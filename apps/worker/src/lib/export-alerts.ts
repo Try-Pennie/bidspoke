@@ -7,12 +7,44 @@
  * This notifies every Slack-connected org when an export reports errors. The export
  * jobs are global (one Snowflake account), so like the required-secrets guard there
  * is no single org to target. No-ops on a clean run.
+ *
+ * THE INCIDENT RECORD (#2103). None of this module's own state can carry an
+ * incident: the standing condition restarts its start whenever a different
+ * problem is posted, and click-path-checks clears it outright so a newly flagged
+ * partner posts as new, while the job has had no clean run in between; the
+ * grace marker outlives the failure on purpose (#1445). So the incident is kept
+ * as every alert-recovery check keeps one, under `export-alert-recovery:<job>`:
+ * opened on the first delivered page, one page per delivered round however many
+ * organizations it reached, its running end stamped on every delivered page and
+ * every failing run the cooldown holds quiet, and settled on the clean run as
+ * stood_down_by_design, because this alerter sends no all-clear. Recording runs
+ * after the send it describes, from the call's one clock reading, and a recorder
+ * fault is logged (`event=incident_record_failed`) and never stops a page or a
+ * clean run's bookkeeping.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { slackOrgIds } from './alert-fanout'
 import { sendExportFailureAlert } from './slack'
 import { buildFixHint, buildConsequence, isTransientExportError } from './export-error-hints'
 import { clearCondition, describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
+import { markAlerted, markSpikeSeen, recordPaged, recoveryKey, settleRecovery, type IncidentContext } from './alert-recovery'
+import { reportRecordError } from './incident-outbox'
+import { formatErr } from './format-error'
+
+/** The incident record's signal for this alerter (incident-signals.ts). */
+export const EXPORT_ALERT_SIGNAL = 'export-alert'
+
+/** Every export and scheduled check runs once for all organizations, so its incident is the platform's. */
+const exportIncident = (jobName: string): IncidentContext => ({ scope: { kind: 'platform' }, subjectLabel: jobName })
+
+/** Run one piece of incident bookkeeping, reporting a fault instead of letting it reach the alert. */
+async function bookkeeping(jobName: string, what: string, fn: () => Promise<unknown>): Promise<void> {
+  try {
+    await fn()
+  } catch (e) {
+    reportRecordError(exportIncident(jobName), `${what} ${EXPORT_ALERT_SIGNAL} ${jobName} not recorded: ${formatErr(e)}`)
+  }
+}
 
 interface KvLike {
   get(key: string): Promise<string | null>
@@ -103,12 +135,20 @@ function validInstant(iso: string): string | null {
  * happened recently at all, and the alternating pattern it protects against is
  * exactly the one a delete would hide.
  *
- * A job with nothing recorded writes nothing, so a healthy job that has never
- * failed costs one KV read.
+ * A job with nothing recorded stamps nothing, so a healthy job that has never
+ * failed costs two KV reads (the grace marker and the incident marker) beside
+ * clearing its condition.
  */
-export async function notifyExportRecovery(kv: KvLike | undefined, jobName: string): Promise<void> {
+export async function notifyExportRecovery(kv: KvLike | undefined, jobName: string, nowMs: number): Promise<void> {
   if (!kv) return
   await clearCondition(kv, `export-alert:${jobName}`)
+  // The incident, if one is open, ends here (#2103). Read first so a job with no
+  // incident writes nothing; settleRecovery records the end before it deletes
+  // the marker, since the marker is the only copy of the start.
+  await bookkeeping(jobName, 'ended', async () => {
+    if ((await kv.get(recoveryKey(EXPORT_ALERT_SIGNAL, jobName))) === null) return
+    await settleRecovery(kv, EXPORT_ALERT_SIGNAL, jobName, null, { ...exportIncident(jobName), reason: 'stood_down_by_design' }, nowMs)
+  })
   const pendingKey = `export-alert-pending:${jobName}`
   const pending = parsePendingFailure(await kv.get(pendingKey))
   if (!pending || pending.recovered) return
@@ -212,7 +252,7 @@ export async function notifyExportFailure(
   // Handling it here fixes every clean-run caller at once (L30), not only the
   // few that could be moved onto notifyExportRecovery by hand.
   if (errors.length === 0) {
-    await notifyExportRecovery(kv, jobName)
+    await notifyExportRecovery(kv, jobName, nowMs)
     return
   }
 
@@ -289,7 +329,11 @@ export async function notifyExportFailure(
   // condition standing at the deploy does not post at once, and when it does
   // post, it posts as new.
   const different = recurrence.kind === 'new' && standing !== null
-  if (kv && !different && (await inCooldown(kv, backoff))) return
+  if (kv && !different && (await inCooldown(kv, backoff))) {
+    // Quiet, not over: the incident's running end moves, and nothing is recorded (#2103).
+    await bookkeeping(jobName, 'running end', () => markSpikeSeen(kv, EXPORT_ALERT_SIGNAL, jobName, nowMs))
+    return
+  }
   const repeat = recurrence.kind === 'reminder' ? (describeRepeat(recurrence.standing, nowMs, recurrence.unchanged) ?? undefined) : undefined
 
   const orgIds = await slackOrgIds(supabase, 'export-alerts')
@@ -319,5 +363,12 @@ export async function notifyExportFailure(
   // Slack outage would suppress retries for hours while nobody got paged.
   if (kv && delivered) {
     await recordAlert(kv, backoff, recurrence.kind === 'reminder' ? recurrence.standing : null, nowMs, { fingerprint: nextFingerprint(standing, print) })
+    // The incident (#2103): opened on its first delivered page, then one page per
+    // delivered round. Only after the send, and only once it delivered.
+    await bookkeeping(jobName, 'paged', async () => {
+      await markAlerted(kv, EXPORT_ALERT_SIGNAL, jobName, exportIncident(jobName), nowMs)
+      await recordPaged(kv, EXPORT_ALERT_SIGNAL, jobName, exportIncident(jobName), nowMs)
+    })
+    await bookkeeping(jobName, 'running end', () => markSpikeSeen(kv, EXPORT_ALERT_SIGNAL, jobName, nowMs))
   }
 }

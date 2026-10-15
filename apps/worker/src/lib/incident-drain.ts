@@ -16,8 +16,10 @@
  *    reported at once.
  *
  * Then, on a run that left nothing waiting, every open incident in the record
- * has its KV marker read directly. A marker gone (or holding a later incident's
- * start) is reported to the database,
+ * has its KV marker read directly, under the key the registry names for its
+ * signal (incidentMarkerKey: alert-recovery's marker, or the check's own state
+ * for a signal that keeps it there, #2103). A marker gone (or holding a later
+ * incident's start) is reported to the database,
  * which closes the row as lapsed, with no end time, the second time in a row it
  * is told so (record_alert_incident_marker_check). Two drains, not one, because
  * the incident's own ended event can lag the deletion of its marker in a list.
@@ -30,8 +32,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { recoveryKey } from './alert-recovery'
-import { isIncidentSignal } from './incident-signals'
+import { incidentMarkerKey, incidentMarkerStart, isIncidentSignal } from './incident-signals'
 import { INCIDENT_OUTBOX_PREFIX, outboxKeyTime, parseIncidentEvent, type IncidentEvent } from './incident-outbox'
 import { clearCondition, readCondition, type BackoffKv } from './alert-backoff'
 import { deliverAll, postStanding, type SlackTarget } from './standing-alert'
@@ -277,10 +278,12 @@ async function checkOpenIncidents(deps: IncidentDrainDeps, nowMs: number, s: Inc
       continue
     }
     try {
-      const marker = await deps.kv.get(recoveryKey(row.signal, row.subject))
+      const marker = await deps.kv.get(incidentMarkerKey(row.signal, row.subject))
       // Present when it holds this incident's start or an earlier one (a start
-      // moved earlier); a later start is a different, newer incident.
-      const present = marker !== null && !(Date.parse(marker) > Date.parse(row.started_at))
+      // moved earlier); a later start is a different, newer incident. A start
+      // that cannot be read is not a later one, so the marker counts as present.
+      const start = marker === null ? null : incidentMarkerStart(row.signal, marker)
+      const present = marker !== null && !(start !== null && Date.parse(start) > Date.parse(row.started_at))
       const { data: verdict, error: checkError } = (await deps.supabase.rpc('record_alert_incident_marker_check', {
         p_id: row.id,
         p_marker_present: present,

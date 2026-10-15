@@ -6,6 +6,11 @@ import { DAY_WINDOW_MINUTES, DEAD_SIGNAL, DEAD_WINDOW_DAYS, DROUGHT_WINDOW_MINUT
 import { STORED_COPY_SERVING_KEY, STORED_COPY_SERVING_WINDOW_MINUTES } from '../stored-copy-signals'
 import { PARTNER_REACHABILITY_RECOVERY_PREFIX } from '../partner-block-alert'
 import { DB_UNREACHABLE_PREFIX } from '../volume-cliff'
+import { incidentMarkerKey, incidentMarkerStart } from '../incident-signals'
+import { recoveryKey } from '../alert-recovery'
+import { alertedStatusKey, CRON_HEARTBEAT_SIGNAL } from '../cron-heartbeat'
+import { EXPORT_ALERT_SIGNAL } from '../export-alerts'
+import { CRON_HEARTBEAT_RECOVERY_WORDS } from '../slack'
 
 /**
  * The incident registry (#2099, #818): one entry per recovery prefix an alert
@@ -16,11 +21,13 @@ import { DB_UNREACHABLE_PREFIX } from '../volume-cliff'
  * from without either noticing.
  */
 describe('INCIDENT_SIGNALS', () => {
-  it('names the twelve recovery prefixes in use, each once', () => {
+  it('names the fourteen signals in use, each once', () => {
     const names = INCIDENT_SIGNALS.map((s) => s.signal)
     expect(new Set(names).size).toBe(names.length)
     expect([...names].sort()).toEqual([
+      'cron-heartbeat',
       'db-unreachable',
+      'export-alert',
       'failure-rate',
       'field-presence-dead',
       'field-presence-drought',
@@ -45,6 +52,13 @@ describe('INCIDENT_SIGNALS', () => {
     for (const s of ['partner-reachability', 'supabase-memory', 'pg-cron-watch', 'stored-copy-serving', 'workflow-schedule'] as const) {
       expect(scope(s), s).toBe('platform')
     }
+    // #2103: the heartbeat watches the worker's own crons and the export alerter
+    // pages for jobs and checks that run once for every organization (one
+    // Snowflake account, one database); both send every Slack organization the
+    // same page and key their state on a job name with no organization in it.
+    for (const s of ['cron-heartbeat', 'export-alert'] as const) {
+      expect(scope(s), s).toBe('platform')
+    }
   })
 
   it('takes each window from the check that measures it', () => {
@@ -57,7 +71,7 @@ describe('INCIDENT_SIGNALS', () => {
     // Each failure-rate signal carries its own window, so the call supplies it.
     expect(incidentSignal('failure-rate').windowMinutes).toBe('per_call')
     // A check that judges a state rather than a trailing window has none.
-    for (const s of ['db-unreachable', 'partner-reachability', 'supabase-memory', 'pg-cron-watch', 'workflow-schedule'] as const) {
+    for (const s of ['db-unreachable', 'partner-reachability', 'supabase-memory', 'pg-cron-watch', 'workflow-schedule', 'cron-heartbeat', 'export-alert'] as const) {
       expect(incidentSignal(s).windowMinutes, s).toBeNull()
     }
   })
@@ -67,6 +81,8 @@ describe('INCIDENT_SIGNALS', () => {
     expect(incidentSignal('field-presence-wrong-path').label.toLowerCase()).toBe(WRONG_PATH_SIGNAL)
     expect(incidentSignal('volume-cliff').label).toBe('Volume cliff')
     expect(incidentSignal('db-unreachable').label).toBe('Database unreachable')
+    // The heartbeat's all-clear names its signal "scheduled job" (#2057).
+    expect(incidentSignal('cron-heartbeat').label.toLowerCase()).toBe(CRON_HEARTBEAT_RECOVERY_WORDS)
     for (const s of INCIDENT_SIGNALS) {
       expect(s.label.length, s.signal).toBeGreaterThan(0)
       expect(s.startMeans.length, s.signal).toBeGreaterThan(0)
@@ -77,6 +93,8 @@ describe('INCIDENT_SIGNALS', () => {
     expect(incidentSignal(STORED_COPY_SERVING_KEY).signal).toBe('stored-copy-serving')
     expect(incidentSignal(PARTNER_REACHABILITY_RECOVERY_PREFIX).signal).toBe('partner-reachability')
     expect(incidentSignal(DB_UNREACHABLE_PREFIX).signal).toBe('db-unreachable')
+    expect(incidentSignal(CRON_HEARTBEAT_SIGNAL).signal).toBe('cron-heartbeat')
+    expect(incidentSignal(EXPORT_ALERT_SIGNAL).signal).toBe('export-alert')
   })
 
   it('lists the partner kinds and the two database memory subjects', () => {
@@ -93,9 +111,37 @@ describe('INCIDENT_SIGNALS', () => {
     const byWorkflow = INCIDENT_SIGNALS.filter((s) => s.subject === 'workflow').map((s) => s.signal).sort()
     expect(byWorkflow).toEqual(['failure-rate', 'field-presence-dead', 'field-presence-drought', 'field-presence-wrong-path', 'slow-spike', 'volume-cliff'])
     expect(incidentSignal('db-unreachable').subject).toBe('organization')
-    for (const s of ['partner-reachability', 'supabase-memory', 'pg-cron-watch', 'stored-copy-serving', 'workflow-schedule'] as const) {
+    for (const s of ['partner-reachability', 'supabase-memory', 'pg-cron-watch', 'stored-copy-serving', 'workflow-schedule', 'cron-heartbeat', 'export-alert'] as const) {
       expect(incidentSignal(s).subject, s).toBe('name')
     }
+  })
+})
+
+describe('where each signal keeps its open incident marker (#2103)', () => {
+  it('names the alert-recovery marker for every signal armed through alert-recovery', () => {
+    for (const s of INCIDENT_SIGNALS) {
+      if (s.signal === 'cron-heartbeat') continue
+      expect(incidentMarkerKey(s.signal, 'subject-1'), s.signal).toBe(recoveryKey(s.signal as Exclude<IncidentSignal, 'cron-heartbeat'>, 'subject-1'))
+    }
+  })
+
+  it('names the heartbeat\'s own paged status record, the key cron-heartbeat.ts writes and deletes', () => {
+    expect(incidentMarkerKey('cron-heartbeat', 'execution-archive')).toBe(alertedStatusKey('execution-archive'))
+  })
+
+  it('reads a plain marker as its start', () => {
+    expect(incidentMarkerStart('volume-cliff', '2026-10-14T10:00:00.000Z')).toBe('2026-10-14T10:00:00.000Z')
+  })
+
+  it('reads the heartbeat record\'s incident start, then its page time for a record written before it had one', () => {
+    const record = { status: 'vanished', at: '2026-10-14T11:00:00.000Z', incidentStartedAt: '2026-10-14T10:00:00.000Z' }
+    expect(incidentMarkerStart('cron-heartbeat', JSON.stringify(record))).toBe('2026-10-14T10:00:00.000Z')
+    expect(incidentMarkerStart('cron-heartbeat', JSON.stringify({ status: 'stale', at: '2026-10-14T11:00:00.000Z' }))).toBe('2026-10-14T11:00:00.000Z')
+  })
+
+  it('reads no start from a heartbeat record it cannot parse, rather than inventing one', () => {
+    expect(incidentMarkerStart('cron-heartbeat', 'not json')).toBeNull()
+    expect(incidentMarkerStart('cron-heartbeat', JSON.stringify({ status: 'stale' }))).toBeNull()
   })
 })
 

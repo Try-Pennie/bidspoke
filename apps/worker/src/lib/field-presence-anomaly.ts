@@ -11,7 +11,7 @@ import { fetchAllPaged } from './paginate'
 import { getSlackConnection, postMessage, sendGroupedRecoveryAlert } from './slack'
 import { listWithOverflow, MAX_LISTED_LINES } from './list-overflow'
 import { recoveryDue, settleRecovery, markAlerted, markSpikeSeen, recordPaged, refreshAlerted, type IncidentContext, type RecoveryDue, type RecoveryKv } from './alert-recovery'
-import type { IncidentEndReason, IncidentSignal } from './incident-signals'
+import type { IncidentEndReason, IncidentSignal, RecoveryMarkerSignal } from './incident-signals'
 import { deriveWatchedFields } from '../engine/watched-fields'
 import type { WorkflowDefinition } from '../types'
 
@@ -1250,7 +1250,7 @@ function fieldKey(workflowId: string, fieldPath: string): string {
 
 interface TierConfig {
   /** KV/recovery prefix, so the two tiers never share an incident marker (L53). */
-  prefix: IncidentSignal
+  prefix: RecoveryMarkerSignal
   signal: string
   /**
    * The window this tier judges, in minutes, so its all-clear reports what was

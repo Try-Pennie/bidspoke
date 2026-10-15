@@ -479,7 +479,7 @@ export async function runExecutionArchive(
     // own try/catch: this runs before any archiving, so a KV or Slack failure
     // here must not turn one clean run into a second killed one (L71).
     try {
-      await notifyExportRecovery(env.IDEMPOTENCY, ARCHIVE_JOB_NAMES.killed)
+      await notifyExportRecovery(env.IDEMPOTENCY, ARCHIVE_JOB_NAMES.killed, now().getTime())
     } catch (err) {
       console.error(`[execution-archive] clearing the killed condition failed: ${formatErr(err)}`)
     }
@@ -736,7 +736,7 @@ export async function runExecutionArchive(
       await notifyExportFailure(supabase, alert.jobName, alert.errors, env.IDEMPOTENCY, alert.remedy)
     }
     for (const jobName of clearedConditionsFor(result)) {
-      await notifyExportRecovery(env.IDEMPOTENCY, jobName)
+      await notifyExportRecovery(env.IDEMPOTENCY, jobName, now().getTime())
     }
 
     console.log(

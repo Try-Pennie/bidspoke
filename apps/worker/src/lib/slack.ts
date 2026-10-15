@@ -2876,6 +2876,9 @@ export async function sendGroupedRecoveryAlert(
   return (await postMessage(slack.bot_token, channel, blocks, fallback)) !== null
 }
 
+/** What the heartbeat's all-clear calls its signal; the incident record's label is the same words (#2103). */
+export const CRON_HEARTBEAT_RECOVERY_WORDS = 'scheduled job'
+
 /**
  * The all-clear for a scheduled job the heartbeat check paged as "started and
  * never finished" once a run of it has finished (#2057). On 2026-10-14 the run
@@ -2895,7 +2898,7 @@ export async function sendCronHeartbeatRecoveryAlert(
     connection,
     connection.default_channel,
     {
-      signal: 'scheduled job',
+      signal: CRON_HEARTBEAT_RECOVERY_WORDS,
       subject: recovery.label,
       // Only what the completion shows: the reported run itself, late, or a later one.
       recoveredPhrase: recovery.sameRun
