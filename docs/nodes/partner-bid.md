@@ -29,7 +29,7 @@ The executor reads `node.config` as:
 
 The editor also writes `partner_name` (the partner's display name) into config for readability. The engine ignores it; only `partner_id` is read.
 
-Everything else that affects the bid (resolver type, formula, matrix, daily cap, min bid, circuit breaker thresholds, dedup endpoint, outbound field mapping, response classification, alert config, bid mode) is configured on the partner itself in **Partners**, not on this node. See the [Partners reference](../reference/partners.md).
+Everything else that affects the bid (resolver type, formula, matrix, daily cap, min bid, circuit breaker thresholds, dedup endpoint, outbound field mapping, response classification, alert config) is configured on the partner itself in **Partners**, not on this node. See the [Partners reference](../reference/partners.md).
 
 ## Bid resolution
 
@@ -54,7 +54,7 @@ If `bid_resolver_type` is not set on an older partner row, the resolver falls ba
 
 ### Bid mode
 
-A partner stores `bid_mode: 'commit'` (default) or `bid_mode: 'ping_only'`. The node reads it only to copy it into the step's resolved input (`baseTemplate` in `apps/worker/src/engine/nodes/partner-bid.ts:289`) and runs the same resolve-and-classify path either way. Ping-only semantics (returning a bid plus a click URL, with conversion handled out of band) are implemented on the partner and its API contract, not branched inside this node. The setting is no longer on the partners page (PM-9, #2136); the column stays until a contract step drops it.
+A partner stores `bid_mode: 'commit'` (default) or `bid_mode: 'ping_only'`. The node reads it only to copy it into the step's resolved input (the `bid_mode` key of `baseTemplate` in `executePartnerBidNode`, `apps/worker/src/engine/nodes/partner-bid.ts`) and runs the same resolve-and-classify path either way. Ping-only semantics (returning a bid plus a click URL, with conversion handled out of band) are implemented on the partner and its API contract, not branched inside this node. The setting is no longer on the partners page (PM-9, #2136); the column stays until a contract step drops it.
 
 ## Output shape
 
