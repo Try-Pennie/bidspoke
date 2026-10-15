@@ -43,7 +43,15 @@ describe('MergeDialog', () => {
     renderDialog()
     const dialog = screen.getByRole('dialog', { name: 'Editor A saved this partner while you were editing' })
     expect(within(dialog).getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual(['Identity', 'Caps', 'Hours'])
-    expect(within(dialog).getAllByRole('radiogroup').map((g) => g.getAttribute('aria-labelledby') && document.getElementById(g.getAttribute('aria-labelledby')!)?.textContent)).toEqual(['Name', 'Leads per day', 'Hours, Monday'])
+    expect(within(dialog).getAllByRole('radiogroup')).toHaveLength(3)
+    for (const name of ['Name', 'Leads per day', 'Hours, Monday']) expect(within(dialog).getByRole('radiogroup', { name })).toBeInTheDocument()
+  })
+
+  it('does not repeat the section heading on its questions (L605)', () => {
+    renderDialog()
+    const hours = screen.getByRole('region', { name: 'Hours' })
+    expect(within(hours).getByRole('radiogroup', { name: 'Hours, Monday' })).toBeInTheDocument()
+    expect(hours.textContent?.match(/Hours/g)).toHaveLength(2)
   })
 
   it('shows each field\'s value before, yours and theirs, in the words the page uses', () => {

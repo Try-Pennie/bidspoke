@@ -59,15 +59,21 @@ const list = (units: MergeUnit[]): string => {
   return names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
 
+/** The label under its section heading, without saying the heading again (L605): Hours, Monday under Hours is Monday. */
+function visibleLabel(c: MergeConflict): string {
+  if (c.label === c.section) return ''
+  return c.label.startsWith(`${c.section}, `) ? c.label.slice(c.section.length + 2) : c.label
+}
+
 function ConflictRow({ conflict, onChoose }: { conflict: MergeConflict; onChoose: (key: string, side: MergeSide) => void }) {
   const id = useId()
   const lines: Array<[string, unknown]> = [['Was', conflict.base], ['Yours', conflict.mine], ['Theirs', conflict.theirs]]
   return (
     <div role="group" aria-labelledby={`${id}-label`} className="space-y-1.5 border-t border-gray-100 py-3 first:border-t-0">
-      <ChoiceGroup id={id} label={conflict.label} value={conflict.choice} options={CHOICES} onChange={(side) => onChoose(conflict.key, side)} />
+      <ChoiceGroup id={id} label={conflict.label} visibleLabel={visibleLabel(conflict)} value={conflict.choice} options={CHOICES} onChange={(side) => onChoose(conflict.key, side)} />
       <div className="grid gap-0.5 text-sm">
         {lines.map(([word, value]) => (
-          <p key={word} className="break-words"><span className="inline-block w-14 text-xs font-medium text-gray-600">{word}</span> {describeMergeValue(conflict.key, value)}</p>
+          <p key={word} className="grid grid-cols-[3.5rem_1fr] items-baseline"><span className="text-xs font-medium text-gray-600">{word}</span> <span className="break-words">{describeMergeValue(conflict.key, value)}</span></p>
         ))}
       </div>
       {conflict.reason && <p className="text-xs text-red-700">These cannot be saved together: {conflict.reason}</p>}
