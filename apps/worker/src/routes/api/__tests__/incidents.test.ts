@@ -640,7 +640,8 @@ describe('the incident routes', () => {
             b.then = (resolve: (v: unknown) => unknown) => {
               inFlight += 1
               most = Math.max(most, inFlight)
-              return new Promise((done) => setTimeout(done, 1)).then(() => {
+              // One microtask in flight is enough for reads started together to overlap.
+              return Promise.resolve().then(() => {
                 inFlight -= 1
                 return then(resolve)
               })
@@ -687,6 +688,7 @@ describe('the incident routes', () => {
           match: 'ACRO_GATEWAY',
           started_at: minutesAgo(120),
           ended_at: minutesAgo(28),
+          state: 'ended',
         })
         expect(body.kept_since).toBe(KEPT_SINCE)
         expect(body.clipped).toBe(false)
@@ -773,8 +775,8 @@ describe('the incident routes', () => {
         const fr = frIncident({ ended_reason: null, ended_at: null })
         const late = run({ started_at: minutesAgo(6), completed_at: minutesAgo(5) })
         install([fr], {}, [...seedRuns().all, late])
-        const body = (await (await failedRuns(fr.id as string)).json()) as { incident: { ended_at: string | null }; count: number }
-        expect(body.incident.ended_at).toBeNull()
+        const body = (await (await failedRuns(fr.id as string)).json()) as { incident: { ended_at: string | null; state: string }; count: number }
+        expect(body.incident).toMatchObject({ ended_at: null, state: 'ongoing' })
         // The two owned runs, the one after the recorded end in seedRuns, and the late one.
         expect(body.count).toBe(4)
       })
@@ -785,8 +787,9 @@ describe('the incident routes', () => {
         const fr = frIncident({ ended_reason: 'lapsed', ended_at: null, closed_at: minutesAgo(20) })
         const late = run({ started_at: minutesAgo(6), completed_at: minutesAgo(5) })
         install([fr], {}, [...seedRuns().all, late])
-        const body = (await (await failedRuns(fr.id as string)).json()) as { incident: { ended_at: string | null }; count: number }
-        expect(body.incident.ended_at).toBeNull()
+        const body = (await (await failedRuns(fr.id as string)).json()) as { incident: { ended_at: string | null; state: string }; count: number }
+        // Said as an end not recorded, never as still running.
+        expect(body.incident).toMatchObject({ ended_at: null, state: 'end_not_recorded' })
         // The two owned runs only: seedRuns' run 10 minutes ago and the late one
         // both came after the close.
         expect(body.count).toBe(2)

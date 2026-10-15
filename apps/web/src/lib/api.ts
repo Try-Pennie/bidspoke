@@ -238,7 +238,15 @@ export interface ExecutionListRow {
 
 /** GET /api/incidents/:id/failed-runs (#2102): one failure rate incident's failed runs still kept. */
 export interface IncidentFailedRuns {
-  incident: { id: string; workflow_id: string; match: string; started_at: string; ended_at: string | null }
+  incident: {
+    id: string
+    workflow_id: string
+    match: string
+    started_at: string
+    ended_at: string | null
+    /** Still open; closed with its end recorded; or closed without one, which is never said as still running. */
+    state: 'ongoing' | 'ended' | 'end_not_recorded'
+  }
   /** The oldest moment whose runs are still kept. */
   kept_since: string
   /** The incident started before kept_since, so its earliest runs are gone. */

@@ -184,7 +184,7 @@ describe('the failed runs of a failure rate incident (#2102)', () => {
   describe('the narrowed run list', () => {
     function body(over: Partial<IncidentFailedRuns['incident']> = {}, rest: Partial<IncidentFailedRuns> = {}): IncidentFailedRuns {
       return {
-        incident: { id: 'inc-1', workflow_id: WF, match: 'ACRO_GATEWAY', started_at: '2026-10-14T18:34:00.000Z', ended_at: '2026-10-14T20:06:00.000Z', ...over },
+        incident: { id: 'inc-1', workflow_id: WF, match: 'ACRO_GATEWAY', started_at: '2026-10-14T18:34:00.000Z', ended_at: '2026-10-14T20:06:00.000Z', state: 'ended', ...over },
         kept_since: '2026-10-07T22:12:00.000Z',
         clipped: false,
         count: 0,
@@ -207,8 +207,12 @@ describe('the failed runs of a failure rate incident (#2102)', () => {
         .toBe('"ACRO_GATEWAY", Yesterday 7:50 PM to Oct 14, 1:10 AM ET')
     })
 
-    it('reads an incident with no recorded end as since its start', () => {
-      expect(incidentRunsSpanLine(body({ ended_at: null }), NOW)).toBe('"ACRO_GATEWAY", Today since 2:34 PM ET')
+    it('reads an incident still open as since its start', () => {
+      expect(incidentRunsSpanLine(body({ ended_at: null, state: 'ongoing' }), NOW)).toBe('"ACRO_GATEWAY", Today since 2:34 PM ET')
+    })
+
+    it('says an incident that closed without a recorded end had its end not recorded, never that it is still running', () => {
+      expect(incidentRunsSpanLine(body({ ended_at: null, state: 'end_not_recorded' }), NOW)).toBe('"ACRO_GATEWAY", Today 2:34 PM ET, end not recorded')
     })
 
     it('says runs before the cutoff are gone only when the span reaches before it', () => {

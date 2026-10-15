@@ -112,14 +112,16 @@ export function incidentRunsTitle(count: number): string {
 
 /**
  * '"ACRO_GATEWAY", Today 2:34 PM to 4:06 PM ET': the match and the incident's
- * span. An end on another day carries its day; with no recorded end it is since
- * the start.
+ * span. An end on another day carries its day. An incident still open is since
+ * its start; one that closed without a recorded end says so, in the card's own
+ * words, rather than reading as still running.
  */
 export function incidentRunsSpanLine(body: IncidentFailedRuns, now: number): string {
-  const { match, started_at, ended_at } = body.incident
+  const { match, started_at, ended_at, state } = body.incident
   const day = etDayHeading(started_at, now)
   const start = formatEtClock(started_at)
-  if (!ended_at) return `"${match}", ${day} since ${start} ET`
+  if (state === 'ongoing') return `"${match}", ${day} since ${start} ET`
+  if (state === 'end_not_recorded' || !ended_at) return `"${match}", ${day} ${start} ET, end not recorded`
   const end = etDayKey(ended_at) === etDayKey(started_at) ? formatEtClock(ended_at) : formatEtDayTime(ended_at)
   return `"${match}", ${day} ${start} to ${end} ET`
 }

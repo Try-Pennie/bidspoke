@@ -83,7 +83,15 @@ export interface IncidentView extends IncidentBase {
 
 /** One failure rate incident's failed runs, for the workflow page's run panel (#2102). */
 export interface IncidentFailedRuns {
-  incident: { id: string; workflow_id: string; match: string; started_at: string; ended_at: string | null }
+  incident: {
+    id: string
+    workflow_id: string
+    match: string
+    started_at: string
+    ended_at: string | null
+    /** Still open; closed with its end recorded; or closed without one (lapsed), which is never said as still running. */
+    state: 'ongoing' | 'ended' | 'end_not_recorded'
+  }
   /** The oldest moment whose runs are still kept. */
   kept_since: string
   /** The incident started before kept_since, so its earliest runs are gone. */
@@ -369,7 +377,14 @@ export async function readIncidentFailedRuns(
   return {
     kind: 'found',
     body: {
-      incident: { id: row.id, workflow_id: target.workflowId, match: target.match, started_at: row.started_at, ended_at: row.ended_at },
+      incident: {
+        id: row.id,
+        workflow_id: target.workflowId,
+        match: target.match,
+        started_at: row.started_at,
+        ended_at: row.ended_at,
+        state: row.ended_reason === null ? 'ongoing' : row.ended_at !== null ? 'ended' : 'end_not_recorded',
+      },
       kept_since: list.window.keptSince,
       clipped: list.window.clipped,
       count: list.runs.length,

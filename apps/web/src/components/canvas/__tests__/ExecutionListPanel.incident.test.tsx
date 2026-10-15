@@ -61,7 +61,7 @@ function body(over: Partial<IncidentFailedRuns> = {}): IncidentFailedRuns {
     run('r-1', '2026-10-14T18:34:00.000Z', 'ACRO_GATEWAY: connection reset by peer'),
   ]
   return {
-    incident: { id: 'inc-1', workflow_id: WF, match: 'ACRO_GATEWAY', started_at: '2026-10-14T18:34:00.000Z', ended_at: '2026-10-14T20:06:00.000Z' },
+    incident: { id: 'inc-1', workflow_id: WF, match: 'ACRO_GATEWAY', started_at: '2026-10-14T18:34:00.000Z', ended_at: '2026-10-14T20:06:00.000Z', state: 'ended' },
     kept_since: '2026-10-07T22:12:00.000Z',
     clipped: false,
     count: runs.length,
@@ -129,6 +129,9 @@ describe('ExecutionListPanel narrowed to an incident (#2102)', () => {
 
   it('shows a failed read as an error with a Retry, never as an empty list', async () => {
     const first = deferred<IncidentFailedRuns>()
+    // A handler before the rejection (L749), so a panel that never read the
+    // promise fails on the assertions below rather than as a stray rejection.
+    first.promise.catch(() => {})
     const load = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValueOnce(body())
     narrowed(load)
     first.reject(new Error("The incident's failed runs could not be read. Try again in a minute."))
