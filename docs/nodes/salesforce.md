@@ -72,10 +72,10 @@ With `skip_when_empty: true`, an update or an Apex POST is skipped rather than s
 | Reason | Operation | When |
 |--------|-----------|------|
 | `nothing_to_write` | update | The body resolves to null or nothing, or is an object left with no keys after `omit_fields` and `rename_fields`. `injected_fields` do not count: they only stamp a write that is happening anyway. |
-| `nothing_to_write` | apex POST | The body resolves to null or nothing. The `credit-inquiries` endpoint answers 500 when its `inquiries` key is missing (#2181), so its body step returns null when there is nothing to send. An empty object is still sent. |
+| `nothing_to_write` | apex POST | The body resolves to null or nothing. An empty object is still sent to any other Apex endpoint. The credit inquiry post has its own rules, below: it is also skipped for an empty or missing `inquiries` list, flag or not. |
 | `no_record_id` | update | The record id resolves empty. |
 
-A skipped step makes no Salesforce call at all (not even a token request), completes rather than fails, and records `{ "skipped": true, "skip_reason": "<reason>" }` as its output, the same keys a skipped partner bid records. Without the flag both keep their old behaviour: an update with a missing record id fails the step and one with a null body sends `{}`, and an Apex POST with a null body sends `null`.
+A skipped step makes no Salesforce call at all (not even a token request), completes rather than fails, and records `{ "skipped": true, "skip_reason": "<reason>" }` as its output, the same keys a skipped partner bid records. Without the flag both keep their old behaviour: an update with a missing record id fails the step and one with a null body sends `{}`, and an Apex POST with a null body sends `null`, except the credit inquiry post, which fails the step before any call (below).
 
 ### The credit inquiry post
 
