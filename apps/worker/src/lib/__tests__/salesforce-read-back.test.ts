@@ -60,13 +60,28 @@ function makeKv() {
       store.set(k, v)
     }),
     delete: vi.fn(async (k: string) => { store.delete(k) }),
-    list: vi.fn(async (opts: { prefix?: string; limit?: number }) => {
+    // Pages as KV does: a cursor after each page that is not the last.
+    list: vi.fn(async (opts: { prefix?: string; limit?: number; cursor?: string }) => {
       const names = [...store.keys()].filter((k) => k.startsWith(opts.prefix ?? '')).sort()
-      return { keys: names.slice(0, opts.limit ?? 1000).map((name) => ({ name })), list_complete: names.length <= (opts.limit ?? 1000) }
+      const start = opts.cursor ? Number(opts.cursor) : 0
+      const end = start + (opts.limit ?? 1000)
+      const complete = end >= names.length
+      return { keys: names.slice(start, end).map((name) => ({ name })), list_complete: complete, ...(complete ? {} : { cursor: String(end) }) }
     }),
   }
 }
 type Kv = ReturnType<typeof makeKv>
+
+/** Settled held writes from older runs, which sort before EXEC_A and stay in KV until they expire. */
+async function settledAhead(kv: Kv, n: number) {
+  const entry = JSON.parse(kv.store.get(await hold(kv, { exec: '00000000-0000-7000-8000-000000000000', step: 'seed', body: {} }))!) as AtRiskEntry
+  kv.store.delete(atRiskKey('00000000-0000-7000-8000-000000000000', 'seed'))
+  for (let i = 0; i < n; i++) {
+    const exec = `00000000-0000-7000-8000-${String(i).padStart(12, '0')}`
+    kv.store.set(atRiskKey(exec, 'patch_prospect_reject'), JSON.stringify({ ...entry, execution_id: exec, step_namespace: 'patch_prospect_reject' }))
+    kv.store.set(`sf-read-back:state:${exec}:patch_prospect_reject`, JSON.stringify({ v: 1, attempts: 2, done: { kind: 'unknown', at: new Date(T0).toISOString(), fields: ['BidStatus__c'] }, alerted: { done: new Date(T0).toISOString() } }))
+  }
+}
 
 interface Held {
   exec?: string
@@ -645,6 +660,15 @@ describe('a record of its own it cannot read', () => {
 })
 
 describe('what the read-back leaves alone', () => {
+  it('still reads a write behind more settled ones than one page of the list holds', async () => {
+    const r = rig({ [PROSPECT]: { [WRITE_MARKER_FIELD]: `${EXEC_A}:patch_prospect_reject:0` } })
+    await settledAhead(r.kv, 260)
+    await hold(r.kv, { step: 'patch_prospect_reject', body: REJECT })
+    const s = await runSalesforceReadBack(r.deps)
+    expect(s.finished).toBe(260)
+    expect(s.landed).toBe(1)
+  })
+
   it('does not read a Submission update, or one held from before the stamp shipped', async () => {
     const r = rig({ [PROSPECT]: {}, a04Ui00000NkhG1IAJ: {} })
     await hold(r.kv, { step: 'update_submission', object: 'Submission__c', record: 'a04Ui00000NkhG1IAJ', body: { PDFlow_3__c: 'x' }, unstamped: true })
@@ -749,6 +773,17 @@ describe('the read-back\'s own liveness', () => {
     const res = await checkSalesforceReadBackLiveness(deps)
     expect(res).toMatchObject({ waiting: 1, alerted: true })
     expect(r.alerts[0]).toMatchObject({ kind: 'not_running', count: 1 })
+  })
+
+  // Settled writes sort first and stay until they expire, so a scan of the first
+  // keys alone could be filled by them and miss the write still waiting (#2201 review).
+  it('still finds a waiting write behind more settled ones than one page holds', async () => {
+    const r = rig()
+    r.kv.store.set(completedKey(SF_READ_BACK_JOB), new Date(T0 - 11 * 60_000).toISOString())
+    await settledAhead(r.kv, 260)
+    await waiting(r.kv)
+    const res = await checkSalesforceReadBackLiveness({ kv: r.kv, keys: KEY, now: () => T0, slackFor: r.deps.slackFor, sendAlert: r.deps.sendAlert!, alertClaims: makeClaims(), appUrl: 'https://app.test' })
+    expect(res).toMatchObject({ waiting: 1, alerted: true })
   })
 
   it('gives a read-back that has never finished a run the same grace before it accuses it', async () => {

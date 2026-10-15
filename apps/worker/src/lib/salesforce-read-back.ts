@@ -124,7 +124,7 @@ export const SF_PHASE_BUDGET_MS = 20_000
 /** How long one Salesforce call may take before it counts as no answer. */
 export const SF_CALL_DEADLINE_MS = 12_000
 
-/** Held writes one tick looks at, the oldest runs first (the key leads with a UUIDv7 run id). */
+/** Held writes waiting for the read-back that one tick gathers, the oldest runs first (the key leads with a UUIDv7 run id); settled and unowned ones listed on the way do not count toward it. */
 export const ENTRY_SCAN_LIMIT = 200
 
 /** The read-back has not finished a run for this long while writes wait: the liveness alert. */
@@ -150,7 +150,7 @@ export interface ReadBackKv {
   get(key: string): Promise<string | null>
   put(key: string, value: string, opts?: { expiration?: number; expirationTtl?: number }): Promise<void>
   delete(key: string): Promise<void>
-  list(opts: { prefix: string; limit: number }): Promise<{ keys: Array<{ name: string }>; list_complete?: boolean }>
+  list(opts: { prefix: string; limit: number; cursor?: string }): Promise<{ keys: Array<{ name: string }>; list_complete?: boolean; cursor?: string }>
 }
 
 type SweepSlack = Pick<SlackConnection, 'bot_token' | 'default_channel' | 'config_alerts_enabled'>
@@ -290,6 +290,40 @@ async function readHeldWrite(kv: ReadBackKv, keys: SecretKeyInput, name: string)
   }
   if (!readBackOwns(entry.sf_object, body, entry.execution_id, entry.step_namespace)) return { kind: 'not_ours' }
   return { kind: 'owned', held: { ...base, body } }
+}
+
+/** Keys one list call asks KV for. */
+const SCAN_PAGE = 200
+/** Held writes classified at once. */
+const SCAN_CHUNK = 25
+/** Keys one scan lists at most, settled and unowned ones included. */
+export const MAX_KEYS_SCANNED = 1000
+
+/**
+ * Lists the held writes oldest first and classifies them, page after page, until
+ * `wanted` writes waiting for the read-back (owned and unsettled, or unopenable)
+ * are found, the list ends, or MAX_KEYS_SCANNED keys have been looked at. Paging
+ * matters because settled writes stay in KV until they expire, and Submission and
+ * unstamped ones are never the read-back's: a single first page can be full of
+ * them and hide every write still waiting (#2201 review).
+ */
+async function scanHeldWrites(kv: ReadBackKv, keys: SecretKeyInput, wanted: number): Promise<{ reads: HeldRead[]; listed: number; truncated: boolean }> {
+  const reads: HeldRead[] = []
+  let listed = 0
+  let waiting = 0
+  let cursor: string | undefined
+  for (;;) {
+    const page = await kv.list({ prefix: AT_RISK_WRITE_PREFIX, limit: SCAN_PAGE, ...(cursor ? { cursor } : {}) })
+    listed += page.keys.length
+    for (let i = 0; i < page.keys.length; i += SCAN_CHUNK) {
+      const chunk = await Promise.all(page.keys.slice(i, i + SCAN_CHUNK).map(({ name }) => readHeldWrite(kv, keys, name)))
+      reads.push(...chunk)
+      waiting += chunk.filter((r) => r.kind === 'owned' || r.kind === 'unopenable').length
+    }
+    if (page.list_complete !== false || !page.cursor) return { reads, listed, truncated: false }
+    if (waiting >= wanted || listed >= MAX_KEYS_SCANNED) return { reads, listed, truncated: true }
+    cursor = page.cursor
+  }
 }
 
 const fieldsOf = (body: Record<string, unknown>) => Object.keys(body).filter((f) => f !== WRITE_MARKER_FIELD)
@@ -455,14 +489,13 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
   }
 
   // ── Find the held writes this job owns ────────────────────────────────────
-  const listing = await deps.kv.list({ prefix: AT_RISK_WRITE_PREFIX, limit: ENTRY_SCAN_LIMIT })
-  s.listed = listing.keys.length
-  s.truncated = listing.list_complete === false
+  const scan = await scanHeldWrites(deps.kv, deps.keys, ENTRY_SCAN_LIMIT)
+  s.listed = scan.listed
+  s.truncated = scan.truncated
   const held: Held[] = []
   // Held writes on the marker objects whose body the keys could not open.
   const unopenable: Held[] = []
-  for (const { name } of listing.keys) {
-    const r = await readHeldWrite(deps.kv, deps.keys, name)
+  for (const r of scan.reads) {
     if (r.kind === 'gone') s.skipped++
     else if (r.kind === 'not_ours') s.not_ours++
     else if (r.kind === 'settled') {
@@ -876,7 +909,7 @@ export interface LivenessResult {
   alerted: boolean
 }
 
-/** Held writes the liveness check looks at, the oldest runs first. */
+/** Waiting held writes the liveness check gathers before it stops listing; the alert says how many it found. */
 const LIVENESS_SCAN_LIMIT = 50
 
 /**
@@ -909,10 +942,9 @@ export async function checkSalesforceReadBackLiveness(deps: LivenessDeps): Promi
     }
     if (nowMs - Date.parse(firstSeen) < LIVENESS_AFTER_MS) return quiet(0)
   }
-  const { keys } = await deps.kv.list({ prefix: AT_RISK_WRITE_PREFIX, limit: LIVENESS_SCAN_LIMIT })
+  const { reads } = await scanHeldWrites(deps.kv, deps.keys, LIVENESS_SCAN_LIMIT)
   const byOrg = new Map<string, AtRiskEntry[]>()
-  for (const { name } of keys) {
-    const r = await readHeldWrite(deps.kv, deps.keys, name)
+  for (const r of reads) {
     // Waiting for the read-back: one it owns and has not settled, or one it
     // cannot open, which nothing else will report while it is not running. A
     // settled write waits only for KV, and one it does not own keeps the held alert.

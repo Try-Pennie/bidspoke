@@ -229,7 +229,8 @@ export const CRON_JOBS: CronJob[] = [
     triggerCron: '* * * * *',
     // 1 minute cadence, 9 minutes slack, matching the database read back.
     staleMs: 10 * MIN,
-    // One KV list of at most 200 held writes, then Salesforce calls only until
+    // KV lists of the held writes, paged until 200 waiting ones are found or
+    // 1000 keys are seen, each classified 25 at a time, then Salesforce calls only until
     // SF_PHASE_BUDGET_MS (20 s), each bounded at SF_CALL_DEADLINE_MS (12 s), so
     // a tick ends at most one call past it, then its alerts: well inside 50 s.
     maxRunMs: 50 * 1000,
