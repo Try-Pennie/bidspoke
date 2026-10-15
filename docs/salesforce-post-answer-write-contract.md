@@ -947,8 +947,8 @@ cover 210 Submissions. Read back from `Submission__c` by id:
   PATCH landed. The 210th holds the link of a later Main Flow run on the same
   Submission (13:02 the same day, also `send_fallback_salesforce`), so it landed
   and was then superseded. None failed.
-- 186 still hold `VantageScore__c = 'null'`; 23 hold a real score written later
-  by another writer, 3 are blank.
+- 186 still hold `VantageScore__c = 'null'`; 21 hold a score written later by
+  another writer, 3 are blank (210 in all).
 - Field type (Tooling `FieldDefinition`): `VantageScore__c` is `Text(255)` on
   Submission and on Lead, so Salesforce accepts the string. The completion
   flip copies a non-null `VantageScore__c` to the Lead, so the text reaches the
@@ -1031,9 +1031,10 @@ grouped by message (7 day searches miss lines), covering 2026-10-08 16:00 to
   to 21,507 ms. Nothing shed because slots freed within the wait.
 - Most waited lines show a low `inflight` (1 to 4) with a multi second wait: the
   wait was the Durable Object round trip itself, not a full bulkhead.
-- **Fail open 50 times**, with waits up to 29,341 ms, all during the 10-12
-  evening and the 10-13 incident: those calls went to Salesforce with no slot,
-  so the true in flight then is unknown and the cap did not apply.
+- **Fail open 50 times**, with waits up to 29,341 ms: 4 in the 10-10 to 10-11
+  window and 46 during the 10-12 evening and the 10-13 incident. Those calls
+  went to Salesforce with no slot, so the true in flight then is unknown and
+  the cap did not apply.
 
 **Step overlap, as a cross check.** Counting every native Salesforce step's
 whole duration (`step_type = 'salesforce'`, non-test, all workflows) as one
