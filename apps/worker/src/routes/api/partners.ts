@@ -16,7 +16,8 @@ import type { Json } from '../../types/database'
 import { PARTNER_TYPES, isPartnerType, type PartnerType } from '../../lib/partner-roles'
 import { partnerCredentialMissing } from '../../lib/partner-credential'
 import { dailyCapObjectName } from '../../lib/daily-cap-name'
-import { clickCountIfClickSold, refuseClickUrlWithoutProspectId } from './buyer-profiles'
+import { clickCountIfClickSold, refuseClickUrlWithoutProspectId, refuseSwitchAwayFromClick } from './buyer-profiles'
+import { documentToProfile, parseProfileDocument, registryPathOf, validateProfile, type Signal } from '@bidspoke/buyer-profile'
 
 type Variables = AuthVariables
 
@@ -349,6 +350,171 @@ partners.put('/:id', async (c) => {
   const profilesRebuilt = await copyCleared(() => rebuildBuyerProfiles(orgId, c.env.WORKFLOW_CACHE, supabase), `buyer profiles of org ${orgId}`)
 
   return c.json({ ...withCredentialWarning(c.env, saved), ...copyWarning(retired && constantsCleared && profilesRebuilt) })
+})
+
+// ── The whole page in one save (#2133) ────────────────────────────────────────
+
+interface PageSaveBody {
+  expected_partner_version?: unknown
+  patch?: unknown
+  expected_profile_version?: unknown
+  profile?: unknown
+  save_id?: unknown
+}
+
+const isVersion = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0
+const isPlainObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+/**
+ * The validator path, if any, a database refusal of the page save is about, so
+ * the form can put it beside its control and the registry can name its field.
+ * A refusal that names no one field (the click cap rule covers three) has none.
+ */
+const REFUSAL_PATHS: Readonly<Record<string, string>> = {
+  tiers_gap: 'tiers',
+  population_not_wired: 'tiers',
+  click_buyer_priced: 'tiers',
+  sold_on_invalid: 'soldOn',
+  sold_on_locked: 'soldOn',
+  click_delivery_on_offer_buyer: 'clickDelivery',
+  click_delivery_invalid: 'clickDelivery',
+}
+
+/** The 409 a stale page save is answered with (save_partner_page's DETAIL), each part null when absent. */
+function stalePageDetail(detail: string | null): Record<string, unknown> {
+  let parsed: Record<string, unknown> = {}
+  try {
+    const value: unknown = detail ? JSON.parse(detail) : null
+    if (isPlainObject(value)) parsed = value
+  } catch {
+    parsed = {}
+  }
+  const keys = ['partner', 'profile', 'partner_version', 'profile_version', 'last_save_id', 'changed_by_name', 'changed_at'] as const
+  return Object.fromEntries(keys.map((k) => [k, parsed[k] ?? null]))
+}
+
+/**
+ * PUT /partners/:id/page: the partner record and the buyer profile together
+ * (#2133). Who may call it: any allowlisted member of the org, the same as
+ * every partner route (jwtAuth). Whose rows it touches: only this org's, since
+ * orgId comes from the token and every read and the RPC carry it.
+ *
+ * Every check the two old routes ran runs first, and the profile is judged
+ * against the partner as THIS save leaves it (stored rules overlaid with the
+ * patch). Then one call, save_partner_page, writes both halves at the pair of
+ * versions the page was edited from, or neither, and records save_id on both
+ * rows, so a press resent after a lost answer can tell its own landed save
+ * from someone else's by the 409's last_save_id (L747).
+ */
+partners.put('/:id/page', async (c) => {
+  const { orgId, userId, email } = c.get('user')
+  const id = c.req.param('id')
+  const supabase = createSupabaseClient(c.env)
+  const body = await c.req.json<PageSaveBody>()
+
+  if (!isVersion(body.expected_partner_version)) {
+    return c.json({ error: 'expected_version_invalid', message: 'expected_partner_version must be a whole number, 0 or more.' }, 400)
+  }
+  if (typeof body.save_id !== 'string' || !UUID.test(body.save_id)) {
+    return c.json({ error: 'save_id_invalid', message: 'save_id must be a UUID.' }, 400)
+  }
+  if (!isPlainObject(body.patch)) {
+    return c.json({ error: 'patch_invalid', message: 'patch must be an object of the partner fields this save changes.' }, 400)
+  }
+  const profileSent = body.profile !== undefined && body.profile !== null
+  const expectedProfileVersion = body.expected_profile_version ?? null
+  // A profile is saved from the version it was edited from; a save that never
+  // read the profile may name none, and is then not compared on it.
+  if (profileSent ? !isVersion(expectedProfileVersion) : expectedProfileVersion !== null && !isVersion(expectedProfileVersion)) {
+    return c.json({ error: 'expected_version_invalid', message: 'expected_profile_version must be a whole number, 0 or more, whenever a profile is saved.' }, 400)
+  }
+
+  const patch: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(body.patch)) if (v !== undefined) patch[k] = v
+  const typeRefusal = partnerTypeRefusal(patch as PartnerBody)
+  if (typeRefusal) return c.json({ error: typeRefusal }, 400)
+
+  const { data: stored, error: fetchError } = await supabase
+    .from('partner_configs')
+    .select('id, click_url, accept_signals, external_routing_code')
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .single()
+  const fetchBlocked = dbErrorUnlessNotFound(c, fetchError)
+  if (fetchBlocked) return fetchBlocked
+  if (!stored) return c.json({ error: 'Partner not found' }, 404)
+
+  const clickUrlRefusal = await refuseClickUrlWithoutProspectId(c, supabase, orgId, id, stored.click_url ?? null, patch.click_url as string | null | undefined)
+  if (clickUrlRefusal) return clickUrlRefusal
+
+  let profileToSave: Record<string, unknown> | null = null
+  if (profileSent) {
+    const parsed = parseProfileDocument(body.profile)
+    if (!parsed.ok) return c.json({ error: 'profile_malformed', errors: parsed.errors }, 400)
+    const profile = documentToProfile({ ...parsed.document, partner_id: id })
+    // The partner rules as this save leaves them, so a rule added or removed in
+    // the same save is the one the profile is judged against.
+    const merged = { ...stored, ...patch } as { accept_signals?: unknown; click_url?: unknown; external_routing_code?: unknown }
+    const validation = validateProfile(profile, {
+      acceptSignals: Array.isArray(merged.accept_signals) ? (merged.accept_signals as Signal[]) : [],
+      clickUrl: typeof merged.click_url === 'string' ? merged.click_url : null,
+      externalRoutingCode: typeof merged.external_routing_code === 'number' ? merged.external_routing_code : null,
+    })
+    if (!validation.ok) {
+      const routeNames = profile.clickDelivery?.routes.map((r) => r.name) ?? []
+      return c.json({ error: 'profile_invalid', errors: validation.errors.map((e) => ({ ...e, field: registryPathOf(e.path, routeNames) })) }, 422)
+    }
+    const inUse = await refuseSwitchAwayFromClick(c, supabase, orgId, id, profile.soldOn)
+    if (inUse) return inUse
+    const { partner_id: _partner, version: _version, ...rest } = parsed.document
+    profileToSave = rest as Record<string, unknown>
+  }
+
+  const { data, error } = await supabase.rpc('save_partner_page', {
+    p_org: orgId,
+    p_partner_id: id,
+    p_expected_partner_version: body.expected_partner_version,
+    p_patch: patch as unknown as Json,
+    // The generated types make every argument required and non null; the
+    // function takes NULL here for a save that never read the profile.
+    p_expected_profile_version: expectedProfileVersion as number,
+    p_profile: profileToSave as unknown as Json,
+    p_save_id: body.save_id,
+    p_actor: userId,
+    p_actor_email: email,
+    p_actor_name: c.get('user').name ?? '',
+  })
+  if (error) {
+    const detail = (error as { details?: string | null }).details ?? null
+    if (error.code === 'BP409') return c.json({ error: 'stale_version', ...stalePageDetail(detail) }, 409)
+    if (error.code === 'BP422') {
+      const code = error.message
+      const path = code === 'field_not_editable' ? detail : REFUSAL_PATHS[code] ?? null
+      const field = code === 'field_not_editable' ? detail : path ? registryPathOf(path) : null
+      return c.json({ error: code, message: detail ?? code, errors: path && field ? [{ code, path, field, message: detail ?? code }] : [] }, 422)
+    }
+    if (error.code === 'P0002') return c.json({ error: 'Partner not found' }, 404) // db-guard-ok: P0002 is the function's own named refusal for no such partner in this org, raised after its locked read, never a transport or query error
+    return dbError(c, error)
+  }
+  const saved = data as unknown as { partner: Record<string, unknown>; profile: unknown; partner_version: number; profile_version: number }
+
+  // Committed. Nothing below may turn it into an error (L33): each stored copy
+  // is refreshed or cleared inside copyCleared, all three run whatever the
+  // others did, and any failure answers 200 with stored_copy_warning.
+  const affectsConstants = CONSTANTS_FIELDS.some((f) => f in patch)
+  const retired = await copyCleared(() => retirePartnerLastGood(c.env.WORKFLOW_CACHE, id), `partner copy ${id}`)
+  const constantsCleared = affectsConstants
+    ? await copyCleared(() => invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE), `partner constants of org ${orgId}`)
+    : true
+  const profilesRebuilt = await copyCleared(() => rebuildBuyerProfiles(orgId, c.env.WORKFLOW_CACHE, supabase), `buyer profiles of org ${orgId}`)
+
+  return c.json({
+    partner: withCredentialWarning(c.env, saved.partner),
+    profile: saved.profile ?? null,
+    partner_version: saved.partner_version,
+    profile_version: saved.profile_version,
+    ...copyWarning(retired && constantsCleared && profilesRebuilt),
+  })
 })
 
 // ── Delete ────────────────────────────────────────────────────────────────────

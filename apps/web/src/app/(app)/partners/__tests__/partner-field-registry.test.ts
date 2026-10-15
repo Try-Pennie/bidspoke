@@ -21,7 +21,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { normaliseSqlPath } from '@bidspoke/buyer-profile'
+import { normaliseSqlPath, registryPathOf } from '@bidspoke/buyer-profile'
 import { PARTNER_BODY_KEYS, PARTNER_FIELD_REGISTRY, PROFILE_PREFIX, registryEntriesFor } from '../partner-draft'
 import { REPO_ROOT } from '@/lib/__tests__/_scan-utils'
 
@@ -75,6 +75,21 @@ describe('the partners page field registry (#2132)', () => {
   it('no two entries share a pattern', () => {
     const patterns = PARTNER_FIELD_REGISTRY.map((e) => e.pattern)
     expect(new Set(patterns).size).toBe(patterns.length)
+  })
+
+  // #2133: the page save names each refused field by its registry path. The
+  // paths are read from the validator's own source (every err() call and the
+  // bound, cap and unsupported cap helpers), so a path added there is held here
+  // without anyone listing it. Seen red by mapping 'tiers' to 'profile.tiers'.
+  it('every path the profile validator can refuse maps through registryPathOf to exactly one entry', () => {
+    const source = readFileSync(path.join(REPO_ROOT, 'packages/buyer-profile/src/validate.ts'), 'utf8')
+    const found = new Set<string>()
+    for (const re of [/\berr\([^,]+,\s*'([A-Za-z.]+)'/g, /\berr\([^,]+,\s*`([^`]+)`/g, /check(?:Bound|Cap)\([^,]+,\s*'([A-Za-z]+)'/g, /\[profile\.\w+,\s*'([A-Za-z]+)'/g]) {
+      for (const m of source.matchAll(re)) found.add(m[1].replace(/\$\{i\}/g, '0'))
+    }
+    expect(found.size).toBeGreaterThan(20)
+    expect(exactlyOne([...found].map((p) => registryPathOf(p, ['DV1'])))).toEqual([])
+    expect(exactlyOne([...found].map((p) => registryPathOf(p)))).toEqual([])
   })
 
   it('matches a row list pattern by its key and nothing looser', () => {
