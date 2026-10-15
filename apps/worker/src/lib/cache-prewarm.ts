@@ -48,7 +48,11 @@ export async function prewarmKvCaches(supabase: SupabaseClient, env: Env, opts: 
   }
   if (!workflows || workflows.length === 0) {
     console.log('[prewarm] no active workflows found')
-    return { workflowsReadError: null, reconfirms: {} }
+    // No organization bids, so none is owed a reconfirm: recording this clears
+    // any standing failure and lets its page clear (L152).
+    const result: PrewarmResult = { workflowsReadError: null, reconfirms: {} }
+    await recordAndCheck(supabase, env, result, opts)
+    return result
   }
 
   const orgIds = Array.from(new Set(workflows.map((w) => w.organization_id as string)))

@@ -131,6 +131,17 @@ describe('the prewarm records a failing reconfirm instead of discarding it (#213
     expect(state['org-1']?.since).toBe(START)
   })
 
+  it('no active workflows at all clears the record, since no org bids, so a standing page gets its all clear', async () => {
+    const cache = fakeKv()
+    const idem = fakeKv()
+    idem.store.set(RECONFIRM_STATE_KEY, { value: JSON.stringify({ 'org-1': { since: START - 20 * MINUTE }, [WORKFLOWS_SUBJECT]: { since: START - 20 * MINUTE } }) })
+    idem.store.set(RECONFIRM_OBSERVING_SINCE_KEY, { value: String(START - RECONFIRM_OBSERVE_FOR_MS - MINUTE) })
+    const notify = vi.fn(async (..._args: unknown[]) => undefined)
+    await prewarmKvCaches(fakeSupabase({ workflows: { data: [], error: null } }), envOf(cache.kv, idem.kv), { notify })
+    expect(await readReconfirmState(idem.kv)).toEqual({})
+    expect(notify.mock.calls.filter((c) => c[1] === PARTNER_CONSTANTS_RECONFIRM_JOB).map((c) => c[2])).toEqual([[]])
+  })
+
   it('a reconfirm that succeeds clears its org from the record', async () => {
     const cache = fakeKv()
     const idem = fakeKv()

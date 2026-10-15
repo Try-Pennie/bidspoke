@@ -618,15 +618,19 @@ export default function PartnerForm({
         setUndoSecondsLeft(5)
       }
     }
-    setSaveState('saved')
-    setTimeout(() => setSaveState('idle'), 1500)
-
     if (saveProfileToo && profile) {
       setSaveOutcome({ kind: 'working', label: 'Saving the buyer profile', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
-      await saveProfile(profile.version ?? 0, partnerChanged)
+      // The button says Saved only when everything this press saves has saved.
+      const profileResult = await saveProfile(profile.version ?? 0, partnerChanged)
+      if (profileResult !== 'saved') {
+        setSaveState('idle')
+        return
+      }
     } else {
       setSaveOutcome({ kind: 'done', message: `Partner saved. ${pickupSentence()}` })
     }
+    setSaveState('saved')
+    setTimeout(() => setSaveState('idle'), 1500)
   }
 
   const isNew = !partner

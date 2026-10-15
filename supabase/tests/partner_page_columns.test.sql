@@ -26,7 +26,7 @@ CREATE TEMP TABLE IF NOT EXISTS page_columns AS
 DO $do$
 DECLARE missing text[];
 BEGIN
-  SELECT array_agg(format('%s.%s', c.table_name, c.column_name) ORDER BY 1) INTO missing
+  SELECT array_agg(format('%s.%s', c.table_name, c.column_name) ORDER BY c.table_name, c.column_name) INTO missing
   FROM information_schema.columns c
   WHERE c.table_schema = 'public'
     AND c.table_name IN ('partner_configs', 'buyer_profiles', 'buyer_operating_windows', 'buyer_blackout_dates', 'buyer_pricing_tiers')
@@ -42,7 +42,7 @@ $do$;
 DO $do$
 DECLARE bad text[];
 BEGIN
-  SELECT array_agg(format('%s.%s', p.table_name, p.column_name) ORDER BY 1) INTO bad
+  SELECT array_agg(format('%s.%s', p.table_name, p.column_name) ORDER BY p.table_name, p.column_name) INTO bad
   FROM page_columns p
   WHERE NOT EXISTS (
       SELECT 1 FROM information_schema.columns c

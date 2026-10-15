@@ -116,6 +116,21 @@ describe('the Buyer profile section', () => {
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Partner saved\. Buyer profile saved, version 4\./))
   })
 
+  it('the button says Saved only once the profile has saved too, never while it is in flight or after it fails', async () => {
+    let fail!: (e: unknown) => void
+    vi.mocked(api.buyerProfiles.save).mockImplementation(() => new Promise((_res, rej) => { fail = rej }))
+    await renderBuyer(vi.fn().mockResolvedValue({ partner: { ...partner, priority: 3, version: 1 }, copyWarning: null }))
+    fireEvent.change(screen.getByLabelText('List order'), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(api.buyerProfiles.save).toHaveBeenCalled())
+    const submit = document.querySelector('button[type="submit"]')!
+    expect(submit).not.toHaveTextContent('Saved')
+    fail(Object.assign(new Error('boom'), { status: 500, body: { error: 'boom', message: 'The database did not answer.' } }))
+    await screen.findByText(/The buyer profile was not saved/)
+    expect(submit).not.toHaveTextContent('Saved')
+  })
+
   it('a profile only change saves the profile alone and never writes the unchanged partner record (#2132)', async () => {
     const onSave = await renderBuyer()
     fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })

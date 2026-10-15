@@ -14,9 +14,10 @@
 -- - the audit trigger reading NEW.updated_by_name for _actor.name: case 5 red;
 -- - buyer_profile_tables_bump_version not setting audit_handled for its own
 --   UPDATE: case 6 red (a second direct_sql row, for buyer_profiles);
--- - the bump not restoring the previous audit_handled: case 7 red;
+-- - the bump not restoring the previous audit_handled: case 6 red (the bump runs
+--   before the detector on the same statement, so even its first row is skipped);
 -- - partner_configs_bump_version written as an explicit list of versioned
---   columns, with a scratch column added to the table: case 13 red.
+--   columns, with a scratch column added to the table: case 16 red.
 
 CREATE TEMP TABLE IF NOT EXISTS suite_cases (name text PRIMARY KEY, ran_at timestamptz NOT NULL DEFAULT now());
 DELETE FROM suite_cases;
