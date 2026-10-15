@@ -43,7 +43,8 @@ export const SALESFORCE_BULKHEAD_KEY = 'salesforce'
  * post-answer call holds a slot here and a slot of the main key, so together the
  * two keys never let more calls reach Salesforce than the main cap alone did,
  * and post-answer work can never hold more than its share of it. A pre-answer
- * call always finds the rest.
+ * call always finds the rest (at the default cap of 20, the other 14; at any cap
+ * of 2 or more, one at least, see `salesforceBulkheads`).
  */
 export const SALESFORCE_POST_ANSWER_BULKHEAD_KEY = 'salesforce-post-answer'
 
@@ -89,7 +90,10 @@ export function salesforceBulkheads(env: Env, afterAnswer: boolean): { gates: Bu
   const main = new BulkheadClient(env, SALESFORCE_BULKHEAD_KEY, mainLimit)
   if (!afterAnswer) return { gates: [main], waitMs: salesforceBulkheadWaitMs(env) }
   // A main cap set at or below the share would let post-answer work fill it, so
-  // the share always leaves pre-answer calls one slot at least.
+  // the share is held below the main cap, leaving pre-answer calls one slot at
+  // least, whenever the main cap is 2 or more. A cap of 1 has nothing to split:
+  // the share is then that one slot too, rather than 0, which would shed every
+  // post-answer call.
   const shareLimit = Math.max(1, Math.min(SALESFORCE_POST_ANSWER_BULKHEAD_LIMIT, mainLimit - 1))
   return {
     gates: [new BulkheadClient(env, SALESFORCE_POST_ANSWER_BULKHEAD_KEY, shareLimit), main],

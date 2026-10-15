@@ -167,7 +167,9 @@ describe('the post-answer share (#2170)', () => {
     expect(SALESFORCE_POST_ANSWER_BULKHEAD_WAIT_MS).toBeGreaterThan(AT_RISK_AFTER_MS)
   })
 
-  it('keeps at least one main slot out of the share whatever the main limit is set to', () => {
+  // At a main limit of 1 there is nothing to split; the share is that slot too,
+  // rather than 0, which would shed every post-answer call.
+  it('keeps at least one main slot out of the share whenever the main limit is 2 or more', () => {
     const fake = fakeBulkheads()
     const env = { SALESFORCE_BULKHEAD: fake.namespace } as unknown as Env
     const [post, main] = salesforceBulkheads(env, true).gates
