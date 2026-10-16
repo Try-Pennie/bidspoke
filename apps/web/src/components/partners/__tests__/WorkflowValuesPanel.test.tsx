@@ -59,6 +59,15 @@ describe('the Workflow values tab, from the measured answers', () => {
     expect(within(active).getByText('Tripoint is active, so workflows read true. Active is set on the Partner tab.')).toBeVisible()
   })
 
+  it('Active says what workflows read now, from the saved value, and that an unsaved toggle changes it only on save', async () => {
+    vi.mocked(api.partners.workflowValues).mockResolvedValue(bySlug('tripoint'))
+    // The saved entry is true; the Partner tab's toggle has been switched off but not saved.
+    render(<WorkflowValuesPanel {...props} partnerId="t" isActive={false} />)
+    const active = await findSection('Active')
+    expect(within(active).getByText('Tripoint is active, so workflows read true. It changes to false when the Active change on the Partner tab is saved.')).toBeVisible()
+    expect(within(active).queryByText(/workflows read false\./)).toBeNull()
+  })
+
   it('Sofi: the sell-off offer read by name, and its sub-account IDs read for every partner', async () => {
     vi.mocked(api.partners.workflowValues).mockResolvedValue(bySlug('sofi'))
     render(<WorkflowValuesPanel {...props} slug="sofi" partnerName="Sofi" isBuyer={false} isSource partnerId="s" />)

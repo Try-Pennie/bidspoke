@@ -76,6 +76,20 @@ function valueText(value: unknown): string {
   return String(value)
 }
 
+/**
+ * What workflows read in activeBidding NOW: the value the Constants step
+ * emits, which is the saved Active, never the Partner tab's unsaved toggle.
+ * When the toggle differs it says only that the value changes on save.
+ */
+function activeSentence(value: PartnerWorkflowValue | undefined, formActive: boolean, partnerName: string): string {
+  if (!value || !value.emitted || typeof value.value !== 'boolean') return `Workflows find no entry for ${partnerName} in activeBidding.`
+  const saved = value.value
+  const now = `${partnerName} is ${saved ? 'active' : 'inactive'}, so workflows read ${saved}.`
+  return formActive === saved
+    ? `${now} Active is set on the Partner tab.`
+    : `${now} It changes to ${formActive} when the Active change on the Partner tab is saved.`
+}
+
 function ReadersBlock({ values, searched }: { values: readonly PartnerWorkflowValue[]; searched: PartnerWorkflowValues['searched'] }) {
   if (values.length === 0) return null
   const lists = values.map(readerSentences)
@@ -117,9 +131,7 @@ function ValueSectionView({ section, read, slug, isActive, partnerName, control,
       <div className="space-y-3">
         {LIVE_NOTES[section.key]}
         {control}
-        {section.key === 'active' && (
-          <p className="text-sm text-gray-700">{`${partnerName} is ${isActive ? 'active' : 'inactive'}, so workflows read ${isActive ? 'true' : 'false'}. Active is set on the Partner tab.`}</p>
-        )}
+        {section.key === 'active' && <p className="text-sm text-gray-700">{activeSentence(section.values[0], isActive, partnerName)}</p>}
         {control === undefined && section.key !== 'active' && section.values.map((v) => (
           <p key={v.constant_name} className="font-mono text-xs text-graphite [overflow-wrap:anywhere]">{valueText(v.value)}</p>
         ))}
