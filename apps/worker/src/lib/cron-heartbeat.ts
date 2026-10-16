@@ -53,6 +53,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { MINUTE_ALERT_CLAIM_TTL_SECONDS, minuteAlertClaimKey, orgIdsToTell, postMinutePage, slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
+import { scheduledSlackFor } from './scheduled-slack'
 import { sendCronHeartbeatAlert, sendCronHeartbeatRecoveryAlert } from './slack'
 import { BACKOFF_STEPS_SECONDS, clearCondition, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf, type Recurrence, type StandingCondition } from './alert-backoff'
 import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
@@ -557,16 +558,37 @@ async function renewAlertedStatusIfDue(kv: KVNamespace, id: string, record: Aler
  */
 export async function lastFinishedRun(supabase: SupabaseClient, jobId: string): Promise<string | null> {
   try {
-    const { data, error } = await supabase
+    const query = supabase
       .from('job_runs')
       .select('finished_at')
       .eq('job', jobId)
       .not('finished_at', 'is', null)
       .order('finished_at', { ascending: false })
       .limit(1)
-    if (error) {
-      logReadFailure('cron-heartbeat', `job_runs for ${jobId}`, error)
-      return null
+    // On the scheduled client (#2061): one read under the tick's bounded deadline,
+    // and none once the tick has seen the database fail. Unbounded, a stalled
+    // database held this read past the 50 s minute deadline (45 s and the
+    // library's retries), so the heartbeat page, which needs only KV, was cut
+    // off with its job. Found by the outage simulation.
+    const scheduled = scheduledSlackFor(supabase)
+    let data: unknown
+    if (scheduled) {
+      // Aside: a fault in job_runs alone is not a database outage (lessons review of #2250).
+      const read = await scheduled.readAside(query)
+      if (read.kind === 'failed') {
+        // A read skipped because the tick already saw the database fail was
+        // logged once, at that failure, by scheduled-slack.ts.
+        if (read.how !== 'skipped') console.error(`[cron-heartbeat] job_runs for ${jobId} not read (${read.how}: ${read.detail}), so the verdict stands without it`)
+        return null
+      }
+      data = read.data
+    } else {
+      const res = await query
+      if (res.error) {
+        logReadFailure('cron-heartbeat', `job_runs for ${jobId}`, res.error)
+        return null
+      }
+      data = res.data
     }
     const finished = (data as { finished_at?: unknown }[] | null | undefined)?.[0]?.finished_at
     return typeof finished === 'string' ? finished : null
