@@ -11,6 +11,7 @@ import {
   sendRequiredSecretsAlert,
   sendExportFailureAlert,
   sendDatabaseUnreachableAlert,
+  sendDatabaseRecoveredAlert,
   DRAIN_STALL_SCHEDULES,
 } from '../slack'
 import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_HELD_LABEL } from '../../engine/writeback-deadletter'
@@ -527,7 +528,7 @@ describe('export failure: the consequence follows each error phase', () => {
 
 describe('database unreachable: no 503 claim, and a fix that matches the error', () => {
   it('does not say leads are refused with 503, which stored copies ended', async () => {
-    await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'workflows', error: 'TypeError: fetch failed', appUrl: 'https://app.test' })
+    await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'workflows', error: 'TypeError: fetch failed', appUrl: 'https://app.test', copyAgeMs: null })
     const text = lastText()
     expect(text).not.toMatch(/503/)
     expect(text).toMatch(/recovers on its own/)
@@ -538,7 +539,7 @@ describe('database unreachable: no 503 claim, and a fix that matches the error',
   // no errors at all. What was measured is that Cloudflare answered, not that
   // the database is down, so the page says that and quotes the code.
   it('a Cloudflare error page says the worker could not reach the database through Cloudflare, and quotes the code', async () => {
-    await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'slack connections', error: 'error code: 1016', appUrl: 'https://app.test' })
+    await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'slack connections', error: 'error code: 1016', appUrl: 'https://app.test', copyAgeMs: null })
     const text = lastText()
     expect(text).toMatch(/Bidspoke cannot reach its database through Cloudflare/)
     expect(text).toContain('`error code: 1016`')
@@ -548,12 +549,12 @@ describe('database unreachable: no 503 claim, and a fix that matches the error',
   })
 
   it.each(['error code: 522', 'Supabase read failed: error code: 1101'])('reads %s as a Cloudflare page too', async (error) => {
-    await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'workflows', error, appUrl: 'https://app.test' })
+    await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'workflows', error, appUrl: 'https://app.test', copyAgeMs: null })
     expect(lastText()).toMatch(/through Cloudflare/)
   })
 
   it('an ordinary database error keeps the database wording', async () => {
-    await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'workflows', error: 'Supabase error: canceling statement due to statement timeout (57014)', appUrl: 'https://app.test' })
+    await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'workflows', error: 'Supabase error: canceling statement due to statement timeout (57014)', appUrl: 'https://app.test', copyAgeMs: null })
     const text = lastText()
     expect(text).toMatch(/Bidspoke cannot read its database/)
     expect(text).toMatch(/status\.supabase\.com/)
@@ -566,9 +567,44 @@ describe('database unreachable: no 503 claim, and a fix that matches the error',
       // As formatErr renders a PostgREST error: the message, then the code.
       error: 'Could not find the function public.execution_counts_per_minute in the schema cache (PGRST202)',
       appUrl: 'https://app.test',
+      copyAgeMs: null,
     })
     const text = lastText()
     expect(text).not.toMatch(/recovers on its own/)
     expect(text).toMatch(/migration/)
+  })
+})
+
+// #2061: the page has one owner now, told by every scheduled read, so it no
+// longer says the minute volume check could not read, and it names how old the
+// Slack settings it is posted with are, once.
+describe('database unreachable: one owner, and the saved settings named by age', () => {
+  const base = { what: 'workflows', error: 'TypeError: fetch failed', appUrl: 'https://app.test', copyAgeMs: 12 * 60_000 }
+
+  it.each([['database', base.error], ['Cloudflare', 'error code: 1016']])('the %s page names the copy age once and not the minute volume check', async (_, error) => {
+    await sendDatabaseUnreachableAlert(conn, '#alerts', { ...base, error })
+    const text = lastText()
+    expect(text).not.toMatch(/minute volume check/)
+    expect(text.match(/alerts during this outage are posted using Slack settings saved 12 minutes ago/gi)?.length).toBe(1)
+    expectHouseStyle(text)
+  })
+
+  it('says the age is unknown, never a guess, for a copy written before it was dated', async () => {
+    await sendDatabaseUnreachableAlert(conn, '#alerts', { ...base, copyAgeMs: null })
+    expect(lastText()).toMatch(/Slack settings saved at a time that was not recorded/)
+  })
+
+  it('says under a minute rather than 0 minutes', async () => {
+    await sendDatabaseUnreachableAlert(conn, '#alerts', { ...base, copyAgeMs: 20_000 })
+    expect(lastText()).toMatch(/Slack settings saved less than a minute ago/)
+  })
+
+  it('the all-clear says what was measured', async () => {
+    const measured = 'For the last 31 minutes the minute database probe and the volume check have answered, at least every 5 minutes, and no scheduled read has failed.'
+    await sendDatabaseRecoveredAlert(conn, '#alerts', { alertedAt: '2026-10-15T02:00:00.000Z', endedAt: '2026-10-15T02:20:00.000Z', measured, appUrl: 'https://app.test' })
+    const text = lastText()
+    expect(text).toContain(measured)
+    expect(text).toMatch(/Bidspoke\* can read its database again/)
+    expectHouseStyle(text)
   })
 })
