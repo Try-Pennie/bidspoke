@@ -1,6 +1,8 @@
-// Setup for the jsdom "components" vitest project (issue #157). Registers the
-// jest-dom matchers (toBeInTheDocument, etc.) and unmounts rendered trees after
-// each test so DOM state never leaks between cases.
+// Setup for every jsdom vitest project: "components" (issue #157) and the "tz"
+// zone projects (#2137), which run the *.tz.test files in forked processes and
+// depend on the storage guard and Radix stubs below too. Registers the jest-dom
+// matchers (toBeInTheDocument, etc.) and unmounts rendered trees after each test
+// so DOM state never leaks between cases.
 import '@testing-library/jest-dom/vitest'
 import { afterEach } from 'vitest'
 import { cleanup } from '@testing-library/react'
