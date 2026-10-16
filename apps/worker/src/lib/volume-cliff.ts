@@ -228,6 +228,10 @@ export async function runVolumeCliffCheck(
   const failed = (what: string, error: unknown) => reportDatabaseUnreachable(owner, { source: 'volume-cliff', what, error })
   const answered = () => reportDatabaseReadable(kv, 'volume-cliff', clock())
 
+  // Straight from the database, never the scheduled lookup that can answer from
+  // the saved copy (#2250 review, L98): so every answered() below follows a read
+  // the database itself answered, an empty answer included, and a tick that
+  // could read nothing reports a failure, never an answered run.
   const { data: slackOrgs, error: slackOrgsError } = await readSlackConnectionRows(supabase)
   logReadFailure('volume-cliff', 'slack connections', slackOrgsError)
   if (slackOrgsError) {
