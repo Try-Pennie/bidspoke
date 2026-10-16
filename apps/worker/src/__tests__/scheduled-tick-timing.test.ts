@@ -63,7 +63,7 @@ describe('minute tick timing (#2058)', () => {
     // The end of tick line, not the checkpoint: the minute stopped waiting.
     expect(line).not.toMatch(/checkpoint/)
     // Every minute job is in the line, each by its own name.
-    for (const name of ['stored-copy-sweep', 'buyer-sale-drain', 'unconfirmed-write-sweep', 'volume-cliff', 'heartbeat-checks']) {
+    for (const name of ['stored-copy-sweep', 'buyer-sale-drain', 'unconfirmed-write-sweep', 'database-reachability', 'volume-cliff', 'heartbeat-checks']) {
       expect(line).toContain(`${name}:`)
     }
     expect(line).not.toMatch(/job#\d/)
