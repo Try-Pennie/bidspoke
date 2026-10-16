@@ -17,6 +17,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 
 vi.mock('@/lib/api', () => ({
   api: {
+    partners: { usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }) },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
     buyerProfiles: { get: vi.fn(), save: vi.fn(), history: vi.fn(), usage: vi.fn() },
@@ -79,6 +80,8 @@ describe('bid mode is off the partners page (PM-9, #2136)', () => {
   it('a new partner shows no control and its create body carries no bid_mode, so the Worker stores its default', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined)
     render(<PartnerForm onSave={onSave} onCancel={vi.fn()} />)
+    // A new partner's bidding settings are one press away (#2137).
+    fireEvent.click(screen.getByRole('button', { name: 'Set up for Bid Group' }))
     expectNoBidModeControl()
     fireEvent.change(screen.getByPlaceholderText('Tripoint'), { target: { value: 'Acme' } })
     save()

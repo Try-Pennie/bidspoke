@@ -2,20 +2,36 @@
 
 export const runtime = 'edge'
 
-import { useEffect, useRef, useState } from 'react'
-import { useSearchParams, useRouter } from 'next/navigation'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
 import { api } from '@/lib/api'
 import type { Partner, PartnerBody, PartnerPageSaveRequest, PartnerPageSaved, PartnerPageStale } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
-import { Plus, ChevronRight, CircleCheck, CircleOff, AlertTriangle } from 'lucide-react'
+import { Plus, CircleCheck, CircleOff, AlertTriangle } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Button } from '@/components/ui/form'
+import { ProblemMark } from '@/components/ui/ProblemMark'
 import PartnerForm, { UNSAVED_CHANGES_MESSAGE, type PartnerSaveResult } from './PartnerForm'
+import { partnersUrl, tabFromParam } from './partner-tabs'
+import { groupPartners } from './partner-list'
+import type { PartnerTab } from './partner-draft'
+
+/**
+ * Mirror the page's state into its URL (#2137) through the one URL builder,
+ * with replaceState: no history entry and no server round trip, and Next keeps
+ * useSearchParams in step with it.
+ */
+function writeUrl(selected: string | null, tab: PartnerTab | null) {
+  const next = partnersUrl({ selected, tab })
+  if (`${window.location.pathname}${window.location.search}` !== next) window.history.replaceState(window.history.state, '', next)
+}
 
 export default function PartnersPage() {
-  const router = useRouter()
   const searchParams = useSearchParams()
   const slugParam = searchParams.get('selected') ?? null
+  const tabParam = searchParams.get('tab')
+  // A tab in the URL wins; one that names no tab falls back to the first (#2137).
+  const requestedTab: PartnerTab | null = tabParam === null ? null : tabFromParam(tabParam) ?? 'partner'
 
   const [partners, setPartners] = useState<Partner[]>([])
   const [loading, setLoading] = useState(true)
@@ -32,6 +48,9 @@ export default function PartnersPage() {
   // fire twice against a money-path config (#495).
   const deletingRef = useRef(false)
   const [formDirty, setFormDirty] = useState(false)
+  /** The open partner holds a problem (a refused save's field), marked on its row beside a missing credential. */
+  const [formProblem, setFormProblem] = useState(false)
+  const partnerNames = useMemo(() => new Map(partners.map((p) => [p.id, p.name])), [partners])
 
   // Confirm before discarding unsaved partner-form edits. Used to guard the
   // in-page <button> navigations (partner switch, New) the form can't intercept.
@@ -66,16 +85,16 @@ export default function PartnersPage() {
   function selectPartner(p: Partner) {
     setCreating(false)
     setSelected(p)
-    if (p.slug !== slugParam) {
-      router.replace(`/partners?selected=${encodeURIComponent(p.slug)}`, { scroll: false })
-    }
+    // A different partner opens on its own tab; the same one keeps the tab it is on.
+    if (p.slug !== slugParam) writeUrl(p.slug, null)
   }
 
   function clearSelection() {
     setCreating(false)
     setSelected(null)
     setFormDirty(false)
-    if (slugParam) router.replace('/partners', { scroll: false })
+    setFormProblem(false)
+    if (slugParam) writeUrl(null, null)
   }
 
   function requestDelete(id: string) {
@@ -152,7 +171,8 @@ export default function PartnersPage() {
 
   return (
     <NavLayout>
-      <div className="flex min-h-0 flex-1">
+      {/* The page is the window's height, so the list stays in view while the form scrolls in its own pane (#2137). */}
+      <div className="flex h-screen min-h-0">
 
         {/* List */}
         <div className="flex w-72 flex-shrink-0 flex-col border-r border-gray-200 bg-white">
@@ -183,50 +203,40 @@ export default function PartnersPage() {
                 </Button>
               </div>
             ) : (
-              <div className="space-y-0.5 p-2">
-                {partners.map((partner) => (
-                  <Button
-                    key={partner.id}
-                    variant="row"
-                    onClick={() => { if (selected?.id !== partner.id && !confirmDiscardIfDirty()) return; setFormDirty(false); selectPartner(partner) }}
-                    className={`group gap-3 transition-[colors,opacity] duration-150 ${
-                      selected?.id === partner.id
-                        ? 'bg-gray-100'
-                        : 'hover:bg-beige'
-                    } ${removingId === partner.id ? 'opacity-0' : ''
-                    }`}
-                  >
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="truncate text-sm font-medium text-graphite">{partner.name}</span>
-                        {!partner.is_active && (
-                          <span className="flex-shrink-0 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">
-                            inactive
-                          </span>
-                        )}
-                        {/*
-                          #1035. The save-time credential check (#416) rendered only
-                          inside this partner's own form, so it reached only someone
-                          who had already opened it. Here it is on the row a person
-                          scanning the list passes.
-
-                          Not a nested control: the whole row is one button, so an
-                          interactive marker would be invalid markup and would steal
-                          the click that opens the partner. The icon carries the full
-                          message as text (sr-only) so a screen reader gets the
-                          reason, and as a title so a pointer does on hover.
-                        */}
-                        {partner.credential_warning && (
-                          <span className="flex-shrink-0 text-amber-700" title={partner.credential_warning}>
-                            <AlertTriangle className="h-3.5 w-3.5" aria-hidden="true" />
-                            <span className="sr-only">{partner.credential_warning}</span>
-                          </span>
-                        )}
-                      </div>
-                      <p className="mt-0.5 truncate font-mono text-xs text-gray-500">{partner.slug}</p>
+              <div className="p-2">
+                {groupPartners(partners).map((group) => (
+                  <section key={group.title} aria-labelledby={`partners-group-${group.title}`} className="mb-2">
+                    <h2 id={`partners-group-${group.title}`} className="px-3 pb-1 pt-3 text-xs font-semibold text-gray-600">{group.title}</h2>
+                    <div className="space-y-0.5">
+                      {group.members.map((partner) => {
+                        // The missing credential (#1035, #416) and a refused save's field on the open partner (PM-12).
+                        const problem = partner.credential_warning ?? (selected?.id === partner.id && formProblem ? 'This partner has a problem: see the form.' : null)
+                        return (
+                          <Button
+                            key={partner.id}
+                            variant="row"
+                            onClick={() => { if (selected?.id !== partner.id && !confirmDiscardIfDirty()) return; setFormDirty(false); setFormProblem(false); selectPartner(partner) }}
+                            className={`transition-[colors,opacity] duration-150 ${
+                              selected?.id === partner.id
+                                ? 'bg-gray-100'
+                                : 'hover:bg-beige'
+                            } ${removingId === partner.id ? 'opacity-0' : ''
+                            }`}
+                          >
+                            {/*
+                              Name only (the settled design). Not a nested control: the
+                              whole row is one button, so the problem mark is text to a
+                              screen reader (its sr-only sentence) and a title on hover.
+                            */}
+                            <span className="flex min-w-0 items-center gap-2">
+                              <span className="truncate text-sm font-medium text-graphite">{partner.name}</span>
+                              {problem && <span title={problem} className="inline-flex"><ProblemMark label={problem} /></span>}
+                            </span>
+                          </Button>
+                        )
+                      })}
                     </div>
-                    <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-gray-300 group-hover:text-gray-500" />
-                  </Button>
+                  </section>
                 ))}
               </div>
             )}
@@ -234,7 +244,7 @@ export default function PartnersPage() {
         </div>
 
         {/* Detail / form */}
-        <div className="flex-1 overflow-y-auto p-8">
+        <div className="flex-1 overflow-y-auto p-8" data-form-pane="">
           {error && (
             <div className="mb-6 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
               <AlertTriangle className="h-4 w-4 flex-shrink-0" />
@@ -254,6 +264,10 @@ export default function PartnersPage() {
               onCancelDelete={() => { if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current); setConfirmDelete(null) }}
               deleting={deletingId === selected?.id}
               onDirtyChange={setFormDirty}
+              requestedTab={selected ? requestedTab : null}
+              onTabChange={(tab) => { if (selected) writeUrl(selected.slug, tab) }}
+              partnerNames={partnerNames}
+              onProblemChange={setFormProblem}
             />
           ) : pendingSelection ? (
             <div className="max-w-3xl space-y-6">

@@ -145,6 +145,20 @@ describe('answerFor', () => {
     expect(answerFor('DELETE', `${W}/api/partners/${tripoint.id}`, fx)).toBeNull()
   })
 
+  // #2137: the Bid Group tab reads which workflow steps name each partner.
+  it('answers the usage read for every listed partner, and fails it only when asked to', () => {
+    for (const p of fx.partners) expect(answerFor('GET', `${W}/api/partners/${p.id}/usage`, fx), p.slug).toMatchObject({ status: 200 })
+    expect(answerFor('GET', `${W}/api/partners/not-a-partner/usage`, fx)).toBeNull()
+    expect(answerFor('GET', `${W}/api/partners/${tripoint.id}/usage`, fx, { usageFails: true })?.status).toBe(503)
+  })
+
+  it('the measured usage names Tripoint and AmOne in Main Flow\'s Bid Group, live and draft, and nobody else', () => {
+    const named = Object.entries(fx.usage as Record<string, { bid_group: Array<{ workflow_name: string; is_active: boolean }> }>)
+      .filter(([, u]) => u.bid_group.length > 0)
+      .map(([id, u]) => [fx.partners.find((p) => p.id === id)!.slug, u.bid_group.map((s) => `${s.workflow_name}${s.is_active ? '' : ' (off)'}`)])
+    expect(named.sort()).toEqual([['amone', ['Main Flow', 'Main Flow (v2) (off)']], ['tripoint', ['Main Flow', 'Main Flow (v2) (off)']]])
+  })
+
   it('answers a page save only when asked to, and only with the recorded 409', () => {
     expect(answerFor('PUT', `${W}/api/partners/${tripoint.id}/page`, fx)).toBeNull()
     expect(answerFor('PUT', `${W}/api/partners/${tripoint.id}/page`, fx, { staleSave: true })).toEqual({ status: 409, body: fx.stale })
