@@ -235,10 +235,20 @@ export async function runWatched<T>(
   }
 }
 
-/** What a failure carries when the request it lost came from the watch (#2163), or when it is a held credit inquiry post (#2172). */
+/**
+ * What a failure carries: its request (put there from the watch when the failure
+ * lost it, #2163), and when the held record of that request expires. The expiry
+ * is set in two cases (carryNotedRequest): a failure whose request came from the
+ * watch (a timeout) whenever a record is held, and, since #468, a failure that
+ * keeps its own executor request (a Salesforce answer after the 2 s mark) when
+ * the read-back owns the kept record. A held credit inquiry post (#2172) is
+ * always owned, so it is the second case too. Its presence is what keeps the
+ * capture from storing a pending row for the replay or the drain beside the
+ * read-back.
+ */
 interface NotedFailure {
   resolvedInput?: ResolvedStepInput
-  /** ISO: when the held record of this request expires. Absent when none is held. */
+  /** ISO: when the held record of this request expires. Absent when none is held, and on an executor's own request whose record the read-back does not own. */
   atRiskHeldUntil?: string
 }
 
