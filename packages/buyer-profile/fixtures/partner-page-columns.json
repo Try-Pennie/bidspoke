@@ -28,7 +28,7 @@
       "bid_resolver_type": { "path": "bid_resolver_type" },
       "bid_resolver_config": { "path": "bid_resolver_config" },
       "outbound_field_mapping": { "path": "outbound_field_mapping" },
-      "bid_mode": { "excluded": "retired", "reason": "Off the page since PM-9 (#2136): nothing acts on it. The engine and the money gate still read it, so the column stays until its contract step drops it." },
+      "bid_mode": { "excluded": "retired", "reason": "Off the page since PM-9 (#2136), and nothing reads or writes it since #2182. The column stays only until the migration that drops it, which removes this entry." },
       "bid_comparison_source": { "path": "bid_comparison_source" },
       "extra_extraction": { "path": "extra_extraction" },
       "last_probe_response": { "path": "last_probe_response" },
