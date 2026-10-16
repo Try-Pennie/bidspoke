@@ -34,6 +34,12 @@ export interface PartnerFixtures {
   panels: { history: unknown; buyer_sales: unknown; held_clicks: unknown; usage_offer: unknown; usage_click: unknown }
   /** GET /api/partners/:id/usage by partner id (#2137), measured read only from production on 2026-10-16. */
   usage: Record<string, unknown>
+  /**
+   * Liberty1's held clicks (#2139), invented because production holds none, and
+   * the answer to adding a lead id to its sale with none. held-clicks-fixtures-contract.test.ts
+   * in the Worker holds both to what the routes answer.
+   */
+  heldClicks: { list: { entries: Array<{ id: string }>; total: number }; lead_id: unknown }
 }
 
 export function loadPartnerFixtures(): PartnerFixtures {
@@ -46,6 +52,7 @@ export function loadPartnerFixtures(): PartnerFixtures {
     matrix: read('synthetic/matrix.tripoint.json'),
     panels: read('synthetic/panels.json'),
     usage: read('usage.json'),
+    heldClicks: read('synthetic/held-clicks.liberty1.json'),
   }
 }
 
@@ -58,6 +65,8 @@ export interface FixtureOptions {
   credentialWarningFor?: string
   /** Answer the usage read (#2137) with a 503, so the Bid Group tab's failed state is reached. */
   usageFails?: boolean
+  /** Give Liberty1 its invented held clicks (#2139), and answer adding a lead id to one, so the cards, the lead id box and the Remove dialog are scanned. */
+  heldClicks?: boolean
 }
 
 export interface Answer { status: number; body: unknown }
@@ -73,6 +82,10 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
   }
   // #2135: a change the page's probe found that no live notice announced. Recorded only.
   if (method === 'POST' && p === '/api/partners/live-miss') return { status: 201, body: { ok: true, id: LIVE_MISS_ID } }
+  if (method === 'POST' && (m = /^\/api\/held-clicks\/([^/]+)\/lead-id$/.exec(p))) {
+    const id = m[1]
+    return opts.heldClicks && fx.heldClicks.list.entries.some((e) => e.id === id) ? ok(fx.heldClicks.lead_id) : null
+  }
   if (method !== 'GET') return null
   // #2135: the versions probe, read on open and while a draft is dirty. Nothing has changed since the capture.
   if ((m = /^\/api\/partners\/([^/]+)\/versions$/.exec(p))) {
@@ -109,7 +122,10 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
   }
   if ((m = /^\/api\/partner-bid-configs\/([^/]+)$/.exec(p))) return opts.matrix && m[1] === fx.matrix.list[0].id ? ok(fx.matrix.detail) : null
   if (p === '/api/buyer-sales') return ok(fx.panels.buyer_sales)
-  if (p === '/api/held-clicks') return ok(fx.panels.held_clicks)
+  if (p === '/api/held-clicks') {
+    const liberty1 = fx.partners.find((row) => row.slug === 'liberty1')
+    return ok(opts.heldClicks && liberty1 && u.searchParams.get('partner_id') === liberty1.id ? fx.heldClicks.list : fx.panels.held_clicks)
+  }
   return null
 }
 
