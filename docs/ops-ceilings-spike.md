@@ -53,7 +53,7 @@ the kill itself, with its CPU and wall time, is in Workers Logs.
 | `dispatch_wall` | wall clock of a dispatched sub-invocation | which of caller and callee is killed first, and when |
 | `dispatch_cpu` | CPU of a dispatched sub-invocation | whether the callee has its own CPU limit or shares the caller's |
 | `dispatch_subrequests` | subrequests inside a sub-invocation | whether the callee has its own budget |
-| `dispatch_detached` | a sub-invocation not awaited by its caller | how long the callee's progress lines continue after `detached_returned` |
+| `dispatch_detached` | a sub-invocation not awaited by its caller | how long the callee's progress lines continue after `detached_returned`. `result.json` holds only `{detached: true, returnedAt}`; the callee's end is in Workers Logs (`detached_callee_finished` or `detached_callee_failed`, or simply its last progress line) |
 | `dispatch_fanout` | 40 concurrent dispatches from one invocation | how many succeed, and the first refusal's text (documented limit 32) |
 
 ## Premises, with the command that re-measures each
