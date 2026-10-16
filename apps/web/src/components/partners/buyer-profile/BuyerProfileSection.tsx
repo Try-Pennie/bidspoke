@@ -6,7 +6,8 @@
  * The profile document and the accept rules are the partner form's state, so
  * one Save writes the partner record first (the rules live there) and the
  * profile second; this section renders the editors over that state and owns
- * the read surfaces beside them (usage, history, the unresolved queue) and the
+ * the read surfaces beside them (usage, the unresolved queue; its history is on
+ * the History tab since #2137) and the
  * actions that are its own: settling a sale, and for a click buyer releasing a
  * held click (#1552), which takes the unresolved queue's place because a click
  * buyer never reserves in the ledger.
@@ -17,17 +18,17 @@
  * priority direction on the priority field.
  */
 import { useEffect, useState } from 'react'
-import { PRIORITY_DIRECTION, SALE_RECORD_LABELS, SOLD_ON, type BuyerProfileDocument, type ProfileError, type SaleWrites, type Signal } from '@bidspoke/buyer-profile'
+import { DEFAULT_DISPLAY_TIME_ZONE, DISPLAY_TIME_ZONE_LABELS, DISPLAY_TIME_ZONES, isDisplayTimeZone, PRIORITY_DIRECTION, SALE_RECORD_LABELS, SOLD_ON, type BuyerProfileDocument, type ProfileError, type SaleWrites, type Signal } from '@bidspoke/buyer-profile'
 import { soldOnPatch } from './sold-on-switch'
 import type { SignalRules } from '@/app/(app)/partners/partner-draft'
 import { api, type HeldClick, type MarkSentResult } from '@/lib/api'
 import { errorSentence } from '@/lib/error-sentence'
 import { ChoiceGroup, Field, NumberInput, describedBy, type OutcomeState } from '@/components/ui/form'
 import { Toggle } from '@/components/ui/Toggle'
+import { Select } from '@/components/ui/Select'
 import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
 import { AcceptRulesEditor } from './AcceptRulesEditor'
 import { BlackoutDatesEditor } from './BlackoutDatesEditor'
-import { BuyerProfileHistory, type HistoryEntry } from './BuyerProfileHistory'
 import { BuyerUsagePanel, type BuyerUsage } from './BuyerUsagePanel'
 import { ClickUsagePanel, type ClickUsage } from './ClickUsagePanel'
 import { CapsGrid, type CapsErrors } from './CapsGrid'
@@ -37,7 +38,10 @@ import { PricingTiersEditor } from './PricingTiersEditor'
 import { StatePicker } from './StatePicker'
 import { UnresolvedSalesList, type SettleOutcome, type UnresolvedSale } from './UnresolvedSalesList'
 import { WeeklyHoursEditor } from './WeeklyHoursEditor'
+import { blackoutZoneNote } from './display-zone'
 import { FIELD_LABELS, SECTION_LABELS, SOLD_ON_LABELS } from './labels'
+import { LiveSectionNote } from '../live/PartnerLive'
+import { formatCalendarDay } from '@/lib/dates'
 
 export const EMPTY_PROFILE: BuyerProfileDocument = {
   // No preselected answer (#1541): the person chooses, and the save refuses until they do.
@@ -86,6 +90,9 @@ interface Props {
 
 const SOLD_ON_OPTIONS = SOLD_ON.map((value) => ({ value, label: SOLD_ON_LABELS[value] }))
 
+/** The zones the hours and reset times can be shown in (#2143, PM-10), by name, never the identifier (L611). */
+const ZONE_OPTIONS = DISPLAY_TIME_ZONES.map((value) => ({ value, label: DISPLAY_TIME_ZONE_LABELS[value] }))
+
 const DECLINE_SECTION = SIGNAL_SECTIONS.filter((s) => s.cat === 'rejection').map((s) => ({
   ...s,
   label: 'Decline when any of',
@@ -114,10 +121,7 @@ function toUnresolvedSale(e: Record<string, unknown>, partnerName: string): Unre
 }
 
 /** A Pacific date as the count names it, 2027-09-20, shown as Sep 20. */
-function countDay(date: string): string {
-  const d = new Date(`${date}T12:00:00Z`)
-  return Number.isNaN(d.getTime()) ? date : d.toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' })
-}
+const countDay = formatCalendarDay
 
 const LIST_NOT_CLEARED = ' The entry was not removed from this list; reload to see it as it stands.'
 
@@ -165,8 +169,6 @@ export function BuyerProfileSection(props: Props) {
   const { partnerId, partnerName, profile, loadError, onProfileChange, errors, acceptSignals, onAcceptSignalsChange, duplicateSignals, onDuplicateSignalsChange, externalRoutingCode, onExternalRoutingCodeChange, signalRules, onSignalRulesChange, otherSellers, soldOnLock } = props
   const [usage, setUsage] = useState<BuyerUsage | ClickUsage | null>(null)
   const [usageError, setUsageError] = useState<string | null>(null)
-  const [history, setHistory] = useState<HistoryEntry[] | null>(null)
-  const [historyError, setHistoryError] = useState<string | null>(null)
   const [unresolved, setUnresolved] = useState<{ rows: UnresolvedSale[]; total: number; page: number } | null>(null)
   const [unresolvedError, setUnresolvedError] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -180,7 +182,6 @@ export function BuyerProfileSection(props: Props) {
   useEffect(() => {
     if (!partnerId) return
     let cancelled = false
-    api.buyerProfiles.history(partnerId).then((h) => { if (!cancelled) setHistory(h.entries) }).catch((err: unknown) => { if (!cancelled) setHistoryError(errorSentence(err, 'The history could not be read.')) })
     // This buyer's queue only, with the API's own total for it (#1457, L16): the
     // filter and the count come from one query, so "Showing N of M" is about the
     // rows the button can reach.
@@ -309,10 +310,12 @@ export function BuyerProfileSection(props: Props) {
   const click = profile?.sold_on === 'click'
   const soldOnError = errorFor(errors, 'soldOn')
   const routingCodeRefusal = errorFor(errors, 'externalRoutingCode') ?? null
+  // Where the hours and reset times are shown; unset shows Eastern, the zone they are stored and judged in.
+  const zone = profile?.display_time_zone ?? DEFAULT_DISPLAY_TIME_ZONE
+  const blackoutNote = blackoutZoneNote(zone)
 
   return (
     <section aria-label="Buyer profile" className="space-y-6 rounded-lg border border-emerald-100 bg-emerald-50/30 p-4">
-      <h3 className="text-xs font-semibold text-emerald-800">Buyer profile</h3>
       {!partnerId ? (
         <p className="text-sm text-gray-600">Save the partner first. The buyer profile is kept against the saved partner.</p>
       ) : loadError ? (
@@ -335,10 +338,12 @@ export function BuyerProfileSection(props: Props) {
             <p id="bp-sold-on-hint" className="text-xs text-gray-500">The offer: sold through buyer selection at a priced rate. The click: quoted at the Engine bid and sent to the buyer only when the person clicks.</p>
             {soldOnLock && <p id="bp-sold-on-lock" className="text-xs text-gray-600">{soldOnLock}</p>}
             {soldOnError && <p id="bp-sold-on-error" role="alert" className="text-xs text-red-700">{soldOnError}</p>}
+            <LiveSectionNote sections={['Sold on']} />
           </div>
 
           <div className="space-y-4">
             <h4 className="text-sm font-medium text-gray-700">{click ? 'Enabled and eligibility' : 'Enabled and ranking'}</h4>
+            <LiveSectionNote sections={['Enabled and ranking', 'Eligibility']} />
             <div className="flex items-center gap-3">
               <Toggle id="bp-enabled" checked={profile.is_enabled} onChange={(v) => patch({ is_enabled: v })} label="Enabled" />
               <label htmlFor="bp-enabled" className="text-sm text-graphite">Enabled</label>
@@ -365,8 +370,22 @@ export function BuyerProfileSection(props: Props) {
             </div>
             <div>
               <h5 className="mb-2 text-xs font-medium text-gray-600">{SECTION_LABELS.windows}</h5>
-              <WeeklyHoursEditor value={profile.windows} onChange={(windows) => patch({ windows })} />
+              <LiveSectionNote sections={[SECTION_LABELS.windows]} />
+              <WeeklyHoursEditor value={profile.windows} onChange={(windows) => patch({ windows })} zone={zone} />
               {errorFor(errors, 'windows') && <p role="alert" className="text-xs text-red-700">{errorFor(errors, 'windows')}</p>}
+              {/* Changes only how times are shown: the hours stay stored and judged in Eastern (#2143, PM-10). */}
+              <div className="mt-3 flex items-center gap-2.5">
+                <label htmlFor="bp-display-time-zone" className="text-xs font-medium text-gray-600">{FIELD_LABELS.display_time_zone}</label>
+                <Select
+                  id="bp-display-time-zone"
+                  value={zone}
+                  options={ZONE_OPTIONS}
+                  onChange={(z) => { if (isDisplayTimeZone(z)) patch({ display_time_zone: z }) }}
+                  describedBy={errorFor(errors, 'displayTimeZone') ? 'bp-display-time-zone-error' : undefined}
+                  className="w-36"
+                />
+              </div>
+              {errorFor(errors, 'displayTimeZone') && <p id="bp-display-time-zone-error" role="alert" className="mt-1 text-xs text-red-700">{errorFor(errors, 'displayTimeZone')}</p>}
             </div>
           </div>
 
@@ -374,6 +393,7 @@ export function BuyerProfileSection(props: Props) {
           {!click && (
             <div className="space-y-3">
               <h4 className="text-sm font-medium text-gray-700">{SECTION_LABELS.tiers}</h4>
+              <LiveSectionNote sections={[SECTION_LABELS.tiers]} />
               <PricingTiersEditor value={profile.tiers} onChange={(tiers) => patch({ tiers })} errors={byPath} />
               {errorFor(errors, 'tiers') && <p role="alert" className="text-xs text-red-700">{errorFor(errors, 'tiers')}</p>}
             </div>
@@ -381,11 +401,13 @@ export function BuyerProfileSection(props: Props) {
 
           <div className="space-y-3">
             <h4 className="text-sm font-medium text-gray-700">Caps</h4>
+            <LiveSectionNote sections={['Caps']} />
             <CapsGrid
               value={{ hourly_lead_cap: profile.hourly_lead_cap, daily_lead_cap: profile.daily_lead_cap, hourly_spend_cap_cents: profile.hourly_spend_cap_cents, daily_spend_cap_cents: profile.daily_spend_cap_cents }}
               onChange={(caps) => patch(caps)}
               errors={capErrors}
               soldOn={profile.sold_on}
+              zone={zone}
             />
             {usage === null && usageError === null ? (
               <p role="status" className="text-xs text-gray-500">Reading the usage counts…</p>
@@ -423,12 +445,14 @@ export function BuyerProfileSection(props: Props) {
           {click && (
             <div className="space-y-3">
               <h4 className="text-sm font-medium text-gray-700">Click delivery</h4>
+              <LiveSectionNote sections={['Click delivery']} />
               <ClickDeliveryEditor value={profile.click_delivery} onChange={(click_delivery) => patch({ click_delivery })} errors={byPath} />
             </div>
           )}
 
           <div className="space-y-3">
             <h4 className="text-sm font-medium text-gray-700">Outcome rules</h4>
+            <LiveSectionNote sections={['Outcome rules']} />
             {/* A click buyer's sale is judged by the click workflow, never by accept rules (#1541). */}
             {!click && (
               <div>
@@ -467,18 +491,9 @@ export function BuyerProfileSection(props: Props) {
 
           <div className="space-y-3">
             <h4 className="text-sm font-medium text-gray-700">{SECTION_LABELS.blackout_dates}</h4>
+            <LiveSectionNote sections={[SECTION_LABELS.blackout_dates]} />
+            {blackoutNote && <p className="text-xs text-gray-500">{blackoutNote}</p>}
             <BlackoutDatesEditor value={profile.blackout_dates} onChange={(blackout_dates) => patch({ blackout_dates })} errors={byPath} />
-          </div>
-
-          <div className="space-y-3">
-            <h4 className="text-sm font-medium text-gray-700">History</h4>
-            {historyError ? (
-              <p role="alert" className="text-xs text-red-700">{historyError}</p>
-            ) : history === null ? (
-              <p role="status" className="text-xs text-gray-500">Reading the history…</p>
-            ) : (
-              <BuyerProfileHistory entries={history} />
-            )}
           </div>
         </>
       )}

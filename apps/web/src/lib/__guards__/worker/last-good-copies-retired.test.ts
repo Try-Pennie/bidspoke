@@ -84,13 +84,14 @@ const KINDS: Kind[] = [
     retire: 'editSlackCopyEntry',
     writeMethods: ['insert', 'upsert', 'update', 'delete'],
     sqlWrites: /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:public\.)?service_connections\b/i,
-    // This guard cannot read a reason, so each is held true by a route test:
-    // connections.test.ts refuses DELETE /connections/slack (#2060) and POST
-    // with a type outside SERVICE_TYPES.
+    // This guard cannot read a reason, so each is held true by a route test in
+    // connections.test.ts: POST with a type outside SERVICE_TYPES, DELETE
+    // /connections/slack and POST /connections/slack/sync-schema are each
+    // refused before the table is touched (#2060).
     exempt: {
       'apps/worker/src/routes/api/connections.ts POST /': 'upserts only salesforce, supabase or snowflake (SERVICE_TYPES), never a Slack row',
       'apps/worker/src/routes/api/connections.ts DELETE /:service_type': 'refuses any type outside SERVICE_TYPES before its read, so it can never delete the Slack row',
-      'apps/worker/src/routes/api/connections.ts POST /:service_type/sync-schema': 'writes only schema_cache and schema_synced_at, which the copy does not hold, and answers 400 for Slack before writing',
+      'apps/worker/src/routes/api/connections.ts POST /:service_type/sync-schema': 'refuses any type outside SERVICE_TYPES before its read, and in any case writes only schema_cache and schema_synced_at, which the copy does not hold',
     },
   },
 ]

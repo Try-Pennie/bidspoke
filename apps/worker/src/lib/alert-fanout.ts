@@ -9,10 +9,12 @@
  * change to the cooldown semantics or the multi-org handling had to be made in
  * every one. This module is the single home for it.
  *
- * It deliberately does NOT cover the per-workflow / per-org cooldown alerts
- * (failure-rate, slow-execution-rate, database-reachability.ts): those
- * key their cooldown on a workflow or a single org and announce recovery, which
- * is a different shape. They still share `slackOrgIds` for the org lookup.
+ * Its once-per-incident fan-out (`rateLimitedOrgAlert`) does NOT cover the
+ * per-workflow / per-org cooldown alerts (failure-rate, slow-execution-rate,
+ * database-reachability.ts): those key their cooldown on a workflow or a single
+ * org and announce recovery, which is a different shape. They share
+ * `slackOrgIds` for the org lookup, and since #2062 they post through the
+ * minute alert claim below (`postMinutePage`, `minuteAllClearClaim`).
  *
  * Every read of `service_connections` outside the signed-in app's routes
  * (routes/api/) lives here or in slack.ts (#1303, guarded by
@@ -47,7 +49,7 @@ import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
 import type { AllClearClaim } from './alert-recovery'
 import { logReadFailure } from './scheduled-read'
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
-import { copyUnreachableLine, describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason } from './scheduled-slack'
+import { describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason } from './scheduled-slack'
 
 /**
  * The slice of KV this module uses: a get and a cooldown put. Narrower than
@@ -166,10 +168,15 @@ async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what
   const copy = await scheduled.copy()
   if (copy.kind === 'read') {
     console.warn(`[scheduled-slack] ${subject}: answered from the saved copy (${describeCopyAge(copy.ageMs)}, ${copy.copy.connections.size} organizations) because the database did not answer (${live.how})`)
+    // A copy that names nobody stands in for a list of nobody: the caller tells
+    // no one, which is the same case as an org missing from the copy, for every
+    // org at once (#2063). The answer itself is unchanged.
+    if (copy.copy.connections.size === 0) scheduled.nobodyCanBeTold(subject, null, 'org_not_in_copy')
     return { kind: 'stored', copy: copy.copy.connections, ageMs: copy.ageMs }
   }
   const reason = copy.kind === 'absent' ? 'no_copy' : 'copy_unreadable'
-  console.error(copyUnreachableLine(subject, reason, copy.kind === 'unreadable' ? copy.detail : undefined))
+  // No organization is named: this read was for every organization at once.
+  scheduled.nobodyCanBeTold(subject, null, reason, copy.kind === 'unreadable' ? copy.detail : undefined)
   return { kind: 'unreachable', reason }
 }
 
@@ -231,10 +238,14 @@ export function anyDelivered(fanout: SlackFanout): boolean {
 
 /**
  * True only when the list was read (live or from the copy) and every org was
- * told; an unread list is never "everyone was told" (#1303).
+ * told; an unread list is never "everyone was told" (#1303). An empty list is
+ * "everyone" only when the database said so: an empty saved copy during an
+ * outage names nobody, so nobody was told, and it is false.
  */
 export function everyDelivered(fanout: SlackFanout): boolean {
-  return fanout.kind === 'ran' && fanout.results.every(Boolean)
+  if (fanout.kind !== 'ran') return false
+  if (fanout.source === 'stored' && fanout.results.length === 0) return false
+  return fanout.results.every(Boolean)
 }
 
 /**
@@ -300,8 +311,10 @@ export type MinutePageOutcome = 'sent' | 'not_sent' | 'in_cooldown' | 'claimed_e
  * standing cooldown means a post already went out, so a tick inside it makes no
  * call to the claim object. The read that lets a post through is the second.
  *
- * The claim is kept on a delivered post, for its TTL, and freed when the post is
- * refused or throws, so the next tick can retry. With no claims (a test, or a
+ * The claim is kept on a delivered post, for its TTL, and freed only when the
+ * post definitely did not reach Slack (send answered false: Slack refused it,
+ * or no request went out), so the next tick can retry. A post that THROWS keeps
+ * the claim, since it may have landed. With no claims (a test, or a
  * worker with no ALERT_CLAIM binding) it posts as before. A claim that cannot be
  * asked fails open and is logged by makeAlertClaims.
  */
@@ -318,7 +331,15 @@ export async function postMinutePage(opts: {
     return 'claimed_elsewhere'
   }
   const release = () => releaseClaimQuietly(claims, key)
-  if (await opts.inCooldown()) {
+  let cooling: boolean
+  try {
+    cooling = await opts.inCooldown()
+  } catch (e) {
+    // Nothing was posted, so the claim is freed for the next tick.
+    await release()
+    throw e
+  }
+  if (cooling) {
     await release()
     return 'in_cooldown'
   }
@@ -326,9 +347,14 @@ export async function postMinutePage(opts: {
   try {
     sent = await opts.send()
   } catch (e) {
-    await release()
+    // A throw cannot say whether Slack took the post (a timeout, or a
+    // connection lost after the request went out), so the claim is KEPT for
+    // its TTL: at worst the page is late, never posted twice by the next tick.
+    console.error(`[alert-claim] ${key}: the post threw, so it may have reached Slack; the claim is kept for ${MINUTE_ALERT_CLAIM_TTL_SECONDS} s rather than freed`)
     throw e
   }
+  // A false is an answer: Slack refused the post, or no request went out (no
+  // connection to post with). Nothing reached Slack, so the next tick may retry.
   if (!sent) await release()
   return sent ? 'sent' : 'not_sent'
 }

@@ -120,7 +120,7 @@ export interface BuyerProfilesSnapshot {
 }
 
 const SELECT =
-  'partner_id, version, sold_on, is_enabled, priority, allowed_states, debt_min, debt_max, loan_amount_min, ' +
+  'partner_id, version, sold_on, is_enabled, priority, allowed_states, debt_min, debt_max, loan_amount_min, collections_max_percent, ' +
   'hourly_lead_cap, daily_lead_cap, hourly_spend_cap_cents, daily_spend_cap_cents, click_delivery, updated_at, ' +
   'partner_configs!inner(id, slug, name, is_active, api_endpoint, cf_secret_key, outbound_field_mapping, extra_extraction, ' +
   'accept_signals, response_classification, click_url, external_routing_code, duplicate_signals, ' +
@@ -139,6 +139,8 @@ interface ProfileRow {
   debt_min: number | string | null
   debt_max: number | string | null
   loan_amount_min: number | string | null
+  /** The collections cap (#2111), a whole percent of debt; null means not judged. */
+  collections_max_percent: number | null
   hourly_lead_cap: number | null
   daily_lead_cap: number | null
   hourly_spend_cap_cents: number | null
@@ -195,6 +197,8 @@ function shape(row: ProfileRow): LoadedBuyer {
       debtMin: num(row.debt_min),
       debtMax: num(row.debt_max),
       loanAmountMin: num(row.loan_amount_min),
+      // A row without the key (a reader stood in for the table, or a select from before the column) is no cap, never Number(undefined).
+      collectionsMaxPercent: num(row.collections_max_percent ?? null),
       hourlyLeadCap: row.hourly_lead_cap,
       dailyLeadCap: row.daily_lead_cap,
       hourlySpendCapCents: row.hourly_spend_cap_cents,

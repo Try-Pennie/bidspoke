@@ -1,0 +1,33 @@
+/**
+ * Self-dispatch, proven inside workerd against the real wrangler.ops.toml (#1946,
+ * the #1698 run engine's Spike 0 exit criteria).
+ *
+ * 1. The SELF service binding reaches OpsInternal: a real binding to this
+ *    Worker's own named entrypoint, never a fetch (L3, L535).
+ * 2. The public edge cannot reach it: every internal looking path on the default
+ *    fetch handler answers the ops not found.
+ *
+ * In production the same binding was accepted on upload and a scheduled()
+ * invocation reached OpsInternal through it (2026-10-16): docs/ops-ceilings-spike.md P5.
+ */
+import { env } from 'cloudflare:workers'
+import { describe, expect, it } from 'vitest'
+import worker, { OPS_IDENTITY_HEADER, type OpsEnv } from '../index'
+
+const opsEnv = env as unknown as OpsEnv
+
+describe('self-dispatch through the SELF binding (workerd)', () => {
+  it('reaches OpsInternal and answers with the ops identity', async () => {
+    expect(opsEnv.SELF).toBeDefined()
+    expect(await opsEnv.SELF?.ping()).toEqual({ lane: 'ops', entrypoint: 'OpsInternal' })
+  })
+})
+
+describe('the public edge (workerd)', () => {
+  it.each(['/internal/run/r_1', '/ping', '/OpsInternal/ping', '/spike/1946/x'])('answers POST %s with the ops not found', async (path) => {
+    const res = await worker.fetch(new Request(`https://ops.trypennie.dev${path}`, { method: 'POST', body: '{}' }), opsEnv)
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'not_found' })
+    expect(res.headers.get(OPS_IDENTITY_HEADER)).toBe('ops')
+  })
+})

@@ -219,7 +219,10 @@ export async function runVolumeCliffCheck(
   // always passes it, and without it two ticks that pass the cooldown together
   // both post.
   claims?: AlertClaims,
-  // The clock its reports to the database reachability owner are dated by (#2061); a test sets it.
+  // The clock that places the volume windows (#2060) and dates this check's
+  // reports to the database reachability owner (#2061), so those cannot
+  // disagree. The cliff alert's markers and cooldowns still take their own wall
+  // clock reading, one per workflow, as before.
   clock: () => number = Date.now,
 ): Promise<void> {
   // A failed read is reported to the owner, which pages at once for these reads
@@ -228,6 +231,10 @@ export async function runVolumeCliffCheck(
   const failed = (what: string, error: unknown) => reportDatabaseUnreachable(owner, { source: 'volume-cliff', what, error })
   const answered = () => reportDatabaseReadable(kv, 'volume-cliff', clock())
 
+  // Straight from the database, never the scheduled lookup that can answer from
+  // the saved copy (#2250 review, L98): so every answered() below follows a read
+  // the database itself answered, an empty answer included, and a tick that
+  // could read nothing reports a failure, never an answered run.
   const { data: slackOrgs, error: slackOrgsError } = await readSlackConnectionRows(supabase)
   logReadFailure('volume-cliff', 'slack connections', slackOrgsError)
   if (slackOrgsError) {
@@ -258,7 +265,7 @@ export async function runVolumeCliffCheck(
     return
   }
 
-  const now = Date.now()
+  const now = clock()
   const workflowIds = workflows.map((w) => w.id as string)
 
   // 60 wall-clock-minute buckets ending with the current (partial) minute at

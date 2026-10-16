@@ -169,6 +169,14 @@ describe('editing one organization in the copy (the Slack settings routes)', () 
     expect(read.savedAtMs).toBe(SAVED_AT)
   })
 
+  it('an edit does not make the rest of the copy read as fresh: another org still reports its age from the last full read', async () => {
+    const kv = await seeded()
+    expect(await editSlackCopyEntry(kv, TEST_KEY, ORG_A, null)).toBe('written')
+    const { client } = fakeClient([{ error: { message: 'connection refused' } }])
+    registerScheduledSlack(client, { kv, secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep, now: () => SAVED_AT + 90 * 60_000 })
+    expect(await lookupSlackConnection(client, ORG_B)).toMatchObject({ kind: 'stored', ageMs: 90 * 60_000 })
+  })
+
   it('writes nothing when there is no copy, or the organization is already absent from it', async () => {
     const none = memoryKv()
     expect(await editSlackCopyEntry(none, TEST_KEY, ORG_A, null)).toBe('no_copy')

@@ -180,7 +180,7 @@ describe('the scheduled handler\'s real client', () => {
       sent.push({ url: String(input), aborted: () => signal?.aborted ?? false })
       return new Promise<Response>((_, reject) => signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true }))
     }) as typeof fetch
-    const client = createScheduledSupabaseClient(env(kv), { fetch: stalled, sleep: fakeTimers('now').sleep })
+    const client = createScheduledSupabaseClient(env(kv), () => {}, { fetch: stalled, sleep: fakeTimers('now').sleep })
     expect(scheduledSlackFor(client)).toBeDefined()
     const conn = await getSlackConnection(client, ORG)
     expect(conn?.bot_token).toBe('xoxb-stored')
@@ -196,7 +196,7 @@ describe('the scheduled handler\'s real client', () => {
       sent.push(String(input))
       return new Response(JSON.stringify({ message: 'upstream connect error' }), { status: 503, headers: { 'content-type': 'application/json' } })
     }) as typeof fetch
-    const client = createScheduledSupabaseClient(env(kv), { fetch: unavailable, sleep: fakeTimers('never').sleep })
+    const client = createScheduledSupabaseClient(env(kv), () => {}, { fetch: unavailable, sleep: fakeTimers('never').sleep })
     expect(await slackOrgIds(client, 'test', 'tell-only')).toEqual({ kind: 'stored', orgIds: [ORG], ageMs: null })
     expect(sent).toHaveLength(1)
   })

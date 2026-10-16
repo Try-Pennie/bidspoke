@@ -546,3 +546,41 @@ describe('the never finished all-clear claim never strands the check (#2062 revi
     expect(held.size).toBe(0)
   })
 })
+
+// A throw cannot say whether Slack took the post, so it keeps the claim for its
+// TTL: the next minute's tick is late rather than a second post (#2062 review).
+describe('a heartbeat post that throws keeps its claim (#2062 review)', () => {
+  const archive = () => cronJob('execution-archive')
+  const orgs = [{ organization_id: 'org-1' }]
+  const dark = () => fakeKv({
+    ...allFresh(NOW),
+    [heartbeatKey(archive().id)]: iso(NOW - archive().maxRunMs - 5 * 60_000),
+    [completedWatchKey(archive().id)]: iso(NOW - 24 * H),
+  })
+
+  it('does not page again from the next tick after a page that threw once Slack had taken it', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const kv = dark()
+    const { claims, held } = claimLedger()
+    vi.mocked(sendCronHeartbeatAlert).mockImplementationOnce(async () => { throw new Error('Network connection lost.') })
+    await expect(runHeartbeatChecks(fakeSupabase(orgs), kv, NOW, claims)).rejects.toThrow('Network connection lost.')
+    expect(held.has('minute-alert:page:cron-heartbeat:execution-archive')).toBe(true)
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000, claims)
+    expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(1)
+    vi.mocked(console.error).mockRestore()
+  })
+
+  it('does not send the never finished all-clear again from the next tick after one that threw', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const kv = dark()
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW)
+    kv.store.set(completedKey(archive().id), iso(NOW + 30_000))
+    const { claims, held } = claimLedger()
+    vi.mocked(sendCronHeartbeatRecoveryAlert).mockImplementationOnce(async () => { throw new Error('Network connection lost.') })
+    await expect(runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000, claims)).rejects.toThrow('Network connection lost.')
+    expect(held.has('minute-alert:all-clear:cron-heartbeat:execution-archive')).toBe(true)
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 2 * 60_000, claims)
+    expect(sendCronHeartbeatRecoveryAlert).toHaveBeenCalledTimes(1)
+    vi.mocked(console.error).mockRestore()
+  })
+})

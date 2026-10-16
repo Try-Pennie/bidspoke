@@ -63,10 +63,35 @@ describe('wrangler.ops.toml (#1709)', () => {
     expect(read('apps/worker-tail/wrangler.toml')).toMatch(/^name = "bidspoke-worker-tail"$/m)
   })
 
-  it('still holds no binding of the bidding Worker: no KV, no Durable Object, no service binding', () => {
-    for (const name of ['kv_namespaces', 'durable_objects.bindings', 'services', 'd1_databases', 'hyperdrive']) {
+  it('still holds no binding of the bidding Worker: no KV, no Durable Object, no database', () => {
+    for (const name of ['kv_namespaces', 'durable_objects.bindings', 'd1_databases', 'hyperdrive']) {
       expect(tables(toml, name), name).toEqual([])
     }
+  })
+
+  /**
+   * Self-dispatch (#1946): the one service binding allowed is SELF, to this
+   * Worker's own OpsInternal entrypoint. A binding to the bidding Worker, or to
+   * the default export (which the public route also reaches), must fail here.
+   */
+  it('holds exactly one service binding, SELF, to its own OpsInternal entrypoint', () => {
+    const services = tables(toml, 'services')
+    expect(services).toHaveLength(1)
+    expect(services[0]).toMatch(/^binding = "SELF"$/m)
+    expect(services[0]).toMatch(/^service = "bidspoke-worker-ops"$/m)
+    expect(services[0]).toMatch(/^entrypoint = "OpsInternal"$/m)
+    expect(toml).toMatch(/^name = "bidspoke-worker-ops"$/m)
+    expect(toml).not.toMatch(/^service = "bidspoke-worker"$/m)
+  })
+
+  it("declares no cron: Spike 0's probe cron is gone and the run engine's tick (B2) adds its own (#1946)", () => {
+    expect(tables(toml, 'triggers')).toEqual([])
+    expect(toml).not.toMatch(/^crons\s*=/m)
+  })
+
+  it('exports the OpsInternal entrypoint the SELF binding names from its main module', () => {
+    expect(toml).toMatch(/^main = "src\/ops\/index\.ts"$/m)
+    expect(read('apps/worker/src/ops/index.ts')).toMatch(/^export \{ OpsInternal \} from '\.\/internal'$/m)
   })
 })
 

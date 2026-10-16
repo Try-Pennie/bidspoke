@@ -19,7 +19,7 @@ import { announceRecovery, recoveryKey, type IncidentContext } from '../alert-re
 import { CLAIM_DEADLINE_MS, makeAlertClaims } from '../alert-claim'
 import { SCHEDULED_SLACK_READ_DEADLINE_MS } from '../scheduled-slack'
 import { MINUTE_JOB_DEADLINE_MS } from '../../index'
-import { claimLedger, gate, overlap } from './_claims-double'
+import { claimLedger, gate, overlap, until } from './_claims-double'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -57,6 +57,21 @@ describe('the claim TTL covers the worst case from claim to cooldown write', () 
     const kv = fakeKv({ [recoveryKey('failure-rate', 'wf-1:X')]: new Date(T0 - 90 * MIN).toISOString() })
     await announceRecovery(kv, 'failure-rate', 'wf-1:X', null, incident, async () => true, { now: T0, claim: minuteAllClearClaim(claims, 'failure-rate', 'wf-1:X') })
     expect([...ttls.values()]).toEqual([MINUTE_ALERT_CLAIM_TTL_SECONDS, MINUTE_ALERT_CLAIM_TTL_SECONDS])
+  })
+})
+
+describe('the overlap helper', () => {
+  it('fails with its own message once its stated deadline passes', async () => {
+    await expect(until(() => false, 'the thing', 20)).rejects.toThrow('the thing did not happen within 20 ms')
+  })
+
+  it('refuses to wait under fake timers rather than hang', async () => {
+    vi.useFakeTimers()
+    try {
+      await expect(until(() => false)).rejects.toThrow(/fake timers/)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
@@ -134,17 +149,39 @@ describe('postMinutePage: claim first, then read the cooldown (L157)', () => {
     expect(held.has('k')).toBe(false)
   })
 
-  it('frees the claim and rethrows when the post throws', async () => {
+  // A throw cannot say whether Slack took the post: a timeout or a connection
+  // lost after the request went out may have landed. So a throwing post KEEPS
+  // the claim for its TTL (at worst the page is late, never doubled), and only
+  // an answer Slack gave refusing it frees the claim.
+  it('keeps the claim, logs, and rethrows when the post throws, since Slack may have taken it', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { claims, held, log } = claimLedger()
+    await expect(postMinutePage({ claims, key: 'k', inCooldown: async () => false, send: async () => { throw new Error('connection lost') } })).rejects.toThrow('connection lost')
+    expect(held.has('k')).toBe(true)
+    expect(log).toEqual(['claim k'])
+    expect(err.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/k: the post threw, so it may have reached Slack; the claim is kept/)
+  })
+
+  it('frees the claim and rethrows when the cooldown read after the claim throws, since nothing was posted', async () => {
     const { claims, held } = claimLedger()
-    await expect(postMinutePage({ claims, key: 'k', inCooldown: async () => false, send: async () => { throw new Error('boom') } })).rejects.toThrow('boom')
+    let reads = 0
+    const send = vi.fn(async () => true)
+    const inCooldown = async () => { if (++reads === 2) throw new Error('KV GET failed: 500'); return false }
+    await expect(postMinutePage({ claims, key: 'k', inCooldown, send })).rejects.toThrow('KV GET failed')
+    expect(send).not.toHaveBeenCalled()
     expect(held.has('k')).toBe(false)
   })
 
-  it('keeps the post error when freeing the claim also throws, and logs the release failure', async () => {
-    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const claims = { claim: async () => true, release: async () => { throw new Error('release refused') } }
-    await expect(postMinutePage({ claims, key: 'k', inCooldown: async () => false, send: async () => { throw new Error('boom') } })).rejects.toThrow('boom')
-    expect(err.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/release k failed: .*release refused/)
+  it('does not post again from the next tick after a post that threw once Slack had taken it', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { claims } = claimLedger()
+    const delivered: string[] = []
+    // Slack accepted the post, then the answer was lost on the way back.
+    const throwsAfterAcceptance = async () => { delivered.push('page'); throw new Error('Network connection lost.') }
+    await expect(postMinutePage({ claims, key: 'k', inCooldown: async () => false, send: throwsAfterAcceptance })).rejects.toThrow()
+    // The cooldown was never written; the next minute's tick runs.
+    expect(await postMinutePage({ claims, key: 'k', inCooldown: async () => false, send: async () => { delivered.push('page'); return true } })).toBe('claimed_elsewhere')
+    expect(delivered).toEqual(['page'])
   })
 
   it('still answers not_sent when freeing the claim after a refused post throws', async () => {
@@ -250,10 +287,7 @@ describe('announceRecovery claims an all-clear only once it is owed', () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {})
     const claims = { claim: async () => true, release: async () => { throw new Error('release refused') } }
     expect(await announceRecovery(owed(), 'failure-rate', id, null, incident, async () => false, { now: T0, claim: { claims, key: 'k', ttlSeconds: 300 } })).toBe(false)
-    expect(await announceRecovery(owed(), 'failure-rate', id, null, incident, async () => { throw new Error('boom') }, { now: T0, claim: { claims, key: 'k', ttlSeconds: 300 } })).toBe(false)
-    const logged = err.mock.calls.map((c) => c.map(String).join(' ')).join('\n')
-    expect(logged).toMatch(/all-clear failed for wf-1:ACRO: Error: boom/)
-    expect(logged).toMatch(/release k failed: .*release refused/)
+    expect(err.mock.calls.map((c) => c.map(String).join(' ')).join('\n')).toMatch(/release k failed: .*release refused/)
   })
 
   it('frees the claim and keeps the incident when the all-clear does not deliver', async () => {
@@ -264,11 +298,27 @@ describe('announceRecovery claims an all-clear only once it is owed', () => {
     expect(kv.store.has(recoveryKey('failure-rate', id))).toBe(true)
   })
 
-  it('frees the claim when the all-clear throws', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+  it('keeps the claim and the incident, and logs, when the all-clear throws, since Slack may have taken it', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const kv = owed()
     const { claims, held } = claimLedger()
-    expect(await announceRecovery(owed(), 'failure-rate', id, null, incident, async () => { throw new Error('boom') }, { now: T0, claim: minuteAllClearClaim(claims, 'failure-rate', id) })).toBe(false)
-    expect(held.size).toBe(0)
+    expect(await announceRecovery(kv, 'failure-rate', id, null, incident, async () => { throw new Error('boom') }, { now: T0, claim: minuteAllClearClaim(claims, 'failure-rate', id) })).toBe(false)
+    expect(held.size).toBe(1)
+    expect(kv.store.has(recoveryKey('failure-rate', id))).toBe(true)
+    const logged = err.mock.calls.map((c) => c.map(String).join(' ')).join('\n')
+    expect(logged).toMatch(/all-clear failed for wf-1:ACRO: Error: boom/)
+    expect(logged).toMatch(/may have reached Slack; the claim is kept/)
+  })
+
+  it('does not send the all-clear again from the next tick after one that threw once Slack had taken it', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const kv = owed()
+    const { claims } = claimLedger()
+    const delivered: string[] = []
+    const opts = { now: T0, claim: minuteAllClearClaim(claims, 'failure-rate', id) }
+    await announceRecovery(kv, 'failure-rate', id, null, incident, async () => { delivered.push('all-clear'); throw new Error('Network connection lost.') }, opts)
+    expect(await announceRecovery(kv, 'failure-rate', id, null, incident, async () => { delivered.push('all-clear'); return true }, opts)).toBe(false)
+    expect(delivered).toEqual(['all-clear'])
   })
 
   it('fails open and logs when the claim object cannot be asked', async () => {

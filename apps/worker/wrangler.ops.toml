@@ -1,7 +1,8 @@
 # bidspoke-worker-ops: the minimal ops Worker (#1705, plan 0.R).
 #
-# One route, POST /porting/capture/:hashid, receiving the porting recorder's
-# captures from Pipedream. It shares this package's source and dependencies but
+# One public route, POST /porting/capture/:hashid, receiving the porting
+# recorder's captures from Pipedream. Not public: a SELF binding to its own
+# OpsInternal entrypoint (#1946, below). It shares this package's source and dependencies but
 # is a SEPARATE Worker: its own name, its own bindings, its own secrets, and
 # none of the money Worker's (no Supabase key, no partner credentials, no KV, no
 # Durable Objects). The full ops Worker grows from this in plan 0.E.
@@ -53,6 +54,18 @@ LANE = "ops"
 binding = "CODE_NODES_OPS"
 namespace = "bidspoke-code-nodes-ops"
 outbound = { service = "bidspoke-ops-outbound" }
+
+# Self-dispatch (#1946, the #1698 run engine's Spike 0): a service binding to this
+# Worker's OWN named entrypoint, OpsInternal (src/ops/internal.ts). It is script
+# config, not a zone route, so CI's token can deploy it, and a named entrypoint is
+# unreachable from the public edge, which only ever invokes the default export.
+# Never an HTTP fetch of ops.trypennie.dev: that would put the internal surface on
+# the public route. apps/web/src/lib/__tests__/ops-worker-config.test.ts allows
+# exactly this one service binding and no binding to the bidding Worker.
+[[services]]
+binding = "SELF"
+service = "bidspoke-worker-ops"
+entrypoint = "OpsInternal"
 
 # Traces go to the tail consumer, which skips this Worker's traces until Phase 1
 # points it at the ops database (apps/worker-tail, #1709): an ops execution id

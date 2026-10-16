@@ -4,6 +4,7 @@
  * logged, with the TTL asked for, so a test can read both what was claimed and
  * in what order against the other steps it logs into the same list.
  */
+import { vi } from 'vitest'
 import type { AlertClaims } from '../alert-claim'
 
 export function claimLedger(log: string[] = []) {
@@ -45,13 +46,23 @@ export const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0
  * machine, and releasing the held post before it got there would test no
  * overlap at all.
  */
-export async function until(ready: () => boolean, what = 'both ticks reaching the decision point'): Promise<void> {
-  for (let i = 0; i < 2000; i++) {
-    if (ready()) return
+export async function until(ready: () => boolean, what = 'both ticks reaching the decision point', deadlineMs = UNTIL_DEADLINE_MS): Promise<void> {
+  // Under fake timers the settle below would never fire and the wait would hang
+  // instead of failing with its message, so refuse that outright.
+  if (vi.isFakeTimers()) throw new Error(`until() polls on real timers; a test with fake timers cannot wait for ${what}`)
+  const start = Date.now()
+  while (!ready()) {
+    if (Date.now() - start > deadlineMs) throw new Error(`${what} did not happen within ${deadlineMs} ms`)
     await settle()
   }
-  throw new Error(`${what} never happened`)
 }
+
+/**
+ * How long until() waits, stated in time rather than turns: well inside the
+ * runner's 5 s test timeout, so a missed overlap fails with its own message
+ * first, and far above the few milliseconds a held tick takes to arrive.
+ */
+export const UNTIL_DEADLINE_MS = 3_000
 
 /**
  * Two ticks of one alert overlapping: both started, the post held until

@@ -46,17 +46,22 @@ const sources = new Map(
 
 const index = sanitizeSource(readFileSync(INDEX, 'utf8'), { blankStrings: false })
 
-/** The `{ ... }` body of the minute cron's branch in the scheduled handler. */
-function minuteBranch(src: string): { start: number; end: number } {
-  const at = src.search(/event\.cron\s*===\s*'\* \* \* \* \*'\s*\)\s*\{/)
-  if (at < 0) throw new Error('the minute cron branch was not found in index.ts')
-  const open = src.indexOf('{', at)
+/** The span of the `{ ... }` block opening at the first `{` at or after `from`, braces matched. */
+function braceBlock(src: string, from: number, what: string): { start: number; end: number } {
+  const open = src.indexOf('{', from)
   let depth = 0
   for (let k = open; k < src.length; k++) {
     if (src[k] === '{') depth++
     else if (src[k] === '}' && --depth === 0) return { start: open, end: k }
   }
-  throw new Error('the minute cron branch does not close')
+  throw new Error(`${what} does not close`)
+}
+
+/** The `{ ... }` body of the minute cron's branch in the scheduled handler. */
+function minuteBranch(src: string): { start: number; end: number } {
+  const at = src.search(/event\.cron\s*===\s*'\* \* \* \* \*'\s*\)\s*\{/)
+  if (at < 0) throw new Error('the minute cron branch was not found in index.ts')
+  return braceBlock(src, at, 'the minute cron branch')
 }
 
 /** Every call of `name` in index.ts (not its import), with its argument text. */
@@ -69,8 +74,13 @@ function callsOf(src: string, name: string): { at: number; args: string }[] {
 
 const reachabilityLiteral = (() => {
   const at = index.search(/const reachability\s*=\s*\{/)
-  return at < 0 ? '' : index.slice(at, index.indexOf('}', at))
+  if (at < 0) return ''
+  const block = braceBlock(index, at, 'the reachability literal')
+  return index.slice(block.start, block.end + 1)
 })()
+
+/** The owner's claims are the real claim object whenever the binding exists. */
+const reachabilityHasClaims = /\bclaims:\s*env\.ALERT_CLAIM\s*\?\s*makeAlertClaims\(env\.ALERT_CLAIM\)/.test(reachabilityLiteral)
 
 describe('the minute alert claims are wired to the minute alerts only (#2062)', () => {
   it('the modules that claim are exactly the minute alerts listed here', () => {
@@ -81,11 +91,13 @@ describe('the minute alert claims are wired to the minute alerts only (#2062)', 
     expect(claiming).toEqual(Object.keys(MINUTE_CLAIMANTS).sort())
   })
 
-  it('no other module builds an all-clear claim by hand', () => {
-    const byHand = [...sources.entries()]
-      .filter(([file, src]) => !(file in MINUTE_CLAIMANTS) && file !== 'alert-fanout.ts' && file !== 'alert-recovery.ts' && /\bclaim:\s*\{/.test(src))
-      .map(([file]) => file)
-    expect(byHand).toEqual([])
+  it('no other module hands announceRecovery a claim', () => {
+    // Every announceRecovery call outside the minute alerts, read by its own
+    // arguments, so a claim built in a variable is caught as well as a literal.
+    const claimingCalls = [...sources.entries()]
+      .filter(([file]) => !(file in MINUTE_CLAIMANTS) && file !== 'alert-recovery.ts')
+      .flatMap(([file, src]) => callsOf(src, 'announceRecovery').filter((c) => /\bclaim\s*:/.test(c.args)).map(() => file))
+    expect(claimingCalls).toEqual([])
   })
 
   const branch = minuteBranch(index)
@@ -97,7 +109,10 @@ describe('the minute alert claims are wired to the minute alerts only (#2062)', 
         for (const c of calls) {
           const inMinute = c.at > branch.start && c.at < branch.end
           if (!ANY_TICK.has(fn)) expect(inMinute, `${fn} is called outside the minute cron branch`).toBe(true)
-          const hasClaims = /\bclaims\b/.test(c.args) || (/\.\.\.reachability\b|\breachability\b/.test(c.args) && /\bclaims:/.test(reachabilityLiteral))
+          // The claims are the owner's (`reachability.claims`), passed by name, by
+          // spreading `reachability`, or as `reachability` itself (the owner's
+          // deps); a bare `claims` word could be anything.
+          const hasClaims = (/\breachability\.claims\b/.test(c.args) || /\.\.\.reachability\b/.test(c.args) || /^\(\s*reachability\s*,/.test(c.args)) && reachabilityHasClaims
           expect(hasClaims, `${fn}${c.args.replace(/\s+/g, ' ')} is not handed its claims`).toBe(true)
         }
       })

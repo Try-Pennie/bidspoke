@@ -100,6 +100,23 @@ export const REQUIRED_PARTNER_SECRETS = [
   'LINK_TOKEN_SECRET',
 ] as const
 
+/**
+ * Secrets of the money Worker that turn a feature on, and that it runs correctly
+ * without: the daily guard never reports them missing, which is the point, since
+ * an unset one is a feature not yet switched on rather than a gap. Each feature
+ * listed here must say, on its own, that it is inert while its secret is unset.
+ * (Achieve's own credentials and Eligibility Scout's are feature gated the same
+ * way, by being left off the required lists above; they live in the
+ * Environment Variables page, not here.)
+ */
+export const FEATURE_GATED_SECRETS = [
+  // The Better Stack page for "nobody can be told" (#2063, lib/nobody-told-page.ts):
+  // the HTTP source's token and its ingesting host. Unset, each scheduled tick that
+  // would have paged logs once that nothing was sent.
+  'BETTERSTACK_OUTAGE_TOKEN',
+  'BETTERSTACK_OUTAGE_URL',
+] as const
+
 /** Secrets the ops Worker cannot run without (#1705, #1709). */
 export const OPS_REQUIRED_SECRETS = [
   // Derives each workflow's capture key and the redaction key (src/ops/index.ts).
@@ -112,7 +129,10 @@ export const OPS_REQUIRED_SECRETS = [
  * database until Phase 1, so requiring them now would alert on two secrets no
  * code uses. They move to OPS_REQUIRED_SECRETS in the change that first reads them.
  */
-export const OPS_OPTIONAL_SECRETS = ['OPS_SUPABASE_URL', 'OPS_SUPABASE_SECRET_KEY'] as const
+export const OPS_OPTIONAL_SECRETS = [
+  'OPS_SUPABASE_URL',
+  'OPS_SUPABASE_SECRET_KEY',
+] as const
 
 /** Every secret the ops Worker may hold; anything else on it fails the parity check. */
 export const OPS_ALLOWED_SECRETS: readonly string[] = [...OPS_REQUIRED_SECRETS, ...OPS_OPTIONAL_SECRETS]

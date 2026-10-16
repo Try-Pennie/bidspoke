@@ -15,6 +15,7 @@ vi.mock('../slack', () => ({
 
 import { detectCliff, runVolumeCliffCheck, sendCliffAlert, BASELINE_WINDOW_MINUTES, RECENT_WINDOW_MINUTES, MIN_BASELINE_PER_MIN } from '../volume-cliff'
 import { DB_UNREACHABLE_PREFIX } from '../database-reachability'
+import { registerScheduledSlack } from '../scheduled-slack'
 import { SLACK_CONNS_LASTGOOD_KEY } from '../slack-copy'
 import { getSlackConnection, postMessage, sendRecoveryAlert, sendDatabaseUnreachableAlert } from '../slack'
 import { encryptSecret } from '../secret-crypto'
@@ -165,6 +166,18 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
   beforeEach(() => {
     vi.mocked(getSlackConnection).mockResolvedValue(CONN as never)
     vi.mocked(sendRecoveryAlert).mockReset()
+  })
+
+  it('measures its volume windows on the injected clock, the one that dates the saved Slack copy (#2060)', async () => {
+    // Steady minutes ending at a fixed instant a day before the real clock: read
+    // on that instant they are healthy volume, read on the real clock they are
+    // empty buckets and nothing has recovered.
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+    const at = Math.floor((Date.now() - 24 * 60 * 60000) / 60000) * 60000
+    const minutes = Array.from({ length: 60 }, (_, i) => ({ minute: new Date(at - 59 * 60000 + i * 60000).toISOString(), cnt: 50 }))
+    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': new Date(Date.now() - 45 * 60000).toISOString(), 'volume-cliff:wf-1:cooldown': '1' })
+    await runVolumeCliffCheck(fakeSupabase(minutes), kv, 'https://app.example', 'https://self.example', TEST_KEY, undefined, () => at + 30_000)
+    expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
   })
 
   it('announces the all-clear when a previously alerted workflow is healthy again', async () => {
@@ -466,6 +479,32 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
     expect(JSON.parse(kv.store.get('db-reachability:source:volume-cliff')!).lastHealthy).toBe(now)
   })
 
+  // #2250 review (L98): a run that never read the database must not feed the
+  // owner's all-clear. The organization list is read straight from the
+  // database (readSlackConnectionRows), never through the scheduled lookup, so
+  // even on the scheduled client with a saved copy present a failed read gives
+  // no list to stand on: the run reports a failure and no answered run, and an
+  // earlier unbroken run of answers is broken, which holds the all-clear.
+  it('on the scheduled client with a saved copy, a failed organization read reports no answered run and breaks the earlier run', async () => {
+    const earlier = Date.parse('2026-10-15T03:04:00Z')
+    const kv = fakeKv({
+      [SLACK_CONNS_LASTGOOD_KEY]: await lastGood(),
+      'db-reachability:source:volume-cliff': JSON.stringify({ healthySince: earlier - 40 * 60000, lastHealthy: earlier, lastFailed: null }),
+    })
+    const supabase = allDownSupabase()
+    registerScheduledSlack(supabase, { kv, secretKeys: TEST_KEY, sleep: () => Promise.resolve() })
+    await runVolumeCliffCheck(supabase, kv, 'https://app.example', 'https://self.example', TEST_KEY, undefined, () => earlier + 60000)
+    expect(JSON.parse(kv.store.get('db-reachability:source:volume-cliff')!)).toEqual({ healthySince: null, lastHealthy: earlier, lastFailed: earlier + 60000 })
+  })
+
+  it('with an empty saved copy and the database down, reports no answered run at all', async () => {
+    const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: await encryptSecret(JSON.stringify({}), TEST_KEY) })
+    const supabase = allDownSupabase()
+    registerScheduledSlack(supabase, { kv, secretKeys: TEST_KEY, sleep: () => Promise.resolve() })
+    await runVolumeCliffCheck(supabase, kv, 'https://app.example', 'https://self.example', TEST_KEY, undefined, () => Date.parse('2026-10-15T03:05:00Z'))
+    expect(JSON.parse(kv.store.get('db-reachability:source:volume-cliff')!).lastHealthy).toBeNull()
+  })
+
   it('leaves the copy exactly as it was when the Slack connections read fails', async () => {
     const before = await lastGood()
     const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: before })
@@ -713,6 +752,16 @@ describe('runVolumeCliffCheck posts once per claim (#1298)', () => {
     await runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
     expect(postMessage).toHaveBeenCalledTimes(2)
     expect(JSON.stringify(vi.mocked(postMessage).mock.calls[1][2])).toContain('reminder 2')
+  })
+
+  // Merge review at 390cc55: recording this run as answered for the database
+  // owner is bookkeeping, so a KV refusal there must not stop the cliff page.
+  it('still pages the cliff when KV refuses the database owner\'s answered record', async () => {
+    const kv = fakeKv()
+    const put = kv.put
+    kv.put = (k: string, v: string) => (k.startsWith('db-reachability:') ? Promise.reject(new Error('KV PUT failed: 500')) : put(k, v))
+    await runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+    expect(postMessage).toHaveBeenCalledTimes(1)
   })
 
   it('releases the claim when Slack refuses the post, so the next tick can retry', async () => {

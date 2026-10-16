@@ -24,24 +24,16 @@ import Link from 'next/link'
 import { HELD_CLICK_REASON_LABELS, SALE_RECORD_LABELS, type HeldClickReason, type SaleWrite, type SalesforceWritesView } from '@bidspoke/buyer-profile'
 import type { HeldClick } from '@/lib/api'
 import { Button, Outcome, TextInput, type OutcomeState } from '@/components/ui/form'
+import { formatInZone } from '@/lib/dates'
 
 const PACIFIC = 'America/Los_Angeles'
 
-function heldSince(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-US', { timeZone: PACIFIC, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
-}
+const heldSince = (iso: string) => formatInZone(iso, PACIFIC, 'day-time')
 
-function pacificTime(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleTimeString('en-US', { timeZone: PACIFIC, hour: 'numeric', minute: '2-digit', timeZoneName: 'short' })
-}
+const pacificTime = (iso: string) => formatInZone(iso, PACIFIC, 'clock')
 
 /** The Pacific day the click was held: the day its count lands on. */
-function pacificDay(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString('en-US', { timeZone: PACIFIC, month: 'short', day: 'numeric' })
-}
+const pacificDay = (iso: string) => formatInZone(iso, PACIFIC, 'day')
 
 function reasonLabel(reason: string): string {
   return (HELD_CLICK_REASON_LABELS as Record<string, string>)[reason as HeldClickReason] ?? reason

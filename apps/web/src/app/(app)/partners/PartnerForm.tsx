@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useReducer, useRef } from 'react'
+import { useState, useEffect, useMemo, useReducer, useRef, useContext } from 'react'
 import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidComparisonSource, ExtraExtractionConfig, PartnerPageSaveRequest, PartnerPageStale } from '@/lib/api'
 import { PARTNER_TYPES, isBuyerPartner, isSourcePartner, partnerTypeLabel, type PartnerType } from '@/lib/partner-roles'
 import {
@@ -18,16 +18,66 @@ import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
 import { OutboundMappingEditor } from '@/components/partners/OutboundMappingEditor'
 import { ExtraExtractionEditor } from '@/components/partners/ExtraExtractionEditor'
 import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
-import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
+import { ErrorRuleLists } from '@/components/partners/ErrorRuleLists'
 import { BuyerProfileSection, EMPTY_PROFILE } from '@/components/partners/buyer-profile/BuyerProfileSection'
 import { MergeDialog } from '@/components/partners/MergeDialog'
 import { mergeThreeWay, sameMergeValue, type MergeResult, type MergeSide, type PageHalves } from '@/lib/partner-page-merge'
 import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
 import { clickDeliveryConsequences } from '@/components/partners/buyer-profile/click-delivery-consequences'
+import { profileWithChangedZoneOnly } from '@/components/partners/buyer-profile/display-zone'
 import { Button, ChoiceGroup, Field, NumberInput, Outcome, TextArea, TextInput, describedBy, type OutcomeState } from '@/components/ui/form'
 import { Toggle } from '@/components/ui/Toggle'
 import { documentToProfile, soldOnSwitchBlocked, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal, type StoredKind } from '@bidspoke/buyer-profile'
 import { UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
+import { Tabs, TabPanel } from '@/components/ui/Tabs'
+import { ProblemMark } from '@/components/ui/ProblemMark'
+import { PartnerHistoryPanel } from '@/components/partners/PartnerHistoryPanel'
+import type { PartnerUsage } from '@/lib/api'
+import type { PartnerTab } from './partner-draft'
+import {
+  bidGroupSettingsSet, bidGroupShown, confirmationWindowShown, openingTab, problemsOf, problemTabs, visibleTabs, TAB_LABELS,
+  type TabInputs, type UsageState,
+} from './partner-tabs'
+import { bidsInSentences } from './bid-group-usage-text'
+import { LiveNotesContext, LivePageNotes, LiveSectionNote, LiveStatusLine, PartnerLiveContext, SYSTEM_CLOCK } from '@/components/partners/live/PartnerLive'
+import { usePartnerPageLive } from './use-partner-page-live'
+import {
+  askedOnly, classifyNotice, directChangeNotes, liveConflictSentence, liveMissReport, liveTakenSentence, probeFindsGap, savedByName, tabClientId, updatedByNotes,
+  PROBE_EVERY_MS, type DirectNote, type HeldVersions, type SectionNote,
+} from '@/lib/partner-live-page'
+import type { PartnerPageNotice, PartnerPageVersions } from '@bidspoke/partner-page-live'
+
+const NO_USAGE: PartnerUsage = { bid_group: [], partner_bid: [], latency_gate: [] }
+const NO_NAMES: ReadonlyMap<string, string> = new Map()
+
+/** Why the Bid Group tab shows when no workflow names the partner, said under the Bids in row. */
+function bidGroupReasonOf(i: TabInputs): string | null {
+  if (bidGroupSettingsSet(i.body)) return 'It shows because a Bid Group setting is filled in.'
+  if (i.isBuyer && i.soldOn === 'offer') return 'It shows because buyer selection calls a buyer sold on the offer with these settings.'
+  return null
+}
+
+/**
+ * The Bid Group tab's first row (#2137, the settled design's "Bids in"): which
+ * workflows ask this partner for a bid, in each of the usage read's three
+ * states, so a read still running or failed never reads as "no workflow".
+ */
+function BidsInRow({ usage, partnerName, partnerNames, reason, onRetry }: { usage: UsageState; partnerName: string; partnerNames: ReadonlyMap<string, string>; reason: string | null; onRetry: () => void }) {
+  if (usage.kind === 'loading') return <p role="status" className="text-sm text-gray-600">Checking which workflows use this partner…</p>
+  if (usage.kind === 'failed') {
+    return (
+      <div role="alert" className="flex items-center gap-3 text-sm text-red-700">
+        <span className="flex-1">Could not check which workflows use this partner. Try again.</span>
+        <Button variant="secondary" onClick={onRetry}>Try again</Button>
+      </div>
+    )
+  }
+  const sentences = bidsInSentences(usage.usage, partnerNames)
+  if (sentences.length === 0) {
+    return <p className="text-sm text-gray-700">{`No workflow's Bid Group names ${partnerName}, so nothing on this tab is used.${reason ? ` ${reason}` : ''}`}</p>
+  }
+  return <div className="space-y-1 text-sm text-gray-700">{sentences.map((t) => <p key={t}>{t}</p>)}</div>
+}
 
 // Re-exported for the parent page's partner-switch / New guards, so the prompt
 // copy stays identical until PR7 (#2138) replaces all three with a dialog.
@@ -89,6 +139,16 @@ interface Props {
   deleting?: boolean
   /** Reports whether the form has unsaved edits, so the parent can guard partner-switch / New. */
   onDirtyChange?: (dirty: boolean) => void
+  /** The tab the URL asks for (#2137); null opens where the partner's problem or settings are. */
+  requestedTab?: PartnerTab | null
+  /** The open tab changed (a press, or a fallback): the page mirrors it into the URL. */
+  onTabChange?: (tab: PartnerTab) => void
+  /** Every listed partner's name by id, for the Bid Group tab's Bids in row. */
+  partnerNames?: ReadonlyMap<string, string>
+  /** Whether the page holds a problem, for the mark on the partner's row in the list. */
+  onProblemChange?: (hasProblem: boolean) => void
+  /** Another person's save was merged in (#2135): the row as stored now, for the list. */
+  onLiveUpdate?: (partner: Partner) => void
 }
 
 /**
@@ -115,11 +175,18 @@ function fieldErrorsOf(err: unknown): ProfileError[] {
 const asNumber = (text: string): number | null => (text.trim() === '' ? null : Number(text))
 const asText = (n: number | null): string => (n === null ? '' : String(n))
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+/**
+ * liveSections: the registry sections (partner-draft.ts) this block shows, when
+ * its heading is not one of them, so a live note about them lands here (#2135).
+ */
+function Section({ title, liveSections, children }: { title: string; liveSections?: readonly string[]; children: React.ReactNode }) {
   return (
     <div>
       <h3 className="mb-4 text-xs font-semibold text-gray-500">{title}</h3>
-      <div className="space-y-4">{children}</div>
+      <div className="space-y-4">
+        <LiveSectionNote sections={liveSections ?? [title]} />
+        {children}
+      </div>
     </div>
   )
 }
@@ -145,6 +212,11 @@ export default function PartnerForm({
   onCancelDelete,
   deleting,
   onDirtyChange,
+  requestedTab = null,
+  onTabChange,
+  partnerNames = NO_NAMES,
+  onProblemChange,
+  onLiveUpdate,
 }: Props) {
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -226,6 +298,8 @@ export default function PartnerForm({
     base: PageHalves; mine: PageHalves; theirs: PageHalves
     theirPartner: Partner; theirName: string | null
     partnerVersion: number; choices: Record<string, MergeSide>
+    /** A merge a live notice held (#2135): only these questions are asked. */
+    onlyKeys?: string[]
   } | null>(null)
   const [mergeOpen, setMergeOpen] = useState(false)
   /** Set by the merge dialog's Save both: submit once the merged values are on screen. */
@@ -276,15 +350,6 @@ export default function PartnerForm({
       .catch(() => { if (!cancelled) setUuidsLoadError(true) })
     return () => { cancelled = true }
   }, [partnerSlug, uuidsAttempt])
-  useEffect(() => {
-    if (!partnerId) return
-    let cancelled = false
-    setBidConfigsLoadError(false)
-    api.partnerBidConfigs.list(partnerId)
-      .then((configs) => { if (!cancelled) setBidConfigs(configs) })
-      .catch(() => { if (!cancelled) setBidConfigsLoadError(true) })
-    return () => { cancelled = true }
-  }, [partnerId, bidConfigsAttempt])
 
   // The buyer profile is read once the partner is known to be a buyer. A read
   // that fails is its own state on the section, never an empty profile (L10).
@@ -350,6 +415,69 @@ export default function PartnerForm({
     return { soldOn: stored.sold_on, tierCount: stored.tiers.length, acceptRuleCount: baselineSnapshot.current?.acceptSignals.length ?? 0 }
   })()
   const soldOnLock = storedKind && soldOnSwitchBlocked(storedKind) ? soldOnLockReason(storedKind) : null
+
+  // ── Tabs (#2137, PM-1, PM-12) ───────────────────────────────────────────────
+  const isNew = !partner
+  const isBuyer = isBuyerPartner(partnerType)
+  const isSource = isSourcePartner(partnerType)
+  // Which workflow steps name the partner: loading, failed and found are three
+  // states the Bid Group tab draws differently; a failure is never "none" (L530).
+  const [usage, setUsage] = useState<UsageState>(() => (partner ? { kind: 'loading' } : { kind: 'found', usage: NO_USAGE }))
+  const [usageAttempt, setUsageAttempt] = useState(0)
+  useEffect(() => {
+    if (!partnerId) return
+    let cancelled = false
+    setUsage({ kind: 'loading' })
+    api.partners.usage(partnerId)
+      .then((u) => { if (!cancelled) setUsage({ kind: 'found', usage: u }) })
+      .catch((err: unknown) => { if (!cancelled) setUsage({ kind: 'failed', message: errorSentence(err, 'the read failed') }) })
+    return () => { cancelled = true }
+  }, [partnerId, usageAttempt])
+  const [bidGroupAdded, setBidGroupAdded] = useState(false)
+  const [confirmationAdded, setConfirmationAdded] = useState(false)
+  const problems = problemsOf({ credentialWarning: partner?.credential_warning, errors: profileErrors, routeNames: profile?.click_delivery?.routes.map((r) => r.name) ?? [] })
+  const tabsWithProblems = problemTabs(problems)
+  const pageProblems = problems.filter((p) => p.tab === null)
+  const credentialProblem = problems.find((p) => p.registryPath === 'cf_secret_key')?.message ?? null
+  const currentBody = buildPartnerBody(captureSnapshot(), bodyCtx)
+  const tabInputs: TabInputs = {
+    isBuyer, isNew, body: currentBody, soldOn: isBuyer ? profile?.sold_on ?? null : null, usage, bidGroupAdded,
+    // A problem on the tab, or a URL asking for it while the read runs, keeps it shown.
+    bidGroupNeeded: tabsWithProblems.includes('bid_group') || (requestedTab === 'bid_group' && usage.kind === 'loading'),
+  }
+  // Once shown for a reason of its own, the tab stays for this visit, so
+  // clearing its last setting never takes it from under the person.
+  const shownForItsOwnReason = bidGroupShown({ ...tabInputs, bidGroupNeeded: tabsWithProblems.includes('bid_group') })
+  useEffect(() => { if (shownForItsOwnReason && !bidGroupAdded) setBidGroupAdded(true) }, [shownForItsOwnReason, bidGroupAdded])
+  const visible = visibleTabs(tabInputs)
+  const bidGroupReason = bidGroupReasonOf(tabInputs)
+  const [tab, setTab] = useState<PartnerTab>(() => openingTab({ requested: requestedTab ?? null, visible, problems, isBuyer, isNew }))
+  function chooseTab(next: PartnerTab) {
+    setTab(next)
+    onTabChange?.(next)
+  }
+  // A tab the partner no longer shows (or a URL naming one it never did) falls
+  // back to the first tab, and the URL is corrected to say so.
+  useEffect(() => {
+    if (!visible.includes(tab)) chooseTab(visible[0])
+    else if (requestedTab && requestedTab !== tab && usage.kind !== 'loading') onTabChange?.(tab)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible.join(), tab, usage.kind])
+  useEffect(() => { onProblemChange?.(problems.length > 0) }, [problems.length, onProblemChange])
+  // The bid matrices are read once the Bid Group tab applies (#2137): only its
+  // resolver offers them, so a partner without the tab makes no read for them.
+  const bidGroupApplies = visible.includes('bid_group')
+  useEffect(() => {
+    if (!partnerId || !bidGroupApplies) return
+    let cancelled = false
+    setBidConfigsLoadError(false)
+    api.partnerBidConfigs.list(partnerId)
+      .then((configs) => { if (!cancelled) setBidConfigs(configs) })
+      .catch(() => { if (!cancelled) setBidConfigsLoadError(true) })
+    return () => { cancelled = true }
+  }, [partnerId, bidConfigsAttempt, bidGroupApplies])
+  // A problem on a tab other than the one open: the outcome offers to show it.
+  const showMeTab = tabsWithProblems.includes(tab) ? null : tabsWithProblems.find((t) => visible.includes(t)) ?? null
 
   // Tell the parent so it can guard partner-switch / New (those are <button>s the
   // link interceptor below can't see).
@@ -425,8 +553,10 @@ export default function PartnerForm({
     const key = JSON.stringify({ patch, profileDoc, version, profileVersion })
     const saveId = pendingSaveRef.current?.key === key ? pendingSaveRef.current.saveId : mintSaveId()
     pendingSaveRef.current = null
+    // This tab and this press, so the tab knows its own live notice (#2135, L747).
+    ownSaveIds.current.add(saveId)
     try {
-      const result = await onSave(patch as PartnerBody, partner.id, undefined, { expected_partner_version: version, expected_profile_version: profileVersion, profile: profileDoc, save_id: saveId })
+      const result = await onSave(patch as PartnerBody, partner.id, undefined, { expected_partner_version: version, expected_profile_version: profileVersion, profile: profileDoc, save_id: saveId, client_id: tabClientId() })
       const saved = result ? result.partner : null
       versionRef.current = saved?.version ?? version + 1
       return { kind: 'saved', partner: saved, profile: result ? result.profile : null, copyWarning: result ? result.copyWarning : null }
@@ -562,10 +692,11 @@ export default function PartnerForm({
   }
 
   // Only when the pending merge or an answer changes, not on every keystroke behind a closed dialog.
-  const mergeResult = useMemo(
-    () => (pendingMerge ? mergeThreeWay(pendingMerge.base, pendingMerge.mine, pendingMerge.theirs, PARTNER_FIELD_REGISTRY, pendingMerge.choices) : null),
-    [pendingMerge],
-  )
+  const mergeResult = useMemo(() => {
+    if (!pendingMerge) return null
+    const result = mergeThreeWay(pendingMerge.base, pendingMerge.mine, pendingMerge.theirs, PARTNER_FIELD_REGISTRY, pendingMerge.choices)
+    return pendingMerge.onlyKeys ? askedOnly(result, pendingMerge.onlyKeys) : result
+  }, [pendingMerge])
 
   /** Save both: the answers on screen at their versions, then one save of what is still mine. */
   function saveMerged() {
@@ -573,7 +704,209 @@ export default function PartnerForm({
     applyMerge(pendingMerge, mergeResult)
     setMergeOpen(false)
     setPendingMerge(null)
+    setLiveHeld(null)
     setResubmit(true)
+  }
+
+  // ── The live channel (#2135, PM-2) ──────────────────────────────────────────
+  // Another person's save of this partner arrives as a notice on partners:<org>.
+  // The page reads both halves again through the Worker and merges them with
+  // what is on screen (mergeThreeWay, #2134): a field only they changed updates
+  // in place, and a field both changed waits for this person's next Save. While
+  // the draft is dirty a probe asks every PROBE_EVERY_MS for the versions, the
+  // backstop for a notice Realtime lost (ADR 0012), and reports such a miss.
+  const liveDeps = useContext(PartnerLiveContext)
+  /** Every save id this tab has sent: its notice, with this tab's client_id, is its own echo. */
+  const ownSaveIds = useRef(new Set<string>())
+  /** When the page last heard a notice of this partner, for a miss report's gap. */
+  const lastNoticeAt = useRef<number | null>(null)
+  /**
+   * Another person's save changed fields this person is editing: the rest of it
+   * is on screen, and these keys are asked when Save is pressed. base is the
+   * page as it was before the first such save; theirs is the newest.
+   */
+  const [liveHeld, setLiveHeld] = useState<{ base: PageHalves; theirs: PageHalves; theirPartner: Partner; theirName: string | null; partnerVersion: number; keys: string[] } | null>(null)
+  const [updatedNotes, setUpdatedNotes] = useState<SectionNote[]>([])
+  const [directNotes, setDirectNotes] = useState<DirectNote[]>([])
+  const liveNotes = useMemo(() => [...updatedNotes, ...directNotes], [updatedNotes, directNotes])
+  /** A read of their save, merged in the next render so it meets what is on screen then. */
+  const [fetchedTheirs, setFetchedTheirs] = useState<{ partner: Partner; profile: BuyerProfileDocument | null; resolvesSave: string | null } | null>(null)
+  const refetching = useRef(false)
+  const refetchWanted = useRef(false)
+  const profileRef = useRef(profile)
+  profileRef.current = profile
+  // A save in flight or a merge waiting on answers: a notice meanwhile is read after it.
+  const liveBusy = saveState === 'saving' || pendingMerge !== null
+  const liveBusyRef = useRef(liveBusy)
+  liveBusyRef.current = liveBusy
+  const heldVersions = (): HeldVersions => ({ partnerVersion: versionRef.current, profileVersion: profileRef.current ? profileRef.current.version ?? 0 : null })
+  const liveNow = () => liveDeps?.clock.now() ?? Date.now()
+
+  const liveChannel = usePartnerPageLive(isNew ? null : liveDeps, partner?.organization_id ?? null, {
+    onNotice: handleNotice,
+    onCatchUp: () => { void refetchTheirs(null) },
+  })
+  const liveStatusRef = useRef(liveChannel.status)
+  liveStatusRef.current = liveChannel.status
+
+  function handleNotice(n: PartnerPageNotice) {
+    if (!partner) return
+    const action = classifyNotice(n, { partnerId: partner.id, clientId: tabClientId(), ownSaveIds: ownSaveIds.current, unknownSaveId: pendingSaveRef.current?.saveId ?? null, known: heldVersions() })
+    if (action === 'ignore') return
+    lastNoticeAt.current = liveNow()
+    if (action === 'echo' || action === 'already_held') return
+    if (action === 'uuids') { setUuidsAttempt((a) => a + 1); return }
+    if (action === 'deleted') {
+      setSaveOutcome({ kind: 'failed', message: `${partner.name} was deleted while you were editing, so these changes cannot be saved.` })
+      return
+    }
+    void refetchTheirs(action === 'resolves_unknown' ? n.saveId : null)
+  }
+
+  /** Read both halves as stored now, through the Worker, then the versions for the direct change notes. */
+  async function refetchTheirs(resolvesSave: string | null) {
+    if (!partner || !liveDeps) return
+    if (refetching.current || liveBusyRef.current) { refetchWanted.current = true; return }
+    refetching.current = true
+    try {
+      const readProfile = profileRef.current !== null
+      const [fresh, prof] = await Promise.all([api.partners.get(partner.id), readProfile ? api.buyerProfiles.get(partner.id) : Promise.resolve(null)])
+      setFetchedTheirs({ partner: fresh, profile: prof?.profile ?? null, resolvesSave })
+      void readVersions()
+    } catch (err) {
+      setSaveOutcome({ kind: 'failed', message: `Another save of this partner could not be read: ${errorSentence(err, 'the read failed')}. Your changes are still here.` })
+    } finally {
+      refetching.current = false
+    }
+  }
+
+  // A notice that came while a save or a merge was in hand is read once it is done.
+  useEffect(() => {
+    if (liveBusy || fetchedTheirs || !refetchWanted.current) return
+    refetchWanted.current = false
+    void refetchTheirs(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveBusy, fetchedTheirs])
+
+  // Their save, merged with what is on screen now (#2134's merge).
+  useEffect(() => {
+    if (!fetchedTheirs || !partner) return
+    setFetchedTheirs(null)
+    if (liveBusy) { refetchWanted.current = true; return }
+    const { partner: fresh, profile: freshProfile, resolvesSave } = fetchedTheirs
+    const freshVersion = fresh.version ?? versionRef.current
+    const readProfile = profile !== null && profileBaseline.current !== null
+    const baseProfile = readProfile ? (JSON.parse(profileBaseline.current!) as BuyerProfileDocument) : null
+    const theirsProfile = readProfile ? freshProfile ?? baseProfile : null
+    if (freshVersion === versionRef.current && (!readProfile || (theirsProfile?.version ?? 0) === (profile?.version ?? 0))) return
+    const resolved = resolvesSave !== null && pendingSaveRef.current?.saveId === resolvesSave
+    const pageBase: PageHalves = { partner: draftState.base, profile: baseProfile }
+    const theirs: PageHalves = { partner: buildPartnerBody(snapshotOf(fresh), bodyCtx), profile: theirsProfile }
+    const result = mergeThreeWay(pageBase, { partner: buildPartnerBody(captureSnapshot(), bodyCtx), profile: readProfile ? profile : null }, theirs, PARTNER_FIELD_REGISTRY)
+    applyMerge({ theirs, theirPartner: fresh, partnerVersion: freshVersion }, result)
+    onLiveUpdate?.(fresh)
+    // An Undo was made against the versions before their save, so it is withdrawn.
+    setUndo(null)
+    setUndoSecondsLeft(0)
+    if (resolved) {
+      // The press that got no answer did land: its own notice says so.
+      setSaveState('idle')
+      setSaveOutcome({ kind: 'done', message: `Saved. ${pickupSentence()}` })
+      return
+    }
+    const name = savedByName(fresh)
+    const conflictKeys = result.conflicts.flatMap((s) => s.conflicts.map((c) => c.key))
+    const notes = updatedByNotes(name, result.autoTaken)
+    setUpdatedNotes((prev) => [...prev.filter((p) => !notes.some((n) => n.sections.some((s) => p.sections.includes(s)))), ...notes])
+    if (conflictKeys.length > 0 || liveHeld) {
+      setLiveHeld((held) => ({ base: held?.base ?? pageBase, theirs, theirPartner: fresh, theirName: name, partnerVersion: freshVersion, keys: [...new Set([...(held?.keys ?? []), ...conflictKeys])] }))
+      return
+    }
+    setSaveOutcome({ kind: 'done', message: liveTakenSentence(name, result.autoTaken) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchedTheirs])
+
+  /** The versions and newest change of each half: the direct change notes, and the probe's answer. */
+  async function readVersions(): Promise<PartnerPageVersions | null> {
+    if (!partner || !liveDeps) return null
+    try {
+      const v = await api.partners.versions(partner.id)
+      setDirectNotes(directChangeNotes(v, liveDeps.clock.now()))
+      return v
+    } catch (err) {
+      // The probe is the backstop for a lost notice, so a failed read is said in the log, never taken as "no change".
+      console.error(`[partners live] the versions read failed: ${errorSentence(err, 'unknown error')}`)
+      return null
+    }
+  }
+
+  // Read on open, so a change made outside the page before it opened is noted, and anything missed before the join is merged.
+  useEffect(() => {
+    if (!liveDeps || !partnerId) return
+    void readVersions().then((v) => { if (v && probeFindsGap(heldVersions(), v)) void refetchTheirs(null) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveDeps, partnerId])
+
+  // A direct change note goes once its bound has passed.
+  useEffect(() => {
+    if (!liveDeps || directNotes.length === 0) return
+    const next = Math.min(...directNotes.map((n) => n.expiresAt))
+    return liveDeps.clock.setTimeout(() => setDirectNotes((notes) => notes.filter((n) => n.expiresAt > liveDeps.clock.now())), Math.max(0, next - liveDeps.clock.now()))
+  }, [directNotes, liveDeps])
+
+  // The delivery probe (L106): while the draft is dirty, the versions every PROBE_EVERY_MS.
+  const [probeRound, setProbeRound] = useState(0)
+  useEffect(() => {
+    if (!liveDeps || !partnerId || !dirty) return
+    return liveDeps.clock.setTimeout(() => { void probe().finally(() => setProbeRound((r) => r + 1)) }, PROBE_EVERY_MS)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveDeps, partnerId, dirty, probeRound])
+
+  /**
+   * A version past the one held, found while the header said Live, is a notice
+   * the channel did not deliver: the header goes to paused while it rejoins,
+   * the save is merged, and the miss is reported (direct_sql when the change
+   * had no actor). Not Live, a gap is expected and only merged.
+   */
+  async function probe() {
+    if (!partner || !liveDeps || liveBusyRef.current) return
+    const known = heldVersions()
+    const wasLive = liveStatusRef.current?.kind === 'live'
+    const v = await readVersions()
+    // Checked again after the read: a notice merged meanwhile is not a miss.
+    if (!v || !probeFindsGap(known, v) || !probeFindsGap(heldVersions(), v)) return
+    if (wasLive) {
+      liveChannel.suspect('a save arrived that no live update announced')
+      api.partners.reportLiveMiss(liveMissReport(v, known, lastNoticeAt.current, liveNow()))
+        .catch((err: unknown) => console.error(`[partners live] the live miss report failed: ${errorSentence(err, 'unknown error')}`))
+    }
+    void refetchTheirs(null)
+  }
+
+  /**
+   * Save pressed while a live merge holds questions: ask them in the merge
+   * dialog first, only those (a field edited after seeing theirs is not asked).
+   * Answers already given to the same question survive. True when it asked.
+   */
+  function askLiveQuestions(): boolean {
+    if (!liveHeld) return false
+    const read = profile !== null && liveHeld.base.profile !== null
+    const mine: PageHalves = { partner: buildPartnerBody(captureSnapshot(), bodyCtx), profile: read ? profile : null }
+    const result = askedOnly(mergeThreeWay(liveHeld.base, mine, liveHeld.theirs, PARTNER_FIELD_REGISTRY), liveHeld.keys)
+    if (result.conflicts.length === 0) {
+      setLiveHeld(null)
+      return false
+    }
+    const asked = new Map((mergeResult?.conflicts ?? []).flatMap((sec) => sec.conflicts).map((c) => [c.key, c]))
+    const choices: Record<string, MergeSide> = {}
+    for (const c of result.conflicts.flatMap((sec) => sec.conflicts)) {
+      const before = asked.get(c.key)
+      const answer = pendingMerge?.choices[c.key]
+      if (answer && before && sameMergeValue(before.mine, c.mine) && sameMergeValue(before.theirs, c.theirs)) choices[c.key] = answer
+    }
+    setPendingMerge({ base: liveHeld.base, mine, theirs: liveHeld.theirs, theirPartner: liveHeld.theirPartner, theirName: liveHeld.theirName, partnerVersion: liveHeld.partnerVersion, choices, onlyKeys: liveHeld.keys })
+    setMergeOpen(true)
+    return true
   }
 
   // The merged values are state, so the save they feed runs once they are rendered.
@@ -623,6 +956,8 @@ export default function PartnerForm({
     setDeliveryConfirm(null)
     setError(null)
     setProfileErrors([])
+    // Another person's live save changed a field being edited (#2135): asked first.
+    if (askLiveQuestions()) return
     const snapshot = captureSnapshot()
     // Capture the pre-edit baseline BEFORE we advance it — this is what Undo restores.
     const preEdit = baselineSnapshot.current
@@ -705,7 +1040,8 @@ export default function PartnerForm({
     setSaveOutcome({ kind: 'working', label: 'Saving', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
     // One request for the whole page (#2133): both halves land or neither does,
     // so the button says Saved only when everything this press saves has saved.
-    const result = await savePage(patch, saveProfileToo ? profile : null)
+    // The display zone goes only when it changed (#2143): absent keeps the stored one.
+    const result = await savePage(patch, saveProfileToo ? profileWithChangedZoneOnly(profile, profileBefore) : null)
     if (result.kind !== 'saved') {
       setSaveState('idle')
       return
@@ -724,14 +1060,15 @@ export default function PartnerForm({
     baselineDirtyKey.current = JSON.stringify({ ...snapshot, slug })
     baselineSnapshot.current = snapshot
     dispatchDraft({ type: 'rebase', base: built })
+    // Who updated what is said until this person's own save (#2135).
+    setUpdatedNotes([])
     setSaveOutcome({ kind: 'done', message: savedSentence(partnerChanged, saveProfileToo ? result.profile ?? profile : null) })
     setSaveState('saved')
     setTimeout(() => setSaveState('idle'), 1500)
   }
 
-  const isNew = !partner
-
   return (
+    <LiveNotesContext.Provider value={liveNotes}>
     <div className="mx-auto max-w-2xl">
       <div className="mb-6 flex items-center justify-between">
         <div>
@@ -742,6 +1079,7 @@ export default function PartnerForm({
           {!isNew && (
             <p className="mt-0.5 font-mono text-sm text-gray-500">{partner.slug}</p>
           )}
+          {!isNew && <LiveStatusLine status={liveChannel.status} clock={liveDeps?.clock ?? SYSTEM_CLOCK} onRetry={liveChannel.retry} />}
         </div>
         <div className="flex items-center gap-2">
           {!isNew && onDelete && (
@@ -771,16 +1109,25 @@ export default function PartnerForm({
         </div>
       )}
 
+      {/* A live note no section holds (#2135), such as a hand edit of the whole profile row. */}
+      <LivePageNotes />
+
       {/*
-        #416. Deliberately NOT the error banner above: an error means the save did
-        not happen, and a partner whose credential is unprovisioned saved fine.
-        Amber, and its own role="status", so it reads as a standing condition
-        rather than as a failed action.
+        A problem no tab holds (PM-12, #2137): a refusal naming a field the
+        registry does not know is said here with the red mark, never dropped.
+        The missing credential (#416) is no longer a banner: it is red under the
+        secret it is about, on the Bid Group tab, with marks on the tab and on
+        the partner's row in the list.
       */}
-      {partner?.credential_warning && (
-        <div role="status" className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          {partner.credential_warning}
-        </div>
+      {pageProblems.length > 0 && (
+        <ul className="mb-4 space-y-1">
+          {pageProblems.map((p, i) => (
+            <li key={i} className="flex items-center gap-2 text-sm text-red-700">
+              <ProblemMark label="Problem:" />
+              {p.message}
+            </li>
+          ))}
+        </ul>
       )}
 
       {mergeOpen && pendingMerge && mergeResult && (
@@ -794,382 +1141,422 @@ export default function PartnerForm({
       )}
 
       <form onSubmit={handleSubmit} className="space-y-8">
-
-        <Section title="Identity">
-          <Field id="partner-name" label="Name" hint="Display name shown in the UI.">
-            <TextInput id="partner-name" value={name} onChange={handleNameChange} placeholder="Tripoint" describedBy={describedBy('partner-name', true, false)} />
-          </Field>
-          {isNew && (
-            <Field
-              id="partner-slug"
-              label="Slug"
-              hint="Lowercase identifier used in logs and workflow references. Cannot be changed after creation."
-            >
-              <TextInput
-                id="partner-slug"
-                value={slug}
-                onChange={(v) => { setSlug(v); setSlugManuallyEdited(true) }}
-                placeholder="tripoint"
-                mono
-                describedBy={describedBy('partner-slug', true, false)}
-              />
-            </Field>
-          )}
-          <div>
-            <ChoiceGroup
-              id="partner-type"
-              label="Type"
-              value={partnerType}
-              options={PARTNER_TYPES.map((t) => ({ value: t, label: partnerTypeLabel(t) }))}
-              onChange={setPartnerType}
-              describedBy="partner-type-hint"
-            />
-            <p id="partner-type-hint" className="mt-1 text-xs text-gray-500">Source partners send leads to Pennie. Buyer partners receive bids. Both does each, on one record.</p>
-          </div>
-          <div className="flex items-center gap-6">
-            {/* Relabelled from Priority (#1412, L118): the buyer profile's priority is
-                who is offered a lead first; this field only orders the partner list. */}
-            {isBuyerPartner(partnerType) && (
-              <Field id="partner-list-order" label="List order" hint="Orders the partner list. It does not affect who is offered a lead.">
-                <NumberInput id="partner-list-order" value={priority === '' ? null : Number(priority)} onChange={(v) => setPriority(v === null ? '' : String(v))} step={1} describedBy={describedBy('partner-list-order', true, false)} />
+        <Tabs<PartnerTab>
+          label={isNew ? 'New partner settings' : `${partner.name} settings`}
+          value={tab}
+          onValueChange={chooseTab}
+          items={visible.map((t) => ({ value: t, label: TAB_LABELS[t], problem: tabsWithProblems.includes(t) }))}
+        >
+          <TabPanel value="partner" className="space-y-8">
+            <Section title="Identity">
+              <Field id="partner-name" label="Name" hint="Display name shown in the UI.">
+                <TextInput id="partner-name" value={name} onChange={handleNameChange} placeholder="Tripoint" describedBy={describedBy('partner-name', true, false)} />
               </Field>
-            )}
-            <div>
-              <span className="mb-1 block text-xs font-medium text-gray-600">Status</span>
-              <div className="flex items-center gap-2.5 pt-1">
-                <Toggle id="partner-active" checked={isActive} onChange={setIsActive} label="Partner active" />
-                <span className="text-sm text-gray-700">{isActive ? 'Active' : 'Inactive'}</span>
+              {isNew && (
+                <Field
+                  id="partner-slug"
+                  label="Slug"
+                  hint="Lowercase identifier used in logs and workflow references. Cannot be changed after creation."
+                >
+                  <TextInput
+                    id="partner-slug"
+                    value={slug}
+                    onChange={(v) => { setSlug(v); setSlugManuallyEdited(true) }}
+                    placeholder="tripoint"
+                    mono
+                    describedBy={describedBy('partner-slug', true, false)}
+                  />
+                </Field>
+              )}
+              <div>
+                <ChoiceGroup
+                  id="partner-type"
+                  label="Type"
+                  value={partnerType}
+                  options={PARTNER_TYPES.map((t) => ({ value: t, label: partnerTypeLabel(t) }))}
+                  onChange={setPartnerType}
+                  describedBy="partner-type-hint"
+                />
+                <p id="partner-type-hint" className="mt-1 text-xs text-gray-500">Source partners send leads to Pennie. Buyer partners receive bids. Both does each, on one record.</p>
               </div>
-            </div>
-          </div>
-        </Section>
+              <div className="flex items-center gap-6">
+                <div>
+                  <span className="mb-1 block text-xs font-medium text-gray-600">Status</span>
+                  <div className="flex items-center gap-2.5 pt-1">
+                    <Toggle id="partner-active" checked={isActive} onChange={setIsActive} label="Partner active" />
+                    <span className="text-sm text-gray-700">{isActive ? 'Active' : 'Inactive'}</span>
+                  </div>
+                </div>
+              </div>
+            </Section>
 
-        {isBuyerPartner(partnerType) && (
-          <BuyerProfileSection
-            partnerId={partner?.id ?? null}
-            partnerName={name || partner?.name || 'this buyer'}
-            profile={profile}
-            loadError={profileLoadError}
-            onProfileChange={setProfile}
-            errors={profileErrors}
-            acceptSignals={acceptSignals}
-            onAcceptSignalsChange={setAcceptSignals}
-            duplicateSignals={duplicateSignals}
-            onDuplicateSignalsChange={setDuplicateSignals}
-            externalRoutingCode={externalRoutingCode}
-            onExternalRoutingCodeChange={setExternalRoutingCode}
-            signalRules={signalRules}
-            onSignalRulesChange={setSignalRules}
-            otherSellers={otherSellers}
-            soldOnLock={soldOnLock}
-          />
-        )}
-        {isBuyerPartner(partnerType) && <Section title="Bid resolution">
-          <BidResolverEditor
-            resolverType={resolverType}
-            resolverConfig={resolverConfig}
-            bidFormula={bidFormula}
-            apiEndpoint={apiEndpoint}
-            cfSecretKey={cfSecretKey}
-            bidComparisonSource={bidComparisonSource}
-            bidConfigOptions={bidConfigs.map((c) => ({ id: c.id, name: c.name, slug: c.slug }))}
-            onTypeChange={setResolverType}
-            onFormulaChange={setBidFormula}
-            onApiEndpointChange={setApiEndpoint}
-            onCfSecretKeyChange={setCfSecretKey}
-            onBidComparisonSourceChange={setBidComparisonSource}
-            onConfigChange={setResolverConfig}
-          />
-          {bidConfigsLoadError && (
-            <div role="alert" className="mt-4 flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              <span className="flex-1">Could not load bid matrices. Try again.</span>
-              <Button variant="secondary" onClick={() => setBidConfigsAttempt((n) => n + 1)}>Try again</Button>
-            </div>
-          )}
-          {resolverType === 'matrix' && partner && !bidConfigsLoadError && (
-            <div className="mt-4 border-t border-gray-100 pt-4">
-              <h4 className="mb-2 text-sm font-medium text-graphite">Matrix</h4>
-              <BidMatrixViewer
-                partnerId={partner.id}
-                partnerSlug={partner.slug}
-                configs={bidConfigs}
-                onConfigsChange={setBidConfigs}
-                selectedConfigId={typeof resolverConfig.bid_config_id === 'string' ? resolverConfig.bid_config_id : undefined}
-                onSelectConfig={(id) => setResolverConfig({ ...resolverConfig, bid_config_id: id })}
+            {isBuyer && (
+              <Section title="Sold through">
+                <div className="divide-y divide-gray-100 rounded-lg border border-gray-200">
+                  <div className="flex items-center justify-between gap-4 px-4 py-2.5">
+                    <span className="text-sm text-graphite">Buyer profile</span>
+                    {/* The read's own states first, so a buyer with a profile is never told to set one up (L10). */}
+                    {profileLoadError !== null
+                      ? <span className="text-sm text-red-700">Could not be read</span>
+                      : partner && profile === null
+                        ? <span role="status" className="text-sm text-gray-600">Checking…</span>
+                        : profile !== null && (profile.version ?? 0) > 0
+                          ? <span className="text-sm text-gray-600">Set up</span>
+                          : <Button variant="secondary" onClick={() => chooseTab('buyer_profile')}>Set up a buyer profile</Button>}
+                  </div>
+                  <div className="flex items-center justify-between gap-4 px-4 py-2.5">
+                    <span className="text-sm text-graphite">Bid Group</span>
+                    {visible.includes('bid_group')
+                      ? <span className="text-sm text-gray-600">Set up</span>
+                      : <Button variant="secondary" onClick={() => { setBidGroupAdded(true); chooseTab('bid_group') }}>Set up for Bid Group</Button>}
+                  </div>
+                </div>
+              </Section>
+            )}
+          </TabPanel>
+          {isBuyer && (
+            <TabPanel value="buyer_profile" className="space-y-8">
+              <BuyerProfileSection
+                partnerId={partner?.id ?? null}
+                partnerName={name || partner?.name || 'this buyer'}
+                profile={profile}
+                loadError={profileLoadError}
+                onProfileChange={setProfile}
+                errors={profileErrors}
+                acceptSignals={acceptSignals}
+                onAcceptSignalsChange={setAcceptSignals}
+                duplicateSignals={duplicateSignals}
+                onDuplicateSignalsChange={setDuplicateSignals}
+                externalRoutingCode={externalRoutingCode}
+                onExternalRoutingCodeChange={setExternalRoutingCode}
+                signalRules={signalRules}
+                onSignalRulesChange={setSignalRules}
+                otherSellers={otherSellers}
+                soldOnLock={soldOnLock}
               />
-            </div>
+            </TabPanel>
           )}
-          {resolverType === 'matrix' && !partner && (
-            <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-gray-500">
-              Save the partner first to attach a bid matrix.
-            </p>
+          {visible.includes('bid_group') && (
+            <TabPanel value="bid_group" className="space-y-8">
+              <Section title="Bids in">
+                <BidsInRow usage={usage} partnerName={name || 'this partner'} partnerNames={partnerNames} reason={bidGroupReason} onRetry={() => setUsageAttempt((n) => n + 1)} />
+              </Section>
+
+              {credentialProblem && resolverType !== 'api' && (
+                <p className="text-sm text-red-700">{credentialProblem}</p>
+              )}
+              <Section title="Bid resolution">
+                <BidResolverEditor
+                  resolverType={resolverType}
+                  resolverConfig={resolverConfig}
+                  bidFormula={bidFormula}
+                  apiEndpoint={apiEndpoint}
+                  cfSecretKey={cfSecretKey}
+                  bidComparisonSource={bidComparisonSource}
+                  bidConfigOptions={bidConfigs.map((c) => ({ id: c.id, name: c.name, slug: c.slug }))}
+                  onTypeChange={setResolverType}
+                  onFormulaChange={setBidFormula}
+                  onApiEndpointChange={setApiEndpoint}
+                  onCfSecretKeyChange={setCfSecretKey}
+                  onBidComparisonSourceChange={setBidComparisonSource}
+                  onConfigChange={setResolverConfig}
+                  cfSecretKeyError={credentialProblem}
+                />
+                {bidConfigsLoadError && (
+                  <div role="alert" className="mt-4 flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    <span className="flex-1">Could not load bid matrices. Try again.</span>
+                    <Button variant="secondary" onClick={() => setBidConfigsAttempt((n) => n + 1)}>Try again</Button>
+                  </div>
+                )}
+                {resolverType === 'matrix' && partner && !bidConfigsLoadError && (
+                  <div className="mt-4 border-t border-gray-100 pt-4">
+                    <h4 className="mb-2 text-sm font-medium text-graphite">Matrix</h4>
+                    <BidMatrixViewer
+                      partnerId={partner.id}
+                      partnerSlug={partner.slug}
+                      configs={bidConfigs}
+                      onConfigsChange={setBidConfigs}
+                      selectedConfigId={typeof resolverConfig.bid_config_id === 'string' ? resolverConfig.bid_config_id : undefined}
+                      onSelectConfig={(id) => setResolverConfig({ ...resolverConfig, bid_config_id: id })}
+                    />
+                  </div>
+                )}
+                {resolverType === 'matrix' && !partner && (
+                  <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-gray-500">
+                    Save the partner first to attach a bid matrix.
+                  </p>
+                )}
+              </Section>
+
+              <Section title="Duplicate check">
+                <Field
+                  id="partner-dedup-endpoint"
+                  label="Dedup endpoint"
+                  hint="Optional. Called before each bid to check if this lead has already been sold to this partner."
+                >
+                  <TextInput id="partner-dedup-endpoint" value={dedupEndpoint} onChange={setDedupEndpoint} placeholder="https://api.partner.com/dedup" describedBy={describedBy('partner-dedup-endpoint', true, false)} />
+                </Field>
+              </Section>
+
+              <Section title="Outbound field mapping">
+                <OutboundMappingEditor value={outboundMapping} onChange={setOutboundMapping} />
+              </Section>
+
+              {resolverType === 'api' && <Section title="Response handling">
+                {/* Bid mode is no longer edited here (PM-9, #2136): nothing acts on it. */}
+                <div>
+                  <h4 className="mb-2 text-sm font-medium text-graphite">Sample response</h4>
+                  <PartnerProbePanel value={lastProbeResponse} onChange={setLastProbeResponse} />
+                </div>
+
+                <div className="border-t border-gray-100 pt-4">
+                  <h4 className="mb-2 text-sm font-medium text-graphite">Extra extraction</h4>
+                  <ExtraExtractionEditor
+                    value={extraExtraction}
+                    onChange={setExtraExtraction}
+                    sampleResponse={lastProbeResponse}
+                  />
+                </div>
+              </Section>}
+
+              <Section title="Bidding limits">
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Relabelled from Daily cap (#1412, L118): the buyer profile has its own
+                      daily lead cap for buyer selection; this one bounds Partner Bid attempts. */}
+                  <Field id="partner-daily-attempt-cap" label="Daily attempt cap (bidding workflows)" hint="Max bid attempts per day through Partner Bid and Bid Group. Leave blank for unlimited.">
+                    <NumberInput id="partner-daily-attempt-cap" value={dailyCap === '' ? null : Number(dailyCap)} onChange={(v) => setDailyCap(v === null ? '' : String(v))} min={0} step={1} describedBy={describedBy('partner-daily-attempt-cap', true, false)} />
+                  </Field>
+                  <Field id="partner-min-bid" label="Minimum bid ($)" hint="Reject bids below this amount. Leave blank to accept any bid down to $0. Set a positive amount (e.g. 0.01) to treat a $0 bid as a decline.">
+                    <NumberInput id="partner-min-bid" value={asNumber(minBid)} onChange={(v) => setMinBid(asText(v))} placeholder="0.00" describedBy={describedBy('partner-min-bid', true, false)} />
+                  </Field>
+                </div>
+              </Section>
+
+              <Section title="Circuit breaker">
+                <div className="flex items-center gap-2.5">
+                  <Toggle id="partner-circuit-enabled" checked={circuitEnabled} onChange={setCircuitEnabled} label="Circuit breaker enabled" />
+                  <span className="text-sm text-gray-700">{circuitEnabled ? 'Enabled' : 'Disabled'}</span>
+                  <span className="text-gray-300">·</span>
+                  <p className="text-xs text-gray-500">
+                    Pauses bids to this partner after repeated failures, then retries automatically.
+                  </p>
+                </div>
+                <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${circuitEnabled ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                  <div className="min-h-0 overflow-hidden">
+                    <div className="grid grid-cols-3 gap-4 pt-1">
+                      <Field id="partner-circuit-threshold" label="Error threshold" hint="Errors before pausing.">
+                        <NumberInput id="partner-circuit-threshold" value={asNumber(circuitThreshold)} onChange={(v) => setCircuitThreshold(asText(v))} step={1} placeholder="5" describedBy={describedBy('partner-circuit-threshold', true, false)} />
+                      </Field>
+                      <Field id="partner-circuit-window" label="Window (seconds)" hint="Time period to count errors in.">
+                        <NumberInput id="partner-circuit-window" value={asNumber(circuitWindow)} onChange={(v) => setCircuitWindow(asText(v))} step={1} placeholder="60" describedBy={describedBy('partner-circuit-window', true, false)} />
+                      </Field>
+                      <Field id="partner-circuit-cooldown" label="Pause duration (seconds)" hint="How long to wait before retrying.">
+                        <NumberInput id="partner-circuit-cooldown" value={asNumber(circuitCooldown)} onChange={(v) => setCircuitCooldown(asText(v))} step={1} placeholder="300" describedBy={describedBy('partner-circuit-cooldown', true, false)} />
+                      </Field>
+                    </div>
+                  </div>
+                </div>
+              </Section>
+
+              <Section title="Response classification">
+                {/* The decline group (rejection) is edited in the Buyer profile section beside
+                    the accept rules, so it is not repeated here (#1412, L605). The defaults
+                    and each list's Alert switch are drawn with the lists (#2143, PM-11). */}
+                <ErrorRuleLists
+                  value={signalRules}
+                  onChange={setSignalRules}
+                  alertRetried={alertTransient}
+                  onAlertRetried={setAlertTransient}
+                  alertNotRetried={alertPermanent}
+                  onAlertNotRetried={setAlertPermanent}
+                />
+              </Section>
+
+              <Section title="Confirmation window">
+                {confirmationWindowShown(usage, confirmationWindowMs, confirmationAdded) ? (
+                  <>
+                    <p className="text-xs text-gray-500">
+                      Used by the Latency Gate node. Maximum acceptable time between our bid and this partner&apos;s
+                      Bid Win Confirmation. Confirmations slower than this are rejected (reject due to latency). Leave
+                      blank to require a node-level override instead.
+                    </p>
+                    <Field id="partner-confirmation-window" label="Confirmation window (ms)" hint="e.g. 5000 = 5 seconds.">
+                      <NumberInput id="partner-confirmation-window" value={asNumber(confirmationWindowMs)} onChange={(v) => { setConfirmationAdded(true); setConfirmationWindowMs(asText(v)) }} step={1} placeholder="(none)" describedBy={describedBy('partner-confirmation-window', true, false)} />
+                    </Field>
+                  </>
+                ) : (
+                  <div className="space-y-1">
+                    <Button variant="secondary" onClick={() => setConfirmationAdded(true)}>
+                      <Plus className="h-4 w-4" aria-hidden="true" /> Set up a confirmation window
+                    </Button>
+                    <p className="text-xs text-gray-500">Used only by a Latency Gate step. No workflow has one for {name || 'this partner'}.</p>
+                  </div>
+                )}
+              </Section>
+
+            </TabPanel>
           )}
-        </Section>}
+          <TabPanel value="workflow_values" className="space-y-8">
+            {isBuyer && <Section title="Click URL">
+              {/* The labelled field with its error beside it (#1546): the buyer profile's click URL refusals name this field. */}
+              <Field
+                id="partner-click-url"
+                label="Click URL"
+                hint="Where a lead sold to this buyer lands. Exposed as {Slug}ClickUrl in the Constants node, and carried on every buyer selection sale; a buyer profile cannot be enabled without one."
+                error={clickUrlError}
+              >
+                <TextInput id="partner-click-url" value={clickUrl} onChange={setClickUrl} placeholder="https://partner.com/apply" describedBy={describedBy('partner-click-url', true, Boolean(clickUrlError))} />
+              </Field>
+            </Section>}
 
-        {isBuyerPartner(partnerType) && <Section title="Endpoints">
-          {/* The labelled field with its error beside it (#1546): the buyer profile's click URL refusals name this field. */}
-          <Field
-            id="partner-click-url"
-            label="Click URL"
-            hint="Where a lead sold to this buyer lands. Exposed as {Slug}ClickUrl in the Constants node, and carried on every buyer selection sale; a buyer profile cannot be enabled without one."
-            error={clickUrlError}
-          >
-            <TextInput id="partner-click-url" value={clickUrl} onChange={setClickUrl} placeholder="https://partner.com/apply" describedBy={describedBy('partner-click-url', true, Boolean(clickUrlError))} />
-          </Field>
-          <Field
-            id="partner-dedup-endpoint"
-            label="Dedup endpoint"
-            hint="Optional. Called before each bid to check if this lead has already been sold to this partner."
-          >
-            <TextInput id="partner-dedup-endpoint" value={dedupEndpoint} onChange={setDedupEndpoint} placeholder="https://api.partner.com/dedup" describedBy={describedBy('partner-dedup-endpoint', true, false)} />
-          </Field>
-        </Section>}
-
-        {isBuyerPartner(partnerType) && <Section title="Outbound field mapping">
-          <OutboundMappingEditor value={outboundMapping} onChange={setOutboundMapping} />
-        </Section>}
-
-        {isBuyerPartner(partnerType) && resolverType === 'api' && <Section title="Response handling">
-          {/* Bid mode is no longer edited here (PM-9, #2136): nothing acts on it. */}
-          <div>
-            <h4 className="mb-2 text-sm font-medium text-graphite">Sample response</h4>
-            <PartnerProbePanel value={lastProbeResponse} onChange={setLastProbeResponse} />
-          </div>
-
-          <div className="border-t border-gray-100 pt-4">
-            <h4 className="mb-2 text-sm font-medium text-graphite">Extra extraction</h4>
-            <ExtraExtractionEditor
-              value={extraExtraction}
-              onChange={setExtraExtraction}
-              sampleResponse={lastProbeResponse}
-            />
-          </div>
-        </Section>}
-
-        {isBuyerPartner(partnerType) && <Section title="Bidding limits">
-          <div className="grid grid-cols-2 gap-4">
-            {/* Relabelled from Daily cap (#1412, L118): the buyer profile has its own
-                daily lead cap for buyer selection; this one bounds Partner Bid attempts. */}
-            <Field id="partner-daily-attempt-cap" label="Daily attempt cap (bidding workflows)" hint="Max bid attempts per day through Partner Bid and Bid Group. Leave blank for unlimited.">
-              <NumberInput id="partner-daily-attempt-cap" value={dailyCap === '' ? null : Number(dailyCap)} onChange={(v) => setDailyCap(v === null ? '' : String(v))} min={0} step={1} describedBy={describedBy('partner-daily-attempt-cap', true, false)} />
-            </Field>
-            <Field id="partner-min-bid" label="Minimum bid ($)" hint="Reject bids below this amount. Leave blank to accept any bid down to $0. Set a positive amount (e.g. 0.01) to treat a $0 bid as a decline.">
-              <NumberInput id="partner-min-bid" value={asNumber(minBid)} onChange={(v) => setMinBid(asText(v))} placeholder="0.00" describedBy={describedBy('partner-min-bid', true, false)} />
-            </Field>
-          </div>
-        </Section>}
-
-        {isBuyerPartner(partnerType) && <Section title="Per-sub-account min bids">
-          <p className="text-xs text-gray-500">
-            Optional per-sub-account floor. When a lead arrives with a matching sub-account UUID,
-            this floor overrides the partner-wide Minimum bid. Leave empty to use only the partner-wide floor.
-          </p>
-          <div className="space-y-1.5">
-            {subAccountFloors.map((f, i) => (
-              <div key={f.id} className="grid grid-cols-[1fr_120px_auto] items-center gap-2">
-                <TextInput
-                  id={`floor-${f.id}-uuid`}
-                  aria-label={`Sub-account UUID, floor ${i + 1}`}
-                  value={f.uuid}
-                  onChange={(v) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, uuid: v } : row))}
-                  placeholder="sub-account UUID"
-                  mono
-                  className="text-xs"
-                />
-                <NumberInput
-                  id={`floor-${f.id}-bid`}
-                  aria-label={`Minimum bid, floor ${i + 1}`}
-                  value={asNumber(f.bid)}
-                  onChange={(v) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, bid: asText(v) } : row))}
-                  step={0.01}
-                  placeholder="0.00"
-                />
-                <Button variant="ghost" onClick={() => setSubAccountFloors((prev) => prev.filter((_, j) => j !== i))} aria-label="Remove row">
-                  <X size={14} aria-hidden="true" />
+            {isBuyer && <Section title="Per-sub-account min bids">
+              <p className="text-xs text-gray-500">
+                Optional per-sub-account floor. When a lead arrives with a matching sub-account UUID,
+                this floor overrides the partner-wide Minimum bid. Leave empty to use only the partner-wide floor.
+              </p>
+              <div className="space-y-1.5">
+                {subAccountFloors.map((f, i) => (
+                  <div key={f.id} className="grid grid-cols-[1fr_120px_auto] items-center gap-2">
+                    <TextInput
+                      id={`floor-${f.id}-uuid`}
+                      aria-label={`Sub-account UUID, floor ${i + 1}`}
+                      value={f.uuid}
+                      onChange={(v) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, uuid: v } : row))}
+                      placeholder="sub-account UUID"
+                      mono
+                      className="text-xs"
+                    />
+                    <NumberInput
+                      id={`floor-${f.id}-bid`}
+                      aria-label={`Minimum bid, floor ${i + 1}`}
+                      value={asNumber(f.bid)}
+                      onChange={(v) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, bid: asText(v) } : row))}
+                      step={0.01}
+                      placeholder="0.00"
+                    />
+                    <Button variant="ghost" onClick={() => setSubAccountFloors((prev) => prev.filter((_, j) => j !== i))} aria-label="Remove row">
+                      <X size={14} aria-hidden="true" />
+                    </Button>
+                  </div>
+                ))}
+                <Button variant="secondary" onClick={() => setSubAccountFloors((prev) => [...prev, { id: uid(), uuid: '', bid: '' }])} className="text-xs">
+                  <Plus size={12} aria-hidden="true" /> Add row
                 </Button>
               </div>
-            ))}
-            <Button variant="secondary" onClick={() => setSubAccountFloors((prev) => [...prev, { id: uid(), uuid: '', bid: '' }])} className="text-xs">
-              <Plus size={12} aria-hidden="true" /> Add row
-            </Button>
-          </div>
-        </Section>}
+            </Section>}
 
-        {isBuyerPartner(partnerType) && <Section title="Circuit breaker">
-          <div className="flex items-center gap-2.5">
-            <Toggle id="partner-circuit-enabled" checked={circuitEnabled} onChange={setCircuitEnabled} label="Circuit breaker enabled" />
-            <span className="text-sm text-gray-700">{circuitEnabled ? 'Enabled' : 'Disabled'}</span>
-            <span className="text-gray-300">·</span>
-            <p className="text-xs text-gray-500">
-              Pauses bids to this partner after repeated failures, then retries automatically.
-            </p>
-          </div>
-          <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${circuitEnabled ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-            <div className="min-h-0 overflow-hidden">
-              <div className="grid grid-cols-3 gap-4 pt-1">
-                <Field id="partner-circuit-threshold" label="Error threshold" hint="Errors before pausing.">
-                  <NumberInput id="partner-circuit-threshold" value={asNumber(circuitThreshold)} onChange={(v) => setCircuitThreshold(asText(v))} step={1} placeholder="5" describedBy={describedBy('partner-circuit-threshold', true, false)} />
-                </Field>
-                <Field id="partner-circuit-window" label="Window (seconds)" hint="Time period to count errors in.">
-                  <NumberInput id="partner-circuit-window" value={asNumber(circuitWindow)} onChange={(v) => setCircuitWindow(asText(v))} step={1} placeholder="60" describedBy={describedBy('partner-circuit-window', true, false)} />
-                </Field>
-                <Field id="partner-circuit-cooldown" label="Pause duration (seconds)" hint="How long to wait before retrying.">
-                  <NumberInput id="partner-circuit-cooldown" value={asNumber(circuitCooldown)} onChange={(v) => setCircuitCooldown(asText(v))} step={1} placeholder="300" describedBy={describedBy('partner-circuit-cooldown', true, false)} />
-                </Field>
+            {isSource && <Section title="Sell-off offer copy">
+              <p className="text-xs text-gray-500">
+                Used by the Constants node in bidding workflows to populate sell-off offer fields for this partner.
+              </p>
+              <Field id="partner-sell-off-title" label="Sell-off offer title">
+                <TextInput id="partner-sell-off-title" value={sellOffOfferTitle} onChange={setSellOffOfferTitle} placeholder="Get up to $50,000 in your account" />
+              </Field>
+              <Field id="partner-sell-off-details" label="Sell-off offer details">
+                <TextArea
+                  id="partner-sell-off-details"
+                  value={sellOffOfferDetails}
+                  onChange={setSellOffOfferDetails}
+                  placeholder="Personal loans from $5,000 to $100,000 with competitive rates."
+                  rows={3}
+                />
+              </Field>
+            </Section>}
+
+            {isSource && <Section title="Sub-account UUIDs">
+              <p className="text-xs text-gray-500">
+                External UUIDs that map to this partner. Used by the Constants node to resolve inbound sub-account IDs to partner slugs.
+              </p>
+              <div className="space-y-1.5">
+                {isNew ? (
+                  pendingUuids.map((uuid, i) => (
+                    <div key={i} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                      <span className="flex-1 truncate font-mono text-xs text-graphite">{uuid}</span>
+                      <Button variant="ghost" onClick={() => setPendingUuids((prev) => prev.filter((_, j) => j !== i))} aria-label="Remove UUID">
+                        <X className="h-3.5 w-3.5" aria-hidden="true" />
+                      </Button>
+                    </div>
+                  ))
+                ) : uuidsLoadError ? (
+                  <div role="alert" className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    <span className="flex-1">Could not load sub-account IDs. Try again.</span>
+                    <Button variant="secondary" onClick={() => setUuidsAttempt((n) => n + 1)}>Try again</Button>
+                  </div>
+                ) : (
+                  uuids.map((u) => (
+                    <div key={u.id} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                      <span className="flex-1 truncate font-mono text-xs text-graphite">{u.uuid}</span>
+                      <Button
+                        variant="ghost"
+                        aria-label="Remove UUID"
+                        disabled={removingUuidId === u.id}
+                        onClick={async () => {
+                          setRemovingUuidId(u.id)
+                          setUuidError(null)
+                          try {
+                            await api.partnerUuids.delete(u.id)
+                            setUuids((prev) => prev.filter((x) => x.id !== u.id))
+                          } catch (err) {
+                            setUuidError(err instanceof Error ? err.message : 'Failed to remove UUID')
+                          } finally {
+                            setRemovingUuidId(null)
+                          }
+                        }}
+                      >
+                        <X className="h-3.5 w-3.5" aria-hidden="true" />
+                      </Button>
+                    </div>
+                  ))
+                )}
               </div>
-            </div>
-          </div>
-        </Section>}
-
-        {isBuyerPartner(partnerType) && <Section title="Response classification">
-          <p className="text-xs text-gray-500">
-            Override how this partner&apos;s responses are classified. Rules are evaluated before the defaults.
-            Leave all sections empty to use default HTTP status–based classification.
-          </p>
-          {/* The decline group (rejection) is edited in the Buyer profile section beside
-              the accept rules, so it is not repeated here (#1412, L605). */}
-          <SignalRuleBuilder value={signalRules} onChange={setSignalRules} sections={SIGNAL_SECTIONS.filter((s) => s.cat !== 'rejection')} />
-        </Section>}
-
-        <Section title="Bid confirmation latency">
-          <p className="text-xs text-gray-500">
-            Used by the Latency Gate node. Maximum acceptable time between our bid and this partner&apos;s
-            Bid Win Confirmation. Confirmations slower than this are rejected (reject due to latency). Leave
-            blank to require a node-level override instead.
-          </p>
-          <Field id="partner-confirmation-window" label="Confirmation window (ms)" hint="e.g. 5000 = 5 seconds.">
-            <NumberInput id="partner-confirmation-window" value={asNumber(confirmationWindowMs)} onChange={(v) => setConfirmationWindowMs(asText(v))} step={1} placeholder="(none)" describedBy={describedBy('partner-confirmation-window', true, false)} />
-          </Field>
-        </Section>
-
-        {isSourcePartner(partnerType) && <Section title="Sell-off offer copy">
-          <p className="text-xs text-gray-500">
-            Used by the Constants node in bidding workflows to populate sell-off offer fields for this partner.
-          </p>
-          <Field id="partner-sell-off-title" label="Sell-off offer title">
-            <TextInput id="partner-sell-off-title" value={sellOffOfferTitle} onChange={setSellOffOfferTitle} placeholder="Get up to $50,000 in your account" />
-          </Field>
-          <Field id="partner-sell-off-details" label="Sell-off offer details">
-            <TextArea
-              id="partner-sell-off-details"
-              value={sellOffOfferDetails}
-              onChange={setSellOffOfferDetails}
-              placeholder="Personal loans from $5,000 to $100,000 with competitive rates."
-              rows={3}
-            />
-          </Field>
-        </Section>}
-
-        {isSourcePartner(partnerType) && <Section title="Sub-account UUIDs">
-          <p className="text-xs text-gray-500">
-            External UUIDs that map to this partner. Used by the Constants node to resolve inbound sub-account IDs to partner slugs.
-          </p>
-          <div className="space-y-1.5">
-            {isNew ? (
-              pendingUuids.map((uuid, i) => (
-                <div key={i} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-                  <span className="flex-1 truncate font-mono text-xs text-graphite">{uuid}</span>
-                  <Button variant="ghost" onClick={() => setPendingUuids((prev) => prev.filter((_, j) => j !== i))} aria-label="Remove UUID">
-                    <X className="h-3.5 w-3.5" aria-hidden="true" />
-                  </Button>
-                </div>
-              ))
-            ) : uuidsLoadError ? (
-              <div role="alert" className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                <span className="flex-1">Could not load sub-account IDs. Try again.</span>
-                <Button variant="secondary" onClick={() => setUuidsAttempt((n) => n + 1)}>Try again</Button>
+              <div className="flex gap-2">
+                <TextInput
+                  id="partner-new-uuid"
+                  aria-label="New sub-account UUID"
+                  value={newUuid}
+                  onChange={(v) => { setNewUuid(v); setUuidError(null) }}
+                  placeholder="Enter UUID"
+                  mono
+                  className="flex-1"
+                />
+                <Button
+                  variant="primary"
+                  disabled={!newUuid.trim()}
+                  busy={addingUuid}
+                  onClick={async () => {
+                    if (!newUuid.trim()) return
+                    if (isNew) {
+                      setPendingUuids((prev) => [...prev, newUuid.trim()])
+                      setNewUuid('')
+                      return
+                    }
+                    if (!partner) return
+                    setAddingUuid(true)
+                    setUuidError(null)
+                    try {
+                      const created = await api.partnerUuids.create({ partner_slug: partner.slug, uuid: newUuid.trim() })
+                      setUuids((prev) => [...prev, created])
+                      setNewUuid('')
+                    } catch (err) {
+                      setUuidError(err instanceof Error ? err.message : 'Failed to add UUID')
+                    } finally {
+                      setAddingUuid(false)
+                    }
+                  }}
+                >
+                  {!addingUuid && <Plus className="h-4 w-4" aria-hidden="true" />}
+                  Add
+                </Button>
               </div>
-            ) : (
-              uuids.map((u) => (
-                <div key={u.id} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-                  <span className="flex-1 truncate font-mono text-xs text-graphite">{u.uuid}</span>
-                  <Button
-                    variant="ghost"
-                    aria-label="Remove UUID"
-                    disabled={removingUuidId === u.id}
-                    onClick={async () => {
-                      setRemovingUuidId(u.id)
-                      setUuidError(null)
-                      try {
-                        await api.partnerUuids.delete(u.id)
-                        setUuids((prev) => prev.filter((x) => x.id !== u.id))
-                      } catch (err) {
-                        setUuidError(err instanceof Error ? err.message : 'Failed to remove UUID')
-                      } finally {
-                        setRemovingUuidId(null)
-                      }
-                    }}
-                  >
-                    <X className="h-3.5 w-3.5" aria-hidden="true" />
-                  </Button>
-                </div>
-              ))
-            )}
-          </div>
-          <div className="flex gap-2">
-            <TextInput
-              id="partner-new-uuid"
-              aria-label="New sub-account UUID"
-              value={newUuid}
-              onChange={(v) => { setNewUuid(v); setUuidError(null) }}
-              placeholder="Enter UUID"
-              mono
-              className="flex-1"
-            />
-            <Button
-              variant="primary"
-              disabled={!newUuid.trim()}
-              busy={addingUuid}
-              onClick={async () => {
-                if (!newUuid.trim()) return
-                if (isNew) {
-                  setPendingUuids((prev) => [...prev, newUuid.trim()])
-                  setNewUuid('')
-                  return
-                }
-                if (!partner) return
-                setAddingUuid(true)
-                setUuidError(null)
-                try {
-                  const created = await api.partnerUuids.create({ partner_slug: partner.slug, uuid: newUuid.trim() })
-                  setUuids((prev) => [...prev, created])
-                  setNewUuid('')
-                } catch (err) {
-                  setUuidError(err instanceof Error ? err.message : 'Failed to add UUID')
-                } finally {
-                  setAddingUuid(false)
-                }
-              }}
-            >
-              {!addingUuid && <Plus className="h-4 w-4" aria-hidden="true" />}
-              Add
-            </Button>
-          </div>
-          {uuidError && <p className="text-xs text-red-600">{uuidError}</p>}
-        </Section>}
-
-        {isBuyerPartner(partnerType) && <Section title="Alert configuration">
-          <p className="text-xs text-gray-500">
-            Default: alert on all errors. Turn off alert types that produce noise for this partner.
-            Business rejections never alert regardless.
-          </p>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
-              <div>
-                <p className="text-sm font-medium text-gray-800">Transient error alerts</p>
-                <p className="text-xs text-gray-500">Network failures, timeouts, 429, 502–504</p>
-              </div>
-              <Toggle id="partner-alert-transient" checked={alertTransient} onChange={setAlertTransient} label="Transient error alerts" />
-            </div>
-            <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
-              <div>
-                <p className="text-sm font-medium text-gray-800">Permanent error alerts</p>
-                <p className="text-xs text-gray-500">4xx errors, auth failures, bad responses</p>
-              </div>
-              <Toggle id="partner-alert-permanent" checked={alertPermanent} onChange={setAlertPermanent} label="Permanent error alerts" />
-            </div>
-          </div>
-        </Section>}
+              {uuidError && <p className="text-xs text-red-600">{uuidError}</p>}
+            </Section>}
+          </TabPanel>
+          {!isNew && (
+            <TabPanel value="history" className="space-y-8">
+              {partner && <PartnerHistoryPanel partner={partner} isBuyer={isBuyer} shown={tab === 'history'} />}
+            </TabPanel>
+          )}
+        </Tabs>
 
         {deliveryConfirm && (
           <div role="alertdialog" aria-labelledby="delivery-confirm-title" className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4">
@@ -1196,6 +1583,9 @@ export default function PartnerForm({
             {saveState === 'idle'   && <><Save   className="h-4 w-4" aria-hidden="true" /> {isNew ? 'Create partner' : 'Save changes'}</>}
           </Button>
           <Outcome state={saveOutcome} />
+          {showMeTab && (
+            <Button variant="ghost" onClick={() => chooseTab(showMeTab)} aria-label={`Show me: the ${TAB_LABELS[showMeTab]} tab`}>Show me</Button>
+          )}
           {/*
             Saved, but a stored copy of the old version could not be refreshed
             (#1846). Beside Saved in the server's shared words, never as an error,
@@ -1203,6 +1593,10 @@ export default function PartnerForm({
           */}
           {copyWarningText && (
             <p role="status" className="text-xs text-amber-800">{copyWarningText}</p>
+          )}
+          {/* Another person's live save changed fields being edited (#2135): asked on Save. */}
+          {liveHeld && (
+            <p role="status" className="text-xs text-amber-800">{liveConflictSentence(liveHeld.theirName, liveHeld.keys.length)}</p>
           )}
           {undo && (
             <Button variant="ghost" onClick={handleUndo}>
@@ -1215,14 +1609,10 @@ export default function PartnerForm({
               Unsaved changes
             </span>
           )}
-          {!isNew && !undo && !dirty && (
-            <p className="text-xs text-gray-500">
-              {`Modified ${new Date(partner.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} by ${partner.updated_by_name ?? partner.updated_by_email?.split('@')[0] ?? 'unknown'}`}
-            </p>
-          )}
         </div>
 
       </form>
     </div>
+    </LiveNotesContext.Provider>
   )
 }

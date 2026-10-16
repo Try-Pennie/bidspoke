@@ -111,10 +111,18 @@ export async function markConfigSynced(
   }
 }
 
+/**
+ * `actor` is the users id of the person who pressed Sync now (#2141), written
+ * to bid_config_history.changed_by so History names them. The hourly cron
+ * passes none, and its rows are credited to the job. Presses made before #2141
+ * recorded no actor and would read as the hourly job; production held no
+ * bid_config_history rows at all on 2026-10-15, so none is miscredited.
+ */
 export async function syncBidConfig(
   configId: string,
   env: Env,
-  supabase: SupabaseClient
+  supabase: SupabaseClient,
+  actor?: string
 ): Promise<SyncResult> {
   const { data: rawConfig, error: configErr } = await supabase
     .from('partner_bid_configs')
@@ -152,7 +160,7 @@ export async function syncBidConfig(
         added: diff.added,
         removed: diff.removed,
         edited: diff.edited,
-      })
+      }, actor ?? null)
     }
 
     return {
@@ -444,16 +452,27 @@ export function validateSyncedRows(
   )
 }
 
+/**
+ * The one writer of bid_config_history. A failed insert is logged and the sync
+ * still reports its result: the rows it synced are already in place, and
+ * failing the sync over its own record would leave last_sync_error naming a
+ * sync that worked. It was silent before #2141.
+ */
 async function writeHistory(
   configId: string,
   supabase: SupabaseClient,
-  diff: Record<string, unknown>
+  diff: Record<string, unknown>,
+  actor: string | null
 ): Promise<void> {
-  await supabase.from('bid_config_history').insert({
+  const { error } = await supabase.from('bid_config_history').insert({
     config_id: configId,
     source: 'salesforce_sync',
     diff,
+    changed_by: actor,
   })
+  if (error) {
+    console.error('[bid-matrix-sync] history write failed', { configId, actor, error: error.message })
+  }
 }
 
 async function notifyMatrixChanges(
@@ -579,6 +598,7 @@ export async function syncAllSalesforceConfigs(
 
   for (const c of (configs ?? []) as { id: string; organization_id: string; slug: string }[]) {
     try {
+      // No actor: History credits these rows to the hourly sync job.
       const result = await syncBidConfig(c.id, env, supabase)
       successes.push(result)
     } catch (err) {

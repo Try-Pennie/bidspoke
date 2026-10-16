@@ -15,6 +15,9 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import type { Page } from '@playwright/test'
+import { LIVE_MISS_ID, realtimeReplies, versionsFor } from './partner-live-fixtures'
+
+export { LIVE_MISS_ID, realtimeReplies, versionsFor }
 
 const DIR = path.join(__dirname, 'fixtures', 'partners')
 const read = <T>(file: string): T => JSON.parse(readFileSync(path.join(DIR, file), 'utf8')) as T
@@ -29,6 +32,8 @@ export interface PartnerFixtures {
   stale: Record<string, unknown> & { partner: { id: string } }
   matrix: { list: Array<{ id: string; partner_id: string }>; detail: unknown }
   panels: { history: unknown; buyer_sales: unknown; held_clicks: unknown; usage_offer: unknown; usage_click: unknown }
+  /** GET /api/partners/:id/usage by partner id (#2137), measured read only from production on 2026-10-16. */
+  usage: Record<string, unknown>
 }
 
 export function loadPartnerFixtures(): PartnerFixtures {
@@ -40,6 +45,7 @@ export function loadPartnerFixtures(): PartnerFixtures {
     stale: read('synthetic/page-save-409.tripoint.json'),
     matrix: read('synthetic/matrix.tripoint.json'),
     panels: read('synthetic/panels.json'),
+    usage: read('usage.json'),
   }
 }
 
@@ -50,6 +56,8 @@ export interface FixtureOptions {
   matrix?: boolean
   /** Give one partner (by slug) a credential warning, so the warning surfaces are scanned. */
   credentialWarningFor?: string
+  /** Answer the usage read (#2137) with a 503, so the Bid Group tab's failed state is reached. */
+  usageFails?: boolean
 }
 
 export interface Answer { status: number; body: unknown }
@@ -63,7 +71,21 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
   if (method === 'PUT' && (m = /^\/api\/partners\/([^/]+)\/page$/.exec(p))) {
     return opts.staleSave && m[1] === fx.stale.partner.id ? { status: 409, body: fx.stale } : null
   }
+  // #2135: a change the page's probe found that no live notice announced. Recorded only.
+  if (method === 'POST' && p === '/api/partners/live-miss') return { status: 201, body: { ok: true, id: LIVE_MISS_ID } }
   if (method !== 'GET') return null
+  // #2135: the versions probe, read on open and while a draft is dirty. Nothing has changed since the capture.
+  if ((m = /^\/api\/partners\/([^/]+)\/versions$/.exec(p))) {
+    const id = m[1]
+    const row = fx.partners.find((r) => r.id === id)
+    return row ? ok(versionsFor(row, fx.buyerProfiles)) : null
+  }
+  // #2135: the refetch after a live notice, a reconnect or the tab coming back.
+  if ((m = /^\/api\/partners\/([^/]+)$/.exec(p))) {
+    const id = m[1]
+    const row = fx.partners.find((r) => r.id === id)
+    return row ? ok(row) : null
+  }
   if (p === '/api/partners') {
     return ok(fx.partners.map((row) => (opts.credentialWarningFor && row.slug === opts.credentialWarningFor
       ? { ...row, credential_warning: `Credential '${String(row.cf_secret_key ?? 'PARTNER_SECRET')}' is not set, so this partner will fail on the next live lead.` }
@@ -74,6 +96,10 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
   if ((m = /^\/api\/partners\/([^/]+)\/buyer-usage$/.exec(p))) {
     const soldOn = fx.buyerProfiles[m[1]]?.profile?.sold_on
     return ok(soldOn === 'click' ? fx.panels.usage_click : fx.panels.usage_offer)
+  }
+  if ((m = /^\/api\/partners\/([^/]+)\/usage$/.exec(p))) {
+    if (opts.usageFails) return { status: 503, body: { error: 'Service unavailable' } }
+    return fx.usage[m[1]] ? ok(fx.usage[m[1]]) : null
   }
   if (p === '/api/partner-uuids') return ok(fx.uuids)
   if (p === '/api/partner-bid-configs') {
@@ -113,6 +139,15 @@ export async function routePartnerFixtures(page: Page, workerUrl: string, opts: 
       return route.fulfill({ status: 599, headers: cors, contentType: 'application/json', body: JSON.stringify({ error: 'no_fixture' }) })
     }
     return route.fulfill({ status: answer.status, headers: cors, contentType: 'application/json', body: JSON.stringify(answer.body) })
+  })
+  // The live channel's socket (#2135), answered here so the scan never joins production's Realtime.
+  await page.routeWebSocket(/\/realtime\/v1\/websocket/, (ws) => {
+    ws.onMessage((frame) => {
+      if (typeof frame !== 'string') return
+      const { replies, unexpected } = realtimeReplies(frame)
+      if (unexpected) unmatched.push(unexpected)
+      for (const r of replies) ws.send(r)
+    })
   })
   return { unmatched }
 }
