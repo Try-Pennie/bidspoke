@@ -30,7 +30,7 @@ import { type DispatchAttempt, dispatchFailed } from './workflow-dispatch-driver
 
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
 import { leadRead } from './lead-read-budget'
-import { copyUnreachableLine, describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason, type ScheduledSlack } from './scheduled-slack'
+import { describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason, type ScheduledSlack } from './scheduled-slack'
 import { composeSalesforceReadBackAlert, type SalesforceReadBackAlert } from './salesforce-read-back-alert'
 export type { SlackConnection } from './slack-connection'
 
@@ -153,11 +153,11 @@ async function scheduledLookup(scheduled: ScheduledSlack, supabase: SupabaseClie
       console.warn(`[scheduled-slack] ${subject}: answered from the saved copy (${describeCopyAge(copy.ageMs)}) because the database did not answer (${live.how})`)
       return { kind: 'stored', connection, ageMs: copy.ageMs }
     }
-    console.error(copyUnreachableLine(subject, 'org_not_in_copy'))
+    scheduled.nobodyCanBeTold(subject, orgId, 'org_not_in_copy')
     return { kind: 'unreachable', reason: 'org_not_in_copy' }
   }
   const reason: CopyUnreachableReason = copy.kind === 'absent' ? 'no_copy' : 'copy_unreadable'
-  console.error(copyUnreachableLine(subject, reason, copy.kind === 'unreadable' ? copy.detail : undefined))
+  scheduled.nobodyCanBeTold(subject, orgId, reason, copy.kind === 'unreadable' ? copy.detail : undefined)
   return { kind: 'unreachable', reason }
 }
 
