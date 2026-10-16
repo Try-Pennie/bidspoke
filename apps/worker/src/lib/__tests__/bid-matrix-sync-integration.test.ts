@@ -134,3 +134,65 @@ describe('#182 sync integration', () => {
     expect(query).toContain('IsSoFi__c = FALSE')
   })
 })
+
+// #2141: History credits a Sync now press to the person who pressed it, and the
+// hourly run to the job. syncBidConfig carries the actor into writeHistory,
+// which is the only writer of bid_config_history.
+describe('#2141 who a sync is credited to', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    servedConfig = CONFIG
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ records: SF_RECORDS, done: true }),
+    }))
+  })
+
+  function recordingSupabase(historyError: { message: string } | null = null) {
+    const inserts: Array<{ table: string; row: unknown }> = []
+    const base = makeSupabase() as unknown as { from: (t: string) => unknown }
+    const client = {
+      from: (table: string) => {
+        const chain = base.from(table) as object
+        return new Proxy(chain, {
+          get(target, prop) {
+            if (prop === 'insert') {
+              return (row: unknown) => {
+                inserts.push({ table, row })
+                return Promise.resolve({ data: null, error: table === 'bid_config_history' ? historyError : null })
+              }
+            }
+            return Reflect.get(target, prop)
+          },
+        })
+      },
+    }
+    return { inserts, client: client as never }
+  }
+
+  const historyRows = (inserts: Array<{ table: string; row: unknown }>) =>
+    inserts.filter((i) => i.table === 'bid_config_history').map((i) => i.row as Record<string, unknown>)
+
+  it('a Sync now press writes the person into changed_by', async () => {
+    const { inserts, client } = recordingSupabase()
+    await syncBidConfig('cfg-1', ENV, client, 'user-7')
+    const rows = historyRows(inserts)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ config_id: 'cfg-1', source: 'salesforce_sync', changed_by: 'user-7' })
+  })
+
+  it('the hourly run writes no person', async () => {
+    const { inserts, client } = recordingSupabase()
+    await syncAllSalesforceConfigs(ENV, client)
+    const rows = historyRows(inserts)
+    expect(rows).toHaveLength(1)
+    expect(rows[0]).toMatchObject({ config_id: 'cfg-1', source: 'salesforce_sync', changed_by: null })
+  })
+
+  it('a history row that does not land is logged, never silent', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { client } = recordingSupabase({ message: 'insert or update on table violates foreign key constraint' })
+    await syncBidConfig('cfg-1', ENV, client, 'user-7')
+    expect(errors.mock.calls.some((c) => String(c[0]).includes('[bid-matrix-sync] history write failed'))).toBe(true)
+  })
+})
