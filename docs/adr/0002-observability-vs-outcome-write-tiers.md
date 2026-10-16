@@ -63,6 +63,7 @@ So the tier-3 tier gets the one store this ADR otherwise avoids, scoped as narro
   - The restore drill restores it as structure only.
 - **Refused or pending (#2054):** a row is stored already `refused` and finished only when Salesforce answered the write and rejected it, judged by `salesforceRejectedTheWrite` in `engine/nodes/salesforce.ts`, the rule the replay closes a row on, imported rather than copied so the two cannot disagree. A login refused even after the fresh one (401), a permission refusal (403), a fresh login the token endpoint refused, and a failure the node classed transient are stored `pending` and replayable: fixing the credentials clears them. The `replayable` column's database comment says the same (migration `20261015140000`).
 - **Retention:** a finished row is purged 30 days after it finishes. A pending row is never purged.
+- **Backlog alert (#468):** every five minutes `lib/writeback-backlog.ts` reads the pending rows (organization, object and time only) and pages an organization, in its own Slack, when its oldest pending row is older than 30 minutes or its pending count grew since the last check, naming counts, objects and ages only. It sends the all-clear once that organization has no pending row. A failed read pages as a failed read through the shared scheduled check alerter and never all-clears. The check is in the cron heartbeat registry, so a check that stops running is paged by the heartbeat, which reads only KV.
 - **Write path:** through `writeOutcome`, so it is retried and read back like any tier-2 record. It is captured outside every alert gate, since a classified Salesforce outage is when these writes fail.
 
 **Replay by hand (#471, 2026-10-13):** three admin actions, each scoped to the caller's organization and audited with no lead value in the audit row.
@@ -71,7 +72,7 @@ So the tier-3 tier gets the one store this ADR otherwise avoids, scoped as narro
 - `POST /api/admin/held-writes/:id/replay` previews unless `dryRun` is `false`. The preview shows each field to be sent beside its current Salesforce value, and a person decides whether a changed field may be overwritten. A replay claims the row first (a compare and set on `attempts`), so two at once send once. It sends the stored body as literal JSON, never through template resolution, and through the node's own call path, so the bulkhead and timeout hold. The row ends `replayed`, `refused` (a business rejection), or stays `pending` with its last error. The logic is `lib/writeback-replay.ts`.
 - `POST /api/admin/held-writes/:id/abandon` closes a row a person dealt with in Salesforce, with a required reason.
 
-Not yet built: the automatic drain and the backlog alert (#468). Now that a pending row has an action that changes it, the alert has a remedy to name.
+Not yet built: the automatic drain (#468 step 3). The backlog alert (above, under Backlog alert) names the replay and abandon routes as its remedy.
 
 ## Post-response `waitUntil` write audit (#362)
 
