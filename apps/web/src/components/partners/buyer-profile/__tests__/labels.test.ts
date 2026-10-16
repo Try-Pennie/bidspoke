@@ -7,7 +7,7 @@
  * the control and the history list all use one word for one field (L118).
  */
 import { describe, expect, it } from 'vitest'
-import { SOLD_ON } from '@bidspoke/buyer-profile'
+import { DISPLAY_TIME_ZONES, SOLD_ON } from '@bidspoke/buyer-profile'
 import { alsoSellTo, describeProfileErrors, formatProfileValue, profileErrorLabel, profileFieldLabel, SECTION_LABELS, FIELD_LABELS, SOLD_ON_LABELS } from '../labels'
 
 describe('profileErrorLabel', () => {
@@ -159,8 +159,16 @@ describe('history paths in the dotted form buyer_profile_flatten writes (#1672)'
   })
 
   it('labels every scalar key the flatten passes through from buyer_profile_document', () => {
-    const documentScalars = ['sold_on', 'is_enabled', 'priority', 'allowed_states', 'debt_min', 'debt_max', 'loan_amount_min', 'hourly_lead_cap', 'daily_lead_cap', 'hourly_spend_cap_cents', 'daily_spend_cap_cents']
+    const documentScalars = ['sold_on', 'is_enabled', 'priority', 'allowed_states', 'debt_min', 'debt_max', 'loan_amount_min', 'hourly_lead_cap', 'daily_lead_cap', 'hourly_spend_cap_cents', 'daily_spend_cap_cents', 'display_time_zone']
     for (const key of documentScalars) expect(profileFieldLabel(key), key).not.toBe(key)
+  })
+
+  it('names the display time zone as the Hours section does, and shows each zone by its name, never the identifier (#2143)', () => {
+    expect(profileFieldLabel('display_time_zone')).toBe('Time zone')
+    expect(profileErrorLabel('displayTimeZone')).toBe('Time zone')
+    expect(DISPLAY_TIME_ZONES.map((z) => formatProfileValue('display_time_zone', z))).toEqual(['Eastern', 'Central', 'Mountain', 'Pacific'])
+    // Unset is shown in Eastern, so the history says so rather than "none".
+    expect(formatProfileValue('display_time_zone', null)).toBe('Eastern')
   })
 
   it('still reads the bracket keys the conflict view diff produces', () => {
