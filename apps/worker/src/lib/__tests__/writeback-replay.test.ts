@@ -88,7 +88,12 @@ function salesforce(answer: { status: number; text: string } | Error, current: R
   return { port, sent }
 }
 
-const deps = (store: HeldWriteStore, sf: SalesforcePort) => ({ store, salesforce: async () => sf, keys: KEY })
+const deps = (store: HeldWriteStore, sf: SalesforcePort, readBackHolds: (executionId: string, stepNamespace: string) => Promise<boolean> = async () => false) => ({
+  store,
+  salesforce: async () => sf,
+  keys: KEY,
+  readBackHolds,
+})
 
 let rows: HeldWriteRow[]
 beforeEach(async () => {
@@ -222,6 +227,47 @@ describe('replayHeldWrite', () => {
     const { store } = memoryStore(rows)
     store.finish = async () => false
     expect(await replayHeldWrite(deps(store, salesforce({ status: 204, text: '' }).port), ORG, ID)).toEqual({ kind: 'replayed', recorded: false })
+  })
+})
+
+/**
+ * #468 step 1, the second guard: a write the Salesforce read-back holds (its
+ * at-risk record, owned and unsettled) is the read-back's to resend. A row for
+ * the same step must not be sent beside it, whatever put it in the store.
+ */
+describe('a row whose write the Salesforce read-back holds (#468)', () => {
+  it('is refused by the replay, sending nothing and spending no attempt, asked by the row\'s own run and step', async () => {
+    const { store } = memoryStore(rows)
+    const sf = salesforce({ status: 204, text: '' })
+    const asked: string[] = []
+    const holds = async (executionId: string, stepNamespace: string) => { asked.push(`${executionId}:${stepNamespace}`); return true }
+    const r = await replayHeldWrite(deps(store, sf.port, holds), ORG, ID)
+    expect(r).toMatchObject({ kind: 'not_replayable', reason: expect.stringMatching(/read-back/) })
+    expect(asked).toEqual(['01920000-0000-7000-8000-000000000471:patch_submission'])
+    expect(sf.sent).toEqual([])
+    expect(rows[0].attempts).toBe(0)
+  })
+
+  it('is refused by the preview too, which reads nothing from Salesforce', async () => {
+    const { store } = memoryStore(rows)
+    const sf = salesforce({ status: 204, text: '' })
+    expect(await previewReplay(deps(store, sf.port, async () => true), ORG, ID)).toMatchObject({ kind: 'not_replayable', reason: expect.stringMatching(/read-back/) })
+    expect(sf.sent).toEqual([])
+  })
+
+  it('sends nothing when whether the read-back holds it cannot be asked', async () => {
+    const { store } = memoryStore(rows)
+    const sf = salesforce({ status: 204, text: '' })
+    const r = await replayHeldWrite(deps(store, sf.port, async () => { throw new Error('kv unavailable') }), ORG, ID)
+    expect(r).toMatchObject({ kind: 'unreadable', error: expect.stringMatching(/read-back.*kv unavailable/) })
+    expect(sf.sent).toEqual([])
+    expect(rows[0].attempts).toBe(0)
+  })
+
+  it('replays a row the read-back does not hold', async () => {
+    const { store } = memoryStore(rows)
+    const sf = salesforce({ status: 204, text: '' })
+    expect(await replayHeldWrite(deps(store, sf.port, async () => false), ORG, ID)).toEqual({ kind: 'replayed', recorded: true })
   })
 })
 

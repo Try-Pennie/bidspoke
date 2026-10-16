@@ -21,6 +21,11 @@
  * read-back. Entries expire after 24 hours, which is also their erasure bound;
  * the key rotation must wait that long before dropping an old key.
  *
+ * ONE OWNER PER WRITE (#468). A kept record says whether the read-back owns it
+ * (readBackOwnsHeld, the rule the read-back classifies by). One it owns is never
+ * also stored in the #1993 store, whatever the failure carried; one it does not
+ * own is stored there, since nothing reads it back.
+ *
  * A FAILURE CARRIES THE NOTED REQUEST (#2163). A timeout fails with
  * withTimeout's own error, which holds no request, so the failure is given the
  * request the node noted, read from the watch, and, when the record is kept,
@@ -42,6 +47,7 @@ import { formatErr } from '../lib/format-error'
 import type { RetryClock } from '../lib/post-response-budget'
 import type { ResolvedStepInput } from '../types'
 import { CREDIT_INQUIRY_APEX_PATH } from './inquiry-post'
+import { readBackOwns } from './write-marker'
 
 export const AT_RISK_WRITE_PREFIX = 'at-risk-write:'
 /** The entry's lifetime, and so its erasure bound and the key rotation's wait. */
@@ -85,11 +91,17 @@ export interface AtRiskKv {
   delete(key: string): Promise<void>
 }
 
-/** A record the watch kept for the read-back, and when KV deletes it. */
+/** A record the watch kept, when KV deletes it, and whether the read-back judges it. */
 export interface HeldWrite {
   key: string
   /** ISO. The last write of the record plus its 24 hour expiry. */
   expires_at: string
+  /**
+   * Whether the Salesforce read-back (#2023) owns the record as written
+   * (readBackOwnsHeld): it reads the record back and resends it, so nothing else
+   * may also keep the write to send (#468).
+   */
+  read_back_owns: boolean
 }
 
 export interface AtRiskWatch {
@@ -139,6 +151,22 @@ export function parseAtRiskEntry(raw: string | null): AtRiskEntry | null {
   if (v.v !== 1 || !operationOk || keys.some((k) => text(k) === null)) return null
   if (!Number.isFinite(Date.parse(v.first_attempt_at as string)) || !Number.isFinite(Date.parse(v.recorded_at as string))) return null
   return v as unknown as AtRiskEntry
+}
+
+/**
+ * Whether the Salesforce read-back (#2023) judges a held record: a credit inquiry
+ * post always (#2172), and an update only when its body carries this step's own
+ * engine stamp on an object with the marker field (readBackOwns). The one rule
+ * the read-back classifies its records by and the watch reports a kept record
+ * by, so a write the read-back resends is never also stored for the replay or
+ * the drain (#468), and one it ignores always is.
+ */
+export function readBackOwnsHeld(
+  held: Pick<AtRiskEntry, 'sf_operation' | 'apex_path' | 'sf_object' | 'execution_id' | 'step_namespace'>,
+  body: unknown,
+): boolean {
+  if (held.sf_operation === 'apex') return held.apex_path === CREDIT_INQUIRY_APEX_PATH
+  return readBackOwns(held.sf_object, body, held.execution_id, held.step_namespace)
 }
 
 /**
@@ -223,12 +251,13 @@ interface NotedFailure {
  *
  * Read from the watch, which is the request's one home: nothing keeps a second
  * copy beside the record. A failure that already carries its executor's request
- * (a Salesforce answer, which says more: the url and the template) keeps it.
- * For an update it is then marked held by nothing here, so a refusal still
- * reaches the replay store. A credit inquiry post (#2172) is the exception: the
- * replay store takes updates only, so when the watch kept its record, the
- * failure is marked held whoever built its request (a 500 included), and the
- * capture leaves it to the read-back rather than calling it uncapturable.
+ * (a Salesforce answer, which says more: the url and the template) keeps it,
+ * and is marked held only when the read-back owns the kept record (#468): then
+ * the read-back is the write's one sender, and the capture stores no pending row
+ * for the replay or the drain to send again. A record the read-back does not
+ * own (no stamp of this step's, or an object with no marker field) is marked
+ * held by nothing here, so the replay store still keeps the write. A credit
+ * inquiry post (#2172) is always the read-back's, a 500 included.
  *
  * Every watched step settles through runWatched, so this is the one place a
  * timed out update or credit inquiry post gets its request back, for every node
@@ -238,10 +267,12 @@ function carryNotedRequest(err: unknown, noted: SalesforceRequestNote | null, he
   if (!noted || !err || typeof err !== 'object') return err
   const failure = err as NotedFailure
   if (failure.resolvedInput) {
-    // A credit inquiry post has no replay store to fall back on (only updates are
-    // stored), so when the watch holds it, the failure says so whoever built its
-    // request, and the capture leaves it to the read-back (#2172).
-    if (held && noted.operation === 'apex') failure.atRiskHeldUntil = held.expires_at
+    // A record the read-back owns is the write's one sender, so the failure says
+    // it is held whoever built its request (a 5xx after a retry, a refusal after a
+    // retry, a bulkhead shed past the 2 s mark), and the capture leaves it to the
+    // read-back rather than also storing it for the replay or the drain (#468).
+    // That covers a credit inquiry post (#2172), which the read-back always owns.
+    if (held?.read_back_owns) failure.atRiskHeldUntil = held.expires_at
     return err
   }
   failure.resolvedInput = {
@@ -261,8 +292,8 @@ function carryNotedRequest(err: unknown, noted: SalesforceRequestNote | null, he
 
 /**
  * When the at-risk record of a failed write expires, if the watch kept the
- * record and either this failure's request came from the watch or it is a
- * credit inquiry post (#2172); null otherwise.
+ * record and either this failure's request came from the watch or the read-back
+ * owns the record (#468; a credit inquiry post always, #2172); null otherwise.
  */
 export function heldUntilOf(err: unknown): string | null {
   if (!err || typeof err !== 'object') return null
@@ -285,6 +316,8 @@ export function startAtRiskWatch(opts: {
   // When the last successful write of the record began, which starts its expiry.
   // Taken before the put, so the stated expiry is never later than KV's own.
   let writtenAt = 0
+  // The request the record holds now: the last one whose write went through.
+  let writtenReq: SalesforceRequestNote | null = null
   let latest: SalesforceRequestNote | null = null
   // Records run one after another, so a rewrite never races the first write.
   let chain: Promise<void> = Promise.resolve()
@@ -312,6 +345,7 @@ export function startAtRiskWatch(opts: {
         await opts.kv.put(key, JSON.stringify(entry), { expirationTtl: AT_RISK_WRITE_TTL_SECONDS })
         written = true
         writtenAt = putAt
+        writtenReq = req
       } catch (e) {
         // The write this guards still goes ahead; the run simply has no record
         // of it, which is the gap this exists to close, so it is said loudly.
@@ -346,9 +380,20 @@ export function startAtRiskWatch(opts: {
     async settle(outcome) {
       watching.abort()
       await chain
-      if (!written) return null
+      if (!written || !writtenReq) return null
       if (outcome === 'unknown') {
-        return { key, expires_at: new Date(writtenAt + AT_RISK_WRITE_TTL_SECONDS * 1000).toISOString() }
+        // Judged on the request the record holds, by the read-back's own rule.
+        const readBackOwnsIt = readBackOwnsHeld(
+          {
+            sf_operation: writtenReq.operation,
+            apex_path: writtenReq.apex_path,
+            sf_object: writtenReq.object,
+            execution_id: opts.run.executionId,
+            step_namespace: opts.stepNamespace,
+          },
+          writtenReq.body,
+        )
+        return { key, expires_at: new Date(writtenAt + AT_RISK_WRITE_TTL_SECONDS * 1000).toISOString(), read_back_owns: readBackOwnsIt }
       }
       try {
         await opts.kv.delete(key)

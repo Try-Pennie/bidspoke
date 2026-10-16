@@ -45,6 +45,7 @@ import {
   HELD_WRITE_STATUSES,
   type ReplayResult,
 } from '../../lib/writeback-replay'
+import { readBackHoldsStep } from '../../lib/salesforce-read-back'
 import { writeAuditLog } from '../../lib/audit'
 import { SCHEDULED_DRILL_DEADLINE_MS, buyerObjectsHealth, runBuyerObjectsDrill } from '../../lib/buyer-objects-health'
 import { withDeadline } from '@bidspoke/buyer-profile'
@@ -983,6 +984,8 @@ admin.post('/held-writes/:id/replay', async (c) => {
       if (!row) throw new Error('the held write is gone')
       return salesforcePortFor(c.env, supabase, keys, orgId, row.workflow_id)
     },
+    // A write the Salesforce read-back holds is its own to resend (#468).
+    readBackHolds: (executionId: string, stepNamespace: string) => readBackHoldsStep(c.env.IDEMPOTENCY, keys, executionId, stepNamespace),
   }
   try {
     if (dryRun) {

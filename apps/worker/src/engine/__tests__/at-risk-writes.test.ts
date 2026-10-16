@@ -300,7 +300,61 @@ describe('a failed write carries the request the node noted (#2163)', () => {
     const w2 = watch(store, clock)
     w2.note(REQ)
     await clock.run(clock.now() + AT_RISK_AFTER_MS)
-    expect(await w2.settle('unknown')).toEqual({ key: atRiskKey('ex-1', 'patch_submission'), expires_at: new Date(clock.now() + AT_RISK_WRITE_TTL_SECONDS * 1000).toISOString() })
+    // REQ carries no stamp, so the read-back does not own it.
+    expect(await w2.settle('unknown')).toEqual({ key: atRiskKey('ex-1', 'patch_submission'), expires_at: new Date(clock.now() + AT_RISK_WRITE_TTL_SECONDS * 1000).toISOString(), read_back_owns: false })
+  })
+})
+
+/**
+ * #468: a kept record says whether the read-back owns it, judged on the request
+ * the record holds by the read-back's own rule, and an owned one marks the
+ * failure held even when the executor attached its own request (a 5xx answer),
+ * so the capture never stores a second sender beside the read-back.
+ */
+describe('a kept record the read-back owns (#468)', () => {
+  const stamped = { ...REQ, body: { ...REQ.body, Bidspoke_Write__c: 'ex-1:patch_submission:0' } }
+  const own = (body: Record<string, unknown>) => ({ template: {}, resolved: { operation: 'update', object: 'Submission__c', record_id: 'a04Ui00000NkhG1IAJ', body, method: 'PATCH' } })
+
+  async function failAnswered(req: typeof REQ) {
+    const store = kv()
+    const clock = new VirtualClock()
+    const w = watch(store, clock)
+    let thrown: unknown
+    const done = runWatched(w, () => {}, async () => {
+      w.note(req)
+      await clock.delay(AT_RISK_AFTER_MS + 1)
+      throw Object.assign(new Error('Salesforce API error (503): unavailable'), { status: 503, resolvedInput: own(req.body) })
+    }, () => 1).catch((e) => { thrown = e })
+    await clock.run()
+    await done
+    return { thrown, store }
+  }
+
+  it('reports a stamped record as the read-back\'s, and an unstamped or other step\'s stamp as not', async () => {
+    for (const [body, owns] of [
+      [stamped.body, true],
+      [REQ.body, false],
+      [{ ...REQ.body, Bidspoke_Write__c: 'ex-1:patch_other:0' }, false],
+    ] as const) {
+      const store = kv()
+      const clock = new VirtualClock()
+      const w = watch(store, clock)
+      w.note({ ...REQ, body })
+      await clock.run(AT_RISK_AFTER_MS)
+      expect((await w.settle('unknown'))?.read_back_owns).toBe(owns)
+    }
+  })
+
+  it('marks a 5xx failure carrying its own request held when the read-back owns the record', async () => {
+    const { thrown, store } = await failAnswered(stamped)
+    expect(store.store.size).toBe(1)
+    expect(heldUntilOf(thrown)).toBe(new Date(AT_RISK_AFTER_MS + AT_RISK_WRITE_TTL_SECONDS * 1000).toISOString())
+  })
+
+  it('marks nothing held for the same failure when the read-back does not own the record', async () => {
+    const { thrown, store } = await failAnswered(REQ)
+    expect(store.store.size).toBe(1)
+    expect(heldUntilOf(thrown)).toBeNull()
   })
 })
 
