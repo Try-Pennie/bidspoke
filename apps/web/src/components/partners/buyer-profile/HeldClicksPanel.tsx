@@ -89,8 +89,8 @@ function standingOf(row: HeldClick, claim: SoldClaim): SalesforceStanding | null
   return row.salesforce ? salesforceStandingOf(row.salesforce, claim.partner_lead_id) : null
 }
 
-/** A sale's Salesforce state when it leaves something to do, with Retry Salesforce. */
-function SalesforceRetry({ row, claim, standing, busy, onRetry }: { row: HeldClick; claim: SoldClaim; standing: SalesforceStanding; busy: boolean; onRetry: () => void }) {
+/** What a sale's Salesforce state leaves to do, in its own words for each state; Retry Salesforce sits under it. */
+function SalesforceProblem({ row, claim, standing }: { row: HeldClick; claim: SoldClaim; standing: SalesforceStanding }) {
   const view = row.salesforce
   let body
   if (standing === 'unreadable') {
@@ -123,10 +123,7 @@ function SalesforceRetry({ row, claim, standing, busy, onRetry }: { row: HeldCli
   }
   return (
     // A Salesforce error is often one unbroken JSON string, so it wraps anywhere rather than widening the card.
-    <div className="max-w-xl space-y-1 [overflow-wrap:anywhere]">
-      <div role="alert">{body}</div>
-      <Button variant="secondary" className="btn-sm" busy={busy} onClick={onRetry}>Retry Salesforce</Button>
-    </div>
+    <div role="alert" className="max-w-xl space-y-1 [overflow-wrap:anywhere]">{body}</div>
   )
 }
 
@@ -262,6 +259,7 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
     const standing = standingOf(row, claim)
     const mine = pending?.id === row.id && pending.action === 'lead' ? pending : null
     const losses = removalLosses(partnerName, claim, standing)
+    const retry = standing !== null && standing !== 'written'
     return (
       <div className="space-y-1.5">
         <p>
@@ -272,20 +270,23 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
         </p>
         <Outcome state={outcome} />
         {mine ? leadIdBox(row, claim, mine, busy) : (
-          <Button variant="ghost" disabled={busy} onClick={() => setPending({ id: row.id, action: 'lead', leadId: claim.partner_lead_id ?? '' })}>
-            {claim.partner_lead_id ? null : <Plus className="h-3.5 w-3.5" aria-hidden="true" />}
-            {claim.partner_lead_id ? 'Correct' : 'Add'} {partnerName}&apos;s lead id
-          </Button>
+          <div>
+            <Button variant="ghost" className="-ml-2" disabled={busy} onClick={() => setPending({ id: row.id, action: 'lead', leadId: claim.partner_lead_id ?? '' })}>
+              {claim.partner_lead_id ? null : <Plus className="h-3.5 w-3.5" aria-hidden="true" />}
+              {claim.partner_lead_id ? 'Correct' : 'Add'} {partnerName}&apos;s lead id
+            </Button>
+          </div>
         )}
-        {standing !== null && standing !== 'written' && (
-          <SalesforceRetry row={row} claim={claim} standing={standing} busy={busy} onRetry={() => void onRetrySalesforce(row)} />
-        )}
-        {losses.length > 0 ? (
-          // Removing loses something only this card holds, so it looks destructive and asks first (L9).
-          <Button variant="danger" className="btn-sm" disabled={busy} onClick={() => setPending({ id: row.id, action: 'remove', losses, prospect: row.prospect_id })}>Remove from the list</Button>
-        ) : (
-          <Button variant="secondary" className="btn-sm" busy={busy} onClick={() => remove(row)}>Remove from the list</Button>
-        )}
+        {retry && <SalesforceProblem row={row} claim={claim} standing={standing} />}
+        <div className="flex flex-wrap gap-1.5">
+          {retry && <Button variant="secondary" className="btn-sm" busy={busy} onClick={() => void onRetrySalesforce(row)}>Retry Salesforce</Button>}
+          {losses.length > 0 ? (
+            // Removing loses something only this card holds, so it looks destructive and asks first (L9).
+            <Button variant="danger" className="btn-sm" disabled={busy} onClick={() => setPending({ id: row.id, action: 'remove', losses, prospect: row.prospect_id })}>Remove from the list</Button>
+          ) : (
+            <Button variant="secondary" className="btn-sm" busy={busy} onClick={() => remove(row)}>Remove from the list</Button>
+          )}
+        </div>
       </div>
     )
   }
@@ -344,7 +345,7 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
     <div className="space-y-2 text-xs">
       {lead && <p className="text-sm text-graphite">{lead}</p>}
       {truncated && <p className="text-gray-600">Showing the oldest {held.entries.length} of {held.total}.</p>}
-      <ul className="space-y-2">
+      <ul aria-label={`Held clicks for ${partnerName}`} className="space-y-2">
         {held.entries.map((row) => (
           <li key={row.id} className="space-y-1.5 rounded-lg border border-gray-200 bg-white p-3 text-graphite">
             <p className="flex flex-wrap items-baseline gap-x-2.5">
