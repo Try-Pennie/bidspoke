@@ -134,6 +134,15 @@ describe('the read\'s other states', () => {
     expect(within(section('Click URL')).getByText('Buyer selection sends a lead it sells to this partner to the click URL.')).toBeVisible()
   })
 
+  it('a re-read that fails keeps the last answer on screen and says beside it that it is from the last read', async () => {
+    vi.mocked(api.partners.workflowValues).mockResolvedValueOnce(bySlug('tripoint')).mockRejectedValueOnce(new Error('503'))
+    const { rerender } = render(<WorkflowValuesPanel {...props} partnerId="t" />)
+    await findSection('Click URL')
+    rerender(<WorkflowValuesPanel {...props} partnerId="t" refreshKey="4" />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load which workflows read this. Try again. What is shown is from the last read.')
+    expect(within(section('Click URL')).getByText('Engine Bidding Workflow, in Build Response Body and Tripoint Ping.')).toBeVisible()
+  })
+
   it('reads again when the partner is saved', async () => {
     vi.mocked(api.partners.workflowValues).mockResolvedValue(bySlug('tripoint'))
     const { rerender } = render(<WorkflowValuesPanel {...props} partnerId="t" />)
@@ -188,5 +197,14 @@ describe('a value the workflows cannot see as it is', () => {
     await findSection('Click URL')
     expect(within(section('Sub-account minimum bids')).getByText('Until a value is saved, workflows find nothing under this name.')).toBeVisible()
     expect(within(section('Click URL')).queryByText('Until a value is saved, workflows find nothing under this name.')).toBeNull()
+  })
+
+  it('the notice follows what the partner type edits here, not whether a control was handed in', async () => {
+    vi.mocked(api.partners.workflowValues).mockResolvedValue(bySlug('tripoint'))
+    render(<WorkflowValuesPanel {...props} partnerId="t" controls={{}} />)
+    await findSection('Click URL')
+    expect(within(section('Sub-account minimum bids')).getByText('Until a value is saved, workflows find nothing under this name.')).toBeVisible()
+    // Active is set on the Partner tab, so it never carries the notice.
+    expect(within(section('Active')).queryByText('Until a value is saved, workflows find nothing under this name.')).toBeNull()
   })
 })

@@ -6,7 +6,7 @@
 import { describe, it, expect, expectTypeOf } from 'vitest'
 import type { PartnerValueKind, PartnerWorkflowValue, PartnerWorkflowValues } from '@/lib/api'
 import {
-  PARTNER_VALUE_KINDS, accessLines, readerSentences, searchedSentence, sectionsOf, shadowSentences, type ValueSection,
+  PARTNER_VALUE_KINDS, accessLines, editsSection, readerSentences, refreshKeyOf, searchedSentence, sectionsOf, shadowSentences, type SectionKey, type ValueSection,
 } from '../workflow-values-text'
 
 const value = (kind: PartnerValueKind, over: Partial<PartnerWorkflowValue> = {}): PartnerWorkflowValue => {
@@ -82,6 +82,24 @@ describe('which sections a partner shows, in the answer order', () => {
 
   it('with no answer yet (new, still reading or failed) the partner type alone decides', () => {
     expect(keys(sectionsOf(null, { isBuyer: true, isSource: true }))).toEqual(['click_url', 'sell_off', 'min_bids', 'sub_account_ids'])
+  })
+})
+
+describe('when the tab reads again', () => {
+  it('the key moves with the version and with the sub-account IDs themselves, so a swapped ID re-reads too', () => {
+    const a = refreshKeyOf(3, [{ id: 'u1' }, { id: 'u2' }])
+    expect(refreshKeyOf(3, [{ id: 'u1' }, { id: 'u3' }])).not.toBe(a)
+    expect(refreshKeyOf(4, [{ id: 'u1' }, { id: 'u2' }])).not.toBe(a)
+    expect(refreshKeyOf(3, [{ id: 'u2' }, { id: 'u1' }])).toBe(a)
+  })
+})
+
+describe('which sections the partner edits here', () => {
+  it('a buyer edits the click URL and minimum bids, a source the sell-off offer and IDs, nobody Active', () => {
+    const buyer = { isBuyer: true, isSource: false }
+    const source = { isBuyer: false, isSource: true }
+    expect(['click_url', 'sell_off', 'min_bids', 'sub_account_ids', 'active', 'other'].filter((k) => editsSection(k as SectionKey, buyer))).toEqual(['click_url', 'min_bids'])
+    expect(['click_url', 'sell_off', 'min_bids', 'sub_account_ids', 'active', 'other'].filter((k) => editsSection(k as SectionKey, source))).toEqual(['sell_off', 'sub_account_ids'])
   })
 })
 

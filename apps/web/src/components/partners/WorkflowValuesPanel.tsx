@@ -16,11 +16,19 @@ import { api, type PartnerWorkflowValue, type PartnerWorkflowValues } from '@/li
 import { Button } from '@/components/ui/form'
 import { LiveSectionNote } from './live/PartnerLive'
 import {
-  accessLines, readerSentences, searchedSentence, sectionsOf, shadowSentences, type SectionKey, type ValueSection,
+  accessLines, editsSection, readerSentences, searchedSentence, sectionsOf, shadowSentences, type SectionKey, type ValueSection,
 } from '@/app/(app)/partners/workflow-values-text'
 
-/** `found` records the partner id it was read for, so a re-read knows whether it is the same partner. */
-type ReadState = { kind: 'none' } | { kind: 'loading' } | { kind: 'failed' } | { kind: 'found'; answer: PartnerWorkflowValues; partnerId: string }
+/**
+ * `found` records the partner id it was read for, so a re-read knows whether
+ * it is the same partner, and whether the latest re-read of it failed, in
+ * which case the answer on screen is the last good one and the page says so.
+ */
+type ReadState =
+  | { kind: 'none' }
+  | { kind: 'loading' }
+  | { kind: 'failed' }
+  | { kind: 'found'; answer: PartnerWorkflowValues; partnerId: string; refreshFailed: boolean }
 
 export type WorkflowValueControls = Partial<Record<Exclude<SectionKey, 'other' | 'active'>, ReactNode>>
 
@@ -30,9 +38,9 @@ interface Props {
   slug: string
   /**
    * Changes whenever what the step emits for the partner may have changed, so
-   * the values are read again: on a save (the partner's version) and on a
-   * sub-account ID added or removed (those are written at once, not on save).
-   * The form builds it as `<version>:<number of sub-account IDs>`.
+   * the values are read again: on a save (the partner's version) and whenever
+   * the sub-account IDs change (written at once, not on save). The form builds
+   * it with `refreshKeyOf` from the version and the IDs themselves.
    */
   refreshKey: string
   isBuyer: boolean
@@ -93,11 +101,14 @@ function ReadersBlock({ values, searched }: { values: readonly PartnerWorkflowVa
   )
 }
 
-function ValueSectionView({ section, read, slug, isActive, partnerName, control }: {
+function ValueSectionView({ section, read, slug, isActive, partnerName, control, edited }: {
   section: ValueSection; read: ReadState; slug: string; isActive: boolean; partnerName: string; control: ReactNode
+  /** Whether this partner's type edits the section here (editsSection). */
+  edited: boolean
 }) {
   const answer = read.kind === 'found' ? read.answer : null
-  const notSaved = answer !== null && control !== undefined && section.values.some((v) => !v.emitted)
+  // Only for a value the person sets on this tab; a value set elsewhere shows as stored ("Not set.").
+  const notSaved = answer !== null && edited && section.values.some((v) => !v.emitted)
   // A plain section, not a named region: the heading names the value, and the
   // control under it (the Click URL box) carries the same name for screen readers.
   return (
@@ -145,8 +156,12 @@ export function WorkflowValuesPanel({ partnerId, slug, refreshKey, isBuyer, isSo
     // Through a promise, so a call that throws before answering is a failed read too, never an empty one.
     Promise.resolve()
       .then(() => api.partners.workflowValues(partnerId))
-      .then((answer) => { if (!cancelled) setRead({ kind: 'found', answer, partnerId }) })
-      .catch(() => { if (!cancelled) setRead({ kind: 'failed' }) })
+      .then((answer) => { if (!cancelled) setRead({ kind: 'found', answer, partnerId, refreshFailed: false }) })
+      // A failed re-read keeps the last good answer for the same partner, marked
+      // as such; with nothing read yet the failure is the whole state (L10).
+      .catch(() => {
+        if (!cancelled) setRead((prev) => (prev.kind === 'found' && prev.partnerId === partnerId ? { ...prev, refreshFailed: true } : { kind: 'failed' }))
+      })
     return () => { cancelled = true }
   }, [partnerId, refreshKey, attempt])
 
@@ -156,9 +171,13 @@ export function WorkflowValuesPanel({ partnerId, slug, refreshKey, isBuyer, isSo
     <div className="space-y-8">
       {read.kind === 'none' && <p className="text-sm text-gray-700">Which workflows read these values shows once the partner is saved.</p>}
       {read.kind === 'loading' && <p role="status" className="text-sm text-gray-600">Checking which workflows read these values…</p>}
-      {read.kind === 'failed' && (
+      {(read.kind === 'failed' || (read.kind === 'found' && read.refreshFailed)) && (
         <div role="alert" className="flex items-center gap-3 text-sm text-red-700">
-          <span className="flex-1">Could not load which workflows read this. Try again.</span>
+          <span className="flex-1">
+            {read.kind === 'found'
+              ? 'Could not load which workflows read this. Try again. What is shown is from the last read.'
+              : 'Could not load which workflows read this. Try again.'}
+          </span>
           <Button variant="secondary" onClick={() => setAttempt((n) => n + 1)}>Try again</Button>
         </div>
       )}
@@ -171,6 +190,7 @@ export function WorkflowValuesPanel({ partnerId, slug, refreshKey, isBuyer, isSo
           isActive={isActive}
           partnerName={partnerName}
           control={s.key === 'other' || s.key === 'active' ? undefined : controls[s.key]}
+          edited={editsSection(s.key, { isBuyer, isSource })}
         />
       ))}
     </div>

@@ -41,6 +41,7 @@ import {
   type TabInputs, type UsageState,
 } from './partner-tabs'
 import { bidsInSentences } from './bid-group-usage-text'
+import { refreshKeyOf } from './workflow-values-text'
 import { LiveNotesContext, LivePageNotes, LiveSectionNote, LiveStatusLine, PartnerLiveContext, SYSTEM_CLOCK } from '@/components/partners/live/PartnerLive'
 import { usePartnerPageLive } from './use-partner-page-live'
 import {
@@ -1403,7 +1404,7 @@ export default function PartnerForm({
             <WorkflowValuesPanel
               partnerId={partner?.id ?? null}
               slug={partner?.slug ?? slug}
-              refreshKey={`${partner?.version ?? 0}:${uuids.length}`}
+              refreshKey={refreshKeyOf(partner?.version ?? 0, uuids)}
               isBuyer={isBuyer}
               isSource={isSource}
               isActive={isActive}

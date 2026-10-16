@@ -44,6 +44,22 @@ const EDITED_BY: Readonly<Record<Exclude<SectionKey, 'other'>, 'buyer' | 'source
 }
 const ORDER: readonly Exclude<SectionKey, 'other'>[] = ['click_url', 'sell_off', 'min_bids', 'sub_account_ids', 'active']
 
+/** Whether a partner of this type edits the section on this tab (Active never: it is the Partner tab's Status). */
+export function editsSection(key: SectionKey, role: { isBuyer: boolean; isSource: boolean }): boolean {
+  if (key === 'other') return false
+  const by = EDITED_BY[key]
+  return (by === 'buyer' && role.isBuyer) || (by === 'source' && role.isSource)
+}
+
+/**
+ * When the tab reads its values again: on a save (the partner's version) and
+ * whenever the sub-account IDs change, which are written at once, not on save.
+ * Keyed on the IDs themselves, in any order, so a swapped ID re-reads too.
+ */
+export function refreshKeyOf(version: number, subAccountIds: readonly { id: string }[]): string {
+  return `${version}:${subAccountIds.map((u) => u.id).sort().join(',')}`
+}
+
 export interface ValueSection {
   key: SectionKey
   title: string
@@ -65,7 +81,7 @@ function inUse(v: PartnerWorkflowValue): boolean {
  * A kind this page does not know yet is shown under its own name.
  */
 export function sectionsOf(answer: PartnerWorkflowValues | null, role: { isBuyer: boolean; isSource: boolean }): ValueSection[] {
-  const edits = (key: Exclude<SectionKey, 'other'>) => (EDITED_BY[key] === 'buyer' && role.isBuyer) || (EDITED_BY[key] === 'source' && role.isSource)
+  const edits = (key: Exclude<SectionKey, 'other'>) => editsSection(key, role)
   if (!answer) return ORDER.filter(edits).map((key) => ({ key, title: SECTION_TITLES[key], values: [] }))
   const out: ValueSection[] = []
   for (const v of answer.values) {
