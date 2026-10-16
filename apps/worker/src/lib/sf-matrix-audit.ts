@@ -14,11 +14,11 @@
  */
 
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { forEachSlackOrg, slackOrgIds } from './alert-fanout'
+import { everyDelivered, forEachSlackOrg, orgIdsToTell, slackOrgIds } from './alert-fanout'
 import type { Env } from '../index'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { requireSalesforceCreds, resolveSalesforceCredentialOrg } from './salesforce-creds'
-import { getSlackConnection, postMessage } from './slack'
+import { lookupSlackConnection, postMessage } from './slack'
 import { parseJson } from './json'
 import { formatErr } from './format-error'
 import { fetchAllPaged } from './paginate'
@@ -466,10 +466,17 @@ async function readDeletedSince(
 
 // ── Slack notify ──────────────────────────────────────────────────────────────
 
-/** Delivered, or nothing to deliver (no Slack, or matrix alerts switched off). */
+/**
+ * Delivered, or nothing to deliver (no Slack, or matrix alerts switched off).
+ * An org nobody could look up is NOT delivered (#1303): before, a failed read
+ * looked like "no Slack" and the snapshot moved past changes nobody heard about.
+ */
 async function postToOrg(supabase: SupabaseClient, orgId: string, blocks: unknown[], text: string): Promise<boolean> {
-  const connection = await getSlackConnection(supabase, orgId)
-  if (!connection || !connection.matrix_alerts_enabled) return true
+  const found = await lookupSlackConnection(supabase, orgId)
+  if (found.kind === 'unreachable') return false
+  if (found.kind === 'none') return true
+  const connection = found.connection
+  if (!connection.matrix_alerts_enabled) return true
   const channel = connection.matrix_alerts_channel || connection.default_channel
   return (await postMessage(connection.bot_token, channel, blocks, text)) !== null
 }
@@ -498,7 +505,7 @@ export async function notifyAllOrgsWithSlack(
     return delivered
   })
   // Advance the snapshot only when EVERY org received EVERY alert.
-  return perOrg.every(Boolean)
+  return everyDelivered(perOrg)
 }
 
 /**
@@ -535,7 +542,7 @@ async function notifyBaseline(
     { type: 'section', text: { type: 'mrkdwn', text } },
   ]
   if (matrixUrl) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${matrixUrl}|Open in Salesforce \u2192>` } })
-  for (const orgId of await slackOrgIds(supabase, 'sf-matrix-audit')) {
+  for (const orgId of orgIdsToTell(await slackOrgIds(supabase, 'sf-matrix-audit'))) {
     try {
       if (!(await postToOrg(supabase, orgId, blocks, 'Bid matrix tracking updated'))) {
         console.error(`[sf-matrix-audit] baseline notice not delivered to org ${orgId}`)

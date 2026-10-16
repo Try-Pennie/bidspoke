@@ -11,7 +11,7 @@
  * (APP_URL, SUPABASE_JWKS_URL, ...) are intentionally excluded.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { slackOrgIds } from './alert-fanout'
+import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import type { Env } from '../index'
 import { sendRequiredSecretsAlert } from './slack'
 
@@ -57,7 +57,7 @@ export async function runRequiredSecretsCheck(
   const missing = findMissingRequiredSecrets(env)
   if (missing.length === 0) return { missing: [], alerted: false }
 
-  const orgIds = await slackOrgIds(supabase, 'required-secrets')
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'required-secrets'))
 
   let alerted = false
   for (const orgId of orgIds) {

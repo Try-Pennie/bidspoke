@@ -18,7 +18,7 @@
 // Config (trigger.config.muted_failure_signals, alongside duration_alert_ms) is
 // the domain type MutedFailureSignal in ../types; re-exported so callers can
 // import it from here.
-import { slackOrgIds } from './alert-fanout'
+import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
 import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { getSlackConnection, sendRecoveryAlert } from './slack'
@@ -137,7 +137,7 @@ export async function runFailureRateCheck(
   kv: KvLike,
   appUrl: string,
 ): Promise<void> {
-  const orgIds = await slackOrgIds(supabase, 'failure-rate')
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'failure-rate'))
   if (orgIds.length === 0) return
 
   const { data: workflows, error: workflowsError } = await supabase

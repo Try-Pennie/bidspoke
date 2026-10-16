@@ -25,7 +25,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { forEachSlackOrg } from './alert-fanout'
+import { anyDelivered, forEachSlackOrg } from './alert-fanout'
 import { sendExportFailureAlert } from './slack'
 
 export type CronGuardKind = 'failed_open' | 'skipped_duplicate'
@@ -375,7 +375,7 @@ export async function runCronGuardWatchLive(supabase: SupabaseClient, kv: KVName
     send: (kind, count, capped, sources) =>
       forEachSlackOrg(supabase, 'cron-guard-watch', (orgId) =>
         sendExportFailureAlert(supabase, orgId, null, { jobName: 'cron-guard-watch', ...cronGuardMessage(kind, count, capped, sources) }),
-      ).then((rs) => rs.some(Boolean)),
+      ).then(anyDelivered),
     log: (line) => console.log(line),
     error: (line) => console.error(line),
   })

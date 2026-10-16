@@ -33,12 +33,16 @@ describe('slackOrgIds', () => {
       { organization_id: 'org-2' },
       { organization_id: 'org-1' },
     ])
-    expect(await slackOrgIds(supabase, 'test')).toEqual(['org-1', 'org-2'])
+    expect(await slackOrgIds(supabase, 'test')).toEqual({ kind: 'live', orgIds: ['org-1', 'org-2'] })
   })
 
-  it('returns an empty list when the read fails, rather than throwing', async () => {
+  it('says it could not read, rather than answering an empty list, when the read fails (#1303)', async () => {
     const supabase = supabaseWithOrgs([], { message: 'boom' })
-    expect(await slackOrgIds(supabase, 'test')).toEqual([])
+    expect(await slackOrgIds(supabase, 'test')).toEqual({ kind: 'unreachable', reason: 'read_failed' })
+  })
+
+  it('answers an empty live list when the database has no Slack organizations', async () => {
+    expect(await slackOrgIds(supabaseWithOrgs([]), 'test')).toEqual({ kind: 'live', orgIds: [] })
   })
 })
 
@@ -51,7 +55,14 @@ describe('forEachSlackOrg', () => {
       return orgId === 'a'
     })
     expect(seen).toEqual(['a', 'b'])
-    expect(results).toEqual([true, false])
+    expect(results).toEqual({ kind: 'ran', source: 'live', results: [true, false] })
+  })
+
+  it('runs nothing and says so when the org list could not be read (#1303)', async () => {
+    const perOrg = vi.fn(async () => true)
+    const results = await forEachSlackOrg(supabaseWithOrgs([], { message: 'boom' }), 'test', perOrg)
+    expect(results).toEqual({ kind: 'unreachable', reason: 'read_failed' })
+    expect(perOrg).not.toHaveBeenCalled()
   })
 })
 

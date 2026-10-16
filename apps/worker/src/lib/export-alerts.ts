@@ -23,7 +23,7 @@
  * clean run's bookkeeping.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { slackOrgIds } from './alert-fanout'
+import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import { sendExportFailureAlert } from './slack'
 import { buildFixHint, buildConsequence, isTransientExportError } from './export-error-hints'
 import { clearCondition, describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
@@ -336,7 +336,7 @@ export async function notifyExportFailure(
   }
   const repeat = recurrence.kind === 'reminder' ? (describeRepeat(recurrence.standing, nowMs, recurrence.unchanged) ?? undefined) : undefined
 
-  const orgIds = await slackOrgIds(supabase, 'export-alerts')
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'export-alerts'))
 
   let delivered = false
   for (const orgId of orgIds) {

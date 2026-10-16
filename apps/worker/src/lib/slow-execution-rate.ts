@@ -22,7 +22,7 @@
  * Cooldown: 30 min per workflow via KV, so a sustained slow period pages once.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { slackOrgIds } from './alert-fanout'
+import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
 import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { getSlackConnection, sendRecoveryAlert } from './slack'
@@ -112,7 +112,7 @@ export async function runSlowExecutionCheck(
   kv: KvLike,
   appUrl: string
 ): Promise<void> {
-  const orgIds = await slackOrgIds(supabase, 'slow-execution-rate')
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'slow-execution-rate'))
   if (orgIds.length === 0) return
 
   const { data: workflows, error: workflowsError } = await supabase

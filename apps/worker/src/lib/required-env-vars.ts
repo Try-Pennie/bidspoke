@@ -18,7 +18,7 @@
  * becomes mandatory.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { slackOrgIds } from './alert-fanout'
+import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import type { Env } from '../index'
 import { sendRequiredEnvVarsAlert } from './slack'
 
@@ -54,7 +54,7 @@ export async function runRequiredEnvVarsCheck(
   supabase: SupabaseClient,
   env: Env,
 ): Promise<RequiredEnvVarsResult> {
-  const orgIds = await slackOrgIds(supabase, 'required-env-vars')
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'required-env-vars'))
 
   const missingAcrossOrgs = new Set<string>()
   let alerted = false
