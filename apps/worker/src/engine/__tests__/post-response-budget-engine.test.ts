@@ -49,7 +49,7 @@ import { getSlackConnection, sendOutcomeDeadLetterAlert, sendSlowdownSummaryAler
 import { fireExecutionAlert } from '../../lib/execution-alerts'
 import { NO_ROW_MATCHED_CODE } from '../../lib/db-retry'
 import { recordOutcomeDeadLetter } from '../durability'
-import { POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS, CONTINUATION_WINDOW_MS } from '../../lib/post-response-budget'
+import { POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS, CONTINUATION_WINDOW_MS, WAIT_UNTIL_LIMIT_MS } from '../../lib/post-response-budget'
 import { executeSalesforceNode } from '../nodes/salesforce'
 import { fakeBulkheads } from '../../__tests__/helpers/fake-bulkheads'
 import { stubFetch } from '../../__tests__/helpers/fetch-mock'
@@ -62,6 +62,7 @@ import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
 import { decryptSecret } from '../../lib/secret-crypto'
 import { UNCONFIRMED_WRITE_PREFIX, ANSWER_JOURNAL_PREFIX } from '../unconfirmed-writes'
 import { runUnconfirmedWriteSweep } from '../../lib/unconfirmed-write-sweep'
+import { StallSnapshotGate, STALL_SNAPSHOT_PREFIX, STALL_SNAPSHOT_DEADLINE_MS, type StallSnapshotRecord } from '../../lib/db-stall-snapshot'
 import { WRITEBACK_HELD_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../writeback-deadletter'
 
 const WF_ID = 'wf-budget'
@@ -193,7 +194,33 @@ function makeDb(clock: VirtualClock, availability: (table: string, op: string) =
     return chain
   }
 
-  return { client: { from } as unknown as SupabaseClient, calls, executions, sightings, steps, writebacks }
+  // The database snapshot a stalled write asks for (#2292): answers by the same
+  // availability as the tables, keyed as table `rpc:<name>`.
+  const rpcCalls: Array<DbCall & { aborted: () => boolean }> = []
+  function rpc(name: string) {
+    const table = `rpc:${name}`
+    let signal: AbortSignal | undefined
+    const call = { at: 0, table, op: 'rpc', answered: 'up' as Availability, aborted: () => signal?.aborted === true }
+    const query = {
+      abortSignal(s: AbortSignal) {
+        signal = s
+        return query
+      },
+      then(resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) {
+        const state = availability(table, 'rpc')
+        call.at = clock.now()
+        call.answered = state
+        calls.push(call)
+        rpcCalls.push(call)
+        if (state === 'hang') return clock.hang().then(resolve, reject)
+        if (state === 'down') return Promise.resolve({ data: null, error: { message: '' } }).then(resolve, reject)
+        return Promise.resolve({ data: { taken_at: 'now', backends: [{ pid: 7, query: 'x'.repeat(900) }], by_state: [{ state: 'active', count: 40 }] }, error: null }).then(resolve, reject)
+      },
+    }
+    return query
+  }
+
+  return { client: { from, rpc } as unknown as SupabaseClient, calls, rpcCalls, executions, sightings, steps, writebacks }
 }
 
 function makeKV(clock: VirtualClock, slowFirstJournalPut = false, refuseSecondJournalPutOnce = false, getFails?: (key: string) => boolean, getRealDelayMs = 0) {
@@ -276,7 +303,7 @@ async function run(
   const result = await executeWorkflow(
     { workflowId: WF_ID, payload: { lead: 1 }, source: 'engine', ...options.input },
     env,
-    { ...moneyRuntime(db.client), clock, ...(options.stepClock ? { stepClock: clock } : {}) },
+    { ...moneyRuntime(db.client), clock, stallSnapshotGate: new StallSnapshotGate(), ...(options.stepClock ? { stepClock: clock } : {}) },
     executionCtx,
   )
   // The response is out at virtual time zero. Let the post-response work run.
@@ -432,6 +459,52 @@ describe('post-response writes with a database that never answers (#1850, #1880)
     expect(Math.max(...unconfirmed.map((p) => p.at))).toBeLessThanOrEqual(CUTOFF)
     expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
     expect(clock.now()).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS)
+  })
+})
+
+/**
+ * #2292: nothing recorded what the database was doing during the 2026-10-16
+ * stalls. The first write a stall times out now asks for a snapshot, taken
+ * inside the run's own waitUntil window, and kept in KV.
+ */
+describe('a database snapshot taken during the stall (#2292)', () => {
+  const snapshots = (store: Map<string, string>) =>
+    [...store.entries()].filter(([k]) => k.startsWith(STALL_SNAPSHOT_PREFIX)).map(([, v]) => JSON.parse(v) as StallSnapshotRecord)
+
+  it('takes one snapshot at the first timed out write, and keeps it, with no query text over 300 characters', async () => {
+    const { idempotency, db } = await run((_c, table) => (table.startsWith('rpc:') ? 'up' : 'hang'))
+    const kept = snapshots(idempotency.store)
+    expect(kept).toHaveLength(1)
+    expect(kept[0].status).toBe('taken')
+    // Asked for by the first write to give up, at the moment it gave up.
+    const firstUnconfirmed = idempotency.puts.filter((p) => p.key.startsWith(UNCONFIRMED_WRITE_PREFIX)).sort((a, b) => a.at - b.at)[0]
+    const firstLabel = (JSON.parse(idempotency.store.get(firstUnconfirmed.key)!) as { label: string }).label
+    expect(kept[0].trigger).toMatchObject({ label: firstLabel, workflow_name: 'Budget Test' })
+    expect(db.rpcCalls).toHaveLength(1)
+    expect(db.rpcCalls[0].at).toBe(firstUnconfirmed.at)
+    expect(db.rpcCalls[0].at).toBeLessThanOrEqual(CUTOFF)
+    const backends = (kept[0].snapshot as { backends: Array<{ query: string }> }).backends
+    expect(backends[0].query).toHaveLength(300)
+  })
+
+  it('records "timed out" when the database does not answer the snapshot either, within the waitUntil window', async () => {
+    const { idempotency, db, clock } = await run(() => 'hang')
+    const kept = snapshots(idempotency.store)
+    expect(kept).toHaveLength(1)
+    expect(kept[0].status).toBe('timed_out')
+    expect(kept[0].deadline_ms).toBe(STALL_SNAPSHOT_DEADLINE_MS)
+    expect(db.rpcCalls[0].aborted()).toBe(true)
+    const put = idempotency.puts.find((p) => p.key.startsWith(STALL_SNAPSHOT_PREFIX))!
+    expect(put.at).toBeLessThanOrEqual(WAIT_UNTIL_LIMIT_MS)
+    expect(clock.now()).toBeLessThanOrEqual(POST_RESPONSE_BUDGET_MS)
+    // The writes themselves are recorded as before.
+    expect(idempotency.puts.filter((p) => p.key.startsWith(UNCONFIRMED_WRITE_PREFIX)).length).toBe(4)
+  })
+
+  it('takes none when every write answers', async () => {
+    const { idempotency, db } = await run(() => 'up')
+    expect(snapshots(idempotency.store)).toEqual([])
+    expect(db.rpcCalls).toEqual([])
   })
 })
 

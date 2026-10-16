@@ -362,6 +362,44 @@ describe('writeOutcome inside the post-response budget (#1850)', () => {
     await p
     expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
   })
+
+  // #2292: the first write that times out is the earliest moment the Worker
+  // knows the database is stalling, so that is when the snapshot is asked for.
+  it('asks for a database snapshot the moment a write is recorded as unconfirmed, naming the write and its run', async () => {
+    const kv = fakeKv()
+    const { clock, d } = budgetedDeps(kv)
+    const onUnconfirmed = vi.fn()
+    const run = { workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1' }
+    const p = writeOutcome('lead_sightings.finalize', () => clock.hang(), { ...d, run, onUnconfirmed }, SIGHTING)
+    await clock.run()
+    await p
+    expect(onUnconfirmed).toHaveBeenCalledTimes(1)
+    expect(onUnconfirmed).toHaveBeenCalledWith({ label: 'lead_sightings.finalize', execution_id: 'ex-1', workflow_name: 'Main Flow' })
+  })
+
+  it('does not ask for a snapshot for a write that answered, even with an error', async () => {
+    const kv = fakeKv()
+    const { clock, d } = budgetedDeps(kv)
+    const onUnconfirmed = vi.fn()
+    const p = writeOutcome('lead_sightings.insert', async () => ({ error: PERMANENT }), { ...d, onUnconfirmed }, SIGHTING)
+    await clock.run()
+    await p
+    expect(onUnconfirmed).not.toHaveBeenCalled()
+  })
+
+  it('still records the unconfirmed write when asking for the snapshot throws', async () => {
+    const kv = fakeKv()
+    const { clock, d } = budgetedDeps(kv)
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const onUnconfirmed = vi.fn(() => { throw new Error('waitUntil refused') })
+    const p = writeOutcome('lead_sightings.finalize', () => clock.hang(), { ...d, onUnconfirmed }, SIGHTING)
+    await clock.run()
+    await p
+    expect([...kv.store.keys()].filter((k) => k.startsWith(UNCONFIRMED_WRITE_PREFIX))).toHaveLength(1)
+    expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
+    expect(err.mock.calls.flat().join(' ')).toMatch(/snapshot/)
+    err.mockRestore()
+  })
 })
 
 // #1881: the cooldown lived in KV, which is eventually consistent across

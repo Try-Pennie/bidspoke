@@ -119,6 +119,41 @@ describe('slowdown summary (#1881)', () => {
     expect(text).toContain('<https://app.test/workflows/wf-1?execution=ex-1|Lead Economy run> (run records, lead sightings)')
     for (const c of BANNED) expect(text).not.toContain(c)
   })
+
+  // #2292: one line saying a snapshot was taken and where to read it. Never
+  // its contents: query text can carry customer data.
+  describe('the database snapshot line (#2292)', () => {
+    const lost = { ...base, landed: 61, lost: 1, steps_missing: 0 }
+
+    it('says a snapshot was taken and how to read it', async () => {
+      await sendSlowdownSummaryAlert(conn, { ...lost, snapshots: { attempts: 1, taken: 1, timed_out: 0, failed: 0, first_at: '2026-10-08T12:20:40Z' } }, 'https://app.test')
+      const text = textOf()
+      expect(text).toContain('A database snapshot was taken during it at 8:20 AM ET.')
+      expect(text).toContain('GET /api/admin/db-stall-snapshots')
+      expect(text).toContain('kept for 3 days')
+      for (const c of BANNED) expect(text).not.toContain(c)
+    })
+
+    it('counts several, and says what a timed out one means', async () => {
+      await sendSlowdownSummaryAlert(conn, { ...lost, snapshots: { attempts: 3, taken: 1, timed_out: 2, failed: 0, first_at: '2026-10-08T12:20:40Z' } }, 'https://app.test')
+      const text = textOf()
+      expect(text).toContain('Bidspoke took 3 database snapshots during it, the first at 8:20 AM ET: 1 answered, 2 timed out.')
+      expect(text).toContain('A snapshot that timed out means the database, or the connection pool in front of it, did not answer a 3 second read either')
+    })
+
+    it('says plainly when none was taken, and when it could not look', async () => {
+      await sendSlowdownSummaryAlert(conn, { ...lost, snapshots: { attempts: 0, taken: 0, timed_out: 0, failed: 0, first_at: null } }, 'https://app.test')
+      expect(textOf()).toContain('No database snapshot was taken during it.')
+      fetchMock.mockClear()
+      await sendSlowdownSummaryAlert(conn, { ...lost, snapshots: null }, 'https://app.test')
+      expect(textOf()).toContain('Bidspoke could not look up its database snapshots')
+    })
+
+    it('carries no query text, whatever the snapshot held', async () => {
+      await sendSlowdownSummaryAlert(conn, { ...lost, snapshots: { attempts: 1, taken: 1, timed_out: 0, failed: 0, first_at: '2026-10-08T12:20:40Z' } }, 'https://app.test')
+      expect(textOf()).not.toMatch(/select|insert|update /i)
+    })
+  })
 })
 
 describe('repeated slowdowns that saved every record (#2165)', () => {
@@ -155,6 +190,13 @@ describe('repeated slowdowns that saved every record (#2165)', () => {
   it('reports a Slack refusal as not delivered', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'channel_not_found' }) })
     expect(await sendRepeatedSlowdownAlert(conn, { slowdowns, window_hours: 24 }, 'https://app.test')).toBe(false)
+  })
+
+  it('says how many database snapshots were taken across them and how to read them (#2292)', async () => {
+    await sendRepeatedSlowdownAlert(conn, { slowdowns, window_hours: 24, snapshots: { attempts: 4, taken: 4, timed_out: 0, failed: 0, first_at: '2026-10-15T13:31:12Z' } }, 'https://app.test')
+    const text = textOf()
+    expect(text).toContain('Bidspoke took 4 database snapshots during them, the first on Oct 15 at 9:31 AM ET: 4 answered.')
+    expect(text).toContain('GET /api/admin/db-stall-snapshots')
   })
 })
 

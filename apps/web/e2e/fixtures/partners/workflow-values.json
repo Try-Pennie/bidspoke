@@ -1,0 +1,1523 @@
+{
+  "58d50fe7-3e86-4d71-85c7-4533ab08acb0": {
+    "partner": {
+      "id": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+      "slug": "amone"
+    },
+    "values": [
+      {
+        "constant_name": "AmoneClickUrl",
+        "kind": "ClickUrl",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.AmoneClickUrl",
+          "code": "constants.AmoneClickUrl"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": [
+          {
+            "reader": "buyer_select",
+            "description": "Buyer selection sends a lead it sells to this partner to the click URL."
+          },
+          {
+            "reader": "buyer_click_check",
+            "description": "The click check offers a lead to a click sold partner at the click URL, and refuses to when it carries no {prospect_id}."
+          },
+          {
+            "reader": "click_alert",
+            "description": "The click alert pages when the click URL carries no {prospect_id}."
+          }
+        ]
+      },
+      {
+        "constant_name": "AmoneSellOffOfferTitle",
+        "kind": "SellOffOfferTitle",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.AmoneSellOffOfferTitle",
+          "code": "constants.AmoneSellOffOfferTitle"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "AmoneSellOffOfferDetails",
+        "kind": "SellOffOfferDetails",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.AmoneSellOffOfferDetails",
+          "code": "constants.AmoneSellOffOfferDetails"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "AmoneSubAccountMinBids",
+        "kind": "SubAccountMinBids",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.AmoneSubAccountMinBids",
+          "code": "constants.AmoneSubAccountMinBids"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "kind": "subAccountIdsMap",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.subAccountIdsMap",
+          "code": "constants.subAccountIdsMap"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              },
+              {
+                "node_id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+                "namespace": "build_response_body",
+                "label": "Build Response Body",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": {},
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "kind": "activeBidding",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.activeBidding",
+          "code": "constants.activeBidding"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": true,
+        "readers_outside_workflows": []
+      }
+    ],
+    "searched": {
+      "workflows": 11,
+      "with_constants_node": 7
+    }
+  },
+  "84fa3d0a-c382-41c1-983b-70d75d97cf4c": {
+    "partner": {
+      "id": "84fa3d0a-c382-41c1-983b-70d75d97cf4c",
+      "slug": "brainsome"
+    },
+    "values": [
+      {
+        "constant_name": "BrainsomeClickUrl",
+        "kind": "ClickUrl",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.BrainsomeClickUrl",
+          "code": "constants.BrainsomeClickUrl"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": [
+          {
+            "reader": "buyer_select",
+            "description": "Buyer selection sends a lead it sells to this partner to the click URL."
+          },
+          {
+            "reader": "buyer_click_check",
+            "description": "The click check offers a lead to a click sold partner at the click URL, and refuses to when it carries no {prospect_id}."
+          },
+          {
+            "reader": "click_alert",
+            "description": "The click alert pages when the click URL carries no {prospect_id}."
+          }
+        ]
+      },
+      {
+        "constant_name": "BrainsomeSellOffOfferTitle",
+        "kind": "SellOffOfferTitle",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.BrainsomeSellOffOfferTitle",
+          "code": "constants.BrainsomeSellOffOfferTitle"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "BrainsomeSellOffOfferDetails",
+        "kind": "SellOffOfferDetails",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.BrainsomeSellOffOfferDetails",
+          "code": "constants.BrainsomeSellOffOfferDetails"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "BrainsomeSubAccountMinBids",
+        "kind": "SubAccountMinBids",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.BrainsomeSubAccountMinBids",
+          "code": "constants.BrainsomeSubAccountMinBids"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "kind": "subAccountIdsMap",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.subAccountIdsMap",
+          "code": "constants.subAccountIdsMap"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              },
+              {
+                "node_id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+                "namespace": "build_response_body",
+                "label": "Build Response Body",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": {
+          "f8b2633f-b8d0-4d74-a361-39365630b761": "brainsome"
+        },
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "kind": "activeBidding",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.activeBidding",
+          "code": "constants.activeBidding"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": true,
+        "readers_outside_workflows": []
+      }
+    ],
+    "searched": {
+      "workflows": 11,
+      "with_constants_node": 7
+    }
+  },
+  "205785c3-09cf-4993-8765-4edd81c62af8": {
+    "partner": {
+      "id": "205785c3-09cf-4993-8765-4edd81c62af8",
+      "slug": "dot818"
+    },
+    "values": [
+      {
+        "constant_name": "Dot818ClickUrl",
+        "kind": "ClickUrl",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.Dot818ClickUrl",
+          "code": "constants.Dot818ClickUrl"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": [
+          {
+            "reader": "buyer_select",
+            "description": "Buyer selection sends a lead it sells to this partner to the click URL."
+          },
+          {
+            "reader": "buyer_click_check",
+            "description": "The click check offers a lead to a click sold partner at the click URL, and refuses to when it carries no {prospect_id}."
+          },
+          {
+            "reader": "click_alert",
+            "description": "The click alert pages when the click URL carries no {prospect_id}."
+          }
+        ]
+      },
+      {
+        "constant_name": "Dot818SellOffOfferTitle",
+        "kind": "SellOffOfferTitle",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.Dot818SellOffOfferTitle",
+          "code": "constants.Dot818SellOffOfferTitle"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "Dot818SellOffOfferDetails",
+        "kind": "SellOffOfferDetails",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.Dot818SellOffOfferDetails",
+          "code": "constants.Dot818SellOffOfferDetails"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "Dot818SubAccountMinBids",
+        "kind": "SubAccountMinBids",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.Dot818SubAccountMinBids",
+          "code": "constants.Dot818SubAccountMinBids"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "kind": "subAccountIdsMap",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.subAccountIdsMap",
+          "code": "constants.subAccountIdsMap"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              },
+              {
+                "node_id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+                "namespace": "build_response_body",
+                "label": "Build Response Body",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": {
+          "1b715767-547f-4f89-b792-5bb151434531": "dot818"
+        },
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "kind": "activeBidding",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.activeBidding",
+          "code": "constants.activeBidding"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": true,
+        "readers_outside_workflows": []
+      }
+    ],
+    "searched": {
+      "workflows": 11,
+      "with_constants_node": 7
+    }
+  },
+  "e82b748a-3d32-4777-b3e3-b7d75d8580f1": {
+    "partner": {
+      "id": "e82b748a-3d32-4777-b3e3-b7d75d8580f1",
+      "slug": "gigfi"
+    },
+    "values": [
+      {
+        "constant_name": "GigfiClickUrl",
+        "kind": "ClickUrl",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.GigfiClickUrl",
+          "code": "constants.GigfiClickUrl"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": [
+          {
+            "reader": "buyer_select",
+            "description": "Buyer selection sends a lead it sells to this partner to the click URL."
+          },
+          {
+            "reader": "buyer_click_check",
+            "description": "The click check offers a lead to a click sold partner at the click URL, and refuses to when it carries no {prospect_id}."
+          },
+          {
+            "reader": "click_alert",
+            "description": "The click alert pages when the click URL carries no {prospect_id}."
+          }
+        ]
+      },
+      {
+        "constant_name": "GigfiSellOffOfferTitle",
+        "kind": "SellOffOfferTitle",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.GigfiSellOffOfferTitle",
+          "code": "constants.GigfiSellOffOfferTitle"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "GigfiSellOffOfferDetails",
+        "kind": "SellOffOfferDetails",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.GigfiSellOffOfferDetails",
+          "code": "constants.GigfiSellOffOfferDetails"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "GigfiSubAccountMinBids",
+        "kind": "SubAccountMinBids",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.GigfiSubAccountMinBids",
+          "code": "constants.GigfiSubAccountMinBids"
+        },
+        "readers": [
+          {
+            "workflow_id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+            "workflow_name": "RML - Bidding Workflow (GigFi)",
+            "is_active": true,
+            "reads": "by_name",
+            "places": [
+              {
+                "node_id": "ebc31eb2-5f2e-4979-b3df-edd460290d4f",
+                "namespace": "ping_gigfi",
+                "label": "Ping GigFi",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "by_name"
+              },
+              {
+                "node_id": "abd62688-f373-4b77-aaf2-9e25cc3ffef0",
+                "namespace": "build_response",
+                "label": "Build Response",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "by_name"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": {
+          "0d868153-1e04-4425-95f9-ce2320a030b0": 6.15,
+          "34c7f980-f343-4348-b85f-562697bd2980": 4.62,
+          "3714027c-81cf-4ab9-9db3-77f8dc0cbf80": 9.23,
+          "462a8345-3957-4fb2-b3f1-68b63fd4c5f3": 4.62,
+          "47430d99-6e9b-465a-b92b-d13be78e2d9e": 3.85,
+          "b3918028-6417-4a3d-acd7-c0f4ca1f9e28": 6.15,
+          "bc36a297-28a5-476b-a68b-22a16baa60bf": 3.08,
+          "f7d57eb6-4c87-437b-8686-fdf088a29846": 9.23
+        },
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "kind": "subAccountIdsMap",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.subAccountIdsMap",
+          "code": "constants.subAccountIdsMap"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              },
+              {
+                "node_id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+                "namespace": "build_response_body",
+                "label": "Build Response Body",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": {},
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "kind": "activeBidding",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.activeBidding",
+          "code": "constants.activeBidding"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": true,
+        "readers_outside_workflows": []
+      }
+    ],
+    "searched": {
+      "workflows": 11,
+      "with_constants_node": 7
+    }
+  },
+  "4ad955bd-744f-4c1f-acbb-19a22b9e5c64": {
+    "partner": {
+      "id": "4ad955bd-744f-4c1f-acbb-19a22b9e5c64",
+      "slug": "lendswift"
+    },
+    "values": [
+      {
+        "constant_name": "LendswiftClickUrl",
+        "kind": "ClickUrl",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.LendswiftClickUrl",
+          "code": "constants.LendswiftClickUrl"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": [
+          {
+            "reader": "buyer_select",
+            "description": "Buyer selection sends a lead it sells to this partner to the click URL."
+          },
+          {
+            "reader": "buyer_click_check",
+            "description": "The click check offers a lead to a click sold partner at the click URL, and refuses to when it carries no {prospect_id}."
+          },
+          {
+            "reader": "click_alert",
+            "description": "The click alert pages when the click URL carries no {prospect_id}."
+          }
+        ]
+      },
+      {
+        "constant_name": "LendswiftSellOffOfferTitle",
+        "kind": "SellOffOfferTitle",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.LendswiftSellOffOfferTitle",
+          "code": "constants.LendswiftSellOffOfferTitle"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "LendswiftSellOffOfferDetails",
+        "kind": "SellOffOfferDetails",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.LendswiftSellOffOfferDetails",
+          "code": "constants.LendswiftSellOffOfferDetails"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "LendswiftSubAccountMinBids",
+        "kind": "SubAccountMinBids",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.LendswiftSubAccountMinBids",
+          "code": "constants.LendswiftSubAccountMinBids"
+        },
+        "readers": [
+          {
+            "workflow_id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+            "workflow_name": "Bidding - LendSwift",
+            "is_active": true,
+            "reads": "by_name",
+            "places": [
+              {
+                "node_id": "994c9673-0281-4a18-a438-3e521d0fa879",
+                "namespace": "ping_lendswift",
+                "label": "Ping Lendswift",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "by_name"
+              },
+              {
+                "node_id": "0f93d25f-6b34-459a-b3aa-888f8bfade0c",
+                "namespace": "build_response",
+                "label": "Build Response",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "by_name"
+              }
+            ]
+          },
+          {
+            "workflow_id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+            "workflow_name": "RML - Bidding Workflow (LendSwift)",
+            "is_active": true,
+            "reads": "by_name",
+            "places": [
+              {
+                "node_id": "994c9673-0281-4a18-a438-3e521d0fa879",
+                "namespace": "ping_lendswift",
+                "label": "Ping Lendswift",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "by_name"
+              },
+              {
+                "node_id": "0f93d25f-6b34-459a-b3aa-888f8bfade0c",
+                "namespace": "build_response",
+                "label": "Build Response",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "by_name"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": {
+          "0d868153-1e04-4425-95f9-ce2320a030b0": 6.15,
+          "34c7f980-f343-4348-b85f-562697bd2980": 4.62,
+          "3714027c-81cf-4ab9-9db3-77f8dc0cbf80": 9.23,
+          "462a8345-3957-4fb2-b3f1-68b63fd4c5f3": 4.62,
+          "47430d99-6e9b-465a-b92b-d13be78e2d9e": 3.85,
+          "b3918028-6417-4a3d-acd7-c0f4ca1f9e28": 6.15,
+          "bc36a297-28a5-476b-a68b-22a16baa60bf": 3.08,
+          "f7d57eb6-4c87-437b-8686-fdf088a29846": 9.23
+        },
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "kind": "subAccountIdsMap",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.subAccountIdsMap",
+          "code": "constants.subAccountIdsMap"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              },
+              {
+                "node_id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+                "namespace": "build_response_body",
+                "label": "Build Response Body",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": {},
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "kind": "activeBidding",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.activeBidding",
+          "code": "constants.activeBidding"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": true,
+        "readers_outside_workflows": []
+      }
+    ],
+    "searched": {
+      "workflows": 11,
+      "with_constants_node": 7
+    }
+  },
+  "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3": {
+    "partner": {
+      "id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+      "slug": "liberty1"
+    },
+    "values": [
+      {
+        "constant_name": "Liberty1ClickUrl",
+        "kind": "ClickUrl",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.Liberty1ClickUrl",
+          "code": "constants.Liberty1ClickUrl"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": "https://trypennie.com/portal/liberty/{prospect_id}",
+        "readers_outside_workflows": [
+          {
+            "reader": "buyer_select",
+            "description": "Buyer selection sends a lead it sells to this partner to the click URL."
+          },
+          {
+            "reader": "buyer_click_check",
+            "description": "The click check offers a lead to a click sold partner at the click URL, and refuses to when it carries no {prospect_id}."
+          },
+          {
+            "reader": "click_alert",
+            "description": "The click alert pages when the click URL carries no {prospect_id}."
+          }
+        ]
+      },
+      {
+        "constant_name": "Liberty1SellOffOfferTitle",
+        "kind": "SellOffOfferTitle",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.Liberty1SellOffOfferTitle",
+          "code": "constants.Liberty1SellOffOfferTitle"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "Liberty1SellOffOfferDetails",
+        "kind": "SellOffOfferDetails",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.Liberty1SellOffOfferDetails",
+          "code": "constants.Liberty1SellOffOfferDetails"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "Liberty1SubAccountMinBids",
+        "kind": "SubAccountMinBids",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.Liberty1SubAccountMinBids",
+          "code": "constants.Liberty1SubAccountMinBids"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "kind": "subAccountIdsMap",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.subAccountIdsMap",
+          "code": "constants.subAccountIdsMap"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              },
+              {
+                "node_id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+                "namespace": "build_response_body",
+                "label": "Build Response Body",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": {},
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "kind": "activeBidding",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.activeBidding",
+          "code": "constants.activeBidding"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": true,
+        "readers_outside_workflows": []
+      }
+    ],
+    "searched": {
+      "workflows": 11,
+      "with_constants_node": 7
+    }
+  },
+  "73bcc351-724d-4705-be3b-b27d0ffc17ad": {
+    "partner": {
+      "id": "73bcc351-724d-4705-be3b-b27d0ffc17ad",
+      "slug": "nerdwallet"
+    },
+    "values": [
+      {
+        "constant_name": "NerdwalletClickUrl",
+        "kind": "ClickUrl",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.NerdwalletClickUrl",
+          "code": "constants.NerdwalletClickUrl"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": [
+          {
+            "reader": "buyer_select",
+            "description": "Buyer selection sends a lead it sells to this partner to the click URL."
+          },
+          {
+            "reader": "buyer_click_check",
+            "description": "The click check offers a lead to a click sold partner at the click URL, and refuses to when it carries no {prospect_id}."
+          },
+          {
+            "reader": "click_alert",
+            "description": "The click alert pages when the click URL carries no {prospect_id}."
+          }
+        ]
+      },
+      {
+        "constant_name": "NerdwalletSellOffOfferTitle",
+        "kind": "SellOffOfferTitle",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.NerdwalletSellOffOfferTitle",
+          "code": "constants.NerdwalletSellOffOfferTitle"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "NerdwalletSellOffOfferDetails",
+        "kind": "SellOffOfferDetails",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.NerdwalletSellOffOfferDetails",
+          "code": "constants.NerdwalletSellOffOfferDetails"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "NerdwalletSubAccountMinBids",
+        "kind": "SubAccountMinBids",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.NerdwalletSubAccountMinBids",
+          "code": "constants.NerdwalletSubAccountMinBids"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "kind": "subAccountIdsMap",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.subAccountIdsMap",
+          "code": "constants.subAccountIdsMap"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              },
+              {
+                "node_id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+                "namespace": "build_response_body",
+                "label": "Build Response Body",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": {
+          "76024d2a-1cdf-496e-980e-44732d341c13": "nerdwallet"
+        },
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "kind": "activeBidding",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.activeBidding",
+          "code": "constants.activeBidding"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": true,
+        "readers_outside_workflows": []
+      }
+    ],
+    "searched": {
+      "workflows": 11,
+      "with_constants_node": 7
+    }
+  },
+  "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68": {
+    "partner": {
+      "id": "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68",
+      "slug": "sofi"
+    },
+    "values": [
+      {
+        "constant_name": "SofiClickUrl",
+        "kind": "ClickUrl",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.SofiClickUrl",
+          "code": "constants.SofiClickUrl"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": [
+          {
+            "reader": "buyer_select",
+            "description": "Buyer selection sends a lead it sells to this partner to the click URL."
+          },
+          {
+            "reader": "buyer_click_check",
+            "description": "The click check offers a lead to a click sold partner at the click URL, and refuses to when it carries no {prospect_id}."
+          },
+          {
+            "reader": "click_alert",
+            "description": "The click alert pages when the click URL carries no {prospect_id}."
+          }
+        ]
+      },
+      {
+        "constant_name": "SofiSellOffOfferTitle",
+        "kind": "SellOffOfferTitle",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.SofiSellOffOfferTitle",
+          "code": "constants.SofiSellOffOfferTitle"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "by_name",
+            "places": [
+              {
+                "node_id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+                "namespace": "build_response_body",
+                "label": "Build Response Body",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "by_name"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": "Denied a personal loan? Need an income-based financing solution?",
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "SofiSellOffOfferDetails",
+        "kind": "SellOffOfferDetails",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.SofiSellOffOfferDetails",
+          "code": "constants.SofiSellOffOfferDetails"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "by_name",
+            "places": [
+              {
+                "node_id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+                "namespace": "build_response_body",
+                "label": "Build Response Body",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "by_name"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": "<p>Access up to $100,000 with rates tailored to your income</p><ul><li>Terms and rates based on your income</li><li>Approval in minutes, not weeks</li><li>Funding as soon as the next business day</li></ul>",
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "SofiSubAccountMinBids",
+        "kind": "SubAccountMinBids",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.SofiSubAccountMinBids",
+          "code": "constants.SofiSubAccountMinBids"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "kind": "subAccountIdsMap",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.subAccountIdsMap",
+          "code": "constants.subAccountIdsMap"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              },
+              {
+                "node_id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+                "namespace": "build_response_body",
+                "label": "Build Response Body",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": {
+          "dd56c162-0b24-4c53-a76c-a6b2f717051b": "sofi",
+          "189b30c2-b93c-42dd-945a-e88246d0362a": "sofi",
+          "026f93f3-3d57-44b0-b52f-82426c91e547": "sofi",
+          "c439f8ab-eea4-4684-805e-6f305994543b": "sofi"
+        },
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "kind": "activeBidding",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.activeBidding",
+          "code": "constants.activeBidding"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": true,
+        "readers_outside_workflows": []
+      }
+    ],
+    "searched": {
+      "workflows": 11,
+      "with_constants_node": 7
+    }
+  },
+  "1b9cbd8f-1d23-496c-b046-b11d64edae29": {
+    "partner": {
+      "id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+      "slug": "tripoint"
+    },
+    "values": [
+      {
+        "constant_name": "TripointClickUrl",
+        "kind": "ClickUrl",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.TripointClickUrl",
+          "code": "constants.TripointClickUrl"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "by_name",
+            "places": [
+              {
+                "node_id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+                "namespace": "build_response_body",
+                "label": "Build Response Body",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "by_name"
+              },
+              {
+                "node_id": "feafe7f2-1988-4b79-83fb-c8ece1390406",
+                "namespace": "tripoint_ping",
+                "label": "Tripoint Ping",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "by_name"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": "https://trypennie.com/portal/tpl",
+        "readers_outside_workflows": [
+          {
+            "reader": "buyer_select",
+            "description": "Buyer selection sends a lead it sells to this partner to the click URL."
+          },
+          {
+            "reader": "buyer_click_check",
+            "description": "The click check offers a lead to a click sold partner at the click URL, and refuses to when it carries no {prospect_id}."
+          },
+          {
+            "reader": "click_alert",
+            "description": "The click alert pages when the click URL carries no {prospect_id}."
+          }
+        ]
+      },
+      {
+        "constant_name": "TripointSellOffOfferTitle",
+        "kind": "SellOffOfferTitle",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.TripointSellOffOfferTitle",
+          "code": "constants.TripointSellOffOfferTitle"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "TripointSellOffOfferDetails",
+        "kind": "SellOffOfferDetails",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.TripointSellOffOfferDetails",
+          "code": "constants.TripointSellOffOfferDetails"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "TripointSubAccountMinBids",
+        "kind": "SubAccountMinBids",
+        "map": false,
+        "access": {
+          "template": "steps.constants.output.TripointSubAccountMinBids",
+          "code": "constants.TripointSubAccountMinBids"
+        },
+        "readers": [],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": null,
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "kind": "subAccountIdsMap",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.subAccountIdsMap",
+          "code": "constants.subAccountIdsMap"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              },
+              {
+                "node_id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+                "namespace": "build_response_body",
+                "label": "Build Response Body",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": false,
+        "value": {},
+        "readers_outside_workflows": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "kind": "activeBidding",
+        "map": true,
+        "access": {
+          "template": "steps.constants.output.activeBidding",
+          "code": "constants.activeBidding"
+        },
+        "readers": [
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "workflow_name": "Engine Bidding Workflow",
+            "is_active": true,
+            "reads": "every_partner",
+            "places": [
+              {
+                "node_id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+                "namespace": "validate_bidding_and_state",
+                "label": "Validate",
+                "node_type": "code",
+                "edge_id": null,
+                "reads": "every_partner"
+              }
+            ]
+          }
+        ],
+        "shadowed_data_keys": [],
+        "emitted": true,
+        "value": true,
+        "readers_outside_workflows": []
+      }
+    ],
+    "searched": {
+      "workflows": 11,
+      "with_constants_node": 7
+    }
+  }
+}

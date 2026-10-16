@@ -29,6 +29,7 @@ import { archiveSender } from '../../lib/execution-archive-send'
 import { parseReArchiveRequest } from '../../archive/rearchive-request'
 import { archiveHealth, hoursBehindWatermark } from '../../lib/archive-health'
 import { readMemoryReadings } from '../../lib/database-memory-readings'
+import { readStallSnapshots, withoutOrganizationData } from '../../lib/db-stall-snapshot'
 import { mayRepairRun } from '../../archive/repair-priority'
 import { REQUEST_RUN_BUDGET } from '../../archive/deadline'
 import { canonicalHourStart } from '../../archive/clock'
@@ -621,6 +622,33 @@ admin.get('/database-memory-readings', async (c) => {
     newestAt: count ? readings[count - 1].at : null,
     readings,
   })
+})
+
+/**
+ * The database snapshots taken during write stalls (#2292), newest first, with
+ * the newest `limit` (default 5, at most 20) in full. A GET that only looks
+ * (L206): it reads the Worker's own KV and never calls the database. A storage
+ * outage is a 503 carrying the error, never an empty list that reads as "no
+ * stall was snapshotted" (L11).
+ *
+ * Who may call it: any signed in user, like the memory readings above, because
+ * the snapshots are platform wide (one database serves every organization) and
+ * cannot be scoped to one. That is also why anything belonging to one
+ * organization is WITHHELD here: each running query (it can carry customer
+ * data) and the run and workflow of the write that set a snapshot off. The
+ * platform's state (which roles and applications, waiting on what, since when,
+ * blocked by whom) is served; the full record is read with wrangler, behind
+ * Cloudflare account access (docs/disaster-recovery.md, Scenario E).
+ */
+admin.get('/db-stall-snapshots', async (c) => {
+  const asked = Number(c.req.query('limit') ?? '5')
+  const limit = Number.isFinite(asked) ? Math.min(Math.max(Math.floor(asked), 0), 20) : 5
+  try {
+    const { entries, latest, unreadable } = await readStallSnapshots(c.env.IDEMPOTENCY, { limit })
+    return c.json({ ok: true, count: entries.length, unreadable, query_text: 'withheld', entries, latest: latest.map(withoutOrganizationData) })
+  } catch (e) {
+    return c.json({ ok: false, error: formatErr(e), count: 0, entries: [], latest: [] }, 503)
+  }
 })
 
 /**

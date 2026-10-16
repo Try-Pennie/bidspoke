@@ -490,5 +490,11 @@
     "args": {},
     "anon": "denied",
     "note": "The cron guard fail-open record's retention (#2166): run daily by the purge-cron-guard-fail-opens pg_cron job, deleting cron_guard_fail_opens rows over 7 days old. A DELETE, revoked from anon and authenticated, so anon must be denied. It takes no arguments, so an empty body names it."
+  },
+  {
+    "name": "db_stall_snapshot",
+    "args": {},
+    "anon": "denied",
+    "note": "Called by the Worker the moment a post-response write times out (#2292, lib/db-stall-snapshot.ts) to record what every backend is doing during the stall. Security definer, reading every running query's first 300 characters, which can carry customer data, so it MUST be denied to anon (#762). If it is missing, every stall's snapshot is stored as failed and the cause goes unrecorded again. It takes no arguments, so an empty body names it."
   }
 ]

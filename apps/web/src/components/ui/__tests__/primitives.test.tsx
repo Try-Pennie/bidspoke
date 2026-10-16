@@ -28,6 +28,16 @@ describe('Field', () => {
     expect(screen.getByRole('alert')).toHaveAttribute('id', 'f-error')
   })
 
+  it('a label a heading already says is kept for screen readers and hidden on screen (#2142)', () => {
+    render(
+      <Field id="f" label="Click URL" labelHidden>
+        <TextInput id="f" value="" onChange={() => {}} />
+      </Field>
+    )
+    expect(screen.getByLabelText('Click URL')).toHaveAttribute('id', 'f')
+    expect(screen.getByText('Click URL')).toHaveClass('sr-only')
+  })
+
   it('draws the hint in the hint token and the error through FieldError (#2144)', () => {
     render(
       <Field id="g" label="Cap" hint="Leads a day." error="Cap must be a whole number.">
