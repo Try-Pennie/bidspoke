@@ -4,8 +4,13 @@
  * The sell-off offer as it is shown (#2142, the settled design's "As shown"):
  * the title, then the details, which are HTML a person typed (paragraphs and a
  * bulleted list in Sofi's). The details are parsed and rebuilt as React nodes
- * from an allowlist of elements, so a script, an event handler or a javascript
- * link in them is never run; anything else keeps only its text.
+ * so a script, an event handler or a javascript link in them is never run:
+ * - paragraphs, lists, list items, bold, italic and line breaks are kept as
+ *   elements, with no attributes;
+ * - a link is kept only when it goes to http or https, else it keeps its text;
+ * - script, style, iframe, object, embed, img, svg, math, template and
+ *   noscript are removed together with everything inside them (DROP);
+ * - any other element is dropped and keeps only its text.
  */
 import type { ReactNode } from 'react'
 

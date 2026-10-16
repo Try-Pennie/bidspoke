@@ -116,6 +116,23 @@ describe('the read\'s other states', () => {
     expect(screen.getByText('Which workflows read these values shows once the partner is saved.')).toBeVisible()
   })
 
+  it('a re-read (a save, or a sub-account ID added) keeps the answer on screen until the new one lands, never flashing Checking', async () => {
+    vi.mocked(api.partners.workflowValues).mockResolvedValueOnce(bySlug('tripoint'))
+    let land: (a: PartnerWorkflowValues) => void = () => {}
+    const { rerender } = render(<WorkflowValuesPanel {...props} partnerId="t" />)
+    await findSection('Click URL')
+    vi.mocked(api.partners.workflowValues).mockReturnValueOnce(new Promise((res) => { land = res }))
+    rerender(<WorkflowValuesPanel {...props} partnerId="t" refreshKey="4" />)
+    await waitFor(() => expect(api.partners.workflowValues).toHaveBeenCalledTimes(2))
+    expect(screen.queryByRole('status')).toBeNull()
+    expect(within(section('Click URL')).getByText('Engine Bidding Workflow, in Build Response Body and Tripoint Ping.')).toBeVisible()
+    const next = structuredClone(bySlug('tripoint'))
+    next.values[0].readers = []
+    land(next)
+    await waitFor(() => expect(within(section('Click URL')).queryByText('Engine Bidding Workflow, in Build Response Body and Tripoint Ping.')).toBeNull())
+    expect(within(section('Click URL')).getByText('Buyer selection sends a lead it sells to this partner to the click URL.')).toBeVisible()
+  })
+
   it('reads again when the partner is saved', async () => {
     vi.mocked(api.partners.workflowValues).mockResolvedValue(bySlug('tripoint'))
     const { rerender } = render(<WorkflowValuesPanel {...props} partnerId="t" />)

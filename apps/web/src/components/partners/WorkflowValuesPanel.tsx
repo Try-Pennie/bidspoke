@@ -18,7 +18,8 @@ import {
   accessLines, readerSentences, searchedSentence, sectionsOf, shadowSentences, type SectionKey, type ValueSection,
 } from '@/app/(app)/partners/workflow-values-text'
 
-type ReadState = { kind: 'none' } | { kind: 'loading' } | { kind: 'failed' } | { kind: 'found'; answer: PartnerWorkflowValues }
+/** `found` records the partner id it was read for, so a re-read knows whether it is the same partner. */
+type ReadState = { kind: 'none' } | { kind: 'loading' } | { kind: 'failed' } | { kind: 'found'; answer: PartnerWorkflowValues; partnerId: string }
 
 export type WorkflowValueControls = Partial<Record<Exclude<SectionKey, 'other' | 'active'>, ReactNode>>
 
@@ -118,11 +119,14 @@ export function WorkflowValuesPanel({ partnerId, slug, refreshKey, isBuyer, isSo
   useEffect(() => {
     if (!partnerId) { setRead({ kind: 'none' }); return }
     let cancelled = false
-    setRead({ kind: 'loading' })
+    // A re-read of the same partner (a save, a sub-account ID added) keeps the
+    // answer on screen until the new one lands, so the tab never flashes
+    // Checking under the person editing it. A first read, or another partner, is Checking.
+    setRead((prev) => (prev.kind === 'found' && prev.partnerId === partnerId ? prev : { kind: 'loading' }))
     // Through a promise, so a call that throws before answering is a failed read too, never an empty one.
     Promise.resolve()
       .then(() => api.partners.workflowValues(partnerId))
-      .then((answer) => { if (!cancelled) setRead({ kind: 'found', answer }) })
+      .then((answer) => { if (!cancelled) setRead({ kind: 'found', answer, partnerId }) })
       .catch(() => { if (!cancelled) setRead({ kind: 'failed' }) })
     return () => { cancelled = true }
   }, [partnerId, refreshKey, attempt])
