@@ -10,7 +10,7 @@ import userEvent from '@testing-library/user-event'
 
 vi.mock('@/lib/api', () => ({
   api: {
-    partners: { usage: vi.fn() },
+    partners: { usage: vi.fn(), history: vi.fn() },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
     buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },
@@ -38,6 +38,7 @@ const names = new Map([['p1', 'Acme'], ['p2', 'Tripoint']])
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(api.partners.usage).mockResolvedValue(NONE)
+  vi.mocked(api.partners.history).mockResolvedValue({ partnerId: 'p1', entries: [], complete: true, completeSince: null })
   vi.mocked(api.partnerUuids.list).mockResolvedValue([])
   vi.mocked(api.partnerBidConfigs.list).mockResolvedValue([])
   vi.mocked(api.buyerProfiles.get).mockResolvedValue({ profile: null, accept_signals: [], other_sellers: [] })
@@ -138,6 +139,18 @@ describe('the confirmation window (L630)', () => {
     expect(onSave.mock.calls[0][0]).toEqual({ confirmation_window_ms: 5000 })
   })
 
+  it('keeps a saved window in view while it is cleared, so emptying it does not hide the field', async () => {
+    const onSave = vi.fn().mockResolvedValue({ partner: { ...partner, version: 4 }, profile: null, copyWarning: null })
+    render(<PartnerForm partner={{ ...partner, confirmation_window_ms: 5000 }} onSave={onSave} onCancel={vi.fn()} />)
+    await waitFor(() => expect(api.partners.usage).toHaveBeenCalled())
+    await userEvent.click(await screen.findByRole('tab', { name: 'Bid Group' }))
+    fireEvent.change(screen.getByLabelText('Confirmation window (ms)'), { target: { value: '' } })
+    expect(screen.getByLabelText('Confirmation window (ms)')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    expect(onSave.mock.calls[0][0]).toEqual({ confirmation_window_ms: null })
+  })
+
   it('shows the field when a Latency Gate names the partner', async () => {
     vi.mocked(api.partners.usage).mockResolvedValue({ ...NONE, partner_bid: [step({ is_active: true, workflow_name: 'Lead Economy' })], latency_gate: [step({ is_active: true, workflow_name: 'Lead Economy' })] })
     render(<PartnerForm partner={partner} onSave={vi.fn()} onCancel={vi.fn()} />)
@@ -214,13 +227,20 @@ describe('problems open where they are (PM-12)', () => {
   })
 })
 
-describe('History (#2137)', () => {
-  it('says when the partner was last saved and by whom, and reads the profile history only once opened', async () => {
+describe('History (#2137, #2141)', () => {
+  it('reads the partner\'s merged History only once opened, and shows its changes in place of the profile saves', async () => {
+    vi.mocked(api.partners.history).mockResolvedValue({ partnerId: 'p1', complete: true, completeSince: null, entries: [
+      { key: 'audit:1', source: 'audit_log', at: '2026-10-13T18:05:00Z', entityType: 'partner_config', entityId: 'p1', action: 'updated',
+        editor: { kind: 'person', userId: 'u1', name: 'Editor A', via: null }, editorLabel: 'Editor A', changes: { daily_cap: { old: 40, new: 50 } }, matrix: null },
+    ] })
     render(<PartnerForm partner={partner} onSave={vi.fn()} onCancel={vi.fn()} />)
-    expect(api.buyerProfiles.history).not.toHaveBeenCalled()
+    expect(api.partners.history).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('tab', { name: 'History' }))
-    expect(screen.getByText('Last saved Oct 13, 2:05 PM ET by Editor A.')).toBeVisible()
-    await waitFor(() => expect(api.buyerProfiles.history).toHaveBeenCalledWith('p1'))
-    expect(await screen.findByText('This profile has never been saved.')).toBeVisible()
+    await waitFor(() => expect(api.partners.history).toHaveBeenCalledWith('p1'))
+    const item = await screen.findByRole('listitem')
+    expect(item).toHaveTextContent('Editor A')
+    expect(item).toHaveTextContent(/Daily attempt cap \(bidding workflows\) from 40 → to 50/)
+    // The profile's own history route is no longer read: History holds every source.
+    expect(api.buyerProfiles.history).not.toHaveBeenCalled()
   })
 })

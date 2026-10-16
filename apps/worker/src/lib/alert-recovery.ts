@@ -28,6 +28,7 @@
 import type { RecoveryMarkerSignal } from './incident-signals'
 import { reportRecordError, writeIncidentEvent, type IncidentContext, type IncidentEnd } from './incident-outbox'
 import { formatErr } from './format-error'
+import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
 
 export type { IncidentContext, IncidentEnd } from './incident-outbox'
 
@@ -197,6 +198,17 @@ export async function markSpikeSeen(
   })
 }
 
+/**
+ * The claim an all-clear is sent under (#2062): only a minute alert passes one
+ * (minuteAllClearClaim in alert-fanout.ts, which says why only those). Typed
+ * here so this module needs nothing from the fan-out.
+ */
+export interface AllClearClaim {
+  claims: AlertClaims | undefined
+  key: string
+  ttlSeconds: number
+}
+
 /** What an all-clear has to say: when the incident was first paged and when it was last seen. */
 export interface RecoveryDue {
   alertedAt: string
@@ -308,7 +320,7 @@ export async function announceRecovery(
   cooldownKey: string | null,
   incident: IncidentContext,
   send: (alertedAt: string, endedAt: string | null) => Promise<boolean>,
-  opts: { now?: number; rearmMinutes?: number; hasEvidence?: () => boolean | Promise<boolean> } = {},
+  opts: { now?: number; rearmMinutes?: number; hasEvidence?: () => boolean | Promise<boolean>; claim?: AllClearClaim } = {},
 ): Promise<boolean> {
   // One reading for the whole all-clear: judging it due and recording its end.
   const now = opts.now ?? Date.now()
@@ -336,14 +348,44 @@ export async function announceRecovery(
     if (!evident) return false
   }
 
+  // #2062: a minute alert claims its all-clear here, once it is owed and
+  // evident, so a quiet minute makes no call to the claim object for each
+  // workflow. A stalled tick overlapping the next minute's then sends it once.
+  // The claim fails open (makeAlertClaims). The marker is read again AFTER the
+  // claim (L157): a tick that judged it owed before another tick's claim lapsed
+  // must not send an all-clear that tick already settled.
+  const claim = opts.claim
+  // Never throws: a failed release must not replace the send's own failure or
+  // turn a held all-clear into a throw (the claim then lapses at its TTL).
+  const release = () => (claim ? releaseClaimQuietly(claim.claims, claim.key) : Promise.resolve())
+  if (claim?.claims) {
+    if (!(await claim.claims.claim(claim.key, claim.ttlSeconds))) {
+      console.log(`[alert-recovery] ${prefix} all-clear for ${id} claimed by another tick`)
+      return false
+    }
+    if (!(await kv.get(recoveryKey(prefix, id)))) {
+      await release()
+      return false
+    }
+  }
+
   let delivered: boolean
   try {
     delivered = await send(due.alertedAt, due.endedAt)
   } catch (err) {
     console.error(`[alert-recovery] ${prefix} all-clear failed for ${id}:`, err)
+    // A throw cannot say whether Slack took it (a timeout, a connection lost
+    // after the request went out), so a claim is KEPT for its TTL: at worst the
+    // all-clear is late, never sent twice by the next tick. The marker stays,
+    // so it is tried again once the claim lapses.
+    if (claim?.claims) console.error(`[alert-recovery] ${claim.key}: the all-clear threw, so it may have reached Slack; the claim is kept for ${claim.ttlSeconds} s rather than freed`)
     return false
   }
-  if (!delivered) return false
+  // False is an answer: Slack refused it, or no request went out. Freed so the next tick retries.
+  if (!delivered) {
+    await release()
+    return false
+  }
 
   await settleRecovery(kv, prefix, id, cooldownKey, { ...incident, reason: 'all_clear' }, now)
   return true

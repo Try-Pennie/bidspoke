@@ -54,8 +54,10 @@ export class CircuitBreakerClient {
     await this.stub.fetch('http://do/release-probe', { method: 'POST' })
   }
 
+  /** Throws when the object does not confirm the reset, so a caller can say it was not reset (#2140). */
   async reset(): Promise<void> {
-    await this.stub.fetch('http://do/reset', { method: 'POST' })
+    const res = await this.stub.fetch('http://do/reset', { method: 'POST' })
+    if (!res.ok) throw new Error(`circuit breaker reset answered ${res.status}`)
   }
 
   async status(): Promise<CircuitStatus> {

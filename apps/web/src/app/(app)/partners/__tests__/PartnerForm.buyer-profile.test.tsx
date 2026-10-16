@@ -10,7 +10,14 @@
  */
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest'
 import { cleanup, render, screen, fireEvent, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import type { BuyerProfileDocument, SaleWrites } from '@bidspoke/buyer-profile'
+
+/** The error a field is described by, beside it (role alert). */
+function fieldErrorOf(label: string): HTMLElement | null {
+  const describedBy = screen.getByLabelText(label).getAttribute('aria-describedby') ?? ''
+  return describedBy.split(' ').map((id) => document.getElementById(id)).find((el): el is HTMLElement => el?.getAttribute('role') === 'alert') ?? null
+}
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -19,7 +26,7 @@ vi.mock('@/lib/api', () => ({
     partnerBidConfigs: { list: vi.fn() },
     buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },
     buyerSales: { list: vi.fn(), settle: vi.fn() },
-    heldClicks: { list: vi.fn(), markSent: vi.fn(), free: vi.fn(), clear: vi.fn(), retrySalesforce: vi.fn() },
+    heldClicks: { list: vi.fn(), markSent: vi.fn(), free: vi.fn(), clear: vi.fn(), retrySalesforce: vi.fn(), setLeadId: vi.fn() },
   },
 }))
 
@@ -131,24 +138,27 @@ describe('the Buyer profile section', () => {
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
     // Only the changed partner field is sent (#2132): the accept rules were not edited, so they are not written.
     expect(onSave.mock.calls[0][0]).toEqual({ daily_cap: 300 })
-    expect(onSave.mock.calls[0][3]).toEqual({ expected_partner_version: 0, expected_profile_version: 3, profile: expect.objectContaining({ daily_lead_cap: 600 }), save_id: SAVE_ID })
+    // client_id is this tab (#2135), so the tab knows its own live notice.
+    expect(onSave.mock.calls[0][3]).toEqual({ expected_partner_version: 0, expected_profile_version: 3, profile: expect.objectContaining({ daily_lead_cap: 600 }), save_id: SAVE_ID, client_id: expect.stringMatching(/^[0-9a-f-]{36}$/) })
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Partner saved\. Buyer profile saved, version 4\./))
   })
 
-  it('the button says Saved only once the one save has landed, never while it is in flight, and a failure says nothing was saved', async () => {
+  it('the bar says Saved only once the one save has landed, never while it is in flight, and a failure says nothing was saved', async () => {
     let fail!: (e: unknown) => void
     const onSave = await renderBuyer(vi.fn().mockImplementation(() => new Promise((_res, rej) => { fail = rej })))
     fireEvent.change(screen.getByLabelText('Daily attempt cap (bidding workflows)'), { target: { value: '300' } })
     fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
-    const submit = document.querySelector('button[type="submit"]')!
-    expect(submit).not.toHaveTextContent('Saved')
+    const bar = () => document.querySelector('[data-save-bar]')!
+    // In flight: the bar counts the seconds (#2138), and nothing says Saved.
+    expect(bar()).toHaveTextContent(/^Saving, \d+ seconds?$/)
     fail(Object.assign(new Error('boom'), { status: 500, body: { error: 'boom', message: 'The database did not answer.' } }))
     await screen.findByText('Nothing saved: The database did not answer.')
     // The partner half is never reported saved on its own any more (#2133).
     expect(screen.queryByText(/Partner saved/)).toBeNull()
-    expect(submit).not.toHaveTextContent('Saved')
+    expect(bar()).not.toHaveTextContent('Saved')
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
   })
 
   it('a profile only save with a partner edit that stores nothing (a blank floor row) leaves nothing reading as unsaved', async () => {
@@ -233,8 +243,9 @@ describe('the Buyer profile section', () => {
     const onSave = await renderBuyer()
     fireEvent.change(screen.getByLabelText('Salesforce routing code'), { target: { value: '' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    const outcome = await screen.findByText(/Nothing saved\./)
-    expect(outcome).toHaveTextContent('Salesforce routing code: Set the Salesforce routing code on the partner before enabling.')
+    // The bar names the field and its tab (#2138, PM-12); the reason is beside the field.
+    expect(await screen.findByText('Nothing saved: fix Salesforce routing code in Buyer profile.')).toBeInTheDocument()
+    expect(fieldErrorOf('Salesforce routing code')).toHaveTextContent('Set the Salesforce routing code on the partner before enabling.')
     expect(onSave).not.toHaveBeenCalled()
   })
 
@@ -246,13 +257,18 @@ describe('the Buyer profile section', () => {
     expect(onSave).not.toHaveBeenCalled()
   })
 
-  it('the refusal beside the Save button names the field by its label and carries the reason, and never says below (#1464, L111, L399)', async () => {
+  it('the refusal in the save bar names the field by its label and its tab, never a direction, and Show me puts focus on it (#1464, L111, L399, #2138)', async () => {
     await renderBuyer()
     fireEvent.change(screen.getByLabelText('Leads per hour'), { target: { value: '900' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    const outcome = await screen.findByText(/Nothing saved\./)
-    expect(outcome).toHaveTextContent('Nothing saved. Fix the buyer profile first: Leads per hour: The hourly lead cap is above the daily lead cap.')
+    const outcome = await screen.findByText('Nothing saved: fix Leads per hour in Buyer profile.')
     expect(outcome).not.toHaveTextContent(/below/i)
+    // The reason is beside the field, which Show me opens and focuses.
+    await userEvent.click(screen.getByRole('tab', { name: /^Partner/ }))
+    await userEvent.click(screen.getByRole('button', { name: 'Show me: the Buyer profile tab' }))
+    expect(screen.getByRole('tab', { name: /^Buyer profile/ })).toHaveAttribute('aria-selected', 'true')
+    expect(document.activeElement).toBe(screen.getByLabelText('Leads per hour'))
+    expect(screen.getAllByRole('alert').map((a) => a.textContent).join(' ')).toMatch(/The hourly lead cap is above the daily lead cap/)
   })
 
   // #2134 (PM-3): the 409 side by side, Save over theirs and Take theirs are
@@ -421,8 +437,8 @@ describe('how the buyer is sold', () => {
     const onSave = await renderWith(null)
     fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '50' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    const outcome = await screen.findByText(/Nothing saved\./)
-    expect(outcome).toHaveTextContent('Sold on: Choose whether this buyer is sold on the offer or on the click.')
+    expect(await screen.findByText('Nothing saved: fix Sold on in Buyer profile.')).toBeInTheDocument()
+    expect(screen.getAllByRole('alert').map((a) => a.textContent).join(' ')).toMatch('Choose whether this buyer is sold on the offer or on the click.')
     expect(onSave).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('radio', { name: 'The click' }))
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
@@ -433,9 +449,10 @@ describe('how the buyer is sold', () => {
   // URL without it, so an enabled click buyer without it would never be offered.
   it('an enabled click buyer whose click URL has no {prospect_id} is refused, with the error on the Click URL field, and nothing is saved', async () => {
     const onSave = await renderWith(clickDoc, { click_url: 'https://trypennie.com/portal/libertyone/' })
+    // Any edit offers Save (#2138), and the save judges the stored profile with it.
+    fireEvent.change(screen.getByLabelText('Clicks per day'), { target: { value: '51' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    const outcome = await screen.findByText(/Nothing saved\./)
-    expect(outcome).toHaveTextContent('Click URL: Put {prospect_id} in the click URL')
+    expect(await screen.findByText('Nothing saved: fix Click URL in Workflow values.')).toBeInTheDocument()
     const field = screen.getByLabelText('Click URL')
     const describedBy = field.getAttribute('aria-describedby') ?? ''
     const fieldError = describedBy.split(' ').map((id) => document.getElementById(id)).find((el) => el?.getAttribute('role') === 'alert')
@@ -461,7 +478,8 @@ describe('how the buyer is sold', () => {
     fireEvent.change(screen.getByLabelText('Click URL'), { target: { value: 'https://trypennie.com/portal/libertyone/' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(clickFieldError()).toHaveTextContent(message))
-    expect(await screen.findByText(`Nothing saved: ${message}`)).toBeInTheDocument()
+    // The bar names the field and its tab (#2138); the route's sentence is on the field.
+    expect(await screen.findByText('Nothing saved: fix Click URL in Workflow values.')).toBeInTheDocument()
     expect(screen.queryByText(code, { exact: false })).not.toBeInTheDocument()
   })
 
@@ -601,13 +619,13 @@ describe('how the buyer is sold', () => {
     vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
     vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: { added: true, count: 12, date: '2027-09-20' }, salesforce: allUpdated, audit_recorded: true, list_cleared: true })
     await renderWith(clickDoc, { name: 'Liberty1' })
-    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('tr') as HTMLElement
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
     fireEvent.click(within(row).getByRole('button', { name: 'Mark sent' }))
-    fireEvent.change(within(row).getByLabelText('Lead id in Liberty1'), { target: { value: 'a0B5f00000XyZ12AAB' } })
+    fireEvent.change(within(row).getByLabelText("Liberty1's lead id, if you have it"), { target: { value: 'a0B5f00000XyZ12AAB' } })
     fireEvent.click(within(row).getByRole('button', { name: 'Mark it sent' }))
     await waitFor(() => expect(api.heldClicks.markSent).toHaveBeenCalledWith('held-1', 2, 'a0B5f00000XyZ12AAB'))
     await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent("Marked sent as a0B5f00000XyZ12AAB. Counted in Liberty1's clicks for Sep 20 (Pacific). Salesforce updated: Prospect, Submission, Lead."))
-    expect(within(row).queryByRole('button', { name: 'Retry the Salesforce updates' })).toBeNull()
+    expect(within(row).queryByRole('button', { name: 'Retry Salesforce' })).toBeNull()
   })
 
   // #1766: an add that got no answer may still have landed, so only a refusal the counter
@@ -628,41 +646,41 @@ describe('how the buyer is sold', () => {
       vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
       vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: null, count_date: '2027-09-20', salesforce: allUpdated, audit_recorded: true, list_cleared: true, ...failure } as MarkSentResult)
       await renderWith(clickDoc, { name: 'Liberty1' })
-      const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('tr') as HTMLElement
+      const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
       fireEvent.click(within(row).getByRole('button', { name: 'Mark sent' }))
-      fireEvent.change(within(row).getByLabelText('Lead id in Liberty1'), { target: { value: 'L1F-778' } })
+      fireEvent.change(within(row).getByLabelText("Liberty1's lead id, if you have it"), { target: { value: 'L1F-778' } })
       fireEvent.click(within(row).getByRole('button', { name: 'Mark it sent' }))
       await waitFor(() => expect(within(row).getByRole('status'), name).toHaveTextContent(sentence))
     }
   })
 
-  it('a Salesforce update that fails after Mark sent is named on the row, the mark stands, and Retry writes again until every record lands', async () => {
+  it('a Salesforce update that fails after Mark sent is named on the card, the mark stands, and Retry writes again until every record lands', async () => {
     vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
     vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: { added: true, count: 12, date: '2027-09-20' }, salesforce: submissionFailed, audit_recorded: true, list_cleared: false })
     vi.mocked(api.heldClicks.retrySalesforce).mockResolvedValue({ outcome: 'written', salesforce: allUpdated, audit_recorded: true, list_cleared: true })
     await renderWith(clickDoc, { name: 'Liberty1' })
-    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('tr') as HTMLElement
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
     fireEvent.click(within(row).getByRole('button', { name: 'Mark sent' }))
-    fireEvent.change(within(row).getByLabelText('Lead id in Liberty1'), { target: { value: 'L1F-778' } })
+    fireEvent.change(within(row).getByLabelText("Liberty1's lead id, if you have it"), { target: { value: 'L1F-778' } })
     fireEvent.click(within(row).getByRole('button', { name: 'Mark it sent' }))
     await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('Marked sent as L1F-778.'))
     expect(within(row).getByRole('status')).toHaveTextContent('Salesforce was not fully updated; the records are listed below with a retry.')
     // No "not removed from this list" note: the entry is kept on purpose, for the retry.
     expect(within(row).getByRole('status')).not.toHaveTextContent('not removed')
     expect(within(row).getByRole('alert')).toHaveTextContent('Submission a0C000000000001AAA: not updated. Salesforce refused the Submission__c update (400)')
-    fireEvent.click(within(row).getByRole('button', { name: 'Retry the Salesforce updates' }))
+    fireEvent.click(within(row).getByRole('button', { name: 'Retry Salesforce' }))
     await waitFor(() => expect(api.heldClicks.retrySalesforce).toHaveBeenCalledWith('held-1'))
     await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('Retried. Salesforce updated: Prospect, Submission, Lead.'))
     expect(within(row).queryByRole('alert')).toBeNull()
   })
 
-  it('an audit entry that did not land is said on the row, since a reload will not know the Salesforce outcome', async () => {
+  it('an audit entry that did not land is said on the card, since a reload will not know the Salesforce outcome', async () => {
     vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
     vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: { added: true, count: 12, date: '2027-09-20' }, salesforce: allUpdated, audit_recorded: false, list_cleared: true })
     await renderWith(clickDoc, { name: 'Liberty1' })
-    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('tr') as HTMLElement
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
     fireEvent.click(within(row).getByRole('button', { name: 'Mark sent' }))
-    fireEvent.change(within(row).getByLabelText('Lead id in Liberty1'), { target: { value: 'L1F-778' } })
+    fireEvent.change(within(row).getByLabelText("Liberty1's lead id, if you have it"), { target: { value: 'L1F-778' } })
     fireEvent.click(within(row).getByRole('button', { name: 'Mark it sent' }))
     await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('The record of these Salesforce updates could not be saved, so after a reload this page will not know them.'))
   })
@@ -671,12 +689,94 @@ describe('how the buyer is sold', () => {
     vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
     vi.mocked(api.heldClicks.free).mockRejectedValue(Object.assign(new Error('claim_changed'), { status: 409, body: { error: 'claim_changed', message: 'This click changed since the page was read, so nothing was done. Reload to see where it stands.' } }))
     await renderWith(clickDoc, { name: 'Liberty1' })
-    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('tr') as HTMLElement
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
     fireEvent.click(within(row).getByRole('button', { name: 'Free' }))
     fireEvent.click(within(row).getByRole('button', { name: 'Free it' }))
     await waitFor(() => expect(api.heldClicks.free).toHaveBeenCalledWith('held-1', 2))
     await waitFor(() => expect(within(row).getByRole('alert')).toHaveTextContent('This click changed since the page was read'))
     expect(within(row).getByRole('button', { name: 'Free' })).toBeInTheDocument()
+  })
+
+  // #2139 (PM-7): Mark sent with no lead id, and the id added afterwards.
+  const noIdWritten: SaleWrites = { ...allUpdated, buyer_lead_id: null }
+  async function markSentWithNoId() {
+    vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
+    vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: { added: true, count: 12, date: '2027-09-20' }, salesforce: noIdWritten, audit_recorded: true, list_cleared: false })
+    await renderWith(clickDoc, { name: 'Liberty1' })
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: 'Mark sent' }))
+    fireEvent.click(within(row).getByRole('button', { name: 'Mark it sent' }))
+    await waitFor(() => expect(api.heldClicks.markSent).toHaveBeenCalledWith('held-1', 2, null))
+    return row
+  }
+
+  it('Mark sent with nothing typed sends no lead id, says so, keeps the sale listed without a "not removed" note, and offers to add the id', async () => {
+    const row = await markSentWithNoId()
+    await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent("Marked sent with no lead id from Liberty1. Counted in Liberty1's clicks for Sep 20 (Pacific). Salesforce updated: Prospect, Submission, Lead."))
+    expect(within(row).getByRole('status')).not.toHaveTextContent('not removed')
+    expect(within(row).getByText(/Liberty1's lead id: none given\. Completed in Salesforce\./)).toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: "Add Liberty1's lead id" })).toBeInTheDocument()
+    expect(screen.getByText('No clicks are held for Liberty1.')).toBeInTheDocument()
+  })
+
+  it('adding the lead id afterwards goes through the API at the sale\'s generation; once every update lands the entry leaves the list and only the outcome stays', async () => {
+    const row = await markSentWithNoId()
+    vi.mocked(api.heldClicks.setLeadId).mockResolvedValue({ outcome: 'amended', generation: 4, salesforce: { ...allUpdated, buyer_lead_id: 'L1F-778' }, audit_recorded: true, list_cleared: true })
+    fireEvent.click(await within(row).findByRole('button', { name: "Add Liberty1's lead id" }))
+    fireEvent.change(within(row).getByLabelText("Liberty1's lead id"), { target: { value: 'L1F-778' } })
+    fireEvent.click(within(row).getByRole('button', { name: 'Add the lead id' }))
+    await waitFor(() => expect(api.heldClicks.setLeadId).toHaveBeenCalledWith('held-1', 3, 'L1F-778'))
+    await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('Lead id L1F-778 added. Salesforce updated: Prospect, Submission, Lead.'))
+    expect(within(row).queryByRole('button')).toBeNull()
+  })
+
+  it('a lead id whose Salesforce update fails keeps the sale listed with Salesforce\'s own words and Retry Salesforce', async () => {
+    const row = await markSentWithNoId()
+    vi.mocked(api.heldClicks.setLeadId).mockResolvedValue({ outcome: 'amended', generation: 4, salesforce: { ...submissionFailed, buyer_lead_id: 'L1F-778' }, audit_recorded: true, list_cleared: false })
+    fireEvent.click(await within(row).findByRole('button', { name: "Add Liberty1's lead id" }))
+    fireEvent.change(within(row).getByLabelText("Liberty1's lead id"), { target: { value: 'L1F-778' } })
+    fireEvent.click(within(row).getByRole('button', { name: 'Add the lead id' }))
+    await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('Lead id L1F-778 added. Salesforce was not fully updated; the records are listed below with a retry.'))
+    expect(within(row).getByRole('alert')).toHaveTextContent('Submission a0C000000000001AAA: not updated. Salesforce refused the Submission__c update (400): FIELD_CUSTOM_VALIDATION_EXCEPTION')
+    expect(within(row).getByText(/Liberty1's lead id: L1F-778\./)).toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: 'Retry Salesforce' })).toBeInTheDocument()
+  })
+
+  it('a refused lead id is told in the route\'s own words, and the sale keeps its controls', async () => {
+    const row = await markSentWithNoId()
+    const message = "The buyer confirmed this sale itself, so its lead id is the buyer's own and is not changed here. Nothing was changed."
+    vi.mocked(api.heldClicks.setLeadId).mockRejectedValue(Object.assign(new Error('not_marked_sent'), { status: 409, body: { error: 'not_marked_sent', message } }))
+    fireEvent.click(await within(row).findByRole('button', { name: "Add Liberty1's lead id" }))
+    fireEvent.change(within(row).getByLabelText("Liberty1's lead id"), { target: { value: 'L1F-778' } })
+    fireEvent.click(within(row).getByRole('button', { name: 'Add the lead id' }))
+    await waitFor(() => expect(within(row).getByRole('alert')).toHaveTextContent(message))
+    expect(within(row).getByRole('button', { name: "Add Liberty1's lead id" })).toBeInTheDocument()
+  })
+
+  it('correcting a lead id names the old and the new one', async () => {
+    const sold = { ...heldClick, claim: { status: 'sold' as const, generation: 5, partner_lead_id: 'L1F-77' }, salesforce: { status: 'recorded' as const, at: 'x', writes: { ...allUpdated, buyer_lead_id: 'L1F-77' } }, salesforce_standing: 'written' as const }
+    vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [sold], total: 1 })
+    vi.mocked(api.heldClicks.setLeadId).mockResolvedValue({ outcome: 'amended', generation: 6, salesforce: { ...allUpdated, buyer_lead_id: 'L1F-778' }, audit_recorded: true, list_cleared: true })
+    await renderWith(clickDoc, { name: 'Liberty1' })
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: "Correct Liberty1's lead id" }))
+    fireEvent.change(within(row).getByLabelText("Liberty1's lead id"), { target: { value: 'L1F-778' } })
+    fireEvent.click(within(row).getByRole('button', { name: 'Correct the lead id' }))
+    await waitFor(() => expect(api.heldClicks.setLeadId).toHaveBeenCalledWith('held-1', 5, 'L1F-778'))
+    await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('Lead id changed from L1F-77 to L1F-778. Salesforce updated: Prospect, Submission, Lead.'))
+  })
+
+  it('a retry on a sale with no lead id that lands leaves it listed on purpose, with no "not removed" note', async () => {
+    const sold = { ...heldClick, claim: { status: 'sold' as const, generation: 5, partner_lead_id: null }, salesforce: { status: 'recorded' as const, at: 'x', writes: { ...submissionFailed, buyer_lead_id: null } }, salesforce_standing: 'incomplete' as const }
+    vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [sold], total: 1 })
+    vi.mocked(api.heldClicks.retrySalesforce).mockResolvedValue({ outcome: 'written', salesforce: noIdWritten, audit_recorded: true, list_cleared: false })
+    await renderWith(clickDoc, { name: 'Liberty1' })
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: 'Retry Salesforce' }))
+    await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('Retried. Salesforce updated: Prospect, Submission, Lead.'))
+    expect(within(row).getByRole('status')).not.toHaveTextContent('not removed')
+    expect(within(row).queryByRole('alert')).toBeNull()
+    expect(within(row).getByText(/Completed in Salesforce\./)).toBeInTheDocument()
   })
 
   it('a failed read of the held clicks is an alert, not an empty list', async () => {
@@ -763,43 +863,42 @@ describe('click delivery', () => {
     expect(screen.queryByDisplayValue(`${LC}/dv1`)).toBeNull()
   })
 
-  it('a changed address asks first, naming the states and both addresses, and saves only when confirmed', async () => {
+  // PM-6 (#2138): no second confirmation. The save bar says what the change
+  // does, state by state, beside the one Save, and is always about what is on
+  // screen now, so what is saved is what the bar said.
+  const bar = () => document.querySelector('[data-save-bar]') as HTMLElement
+
+  it('a changed address is said in the bar, naming the states and both addresses, and one Save saves it', async () => {
     const onSave = await renderWith({ ...clickDoc, click_delivery: delivery })
     fireEvent.change(screen.getByLabelText('Route 1 address'), { target: { value: `${LC}/dv1-new` } })
-    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    const confirm = await screen.findByRole('alertdialog', { name: 'Confirm the click delivery change' })
-    expect(confirm).toHaveTextContent(`Clicks from OR, WA will go to ${LC}/dv1-new instead of ${LC}/dv1.`)
+    expect(bar()).toHaveTextContent(`1 unsaved change: Clicks from OR, WA will go to ${LC}/dv1-new instead of ${LC}/dv1.`)
     expect(onSave).not.toHaveBeenCalled()
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Save these changes' }))
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalledWith({}, 'p1', undefined, expect.objectContaining({
       expected_profile_version: 3,
       profile: expect.objectContaining({ click_delivery: { ...delivery, routes: [{ ...delivery.routes[0], url: `${LC}/dv1-new` }, delivery.routes[1]] } }),
     })))
     // The partner record did not change, so its half of the save is empty (#2132).
     expect(onSave).toHaveBeenCalledTimes(1)
-  })
-
-  it('an edit made while the confirmation shows withdraws it, so what is saved is always what was confirmed', async () => {
-    const onSave = await renderWith({ ...clickDoc, click_delivery: delivery })
-    fireEvent.change(screen.getByLabelText('Route 1 address'), { target: { value: `${LC}/dv1-new` } })
-    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    await screen.findByRole('alertdialog', { name: 'Confirm the click delivery change' })
-    fireEvent.change(screen.getByLabelText('Route 1 address'), { target: { value: `${LC}/dv1-other` } })
+    // No inline confirmation is left on the page.
     expect(screen.queryByRole('alertdialog')).toBeNull()
-    expect(onSave).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    expect(await screen.findByRole('alertdialog', { name: 'Confirm the click delivery change' })).toHaveTextContent(`${LC}/dv1-other instead of ${LC}/dv1.`)
   })
 
-  it('keep editing leaves everything unsaved and the edit in the form', async () => {
+  it('the bar follows each edit, so it always says what Save would store', async () => {
+    await renderWith({ ...clickDoc, click_delivery: delivery })
+    fireEvent.change(screen.getByLabelText('Route 1 address'), { target: { value: `${LC}/dv1-new` } })
+    fireEvent.change(screen.getByLabelText('Route 1 address'), { target: { value: `${LC}/dv1-other` } })
+    expect(bar()).toHaveTextContent(`${LC}/dv1-other instead of ${LC}/dv1.`)
+    expect(bar()).not.toHaveTextContent('dv1-new')
+  })
+
+  it('a catch-all change names every state no other route lists, and Discard changes puts it back', async () => {
     const onSave = await renderWith({ ...clickDoc, click_delivery: delivery })
     fireEvent.change(screen.getByLabelText('Route 2 address'), { target: { value: `${LC}/di4-new` } })
-    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    const confirm = await screen.findByRole('alertdialog', { name: 'Confirm the click delivery change' })
-    expect(confirm).toHaveTextContent(`Clicks from every state no other route lists will go to ${LC}/di4-new instead of ${LC}/di4.`)
-    fireEvent.click(within(confirm).getByRole('button', { name: 'Keep editing' }))
-    expect(screen.queryByRole('alertdialog')).toBeNull()
-    expect(screen.getByLabelText('Route 2 address')).toHaveValue(`${LC}/di4-new`)
+    expect(bar()).toHaveTextContent(`Clicks from every state no other route lists will go to ${LC}/di4-new instead of ${LC}/di4.`)
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }))
+    expect(screen.getByLabelText('Route 2 address')).toHaveValue(`${LC}/di4`)
+    expect(document.querySelector('[data-save-bar]')).toBeNull()
     expect(onSave).not.toHaveBeenCalled()
   })
 
@@ -809,27 +908,25 @@ describe('click delivery', () => {
     fireEvent.change(screen.getByLabelText('Route 1 name'), { target: { value: 'All' } })
     fireEvent.change(screen.getByLabelText('Route 1 address'), { target: { value: `${LC}/all` } })
     fireEvent.change(screen.getByLabelText('Success reply'), { target: { value: PATTERN } })
-    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    const confirm = await screen.findByRole('alertdialog', { name: 'Confirm the click delivery change' })
-    expect(confirm).toHaveTextContent(`Clicks from every state will go to ${LC}/all instead of the address on the workflow click send node.`)
-    expect(confirm).toHaveTextContent('A click counts as sent only when the reply matches')
+    expect(bar()).toHaveTextContent(`Clicks from every state will go to ${LC}/all instead of the address on the workflow click send node.`)
+    expect(bar()).toHaveTextContent('A click counts as sent only when the reply matches')
   })
 
-  it('a delivery the validator refuses is not saved and names the refusal', async () => {
+  it('a delivery the validator refuses is not saved, and the bar names the field with the reason beside it', async () => {
     const onSave = await renderWith({ ...clickDoc, click_delivery: delivery })
     fireEvent.click(screen.getByRole('button', { name: 'Add route' }))
     fireEvent.change(screen.getByLabelText('Route 3 name'), { target: { value: 'X' } })
     fireEvent.change(screen.getByLabelText('Route 3 address'), { target: { value: `${LC}/x` } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-    const outcome = await screen.findByText(/Nothing saved\./)
-    expect(outcome).toHaveTextContent('Only one route may have no states.')
+    expect(await screen.findByText(/^Nothing saved: fix Routes in Buyer profile/)).toBeInTheDocument()
+    expect(screen.getAllByRole('alert').map((a) => a.textContent).join(' ')).toMatch('Only one route may have no states.')
     expect(onSave).not.toHaveBeenCalled()
-    expect(screen.queryByRole('alertdialog')).toBeNull()
   })
 
   it('an edit elsewhere on the profile saves without asking', async () => {
     const onSave = await renderWith({ ...clickDoc, click_delivery: delivery })
     fireEvent.change(screen.getByLabelText('Clicks per day'), { target: { value: '60' } })
+    expect(bar()).toHaveTextContent('1 unsaved change: Clicks per day')
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalled())
     expect(screen.queryByRole('alertdialog')).toBeNull()

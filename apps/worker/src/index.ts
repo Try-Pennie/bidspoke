@@ -4,11 +4,13 @@ import { cors } from 'hono/cors'
 import webhooks from './routes/webhooks'
 import shadow from './routes/shadow'
 import api from './routes/api/index'
-import { createScheduledSupabaseClient } from './lib/scheduled-slack'
+import { createScheduledSupabaseClient, scheduledSlackFor } from './lib/scheduled-slack'
+import { runInScheduledTick } from './lib/outage-notice'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runBidRecordingCoverageCheck } from './lib/bid-recording-coverage'
 import { runTripointRevenueFillForEnv } from './lib/tripoint-revenue-fill'
 import { runVolumeCliffCheck } from './lib/volume-cliff'
+import { DATABASE_REACHABILITY_JOB, reportDatabaseUnreachable, runDatabaseReachabilityProbe, type ReachabilityDeps } from './lib/database-reachability'
 import { runBuyerSaleDrainForEnv, BUYER_SALE_DRAIN_JOB } from './lib/buyer-sale-drain'
 import { runBuyerSalesChecksForEnv, BUYER_SALES_CHECKS_JOB } from './lib/buyer-sales-checks'
 import { runClickPathChecksForEnv, CLICK_PATH_CHECKS_JOB } from './lib/click-path-checks'
@@ -163,9 +165,6 @@ export const MINUTE_JOB_DEADLINE_MS = 50_000
 const scheduledJobs = {
   /** Starts every job the cron names and returns their work, to be awaited. */
   start(event: ScheduledEvent, env: Env, platformCtx: ExecutionContext, timer?: TickTimer): Promise<unknown>[] {
-    // One client for every job this tick starts, registered so each Slack lookup
-    // on it is bounded and falls back to the saved copy (#1303, scheduled-slack.ts).
-    const supabase = createScheduledSupabaseClient(env, (p) => platformCtx.waitUntil(p))
     // Every job's work is tracked, so once it has all settled the stored copies
     // any of them served or refused (#1848) are counted, in one write.
     const work: Promise<unknown>[] = []
@@ -177,6 +176,33 @@ const scheduledJobs = {
       work.push(tracked)
       platformCtx.waitUntil(tracked)
     }
+    // The database reachability owner (#2061): the probe below, the volume check's
+    // reads, and the first scheduled read of a tick that fails all report to it.
+    // Its claims are also the ones the other minute alerts post under (#2062).
+    const reachability = {
+      kv: env.IDEMPOTENCY,
+      secretKeys: secretKeys(env),
+      appUrl: env.APP_URL,
+      claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
+      // The tick client's scheduled Slack, set once the client is built below (#2061).
+      scheduled: undefined as ReachabilityDeps['scheduled'],
+    }
+    // One client for every job this tick starts, registered so each Slack lookup
+    // on it is bounded and falls back to the saved copy (#1303, scheduled-slack.ts),
+    // and so its first failed read is reported to the owner. A Better Stack page
+    // raised by a lookup is handed to the platform's waitUntil, never the tick's
+    // job list (#2063); the owner's report is a timed job like any other.
+    const supabase = createScheduledSupabaseClient(env, (p) => platformCtx.waitUntil(p), {
+      onUnreachable: (f) =>
+        handOver(
+          reportDatabaseUnreachable(reachability, { source: 'scheduled-read', what: f.what, error: `${f.how}: ${f.detail}` })
+            .catch((e) => console.error('[database-reachability] scheduled read report failed:', e)),
+          'database-reachability-report',
+        ),
+    })
+    // The owner pages Better Stack through this client's pager when no saved copy
+    // can stand in (#2061), the same pager its lookups use, so one is sent a tick.
+    reachability.scheduled = scheduledSlackFor(supabase)
     const ctx: Pick<ExecutionContext, 'waitUntil'> = { waitUntil: (p: Promise<unknown>) => handOver(p) }
     // A minute job carries its name, so a slow minute tick names the job that held it up.
     // It is also given MINUTE_JOB_DEADLINE_MS (#2058): what is waited on, by
@@ -1111,12 +1137,27 @@ const scheduledJobs = {
           })
           .catch((e) => console.error(`[${SF_READ_BACK_JOB}] liveness check failed:`, e))
       )
+      // The database probe beside the volume check (#2061): one bounded read of
+      // the Slack connections, which writes the saved copy every outage alert is
+      // posted from, reports to the reachability owner, and sends its all-clear.
+      // Its completed stamp is written in the probe's finally.
+      minuteJob(DATABASE_REACHABILITY_JOB,
+        runDatabaseReachabilityProbe({
+          ...reachability,
+          supabase,
+          stamps: {
+            started: () => writeHeartbeat(env.IDEMPOTENCY, DATABASE_REACHABILITY_JOB),
+            completed: () => writeHeartbeatCompleted(env.IDEMPOTENCY, DATABASE_REACHABILITY_JOB),
+          },
+        })
+          .catch((e) => console.error('[database-reachability] probe failed:', e))
+      )
       minuteJob('volume-cliff',
         runVolumeCliffCheck(supabase, env.IDEMPOTENCY, env.APP_URL, env.SELF_CHECK_URL, secretKeys(env), makeAlertClaims(env.ALERT_CLAIM))
           .catch((e) => console.error('[volume-cliff] check failed:', e))
       )
       minuteJob('slow-execution-check',
-        runSlowExecutionCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
+        runSlowExecutionCheck(supabase, env.IDEMPOTENCY, env.APP_URL, reachability.claims)
           .catch((e) => console.error('[slow-spike] check failed:', e))
       )
       minuteJob('stranded-executions',
@@ -1133,15 +1174,15 @@ const scheduledJobs = {
           .catch((e) => console.error('[stranded-executions] check failed:', e))
       )
       minuteJob('failure-rate-check',
-        runFailureRateCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
+        runFailureRateCheck(supabase, env.IDEMPOTENCY, env.APP_URL, reachability.claims)
           .catch((e) => console.error('[failure-spike] check failed:', e))
       )
       minuteJob('upstream-outage-check',
-        runUpstreamOutageCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
+        runUpstreamOutageCheck(supabase, env.IDEMPOTENCY, env.APP_URL, reachability.claims)
           .catch((e) => console.error('[upstream-outage] check failed:', e))
       )
       minuteJob('heartbeat-checks',
-        runHeartbeatChecks(supabase, env.IDEMPOTENCY)
+        runHeartbeatChecks(supabase, env.IDEMPOTENCY, Date.now(), reachability.claims)
           .then((rs) => {
             for (const r of rs) {
               if (r.status === 'stale' || r.status === 'never_ran' || r.status === 'vanished') {
@@ -1178,7 +1219,9 @@ export default {
     platformCtx.waitUntil(isolateCronGuardRecorder.flush(env.IDEMPOTENCY))
     const run = runCronTickOnce(env.ALERT_CLAIM, event, async () => {
       const timer = tickTimer()
-      const work = scheduledJobs.start(event, env, platformCtx, timer)
+      // Every job of the tick runs in its context, so each alert it posts names
+      // an open database outage with one line (#2061, lib/outage-notice.ts).
+      const work = runInScheduledTick(() => scheduledJobs.start(event, env, platformCtx, timer))
       // Only the minute tick is reported: the hourly and daily ones run for
       // minutes by design. The checkpoint covers a tick killed before its end.
       const minuteTick = event.cron === '* * * * *'

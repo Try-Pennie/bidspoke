@@ -5,7 +5,7 @@
  *
  * The first must reach Slack in the very outage it describes, so its tests run
  * with the database refusing every request and the Slack connection coming from
- * the encrypted last-good copy the volume check keeps in KV (L71). Every clock
+ * the encrypted last-good copy the database probe keeps in KV (L71). Every clock
  * is injected; nothing sleeps.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'

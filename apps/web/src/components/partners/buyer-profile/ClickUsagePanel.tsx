@@ -6,9 +6,10 @@
  * buyer_click_check stops offering at (L16). A positive statement on a healthy
  * day (L610) and an unreadable counter as its own state with no number (L633).
  *
- * Every fact once on the page (#1557, L605): that a day runs midnight to
- * midnight Pacific, and that a buyer with no cap is not offered, are both said
- * by the caps note above; this panel shows the date and the count against the cap.
+ * Every fact once on the page (#1557, L605): when the count resets (midnight
+ * Pacific, said in the profile's display zone since #2143), and that a buyer
+ * with no cap is not offered, are both said by the caps note above; this panel
+ * shows the date and the count against the cap.
  */
 import { FieldError } from '@/components/ui/form'
 import { alsoSellTo, CAP_NEAR_SHARE, formatWhole } from './labels'

@@ -705,7 +705,7 @@ body.doc { margin: 0; background: #f4f1ea; color: #1d212f; font-family: Mori, -a
 <li><b>Field level merge</b> Only a field you both changed asks a question, grouped by section, with Keep yours or Use theirs for each. Saving keeps your choices and adds the rest of theirs. Today &quot;Take theirs&quot; discards every edit you made.</li>
 <li><b>Mark sent without a lead id</b> The partner&#x27;s lead id becomes optional when marking a held click sent. Without it the click is still counted and Salesforce still marks the sale Completed, with no partner lead id. Today the route refuses an empty id.</li>
 <li><b>Bid mode removed</b> The Commit and Ping only setting is removed from the page: nothing acts on it (the Partner Bid step copies it into its resolved input and the money gate records it in its snapshot; neither changes what is sent).</li>
-<li><b>Display time zone, stored per buyer</b> A buyer profile gains a time zone used only to show hours and reset times. Hours stay stored and judged in Eastern; the click count resets at midnight Pacific, shown as 3:00 AM Eastern.</li>
+<li><b>Display time zone, stored per buyer</b> A buyer profile gains a time zone, Eastern, Central, Mountain or Pacific, used only to show hours and reset times. Hours stay stored and judged in Eastern; the click count resets at midnight Pacific, shown as the hour that is in the chosen zone on the night it happens (3:00 AM Eastern on most nights, 4:00 AM on the March clock change night and 2:00 AM on the November one).</li>
 <li><b>Default error rules shown as fixed rows</b> The built in retry and never retry answers are listed as rows marked Default that cannot be edited; your own rules are checked first, and each list carries its own Alert switch.</li>
 <li><b>A partner opens where its problem is</b> A partner with an issue (a missing credential, a refused field) opens on the tab holding it, with red dots on the list row and the tab.</li>
 <li><b>Delete knows about sales up front</b> The page reads whether sales refer to the partner before offering Delete, and explains the block instead of offering a field that would fail.</li>
@@ -782,7 +782,7 @@ var HELD = [
   { pid: "a0B5f00000QxR2kEAF", at: 14 + 12 / 60, why: "The buyer gave no readable answer, so whether it received the lead is not known.", detail: "No answer within 12 seconds." },
   { pid: "a0B5f00000QyT7mEAF", at: 16 + 41 / 60, why: "An earlier send never recorded its outcome.", detail: "" }
 ];
-function heldAt(x) { var hh = Math.floor(x), mm = Math.round((x - hh) * 60); var t = shown(hh); return "Oct 14, " + t.replace(":00", ":" + (mm < 10 ? "0" : "") + mm) + " " + (ZONE === "Pacific" ? "PT" : "ET"); }
+function heldAt(x) { var hh = Math.floor(x), mm = Math.round((x - hh) * 60); var t = shown(hh); return "Oct 14, " + t.replace(":00", ":" + (mm < 10 ? "0" : "") + mm) + " " + ZONE_ABBR[ZONE]; }
 function releaseBtns() { return h("span", "relbtns", [h("span", "btn ghost sm", ["Mark sent"]), h("span", "btn ghost sm danger", ["Free"])]); }
 function heldPanel() {
   var lead = h("p", "held-lead", ["2 clicks held. No later click on these prospects is sent until each is released."]);
@@ -807,6 +807,10 @@ function heldPanel() {
   }));
 }
 var ZONE = "Eastern";
+// The four zones a buyer profile can show times in (#2143), each a whole number of hours from Eastern.
+var ZONES = ["Eastern", "Central", "Mountain", "Pacific"];
+var ZONE_SHIFT = { Eastern: 0, Central: -1, Mountain: -2, Pacific: -3 };
+var ZONE_ABBR = { Eastern: "ET", Central: "CT", Mountain: "MT", Pacific: "PT" };
 var ROUTES = [
   { name: "DV1", addr: "https://services.leadconnectorhq.com/hooks/.../CTTs...", states: DV1_STATES },
   { name: "DI4", addr: "https://services.leadconnectorhq.com/hooks/.../AYAF...", fallback: true }
@@ -845,15 +849,15 @@ function clickDelivery() {
   }));
   return [legend, h("div", "stbox", [h("div", "st-head", [h("span", "", ["Click a state to move it between routes"])]), grid]), addBtn("Add route"), successReply()];
 }
-// Eastern and Pacific are always three hours apart, so a shown time is a fixed shift.
+// The four zones change their clocks on the same nights, so a weekly time is shown by a fixed shift.
 function hm(h24) { var hh = ((h24 % 24) + 24) % 24; var ap = hh < 12 ? "AM" : "PM"; var d = hh % 12 === 0 ? 12 : hh % 12; return d + ":00 " + ap; }
-function shown(h24) { return hm(ZONE === "Pacific" ? h24 - 3 : h24); }
+function shown(h24) { return hm(h24 + ZONE_SHIFT[ZONE]); }
 function zonePicker() {
   var sel = h("span", "zsel", [ZONE + " time", h("b", "", ["\u25be"])]);
-  sel.addEventListener("click", function () { ZONE = ZONE === "Eastern" ? "Pacific" : "Eastern"; REDRAW_KEEP(); });
+  sel.addEventListener("click", function () { ZONE = ZONES[(ZONES.indexOf(ZONE) + 1) % ZONES.length]; REDRAW_KEEP(); });
   return h("div", "zrow", [h("span", "fld-l", ["Time zone"]), sel]);
 }
-function capHint() { return "Empty means Liberty1 is not offered at all. The count resets at " + (ZONE === "Pacific" ? "midnight" : "3:00 AM") + " " + ZONE + " time."; }
+function capHint() { return "Empty means Liberty1 is not offered at all. The count resets at " + (ZONE === "Pacific" ? "midnight" : shown(3)) + " " + ZONE + " time."; }
 function capsEditor() {
   if (CAPSTYLE === "bar") return [row(field("Clicks per day", input("50", { narrow: true })), h("div", "meter", [h("div", "bar", [h("i", "", [])]), h("span", "", ["11 of 50 clicks today"])])), h("p", "fld-h", [capHint()])];
   if (CAPSTYLE === "text") return [field("Clicks per day", h("div", "capline", [input("50", { narrow: true }), h("span", "", ["11 sent today, 39 left"])])), h("p", "fld-h", [capHint()])];
@@ -974,7 +978,7 @@ function cur() { return P[CUR]; }
 // Tripoint's own buyer profile sections (offer buyer, real values read 2026-10-14).
 var T_PRIORITY = { title: "Priority", body: function () { return [input("1", { narrow: true })].concat(PRIO_TEXT[PRIOSTYLE].map(function (t) { return h("p", "fld-h", [t]); })); } };
 var T_ELIG = { title: "Eligibility", body: function () { return [states(ALL_STATES, "51 of 51 states"), row(field("Debt minimum", input("", { placeholder: "None" })), field("Debt maximum", input("", { placeholder: "None" })), field("Loan amount minimum", input("$2,000")))]; } };
-var T_HOURS = { title: "Hours", body: function () { return [h("div", "dchips", DAYS.map(function (d) { return h("span", "dchip on", [d.slice(0, 3)]); })), h("div", "hrange", [tbox(shown(0)), h("span", "to", ["to"]), tbox(ZONE === "Pacific" ? "8:59 PM" : "11:59 PM")]), h("span", "add lnkbtn", ["Set different hours for each day"]), zonePicker()]; } };
+var T_HOURS = { title: "Hours", body: function () { return [h("div", "dchips", DAYS.map(function (d) { return h("span", "dchip on", [d.slice(0, 3)]); })), h("div", "hrange", [tbox(shown(0)), h("span", "to", ["to"]), tbox(shown(23).replace(":00", ":59"))]), h("span", "add lnkbtn", ["Set different hours for each day"]), zonePicker()]; } };
 var PRICESTYLE = "today";
 var RESSTYLE = "today";
 var RRSTYLE = "today";

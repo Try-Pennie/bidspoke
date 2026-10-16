@@ -8,7 +8,7 @@
  * rules. `sections` says which groups this instance renders; the state is one
  * object owned by the form, so a rule is never held in two places.
  */
-import { useId, useRef, useState } from 'react'
+import { useId, useRef, useState, type ReactNode } from 'react'
 import { Plus, X } from 'lucide-react'
 import { SIGNAL_OPERATORS, SIGNAL_OPERATOR_LABELS } from '@bidspoke/buyer-profile'
 import {
@@ -127,11 +127,24 @@ function RuleRow({ rule, onChange, onRemove, removing }: {
   )
 }
 
-export function SignalRuleBuilder({ value, onChange, sections = SIGNAL_SECTIONS }: {
+/**
+ * What a group carries beyond its rules, for the Retry and Never retry lists
+ * (#2143, PM-11): a control beside the heading (the list's Alert switch), and
+ * the fixed rows the person's rules are checked before (the defaults). A group
+ * with these is a labelled group, its rules first, then the fixed rows, then
+ * Add rule, so a new rule lands above the defaults it is checked before.
+ */
+export interface SignalSectionExtras {
+  aside: ReactNode
+  after: ReactNode
+}
+
+export function SignalRuleBuilder({ value, onChange, sections = SIGNAL_SECTIONS, extras }: {
   value: SignalRules
   onChange: (v: SignalRules) => void
   /** Which groups this instance renders. Defaults to all three. */
   sections?: readonly SignalSection[]
+  extras?: Partial<Record<SignalCategory, SignalSectionExtras>>
 }) {
   const [removingIds, setRemovingIds] = useState<Set<string>>(new Set())
   const valueRef = useRef(value)
@@ -152,37 +165,52 @@ export function SignalRuleBuilder({ value, onChange, sections = SIGNAL_SECTIONS 
     onChange({ ...value, [cat]: [...value[cat], emptyBody()] })
   }
 
+  const ruleRows = (cat: SignalCategory) => (
+    <div className="space-y-1.5">
+      {value[cat].map((rule) => (
+        <RuleRow
+          key={rule.id}
+          rule={rule}
+          removing={removingIds.has(rule.id)}
+          onChange={(r) => update(cat, rule.id, r)}
+          onRemove={() => remove(cat, rule.id)}
+        />
+      ))}
+    </div>
+  )
+  const addButton = (cat: SignalCategory) => (
+    <Button variant="ghost" onClick={() => add(cat)} className="shrink-0">
+      <Plus className="h-3 w-3" aria-hidden="true" />
+      Add rule
+    </Button>
+  )
+
   return (
     <div className="space-y-5">
-      {sections.map(({ cat, label, desc }) => (
+      {sections.map(({ cat, label, desc }) => extras?.[cat] ? (
+        <div key={cat} role="group" aria-label={label} className="space-y-1.5">
+          <div className="flex items-center justify-between gap-4">
+            <p className="text-sm font-medium text-gray-700">{label}</p>
+            {extras[cat].aside}
+          </div>
+          {value[cat].length > 0 && ruleRows(cat)}
+          {extras[cat].after}
+          <div>{addButton(cat)}</div>
+        </div>
+      ) : (
         <div key={cat}>
           <div className="mb-2 flex items-start justify-between gap-4">
             <div>
               <p className="text-sm font-medium text-gray-700">{label}</p>
               <p className="text-xs text-hint">{desc}</p>
             </div>
-            <Button variant="ghost" onClick={() => add(cat)} className="shrink-0">
-              <Plus className="h-3 w-3" aria-hidden="true" />
-              Add rule
-            </Button>
+            {addButton(cat)}
           </div>
           {value[cat].length === 0 ? (
             <p className="rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs text-hint">
               No rules. Uses default HTTP status classification.
             </p>
-          ) : (
-            <div className="space-y-1.5">
-              {value[cat].map((rule) => (
-                <RuleRow
-                  key={rule.id}
-                  rule={rule}
-                  removing={removingIds.has(rule.id)}
-                  onChange={(r) => update(cat, rule.id, r)}
-                  onRemove={() => remove(cat, rule.id)}
-                />
-              ))}
-            </div>
-          )}
+          ) : ruleRows(cat)}
         </div>
       ))}
     </div>

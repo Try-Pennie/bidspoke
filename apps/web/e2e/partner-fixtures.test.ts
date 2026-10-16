@@ -14,10 +14,11 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRedactor, stringsIn } from '../../../scripts/e2e-fixtures/redact.mjs'
 import { writeFixtures } from '../../../scripts/e2e-fixtures/capture-partners.mjs'
-import { answerFor, isWorkerApiRequest, loadPartnerFixtures } from './partner-fixtures'
+import { answerFor, isWorkerApiRequest, LIVE_MISS_ID, loadPartnerFixtures, realtimeReplies, versionsFor } from './partner-fixtures'
+import { RealtimeClient } from '@supabase/supabase-js'
 import { mergeThreeWay } from '../src/lib/partner-page-merge'
 import { buildPartnerBody, PARTNER_FIELD_REGISTRY, snapshotOf } from '../src/app/(app)/partners/partner-draft'
-import type { Partner } from '../src/lib/api'
+import type { Partner, PartnerHistory } from '../src/lib/api'
 
 const fx = loadPartnerFixtures()
 /** A captured buyer profile document with every field the redaction keeps. */
@@ -145,10 +146,29 @@ describe('answerFor', () => {
     expect(answerFor('DELETE', `${W}/api/partners/${tripoint.id}`, fx)).toBeNull()
   })
 
+  // #2140: every partner the page can open carries the delete box on its
+  // Partner tab, so every listed partner has a recorded check, derived from the
+  // partner list rather than a hand list, and nothing else does.
+  it('answers the delete check of every listed partner, Tripoint blocked by its sales and the rest deletable', () => {
+    for (const p of fx.partners) {
+      const answer = answerFor('GET', `${W}/api/partners/${p.id}/delete-check`, fx)?.body as { partner: { id: string }; blockers: Array<{ kind: string; table?: string }> } | undefined
+      expect(answer?.partner.id, p.slug).toBe(p.id)
+      if (p.slug === 'tripoint') expect(answer!.blockers).toEqual([expect.objectContaining({ kind: 'rows', table: 'buyer_sales' })])
+      else expect(answer!.blockers, p.slug).toEqual([])
+    }
+    expect(answerFor('GET', `${W}/api/partners/not-a-partner/delete-check`, fx)).toBeNull()
+    expect(answerFor('GET', `${W}/api/partners/_about/delete-check`, fx)).toBeNull()
+    expect(answerFor('GET', `${W}/api/partners/constructor/delete-check`, fx)).toBeNull()
+  })
+
   // #2137: the Bid Group tab reads which workflow steps name each partner.
   it('answers the usage read for every listed partner, and fails it only when asked to', () => {
     for (const p of fx.partners) expect(answerFor('GET', `${W}/api/partners/${p.id}/usage`, fx), p.slug).toMatchObject({ status: 200 })
     expect(answerFor('GET', `${W}/api/partners/not-a-partner/usage`, fx)).toBeNull()
+    // An inherited name of a plain object is no partner either (each read keyed by partner id).
+    for (const path of ['partners/constructor/history', 'partners/constructor/usage', 'partners/constructor/buyer-profile', 'partner-bid-configs?partner_id=constructor', 'partners/toString/delete-check']) {
+      expect(answerFor('GET', `${W}/api/${path}`, fx), path).toBeNull()
+    }
     expect(answerFor('GET', `${W}/api/partners/${tripoint.id}/usage`, fx, { usageFails: true })?.status).toBe(503)
   })
 
@@ -157,6 +177,26 @@ describe('answerFor', () => {
       .filter(([, u]) => u.bid_group.length > 0)
       .map(([id, u]) => [fx.partners.find((p) => p.id === id)!.slug, u.bid_group.map((s) => `${s.workflow_name}${s.is_active ? '' : ' (off)'}`)])
     expect(named.sort()).toEqual([['amone', ['Main Flow', 'Main Flow (v2) (off)']], ['tripoint', ['Main Flow', 'Main Flow (v2) (off)']]])
+  })
+
+  // #2139: the held clicks cards, the lead id box and the Remove dialog are reached
+  // from Liberty1's invented held clicks; every other read stays the empty panel.
+  it('gives Liberty1 its held clicks only when asked to, with a held click, a sale with no lead id and a sale Salesforce refused', () => {
+    const liberty1 = fx.partners.find((p) => p.slug === 'liberty1')!
+    const url = `${W}/api/held-clicks?partner_id=${liberty1.id}`
+    expect(answerFor('GET', url, fx)?.body).toEqual(fx.panels.held_clicks)
+    const list = answerFor('GET', url, fx, { heldClicks: true })?.body as { entries: Array<{ claim: { status: string; partner_lead_id?: string | null }; salesforce_standing: string | null }>; total: number }
+    expect(list).toEqual(fx.heldClicks.list)
+    expect(list.entries.map((e) => [e.claim.status, e.claim.partner_lead_id ?? null, e.salesforce_standing])).toEqual([['held', null, null], ['sold', null, 'written'], ['sold', 'L1F-778', 'incomplete']])
+    expect(answerFor('GET', `${W}/api/held-clicks?partner_id=${tripoint.id}`, fx, { heldClicks: true })?.body).toEqual(fx.panels.held_clicks)
+  })
+
+  it('answers adding a lead id only for a listed sale, and only when asked to', () => {
+    const sale = fx.heldClicks.list.entries[1]
+    expect(answerFor('POST', `${W}/api/held-clicks/${sale.id}/lead-id`, fx)).toBeNull()
+    expect(answerFor('POST', `${W}/api/held-clicks/${sale.id}/lead-id`, fx, { heldClicks: true })).toEqual({ status: 200, body: fx.heldClicks.lead_id })
+    expect(answerFor('POST', `${W}/api/held-clicks/not-listed/lead-id`, fx, { heldClicks: true })).toBeNull()
+    expect(answerFor('POST', `${W}/api/held-clicks/${sale.id}/mark-sent`, fx, { heldClicks: true })).toBeNull()
   })
 
   it('answers a page save only when asked to, and only with the recorded 409', () => {
@@ -171,6 +211,26 @@ describe('answerFor', () => {
     expect(answerFor('GET', `${W}/api/partner-bid-configs/${fx.matrix.list[0].id}`, fx, { matrix: true })?.body).toEqual(fx.matrix.detail)
   })
 
+  // #2135: the live channel's versions probe, its refetch and its miss report.
+  it('answers the versions probe for every listed partner from its captured version and profile, and nothing for another', () => {
+    for (const p of fx.partners) {
+      const answer = answerFor('GET', `${W}/api/partners/${p.id}/versions`, fx)
+      expect(answer, p.slug).toEqual({ status: 200, body: versionsFor(p, fx.buyerProfiles) })
+      const body = answer!.body as { partnerVersion: number; profileVersion: number; latestChange: unknown }
+      expect(body.partnerVersion, p.slug).toBe(p.version)
+      expect(body.latestChange).toBeNull()
+    }
+    const tripointProfile = fx.buyerProfiles[tripoint.id].profile as { version: number }
+    expect((answerFor('GET', `${W}/api/partners/${tripoint.id}/versions`, fx)!.body as { profileVersion: number }).profileVersion).toBe(tripointProfile.version)
+    expect(answerFor('GET', `${W}/api/partners/not-a-partner/versions`, fx)).toBeNull()
+  })
+
+  it('answers the refetch of one partner with its captured row, and a live miss report as recorded', () => {
+    expect(answerFor('GET', `${W}/api/partners/${tripoint.id}`, fx)).toEqual({ status: 200, body: tripoint })
+    expect(answerFor('GET', `${W}/api/partners/not-a-partner`, fx)).toBeNull()
+    expect(answerFor('POST', `${W}/api/partners/live-miss`, fx)).toEqual({ status: 201, body: { ok: true, id: LIVE_MISS_ID } })
+  })
+
   it('the recorded 409 conflicts with the edit the spec makes (Leads per day to 300), so the merge dialog opens', () => {
     const profile = fx.buyerProfiles[tripoint.id].profile as BuyerProfileDocument
     const partner = buildPartnerBody(snapshotOf(tripoint as unknown as Partner), { slug: 'tripoint', isExisting: true })
@@ -182,5 +242,143 @@ describe('answerFor', () => {
       PARTNER_FIELD_REGISTRY,
     )
     expect(r.conflicts.flatMap((s) => s.conflicts.map((c) => c.key))).toEqual(['profile.daily_lead_cap'])
+  })
+})
+
+// #2141: History, read from production's audit rows (read only, 2026-10-16) and
+// redacted as a capture is, plus a synthetic matrix history (production holds no
+// matrix sync rows) and the failed and incomplete answers.
+describe('the History fixtures', () => {
+  const tripoint = fx.partners.find((p) => p.slug === 'tripoint')!
+  const liberty1 = fx.partners.find((p) => p.slug === 'liberty1')!
+
+  it('hold every listed partner at the real count: 59 changes, 19 each for Tripoint and Liberty1', () => {
+    expect(Object.keys(fx.history).sort()).toEqual(fx.partners.map((p) => p.id).sort())
+    expect(fx.history[tripoint.id].entries).toHaveLength(19)
+    expect(fx.history[liberty1.id].entries).toHaveLength(19)
+    expect(Object.values(fx.history).reduce((n, h) => n + h.entries.length, 0)).toBe(59)
+  })
+
+  it('name no real person, carry no live webhook, prospect or buyer lead id', () => {
+    const all = stringsIn([fx.history, fx.historyMatrix])
+    expect(all.filter((s) => s.includes('@') && !s.endsWith('@example.com'))).toEqual([])
+    const people = [...Object.values(fx.history), fx.historyMatrix].flatMap((h) => h.entries).flatMap((e) => (e.editor.kind === 'person' ? [e.editor.name] : []))
+    expect(people.length).toBeGreaterThan(0)
+    expect(people.every((n) => /^Editor [A-Z]\d*$/.test(n))).toBe(true)
+    const urls = all.filter((s) => s.startsWith('http') && !s.startsWith('https://trypennie.com/'))
+    expect(urls.length).toBeGreaterThan(0)
+    expect(urls.every((u) => u.startsWith('https://hooks.example.com/redacted/'))).toBe(true)
+    const held = fx.history[liberty1.id].entries.filter((e) => e.entityType === 'held_click')
+    expect(held).toHaveLength(2)
+    for (const e of held) expect(e.changes).toMatchObject({ subject: { prospect_id: 'redacted' }, buyer_lead_id: { new: 'redacted' } })
+  })
+
+  it('give an editor the same alias the partner list gives them', () => {
+    const lastEditor = String(tripoint.updated_by)
+    const people = new Map(fx.history[tripoint.id].entries.flatMap((e) => (e.editor.kind === 'person' && e.editor.userId ? [[e.editor.userId, e.editor.name] as const] : [])))
+    expect(people.get(lastEditor)).toBe(tripoint.updated_by_name)
+  })
+
+  it('redact a captured answer the same way, from a raw shape the route returns', () => {
+    const r = createRedactor()
+    r.partner({ updated_by: 'u1', updated_by_name: 'Ann' })
+    const out = r.history({ partnerId: 'p', complete: true, completeSince: null, entries: [
+      { editor: { kind: 'person', userId: 'u1', name: 'Ann', via: 'sync_now' }, editorLabel: 'Ann, Sync now from Salesforce', changes: { _actor: { name: 'Bo', email: 'bo@x.com' }, 'click_delivery.routes[DV1]': { old: null, new: { url: 'https://live.example/hook', states: ['WA'] } } } },
+      { editor: { kind: 'direct' }, editorLabel: 'Changed directly in the database', changes: { added: [{ range: '1', source_url: 'https://sf.example/r1' }] } },
+    ] })
+    expect(out.entries[0]).toMatchObject({ editor: { userId: '00000000-0000-4000-8000-000000000001', name: 'Editor A' }, editorLabel: 'Editor A, Sync now from Salesforce' })
+    expect(out.entries[0].changes).toEqual({ _actor: { name: 'Editor B', email: 'editor-b@example.com' }, 'click_delivery.routes[DV1]': { old: null, new: { url: 'https://hooks.example.com/redacted/DV1', states: ['WA'] } } })
+    expect(out.entries[1]).toMatchObject({ editorLabel: 'Changed directly in the database', changes: { added: [{ range: '1' }] } })
+  })
+
+  it('refuses a person editor with no name rather than scattering the alias through the label', () => {
+    expect(() => createRedactor().history({ partnerId: 'p', complete: true, completeSince: null, entries: [
+      { editor: { kind: 'person', userId: 'u1', name: '', via: null }, editorLabel: 'Ann', changes: {} },
+    ] })).toThrow(/no name/)
+  })
+
+  it('redacts every held click shape the route ties to a partner: a cleared claim\'s held_click.old and the Salesforce writes, as well as the subject', () => {
+    const subject = { partner_id: 'p', prospect_id: 'a06REALPROSPECT', reason: 'outcome_unknown', held_at: '2026-09-30T15:57:55Z' }
+    const out = createRedactor().history({ partnerId: 'p', complete: true, completeSince: null, entries: [
+      { editor: { kind: 'direct' }, editorLabel: 'Changed directly in the database', changes: { held_click: { old: subject, new: null }, claim_state: { old: 'sold', new: 'sold' } } },
+      { editor: { kind: 'direct' }, editorLabel: 'Changed directly in the database', changes: {
+        subject, claim_state: { old: 'in_flight', new: 'sold' }, buyer_lead_id: { old: null, new: 'REALLEAD' },
+        salesforce_writes: { old: null, new: { complete: true, writes: [{ record: 'prospect', id: 'a06REALPROSPECT', message: 'updated a06REALPROSPECT' }] } },
+      } },
+    ] })
+    const strings = stringsIn(out)
+    expect(strings.filter((s) => s.includes('REAL'))).toEqual([])
+    expect(out.entries[0].changes).toMatchObject({ held_click: { old: { partner_id: 'p', prospect_id: 'redacted', reason: 'outcome_unknown' }, new: null } })
+    expect(out.entries[1].changes).toMatchObject({ salesforce_writes: { old: null, new: { complete: true, writes: [{ record: 'redacted', id: 'redacted' }] } } })
+  })
+
+  it('answers the history read for every partner, fails it with the route\'s error when asked, and gives the matrix and incomplete answers only when asked', () => {
+    for (const p of fx.partners) expect(answerFor('GET', `${W}/api/partners/${p.id}/history`, fx), p.slug).toEqual({ status: 200, body: fx.history[p.id] })
+    expect(answerFor('GET', `${W}/api/partners/not-a-partner/history`, fx)).toBeNull()
+    expect(answerFor('GET', `${W}/api/partners/${tripoint.id}/history`, fx, { historyFails: true })).toEqual({ status: 500, body: { error: 'history_unavailable', read: 'users', message: 'History could not be loaded: the users read failed.' } })
+    expect(answerFor('GET', `${W}/api/partners/${tripoint.id}/history`, fx, { historyMatrix: true })?.body).toEqual(fx.historyMatrix)
+    expect(answerFor('GET', `${W}/api/partners/${liberty1.id}/history`, fx, { historyMatrix: true })?.body).toEqual(fx.history[liberty1.id])
+    const cut = answerFor('GET', `${W}/api/partners/${tripoint.id}/history`, fx, { historyIncomplete: true })?.body as PartnerHistory
+    const oldest = fx.history[tripoint.id].entries.at(-1)!
+    expect(cut.complete).toBe(false)
+    expect(Date.parse(cut.completeSince!)).toBe(Date.parse(oldest.at))
+    expect(cut.entries).toEqual(fx.history[tripoint.id].entries.slice(0, -1))
+  })
+})
+
+// #2135: the live channel's socket is answered in the browser, never by production's Realtime.
+describe('realtimeReplies', () => {
+  const ORG = String(fx.partners[0].organization_id)
+
+  it('admits the partners page join, and answers a heartbeat, a token refresh and a leave', () => {
+    const join = realtimeReplies(JSON.stringify(['1', '1', `realtime:partners:${ORG}`, 'phx_join', { config: { private: true } }]))
+    expect(join.unexpected).toBeNull()
+    expect(JSON.parse(join.replies[0])).toEqual(['1', '1', `realtime:partners:${ORG}`, 'phx_reply', { status: 'ok', response: { postgres_changes: [] } }])
+    for (const event of ['heartbeat', 'access_token', 'phx_leave']) expect(realtimeReplies(JSON.stringify([null, '2', 'phoenix', event, {}])).replies, event).toHaveLength(1)
+  })
+
+  it('records a join to any other topic, and ignores what it cannot read', () => {
+    expect(realtimeReplies(JSON.stringify(['1', '1', 'realtime:test-run-1', 'phx_join', {}]))).toEqual({ replies: [], unexpected: 'JOIN realtime:test-run-1' })
+    // Only a UUID: not any 36 characters of hex and dashes.
+    const dashes = `realtime:partners:${'-'.repeat(36)}`
+    expect(realtimeReplies(JSON.stringify(['1', '1', dashes, 'phx_join', {}]))).toEqual({ replies: [], unexpected: `JOIN ${dashes}` })
+    expect(realtimeReplies('not json')).toEqual({ replies: [], unexpected: null })
+  })
+
+  it('is enough for the real Realtime client to subscribe the page\'s private channel', async () => {
+    // A socket that answers through realtimeReplies, given to the real client as its transport.
+    class FixtureSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly CLOSING = 2
+      static readonly CLOSED = 3
+      readyState = 0
+      binaryType = 'arraybuffer'
+      url: string
+      protocol = ''
+      onopen: ((e: unknown) => void) | null = null
+      onmessage: ((e: { data: string }) => void) | null = null
+      onclose: ((e: unknown) => void) | null = null
+      onerror: ((e: unknown) => void) | null = null
+      constructor(url: string) {
+        this.url = url
+        queueMicrotask(() => { this.readyState = 1; this.onopen?.({}) })
+      }
+      send(data: string) {
+        for (const r of realtimeReplies(data).replies) queueMicrotask(() => this.onmessage?.({ data: r }))
+      }
+      close() { this.readyState = 3; this.onclose?.({ code: 1000 }) }
+      addEventListener() {}
+      removeEventListener() {}
+      dispatchEvent() { return true }
+    }
+    type Options = NonNullable<ConstructorParameters<typeof RealtimeClient>[1]>
+    const client = new RealtimeClient('wss://fixture.example/realtime/v1', { params: { apikey: 'fixture' }, transport: FixtureSocket as unknown as Options['transport'] })
+    await client.setAuth('fixture-jwt')
+    const status = await new Promise<string>((resolve) => {
+      client.channel(`partners:${ORG}`, { config: { private: true } }).subscribe((s) => resolve(s))
+    })
+    expect(status).toBe('SUBSCRIBED')
+    client.disconnect()
   })
 })

@@ -86,7 +86,73 @@ export function createRedactor() {
       }
       return out
     },
+    /**
+     * A History answer (#2141): each person who made a change becomes the same
+     * Editor alias the partner rows give them (by user id, name or email), the
+     * stamped actor of a change likewise, a click route's address the same
+     * placeholder a profile's gets, a held click's prospect and the buyer's lead
+     * id "redacted", and a matrix row's Salesforce link removed. Labels a job or
+     * a direct edit carries name no person and stay.
+     */
+    history(answer) {
+      const personName = (values) => `Editor ${letterOf(aliasOf(values))}`
+      const entries = answer.entries.map((e) => {
+        const out = { ...e }
+        if (e.editor && e.editor.kind === 'person') {
+          if (typeof e.editor.name !== 'string' || e.editor.name.trim() === '') throw new Error('redact: a person editor has no name, so its label cannot be aliased and nothing was written')
+          const n = aliasOf([e.editor.userId, e.editor.name].filter((v) => v))
+          const name = `Editor ${letterOf(n)}`
+          out.editor = { ...e.editor, name, userId: e.editor.userId ? `00000000-0000-4000-8000-${String(n + 1).padStart(12, '0')}` : null }
+          if (!e.editorLabel.includes(e.editor.name)) throw new Error(`redact: an editor label does not carry its editor's name, so it cannot be replaced and nothing was written`)
+          out.editorLabel = e.editorLabel.split(e.editor.name).join(name)
+        }
+        out.changes = redactChanges(e.changes, personName)
+        return out
+      })
+      return { ...answer, entries }
+    },
   }
+}
+
+/** A held click's subject with the prospect replaced; the partner, reason and time stay. */
+function redactHeldSubject(s) {
+  if (!s || typeof s !== 'object') return s
+  return { ...s, ...('prospect_id' in s ? { prospect_id: 'redacted' } : {}) }
+}
+
+/** One History entry's changes with the identifying values replaced, its shape kept. */
+function redactChanges(changes, personName) {
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) return changes
+  const out = {}
+  for (const [key, v] of Object.entries(changes)) {
+    if (key === '_actor' && v && typeof v === 'object') {
+      const name = personName([v.name, v.email].filter((x) => x))
+      out[key] = { ...v, name, ...('email' in v ? { email: `${name.toLowerCase().replace(' ', '-')}@example.com` } : {}) }
+    } else if (/^click_delivery\.routes\[(.*)\]$/.test(key) && v && typeof v === 'object') {
+      const route = /^click_delivery\.routes\[(.*)\]$/.exec(key)[1]
+      const side = (s) => (s && typeof s === 'object' ? { ...s, url: `https://hooks.example.com/redacted/${encodeURIComponent(route)}` } : s)
+      out[key] = { old: side(v.old), new: side(v.new) }
+    } else if (key === 'subject' && v && typeof v === 'object') {
+      out[key] = redactHeldSubject(v)
+    } else if (key === 'held_click' && v && typeof v === 'object') {
+      // A cleared claim carries its subject here (held-clicks.ts), which is
+      // also how History ties it to the partner (held_click.old.partner_id).
+      out[key] = { old: redactHeldSubject(v.old), new: redactHeldSubject(v.new) }
+    } else if (key === 'salesforce_writes' && v && typeof v === 'object') {
+      // A sale's Salesforce updates name the records they wrote: every text
+      // goes, the shape (counts, true or false) stays.
+      out[key] = { old: redactSample(v.old), new: redactSample(v.new) }
+    } else if (key === 'buyer_lead_id' && v && typeof v === 'object') {
+      out[key] = { old: v.old === null ? null : 'redacted', new: v.new === null ? null : 'redacted' }
+    } else if (key === 'last_probe_response' && v && typeof v === 'object') {
+      out[key] = { old: redactSample(v.old), new: redactSample(v.new) }
+    } else if ((key === 'added' || key === 'removed' || key === 'edited') && Array.isArray(v)) {
+      out[key] = v.map(({ source_url: _url, ...row }) => row)
+    } else {
+      out[key] = v
+    }
+  }
+  return out
 }
 
 /** Every string in a value, so a test can assert nothing personal survived. */

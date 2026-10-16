@@ -19,7 +19,9 @@ vi.mock('../../../lib/buyer-profile-loader')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
-import { readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
+import { readBuyerProfileVersion, readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
+// What the accessibility job's router answers these two routes with (#2135), so a route and its fixture cannot drift apart.
+import { LIVE_MISS_ID, versionsFor } from '../../../../../web/e2e/partner-live-fixtures'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
 
 // The fixtures the accessibility job is answered from (apps/web/e2e/fixtures/partners).
@@ -27,13 +29,19 @@ import partnersJson from '../../../../../web/e2e/fixtures/partners/partners.json
 import buyerProfilesJson from '../../../../../web/e2e/fixtures/partners/buyer-profiles.json'
 import uuidsJson from '../../../../../web/e2e/fixtures/partners/partner-uuids.json'
 import staleJson from '../../../../../web/e2e/fixtures/partners/synthetic/page-save-409.tripoint.json'
+import deleteChecksJson from '../../../../../web/e2e/fixtures/partners/synthetic/delete-checks.json'
 import usageJson from '../../../../../web/e2e/fixtures/partners/usage.json'
+import historyJson from '../../../../../web/e2e/fixtures/partners/history.json'
+import historyMatrixJson from '../../../../../web/e2e/fixtures/partners/synthetic/history-matrix.tripoint.json'
+import type { HistoryEntry, PartnerHistory } from '@bidspoke/partner-history'
 
 type Row = Record<string, unknown> & { id: string; slug: string; partner_type: string; accept_signals: unknown }
 const partners = partnersJson as unknown as Row[]
 const buyerProfiles = buyerProfilesJson as unknown as Record<string, { profile: Record<string, unknown> | null; accept_signals: unknown[]; other_sellers: Array<{ id: string; name: string }> }>
 const uuids = uuidsJson as unknown[]
 const stale = staleJson as unknown as Record<string, unknown> & { partner: Row; profile: Record<string, unknown> }
+interface DeleteCheckFixture { rpc: unknown; ledger: { unmirrored: number; unresolved: number }; uuids: Array<{ uuid: string }>; workflows: Record<string, unknown>[]; answer: unknown }
+const deleteChecks = Object.entries(deleteChecksJson).filter(([k]) => !k.startsWith('_')) as unknown as Array<[string, DeleteCheckFixture]>
 
 const testUser = { id: 'user-1', organization_id: String(partners[0].organization_id), email: 'editor-a@example.com' }
 const validPayload = { sub: 'user-1', email: 'editor-a@example.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -146,11 +154,97 @@ describe('the partners page fixtures are what their routes answer (#2134)', () =
     expect(Object.keys(usageJson).sort()).toEqual(partners.map((p) => p.id).sort())
   })
 
+  // #2141: History. The fixture holds production's audit rows (read only,
+  // 2026-10-16) as the route answered them, redacted; here the route is given
+  // the rows, configs and editors each entry was made from and must answer it.
+  const histories: Array<[string, PartnerHistory]> = [
+    ...Object.entries(historyJson as unknown as Record<string, PartnerHistory>).map(([id, h]) => [partners.find((p) => p.id === id)!.slug, h] as [string, PartnerHistory]),
+    ['tripoint with the synthetic matrix history', historyMatrixJson as unknown as PartnerHistory],
+  ]
+  function historyTables(h: PartnerHistory): Record<string, TableConfig> {
+    const editorId = (e: HistoryEntry) => (e.editor.kind === 'person' ? e.editor.userId : null)
+    const audit = h.entries.filter((e) => e.source === 'audit_log').map((e) => ({
+      id: e.key.slice('audit:'.length), changed_at: e.at, changed_by: editorId(e), entity_type: e.entityType, entity_id: e.entityId, action: e.action, changes: e.changes,
+    }))
+    const matrix = h.entries.filter((e) => e.source === 'bid_config_history').map((e) => ({
+      id: e.key.slice('matrix:'.length), changed_at: e.at, changed_by: editorId(e), config_id: e.entityId, source: e.matrix!.source, diff: e.changes,
+    }))
+    const configs = new Map(h.entries.flatMap((e) => (e.matrix ? [[e.matrix.configId, { id: e.matrix.configId, name: e.matrix.configName }] as const] : [])))
+    const users = new Map(h.entries.flatMap((e) => (e.editor.kind === 'person' && e.editor.userId ? [[e.editor.userId, { id: e.editor.userId, display_name: e.editor.name, email: 'editor@example.com' }] as const] : [])))
+    return {
+      partner_configs: { single: { id: h.partnerId } },
+      partner_bid_configs: { list: [...configs.values()] },
+      audit_log: { list: audit },
+      bid_config_history: { list: matrix },
+      users: { single: testUser, list: [...users.values()] },
+    }
+  }
+
+  it.each(histories)('GET /partners/:id/history for %s', async (_name, h) => {
+    supabaseWith(historyTables(h))
+    const res = await call('GET', `/partners/${h.partnerId}/history`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(h)
+  })
+
+  it('GET /partners/:id/history: the failed answer the fixture router gives is the route\'s own for a failed users read', async () => {
+    const h = histories.find(([name]) => name === 'tripoint')![1]
+    supabaseWith({ ...historyTables(h), users: { single: testUser, listError: { message: 'boom', code: 'XX000' } } })
+    const res = await call('GET', `/partners/${h.partnerId}/history`)
+    expect(res.status).toBe(500)
+    expect(await res.json()).toEqual({ error: 'history_unavailable', read: 'users', message: 'History could not be loaded: the users read failed.' })
+  })
+
+  it('the history fixture has an answer for every listed partner', () => {
+    expect(Object.keys(historyJson).sort()).toEqual(partners.map((p) => p.id).sort())
+  })
+
   it('GET /partner-uuids: the sub-account IDs', async () => {
     supabaseWith({ partner_uuid_map: { list: uuids as Record<string, unknown>[] } })
     const res = await call('GET', '/partner-uuids')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual(uuids)
+  })
+
+  // #2140: the delete box's answer for every listed partner (Tripoint blocked by
+  // its sales, the others deletable), from the real route over each one's inputs.
+  it.each(deleteChecks.map(([id, f]) => [partners.find((p) => p.id === id)!.slug, id, f] as const))('GET /partners/:id/delete-check for %s', async (_slug, id, f) => {
+    supabaseWith(
+      { workflows: { list: f.workflows }, partner_uuid_map: { list: f.uuids } },
+      async (name) => ({ data: name === 'partner_delete_check' ? f.rpc : null, error: null }),
+    )
+    const entries = (n: number) => Array.from({ length: n }, (_, i) => ({ lead_key: `l${i}` }))
+    const ledgerEnv = {
+      ...env,
+      BUYER_LEDGER: { idFromName: (n: string) => n, get: () => ({ fetch: async (url: string) => (new URL(url).pathname === '/unmirrored' ? Response.json({ entries: entries(f.ledger.unmirrored), oldest_age_ms: null }) : Response.json({ entries: entries(f.ledger.unresolved) })) }) },
+    } as unknown as Env
+    const res = await api.request(`/partners/${id}/delete-check`, { method: 'GET', headers: { Authorization: 'Bearer tok' } }, ledgerEnv, mockCtx)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(f.answer)
+  })
+
+  // #2135: the live channel's versions probe and its miss report, which the
+  // fixture router answers (answerFor in apps/web/e2e/partner-fixtures.ts).
+  it.each(partners.map((p) => [p.slug, p.id]))('GET /partners/:id/versions for %s is what the fixture router answers', async (_slug, id) => {
+    const row = partners.find((p) => p.id === id)!
+    const fixtureProfile = buyerProfiles[id]?.profile as { version?: number } | null | undefined
+    vi.mocked(readBuyerProfileVersion).mockResolvedValue(fixtureProfile ? { version: fixtureProfile.version ?? 0, lastSaveId: null } : null)
+    supabaseWith({ partner_configs: { single: { id, version: row.version, last_save_id: row.last_save_id } }, audit_log: { list: [] } })
+    const res = await call('GET', `/partners/${id}/versions`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(versionsFor(row, buyerProfiles))
+  })
+
+  it('POST /partners/live-miss answers what the fixture router answers', async () => {
+    const tripoint = partners.find((p) => p.slug === 'tripoint')!
+    supabaseWith({ partner_configs: { single: { id: tripoint.id } }, partner_page_live_misses: { insertResult: { id: LIVE_MISS_ID } } })
+    const res = await call('POST', '/partners/live-miss', {
+      partner_id: tripoint.id, cause: 'delivery',
+      noticed: { partner_version: 0, profile_version: 5 }, observed: { partner_version: 1, profile_version: 5 }, since_last_notice_ms: 61_000,
+    })
+    // The router answers 201 { ok: true, id: LIVE_MISS_ID } (partner-fixtures.test.ts holds it to that).
+    expect(res.status).toBe(201)
+    expect(await res.json()).toEqual({ ok: true, id: LIVE_MISS_ID })
   })
 
   it('PUT /partners/:id/page: the stale save the merge dialog opens from is the 409 the route answers', async () => {

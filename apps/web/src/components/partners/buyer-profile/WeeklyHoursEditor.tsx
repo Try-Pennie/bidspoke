@@ -2,31 +2,46 @@
 
 /**
  * The weekly hours editor (#1412): seven days from the shared vocabulary, any
- * number of windows a day in Eastern time, an "Always open" preset, and a
+ * number of windows a day (stored in Eastern time), an "Always open" preset, and a
  * window whose close is not after its open flagged beside it. No windows means
  * the buyer is never offered a lead (L72), stated once. Opens and Closes are
  * column headers said once over the seven rows, not labels on each (L579).
  * Times are typed (design round 1 of #2137), and each window keeps a stable
  * id, so committing a time that re-sorts the day keeps the focus in the field.
+ *
+ * The windows are stored in Eastern and drawn in the profile's display zone
+ * (#2143, PM-10): display-zone.ts shifts them, draws one that crosses midnight
+ * there on both days, and turns an edit back into the Eastern windows it means.
+ * In Eastern every row is exactly one stored window.
  */
 import { useId } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
-import { DAYS_OF_WEEK, type ProfileWindowDocument } from '@bidspoke/buyer-profile'
+import { DAYS_OF_WEEK, DEFAULT_DISPLAY_TIME_ZONE, type DisplayTimeZone, type ProfileWindowDocument } from '@bidspoke/buyer-profile'
 import { Button, FieldError } from '@/components/ui/form'
 import { TimeField } from '@/components/ui/DateTimeFields'
 import { formatTime } from '@/components/ui/date-time'
+import { zoneShiftFromEastern } from '@/lib/dates'
+import { addDisplayWindow, displayWindows, replaceDisplayWindow, type DisplayWindow } from './display-zone'
 import { useRowIds } from './row-ids'
 
 const DEFAULT_WINDOW = { opens_minute: 540, closes_minute: 1020 }
 
-export function WeeklyHoursEditor({ value, onChange }: { value: readonly ProfileWindowDocument[]; onChange: (windows: ProfileWindowDocument[]) => void }) {
+export function WeeklyHoursEditor({ value, onChange, zone = DEFAULT_DISPLAY_TIME_ZONE }: { value: readonly ProfileWindowDocument[]; onChange: (windows: ProfileWindowDocument[]) => void; zone?: DisplayTimeZone }) {
   const base = useId()
   const rows = useRowIds<ProfileWindowDocument>()
+  const shift = zoneShiftFromEastern(zone)
   const sorted = [...value].sort((a, b) => a.day_of_week - b.day_of_week || a.opens_minute - b.opens_minute)
+  const shown = displayWindows(sorted, shift)
 
-  const replaceWindow = (target: ProfileWindowDocument, next: ProfileWindowDocument | null) =>
-    onChange(sorted.flatMap((w) => (w === target ? (next ? [rows.carry(target, next)] : []) : [w])))
-  const addWindow = (day: number) => onChange([...sorted, { day_of_week: day, ...DEFAULT_WINDOW }])
+  // The first window an edit writes keeps the edited row's id, so a re-sort keeps the focus.
+  const replaceWindow = (target: DisplayWindow, next: Pick<ProfileWindowDocument, 'day_of_week' | 'opens_minute' | 'closes_minute'> | null) => {
+    const out = replaceDisplayWindow(sorted, shift, target, next)
+    const written = out.find((w) => !sorted.includes(w))
+    if (written) rows.carry(target.sources[0], written)
+    onChange(out)
+  }
+  const addWindow = (day: number) => onChange(addDisplayWindow(sorted, shift, { day_of_week: day, ...DEFAULT_WINDOW }))
+  const keyOf = (row: DisplayWindow) => `${rows.idOf(row.sources[0])}-${row.pieces[0].part}`
 
   return (
     <div className="space-y-2">
@@ -41,7 +56,7 @@ export function WeeklyHoursEditor({ value, onChange }: { value: readonly Profile
         <span />
       </div>
       {DAYS_OF_WEEK.map((day) => {
-        const windows = sorted.filter((w) => w.day_of_week === day.index)
+        const windows = shown.filter((w) => w.day_of_week === day.index)
         return (
           <fieldset key={day.index} aria-label={day.label} className="border-t border-gray-100 py-1">
             <legend className="sr-only">{day.label}</legend>
@@ -58,7 +73,7 @@ export function WeeklyHoursEditor({ value, onChange }: { value: readonly Profile
             ) : (
               <div className="space-y-1">
                 {windows.map((w, i) => {
-                  const key = rows.idOf(w)
+                  const key = keyOf(w)
                   const rowId = `${base}-${key}`
                   const invalid = w.closes_minute <= w.opens_minute
                   const opens = formatTime(w.opens_minute)

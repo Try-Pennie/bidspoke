@@ -7,8 +7,9 @@
  * in cents. The scope is stated once from the wired populations (L582, L287).
  */
 import { useId } from 'react'
-import { WIRED_POPULATIONS, type SoldOn } from '@bidspoke/buyer-profile'
+import { DEFAULT_DISPLAY_TIME_ZONE, WIRED_POPULATIONS, type DisplayTimeZone, type SoldOn } from '@bidspoke/buyer-profile'
 import { Field, NumberInput, describedBy } from '@/components/ui/form'
+import { clickCountResetSentence, easternDayResetSentence } from './display-zone'
 import { CLICK_FIELD_LABELS, POPULATION_LABELS } from './labels'
 
 export interface CapsValue {
@@ -28,7 +29,12 @@ export interface CapsErrors {
 const centsToDollars = (cents: number | null): number | null => (cents === null ? null : Math.round(cents) / 100)
 const dollarsToCents = (dollars: number | null): number | null => (dollars === null ? null : Math.round(dollars * 100))
 
-export function CapsGrid({ value, onChange, errors = {}, soldOn = null }: { value: CapsValue; onChange: (next: CapsValue) => void; errors?: CapsErrors; soldOn?: SoldOn | null }) {
+/**
+ * `zone` is the profile's display zone and `nowMs` the clock the click count's next
+ * reset is read from (#2143, PM-10): the reset is said as the hour it falls on in
+ * that zone, which moves on the nights the clocks change.
+ */
+export function CapsGrid({ value, onChange, errors = {}, soldOn = null, zone = DEFAULT_DISPLAY_TIME_ZONE, nowMs }: { value: CapsValue; onChange: (next: CapsValue) => void; errors?: CapsErrors; soldOn?: SoldOn | null; zone?: DisplayTimeZone; nowMs?: number }) {
   const base = useId()
   const patch = (next: Partial<CapsValue>) => onChange({ ...value, ...next })
   const scope = WIRED_POPULATIONS.map((p) => POPULATION_LABELS[p]).join(', ')
@@ -52,7 +58,7 @@ export function CapsGrid({ value, onChange, errors = {}, soldOn = null }: { valu
             <NumberInput id={`${base}-dl`} value={value.daily_lead_cap} onChange={(v) => patch({ daily_lead_cap: v })} min={0} step={1} describedBy={db} />
           ))}
         </div>
-        <p id={noteId} className="text-xs text-hint">Once the clicks in a day reach it, the buyer is no longer offered that day. With the box empty the buyer is not offered at all. A day runs midnight to midnight Pacific time.</p>
+        <p id={noteId} className="text-xs text-hint">Once the clicks in a day reach it, the buyer is no longer offered that day. With the box empty the buyer is not offered at all. {clickCountResetSentence(nowMs ?? Date.now(), zone)}</p>
       </div>
     )
   }
@@ -73,7 +79,7 @@ export function CapsGrid({ value, onChange, errors = {}, soldOn = null }: { valu
           <NumberInput id={`${base}-ds`} value={centsToDollars(value.daily_spend_cap_cents)} onChange={(v) => patch({ daily_spend_cap_cents: dollarsToCents(v) })} min={0} step={0.01} describedBy={db} />
         ))}
       </div>
-      <p id={noteId} className="text-xs text-hint">Spend is in dollars. An empty box is no cap. Counts sales made through buyer selection: {scope}. Hours and days are Eastern time.</p>
+      <p id={noteId} className="text-xs text-hint">Spend is in dollars. An empty box is no cap. Counts sales made through buyer selection: {scope}. {easternDayResetSentence(zone)}</p>
     </div>
   )
 }

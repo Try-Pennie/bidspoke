@@ -32,6 +32,7 @@ import { parseSlackConnection, type SlackConnection } from './slack-connection'
 import { leadRead } from './lead-read-budget'
 import { describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason, type ScheduledSlack } from './scheduled-slack'
 import { composeSalesforceReadBackAlert, type SalesforceReadBackAlert } from './salesforce-read-back-alert'
+import { openOutageForPost, type OpenOutage } from './outage-notice'
 export type { SlackConnection } from './slack-connection'
 
 export interface FailureAlertPayload {
@@ -2989,16 +2990,39 @@ function missingDatabaseObject(error: string): boolean {
   return /\b(PGRST202|PGRST205|42883|42P01|42703|42501)\b|permission denied for/.test(error)
 }
 
+/** What a database unreachable page carries (#1297, #2061). */
+export interface DatabaseUnreachablePayload {
+  /** The read that failed, as a reader names it. */
+  what: string
+  error: string
+  appUrl: string
+  repeat?: string
+  /** How old the saved Slack copy the page is posted from is; null when the copy does not say. */
+  copyAgeMs: number | null
+}
+
 /**
- * Bidspoke cannot read its own database (#1297). Posted by the minute cliff
- * check from the last-good Slack connection in KV, because the token's home is
- * the database that cannot be read. Returns the message ts, or null when Slack
- * refused, so the caller can gate its cooldown on delivery.
+ * How old the saved Slack settings are, as the page says it once (#2061). A
+ * copy written before it was dated says so, never a guessed age (L11).
+ */
+export function describeSavedSettingsAge(ageMs: number | null): string {
+  return `Alerts during this outage are posted using Slack settings ${savedSettingsAgo(ageMs)}.`
+}
+
+/** When the database unreachable page says its all-clear will come (database-reachability.ts). */
+const DATABASE_ALL_CLEAR_PROMISE =
+  `An all-clear follows here once no scheduled read has failed for ${RECOVERY_REARM_MINUTES} minutes and the minute database probe and the volume check have answered throughout them.`
+
+/**
+ * Bidspoke cannot read its own database (#1297). Posted by its one owner
+ * (database-reachability.ts, #2061) from the saved Slack copy in KV, because the
+ * token's home is the database that cannot be read. Returns the message ts, or
+ * null when Slack refused, so the caller can gate its cooldown on delivery.
  */
 export async function sendDatabaseUnreachableAlert(
   slack: { bot_token: string },
   channel: string,
-  payload: { what: string; error: string; appUrl: string; repeat?: string },
+  payload: DatabaseUnreachablePayload,
 ): Promise<string | null> {
   // A Cloudflare error page in place of the answer (#2058, #2117) means the
   // worker could not reach the database through Cloudflare, which is all that
@@ -3015,33 +3039,34 @@ export async function sendDatabaseUnreachableAlert(
         text:
           // No claim about leads (#835): since the stored copies (#1845) a live run
           // can still be served from them, so "leads are refused with 503" is no
-          // longer what happens. What this check knows is that it cannot count.
-          `<!here> The minute volume check could not read *${payload.what}* from Supabase: \`${truncateErrorForAlert(payload.error)}\`. ` +
-          'While this lasts it cannot count executions, so it cannot see a drop in volume. ' +
-          'The volume cliff alerts will only fire once the database is readable again, and they will then report the outage as a caller stopping, which it is not.',
+          // longer what happens. What was measured is that a read failed.
+          `<!here> A scheduled read of *${payload.what}* from Supabase failed: \`${truncateErrorForAlert(payload.error)}\`. ` +
+          'While this lasts the volume cliff alerts cannot count executions, so they cannot see a drop in volume, ' +
+          'and once the database is readable again they will report the outage as a caller stopping, which it is not.',
       },
     },
+    { type: 'section', text: { type: 'mrkdwn', text: describeSavedSettingsAge(payload.copyAgeMs) } },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
         text: missingDatabaseObject(payload.error)
           // A missing function, table or grant answers the same way every minute.
-          ? '*How to fix:* the database answered, but what this check reads is missing or not permitted, and that does not clear up on its own. Apply the outstanding database migrations, or restore the grant the error names. An all-clear follows here once this check can read again.'
-          : '*How to fix:* check <https://status.supabase.com|status.supabase.com> and the database\'s health and memory use in the Supabase dashboard for this project. Nothing on the worker needs restarting; it recovers on its own when the database answers. An all-clear follows here once this check can read again.',
+          ? `*How to fix:* the database answered, but what was read is missing or not permitted, and that does not clear up on its own. Apply the outstanding database migrations, or restore the grant the error names. ${DATABASE_ALL_CLEAR_PROMISE}`
+          : `*How to fix:* check <https://status.supabase.com|status.supabase.com> and the database's health and memory use in the Supabase dashboard for this project. Nothing on the worker needs restarting; it recovers on its own when the database answers. ${DATABASE_ALL_CLEAR_PROMISE}`,
       },
     },
     ...(payload.repeat ? [{ type: 'section', text: { type: 'mrkdwn', text: payload.repeat } }] : []),
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/dashboard|Open dashboard>` } },
   ]
-  return postMessage(slack.bot_token, channel, blocks, 'Bidspoke cannot read its database')
+  return postOutageOwnerMessage(slack.bot_token, channel, blocks, 'Bidspoke cannot read its database')
 }
 
 /** The same alert when the read got a Cloudflare error page instead of an answer. */
 function sendDatabaseUnreachableThroughCloudflare(
   slack: { bot_token: string },
   channel: string,
-  payload: { what: string; appUrl: string; repeat?: string },
+  payload: DatabaseUnreachablePayload,
   code: number,
 ): Promise<string | null> {
   const title = 'Bidspoke cannot reach its database through Cloudflare'
@@ -3053,23 +3078,24 @@ function sendDatabaseUnreachableThroughCloudflare(
       text: {
         type: 'mrkdwn',
         text:
-          `<!here> The minute volume check could not read *${payload.what}*. Cloudflare answered in place of the database, with \`error code: ${code}\`.${meaning} ` +
+          `<!here> A scheduled read of *${payload.what}* got an answer from Cloudflare in place of the database, with \`error code: ${code}\`.${meaning} ` +
           'That answer comes from Cloudflare, so it does not show that the database itself is down. ' +
-          'While this lasts the check cannot count executions, so it cannot see a drop in volume. ' +
-          'The volume cliff alerts will only fire once the database is readable again, and they will then report the outage as a caller stopping, which it is not.',
+          'While this lasts the volume cliff alerts cannot count executions, so they cannot see a drop in volume, ' +
+          'and once the database is readable again they will report the outage as a caller stopping, which it is not.',
       },
     },
+    { type: 'section', text: { type: 'mrkdwn', text: describeSavedSettingsAge(payload.copyAgeMs) } },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: '*How to fix:* check <https://www.cloudflarestatus.com|cloudflarestatus.com> for an incident affecting Workers. Nothing on the worker or the database needs changing; this check recovers on its own when Cloudflare reaches the database again. An all-clear follows here once it can read again.',
+        text: `*How to fix:* check <https://www.cloudflarestatus.com|cloudflarestatus.com> for an incident affecting Workers. Nothing on the worker or the database needs changing; reads recover on their own when Cloudflare reaches the database again. ${DATABASE_ALL_CLEAR_PROMISE}`,
       },
     },
     ...(payload.repeat ? [{ type: 'section', text: { type: 'mrkdwn', text: payload.repeat } }] : []),
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/dashboard|Open dashboard>` } },
   ]
-  return postMessage(slack.bot_token, channel, blocks, title)
+  return postOutageOwnerMessage(slack.bot_token, channel, blocks, title)
 }
 
 /**
@@ -3101,6 +3127,29 @@ export async function sendRecoveryAlert(
   }
 
   return (await postMessage(slack.bot_token, channel, blocks, `Recovered: ${payload.subject}`)) !== null
+}
+
+/**
+ * The database unreachable all-clear (#2061): the shared recovery sentence, then
+ * the sentence saying what was measured to stand the incident down, because one
+ * cheap read answering in a memory stall is not a recovery and the reader should
+ * see what was. Returns whether it reached Slack.
+ */
+export async function sendDatabaseRecoveredAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: { alertedAt: string; endedAt: string | null; measured: string; appUrl: string },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const item: RecoveredSubject = { subject: 'Bidspoke', alertedAt: payload.alertedAt, endedAt: payload.endedAt }
+  const wording: RecoveryWording = { signal: 'database unreachable', recoveredPhrase: 'can read its database again' }
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: recoverySentence(item, wording, now) } },
+    { type: 'section', text: { type: 'mrkdwn', text: payload.measured } },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/dashboard|Open dashboard>` } },
+  ]
+  return (await postOutageOwnerMessage(slack.bot_token, channel, blocks, 'Recovered: Bidspoke can read its database again')) !== null
 }
 
 /**
@@ -3505,11 +3554,68 @@ export function etTime(at: number | string | Date): string {
 
 // ── Internal ──────────────────────────────────────────────────────────────────
 
+/**
+ * The one line an alert posted by a scheduled tick carries while the database
+ * outage is open (#2061, outage-notice.ts). It names only what the owner
+ * measured: when it reported the outage and when a read last failed, and, when
+ * this tick's Slack lookups fell back to the saved copy, that copy's age. The
+ * owner's own page says the rest (which read, how to fix, when the all-clear
+ * comes), so this does not repeat it.
+ */
+export function databaseOutageLine(outage: OpenOutage): string {
+  const failed = outage.lastFailedAtMs === null ? '' : ` (database reads last failed at ${etTime(outage.lastFailedAtMs)})`
+  const sentence = `Sent during the database outage reported at ${etTime(outage.reportedAtMs)}${failed}, so this alert may be a consequence of it.`
+  if (outage.copyAgeMs === undefined) return sentence
+  return `${sentence} It was posted using Slack settings ${savedSettingsAgo(outage.copyAgeMs)}.`
+}
+
+/** How long ago the saved Slack settings were saved, as the outage line says it. */
+function savedSettingsAgo(ageMs: number | null): string {
+  if (ageMs === null) return 'saved at a time that was not recorded'
+  const minutes = Math.floor(ageMs / 60_000)
+  if (minutes < 1) return 'saved less than a minute ago'
+  if (minutes < 120) return `saved ${minutes} minute${minutes === 1 ? '' : 's'} ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 48) return `saved ${hours} hours ago`
+  return `saved ${Math.floor(hours / 24)} days ago`
+}
+
+/** The blocks with the outage line under the title (first when there is none), in a new array. */
+function withOutageLine(blocks: unknown[], outage: OpenOutage): unknown[] {
+  const line = { type: 'context', elements: [{ type: 'mrkdwn', text: databaseOutageLine(outage) }] }
+  const first = blocks[0] as { type?: unknown } | undefined
+  const at = first?.type === 'header' ? 1 : 0
+  return [...blocks.slice(0, at), line, ...blocks.slice(at)]
+}
+
 // Post a Slack message. Returns the message ts on success, or null on any
 // failure — an HTTP error OR an API-level error (Slack returns HTTP 200 with
 // { ok: false, error } for channel_not_found / not_in_channel / invalid_auth).
 // Callers that gate a cooldown must treat null as "not delivered".
+//
+// Every alert goes through here, so this is where a scheduled tick's alert
+// gets the outage line while the database outage is open (#2061). Reading the
+// incident never throws and never waits past its own deadline.
 export async function postMessage(
+  botToken: string,
+  channel: string,
+  blocks: unknown[],
+  text: string
+): Promise<string | null> {
+  const outage = await openOutageForPost()
+  return deliverMessage(botToken, channel, outage ? withOutageLine(blocks, outage) : blocks, text)
+}
+
+/**
+ * The database owner's own page and all-clear (#2061): never the outage line,
+ * which would name the outage on the message that announces it. Private to this
+ * module, so no other sender can leave the line out.
+ */
+function postOutageOwnerMessage(botToken: string, channel: string, blocks: unknown[], text: string): Promise<string | null> {
+  return deliverMessage(botToken, channel, blocks, text)
+}
+
+async function deliverMessage(
   botToken: string,
   channel: string,
   blocks: unknown[],

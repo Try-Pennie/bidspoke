@@ -27,6 +27,22 @@ export interface AlertClaims {
 }
 
 /**
+ * Free a claim without ever throwing (#2062): a release that fails must not
+ * replace the outcome it follows (a post's error, a refused post, a held
+ * all-clear) or stop a check part way through its loop. The claim then lapses
+ * at its TTL, and the failure is logged. makeAlertClaims' own release already
+ * never throws; this holds every other AlertClaims to the same.
+ */
+export async function releaseClaimQuietly(claims: AlertClaims | undefined, key: string): Promise<void> {
+  if (!claims) return
+  try {
+    await claims.release(key)
+  } catch (e) {
+    console.error(`[alert-claim] release ${key} failed: ${formatErr(e)}`)
+  }
+}
+
+/**
  * How long a caller waits for the claim object before giving up on it.
  *
  * Below the tightest `maxRunMs` in `cron-heartbeat.ts` (two minutes, the

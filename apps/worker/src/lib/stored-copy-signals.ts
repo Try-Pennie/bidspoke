@@ -7,7 +7,7 @@
  *    refuses a copy. This is the outage alert, so it must reach Slack while the
  *    database is down: the Slack connections come through the scheduled client's
  *    bounded read, which asks the database once under a 3 s deadline and answers
- *    from the encrypted last-good copy the volume check rewrites every minute
+ *    from the encrypted last-good copy the database probe (database-reachability.ts) rewrites every minute
  *    (`slack-conns-lastgood`) when it does not answer (#1303, L71). It pages once per
  *    stretch on the shared reminder schedule, at once again when copies start
  *    being refused, and posts an all-clear once none has been used for the
