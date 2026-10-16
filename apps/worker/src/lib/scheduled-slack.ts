@@ -50,6 +50,19 @@ export interface ScheduledSlackOptions {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>
   /** The clock the copy's age is measured on. */
   now?: () => number
+  /**
+   * Told once, on the first read this tick that failed (#2061): the scheduled
+   * handler reports it to the database reachability owner, so a stalled
+   * database that only a Slack lookup noticed is still reported.
+   */
+  onUnreachable?: (failure: ReadFailure) => void
+}
+
+/** A read that did not answer, and why. */
+export interface ReadFailure {
+  what: string
+  how: 'error' | 'timeout' | 'threw'
+  detail: string
 }
 
 /** One live read's outcome: the database answered, or did not and why. */
@@ -88,6 +101,36 @@ const realSleep = (ms: number, signal: AbortSignal): Promise<void> =>
 
 const registered = new WeakMap<object, ScheduledSlack>()
 
+/**
+ * Ask once under `deadlineMs`: the library's retries off, the read aborted when
+ * the deadline passes, and the timer stopped when the read answers. Shared by
+ * the scheduled Slack lookup and the database reachability probe (#2061), so
+ * the two bound a read the same way.
+ */
+export async function boundedRead<T>(
+  query: BoundableQuery<T>,
+  deadlineMs: number,
+  sleep: (ms: number, signal: AbortSignal) => Promise<void> = realSleep,
+): Promise<{ kind: 'answered'; data: T | null } | { kind: 'failed'; how: ReadFailure['how']; detail: string }> {
+  const stop = new AbortController()
+  query.retry(false)
+  query.abortSignal(stop.signal)
+  // Folded into a value before the race, so a read that rejects after losing
+  // it has already been handled (L749).
+  const answered = Promise.resolve(query).then(
+    (r) => ({ kind: 'result' as const, r }),
+    (e: unknown) => ({ kind: 'threw' as const, e }),
+  )
+  const expired = sleep(deadlineMs, stop.signal).then(() => ({ kind: 'timeout' as const }))
+  const outcome = await Promise.race([answered, expired])
+  // Ends the timer when the read answered, and the read when the timer did.
+  stop.abort()
+  if (outcome.kind === 'timeout') return { kind: 'failed', how: 'timeout', detail: `no answer in ${deadlineMs} ms` }
+  if (outcome.kind === 'threw') return { kind: 'failed', how: 'threw', detail: formatErr(outcome.e) }
+  if (outcome.r.error) return { kind: 'failed', how: 'error', detail: formatErr(outcome.r.error) }
+  return { kind: 'answered', data: outcome.r.data }
+}
+
 /** Mark `client` as this tick's scheduled client. Make one per tick, with the client. */
 export function registerScheduledSlack(client: object, options: ScheduledSlackOptions): ScheduledSlack {
   const deadlineMs = options.deadlineMs ?? SCHEDULED_SLACK_READ_DEADLINE_MS
@@ -96,10 +139,16 @@ export function registerScheduledSlack(client: object, options: ScheduledSlackOp
   let unreachable: { what: string; how: string } | null = null
   let copy: Promise<TickCopy> | null = null
 
-  const fail = <T>(what: string, how: 'error' | 'timeout' | 'threw', detail: string): LiveRead<T> => {
+  const fail = <T>(what: string, how: ReadFailure['how'], detail: string): LiveRead<T> => {
     if (!unreachable) {
       unreachable = { what, how }
       console.error(`[scheduled-slack] ${what} read failed (${how}: ${detail}), so every Slack lookup for the rest of this tick uses the saved copy`)
+      try {
+        options.onUnreachable?.({ what, how, detail })
+      } catch (e) {
+        // Telling the owner must never cost the lookup its answer from the copy.
+        console.error(`[scheduled-slack] reporting ${what} to the database reachability owner failed: ${formatErr(e)}`)
+      }
     }
     return { kind: 'failed', how, detail }
   }
@@ -110,23 +159,9 @@ export function registerScheduledSlack(client: object, options: ScheduledSlackOp
     },
     async read<T>(what: string, query: BoundableQuery<T>): Promise<LiveRead<T>> {
       if (unreachable) return { kind: 'failed', how: 'skipped', detail: `not asked: ${unreachable.what} failed earlier this tick (${unreachable.how})` }
-      const stop = new AbortController()
-      query.retry(false)
-      query.abortSignal(stop.signal)
-      // Folded into a value before the race, so a read that rejects after losing
-      // it has already been handled (L749).
-      const answered = Promise.resolve(query).then(
-        (r) => ({ kind: 'result' as const, r }),
-        (e: unknown) => ({ kind: 'threw' as const, e }),
-      )
-      const expired = sleep(deadlineMs, stop.signal).then(() => ({ kind: 'timeout' as const }))
-      const outcome = await Promise.race([answered, expired])
-      // Ends the timer when the read answered, and the read when the timer did.
-      stop.abort()
-      if (outcome.kind === 'timeout') return fail(what, 'timeout', `no answer in ${deadlineMs} ms`)
-      if (outcome.kind === 'threw') return fail(what, 'threw', formatErr(outcome.e))
-      if (outcome.r.error) return fail(what, 'error', formatErr(outcome.r.error))
-      return { kind: 'answered', data: outcome.r.data }
+      const outcome = await boundedRead(query, deadlineMs, sleep)
+      if (outcome.kind === 'failed') return fail(what, outcome.how, outcome.detail)
+      return outcome
     },
     copy(): Promise<TickCopy> {
       copy ??= readSlackCopy(options.kv, options.secretKeys).then((read): TickCopy => {
@@ -147,10 +182,17 @@ export function registerScheduledSlack(client: object, options: ScheduledSlackOp
  */
 export function createScheduledSupabaseClient(
   env: Env,
-  options: { fetch?: typeof fetch } & Pick<ScheduledSlackOptions, 'sleep' | 'now' | 'deadlineMs'> = {},
+  options: { fetch?: typeof fetch } & Pick<ScheduledSlackOptions, 'sleep' | 'now' | 'deadlineMs' | 'onUnreachable'> = {},
 ): SupabaseClient<Database> {
   const client = createSupabaseClient(env, { fetch: options.fetch })
-  registerScheduledSlack(client, { kv: env.IDEMPOTENCY, secretKeys: secretKeys(env), sleep: options.sleep, now: options.now, deadlineMs: options.deadlineMs })
+  registerScheduledSlack(client, {
+    kv: env.IDEMPOTENCY,
+    secretKeys: secretKeys(env),
+    sleep: options.sleep,
+    now: options.now,
+    deadlineMs: options.deadlineMs,
+    onUnreachable: options.onUnreachable,
+  })
   return client
 }
 

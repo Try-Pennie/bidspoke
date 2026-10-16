@@ -216,3 +216,26 @@ describe('every other client keeps today\'s behaviour', () => {
     expect(down.kv.gets).toEqual([SLACK_CONNS_LASTGOOD_KEY])
   })
 })
+
+// #2061: the per tick flag is one of the reads that report to the database
+// reachability owner, so a stall only a Slack lookup noticed is still reported.
+describe('the first failed read of a tick is told to the reachability owner', () => {
+  it('tells onUnreachable once, with what failed and how, however many lookups follow', async () => {
+    const { client } = fakeClient(['stall'])
+    const told: unknown[] = []
+    registerScheduledSlack(client, { kv: await kvWithCopy({ [ORG]: STORED_CONN }), secretKeys: TEST_KEY, sleep: fakeTimers('now').sleep, onUnreachable: (f) => told.push(f) })
+    await lookupSlackConnection(client, ORG)
+    await lookupSlackConnection(client, ORG)
+    await slackOrgIds(client, 'heartbeat-checks', 'tell-only')
+    expect(told).toEqual([{ what: expect.stringContaining(ORG), how: 'timeout', detail: `no answer in ${SCHEDULED_SLACK_READ_DEADLINE_MS} ms` }])
+  })
+
+  it('tells nothing on a tick whose reads all answer', async () => {
+    const { client } = fakeClient([{ data: { config: LIVE_CONN } }, { data: [{ organization_id: ORG }] }])
+    const told: unknown[] = []
+    registerScheduledSlack(client, { kv: kvWith(), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep, onUnreachable: (f) => told.push(f) })
+    await lookupSlackConnection(client, ORG)
+    await slackOrgIds(client, 'heartbeat-checks', 'tell-only')
+    expect(told).toEqual([])
+  })
+})
