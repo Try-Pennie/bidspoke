@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useId, useMemo, useReducer, useRef, useContext } from 'react'
 import { createPortal } from 'react-dom'
-import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidComparisonSource, ExtraExtractionConfig, PartnerPageSaveRequest, PartnerPageStale } from '@/lib/api'
+import type { Partner, PartnerBody, PartnerDeleted, PartnerUuid, PartnerBidConfig, BidResolverType, BidComparisonSource, ExtraExtractionConfig, PartnerPageSaveRequest, PartnerPageStale } from '@/lib/api'
 import { PARTNER_TYPES, isBuyerPartner, isSourcePartner, partnerTypeLabel, type PartnerType } from '@/lib/partner-roles'
 import {
   buildPartnerBody, changedPatch, draftReducer, initDraft, inversePatch, parseList, listToString, parseRoutingCode, snapshotOf, PARTNER_FIELD_REGISTRY,
@@ -13,7 +13,7 @@ import { formatElapsed, formatEtDayTime } from '@/lib/dates'
 import { pickupSentence } from '@/lib/bidding-pickup'
 import { api } from '@/lib/api'
 import { errorSentence } from '@/lib/error-sentence'
-import { Trash2, Plus, X } from 'lucide-react'
+import { Plus, X } from 'lucide-react'
 import { BidResolverEditor } from '@/components/partners/BidResolverEditor'
 import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
 import { OutboundMappingEditor } from '@/components/partners/OutboundMappingEditor'
@@ -22,6 +22,7 @@ import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
 import { ErrorRuleLists } from '@/components/partners/ErrorRuleLists'
 import { BuyerProfileSection, EMPTY_PROFILE } from '@/components/partners/buyer-profile/BuyerProfileSection'
 import { MergeDialog } from '@/components/partners/MergeDialog'
+import { PartnerDeleteBox } from '@/components/partners/PartnerDeleteBox'
 import { mergeThreeWay, sameMergeValue, type MergeResult, type MergeSide, type PageHalves } from '@/lib/partner-page-merge'
 import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
 import { clickDeliveryConsequences } from '@/components/partners/buyer-profile/click-delivery-consequences'
@@ -144,11 +145,8 @@ interface Props {
    */
   onSave: (body: PartnerBody, id?: string, pendingUuids?: string[], request?: PartnerPageSaveRequest) => Promise<PartnerSaveResult | void>
   onCancel: () => void
-  onDelete?: (id: string) => void
-  confirmingDelete?: boolean
-  onConfirmDelete?: () => void
-  onCancelDelete?: () => void
-  deleting?: boolean
+  /** The partner was deleted from the delete box at the foot (#2140), with the answer's warnings. */
+  onDeleted?: (id: string, answer: PartnerDeleted) => void
   /**
    * Where the save bar is drawn (#2138): the foot of the page's form pane, so
    * it spans the pane under the scrolling form. Drawn after the form without one.
@@ -237,11 +235,7 @@ export default function PartnerForm({
   partner,
   onSave,
   onCancel,
-  onDelete,
-  confirmingDelete,
-  onConfirmDelete,
-  onCancelDelete,
-  deleting,
+  onDeleted,
   barSlot = null,
   onSaveConfirmed,
   requestedTab = null,
@@ -874,6 +868,26 @@ export default function PartnerForm({
   const liveStatusRef = useRef(liveChannel.status)
   liveStatusRef.current = liveChannel.status
 
+  /** A delete pressed in the box at the foot and not yet refused or failed (#2140). */
+  const deleteRunningRef = useRef(false)
+  /**
+   * The box follows the person off the Partner tab while a delete runs, and while
+   * a refusal or failure that landed on another tab has not been seen there. An
+   * outcome that lands on the Partner tab is seen where it lands, so it pins
+   * nothing; the next visit to the Partner tab clears an outcome seen elsewhere.
+   */
+  const [deletePinned, setDeletePinned] = useState(false)
+  const tabRef = useRef(tab)
+  tabRef.current = tab
+  useEffect(() => {
+    if (tab === 'partner' && !deleteRunningRef.current) setDeletePinned(false)
+  }, [tab])
+  function deleteRunningChanged(running: boolean) {
+    deleteRunningRef.current = running
+    if (running) setDeletePinned(true)
+    else if (tabRef.current === 'partner') setDeletePinned(false)
+  }
+
   function handleNotice(n: PartnerPageNotice) {
     if (!partner) return
     const action = classifyNotice(n, { partnerId: partner.id, clientId: tabClientId(), ownSaveIds: ownSaveIds.current, unknownSaveId: pendingSaveRef.current?.saveId ?? null, known: heldVersions() })
@@ -882,6 +896,9 @@ export default function PartnerForm({
     if (action === 'echo' || action === 'already_held') return
     if (action === 'uuids') { setUuidsAttempt((a) => a + 1); return }
     if (action === 'deleted') {
+      // This page's own delete, heard back before its answer: the answer closes
+      // the partner; it is not someone else deleting it under the person.
+      if (deleteRunningRef.current) return
       setSaveOutcome({ kind: 'failed', message: `${partner.name} was deleted while you were editing, so these changes cannot be saved.` })
       return
     }
@@ -1288,21 +1305,6 @@ export default function PartnerForm({
           {!isNew && <LiveStatusLine status={liveChannel.status} clock={liveDeps?.clock ?? SYSTEM_CLOCK} onRetry={liveChannel.retry} />}
         </div>
         <div className="flex items-center gap-2">
-          {!isNew && onDelete && (
-            confirmingDelete ? (
-              <div className="flex items-center gap-1.5">
-                <Button variant="danger" onClick={onConfirmDelete} busy={deleting}>
-                  {deleting ? 'Deleting…' : 'Confirm delete'}
-                </Button>
-                <Button variant="ghost" onClick={onCancelDelete}>Cancel</Button>
-              </div>
-            ) : (
-              <Button variant="danger" onClick={() => onDelete(partner.id)} disabled={deleting}>
-                <Trash2 className="h-4 w-4" aria-hidden="true" />
-                Delete
-              </Button>
-            )
-          )}
           {/* A new partner's Cancel is in the save bar, beside Create partner. */}
           {!isNew && (
             <Button variant="secondary" onClick={() => leaveThen({ kind: 'close' }, onCancel)}>
@@ -1762,6 +1764,27 @@ export default function PartnerForm({
         </Tabs>
 
       </form>
+
+      {/*
+        #2140, PM-13: Delete last on the Partner tab, in its own box outside the
+        form, so Enter in its field can never submit the partner. It re-reads
+        what a delete would remove whenever it opens and whenever the partner,
+        its profile or its sub-account IDs change.
+      */}
+      {/*
+        A delete in flight keeps the box mounted on whatever tab is open, saying
+        it is running, so its answer always reaches the page: the server commits
+        it whether or not the person stayed on the Partner tab. A refusal or a
+        failure stays there too, until the person is back on the Partner tab.
+      */}
+      {!isNew && onDeleted && (tab === 'partner' || deletePinned) && (
+        <PartnerDeleteBox
+          partner={{ id: partner.id, name: partner.name }}
+          refreshKey={JSON.stringify([partner.version ?? 0, profile?.version ?? null, uuids.map((u) => u.uuid).sort()])}
+          onDeleted={(answer) => onDeleted(partner.id, answer)}
+          onRunningChange={deleteRunningChanged}
+        />
+      )}
 
       {/*
         The save bar (#2138), at the foot of the page's form pane when the page

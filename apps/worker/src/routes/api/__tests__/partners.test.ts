@@ -151,69 +151,7 @@ describe('GET /partners/:id/cap-count for a click sold buyer', () => {
   })
 })
 
-describe('DELETE /partners/:id: zero-row + DB error (#588)', () => {
-  let app: Awaited<ReturnType<typeof makeApp>>
-
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
-    app = await makeApp()
-  })
-
-  // The delete goes through delete_partner_config (#1409), which records the
-  // actor on the audit row the table trigger writes. The route itself writes no
-  // audit row any more: one record per change, from the table, never two.
-  function deleteApp(rpcResult: { data: unknown; error: unknown }) {
-    const rpc = vi.fn().mockResolvedValue(rpcResult)
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser } }, { rpc }) as unknown as ReturnType<typeof createSupabaseClient>
-    )
-    return rpc
-  }
-
-  it('calls delete_partner_config with the org, the id, the actor and their email, and invalidates the constants cache', async () => {
-    const rpc = deleteApp({ data: null, error: null })
-    const res = await request(app, 'DELETE', '/partners/p-1')
-    expect(res.status).toBe(200)
-    expect(rpc).toHaveBeenCalledWith('delete_partner_config', {
-      p_org: 'org-abc', p_id: 'p-1', p_actor: 'user-1', p_actor_email: 'dan@pennie.com',
-    })
-    expect(vi.mocked(invalidatePartnerConstantsCache)).toHaveBeenCalled()
-    // A deleted partner leaves the buyer profile snapshot too (#1411).
-    expect(vi.mocked(refreshBuyerProfilesCache).mock.calls.map((call) => call[0])).toEqual(['org-abc'])
-    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
-  })
-
-  it('returns 404 when the function reports the partner is not there (P0002), and writes no audit log', async () => {
-    // #588: the existence read succeeded but the row raced away or is another
-    // org's. The function refuses by name and nothing is audited as deleted.
-    deleteApp({ data: null, error: { code: 'P0002', message: 'partner_not_found' } })
-    const res = await request(app, 'DELETE', '/partners/p-1')
-    expect(res.status).toBe(404)
-    expect(await res.json()).toEqual({ error: 'Partner not found' })
-    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
-    expect(vi.mocked(invalidatePartnerConstantsCache)).not.toHaveBeenCalled()
-  })
-
-  it('returns 409 naming what blocks the delete when the function refuses partner_has_dependents (BP023)', async () => {
-    deleteApp({ data: null, error: { code: 'BP023', message: 'partner_has_dependents', details: 'Key (id)=(p-1) is still referenced from table "buyer_sales".' } })
-    const res = await request(app, 'DELETE', '/partners/p-1')
-    expect(res.status).toBe(409)
-    const body = await res.json() as { error: string }
-    expect(body.error).toContain('buyer_sales')
-    expect(vi.mocked(invalidatePartnerConstantsCache)).not.toHaveBeenCalled()
-  })
-
-  it('returns 500 (not a false 404) when the function call hits a real DB error', async () => {
-    // A transient write failure must surface as a retryable 500, never a 404.
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-    deleteApp({ data: null, error: { code: '42P01', message: 'relation missing' } })
-    const res = await request(app, 'DELETE', '/partners/p-1')
-    expect(res.status).toBe(500)
-    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
-  })
-})
+// DELETE /partners/:id moved to partner-delete.ts (#2140); its tests are in partner-delete.test.ts.
 
 // #595: PUT /:id ends its write in .update().select().single(). PostgREST
 // answers a zero-row match there with PGRST116, which the old
@@ -735,29 +673,17 @@ describe('every partner write retires its stored copy (#1846)', () => {
 
   // The retire runs straight after the write, before the other cache refreshes,
   // so one of those throwing cannot leave the copy in place (#1846 review).
-  it.each([
-    ['PUT', 'the partner constants refresh'],
-    ['DELETE', 'the buyer profile refresh'],
-  ] as const)('%s retires the copy even when %s throws', async (method, which) => {
+  // DELETE's own case is in partner-delete.test.ts (#2140).
+  it('PUT retires the copy even when the partner constants refresh throws', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    if (which === 'the partner constants refresh') vi.mocked(invalidatePartnerConstantsCache).mockRejectedValueOnce(new Error('kv down'))
-    else vi.mocked(refreshBuyerProfilesCache).mockRejectedValueOnce(new Error('kv down'))
+    vi.mocked(invalidatePartnerConstantsCache).mockRejectedValueOnce(new Error('kv down'))
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabaseForSave(
         { users: { single: testUser }, partner_configs: [{ single: { id: 'p-1' } }, { updateResult: { id: 'p-1', slug: 'sofi', is_active: false } }] },
         { rpc: vi.fn().mockResolvedValue({ data: null, error: null }) },
       ) as unknown as ReturnType<typeof createSupabaseClient>
     )
-    await call(method, '/partners/p-1', method === 'PUT' ? { is_active: false } : undefined)
-    expect(deleted).toEqual(['partner-lastgood:p-1'])
-  })
-
-  it('DELETE retires its copy, so a deleted partner never bids from KV', async () => {
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabaseForSave({ users: { single: testUser } }, { rpc: vi.fn().mockResolvedValue({ data: null, error: null }) }) as unknown as ReturnType<typeof createSupabaseClient>
-    )
-    const res = await call('DELETE', '/partners/p-1')
-    expect(res.status).toBe(200)
+    await call('PUT', '/partners/p-1', { is_active: false })
     expect(deleted).toEqual(['partner-lastgood:p-1'])
   })
 
@@ -785,14 +711,5 @@ describe('every partner write retires its stored copy (#1846)', () => {
     // The edit was saved, so every other cache it feeds is still refreshed (#1846).
     expect(vi.mocked(invalidatePartnerConstantsCache)).toHaveBeenCalledTimes(1)
     expect(vi.mocked(refreshBuyerProfilesCache)).toHaveBeenCalledTimes(1)
-  })
-
-  it('a refused DELETE leaves the copy alone, because the partner is still there', async () => {
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabaseForSave({ users: { single: testUser } }, { rpc: vi.fn().mockResolvedValue({ data: null, error: { code: 'BP023', message: 'partner_has_dependents' } }) }) as unknown as ReturnType<typeof createSupabaseClient>
-    )
-    const res = await call('DELETE', '/partners/p-1')
-    expect(res.status).toBe(409)
-    expect(deleted).toEqual([])
   })
 })
