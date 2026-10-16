@@ -67,6 +67,14 @@ binding = "SELF"
 service = "bidspoke-worker-ops"
 entrypoint = "OpsInternal"
 
+# No cron, stated as an EMPTY list rather than left out (#1946): wrangler deploy
+# leaves a Worker's existing schedules in place when the config names none, so
+# Spike 0's minute cron kept firing into this Worker, which has no scheduled()
+# handler, until this line told a deploy to remove it. The run engine's tick (B2)
+# replaces it with its own cron and handler.
+[triggers]
+crons = []
+
 # Traces go to the tail consumer, which skips this Worker's traces until Phase 1
 # points it at the ops database (apps/worker-tail, #1709): an ops execution id
 # names nothing in the bidding database's workflow_executions.
