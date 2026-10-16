@@ -14,6 +14,7 @@ import { loadEnvVars } from '../env-loader'
 import { supabaseHeldWriteStore, salesforcePortFor } from '../writeback-replay'
 import { SALESFORCE_BULKHEAD_KEY } from '../bulkhead-client'
 import { fakeBulkheads } from '../../__tests__/helpers/fake-bulkheads'
+import { isSalesforceBulkheadShed } from '../../engine/nodes/salesforce'
 
 interface Built { table: string; op: string; columns?: string; patch?: unknown; filters: Array<[string, string, unknown]> }
 
@@ -160,6 +161,21 @@ describe('salesforcePortFor', () => {
     await expect(shedPort.postApex('/services/apexrest/credit-inquiries', '{}')).rejects.toThrow(/Salesforce bulkhead: at capacity \(salesforce,/)
     expect(full.acquires).toEqual([SALESFORCE_BULKHEAD_KEY])
     expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  // The drain and the replay give an attempt back for a call the bulkhead
+  // refused before sending (#468), so the refusal must carry its mark through
+  // the port, not only its wording.
+  it('marks a send the full bulkhead refused, so the replay can tell it from no answer', async () => {
+    vi.mocked(loadEnvVars).mockResolvedValue({ SALESFORCE_INSTANCE_URL: 'https://sf.example/', SALESFORCE_CLIENT_ID: 'id', SALESFORCE_CLIENT_SECRET: 'secret' })
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ access_token: 'tok' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const full = fakeBulkheads({ seed: { [SALESFORCE_BULKHEAD_KEY]: 20 } })
+    const shedPort = await salesforcePortFor({ WORKFLOW_CACHE: kv(), SALESFORCE_BULKHEAD: full.namespace } as unknown as Env, {} as SupabaseClient, 'k', 'org-1', 'wf-1', { waitMs: 0 })
+    const caught = await shedPort.send('PATCH', '/sobjects/Lead/00Q000000000001AAA', '{}').then(() => null, (e: unknown) => e)
+    expect(isSalesforceBulkheadShed(caught)).toBe(true)
+    // The token is cached, so nothing went out: the PATCH never left.
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('refuses a path that is not a plain Apex REST path, sending nothing', async () => {

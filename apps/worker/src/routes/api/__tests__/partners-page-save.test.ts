@@ -240,7 +240,7 @@ describe('PUT /partners/:id/page: the whole page in one save (#2133)', () => {
   it('refuses a switch away from the click while a live workflow sells the buyer on a click node, naming it, and calls nothing', async () => {
     vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
     const rpc = saved()
-    const live = { id: 'wf-1', name: 'Liberty Flow', is_active: true, definition: { nodes: [{ type: 'buyer_click_send', config: { partner_id: 'p-1' } }] } }
+    const live = { id: 'wf-1', name: 'Liberty Flow', is_active: true, organization_id: testUser.organization_id, deleted_at: null, definition: { nodes: [{ type: 'buyer_click_send', config: { partner_id: 'p-1' } }] } }
     supabaseWith(rpc, { workflows: { list: [live] } })
     const res = await put(page())
     expect(res.status).toBe(409)
@@ -312,6 +312,42 @@ describe('PUT /partners/:id/page: the whole page in one save (#2133)', () => {
     expect(refused.status).toBe(422)
     expect(((await refused.json()) as { errors: unknown[] }).errors).toEqual([
       { code: 'display_time_zone_invalid', path: 'displayTimeZone', field: 'profile.display_time_zone', message: 'America/Phoenix' },
+    ])
+  })
+
+  // #2111: the collections cap is set through this route before the page has a
+  // control for it, so the parser must carry it and an absent key must not be sent.
+  it('carries the collections cap to the save and back', async () => {
+    const rpc = saved({ profile: { ...doc, version: 3, collections_max_percent: 75 } })
+    supabaseWith(rpc)
+    const res = await put(page({ profile: { ...doc, collections_max_percent: 75 } }))
+    expect(res.status).toBe(200)
+    expect((pageCalls(rpc)[0][1] as { p_profile: Record<string, unknown> }).p_profile.collections_max_percent).toBe(75)
+    expect(((await res.json()) as { profile: Record<string, unknown> }).profile.collections_max_percent).toBe(75)
+  })
+
+  it('sends no collections cap when the page did not speak about it, so the stored cap is kept', async () => {
+    const rpc = saved()
+    supabaseWith(rpc)
+    expect((await put(page())).status).toBe(200)
+    expect('collections_max_percent' in (pageCalls(rpc)[0][1] as { p_profile: Record<string, unknown> }).p_profile).toBe(false)
+  })
+
+  it('refuses a cap that is not a whole percent before calling anything, and names the database refusal by its registry path', async () => {
+    const rpc = saved()
+    supabaseWith(rpc)
+    const res = await put(page({ profile: { ...doc, collections_max_percent: 75.5 } }))
+    expect(res.status).toBe(422)
+    expect(((await res.json()) as { errors: unknown[] }).errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'collections_max_percent_invalid', path: 'collectionsMaxPercent', field: 'profile.collections_max_percent' }),
+    ]))
+    expect(pageCalls(rpc)).toEqual([])
+
+    supabaseWith(vi.fn(async () => ({ data: null, error: { code: 'BP422', message: 'collections_max_percent_invalid', details: '101' } })))
+    const refused = await put(page())
+    expect(refused.status).toBe(422)
+    expect(((await refused.json()) as { errors: unknown[] }).errors).toEqual([
+      { code: 'collections_max_percent_invalid', path: 'collectionsMaxPercent', field: 'profile.collections_max_percent', message: '101' },
     ])
   })
 

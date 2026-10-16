@@ -196,6 +196,24 @@ describe('each organization is its own failure boundary', () => {
     expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes(ORG) && String(c[0]).includes('Slack exploded'))).toBe(true)
   })
 
+  // Lessons review at a14c900: freeing the claim of the org whose page threw
+  // can throw too (a KV refusal in the same outage); it must not end the loop.
+  it('still pages the second organization when freeing the first one\'s claim also throws', async () => {
+    const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: await copyBlob({ [ORG]: CONN, [ORG2]: CONN2 }) })
+    // A refusal Slack answered is what frees a claim since #2062 (a post that
+    // throws keeps it, as it may have landed), so the first organization's post
+    // is refused here, and freeing its claim is what throws.
+    vi.mocked(sendDatabaseUnreachableAlert).mockImplementation(async (slack) => (slack.bot_token === 'xoxb-t' ? null : 'ts-2'))
+    const claims: AlertClaims = {
+      claim: async () => true,
+      release: async () => { throw new Error('release refused') },
+    }
+    const result = await reportDatabaseUnreachable(deps(kv, T0, claims), readFailure)
+    expect(result.told).toEqual([ORG2])
+    expect(vi.mocked(sendDatabaseUnreachableAlert).mock.calls.map((c) => c[1])).toEqual(['C1', 'C2'])
+    expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('release refused'))).toBe(true)
+  })
+
   it('sends the second organization its all-clear when settling the first one\'s throws', async () => {
     const open = (org: string) => ({
       [`db-unreachable-recovery:${org}`]: new Date(T0 - 90 * MIN).toISOString(),
@@ -218,6 +236,43 @@ describe('each organization is its own failure boundary', () => {
     expect(kv.store.has(`db-unreachable-recovery:${ORG2}`)).toBe(false)
     expect(kv.store.has(`db-unreachable:${ORG2}:condition`)).toBe(false)
     expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes(ORG) && String(c[0]).includes('KV DELETE failed'))).toBe(true)
+  })
+})
+
+// Merge review: the reader's record and the failed minute are bookkeeping; a
+// KV refusal writing them must not stop the page itself.
+describe('the bookkeeping before the page cannot stop it', () => {
+  it('still pages a volume check failure when the reader record and failed minute writes are refused', async () => {
+    const kv = await kvWithCopy()
+    const put = kv.put
+    kv.put = (k: string, v: string) => (k.startsWith('db-reachability:') ? Promise.reject(new Error('KV PUT failed: 500')) : put(k, v))
+    const result = await reportDatabaseUnreachable(deps(kv, T0), readFailure)
+    expect(sendDatabaseUnreachableAlert).toHaveBeenCalledTimes(1)
+    expect(result.told).toEqual([ORG])
+    expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('KV PUT failed'))).toBe(true)
+  })
+})
+
+// Merge review at 390cc55: a reader saying it answered is bookkeeping too, and
+// its callers (the cliff check, the probe's all-clear) must not stop on it.
+describe('recording an answered run cannot stop its caller', () => {
+  it('resolves and logs when KV refuses the reader record', async () => {
+    const kv = fakeKv()
+    kv.put = () => Promise.reject(new Error('KV PUT failed: 500'))
+    await expect(reportDatabaseReadable(kv, 'volume-cliff', T0)).resolves.toBeUndefined()
+    expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('KV PUT failed'))).toBe(true)
+  })
+
+  it('still sends an owed all-clear when the probe\'s own answered record is refused', async () => {
+    const kv = await kvWithCopy({ [RECOVERY]: new Date(T0 - 90 * MIN).toISOString(), [ACTIVE]: new Date(T0 - 60 * MIN).toISOString() })
+    for (let t = T0 - 40 * MIN; t <= T0 - MIN; t += MIN) {
+      await reportDatabaseReadable(kv, 'probe', t)
+      await reportDatabaseReadable(kv, 'volume-cliff', t)
+    }
+    const put = kv.put
+    kv.put = (k: string, v: string) => (k === 'db-reachability:source:probe' ? Promise.reject(new Error('KV PUT failed: 500')) : put(k, v))
+    await runDatabaseReachabilityProbe(probeDeps(kv, T0))
+    expect(sendDatabaseRecoveredAlert).toHaveBeenCalledTimes(1)
   })
 })
 

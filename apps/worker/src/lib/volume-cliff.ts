@@ -219,7 +219,10 @@ export async function runVolumeCliffCheck(
   // always passes it, and without it two ticks that pass the cooldown together
   // both post.
   claims?: AlertClaims,
-  // The clock its reports to the database reachability owner are dated by (#2061); a test sets it.
+  // The clock that places the volume windows (#2060) and dates this check's
+  // reports to the database reachability owner (#2061), so those cannot
+  // disagree. The cliff alert's markers and cooldowns still take their own wall
+  // clock reading, one per workflow, as before.
   clock: () => number = Date.now,
 ): Promise<void> {
   // A failed read is reported to the owner, which pages at once for these reads
@@ -262,7 +265,7 @@ export async function runVolumeCliffCheck(
     return
   }
 
-  const now = Date.now()
+  const now = clock()
   const workflowIds = workflows.map((w) => w.id as string)
 
   // 60 wall-clock-minute buckets ending with the current (partial) minute at

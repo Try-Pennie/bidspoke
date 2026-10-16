@@ -27,6 +27,7 @@ import partnersJson from '../../../../../web/e2e/fixtures/partners/partners.json
 import buyerProfilesJson from '../../../../../web/e2e/fixtures/partners/buyer-profiles.json'
 import uuidsJson from '../../../../../web/e2e/fixtures/partners/partner-uuids.json'
 import staleJson from '../../../../../web/e2e/fixtures/partners/synthetic/page-save-409.tripoint.json'
+import usageJson from '../../../../../web/e2e/fixtures/partners/usage.json'
 
 type Row = Record<string, unknown> & { id: string; slug: string; partner_type: string; accept_signals: unknown }
 const partners = partnersJson as unknown as Row[]
@@ -40,6 +41,34 @@ const validPayload = { sub: 'user-1', email: 'editor-a@example.com', exp: 999999
 const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
 /** Both secrets the captured partners name are set on the production Worker (wrangler secret list, 2026-10-15). */
 const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: { get: async () => null, put: async () => {}, delete: async () => {} }, AMONE_PROXY_SECRET: 's', TRIPOINT_PROXY_SECRET: 's' } as unknown as Env
+
+type UsageStep = { workflow_id: string; workflow_name: string; is_active: boolean; node_id: string }
+type BidGroupUsageStep = UsageStep & { mode: string; partner_ids: string[]; fallback_partner_id: string | null }
+type UsageFixture = Record<string, { bid_group: BidGroupUsageStep[]; partner_bid: UsageStep[]; latency_gate: UsageStep[] }>
+
+/**
+ * The organization's workflows a usage answer was read from: every step of every
+ * kind it records, rebuilt as the node that would answer it. A Partner Bid or
+ * Latency Gate step names its partner by partner_id; a Bid Group names its
+ * partners as the engine reads them, a tiered group by its tiers.
+ */
+function workflowsAnswering(usage: UsageFixture) {
+  const workflows = new Map<string, { id: string; name: string; is_active: boolean; organization_id: string; deleted_at: null; definition: { nodes: Array<Record<string, unknown>> } }>()
+  const add = (s: UsageStep, node: Record<string, unknown>) => {
+    const w = workflows.get(s.workflow_id) ?? { id: s.workflow_id, name: s.workflow_name, is_active: s.is_active, organization_id: testUser.organization_id, deleted_at: null, definition: { nodes: [] } }
+    if (!w.definition.nodes.some((n) => JSON.stringify(n) === JSON.stringify(node))) w.definition.nodes.push(node)
+    workflows.set(s.workflow_id, w)
+  }
+  for (const [pid, u] of Object.entries(usage)) {
+    for (const s of u.bid_group) {
+      const members = s.mode === 'tiered' ? { tiers: [{ id: 't1', mode: 'highest_bid', partner_ids: s.partner_ids }] } : { partner_ids: s.partner_ids }
+      add(s, { id: s.node_id, type: 'bid_group', config: { mode: s.mode, ...members, fallback_partner_id: s.fallback_partner_id } })
+    }
+    for (const s of u.partner_bid) add(s, { id: s.node_id, type: 'partner_bid', config: { partner_id: pid } })
+    for (const s of u.latency_gate) add(s, { id: s.node_id, type: 'latency_gate', config: { partner_id: pid } })
+  }
+  return [...workflows.values()]
+}
 
 const withoutWarning = ({ credential_warning: _w, ...row }: Row) => row
 
@@ -77,7 +106,8 @@ describe('the partners page fixtures are what their routes answer (#2134)', () =
     const fixture = buyerProfiles[id]
     // The live workflows that name a buyer, as the fixture's other sellers say: one
     // workflow whose Bid Group lists them, which is how Main Flow names them.
-    const workflows = fixture.other_sellers.map((w) => ({ ...w, is_active: true, definition: { nodes: [{ type: 'bid_group', config: { partner_ids: [id] } }] } }))
+    // Each row carries the organization and deleted_at the shared read selects and checks (#2142).
+    const workflows = fixture.other_sellers.map((w) => ({ ...w, is_active: true, organization_id: testUser.organization_id, deleted_at: null, definition: { nodes: [{ type: 'bid_group', config: { partner_ids: [id] } }] } }))
     supabaseWith(
       { partner_configs: { single: withoutWarning(row) }, workflows: { list: workflows } },
       async (name) => ({ data: name === 'buyer_profile_document' ? fixture.profile : null, error: null }),
@@ -85,6 +115,35 @@ describe('the partners page fixtures are what their routes answer (#2134)', () =
     const res = await call('GET', `/partners/${id}/buyer-profile`)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual(fixture)
+  })
+
+  // #2137: the usage read the Bid Group tab is shown from. The fixture was
+  // measured from production's workflows (read only, 2026-10-16); here the route
+  // is given workflows whose steps say exactly that, and must answer the fixture.
+  it.each(Object.keys(usageJson).map((id) => [partners.find((p) => p.id === id)!.slug, id]))('GET /partners/:id/usage for %s', async (_slug, id) => {
+    const usage = usageJson as UsageFixture
+    supabaseWith({ partner_configs: { single: { id } }, workflows: { list: workflowsAnswering(usage) } })
+    const res = await call('GET', `/partners/${id}/usage`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(usage[id])
+  })
+
+  // The fixture holds no tiered Bid Group today, so the rebuild is held to one
+  // here: a tiered group names its partners by its tiers (the engine ignores its
+  // top level partner_ids), and a rebuild that put them at the top level would
+  // answer nothing. Seen red with the tiers left out of workflowsAnswering.
+  it('a tiered Bid Group in the usage answer is rebuilt by its tiers, and answers back the same', async () => {
+    const [a, b] = partners.map((p) => p.id)
+    const tiered: UsageFixture = {
+      [a]: { bid_group: [{ workflow_id: 'wf-t', workflow_name: 'Tiered Flow', is_active: true, node_id: 'n-t', mode: 'tiered', partner_ids: [a, b], fallback_partner_id: null }], partner_bid: [], latency_gate: [] },
+    }
+    supabaseWith({ partner_configs: { single: { id: a } }, workflows: { list: workflowsAnswering(tiered) } })
+    const res = await call('GET', `/partners/${a}/usage`)
+    expect(await res.json()).toEqual(tiered[a])
+  })
+
+  it('the usage fixture has an answer for every listed partner', () => {
+    expect(Object.keys(usageJson).sort()).toEqual(partners.map((p) => p.id).sort())
   })
 
   it('GET /partner-uuids: the sub-account IDs', async () => {

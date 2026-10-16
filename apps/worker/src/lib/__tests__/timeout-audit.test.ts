@@ -418,13 +418,20 @@ describe('runTimeoutAuditCheck — signature recorded only after a delivered ale
   function makeSupabase(workflows: unknown[], orgs = ['org-1']) {
     return {
       from: (table: string) => {
-        const data = table === 'service_connections'
+        // The workflows read is organization scoped (readOrgWorkflows, #2142) and
+        // checks each row's organization_id and deleted_at, so the double answers
+        // rows of the organization the query filtered on, as PostgREST would.
+        let orgFilter: unknown = null
+        const rows = () => table === 'service_connections'
           ? orgs.map((id) => ({ organization_id: id }))
-          : table === 'workflows' ? workflows : []
+          : table === 'workflows'
+            ? (workflows as Array<Record<string, unknown>>).map((w) => ({ is_active: true, deleted_at: null, ...w, organization_id: orgFilter }))
+            : []
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const chain: any = new Proxy({}, {
           get(_, prop) {
-            if (prop === 'then') return (res: (v: unknown) => unknown) => Promise.resolve({ data, error: null }).then(res)
+            if (prop === 'then') return (res: (v: unknown) => unknown) => Promise.resolve({ data: rows(), error: null }).then(res)
+            if (prop === 'eq') return (col: string, val: unknown) => { if (col === 'organization_id') orgFilter = val; return chain }
             return () => chain
           },
         })

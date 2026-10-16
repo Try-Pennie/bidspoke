@@ -61,7 +61,7 @@ afterEach(() => vi.restoreAllMocks())
 describe('the required secrets alert during a database stall', () => {
   it('posts once with the live connection while the database answers (the positive control)', async () => {
     const db = database('up')
-    const client = createScheduledSupabaseClient(env(await kvWithCopy({ [ORG]: STORED })), { fetch: db.fetch, sleep: fakeTimers('never').sleep })
+    const client = createScheduledSupabaseClient(env(await kvWithCopy({ [ORG]: STORED })), () => {}, { fetch: db.fetch, sleep: fakeTimers('never').sleep })
     const r = await runRequiredSecretsCheck(client, env(kvWith()))
     expect(r.alerted).toBe(true)
     expect(posts).toEqual([{ token: 'Bearer xoxb-live', channel: '#ops' }])
@@ -70,7 +70,7 @@ describe('the required secrets alert during a database stall', () => {
   it('posts once from the saved copy when the database never answers, asking it only once', async () => {
     const db = database('stalled')
     const kv = await kvWithCopy({ [ORG]: STORED })
-    const client = createScheduledSupabaseClient(env(kv), { fetch: db.fetch, sleep: fakeTimers('now').sleep })
+    const client = createScheduledSupabaseClient(env(kv), () => {}, { fetch: db.fetch, sleep: fakeTimers('now').sleep })
     const r = await runRequiredSecretsCheck(client, env(kvWith()))
     expect(r.alerted).toBe(true)
     expect(posts).toEqual([{ token: 'Bearer xoxb-stored', channel: '#ops' }])
@@ -81,7 +81,7 @@ describe('the required secrets alert during a database stall', () => {
 
   it('posts nothing and says why when the database never answers and there is no copy', async () => {
     const db = database('stalled')
-    const client = createScheduledSupabaseClient(env(kvWith()), { fetch: db.fetch, sleep: fakeTimers('now').sleep })
+    const client = createScheduledSupabaseClient(env(kvWith()), () => {}, { fetch: db.fetch, sleep: fakeTimers('now').sleep })
     const r = await runRequiredSecretsCheck(client, env(kvWith()))
     expect(r.alerted).toBe(false)
     expect(posts).toEqual([])

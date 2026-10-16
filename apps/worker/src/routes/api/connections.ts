@@ -149,6 +149,11 @@ connections.delete('/:service_type', async (c) => {
 connections.post('/:service_type/sync-schema', async (c) => {
   const { orgId, userId } = c.get('user')
   const serviceType = c.req.param('service_type') as ServiceType
+  // Refused before the table is read, as DELETE does (#2060), so this route can
+  // never write a Slack row the saved Slack copy describes.
+  if (!SERVICE_TYPES.has(serviceType)) {
+    return c.json({ error: `service_type must be one of: ${[...SERVICE_TYPES].join(', ')}` }, 400)
+  }
 
   const supabase = createSupabaseClient(c.env)
   const { data: conn, error: connError } = await supabase

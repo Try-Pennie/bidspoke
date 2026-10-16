@@ -54,7 +54,7 @@ If `bid_resolver_type` is not set on an older partner row, the resolver falls ba
 
 ### Bid mode
 
-A partner stores `bid_mode: 'commit'` (default) or `bid_mode: 'ping_only'`. The node reads it only to copy it into the step's resolved input (the `bid_mode` key of `baseTemplate` in `executePartnerBidNode`, `apps/worker/src/engine/nodes/partner-bid.ts`) and runs the same resolve-and-classify path either way. Ping-only semantics (returning a bid plus a click URL, with conversion handled out of band) are implemented on the partner and its API contract, not branched inside this node. The setting is no longer on the partners page (PM-9, #2136); the column stays until a contract step drops it.
+There is no bid mode. Partners used to store `bid_mode` (`commit` or `ping_only`), which this node only copied into its step's recorded input and never acted on. Since #2182 the node no longer reads it, so steps recorded before then carry a `bid_mode` key in their input and later ones do not. Ping-only semantics (returning a bid plus a click URL, with conversion handled out of band) are implemented on the partner and its API contract, not branched inside this node. The setting left the partners page in PM-9 (#2136), and the column is dropped by a later migration.
 
 ## Output shape
 

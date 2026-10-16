@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { NODE_TRAITS, NODE_TYPES } from '@bidspoke/node-types'
-import { populationsInUse, workflowsUsingPartner, type WorkflowForFinder } from '../partner-workflow-finder'
+import { bidGroupPartnerIds, populationsInUse, workflowsUsingPartner, type WorkflowForFinder } from '../partner-workflow-finder'
 
 const wf = (id: string, nodes: Array<Record<string, unknown>>, is_active = true): WorkflowForFinder => ({ id, name: `Workflow ${id}`, is_active, definition: { nodes } })
 
@@ -45,6 +45,18 @@ describe('workflowsUsingPartner', () => {
       { id: 'y', name: 'Y', is_active: true, definition: { nodes: [{ type: 'bid_group' }, null as unknown as Record<string, unknown>] } },
     ]
     expect(workflowsUsingPartner(odd, priced, { includeBuyerSelect: true, includeClickNodes: true })('p-tripoint')).toEqual([])
+  })
+
+  // #2137: a tiered Bid Group calls the partners of its tiers and never its top
+  // level partner_ids (bid-group.ts runTiered), and the fallback after every tier.
+  it('names the partners of a tiered Bid Group by its tiers, as the engine calls them', () => {
+    const tiered = wf('tiered', [{ type: 'bid_group', config: { mode: 'tiered', partner_ids: ['p-stale'], tiers: [{ id: 't1', mode: 'cascade', partner_ids: ['p-a'] }, { id: 't2', mode: 'highest_bid', partner_ids: ['p-b', 'p-c'] }], fallback_partner_id: 'p-fb' } }])
+    const find = workflowsUsingPartner([tiered], priced, { includeBuyerSelect: false, includeClickNodes: false })
+    expect(['p-a', 'p-b', 'p-c', 'p-fb'].map((id) => find(id).map((w) => w.id))).toEqual([['tiered'], ['tiered'], ['tiered'], ['tiered']])
+    expect(find('p-stale')).toEqual([])
+    expect(bidGroupPartnerIds({ mode: 'tiered', partner_ids: ['p-stale'], tiers: [{ partner_ids: ['p-a'] }, { partner_ids: ['p-b', 'p-a'] }], fallback_partner_id: 'p-fb' })).toEqual(['p-a', 'p-b', 'p-fb'])
+    expect(bidGroupPartnerIds({ partner_ids: ['p-a', 'p-b'], fallback_partner_id: null })).toEqual(['p-a', 'p-b'])
+    expect(bidGroupPartnerIds({ partner_ids: 'p-a', tiers: 'x' })).toEqual([])
   })
 
   it('an inactive workflow is reported only when the caller asks for drafts too', () => {

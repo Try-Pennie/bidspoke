@@ -1,3 +1,5 @@
+import { DEFAULT_DISPLAY_TIME_ZONE, type DisplayTimeZone } from '@bidspoke/buyer-profile'
+
 const ET = 'America/New_York'
 
 /** "Apr 7, 2026, 2:34 PM EDT" */
@@ -23,41 +25,71 @@ export function formatDate(dateStr: string): string {
   }).format(new Date(dateStr))
 }
 
-/** "Oct 14, 2:34 PM": day and clock time in ET with no zone suffix, for a column whose header says ET once. */
-export function formatEtDayTime(dateStr: string): string {
+/*
+ * formatEtDayTime, formatEtClock, etDayKey and etDayHeading take a display zone
+ * (#2143, PM-10): the partners page shows a buyer's hours and reset times in the
+ * zone its profile chooses. The default is Eastern, so every caller that names
+ * no zone reads exactly as before. Showing is all a zone does here: nothing
+ * that judges a lead reads it.
+ */
+
+/** "Oct 14, 2:34 PM": day and clock time with no zone suffix, for a column whose header names the zone once. */
+export function formatEtDayTime(at: string | number, zone: DisplayTimeZone = DEFAULT_DISPLAY_TIME_ZONE): string {
   return new Intl.DateTimeFormat('en-US', {
-    timeZone: ET,
+    timeZone: zone,
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
-  }).format(new Date(dateStr))
+  }).format(new Date(at))
 }
 
-/** "2:34 PM": the ET clock time alone, for a row under a day heading. */
-export function formatEtClock(dateStr: string): string {
+/** "2:34 PM": the clock time alone, for a row under a day heading or a sentence that names the zone. */
+export function formatEtClock(at: string | number, zone: DisplayTimeZone = DEFAULT_DISPLAY_TIME_ZONE): string {
   return new Intl.DateTimeFormat('en-US', {
-    timeZone: ET,
+    timeZone: zone,
     hour: 'numeric',
     minute: '2-digit',
-  }).format(new Date(dateStr))
+  }).format(new Date(at))
 }
 
-/** "2026-10-14": the ET calendar day a moment falls on. */
-export function etDayKey(at: string | number): string {
-  const parts = new Intl.DateTimeFormat('en-US', { timeZone: ET, year: 'numeric', month: '2-digit', day: '2-digit' })
+/** "2026-10-14": the calendar day a moment falls on in the zone. */
+export function etDayKey(at: string | number, zone: DisplayTimeZone = DEFAULT_DISPLAY_TIME_ZONE): string {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit' })
     .formatToParts(new Date(at))
   const get = (t: string) => parts.find((p) => p.type === t)?.value ?? ''
   return `${get('year')}-${get('month')}-${get('day')}`
 }
 
+/** Minutes from the start of the month to a zone's wall clock at an instant. */
+function wallMinutes(instantMs: number, zone: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', day: 'numeric', hour: 'numeric', minute: 'numeric' })
+    .formatToParts(new Date(instantMs))
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value)
+  return get('day') * 1440 + get('hour') * 60 + get('minute')
+}
+
 /**
- * "Today", "Yesterday", or "Mon, Oct 12": a day heading in ET. Yesterday is the
- * calendar day before today's, so a day with a clock change still counts as one.
+ * How many minutes a zone's clock reads from Eastern's: -180 for Pacific. A
+ * weekly window has no date, so it is drawn in another zone by this one shift.
+ * The four zones change their clocks on the same nights, so the shift is the
+ * same in winter and in summer; it is measured on a day of each and refused if
+ * they ever disagree, rather than drawing hours an hour out for half the year.
  */
-export function etDayHeading(dateStr: string, now: number): string {
-  const day = etDayKey(dateStr)
-  const today = etDayKey(now)
+export function zoneShiftFromEastern(zone: DisplayTimeZone): number {
+  const shifts = [Date.UTC(2026, 0, 15, 17), Date.UTC(2026, 6, 15, 17)].map((t) => wallMinutes(t, zone) - wallMinutes(t, ET))
+  if (shifts[0] !== shifts[1]) throw new Error(`${zone} is ${shifts[0]} minutes from Eastern in January but ${shifts[1]} in July`)
+  return shifts[0]
+}
+
+/**
+ * "Today", "Yesterday", or "Mon, Oct 12": a day heading in the zone. Yesterday
+ * is the calendar day before today's, so a day with a clock change still counts
+ * as one.
+ */
+export function etDayHeading(dateStr: string, now: number, zone: DisplayTimeZone = DEFAULT_DISPLAY_TIME_ZONE): string {
+  const day = etDayKey(dateStr, zone)
+  const today = etDayKey(now, zone)
   if (day === today) return 'Today'
   const before = new Date(`${today}T12:00:00Z`)
   before.setUTCDate(before.getUTCDate() - 1)

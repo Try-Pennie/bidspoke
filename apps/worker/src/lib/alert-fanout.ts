@@ -47,7 +47,7 @@ import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
 import type { AllClearClaim } from './alert-recovery'
 import { logReadFailure } from './scheduled-read'
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
-import { copyUnreachableLine, describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason } from './scheduled-slack'
+import { describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason } from './scheduled-slack'
 
 /**
  * The slice of KV this module uses: a get and a cooldown put. Narrower than
@@ -166,10 +166,15 @@ async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what
   const copy = await scheduled.copy()
   if (copy.kind === 'read') {
     console.warn(`[scheduled-slack] ${subject}: answered from the saved copy (${describeCopyAge(copy.ageMs)}, ${copy.copy.connections.size} organizations) because the database did not answer (${live.how})`)
+    // A copy that names nobody stands in for a list of nobody: the caller tells
+    // no one, which is the same case as an org missing from the copy, for every
+    // org at once (#2063). The answer itself is unchanged.
+    if (copy.copy.connections.size === 0) scheduled.nobodyCanBeTold(subject, null, 'org_not_in_copy')
     return { kind: 'stored', copy: copy.copy.connections, ageMs: copy.ageMs }
   }
   const reason = copy.kind === 'absent' ? 'no_copy' : 'copy_unreadable'
-  console.error(copyUnreachableLine(subject, reason, copy.kind === 'unreadable' ? copy.detail : undefined))
+  // No organization is named: this read was for every organization at once.
+  scheduled.nobodyCanBeTold(subject, null, reason, copy.kind === 'unreadable' ? copy.detail : undefined)
   return { kind: 'unreachable', reason }
 }
 
@@ -231,10 +236,14 @@ export function anyDelivered(fanout: SlackFanout): boolean {
 
 /**
  * True only when the list was read (live or from the copy) and every org was
- * told; an unread list is never "everyone was told" (#1303).
+ * told; an unread list is never "everyone was told" (#1303). An empty list is
+ * "everyone" only when the database said so: an empty saved copy during an
+ * outage names nobody, so nobody was told, and it is false.
  */
 export function everyDelivered(fanout: SlackFanout): boolean {
-  return fanout.kind === 'ran' && fanout.results.every(Boolean)
+  if (fanout.kind !== 'ran') return false
+  if (fanout.source === 'stored' && fanout.results.length === 0) return false
+  return fanout.results.every(Boolean)
 }
 
 /**

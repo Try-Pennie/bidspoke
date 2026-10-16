@@ -24,6 +24,7 @@ import { describe, expect, it } from 'vitest'
 import { flattenProfileDocument, normaliseSqlPath, registryPathOf, type BuyerProfileDocument } from '@bidspoke/buyer-profile'
 import { PARTNER_BODY_KEYS, PARTNER_FIELD_REGISTRY, PROFILE_PREFIX, registryEntriesFor } from '../partner-draft'
 import { REPO_ROOT } from '@/lib/__tests__/_scan-utils'
+import { validatorPaths } from './_validator-paths'
 
 const fixtures = path.join(REPO_ROOT, 'packages/buyer-profile/fixtures')
 const flatten = JSON.parse(readFileSync(path.join(fixtures, 'flatten-cases.json'), 'utf8')) as { cases: Array<{ document: BuyerProfileDocument; paths: { ts: string[]; sql: string[] } }> }
@@ -74,8 +75,9 @@ describe('the partners page field registry (#2132)', () => {
     }
   })
 
-  // PM-9 (#2136): the page no longer edits bid_mode. The column stays until its
-  // contract step, so the column list keeps it, excluded as retired.
+  // PM-9 (#2136): the page no longer edits bid_mode, and since #2182 nothing
+  // reads or writes it. The column stays until the migration that drops it, so
+  // the column list keeps it, excluded as retired, until that migration.
   it('bid_mode is not a path the page edits, and its column is excluded as retired', () => {
     expect(PARTNER_BODY_KEYS).not.toContain('bid_mode')
     expect(registryEntriesFor('bid_mode')).toEqual([])
@@ -92,11 +94,7 @@ describe('the partners page field registry (#2132)', () => {
   // bound, cap and unsupported cap helpers), so a path added there is held here
   // without anyone listing it. Seen red by mapping 'tiers' to 'profile.tiers'.
   it('every path the profile validator can refuse maps through registryPathOf to exactly one entry', () => {
-    const source = readFileSync(path.join(REPO_ROOT, 'packages/buyer-profile/src/validate.ts'), 'utf8')
-    const found = new Set<string>()
-    for (const re of [/\berr\([^,]+,\s*'([A-Za-z.]+)'/g, /\berr\([^,]+,\s*`([^`]+)`/g, /check(?:Bound|Cap)\([^,]+,\s*'([A-Za-z]+)'/g, /\[profile\.\w+,\s*'([A-Za-z]+)'/g]) {
-      for (const m of source.matchAll(re)) found.add(m[1].replace(/\$\{i\}/g, '0'))
-    }
+    const found = validatorPaths()
     expect(found.size).toBeGreaterThan(20)
     expect(exactlyOne([...found].map((p) => registryPathOf(p, ['DV1'])))).toEqual([])
     expect(exactlyOne([...found].map((p) => registryPathOf(p)))).toEqual([])

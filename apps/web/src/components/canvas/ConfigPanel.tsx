@@ -1688,6 +1688,9 @@ function BuyerSelectConfig({
       <Field label="Loan amount (optional)" hint="Read only by buyers whose profile sets a minimum.">
         <input className="input" placeholder="{{trigger.payload.loanAmount}}" value={template('loan_amount')} onChange={(e) => onChange({ loan_amount: e.target.value || undefined })} />
       </Field>
+      <Field label="Collections (optional)" hint="Dollars. Read only by buyers whose profile caps collections as a share of the debt above.">
+        <input className="input" aria-label="Collections" placeholder="{{steps.prospect_trades.output.body.tradeCalculations.eligibleCollectionTotalBalance}}" value={template('collections')} onChange={(e) => onChange({ collections: e.target.value || undefined })} />
+      </Field>
 
       <Field label="Sale payload base" hint="A template that resolves to the whole object to send. Resolved only after the sell off condition passes.">
         <input className="input" placeholder="{{trigger.payload}}" value={payload.base ?? ''} onChange={(e) => patchPayload({ base: e.target.value })} />
@@ -1877,6 +1880,10 @@ function BuyerClickCheckConfig({
 
       <Field label="Loan amount">
         <input className="input" aria-label="Loan amount" placeholder="{{trigger.payload.loanInformation.loanAmount}}" value={text('loan_amount')} onChange={(e) => onChange({ loan_amount: e.target.value || undefined })} />
+      </Field>
+
+      <Field label="Collections" hint="Dollars. Judged only when the buyer profile caps collections as a share of the debt above; a capped buyer is never offered without it.">
+        <input className="input" aria-label="Collections" placeholder="{{steps.prospect_trades.output.body.tradeCalculations.eligibleCollectionTotalBalance}}" value={text('collections')} onChange={(e) => onChange({ collections: e.target.value || undefined })} />
       </Field>
 
       <p className="text-xs text-gray-600">

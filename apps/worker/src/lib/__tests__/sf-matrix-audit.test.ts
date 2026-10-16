@@ -244,6 +244,14 @@ describe('notifyAllOrgsWithSlack, delivery gates the snapshot', () => {
     expect(await notifyAllOrgsWithSlack(client, [alert], now, undefined)).toBe(false)
   })
 
+  it('returns false when the database is down and the saved copy names nobody, so the snapshot is not advanced over an outage', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { client } = fakeClient([{ error: { message: 'connection terminated' } }])
+    registerScheduledSlack(client, { kv: await kvWithCopy({}), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep })
+    expect(await notifyAllOrgsWithSlack(client, [alert], now, undefined)).toBe(false)
+  })
+
   it('returns false when an org in the list cannot be told, rather than counting it as no Slack', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.spyOn(console, 'log').mockImplementation(() => {})

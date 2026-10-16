@@ -47,7 +47,7 @@ function output(route: BuyerClickCheckRoute): BuyerClickCheckOutput {
   return {
     _route: route, reason: route === 'eligible' ? 'eligible' : 'daily_lead_cap', population: 'engine', partner_id: PARTNER_ID, partner_slug: 'liberty1', partner_name: 'Liberty1',
     click_url: 'https://trypennie.com/portal/libertyone/{prospect_id}', external_routing_code: 4, count: 12, daily_lead_cap: 50, count_date: '2027-09-21', count_source: 'counter', profile_served_from: 'cache',
-    judged: { lead: { state: 'TX', debt: 25000, loan_amount: 5000 }, limits: null }, duration_ms: 4,
+    judged: { lead: { state: 'TX', debt: 25000, loan_amount: 5000, collections: null, collections_percent: null }, limits: null }, duration_ms: 4,
   }
 }
 
@@ -68,6 +68,17 @@ describe('buyer_click_check in the walker', () => {
       const rows = queue.filter((r) => r.step_node_id === NODE_ID)
       expect(rows.map((r) => [r.step_type, r.status]), route).toEqual([['buyer_click_check', 'completed']])
     }
+  })
+
+  it('records every template the check judged on as its step input, the collections template included (#2111)', async () => {
+    vi.mocked(executeBuyerClickCheckNode).mockResolvedValue({ output: output('eligible') })
+    const templates = { state: '{{trigger.payload.state}}', debt: '{{d}}', loan_amount: '{{l}}', collections: '{{steps.prospect_trades.output.body.tradeCalculations.eligibleCollectionTotalBalance}}' }
+    const def = definition(BUYER_CLICK_CHECK_ROUTES)
+    def.nodes[0] = { ...check, config: { ...check.config, ...templates } }
+    const queue: StepLogEntry[] = []
+    await walk(def, queue)
+    const row = queue.find((r) => r.step_node_id === NODE_ID)
+    expect((row?.input as { template: Record<string, unknown> }).template).toEqual({ partner_id: PARTNER_ID, population: 'engine', ...templates })
   })
 
   it('runs the executor exactly once: never through the retry loop', async () => {

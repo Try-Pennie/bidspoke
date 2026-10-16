@@ -215,3 +215,220 @@ describe('BidMatrixViewer: deleting a matrix (#2134)', () => {
     }
   })
 })
+
+// #2217: a rows read that failed rendered the empty state, "No rows yet", so a
+// load failure read as a matrix with no rows (L10). The read now has three
+// states of its own: loading, failed with Try again, and empty.
+describe('BidMatrixViewer: the rows read has loading, failed and empty states (#2217)', () => {
+  const rows = [
+    { id: 'r1', config_id: 'cfg-1', is_sell_off: false, row_low: 0, row_high: 9999, range_low: 600, range_high: 699, bid_amount: 10 },
+  ]
+
+  it('while the read is in flight it says it is loading, never that there are no rows', async () => {
+    vi.mocked(api.partnerBidConfigs.get).mockImplementation(() => new Promise(() => {}))
+    renderViewer()
+    expect(await screen.findByRole('status', { name: 'Loading the matrix rows' })).toBeInTheDocument()
+    expect(screen.queryByText(/No rows yet/)).toBeNull()
+  })
+
+  it('a rejected read shows the error and why, never "No rows yet", and Try again reads again', async () => {
+    vi.mocked(api.partnerBidConfigs.get).mockRejectedValueOnce(Object.assign(new Error('partner bid config read failed'), { status: 500 }))
+    vi.mocked(api.partnerBidConfigs.get).mockResolvedValueOnce({ config, rows } as never)
+    renderViewer()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("This matrix's rows could not be loaded.")
+    expect(alert).toHaveTextContent('partner bid config read failed')
+    expect(alert).toHaveTextContent('Nothing has changed.')
+    expect(screen.queryByText(/No rows yet/)).toBeNull()
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('Standard rows (1)')).toBeInTheDocument()
+    expect(api.partnerBidConfigs.get).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('a read that ran out of time says the server did not answer within 30 seconds', async () => {
+    vi.mocked(api.partnerBidConfigs.get).mockRejectedValue(Object.assign(new Error('Timed out after 30s. It may still be processing. Check execution history before retrying.'), { timedOut: true }))
+    renderViewer()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('The server did not answer within 30 seconds.')
+    expect(alert).not.toHaveTextContent(/execution history/)
+  })
+
+  it('a read that answers with no rows is the empty state', async () => {
+    renderViewer()
+    expect(await screen.findByText(/No rows yet/)).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
+// #2217: deleting the matrix the partner's resolver points at left
+// bid_config_id naming the deleted matrix, and the selectedConfigId effect put
+// the deleted id back on screen. The page draft is now cleared to "No matrix",
+// so the save sends it and the unsaved state shows it.
+describe('BidMatrixViewer: deleting the matrix the partner uses (#2217)', () => {
+  const second = { ...config, id: 'cfg-2', name: 'sofi spare', is_default: false } as unknown as PartnerBidConfig
+
+  /** Wired the way PartnerForm wires it: the resolver config is the page draft. */
+  function Host({ initial, onDraft, start = [config, second] }: { initial: string | null; onDraft: (cfg: Record<string, unknown>) => void; start?: PartnerBidConfig[] }) {
+    const [configs, setConfigs] = useState(start)
+    const [resolverConfig, setResolverConfig] = useState<Record<string, unknown>>({ bid_config_id: initial })
+    return (
+      <BidMatrixViewer
+        partnerId="p-1"
+        partnerSlug="sofi"
+        configs={configs}
+        onConfigsChange={setConfigs}
+        selectedConfigId={typeof resolverConfig.bid_config_id === 'string' ? resolverConfig.bid_config_id : undefined}
+        onSelectConfig={(id) => { const next = { ...resolverConfig, bid_config_id: id }; setResolverConfig(next); onDraft(next) }}
+      />
+    )
+  }
+
+  async function deleteShown() {
+    fireEvent.click(screen.getByRole('button', { name: 'Delete this matrix' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete matrix' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+  }
+
+  it('clears the draft to no matrix, and never shows or reads the deleted matrix again', async () => {
+    vi.mocked(api.partnerBidConfigs.delete).mockResolvedValue({ ok: true })
+    const onDraft = vi.fn()
+    render(<Host initial="cfg-1" onDraft={onDraft} />)
+    await screen.findByText(/No rows yet/)
+    await deleteShown()
+    expect(onDraft).toHaveBeenLastCalledWith({ bid_config_id: null })
+    expect(screen.getByRole('combobox', { name: 'Matrix shown' })).toHaveTextContent('No matrix')
+    expect(screen.queryByText(/no longer available/)).toBeNull()
+    // The read before the delete is the only read of cfg-1: nothing reads the deleted matrix after it.
+    expect(vi.mocked(api.partnerBidConfigs.get).mock.calls.filter(([id]) => id === 'cfg-1')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Delete this matrix' })).toBeDisabled()
+  })
+
+  it('deleting a matrix the partner does not use leaves the draft alone', async () => {
+    vi.mocked(api.partnerBidConfigs.delete).mockResolvedValue({ ok: true })
+    const onDraft = vi.fn()
+    render(<Host initial={null} onDraft={onDraft} />)
+    await screen.findByText(/No rows yet/)
+    await deleteShown()
+    expect(onDraft).not.toHaveBeenCalled()
+    // The partner names no matrix, so the matrix shown was configs[0] by default:
+    // the view moves to the next one, and the deleted one is never read again.
+    await waitFor(() => expect(api.partnerBidConfigs.get).toHaveBeenLastCalledWith('cfg-2'))
+    expect(vi.mocked(api.partnerBidConfigs.get).mock.calls.filter(([id]) => id === 'cfg-1')).toHaveLength(1)
+  })
+
+  it('deleting the last matrix, which the partner used, clears the draft and offers Add matrix', async () => {
+    vi.mocked(api.partnerBidConfigs.delete).mockResolvedValue({ ok: true })
+    const onDraft = vi.fn()
+    render(<Host initial="cfg-1" onDraft={onDraft} start={[config]} />)
+    await screen.findByText(/No rows yet/)
+    await deleteShown()
+    expect(onDraft).toHaveBeenLastCalledWith({ bid_config_id: null })
+    expect(screen.getByRole('button', { name: 'Add matrix' })).toBeInTheDocument()
+    expect(screen.queryByRole('combobox', { name: 'Matrix shown' })).toBeNull()
+    expect(screen.queryByText(/no longer available/)).toBeNull()
+  })
+})
+
+// Lessons review on #2256: a sync answers for the matrix it was started on. If
+// another matrix is in view by then, its rows must not be replaced by the
+// synced matrix's rows, nor its problems by the synced matrix's problems.
+describe('BidMatrixViewer: a sync that answers after the view moved (#2217)', () => {
+  const second = { ...config, id: 'cfg-2', name: 'sofi spare', is_default: false } as unknown as PartnerBidConfig
+  const row = (id: string, low: number) => ({ id, config_id: 'x', is_sell_off: false, row_low: low, row_high: low + 999, range_low: 600, range_high: 699, bid_amount: 10 })
+
+  function Host() {
+    const [configs, setConfigs] = useState([config, second])
+    const [chosen, setChosen] = useState<string | null>('cfg-1')
+    return (
+      <>
+        <button type="button" onClick={() => setChosen('cfg-2')}>show spare</button>
+        <BidMatrixViewer partnerId="p-1" partnerSlug="sofi" configs={configs} onConfigsChange={setConfigs}
+          selectedConfigId={chosen ?? undefined} onSelectConfig={setChosen} />
+      </>
+    )
+  }
+
+  it('keeps the matrix now in view on its own rows, with no problems from the other one', async () => {
+    let finish: () => void = () => {}
+    vi.mocked(api.partnerBidConfigs.sync).mockImplementation(() => new Promise((resolve) => {
+      finish = () => resolve({ config_id: 'cfg-1', config_slug: 'sofi', rows_fetched: 4, rows_upserted: 4, rows_deleted: 0, last_synced_at: '2026-10-16T01:00:00Z', problems: [{ kind: 'gap', axis: 'range', is_sell_off: false, detail: 'no coverage for score between 740 and 759' }] } as never)
+    }))
+    vi.mocked(api.partnerBidConfigs.get).mockImplementation(async (id: string) => (id === 'cfg-1'
+      ? { config, rows: [row('a1', 0), row('a2', 1000), row('a3', 2000), row('a4', 3000)] }
+      : { config: second, rows: [row('b1', 0), row('b2', 1000)] }) as never)
+    render(<Host />)
+    await screen.findByText('Standard rows (4)')
+    fireEvent.click(screen.getByRole('button', { name: /Sync now/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'show spare' }))
+    await screen.findByText('Standard rows (2)')
+    finish()
+    await waitFor(() => expect(api.partnerBidConfigs.get).toHaveBeenCalledTimes(3))
+    await waitFor(() => expect(screen.queryByText(/Syncing/)).toBeNull())
+    expect(screen.getByText('Standard rows (2)')).toBeInTheDocument()
+    expect(screen.queryByText('Standard rows (4)')).toBeNull()
+    expect(screen.queryByText(/no coverage/)).toBeNull()
+  })
+
+  it('a sync that fails after the view moved still says so, naming the matrix it was for', async () => {
+    let fail: () => void = () => {}
+    vi.mocked(api.partnerBidConfigs.sync).mockImplementation(() => new Promise((_, reject) => { fail = () => reject(new Error('Salesforce did not answer')) }))
+    vi.mocked(api.partnerBidConfigs.get).mockImplementation(async (id: string) => ({ config: id === 'cfg-1' ? config : second, rows: [row(`${id}-r`, 0)] }) as never)
+    render(<Host />)
+    await screen.findByText('Standard rows (1)')
+    fireEvent.click(screen.getByRole('button', { name: /Sync now/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'show spare' }))
+    await waitFor(() => expect(api.partnerBidConfigs.get).toHaveBeenLastCalledWith('cfg-2'))
+    fail()
+    expect(await screen.findByText('The sync of "sofi default" failed: Salesforce did not answer')).toBeInTheDocument()
+  })
+})
+
+// Lessons review on #2256: a create or a delete that answers after the list of
+// matrices changed (another matrix added, or one refreshed by a sync) must
+// build on the list as it is then, never on the one its press closed over.
+describe('BidMatrixViewer: a create or delete that answers after the list changed (#2217)', () => {
+  const second = { ...config, id: 'cfg-2', name: 'sofi spare', is_default: false } as unknown as PartnerBidConfig
+  const third = { ...config, id: 'cfg-3', name: 'sofi late', is_default: false } as unknown as PartnerBidConfig
+
+  /** Records every list the viewer hands back, and can add a matrix from outside while a request is in flight. */
+  function Host({ onList }: { onList: (configs: PartnerBidConfig[]) => void }) {
+    const [configs, setConfigs] = useState([config, second])
+    return (
+      <>
+        <button type="button" onClick={() => setConfigs((cs) => [...cs, third])}>add late</button>
+        <BidMatrixViewer partnerId="p-1" partnerSlug="sofi" configs={configs} onConfigsChange={(cs) => { setConfigs(cs); onList(cs) }} />
+      </>
+    )
+  }
+
+  const ids = (cs: PartnerBidConfig[]) => cs.map((c) => c.id)
+
+  it('a create keeps a matrix added while it was in flight', async () => {
+    let finish: () => void = () => {}
+    const created = { ...config, id: 'cfg-new', name: 'sofi default', is_default: false } as unknown as PartnerBidConfig
+    vi.mocked(api.partnerBidConfigs.create).mockImplementation(() => new Promise((resolve) => { finish = () => resolve(created) }))
+    const onList = vi.fn()
+    render(<Host onList={onList} />)
+    await screen.findByText(/No rows yet/)
+    fireEvent.click(screen.getByRole('button', { name: 'Add another matrix' }))
+    fireEvent.click(screen.getByRole('button', { name: 'add late' }))
+    finish()
+    await waitFor(() => expect(onList).toHaveBeenCalled())
+    expect(ids(onList.mock.lastCall![0])).toEqual(['cfg-1', 'cfg-2', 'cfg-3', 'cfg-new'])
+  })
+
+  it('a delete keeps a matrix added while it was in flight', async () => {
+    let finish: () => void = () => {}
+    vi.mocked(api.partnerBidConfigs.delete).mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ ok: true }) }))
+    const onList = vi.fn()
+    render(<Host onList={onList} />)
+    await screen.findByText(/No rows yet/)
+    fireEvent.click(screen.getByRole('button', { name: 'Delete this matrix' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete matrix' }))
+    fireEvent.click(screen.getByRole('button', { name: 'add late', hidden: true }))
+    finish()
+    await waitFor(() => expect(onList).toHaveBeenCalled())
+    expect(ids(onList.mock.lastCall![0])).toEqual(['cfg-2', 'cfg-3'])
+  })
+})

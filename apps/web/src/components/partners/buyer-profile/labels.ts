@@ -5,7 +5,7 @@
  * flatten and the package's flattenProfileDocument produce: a scalar name, `allowed_states`,
  * `windows[day:opens]`, `blackout_dates[date]`, `tiers[population:from]`.
  */
-import { DAYS_OF_WEEK, POPULATIONS, type Population, type ProfileError, type SoldOn } from '@bidspoke/buyer-profile'
+import { DAYS_OF_WEEK, DEFAULT_DISPLAY_TIME_ZONE, DISPLAY_TIME_ZONE_LABELS, isDisplayTimeZone, POPULATIONS, type Population, type ProfileError, type SoldOn } from '@bidspoke/buyer-profile'
 import { formatTime } from '@/components/ui/date-time'
 
 export const FIELD_LABELS: Record<string, string> = {
@@ -20,6 +20,8 @@ export const FIELD_LABELS: Record<string, string> = {
   daily_lead_cap: 'Leads per day',
   hourly_spend_cap_cents: 'Spend per hour',
   daily_spend_cap_cents: 'Spend per day',
+  // Where the hours and reset times are shown (#2143, PM-10): the settled design's word for the control under Hours.
+  display_time_zone: 'Time zone',
   // Partner record fields the validator names when a profile cannot be enabled without them (#1416).
   click_url: 'Click URL',
   external_routing_code: 'Salesforce routing code',
@@ -184,6 +186,11 @@ function formatDottedRowValue(row: RowPath, value: unknown): string | null {
 
 /** A human value at a flattened profile path or a history path. */
 export function formatProfileValue(path: string, value: unknown): string {
+  // A zone by its name (L611); unset is shown in Eastern, so it reads as Eastern, not as none.
+  if (path === 'display_time_zone') {
+    if (value === null || value === undefined) return DISPLAY_TIME_ZONE_LABELS[DEFAULT_DISPLAY_TIME_ZONE]
+    if (isDisplayTimeZone(value)) return DISPLAY_TIME_ZONE_LABELS[value]
+  }
   if (value === null || value === undefined) return 'none'
   if (path === 'sold_on' && typeof value === 'string' && value in SOLD_ON_LABELS) return SOLD_ON_LABELS[value as SoldOn]
   if (path.endsWith('_cents') && typeof value === 'number') return formatCents(value)

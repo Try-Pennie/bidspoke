@@ -62,6 +62,8 @@ describe('out reasons', () => {
       // #1546: a click URL without the {prospect_id} placeholder, which the
       // offer script would refuse on every lead.
       'click_url_has_no_prospect_id',
+      // #2111: the collections cap, and a cap judged by a step that reads no collections figure.
+      'collections_above_max', 'collections_not_wired',
     ]
     expect([...OUT_REASONS].sort()).toEqual(expected.sort())
   })
