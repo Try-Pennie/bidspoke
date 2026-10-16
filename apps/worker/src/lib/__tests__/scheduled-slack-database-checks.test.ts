@@ -116,7 +116,7 @@ describe('timeout-audit through an outage and back', () => {
 
   it('does not judge an org whose step durations could not be read at all', async () => {
     const kv = stateKv({ [SEEN]: 'wf-1:node-a' })
-    const workflow = { id: 'wf-1', name: 'Main Flow', definition: { nodes: [{ id: 'n1', namespace: 'node_a', type: 'code', config: {} }], edges: [] } }
+    const workflow = { id: 'wf-1', name: 'Main Flow', organization_id: ORG, deleted_at: null, is_active: true, definition: { nodes: [{ id: 'n1', namespace: 'node_a', type: 'code', config: {} }], edges: [] } }
     const { client, asked } = tableClient({
       service_connections: { data: [{ organization_id: ORG }] },
       workflows: { data: [workflow] },

@@ -106,6 +106,7 @@ describe('the partners page fixtures are what their routes answer (#2134)', () =
     const fixture = buyerProfiles[id]
     // The live workflows that name a buyer, as the fixture's other sellers say: one
     // workflow whose Bid Group lists them, which is how Main Flow names them.
+    // Each row carries the organization and deleted_at the shared read selects and checks (#2142).
     const workflows = fixture.other_sellers.map((w) => ({ ...w, is_active: true, organization_id: testUser.organization_id, deleted_at: null, definition: { nodes: [{ type: 'bid_group', config: { partner_ids: [id] } }] } }))
     supabaseWith(
       { partner_configs: { single: withoutWarning(row) }, workflows: { list: workflows } },

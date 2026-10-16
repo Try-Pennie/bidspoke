@@ -2,6 +2,41 @@
   "about": "Differences a pull request MEANS to make to what the bidding engine sends or decides. Each entry: workflow, check, optional node pattern, field pattern (* matches anything), and a reason in words. An entry excuses differences only in the change that adds it; once on main it is carried over and excuses nothing, and once the live worker runs the commit that added it, every pull request fails until it is deleted. A new entry that matches no difference fails the gate. See README.md, Reading a red.",
   "entries": [
     {
+      "workflow": "Main Flow",
+      "check": "supabase_write",
+      "node": "insert execution_steps",
+      "field": "insert execution_steps values[*].input.resolved.partner_constants_keys*",
+      "reason": "The Constants step's logged input now lists every partner key the node emits, the two maps subAccountIdsMap and activeBidding included, from partnerConstantOutputKeys (#2142). The node's output, and everything sent or decided, is unchanged."
+    },
+    {
+      "workflow": "RML - Bidding Workflow (GigFi)",
+      "check": "supabase_write",
+      "node": "insert execution_steps",
+      "field": "insert execution_steps values[*].input.resolved.partner_constants_keys*",
+      "reason": "The Constants step's logged input now lists every partner key the node emits, the two maps subAccountIdsMap and activeBidding included, from partnerConstantOutputKeys (#2142). The node's output, and everything sent or decided, is unchanged."
+    },
+    {
+      "workflow": "Lead Economy - Bidding Workflow",
+      "check": "supabase_write",
+      "node": "insert execution_steps",
+      "field": "insert execution_steps values[*].input.resolved.partner_constants_keys*",
+      "reason": "The Constants step's logged input now lists every partner key the node emits, the two maps subAccountIdsMap and activeBidding included, from partnerConstantOutputKeys (#2142). The node's output, and everything sent or decided, is unchanged."
+    },
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "supabase_write",
+      "node": "insert execution_steps",
+      "field": "insert execution_steps values[*].input.resolved.partner_constants_keys*",
+      "reason": "The Constants step's logged input now lists every partner key the node emits, the two maps subAccountIdsMap and activeBidding included, from partnerConstantOutputKeys (#2142). The node's output, and everything sent or decided, is unchanged."
+    },
+    {
+      "workflow": "RML - Bidding Workflow (LendSwift)",
+      "check": "supabase_write",
+      "node": "insert execution_steps",
+      "field": "insert execution_steps values[*].input.resolved.partner_constants_keys*",
+      "reason": "The Constants step's logged input now lists every partner key the node emits, the two maps subAccountIdsMap and activeBidding included, from partnerConstantOutputKeys (#2142). The node's output, and everything sent or decided, is unchanged."
+    },
+    {
       "workflow": "Engine Bidding Workflow",
       "check": "supabase_write",
       "node": "*",
