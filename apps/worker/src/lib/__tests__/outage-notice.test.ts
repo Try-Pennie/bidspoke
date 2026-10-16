@@ -204,8 +204,12 @@ describe('the outage line on scheduled alerts (#2061)', () => {
     const kv = await kvWith({ [RECOVERY]: new Date(REPORTED).toISOString() })
     kv.store.delete(SLACK_CONNS_LASTGOOD_KEY)
     const slack = await tick(kv, false)
-    await runWithOutageNotice({ kv, scheduled: slack }, () => postMessage('xoxb-t', 'C1', blocks(), 'x'))
-    expect(posted[0].blocks).toEqual(blocks())
-    expect(errors.some((e) => e.includes('[outage-notice]') && e.includes('no saved Slack copy'))).toBe(true)
+    await runWithOutageNotice({ kv, scheduled: slack }, async () => {
+      await postMessage('xoxb-t', 'C1', blocks(), 'x')
+      await postMessage('xoxb-t', 'C2', blocks(), 'x')
+    })
+    expect(posted.map((p) => p.blocks)).toEqual([blocks(), blocks()])
+    // Said once a tick: the tick's copy cannot change under it.
+    expect(errors.filter((e) => e.includes('[outage-notice]') && e.includes('no saved Slack copy'))).toHaveLength(1)
   })
 })

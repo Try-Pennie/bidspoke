@@ -53,9 +53,11 @@ describe('every Slack alert is posted through postMessage (#2061)', () => {
   const slack = read(SLACK)
 
   it('names the post method nowhere in worker source but lib/slack.ts', () => {
+    // listTsFiles already leaves out test files and __tests__ folders, whose
+    // Slack doubles legitimately name the method.
     const outside = listTsFiles(WORKER_SRC)
       .map(rel)
-      .filter((r) => r !== SLACK && !r.includes('/__tests__/'))
+      .filter((r) => r !== SLACK)
       .filter((r) => POST_METHOD.test(read(r)))
     expect(outside).toEqual([])
   })

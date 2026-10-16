@@ -33,9 +33,13 @@ describe('lastFinishedRun on the scheduled client', () => {
     const { client, calls } = fakeClient(['stall', { data: [{ finished_at: '2026-10-15T00:00:00Z' }] }])
     const timers = fakeTimers('now')
     registerScheduledSlack(client, { kv: kvWith(), secretKeys: TEST_KEY, sleep: timers.sleep })
+    const errors = vi.mocked(console.error)
     await lastFinishedRun(client, 'sightings-export')
+    errors.mockClear()
     await expect(lastFinishedRun(client, 'timeout-audit')).resolves.toBeNull()
     expect(calls).toHaveLength(1)
+    // The failure was logged once, when it happened; a skipped read adds nothing per job.
+    expect(errors).not.toHaveBeenCalled()
   })
 
   it('still reads the finish when the database answers', async () => {

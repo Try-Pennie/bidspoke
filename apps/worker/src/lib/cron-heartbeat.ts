@@ -560,7 +560,9 @@ export async function lastFinishedRun(supabase: SupabaseClient, jobId: string): 
     if (scheduled) {
       const read = await scheduled.read(`cron-heartbeat job_runs for ${jobId}`, query)
       if (read.kind === 'failed') {
-        console.error(`[cron-heartbeat] job_runs for ${jobId} not read (${read.how}: ${read.detail}), so the verdict stands without it`)
+        // A read skipped because the tick already saw the database fail was
+        // logged once, at that failure, by scheduled-slack.ts.
+        if (read.how !== 'skipped') console.error(`[cron-heartbeat] job_runs for ${jobId} not read (${read.how}: ${read.detail}), so the verdict stands without it`)
         return null
       }
       data = read.data

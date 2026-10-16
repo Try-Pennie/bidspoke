@@ -33,7 +33,8 @@
  * because a KV call has no deadline of its own and stalls are what this is for
  * (2026-10-14). A read that fails, throws or does not answer posts the alert
  * without the line and logs why; after the first one, the rest of the tick does
- * not ask again, so a stalled store costs a tick at most one deadline.
+ * not ask again, so a stalled store costs a tick at most one deadline. No saved
+ * copy (no organizations to read for) is treated the same way.
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { raceDeadline } from './alert-claim'
@@ -155,7 +156,9 @@ export async function openOutageForPost(): Promise<OpenOutage | null> {
     else if (read.kind === 'threw') why = formatErr(read.error)
     else if (read.value.kind === 'unread') why = read.value.why
     if (why !== null) {
-      if (read.kind !== 'ok') store.failed = why
+      // The tick's copy is read once, so an absent or unreadable one stays so
+      // for the tick; a failed or stalled read is not asked again either.
+      store.failed = why
       console.error(`[outage-notice] the database incident could not be read (${why}), so this alert was posted without the outage line`)
       return null
     }
