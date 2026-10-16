@@ -40,7 +40,7 @@ export async function readRecoveryOrigin(db: SupabaseClient, recoveredFrom: stri
   for (let read = 0; read < MAX_RECOVERY_LINEAGE; read++) {
     const { data, error } = await db.from('workflow_executions').select('id, started_at, parent_execution_id').eq('id', id).maybeSingle()
     if (error) throw new Error(`could not read execution ${id} in the recovered run's lineage: ${formatErr(error)}`)
-    const row = data as { id: string; started_at: unknown; parent_execution_id: unknown } | null
+    const row: { started_at: unknown; parent_execution_id: unknown } | null = data
     if (!row) throw new Error(`execution ${id} in the recovered run's lineage is no longer kept, so how far back the lineage goes cannot be read`)
     const parent = row.parent_execution_id
     if (typeof parent === 'string' && parent !== '') {
