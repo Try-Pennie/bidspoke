@@ -28,6 +28,8 @@ import { RECOVERY_REARM_MINUTES } from '../alert-recovery'
 import type { AlertClaims } from '../alert-claim'
 import { fakeTimers, tableClient, TEST_KEY } from './_scheduled-slack-doubles'
 import { outboxEvents, transitions } from './_incident-events'
+import { claimLedger, gate, settle } from './_claims-double'
+import { MINUTE_ALERT_CLAIM_TTL_SECONDS } from '../alert-fanout'
 
 const ORG = '55555555-5555-4555-8555-555555555555'
 const CONN = { bot_token: 'xoxb-t', default_channel: 'C1', volume_alerts_enabled: true }
@@ -76,9 +78,9 @@ const answering = (rows: unknown[] = [{ organization_id: ORG, config: { bot_toke
   tableClient({ service_connections: { data: rows } }).client
 const failing = () => tableClient({ service_connections: { error: { message: 'connection refused', code: '08006' } } }).client
 
-function probeDeps(kv: ReturnType<typeof fakeKv>, at: number, supabase = answering()) {
+function probeDeps(kv: ReturnType<typeof fakeKv>, at: number, supabase = answering(), claims?: AlertClaims) {
   return {
-    ...deps(kv, at),
+    ...deps(kv, at, claims),
     supabase,
     sleep: fakeTimers('never').sleep,
     stamps: { started: vi.fn().mockResolvedValue(undefined), completed: vi.fn().mockResolvedValue(undefined) },
@@ -340,5 +342,83 @@ describe('the minute probe writes the copy and stamps its heartbeat', () => {
     const d = probeDeps(kv, T0, supabase)
     await expect(runDatabaseReachabilityProbe(d)).rejects.toThrow('client exploded')
     expect(d.stamps.completed).toHaveBeenCalledTimes(1)
+  })
+})
+
+// A stalled minute tick overlapping the next minute's (#2062). The page keeps
+// the claim key phase 3 gave it, now taken BEFORE the cooldown is read (L157)
+// and held for the minute alert TTL; the all-clear claims once it is owed.
+describe('the owner posts once across overlapping ticks (#2062)', () => {
+  const OPEN = { [RECOVERY]: new Date(T0 - 90 * MIN).toISOString(), [ACTIVE]: new Date(T0 - 60 * MIN).toISOString(), [COOLDOWN]: '1', [CONDITION]: '{"since":"2026-10-15T01:30:00.000Z","alerts":2}' }
+  async function owed() {
+    const kv = await kvWithCopy(OPEN)
+    for (let t = T0 - 40 * MIN; t <= T0 - MIN; t += MIN) for (const s of ['probe', 'volume-cliff'] as const) await reportDatabaseReadable(kv, s, t)
+    return kv
+  }
+  async function overlap(run: () => Promise<unknown>, open: () => void) {
+    const a = run()
+    await settle()
+    const b = run()
+    await settle()
+    open()
+    await Promise.all([a, b])
+  }
+
+  it('claims the page before the read that decides: a cooldown written while it claimed stops the page', async () => {
+    const kv = await kvWithCopy()
+    const log: string[] = []
+    const { claims } = claimLedger(log)
+    const racing: AlertClaims = {
+      claim: async (k, ttl) => {
+        const won = await claims.claim(k, ttl)
+        // The other tick posts and arms its cooldown just as this one claims.
+        kv.store.set(COOLDOWN, '1')
+        return won
+      },
+      release: claims.release,
+    }
+    await reportDatabaseUnreachable(deps(kv, T0, racing), readFailure)
+    expect(sendDatabaseUnreachableAlert).not.toHaveBeenCalled()
+    expect(log).toEqual([`claim db-unreachable:${ORG}`, `release db-unreachable:${ORG}`])
+  })
+
+  it('reuses its phase 3 claim key, held for the minute alert TTL', async () => {
+    const kv = await kvWithCopy()
+    const { claims, ttls } = claimLedger()
+    await reportDatabaseUnreachable(deps(kv, T0, claims), readFailure)
+    expect([...ttls.entries()]).toEqual([[`db-unreachable:${ORG}`, MINUTE_ALERT_CLAIM_TTL_SECONDS]])
+  })
+
+  it('pages once when a held tick overlaps the next one', async () => {
+    const kv = await kvWithCopy()
+    const held = gate<string>()
+    vi.mocked(sendDatabaseUnreachableAlert).mockImplementationOnce(() => held.promise)
+    const { claims } = claimLedger()
+    await overlap(() => reportDatabaseUnreachable(deps(kv, T0, claims), readFailure), () => held.open('ts-db'))
+    expect(sendDatabaseUnreachableAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('control: with no claim the held ticks send the all-clear twice', async () => {
+    const kv = await owed()
+    const held = gate<boolean>()
+    vi.mocked(sendDatabaseRecoveredAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+    await overlap(() => runDatabaseReachabilityProbe(probeDeps(kv, T0)), () => held.open(true))
+    expect(sendDatabaseRecoveredAlert).toHaveBeenCalledTimes(2)
+  })
+
+  it('sends the all-clear once, under the minute all-clear claim', async () => {
+    const kv = await owed()
+    const held = gate<boolean>()
+    vi.mocked(sendDatabaseRecoveredAlert).mockImplementationOnce(() => held.promise)
+    const { claims, log } = claimLedger()
+    await overlap(() => runDatabaseReachabilityProbe(probeDeps(kv, T0, answering(), claims)), () => held.open(true))
+    expect(sendDatabaseRecoveredAlert).toHaveBeenCalledTimes(1)
+    expect(log).toEqual([`claim minute-alert:all-clear:db-unreachable:${ORG}`, `claim minute-alert:all-clear:db-unreachable:${ORG}`])
+  })
+
+  it('makes no claim call on a healthy probe with nothing owed', async () => {
+    const { claims, log } = claimLedger()
+    await runDatabaseReachabilityProbe(probeDeps(fakeKv(), T0, answering(), claims))
+    expect(log).toEqual([])
   })
 })
