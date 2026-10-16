@@ -151,6 +151,15 @@ describe('the sentences about another person\'s save (#2135)', () => {
     expect(liveTakenSentence(null, [])).toBe('Someone else saved this partner, with no change to anything shown here.')
   })
 
+  it('a field no tab draws is never said to be on screen, nor noted on a section (#2137 offPage)', () => {
+    const name = { key: 'name', tab: 'partner' as const, section: 'Identity', label: 'Name' }
+    const listOrder = { key: 'priority', tab: 'partner' as const, section: 'Identity', label: 'List order (not shown on this page)' }
+    expect(liveTakenSentence('Brian Nelms', [listOrder])).toBe('Brian Nelms saved this partner. They changed List order (not shown on this page).')
+    expect(liveTakenSentence('Brian Nelms', [name, listOrder])).toBe('Brian Nelms saved this partner. Their change to Name is on screen. They also changed List order (not shown on this page).')
+    expect(updatedByNotes('Brian Nelms', [name, listOrder])).toEqual([{ sections: ['Identity'], text: 'Updated by Brian Nelms: Name.' }])
+    expect(updatedByNotes('Brian Nelms', [listOrder])).toEqual([])
+  })
+
   it('Updated by notes go on the sections of what was taken, naming each field', () => {
     const notes = updatedByNotes('Brian Nelms', [
       { key: 'name', tab: 'partner', section: 'Identity', label: 'Name' },

@@ -148,13 +148,23 @@ export function liveConflictSentence(name: string | null, fields: number): strin
 export function liveTakenSentence(name: string | null, taken: readonly MergeUnit[]): string {
   const who = name ?? 'Someone else'
   if (taken.length === 0) return `${who} saved this partner, with no change to anything shown here.`
-  return `${who} saved this partner. Their ${taken.length === 1 ? 'change' : 'changes'} to ${listOf(taken.map((u) => u.label))} ${taken.length === 1 ? 'is' : 'are'} on screen.`
+  // A field no tab draws (the registry's offPage) is never said to be on screen.
+  const shown = taken.filter((u) => !offPage(u))
+  const hidden = taken.filter(offPage)
+  const parts = [
+    shown.length > 0 ? `Their ${shown.length === 1 ? 'change' : 'changes'} to ${listOf(shown.map((u) => u.label))} ${shown.length === 1 ? 'is' : 'are'} on screen.` : null,
+    hidden.length > 0 ? `They ${shown.length > 0 ? 'also ' : ''}changed ${listOf(hidden.map((u) => u.label))}.` : null,
+  ].filter((p): p is string => p !== null)
+  return `${who} saved this partner. ${parts.join(' ')}`
 }
 
-/** "Updated by <Name>: <fields>." on each section that took their change. */
+/** Whether a merge unit is a field no tab draws a control for. */
+const offPage = (u: MergeUnit): boolean => registryEntriesFor(u.key).some((e) => e.offPage === true)
+
+/** "Updated by <Name>: <fields>." on each section that took their change, for the fields a tab draws. */
 export function updatedByNotes(name: string | null, taken: readonly MergeUnit[]): SectionNote[] {
   const bySection = new Map<string, string[]>()
-  for (const u of taken) bySection.set(u.section, [...(bySection.get(u.section) ?? []), u.label])
+  for (const u of taken.filter((t) => !offPage(t))) bySection.set(u.section, [...(bySection.get(u.section) ?? []), u.label])
   return [...bySection].map(([section, labels]) => ({ sections: [section], text: `Updated by ${name ?? 'someone else'}: ${listOf(labels)}.` }))
 }
 

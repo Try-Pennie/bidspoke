@@ -39,7 +39,7 @@ const START = Date.parse('2026-10-16T14:35:00.000Z')
 
 const partner: Partner = {
   id: ID, organization_id: ORG, name: 'M1', slug: 'm1', api_endpoint: null, cf_secret_key: null, daily_cap: null, min_bid: null,
-  bid_formula: null, bid_resolver_type: 'api', bid_resolver_config: {}, outbound_field_mapping: null, bid_mode: 'ping_only',
+  bid_formula: null, bid_resolver_type: 'api', bid_resolver_config: {}, outbound_field_mapping: null,
   bid_comparison_source: 'auto', extra_extraction: null, last_probe_response: null, dedup_endpoint: null, response_classification: null,
   alert_config: null, circuit_error_threshold: 5, circuit_window_seconds: 60, circuit_cooldown_seconds: 300, circuit_enabled: true,
   confirmation_window_ms: null, is_active: true, priority: 0, sell_off_offer_title: null, sell_off_offer_details: null, click_url: null,
@@ -192,7 +192,8 @@ describe('another person\'s save, live (#2135)', () => {
     })
     expect(await screen.findByText(/Live updates paused\. Reconnecting/)).toBeTruthy()
     await waitFor(() => expect(api.partners.get).toHaveBeenCalledWith(ID))
-    await screen.findByText('Brian Nelms saved this partner. Their change to List order is on screen.')
+    // List order is off the page (#2137), so it is never said to be on screen.
+    await screen.findByText('Brian Nelms saved this partner. They changed List order (not shown on this page).')
     expect(nameBox().value).toBe('M1 (mine)')
   })
 

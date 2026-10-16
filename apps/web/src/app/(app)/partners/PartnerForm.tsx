@@ -1286,7 +1286,7 @@ export default function PartnerForm({
                 )}
               </Section>
 
-              <Section title="Duplicate check" liveSections={['Endpoints']}>
+              <Section title="Duplicate check">
                 <Field
                   id="partner-dedup-endpoint"
                   label="Dedup endpoint"
@@ -1366,7 +1366,7 @@ export default function PartnerForm({
                 <SignalRuleBuilder value={signalRules} onChange={setSignalRules} sections={SIGNAL_SECTIONS.filter((s) => s.cat !== 'rejection')} />
               </Section>
 
-              <Section title="Confirmation window" liveSections={['Bid confirmation latency']}>
+              <Section title="Confirmation window">
                 {confirmationWindowShown(usage, confirmationWindowMs, confirmationAdded) ? (
                   <>
                     <p className="text-xs text-gray-500">
@@ -1413,7 +1413,7 @@ export default function PartnerForm({
             </TabPanel>
           )}
           <TabPanel value="workflow_values" className="space-y-8">
-            {isBuyer && <Section title="Click URL" liveSections={['Endpoints']}>
+            {isBuyer && <Section title="Click URL">
               {/* The labelled field with its error beside it (#1546): the buyer profile's click URL refusals name this field. */}
               <Field
                 id="partner-click-url"
