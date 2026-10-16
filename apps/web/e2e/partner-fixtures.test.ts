@@ -219,6 +219,9 @@ describe('realtimeReplies', () => {
 
   it('records a join to any other topic, and ignores what it cannot read', () => {
     expect(realtimeReplies(JSON.stringify(['1', '1', 'realtime:test-run-1', 'phx_join', {}]))).toEqual({ replies: [], unexpected: 'JOIN realtime:test-run-1' })
+    // Only a UUID: not any 36 characters of hex and dashes.
+    const dashes = `realtime:partners:${'-'.repeat(36)}`
+    expect(realtimeReplies(JSON.stringify(['1', '1', dashes, 'phx_join', {}]))).toEqual({ replies: [], unexpected: `JOIN ${dashes}` })
     expect(realtimeReplies('not json')).toEqual({ replies: [], unexpected: null })
   })
 

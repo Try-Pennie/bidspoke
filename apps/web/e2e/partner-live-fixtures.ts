@@ -43,7 +43,7 @@ export function realtimeReplies(frame: string): { replies: string[]; unexpected:
   const [joinRef, ref, topic, event] = msg as [string | null, string | null, string, string, unknown]
   const reply = (response: Record<string, unknown>) => JSON.stringify([joinRef, ref, topic, 'phx_reply', { status: 'ok', response }])
   if (event === 'phx_join') {
-    if (!/^realtime:partners:[0-9a-f-]{36}$/.test(topic)) return { replies: [], unexpected: `JOIN ${topic}` }
+    if (!/^realtime:partners:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(topic)) return { replies: [], unexpected: `JOIN ${topic}` }
     return { replies: [reply({ postgres_changes: [] })], unexpected: null }
   }
   if (event === 'heartbeat' || event === 'access_token' || event === 'phx_leave') return { replies: [reply({})], unexpected: null }
