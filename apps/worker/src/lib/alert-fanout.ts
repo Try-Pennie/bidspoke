@@ -28,7 +28,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
-import { copyUnreachableLine, describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason } from './scheduled-slack'
+import { describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason } from './scheduled-slack'
 
 /**
  * The slice of KV this module uses: a get and a cooldown put. Narrower than
@@ -150,7 +150,8 @@ async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what
     return { kind: 'stored', copy: copy.copy.connections, ageMs: copy.ageMs }
   }
   const reason = copy.kind === 'absent' ? 'no_copy' : 'copy_unreadable'
-  console.error(copyUnreachableLine(subject, reason, copy.kind === 'unreadable' ? copy.detail : undefined))
+  // No organization is named: this read was for every organization at once.
+  scheduled.nobodyCanBeTold(subject, null, reason, copy.kind === 'unreadable' ? copy.detail : undefined)
   return { kind: 'unreachable', reason }
 }
 
