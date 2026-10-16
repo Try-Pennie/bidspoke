@@ -32,7 +32,8 @@
  * built-in and org-wide with no configuration.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { orgIdsToTell, slackOrgIds } from './alert-fanout'
+import { minuteAlertClaimKey, orgIdsToTell, postMinutePage, slackOrgIds } from './alert-fanout'
+import type { AlertClaims } from './alert-claim'
 import { logReadFailure } from './scheduled-read'
 import { sendUpstreamOutageAlert, sendFailureSaturationAlert } from './slack'
 import { fetchAllPaged } from './paginate'
@@ -726,11 +727,15 @@ export function groupSaturation(
  * trailing window, group by cause, and fire ONE @here alert per cause whose
  * count crosses the threshold. Cooldown per (org, cause) so a sustained outage
  * pages once.
+ *
+ * `claims` makes a stalled tick overlapping the next minute's post each page
+ * once (#2062, alert-fanout.ts); the scheduled handler always passes it.
  */
 export async function runUpstreamOutageCheck(
   supabase: SupabaseClient,
   kv: KvLike,
   appUrl: string,
+  claims?: AlertClaims,
 ): Promise<void> {
   const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'upstream-outage', 'measure-from-database'))
   if (orgIds.length === 0) return
@@ -863,30 +868,38 @@ export async function runUpstreamOutageCheck(
     // count is too small for the absolute threshold, so it must not be gated on
     // anything the cause rule decides.
     for (const sat of groupSaturation(rows, runTotals, nameById, saturationStartMs)) {
-      const satCooldownKey = `failure-saturation-cooldown:${orgId}:${sat.workflowId}`
-      if (await kv.get(satCooldownKey)) continue
-      console.log(
-        `[failure-saturation] org=${orgId} workflow=${sat.workflowId} ` +
-          `${sat.failureCount}/${sat.totalCount} failed in ${SATURATION_WINDOW_MINUTES}m`,
-      )
-      const satSent = await sendFailureSaturationAlert(
-        supabase,
-        orgId,
-        {
-          workflow_id: sat.workflowId,
-          workflow_name: sat.workflowName,
-          failure_count: sat.failureCount,
-          total_count: sat.totalCount,
-          window_minutes: SATURATION_WINDOW_MINUTES,
-          error_shapes: sat.shapes,
-          other_shape_count: sat.otherShapeCount,
-          timestamp: new Date(now).toISOString(),
+      const satId = `${orgId}:${sat.workflowId}`
+      const satCooldownKey = `failure-saturation-cooldown:${satId}`
+      // Claim, then read the cooldown, then post (#2062, L157).
+      const satOutcome = await postMinutePage({
+        claims,
+        key: minuteAlertClaimKey('page', 'failure-saturation', satId),
+        inCooldown: async () => (await kv.get(satCooldownKey)) !== null,
+        send: async () => {
+          console.log(
+            `[failure-saturation] org=${orgId} workflow=${sat.workflowId} ` +
+              `${sat.failureCount}/${sat.totalCount} failed in ${SATURATION_WINDOW_MINUTES}m`,
+          )
+          return Boolean(await sendFailureSaturationAlert(
+            supabase,
+            orgId,
+            {
+              workflow_id: sat.workflowId,
+              workflow_name: sat.workflowName,
+              failure_count: sat.failureCount,
+              total_count: sat.totalCount,
+              window_minutes: SATURATION_WINDOW_MINUTES,
+              error_shapes: sat.shapes,
+              other_shape_count: sat.otherShapeCount,
+              timestamp: new Date(now).toISOString(),
+            },
+            appUrl,
+          ))
         },
-        appUrl,
-      )
+      })
       // Only start the cooldown once it actually delivered, so a kicked bot
       // retries next minute instead of buying thirty minutes of silence.
-      if (satSent) {
+      if (satOutcome === 'sent') {
         await kv.put(satCooldownKey, '1', { expirationTtl: DEFAULT_COOLDOWN_MINUTES * 60 })
       }
     }
@@ -899,31 +912,36 @@ export async function runUpstreamOutageCheck(
 
       // A per-workflow cause carries the workflow into its own key, so one
       // partner's outage cannot silence another's for the cooldown (#1361).
-      const cooldownKey =
-        `upstream-outage-cooldown:${orgId}:${group.cause.key}` +
-        (group.workflowId ? `:${group.workflowId}` : '')
-      if (await kv.get(cooldownKey)) continue
+      const outageId = `${orgId}:${group.cause.key}` + (group.workflowId ? `:${group.workflowId}` : '')
+      const cooldownKey = `upstream-outage-cooldown:${outageId}`
 
-      console.log(`[upstream-outage] org=${orgId} cause=${group.cause.key} count=${group.count}/${DEFAULT_OUTAGE_THRESHOLD} window=${DEFAULT_OUTAGE_WINDOW_MINUTES}m workflows=${group.workflowNames.length}`)
-
-      const sent = await sendUpstreamOutageAlert(
-        supabase,
-        orgId,
-        {
-          cause_key: group.cause.key,
-          cause_label: group.cause.label,
-          failure_count: group.count,
-          window_minutes: DEFAULT_OUTAGE_WINDOW_MINUTES,
-          workflow_names: group.workflowNames,
-          error_shapes: group.shapes,
-          other_shape_count: group.otherShapeCount,
-          how_to_check: describeHowToCheck(group.cause.label, group.shapes, { causeKey: group.cause.key, workflowNames: group.workflowNames }),
-          timestamp: new Date(now).toISOString(),
+      // Claim, then read the cooldown, then post (#2062, L157).
+      const outcome = await postMinutePage({
+        claims,
+        key: minuteAlertClaimKey('page', 'upstream-outage', outageId),
+        inCooldown: async () => (await kv.get(cooldownKey)) !== null,
+        send: async () => {
+          console.log(`[upstream-outage] org=${orgId} cause=${group.cause.key} count=${group.count}/${DEFAULT_OUTAGE_THRESHOLD} window=${DEFAULT_OUTAGE_WINDOW_MINUTES}m workflows=${group.workflowNames.length}`)
+          return Boolean(await sendUpstreamOutageAlert(
+            supabase,
+            orgId,
+            {
+              cause_key: group.cause.key,
+              cause_label: group.cause.label,
+              failure_count: group.count,
+              window_minutes: DEFAULT_OUTAGE_WINDOW_MINUTES,
+              workflow_names: group.workflowNames,
+              error_shapes: group.shapes,
+              other_shape_count: group.otherShapeCount,
+              how_to_check: describeHowToCheck(group.cause.label, group.shapes, { causeKey: group.cause.key, workflowNames: group.workflowNames }),
+              timestamp: new Date(now).toISOString(),
+            },
+            appUrl,
+          ))
         },
-        appUrl,
-      )
+      })
 
-      if (sent) {
+      if (outcome === 'sent') {
         await kv.put(cooldownKey, '1', { expirationTtl: DEFAULT_COOLDOWN_MINUTES * 60 })
       }
     }

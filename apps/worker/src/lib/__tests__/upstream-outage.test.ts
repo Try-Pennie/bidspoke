@@ -18,6 +18,7 @@ import {
   describeHowToCheck,
 } from '../upstream-outage'
 import { sendUpstreamOutageAlert, sendFailureSaturationAlert } from '../slack'
+import { claimLedger, gate, settle } from './_claims-double'
 
 describe('classifyOutageCause (#331)', () => {
   it('classifies Salesforce 5xx and concurrency-governor errors as the salesforce cause', () => {
@@ -596,5 +597,81 @@ describe('runUpstreamOutageCheck scopes the partner cooldown per workflow (#1361
     const sb = makeSupabase({ ...org, workflows: twoPartners, workflow_executions: spike('wf-gigfi') })
     await runUpstreamOutageCheck(sb as never, kv as never, 'https://app.example.com')
     expect(sendUpstreamOutageAlert).not.toHaveBeenCalled()
+  })
+})
+
+// ── Overlapping minute ticks (#2062) ─────────────────────────────────────────
+//
+// runCronTickOnce stops a second delivery of the same minute; a stalled tick
+// overlapping the next minute's is stopped by a claim on each page. Each tick is
+// held at its post while the other reaches the same point (L157). This check
+// has no all-clear, so only its two pages are claimed.
+describe('runUpstreamOutageCheck posts once across overlapping ticks (#2062)', () => {
+  const url = 'https://app.example.com'
+  // The cause rule alone: no run totals, so saturation judges nothing.
+  const causeOrg = () => makeSupabase({
+    service_connections: [{ organization_id: 'org-1' }],
+    workflows: [{ id: 'wf-1', name: 'Engine Bidding', organization_id: 'org-1' }],
+    workflow_executions: Array.from({ length: DEFAULT_OUTAGE_THRESHOLD }, () => failRow('wf-1', 'Salesforce API error (520): error code: 520')),
+  })
+  // The measured Main Flow saturation shape: 17 of 19 failed.
+  const saturatedOrg = () => makeSupabase({
+    service_connections: [{ organization_id: 'org-1' }],
+    workflows: [{ id: 'wf-1', name: 'Main Flow', organization_id: 'org-1' }],
+    workflow_executions: Array.from({ length: 17 }, () => ({
+      workflow_id: 'wf-1',
+      error_message: 'Parallel failed: child "trades_body" failed: Salesforce API error (500): boom',
+      started_at: recent(),
+      completed_at: recent(),
+    })),
+    __runTotals: [{ workflow_id: 'wf-1', minute: recent(), cnt: 19 }],
+  })
+
+  beforeEach(() => vi.clearAllMocks())
+
+  async function overlap(run: () => Promise<void>, open: () => void) {
+    const a = run()
+    await settle()
+    const b = run()
+    await settle()
+    open()
+    await Promise.all([a, b])
+  }
+
+  it('control: with no claim the two ticks page the cause twice, so the fixture really overlaps', async () => {
+    const held = gate<string>()
+    vi.mocked(sendUpstreamOutageAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+    const kv = makeKv()
+    await overlap(() => runUpstreamOutageCheck(causeOrg() as never, kv as never, url), () => held.open('ts-1'))
+    expect(sendUpstreamOutageAlert).toHaveBeenCalledTimes(2)
+  })
+
+  it('pages the cause once, under the minute page claim', async () => {
+    const held = gate<string>()
+    vi.mocked(sendUpstreamOutageAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+    const kv = makeKv()
+    const { claims, log } = claimLedger()
+    await overlap(() => runUpstreamOutageCheck(causeOrg() as never, kv as never, url, claims), () => held.open('ts-1'))
+    expect(sendUpstreamOutageAlert).toHaveBeenCalledTimes(1)
+    expect(log).toEqual(['claim minute-alert:page:upstream-outage:org-1:salesforce', 'claim minute-alert:page:upstream-outage:org-1:salesforce'])
+    expect(kv.store.has('upstream-outage-cooldown:org-1:salesforce')).toBe(true)
+  })
+
+  it('control: with no claim the two ticks page saturation twice', async () => {
+    const held = gate<boolean>()
+    vi.mocked(sendFailureSaturationAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+    const kv = makeKv()
+    await overlap(() => runUpstreamOutageCheck(saturatedOrg() as never, kv as never, url), () => held.open(true))
+    expect(sendFailureSaturationAlert).toHaveBeenCalledTimes(2)
+  })
+
+  it('pages saturation once, under the minute page claim', async () => {
+    const held = gate<boolean>()
+    vi.mocked(sendFailureSaturationAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+    const kv = makeKv()
+    const { claims, log } = claimLedger()
+    await overlap(() => runUpstreamOutageCheck(saturatedOrg() as never, kv as never, url, claims), () => held.open(true))
+    expect(sendFailureSaturationAlert).toHaveBeenCalledTimes(1)
+    expect(log.filter((l) => l.includes('failure-saturation'))).toEqual(['claim minute-alert:page:failure-saturation:org-1:wf-1', 'claim minute-alert:page:failure-saturation:org-1:wf-1'])
   })
 })
