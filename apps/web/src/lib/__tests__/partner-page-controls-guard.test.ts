@@ -10,8 +10,9 @@
  * Four rules, each with a positive control:
  *   1. No raw control (input, select, textarea, button, datalist, option, and
  *      no radio, checkbox, date or time type in any quote or brace spelling)
- *      in any .tsx under the partners page directories, walked recursively,
- *      with a check that every .tsx under them was scanned.
+ *      in any non test .tsx under the partners page directories, walked
+ *      recursively (.test.tsx files and __tests__ folders are not screens and
+ *      are skipped), with a check that every such .tsx under them was scanned.
  *   2. No local Field, Input, Toggle or Select there, and no role="switch"
  *      anywhere in the app outside components/ui.
  *   3. No @radix-ui import anywhere in apps/web/src outside components/ui and

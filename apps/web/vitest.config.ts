@@ -19,7 +19,10 @@ export default defineConfig({
   test: {
     // Worker threads rather than forked child processes, for the lib and
     // components projects (#973); the zone projects below override it with
-    // forks, because a zone is fixed when a process starts. Measured over four runs each, on a settled machine:
+    // forks, because a zone is fixed when a process starts. The measurement
+    // below predates the zone projects, when lib (then "node") and components
+    // were the only two, so "both" there means those two. Measured over four
+    // runs each, on a settled machine:
     //
     //   forks (the default)          6.36 to 6.56s
     //   threads for the node project 5.13 to 5.32s
