@@ -89,7 +89,9 @@ describe('scanPartnerValueReaders: reads by name', () => {
     ['the conventional local name', 'const constants = steps.constants.output;\nreturn constants.TripointClickUrl'],
     ['element access', "return constants['TripointClickUrl']"],
     ['any local name for the output', 'const c = steps.constants.output ?? {}\nreturn c.TripointClickUrl'],
-    ['a destructure from the output', 'const { TripointClickUrl: url, other } = steps.constants.output'],
+    ['a local name with a comment after its assignment', 'const c = steps.constants.output // the constants\nreturn c.TripointClickUrl'],
+    ['a local name declared after a comma', 'const a = 1, c = steps.constants.output;\nreturn c.TripointClickUrl'],
+    ['a destructure from the output','const { TripointClickUrl: url, other } = steps.constants.output'],
     ['a destructure from the local name', 'const { TripointClickUrl } = constants'],
     ['a destructure with a nested default beside it', 'const { states = {}, TripointClickUrl: url } = constants'],
   ])('%s', (_name, script) => {

@@ -153,7 +153,7 @@ function textPlaces(nodes: DefNode[], edges: DefEdge[]): TextPlace[] {
 function rootPattern(text: string, namespaces: readonly string[]): string {
   const nsRoot = String.raw`${NOT_A_PROPERTY}steps${DOT}(?:${namespaces.map(esc).join('|')})${DOT}output(?![\w$])`
   const names = new Set<string>(['constants'])
-  const alias = new RegExp(String.raw`(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*${nsRoot}\s*(?:\?\?\s*\{\s*\}\s*)?(?=;|\r?\n|$)`, 'g')
+  const alias = new RegExp(String.raw`(?:\b(?:const|let|var)\s+|,\s*)([A-Za-z_$][\w$]*)\s*=\s*${nsRoot}\s*(?:\?\?\s*\{\s*\}\s*)?(?=[;,]|\/[/*]|\r?\n|$)`, 'g')
   for (const m of text.matchAll(alias)) names.add(m[1])
   const nameRoot = String.raw`${NOT_A_PROPERTY}(?:${[...names].map(esc).join('|')})(?![\w$])`
   return `(?:${nsRoot}|${nameRoot})`
