@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { defineConfig, type Plugin } from 'vitest/config'
 
 /**
@@ -24,6 +25,11 @@ function keptCanvasScriptsAsText(): Plugin {
 
 export default defineConfig({
   plugins: [keptCanvasScriptsAsText()],
+  resolve: {
+    // Only workerd can resolve cloudflare:workers; Node tests importing a file
+    // that declares a WorkerEntrypoint get a shape-only stand in (#1946).
+    alias: { 'cloudflare:workers': fileURLToPath(new URL('./src/test-setup/cloudflare-workers-stub.ts', import.meta.url)) },
+  },
   test: {
     // money-gate/lib holds the money gate's pure parts and their tests (#1704).
     include: ['src/**/*.test.ts', 'money-gate/**/*.test.ts'],
@@ -32,7 +38,7 @@ export default defineConfig({
     // money gate's replay (*.workers.test.ts) and verdict (*.gate.test.ts) run only
     // through .github/scripts/money-gate.sh, which gives them the two engines and
     // the two transcripts they need.
-    exclude: ['**/node_modules/**', 'src/durable-objects/__tests__/*.workers.test.ts', 'money-gate/**/*.workers.test.ts', 'money-gate/**/*.gate.test.ts'],
+    exclude: ['**/node_modules/**', 'src/durable-objects/__tests__/*.workers.test.ts', 'src/ops/__tests__/*.workers.test.ts', 'money-gate/**/*.workers.test.ts', 'money-gate/**/*.gate.test.ts'],
     environment: 'node',
     // The cron guard recorder's backoff takes no real time in any file (#2166).
     setupFiles: ['src/test-setup/guard-recorder.ts'],

@@ -102,8 +102,11 @@ const soqlTime = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/,
 
 /**
  * The query for the post's marker: the `Inquiries_<leadId>` file linked to the
- * Lead and created since the post began. Proved on the org, read only, on
- * 2026-10-15: one row for a Lead's file from that day, none with a later window.
+ * Lead and created since `sinceMs`, less the margin. The read-back passes when
+ * the held post began; a recovery run passes when the root run of its lineage
+ * began, which is never later than that run's post (#2176). Proved on the org,
+ * read only, on 2026-10-15: one row for a Lead's file from that day, none with a
+ * later window.
  */
 export function inquiryMarkerQuery(leadId: string, sinceMs: number): string {
   if (!isSalesforceRecordId(leadId)) throw new Error('the Lead id is not a record id, so it is not put in a query')
@@ -111,4 +114,59 @@ export function inquiryMarkerQuery(leadId: string, sinceMs: number): string {
     `SELECT Id FROM ContentDocumentLink WHERE LinkedEntityId = '${leadId}' AND ContentDocument.Title = 'Inquiries_${leadId}'` +
     ` AND ContentDocument.CreatedDate >= ${soqlTime(sinceMs - INQUIRY_MARKER_MARGIN_MS)}`
   )
+}
+
+/** One GET to Salesforce, `path` below `/services/data/v60.0`: its answer, or that none came back. */
+export type SalesforceRead = { kind: 'answer'; status: number; text: string } | { kind: 'no_answer'; error: string }
+
+/** Which of the lookup's two reads a failure was on. */
+export type InquiryMarkerReadName = 'Submission' | 'Inquiries file'
+
+export type InquiryMarkerLookup =
+  /** The Lead holds an `Inquiries_<leadId>` file created since the post began: it landed. */
+  | { kind: 'landed'; leadId: string }
+  /** No such file: the post did not land. */
+  | { kind: 'absent'; leadId: string }
+  /** The Submission names no Lead: InquiryParserRest answers 404 and writes nothing. */
+  | { kind: 'no_lead' }
+  /** A read got no answer, or one that is not a 2xx: whether the post landed is not known. */
+  | { kind: 'unread'; what: InquiryMarkerReadName; read: SalesforceRead }
+  /** A 2xx whose body is not the object asked for: not known either, and never read as absent. */
+  | { kind: 'unreadable'; what: InquiryMarkerReadName }
+
+/**
+ * Whether a credit inquiry post's file landed since `sinceMs` (#2172, #2176):
+ * the Submission's Lead, then the Lead's `Inquiries_<leadId>` file. The one
+ * reading both its callers make, the read-back judging a held post and a
+ * recovery run checking before it posts, so the two can never disagree about
+ * what landed means. It judges nothing about a failed read: each caller decides
+ * what one means for it. `sinceMs` is the caller's: when the held post began for
+ * the read-back, when the lineage's root run began for a recovery run.
+ */
+export async function lookupInquiryMarker(
+  read: (path: string) => Promise<SalesforceRead>,
+  submissionId: string,
+  sinceMs: number,
+): Promise<InquiryMarkerLookup> {
+  if (!isSalesforceRecordId(submissionId)) throw new Error('the Submission id is not a record id, so it is not put in a path')
+  const object = async (what: InquiryMarkerReadName, path: string): Promise<{ body: Record<string, unknown> } | Extract<InquiryMarkerLookup, { kind: 'unread' | 'unreadable' }>> => {
+    const r = await read(path)
+    if (r.kind === 'no_answer' || r.status < 200 || r.status >= 300) return { kind: 'unread', what, read: r }
+    try {
+      const parsed: unknown = JSON.parse(r.text)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return { body: parsed as Record<string, unknown> }
+    } catch {
+      // Not JSON: unreadable, below.
+    }
+    return { kind: 'unreadable', what }
+  }
+  const sub = await object('Submission', `/sobjects/Submission__c/${submissionId}?fields=Lead__c`)
+  if (!('body' in sub)) return sub
+  const leadId = sub.body.Lead__c
+  if (typeof leadId !== 'string' || !isSalesforceRecordId(leadId)) return { kind: 'no_lead' }
+  const marker = await object('Inquiries file', `/query?q=${encodeURIComponent(inquiryMarkerQuery(leadId, sinceMs))}`)
+  if (!('body' in marker)) return marker
+  const found = marker.body.totalSize
+  if (typeof found !== 'number') return { kind: 'unreadable', what: 'Inquiries file' }
+  return found > 0 ? { kind: 'landed', leadId } : { kind: 'absent', leadId }
 }

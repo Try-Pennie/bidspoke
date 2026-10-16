@@ -83,6 +83,12 @@ export interface BuyerClickCheckConfig {
   state: string
   debt: string
   loan_amount: string
+  /**
+   * The template for the lead's collections balance (#2111), judged only
+   * against a profile that caps collections. Unset or blank, a capped profile
+   * routes every lead out as collections_not_wired and a person is paged.
+   */
+  collections?: string
   /** Which lead source this check runs on, recorded on every output. */
   population: Population
 }
@@ -184,7 +190,13 @@ export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: Exec
   const startedAt = deps.clock()
   const config = node.config as unknown as Partial<BuyerClickCheckConfig>
   // Resolved once, before anything can fail, so every output records what was read.
-  const lead: LeadInput = { state: resolve(config.state, ctx), debt: resolve(config.debt, ctx), loanAmount: resolve(config.loan_amount, ctx) }
+  const lead: LeadInput = {
+    state: resolve(config.state, ctx),
+    debt: resolve(config.debt, ctx),
+    loanAmount: resolve(config.loan_amount, ctx),
+    collections: resolve(config.collections, ctx),
+    collectionsWired: typeof config.collections === 'string' && config.collections.trim() !== '',
+  }
   const output: BuyerClickCheckOutput = {
     _route: 'not_eligible',
     reason: 'cap_check_error',
@@ -296,6 +308,10 @@ async function decide(partnerId: string, lead: LeadInput, instantMs: number, dep
   // disabled profile is refused before the box, so it records none (#1654).
   const compared = verdict.eligible || verdict.reason !== 'profile_disabled'
   const judged = { ...base, judgedLead: verdict.lead, ...(compared ? { limits: judgedLimits(buyer.profile, verdict.lead) } : {}) }
+  // #2111: a cap the step cannot judge is a configuration fault, so a person is paged rather than every lead quietly refused.
+  if (!verdict.eligible && verdict.reason === 'collections_not_wired') {
+    return { ...judged, route: 'not_eligible', reason: verdict.reason, detail: `${buyer.partner.slug}'s profile caps collections at ${String(buyer.profile.collectionsMaxPercent)} percent of debt, and this Buyer Click Check has no collections template to judge it by`, page: 'collections_not_wired' }
+  }
   if (!verdict.eligible) return { ...judged, route: 'not_eligible', reason: verdict.reason }
 
   if (cap === null) {

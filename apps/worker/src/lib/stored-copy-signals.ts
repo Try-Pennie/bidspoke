@@ -5,9 +5,10 @@
  * 1. **Leads are being served from stored copies.** Read from the stored copy
  *    ledger (stored-copy-ledger.ts), which every loader adds to when it serves or
  *    refuses a copy. This is the outage alert, so it must reach Slack while the
- *    database is down: the Slack connection comes from the encrypted last-good
- *    copy the volume check rewrites every minute (`slack-conns-lastgood`), and
- *    the database is asked only when there is no copy (L71). It pages once per
+ *    database is down: the Slack connections come through the scheduled client's
+ *    bounded read, which asks the database once under a 3 s deadline and answers
+ *    from the encrypted last-good copy the volume check rewrites every minute
+ *    (`slack-conns-lastgood`) when it does not answer (#1303, L71). It pages once per
  *    stretch on the shared reminder schedule, at once again when copies start
  *    being refused, and posts an all-clear once none has been used for the
  *    re-arm window.
@@ -46,13 +47,12 @@ import { envVarsLastGoodKey } from './env-loader'
 import { partnerConstantsLastGoodKey } from './partner-constants-loader'
 import { buyerProfilesLastGoodKey } from './buyer-profile-loader'
 import { notifyExportFailure } from './export-alerts'
-import { ALERT_CLAIM_TTL_SECONDS, readLastGoodSlackConnections } from './volume-cliff'
-import { parseSlackConnection, type SlackConnection } from './slack-connection'
+import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
+import { readEverySlackConnection } from './alert-fanout'
 import { etTime, sendRecoveryAlert, sendTitledAlert } from './slack'
 import { backoffCooldownKey, clearCondition, describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf, type BackoffKv } from './alert-backoff'
 import { keepAlerted, markSpikeSeen, recordPaged, recoveryDue, settleRecovery, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import type { AlertClaims } from './alert-claim'
-import type { SecretKeyInput } from './secret-crypto'
 import { formatErr } from './format-error'
 
 /** The minutes, ending with the current one, the serving alert looks back over. */
@@ -75,13 +75,6 @@ export const STORED_COPY_SERVING_ALERT_MINUTES = 3
  * well over half the maximum age before such a copy is refused.
  */
 export const SWEEP_FAILING_ALERT_AFTER_MS = STORED_COPY_RECONFIRM_AFTER_MS
-
-/**
- * How long the serving alert waits for the database's own Slack connection when
- * KV holds no copy of it. The database is suspect whenever this alert has
- * something to say, so the wait is short and a miss falls back to nothing.
- */
-export const SLACK_LIVE_READ_DEADLINE_MS = 3_000
 
 /** The serving alert's claim, standing condition (`:condition`, `:cooldown`) and recovery family. */
 export const STORED_COPY_SERVING_KEY = 'stored-copy-serving'
@@ -111,12 +104,12 @@ export interface TitledMessage {
 }
 
 export interface StoredCopyCheckDeps {
-  /** IDEMPOTENCY: the ledger, alert state and the last-good Slack connections. */
+  /** IDEMPOTENCY: the ledger and alert state. */
   kv: CheckKv
   /** WORKFLOW_CACHE: the stored copies themselves. */
   copies: KVNamespace
+  /** The scheduled handler's client, whose Slack reads fall back to the last-good copy (#1303). */
   supabase: SupabaseClient
-  secretKeys: SecretKeyInput
   claims?: AlertClaims
   appUrl: string
   /** What this minute's sweep reported. */
@@ -254,36 +247,17 @@ export function servingMessage(reading: LedgerReading): TitledMessage & { refusi
 }
 
 /**
- * Where the serving alert goes: the last-good copy of the Slack connections
- * first, because this alert speaks while the database is failing and the copy
- * is rewritten every minute while it is not; the database only when KV holds
- * no copy, and then under a short deadline. Only connections with volume alerts
- * on, the toggle the database unreachable alert also follows.
+ * Where the serving alert goes: every org's Slack connection with volume alerts
+ * on (the toggle the database unreachable alert also follows), through the one
+ * bounded read the scheduled client shares (readEverySlackConnection, #1303):
+ * the database under a 3 s deadline, the last-good copy when it does not answer,
+ * which is exactly when this alert speaks. The read logs why when nobody can be told.
  */
-export async function servingAlertTargets(kv: CheckKv, secretKeys: SecretKeyInput, supabase: SupabaseClient): Promise<SlackTarget[]> {
-  let connections: Map<string, SlackConnection> = new Map()
-  try {
-    connections = await readLastGoodSlackConnections(kv, secretKeys)
-  } catch (e) {
-    console.error(`[stored-copy-checks] last-good Slack connections unreadable: ${formatErr(e)}`)
-  }
-  if (connections.size === 0) {
-    try {
-      const { data, error } = await supabase
-        .from('service_connections')
-        .select('organization_id, config')
-        .eq('service_type', 'slack')
-        .abortSignal(AbortSignal.timeout(SLACK_LIVE_READ_DEADLINE_MS))
-      if (error) throw new Error(error.message)
-      for (const row of (data ?? []) as { organization_id: string; config: unknown }[]) {
-        const conn = parseSlackConnection(row.config)
-        if (conn) connections.set(row.organization_id, conn)
-      }
-    } catch (e) {
-      console.error(`[stored-copy-checks] no last-good Slack connection in KV and the database read failed, so nobody can be told: ${formatErr(e)}`)
-    }
-  }
-  return [...connections.values()].filter((c) => c.volume_alerts_enabled)
+async function servingAlertTargets(supabase: SupabaseClient): Promise<SlackTarget[]> {
+  // Tell-only: the finding is the stored copy ledger in KV (#1303).
+  const read = await readEverySlackConnection(supabase, 'stored-copy-checks', 'tell-only')
+  if (read.kind === 'unreachable') return []
+  return [...read.connections.values()].filter((c) => c.volume_alerts_enabled)
 }
 
 async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, nowMs: number, recordErrors: string[]): Promise<ServingOutcome> {
@@ -304,7 +278,7 @@ async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, 
     if (reading.lastActiveMs !== null) await markSpikeSeen(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, reading.lastActiveMs)
     const due = await recoveryDue(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, { now: nowMs })
     if (!due) return reading.activeMinutes > 0 ? 'below_threshold' : 'quiet'
-    const targets = await servingAlertTargets(kv, deps.secretKeys, deps.supabase)
+    const targets = await servingAlertTargets(deps.supabase)
     const send = deps.postRecovery ?? sendRecoveryAlert
     let delivered = false
     for (const slack of targets) {
@@ -351,7 +325,7 @@ async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, 
     if (deps.claims) await deps.claims.release(STORED_COPY_SERVING_KEY)
   }
 
-  const targets = await servingAlertTargets(kv, deps.secretKeys, deps.supabase)
+  const targets = await servingAlertTargets(deps.supabase)
   if (targets.length === 0) {
     await release()
     return 'no_slack'

@@ -19,12 +19,14 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
+import { probeSlackConnectionsTable, readSlackConnectionRowsForCopy } from './alert-fanout'
 import { formatErr } from './format-error'
 import { getSlackConnection, postMessage, sendDatabaseUnreachableAlert } from './slack'
 import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, RECOVERY_TTL_SECONDS, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { sendRecoveryAlert } from './slack'
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
-import { decryptSecret, encryptSecret, type SecretKeyInput } from './secret-crypto'
+import type { SecretKeyInput } from './secret-crypto'
+import { readLastGoodSlackConnections, rememberSlackConnections } from './slack-copy'
 import type { AlertClaims } from './alert-claim'
 import { BACKOFF_STEPS_SECONDS, backoffCooldownKey, clearCondition, describeRepeat, inCooldown, readCondition, recordAlert } from './alert-backoff'
 
@@ -76,9 +78,8 @@ export interface SelfCheckResult {
 // database was back, when it blamed the caller. So every healthy tick writes an
 // ENCRYPTED last-good copy of the Slack connections to KV (the token is a
 // secret and KV is not the place for plaintext, #491), and a tick whose reads
-// fail posts from that copy instead of returning quietly. The copy is one key,
-// rewritten once a minute, well inside KV's one write a second per key.
-export const SLACK_CONNS_LASTGOOD_KEY = 'slack-conns-lastgood'
+// fail posts from that copy instead of returning quietly. The copy's reader and
+// writer live in slack-copy.ts, which every other reader of it shares.
 export const DB_UNREACHABLE_PREFIX = 'db-unreachable'
 export const DB_UNREACHABLE_COOLDOWN_SECONDS = 15 * 60
 
@@ -113,38 +114,6 @@ const volumeCliffBackoffKey = (wfId: string) => `volume-cliff:${wfId}`
  * database, which is the thing that is down.
  */
 const dbUnreachableIncident = (orgId: string): IncidentContext => ({ scope: { kind: 'org', organizationId: orgId }, subjectLabel: 'Bidspoke' })
-
-async function rememberSlackConnections(
-  kv: KvLike,
-  secretEncryptionKey: SecretKeyInput,
-  connections: Map<string, SlackConnection>,
-): Promise<void> {
-  try {
-    const blob = await encryptSecret(JSON.stringify(Object.fromEntries(connections)), secretEncryptionKey)
-    await kv.put(SLACK_CONNS_LASTGOOD_KEY, blob)
-  } catch (e) {
-    // The check itself must not fail because the safety copy could not be written.
-    console.error(`[volume-cliff] last-good Slack connections write failed: ${formatErr(e)}`)
-  }
-}
-
-export async function readLastGoodSlackConnections(kv: KvLike, secretEncryptionKey: SecretKeyInput): Promise<Map<string, SlackConnection>> {
-  const blob = await kv.get(SLACK_CONNS_LASTGOOD_KEY)
-  if (!blob) return new Map()
-  try {
-    const parsed = JSON.parse(await decryptSecret(blob, secretEncryptionKey)) as Record<string, unknown>
-    const out = new Map<string, SlackConnection>()
-    for (const [orgId, cfg] of Object.entries(parsed)) {
-      const conn = parseSlackConnection(cfg)
-      if (conn) out.set(orgId, conn)
-    }
-    return out
-  } catch (e) {
-    // A blob written under a rotated key is a miss, not a crash.
-    console.error(`[volume-cliff] last-good Slack connections unreadable: ${formatErr(e)}`)
-    return new Map()
-  }
-}
 
 /**
  * A read this check depends on failed. Say so in Slack from the last-good copy,
@@ -322,11 +291,13 @@ export async function runVolumeCliffCheck(
   // always passes it, and without it two ticks that pass the cooldown together
   // both post.
   claims?: AlertClaims,
+  // The clock that dates the saved Slack copy (#2060) and places the volume
+  // windows, so those two cannot disagree. The incident records (the database
+  // and cliff alerts' markers and cooldowns) still take their own wall clock
+  // reading, one per org or workflow, as before.
+  clock: () => number = Date.now,
 ): Promise<void> {
-  const { data: slackOrgs, error: slackOrgsError } = await supabase
-    .from('service_connections')
-    .select('organization_id, config')
-    .eq('service_type', 'slack')
+  const { data: slackOrgs, error: slackOrgsError } = await readSlackConnectionRowsForCopy(supabase)
   logReadFailure('volume-cliff', 'slack connections', slackOrgsError)
   if (slackOrgsError) {
     await reportDatabaseUnreachable(kv, secretEncryptionKey, 'slack connections', slackOrgsError, appUrl, claims)
@@ -338,7 +309,10 @@ export async function runVolumeCliffCheck(
     const conn = parseSlackConnection((row as { config?: unknown }).config)
     if (conn) connections.set(row.organization_id as string, conn)
   }
-  if (connections.size > 0) await rememberSlackConnections(kv, secretEncryptionKey, connections)
+  // Every successful read rewrites the copy, an empty one included (#2060): the
+  // database has just said who has a connection, and an outage must not post to
+  // organizations that have since disconnected. A failed read returned above.
+  await rememberSlackConnections(kv, secretEncryptionKey, connections, clock())
 
   const slackOrgIds = (slackOrgs ?? []).map((c) => c.organization_id as string)
   if (slackOrgIds.length === 0) return
@@ -357,7 +331,7 @@ export async function runVolumeCliffCheck(
 
   if (!workflows?.length) return
 
-  const now = Date.now()
+  const now = clock()
   const workflowIds = workflows.map((w) => w.id as string)
 
   // 60 wall-clock-minute buckets ending with the current (partial) minute at
@@ -560,11 +534,7 @@ async function probeDatabase(supabase: SupabaseClient): Promise<DatabaseProbeRes
   try {
     const ctrl = new AbortController()
     const timeout = setTimeout(() => ctrl.abort(), SELF_CHECK_TIMEOUT_MS)
-    const { error } = await supabase
-      .from('service_connections')
-      .select('organization_id')
-      .limit(1)
-      .abortSignal(ctrl.signal)
+    const { error } = await probeSlackConnectionsTable(supabase, ctrl.signal)
     clearTimeout(timeout)
     const latency = Date.now() - start
     if (error) {

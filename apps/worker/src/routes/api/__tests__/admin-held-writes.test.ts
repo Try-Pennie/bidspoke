@@ -153,6 +153,8 @@ describe('the held Salesforce write actions', () => {
       [{ kind: 'no_salesforce', error: 'credentials missing' }, 502],
       [{ kind: 'refused', error: 'Salesforce API error (400)', recorded: true }, 200],
       [{ kind: 'still_pending', error: 'Salesforce API error (503)', recorded: true }, 200],
+      // The bulkhead was full: nothing sent, nothing spent, try again shortly (#468).
+      [{ kind: 'held', error: 'Salesforce bulkhead: at capacity', recorded: true }, 503],
     ]
     for (const [result, status] of cases) {
       vi.mocked(replayHeldWrite).mockResolvedValueOnce(result)

@@ -1,6 +1,6 @@
 import { easternParts, isOpen, type DisplayTimeZone, type OperatingWindow } from './clock'
 import { fnv1a32 } from './hash'
-import { parsePositiveAmount, parseUsState } from './parse'
+import { parseNonNegativeAmount, parsePositiveAmount, parseUsState } from './parse'
 import { priceForDebt, type Price, type PricingTier } from './tiers'
 import type { ClickDelivery } from './click-delivery'
 import type { OutReason, SoldOn, UsState } from './vocab'
@@ -21,6 +21,13 @@ export interface BuyerProfile {
   debtMax: number | null
   /** Dollars, inclusive. Null means the loan amount is not judged at all. */
   loanAmountMin: number | null
+  /**
+   * The most a lead's collections may be, as a whole percent of its debt
+   * (#2111), inclusive. Null or absent means collections are not judged. The
+   * debt is the one the debt range is judged on, so the share and the range
+   * can never be taken against two different figures.
+   */
+  collectionsMaxPercent?: number | null
   hourlyLeadCap: number | null
   dailyLeadCap: number | null
   hourlySpendCapCents: number | null
@@ -48,6 +55,15 @@ export interface LeadInput {
   state: unknown
   debt: unknown
   loanAmount: unknown
+  /** The lead's collections balance (#2111), read only when the profile caps it. */
+  collections?: unknown
+  /**
+   * Whether the calling step has a collections template at all (#2111). A cap
+   * judged by a step that reads no figure refuses every lead by name, rather
+   * than passing them all unjudged or reading as a lead with no collections.
+   * Absent counts as not wired.
+   */
+  collectionsWired?: boolean
 }
 
 /**
@@ -60,6 +76,10 @@ export interface JudgedLead {
   state: UsState | null
   debt: number | null
   loan_amount: number | null
+  /** Zero or more (#2111); null where nothing readable was resolved or no figure is wired. */
+  collections: number | null
+  /** Collections as a percent of debt, rounded to two places, null when either is null. */
+  collections_percent: number | null
 }
 
 /**
@@ -71,6 +91,7 @@ export interface JudgedLimits {
   debt_min: number | null
   debt_max: number | null
   loan_amount_min: number | null
+  collections_max_percent: number | null
   state_allowed: boolean | null
   allowed_state_count: number
   daily_lead_cap: number | null
@@ -78,11 +99,20 @@ export interface JudgedLimits {
 
 /** The one parse of the lead's fields the box and every recorder share (#1654). */
 export function parseLead(lead: LeadInput): JudgedLead {
+  const debt = parsePositiveAmount(lead.debt)
+  const collections = parseNonNegativeAmount(lead.collections)
   return {
     state: parseUsState(lead.state),
-    debt: parsePositiveAmount(lead.debt),
+    debt,
     loan_amount: parsePositiveAmount(lead.loanAmount),
+    collections,
+    collections_percent: collections === null || debt === null ? null : Math.round((collections / debt) * 10_000) / 100,
   }
+}
+
+/** The cap in force, null when the profile sets none (an absent key included). */
+function collectionsCapOf(profile: BuyerProfile): number | null {
+  return profile.collectionsMaxPercent ?? null
 }
 
 /** The one allowed state rule, read by the box and by judgedLimits alike. */
@@ -96,6 +126,7 @@ export function judgedLimits(profile: BuyerProfile, lead: JudgedLead): JudgedLim
     debt_min: profile.debtMin,
     debt_max: profile.debtMax,
     loan_amount_min: profile.loanAmountMin,
+    collections_max_percent: collectionsCapOf(profile),
     state_allowed: lead.state === null ? null : stateAllowed(profile, lead.state),
     allowed_state_count: profile.allowedStates.length,
     daily_lead_cap: profile.dailyLeadCap,
@@ -126,11 +157,15 @@ const out = (reason: OutReason): Out => ({ eligible: false, reason })
  * click buyer can never be judged by two drifting copies of the same rule
  * (L613, L370); the source guard in eligibility.test.ts counts the checks.
  */
-function evaluateBox(profile: BuyerProfile, lead: JudgedLead, instantMs: number): { inside: true; debtCents: number } | Out {
-  const { state, debt, loan_amount: loanAmount } = lead
+function evaluateBox(profile: BuyerProfile, lead: JudgedLead, collectionsWired: boolean, instantMs: number): { inside: true; debtCents: number } | Out {
+  const { state, debt, loan_amount: loanAmount, collections } = lead
+  const collectionsCap = collectionsCapOf(profile)
+  // First, so every lead says the step is not wired, whatever else it would be out for.
+  if (collectionsCap !== null && !collectionsWired) return out('collections_not_wired')
   if (state === null) return out('missing_lead_field')
   if (debt === null) return out('missing_lead_field')
   if (profile.loanAmountMin !== null && loanAmount === null) return out('missing_lead_field')
+  if (collectionsCap !== null && collections === null) return out('missing_lead_field')
 
   if (!stateAllowed(profile, state)) return out('state_not_allowed')
   if (profile.blackoutDates.includes(easternParts(instantMs).date)) return out('blackout')
@@ -141,7 +176,12 @@ function evaluateBox(profile: BuyerProfile, lead: JudgedLead, instantMs: number)
   if (profile.loanAmountMin !== null && loanAmount !== null && loanAmount < profile.loanAmountMin) {
     return out('loan_amount_below_min')
   }
-  return { inside: true, debtCents: Math.round(debt * 100) }
+  const debtCents = Math.round(debt * 100)
+  // In whole cents, so exactly the cap passes without a floating point share deciding it.
+  if (collectionsCap !== null && collections !== null && Math.round(collections * 100) * 100 > debtCents * collectionsCap) {
+    return out('collections_above_max')
+  }
+  return { inside: true, debtCents }
 }
 
 /**
@@ -161,7 +201,7 @@ export function evaluateEligibility(
   if (!profile.isEnabled) return out('profile_disabled')
   if (!profile.tiers.some((t) => t.population === population)) return out('no_pricing_for_population')
 
-  const box = evaluateBox(profile, parseLead(lead), instantMs)
+  const box = evaluateBox(profile, parseLead(lead), lead.collectionsWired === true, instantMs)
   if (!('inside' in box)) return box
 
   const price = priceForDebt(profile.tiers, population, box.debtCents)
@@ -178,7 +218,7 @@ export function evaluateEligibility(
 export function evaluateClickEligibility(profile: BuyerProfile, lead: LeadInput, instantMs: number): ClickEligibility {
   const judged = parseLead(lead)
   if (!profile.isEnabled) return { ...out('profile_disabled'), lead: judged }
-  const box = evaluateBox(profile, judged, instantMs)
+  const box = evaluateBox(profile, judged, lead.collectionsWired === true, instantMs)
   if (!('inside' in box)) return { ...box, lead: judged }
   return { eligible: true, debtCents: box.debtCents, lead: judged }
 }

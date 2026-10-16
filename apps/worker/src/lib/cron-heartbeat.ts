@@ -51,7 +51,7 @@
  * external uptime monitor.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { slackOrgIds } from './alert-fanout'
+import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
 import { sendCronHeartbeatAlert, sendCronHeartbeatRecoveryAlert } from './slack'
 import { BACKOFF_STEPS_SECONDS, clearCondition, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
@@ -261,6 +261,21 @@ export const CRON_JOBS: CronJob[] = [
     completionDroughtMs: 10 * MIN,
     dependents:
       'a Salesforce update cut off after a lead was answered is never read back, so one that did not land is never resent and nobody is told it is missing (#2023)',
+  },
+  {
+    id: 'writeback-drain',
+    label: 'Stored Salesforce writes drain',
+    triggerCron: '* * * * *',
+    // 1 minute cadence, 9 minutes slack: a dark drain is noticed well before the
+    // backlog alert's 30 minutes, which would otherwise be the only sign of it.
+    staleMs: 10 * MIN,
+    // One bounded read of the pending rows, then Salesforce calls only until
+    // DRAIN_PHASE_BUDGET_MS (20 s), each bounded at DRAIN_CALL_DEADLINE_MS (12 s),
+    // then its alerts: well inside 50 s.
+    maxRunMs: 50 * 1000,
+    completionDroughtMs: 10 * MIN,
+    dependents:
+      'a Salesforce write stored after it failed with an answer is never resent, and every one waits for a person to replay it by hand (#468)',
   },
   {
     id: 'buyer-sales-checks',
@@ -752,7 +767,7 @@ export async function runHeartbeatChecks(
   kv: KVNamespace,
   nowMs: number = Date.now(),
 ): Promise<HeartbeatCheckResult[]> {
-  const orgIds = await slackOrgIds(supabase, 'cron-heartbeat')
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'cron-heartbeat', 'tell-only'))
 
   const results: HeartbeatCheckResult[] = []
   for (const job of CRON_JOBS) {

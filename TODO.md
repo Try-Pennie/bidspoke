@@ -254,7 +254,7 @@
 ### Pre-main-flow migration (must land before main flow migrates off Pipedream)
 
 - [x] **4.1c Tripoint submission workflow** — **DONE per Dan 2026-06-18.** Triggered by Denise's frontend with a Tripoint lead ID; submits to Tripoint via proxy, checks 200/208 success codes, patches Salesforce. See scope §3.1c.
-- [x] **4.1d M1 ping-only integration** — **DONE per Dan 2026-06-18.** M1 bidding is ping-only in the main flow (returns bid + click URL); conversion POST is a separate out-of-band endpoint Brian built with a required 60-second delay. Partner Bid node `bid_mode: 'ping_only'` support shipped. See scope §3.1d.
+- [x] **4.1d M1 ping-only integration**: **DONE per Dan 2026-06-18.** M1 bidding is ping-only in the main flow (returns bid + click URL); conversion POST is a separate out-of-band endpoint Brian built with a required 60-second delay. Partner Bid node `bid_mode: 'ping_only'` support shipped. See scope §3.1d. (The node never acted on `bid_mode`; it was retired in #2182 and its column is dropped by a later migration.)
 
 ### Follow-on (after cutover)
 

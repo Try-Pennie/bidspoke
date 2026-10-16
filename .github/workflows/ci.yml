@@ -113,6 +113,7 @@ jobs:
           pnpm --filter @bidspoke/workflow-definition test
           pnpm --filter @bidspoke/realtime-spike test
           pnpm --filter @bidspoke/partner-page-live test
+          pnpm --filter @bidspoke/partner-history test
           pnpm --filter compare-outbound test
           pnpm --filter ops-outbound test
           pnpm --filter worker-tail test

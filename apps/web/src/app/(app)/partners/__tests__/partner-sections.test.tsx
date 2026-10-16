@@ -30,7 +30,7 @@ import { PARTNER_FIELD_REGISTRY, PROFILE_PREFIX } from '../partner-draft'
 // set, so every tab and every partner section is drawn.
 const partner: Partner = {
   id: 'p1', organization_id: 'org-1', name: 'Acme', slug: 'acme', api_endpoint: 'https://acme.example/bid', cf_secret_key: null, daily_cap: null, min_bid: 1,
-  bid_formula: null, bid_resolver_type: 'api', bid_resolver_config: {}, outbound_field_mapping: null, bid_mode: 'commit',
+  bid_formula: null, bid_resolver_type: 'api', bid_resolver_config: {}, outbound_field_mapping: null,
   bid_comparison_source: 'auto', extra_extraction: null, last_probe_response: null, dedup_endpoint: null, response_classification: null,
   alert_config: null, circuit_error_threshold: 5, circuit_window_seconds: 60, circuit_cooldown_seconds: 300, circuit_enabled: true,
   confirmation_window_ms: 5000, is_active: true, priority: 0, sell_off_offer_title: null, sell_off_offer_details: null, click_url: null,

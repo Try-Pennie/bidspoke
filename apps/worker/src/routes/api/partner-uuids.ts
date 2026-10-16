@@ -4,7 +4,6 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { invalidatePartnerConstantsCache } from '../../lib/partner-constants-loader'
-import { writeAuditLog } from '../../lib/audit'
 
 type Variables = AuthVariables
 
@@ -16,8 +15,9 @@ type Variables = AuthVariables
  * Both writes go through change_partner_uuid (#2135), which sets
  * bidspoke.actor_* before writing: a trigger cannot see who made a single
  * PostgREST insert or delete, and the partners page notice those triggers send
- * says whether a change had an editor. The audit rows stay here until PR10
- * moves them into a trigger.
+ * says whether a change had an editor. The same actor names the person on the
+ * audit row, which the partner_uuid_map_audit trigger writes once per change
+ * (#2141), so this route writes none of its own.
  */
 const partnerUuids = new Hono<{ Bindings: Env; Variables: Variables }>()
 
@@ -70,11 +70,6 @@ partnerUuids.post('/', async (c) => {
   }
   const row = data as unknown as UuidRow
 
-  await writeAuditLog(supabase, orgId, 'partner_uuid', row.id, 'created', userId, {
-    partner_slug: body.partner_slug,
-    uuid: body.uuid,
-  })
-
   await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
   return c.json(row, 201)
 })
@@ -112,8 +107,6 @@ partnerUuids.delete('/:id', async (c) => {
     if (error.code === 'P0002') return c.json({ error: 'Partner UUID not found' }, 404) // db-guard-ok: P0002 is change_partner_uuid's own named refusal for a mapping that went between the read and the remove
     return dbError(c, error)
   }
-
-  await writeAuditLog(supabase, orgId, 'partner_uuid', id, 'deleted', userId)
 
   await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
   return c.json({ ok: true })
