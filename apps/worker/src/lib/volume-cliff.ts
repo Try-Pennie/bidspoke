@@ -18,8 +18,10 @@
  *
  * When one of its three reads fails, it reports to the database reachability
  * owner (database-reachability.ts, #2061), which pages at once for these reads
- * as this check did before, and it reports each run whose reads all answered,
- * which the owner's all-clear needs.
+ * as this check did before, and it reports each run in which every read it made
+ * answered, which the owner's all-clear needs. A run with no Slack organization
+ * or no active workflow stops before its later reads, so it is reported on the
+ * reads it made: there is then nothing for those reads to count.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'

@@ -77,9 +77,10 @@ async function decryptCopy(blob: string, secretKeys: SecretKeyInput): Promise<{ 
 
 /**
  * The copy as a plain map, for the readers that only need "who can be told"
- * (the request path's alerts): empty when
- * there is no copy or it cannot be decrypted. A KV read that throws is thrown on,
- * as it always was, for those callers' own handling.
+ * (the request path's alerts). It answers an empty map both when there is no
+ * copy and when it cannot be decrypted; readSlackCopy tells those apart, for a
+ * caller that must say which (L11). A KV read that throws is thrown on, as it
+ * always was, for those callers' own handling.
  */
 export async function readLastGoodSlackConnections(kv: CopyKv, secretKeys: SecretKeyInput): Promise<Map<string, SlackConnection>> {
   const blob = await kv.get(SLACK_CONNS_LASTGOOD_KEY)
