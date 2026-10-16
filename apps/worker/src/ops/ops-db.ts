@@ -40,8 +40,9 @@ declare const OPS_CLIENT: unique symbol
 /**
  * A client of the ops database, and nothing else is one. The brand keeps the
  * bidding client out of readOpsRows at compile time, and is how the scan tells
- * this client from the bidding one. Untyped by tables until Phase 1 creates the
- * first ops table and generates its types.
+ * this client from the bidding one. Not typed by tables: no ops database types
+ * are generated yet, so the run engine's results are checked at run time by
+ * each wrapper in ops-writes.ts, and readOpsRows's rows are typed by its caller.
  */
 export type OpsSupabaseClient = SupabaseClient & { readonly [OPS_CLIENT]: 'ops' }
 
