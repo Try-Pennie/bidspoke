@@ -41,7 +41,7 @@ function fakeRuntime(over: Partial<ProbeRuntime> = {}): ProbeRuntime & { logs: R
     log: (e) => {
       logs.push(e)
     },
-    limits: { wallCapMs: 60_000, wallStepMs: 10_000, cpuSliceUnits: 10, cpuMaxSlices: 5, cpuWallCapMs: 60_000, cpuLogEvery: 2, subrequestCap: 25, subrequestLogEvery: 10, fanout: 3, detachedCapMs: 30_000 },
+    limits: { wallCapMs: 60_000, wallStepMs: 10_000, cpuSliceUnits: 10, cpuMaxSlices: 5, cpuWallCapMs: 60_000, cpuLogEvery: 2, subrequestCap: 25, subrequestLogEvery: 10, fanout: 3 },
     ...over,
   }
 }

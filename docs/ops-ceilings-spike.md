@@ -218,14 +218,16 @@ else). The inputs are psql variables named at the top of `catch-up.sql`.
 
 | Read (rows returned, PostgREST pages of 1,000, ms on the proxy) | 6 h outage | 24 h outage | 72 h, 4x arrivals |
 |---|---|---|---|
-| every missed fire, materialised | 24,480 / 25 / 2.4 | 97,920 / 98 / 11.5 | 293,760 / 294 / 25.2 |
-| latest missed fire per schedule (`catch_up: latest`) | 68 / 1 / 0.0 | 68 / 1 / 0.0 | 68 / 1 / 0.0 |
-| expired leases (in flight at the crash) | 500 / 1 / 0.1 | 500 / 1 / 0.1 | 2,000 / 2 / 0.2 |
-| queued runs, whole backlog | 12,500 / 13 / 0.8 | 50,000 / 50 / 5.9 | 600,000 / 600 / 35.2 |
-| one fair claim call (CTE, LATERAL, SKIP LOCKED, k 5, limit 100) | 100 / 1 / 1.5 | 100 / 1 / 3.8 | 100 / 1 / 40.6 |
-| reconciliation read over 24 h of history, NO index | 37,500 / 38 / 60.8 | 0 / 0 / 41.1 | 0 / 0 / 1,341.8 |
+| every missed fire, materialised | 24,480 / 25 / 2.2 | 97,920 / 98 / 8.3 | 293,760 / 294 / 27.3 |
+| latest missed fire per schedule (`catch_up: latest`) | 68 / 1 / 0.1 | 68 / 1 / 0.0 | 68 / 1 / 0.1 |
+| expired leases (in flight at the crash) | 500 / 1 / 0.1 | 500 / 1 / 0.1 | 2,000 / 2 / 0.4 |
+| queued runs, whole backlog | 12,500 / 13 / 0.8 | 50,000 / 50 / 5.7 | 600,000 / 600 / 40.7 |
+| one fair claim call (CTE, LATERAL, SKIP LOCKED, k 5, limit 100) | 100 / 1 / 1.4 | 100 / 1 / 3.5 | 100 / 1 / 73.7 |
+| reconciliation read over the outage plus the 24 h before it, NO index | 50,000 / 50 / 37.0 | 50,000 / 50 / 130.7 | 200,000 / 200 / 767.7 |
 
-History: 1,513,000, 1,550,500 and 6,602,000 rows in `run_requests` respectively
+Each timing is ONE run; the same statement moved by up to 2x between runs (the
+72 h fair claim read 40.6 ms once and 73.7 ms the next), so read them as orders of
+magnitude, not as yardsticks (L656). History: 1,513,000, 1,550,500 and 6,602,000 rows in `run_requests` respectively
 (30 days of terminal rows plus the backlog).
 
 What it says for B1 to B3:
@@ -238,10 +240,10 @@ What it says for B1 to B3:
 - Materialising every missed fire is the volume to avoid: it grows as
   schedules x outage / period. `catch_up: latest` keeps it at one per schedule.
 - On the proxy nothing approaches 30 s. The slowest statement is the one with no
-  index (a full scan of `run_requests`, 1.3 s at 6.6 million rows), so every
+  index (a full scan of `run_requests`, 0.77 s at 6.6 million rows), so every
   sweep over history needs an index or a partition bound; the fair claim's cost
   grows with the backlog (the `DISTINCT workflow_id` over the queue) and should be
-  re-measured on Micro at the backlog B1 sizes for.
+  re-measured on Micro at the backlog B1 sizes for (74 ms at 600,000 queued on the proxy).
 - Stage 2 re-runs the timing on the real Micro once B1's tables exist (#1948);
   until then these are the only numbers, and they are optimistic.
 

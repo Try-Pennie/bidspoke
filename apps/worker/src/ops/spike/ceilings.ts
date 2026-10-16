@@ -113,8 +113,6 @@ export interface ProbeLimits {
   subrequestLogEvery: number
   /** Past the documented 32 invocations per request chain. */
   fanout: number
-  /** How long a detached callee waits: long enough to outlive its caller by minutes. */
-  detachedCapMs: number
 }
 
 export const DEFAULT_LIMITS: ProbeLimits = {
@@ -127,7 +125,6 @@ export const DEFAULT_LIMITS: ProbeLimits = {
   subrequestCap: 12_000,
   subrequestLogEvery: 500,
   fanout: 40,
-  detachedCapMs: 5 * 60 * 1000,
 }
 
 export interface ProbeRuntime {
@@ -280,7 +277,8 @@ async function runProbe(arm: SpikeArm, env: SpikeEnv, rt: ProbeRuntime): Promise
     case 'dispatch_detached': {
       const startedAt = rt.now()
       // Not awaited, on purpose: whether the callee outlives this return is the
-      // measurement. The handler is attached at once so a late rejection is a
+      // measurement. The callee runs the ordinary wall probe (wallCapMs), far
+      // longer than this caller lives, so its last progress line dates its end. The handler is attached at once so a late rejection is a
       // logged outcome, never an unhandled one (L749).
       call('wall').then(
         (result) => emit(rt, { stage: 'detached_callee_finished', probe: arm.probe, nonce: arm.nonce, result }),

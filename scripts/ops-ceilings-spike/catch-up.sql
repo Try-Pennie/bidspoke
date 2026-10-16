@@ -3,8 +3,8 @@
 -- SYNTHETIC rows in a throwaway local Postgres. Run by catch-up.sh, never against
 -- a real database: it creates and drops its own schema, spike_1946.
 --
--- The tables are a MODEL of the #1698 design (run_requests, run_queue, schedule
--- fires), not B1's schema, which does not exist yet. What it measures:
+-- The tables are a MODEL of the #1698 design (schedules, run_requests,
+-- run_queue), not B1's schema, which does not exist yet. What it measures:
 --   1. how many rows each catch-up read returns, against PostgREST's 1,000 row cap;
 --   2. how long each statement takes under service_role's 30 s statement_timeout;
 --   3. how those move with the outage length and the history kept.
@@ -42,12 +42,6 @@ CREATE TABLE schedules (
   organization_id uuid NOT NULL,
   period_s int NOT NULL,
   last_fired_at timestamptz NOT NULL
-);
-CREATE TABLE schedule_fires (
-  workflow_id int NOT NULL,
-  scheduled_for timestamptz NOT NULL,
-  organization_id uuid NOT NULL,
-  PRIMARY KEY (workflow_id, scheduled_for)
 );
 CREATE TABLE run_requests (
   id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -157,9 +151,11 @@ SELECT * FROM measure('fair claim, one call (CTE + LATERAL + SKIP LOCKED)', form
   DELETE FROM spike_1946.run_queue rq USING picked WHERE rq.run_request_id = picked.run_request_id RETURNING rq.run_request_id
 $q$, (SELECT t FROM clock), (SELECT t FROM clock), :k, :claim_limit))
 UNION ALL
-SELECT * FROM measure('terminal history in the window a reconciliation sweep reads (last 24 h)', format($q$
-  SELECT id FROM spike_1946.run_requests WHERE finished_at >= %L::timestamptz - interval '24 hours'
-$q$, (SELECT t FROM clock)));
+-- The first sweep after the outage reads back to the last one that ran, so its
+-- window is the outage plus the 24 h before it (nothing finished during the outage).
+SELECT * FROM measure('reconciliation read: the outage plus the 24 h before it, NO index', format($q$
+  SELECT id FROM spike_1946.run_requests WHERE finished_at >= %L::timestamptz - make_interval(hours => %s + 24)
+$q$, (SELECT t FROM clock), :outage_h));
 
 RESET statement_timeout;
 DROP SCHEMA spike_1946 CASCADE;

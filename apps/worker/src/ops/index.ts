@@ -1,5 +1,5 @@
 /**
- * bidspoke-worker-ops: the minimal ops Worker (#1705, plan 0.R). One route.
+ * bidspoke-worker-ops: the minimal ops Worker (#1705, plan 0.R). One public route.
  *
  *   POST /porting/capture/:hashid
  *
@@ -8,9 +8,10 @@
  * HMAC(PORTING_CAPTURE_MASTER, hashid), so the Worker holds one secret and a
  * key leaked outside Pipedream signs for its one workflow only. Inside the
  * Pipedream workspace there is no isolation: every key is a workspace wide
- * environment variable there (see signature.ts). Data reached: one R2
- * bucket, PORTING_TEE, written under this workflow's own prefix. No database,
- * no other binding, no other secret.
+ * environment variable there (see signature.ts). Data the route reaches: one
+ * R2 bucket, PORTING_TEE, written under this workflow's own prefix. No database
+ * and no other secret; the SELF binding and the scheduled() probes below are
+ * never reached from it.
  *
  * Order, and why:
  * 1. Refuse by name an unset master secret (503) or a workflow that is not

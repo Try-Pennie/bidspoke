@@ -29,7 +29,7 @@ function runtime(): ProbeRuntime & { logs: Record<string, unknown>[] } {
     sleep: async (ms) => { t += ms },
     burn: () => {},
     log: (e) => { logs.push(e) },
-    limits: { wallCapMs: 20_000, wallStepMs: 10_000, cpuSliceUnits: 1, cpuMaxSlices: 2, cpuWallCapMs: 60_000, cpuLogEvery: 1, subrequestCap: 3, subrequestLogEvery: 1, fanout: 2, detachedCapMs: 1 },
+    limits: { wallCapMs: 20_000, wallStepMs: 10_000, cpuSliceUnits: 1, cpuMaxSlices: 2, cpuWallCapMs: 60_000, cpuLogEvery: 1, subrequestCap: 3, subrequestLogEvery: 1, fanout: 2 },
   }
 }
 

@@ -1,7 +1,8 @@
 # bidspoke-worker-ops: the minimal ops Worker (#1705, plan 0.R).
 #
-# One route, POST /porting/capture/:hashid, receiving the porting recorder's
-# captures from Pipedream. It shares this package's source and dependencies but
+# One public route, POST /porting/capture/:hashid, receiving the porting
+# recorder's captures from Pipedream. Not public: a minute cron and a SELF binding
+# to its own OpsInternal entrypoint (#1946, below). It shares this package's source and dependencies but
 # is a SEPARATE Worker: its own name, its own bindings, its own secrets, and
 # none of the money Worker's (no Supabase key, no partner credentials, no KV, no
 # Durable Objects). The full ops Worker grows from this in plan 0.E.
