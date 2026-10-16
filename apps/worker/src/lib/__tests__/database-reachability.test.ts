@@ -173,6 +173,52 @@ describe('a failed scheduled read pages from the copy, naming its age', () => {
   })
 })
 
+// Phase 4 lessons review: one organization's failure must not stop the page,
+// or the all-clear, for every organization after it.
+describe('each organization is its own failure boundary', () => {
+  const ORG2 = '66666666-6666-4666-8666-666666666666'
+  const CONN2 = { bot_token: 'xoxb-2', default_channel: 'C2', volume_alerts_enabled: true }
+
+  it('pages the second organization when the first one\'s post throws, and says which was told', async () => {
+    const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: await copyBlob({ [ORG]: CONN, [ORG2]: CONN2 }) })
+    vi.mocked(sendDatabaseUnreachableAlert).mockImplementation(async (slack) => {
+      if (slack.bot_token === 'xoxb-t') throw new Error('Slack exploded')
+      return 'ts-2'
+    })
+    const result = await reportDatabaseUnreachable(deps(kv, T0), readFailure)
+    expect(vi.mocked(sendDatabaseUnreachableAlert).mock.calls.map((c) => c[1])).toEqual(['C1', 'C2'])
+    expect(result.told).toEqual([ORG2])
+    expect(result.failed).toEqual([{ orgId: ORG, reason: expect.stringContaining('Slack exploded') }])
+    expect(kv.store.has(`db-unreachable:${ORG2}:cooldown`)).toBe(true)
+    expect(kv.store.has(COOLDOWN)).toBe(false)
+    expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes(ORG) && String(c[0]).includes('Slack exploded'))).toBe(true)
+  })
+
+  it('sends the second organization its all-clear when settling the first one\'s throws', async () => {
+    const open = (org: string) => ({
+      [`db-unreachable-recovery:${org}`]: new Date(T0 - 90 * MIN).toISOString(),
+      [`db-unreachable-active:${org}`]: new Date(T0 - 60 * MIN).toISOString(),
+      [`db-unreachable:${org}:condition`]: '{"since":"2026-10-15T01:30:00.000Z","alerts":1}',
+    })
+    const kv = fakeKv({ ...open(ORG), ...open(ORG2) })
+    for (let t = T0 - 40 * MIN; t <= T0 - MIN; t += MIN) {
+      await reportDatabaseReadable(kv, 'probe', t)
+      await reportDatabaseReadable(kv, 'volume-cliff', t)
+    }
+    const del = kv.delete
+    kv.delete = (k: string) => (k === `db-unreachable:${ORG}:condition` ? Promise.reject(new Error('KV DELETE failed: 500')) : del(k))
+    const rows = [
+      { organization_id: ORG, config: { bot_token: CONN.bot_token, default_channel: CONN.default_channel } },
+      { organization_id: ORG2, config: { bot_token: CONN2.bot_token, default_channel: CONN2.default_channel } },
+    ]
+    await runDatabaseReachabilityProbe(probeDeps(kv, T0, answering(rows)))
+    expect(vi.mocked(sendDatabaseRecoveredAlert).mock.calls.map((c) => c[1])).toEqual(['C1', 'C2'])
+    expect(kv.store.has(`db-unreachable-recovery:${ORG2}`)).toBe(false)
+    expect(kv.store.has(`db-unreachable:${ORG2}:condition`)).toBe(false)
+    expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes(ORG) && String(c[0]).includes('KV DELETE failed'))).toBe(true)
+  })
+})
+
 describe('the fast reads page only on a second failed minute in a row', () => {
   it('one failed probe does not page', async () => {
     const kv = await kvWithCopy()
