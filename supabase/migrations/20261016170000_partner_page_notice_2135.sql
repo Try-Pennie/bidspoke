@@ -693,3 +693,6 @@ COMMENT ON TABLE public.partner_page_live_misses IS
 ALTER TABLE public.partner_page_live_misses ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.partner_page_live_misses FROM PUBLIC, anon, authenticated;
 GRANT SELECT, INSERT ON public.partner_page_live_misses TO service_role;
+-- Production's default privileges give service_role every privilege on a new
+-- table in public; the Worker only records and reads misses (#2135).
+REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER, MAINTAIN ON public.partner_page_live_misses FROM service_role;

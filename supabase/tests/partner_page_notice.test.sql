@@ -662,15 +662,35 @@ $do$;
 
 -- ── 17. The live miss table is the Worker's alone ────────────────────────────
 -- (The function grants are in partner_page_function_grants.test.sql.)
+-- Each role's EXACT privilege set, never only the one it needs (L503: an
+-- over broad grant is invisible because the code never attempts what it is not
+-- meant to do). Production's default privileges grant service_role every table
+-- privilege on a new table in public, and so does this suite's database
+-- (scripts/sql-suite/bootstrap.sql keeps them): a migration that only GRANTs
+-- SELECT and INSERT leaves UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER and
+-- MAINTAIN in place. Found on production's read back of 20261016170000.
 DO $do$
+DECLARE
+  r text;
+  priv text;
+  held text[];
+  expected text[];
+  bad text[] := '{}';
 BEGIN
-  IF has_table_privilege('authenticated', 'public.partner_page_live_misses', 'SELECT') OR has_table_privilege('anon', 'public.partner_page_live_misses', 'INSERT') THEN
-    RAISE EXCEPTION 'case 17: partner_page_live_misses is readable or writable by a client role';
+  FOREACH r IN ARRAY ARRAY['anon', 'authenticated', 'service_role'] LOOP
+    held := '{}';
+    FOREACH priv IN ARRAY ARRAY['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER', 'MAINTAIN'] LOOP
+      IF has_table_privilege(r, 'public.partner_page_live_misses', priv) THEN held := held || priv; END IF;
+    END LOOP;
+    expected := CASE r WHEN 'service_role' THEN ARRAY['SELECT', 'INSERT'] ELSE '{}'::text[] END;
+    IF held IS DISTINCT FROM expected THEN
+      bad := bad || format('%s holds {%s}, expected {%s}', r, array_to_string(held, ','), array_to_string(expected, ','));
+    END IF;
+  END LOOP;
+  IF array_length(bad, 1) IS NOT NULL THEN
+    RAISE EXCEPTION 'case 17: partner_page_live_misses grants wrong: %', array_to_string(bad, '; ');
   END IF;
-  IF NOT has_table_privilege('service_role', 'public.partner_page_live_misses', 'INSERT') THEN
-    RAISE EXCEPTION 'case 17: the Worker cannot record a live miss';
-  END IF;
-  INSERT INTO suite_cases(name) VALUES ('live misses are the Worker''s alone');
+  INSERT INTO suite_cases(name) VALUES ('live misses are the Worker''s alone, SELECT and INSERT only');
 END
 $do$;
 
