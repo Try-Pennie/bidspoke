@@ -377,8 +377,10 @@ async function sendClaimed(
   } catch (e) {
     const error = formatErr(e)
     // Refused by the bulkhead before anything left: nothing can have landed, so
-    // the attempt is given back and the row is held as it was (#468).
-    if (isSalesforceBulkheadShed(e)) return { kind: 'held', error, recorded: await record(claimed, { attempts: readAttempts }) }
+    // the attempt is given back and the row is held as it was (#468), the time
+    // of its last real attempt included, which the claim moved and the drain's
+    // backoff and the abandon lease read.
+    if (isSalesforceBulkheadShed(e)) return { kind: 'held', error, recorded: await record(claimed, { attempts: readAttempts, updated_at: row.updated_at }) }
     // No answer is not a refusal: the write may be resent, and may have landed.
     return failed(error, false)
   }

@@ -310,6 +310,20 @@ describe('runWritebackDrain', () => {
     expect(rows.map((r) => r.attempts)).toEqual([0, 0])
   })
 
+  it('gives back the time of the last attempt with the attempt, so a refused call starts no new backoff', async () => {
+    const lastTried = new Date(nowMs - DRAIN_BACKOFF_MS - 1).toISOString()
+    rows.push(await row({ attempts: 1, updated_at: lastTried }))
+    const shed = Object.assign(new Error('Salesforce bulkhead: at capacity (salesforce, 20/20 inflight, waited 0ms)'), { bulkheadShed: true })
+    let refuse = true
+    const sf = salesforce({ patch: () => (refuse ? shed : { status: 204, text: '' }) })
+    await runWritebackDrain(deps(sf.port))
+    expect(rows[0]).toMatchObject({ status: 'pending', attempts: 1, updated_at: lastTried })
+    // The next minute, with room in the bulkhead, it goes at once.
+    refuse = false
+    nowMs += 60_000
+    expect(await runWritebackDrain(deps(sf.port))).toMatchObject({ replayed: 1 })
+  })
+
   it('stops as a full bulkhead, not as Salesforce not answering, when the bulkhead refuses the read', async () => {
     rows.push(await row(), await row({ sf_record_id: 'a0B000000000002AAA' }))
     const shed = Object.assign(new Error('Salesforce bulkhead: at capacity (salesforce, 20/20 inflight, waited 0ms)'), { bulkheadShed: true })
