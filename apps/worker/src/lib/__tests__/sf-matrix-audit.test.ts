@@ -4,6 +4,8 @@ import { partnerFlagsFromDescribe } from '../bid-range-flags'
 import type { MatrixAuditAlert } from '../matrix-audit-message'
 import { BID_RANGE_ROW_DESCRIBE } from './fixtures/bid-range-row-describe'
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { registerScheduledSlack } from '../scheduled-slack'
+import { fakeClient, fakeTimers, kvWith, kvWithCopy, TEST_KEY } from './_scheduled-slack-doubles'
 
 const FLAGS = partnerFlagsFromDescribe(BID_RANGE_ROW_DESCRIBE)
 // The 8 the audit hard coded until #1864.
@@ -231,5 +233,42 @@ describe('notifyAllOrgsWithSlack, delivery gates the snapshot', () => {
 
   it('returns true when the org opted out of matrix alerts (no-op, nothing lost)', async () => {
     expect(await notifyAllOrgsWithSlack(makeSupabase(['org-1'], { ...enabled, matrix_alerts_enabled: false }), [alert], now, undefined)).toBe(true)
+  })
+
+  // #1303: "every org was told" over an org list nobody could read is not true,
+  // so an outage must not advance the snapshot past changes nobody heard about.
+  it('returns false when the org list could not be read, so the snapshot is not advanced over an outage', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { client } = fakeClient([{ error: { message: 'connection terminated' } }])
+    registerScheduledSlack(client, { kv: kvWith(), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep })
+    expect(await notifyAllOrgsWithSlack(client, [alert], now, undefined)).toBe(false)
+  })
+
+  it('returns false when the database is down and the saved copy names nobody, so the snapshot is not advanced over an outage', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { client } = fakeClient([{ error: { message: 'connection terminated' } }])
+    registerScheduledSlack(client, { kv: await kvWithCopy({}), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep })
+    expect(await notifyAllOrgsWithSlack(client, [alert], now, undefined)).toBe(false)
+  })
+
+  it('returns false when an org in the list cannot be told, rather than counting it as no Slack', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    // The org list answers, then the org's own lookup fails with no copy holding it.
+    const { client } = fakeClient([{ data: [{ organization_id: 'org-1' }] }, { error: { message: 'connection terminated' } }])
+    registerScheduledSlack(client, { kv: await kvWithCopy({ 'org-2': enabled }), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep })
+    expect(await notifyAllOrgsWithSlack(client, [alert], now, undefined)).toBe(false)
+  })
+
+  it('posts from the saved copy and returns true when the database is down and the copy holds the org', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ ok: true, ts: '1.1' }), { status: 200 }))
+    const { client } = fakeClient(['throw'])
+    registerScheduledSlack(client, { kv: await kvWithCopy({ 'org-1': { ...enabled, bot_token: 'xoxb-stored' } }), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep })
+    expect(await notifyAllOrgsWithSlack(client, [alert], now, undefined)).toBe(true)
+    expect(fetchSpy).toHaveBeenCalledTimes(1)
+    expect(String((fetchSpy.mock.calls[0][1] as RequestInit & { headers: Record<string, string> }).headers.Authorization)).toContain('xoxb-stored')
   })
 })
