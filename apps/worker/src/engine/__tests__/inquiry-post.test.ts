@@ -15,6 +15,8 @@ import {
   inquiryPostOf,
   stepRetries,
   inquiryMarkerQuery,
+  lookupInquiryMarker,
+  type SalesforceRead,
 } from '../inquiry-post'
 import { INQUIRY_APEX_PATH } from '../../lib/main-flow-port/transform'
 
@@ -94,5 +96,67 @@ describe('inquiryMarkerQuery', () => {
 
   it('refuses anything that is not a record id, so nothing reaches the query text', () => {
     expect(() => inquiryMarkerQuery("00Q' OR Id != '", 0)).toThrow(/record id/)
+  })
+})
+
+/**
+ * The one Lead lookup and marker query (#2176): the read-back judges a held post
+ * by it, and a recovery run checks it before posting. Both ask the same question,
+ * did this post's file land since the post began, so they share one reading.
+ */
+describe('lookupInquiryMarker', () => {
+  const SINCE = Date.parse('2026-10-15T20:00:00.000Z')
+  const SUB_PATH = `/sobjects/Submission__c/${SUB}?fields=Lead__c`
+  const MARKER_PATH = `/query?q=${encodeURIComponent(inquiryMarkerQuery(LEAD, SINCE))}`
+  const ok = (body: unknown): SalesforceRead => ({ kind: 'answer', status: 200, text: JSON.stringify(body) })
+  const reader = (answers: Record<string, SalesforceRead>) => {
+    const asked: string[] = []
+    const read = async (path: string) => {
+      asked.push(path)
+      const a = answers[path]
+      if (!a) throw new Error(`unexpected read ${path}`)
+      return a
+    }
+    return { asked, read }
+  }
+
+  it('reads the Submission for its Lead, then the file since the post began: one found is landed', async () => {
+    const r = reader({ [SUB_PATH]: ok({ Lead__c: LEAD }), [MARKER_PATH]: ok({ totalSize: 1, records: [{ Id: '06AUi0000000001AAA' }] }) })
+    expect(await lookupInquiryMarker(r.read, SUB, SINCE)).toEqual({ kind: 'landed', leadId: LEAD })
+    expect(r.asked).toEqual([SUB_PATH, MARKER_PATH])
+  })
+
+  it('none found is absent, naming the Lead', async () => {
+    const r = reader({ [SUB_PATH]: ok({ Lead__c: LEAD }), [MARKER_PATH]: ok({ totalSize: 0, records: [] }) })
+    expect(await lookupInquiryMarker(r.read, SUB, SINCE)).toEqual({ kind: 'absent', leadId: LEAD })
+  })
+
+  it('a Submission with no Lead is said, and no file is asked for', async () => {
+    for (const lead of [null, '', 'not an id']) {
+      const r = reader({ [SUB_PATH]: ok({ Lead__c: lead }) })
+      expect(await lookupInquiryMarker(r.read, SUB, SINCE)).toEqual({ kind: 'no_lead' })
+      expect(r.asked).toEqual([SUB_PATH])
+    }
+  })
+
+  it('a read not answered, or answered with a failure, is unread and names which read and what came back', async () => {
+    const down: SalesforceRead = { kind: 'no_answer', error: 'socket hang up' }
+    const refused: SalesforceRead = { kind: 'answer', status: 503, text: 'busy' }
+    expect(await lookupInquiryMarker(reader({ [SUB_PATH]: down }).read, SUB, SINCE)).toEqual({ kind: 'unread', what: 'Submission', read: down })
+    expect(await lookupInquiryMarker(reader({ [SUB_PATH]: refused }).read, SUB, SINCE)).toEqual({ kind: 'unread', what: 'Submission', read: refused })
+    expect(await lookupInquiryMarker(reader({ [SUB_PATH]: ok({ Lead__c: LEAD }), [MARKER_PATH]: refused }).read, SUB, SINCE)).toEqual({ kind: 'unread', what: 'Inquiries file', read: refused })
+  })
+
+  it('an answer that is not the object asked for is unreadable, never absent', async () => {
+    const notJson: SalesforceRead = { kind: 'answer', status: 200, text: '<html>' }
+    expect(await lookupInquiryMarker(reader({ [SUB_PATH]: notJson }).read, SUB, SINCE)).toEqual({ kind: 'unreadable', what: 'Submission' })
+    expect(await lookupInquiryMarker(reader({ [SUB_PATH]: ok({ Lead__c: LEAD }), [MARKER_PATH]: ok({ records: [] }) }).read, SUB, SINCE)).toEqual({ kind: 'unreadable', what: 'Inquiries file' })
+    expect(await lookupInquiryMarker(reader({ [SUB_PATH]: ok({ Lead__c: LEAD }), [MARKER_PATH]: ok([1]) }).read, SUB, SINCE)).toEqual({ kind: 'unreadable', what: 'Inquiries file' })
+  })
+
+  it('refuses a Submission id that is not a record id, so nothing reaches a path', async () => {
+    const r = reader({})
+    await expect(lookupInquiryMarker(r.read, "a0X' OR 1=1", SINCE)).rejects.toThrow(/record id/)
+    expect(r.asked).toEqual([])
   })
 })

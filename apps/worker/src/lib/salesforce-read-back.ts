@@ -100,7 +100,7 @@ import type { Env } from '../env'
 import { AT_RISK_WRITE_PREFIX, AT_RISK_WRITE_TTL_SECONDS, atRiskKey, parseAtRiskEntry, readBackOwnsHeld, type AtRiskEntry } from '../engine/at-risk-writes'
 import { WRITE_MARKER_FIELD, parseWriteMarker, stampsWrites, writeMarker } from '../engine/write-marker'
 import { salesforceRejectedTheWrite } from '../engine/nodes/salesforce'
-import { CREDIT_INQUIRY_APEX_PATH, inquiryMarkerQuery, inquiryPostOf, type InquiryPost } from '../engine/inquiry-post'
+import { CREDIT_INQUIRY_APEX_PATH, inquiryPostOf, lookupInquiryMarker, type InquiryMarkerReadName, type InquiryPost, type SalesforceRead } from '../engine/inquiry-post'
 import { decryptSecret, secretKeys, type SecretKeyInput } from './secret-crypto'
 import { makeAlertClaims, makeSendClaims, raceDeadline, type AlertClaims, type SendClaims } from './alert-claim'
 import { isSalesforceApiName, isSalesforceRecordId, salesforcePortFor, type SalesforcePort } from './writeback-replay'
@@ -441,7 +441,7 @@ interface Finding {
   still_trying?: boolean
 }
 
-type CallResult = { kind: 'answer'; status: number; text: string } | { kind: 'no_answer'; error: string }
+type CallResult = SalesforceRead
 
 function errorCodeOf(text: string): string | null {
   try {
@@ -640,50 +640,39 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
     return stopFor(answer.status)
   }
 
-  /** One read for a credit inquiry post: its body, or how the post was settled or the tick stopped. */
-  const readFor = async (h: Held, port: SalesforcePort, path: string, what: string): Promise<{ body: Record<string, unknown> } | { unread?: boolean; stop?: UnreadReason; settled?: boolean }> => {
-    s.reads++
-    const read = await call(port, 'GET', path)
+  /** A credit inquiry post's read that failed: how the post was settled, or why the tick stopped. */
+  const settleFailedRead = async (h: Held, what: InquiryMarkerReadName, read: SalesforceRead): Promise<{ unread?: boolean; stop?: UnreadReason }> => {
     if (read.kind === 'no_answer') {
       console.warn(`[${SF_READ_BACK_JOB}] reading the ${what} for ${h.id} got no answer: ${read.error}`)
       return { unread: true, stop: 'salesforce_not_answering' }
     }
-    if (read.status < 200 || read.status >= 300) {
-      if (salesforceRejectedTheWrite(read.status, read.text)) {
-        const code = errorCodeOf(read.text)
-        await finish(h, {
-          kind: 'resend_failed',
-          resent: false,
-          detail: read.status === 404 ? `the ${what} no longer exists in Salesforce` : `Salesforce refused to read the ${what} (${read.status}${code ? ` ${code}` : ''})`,
-        })
-        return { settled: true }
-      }
-      return { unread: true, stop: stopFor(read.status) }
+    if (salesforceRejectedTheWrite(read.status, read.text)) {
+      const code = errorCodeOf(read.text)
+      await finish(h, {
+        kind: 'resend_failed',
+        resent: false,
+        detail: read.status === 404 ? `the ${what} no longer exists in Salesforce` : `Salesforce refused to read the ${what} (${read.status}${code ? ` ${code}` : ''})`,
+      })
+      return {}
     }
-    try {
-      const parsed: unknown = JSON.parse(read.text)
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
-      return { body: parsed as Record<string, unknown> }
-    } catch {
-      return { unread: true, stop: 'salesforce_not_answering' }
-    }
+    return { unread: true, stop: stopFor(read.status) }
   }
 
   /** One credit inquiry post that carries inquiries (#2172): its Lead, its file, and at most one resend. */
   const processInquiry = async (h: Held, post: Extract<InquiryPost, { kind: 'inquiries' }>, port: SalesforcePort): Promise<{ unread?: boolean; stop?: UnreadReason }> => {
-    const sub = await readFor(h, port, `/sobjects/Submission__c/${post.submissionId}?fields=Lead__c`, 'Submission')
-    if (!('body' in sub)) return sub.settled ? {} : sub
-    const lead = sub.body.Lead__c
-    if (typeof lead !== 'string' || !isSalesforceRecordId(lead)) {
+    // The one Lead lookup and marker query a recovery run checks too (#2176).
+    const looked = await lookupInquiryMarker((path) => {
+      s.reads++
+      return call(port, 'GET', path)
+    }, post.submissionId, h.firstAttemptMs)
+    if (looked.kind === 'unread') return settleFailedRead(h, looked.what, looked.read)
+    if (looked.kind === 'unreadable') return { unread: true, stop: 'salesforce_not_answering' }
+    if (looked.kind === 'no_lead') {
       // InquiryParserRest answers 404 for a Submission with no Lead, writing nothing.
       await finish(h, { kind: 'resend_failed', resent: false, detail: 'the Submission has no Lead, so Salesforce refuses the post' })
       return {}
     }
-    const marker = await readFor(h, port, `/query?q=${encodeURIComponent(inquiryMarkerQuery(lead, h.firstAttemptMs))}`, 'Inquiries file')
-    if (!('body' in marker)) return marker.settled ? {} : marker
-    const found = marker.body.totalSize
-    if (typeof found !== 'number') return { unread: true, stop: 'salesforce_not_answering' }
-    if (found > 0) {
+    if (looked.kind === 'landed') {
       s.landed++
       if (h.state.attempts > 0) s.landed_by_resend++
       await forget(h)
