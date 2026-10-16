@@ -18,7 +18,7 @@ import { recoveryKey } from '../alert-recovery'
 import { cronJob, evaluateHeartbeat } from '../cron-heartbeat'
 import { incidentSignal } from '../incident-signals'
 import { WRITEBACK_BACKLOG_RECOVERY_SUBJECT } from '../slack'
-import { transitions } from './_incident-events'
+import { outboxEvents, transitions } from './_incident-events'
 
 /**
  * The backlog alert on outcome_writeback_deadletters (#468 step 2). The table
@@ -99,6 +99,11 @@ describe('runWritebackBacklogCheck', () => {
     expect(alert.objects).toEqual([{ object: 'Lead', count: 1 }, { object: 'Prospect__c', count: 1 }])
     expect(s.paged).toEqual([ORG_A])
     expect(transitions(h.kv.store)).toEqual([`opened ${ORG_A}`, `paged ${ORG_A}`])
+    // The record names the subject in the all-clear's own words, for that organization.
+    expect(outboxEvents(h.kv.store).map((e) => [e.subjectLabel, e.organizationId])).toEqual([
+      [WRITEBACK_BACKLOG_RECOVERY_SUBJECT, ORG_A],
+      [WRITEBACK_BACKLOG_RECOVERY_SUBJECT, ORG_A],
+    ])
     expect(h.kv.store.get(recoveryKey(WRITEBACK_BACKLOG_SIGNAL, ORG_A))).toBe(iso(NOW))
   })
 

@@ -65,7 +65,7 @@ import { reportRecordError } from './incident-outbox'
 import { raceDeadline } from './alert-claim'
 import { formatErr } from './format-error'
 import { notifyExportFailure, notifyExportRecovery } from './export-alerts'
-import { sendWritebackBacklogAlert, sendWritebackBacklogRecoveryAlert, type WritebackBacklogAlert } from './slack'
+import { sendWritebackBacklogAlert, sendWritebackBacklogRecoveryAlert, WRITEBACK_BACKLOG_RECOVERY_SUBJECT, type WritebackBacklogAlert } from './slack'
 
 export const WRITEBACK_BACKLOG_JOB = 'writeback-backlog'
 /** The incident record's signal for this check (incident-signals.ts). */
@@ -170,7 +170,7 @@ export interface BacklogSummary {
 
 const incidentFor = (orgId: string, errors: string[]): IncidentContext => ({
   scope: { kind: 'org', organizationId: orgId },
-  subjectLabel: 'Failed Salesforce writes',
+  subjectLabel: WRITEBACK_BACKLOG_RECOVERY_SUBJECT,
   onRecordError: (message) => errors.push(message),
 })
 
