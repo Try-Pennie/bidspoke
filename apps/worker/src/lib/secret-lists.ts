@@ -112,7 +112,13 @@ export const OPS_REQUIRED_SECRETS = [
  * database until Phase 1, so requiring them now would alert on two secrets no
  * code uses. They move to OPS_REQUIRED_SECRETS in the change that first reads them.
  */
-export const OPS_OPTIONAL_SECRETS = ['OPS_SUPABASE_URL', 'OPS_SUPABASE_SECRET_KEY'] as const
+export const OPS_OPTIONAL_SECRETS = [
+  'OPS_SUPABASE_URL',
+  'OPS_SUPABASE_SECRET_KEY',
+  // Spike 0's arm (#1946, src/ops/spike/ceilings.ts): set only while one ceiling
+  // probe is being measured, unset otherwise. Removed with the spike.
+  'OPS_SPIKE_ARM',
+] as const
 
 /** Every secret the ops Worker may hold; anything else on it fails the parity check. */
 export const OPS_ALLOWED_SECRETS: readonly string[] = [...OPS_REQUIRED_SECRETS, ...OPS_OPTIONAL_SECRETS]
