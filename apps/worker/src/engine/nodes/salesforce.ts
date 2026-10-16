@@ -430,7 +430,7 @@ export async function executeSalesforceNode(
         return { kind: 'no_answer', error: formatErr(e) }
       }
     }
-    const landed = await checkRecoveredInquiryPost(ctx, ctx.recovery, inquiryPost, read, resolvedInput, warnLogs)
+    const landed = await checkRecoveredInquiryPost(ctx, ctx.recovery, node.namespace, inquiryPost, read, resolvedInput, warnLogs)
     if (landed) return landed
   }
   // A credit inquiry post is recorded BEFORE it goes out, and this waits for the
@@ -1023,7 +1023,9 @@ const SKIP_MESSAGES: Record<SalesforceSkipReason, string> = {
  * from the entry, and a second post that lands attaches a second Inquiries file,
  * so before it posts it looks for the original's file on the Lead, through the
  * read-back's own lookup (lookupInquiryMarker), since the root run of the
- * lineage began (engine/recovery-origin.ts says why that start).
+ * lineage began (engine/recovery-origin.ts says why that start). First it asks
+ * whether the read-back still holds a post of any run of the lineage (Dan,
+ * 2026-10-16), and sends nothing while it does.
  *
  * Returns the skipped result when the file is there, nothing when it is not (the
  * post goes out as on any run, intent record first), and throws when the check
@@ -1035,6 +1037,7 @@ const SKIP_MESSAGES: Record<SalesforceSkipReason, string> = {
 async function checkRecoveredInquiryPost(
   ctx: ExecutionContext,
   recovery: NonNullable<ExecutionContext['recovery']>,
+  stepNamespace: string,
   post: Extract<InquiryPost, { kind: 'inquiries' }>,
   read: (path: string) => Promise<SalesforceRead>,
   resolvedInput: ResolvedStepInput,
@@ -1055,6 +1058,22 @@ async function checkRecoveredInquiryPost(
     origin = await ctx.recoveryOrigin()
   } catch (e) {
     throw unknown(`where its lineage began could not be read: ${formatErr(e)}`)
+  }
+  // While the read-back still holds a post of the lineage it is that post's one
+  // sender (Dan, 2026-10-16): a post sent beside its resend, or beside the original
+  // still out, could land a second file. Asked of every run of the chain, by the
+  // read-back's own classifier, before anything is read from Salesforce.
+  if (!ctx.readBackHolds) throw unknown('the run has no way to ask whether the read-back still holds an earlier post')
+  for (const executionId of origin.lineage) {
+    let held: boolean
+    try {
+      held = await ctx.readBackHolds(executionId, stepNamespace)
+    } catch (e) {
+      throw unknown(`whether the read-back still holds execution ${executionId}'s post could not be read: ${formatErr(e)}`)
+    }
+    if (held) {
+      throw unknown(`the original post is still being settled by the read-back (execution ${executionId}), which reads its file and resends it at most once; a replay after it settles checks again`)
+    }
   }
   const looked = await lookupInquiryMarker(read, post.submissionId, origin.startedAtMs)
   if (looked.kind === 'unread') {

@@ -52,13 +52,19 @@ const SECOND = { id: 'second-replay', started_at: '2026-10-15T22:00:00.000Z', pa
 describe('readRecoveryOrigin', () => {
   it('the run recovered from, when it is itself an original run: its id and start', async () => {
     const d = db([ROOT])
-    expect(await readRecoveryOrigin(d.client, 'root')).toEqual({ executionId: 'root', startedAtMs: Date.parse(ROOT.started_at) })
+    expect(await readRecoveryOrigin(d.client, 'root')).toEqual({ executionId: 'root', startedAtMs: Date.parse(ROOT.started_at), lineage: ['root'] })
     expect(d.asked).toEqual(['root'])
   })
 
-  it('a recovery of a recovery goes back to the root run of the chain', async () => {
+  // Every run of the chain is named, nearest first: any of them may be the one
+  // whose post the read-back still holds (#2176, Dan, 2026-10-16).
+  it('a recovery of a recovery goes back to the root run of the chain, naming every run on the way', async () => {
     const d = db([ROOT, FIRST, SECOND])
-    expect(await readRecoveryOrigin(d.client, 'second-replay')).toEqual({ executionId: 'root', startedAtMs: Date.parse(ROOT.started_at) })
+    expect(await readRecoveryOrigin(d.client, 'second-replay')).toEqual({
+      executionId: 'root',
+      startedAtMs: Date.parse(ROOT.started_at),
+      lineage: ['second-replay', 'first-replay', 'root'],
+    })
     expect(d.asked).toEqual(['second-replay', 'first-replay', 'root'])
   })
 

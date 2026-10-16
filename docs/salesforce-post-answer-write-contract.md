@@ -1281,6 +1281,14 @@ read-back above uses too.
   which errs toward not sending. The root rather than the run directly recovered,
   because a replay of a replay that skipped would otherwise look only after the
   first replay began, miss the original file, and post a second one.
+- **First, the read-back's hold** (Dan, 2026-10-16). Before anything is read
+  from Salesforce, each run of the lineage, nearest first, is asked of
+  `readBackHoldsStep` for this step: the read-back's own classifier on that run's
+  at-risk record. While the read-back holds a post of any of them it is that
+  post's one sender, so nothing is sent and the step fails as unknown, saying the
+  original post is still being settled by the read-back; a replay after it
+  settles checks again. A hold check that throws, or a run with no way to ask,
+  sends nothing either.
 - **Found**: nothing is sent, no intent record is written, and the step completes
   as `{ skipped: true, skip_reason: 'already_landed', lead_id, recovered_from,
   marker_since }`.
@@ -1294,11 +1302,12 @@ read-back above uses too.
   is said and can be run again; a second file cannot be taken back. A Submission
   with no Lead fails the step, permanent, unsent, since Salesforce refuses it.
 - **A normal run makes no check.**
-- **What it does not cover.** The check and the post are two calls, not one: a
-  post of the original run still in flight, or a read-back resend of it, at the
-  moment of the check can land beside the recovery's post. A recovery is a
-  person's action taken minutes or more after the run, and the read-back's own
-  resend reads the file first, so this needs both within the same seconds.
+- **The race with the read-back is closed.** A post of the lineage still in
+  flight, or one the read-back may resend, is held by the read-back from before
+  it was sent (its intent record is written first) until it is settled, and a
+  recovery sends nothing while it is held. What is left is a post the read-back
+  does not hold: one inside a parallel node (not recorded, see above), or one
+  whose record could not be written, which its own run already logs as an error.
 
 ### The unfinished work alert (#2024)
 

@@ -254,6 +254,14 @@ export interface ExecutionContext {
    * before it posts, and does not post when this is absent or throws.
    */
   recoveryOrigin?: () => Promise<import('./engine/recovery-origin').RecoveryOrigin>
+  /**
+   * Set with `recovery` (#2176, Dan, 2026-10-16): whether the Salesforce read-back
+   * still holds one step's write of an earlier run, through its own classifier
+   * (`readBackHoldsStep`). A credit inquiry post on a recovery run sends nothing
+   * while it holds a post of any run of the lineage, and nothing when this is
+   * absent or throws.
+   */
+  readBackHolds?: (executionId: string, stepNamespace: string) => Promise<boolean>
 }
 
 export interface StepOutput {

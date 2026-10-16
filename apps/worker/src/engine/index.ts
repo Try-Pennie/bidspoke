@@ -526,6 +526,9 @@ export async function executeWorkflow(
   if (recoveredFrom) {
     let origin: Promise<RecoveryOrigin> | undefined
     ctx.recoveryOrigin = () => (origin ??= readRecoveryOrigin(runDb, recoveredFrom))
+    // And whether the read-back still holds a post of that lineage, asked of the
+    // at-risk records the watch writes, by the read-back's own classifier.
+    ctx.readBackHolds = (id, stepNamespace) => readBackHoldsStep(env.IDEMPOTENCY, secretKeys(env), id, stepNamespace)
   }
 
   // Resume re-runs the workflow from the entry node — no completed steps are

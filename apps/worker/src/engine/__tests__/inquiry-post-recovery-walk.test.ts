@@ -64,9 +64,16 @@ function makeKv() {
 }
 
 let kv: ReturnType<typeof makeKv>
-type Recovery = Pick<ExecutionContext, 'recovery' | 'recoveryOrigin'>
-const replay = (): Recovery => ({ recovery: 'replay', recoveryOrigin: async () => ({ executionId: ORIGINAL, startedAtMs: ORIGINAL_START }) })
-const resume = (): Recovery => ({ recovery: 'resume', recoveryOrigin: async () => ({ executionId: ORIGINAL, startedAtMs: ORIGINAL_START }) })
+type Recovery = Pick<ExecutionContext, 'recovery' | 'recoveryOrigin' | 'readBackHolds'>
+/** The read-back's answer for each run and step asked, recorded; it holds nothing unless told. */
+let holdsAsked: string[]
+const holdsNothing: NonNullable<ExecutionContext['readBackHolds']> = async (executionId, stepNamespace) => {
+  holdsAsked.push(`${executionId}:${stepNamespace}`)
+  return false
+}
+const origin = async () => ({ executionId: ORIGINAL, startedAtMs: ORIGINAL_START, lineage: [ORIGINAL] })
+const replay = (): Recovery => ({ recovery: 'replay', recoveryOrigin: origin, readBackHolds: holdsNothing })
+const resume = (): Recovery => ({ recovery: 'resume', recoveryOrigin: origin, readBackHolds: holdsNothing })
 
 const edge = (source: string, target: string): EdgeDefinition => ({ id: `${source}-${target}`, source, target })
 /** The answer, then the inquiry post, then an exit: Main Flow posts after its answer. */
@@ -119,6 +126,7 @@ let fetchMock: FetchMock
 beforeEach(() => {
   fetchMock = stubFetch()
   kv = makeKv()
+  holdsAsked = []
   cache.get.mockReset().mockResolvedValue('tok')
   cache.put.mockReset().mockResolvedValue(undefined)
   cache.delete.mockReset().mockResolvedValue(undefined)
@@ -141,6 +149,8 @@ describe('a recovery run whose original post landed', () => {
       expect(await walk(recovery(), queue)).toBeNull()
       expect(apexCalls()).toHaveLength(0)
       expect(urls()).toEqual([SUB_URL, MARKER_URL])
+      // The read-back was asked first, about this step of the original, and holds nothing.
+      expect(holdsAsked).toEqual([`${ORIGINAL}:${STEP}`])
       expect(stepRow(queue)).toMatchObject({
         status: 'completed',
         output: { skipped: true, skip_reason: 'already_landed', lead_id: LEAD, recovered_from: ORIGINAL, marker_since: new Date(ORIGINAL_START - 2_000).toISOString() },
@@ -165,6 +175,7 @@ describe('a recovery run whose original post never landed', () => {
       const queue: StepLogEntry[] = []
       expect(await walk(recovery(), queue)).toBeNull()
       expect(urls()).toEqual([SUB_URL, MARKER_URL, APEX_URL])
+      expect(holdsAsked).toEqual([`${ORIGINAL}:${STEP}`])
       expect(parseAtRiskEntry(heldAtCall ?? null)).toMatchObject({ sf_operation: 'apex', apex_path: CREDIT_INQUIRY_APEX_PATH, sf_record_id: SUB })
       // Confirmed, so the record is cleared, as on a normal run.
       expect(kv.store.has(HELD)).toBe(false)
@@ -186,6 +197,80 @@ describe('a recovery run whose original post never landed', () => {
     expect(apexCalls()).toHaveLength(1)
     const apexInit = fetchMock.mock.calls.find((c) => c[0] === APEX_URL)?.[1] as { headers: Record<string, string> }
     expect(apexInit.headers.Authorization).toBe('Bearer fresh')
+  })
+})
+
+/**
+ * Dan, 2026-10-16 (#2176): while the read-back still holds a post of the lineage,
+ * a recovery sends nothing. The read-back is that post's one sender; a recovery
+ * posting beside it could land a second file in the seconds both are out.
+ */
+describe('a recovery run while the read-back still holds a post of its lineage', () => {
+  it('a replay while the read-back holds the original post sends nothing, reads nothing, and fails as unknown', async () => {
+    salesforce({})
+    const asked: string[] = []
+    const queue: StepLogEntry[] = []
+    const err = await walk({
+      recovery: 'replay',
+      recoveryOrigin: origin,
+      readBackHolds: async (executionId, stepNamespace) => {
+        asked.push(`${executionId}:${stepNamespace}`)
+        return executionId === ORIGINAL
+      },
+    }, queue)
+    expect(err?.message).toMatch(/credit inquiry post not sent.*replay.*whether .*Inquiries file.* landed is unknown.*still being settled by the read-back/)
+    expect(asked).toEqual([`${ORIGINAL}:${STEP}`])
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(stepRow(queue)).toMatchObject({ status: 'failed', retries_used: 0 })
+    expect(kv.put).not.toHaveBeenCalled()
+  })
+
+  it('a hold on any run of the chain, not only the root, sends nothing', async () => {
+    salesforce({})
+    const asked: string[] = []
+    const err = await walk({
+      recovery: 'resume',
+      recoveryOrigin: async () => ({ executionId: ORIGINAL, startedAtMs: ORIGINAL_START, lineage: ['replay-2', 'replay-1', ORIGINAL] }),
+      readBackHolds: async (executionId, stepNamespace) => {
+        asked.push(`${executionId}:${stepNamespace}`)
+        return executionId === 'replay-1'
+      },
+    })
+    expect(err?.message).toMatch(/still being settled by the read-back.*replay-1/)
+    expect(asked).toEqual([`replay-2:${STEP}`, `replay-1:${STEP}`])
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('every run of the chain is asked before the file check, and none holding lets the check go on', async () => {
+    salesforce({
+      [SUB_URL]: () => answer(200, { Lead__c: LEAD }),
+      [MARKER_URL]: () => answer(200, { totalSize: 1, records: [{ Id: '06AUi0000000001AAA' }] }),
+    })
+    const err = await walk({
+      recovery: 'replay',
+      recoveryOrigin: async () => ({ executionId: ORIGINAL, startedAtMs: ORIGINAL_START, lineage: ['replay-1', ORIGINAL] }),
+      readBackHolds: holdsNothing,
+    })
+    expect(err).toBeNull()
+    expect(holdsAsked).toEqual([`replay-1:${STEP}`, `${ORIGINAL}:${STEP}`])
+    expect(apexCalls()).toHaveLength(0)
+  })
+
+  it('a hold check that throws sends nothing and fails as unknown', async () => {
+    salesforce({})
+    const queue: StepLogEntry[] = []
+    const err = await walk({ recovery: 'replay', recoveryOrigin: origin, readBackHolds: async () => { throw new Error('KV unavailable') } }, queue)
+    expect(err?.message).toMatch(/credit inquiry post not sent.*replay.*unknown.*KV unavailable/)
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(stepRow(queue)).toMatchObject({ status: 'failed' })
+    expect(kv.put).not.toHaveBeenCalled()
+  })
+
+  it('a recovery run with no way to ask the read-back sends nothing', async () => {
+    salesforce({})
+    const err = await walk({ recovery: 'replay', recoveryOrigin: origin })
+    expect(err?.message).toMatch(/credit inquiry post not sent.*replay.*read-back/)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
 

@@ -33,11 +33,19 @@ export interface RecoveryOrigin {
   executionId: string
   /** When it started, from its row. */
   startedAtMs: number
+  /**
+   * Every run of the chain, nearest first, the root last. Any of them may have
+   * sent the post the read-back still holds, so a recovery asks about each
+   * (Dan, 2026-10-16).
+   */
+  lineage: string[]
 }
 
 export async function readRecoveryOrigin(db: SupabaseClient, recoveredFrom: string): Promise<RecoveryOrigin> {
   let id = recoveredFrom
+  const lineage: string[] = []
   for (let read = 0; read < MAX_RECOVERY_LINEAGE; read++) {
+    lineage.push(id)
     const { data, error } = await db.from('workflow_executions').select('id, started_at, parent_execution_id').eq('id', id).maybeSingle()
     if (error) throw new Error(`could not read execution ${id} in the recovered run's lineage: ${formatErr(error)}`)
     const row: { started_at: unknown; parent_execution_id: unknown } | null = data
@@ -49,7 +57,7 @@ export async function readRecoveryOrigin(db: SupabaseClient, recoveredFrom: stri
     }
     const startedAtMs = typeof row.started_at === 'string' ? Date.parse(row.started_at) : NaN
     if (!Number.isFinite(startedAtMs)) throw new Error(`execution ${id}, the root of the recovered run's lineage, has no readable start`)
-    return { executionId: id, startedAtMs }
+    return { executionId: id, startedAtMs, lineage }
   }
   throw new Error(`the recovered run's lineage is longer than ${MAX_RECOVERY_LINEAGE} runs, or loops, so its root was not found`)
 }
