@@ -33,7 +33,6 @@ interface PartnerBody {
   bid_resolver_type?: 'formula' | 'matrix' | 'api'
   bid_resolver_config?: Record<string, unknown>
   outbound_field_mapping?: Record<string, unknown> | null
-  bid_mode?: 'commit' | 'ping_only'
   bid_comparison_source?: 'auto' | 'api' | 'formula' | 'matrix'
   extra_extraction?: Record<string, unknown> | null
   last_probe_response?: unknown
@@ -99,6 +98,19 @@ function partnerTypeRefusal(body: PartnerBody): string | null {
     `Invalid partner_type ${JSON.stringify(body.partner_type)}. ` +
     `Accepted values: ${PARTNER_TYPES.join(', ')}.`
   )
+}
+
+// #2182: bid_mode is retired. Nothing acts on it since PM-9 (#2136), and its
+// column is dropped in a later migration (docs/adr/0007), so no route writes it.
+// A body naming it is refused by name before anything is read, the same answer
+// save_partner_config gives a field it may not write: without this, a save
+// naming it would reach that function, whose editable list still holds it, and
+// be stored, and once the column is gone the same save would fail as a server
+// error instead.
+const RETIRED_FIELD = 'bid_mode'
+const RETIRED_FIELD_MESSAGE = 'bid_mode is retired: nothing reads it, and its column is being removed (#2182). Send the save without it.'
+function namesRetiredField(body: object): boolean {
+  return Object.prototype.hasOwnProperty.call(body, RETIRED_FIELD)
 }
 
 // Derive resolver type from legacy fields when a client posts without bid_resolver_type.
@@ -201,6 +213,7 @@ partners.post('/', async (c) => {
   if (!body.slug) return c.json({ error: 'slug is required' }, 400)
   const createTypeRefusal = partnerTypeRefusal(body)
   if (createTypeRefusal) return c.json({ error: createTypeRefusal }, 400)
+  if (namesRetiredField(body)) return c.json({ error: 'field_not_editable', field: RETIRED_FIELD, message: RETIRED_FIELD_MESSAGE }, 400)
 
   // slug must be lowercase URL-safe
   const slug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, '-')
@@ -219,7 +232,6 @@ partners.post('/', async (c) => {
       bid_resolver_type: body.bid_resolver_type ?? deriveResolverType(body),
       bid_resolver_config: asJson(body.bid_resolver_config ?? deriveResolverConfig(body)),
       outbound_field_mapping: asJson(body.outbound_field_mapping ?? null),
-      bid_mode: body.bid_mode ?? 'commit',
       bid_comparison_source: body.bid_comparison_source ?? 'auto',
       extra_extraction: asJson(body.extra_extraction ?? null),
       last_probe_response: asJson(body.last_probe_response ?? null),
@@ -286,6 +298,7 @@ partners.put('/:id', async (c) => {
 
   const updateTypeRefusal = partnerTypeRefusal(body)
   if (updateTypeRefusal) return c.json({ error: updateTypeRefusal }, 400)
+  if (namesRetiredField(body)) return c.json({ error: 'field_not_editable', field: RETIRED_FIELD, message: RETIRED_FIELD_MESSAGE }, 400)
 
   const { data: partner, error: fetchError } = await supabase
     .from('partner_configs')
@@ -442,6 +455,10 @@ partners.put('/:id/page', async (c) => {
   for (const [k, v] of Object.entries(body.patch)) if (v !== undefined) patch[k] = v
   const typeRefusal = partnerTypeRefusal(patch as PartnerBody)
   if (typeRefusal) return c.json({ error: typeRefusal }, 400)
+  if (namesRetiredField(patch)) {
+    const refusal = { code: 'field_not_editable', path: RETIRED_FIELD, field: RETIRED_FIELD, message: RETIRED_FIELD_MESSAGE }
+    return c.json({ error: refusal.code, message: RETIRED_FIELD_MESSAGE, errors: [refusal] }, 422)
+  }
 
   const { data: stored, error: fetchError } = await supabase
     .from('partner_configs')
