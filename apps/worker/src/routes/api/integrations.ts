@@ -21,10 +21,11 @@
 // failure logged; everything the edit needs (the key ring included) is read
 // inside copyCleared, so nothing about the copy can fail the request. A copy no
 // reader can decrypt is left alone without a warning, since nobody can post
-// from it. The next healthy minute rewrites the whole copy from the database
-// (volume-cliff.ts), which bounds how long a stale entry can last while the
-// database is up. KV is eventually consistent, so a reader in another location
-// can still see the old entry for up to about a minute.
+// from it. The next minute the database probe's read answers rewrites the whole
+// copy from the database (database-reachability.ts), which bounds how long a
+// stale entry can last while the database is up. KV is eventually consistent,
+// so a reader in another location can still see the old entry for up to about
+// a minute.
 
 import { Hono } from 'hono'
 import { dbError, dbErrorUnlessNotFound, requireRowOr404, rowsTouched } from '../../lib/api-error'
