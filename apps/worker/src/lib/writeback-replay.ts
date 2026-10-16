@@ -5,7 +5,9 @@
  * `outcome_writeback_deadletters` (#1993). This is the manual escape hatch for
  * it: preview the exact fields beside what Salesforce holds now, send the patch
  * once, and record how it ended. A person can also close a row they dealt with
- * in Salesforce themselves. The automatic drain is #468.
+ * in Salesforce themselves. The automatic drain (#468, writeback-drain.ts) sends
+ * through drainHeldWrite below, on the same claim and the same record of how a
+ * send ended, so there is one send path for a stored write.
  *
  * THE BODY IS SENT AS LITERAL JSON. It was resolved once, in the run, and holds
  * the lead's own values. Passing it through the node's template resolution again
@@ -24,7 +26,11 @@
  *
  * A changed field is the person's call (Dan, 2026-10-13): the preview shows each
  * field's current Salesforce value beside the one to be sent, and a confirmed
- * replay sends the whole patch as captured.
+ * replay sends the whole patch as captured. The drain, which has nobody to ask,
+ * leaves such a field out instead (drainHeldWrite).
+ *
+ * A call the Salesforce bulkhead refuses sent nothing, so it gives its attempt
+ * back and the row stays as it was (`held`), for a person and the drain alike.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
@@ -38,10 +44,13 @@ import { salesforceBulkheads } from './bulkhead-client'
 import { isSalesforceApiName, isSalesforceRecordId } from './salesforce-names'
 import {
   getSalesforceToken,
+  isSalesforceBulkheadShed,
   performSalesforceCall,
   salesforceRejectedTheWrite,
   salesforceTokenCacheKey,
 } from '../engine/nodes/salesforce'
+import { WRITE_MARKER_FIELD } from '../engine/write-marker'
+import { fieldsMovedSince } from './salesforce-field-conflict'
 
 /**
  * Every status a held write can carry: the CHECK on the table, and what each
@@ -113,6 +122,8 @@ export interface ReplayDeps {
    * refused (#468). Throws when it cannot be asked, and nothing is sent.
    */
   readBackHolds: (executionId: string, stepNamespace: string) => Promise<boolean>
+  /** The clock an outcome is stamped with. */
+  now?: () => number
 }
 
 /**
@@ -158,6 +169,38 @@ export type ReplayResult =
   | { kind: 'replayed'; recorded: boolean }
   | { kind: 'refused'; error: string; recorded: boolean }
   | { kind: 'still_pending'; error: string; recorded: boolean }
+  /** The bulkhead refused the call before anything was sent: the attempt is given back. */
+  | { kind: 'held'; error: string; recorded: boolean }
+
+/** How the drain of stored writes (#468 step 3) sends one row. */
+export interface DrainOptions {
+  /** The last attempt allowed: a failure on it closes the row as abandoned. */
+  maxAttempts: number
+  /** Bodies sent to the same record earlier this tick: their values are ours, and this newer write replaces them. */
+  earlier?: Array<Record<string, unknown>>
+}
+
+export type DrainResult =
+  | { kind: 'not_found' }
+  | { kind: 'not_replayable'; reason: string }
+  | { kind: 'unreadable'; error: string }
+  | { kind: 'no_salesforce'; error: string }
+  | { kind: 'conflict' }
+  | { kind: 'held'; error: string; recorded: boolean }
+  /** The read before sending got no answer: nothing was spent. */
+  | { kind: 'read_unanswered'; error: string }
+  /** The read before sending was answered with a failure that is not a refusal (5xx, 401, 403, 429): nothing was spent. */
+  | { kind: 'read_failed'; error: string }
+  /** Sent and landed. `moved` are the fields left out because another writer changed them; `sent` is what was sent. */
+  | { kind: 'replayed'; recorded: boolean; moved: string[]; sent: Record<string, unknown> }
+  /** Every field had moved, so nothing was sent and the row was closed as abandoned. */
+  | { kind: 'all_moved'; moved: string[]; recorded: boolean }
+  /** Salesforce rejected the write, or refused to read its record (then `resent` is false). */
+  | { kind: 'refused'; error: string; recorded: boolean; resent: boolean }
+  /** Failed with attempts left. `answered` is false when Salesforce never answered, so it may have landed. */
+  | { kind: 'still_pending'; error: string; recorded: boolean; answered: boolean }
+  /** Failed on its last attempt, and closed. */
+  | { kind: 'abandoned'; error: string; recorded: boolean; answered: boolean }
 
 export type AbandonResult =
   | { kind: 'not_found' }
@@ -239,16 +282,21 @@ export async function previewReplay(deps: ReplayDeps, orgId: string, id: string)
   }
 }
 
-export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: string): Promise<ReplayResult> {
+type Prepared = { row: HeldWriteRow; readAttempts: number; body: Record<string, unknown>; sf: SalesforcePort }
+type NotPrepared = Extract<ReplayResult, { kind: 'not_found' | 'not_replayable' | 'unreadable' | 'no_salesforce' }>
+
+/**
+ * Everything that can fail before sending, BEFORE any claim, so a key or
+ * credential fault costs no attempt and leaves the row as it was. The read-back
+ * is asked first: a write it holds is its own to send (#468).
+ */
+async function prepare(deps: ReplayDeps, orgId: string, id: string): Promise<Prepared | NotPrepared> {
   const row = await deps.store.get(orgId, id)
   if (!row) return { kind: 'not_found' }
   // The count as READ, held apart from the row object, which a store may share.
   const readAttempts = row.attempts
   const why = whyNotReplayable(row)
   if (why) return { kind: 'not_replayable', reason: why }
-  // Everything that can fail before sending fails BEFORE the claim, so a key or
-  // credential fault costs no attempt and leaves the row as it was. The
-  // read-back is asked first: a write it holds is its own to send (#468).
   const readBack = await heldByReadBack(deps, row)
   if (readBack) return readBack
   let body: Record<string, unknown>
@@ -263,15 +311,18 @@ export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: strin
   } catch (e) {
     return { kind: 'no_salesforce', error: formatErr(e) }
   }
-  if (!(await deps.store.claim(orgId, id, readAttempts))) return { kind: 'conflict' }
-  const claimed = readAttempts + 1
-  const now = () => new Date().toISOString()
+  return { row, readAttempts, body, sf }
+}
+
+/** Writes and locks for one row: every outcome a send records goes through these. */
+function recorderFor(deps: ReplayDeps, id: string) {
+  const now = () => new Date(deps.now?.() ?? Date.now()).toISOString()
   // Once the patch is sent, nothing may throw over what Salesforce answered: a
   // database fault while recording the outcome is reported as not recorded,
   // never as a failed replay, since the write may well have landed.
-  const record = async (patch: Partial<HeldWriteRow>): Promise<boolean> => {
+  const record = async (attempts: number, patch: Partial<HeldWriteRow>): Promise<boolean> => {
     try {
-      const done = await deps.store.finish(id, claimed, patch)
+      const done = await deps.store.finish(id, attempts, patch)
       if (!done) console.error(`[writeback-replay] the outcome of held write ${id} was not recorded: the row changed meanwhile`)
       return done
     } catch (e) {
@@ -287,36 +338,147 @@ export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: strin
       console.error(`[writeback-replay] the error of held write ${id} could not be encrypted, so it is not stored:`, formatErr(e))
       return null
     })
+  return { now, record, withError, lock }
+}
+
+type SendOutcome =
+  | { kind: 'held'; error: string; recorded: boolean }
+  | { kind: 'replayed'; recorded: boolean }
+  | { kind: 'refused'; error: string; recorded: boolean }
+  | { kind: 'still_pending' | 'abandoned'; error: string; recorded: boolean; answered: boolean }
+
+/**
+ * The one send of a claimed row, and the one record of how it ended. The
+ * person's replay and the drain both end here, so the rules for an answer are
+ * written once: a 2xx is replayed, only salesforceRejectedTheWrite closes the
+ * row as refused, a bulkhead refusal gives the attempt back, and anything else
+ * stays pending, or closes as abandoned when this was the last attempt allowed.
+ */
+async function sendClaimed(
+  deps: ReplayDeps,
+  row: HeldWriteRow,
+  readAttempts: number,
+  sf: SalesforcePort,
+  body: Record<string, unknown>,
+  opts: { lastAttempt: boolean; note?: string },
+): Promise<SendOutcome> {
+  const claimed = readAttempts + 1
+  const { now, record, withError, lock } = recorderFor(deps, row.id)
+  const failed = async (error: string, answered: boolean): Promise<SendOutcome> => {
+    const locked = await lock(error)
+    if (!opts.lastAttempt) return { kind: 'still_pending', error, answered, recorded: await record(claimed, { ...withError(locked), updated_at: now() }) }
+    const at = now()
+    return { kind: 'abandoned', error, answered, recorded: await record(claimed, { status: 'abandoned', ...withError(locked), finished_at: at, updated_at: at }) }
+  }
 
   let answer: { status: number; text: string }
   try {
     answer = await sf.send('PATCH', recordPath(row), JSON.stringify(body))
   } catch (e) {
-    // No answer is not a refusal: the write may be resent.
     const error = formatErr(e)
-    const recorded = await record({ ...withError(await lock(error)), updated_at: now() })
-    return { kind: 'still_pending', error, recorded }
+    // Refused by the bulkhead before anything left: nothing can have landed, so
+    // the attempt is given back and the row is held as it was (#468).
+    if (isSalesforceBulkheadShed(e)) return { kind: 'held', error, recorded: await record(claimed, { attempts: readAttempts }) }
+    // No answer is not a refusal: the write may be resent, and may have landed.
+    return failed(error, false)
   }
   if (answer.status >= 200 && answer.status < 300) {
     const at = now()
-    return { kind: 'replayed', recorded: await record({ status: 'replayed', finished_at: at, updated_at: at }) }
+    const note = opts.note === undefined ? {} : withError(await lock(opts.note))
+    return { kind: 'replayed', recorded: await record(claimed, { status: 'replayed', ...note, finished_at: at, updated_at: at }) }
   }
   const error = `Salesforce API error (${answer.status}): ${answer.text}`
-  const lastError = await lock(error)
-  // Only a rejection of the write itself closes the row. A transient failure, or
-  // a login or permission refusal (a fault on our side), leaves it pending.
-  if (!salesforceRejectedTheWrite(answer.status, answer.text)) {
-    return { kind: 'still_pending', error, recorded: await record({ ...withError(lastError), updated_at: now() }) }
-  }
+  // Only a rejection of the write itself closes the row as refused. A transient
+  // failure, or a login or permission refusal (a fault on our side), does not.
+  if (!salesforceRejectedTheWrite(answer.status, answer.text)) return failed(error, true)
   const at = now()
-  const recorded = await record({
-    status: 'refused',
-    replayable: false,
-    ...withError(lastError),
-    finished_at: at,
-    updated_at: at,
-  })
+  const recorded = await record(claimed, { status: 'refused', replayable: false, ...withError(await lock(error)), finished_at: at, updated_at: at })
   return { kind: 'refused', error, recorded }
+}
+
+export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: string): Promise<ReplayResult> {
+  const p = await prepare(deps, orgId, id)
+  if (!('row' in p)) return p
+  if (!(await deps.store.claim(orgId, id, p.readAttempts))) return { kind: 'conflict' }
+  // A person's replay sends the whole patch as captured (Dan, 2026-10-13) and
+  // never closes a row as abandoned: that is the person's own call.
+  const out = await sendClaimed(deps, p.row, p.readAttempts, p.sf, p.body, { lastAttempt: false })
+  switch (out.kind) {
+    case 'replayed':
+      return { kind: 'replayed', recorded: out.recorded }
+    case 'refused':
+    case 'held':
+      return { kind: out.kind, error: out.error, recorded: out.recorded }
+    case 'still_pending':
+    case 'abandoned':
+      return { kind: 'still_pending', error: out.error, recorded: out.recorded }
+  }
+}
+
+/**
+ * The drain's send of one stored write (#468 step 3). The person's replay with
+ * the person's decisions made by rule:
+ *  - the record is read first (LastModifiedDate and every field), and a field
+ *    another writer moved since the row was written is left out and returned by
+ *    name, through the read-back's one rule (salesforce-field-conflict.ts). The
+ *    row's creation is when the write began for this rule: the failed attempts
+ *    were all answered before it, so a change after it is another writer's;
+ *  - a read with no usable answer spends nothing; a read Salesforce refuses
+ *    (the record is gone, a field it does not know) closes the row as refused,
+ *    since the write would be refused too;
+ *  - every field moved: nothing is sent, and the row is closed as abandoned;
+ *  - a failure on the last attempt allowed closes the row as abandoned.
+ */
+export async function drainHeldWrite(deps: ReplayDeps, orgId: string, id: string, opts: DrainOptions): Promise<DrainResult> {
+  const p = await prepare(deps, orgId, id)
+  if (!('row' in p)) return p
+  const { row, readAttempts, body, sf } = p
+  if (readAttempts >= opts.maxAttempts) return { kind: 'not_replayable', reason: 'its attempts are spent' }
+  const { now, record, withError, lock } = recorderFor(deps, id)
+  const names = Object.keys(body)
+
+  let read: { status: number; text: string }
+  try {
+    read = await sf.send('GET', `${recordPath(row)}?fields=${['LastModifiedDate', ...names].join(',')}`)
+  } catch (e) {
+    return { kind: 'read_unanswered', error: formatErr(e) }
+  }
+  if (read.status < 200 || read.status >= 300) {
+    const error = `Salesforce API error (${read.status}) reading the record: ${read.text}`
+    if (!salesforceRejectedTheWrite(read.status, read.text)) return { kind: 'read_failed', error }
+    const at = now()
+    const recorded = await record(readAttempts, { status: 'refused', replayable: false, ...withError(await lock(error)), finished_at: at, updated_at: at })
+    return { kind: 'refused', error, recorded, resent: false }
+  }
+  let current: Record<string, unknown>
+  try {
+    const parsed: unknown = JSON.parse(read.text)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
+    current = parsed as Record<string, unknown>
+  } catch (e) {
+    return { kind: 'read_failed', error: `the record read back was not readable: ${formatErr(e)}` }
+  }
+
+  const fields = names.filter((f) => f !== WRITE_MARKER_FIELD)
+  const moved = fieldsMovedSince({ fields, body, current, sinceMs: Date.parse(row.created_at), earlier: opts.earlier ?? [] })
+  const note = moved.length > 0 ? `Sent without the fields changed in Salesforce since the write failed: ${moved.join(', ')}` : undefined
+  if (moved.length > 0 && moved.length === fields.length) {
+    const at = now()
+    const recorded = await record(readAttempts, { status: 'abandoned', ...withError(await lock(`Not sent: every field had changed in Salesforce since the write failed: ${moved.join(', ')}`)), finished_at: at, updated_at: at })
+    return { kind: 'all_moved', moved, recorded }
+  }
+  const sent = Object.fromEntries(names.filter((f) => !moved.includes(f)).map((f) => [f, body[f]]))
+
+  if (!(await deps.store.claim(orgId, id, readAttempts))) return { kind: 'conflict' }
+  const out = await sendClaimed(deps, row, readAttempts, sf, sent, { lastAttempt: readAttempts + 1 >= opts.maxAttempts, note })
+  switch (out.kind) {
+    case 'replayed':
+      return { kind: 'replayed', recorded: out.recorded, moved, sent }
+    case 'refused':
+      return { ...out, resent: true }
+    default:
+      return out
+  }
 }
 
 export async function abandonHeldWrite(store: HeldWriteStore, orgId: string, id: string, nowMs: number = Date.now()): Promise<AbandonResult> {
