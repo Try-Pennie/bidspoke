@@ -75,3 +75,24 @@ export type LedgerMethod = (typeof LEDGER_METHODS)[number]
 /** How a scheduled run treats a run of the same workflow still going (L693). */
 export const OVERLAP_RULES = ['skip', 'queue'] as const
 export type OverlapRule = (typeof OVERLAP_RULES)[number]
+
+// ── the minute cron (#1949, supabase-ops migration 20261017090000) ──────────
+
+/** What observe mode records for one schedule slot: a fire it would have made, or a slot it reports missed. */
+export const OBSERVATION_OUTCOMES = ['would_fire', 'missed'] as const
+export type ObservationOutcome = (typeof OBSERVATION_OUTCOMES)[number]
+
+/**
+ * Why, by outcome. These are planFires' own reasons (packages/workflow-definition
+ * schedule/plan.ts): a type check in tick.ts fails to compile when the two lists
+ * differ, and the vocabulary test holds this one to the database.
+ */
+export const OBSERVATION_REASONS = {
+  would_fire: ['due', 'catch_up'],
+  missed: ['catch_up_none', 'outside_catch_up_window', 'superseded_by_due_fire'],
+} as const satisfies Record<ObservationOutcome, readonly string[]>
+export const ALL_OBSERVATION_REASONS: readonly string[] = Object.values(OBSERVATION_REASONS).flat()
+
+/** The maintenance sweeps the tick runs, each with one owner per interval (#1698 1.4). */
+export const OPS_SWEEPS = ['lease_expiry', 'run_expiry', 'queue_agreement'] as const
+export type OpsSweep = (typeof OPS_SWEEPS)[number]

@@ -70,32 +70,44 @@ describe('wrangler.ops.toml (#1709)', () => {
   })
 
   /**
-   * Self-dispatch (#1946): the one service binding allowed is SELF, to this
-   * Worker's own OpsInternal entrypoint. A binding to the bidding Worker, or to
-   * the default export (which the public route also reaches), must fail here.
+   * Two service bindings, each to a NAMED entrypoint (#1946, #1949): SELF, to this
+   * Worker's own OpsInternal, and OPS_GATEWAY, to the bidding Worker's OpsGateway
+   * (decision 4: the ops workflows' state and the minute cron's heartbeat). A
+   * binding to either Worker's default export, which the public route also
+   * reaches, or any third binding, must fail here.
    */
-  it('holds exactly one service binding, SELF, to its own OpsInternal entrypoint', () => {
+  it('holds exactly two service bindings: SELF to its own OpsInternal, OPS_GATEWAY to the bidding Worker\'s OpsGateway', () => {
     const services = tables(toml, 'services')
-    expect(services).toHaveLength(1)
-    expect(services[0]).toMatch(/^binding = "SELF"$/m)
-    expect(services[0]).toMatch(/^service = "bidspoke-worker-ops"$/m)
-    expect(services[0]).toMatch(/^entrypoint = "OpsInternal"$/m)
+    expect(services).toHaveLength(2)
+    const byBinding = new Map(services.map((t) => [/^binding = "([^"]+)"$/m.exec(t)?.[1], t]))
+    expect([...byBinding.keys()].sort()).toEqual(['OPS_GATEWAY', 'SELF'])
+    const self = byBinding.get('SELF')!
+    expect(self).toMatch(/^service = "bidspoke-worker-ops"$/m)
+    expect(self).toMatch(/^entrypoint = "OpsInternal"$/m)
+    const gateway = byBinding.get('OPS_GATEWAY')!
+    expect(gateway).toMatch(/^service = "bidspoke-worker"$/m)
+    expect(gateway).toMatch(/^entrypoint = "OpsGateway"$/m)
+    for (const t of services) expect(t, 'every binding names an entrypoint, never a default export').toMatch(/^entrypoint = "[A-Za-z]+"$/m)
     expect(toml).toMatch(/^name = "bidspoke-worker-ops"$/m)
-    expect(toml).not.toMatch(/^service = "bidspoke-worker"$/m)
+  })
+
+  it('binds an entrypoint the bidding Worker really exports', () => {
+    expect(read('apps/worker/src/index.ts')).toMatch(/^export \{ OpsGateway \} from '\.\/lib\/ops-gateway-entrypoint'$/m)
+    expect(read('apps/worker/src/lib/ops-gateway-entrypoint.ts')).toMatch(/^export class OpsGateway extends WorkerEntrypoint<Env>/m)
   })
 
   /**
-   * An EMPTY crons list, not an absent one (#1946). wrangler deploy leaves a
-   * Worker's existing schedules alone when the config names no triggers, so
+   * The minute cron (#1949), stated, never left out (#1946): wrangler deploy
+   * leaves a Worker's existing schedules alone when the config names none, so
    * removing Spike 0's [triggers] block left its minute cron firing into a Worker
-   * with no scheduled() handler, an exception every minute (measured 2026-10-16,
-   * 19:05 UTC). Only `crons = []` makes the deploy delete it. The run engine's
-   * tick (B2) replaces this with its own cron and handler.
+   * with no scheduled() handler (measured 2026-10-16, 19:05 UTC). The tick now
+   * has its handler, and this is its one schedule.
    */
-  it("declares an empty crons list, so a deploy removes Spike 0's minute cron (#1946)", () => {
+  it('declares the one minute cron the tick runs on, and exports the handler it fires (#1949)', () => {
     const triggers = tables(toml, 'triggers')
     expect(triggers).toHaveLength(1)
-    expect(triggers[0]).toMatch(/^crons = \[\]$/m)
+    expect(triggers[0]).toMatch(/^crons = \["\* \* \* \* \*"\]$/m)
+    expect(read('apps/worker/src/ops/index.ts')).toMatch(/^ {2}scheduled\(controller: ScheduledController, env: OpsEnv\): Promise<void> \{$/m)
   })
 
   it('exports the OpsInternal entrypoint the SELF binding names from its main module', () => {

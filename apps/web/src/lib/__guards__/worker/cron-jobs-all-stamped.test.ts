@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { WORKER_SRC, listTsFiles } from '../../__tests__/_scan-utils'
+import { STAMPED_IN, jobWorkers } from './_cron-registry'
 
 const INDEX_SOURCE = readFileSync(path.join(WORKER_SRC, 'index.ts'), 'utf8')
 const REGISTRY_SOURCE = readFileSync(path.join(WORKER_SRC, 'lib/cron-heartbeat.ts'), 'utf8')
@@ -48,7 +49,8 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 /** The two calls the handler must make for a job id: the started stamp and the settled stamp. */
 export function stampsFor(source: string, jobId: string, constants: Map<string, string[]>): { started: boolean; completed: boolean } {
   const names = [`'${jobId}'`, ...(constants.get(jobId) ?? [])]
-  const started = names.some((n) => new RegExp(`writeHeartbeat\\([^)]*,\\s*${escape(n)}\\s*\\)`).test(source))
+  // An optional clock after the id: lib/ops-gateway.ts passes this Worker's own (#1949).
+  const started = names.some((n) => new RegExp(`writeHeartbeat\\([^)]*,\\s*${escape(n)}\\s*(,[^)]*)?\\)`).test(source))
   const completed = names.some((n) => new RegExp(`(completeAfter\\(|writeHeartbeatCompleted\\()[\\s\\S]{0,4000}?${escape(n)}`).test(source))
   return { started, completed }
 }
@@ -65,13 +67,22 @@ describe('every registered cron job is stamped by the scheduled handler', () => 
     expect(constants.get('execution-archive-expiry')).toEqual(['ARCHIVE_EXPIRY_JOB'])
   })
 
+  const workers = jobWorkers(REGISTRY_SOURCE)
   for (const id of ids) {
-    it(`${id} has a started stamp and a settled stamp reachable from scheduled()`, () => {
-      const s = stampsFor(INDEX_SOURCE, id, constants)
-      expect(s.started, `${id}: no writeHeartbeat(..., '${id}') in apps/worker/src/index.ts`).toBe(true)
-      expect(s.completed, `${id}: no completeAfter or writeHeartbeatCompleted for '${id}' in apps/worker/src/index.ts`).toBe(true)
+    const worker = workers.get(id)
+    const file = worker ? STAMPED_IN[worker] : 'index.ts'
+    it(`${id} has a started stamp and a settled stamp${worker ? ` in ${file}, where ${worker} stamps it` : ' reachable from scheduled()'}`, () => {
+      expect(file, `${id} names worker ${worker}, which no stamping source is listed for`).toBeDefined()
+      const s = stampsFor(readFileSync(path.join(WORKER_SRC, file!), 'utf8'), id, constants)
+      expect(s.started, `${id}: no writeHeartbeat(..., '${id}') in apps/worker/src/${file}`).toBe(true)
+      expect(s.completed, `${id}: no completeAfter or writeHeartbeatCompleted for '${id}' in apps/worker/src/${file}`).toBe(true)
     })
   }
+
+  it('reads a job of another Worker out of the registry, so the split above is not vacuous (#1949)', () => {
+    expect(workers.get('ops-tick')).toBe('bidspoke-worker-ops')
+    expect(workers.has('daily-1300')).toBe(false)
+  })
 
   it('reports a job the handler never stamps, so a green run means the scan can see an omission', () => {
     expect(stampsFor(INDEX_SOURCE, 'no-such-job', constants)).toEqual({ started: false, completed: false })

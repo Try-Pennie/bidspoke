@@ -2,7 +2,8 @@
 #
 # One public route, POST /porting/capture/:hashid, receiving the porting
 # recorder's captures from Pipedream. Not public: a SELF binding to its own
-# OpsInternal entrypoint (#1946, below). It shares this package's source and dependencies but
+# OpsInternal entrypoint (#1946, below), the minute cron (#1949) and its binding
+# to the bidding Worker's OpsGateway entrypoint. It shares this package's source and dependencies but
 # is a SEPARATE Worker: its own name, its own bindings, its own secrets, and
 # none of the money Worker's (no Supabase key, no partner credentials, no KV, no
 # Durable Objects). The full ops Worker grows from this in plan 0.E.
@@ -67,13 +68,28 @@ binding = "SELF"
 service = "bidspoke-worker-ops"
 entrypoint = "OpsInternal"
 
-# No cron, stated as an EMPTY list rather than left out (#1946): wrangler deploy
-# leaves a Worker's existing schedules in place when the config names none, so
-# Spike 0's minute cron kept firing into this Worker, which has no scheduled()
-# handler, until this line told a deploy to remove it. The run engine's tick (B2)
-# replaces it with its own cron and handler.
+# The bidding Worker's OpsGateway entrypoint (#1949, Dan's decision 4 of
+# 2026-10-16): the ops workflows' state, which the bidding database is the one
+# home of, and the minute cron's heartbeat and report, which the bidding Worker
+# watches so the watchdog does not depend on this Worker (L71). A NAMED
+# entrypoint, never the bidding Worker's default export, whose fetch handler is
+# its public API: apps/web/src/lib/__tests__/ops-worker-config.test.ts allows
+# this one binding into it and no other. Deploy Ops Worker waits for Deploy
+# Worker, so the entrypoint exists before a deploy binds it.
+[[services]]
+binding = "OPS_GATEWAY"
+service = "bidspoke-worker"
+entrypoint = "OpsGateway"
+
+# The run engine's minute cron (#1949, B2): scheduled() in src/ops/index.ts runs
+# one tick of src/ops/tick.ts, in observe mode. Always stated, never left out
+# (#1946): wrangler deploy leaves a Worker's existing schedules in place when the
+# config names none. A new cron first fires about 16 minutes after the deploy
+# that adds it, and its scheduledTime lands at :48 within the minute (spike,
+# docs/ops-ceilings-spike.md), so nothing keys on either. Deploy Ops Worker
+# checks the deploy's own output lists this schedule.
 [triggers]
-crons = []
+crons = ["* * * * *"]
 
 # Traces go to the tail consumer, which skips this Worker's traces until Phase 1
 # points it at the ops database (apps/worker-tail, #1709): an ops execution id
@@ -88,13 +104,16 @@ invocation_logs = true
 
 # Secrets (set via `wrangler secret put <NAME> --config wrangler.ops.toml`):
 #   PORTING_CAPTURE_MASTER  derives each workflow's capture key (HMAC of the
-#                           hashid) and the redaction key. Cannot be re derived
-#                           if lost: escrow it with the other recovery keys.
+#                           hashid), the redaction key and the minute cron's
+#                           dispatch key (src/ops/dispatch-auth.ts, #1949).
+#                           Cannot be re derived if lost: escrow it with the
+#                           other recovery keys.
 #   OPS_SUPABASE_URL        the ops database ("Bidspoke Ops"), and
 #   OPS_SUPABASE_SECRET_KEY a named secret key (sb_secret_...) Dan creates for
 #                           this Worker, which acts as service_role
 #                           (src/ops/ops-db.ts). Not the legacy service_role key:
-#                           the project's legacy keys are disabled. Allowed, not
-#                           required: nothing calls the ops database until the
-#                           run engine's tick (#1949). Never the bidding
+#                           the project's legacy keys are disabled. The minute
+#                           cron (#1949) needs both, and while either is unset
+#                           it reports not_configured, naming it, every minute,
+#                           and the bidding Worker pages. Never the bidding
 #                           database's URL or key, which the client refuses.
