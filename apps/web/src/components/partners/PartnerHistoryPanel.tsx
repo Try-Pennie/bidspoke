@@ -50,15 +50,24 @@ function Line({ line }: { line: HistoryLine }) {
 }
 
 export function PartnerHistoryPanel({ partner, shown, clock = Date.now }: { partner: Partner; shown: boolean; clock?: () => number }) {
-  const [read, setRead] = useState<Read>({ kind: 'idle' })
+  // The read is kept with the partner it is for. The panel stays mounted when
+  // another partner is selected, and its effect starts the new read only after
+  // the first frame is painted, so a read for any other partner is shown as
+  // reading, never as this partner's history.
+  const [stored, setStored] = useState<{ partnerId: string; read: Read }>({ partnerId: partner.id, read: { kind: 'idle' } })
   const [attempt, setAttempt] = useState(0)
   const [wanted, setWanted] = useState(shown)
   const [now, setNow] = useState(() => clock())
   useEffect(() => { if (shown) setWanted(true) }, [shown])
+  const read: Read = useMemo(
+    () => (stored.partnerId === partner.id ? stored.read : { kind: wanted ? 'reading' : 'idle' }),
+    [stored, partner.id, wanted],
+  )
 
   useEffect(() => {
     if (!wanted) return
     let cancelled = false
+    const setRead = (next: Read) => setStored({ partnerId: partner.id, read: next })
     setRead({ kind: 'reading' })
     api.partners.history(partner.id)
       .then((history) => {

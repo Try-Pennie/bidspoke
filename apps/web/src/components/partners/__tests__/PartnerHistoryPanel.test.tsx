@@ -4,6 +4,7 @@
  * an incomplete answer said as such; a path nothing names shown and counted.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useLayoutEffect } from 'react'
 import { act, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
@@ -119,6 +120,24 @@ describe('PartnerHistoryPanel (#2141)', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('a newly selected partner never paints the previous partner\'s history, not even for the frame before its read starts', async () => {
+    vi.mocked(api.partners.history).mockResolvedValue(LIBERTY)
+    const painted: string[] = []
+    // A layout effect runs after the DOM is written and before the panel's own
+    // effects, so it sees exactly what the first frame for the new partner shows.
+    function Probe({ partner }: { partner: Partner }) {
+      useLayoutEffect(() => { painted.push(document.body.textContent ?? '') })
+      return <PartnerHistoryPanel partner={partner} shown clock={clock} />
+    }
+    const { rerender } = render(<Probe partner={PARTNER} />)
+    await screen.findByRole('heading', { name: 'Yesterday' })
+    vi.mocked(api.partners.history).mockReturnValue(new Promise(() => {}))
+    painted.length = 0
+    rerender(<Probe partner={{ ...PARTNER, id: 'p2', name: 'Tripoint' } as Partner} />)
+    expect(painted[0]).not.toContain('Loan amount minimum')
+    expect(painted[0]).toContain('Reading the history')
   })
 
   it('a newly selected partner reads its own history', async () => {
