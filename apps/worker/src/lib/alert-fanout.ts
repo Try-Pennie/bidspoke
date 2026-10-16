@@ -13,6 +13,14 @@
  * (failure-rate, slow-execution-rate, volume-cliff's db-unreachable path): those
  * key their cooldown on a workflow or a single org and announce recovery, which
  * is a different shape. They still share `slackOrgIds` for the org lookup.
+ *
+ * Every read of `service_connections` lives here or in slack.ts (#1303, guarded
+ * by service-connections-readers.test.ts). The org lists answer a discriminated
+ * result (`SlackOrgList`, `SlackFanout`, `SlackConnectionsRead`): from the
+ * database, from the saved copy, or unreachable and why, so "no orgs" and "could
+ * not read" differ. A caller whose next step is the same either way folds it with
+ * `orgIdsToTell`, `anyDelivered` or `everyDelivered`. On the scheduled handler's
+ * client the read is bounded and falls back to the copy (scheduled-slack.ts).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'

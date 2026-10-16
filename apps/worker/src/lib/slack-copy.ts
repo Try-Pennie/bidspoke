@@ -79,7 +79,7 @@ export async function readLastGoodSlackConnections(kv: CopyKv, secretKeys: Secre
     return (await decryptCopy(blob, secretKeys)).connections
   } catch (e) {
     // A blob written under a rotated key is a miss, not a crash.
-    console.error(`[volume-cliff] last-good Slack connections unreadable: ${formatErr(e)}`)
+    console.error(`[slack-copy] last-good Slack connections unreadable: ${formatErr(e)}`)
     return new Map()
   }
 }
@@ -94,6 +94,6 @@ export async function rememberSlackConnections(
     const blob = await encryptSecret(JSON.stringify(Object.fromEntries(connections)), secretKeys)
     await kv.put(SLACK_CONNS_LASTGOOD_KEY, blob)
   } catch (e) {
-    console.error(`[volume-cliff] last-good Slack connections write failed: ${formatErr(e)}`)
+    console.error(`[slack-copy] last-good Slack connections write failed: ${formatErr(e)}`)
   }
 }

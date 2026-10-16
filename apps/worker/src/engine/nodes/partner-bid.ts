@@ -215,7 +215,7 @@ export const CIRCUIT_ALERT_DEADLINE_MS = 3_000
 
 export interface CircuitAlertDeps {
   /**
-   * The last-good copy of the Slack connections (lib/volume-cliff.ts), the page's
+   * The last-good copy of the Slack connections (lib/slack-copy.ts), the page's
    * fallback when the connection row cannot be read. Required, so no caller can
    * page without one by forgetting it (L168).
    */
