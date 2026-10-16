@@ -2,6 +2,7 @@ import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import AxeBuilder from '@axe-core/playwright'
 import { checkScannedPage } from '../src/lib/scanned-page'
+import { waivableSelector, waivedInDocument, type ContrastWaiver } from './contrast-waiver'
 
 /**
  * Run axe-core against the current page and fail the test on any serious or
@@ -16,7 +17,8 @@ import { checkScannedPage } from '../src/lib/scanned-page'
  * test about that surface measures it rather than the page behind it.
  *
  * `contrastWaiver` lets through ONE known colour-contrast failure, text in the
- * named class (or inside it), until the named issue sets its new shade. Every
+ * named class inside the named surface, in the main document only
+ * (contrast-waiver.ts), until the named issue sets its new shade. Every
  * other contrast failure, and every other rule, still fails the scan. It exists
  * for the partners page form (#2137), whose grey hint text on the beige
  * background PR13 (#2144) recolours once Dan picks the shade; the waiver is
@@ -27,7 +29,7 @@ export async function expectNoSeriousA11yViolations(
   exclude: string[] = [],
   expectedPath?: string,
   include?: string,
-  contrastWaiver?: { className: string; issue: string },
+  contrastWaiver?: ContrastWaiver,
 ) {
   // Prove the page under the scanner is the page that was asked for, and that
   // it rendered, BEFORE measuring it (#797). The rule itself is a pure function
@@ -50,13 +52,12 @@ export async function expectNoSeriousA11yViolations(
     (v) => v.impact === 'serious' || v.impact === 'critical',
   )
   if (contrastWaiver) {
-    const waived = async (target: unknown) => page.evaluate(
-      ([selector, cls]) => {
-        const el = document.querySelector(selector)
-        return el !== null && el.closest('.' + cls) !== null
-      },
-      [String(Array.isArray(target) ? target[target.length - 1] : target), contrastWaiver.className] as const,
-    )
+    // Only a main document node, inside the waiver's surface and class (contrast-waiver.ts).
+    const waived = async (target: unknown) => {
+      const selector = waivableSelector(target)
+      if (selector === null) return false
+      return page.evaluate(`(${waivedInDocument.toString()})(document, ${JSON.stringify(selector)}, ${JSON.stringify(contrastWaiver)})`) as Promise<boolean>
+    }
     const kept = []
     for (const v of blocking) {
       if (v.id !== 'color-contrast') { kept.push(v); continue }
