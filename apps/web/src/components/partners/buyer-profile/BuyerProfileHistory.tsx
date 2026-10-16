@@ -5,6 +5,7 @@
  * when, each changed path old to new in the form's own words.
  */
 import { formatProfileValue, profileFieldLabel } from './labels'
+import { formatEtDateTime } from '@/lib/dates'
 
 export interface HistoryEntry {
   changed_at: string
@@ -13,10 +14,7 @@ export interface HistoryEntry {
   changes: Record<string, { old: unknown; new: unknown }> | null
 }
 
-function when(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
-}
+const when = formatEtDateTime
 
 export function BuyerProfileHistory({ entries }: { entries: readonly HistoryEntry[] }) {
   if (entries.length === 0) return <p className="text-xs text-gray-500">This profile has never been saved.</p>

@@ -34,6 +34,41 @@ export function formatEtDayTime(dateStr: string): string {
   }).format(new Date(dateStr))
 }
 
+/** "Oct 14, 2026, 2:34 PM": day, year and ET clock time with no zone suffix; an unreadable time comes back as given. */
+export function formatEtDateTime(dateStr: string): string {
+  const d = new Date(dateStr)
+  if (Number.isNaN(d.getTime())) return dateStr
+  return new Intl.DateTimeFormat('en-US', {
+    timeZone: ET,
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(d)
+}
+
+/**
+ * A moment in a named zone, for a figure kept in that zone's day (the held
+ * clicks count's Pacific day): 'day-time' "Oct 14, 2:34 PM PDT", 'clock'
+ * "2:34 PM PDT", 'day' "Oct 14". A time carries its zone's name, because it is
+ * not ET. An unreadable moment comes back as given.
+ */
+export function formatInZone(iso: string, timeZone: string, style: 'day-time' | 'clock' | 'day'): string {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return iso
+  const day = style === 'clock' ? {} : { month: 'short', day: 'numeric' } as const
+  const time = style === 'day' ? {} : { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' } as const
+  return new Intl.DateTimeFormat('en-US', { timeZone, ...day, ...time }).format(d)
+}
+
+/** "Sep 20": a calendar date (YYYY-MM-DD) as written, in no zone; an unreadable one comes back as given. */
+export function formatCalendarDay(date: string): string {
+  const d = new Date(`${date}T12:00:00Z`)
+  if (Number.isNaN(d.getTime())) return date
+  return new Intl.DateTimeFormat('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' }).format(d)
+}
+
 /** "2:34 PM": the ET clock time alone, for a row under a day heading. */
 export function formatEtClock(dateStr: string): string {
   return new Intl.DateTimeFormat('en-US', {

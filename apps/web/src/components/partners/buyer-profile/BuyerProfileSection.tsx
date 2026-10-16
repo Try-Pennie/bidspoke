@@ -38,6 +38,8 @@ import { StatePicker } from './StatePicker'
 import { UnresolvedSalesList, type SettleOutcome, type UnresolvedSale } from './UnresolvedSalesList'
 import { WeeklyHoursEditor } from './WeeklyHoursEditor'
 import { FIELD_LABELS, SECTION_LABELS, SOLD_ON_LABELS } from './labels'
+import { LiveSectionNote } from '../live/PartnerLive'
+import { formatCalendarDay } from '@/lib/dates'
 
 export const EMPTY_PROFILE: BuyerProfileDocument = {
   // No preselected answer (#1541): the person chooses, and the save refuses until they do.
@@ -114,10 +116,7 @@ function toUnresolvedSale(e: Record<string, unknown>, partnerName: string): Unre
 }
 
 /** A Pacific date as the count names it, 2027-09-20, shown as Sep 20. */
-function countDay(date: string): string {
-  const d = new Date(`${date}T12:00:00Z`)
-  return Number.isNaN(d.getTime()) ? date : d.toLocaleDateString('en-US', { timeZone: 'UTC', month: 'short', day: 'numeric' })
-}
+const countDay = formatCalendarDay
 
 const LIST_NOT_CLEARED = ' The entry was not removed from this list; reload to see it as it stands.'
 
@@ -331,10 +330,12 @@ export function BuyerProfileSection(props: Props) {
             <p id="bp-sold-on-hint" className="text-xs text-gray-500">The offer: sold through buyer selection at a priced rate. The click: quoted at the Engine bid and sent to the buyer only when the person clicks.</p>
             {soldOnLock && <p id="bp-sold-on-lock" className="text-xs text-gray-600">{soldOnLock}</p>}
             {soldOnError && <p id="bp-sold-on-error" role="alert" className="text-xs text-red-700">{soldOnError}</p>}
+            <LiveSectionNote sections={['Sold on']} />
           </div>
 
           <div className="space-y-4">
             <h4 className="text-sm font-medium text-gray-700">{click ? 'Enabled and eligibility' : 'Enabled and ranking'}</h4>
+            <LiveSectionNote sections={['Enabled and ranking', 'Eligibility']} />
             <div className="flex items-center gap-3">
               <Toggle id="bp-enabled" checked={profile.is_enabled} onChange={(v) => patch({ is_enabled: v })} label="Enabled" />
               <label htmlFor="bp-enabled" className="text-sm text-graphite">Enabled</label>
@@ -361,6 +362,7 @@ export function BuyerProfileSection(props: Props) {
             </div>
             <div>
               <h5 className="mb-2 text-xs font-medium text-gray-600">{SECTION_LABELS.windows}</h5>
+              <LiveSectionNote sections={[SECTION_LABELS.windows]} />
               <WeeklyHoursEditor value={profile.windows} onChange={(windows) => patch({ windows })} />
               {errorFor(errors, 'windows') && <p role="alert" className="text-xs text-red-700">{errorFor(errors, 'windows')}</p>}
             </div>
@@ -370,6 +372,7 @@ export function BuyerProfileSection(props: Props) {
           {!click && (
             <div className="space-y-3">
               <h4 className="text-sm font-medium text-gray-700">{SECTION_LABELS.tiers}</h4>
+              <LiveSectionNote sections={[SECTION_LABELS.tiers]} />
               <PricingTiersEditor value={profile.tiers} onChange={(tiers) => patch({ tiers })} errors={byPath} />
               {errorFor(errors, 'tiers') && <p role="alert" className="text-xs text-red-700">{errorFor(errors, 'tiers')}</p>}
             </div>
@@ -377,6 +380,7 @@ export function BuyerProfileSection(props: Props) {
 
           <div className="space-y-3">
             <h4 className="text-sm font-medium text-gray-700">Caps</h4>
+            <LiveSectionNote sections={['Caps']} />
             <CapsGrid
               value={{ hourly_lead_cap: profile.hourly_lead_cap, daily_lead_cap: profile.daily_lead_cap, hourly_spend_cap_cents: profile.hourly_spend_cap_cents, daily_spend_cap_cents: profile.daily_spend_cap_cents }}
               onChange={(caps) => patch(caps)}
@@ -419,12 +423,14 @@ export function BuyerProfileSection(props: Props) {
           {click && (
             <div className="space-y-3">
               <h4 className="text-sm font-medium text-gray-700">Click delivery</h4>
+              <LiveSectionNote sections={['Click delivery']} />
               <ClickDeliveryEditor value={profile.click_delivery} onChange={(click_delivery) => patch({ click_delivery })} errors={byPath} />
             </div>
           )}
 
           <div className="space-y-3">
             <h4 className="text-sm font-medium text-gray-700">Outcome rules</h4>
+            <LiveSectionNote sections={['Outcome rules']} />
             {/* A click buyer's sale is judged by the click workflow, never by accept rules (#1541). */}
             {!click && (
               <div>
@@ -463,6 +469,7 @@ export function BuyerProfileSection(props: Props) {
 
           <div className="space-y-3">
             <h4 className="text-sm font-medium text-gray-700">{SECTION_LABELS.blackout_dates}</h4>
+            <LiveSectionNote sections={[SECTION_LABELS.blackout_dates]} />
             <BlackoutDatesEditor value={profile.blackout_dates} onChange={(blackout_dates) => patch({ blackout_dates })} errors={byPath} />
           </div>
         </>

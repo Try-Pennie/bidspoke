@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, useMemo, useReducer, useRef } from 'react'
+import { useState, useEffect, useMemo, useReducer, useRef, useContext } from 'react'
 import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidComparisonSource, ExtraExtractionConfig, PartnerPageSaveRequest, PartnerPageStale } from '@/lib/api'
 import { PARTNER_TYPES, isBuyerPartner, isSourcePartner, partnerTypeLabel, type PartnerType } from '@/lib/partner-roles'
 import {
@@ -38,6 +38,13 @@ import {
   type TabInputs, type UsageState,
 } from './partner-tabs'
 import { bidsInSentences } from './bid-group-usage-text'
+import { LiveNotesContext, LivePageNotes, LiveSectionNote, LiveStatusLine, PartnerLiveContext } from '@/components/partners/live/PartnerLive'
+import { usePartnerPageLive } from './use-partner-page-live'
+import {
+  askedOnly, classifyNotice, directChangeNotes, liveConflictSentence, liveMissReport, liveTakenSentence, probeFindsGap, savedByName, tabClientId, updatedByNotes,
+  PROBE_EVERY_MS, type DirectNote, type HeldVersions, type SectionNote,
+} from '@/lib/partner-live-page'
+import type { PartnerPageNotice, PartnerPageVersions } from '@bidspoke/partner-page-live'
 
 const NO_USAGE: PartnerUsage = { bid_group: [], partner_bid: [], latency_gate: [] }
 const NO_NAMES: ReadonlyMap<string, string> = new Map()
@@ -139,6 +146,8 @@ interface Props {
   partnerNames?: ReadonlyMap<string, string>
   /** Whether the page holds a problem, for the mark on the partner's row in the list. */
   onProblemChange?: (hasProblem: boolean) => void
+  /** Another person's save was merged in (#2135): the row as stored now, for the list. */
+  onLiveUpdate?: (partner: Partner) => void
 }
 
 /**
@@ -165,11 +174,18 @@ function fieldErrorsOf(err: unknown): ProfileError[] {
 const asNumber = (text: string): number | null => (text.trim() === '' ? null : Number(text))
 const asText = (n: number | null): string => (n === null ? '' : String(n))
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+/**
+ * liveSections: the registry sections (partner-draft.ts) this block shows, when
+ * its heading is not one of them, so a live note about them lands here (#2135).
+ */
+function Section({ title, liveSections, children }: { title: string; liveSections?: readonly string[]; children: React.ReactNode }) {
   return (
     <div>
       <h3 className="mb-4 text-xs font-semibold text-gray-500">{title}</h3>
-      <div className="space-y-4">{children}</div>
+      <div className="space-y-4">
+        <LiveSectionNote sections={liveSections ?? [title]} />
+        {children}
+      </div>
     </div>
   )
 }
@@ -199,6 +215,7 @@ export default function PartnerForm({
   onTabChange,
   partnerNames = NO_NAMES,
   onProblemChange,
+  onLiveUpdate,
 }: Props) {
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -280,6 +297,8 @@ export default function PartnerForm({
     base: PageHalves; mine: PageHalves; theirs: PageHalves
     theirPartner: Partner; theirName: string | null
     partnerVersion: number; choices: Record<string, MergeSide>
+    /** A merge a live notice held (#2135): only these questions are asked. */
+    onlyKeys?: string[]
   } | null>(null)
   const [mergeOpen, setMergeOpen] = useState(false)
   /** Set by the merge dialog's Save both: submit once the merged values are on screen. */
@@ -533,8 +552,10 @@ export default function PartnerForm({
     const key = JSON.stringify({ patch, profileDoc, version, profileVersion })
     const saveId = pendingSaveRef.current?.key === key ? pendingSaveRef.current.saveId : mintSaveId()
     pendingSaveRef.current = null
+    // This tab and this press, so the tab knows its own live notice (#2135, L747).
+    ownSaveIds.current.add(saveId)
     try {
-      const result = await onSave(patch as PartnerBody, partner.id, undefined, { expected_partner_version: version, expected_profile_version: profileVersion, profile: profileDoc, save_id: saveId })
+      const result = await onSave(patch as PartnerBody, partner.id, undefined, { expected_partner_version: version, expected_profile_version: profileVersion, profile: profileDoc, save_id: saveId, client_id: tabClientId() })
       const saved = result ? result.partner : null
       versionRef.current = saved?.version ?? version + 1
       return { kind: 'saved', partner: saved, profile: result ? result.profile : null, copyWarning: result ? result.copyWarning : null }
@@ -670,10 +691,11 @@ export default function PartnerForm({
   }
 
   // Only when the pending merge or an answer changes, not on every keystroke behind a closed dialog.
-  const mergeResult = useMemo(
-    () => (pendingMerge ? mergeThreeWay(pendingMerge.base, pendingMerge.mine, pendingMerge.theirs, PARTNER_FIELD_REGISTRY, pendingMerge.choices) : null),
-    [pendingMerge],
-  )
+  const mergeResult = useMemo(() => {
+    if (!pendingMerge) return null
+    const result = mergeThreeWay(pendingMerge.base, pendingMerge.mine, pendingMerge.theirs, PARTNER_FIELD_REGISTRY, pendingMerge.choices)
+    return pendingMerge.onlyKeys ? askedOnly(result, pendingMerge.onlyKeys) : result
+  }, [pendingMerge])
 
   /** Save both: the answers on screen at their versions, then one save of what is still mine. */
   function saveMerged() {
@@ -681,7 +703,209 @@ export default function PartnerForm({
     applyMerge(pendingMerge, mergeResult)
     setMergeOpen(false)
     setPendingMerge(null)
+    setLiveHeld(null)
     setResubmit(true)
+  }
+
+  // ── The live channel (#2135, PM-2) ──────────────────────────────────────────
+  // Another person's save of this partner arrives as a notice on partners:<org>.
+  // The page reads both halves again through the Worker and merges them with
+  // what is on screen (mergeThreeWay, #2134): a field only they changed updates
+  // in place, and a field both changed waits for this person's next Save. While
+  // the draft is dirty a probe asks every PROBE_EVERY_MS for the versions, the
+  // backstop for a notice Realtime lost (ADR 0012), and reports such a miss.
+  const liveDeps = useContext(PartnerLiveContext)
+  /** Every save id this tab has sent: its notice, with this tab's client_id, is its own echo. */
+  const ownSaveIds = useRef(new Set<string>())
+  /** When the page last heard a notice of this partner, for a miss report's gap. */
+  const lastNoticeAt = useRef<number | null>(null)
+  /**
+   * Another person's save changed fields this person is editing: the rest of it
+   * is on screen, and these keys are asked when Save is pressed. base is the
+   * page as it was before the first such save; theirs is the newest.
+   */
+  const [liveHeld, setLiveHeld] = useState<{ base: PageHalves; theirs: PageHalves; theirPartner: Partner; theirName: string | null; partnerVersion: number; keys: string[] } | null>(null)
+  const [updatedNotes, setUpdatedNotes] = useState<SectionNote[]>([])
+  const [directNotes, setDirectNotes] = useState<DirectNote[]>([])
+  const liveNotes = useMemo(() => [...updatedNotes, ...directNotes], [updatedNotes, directNotes])
+  /** A read of their save, merged in the next render so it meets what is on screen then. */
+  const [fetchedTheirs, setFetchedTheirs] = useState<{ partner: Partner; profile: BuyerProfileDocument | null; resolvesSave: string | null } | null>(null)
+  const refetching = useRef(false)
+  const refetchWanted = useRef(false)
+  const profileRef = useRef(profile)
+  profileRef.current = profile
+  // A save in flight or a merge waiting on answers: a notice meanwhile is read after it.
+  const liveBusy = saveState === 'saving' || pendingMerge !== null
+  const liveBusyRef = useRef(liveBusy)
+  liveBusyRef.current = liveBusy
+  const heldVersions = (): HeldVersions => ({ partnerVersion: versionRef.current, profileVersion: profileRef.current ? profileRef.current.version ?? 0 : null })
+  const liveNow = () => liveDeps?.clock.now() ?? Date.now()
+
+  const liveChannel = usePartnerPageLive(isNew ? null : liveDeps, partner?.organization_id ?? null, {
+    onNotice: handleNotice,
+    onCatchUp: () => { void refetchTheirs(null) },
+  })
+  const liveStatusRef = useRef(liveChannel.status)
+  liveStatusRef.current = liveChannel.status
+
+  function handleNotice(n: PartnerPageNotice) {
+    if (!partner) return
+    const action = classifyNotice(n, { partnerId: partner.id, clientId: tabClientId(), ownSaveIds: ownSaveIds.current, unknownSaveId: pendingSaveRef.current?.saveId ?? null, known: heldVersions() })
+    if (action === 'ignore') return
+    lastNoticeAt.current = liveNow()
+    if (action === 'echo' || action === 'already_held') return
+    if (action === 'uuids') { setUuidsAttempt((a) => a + 1); return }
+    if (action === 'deleted') {
+      setSaveOutcome({ kind: 'failed', message: `${partner.name} was deleted while you were editing, so these changes cannot be saved.` })
+      return
+    }
+    void refetchTheirs(action === 'resolves_unknown' ? n.saveId : null)
+  }
+
+  /** Read both halves as stored now, through the Worker, then the versions for the direct change notes. */
+  async function refetchTheirs(resolvesSave: string | null) {
+    if (!partner || !liveDeps) return
+    if (refetching.current || liveBusyRef.current) { refetchWanted.current = true; return }
+    refetching.current = true
+    try {
+      const readProfile = profileRef.current !== null
+      const [fresh, prof] = await Promise.all([api.partners.get(partner.id), readProfile ? api.buyerProfiles.get(partner.id) : Promise.resolve(null)])
+      setFetchedTheirs({ partner: fresh, profile: prof?.profile ?? null, resolvesSave })
+      void readVersions()
+    } catch (err) {
+      setSaveOutcome({ kind: 'failed', message: `Another save of this partner could not be read: ${errorSentence(err, 'the read failed')}. Your changes are still here.` })
+    } finally {
+      refetching.current = false
+    }
+  }
+
+  // A notice that came while a save or a merge was in hand is read once it is done.
+  useEffect(() => {
+    if (liveBusy || fetchedTheirs || !refetchWanted.current) return
+    refetchWanted.current = false
+    void refetchTheirs(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveBusy, fetchedTheirs])
+
+  // Their save, merged with what is on screen now (#2134's merge).
+  useEffect(() => {
+    if (!fetchedTheirs || !partner) return
+    setFetchedTheirs(null)
+    if (liveBusy) { refetchWanted.current = true; return }
+    const { partner: fresh, profile: freshProfile, resolvesSave } = fetchedTheirs
+    const freshVersion = fresh.version ?? versionRef.current
+    const readProfile = profile !== null && profileBaseline.current !== null
+    const baseProfile = readProfile ? (JSON.parse(profileBaseline.current!) as BuyerProfileDocument) : null
+    const theirsProfile = readProfile ? freshProfile ?? baseProfile : null
+    if (freshVersion === versionRef.current && (!readProfile || (theirsProfile?.version ?? 0) === (profile?.version ?? 0))) return
+    const resolved = resolvesSave !== null && pendingSaveRef.current?.saveId === resolvesSave
+    const pageBase: PageHalves = { partner: draftState.base, profile: baseProfile }
+    const theirs: PageHalves = { partner: buildPartnerBody(snapshotOf(fresh), bodyCtx), profile: theirsProfile }
+    const result = mergeThreeWay(pageBase, { partner: buildPartnerBody(captureSnapshot(), bodyCtx), profile: readProfile ? profile : null }, theirs, PARTNER_FIELD_REGISTRY)
+    applyMerge({ theirs, theirPartner: fresh, partnerVersion: freshVersion }, result)
+    onLiveUpdate?.(fresh)
+    // An Undo was made against the versions before their save, so it is withdrawn.
+    setUndo(null)
+    setUndoSecondsLeft(0)
+    if (resolved) {
+      // The press that got no answer did land: its own notice says so.
+      setSaveState('idle')
+      setSaveOutcome({ kind: 'done', message: `Saved. ${pickupSentence()}` })
+      return
+    }
+    const name = savedByName(fresh)
+    const conflictKeys = result.conflicts.flatMap((s) => s.conflicts.map((c) => c.key))
+    const notes = updatedByNotes(name, result.autoTaken)
+    setUpdatedNotes((prev) => [...prev.filter((p) => !notes.some((n) => n.sections.some((s) => p.sections.includes(s)))), ...notes])
+    if (conflictKeys.length > 0 || liveHeld) {
+      setLiveHeld((held) => ({ base: held?.base ?? pageBase, theirs, theirPartner: fresh, theirName: name, partnerVersion: freshVersion, keys: [...new Set([...(held?.keys ?? []), ...conflictKeys])] }))
+      return
+    }
+    setSaveOutcome({ kind: 'done', message: liveTakenSentence(name, result.autoTaken) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchedTheirs])
+
+  /** The versions and newest change of each half: the direct change notes, and the probe's answer. */
+  async function readVersions(): Promise<PartnerPageVersions | null> {
+    if (!partner || !liveDeps) return null
+    try {
+      const v = await api.partners.versions(partner.id)
+      setDirectNotes(directChangeNotes(v, liveDeps.clock.now()))
+      return v
+    } catch (err) {
+      // The probe is the backstop for a lost notice, so a failed read is said in the log, never taken as "no change".
+      console.error(`[partners live] the versions read failed: ${errorSentence(err, 'unknown error')}`)
+      return null
+    }
+  }
+
+  // Read on open, so a change made outside the page before it opened is noted, and anything missed before the join is merged.
+  useEffect(() => {
+    if (!liveDeps || !partnerId) return
+    void readVersions().then((v) => { if (v && probeFindsGap(heldVersions(), v)) void refetchTheirs(null) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveDeps, partnerId])
+
+  // A direct change note goes once its bound has passed.
+  useEffect(() => {
+    if (!liveDeps || directNotes.length === 0) return
+    const next = Math.min(...directNotes.map((n) => n.expiresAt))
+    return liveDeps.clock.setTimeout(() => setDirectNotes((notes) => notes.filter((n) => n.expiresAt > liveDeps.clock.now())), Math.max(0, next - liveDeps.clock.now()))
+  }, [directNotes, liveDeps])
+
+  // The delivery probe (L106): while the draft is dirty, the versions every PROBE_EVERY_MS.
+  const [probeRound, setProbeRound] = useState(0)
+  useEffect(() => {
+    if (!liveDeps || !partnerId || !dirty) return
+    return liveDeps.clock.setTimeout(() => { void probe().finally(() => setProbeRound((r) => r + 1)) }, PROBE_EVERY_MS)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveDeps, partnerId, dirty, probeRound])
+
+  /**
+   * A version past the one held, found while the header said Live, is a notice
+   * the channel did not deliver: the header goes to paused while it rejoins,
+   * the save is merged, and the miss is reported (direct_sql when the change
+   * had no actor). Not Live, a gap is expected and only merged.
+   */
+  async function probe() {
+    if (!partner || !liveDeps || liveBusyRef.current) return
+    const known = heldVersions()
+    const wasLive = liveStatusRef.current?.kind === 'live'
+    const v = await readVersions()
+    // Checked again after the read: a notice merged meanwhile is not a miss.
+    if (!v || !probeFindsGap(known, v) || !probeFindsGap(heldVersions(), v)) return
+    if (wasLive) {
+      liveChannel.suspect('a save arrived that no live update announced')
+      api.partners.reportLiveMiss(liveMissReport(v, known, lastNoticeAt.current, liveNow()))
+        .catch((err: unknown) => console.error(`[partners live] the live miss report failed: ${errorSentence(err, 'unknown error')}`))
+    }
+    void refetchTheirs(null)
+  }
+
+  /**
+   * Save pressed while a live merge holds questions: ask them in the merge
+   * dialog first, only those (a field edited after seeing theirs is not asked).
+   * Answers already given to the same question survive. True when it asked.
+   */
+  function askLiveQuestions(): boolean {
+    if (!liveHeld) return false
+    const read = profile !== null && liveHeld.base.profile !== null
+    const mine: PageHalves = { partner: buildPartnerBody(captureSnapshot(), bodyCtx), profile: read ? profile : null }
+    const result = askedOnly(mergeThreeWay(liveHeld.base, mine, liveHeld.theirs, PARTNER_FIELD_REGISTRY), liveHeld.keys)
+    if (result.conflicts.length === 0) {
+      setLiveHeld(null)
+      return false
+    }
+    const asked = new Map((mergeResult?.conflicts ?? []).flatMap((sec) => sec.conflicts).map((c) => [c.key, c]))
+    const choices: Record<string, MergeSide> = {}
+    for (const c of result.conflicts.flatMap((sec) => sec.conflicts)) {
+      const before = asked.get(c.key)
+      const answer = pendingMerge?.choices[c.key]
+      if (answer && before && sameMergeValue(before.mine, c.mine) && sameMergeValue(before.theirs, c.theirs)) choices[c.key] = answer
+    }
+    setPendingMerge({ base: liveHeld.base, mine, theirs: liveHeld.theirs, theirPartner: liveHeld.theirPartner, theirName: liveHeld.theirName, partnerVersion: liveHeld.partnerVersion, choices, onlyKeys: liveHeld.keys })
+    setMergeOpen(true)
+    return true
   }
 
   // The merged values are state, so the save they feed runs once they are rendered.
@@ -731,6 +955,8 @@ export default function PartnerForm({
     setDeliveryConfirm(null)
     setError(null)
     setProfileErrors([])
+    // Another person's live save changed a field being edited (#2135): asked first.
+    if (askLiveQuestions()) return
     const snapshot = captureSnapshot()
     // Capture the pre-edit baseline BEFORE we advance it — this is what Undo restores.
     const preEdit = baselineSnapshot.current
@@ -832,12 +1058,15 @@ export default function PartnerForm({
     baselineDirtyKey.current = JSON.stringify({ ...snapshot, slug })
     baselineSnapshot.current = snapshot
     dispatchDraft({ type: 'rebase', base: built })
+    // Who updated what is said until this person's own save (#2135).
+    setUpdatedNotes([])
     setSaveOutcome({ kind: 'done', message: savedSentence(partnerChanged, saveProfileToo ? result.profile ?? profile : null) })
     setSaveState('saved')
     setTimeout(() => setSaveState('idle'), 1500)
   }
 
   return (
+    <LiveNotesContext.Provider value={liveNotes}>
     <div className="mx-auto max-w-2xl">
       <div className="mb-6 flex items-center justify-between">
         <div>
@@ -848,6 +1077,7 @@ export default function PartnerForm({
           {!isNew && (
             <p className="mt-0.5 font-mono text-sm text-gray-500">{partner.slug}</p>
           )}
+          {!isNew && <LiveStatusLine status={liveChannel.status} now={liveChannel.now} onRetry={liveChannel.retry} />}
         </div>
         <div className="flex items-center gap-2">
           {!isNew && onDelete && (
@@ -876,6 +1106,9 @@ export default function PartnerForm({
           {error}
         </div>
       )}
+
+      {/* A live note no section holds (#2135), such as a hand edit of the whole profile row. */}
+      <LivePageNotes />
 
       {/*
         A problem no tab holds (PM-12, #2137): a refusal naming a field the
@@ -1053,7 +1286,7 @@ export default function PartnerForm({
                 )}
               </Section>
 
-              <Section title="Duplicate check">
+              <Section title="Duplicate check" liveSections={['Endpoints']}>
                 <Field
                   id="partner-dedup-endpoint"
                   label="Dedup endpoint"
@@ -1133,7 +1366,7 @@ export default function PartnerForm({
                 <SignalRuleBuilder value={signalRules} onChange={setSignalRules} sections={SIGNAL_SECTIONS.filter((s) => s.cat !== 'rejection')} />
               </Section>
 
-              <Section title="Confirmation window">
+              <Section title="Confirmation window" liveSections={['Bid confirmation latency']}>
                 {confirmationWindowShown(usage, confirmationWindowMs, confirmationAdded) ? (
                   <>
                     <p className="text-xs text-gray-500">
@@ -1180,7 +1413,7 @@ export default function PartnerForm({
             </TabPanel>
           )}
           <TabPanel value="workflow_values" className="space-y-8">
-            {isBuyer && <Section title="Click URL">
+            {isBuyer && <Section title="Click URL" liveSections={['Endpoints']}>
               {/* The labelled field with its error beside it (#1546): the buyer profile's click URL refusals name this field. */}
               <Field
                 id="partner-click-url"
@@ -1377,6 +1610,10 @@ export default function PartnerForm({
           {copyWarningText && (
             <p role="status" className="text-xs text-amber-800">{copyWarningText}</p>
           )}
+          {/* Another person's live save changed fields being edited (#2135): asked on Save. */}
+          {liveHeld && (
+            <p role="status" className="text-xs text-amber-800">{liveConflictSentence(liveHeld.theirName, liveHeld.keys.length)}</p>
+          )}
           {undo && (
             <Button variant="ghost" onClick={handleUndo}>
               Undo · {undoSecondsLeft}s
@@ -1392,5 +1629,6 @@ export default function PartnerForm({
 
       </form>
     </div>
+    </LiveNotesContext.Provider>
   )
 }

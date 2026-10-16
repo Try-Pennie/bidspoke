@@ -8,6 +8,7 @@ import { Dialog } from '@/components/Dialog'
 import { Button } from '@/components/ui/form'
 import { Select } from '@/components/ui/Select'
 import { errorSentence } from '@/lib/error-sentence'
+import { formatDatetime } from '@/lib/dates'
 
 interface Props {
   partnerId: string
@@ -252,7 +253,8 @@ function MatrixProblems({ problems }: { problems: MatrixProblem[] }) {
 }
 
 function ConfigBadge({ config }: { config: PartnerBidConfig }) {
-  const synced = config.last_synced_at ? new Date(config.last_synced_at).toLocaleString() : null
+  // In ET with its zone, through dates.ts (#2135); it was the browser's own zone, unlabelled.
+  const synced = config.last_synced_at && !Number.isNaN(Date.parse(config.last_synced_at)) ? formatDatetime(config.last_synced_at) : null
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs">
       <span className="inline-flex items-center gap-1 rounded-full bg-p-blue-light/10 px-2 py-0.5 font-medium text-p-blue-dark">

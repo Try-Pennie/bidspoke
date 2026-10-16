@@ -157,6 +157,13 @@ FROM job_runs WHERE job = 'partner-page-monitor' AND started_at > now() - interv
 
 Until steps 1 to 5 are done the check records `unmeasured` with the step it stopped at, and pages that it cannot run after 30 minutes.
 
+## The page as built (PR4 page half, #2135)
+
+- `apps/web/src/lib/partner-live-channel.ts` keeps the join and the header's three states (Live; paused with the seconds since it dropped; failed with Retry after `FAIL_AFTER_MS`, two minutes, not live). A join refused as `MissingPartition` is retried after a second and counted; any other refusal or drop rejoins with backoff. `partner-live-join.ts` joins as the signed in person, setting the session's JWT before each join and again on every token refresh.
+- `PartnerForm.tsx` acts on a notice of the open partner: its own save is known by this tab's `client_id` (one UUID per tab, sent on every page save) plus a `save_id` it sent, never by who saved; anything else is read again through `GET /api/partners/:id` and merged with `mergeThreeWay`. A field only they changed updates in place with "Updated by <Name>" on its section; a field both changed waits, the save bar says how many, and Save asks in the merge dialog. It reads again on rejoining and when the tab comes back to the front.
+- Realtime can answer a join `SUBSCRIBED` a moment before it streams after an idle shutdown (measured 2026-10-16), and a socket can drop while the header still says Live, so the page has a backstop: while the draft is dirty it reads `GET /api/partners/:id/versions` every 60 seconds (`PROBE_EVERY_MS`). A version past the one held, found while the header said Live, sets the header to paused while it rejoins, merges the save, and posts `/api/partners/live-miss` (`direct_sql` when the change had no actor). The same read, on open and after every refetch, shows "Changed directly in the database at ..." on the section a hand edit touched, until the half's `BIDDING_PICKUP` bound has passed.
+- The accessibility job answers the page's socket in the browser (`realtimeReplies`, `apps/web/e2e/partner-live-fixtures.ts`), so the scan never joins production's Realtime.
+
 ## Consequences
 
 - `realtime.messages` carries one policy; any later policy on it (presence, another page) is a new migration and a new case in the SQL suite.
