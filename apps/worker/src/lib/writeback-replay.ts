@@ -18,6 +18,10 @@
  * claim and sends nothing. The outcome is then written only while the row still
  * holds that claim.
  *
+ * NEVER BESIDE THE READ-BACK (#468). A write the Salesforce read-back holds as
+ * its own is that job's to resend, so a row for the same run and step is refused,
+ * preview included, and one whose holder cannot be asked sends nothing.
+ *
  * A changed field is the person's call (Dan, 2026-10-13): the preview shows each
  * field's current Salesforce value beside the one to be sent, and a confirmed
  * replay sends the whole patch as captured.
@@ -103,6 +107,28 @@ export interface ReplayDeps {
   /** Built lazily: loading the credentials can fail, and a preview still shows the fields then. */
   salesforce: () => Promise<SalesforcePort>
   keys: SecretKeyInput
+  /**
+   * Whether the Salesforce read-back (#2023) holds this run's step as its own
+   * (readBackHoldsStep): then it is that write's one sender and the row is
+   * refused (#468). Throws when it cannot be asked, and nothing is sent.
+   */
+  readBackHolds: (executionId: string, stepNamespace: string) => Promise<boolean>
+}
+
+/**
+ * Why a row the store holds must not be sent while the read-back holds the same
+ * write, or null when it may be (#468). The capture never stores a write the
+ * read-back owns, so a refusal here means a row from before that rule or a rule
+ * broken since: either way the read-back resends it, and a replay beside it
+ * would send it twice. A read-back that cannot be asked refuses too.
+ */
+async function heldByReadBack(deps: ReplayDeps, row: HeldWriteRow): Promise<{ kind: 'not_replayable'; reason: string } | { kind: 'unreadable'; error: string } | null> {
+  try {
+    if (!(await deps.readBackHolds(row.execution_id, row.step_namespace))) return null
+  } catch (e) {
+    return { kind: 'unreadable', error: `could not tell whether the Salesforce read-back holds this write, so nothing was sent: ${formatErr(e)}` }
+  }
+  return { kind: 'not_replayable', reason: 'the Salesforce read-back holds this write and resends it itself' }
 }
 
 export type PreviewResult =
@@ -175,6 +201,8 @@ export async function previewReplay(deps: ReplayDeps, orgId: string, id: string)
   if (!row) return { kind: 'not_found' }
   const why = whyNotReplayable(row)
   if (why) return { kind: 'not_replayable', reason: why }
+  const readBack = await heldByReadBack(deps, row)
+  if (readBack) return readBack
   let body: Record<string, unknown>
   try {
     body = await readBody(row, deps.keys)
@@ -219,7 +247,10 @@ export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: strin
   const why = whyNotReplayable(row)
   if (why) return { kind: 'not_replayable', reason: why }
   // Everything that can fail before sending fails BEFORE the claim, so a key or
-  // credential fault costs no attempt and leaves the row as it was.
+  // credential fault costs no attempt and leaves the row as it was. The
+  // read-back is asked first: a write it holds is its own to send (#468).
+  const readBack = await heldByReadBack(deps, row)
+  if (readBack) return readBack
   let body: Record<string, unknown>
   try {
     body = await readBody(row, deps.keys)
