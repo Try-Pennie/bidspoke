@@ -13,6 +13,7 @@ vi.mock('../slack', () => ({
 import { detectSlowSpike, buildSlowDurations, runSlowExecutionCheck, MIN_SLOW_COUNT, SLOW_FRACTION_PCT } from '../slow-execution-rate'
 import { getSlackConnection, sendRecoveryAlert, sendSlowSpikeAlert } from '../slack'
 import { transitions, withTickingClock } from './_incident-events'
+import { claimLedger, gate, settle } from './_claims-double'
 
 const THRESHOLD = 5000 // 5s
 
@@ -219,6 +220,72 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
     vi.clearAllMocks()
     vi.mocked(getSlackConnection).mockResolvedValue(CONN as never)
     vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+  })
+
+  // A stalled tick overlapping the next minute's (#2062): each tick is held at
+  // its post while the other reaches the same point (L157).
+  describe('posts once across overlapping ticks (#2062)', () => {
+    const url = 'https://app.example.com'
+    const spiking = () =>
+      makeSupabase({
+        service_connections: [{ organization_id: 'org-1' }],
+        workflows: [wf],
+        workflow_executions: new Array(MIN_SLOW_COUNT + 3)
+          .fill(0)
+          .map(() => ({ workflow_id: 'wf-1', duration_ms: THRESHOLD * 4, started_at: new Date(Date.now() - 1000).toISOString() })),
+      })
+    const owed = () => makeKv({ 'slow-spike-recovery:wf-1': new Date(Date.now() - 90 * 60_000).toISOString() })
+
+    async function overlap(run: () => Promise<void>, open: () => void) {
+      const a = run()
+      await settle()
+      const b = run()
+      await settle()
+      open()
+      await Promise.all([a, b])
+    }
+
+    it('control: with no claim the two ticks page twice, so the fixture really overlaps', async () => {
+      const held = gate<string>()
+      vi.mocked(sendSlowSpikeAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+      const kv = makeKv()
+      await overlap(() => runSlowExecutionCheck(spiking() as never, kv as never, url), () => held.open('ts-1'))
+      expect(sendSlowSpikeAlert).toHaveBeenCalledTimes(2)
+    })
+
+    it('pages once, under the minute page claim', async () => {
+      const held = gate<string>()
+      vi.mocked(sendSlowSpikeAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+      const kv = makeKv()
+      const { claims, log } = claimLedger()
+      await overlap(() => runSlowExecutionCheck(spiking() as never, kv as never, url, claims), () => held.open('ts-1'))
+      expect(sendSlowSpikeAlert).toHaveBeenCalledTimes(1)
+      expect(log).toEqual(['claim minute-alert:page:slow-spike:wf-1', 'claim minute-alert:page:slow-spike:wf-1'])
+    })
+
+    it('control: with no claim the two ticks send the all-clear twice', async () => {
+      const held = gate<boolean>()
+      vi.mocked(sendRecoveryAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+      const kv = owed()
+      await overlap(() => runSlowExecutionCheck(healthy() as never, kv as never, url), () => held.open(true))
+      expect(sendRecoveryAlert).toHaveBeenCalledTimes(2)
+    })
+
+    it('sends the all-clear once, under the minute all-clear claim', async () => {
+      const held = gate<boolean>()
+      vi.mocked(sendRecoveryAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+      const kv = owed()
+      const { claims, log } = claimLedger()
+      await overlap(() => runSlowExecutionCheck(healthy() as never, kv as never, url, claims), () => held.open(true))
+      expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
+      expect(log).toEqual(['claim minute-alert:all-clear:slow-spike:wf-1', 'claim minute-alert:all-clear:slow-spike:wf-1'])
+    })
+
+    it('makes no claim call on a healthy tick with nothing owed', async () => {
+      const { claims, log } = claimLedger()
+      await runSlowExecutionCheck(healthy() as never, makeKv() as never, url, claims)
+      expect(log).toEqual([])
+    })
   })
 
   it('records the opening before the page, on a clock that moves between reads (#2099)', async () => {
