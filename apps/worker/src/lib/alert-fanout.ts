@@ -320,7 +320,15 @@ export async function postMinutePage(opts: {
     return 'claimed_elsewhere'
   }
   const release = () => releaseClaimQuietly(claims, key)
-  if (await opts.inCooldown()) {
+  let cooling: boolean
+  try {
+    cooling = await opts.inCooldown()
+  } catch (e) {
+    // Nothing was posted, so the claim is freed for the next tick.
+    await release()
+    throw e
+  }
+  if (cooling) {
     await release()
     return 'in_cooldown'
   }

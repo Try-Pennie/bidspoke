@@ -147,6 +147,16 @@ describe('postMinutePage: claim first, then read the cooldown (L157)', () => {
     expect(err.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/k: the post threw, so it may have reached Slack; the claim is kept/)
   })
 
+  it('frees the claim and rethrows when the cooldown read after the claim throws, since nothing was posted', async () => {
+    const { claims, held } = claimLedger()
+    let reads = 0
+    const send = vi.fn(async () => true)
+    const inCooldown = async () => { if (++reads === 2) throw new Error('KV GET failed: 500'); return false }
+    await expect(postMinutePage({ claims, key: 'k', inCooldown, send })).rejects.toThrow('KV GET failed')
+    expect(send).not.toHaveBeenCalled()
+    expect(held.has('k')).toBe(false)
+  })
+
   it('does not post again from the next tick after a post that threw once Slack had taken it', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const { claims } = claimLedger()
