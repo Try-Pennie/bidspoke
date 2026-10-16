@@ -33,4 +33,26 @@ describe('the nobody can be told alert is documented as the code sends it', () =
   it('the doc names the alert the code names', () => {
     expect(DOC).toContain(constant('BETTER_STACK_ALERT_NAME'))
   })
+
+  it('the disaster recovery runbook names the same alert', () => {
+    const DR = readFileSync(path.join(REPO_ROOT, 'docs/disaster-recovery.md'), 'utf8')
+    expect(DR).toContain(constant('BETTER_STACK_ALERT_NAME'))
+  })
+
+  it('the doc says how to prove the page works, by the drill route the worker serves (#1303)', () => {
+    const ADMIN = readFileSync(path.join(WORKER_SRC, 'routes/api/admin.ts'), 'utf8')
+    expect(ADMIN, 'the drill route is no longer in routes/api/admin.ts').toContain("admin.post('/nobody-told-page/drill'")
+    expect(DOC).toContain('POST /api/admin/nobody-told-page/drill')
+  })
+})
+
+/**
+ * The drill exists to prove the real page's request reaches Better Stack, so it
+ * must make THAT request, not a copy of it that could drift (#1303). The module
+ * therefore holds one POST, which the page and the drill both go through.
+ */
+describe('the drill and the real page share one send', () => {
+  it('nobody-told-page.ts makes exactly one POST', () => {
+    expect(SOURCE.match(/method: 'POST'/g) ?? []).toHaveLength(1)
+  })
 })
