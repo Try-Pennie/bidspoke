@@ -25,7 +25,7 @@ import {
 import { LEDGER_KEY_TTL_SECONDS, STORED_COPY_LEDGER_PREFIX } from '../stored-copy-ledger'
 import { STORED_COPY_KINDS, STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS, STORED_COPY_REFUSALS, confirmedAt, type StoredCopyRefusal } from '../stored-copy-age'
 import { bidMatrixLastGoodKey } from '../bid-matrix-lookup'
-import { SLACK_CONNS_LASTGOOD_KEY } from '../volume-cliff'
+import { SLACK_CONNS_LASTGOOD_KEY } from '../slack-copy'
 import { encryptSecret } from '../secret-crypto'
 import { endpointLastGoodKey } from '../endpoint-copies'
 import { partnerLastGoodKey } from '../partner-last-good'

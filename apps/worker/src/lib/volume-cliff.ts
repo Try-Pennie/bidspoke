@@ -24,7 +24,8 @@ import { getSlackConnection, postMessage, sendDatabaseUnreachableAlert } from '.
 import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, RECOVERY_TTL_SECONDS, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { sendRecoveryAlert } from './slack'
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
-import { decryptSecret, encryptSecret, type SecretKeyInput } from './secret-crypto'
+import type { SecretKeyInput } from './secret-crypto'
+import { readLastGoodSlackConnections, rememberSlackConnections } from './slack-copy'
 import type { AlertClaims } from './alert-claim'
 import { BACKOFF_STEPS_SECONDS, backoffCooldownKey, clearCondition, describeRepeat, inCooldown, readCondition, recordAlert } from './alert-backoff'
 
@@ -76,9 +77,8 @@ export interface SelfCheckResult {
 // database was back, when it blamed the caller. So every healthy tick writes an
 // ENCRYPTED last-good copy of the Slack connections to KV (the token is a
 // secret and KV is not the place for plaintext, #491), and a tick whose reads
-// fail posts from that copy instead of returning quietly. The copy is one key,
-// rewritten once a minute, well inside KV's one write a second per key.
-export const SLACK_CONNS_LASTGOOD_KEY = 'slack-conns-lastgood'
+// fail posts from that copy instead of returning quietly. The copy's reader and
+// writer live in slack-copy.ts, which every other reader of it shares.
 export const DB_UNREACHABLE_PREFIX = 'db-unreachable'
 export const DB_UNREACHABLE_COOLDOWN_SECONDS = 15 * 60
 
@@ -113,38 +113,6 @@ const volumeCliffBackoffKey = (wfId: string) => `volume-cliff:${wfId}`
  * database, which is the thing that is down.
  */
 const dbUnreachableIncident = (orgId: string): IncidentContext => ({ scope: { kind: 'org', organizationId: orgId }, subjectLabel: 'Bidspoke' })
-
-async function rememberSlackConnections(
-  kv: KvLike,
-  secretEncryptionKey: SecretKeyInput,
-  connections: Map<string, SlackConnection>,
-): Promise<void> {
-  try {
-    const blob = await encryptSecret(JSON.stringify(Object.fromEntries(connections)), secretEncryptionKey)
-    await kv.put(SLACK_CONNS_LASTGOOD_KEY, blob)
-  } catch (e) {
-    // The check itself must not fail because the safety copy could not be written.
-    console.error(`[volume-cliff] last-good Slack connections write failed: ${formatErr(e)}`)
-  }
-}
-
-export async function readLastGoodSlackConnections(kv: KvLike, secretEncryptionKey: SecretKeyInput): Promise<Map<string, SlackConnection>> {
-  const blob = await kv.get(SLACK_CONNS_LASTGOOD_KEY)
-  if (!blob) return new Map()
-  try {
-    const parsed = JSON.parse(await decryptSecret(blob, secretEncryptionKey)) as Record<string, unknown>
-    const out = new Map<string, SlackConnection>()
-    for (const [orgId, cfg] of Object.entries(parsed)) {
-      const conn = parseSlackConnection(cfg)
-      if (conn) out.set(orgId, conn)
-    }
-    return out
-  } catch (e) {
-    // A blob written under a rotated key is a miss, not a crash.
-    console.error(`[volume-cliff] last-good Slack connections unreadable: ${formatErr(e)}`)
-    return new Map()
-  }
-}
 
 /**
  * A read this check depends on failed. Say so in Slack from the last-good copy,

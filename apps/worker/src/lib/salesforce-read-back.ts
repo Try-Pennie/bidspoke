@@ -110,7 +110,7 @@ import { formatErr } from './format-error'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
 import { boundedSlackFor } from './unconfirmed-write-sweep'
 import { getSlackConnection, sendSalesforceReadBackAlert, type SlackConnection } from './slack'
-import { readLastGoodSlackConnections } from './volume-cliff'
+import { readLastGoodSlackConnections } from './slack-copy'
 import { BulkheadClient, salesforceBulkheadLimit } from './bulkhead-client'
 import type { ReadBackAlertWrite, SalesforceReadBackAlert, UnreadReason } from './salesforce-read-back-alert'
 
