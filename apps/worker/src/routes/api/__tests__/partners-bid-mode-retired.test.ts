@@ -2,14 +2,11 @@
  * The partner routes no longer write partner_configs.bid_mode (#2182, the
  * contract step after PM-9, part of #2114).
  *
- * Nothing acts on bid_mode, and its column is dropped in a later migration
- * (docs/adr/0007). Before that drop a deployed Worker must neither send nor
- * store it: a create no longer names it (the column default applies until the
- * column goes), and a create, a save or a page save that names it is refused
- * by name before anything is read or written. Without the refusal, a save
- * naming it would reach save_partner_config, whose editable list still holds
- * it, and be stored; after the drop the same save would fail on a missing
- * column as a server error instead of a refusal.
+ * Nothing acts on bid_mode, and its column is dropped
+ * (20261016220000_drop_partner_bid_mode_2182.sql). A create never names it, and
+ * a create, a save or a page save that names it is refused by name before
+ * anything is read or written, so a stale client is told which field to leave
+ * out rather than reaching the database at all.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import type { Env } from '../../../index'
@@ -64,7 +61,7 @@ beforeEach(() => {
 })
 
 describe('bid_mode is no longer written by any partner route (#2182)', () => {
-  it('POST creates a partner without naming bid_mode, so the column default applies until the column goes', async () => {
+  it('POST creates a partner without naming bid_mode', async () => {
     const { sb } = supabase()
     const res = await call('POST', '/partners', { name: 'Acme', slug: 'acme' })
     expect(res.status).toBe(201)
