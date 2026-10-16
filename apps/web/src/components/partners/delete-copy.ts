@@ -3,9 +3,11 @@
  * structured answer. One place, so the box, its blocked state and the refusal
  * after a press say the same thing the same way (L118).
  */
+import { formatWhole } from './buyer-profile/labels'
 import type { DependentNoun, PartnerDeleteBlocker, PartnerDeleteCheck, PartnerDeleteTable, PartnerDeleteWorkflow } from '@/lib/api'
 
-const n = (count: number): string => count.toLocaleString('en-US')
+// Counts in the one whole number spelling the partners page uses (6,339).
+const n = formatWhole
 
 /** "its buyer profile" for one, "2 sub-account IDs" for any other count. */
 export function countPhrase(rows: number, noun: DependentNoun): string {

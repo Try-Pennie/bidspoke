@@ -13,6 +13,7 @@ import { Skeleton } from '@/components/ui/Skeleton'
 import { Button } from '@/components/ui/form'
 import { ProblemMark } from '@/components/ui/ProblemMark'
 import PartnerForm, { UNSAVED_CHANGES_MESSAGE, type PartnerSaveResult } from './PartnerForm'
+import { PartnerLiveProvider } from '@/components/partners/live/PartnerLive'
 import { partnersUrl, tabFromParam } from './partner-tabs'
 import { groupPartners } from './partner-list'
 import type { PartnerTab } from './partner-draft'
@@ -158,6 +159,8 @@ export default function PartnersPage() {
     (loading || partners.some((p) => p.slug === slugParam))
 
   return (
+    // The live channel (#2135) is the page's, so switching partners keeps one Supabase client.
+    <PartnerLiveProvider>
     <NavLayout>
       {/* The page is the window's height, so the list stays in view while the form scrolls in its own pane (#2137). */}
       <div className="flex h-screen min-h-0">
@@ -258,6 +261,7 @@ export default function PartnersPage() {
               onTabChange={(tab) => { if (selected) writeUrl(selected.slug, tab) }}
               partnerNames={partnerNames}
               onProblemChange={setFormProblem}
+              onLiveUpdate={(p) => setPartners((prev) => prev.map((x) => (x.id === p.id ? p : x)))}
             />
           ) : pendingSelection ? (
             <div className="max-w-3xl space-y-6">
@@ -290,5 +294,6 @@ export default function PartnersPage() {
 
       </div>
     </NavLayout>
+    </PartnerLiveProvider>
   )
 }
