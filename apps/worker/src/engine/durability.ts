@@ -26,6 +26,7 @@ import { formatErr } from '../lib/format-error'
 import { getSlackConnection, sendOutcomeDeadLetterAlert, type OutcomeDeadLetterAlert } from '../lib/slack'
 import { putUnconfirmedWrite, type ReadBack, type UnconfirmedRun } from './unconfirmed-writes'
 import type { AlertClaims } from '../lib/alert-claim'
+import type { StallSnapshotTrigger } from '../lib/db-stall-snapshot'
 
 // How long the best-effort build-now volume tally may take before the dead letter
 // gives up waiting on it and proceeds to the alert (#355). Short, so a hung KV
@@ -66,6 +67,14 @@ export interface OutcomeDeps {
    * Absent, the eventually consistent KV cooldown stands in.
    */
   claims?: AlertClaims
+  /**
+   * Told the moment a write is recorded as unconfirmed (#2292), which is the
+   * earliest point the Worker knows the database is stalling, so a snapshot of
+   * what the database is doing can be taken while the stall is still happening
+   * (lib/db-stall-snapshot.ts). It must return at once: the engine hands the
+   * capture to waitUntil, and nothing here waits for it.
+   */
+  onUnconfirmed?: (trigger: StallSnapshotTrigger) => void
 }
 
 // The deps an outcome-write function carries when its caller already holds the
@@ -186,6 +195,16 @@ export async function recordUnconfirmedOutcome(
   options: { deadLetterOnFailure: boolean } = { deadLetterOnFailure: true },
 ): Promise<void> {
   const nowMs = (deps.now ?? Date.now)()
+  // First, so the snapshot is asked for before anything else is awaited. It is
+  // evidence, never the record: a hook that throws is logged and passed over.
+  try {
+    deps.onUnconfirmed?.({
+      label,
+      ...(deps.run ? { execution_id: deps.run.execution_id, workflow_name: deps.run.workflow_name } : {}),
+    })
+  } catch (e) {
+    console.error(`[durability] ${label}: could not ask for a database snapshot:`, formatErr(e))
+  }
   try {
     await putUnconfirmedWrite(
       deps.kv,
