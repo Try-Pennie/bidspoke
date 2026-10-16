@@ -82,6 +82,8 @@ import { runRealityOfOptions, shadowRunRefusal, stampRunReality } from './run-re
 import { startAtRiskWatch, startWatchSafely, runWatched, heldUntilOf } from './at-risk-writes'
 import { isCreditInquiryPost, stepRetries } from './inquiry-post'
 import { writeMarker, withWriteMarker, ENGINE_ATTEMPT } from './write-marker'
+import { unfinishedWorkPages } from './unfinished-work'
+import { readBackHoldsStep } from '../lib/salesforce-read-back'
 import type { WorkflowLane } from '@bidspoke/node-types'
 import type { Env } from '../index'
 import type {
@@ -225,15 +227,22 @@ export function nodeExecutorForLane(lane: WorkflowLane): ExecuteNode {
 
 /**
  * A run's walk still running at its cut-off after the answer (#1860). Its outcome
- * is unknown, not failed: it may still finish, but nothing confirmed it. It names
- * the step or steps the walk was on (#1882), so the reason and the alert point at
- * what was slow rather than at a guess.
+ * is unknown, not failed: nothing confirmed whether it finished. It names the step
+ * or steps the walk was on (#1882), so the reason and the alert point at what was
+ * slow rather than at a guess, and keeps their namespaces, which the page decision
+ * asks the Salesforce read-back about (#2024).
  */
 class ContinuationUnfinishedError extends Error {
-  constructor(seconds: number, readonly stillRunning: readonly string[]) {
+  readonly stillRunning: readonly string[]
+  constructor(seconds: number, readonly runningNamespaces: readonly string[], nodes: readonly NodeDefinition[]) {
+    const stillRunning = runningNamespaces.map((ns) => {
+      const node = nodes.find((n) => n.namespace === ns)
+      return node ? stepName(node) : ns
+    })
     const running = stillRunning.length > 0 ? ` Still running then: ${listSteps(stillRunning)}.` : ''
-    super(`The run's work after the answer did not finish within ${seconds} s of the answer.${running} It may still finish, but nothing confirmed it.`)
+    super(`The run's work after the answer did not finish within ${seconds} s of the answer.${running} Nothing confirmed whether it finished.`)
     this.name = 'ContinuationUnfinishedError'
+    this.stillRunning = stillRunning
   }
 }
 
@@ -701,7 +710,7 @@ export async function executeWorkflow(
   //
   // #1860: and the wait for the walk itself stops too. A run that answered early
   // keeps walking after the response; a walk still out at its cut-off is reported
-  // to finalize as unfinished (it may still finish, nothing confirmed it), so the
+  // to finalize as unfinished (nothing confirmed whether it finished), so the
   // flush and finalize behind it still run inside the budget. A test run waits
   // for its whole walk, as before.
   const walkSettled: Promise<unknown> = reality.isTest
@@ -709,7 +718,7 @@ export async function executeWorkflow(
     : withinBudget(walkPromiseCaught, continuationTiming).then((o) =>
         o.settled
           ? o.value
-          : { __error: new ContinuationUnfinishedError(CONTINUATION_WINDOW_MS / 1000, [...(ctx.runningSteps ?? [])]) },
+          : { __error: new ContinuationUnfinishedError(CONTINUATION_WINDOW_MS / 1000, [...(ctx.runningNamespaces ?? [])], definition.nodes) },
       )
   // #1881: a flush that RETURNED an error and one that only timed out are kept
   // apart. The first is a lost trace and the run fails as before; the second
@@ -839,12 +848,27 @@ export async function executeWorkflow(
             // A walk still out at its cut-off is not a failed write: its outcome is
             // unknown, so it is counted under its own label (#1860).
             const label = continuationError instanceof ContinuationUnfinishedError ? CONTINUATION_UNFINISHED_LABEL : 'sf_writeback'
+            // Unfinished work the Salesforce read-back holds in full needs no page:
+            // the read-back confirms, resends or pages for each of those writes
+            // itself (#2024). Asked of the at-risk record it reads; any doubt pages.
+            const pages: Promise<boolean> = continuationError instanceof ContinuationUnfinishedError
+              ? unfinishedWorkPages(definition, continuationError.runningNamespaces, {
+                  clock: retryClock,
+                  readBackHolds: (ns) => readBackHoldsStep(env.IDEMPOTENCY, secretKeys(env), executionId, ns),
+                })
+              : Promise.resolve(true)
             executionCtx.waitUntil(
-              recordOutcomeDeadLetter(label, continuationError, { ...outcomeDeps, supabase: runDb }, {
-                workflow_id: workflowId, workflow_name, execution_id: executionId, at: new Date().toISOString(),
-                ...(continuationError instanceof ContinuationUnfinishedError && continuationError.stillRunning.length > 0
-                  ? { still_running: [...continuationError.stillRunning] }
-                  : {}),
+              pages.then((page) => {
+                if (!page) {
+                  console.log(`[durability] ${label}: the Salesforce read-back holds all the work still out on execution ${executionId}, so it is left to the read-back`)
+                  return
+                }
+                return recordOutcomeDeadLetter(label, continuationError, { ...outcomeDeps, supabase: runDb }, {
+                  workflow_id: workflowId, workflow_name, execution_id: executionId, at: new Date().toISOString(),
+                  ...(continuationError instanceof ContinuationUnfinishedError && continuationError.stillRunning.length > 0
+                    ? { still_running: [...continuationError.stillRunning] }
+                    : {}),
+                })
               }).catch((e) =>
                 console.error(`[durability] ${label} dead-letter failed:`, e),
               ),
@@ -1536,7 +1560,7 @@ export async function walkGraph(
   while (current) {
     const node = current
     // What the walk is on, for a cut-off that has to say what it gave up on (#1882).
-    ctx.runningSteps = [stepName(node)]
+    ctx.runningNamespaces = [node.namespace]
 
     if (++walkSteps > MAX_WALK_STEPS) {
       throw new StepFailureError(
@@ -2134,7 +2158,7 @@ export async function walkGraph(
       const chain = collectCodeChain(node, definition)
       if (chain.length > 1) {
         // The chain runs as one call, so every node in it is running at once.
-        ctx.runningSteps = chain.map(stepName)
+        ctx.runningNamespaces = chain.map((n) => n.namespace)
         const chainResult = await executeCodeChain(chain, ctx, env)
         // Log + record each result. Any sentinel or failure in the chain stops
         // further chain processing (bundled worker also stops at the first
