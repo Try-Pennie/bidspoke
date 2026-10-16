@@ -24,6 +24,9 @@
  *   on the read), so the value keeps the exact shape the release before reads
  *   and writes, and an encrypted copy needs no second encryption.
  *
+ * One outage copy is exempt by decision, with its reason recorded in
+ * STORED_COPY_AGE_EXEMPTIONS: the Slack connections copy (#1874).
+ *
  * Every loader judges its copy with judgeCopyAge, serves it with
  * serveStoredCopy and refuses with refuseStoredCopy, so the rule and the words
  * for it exist once, and every serve and refusal is counted in the stored copy
@@ -34,6 +37,23 @@ import { noteStoredCopy } from './stored-copy-ledger'
 
 /** The oldest a stored copy may be, since it was last confirmed, and still be served (Dan, 2026-10-07). */
 export const STORED_COPY_MAX_AGE_MS = 30 * 60 * 1000
+
+/**
+ * The outage copies NOT held to STORED_COPY_MAX_AGE_MS, by KV key, each with
+ * its reason. The limit exists because a copy decides how a lead is priced or
+ * routed; these copies decide no such thing.
+ */
+export const STORED_COPY_AGE_EXEMPTIONS: Record<string, string> = {
+  // The Slack connections copy (lib/slack-copy.ts), which alerts post from
+  // while the database is down.
+  'slack-conns-lastgood':
+    'Used at any age (Dan, 2026-10-14, #1874). It decides only where an alert is posted, never how a lead is ' +
+    'priced or routed, and refusing it after thirty minutes would silence every alert in exactly the long ' +
+    'outage it exists for. A stale entry costs at worst a post to a channel changed before the outage. It is ' +
+    'kept current instead: every successful read of every organization rewrites it (an empty read included), ' +
+    'the Slack settings routes edit an organization entry in the same request, and every answer from it ' +
+    'names its age (#2060).',
+}
 
 /**
  * A copy is confirmed again once it is this old, by whichever healthy read or
