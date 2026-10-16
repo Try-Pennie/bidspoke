@@ -291,7 +291,8 @@ export async function runVolumeCliffCheck(
   // always passes it, and without it two ticks that pass the cooldown together
   // both post.
   claims?: AlertClaims,
-  // The clock the saved Slack copy is dated by (#2060); a test sets it.
+  // The clock this check reads: the saved Slack copy is dated by it (#2060) and
+  // the volume windows are measured on it, so the two cannot disagree.
   clock: () => number = Date.now,
 ): Promise<void> {
   const { data: slackOrgs, error: slackOrgsError } = await readSlackConnectionRowsForCopy(supabase)
@@ -328,7 +329,7 @@ export async function runVolumeCliffCheck(
 
   if (!workflows?.length) return
 
-  const now = Date.now()
+  const now = clock()
   const workflowIds = workflows.map((w) => w.id as string)
 
   // 60 wall-clock-minute buckets ending with the current (partial) minute at
