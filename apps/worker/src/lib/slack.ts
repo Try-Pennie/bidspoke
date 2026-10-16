@@ -3251,6 +3251,88 @@ export async function sendWritebackBacklogRecoveryAlert(
   )
 }
 
+// ── What the drain of stored Salesforce writes could not finish (#468) ─────────
+
+/**
+ * One alert per organization and kind from the drain (writeback-drain.ts): a
+ * resend Salesforce refused, a write given up after its tries, or a write sent
+ * without fields another writer had changed. Objects and field names only, never
+ * a value, a record id or a run id: the rows hold lead data and the alert goes to
+ * a shared channel. The held writes list carries the rest to people who may see it.
+ */
+export interface WritebackDrainAlert {
+  kind: 'refused' | 'abandoned' | 'moved'
+  /** The attempts the drain allows a write. */
+  tries: number
+  writes: Array<{
+    sf_object: string
+    /** moved: the fields left out. */
+    fields?: string[]
+    /** refused: false when Salesforce refused to read the record, so nothing was sent. moved: whether the rest was sent. */
+    resent?: boolean
+    /** abandoned: false when the last try got no answer, so the write may have landed. */
+    answered?: boolean
+  }>
+}
+
+const tryCount = (n: number) => (n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`)
+
+/** The alert's title and sentences, separate from the send so the words can be tested. */
+export function writebackDrainMessage(alert: WritebackDrainAlert): { title: string; sections: string[] } {
+  const n = alert.writes.length
+  const one = n === 1
+  const counted = `${n} Salesforce write${one ? '' : 's'} that failed after a lead was answered`
+  const perObject = new Map<string, number>()
+  for (const w of alert.writes) perObject.set(w.sf_object, (perObject.get(w.sf_object) ?? 0) + 1)
+  const where = joinWithAnd([...perObject].map(([object, count]) => `${count} to ${salesforceObjectWords(object)}`))
+  const them = one ? 'it' : 'them'
+  if (alert.kind === 'refused') {
+    return {
+      title: `Salesforce write${one ? '' : 's'} could not be resent`,
+      sections: [
+        `${counted} could not be resent, because Salesforce refused ${them}: ${where}. Bidspoke will not send ${them} again.`,
+        '*Fix:* list them at `/api/admin/held-writes?status=refused`, then set those fields by hand in Salesforce, unless the refusal was right.',
+      ],
+    }
+  }
+  if (alert.kind === 'abandoned') {
+    const unanswered = alert.writes.filter((w) => w.answered === false).length
+    const mayHaveLanded =
+      unanswered === 0 ? '' : one ? ' The last try got no answer, so it may have landed.' : ` The last try for ${unanswered} of them got no answer, so ${unanswered === 1 ? 'it' : 'they'} may have landed.`
+    return {
+      title: `Salesforce write${one ? ' was' : 's were'} given up`,
+      sections: [
+        `${counted} did not land when Bidspoke sent ${them} again ${tryCount(alert.tries)}: ${where}. Bidspoke has stopped trying.${mayHaveLanded}`,
+        '*Fix:* list them at `/api/admin/held-writes?status=abandoned`, then check each record in Salesforce and set the fields by hand where the write did not land.',
+      ],
+    }
+  }
+  const fieldList = (fields: string[] | undefined) => joinWithAnd((fields ?? []).map((f) => slackText(f)))
+  const lines = alert.writes.map((w) =>
+    w.resent === false
+      ? `A write to ${salesforceObjectWords(w.sf_object)} was not sent again, because every field it set (${fieldList(w.fields)}) had changed. Bidspoke closed it.`
+      : `A write to ${salesforceObjectWords(w.sf_object)} was sent again without ${fieldList(w.fields)}.`,
+  )
+  return {
+    title: `Salesforce write${one ? '' : 's'} resent without some fields`,
+    sections: [
+      `${counted} found fields changed in Salesforce since ${one ? 'it' : 'they'} failed, so Bidspoke left those fields as they were.`,
+      lines.join('\n'),
+      '*Fix:* open each record in Salesforce and decide whether those fields should keep their current values. The writes are listed at `/api/admin/held-writes`.',
+    ],
+  }
+}
+
+/** Posts one drain alert to an organization's channel. Returns whether Slack took it. */
+export async function sendWritebackDrainAlert(connection: { bot_token: string; default_channel: string }, alert: WritebackDrainAlert): Promise<boolean> {
+  const m = writebackDrainMessage(alert)
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
+    ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+}
+
 /**
  * All-clear for a scheduled GitHub workflow the schedule watch had paged (#851,
  * #805). The same shape as the pg_cron one: the plain workflow label, the shared
