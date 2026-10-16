@@ -10,8 +10,7 @@
  * Pipedream workspace there is no isolation: every key is a workspace wide
  * environment variable there (see signature.ts). Data the route reaches: one
  * R2 bucket, PORTING_TEE, written under this workflow's own prefix. No database
- * and no other secret; the SELF binding and the scheduled() probes below are
- * never reached from it.
+ * and no other secret; the SELF binding below is never reached from it.
  *
  * Order, and why:
  * 1. Refuse by name an unset master secret (503) or a workflow that is not
@@ -31,11 +30,11 @@
  * Logs carry an outcome code and the enrolled hashid only. Never a body, a
  * payload value or an error message (L658): a catch here binds nothing.
  *
- * Two more ways in, neither public (#1946): a minute scheduled() that runs Spike
- * 0's ceiling probes only when OPS_SPIKE_ARM arms one (spike/ceilings.ts), and
- * the named entrypoint OpsInternal (internal.ts), reached only through this
- * Worker's own SELF service binding. The public route reaches the default
- * fetch handler alone, which forwards nothing to either.
+ * One more way in, not public (#1946): the named entrypoint OpsInternal
+ * (internal.ts), reached only through this Worker's own SELF service binding.
+ * The public route reaches the default fetch handler alone, which forwards
+ * nothing to it. Spike 0 measured the platform ceilings the run engine is sized
+ * by: docs/ops-ceilings-spike.md.
  *
  * Before any of that, the Worker checks its lane (#1709, plan 0.E): LANE must
  * be "ops", set in wrangler.ops.toml, or every request is refused by name. A
@@ -46,7 +45,7 @@ import type { WorkflowLane } from '@bidspoke/node-types'
 import { SIGNATURE_HEADER, deriveHexKey, deriveWorkflowKey, redactCapture, verifyBodySignature } from '@bidspoke/porting-evidence'
 import type { OpsDbEnv } from './ops-db'
 import { PORTING_REGISTRY, type PortingRegistry } from './porting-registry'
-import { createSpikeScheduled, type OpsInternalBinding } from './spike/ceilings'
+import type { OpsInternalBinding } from './internal'
 
 export interface OpsEnv extends OpsDbEnv {
   /** The lane this Worker serves: "ops", from wrangler.ops.toml [vars]. */
@@ -59,11 +58,6 @@ export interface OpsEnv extends OpsDbEnv {
    * Phase 2 defines what ops code may reach. Nothing dispatches to it yet.
    */
   CODE_NODES_OPS: DispatchNamespace
-  /**
-   * Spike 0's arm (#1946): unset in normal running, which keeps the scheduled
-   * probes inert. See spike/ceilings.ts.
-   */
-  OPS_SPIKE_ARM?: string
   /** This Worker's own OpsInternal entrypoint, through a service binding (#1946). */
   SELF?: OpsInternalBinding
 }
@@ -268,7 +262,6 @@ export function createOpsHandler(deps: Partial<OpsDeps> = {}) {
 }
 
 const handler = createOpsHandler()
-const spikeTick = createSpikeScheduled()
 
 /**
  * The internal entrypoint the SELF binding names (#1946). A named export, so the
@@ -279,13 +272,5 @@ export { OpsInternal } from './internal'
 export default {
   fetch(req: Request, env: OpsEnv): Promise<Response> {
     return handler(req, env)
-  },
-  /**
-   * Spike 0's ceiling probes (#1946), inert unless OPS_SPIKE_ARM is set: see
-   * spike/ceilings.ts. Awaited rather than handed to waitUntil, so the probe is
-   * measured inside the scheduled invocation itself.
-   */
-  async scheduled(controller: ScheduledController, env: OpsEnv, ctx: ExecutionContext): Promise<void> {
-    await spikeTick(controller, env, ctx)
   },
 } satisfies ExportedHandler<OpsEnv>

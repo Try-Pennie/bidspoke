@@ -132,9 +132,6 @@ export const OPS_REQUIRED_SECRETS = [
 export const OPS_OPTIONAL_SECRETS = [
   'OPS_SUPABASE_URL',
   'OPS_SUPABASE_SECRET_KEY',
-  // Spike 0's arm (#1946, src/ops/spike/ceilings.ts): set only while one ceiling
-  // probe is being measured, unset otherwise. Removed with the spike.
-  'OPS_SPIKE_ARM',
 ] as const
 
 /** Every secret the ops Worker may hold; anything else on it fails the parity check. */
