@@ -3,8 +3,9 @@
 Spike 0 gates the #1698 run engine (plan: discussion #1945): the lease length, the
 slice budget, the per tick claim count `k` and whether R2 checkpoint resume (B4) is
 needed all follow from the ceilings measured here. Every premise below carries the
-command that re-measures it, or says what re-measuring it would take where no
-command in the repository can (P3). A reading is what that command returned when it was
+command that re-measures it. Where that command needs the removed probes, it says
+so and points at "Arming a probe", which says how to restore them; P3 also needs
+the restored probe changed. A reading is what that command returned when it was
 last run; re-run the command before relying on the number (L316).
 
 The work was in two stages. Stage 1 (#2266) measured everything that needed no
@@ -24,7 +25,7 @@ Logs: the invocation's own `$workers.outcome`, `wallTimeMs` and `cpuTimeMs`.
 |---|---|
 | `dispatch_ping` (s0-ping-01) | `scheduled()` reached `OpsInternal` through `SELF`: `result.json` = `{lane: ops, entrypoint: OpsInternal}`. The upload with a binding to the Worker's own new entrypoint was ACCEPTED in one step. |
 | `cron_subrequests` (s0-csub-01) | Ran sequential R2 HEADs at about 4.7 a second (about 210 ms each) and was ended by the WALL limit before the subrequest limit: outcome `canceled`, wall 899,751 ms, CPU 822 ms, about 3,900 subrequests done. The 10,000 subrequest ceiling was not reached and stays documented, not measured. |
-| `dispatch_subrequests` (s0-dsub-01) | The callee is its own invocation (`eventType: jsrpc`, entrypoint `OpsInternal`, its own requestId) and made about 4,600 R2 HEADs. Caller and callee were both ended at the same logged instant (16:24:48.685 UTC) when the caller hit the cron wall; the callee's wall time is about 600 ms shorter because it started about 600 ms later: caller `canceled` at 899,986 ms, callee `canceled` at 899,368 ms (CPU 982 ms). |
+| `dispatch_subrequests` (s0-dsub-01) | The callee is its own invocation (`eventType: jsrpc`, entrypoint `OpsInternal`, its own requestId) and made about 4,600 R2 HEADs. Caller and callee end records carry the same timestamp (16:24:48.685 UTC), the caller's cron wall; their wall times differ by about 600 ms because the callee started about 600 ms later: caller `canceled` at 899,986 ms, callee `canceled` at 899,368 ms (CPU 982 ms). |
 | `dispatch_fanout` (s0-fan-01) | 40 concurrent `ping()` dispatches from one `scheduled()`: 40 fulfilled, 0 refused, each its own `jsrpc` invocation of about 7 ms. The documented 32 invocations per request did NOT refuse 40 fanned out calls; a larger fan out was not tried. |
 | `dispatch_detached` (s0-det-01) | A dispatch the caller did not await was CANCELED when the caller's invocation ended: callee `canceled` at 908 ms, before its first 10 s progress step. |
 | `cron_cpu` (s0-ccpu-01) | Outcome `exceededCpu` at CPU 32,000 ms (wall 36,974 ms). The minute cron's CPU ceiling is the documented 30 s plus the platform's small allowance. |
@@ -70,20 +71,20 @@ What it means for the run engine (#1698):
 ### Arming a probe (how the removed probes worked)
 
 The probe code is REMOVED from the repository. To re-measure with it: on a
-branch, `git revert` the squash commit of the pull request that closed #1946
-(which restores `src/ops/spike/ceilings.ts`, `OpsInternal.probe`, the cron and the
-`OPS_SPIKE_ARM` allowlist entry), deploy that branch to `bidspoke-worker-ops`, wait
+branch, revert the squash commit of pull request #2286 (found with
+`git log --oneline --grep '#2286'`), which restores `src/ops/spike/ceilings.ts`, `OpsInternal.probe`, the cron and the
+`OPS_SPIKE_ARM` allowlist entry; deploy that branch to `bidspoke-worker-ops`, wait
 about 16 minutes for the new cron to fire, then arm as below. The code it restores
-is the code #2266 merged as f5c19ef8. What follows describes that code.
+is the code #2266 merged as f5c19ef8. The rest of this section describes that
+code, in the past tense.
 
-
-The arm is JSON: `{"probe": <name>, "nonce": <8 to 64 of a-z 0-9 ->, "until": <ISO time at most 3 hours ahead>}`.
-A malformed, expired or too distant arm is refused by name in the logs and runs
-nothing. Each nonce runs once: its first tick claims
+The arm was JSON: `{"probe": <name>, "nonce": <8 to 64 of a-z 0-9 ->, "until": <ISO time at most 3 hours ahead>}`.
+A malformed, expired or too distant arm was refused by name in the logs and ran
+nothing. Each nonce ran once: its first tick claimed
 `spike/1946/<nonce>/claim.json` in the `bidspoke-porting-tee` bucket with a write
-that refuses to overwrite, so the next minute, an overlapping tick and Cloudflare's
-retry of a killed cron all stand down. A probe that survives writes
-`spike/1946/<nonce>/result.json`. Probes built to be killed leave only the claim;
+that refused to overwrite, so the next minute, an overlapping tick and Cloudflare's
+retry of a killed cron all stood down. A probe that survived wrote
+`spike/1946/<nonce>/result.json`. Probes built to be killed left only the claim;
 the kill itself, with its CPU and wall time, is in Workers Logs.
 
 | Probe | Measures | How it ended in Stage 2 |
@@ -92,7 +93,7 @@ the kill itself, with its CPU and wall time, is in Workers Logs.
 | `cron_cpu` | CPU of a minute cron | `exceededCpu` at 32,000 ms |
 | `cron_subrequests` | subrequests per invocation (R2 HEADs) | wall limit first, about 3,900 done, no refusal (the HEADs are sequential) |
 | `dispatch_ping` | `scheduled()` reaches `OpsInternal` over `SELF` | reached; `result.json` holds `{lane: ops, entrypoint: OpsInternal}` |
-| `dispatch_wall` | wall clock of a dispatched sub-invocation | both `canceled` at the same instant, about 899,000 ms |
+| `dispatch_wall` | wall clock of a dispatched sub-invocation | both `canceled` with one end timestamp; caller 899,749 ms, callee 899,057 ms |
 | `dispatch_cpu` | CPU of a dispatched sub-invocation | callee `exceededCpu` at 32,000 ms on its own budget; caller `ok` |
 | `dispatch_subrequests` | subrequests inside a sub-invocation | wall limit first, about 4,600 done; own or shared budget not settled |
 | `dispatch_detached` | a sub-invocation not awaited by its caller | callee `canceled` at 908 ms, as soon as its caller ended |
