@@ -613,6 +613,11 @@ BEGIN
     ELSE
       RAISE EXCEPTION 'complete_run_request: % is not an outcome', p_outcome USING ERRCODE = 'invalid_parameter_value';
   END CASE;
+  -- No token is no claim: refused, so it can never match a swept or never
+  -- claimed run's absent token and be told already_completed.
+  IF p_claim_token IS NULL THEN
+    RAISE EXCEPTION 'complete_run_request: a claim token is required' USING ERRCODE = 'invalid_parameter_value';
+  END IF;
 
   SELECT r.* INTO v_run FROM public.run_requests r
   WHERE r.id = p_run_request_id AND r.organization_id = p_organization_id FOR UPDATE;
@@ -620,7 +625,7 @@ BEGIN
     RETURN QUERY SELECT 'not_found'::text, NULL::text, NULL::bigint;
     RETURN;
   END IF;
-  IF v_run.claim_token IS DISTINCT FROM p_claim_token THEN
+  IF v_run.claim_token IS NULL OR v_run.claim_token <> p_claim_token THEN
     RETURN QUERY SELECT 'claim_lost'::text, v_run.status, v_run.state_version;
     RETURN;
   END IF;

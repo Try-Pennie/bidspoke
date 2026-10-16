@@ -417,6 +417,12 @@ BEGIN
     RAISE EXCEPTION 'the holder of a swept run was told its complete succeeded';
   END IF;
   IF (SELECT status FROM public.run_requests WHERE id = v_retried) <> 'queued' THEN RAISE EXCEPTION 'the swept holder''s complete changed the run'; END IF;
+  -- A missing token never matches the swept run's absent one.
+  BEGIN
+    PERFORM public.complete_run_request(v_org, v_retried, NULL, 'done');
+    RAISE EXCEPTION 'a complete with no claim token was accepted';
+  EXCEPTION WHEN invalid_parameter_value THEN NULL;
+  END;
 
   -- Likewise after the sweep sends it to a person (from no rows again: the
   -- requeued run above would be claimed first).

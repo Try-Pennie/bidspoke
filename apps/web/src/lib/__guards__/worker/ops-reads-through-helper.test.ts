@@ -32,8 +32,8 @@
  * Seen red on 2026-10-06 against a planted file (the "planted way round" test,
  * kept so the check stays proven) and against a real `.from(` added to
  * src/ops/index.ts; on 2026-10-16 (#1948) against a real `.rpc(` added there,
- * and, in the last two tests, against a helper of the right name in the wrong
- * file and the wrong method inside callOpsRpc.
+ * and, in the last test, against a helper of the right name in the wrong file
+ * and the wrong method inside callOpsRpc.
  */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
