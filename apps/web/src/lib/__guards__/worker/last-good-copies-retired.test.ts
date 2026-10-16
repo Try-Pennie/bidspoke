@@ -11,6 +11,13 @@
  * Before #1846 nothing retired either, so in an outage an endpoint deleted or
  * switched off, or a partner disabled, minutes earlier was served from its copy.
  *
+ * A third copy follows the same rule (#2060): `slack-conns-lastgood`, every
+ * org's Slack connection, which alerts post from in an outage. A handler that
+ * writes service_connections must call editSlackCopyEntry after the write,
+ * unless it is listed with the reason it can never touch a Slack row. Seen to
+ * fail on integrations.ts before #2060, naming POST /slack, PATCH
+ * /slack/settings and DELETE /slack.
+ *
  * The handlers are ENUMERATED from source, never listed by hand (L41, L96): every
  * function in any app's source holding a write to the table (a `.from(table)`
  * chain ending in a write method, or an `.rpc()` of a database function whose
@@ -39,6 +46,12 @@ import { REPO_ROOT, WORKER_SRC, listTsFiles } from '../../__tests__/_scan-utils'
 interface Kind {
   table: string
   retire: string
+  /**
+   * Handlers that write the table but can never change what the copy holds,
+   * each with the reason (L362). Every entry must still name a writing handler,
+   * so a stale one fails rather than exempting nothing.
+   */
+  exempt?: Record<string, string>
   /** PostgREST builder methods that change or remove a row this copy could describe. */
   writeMethods: string[]
   /** SQL statements that do the same inside a database function. */
@@ -62,6 +75,23 @@ const KINDS: Kind[] = [
     // on an existing row, so it counts.
     writeMethods: ['upsert', 'update', 'delete'],
     sqlWrites: /\b(?:UPDATE|DELETE\s+FROM)\s+(?:public\.)?partner_configs\b/i,
+  },
+  {
+    // The saved Slack copy (`slack-conns-lastgood`, lib/slack-copy.ts), which
+    // alerts post from in a database outage (#2060). The "retire" here edits
+    // the org's entry: removes it, or replaces it with the new connection.
+    table: 'service_connections',
+    retire: 'editSlackCopyEntry',
+    writeMethods: ['insert', 'upsert', 'update', 'delete'],
+    sqlWrites: /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:public\.)?service_connections\b/i,
+    // This guard cannot read a reason, so each is held true by a route test:
+    // connections.test.ts refuses DELETE /connections/slack (#2060) and POST
+    // with a type outside SERVICE_TYPES.
+    exempt: {
+      'apps/worker/src/routes/api/connections.ts POST /': 'upserts only salesforce, supabase or snowflake (SERVICE_TYPES), never a Slack row',
+      'apps/worker/src/routes/api/connections.ts DELETE /:service_type': 'refuses any type outside SERVICE_TYPES before its read, so it can never delete the Slack row',
+      'apps/worker/src/routes/api/connections.ts POST /:service_type/sync-schema': 'writes only schema_cache and schema_synced_at, which the copy does not hold, and answers 400 for Slack before writing',
+    },
   },
 ]
 
@@ -217,6 +247,7 @@ export function judge(kind: Kind, rel: string, src: string, rpcWriters: Set<stri
     }
     const label = `${rel} ${handlerLabel(fn, sf)}`
     handlers.add(label)
+    if (kind.exempt?.[label]) continue
     let retiredAfter = false
     const find = (n: ts.Node) => {
       if (ts.isCallExpression(n) && calleeName(n) === kind.retire && n.getStart(sf) > w.node.getEnd()) retiredAfter = true
@@ -241,7 +272,7 @@ function scan(kind: Kind): Finding {
   return all
 }
 
-const [ENDPOINTS, PARTNERS] = KINDS
+const [ENDPOINTS, PARTNERS, SLACK_COPY] = KINDS
 
 describe('every handler writing webhook_endpoints retires the endpoint copies (#1846)', () => {
   const found = scan(ENDPOINTS)
@@ -273,6 +304,30 @@ describe('every handler writing partner_configs retires the partner copy (#1846)
       'apps/worker/src/routes/api/workflows.ts POST /:id/rename-apply',
     ]))
     expect([...sqlFunctionsWriting(PARTNERS, readMigrations())]).toEqual(expect.arrayContaining(['delete_partner_config', 'rename_partner_step_namespace']))
+  })
+})
+
+describe('every handler writing service_connections edits the saved Slack copy (#2060)', () => {
+  const found = scan(SLACK_COPY)
+
+  it('no handler writes the table without a later editSlackCopyEntry(), apart from the recorded exemptions', () => {
+    expect(found.offenders).toEqual([])
+  })
+
+  it('the enumeration finds the Slack settings routes, so an empty offender list is a measurement (L1)', () => {
+    expect(found.handlers).toEqual(expect.arrayContaining([
+      'apps/worker/src/routes/api/integrations.ts POST /slack',
+      'apps/worker/src/routes/api/integrations.ts PATCH /slack/settings',
+      'apps/worker/src/routes/api/integrations.ts DELETE /slack',
+    ]))
+  })
+
+  it('every exemption still names a handler that writes the table, so none is stale', () => {
+    expect(found.handlers).toEqual(expect.arrayContaining(Object.keys(SLACK_COPY.exempt ?? {})))
+  })
+
+  it('no database function writes the table, where a write would reach the copy unseen', () => {
+    expect([...sqlFunctionsWriting(SLACK_COPY, readMigrations())]).toEqual([])
   })
 })
 
