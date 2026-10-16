@@ -18,7 +18,7 @@
  * priority direction on the priority field.
  */
 import { useEffect, useState } from 'react'
-import { PRIORITY_DIRECTION, SALE_RECORD_LABELS, SOLD_ON, type BuyerProfileDocument, type ProfileError, type SaleWrites, type Signal } from '@bidspoke/buyer-profile'
+import { PRIORITY_DIRECTION, SALE_RECORD_LABELS, SOLD_ON, salesforceStandingOf, type BuyerProfileDocument, type ProfileError, type SaleWrites, type Signal } from '@bidspoke/buyer-profile'
 import { soldOnPatch } from './sold-on-switch'
 import type { SignalRules } from '@/app/(app)/partners/partner-draft'
 import { api, type HeldClick, type MarkSentResult } from '@/lib/api'
@@ -146,8 +146,17 @@ const reasonOf = (message: string | undefined): string => {
   return `: ${/[.!?]$/.test(text) ? text : `${text}.`}`
 }
 
-function markSentMessage(result: MarkSentResult, leadId: string, partnerName: string): string {
-  const base = `Marked sent as ${leadId}.`
+/**
+ * The not-removed note, only where the entry was meant to leave the list: its
+ * updates all landed AND it has a lead id. A sale with no lead id stays listed
+ * on purpose (#2139), so the id can be added.
+ */
+function notClearedNote(writes: SaleWrites, leadId: string | null, listCleared: boolean): string {
+  return !listCleared && writes.complete && leadId !== null ? LIST_NOT_CLEARED : ''
+}
+
+function markSentMessage(result: MarkSentResult, leadId: string | null, partnerName: string): string {
+  const base = leadId === null ? `Marked sent with no lead id from ${partnerName}.` : `Marked sent as ${leadId}.`
   const counted = result.count
     ? result.count.added
       ? ` Counted in ${partnerName}'s clicks for ${countDay(result.count.date)} (Pacific).`
@@ -156,8 +165,8 @@ function markSentMessage(result: MarkSentResult, leadId: string, partnerName: st
       ? ` It could not be added to ${partnerName}'s clicks for ${countDay(result.count_date)} (Pacific)${reasonOf(result.count_error)}`
       // An add that got no answer may still have landed (#1766), so only a refusal says it was not added.
       : ` It may not have been added to ${partnerName}'s clicks for ${countDay(result.count_date)} (Pacific)${reasonOf(result.count_error)}`
-  // An entry kept for its Salesforce retry is kept on purpose, so the not-removed note is only for a complete one.
-  const notCleared = !result.list_cleared && result.salesforce.complete ? LIST_NOT_CLEARED : ''
+  // An entry kept for its Salesforce retry, or for a lead id still to add, is kept on purpose.
+  const notCleared = notClearedNote(result.salesforce, leadId, result.list_cleared)
   return `${base}${counted}${salesforceSentence(result.salesforce)}${result.audit_recorded ? '' : AUDIT_NOT_RECORDED}${notCleared}`
 }
 
@@ -238,22 +247,46 @@ export function BuyerProfileSection(props: Props) {
   const patchHeld = (id: string, patch: Partial<HeldClick>) =>
     setHeld((h) => (h ? { ...h, entries: h.entries.map((e) => (e.id === id ? { ...e, ...patch } : e)) } : h))
 
-  const markSent = (row: HeldClick, generation: number, leadId: string) =>
+  /**
+   * What a sale's new Salesforce writes leave on its card: the writes, where the
+   * sale now stands by the rule the list reads it by (L342), and whether the
+   * entry left the list, so the card offers nothing on an entry that is gone.
+   */
+  const soldPatch = (generation: number, leadId: string | null, writes: SaleWrites, listCleared: boolean): Partial<HeldClick> => {
+    const salesforce = { status: 'recorded' as const, at: new Date().toISOString(), writes }
+    return {
+      claim: { status: 'sold', generation, partner_lead_id: leadId },
+      salesforce,
+      salesforce_standing: salesforceStandingOf(salesforce, leadId),
+      cleared: listCleared,
+    }
+  }
+
+  const markSent = (row: HeldClick, generation: number, leadId: string | null) =>
     release(row.id, 'Marking it sent', async () => {
       const r = await api.heldClicks.markSent(row.id, generation, leadId)
-      patchHeld(row.id, {
-        claim: { status: 'sold', generation: r.generation, partner_lead_id: leadId },
-        salesforce: { status: 'recorded', at: new Date().toISOString(), writes: r.salesforce },
-      })
+      patchHeld(row.id, soldPatch(r.generation, leadId, r.salesforce, r.list_cleared))
       return markSentMessage(r, leadId, partnerName)
     })
   const retrySalesforce = (row: HeldClick) =>
     release(row.id, 'Updating Salesforce', async () => {
       const r = await api.heldClicks.retrySalesforce(row.id)
-      patchHeld(row.id, { salesforce: { status: 'recorded', at: new Date().toISOString(), writes: r.salesforce } })
+      // The retry writes the lead id the claim holds, so the card keeps it.
+      const claim = row.claim.status === 'sold' ? row.claim : null
+      if (claim) patchHeld(row.id, soldPatch(claim.generation, claim.partner_lead_id, r.salesforce, r.list_cleared))
+      else patchHeld(row.id, { salesforce: { status: 'recorded', at: new Date().toISOString(), writes: r.salesforce } })
       const unrecorded = r.audit_recorded ? '' : AUDIT_NOT_RECORDED
       if (!r.salesforce.complete) return `Retried. Salesforce was still not fully updated; the records are listed below.${unrecorded}`
-      return `Retried.${salesforceSentence(r.salesforce)}${unrecorded}${r.list_cleared ? '' : LIST_NOT_CLEARED}`
+      return `Retried.${salesforceSentence(r.salesforce)}${unrecorded}${notClearedNote(r.salesforce, claim?.partner_lead_id ?? null, r.list_cleared)}`
+    })
+  /** Add or correct a marked sent sale's lead id (#2139, L1008); a refusal is shown in the route's own words. */
+  const setLeadId = (row: HeldClick, generation: number, leadId: string) =>
+    release(row.id, 'Saving the lead id', async () => {
+      const old = row.claim.status === 'sold' ? row.claim.partner_lead_id : null
+      const r = await api.heldClicks.setLeadId(row.id, generation, leadId)
+      patchHeld(row.id, soldPatch(r.generation, leadId, r.salesforce, r.list_cleared))
+      const base = old ? `Lead id changed from ${old} to ${leadId}.` : `Lead id ${leadId} added.`
+      return `${base}${salesforceSentence(r.salesforce)}${r.audit_recorded ? '' : AUDIT_NOT_RECORDED}${notClearedNote(r.salesforce, leadId, r.list_cleared)}`
     })
   const free = (row: HeldClick, generation: number) =>
     release(row.id, 'Freeing it', async () => {
@@ -411,7 +444,7 @@ export function BuyerProfileSection(props: Props) {
           {click && (
             <div className="space-y-3">
               <h4 className="text-sm font-medium text-gray-700">Held clicks</h4>
-              <HeldClicksPanel partnerName={partnerName} held={held} error={heldError} outcomes={heldOutcomes} onMarkSent={markSent} onFree={free} onClear={clear} onRetrySalesforce={retrySalesforce} />
+              <HeldClicksPanel partnerName={partnerName} held={held} error={heldError} outcomes={heldOutcomes} onMarkSent={markSent} onFree={free} onClear={clear} onRetrySalesforce={retrySalesforce} onSetLeadId={setLeadId} />
             </div>
           )}
 
