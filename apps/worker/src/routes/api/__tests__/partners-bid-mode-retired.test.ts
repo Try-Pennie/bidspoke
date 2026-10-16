@@ -32,7 +32,7 @@ const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, 
 const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
 const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: { get: async () => null, put: async () => {}, delete: async () => {} } } as unknown as Env
 const SAVE_ID = '0b9f6c1e-3c2a-4d7e-8f10-2a3b4c5d6e7f'
-const RETIRED_MESSAGE = 'bid_mode is retired: nothing reads it, and its column is being removed (#2182). Send the save without it.'
+const RETIRED_MESSAGE = 'bid_mode is retired: nothing reads it, and its column was removed (#2182). Send the save without it.'
 
 // The route tree is imported once, before the tests, so its cold import is not
 // charged to whichever test runs first.
