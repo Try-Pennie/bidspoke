@@ -15,8 +15,12 @@ import { Button } from '@/components/ui/form'
 import { UNCONFIRMED, UNCONFIRMED_DISCARD_GAVE_UP, UNCONFIRMED_DISCARD_REASON, UNCONFIRMED_GAVE_UP } from '@/app/(app)/partners/save-bar-text'
 
 export type SaveBarState =
-  /** Something is edited: named, with Discard changes and Save changes. */
-  | { kind: 'dirty'; message: string }
+  /**
+   * Something is edited: named, with Discard changes and Save changes. `note`
+   * is a second line, such as another person's live save of fields being
+   * edited, which Save will ask about (#2135).
+   */
+  | { kind: 'dirty'; message: string; note?: string | null }
   /** A new partner, not created yet: Cancel and Create partner. */
   | { kind: 'new'; canCreate: boolean }
   /** Saving (or undoing, or creating): the seconds counting. */
@@ -56,7 +60,10 @@ export function SaveBar({ state, formId, onDiscard, onCancel, onTryAgain, onUndo
   if (state.kind === 'dirty') {
     return (
       <div className="save-bar" data-save-bar="">
-        <p className="save-bar-message">{state.message}</p>
+        <div className="save-bar-message flex-col items-start">
+          <p>{state.message}</p>
+          {state.note && <p role="status" className="save-bar-note">{state.note}</p>}
+        </div>
         <Button variant="secondary" onClick={onDiscard}>Discard changes</Button>
         <Button variant="primary" type="submit" form={formId}>Save changes</Button>
       </div>

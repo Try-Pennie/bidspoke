@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { DISPLAY_TIME_ZONES } from '@bidspoke/buyer-profile'
-import { etDayHeading, etDayKey, formatElapsed, formatEtClock, formatEtDayTime, formatLogTime, zoneShiftFromEastern } from '../dates'
+import { etDayHeading, etDayKey, formatCalendarDay, formatElapsed, formatEtClock, formatEtDateTime, formatEtDayTime, formatInZone, formatLogTime, zoneShiftFromEastern } from '../dates'
 
 describe('formatElapsed (#2138): the save bar\'s running time', () => {
   it('counts whole seconds, one second singular, and moves to minutes past a minute', () => {
@@ -20,6 +20,32 @@ describe('formatElapsed (#2138): the save bar\'s running time', () => {
 
   it('never counts below zero, so a clock that steps back says 0 seconds', () => {
     expect(formatElapsed(-5_000)).toBe('0 seconds')
+  })
+})
+
+// #2135: the partners page's times all go through dates.ts (dates-in-partners guard).
+describe('formatEtDateTime and formatCalendarDay (#2135)', () => {
+  it('gives the ET day, year and clock time with no zone suffix', () => {
+    expect(formatEtDateTime('2026-10-14T18:34:12.482Z')).toBe('Oct 14, 2026, 2:34 PM')
+    expect(formatEtDateTime('2027-01-01T03:00:00.000Z')).toBe('Dec 31, 2026, 10:00 PM')
+  })
+
+  it('names a calendar date as written, whatever zone the browser is in', () => {
+    expect(formatCalendarDay('2027-09-20')).toBe('Sep 20')
+    expect(formatCalendarDay('2027-01-01')).toBe('Jan 1')
+  })
+
+  it('gives back what it cannot read, rather than Invalid Date', () => {
+    expect(formatEtDateTime('not a time')).toBe('not a time')
+    expect(formatCalendarDay('soon')).toBe('soon')
+    expect(formatInZone('later', 'America/Los_Angeles', 'day')).toBe('later')
+  })
+
+  it('formatInZone shows a moment in a named zone, its time with the zone\'s name', () => {
+    // 06:30 UTC on Oct 15 is still Oct 14 in Los Angeles (PDT, UTC-7).
+    expect(formatInZone('2026-10-15T06:30:00.000Z', 'America/Los_Angeles', 'day-time')).toBe('Oct 14, 11:30 PM PDT')
+    expect(formatInZone('2026-10-15T06:30:00.000Z', 'America/Los_Angeles', 'clock')).toBe('11:30 PM PDT')
+    expect(formatInZone('2026-10-15T06:30:00.000Z', 'America/Los_Angeles', 'day')).toBe('Oct 14')
   })
 })
 

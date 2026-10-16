@@ -138,7 +138,8 @@ describe('the Buyer profile section', () => {
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
     // Only the changed partner field is sent (#2132): the accept rules were not edited, so they are not written.
     expect(onSave.mock.calls[0][0]).toEqual({ daily_cap: 300 })
-    expect(onSave.mock.calls[0][3]).toEqual({ expected_partner_version: 0, expected_profile_version: 3, profile: expect.objectContaining({ daily_lead_cap: 600 }), save_id: SAVE_ID })
+    // client_id is this tab (#2135), so the tab knows its own live notice.
+    expect(onSave.mock.calls[0][3]).toEqual({ expected_partner_version: 0, expected_profile_version: 3, profile: expect.objectContaining({ daily_lead_cap: 600 }), save_id: SAVE_ID, client_id: expect.stringMatching(/^[0-9a-f-]{36}$/) })
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Partner saved\. Buyer profile saved, version 4\./))
   })
 
