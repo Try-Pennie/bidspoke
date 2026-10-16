@@ -628,6 +628,16 @@ export function salesforceRejectedTheWrite(status: number, responseText: string)
 }
 
 /**
+ * Whether an error is the bulkhead refusing a Salesforce call before anything
+ * was sent (ADR 0005). Read off a mark the call path sets, never the wording.
+ * The replay and the drain give the attempt back on it (#468): nothing left, so
+ * nothing can have landed, and the row is held rather than spent.
+ */
+export function isSalesforceBulkheadShed(e: unknown): boolean {
+  return e instanceof Error && (e as Error & { bulkheadShed?: unknown }).bulkheadShed === true
+}
+
+/**
  * The bulkhead slots for one Salesforce call (ADR 0005, #2170). A key whose
  * Durable Object errors is passed over, every key alike, and said by name, so a
  * fail-open is counted from its own line rather than read off a waited line.
@@ -691,11 +701,13 @@ export async function performSalesforceCall(
     console.log(`[salesforce] event=salesforce_bulkhead_shed key=${key} inflight=${inflight} limit=${limit} waited_ms=${waitedMs} trace=${opts.traceId}`)
     const shedErr = new Error(
       `Salesforce bulkhead: at capacity (${key}, ${inflight}/${limit} inflight, waited ${waitedMs}ms)`,
-    ) as Error & { resolvedInput?: ResolvedStepInput }
+    ) as Error & { resolvedInput?: ResolvedStepInput; bulkheadShed?: true }
     // Not marked permanent/saturated on purpose: classifyStepError defaults an
     // unmarked error to transient, so withRetry retries the shed (see comment above).
     // After the answer it is therefore an unknown outcome, so the at-risk record stays.
     shedErr.resolvedInput = opts.resolvedInput
+    // Nothing was sent: the replay and the drain read this (isSalesforceBulkheadShed).
+    shedErr.bulkheadShed = true
     throw shedErr
   }
   if (waitedMs > 1000 && slots.granted) {
@@ -977,7 +989,7 @@ async function fetchQueryPage(
     // it to transient so withRetry rides out a brief slowdown.
     throw Object.assign(
       new Error(`Salesforce bulkhead: at capacity while paging a query (${key}, ${inflight}/${limit} inflight)`),
-      { resolvedInput: opts.resolvedInput },
+      { resolvedInput: opts.resolvedInput, bulkheadShed: true as const },
     )
   }
 
