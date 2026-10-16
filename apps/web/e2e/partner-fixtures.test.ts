@@ -178,6 +178,26 @@ describe('answerFor', () => {
     expect(named.sort()).toEqual([['amone', ['Main Flow', 'Main Flow (v2) (off)']], ['tripoint', ['Main Flow', 'Main Flow (v2) (off)']]])
   })
 
+  // #2139: the held clicks cards, the lead id box and the Remove dialog are reached
+  // from Liberty1's invented held clicks; every other read stays the empty panel.
+  it('gives Liberty1 its held clicks only when asked to, with a held click, a sale with no lead id and a sale Salesforce refused', () => {
+    const liberty1 = fx.partners.find((p) => p.slug === 'liberty1')!
+    const url = `${W}/api/held-clicks?partner_id=${liberty1.id}`
+    expect(answerFor('GET', url, fx)?.body).toEqual(fx.panels.held_clicks)
+    const list = answerFor('GET', url, fx, { heldClicks: true })?.body as { entries: Array<{ claim: { status: string; partner_lead_id?: string | null }; salesforce_standing: string | null }>; total: number }
+    expect(list).toEqual(fx.heldClicks.list)
+    expect(list.entries.map((e) => [e.claim.status, e.claim.partner_lead_id ?? null, e.salesforce_standing])).toEqual([['held', null, null], ['sold', null, 'written'], ['sold', 'L1F-778', 'incomplete']])
+    expect(answerFor('GET', `${W}/api/held-clicks?partner_id=${tripoint.id}`, fx, { heldClicks: true })?.body).toEqual(fx.panels.held_clicks)
+  })
+
+  it('answers adding a lead id only for a listed sale, and only when asked to', () => {
+    const sale = fx.heldClicks.list.entries[1]
+    expect(answerFor('POST', `${W}/api/held-clicks/${sale.id}/lead-id`, fx)).toBeNull()
+    expect(answerFor('POST', `${W}/api/held-clicks/${sale.id}/lead-id`, fx, { heldClicks: true })).toEqual({ status: 200, body: fx.heldClicks.lead_id })
+    expect(answerFor('POST', `${W}/api/held-clicks/not-listed/lead-id`, fx, { heldClicks: true })).toBeNull()
+    expect(answerFor('POST', `${W}/api/held-clicks/${sale.id}/mark-sent`, fx, { heldClicks: true })).toBeNull()
+  })
+
   it('answers a page save only when asked to, and only with the recorded 409', () => {
     expect(answerFor('PUT', `${W}/api/partners/${tripoint.id}/page`, fx)).toBeNull()
     expect(answerFor('PUT', `${W}/api/partners/${tripoint.id}/page`, fx, { staleSave: true })).toEqual({ status: 409, body: fx.stale })

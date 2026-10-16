@@ -255,6 +255,47 @@ test.describe('Accessibility (axe-core)', () => {
     expect(unmatched).toEqual([])
   })
 
+  // #2139: the held clicks cards, open. Liberty1 is given three invented held
+  // clicks (production holds none): one still held, a sale with no lead id and a
+  // sale whose Submission update Salesforce refused. The Mark sent box and the
+  // Remove dialog are each scanned open; adding the lead id is answered by its
+  // fixture, so nothing reaches production.
+  test('partners page: held clicks, the lead id box and the Remove dialog have no serious a11y violations', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl(), { heldClicks: true })
+    await page.goto('/partners?selected=liberty1&tab=buyer-profile')
+    const cards = page.getByRole('list', { name: 'Held clicks for Liberty1' }).locator(':scope > li')
+    await expect(cards).toHaveCount(3)
+    await expect(page.getByText('1 click held. No later click on this prospect is sent until it is released.')).toBeVisible()
+    await page.waitForLoadState('networkidle')
+
+    // The Mark sent box, open, with its consequence for no lead id.
+    await cards.nth(0).getByRole('button', { name: 'Mark sent' }).click()
+    const box = page.getByLabel("Liberty1's lead id, if you have it")
+    await expect(box).toBeVisible()
+    await expect(box).toHaveAccessibleDescription(/Salesforce marks the sale Completed with no lead id/)
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await cards.nth(0).getByRole('button', { name: 'Cancel' }).click()
+
+    // The Remove dialog of the sale Salesforce refused, naming the retry it takes.
+    await expect(cards.nth(2).getByRole('alert')).toContainText('UNABLE_TO_LOCK_ROW')
+    await cards.nth(2).getByRole('button', { name: 'Remove from the list' }).click()
+    const dialog = page.getByRole('alertdialog', { name: 'Remove a0B5f00000QzW4pEAF from the list?' })
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toHaveAccessibleDescription(/Its Salesforce retry goes with it/)
+    await expectDialogs(page)
+    await expectNoSeriousA11yViolations(page, [], '/partners', '[role="alertdialog"]')
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+    await expect(dialog).toBeHidden()
+
+    // Adding the lead id to the sale with none, answered by its fixture.
+    await cards.nth(1).getByRole('button', { name: "Add Liberty1's lead id" }).click()
+    await page.getByLabel("Liberty1's lead id", { exact: true }).fill('L1F-779')
+    await cards.nth(1).getByRole('button', { name: 'Add the lead id' }).click()
+    await expect(cards.nth(1).getByRole('status')).toHaveText('Lead id L1F-779 added. Salesforce updated: Prospect, Submission, Lead.')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    expect(unmatched).toEqual([])
+  })
+
   // #2137: jsdom has no layout, so clipping is measured here, in the real tabs,
   // the real scrolling form pane and the real Dialog shell.
   test('partners page: nothing is clipped, a dropdown at the foot of the scrolled form or the merge dialog, and the list stays in view', async ({ page }) => {
