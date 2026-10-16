@@ -21,7 +21,7 @@ import { CRON_HEARTBEAT_RECOVERY_WORDS } from '../slack'
  * from without either noticing.
  */
 describe('INCIDENT_SIGNALS', () => {
-  it('names the fifteen signals in use, each once', () => {
+  it('names the sixteen signals in use, each once', () => {
     const names = INCIDENT_SIGNALS.map((s) => s.signal)
     expect(new Set(names).size).toBe(names.length)
     expect([...names].sort()).toEqual([
@@ -40,6 +40,7 @@ describe('INCIDENT_SIGNALS', () => {
       'supabase-memory',
       'volume-cliff',
       'workflow-schedule',
+      'writeback-backlog',
     ])
   })
 
@@ -48,6 +49,9 @@ describe('INCIDENT_SIGNALS', () => {
     for (const s of ['failure-rate', 'slow-spike', 'volume-cliff', 'db-unreachable', 'field-presence-drought', 'field-presence-dead', 'field-presence-wrong-path'] as const) {
       expect(scope(s), s).toBe('org')
     }
+    // #468: a stored Salesforce write belongs to one organization, and only its
+    // own routes can replay it, so its backlog is that organization's.
+    expect(scope('writeback-backlog')).toBe('org')
     // A partner host is shared by every organization's leads, and the probe reports
     // under the literal org 'probe', so neither may be read as an organization.
     for (const s of ['partner-reachability', 'supabase-memory', 'pg-cron-watch', 'stored-copy-serving', 'workflow-schedule'] as const) {
@@ -116,6 +120,7 @@ describe('INCIDENT_SIGNALS', () => {
     const byWorkflow = INCIDENT_SIGNALS.filter((s) => s.subject === 'workflow').map((s) => s.signal).sort()
     expect(byWorkflow).toEqual(['failure-rate', 'field-presence-dead', 'field-presence-drought', 'field-presence-wrong-path', 'slow-spike', 'volume-cliff'])
     expect(incidentSignal('db-unreachable').subject).toBe('organization')
+    expect(incidentSignal('writeback-backlog').subject).toBe('organization')
     for (const s of ['partner-reachability', 'supabase-memory', 'pg-cron-watch', 'stored-copy-serving', 'workflow-schedule', 'cron-heartbeat', 'export-alert', 'partner-page-live'] as const) {
       expect(incidentSignal(s).subject, s).toBe('name')
     }
