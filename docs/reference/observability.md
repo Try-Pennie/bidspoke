@@ -149,14 +149,24 @@ A scheduled check finds who to tell by reading the org's Slack connection. When 
 
 | | |
 |---|---|
-| Alert | `Bidspoke nobody can be told in Slack`, a Better Stack logs alert on the source below |
-| Match | `message` equals `bidspoke nobody can be told in Slack: the database did not answer and no saved Slack copy could stand in` (the constant `NOBODY_TOLD_LINE`, pinned by `nobody-told-page.test.ts`; change both together or the alert stops matching) |
-| Means | The database did not answer a scheduled Slack lookup and the saved copy could not stand in: `reason` is `no_copy` (there is no saved copy, as after a fresh deploy), `org_not_in_copy` (the copy holds no connection for that organization, or, with `organization_id` null, for any organization) or `copy_unreadable` (the copy did not decrypt, most likely written under a key since rotated). Every scheduled alert for that organization is going unsaid. Check the database first (the Supabase dashboard), then the saved copy. |
+| Alert | `Bidspoke Slack alerts down`, a Better Stack logs alert on the source below (the name Dan gave it on 2026-10-16, the constant `BETTER_STACK_ALERT_NAME`) |
+| Match | The alert's query is `raw ILIKE '%bidspoke nobody can be told in Slack: the database did not answer and no saved Slack copy could stand in%'`, threshold above 0. The text is the event's `message`, the constant `NOBODY_TOLD_LINE`, pinned by `nobody-told-page.test.ts`; change both together or the alert stops matching. The alert matches on this line, never on its own name. |
+| Means | The database did not answer a scheduled Slack lookup and the saved copy could not stand in: `reason` is `no_copy` (there is no saved copy, as after a fresh deploy), `org_not_in_copy` (the copy holds no connection for that organization, or, with `organization_id` null, for any organization) or `copy_unreadable` (the copy did not decrypt, most likely written under a key since rotated). Every scheduled alert for that organization is going unsaid. Check the database first (the Supabase dashboard), then the saved copy. A `reason` of `drill` is not an outage: somebody sent a drill page (below). |
 | Source | A Better Stack HTTP log source used for nothing else. Its token is the worker secret `BETTERSTACK_OUTAGE_TOKEN`, its ingesting host `BETTERSTACK_OUTAGE_URL`. |
-| Fields | Exactly four: `message`, `organization_id` (null when the read was for every organization at once), `reason`, and `dt` (when it happened). Never applicant data or any other field; a test pins the whole event. |
+| Fields | Exactly four: `message`, `organization_id` (null when the read was for every organization at once, and on a drill), `reason`, and `dt` (when it happened). Never applicant data or any other field; a test pins the whole event. |
 | Cadence | At most once per organization per scheduled tick, and once sent, not again for that organization for an hour (a KV record in `IDEMPOTENCY` under `nobody-told-page:`). A send Better Stack refuses or that takes over 5 seconds writes no record, so the next tick tries again. It never delays or fails the check that raised it. |
 
-**The source and the alert are created by hand in Better Stack, separately from this code**, and until both secrets are set the worker pages nobody here: each tick that would have paged logs `BETTERSTACK_OUTAGE_TOKEN or BETTERSTACK_OUTAGE_URL is unset`. To switch it on: create an HTTP log source, set its token and `https://<ingesting host>` as the two worker secrets, then create the logs alert on that source matching the line above and route it to the on call escalation policy.
+**The source and the alert are created by hand in Better Stack, separately from this code**, and until both secrets are set the worker pages nobody here: each tick that would have paged logs `BETTERSTACK_OUTAGE_TOKEN or BETTERSTACK_OUTAGE_URL is unset`. To switch it on: create an HTTP log source, set its token and `https://<ingesting host>` as the two worker secrets, then create the logs alert on that source matching the line above and route it to the on call escalation policy. Then prove it with a drill.
+
+**Proving the page works: the drill (#1303).** Nothing else sends this page on demand, so until an outage the stored URL, the token and the alert are unproven. `POST /api/admin/nobody-told-page/drill` sends ONE page through the same request a real outage sends, with the worker's own two secrets: the same line as `message`, `organization_id` null, and `reason: 'drill'`. It takes no body. Any signed in user on the access allowlist may call it, as for every `/api/admin` route; it reads no tenant data, and the caller's organization is used only for its audit row (`outage_page`, action `outage_page_drilled`, with the outcome). It never reads or writes the `nobody-told-page:` record in `IDEMPOTENCY`, so a drill cannot hold back a real outage's page in the hour after it. **The alert should fire and page whoever it is routed to**, so say so before running it. The answer always carries `alert` (the alert's name) and says what happened:
+
+| Status | `outcome` | Means |
+|---|---|---|
+| 200 | `sent`, with `status` (Better Stack's answer, normally 202) | Better Stack took the line. The alert should fire within its check interval; if it does not, the alert's query or source is wrong. |
+| 503 | `not_configured`, with `missing` (the unset secret names) | Nothing was sent: a secret is unset, so a real outage would page nobody either. |
+| 502 | `refused`, with `status` | Better Stack refused it, so the stored token or URL is wrong (a 401 or 403 most likely means the token). A real page would be refused the same way. |
+| 504 | `no_answer`, with `deadline_ms` | No answer within the 5 second page deadline; the send was abandoned. |
+| 502 | `threw`, with `error` | The request itself failed (a malformed URL, a DNS or network failure). |
 
 ## Estimated cost per execution
 
