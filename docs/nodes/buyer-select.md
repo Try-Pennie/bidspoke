@@ -39,6 +39,7 @@ Test Runner runs, shadow runs and local development runs evaluate and report onl
 | `bid_when_positive` | No | Template that must resolve to a positive number. |
 | `lead_key` | Yes | Template for the stable key one lead is known by across executions. An empty key fails a live step and defers otherwise. |
 | `state`, `debt`, `loan_amount` | As profiles need them | Templates the eligibility rules read. |
+| `collections` | When a profile caps collections | The lead's collections balance, judged as a share of `debt` against a profile's collections cap (#2111). Without it, a buyer whose profile sets a cap is out as `collections_not_wired`. |
 | `sale_payload` | Yes | `{ base, set, normalise }`. `base` is a whole object template such as `{{trigger.payload}}`. `set` is a list of target path and source template pairs. `normalise` is a list of path and normaliser pairs, for example `ssn_digits_9`. Resolved only after the lead is known to be for sale. |
 
 The node has no `retries` setting and ignores one if a definition carries it (reported as `retries_ignored`). A retried sale is a duplicate send.

@@ -22,7 +22,7 @@ import type { Env } from '../../index'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
 import { readSlackConnectionForLead, sendCircuitAlert, type SlackConnection } from '../../lib/slack'
 import { resolveSlackForBlockAlert } from '../../lib/partner-block-alert'
-import { readLastGoodSlackConnections } from '../../lib/volume-cliff'
+import { readLastGoodSlackConnections } from '../../lib/slack-copy'
 import { secretKeys } from '../../lib/secret-crypto'
 import { withDeadline, type Timers } from '@bidspoke/buyer-profile'
 import { parseJson } from '../../lib/json'
@@ -35,7 +35,7 @@ import { dropPartnerLastGoodIfPresent, readPartnerLastGood, rememberPartnerLastG
 import { classifyHttpErrorWithBody, NO_RESPONSE_DECISION, shouldSuppressAlert } from '../error-classifier'
 import { noteBlockSighting, sightingFromResponse } from '../block-sightings'
 import type { ResponseClassificationConfig, AlertConfig } from '../error-classifier'
-import type { BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '../bid-resolver'
+import type { BidResolverType, BidComparisonSource, ExtraExtractionConfig } from '../bid-resolver'
 import { resolveBid, effectiveResolverType } from '../bid-resolver'
 import { linkAbort } from '../retry'
 import { PartnerApiError } from '../partner-bid-error'
@@ -64,7 +64,6 @@ interface PartnerConfig {
   bid_resolver_type: BidResolverType | null
   bid_resolver_config: Record<string, unknown> | null
   outbound_field_mapping: Record<string, unknown> | null
-  bid_mode: BidMode | null
   bid_comparison_source: BidComparisonSource | null
   extra_extraction: ExtraExtractionConfig | null
   dedup_endpoint: string | null
@@ -134,7 +133,7 @@ export interface PartnerBidOutput {
 const PARTNER_SELECT =
   'id, slug, api_endpoint, cf_secret_key, daily_cap, min_bid, bid_formula, ' +
   'bid_resolver_type, bid_resolver_config, outbound_field_mapping, ' +
-  'bid_mode, bid_comparison_source, extra_extraction, ' +
+  'bid_comparison_source, extra_extraction, ' +
   'dedup_endpoint, response_classification, alert_config, ' +
   'circuit_error_threshold, circuit_window_seconds, circuit_cooldown_seconds, ' +
   'circuit_enabled, is_active, confirmation_window_ms, updated_at'
@@ -215,7 +214,7 @@ export const CIRCUIT_ALERT_DEADLINE_MS = 3_000
 
 export interface CircuitAlertDeps {
   /**
-   * The last-good copy of the Slack connections (lib/volume-cliff.ts), the page's
+   * The last-good copy of the Slack connections (lib/slack-copy.ts), the page's
    * fallback when the connection row cannot be read. Required, so no caller can
    * page without one by forgetting it (L168).
    */
@@ -286,7 +285,6 @@ export async function executePartnerBidNode(
     partner_id: config.partner_id,
     partner_slug: p.slug,
     bid_resolver_type: p.bid_resolver_type,
-    bid_mode: p.bid_mode,
     api_endpoint: p.api_endpoint,
     bid_formula: p.bid_formula,
     bid_resolver_config: p.bid_resolver_config,

@@ -7,7 +7,7 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { PartnerBody, PartnerUsage } from '@/lib/api'
 import { REPO_ROOT } from '@/lib/__tests__/_scan-utils'
-import { buildPartnerBody, PARTNER_BODY_KEYS, registryEntriesFor, snapshotOf } from '../partner-draft'
+import { buildPartnerBody, PARTNER_BODY_KEYS, PARTNER_FIELD_REGISTRY, registryEntriesFor, snapshotOf } from '../partner-draft'
 import {
   bidGroupSettingsSet, bidGroupShown, canAddBidGroup, confirmationWindowShown, openingTab, partnersUrl, problemsOf, problemTabs,
   tabFromParam, visibleTabs, TAB_ORDER, type TabInputs, type UsageState,
@@ -109,7 +109,7 @@ describe('problems (PM-12)', () => {
   })
 
   it('a field the save refused as not editable is named by its own key, and every key maps to a tab', () => {
-    for (const key of PARTNER_BODY_KEYS) expect(problemsOf({ credentialWarning: null, errors: [{ path: key, field: key, message: 'm' }] })[0].tab, key).not.toBeNull()
+    for (const key of PARTNER_BODY_KEYS.filter((k) => !registryEntriesFor(k)[0]?.offPage)) expect(problemsOf({ credentialWarning: null, errors: [{ path: key, field: key, message: 'm' }] })[0].tab, key).not.toBeNull()
   })
 
   it('the server\'s registry path wins over the validator path, and a path no field matches is a page level problem, never nothing', () => {
@@ -117,6 +117,15 @@ describe('problems (PM-12)', () => {
     expect(problemsOf({ credentialWarning: null, errors: [{ path: 'soldOn', message: 'm' }] })[0]).toMatchObject({ registryPath: 'profile.sold_on', tab: 'buyer_profile' })
     expect(problemsOf({ credentialWarning: null, errors: [{ path: 'nothingLikeThis', message: 'm' }] })[0]).toEqual({ registryPath: null, tab: null, message: 'm' })
     expect(problemsOf({ credentialWarning: null, errors: [{ path: '', message: 'm' }] })[0].tab).toBeNull()
+  })
+
+  // List order left the page with the alphabetical list (#2137): no tab draws
+  // it, so a problem with it is said at page level rather than marking a tab
+  // that has nothing to show, and its label says it is not on the page.
+  it('a field no tab draws (List order) is a page level problem, labelled as off the page', () => {
+    expect(registryEntriesFor('priority')[0]).toMatchObject({ offPage: true, label: 'List order (not shown on this page)' })
+    expect(problemsOf({ credentialWarning: null, errors: [{ path: 'priority', field: 'priority', message: 'm' }] })[0]).toEqual({ registryPath: null, tab: null, message: 'm' })
+    expect(PARTNER_FIELD_REGISTRY.filter((e) => e.offPage).map((e) => e.pattern)).toEqual(['priority'])
   })
 
   it('names each tab with a problem once, in the page order', () => {

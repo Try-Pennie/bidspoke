@@ -8,43 +8,41 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
+import { readEverySlackConnection, type SlackListUse } from './alert-fanout'
+import { describeCopyAge } from './scheduled-slack'
 import { describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf, touchCondition, type BackoffKv } from './alert-backoff'
 
 export type SlackTarget = { bot_token: string; default_channel: string }
 
 /**
  * Every org's Slack connection, for a worker level check that belongs to no org, the way
- * the daily secrets check fans out. The database first, the last-good KV copy when it does
- * not answer (L682): a partner block has nothing to do with Supabase, so that alert must
- * not go quiet during a database wobble, and the database memory alert (#1928) is needed
- * most exactly when the database is struggling. Never throws: an empty list with the
- * reason logged is the honest answer, and the runner reports it in its summary.
+ * the daily secrets check fans out. One read of every connection, which on the scheduled
+ * client is bounded and answered from the saved copy when the database does not answer
+ * (readEverySlackConnection, #1303; L682): a partner block has nothing to do with
+ * Supabase, so that alert must not go quiet during a database wobble, and the database
+ * memory alert (#1928) is needed most exactly when the database is struggling. A database
+ * that answered "no org has Slack" is an answer, never a reason to post from the copy.
+ * Never throws: an empty list with the reason logged is the honest answer, and the runner
+ * reports it in its summary.
  */
 export async function resolveSlackForEveryOrg(deps: {
   supabase: SupabaseClient
-  getConnection: (supabase: SupabaseClient, orgId: string) => Promise<SlackTarget | null>
-  lastGood: () => Promise<Map<string, SlackTarget>>
+  /** What the caller does with the connections (alert-fanout.ts SlackListUse); required so none can leave it out. */
+  use: SlackListUse
   log: (line: string) => void
   /** Names the calling check in the log, so a fallback is traced to the right one. */
   logPrefix: string
 }): Promise<SlackTarget[]> {
   try {
-    const { data, error } = await deps.supabase.from('service_connections').select('organization_id').eq('service_type', 'slack')
-    if (error) throw new Error(error.message)
-    const orgIds = [...new Set(((data ?? []) as Array<{ organization_id: string }>).map((r) => r.organization_id))]
-    const found: SlackTarget[] = []
-    for (const orgId of orgIds) {
-      const conn = await deps.getConnection(deps.supabase, orgId)
-      if (conn) found.push(conn)
+    const read = await readEverySlackConnection(deps.supabase, deps.logPrefix.replace(/^\[|\]$/g, ''), deps.use)
+    if (read.kind === 'unreachable') {
+      deps.log(`${deps.logPrefix} nobody can be told: the Slack connections could not be read (${read.reason})`)
+      return []
     }
-    if (found.length > 0) return found
+    if (read.kind === 'stored') deps.log(`${deps.logPrefix} Slack connections answered from the saved copy (${describeCopyAge(read.ageMs)}) because the database did not answer`)
+    return [...read.connections.values()]
   } catch (e) {
-    deps.log(`${deps.logPrefix} Slack connections read failed, trying the last-good copy: ${formatErr(e)}`)
-  }
-  try {
-    return [...(await deps.lastGood()).values()]
-  } catch (e) {
-    deps.log(`${deps.logPrefix} last-good Slack copy unreadable: ${formatErr(e)}`)
+    deps.log(`${deps.logPrefix} Slack connections read failed: ${formatErr(e)}`)
     return []
   }
 }

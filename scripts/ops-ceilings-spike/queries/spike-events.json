@@ -1,0 +1,13 @@
+{
+  "queryId": "ops-ceilings-spike-events",
+  "timeframe": { "from": 0, "to": 0 },
+  "parameters": {
+    "datasets": ["cloudflare-workers"],
+    "filters": [
+      { "key": "$metadata.service", "operation": "eq", "value": "bidspoke-worker-ops", "type": "string" },
+      { "key": "$metadata.message", "operation": "INCLUDES", "value": "NONCE", "type": "string" }
+    ],
+    "limit": 50
+  },
+  "view": "events"
+}

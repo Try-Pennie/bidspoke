@@ -13,7 +13,9 @@
  *
  * What pages (the only thing that pages at launch, L36):
  *  - `channel`: the monitor's own notice did not arrive within
- *    RECEIPT_DEADLINE_MS, or the join was refused. That is a broken channel for
+ *    RECEIPT_DEADLINE_MS of its first ping (re-sent every PING_RETRY_MS, since
+ *    Realtime starting up can lose the first, ADR 0012), or the join was
+ *    refused. That is a broken channel for
  *    every organization, not a threshold judgement, so it pages on the run that
  *    sees it.
  *  - `monitor`: the check could not run (no secret, no monitor organization,
@@ -54,6 +56,14 @@ const MONITOR_ID = 'monitor'
 
 /** How long a sent notice may take to arrive. The live run measured a 114 ms worst case of 20 (ADR 0012). */
 export const RECEIPT_DEADLINE_MS = 10_000
+/**
+ * How often the ping is sent again, with the same save id, while its notice has
+ * not arrived and the deadline has not passed. Realtime woken from an idle
+ * shutdown answers a private join SUBSCRIBED before it streams database
+ * broadcasts, so a notice sent within about a second of that join is lost
+ * (2026-10-16 01:45 UTC, ADR 0012); the next ping is not.
+ */
+export const PING_RETRY_MS = 2_500
 /** Joins tried when Realtime refuses one for a missing partition. */
 export const JOIN_ATTEMPTS = 3
 /** The wait between those joins: the live run saw the partition 0 ms after the first refusal. */
@@ -70,8 +80,8 @@ export type IdentityAnswer =
 export type JoinAnswer = { ok: true; leave: () => Promise<void> } | { ok: false; reason: string; missingPartition: boolean }
 
 export type Outcome =
-  | { kind: 'received'; latencyMs: number; partitionToday: boolean; partitionTomorrow: boolean; joinAttempts: number }
-  | { kind: 'not_received'; partitionToday: boolean; partitionTomorrow: boolean; joinAttempts: number }
+  | { kind: 'received'; latencyMs: number; partitionToday: boolean; partitionTomorrow: boolean; joinAttempts: number; pings: number }
+  | { kind: 'not_received'; partitionToday: boolean; partitionTomorrow: boolean; joinAttempts: number; pings: number }
   | { kind: 'join_refused'; reason: string; joinAttempts: number }
   | { kind: 'partition_missing_at_send'; partitionTomorrow: boolean; joinAttempts: number }
   | { kind: 'unmeasured'; reason: string }
@@ -139,11 +149,27 @@ export async function measurePartnerPageDelivery(deps: MeasureDeps): Promise<Out
       // WARNING; nobody can be subscribed then either, so this is not a miss.
       return { kind: 'partition_missing_at_send', partitionTomorrow: ping.partitionTomorrow, joinAttempts: attempts }
     }
-    await Promise.race([receipt, deps.sleep(RECEIPT_DEADLINE_MS)])
-    if (receivedAt !== null) {
-      return { kind: 'received', latencyMs: receivedAt - sentAt, partitionToday: true, partitionTomorrow: ping.partitionTomorrow, joinAttempts: attempts }
+    // Waits on the notice, never a fixed time after the join (L290): every
+    // PING_RETRY_MS without it the same ping is sent again, so a notice lost to
+    // Realtime starting up is followed by one it streams. Any of them counts,
+    // latency is from the first send, and the partition figures are the first
+    // ping's. `pings` counts the sends the database accepted, so a startup race
+    // stays countable in job_runs.
+    const deadline = sentAt + RECEIPT_DEADLINE_MS
+    let pings = 1
+    for (;;) {
+      const remaining = deadline - deps.now()
+      if (remaining <= 0) break
+      await Promise.race([receipt, deps.sleep(Math.min(PING_RETRY_MS, remaining))])
+      if (receivedAt !== null || deps.now() >= deadline) break
+      const again = await deps.ping(identity.organizationId, saveId)
+      if (again.ok) pings += 1
+      else deps.log(`[partner-page-monitor] re-ping could not be sent: ${again.reason}`)
     }
-    return { kind: 'not_received', partitionToday: true, partitionTomorrow: ping.partitionTomorrow, joinAttempts: attempts }
+    if (receivedAt !== null) {
+      return { kind: 'received', latencyMs: receivedAt - sentAt, partitionToday: true, partitionTomorrow: ping.partitionTomorrow, joinAttempts: attempts, pings }
+    }
+    return { kind: 'not_received', partitionToday: true, partitionTomorrow: ping.partitionTomorrow, joinAttempts: attempts, pings }
   } finally {
     // Closed whatever happened, and a failure to close is logged, never thrown
     // over the outcome.
@@ -189,9 +215,9 @@ const iso = (ms: number) => new Date(ms).toISOString()
 function summaryOf(o: Outcome): Record<string, unknown> {
   switch (o.kind) {
     case 'received':
-      return { latency_ms: o.latencyMs, partition_today: o.partitionToday, partition_tomorrow: o.partitionTomorrow, join_attempts: o.joinAttempts }
+      return { latency_ms: o.latencyMs, partition_today: o.partitionToday, partition_tomorrow: o.partitionTomorrow, join_attempts: o.joinAttempts, pings: o.pings }
     case 'not_received':
-      return { partition_today: o.partitionToday, partition_tomorrow: o.partitionTomorrow, join_attempts: o.joinAttempts, deadline_ms: RECEIPT_DEADLINE_MS }
+      return { partition_today: o.partitionToday, partition_tomorrow: o.partitionTomorrow, join_attempts: o.joinAttempts, pings: o.pings, deadline_ms: RECEIPT_DEADLINE_MS }
     case 'join_refused':
       return { reason: o.reason, join_attempts: o.joinAttempts }
     case 'partition_missing_at_send':
@@ -318,7 +344,7 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
   if (outcome.kind === 'not_received' || outcome.kind === 'join_refused') {
     const reason = outcome.kind === 'join_refused'
       ? `the monitor could not join the channel: ${outcome.reason}`
-      : `no notice arrived within ${RECEIPT_DEADLINE_MS / 1000} seconds of the ping`
+      : `no notice arrived within ${RECEIPT_DEADLINE_MS / 1000} seconds of the first ping, after ${outcome.pings} ${outcome.pings === 1 ? 'ping' : 'pings'}`
     await markSpikeSeen(deps.kv, RECOVERY_PREFIX, CHANNEL_ID, nowMs)
     const since = (await deps.kv.get(recoveryKey(RECOVERY_PREFIX, CHANNEL_ID))) ?? iso(nowMs)
     const posted = await postStanding({
