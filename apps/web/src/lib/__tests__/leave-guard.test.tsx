@@ -123,6 +123,30 @@ describe('browser back while blocking', () => {
   })
 })
 
+describe('the sentinel once the page is clean again (L710)', () => {
+  it('a Back that lands on the copy under the sentinel goes on back once, so the first Back is never dead', () => {
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    const { rerender } = render(<Guarded blocking onAsk={vi.fn()} />)
+    rerender(<Guarded blocking={false} onAsk={vi.fn()} />)
+    // The browser has moved back off the sentinel onto the same page's entry under it.
+    window.history.replaceState(null, '', '/partners')
+    window.dispatchEvent(new PopStateEvent('popstate', { state: null }))
+    expect(back).toHaveBeenCalledTimes(1)
+    // Only that once: a later Back is the person's own and goes where they ask.
+    window.dispatchEvent(new PopStateEvent('popstate', { state: null }))
+    expect(back).toHaveBeenCalledTimes(1)
+    back.mockRestore()
+  })
+
+  it('a page that never pushed a sentinel leaves Back alone', () => {
+    const back = vi.spyOn(window.history, 'back').mockImplementation(() => {})
+    render(<Guarded blocking={false} onAsk={vi.fn()} />)
+    window.dispatchEvent(new PopStateEvent('popstate', { state: null }))
+    expect(back).not.toHaveBeenCalled()
+    back.mockRestore()
+  })
+})
+
 describe('navigations the app starts (leaveThen)', () => {
   it('go straight away with no guard, or a guard with nothing to lose', () => {
     const go = vi.fn()

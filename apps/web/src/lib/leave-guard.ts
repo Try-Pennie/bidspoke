@@ -113,10 +113,12 @@ function onSentinel(): boolean {
  * page itself and can be asked about. The state is copied whole, so the App
  * Router's own fields go with it and it treats the entry as its own.
  */
-function pushSentinel() {
-  if (onSentinel()) return
+function pushSentinel(): string | null {
+  if (onSentinel()) return null
+  const under = window.location.href
   const state: unknown = window.history.state
-  window.history.pushState({ ...(typeof state === 'object' && state !== null ? state : {}), [SENTINEL]: true }, '', window.location.href)
+  window.history.pushState({ ...(typeof state === 'object' && state !== null ? state : {}), [SENTINEL]: true }, '', under)
+  return under
 }
 
 /** A link's name as the person read it: its accessible label, its text, or its path. */
@@ -166,6 +168,8 @@ export function useLeaveGuard({ blocking, onAsk, onAuthRejected }: LeaveGuardOpt
   const onAuthRef = useRef(onAuthRejected)
   onAuthRef.current = onAuthRejected
   const leaving = useRef(false)
+  /** The address of the entry under the sentinel this page pushed, while that sentinel may still be on top. */
+  const sentinelUnder = useRef<string | null>(null)
   const guardRef = useRef<Registered | null>(null)
   if (guardRef.current === null) {
     guardRef.current = {
@@ -196,19 +200,38 @@ export function useLeaveGuard({ blocking, onAsk, onAuthRejected }: LeaveGuardOpt
     const guard = guardRef.current!
     const onUnload = beforeUnloadListener(guard.blocking)
     window.addEventListener('beforeunload', onUnload)
-    pushSentinel()
+    const pushed = pushSentinel()
+    if (pushed !== null) sentinelUnder.current = pushed
     const onPop = () => {
       if (!guard.blocking()) return
       // Back moved off the sentinel: put it back so the person stays, then ask.
       // A back pressed while the dialog is open lands here too, and the dialog
       // shell maps it to Keep editing.
       pushSentinel()
-      guard.ask({ destination: { kind: 'back' }, proceed: () => { guard.release(); window.history.go(-2) } })
+      guard.ask({ destination: { kind: 'back' }, proceed: () => { guard.release(); sentinelUnder.current = null; window.history.go(-2) } })
     }
     window.addEventListener('popstate', onPop)
     return () => {
       window.removeEventListener('beforeunload', onUnload)
       window.removeEventListener('popstate', onPop)
     }
+  }, [blocking])
+
+  // Clean again with the sentinel still on top (L710): the first Back would
+  // land on the same page's copy under it and look dead, so a Back that lands
+  // there goes on back once more, to where the person meant. The sentinel is
+  // not removed when the page turns clean, because that is the moment Save and
+  // open it starts the navigation the person asked for, and a back() then
+  // would race it; this acts only on the person's own Back.
+  useEffect(() => {
+    if (blocking || sentinelUnder.current === null) return
+    const onPop = () => {
+      if (onSentinel() || window.location.href !== sentinelUnder.current) return
+      sentinelUnder.current = null
+      window.removeEventListener('popstate', onPop)
+      window.history.back()
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
   }, [blocking])
 }

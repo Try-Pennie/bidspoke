@@ -8,7 +8,7 @@
  * faked, and the probe answers are queued, so "5 s later" is a timer advance.
  */
 import { describe, it, expect, vi, beforeEach, afterEach, type Mock } from 'vitest'
-import { render, screen, fireEvent, act } from '@testing-library/react'
+import { render, screen, fireEvent, act, within } from '@testing-library/react'
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -20,6 +20,7 @@ vi.mock('@/lib/api', () => ({
 }))
 
 import PartnerForm from '../PartnerForm'
+import { UNCONFIRMED_DISCARD_GAVE_UP } from '../save-bar-text'
 import { api } from '@/lib/api'
 import type { Partner, PartnerPageVersions } from '@/lib/api'
 
@@ -157,6 +158,28 @@ describe('saving, and a save whose answer was lost (L766)', () => {
     await settle()
     expect(vi.mocked(api.partners.versions).mock.calls.length).toBe(asked + 1)
     expect(screen.queryByText(/^Partner saved/)).toBeNull()
+  })
+
+  it('once it has stopped checking, Discard is offered again, saying the save may have landed, and puts the page back (L665)', async () => {
+    const onSave = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    await renderRenamed(onSave)
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await settle()
+    expect(screen.getByRole('button', { name: 'Discard changes' })).toBeDisabled()
+    await advance(120_000)
+    const discard = screen.getByRole('button', { name: 'Discard changes' })
+    expect(discard).toBeEnabled()
+    expect(document.getElementById(discard.getAttribute('aria-describedby') ?? '')).toHaveTextContent(UNCONFIRMED_DISCARD_GAVE_UP)
+    // The leave dialog offers Discard again too, saying the same.
+    await act(async () => { window.dispatchEvent(new PopStateEvent('popstate', { state: null })) })
+    const dialog = screen.getByRole('alertdialog')
+    expect(dialog).toHaveTextContent(UNCONFIRMED_DISCARD_GAVE_UP)
+    expect(within(dialog).getByRole('button', { name: 'Discard and go back' })).toBeEnabled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep editing' }))
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes' }))
+    expect(screen.getByLabelText('Name')).toHaveValue('M1')
+    expect(bar()).toBeNull()
   })
 
   it('Discard is disabled while unconfirmed, saying why, and Try again resends the same save id', async () => {

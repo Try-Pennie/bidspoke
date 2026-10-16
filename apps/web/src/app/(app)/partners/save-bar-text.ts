@@ -15,6 +15,14 @@ import { TAB_LABELS, type PageProblem } from './partner-tabs'
 export const UNCONFIRMED = 'Not confirmed yet, checking.'
 export const UNCONFIRMED_GAVE_UP = 'Still not confirmed. It may have saved. Reload to see what is stored.'
 export const UNCONFIRMED_DISCARD_REASON = 'Your last save may still land. Wait for it to be confirmed before discarding.'
+/**
+ * Once checking has stopped (two minutes, no evidence), Discard is open again
+ * (L665: nothing left running could clear the wait), saying what it cannot undo.
+ */
+export const UNCONFIRMED_DISCARD_GAVE_UP = 'Discarding clears what is on screen, not the save, which may already be stored.'
+
+/** Where an unconfirmed save stands: still being checked, or checking has stopped. */
+export type UnconfirmedState = 'checking' | 'gave-up' | null
 /** A 401 held by the leave guard: the draft stays on screen. */
 export const SESSION_EXPIRED = 'Not saved: your session has expired. Sign in again in a new tab, then press Try again. Your changes are still here.'
 /** A 403 held by the leave guard. */
@@ -75,9 +83,10 @@ export function leaveTitle(who: string, units: readonly MergeUnit[], unconfirmed
   return `Leave ${who} with ${units.length === 1 ? 'an unsaved change' : `${units.length} unsaved changes`}?`
 }
 
-export function leaveDescription(units: readonly MergeUnit[], unconfirmed: boolean): string {
+export function leaveDescription(units: readonly MergeUnit[], unconfirmed: UnconfirmedState): string {
   const changed = units.length === 0 ? (unconfirmed ? '' : 'Your changes are not saved.') : `You changed ${andList(units.map((u) => u.label))} and have not saved ${units.length === 1 ? 'it' : 'them'}.`
-  return [changed, unconfirmed ? UNCONFIRMED_DISCARD_REASON : ''].filter((s) => s !== '').join(' ')
+  const note = unconfirmed === 'checking' ? UNCONFIRMED_DISCARD_REASON : unconfirmed === 'gave-up' ? UNCONFIRMED_DISCARD_GAVE_UP : ''
+  return [changed, note].filter((s) => s !== '').join(' ')
 }
 
 /** The two leaving buttons, naming where the person was going (PM-5). */

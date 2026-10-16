@@ -1530,7 +1530,7 @@ export default function PartnerForm({
           // The partner as stored, as the settled design names it: a rename in progress is one of the changes.
           who={isNew ? 'the new partner' : partner?.name || 'this partner'}
           units={units}
-          unconfirmed={unconfirmed}
+          unconfirmed={saveOutcome.kind !== 'unconfirmed' ? null : now - saveOutcome.since >= UNCONFIRMED_GIVE_UP_MS ? 'gave-up' : 'checking'}
           destination={leaveAsk.destination}
           onKeepEditing={() => setLeaveAsk(null)}
           // Discard means discard: if the way away keeps this page (a link to it), what is left is clean.

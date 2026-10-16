@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import type { MergeUnit } from '@/lib/partner-page-merge'
-import { leaveActionWords, leaveDescription, leaveTitle, namedAsShown, refusedSentence, unsavedSentence, SESSION_EXPIRED, UNCONFIRMED, UNCONFIRMED_DISCARD_REASON, UNCONFIRMED_GAVE_UP } from '../save-bar-text'
+import { leaveActionWords, leaveDescription, leaveTitle, namedAsShown, refusedSentence, unsavedSentence, SESSION_EXPIRED, UNCONFIRMED, UNCONFIRMED_DISCARD_GAVE_UP, UNCONFIRMED_DISCARD_REASON, UNCONFIRMED_GAVE_UP } from '../save-bar-text'
 
 const unit = (key: string, label: string): MergeUnit => ({ key, label, tab: 'partner', section: 'Identity' })
 const NAME = unit('name', 'Name')
@@ -68,15 +68,18 @@ describe('the leave dialog (PM-5)', () => {
   it('names the partner, how many changes, and which', () => {
     expect(leaveTitle('Liberty1', [NAME], false)).toBe('Leave Liberty1 with an unsaved change?')
     expect(leaveTitle('Liberty1', [NAME, STATUS], false)).toBe('Leave Liberty1 with 2 unsaved changes?')
-    expect(leaveDescription([NAME], false)).toBe('You changed Name and have not saved it.')
-    expect(leaveDescription([NAME, STATUS], false)).toBe('You changed Name and Status and have not saved them.')
-    expect(leaveDescription([], false)).toBe('Your changes are not saved.')
+    expect(leaveDescription([NAME], null)).toBe('You changed Name and have not saved it.')
+    expect(leaveDescription([NAME, STATUS], null)).toBe('You changed Name and Status and have not saved them.')
+    expect(leaveDescription([], null)).toBe('Your changes are not saved.')
   })
 
   it('a save not yet confirmed is said as such, with why Discard waits', () => {
     expect(leaveTitle('Liberty1', [], true)).toBe('Leave Liberty1 before its save is confirmed?')
-    expect(leaveDescription([], true)).toBe(UNCONFIRMED_DISCARD_REASON)
-    expect(leaveDescription([NAME], true)).toBe(`You changed Name and have not saved it. ${UNCONFIRMED_DISCARD_REASON}`)
+    expect(leaveDescription([], 'checking')).toBe(UNCONFIRMED_DISCARD_REASON)
+    expect(leaveDescription([NAME], 'checking')).toBe(`You changed Name and have not saved it. ${UNCONFIRMED_DISCARD_REASON}`)
+    // Once checking has stopped, Discard is open again and says what it would and would not undo (L665).
+    expect(leaveDescription([NAME], 'gave-up')).toBe(`You changed Name and have not saved it. ${UNCONFIRMED_DISCARD_GAVE_UP}`)
+    expect(UNCONFIRMED_DISCARD_GAVE_UP).not.toMatch(/fail/i)
   })
 
   it('names the destination: another partner or page by name, and back, close and sign out in words', () => {

@@ -32,8 +32,10 @@ const GUARD_MODULE = 'lib/leave-guard.ts'
 const NAVIGATIONS: ReadonlyArray<{ name: string; re: RegExp }> = [
   { name: 'router.push', re: /\brouter\s*\.\s*push\s*\(/g },
   { name: 'router.replace', re: /\brouter\s*\.\s*replace\s*\(/g },
-  // location, location.href, location.pathname or location.search set (a hash is a jump within the page).
-  { name: 'location assignment', re: /\blocation(?:\s*\.\s*(?:href|pathname|search))?\s*=(?!=)/g },
+  // location, or any of its parts, set: every one but the hash loads another
+  // page (the hash is a jump within this one). Named by exclusion, so a part
+  // nobody listed is still caught.
+  { name: 'location assignment', re: /\blocation(?:\s*\.\s*(?!hash\b)[A-Za-z]+)?\s*=(?!=)/g },
   { name: 'location.assign', re: /\blocation\s*\.\s*assign\s*\(/g },
   { name: 'location.replace', re: /\blocation\s*\.\s*replace\s*\(/g },
   // Moving through history leaves the page too.
@@ -114,6 +116,7 @@ describe('navigations started in code go through the leave guard (#2138)', () =>
       "window.location.assign('/a')", "location.replace('/b')",
       'router.back()', 'router.forward()', 'window.history.back()', 'history.forward()', 'window.history.go(-2)',
       "window.location.pathname = '/x'", "location.search = '?a=1'", "window.open('/x', '_self')",
+      "location.host = 'x.example'", "window.location.hostname = 'x'", "location.port = '8080'", "location.protocol = 'http:'",
     ]
     for (const line of scratch) expect(navigationsIn('app/(app)/partners/PartnerForm.tsx', line), line).toHaveLength(1)
     expect(navigationsIn(GUARD_MODULE, "window.location.assign('/a')")).toEqual([])

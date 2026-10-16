@@ -12,7 +12,7 @@
  */
 import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/form'
-import { UNCONFIRMED, UNCONFIRMED_DISCARD_REASON, UNCONFIRMED_GAVE_UP } from '@/app/(app)/partners/save-bar-text'
+import { UNCONFIRMED, UNCONFIRMED_DISCARD_GAVE_UP, UNCONFIRMED_DISCARD_REASON, UNCONFIRMED_GAVE_UP } from '@/app/(app)/partners/save-bar-text'
 
 export type SaveBarState =
   /** Something is edited: named, with Discard changes and Save changes. */
@@ -77,9 +77,10 @@ export function SaveBar({ state, formId, onDiscard, onCancel, onTryAgain, onUndo
       <div className="save-bar" data-save-bar="">
         <div className="save-bar-message flex-col items-start">
           <p role="status">{state.gaveUp ? UNCONFIRMED_GAVE_UP : UNCONFIRMED}</p>
-          <p id="save-bar-discard-reason" className="save-bar-note">{UNCONFIRMED_DISCARD_REASON}</p>
+          <p id="save-bar-discard-reason" className="save-bar-note">{state.gaveUp ? UNCONFIRMED_DISCARD_GAVE_UP : UNCONFIRMED_DISCARD_REASON}</p>
         </div>
-        <Button variant="secondary" disabled describedBy="save-bar-discard-reason">Discard changes</Button>
+        {/* Discard waits while the save is checked; once checking stops it is open again (L665). */}
+        <Button variant="secondary" disabled={!state.gaveUp} onClick={onDiscard} describedBy="save-bar-discard-reason">Discard changes</Button>
         <Button variant="primary" onClick={onTryAgain}>Try again</Button>
       </div>
     )
