@@ -214,12 +214,45 @@ html {
   .btn-danger {
     @apply border border-red-200 bg-white text-red-700 hover:bg-red-50;
   }
+  .btn-destructive {
+    @apply bg-red-600 text-white hover:bg-red-700;
+  }
   .btn-ghost {
     @apply px-2 py-1 text-xs text-p-blue-dark hover:bg-p-blue-light;
   }
   /* A row action inside a table: the row's height is set by the text, not the button. */
   .btn-sm {
     @apply px-2 py-1 text-xs;
+  }
+  /* The one dialog shell (#2134): components/Dialog.tsx. A scrim over the page,
+     a white panel centred in the viewport, the title, an optional sentence, the
+     body (which scrolls when it is taller than the window) and the actions. */
+  .dialog-overlay {
+    @apply fixed inset-0 z-50 bg-navy/40;
+  }
+  .dialog {
+    @apply fixed left-1/2 top-1/2 z-50 flex max-h-[calc(100vh-2rem)] w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col gap-2 rounded-xl bg-white p-5 shadow-2xl focus:outline-none;
+  }
+  .dialog-sm {
+    @apply max-w-md;
+  }
+  .dialog-md {
+    @apply max-w-lg;
+  }
+  .dialog-lg {
+    @apply max-w-3xl;
+  }
+  .dialog-title {
+    @apply text-base font-semibold text-graphite;
+  }
+  .dialog-description {
+    @apply text-sm text-gray-700;
+  }
+  .dialog-body {
+    @apply -mx-5 min-h-0 overflow-y-auto px-5 text-sm text-gray-700;
+  }
+  .dialog-actions {
+    @apply mt-2 flex flex-wrap items-center justify-end gap-2;
   }
   .outcome {
     @apply inline-flex items-center gap-1.5 text-xs;

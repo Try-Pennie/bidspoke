@@ -525,11 +525,23 @@ describe('productionChecksDeps lists offer buyers only', () => {
     const partner = (slug: string) => ({ organization_id: 'org-1', slug })
     const caps = { hourly_lead_cap: null, daily_lead_cap: 50, hourly_spend_cap_cents: null, daily_spend_cap_cents: null }
     const supabase = profilesTableDouble([
-      { partner_id: 'p-offer', sold_on: 'offer', ...caps, partner_configs: partner('tripoint') },
-      { partner_id: 'p-click', sold_on: 'click', ...caps, partner_configs: partner('liberty1') },
+      { partner_id: 'p-offer', sold_on: 'offer', ...caps, organizations: { is_synthetic: false }, partner_configs: partner('tripoint') },
+      { partner_id: 'p-click', sold_on: 'click', ...caps, organizations: { is_synthetic: false }, partner_configs: partner('liberty1') },
     ])
     const buyers = await productionChecksDeps(supabase, {} as unknown as Env).listBuyers()
     expect(buyers.map((b) => b.partner_id)).toEqual(['p-offer'])
+  })
+
+  // #2135: the partners page delivery monitor's organization is synthetic, and
+  // no job that lists buyers across organizations may list one of it.
+  it('never lists a buyer of a synthetic organization', async () => {
+    const caps = { hourly_lead_cap: null, daily_lead_cap: 50, hourly_spend_cap_cents: null, daily_spend_cap_cents: null }
+    const supabase = profilesTableDouble([
+      { partner_id: 'p-real', sold_on: 'offer', ...caps, organizations: { is_synthetic: false }, partner_configs: { organization_id: 'org-1', slug: 'tripoint' } },
+      { partner_id: 'p-monitor', sold_on: 'offer', ...caps, organizations: { is_synthetic: true }, partner_configs: { organization_id: 'org-monitor', slug: 'monitor-buyer' } },
+    ])
+    const buyers = await productionChecksDeps(supabase, {} as unknown as Env).listBuyers()
+    expect(buyers.map((b) => b.partner_id)).toEqual(['p-real'])
   })
 })
 

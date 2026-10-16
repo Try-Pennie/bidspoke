@@ -481,6 +481,25 @@ export async function readBuyerSoldOn(supabase: SupabaseClient, orgId: string, p
 }
 
 /**
+ * The version and last press of one buyer's profile, for the partners page's
+ * versions probe (#2135). Null means no profile; a failed read, or a version
+ * that is not a whole number, throws (L10).
+ */
+export async function readBuyerProfileVersion(supabase: SupabaseClient, orgId: string, partnerId: string): Promise<{ version: number; lastSaveId: string | null } | null> {
+  const { data, error } = await supabase
+    .from('buyer_profiles')
+    .select('version, last_save_id')
+    .eq('partner_id', partnerId)
+    .eq('organization_id', orgId)
+    .maybeSingle()
+  if (error) throw new Error(`buyer_profiles: ${error.message}`)
+  if (!data) return null
+  const row = data as unknown as Record<string, unknown>
+  if (typeof row.version !== 'number' || !Number.isInteger(row.version)) throw new Error(`buyer_profiles: version ${String(row.version)} is not a whole number`)
+  return { version: row.version, lastSaveId: typeof row.last_save_id === 'string' ? row.last_save_id : null }
+}
+
+/**
  * How one buyer is sold and whether it is switched on, from its one profile row.
  * The partner save reads both (#1561): only an ENABLED click buyer is offered on
  * the partner's click URL, so only its URL is refused when it loses the prospect

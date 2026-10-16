@@ -107,6 +107,19 @@ export const INCIDENT_SIGNALS = [
     windowMinutes: null,
     kinds: ['memory', 'feed'],
   },
+  // #2135. The partners page live channel, measured end to end every five
+  // minutes through the synthetic monitor organization: `channel` when the
+  // monitor's own notice did not arrive (the channel is broken for every
+  // organization), `monitor` when the check could not run at all.
+  {
+    signal: 'partner-page-live',
+    label: 'Partners page live updates',
+    scope: 'platform',
+    subject: 'name',
+    startMeans: FIRST_SEEN,
+    windowMinutes: null,
+    kinds: ['channel', 'monitor'],
+  },
   { signal: 'pg-cron-watch', label: 'Database job', scope: 'platform', subject: 'name', startMeans: FIRST_PAGE, windowMinutes: null },
   { signal: 'stored-copy-serving', label: 'Stored copy', scope: 'platform', subject: 'name', startMeans: FIRST_SEEN, windowMinutes: 5 },
   { signal: 'workflow-schedule', label: 'Scheduled workflow', scope: 'platform', subject: 'name', startMeans: FIRST_PAGE, windowMinutes: null },

@@ -588,8 +588,11 @@ export function productionDrainDeps(supabase: SupabaseClient, env: Env): DrainDe
       // (#1541) never reserves in the ledger, so it has no outbox here.
       const { data, error } = await supabase
         .from('buyer_profiles')
-        .select('partner_id, partner_configs!inner(organization_id, slug)')
+        .select('partner_id, partner_configs!inner(organization_id, slug), organizations!inner(is_synthetic)')
         .eq('sold_on', 'offer')
+        // Never a synthetic organization's buyer (#2135): the one predicate that
+        // marks the partners page delivery monitor's organization (L261).
+        .eq('organizations.is_synthetic', false)
       if (error) throw new Error(`buyer_profiles: ${error.message}`)
       return ((data ?? []) as unknown as Array<{ partner_id: string; partner_configs: { organization_id: string; slug: string } }>).map((r) => ({
         partner_id: r.partner_id,

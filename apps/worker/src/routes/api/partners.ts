@@ -8,7 +8,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { invalidatePartnerConstantsCache } from '../../lib/partner-constants-loader'
-import { refreshBuyerProfilesCache } from '../../lib/buyer-profile-loader'
+import { readBuyerProfileVersion, refreshBuyerProfilesCache } from '../../lib/buyer-profile-loader'
 import { retirePartnerLastGood } from '../../lib/partner-last-good'
 import { copyCleared, copyWarning } from '../../lib/stored-copy'
 import { asJson } from '../../lib/json'
@@ -18,6 +18,7 @@ import { partnerCredentialMissing } from '../../lib/partner-credential'
 import { dailyCapObjectName } from '../../lib/daily-cap-name'
 import { clickCountIfClickSold, refuseClickUrlWithoutProspectId, refuseSwitchAwayFromClick } from './buyer-profiles'
 import { documentToProfile, parseProfileDocument, registryPathOf, validateProfile, type Signal } from '@bidspoke/buyer-profile'
+import { parseLiveMissReport, type PartnerPageChange, type PartnerPageVersions } from '@bidspoke/partner-page-live'
 
 type Variables = AuthVariables
 
@@ -360,6 +361,8 @@ interface PageSaveBody {
   expected_profile_version?: unknown
   profile?: unknown
   save_id?: unknown
+  /** The browser tab that pressed save (#2135), carried on the page notice so that tab can recognise its own echo. Optional. */
+  client_id?: unknown
 }
 
 const isVersion = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0
@@ -419,6 +422,10 @@ partners.put('/:id/page', async (c) => {
   }
   if (typeof body.save_id !== 'string' || !UUID.test(body.save_id)) {
     return c.json({ error: 'save_id_invalid', message: 'save_id must be a UUID.' }, 400)
+  }
+  const clientId = body.client_id ?? null
+  if (clientId !== null && (typeof clientId !== 'string' || !UUID.test(clientId))) {
+    return c.json({ error: 'client_id_invalid', message: 'client_id must be a UUID when sent.' }, 400)
   }
   if (!isPlainObject(body.patch)) {
     return c.json({ error: 'patch_invalid', message: 'patch must be an object of the partner fields this save changes.' }, 400)
@@ -482,6 +489,9 @@ partners.put('/:id/page', async (c) => {
     p_expected_profile_version: expectedProfileVersion as number,
     p_profile: profileToSave as unknown as Json,
     p_save_id: body.save_id,
+    // The generated types make every argument non null; the function takes
+    // NULL for a page that names no tab.
+    p_client_id: clientId as string,
     p_actor: userId,
     p_actor_email: email,
     p_actor_name: c.get('user').name ?? '',
@@ -557,6 +567,149 @@ partners.delete('/:id', async (c) => {
   await refreshBuyerProfilesCache(orgId, c.env.WORKFLOW_CACHE, supabase)
 
   return c.json({ ok: true, ...copyWarning(cleared) })
+})
+
+// ── The live channel's versions probe and its misses (#2135) ──────────────────
+
+interface AuditRow {
+  changed_at: string
+  changed_by: string | null
+  changes: unknown
+}
+
+/**
+ * One audit row as the page reads it. Direct means the row the audit triggers
+ * write for a change with no actor (`_source: direct_sql`), the one predicate
+ * both triggers use. Fields: the keys whose value is an `{ old, new }` pair, or,
+ * for a profile table's hand write, the table it touched.
+ */
+function pageChange(row: AuditRow | undefined): PartnerPageChange | null {
+  if (!row) return null
+  const changes = isPlainObject(row.changes) ? row.changes : {}
+  const direct = changes._source === 'direct_sql'
+  const pairs = Object.entries(changes)
+    .filter(([k, v]) => !k.startsWith('_') && isPlainObject(v) && ('old' in v || 'new' in v))
+    .map(([k]) => k)
+  const fields = pairs.length === 0 && direct && typeof changes.table === 'string' ? [changes.table] : pairs.sort()
+  return { changedAt: row.changed_at, direct, fields }
+}
+
+/**
+ * GET /partners/:id/versions: the page's delivery probe, every 60 seconds
+ * while a draft is dirty, and its read of the newest change of each half on
+ * open and on every refetch. Who may call: any allowlisted member of the org
+ * (jwtAuth). Whose rows: this org's only; every read carries orgId. Four small
+ * reads by key, each answered by an index (audit_log by idx_audit_entity).
+ */
+partners.get('/:id/versions', async (c) => {
+  const { orgId } = c.get('user')
+  const id = c.req.param('id')
+  const supabase = createSupabaseClient(c.env)
+
+  const { data: partner, error: partnerError } = await supabase
+    .from('partner_configs')
+    .select('id, version, last_save_id')
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .single()
+  const blocked = dbErrorUnlessNotFound(c, partnerError)
+  if (blocked) return blocked
+  if (!partner) return c.json({ error: 'Partner not found' }, 404)
+
+  const newestAudit = (entityType: 'partner_config' | 'buyer_profile') =>
+    supabase
+      .from('audit_log')
+      .select('changed_at, changed_by, changes')
+      .eq('organization_id', orgId)
+      .eq('entity_type', entityType)
+      .eq('entity_id', id)
+      .order('changed_at', { ascending: false })
+      .limit(1)
+  let profile: Awaited<ReturnType<typeof readBuyerProfileVersion>>
+  let partnerAudit: Awaited<ReturnType<typeof newestAudit>>
+  let profileAudit: Awaited<ReturnType<typeof newestAudit>>
+  try {
+    ;[profile, partnerAudit, profileAudit] = await Promise.all([
+      readBuyerProfileVersion(supabase, orgId, id),
+      newestAudit('partner_config'),
+      newestAudit('buyer_profile'),
+    ])
+  } catch (e) {
+    return dbError(c, e)
+  }
+  for (const read of [partnerAudit, profileAudit]) {
+    if (read.error) return dbError(c, read.error)
+  }
+
+  const row = partner
+  const newest = {
+    partner: pageChange(((partnerAudit.data ?? []) as unknown as AuditRow[])[0]),
+    profile: pageChange(((profileAudit.data ?? []) as unknown as AuditRow[])[0]),
+  }
+  const latest = (['partner', 'profile'] as const)
+    .flatMap((section) => (newest[section] ? [{ section, ...newest[section] }] : []))
+    .sort((a, b) => Date.parse(b.changedAt) - Date.parse(a.changedAt))[0] ?? null
+
+  const body: PartnerPageVersions = {
+    partnerId: row.id,
+    partnerVersion: row.version,
+    profileVersion: profile?.version ?? 0,
+    lastSaveId: row.last_save_id,
+    profileLastSaveId: profile?.lastSaveId ?? null,
+    latestChange: latest,
+    newest,
+  }
+  return c.json(body)
+})
+
+/**
+ * POST /partners/live-miss: a page's probe found a version it heard no notice
+ * of. Recorded, never alerted on: no miss threshold has been measured, and the
+ * issue that sets one from these rows is filed with #2135 (L65). Who may call:
+ * any allowlisted member of the org. Whose rows: a partner of this org only,
+ * recorded against this org and the person whose page saw it.
+ */
+partners.post('/live-miss', async (c) => {
+  const { orgId, userId } = c.get('user')
+  const supabase = createSupabaseClient(c.env)
+
+  let raw: unknown
+  try {
+    raw = await c.req.json()
+  } catch {
+    raw = null
+  }
+  const parsed = parseLiveMissReport(raw)
+  if (!parsed.ok) return c.json({ error: 'live_miss_invalid', field: parsed.field }, 400)
+  const report = parsed.report
+
+  const { data: partner, error: partnerError } = await supabase
+    .from('partner_configs')
+    .select('id')
+    .eq('id', report.partnerId)
+    .eq('organization_id', orgId)
+    .single()
+  const blocked = dbErrorUnlessNotFound(c, partnerError)
+  if (blocked) return blocked
+  if (!partner) return c.json({ error: 'Partner not found' }, 404)
+
+  const { data, error } = await supabase
+    .from('partner_page_live_misses')
+    .insert({
+      organization_id: orgId,
+      partner_id: report.partnerId,
+      reported_by: userId,
+      cause: report.cause,
+      noticed_partner_version: report.noticed.partnerVersion,
+      noticed_profile_version: report.noticed.profileVersion,
+      observed_partner_version: report.observed.partnerVersion,
+      observed_profile_version: report.observed.profileVersion,
+      since_last_notice_ms: report.sinceLastNoticeMs,
+    })
+    .select('id')
+    .single()
+  if (error) return dbError(c, error)
+  return c.json({ ok: true, id: data.id }, 201)
 })
 
 // ── Today's cap count from the Durable Object ─────────────────────────────────
