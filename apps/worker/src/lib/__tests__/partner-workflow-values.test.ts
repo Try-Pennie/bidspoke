@@ -10,6 +10,7 @@ import ENGINE_FIXTURE_RAW from '../../../money-gate/fixtures/definitions/da82a18
 import LIVE_FIXTURE_RAW from './fixtures/workflow-values-live.json?raw'
 import {
   partnerValueNames,
+  carriesConstantsNode,
   scanPartnerValueReaders,
   type PartnerValueReaders,
   type ScannableWorkflow,
@@ -205,6 +206,13 @@ describe('scanPartnerValueReaders: workflows', () => {
     expect(value(scan, 'TripointClickUrl').shadowed_data_keys).toEqual([{ workflow_id: 'w', workflow_name: 'Workflow w', is_active: true, node_id: 'n-const', namespace: 'constants' }])
     expect(value(scan, 'activeBidding').shadowed_data_keys).toHaveLength(1)
     expect(value(scan, 'TripointSellOffOfferTitle').shadowed_data_keys).toEqual([])
+  })
+
+  it('carriesConstantsNode says which workflows the scan can find a reader in, malformed ones included as none', () => {
+    expect(carriesConstantsNode(wf('a', [constantsNode(), code('r', 'x')]))).toBe(true)
+    expect(carriesConstantsNode(wf('b', [code('r', 'constants.TripointClickUrl')]))).toBe(false)
+    expect(carriesConstantsNode({ id: 'c', name: 'c', is_active: true, definition: null })).toBe(false)
+    expect(carriesConstantsNode({ id: 'd', name: 'd', is_active: true, definition: { nodes: 'no' } })).toBe(false)
   })
 
   it('a definition with no nodes or a malformed one reads nothing rather than throwing', () => {
