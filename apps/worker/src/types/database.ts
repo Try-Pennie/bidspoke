@@ -631,6 +631,7 @@ export type Database = {
         Row: {
           allowed_states: string[]
           click_delivery: Json | null
+          collections_max_percent: number | null
           created_at: string
           daily_lead_cap: number | null
           daily_spend_cap_cents: number | null
@@ -655,6 +656,7 @@ export type Database = {
         Insert: {
           allowed_states?: string[]
           click_delivery?: Json | null
+          collections_max_percent?: number | null
           created_at?: string
           daily_lead_cap?: number | null
           daily_spend_cap_cents?: number | null
@@ -679,6 +681,7 @@ export type Database = {
         Update: {
           allowed_states?: string[]
           click_delivery?: Json | null
+          collections_max_percent?: number | null
           created_at?: string
           daily_lead_cap?: number | null
           daily_spend_cap_cents?: number | null

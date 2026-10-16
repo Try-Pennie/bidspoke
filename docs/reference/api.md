@@ -374,6 +374,8 @@ Response `201` (the only time the key is shown in full):
 
 A buyer profile document carries `display_time_zone` (#2143): one of `America/New_York`, `America/Chicago`, `America/Denver`, `America/Los_Angeles` (`DISPLAY_TIME_ZONES` in `packages/buyer-profile/src/clock.ts`), or null for never chosen, shown in Eastern. It only sets the zone the page shows the hours and the click count reset in; the hours are stored and judged in Eastern. A save whose document leaves the key out keeps the stored zone. Any other value is 400 `profile_malformed` on `display_time_zone`, and the database refuses it too (422 `display_time_zone_invalid`).
 
+A buyer profile document carries `collections_max_percent` (#2111): the most a lead's collections may be, as a whole percent of its debt, 1 to 100, or null for no cap. It is judged by Buyer Click Check and Buyer Select against the debt each judges the debt range on. A save whose document leaves the key out keeps the stored cap, so a sender that does not know the field cannot clear it. A value that is not a number (a numeric string is read as its number) is 400 `profile_malformed` on `collections_max_percent`; a number that is not a whole percent from 1 to 100, such as 0 or 75.5, is 422 `profile_invalid` with `collections_max_percent_invalid`; and the database refuses either too (422 `collections_max_percent_invalid`).
+
 ## Buyer sales
 
 `/api/buyer-sales`. Sales the [Buyer Select node](../nodes/buyer-select.md) recorded, from the `buyer_sales` mirror of the buyer ledger. Settling is a ledger operation first: the route settles the ledger with the caller as the actor, then mirrors the settled entry inline; a mirror that fails is reported and delivered by the drain, and never fails the settlement.
