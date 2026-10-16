@@ -649,6 +649,33 @@ describe('ConfigPanel: buyer_click_check (#1543)', () => {
   })
 })
 
+// #2111: the collections template a profile's collections cap is judged on.
+describe.each(['buyer_click_check', 'buyer_select'])('ConfigPanel: %s collections template (#2111)', (type) => {
+  const COLLECTIONS = '{{steps.prospect_trades.output.body.tradeCalculations.eligibleCollectionTotalBalance}}'
+
+  it('writes the collections template', () => {
+    vi.mocked(api.partners.list).mockResolvedValue([])
+    const { onUpdate } = renderPanel(nodeOf(type, { population: 'engine', mode: 'live' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Collections' }), { target: { value: COLLECTIONS } })
+    expect((vi.mocked(onUpdate).mock.calls.at(-1)?.[1]?.config as Record<string, unknown>).collections).toBe(COLLECTIONS)
+  })
+
+  it('clearing a stored template removes the key, so the step reads no figure', () => {
+    vi.mocked(api.partners.list).mockResolvedValue([])
+    const { onUpdate } = renderPanel(nodeOf(type, { population: 'engine', mode: 'live', collections: COLLECTIONS }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Collections' }), { target: { value: '' } })
+    const cleared = vi.mocked(onUpdate).mock.calls.at(-1)?.[1]?.config as Record<string, unknown>
+    expect(cleared).toBeDefined()
+    expect(cleared.collections).toBeUndefined()
+  })
+
+  it('shows a stored template', () => {
+    vi.mocked(api.partners.list).mockResolvedValue([])
+    renderPanel(nodeOf(type, { population: 'engine', mode: 'live', collections: COLLECTIONS }))
+    expect((screen.getByRole('textbox', { name: 'Collections' }) as HTMLInputElement).value).toBe(COLLECTIONS)
+  })
+})
+
 describe('ConfigPanel: buyer_click_send notify percent hint (#1557)', () => {
   it('explains the domain, not the interface: it never says where the cap lives on screen', () => {
     vi.mocked(api.partners.list).mockResolvedValue([])

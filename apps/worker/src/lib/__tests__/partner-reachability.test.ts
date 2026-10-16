@@ -12,7 +12,9 @@
  * The clock, the fetch, the KV store, the claim and every Slack send are injected, so no
  * test waits, reaches a network, or depends on the wall clock (L524, L2, L130).
  */
-import { describe, it, expect } from 'vitest'
+import { afterEach, describe, it, expect, vi } from 'vitest'
+import { registerScheduledSlack } from '../scheduled-slack'
+import { fakeClient, fakeTimers, kvWith, kvWithCopy, TEST_KEY, type Answer as DbAnswer } from './_scheduled-slack-doubles'
 import { outboxEvents, transitions } from './_incident-events'
 import {
   classifyProbe,
@@ -675,52 +677,56 @@ describe('fetchProbe, the one real seam', () => {
 })
 
 describe('resolveSlackForEveryOrg: the probe belongs to no org, so it posts to every one that has Slack', () => {
-  const supabaseWith = (rows: Array<{ organization_id: string }> | null, error: { message: string } | null) => ({
-    from: () => ({ select: () => ({ eq: async () => ({ data: rows, error }) }) }),
-  }) as unknown as import('@supabase/supabase-js').SupabaseClient
+  // The scheduled client's one bounded read of every org's connection (#1303).
+  const scheduledClient = async (answers: DbAnswer[], copy: Record<string, unknown> | null) => {
+    const { client, calls } = fakeClient(answers)
+    registerScheduledSlack(client, { kv: copy ? await kvWithCopy(copy) : kvWith(), secretKeys: TEST_KEY, sleep: fakeTimers(answers.includes('stall') ? 'now' : 'never').sleep })
+    return { client, calls }
+  }
+  const quiet = () => {
+    for (const level of ['log', 'warn', 'error'] as const) vi.spyOn(console, level).mockImplementation(() => {})
+  }
+  afterEach(() => vi.restoreAllMocks())
 
-  it('returns one connection per org that holds one, deduplicating repeated org rows', async () => {
+  it('returns one connection per org that holds one, in one read', async () => {
+    quiet()
     const { resolveSlackForEveryOrg } = await import('../standing-alert')
-    const asked: string[] = []
-    const found = await resolveSlackForEveryOrg({
-      supabase: supabaseWith([{ organization_id: 'a' }, { organization_id: 'b' }, { organization_id: 'a' }], null),
-      getConnection: async (_s, orgId) => { asked.push(orgId); return orgId === 'a' ? { bot_token: 'ta', default_channel: '#a' } : null },
-      lastGood: async () => new Map(),
-      log: () => {},
-      logPrefix: '[partner-reachability]',
-    })
-    expect(asked).toEqual(['a', 'b'])
-    expect(found).toEqual([{ bot_token: 'ta', default_channel: '#a' }])
+    const { client, calls } = await scheduledClient([{ data: [
+      { organization_id: 'a', config: { bot_token: 'ta', default_channel: '#a' } },
+      { organization_id: 'b', config: null },
+    ] }], null)
+    const found = await resolveSlackForEveryOrg({ supabase: client, use: 'tell-only', log: () => {}, logPrefix: '[partner-reachability]' })
+    expect(found).toEqual([expect.objectContaining({ bot_token: 'ta', default_channel: '#a' })])
+    expect(calls).toHaveLength(1)
   })
 
   it('falls back to the last-good KV copy when the database does not answer, and says so', async () => {
     // A partner block has nothing to do with Supabase, so this alert must not go quiet
     // during a database wobble (L682).
+    quiet()
     const { resolveSlackForEveryOrg } = await import('../standing-alert')
     const logs: string[] = []
-    const found = await resolveSlackForEveryOrg({
-      supabase: supabaseWith(null, { message: 'connection refused' }),
-      getConnection: async () => { throw new Error('should not be asked') },
-      lastGood: async () => new Map([['a', { bot_token: 'tk', default_channel: '#k' }]]),
-      log: (l) => { logs.push(l) },
-      logPrefix: '[partner-reachability]',
-    })
-    expect(found).toEqual([{ bot_token: 'tk', default_channel: '#k' }])
-    expect(logs.some((l) => l.includes('last-good') && l.includes('connection refused'))).toBe(true)
+    const { client } = await scheduledClient(['stall'], { a: { bot_token: 'tk', default_channel: '#k' } })
+    const found = await resolveSlackForEveryOrg({ supabase: client, use: 'tell-only', log: (l) => { logs.push(l) }, logPrefix: '[partner-reachability]' })
+    expect(found).toEqual([expect.objectContaining({ bot_token: 'tk', default_channel: '#k' })])
+    expect(logs.some((l) => l.includes('saved copy'))).toBe(true)
   })
 
-  it('returns an empty list, with the reason logged, when both the database and the copy fail', async () => {
+  it('returns an empty list, with the reason logged, when the database does not answer and there is no copy', async () => {
+    quiet()
     const { resolveSlackForEveryOrg } = await import('../standing-alert')
     const logs: string[] = []
-    const found = await resolveSlackForEveryOrg({
-      supabase: supabaseWith(null, { message: 'down' }),
-      getConnection: async () => null,
-      lastGood: async () => { throw new Error('kv unreadable') },
-      log: (l) => { logs.push(l) },
-      logPrefix: '[partner-reachability]',
-    })
+    const { client } = await scheduledClient([{ error: { message: 'down' } }], null)
+    const found = await resolveSlackForEveryOrg({ supabase: client, use: 'tell-only', log: (l) => { logs.push(l) }, logPrefix: '[partner-reachability]' })
     expect(found).toEqual([])
-    expect(logs.some((l) => l.includes('kv unreadable'))).toBe(true)
+    expect(logs.some((l) => l.includes('no_copy'))).toBe(true)
+  })
+
+  it('does not post from the copy when the database answered that no org has Slack', async () => {
+    quiet()
+    const { resolveSlackForEveryOrg } = await import('../standing-alert')
+    const { client } = await scheduledClient([{ data: [] }], { a: { bot_token: 'tk', default_channel: '#k' } })
+    expect(await resolveSlackForEveryOrg({ supabase: client, use: 'tell-only', log: () => {}, logPrefix: '[partner-reachability]' })).toEqual([])
   })
 
   it('reports an unresolved Slack destination in the run summary, not only in a log line', async () => {

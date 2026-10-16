@@ -210,7 +210,7 @@ export default function PartnersPage() {
                     <div className="space-y-0.5">
                       {group.members.map((partner) => {
                         // The missing credential (#1035, #416) and a refused save's field on the open partner (PM-12).
-                        const problem = partner.credential_warning ?? (selected?.id === partner.id && formProblem ? 'This partner has a problem: see its marked tab.' : null)
+                        const problem = partner.credential_warning ?? (selected?.id === partner.id && formProblem ? 'This partner has a problem: see the form.' : null)
                         return (
                           <Button
                             key={partner.id}

@@ -338,7 +338,7 @@ test.describe('Accessibility (axe-core)', () => {
  * contrast; PR13 (#2144) sets its new shade once Dan picks it (decision 3,
  * 2026-10-15), and deletes this waiver. Every other contrast failure still fails.
  */
-const GREY_HINTS = { className: 'text-gray-500', issue: '#2144' }
+const GREY_HINTS = { className: 'text-gray-500', within: '[data-form-pane]', issue: '#2144' }
 
 /** The Worker the built page calls, as api.ts reads it. */
 function workerUrl(): string {

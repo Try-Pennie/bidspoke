@@ -54,6 +54,14 @@ describe('snapshotPartnerConfig', () => {
   it('drops who edited it and what a probe saw', () => {
     for (const k of ['updated_by', 'updated_by_email', 'updated_by_name', 'last_probe_response']) expect(k in snap).toBe(false)
   })
+
+  // #2182: bid_mode is retired and its column is being dropped. No engine reads
+  // it, so the snapshot does not take it, and a refresh after the drop does not
+  // fail asking for a column that is gone.
+  it('drops bid_mode, which nothing reads and whose column is being dropped (#2182)', () => {
+    expect('bid_mode' in snap).toBe(false)
+    expect(SNAPSHOT_COLUMNS.partner_configs.columns).not.toContain('bid_mode')
+  })
 })
 
 describe('snapshotRow keeps columns by allowlist for every table', () => {

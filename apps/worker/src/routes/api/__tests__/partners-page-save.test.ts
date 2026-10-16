@@ -315,6 +315,42 @@ describe('PUT /partners/:id/page: the whole page in one save (#2133)', () => {
     ])
   })
 
+  // #2111: the collections cap is set through this route before the page has a
+  // control for it, so the parser must carry it and an absent key must not be sent.
+  it('carries the collections cap to the save and back', async () => {
+    const rpc = saved({ profile: { ...doc, version: 3, collections_max_percent: 75 } })
+    supabaseWith(rpc)
+    const res = await put(page({ profile: { ...doc, collections_max_percent: 75 } }))
+    expect(res.status).toBe(200)
+    expect((pageCalls(rpc)[0][1] as { p_profile: Record<string, unknown> }).p_profile.collections_max_percent).toBe(75)
+    expect(((await res.json()) as { profile: Record<string, unknown> }).profile.collections_max_percent).toBe(75)
+  })
+
+  it('sends no collections cap when the page did not speak about it, so the stored cap is kept', async () => {
+    const rpc = saved()
+    supabaseWith(rpc)
+    expect((await put(page())).status).toBe(200)
+    expect('collections_max_percent' in (pageCalls(rpc)[0][1] as { p_profile: Record<string, unknown> }).p_profile).toBe(false)
+  })
+
+  it('refuses a cap that is not a whole percent before calling anything, and names the database refusal by its registry path', async () => {
+    const rpc = saved()
+    supabaseWith(rpc)
+    const res = await put(page({ profile: { ...doc, collections_max_percent: 75.5 } }))
+    expect(res.status).toBe(422)
+    expect(((await res.json()) as { errors: unknown[] }).errors).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'collections_max_percent_invalid', path: 'collectionsMaxPercent', field: 'profile.collections_max_percent' }),
+    ]))
+    expect(pageCalls(rpc)).toEqual([])
+
+    supabaseWith(vi.fn(async () => ({ data: null, error: { code: 'BP422', message: 'collections_max_percent_invalid', details: '101' } })))
+    const refused = await put(page())
+    expect(refused.status).toBe(422)
+    expect(((await refused.json()) as { errors: unknown[] }).errors).toEqual([
+      { code: 'collections_max_percent_invalid', path: 'collectionsMaxPercent', field: 'profile.collections_max_percent', message: '101' },
+    ])
+  })
+
   it('P0002 from the function is 404, and a real database error is 500, never a false 404 or 409', async () => {
     supabaseWith(vi.fn(async () => ({ data: null, error: { code: 'P0002', message: 'partner_not_found' } })))
     expect((await put(page())).status).toBe(404)

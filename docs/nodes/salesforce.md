@@ -75,7 +75,7 @@ With `skip_when_empty: true`, an update or an Apex POST is skipped rather than s
 | `nothing_to_write` | apex POST | The body resolves to null or nothing. An empty object is still sent to any other Apex endpoint. The credit inquiry post has its own rules, below: it is also skipped for an empty or missing `inquiries` list, flag or not. |
 | `no_record_id` | update | The record id resolves empty. |
 
-A skipped step makes no Salesforce call at all (not even a token request), completes rather than fails, and records `{ "skipped": true, "skip_reason": "<reason>" }` as its output, the same keys a skipped partner bid records. Without the flag both keep their old behaviour: an update with a missing record id fails the step and one with a null body sends `{}`, and an Apex POST with a null body sends `null`, except the credit inquiry post, which fails the step before any call (below).
+A step skipped this way makes no Salesforce call at all (not even a token request), completes rather than fails, and records `{ "skipped": true, "skip_reason": "<reason>" }` as its output, the same keys a skipped partner bid records. Without the flag both keep their old behaviour: an update with a missing record id fails the step and one with a null body sends `{}`, and an Apex POST with a null body sends `null`, except the credit inquiry post, which fails the step before any call (below).
 
 ### The credit inquiry post
 
@@ -84,7 +84,8 @@ A POST to `/services/apexrest/credit-inquiries` attaches a new file to the Lead 
 - the engine never retries it (`retries` is read as 0);
 - a body whose `inquiriesJson` holds an empty `inquiries` list, or none, is skipped with `nothing_to_write`, flag or not: the endpoint writes nothing for the first and answers 500 for the second;
 - a body the endpoint cannot read (no Submission id, or `inquiriesJson` that is not the JSON text of `{ inquiries: [...] }`) fails the step before any call, including a null body without `skip_when_empty`;
-- on a live run, the post is recorded in KV before it is sent and cleared on a confirmed answer; one whose outcome is unknown is read back by the Lead's `Inquiries_<leadId>` file and resent at most once (the repository's `docs/salesforce-post-answer-write-contract.md`, "The credit inquiry post's read-back").
+- on a live run, the post is recorded in KV before it is sent and cleared on a confirmed answer; one whose outcome is unknown is read back by the Lead's `Inquiries_<leadId>` file and resent at most once (the repository's `docs/salesforce-post-answer-write-contract.md`, "The credit inquiry post's read-back");
+- on a replay or a resume, it checks first and sends only if missing (#2176). While the Salesforce read-back still holds a post of any earlier run of the chain, nothing is sent and the step fails as unknown, saying the original post is still being settled. Otherwise it reads the Submission's Lead and looks for that Lead's `Inquiries_<leadId>` file created since the first run of the chain began. Found, nothing is sent and the step completes with `{ "skipped": true, "skip_reason": "already_landed", "lead_id", "recovered_from", "marker_since" }`; this skip is the one that does call Salesforce, for the check. Not found, the post goes out as on any run. If the check cannot be answered, nothing is sent and the step fails saying whether the file landed is unknown; run it again once Salesforce answers. A Submission with no Lead fails the step, permanent, unsent.
 
 ### Expected errors
 
@@ -132,7 +133,7 @@ On success:
 
 For `update`, Salesforce returns `204 No Content`, so `body` is `null`. For `query`, `body` is the SOQL result envelope (`{ totalSize, done, records }`). Read downstream as `steps.<namespace>.output.body.id`, `steps.<namespace>.output.body.records`, etc.
 
-When a write is skipped (`skip_when_empty`), the output is `{ skipped: true, skip_reason }` and the run continues.
+When a write is skipped (`skip_when_empty`), the output is `{ skipped: true, skip_reason }` and the run continues. A credit inquiry post skipped on a replay or a resume because its file already landed is `{ skipped: true, skip_reason: "already_landed", lead_id, recovered_from, marker_since }`; unlike the others, that skip has called Salesforce, to make the check.
 
 When an `expected_errors` entry matches, the output is `{ status, ok: false, errorCode, message, body }` and the run exits at this node.
 

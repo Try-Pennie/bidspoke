@@ -45,6 +45,7 @@ export type ProfileErrorCode =
   | 'success_pattern_invalid'
   | 'success_pattern_no_id_group'
   | 'display_time_zone_invalid'
+  | 'collections_max_percent_invalid'
 
 export interface ProfileError {
   code: ProfileErrorCode
@@ -118,6 +119,7 @@ export function validateProfile(profile: BuyerProfile, partner: PartnerRulesForV
   checkBound(profile.debtMin, 'debtMin', 'Debt minimum', err)
   checkBound(profile.debtMax, 'debtMax', 'Debt maximum', err)
   checkBound(profile.loanAmountMin, 'loanAmountMin', 'Loan amount minimum', err)
+  checkCollectionsCap(profile.collectionsMaxPercent ?? null, err)
   if (profile.debtMin !== null && profile.debtMax !== null && profile.debtMin > profile.debtMax) {
     err('debt_min_above_max', 'debtMin', 'The debt minimum is above the debt maximum.')
   }
@@ -210,6 +212,14 @@ type Err = (code: ProfileErrorCode, path: string, message: string) => void
 function checkBound(value: number | null, path: string, label: string, err: Err): void {
   if (value === null) return
   if (!Number.isFinite(value) || value <= 0) err('bound_invalid', path, `${label} must be above zero.`)
+}
+
+/** #2111: a whole percent of debt, 1 to 100. 0 would refuse every lead with any collections, and over 100 is no cap. */
+function checkCollectionsCap(value: number | null, err: Err): void {
+  if (value === null) return
+  if (!Number.isInteger(value) || value < 1 || value > 100) {
+    err('collections_max_percent_invalid', 'collectionsMaxPercent', 'Collections at most is a whole percent of debt, from 1 to 100.')
+  }
 }
 
 /** Every cap is read through isCap, the rule both click nodes judge a stored cap by (#1557). */

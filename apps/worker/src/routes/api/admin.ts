@@ -49,6 +49,7 @@ import { readBackHoldsStep } from '../../lib/salesforce-read-back'
 import { writeAuditLog } from '../../lib/audit'
 import { SCHEDULED_DRILL_DEADLINE_MS, buyerObjectsHealth, runBuyerObjectsDrill } from '../../lib/buyer-objects-health'
 import { withDeadline } from '@bidspoke/buyer-profile'
+import { readOrgWorkflows } from '../../lib/org-workflows'
 
 const admin = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 
@@ -61,15 +62,12 @@ admin.post('/migrate-code-workers', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
 
-  const { data: workflows, error } = await supabase
-    .from('workflows')
-    .select('id, name, definition')
-    .eq('organization_id', orgId)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-
-  if (error) return dbError(c, error)
-  if (!workflows) return c.json({ migrated: 0, results: [] })
+  let workflows
+  try {
+    workflows = await readOrgWorkflows(supabase, orgId, { activeOnly: true })
+  } catch (err) {
+    return dbError(c, err)
+  }
 
   const results = await Promise.all(
     workflows.map(async (w) => {
@@ -940,7 +938,7 @@ admin.post('/reencrypt-secrets', async (c) => {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-const REPLAY_STATUS: Record<ReplayResult['kind'], 200 | 404 | 409 | 500 | 502> = {
+const REPLAY_STATUS: Record<ReplayResult['kind'], 200 | 404 | 409 | 500 | 502 | 503> = {
   not_found: 404,
   not_replayable: 409,
   conflict: 409,
@@ -949,6 +947,8 @@ const REPLAY_STATUS: Record<ReplayResult['kind'], 200 | 404 | 409 | 500 | 502> =
   replayed: 200,
   refused: 200,
   still_pending: 200,
+  // The Salesforce bulkhead was full, so nothing was sent and no attempt spent: try again shortly.
+  held: 503,
 }
 
 admin.get('/held-writes', async (c) => {

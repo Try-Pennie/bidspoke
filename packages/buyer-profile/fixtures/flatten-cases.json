@@ -16,6 +16,7 @@
         "hourly_spend_cap_cents": 10000,
         "daily_spend_cap_cents": 50000,
         "display_time_zone": "America/Chicago",
+        "collections_max_percent": 75,
         "windows": [{ "day_of_week": 1, "opens_minute": 540, "closes_minute": 1020 }],
         "blackout_dates": [{ "date": "2026-12-25", "note": "Holiday" }],
         "tiers": [
@@ -33,6 +34,7 @@
           "blackout_dates[2026-12-25]",
           "click_delivery.routes[DV1]",
           "click_delivery.success_pattern",
+          "collections_max_percent",
           "daily_lead_cap",
           "daily_spend_cap_cents",
           "debt_max",
@@ -53,6 +55,7 @@
           "blackout_dates.2026-12-25",
           "click_delivery.routes[DV1]",
           "click_delivery.success_pattern",
+          "collections_max_percent",
           "daily_lead_cap",
           "daily_spend_cap_cents",
           "debt_max",
@@ -87,6 +90,7 @@
         "hourly_spend_cap_cents": null,
         "daily_spend_cap_cents": null,
         "display_time_zone": null,
+        "collections_max_percent": null,
         "windows": [],
         "blackout_dates": [],
         "tiers": [],
@@ -95,6 +99,7 @@
       "paths": {
         "ts": [
           "allowed_states",
+          "collections_max_percent",
           "daily_lead_cap",
           "daily_spend_cap_cents",
           "debt_max",
@@ -109,6 +114,7 @@
         ],
         "sql": [
           "allowed_states",
+          "collections_max_percent",
           "daily_lead_cap",
           "daily_spend_cap_cents",
           "debt_max",

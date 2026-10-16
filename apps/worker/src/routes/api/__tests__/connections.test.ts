@@ -215,6 +215,18 @@ describe('DELETE /connections/:service_type', () => {
     expect(res.status).toBe(200)
     expect(vi.mocked(deleteCfSecret)).toHaveBeenCalledWith('CONN_EXISTING', 'acct-123', 'tok-abc')
   })
+
+  it('refuses a service type it does not manage, so the Slack connection is removed only by its own route (#2060)', async () => {
+    // DELETE /api/integrations/slack also removes the org from the saved Slack
+    // copy alerts post from in an outage; a Slack delete through here would not.
+    const sb = makeSupabase({ users: { single: testUser }, service_connections: [{ single: { id: 'sc-slack', cf_secret_key: '' } }, { writeRows: [{ id: 'sc-slack' }] }] })
+    const from = vi.spyOn(sb, 'from')
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    const res = await request(app, 'DELETE', '/connections/slack')
+    expect(res.status).toBe(400)
+    expect(from.mock.calls.filter(([t]) => t === 'service_connections')).toEqual([])
+    expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
+  })
 })
 
 describe('POST /connections/:service_type/sync-schema', () => {
@@ -235,6 +247,15 @@ describe('POST /connections/:service_type/sync-schema', () => {
     )
     const res = await request(app, 'POST', '/connections/salesforce/sync-schema')
     expect(res.status).toBe(404)
+  })
+
+  it('refuses a service type it does not manage before touching the table, so it never writes a Slack row (#2060)', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, service_connections: { single: { id: 'sc-slack', cf_secret_key: '', service_type: 'slack' } } })
+    const from = vi.spyOn(sb, 'from')
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    const res = await request(app, 'POST', '/connections/slack/sync-schema')
+    expect(res.status).toBe(400)
+    expect(from.mock.calls.filter(([t]) => t === 'service_connections')).toEqual([])
   })
 
   it('returns 500 when CF secret is not in env', async () => {
