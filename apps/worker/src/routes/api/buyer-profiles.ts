@@ -37,6 +37,7 @@ import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
 import { readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../../lib/buyer-profile-loader'
 import { BuyerLedgerClient, ClickCounterClient } from '../../lib/buyer-object-clients'
 import { workflowsUsingPartner } from '../../lib/partner-workflow-finder'
+import { readOrgWorkflows } from '../../lib/org-workflows'
 import type { Json } from '../../types/database'
 
 const buyerProfiles = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
@@ -91,14 +92,14 @@ buyerProfiles.get('/:id/buyer-profile', async (c) => {
   // The click nodes are left out too (#1543): a click buyer's clicks through
   // buyer_click_send are exactly what its cap counts, and buyer_click_check only
   // offers, so neither is a seller whose wins the cap leaves uncounted.
-  const { data: workflows, error: wfError } = await supabase
-    .from('workflows')
-    .select('id, name, is_active, definition')
-    .eq('organization_id', orgId)
-    .is('deleted_at', null)
-  if (wfError) return dbError(c, wfError)
+  let workflows
+  try {
+    workflows = await readOrgWorkflows(supabase, orgId)
+  } catch (err) {
+    return dbError(c, err)
+  }
   const finder = workflowsUsingPartner(
-    (workflows ?? []) as Array<{ id: string; name: string; is_active: boolean | null; definition: unknown }>,
+    workflows,
     new Map(),
     { includeBuyerSelect: false, includeClickNodes: false, liveOnly: true }
   )
@@ -227,14 +228,14 @@ export async function refuseSwitchAwayFromClick(
   }
   if (stored !== 'click') return null
 
-  const { data: workflows, error } = await supabase
-    .from('workflows')
-    .select('id, name, is_active, definition')
-    .eq('organization_id', orgId)
-    .is('deleted_at', null)
-  if (error) return dbError(c, error)
+  let workflows
+  try {
+    workflows = await readOrgWorkflows(supabase, orgId)
+  } catch (err) {
+    return dbError(c, err)
+  }
   const using = workflowsUsingPartner(
-    workflows ?? [],
+    workflows,
     new Map(),
     { includeBuyerSelect: false, includeClickNodes: true, clickNodesOnly: true, liveOnly: true }
   )(partnerId)

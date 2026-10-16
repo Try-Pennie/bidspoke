@@ -24,12 +24,14 @@ import envFolders from './env-folders'
 import configWarnings from './config-warnings'
 import fieldCoverage from './field-coverage'
 import buyerProfiles from './buyer-profiles'
+import partnerWorkflowValues from './partner-workflow-values'
 import partnerHistory from './partner-history'
 import buyerSales from './buyer-sales'
 import heldClicks from './held-clicks'
 import buyerSelectParity from './buyer-select-parity'
 import mutedAlertRoutes from './muted-alerts'
 import incidentRoutes from './incidents'
+import partnerUsageRoutes from './partner-usage'
 
 type Variables = AuthVariables
 
@@ -67,6 +69,8 @@ api.route('/field-coverage', fieldCoverage)
 // matches only its own paths, so /partners/:id and /partners/:id/buyer-profile
 // do not collide.
 api.route('/partners', buyerProfiles)
+// The workflow values tab (#2142): which workflows read the partner's Constants values.
+api.route('/partners', partnerWorkflowValues)
 // The partners page History (#2141), on the same prefix the same way.
 api.route('/partners', partnerHistory)
 api.route('/buyer-sales', buyerSales)
@@ -76,6 +80,9 @@ api.route('/held-clicks', heldClicks)
 // under the admin prefix. Mounted before /admin's own routes cannot matter: a
 // Hono sub app matches only its own paths.
 api.route('/admin/buyer-select/parity', buyerSelectParity)
+// Which workflow steps name a partner, per node kind (#2137): the partners page's
+// Bid Group tab and confirmation window apply only where one does.
+api.route('/partners', partnerUsageRoutes)
 api.get('/audit-log', async (c) => {
   const { orgId } = c.get('user')
   const supabase = (await import('../../lib/supabase')).createSupabaseClient(c.env)

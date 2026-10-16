@@ -358,6 +358,27 @@ html {
   .outcome-stalled {
     @apply text-red-700;
   }
+  /* The one set of tabs (#2137, components/ui/Tabs.tsx), as the settled design
+     draws them: plain words on a line, the open tab bold with a navy line under it. */
+  .tabs-list {
+    @apply mb-6 flex flex-wrap gap-x-6 border-b border-gray-200;
+  }
+  .tab {
+    @apply -mb-px inline-flex items-center border-b-2 border-transparent py-2 text-sm text-gray-600 hover:text-graphite focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark focus-visible:ring-offset-1;
+  }
+  .tab[data-state='active'] {
+    @apply border-navy font-semibold text-navy;
+  }
+  .tab-panel {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark focus-visible:ring-offset-2;
+  }
+  /* The one red problem mark (#2137, components/ui/ProblemMark.tsx). */
+  .problem-mark {
+    @apply inline-flex shrink-0 items-center;
+  }
+  .problem-mark-dot {
+    @apply inline-block h-[7px] w-[7px] rounded-full bg-red-700;
+  }
 }
 
 /* Radix hides the Select list's scrollbar with an unlayered style of its own,

@@ -71,6 +71,13 @@ export interface BuyerProfileDocument {
    * cannot blank it by omission.
    */
   display_time_zone?: DisplayTimeZone | null
+  /**
+   * The most a lead's collections may be, as a whole percent of its debt
+   * (#2111). Null means not judged. ABSENT means the sender did not speak about
+   * it, and the save keeps what is stored, so a page from before the field
+   * cannot blank a cap set through the API.
+   */
+  collections_max_percent?: number | null
 }
 
 export interface DocumentFieldError {
@@ -201,6 +208,9 @@ export function parseProfileDocument(input: unknown): ParsedProfileDocument {
     else err('display_time_zone', `display_time_zone must be one of ${DISPLAY_TIME_ZONES.join(', ')}.`)
   }
 
+  let collections_max_percent: number | null | undefined
+  if (raw.collections_max_percent !== undefined) collections_max_percent = nullableNumber('collections_max_percent')
+
   if (raw.partner_id !== undefined && typeof raw.partner_id !== 'string') err('partner_id', 'partner_id must be a string.')
   if (raw.version !== undefined && integer(raw.version) === undefined) err('version', 'version must be a whole number.')
 
@@ -223,6 +233,7 @@ export function parseProfileDocument(input: unknown): ParsedProfileDocument {
   }
   if (click_delivery !== undefined) document.click_delivery = click_delivery
   if (display_time_zone !== undefined) document.display_time_zone = display_time_zone
+  if (collections_max_percent !== undefined) document.collections_max_percent = collections_max_percent
   if (typeof raw.partner_id === 'string') document.partner_id = raw.partner_id
   if (raw.version !== undefined) document.version = integer(raw.version) as number
   return { ok: true, document }
@@ -285,5 +296,7 @@ export function documentToProfile(doc: BuyerProfileDocument): BuyerProfile {
     ...(doc.click_delivery === undefined ? {} : { clickDelivery: doc.click_delivery === null ? null : clickDeliveryFromDocument(doc.click_delivery) }),
     // Shown only, never judged; carried so validateProfile can refuse a value outside the list.
     ...(doc.display_time_zone === undefined ? {} : { displayTimeZone: doc.display_time_zone }),
+    // Absent maps to no key, which the box reads as no cap, like null.
+    ...(doc.collections_max_percent === undefined ? {} : { collectionsMaxPercent: n(doc.collections_max_percent) }),
   }
 }

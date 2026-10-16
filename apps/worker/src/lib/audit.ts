@@ -40,6 +40,9 @@ export type AuditEntityType =
   // read is audited, because the archive holds full fidelity PII for thirteen
   // months and a read of it is the access that has to be accountable.
   | 'execution_archive'
+  // The Better Stack page for "nobody can be told in Slack" (#2063), entity id
+  // the alert's name. Written when a person sends a drill page (#1303).
+  | 'outage_page'
 
 export type AuditAction =
   | 'created'
@@ -70,6 +73,8 @@ export type AuditAction =
   // not recorded: an SSN written here would be the identity copied into a
   // second store with its own retention.
   | 'archive_searched'
+  // A drill page sent to Better Stack by hand (#1303), with what came of it.
+  | 'outage_page_drilled'
 
 /**
  * How long to wait between audit-write attempts (#277).

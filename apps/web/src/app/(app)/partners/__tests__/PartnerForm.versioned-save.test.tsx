@@ -13,6 +13,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 
 vi.mock('@/lib/api', () => ({
   api: {
+    partners: { usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }) },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
     buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },
@@ -27,7 +28,7 @@ import { pickupSentence } from '@/lib/bidding-pickup'
 
 const partner: Partner = {
   id: 'p1', organization_id: 'org-1', name: 'M1', slug: 'm1', api_endpoint: null, cf_secret_key: null, daily_cap: null, min_bid: null,
-  bid_formula: null, bid_resolver_type: 'api', bid_resolver_config: {}, outbound_field_mapping: null, bid_mode: 'ping_only',
+  bid_formula: null, bid_resolver_type: 'api', bid_resolver_config: {}, outbound_field_mapping: null,
   bid_comparison_source: 'auto', extra_extraction: null, last_probe_response: null, dedup_endpoint: null, response_classification: null,
   alert_config: null, circuit_error_threshold: 5, circuit_window_seconds: 60, circuit_cooldown_seconds: 300, circuit_enabled: true,
   confirmation_window_ms: null, is_active: true, priority: 0, sell_off_offer_title: null, sell_off_offer_details: null, click_url: null,
@@ -81,12 +82,12 @@ describe('a versioned save of only what changed (#2132)', () => {
     expect(versioning.expected_profile_version).toBeNull()
   })
 
-  it('never sends a field the person did not touch, so a stored ping_only bid mode is left alone', async () => {
+  it('never sends a field the person did not touch', async () => {
     const onSave = renderForm()
     rename()
     save()
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
-    expect('bid_mode' in onSave.mock.calls[0][0]).toBe(false)
+    expect(Object.keys(onSave.mock.calls[0][0])).toEqual(['name'])
   })
 
   it('the next save names the version the last one produced, and mints a new save id', async () => {
@@ -262,7 +263,7 @@ describe('a versioned save of only what changed (#2132)', () => {
   it('an edit that changes nothing stored (a blank floor row) saves nothing and no longer reads as unsaved', async () => {
     const onSave = vi.fn()
     render(<PartnerForm partner={{ ...partner, partner_type: 'buyer' }} onSave={onSave} onCancel={vi.fn()} />)
-    fireEvent.click(screen.getByRole('button', { name: /Add row/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Add row/, hidden: true }))
     expect(await screen.findByText('Unsaved changes')).toBeInTheDocument()
     save()
     await screen.findByText('Nothing to save.')
@@ -320,7 +321,7 @@ describe('a failed read is its own state (L10)', () => {
     vi.mocked(api.partnerBidConfigs.list).mockRejectedValueOnce(new Error('503'))
     render(<PartnerForm partner={{ ...partner, partner_type: 'buyer', bid_resolver_type: 'matrix' }} onSave={vi.fn()} onCancel={vi.fn()} />)
     expect(await screen.findByText('Could not load bid matrices. Try again.')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Try again', hidden: true }))
     await waitFor(() => expect(api.partnerBidConfigs.list).toHaveBeenCalledTimes(2))
     await waitFor(() => expect(screen.queryByText('Could not load bid matrices. Try again.')).not.toBeInTheDocument())
   })

@@ -7,7 +7,6 @@ import type { PartnerHistory } from '@bidspoke/partner-history'
 export type { PartnerType }
 
 export type BidResolverType = 'formula' | 'matrix' | 'api'
-export type BidMode = 'commit' | 'ping_only'
 export type BidComparisonSource = 'auto' | 'api' | 'formula' | 'matrix'
 
 export type ExtraExtractionSpec =
@@ -31,8 +30,6 @@ export interface Partner {
   bid_resolver_type: BidResolverType
   bid_resolver_config: Record<string, unknown>
   outbound_field_mapping: Record<string, unknown> | null
-  /** Read only (PM-9, #2136): off the page, kept until its contract step drops the column. */
-  bid_mode: BidMode
   bid_comparison_source: BidComparisonSource
   extra_extraction: ExtraExtractionConfig | null
   last_probe_response: unknown
@@ -79,10 +76,31 @@ export interface Partner {
 
 /**
  * The fields a partner save may name: the row less its identity, its
- * bookkeeping, what the Worker derives, and bid_mode, which the page no longer
- * edits (PM-9, #2136), so no save the page makes can carry it.
+ * bookkeeping and what the Worker derives. bid_mode is not a Partner field
+ * at all since #2182: nothing reads it, and the Worker refuses a save naming it.
  */
-export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email' | 'updated_by_name' | 'credential_warning' | 'version' | 'last_save_id' | 'bid_mode'>>
+export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email' | 'updated_by_name' | 'credential_warning' | 'version' | 'last_save_id'>>
+
+/** One workflow step that names a partner (#2137), from GET /api/partners/:id/usage. */
+export interface PartnerUsageStep {
+  workflow_id: string
+  workflow_name: string
+  /** A switched off workflow still counts: switched on again, it calls the partner at once. */
+  is_active: boolean
+  node_id: string | null
+}
+
+/**
+ * Which of the organization's workflow steps name a partner, per node kind
+ * (#2137): a Bid Group or Partner Bid step makes the Bid Group tab apply, a
+ * Latency Gate the confirmation window.
+ */
+export interface PartnerUsage {
+  /** partner_ids are asked on every lead (a tiered group's from its tiers); the fallback only once nobody wins. */
+  bid_group: Array<PartnerUsageStep & { mode: 'highest_bid' | 'cascade' | 'tiered'; partner_ids: string[]; fallback_partner_id: string | null }>
+  partner_bid: PartnerUsageStep[]
+  latency_gate: PartnerUsageStep[]
+}
 
 /**
  * The page's one save beside its partner patch (#2133): the pair of versions it
@@ -112,6 +130,59 @@ export interface PartnerPageSaved extends StoredCopyAnswer {
   profile: BuyerProfileDocument | null
   partner_version: number
   profile_version: number
+}
+
+/**
+ * The workflow values tab's answer (#2142, GET /api/partners/:id/workflow-values):
+ * every value the Constants node emits for the partner, with the workflows that
+ * read it. Held to the Worker's own type by
+ * apps/web/src/lib/__tests__/workflow-values-answer-type.test.ts.
+ */
+export type PartnerValueKind = 'ClickUrl' | 'SellOffOfferTitle' | 'SellOffOfferDetails' | 'SubAccountMinBids' | 'subAccountIdsMap' | 'activeBidding'
+
+/** `by_name`: names this partner's value, or its entry in a map. `every_partner`: reads it for every partner at once. */
+export type PartnerValueReadHow = 'by_name' | 'every_partner'
+
+export interface PartnerValueReadingPlace {
+  node_id: string | null
+  namespace: string | null
+  label: string | null
+  node_type: string | null
+  edge_id: string | null
+  reads: PartnerValueReadHow
+}
+
+export interface PartnerValueReadingWorkflow {
+  workflow_id: string
+  workflow_name: string
+  is_active: boolean
+  reads: PartnerValueReadHow
+  places: PartnerValueReadingPlace[]
+}
+
+export interface PartnerWorkflowValue {
+  /** The name the Constants node emits it under. */
+  constant_name: string
+  kind: PartnerValueKind
+  /** One of the two maps holding every partner's entry. */
+  map: boolean
+  access: { template: string; code: string }
+  /** Whether the node emits it now. */
+  emitted: boolean
+  /** As the node emits it: the value, or this partner's part of a map: its entry in activeBidding, its id to slug entries in subAccountIdsMap. */
+  value: unknown
+  readers: PartnerValueReadingWorkflow[]
+  /** Workflow data keys with this name, which the partner value replaces. */
+  shadowed_data_keys: Array<{ workflow_id: string; workflow_name: string; is_active: boolean; node_id: string; namespace: string }>
+  /** For the click URL: the engine's readers outside workflows. */
+  readers_outside_workflows: Array<{ reader: string; description: string }>
+}
+
+export interface PartnerWorkflowValues {
+  partner: { id: string; slug: string }
+  values: PartnerWorkflowValue[]
+  /** What was searched, so an empty reader list can be worded as what it measured. */
+  searched: { workflows: number; with_constants_node: number }
 }
 
 /**
@@ -1004,12 +1075,16 @@ export const api = {
       req<{ ok: boolean } & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'DELETE' }),
     getCapCount: (id: string) =>
       req<{ count: number; date: string; sold_on?: 'click'; day_zone?: string }>(`/api/partners/${id}/cap-count`),
+    // The workflow values tab (#2142): which workflows read the partner's Constants values.
+    workflowValues: (id: string) => req<PartnerWorkflowValues>(`/api/partners/${id}/workflow-values`),
     // The live channel's versions probe (#2135): both versions, the last press,
     // and the newest change of each half, direct or not.
     versions: (id: string) => req<PartnerPageVersions>(`/api/partners/${id}/versions`),
     // A change the probe found that no notice announced (#2135). Recorded only.
     reportLiveMiss: (report: LiveMissReportBody) =>
       req<{ ok: true; id: string }>('/api/partners/live-miss', { method: 'POST', body: JSON.stringify(report) }),
+    // Which workflow steps name the partner, per node kind (#2137). A failure throws: never read as "none".
+    usage: (id: string) => req<PartnerUsage>(`/api/partners/${id}/usage`),
     // History (#2141): audit_log and the matrix syncs merged, newest first. Any
     // read failing is an error naming it (`history_unavailable`), never a
     // shorter list; the page groups by Eastern day through dates.ts.

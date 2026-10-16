@@ -40,6 +40,8 @@ interface Props {
   onCfSecretKeyChange: (v: string) => void
   onBidComparisonSourceChange: (v: BidComparisonSource) => void
   onConfigChange: (cfg: Record<string, unknown>) => void
+  /** A problem with the secret, drawn red under its field (#2137): the missing credential. */
+  cfSecretKeyError?: string | null
 }
 
 export function BidResolverEditor(p: Props) {
@@ -71,7 +73,8 @@ export function BidResolverEditor(p: Props) {
           <div>
             <label htmlFor={cfSecretId} className="mb-1 block text-xs font-medium text-gray-600">Auth secret name</label>
             <p className="mb-1.5 text-xs text-gray-500">Cloudflare worker secret containing the bearer token. Optional.</p>
-            <TextInput id={cfSecretId} value={p.cfSecretKey} onChange={p.onCfSecretKeyChange} placeholder="PARTNER_TOKEN" mono />
+            <TextInput id={cfSecretId} value={p.cfSecretKey} onChange={p.onCfSecretKeyChange} placeholder="PARTNER_TOKEN" mono describedBy={p.cfSecretKeyError ? `${cfSecretId}-problem` : undefined} />
+            {p.cfSecretKeyError && <p id={`${cfSecretId}-problem`} className="mt-1 text-xs text-red-700">{p.cfSecretKeyError}</p>}
           </div>
 
           <BidValueSourceRadio

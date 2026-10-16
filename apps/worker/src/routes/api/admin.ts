@@ -46,9 +46,11 @@ import {
   type ReplayResult,
 } from '../../lib/writeback-replay'
 import { readBackHoldsStep } from '../../lib/salesforce-read-back'
-import { writeAuditLog } from '../../lib/audit'
+import { recordAuditLog, writeAuditLog } from '../../lib/audit'
 import { SCHEDULED_DRILL_DEADLINE_MS, buyerObjectsHealth, runBuyerObjectsDrill } from '../../lib/buyer-objects-health'
 import { withDeadline } from '@bidspoke/buyer-profile'
+import { BETTER_STACK_ALERT_NAME, drillNobodyToldPage, type NobodyToldDrillOutcome } from '../../lib/nobody-told-page'
+import { readOrgWorkflows } from '../../lib/org-workflows'
 
 const admin = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 
@@ -61,15 +63,12 @@ admin.post('/migrate-code-workers', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
 
-  const { data: workflows, error } = await supabase
-    .from('workflows')
-    .select('id, name, definition')
-    .eq('organization_id', orgId)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-
-  if (error) return dbError(c, error)
-  if (!workflows) return c.json({ migrated: 0, results: [] })
+  let workflows
+  try {
+    workflows = await readOrgWorkflows(supabase, orgId, { activeOnly: true })
+  } catch (err) {
+    return dbError(c, err)
+  }
 
   const results = await Promise.all(
     workflows.map(async (w) => {
@@ -647,6 +646,40 @@ admin.get('/buyer-objects/health', async (c) => {
 admin.post('/buyer-objects/drill', async (c) => {
   const report = await withDeadline(runBuyerObjectsDrill(c.env), SCHEDULED_DRILL_DEADLINE_MS, 'buyer objects drill')
   return c.json(report, report.ok ? 200 : 500)
+})
+
+/**
+ * The drill for the Better Stack page "nobody can be told in Slack" (#2063,
+ * #1303). Nothing else sends that page on demand, so without this nobody can
+ * prove the stored URL and token are right or that the alert fires until an
+ * outage needs them. It sends ONE page through the real page's own request
+ * (drillNobodyToldPage in lib/nobody-told-page.ts), with the worker's own
+ * secrets, carrying the line the alert matches on and `reason: 'drill'`. It
+ * PAGES whoever the alert is routed to, so it is a POST named a drill (L206).
+ *
+ * Caller: any signed in user on the access allowlist, as for every /api/admin
+ * route (jwtAuth). Scoping: it reads no tenant data, and the page names no
+ * organization; the caller's organization is used only for the audit row. It
+ * never reads or writes the IDEMPOTENCY record a real page dedupes on, so it
+ * cannot hold back a real outage's page. Every outcome is its own answer, never
+ * a blanket ok, and every attempt is audited, one that sent nothing included;
+ * `audited` in the answer says whether that row actually landed.
+ */
+const DRILL_STATUS: Record<NobodyToldDrillOutcome['outcome'], 200 | 502 | 503 | 504> = {
+  sent: 200,
+  refused: 502,
+  threw: 502,
+  no_answer: 504,
+  not_configured: 503,
+}
+
+admin.post('/nobody-told-page/drill', async (c) => {
+  const { orgId, email } = c.get('user')
+  const result = await drillNobodyToldPage({ token: c.env.BETTERSTACK_OUTAGE_TOKEN, url: c.env.BETTERSTACK_OUTAGE_URL })
+  // recordAuditLog, not writeAuditLog: the answer says whether the row landed
+  // rather than claiming every attempt is audited when the write failed (L11).
+  const audited = await recordAuditLog(createSupabaseClient(c.env), orgId, 'outage_page', BETTER_STACK_ALERT_NAME, 'outage_page_drilled', email ?? 'unknown', { ...result })
+  return c.json({ ok: result.outcome === 'sent', ...result, alert: BETTER_STACK_ALERT_NAME, audited }, DRILL_STATUS[result.outcome])
 })
 
 admin.post('/archive-settings-check', async (c) => {
