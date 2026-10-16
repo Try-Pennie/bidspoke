@@ -1086,7 +1086,7 @@ describe('workflow reads: DB error => 5xx not 404 (#596)', () => {
       { id: 'p-tripoint', name: 'Tripoint', slug: 'tripoint', bid_formula: 'steps.trades.output.debt * 0.0012', bid_resolver_config: null },
       { id: 'p-liberty', name: 'Liberty', slug: 'liberty', bid_formula: 'steps.trades.output.debt * 0.001', bid_resolver_config: null },
     ]
-    const engineWorkflow = { id: 'wf-engine', name: 'Engine Bidding', definition: { nodes: [{ id: 'bs', namespace: 'sell_off', type: 'buyer_select', config: { population: 'engine', mode: 'live' } }] } }
+    const engineWorkflow = { id: 'wf-engine', name: 'Engine Bidding', is_active: true, organization_id: USER_ORG, deleted_at: null, definition: { nodes: [{ id: 'bs', namespace: 'sell_off', type: 'buyer_select', config: { population: 'engine', mode: 'live' } }] } }
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },

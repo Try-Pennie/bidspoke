@@ -1,0 +1,1237 @@
+{
+  "about": "Measured by scripts/measure-workflow-values-fixture.ts from Try-Pennie/bidspoke-workflows; see that script.",
+  "mirror_commit": "18d91be8eee26b6703103c9a51ff332ee2ad372f",
+  "partners": [
+    {
+      "slug": "amone",
+      "subAccountIds": [
+        "sub-account-of-amone"
+      ]
+    },
+    {
+      "slug": "brainsome",
+      "subAccountIds": [
+        "sub-account-of-brainsome"
+      ]
+    },
+    {
+      "slug": "dot818",
+      "subAccountIds": [
+        "sub-account-of-dot818"
+      ]
+    },
+    {
+      "slug": "gigfi",
+      "subAccountIds": [
+        "sub-account-of-gigfi"
+      ]
+    },
+    {
+      "slug": "lendswift",
+      "subAccountIds": [
+        "sub-account-of-lendswift"
+      ]
+    },
+    {
+      "slug": "liberty1",
+      "subAccountIds": [
+        "sub-account-of-liberty1"
+      ]
+    },
+    {
+      "slug": "nerdwallet",
+      "subAccountIds": [
+        "sub-account-of-nerdwallet"
+      ]
+    },
+    {
+      "slug": "sofi",
+      "subAccountIds": [
+        "sub-account-of-sofi"
+      ]
+    },
+    {
+      "slug": "tripoint",
+      "subAccountIds": [
+        "sub-account-of-tripoint"
+      ]
+    }
+  ],
+  "workflows": [
+    {
+      "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+      "name": "Main Flow (v2)",
+      "is_active": true,
+      "definition": {
+        "nodes": [
+          {
+            "id": "759cb6a2-b8d5-498b-b684-54c32a703b80",
+            "namespace": "constants",
+            "label": "Constants",
+            "type": "constants",
+            "config": {}
+          },
+          {
+            "id": "385d104c-6f18-4091-bb33-d95513f87471",
+            "namespace": "fallback_engine_debt_not_present",
+            "label": "Fallback Engine Debt Not Present",
+            "type": "code",
+            "config": {
+              "script": "  const token = steps.constants.output.epcThroughEngine\n  if (steps.constants.output.epcThroughEngine) {"
+            }
+          },
+          {
+            "id": "9f27614b-bdc7-4af2-ae5f-474c1bc52dee",
+            "namespace": "fallback_engine_debt_missing",
+            "label": "fallback_engine_debt_missing",
+            "type": "code",
+            "config": {
+              "script": "  const token = steps.constants.output.epcThroughEngine"
+            }
+          },
+          {
+            "id": "3e14b0bc-f691-47d9-a597-ce9cc6b135c4",
+            "namespace": "state_condition_check",
+            "label": "State Condition Check",
+            "type": "branch",
+            "config": {
+              "branches": [
+                {
+                  "condition": {
+                    "groups": [
+                      {
+                        "conditions": [
+                          {
+                            "value": "steps.constants.output.states"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "id": "81bba74d-2aaf-4362-8ca7-23073cd3ce03",
+            "namespace": "fallback_invalid_state",
+            "label": "Fallback Invalid State",
+            "type": "code",
+            "config": {
+              "script": "  const token = steps.constants.output.epcThroughEngine"
+            }
+          },
+          {
+            "id": "930843c2-21c1-4c7d-a33d-d09e84ca58c5",
+            "namespace": "fallback_engine_under_10000",
+            "label": "Fallback Engine Under 10000",
+            "type": "code",
+            "config": {
+              "script": "  const token = steps.constants.output.epcThroughEngine"
+            }
+          },
+          {
+            "id": "fd3893e9-751d-4cd1-a211-b2a3569bfe8c",
+            "namespace": "engine_no_bids_call",
+            "label": "Engine No Bids Call",
+            "type": "code",
+            "config": {
+              "script": "  const epc = steps.constants?.output?.epcThroughEngine;"
+            }
+          },
+          {
+            "id": "7a34b125-9828-45a0-b4f1-c4138ac602d6",
+            "namespace": "engine_no_bids_call_1",
+            "label": "Engine No Bids Call 1",
+            "type": "code",
+            "config": {
+              "script": "  const epc = steps.constants?.output?.epcThroughEngine;"
+            }
+          }
+        ],
+        "edges": []
+      }
+    },
+    {
+      "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+      "name": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+      "is_active": true,
+      "definition": {
+        "nodes": [
+          {
+            "id": "5bcd28cb-36a9-47b0-85ab-c61ddee683a9",
+            "namespace": "constants",
+            "label": "Constants",
+            "type": "constants",
+            "config": {}
+          },
+          {
+            "id": "82e843f7-8e5e-4651-8d35-6370fb0ff744",
+            "namespace": "parse_name",
+            "label": "Parse Name",
+            "type": "code",
+            "config": {
+              "script": "// Guard (folded in from the old constants step): drop non-lead requests"
+            }
+          },
+          {
+            "id": "f164e4d5-8f83-4ff1-a7e4-d655db2b1677",
+            "namespace": "validate_bidding_and_state",
+            "label": "Validate Bidding and State",
+            "type": "code",
+            "config": {
+              "script": "const constants = steps.constants.output;\nconst allowedStates = constants.states;\nconst biddingActive = constants.biddingActive;\nconst validLoanAmount = loanAmount <= constants.maximumLoanAmount;"
+            }
+          },
+          {
+            "id": "994c9673-0281-4a18-a438-3e521d0fa879",
+            "namespace": "ping_lendswift",
+            "label": "Ping Lendswift",
+            "type": "code",
+            "config": {
+              "script": "const subAccountBids = steps.constants.output.LendswiftSubAccountMinBids || {};"
+            }
+          },
+          {
+            "id": "0f93d25f-6b34-459a-b3aa-888f8bfade0c",
+            "namespace": "build_response",
+            "label": "Build Response",
+            "type": "code",
+            "config": {
+              "script": "const constants = steps.constants.output;\nconst floor = constants.LendswiftSubAccountMinBids?.[subAccountUuid];\nconst bidAmount = lendswiftBid * constants.multiplier;\nconst offerLink = await withLinkToken(constants.pennieClickUrl + `/${applicantId}`, applicantId);\n        name: constants.offerName,\n        display_name: constants.offerName,\n        product_type: constants.productType,\n        logo_src: constants.logoSrc,\n        offer_title: constants.offerTitle,\n        offer_details: constants.offerDetails,"
+            }
+          }
+        ],
+        "edges": []
+      }
+    },
+    {
+      "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+      "name": "Offer Wall by Submission ID",
+      "is_active": true,
+      "definition": {
+        "nodes": [],
+        "edges": []
+      }
+    },
+    {
+      "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+      "name": "Main Flow",
+      "is_active": true,
+      "definition": {
+        "nodes": [
+          {
+            "id": "759cb6a2-b8d5-498b-b684-54c32a703b80",
+            "namespace": "constants",
+            "label": "Constants",
+            "type": "constants",
+            "config": {}
+          },
+          {
+            "id": "385d104c-6f18-4091-bb33-d95513f87471",
+            "namespace": "fallback_engine_debt_not_present",
+            "label": "Fallback Engine Debt Not Present",
+            "type": "code",
+            "config": {
+              "script": "  const token = steps.constants.output.epcThroughEngine\n  if (steps.constants.output.epcThroughEngine) {"
+            }
+          },
+          {
+            "id": "9f27614b-bdc7-4af2-ae5f-474c1bc52dee",
+            "namespace": "fallback_engine_debt_missing",
+            "label": "fallback_engine_debt_missing",
+            "type": "code",
+            "config": {
+              "script": "  const token = steps.constants.output.epcThroughEngine"
+            }
+          },
+          {
+            "id": "3e14b0bc-f691-47d9-a597-ce9cc6b135c4",
+            "namespace": "state_condition_check",
+            "label": "State Condition Check",
+            "type": "branch",
+            "config": {
+              "branches": [
+                {
+                  "condition": {
+                    "groups": [
+                      {
+                        "conditions": [
+                          {
+                            "value": "steps.constants.output.states"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              ]
+            }
+          },
+          {
+            "id": "81bba74d-2aaf-4362-8ca7-23073cd3ce03",
+            "namespace": "fallback_invalid_state",
+            "label": "Fallback Invalid State",
+            "type": "code",
+            "config": {
+              "script": "  const fallbackToken = steps.constants.output.epcThroughEngine\n    tokenUsed = steps.constants.output.epcThroughEngine"
+            }
+          },
+          {
+            "id": "930843c2-21c1-4c7d-a33d-d09e84ca58c5",
+            "namespace": "fallback_engine_under_10000",
+            "label": "Fallback Engine Under 10000",
+            "type": "code",
+            "config": {
+              "script": "  const fallbackToken = steps.constants.output.epcThroughEngine\n    tokenUsed = steps.constants.output.epcThroughEngine"
+            }
+          },
+          {
+            "id": "fd3893e9-751d-4cd1-a211-b2a3569bfe8c",
+            "namespace": "engine_no_bids_call",
+            "label": "Engine No Bids Call",
+            "type": "code",
+            "config": {
+              "script": "  const epc = steps.constants?.output?.epcThroughEngine;"
+            }
+          },
+          {
+            "id": "7a34b125-9828-45a0-b4f1-c4138ac602d6",
+            "namespace": "engine_no_bids_call_1",
+            "label": "Engine No Bids Call 1",
+            "type": "code",
+            "config": {
+              "script": "  const epc = steps.constants?.output?.epcThroughEngine;"
+            }
+          }
+        ],
+        "edges": []
+      }
+    },
+    {
+      "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+      "name": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+      "is_active": true,
+      "definition": {
+        "nodes": [
+          {
+            "id": "1a6c9236-55f7-49b5-80a7-7265750f1b2c",
+            "namespace": "constants",
+            "label": "Constants",
+            "type": "constants",
+            "config": {}
+          },
+          {
+            "id": "a52917dc-b4cb-4504-b32e-f5e36a986b8a",
+            "namespace": "parsed_name",
+            "label": "Parsed Name",
+            "type": "code",
+            "config": {
+              "script": "  // crashing below. (In Pipedream this lived in the constants step; our Constants"
+            }
+          },
+          {
+            "id": "8ef8adb2-4182-4409-af20-58b30c283ba3",
+            "namespace": "validate_bidding_and_state",
+            "label": "Validate Bidding And State",
+            "type": "code",
+            "config": {
+              "script": "  const constants = steps.constants.output;\n  const allowedStates = constants.states;\n  const biddingActive = constants.biddingActive;\n  const validLoanAmount = loanAmount <= constants.maximumLoanAmount;"
+            }
+          },
+          {
+            "id": "ebc31eb2-5f2e-4979-b3df-edd460290d4f",
+            "namespace": "ping_gigfi",
+            "label": "Ping GigFi",
+            "type": "code",
+            "config": {
+              "script": "const subAccountBids = steps.constants.output.GigfiSubAccountMinBids || {};"
+            }
+          },
+          {
+            "id": "abd62688-f373-4b77-aaf2-9e25cc3ffef0",
+            "namespace": "build_response",
+            "label": "Build Response",
+            "type": "code",
+            "config": {
+              "script": "const constants = steps.constants.output;\nconst floor = constants.GigfiSubAccountMinBids?.[subAccountUuid];\nconst bidAmount = gigfiBid * constants.multiplier;\nconst offerLink = await withLinkToken(constants.pennieClickUrl + `/${applicantId}`, applicantId);\n        name: constants.offerName,\n        display_name: constants.offerName,\n        product_type: constants.productType,\n        logo_src: constants.logoSrc,\n        offer_title: constants.offerTitle,\n        offer_details: constants.offerDetails,"
+            }
+          }
+        ],
+        "edges": []
+      }
+    },
+    {
+      "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+      "name": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+      "is_active": true,
+      "definition": {
+        "nodes": [
+          {
+            "id": "f116a827-846e-443d-936e-243f8bd35b60",
+            "namespace": "constants",
+            "label": "constants",
+            "type": "constants",
+            "config": {}
+          },
+          {
+            "id": "83ceda70-bea4-448b-9ec8-800527ae25ab",
+            "namespace": "validate_bidding_and_state",
+            "label": "Validate Bidding and State",
+            "type": "code",
+            "config": {
+              "script": "const constants = steps.constants.output;\nconst validState = constants.states.includes(state);\n  loanAmount >= constants.minimumLoanAmount &&\n  annualIncome >= constants.minimumAnnualIncome &&\n  constants.allowedPurposes.includes(purpose) &&\n  constants.allowedEmploymentStatuses.includes(employmentStatus);"
+            }
+          },
+          {
+            "id": "9ceb40c7-a036-4da2-b6db-63836c9f3dc5",
+            "namespace": "return_response",
+            "label": "Return Response",
+            "type": "code",
+            "config": {
+              "script": "const constants = steps.constants.output;\nif (pt.sellOff)              redirectUrl = constants.tripointClickUrl;\nelse if (pt.expLandingPage)  redirectUrl = constants.pennieExpLandingPage;\nelse if (pt.altLandingPage)  redirectUrl = constants.pennieAlternateClickUrl;\nelse                         redirectUrl = constants.pennieClickUrl;\n  offer = { offer_title: constants.sellOffOfferTitle, offer_details: constants.sellOffOfferDetails };\n  offer = { offer_title: constants.mainOfferTitle, offer_details: constants.mainOfferDetails };\n    name: constants.offerName,\n    display_name: constants.offerName,\n    product_type: constants.productType,\n    logo_src: constants.logoSrc,"
+            }
+          },
+          {
+            "id": "fd32d90e-400d-413e-895d-af34e73d9f95",
+            "namespace": "patch_prospect_body",
+            "label": "Patch Prospect body",
+            "type": "code",
+            "config": {
+              "script": "const constants = steps.constants.output;"
+            }
+          }
+        ],
+        "edges": []
+      }
+    },
+    {
+      "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+      "name": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+      "is_active": true,
+      "definition": {
+        "nodes": [],
+        "edges": []
+      }
+    },
+    {
+      "id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+      "name": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+      "is_active": true,
+      "definition": {
+        "nodes": [
+          {
+            "id": "db720491-42a9-443e-bc47-7e7afa9348c8",
+            "namespace": "constants",
+            "label": "constants",
+            "type": "constants",
+            "config": {}
+          },
+          {
+            "id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+            "namespace": "validate_bidding_and_state",
+            "label": "Validate",
+            "type": "code",
+            "config": {
+              "script": "const allowedStates = steps.constants.output.states;\nconst sourceName = steps.constants.output.subAccountIdsMap[source] || \"\"\nconst biddingActive = !sourceName || steps.constants.output.activeBidding[sourceName] === true"
+            }
+          },
+          {
+            "id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+            "namespace": "build_response_body",
+            "label": "Build Response Body",
+            "type": "code",
+            "config": {
+              "script": "      click_url: sale.accepted ? (steps.constants.output.TripointClickUrl ?? null) : null,\nconst constants = steps.constants.output;\n  if (expLandingPage)  return constants.pennieExpLandingPage;\n  if (altLandingPage)  return constants.pennieAlternateClickUrl;\n  return constants.pennieClickUrl;\nconst subAccountIdsMap  = constants.subAccountIdsMap ?? {};\n  offer_title:   constants.mainOfferTitle,\n  offer_details: constants.mainOfferDetails,\n  offer_title:   constants.SofiSellOffOfferTitle,\n  offer_details: constants.SofiSellOffOfferDetails,\n        name:         constants.offerName,\n        display_name: constants.offerName,\n        product_type: constants.productType,\n        logo_src:     constants.logoSrc,"
+            }
+          },
+          {
+            "id": "feafe7f2-1988-4b79-83fb-c8ece1390406",
+            "namespace": "tripoint_ping",
+            "label": "Tripoint Ping",
+            "type": "code",
+            "config": {
+              "script": "    click_url: accepted ? (steps.constants.output.TripointClickUrl ?? null) : null,"
+            }
+          }
+        ],
+        "edges": []
+      }
+    },
+    {
+      "id": "cefc5162-8dad-4f6e-a315-e39e36dc1265",
+      "name": "Test",
+      "is_active": true,
+      "definition": {
+        "nodes": [],
+        "edges": []
+      }
+    },
+    {
+      "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+      "name": "Engine Bidding Workflow",
+      "is_active": true,
+      "definition": {
+        "nodes": [
+          {
+            "id": "db720491-42a9-443e-bc47-7e7afa9348c8",
+            "namespace": "constants",
+            "label": "constants",
+            "type": "constants",
+            "config": {}
+          },
+          {
+            "id": "a0f687ec-9672-495f-8573-931ae8052fa1",
+            "namespace": "validate_bidding_and_state",
+            "label": "Validate",
+            "type": "code",
+            "config": {
+              "script": "const allowedStates = steps.constants.output.states;\nconst sourceName = steps.constants.output.subAccountIdsMap[source] || \"\"\nconst biddingActive = !sourceName || steps.constants.output.activeBidding[sourceName] === true"
+            }
+          },
+          {
+            "id": "a9da9329-80f3-4f9a-9288-b7d01a92eb68",
+            "namespace": "build_response_body",
+            "label": "Build Response Body",
+            "type": "code",
+            "config": {
+              "script": "      click_url: sale.accepted ? (steps.constants.output.TripointClickUrl ?? null) : null,\nconst constants = steps.constants.output;\n  if (expLandingPage)  return constants.pennieExpLandingPage;\n  if (altLandingPage)  return constants.pennieAlternateClickUrl;\n  return constants.pennieClickUrl;\nconst subAccountIdsMap  = constants.subAccountIdsMap ?? {};\n  offer_title:   constants.mainOfferTitle,\n  offer_details: constants.mainOfferDetails,\n  offer_title:   constants.SofiSellOffOfferTitle,\n  offer_details: constants.SofiSellOffOfferDetails,\n        name:         constants.offerName,\n        display_name: constants.offerName,\n        product_type: constants.productType,\n        logo_src:     constants.logoSrc,"
+            }
+          },
+          {
+            "id": "feafe7f2-1988-4b79-83fb-c8ece1390406",
+            "namespace": "tripoint_ping",
+            "label": "Tripoint Ping",
+            "type": "code",
+            "config": {
+              "script": "    click_url: accepted ? (steps.constants.output.TripointClickUrl ?? null) : null,"
+            }
+          }
+        ],
+        "edges": []
+      }
+    },
+    {
+      "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+      "name": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+      "is_active": true,
+      "definition": {
+        "nodes": [
+          {
+            "id": "5bcd28cb-36a9-47b0-85ab-c61ddee683a9",
+            "namespace": "constants",
+            "label": "Constants",
+            "type": "constants",
+            "config": {}
+          },
+          {
+            "id": "82e843f7-8e5e-4651-8d35-6370fb0ff744",
+            "namespace": "parse_name",
+            "label": "Parse Name",
+            "type": "code",
+            "config": {
+              "script": "// Guard (folded in from the old constants step): drop non-lead requests"
+            }
+          },
+          {
+            "id": "f164e4d5-8f83-4ff1-a7e4-d655db2b1677",
+            "namespace": "validate_bidding_and_state",
+            "label": "Validate Bidding and State",
+            "type": "code",
+            "config": {
+              "script": "const constants = steps.constants.output;\nconst allowedStates = constants.states;\nconst biddingActive = constants.biddingActive;\nconst validLoanAmount = loanAmount <= constants.maximumLoanAmount;"
+            }
+          },
+          {
+            "id": "994c9673-0281-4a18-a438-3e521d0fa879",
+            "namespace": "ping_lendswift",
+            "label": "Ping Lendswift",
+            "type": "code",
+            "config": {
+              "script": "const subAccountBids = steps.constants.output.LendswiftSubAccountMinBids || {};"
+            }
+          },
+          {
+            "id": "0f93d25f-6b34-459a-b3aa-888f8bfade0c",
+            "namespace": "build_response",
+            "label": "Build Response",
+            "type": "code",
+            "config": {
+              "script": "const constants = steps.constants.output;\nconst floor = constants.LendswiftSubAccountMinBids?.[subAccountUuid];\nconst bidAmount = lendswiftBid * constants.multiplier;\nconst offerLink = await withLinkToken(constants.pennieClickUrl + `/${applicantId}`, applicantId);\n        name: constants.offerName,\n        display_name: constants.offerName,\n        product_type: constants.productType,\n        logo_src: constants.logoSrc,\n        offer_title: constants.offerTitle,\n        offer_details: constants.offerDetails,"
+            }
+          }
+        ],
+        "edges": []
+      }
+    },
+    {
+      "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+      "name": "Delegate Gmail Access for Offboarded Agents",
+      "is_active": true,
+      "definition": {
+        "nodes": [],
+        "edges": []
+      }
+    },
+    {
+      "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+      "name": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+      "is_active": true,
+      "definition": {
+        "nodes": [],
+        "edges": []
+      }
+    }
+  ],
+  "expected": {
+    "amone": [
+      {
+        "constant_name": "AmoneClickUrl",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "AmoneSellOffOfferTitle",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "AmoneSellOffOfferDetails",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "AmoneSubAccountMinBids",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      }
+    ],
+    "brainsome": [
+      {
+        "constant_name": "BrainsomeClickUrl",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "BrainsomeSellOffOfferTitle",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "BrainsomeSellOffOfferDetails",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "BrainsomeSubAccountMinBids",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      }
+    ],
+    "dot818": [
+      {
+        "constant_name": "Dot818ClickUrl",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "Dot818SellOffOfferTitle",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "Dot818SellOffOfferDetails",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "Dot818SubAccountMinBids",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      }
+    ],
+    "gigfi": [
+      {
+        "constant_name": "GigfiClickUrl",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "GigfiSellOffOfferTitle",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "GigfiSellOffOfferDetails",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "GigfiSubAccountMinBids",
+        "readers": [
+          {
+            "workflow_id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+            "reads": "by_name",
+            "places": [
+              "node ping_gigfi by_name",
+              "node build_response by_name"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      }
+    ],
+    "lendswift": [
+      {
+        "constant_name": "LendswiftClickUrl",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "LendswiftSellOffOfferTitle",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "LendswiftSellOffOfferDetails",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "LendswiftSubAccountMinBids",
+        "readers": [
+          {
+            "workflow_id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+            "reads": "by_name",
+            "places": [
+              "node ping_lendswift by_name",
+              "node build_response by_name"
+            ]
+          },
+          {
+            "workflow_id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+            "reads": "by_name",
+            "places": [
+              "node ping_lendswift by_name",
+              "node build_response by_name"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      }
+    ],
+    "liberty1": [
+      {
+        "constant_name": "Liberty1ClickUrl",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "Liberty1SellOffOfferTitle",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "Liberty1SellOffOfferDetails",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "Liberty1SubAccountMinBids",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      }
+    ],
+    "nerdwallet": [
+      {
+        "constant_name": "NerdwalletClickUrl",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "NerdwalletSellOffOfferTitle",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "NerdwalletSellOffOfferDetails",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "NerdwalletSubAccountMinBids",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      }
+    ],
+    "sofi": [
+      {
+        "constant_name": "SofiClickUrl",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "SofiSellOffOfferTitle",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "by_name",
+            "places": [
+              "node build_response_body by_name"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "by_name",
+            "places": [
+              "node build_response_body by_name"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "SofiSellOffOfferDetails",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "by_name",
+            "places": [
+              "node build_response_body by_name"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "by_name",
+            "places": [
+              "node build_response_body by_name"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "SofiSubAccountMinBids",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      }
+    ],
+    "tripoint": [
+      {
+        "constant_name": "TripointClickUrl",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "by_name",
+            "places": [
+              "node build_response_body by_name",
+              "node tripoint_ping by_name"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "by_name",
+            "places": [
+              "node build_response_body by_name",
+              "node tripoint_ping by_name"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "TripointSellOffOfferTitle",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "TripointSellOffOfferDetails",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "TripointSubAccountMinBids",
+        "readers": [],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "subAccountIdsMap",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner",
+              "node build_response_body every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      },
+      {
+        "constant_name": "activeBidding",
+        "readers": [
+          {
+            "workflow_id": "a06ab6d1-dc84-4f01-a7b7-89cc88603166",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          },
+          {
+            "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "reads": "every_partner",
+            "places": [
+              "node validate_bidding_and_state every_partner"
+            ]
+          }
+        ],
+        "shadowed_by": []
+      }
+    ]
+  }
+}

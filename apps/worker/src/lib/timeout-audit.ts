@@ -19,6 +19,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
+import { readOrgWorkflows, type OrgWorkflow } from './org-workflows'
 import type { WorkflowDefinition } from '../types'
 import { suggestionFloorMs } from './timeout-floor'
 import { DEFAULT_RETRIES, SAMPLE_CONFIDENT, suggestedTimeoutMs, timeoutSeverity } from './timeout-suggestion'
@@ -171,22 +172,30 @@ export function warningsSignature(
     .join('|')
 }
 
+/**
+ * The organization's active workflows, or none with the failure logged: the
+ * audit has always judged what it could read and said so in the log
+ * (logReadFailure), and keeps doing so through the shared read (#2142).
+ */
+async function activeWorkflowsOrNone(supabase: SupabaseClient, orgId: string, what: string): Promise<OrgWorkflow[]> {
+  try {
+    return await readOrgWorkflows(supabase, orgId, { activeOnly: true })
+  } catch (err) {
+    logReadFailure('timeout-audit', what, err)
+    return []
+  }
+}
+
 /** Fetch active workflows (with live definitions) for an org and scan them. */
 export async function getOrgTimeoutWarnings(
   supabase: SupabaseClient,
   orgId: string
 ): Promise<WorkflowTimeoutWarnings[]> {
-  const { data, error: dataError } = await supabase
-    .from('workflows')
-    .select('id, name, definition')
-    .eq('organization_id', orgId)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-  logReadFailure('timeout-audit', 'step durations', dataError)
+  const data = await activeWorkflowsOrNone(supabase, orgId, 'step durations')
   return scanWorkflowDefinitions(
-    (data ?? []).map((w) => ({
-      id: w.id as string,
-      name: w.name as string,
+    data.map((w) => ({
+      id: w.id,
+      name: w.name,
       definition: w.definition as WorkflowDefinition | null,
     }))
   )
@@ -402,13 +411,7 @@ export async function getOrgHistoryWarnings(
   orgId: string,
   opts: { concurrency?: number } = {}
 ): Promise<OrgHistoryWarnings> {
-  const { data, error: dataError } = await supabase
-    .from('workflows')
-    .select('id, name, definition')
-    .eq('organization_id', orgId)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-  logReadFailure('timeout-audit', 'step timeouts', dataError)
+  const data = await activeWorkflowsOrNone(supabase, orgId, 'step timeouts')
 
   // Adaptive grouped percentile queries per workflow, run in parallel so the
   // dashboard load doesn't serialize them; the daily cron passes a small
@@ -416,7 +419,7 @@ export async function getOrgHistoryWarnings(
   // and the config panel, so the audit never flags a node those surfaces call
   // fine (or vice versa).
   const results = await mapWithConcurrency(
-    data ?? [],
+    data,
     opts.concurrency ?? Number.POSITIVE_INFINITY,
     async (w) => {
       const definition = w.definition as WorkflowDefinition | null
@@ -424,13 +427,13 @@ export async function getOrgHistoryWarnings(
 
       const { stats } = await collectWorkflowDurationStats(
         supabase,
-        w.id as string,
+        w.id,
         definition.nodes.map((n) => n.namespace)
       )
 
       return {
-        workflow_id: w.id as string,
-        workflow_name: w.name as string,
+        workflow_id: w.id,
+        workflow_name: w.name,
         under: findUnderProvisionedNodes(definition, stats),
         over: findOverProvisionedNodes(definition, stats),
       }
