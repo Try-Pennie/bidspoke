@@ -300,8 +300,10 @@ export type MinutePageOutcome = 'sent' | 'not_sent' | 'in_cooldown' | 'claimed_e
  * standing cooldown means a post already went out, so a tick inside it makes no
  * call to the claim object. The read that lets a post through is the second.
  *
- * The claim is kept on a delivered post, for its TTL, and freed when the post is
- * refused or throws, so the next tick can retry. With no claims (a test, or a
+ * The claim is kept on a delivered post, for its TTL, and freed only when the
+ * post definitely did not reach Slack (send answered false: Slack refused it,
+ * or no request went out), so the next tick can retry. A post that THROWS keeps
+ * the claim, since it may have landed. With no claims (a test, or a
  * worker with no ALERT_CLAIM binding) it posts as before. A claim that cannot be
  * asked fails open and is logged by makeAlertClaims.
  */
@@ -326,9 +328,14 @@ export async function postMinutePage(opts: {
   try {
     sent = await opts.send()
   } catch (e) {
-    await release()
+    // A throw cannot say whether Slack took the post (a timeout, or a
+    // connection lost after the request went out), so the claim is KEPT for
+    // its TTL: at worst the page is late, never posted twice by the next tick.
+    console.error(`[alert-claim] ${key}: the post threw, so it may have reached Slack; the claim is kept for ${MINUTE_ALERT_CLAIM_TTL_SECONDS} s rather than freed`)
     throw e
   }
+  // A false is an answer: Slack refused the post, or no request went out (no
+  // connection to post with). Nothing reached Slack, so the next tick may retry.
   if (!sent) await release()
   return sent ? 'sent' : 'not_sent'
 }

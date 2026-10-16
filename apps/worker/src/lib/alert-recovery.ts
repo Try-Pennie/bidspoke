@@ -374,9 +374,14 @@ export async function announceRecovery(
     delivered = await send(due.alertedAt, due.endedAt)
   } catch (err) {
     console.error(`[alert-recovery] ${prefix} all-clear failed for ${id}:`, err)
-    await release()
+    // A throw cannot say whether Slack took it (a timeout, a connection lost
+    // after the request went out), so a claim is KEPT for its TTL: at worst the
+    // all-clear is late, never sent twice by the next tick. The marker stays,
+    // so it is tried again once the claim lapses.
+    if (claim?.claims) console.error(`[alert-recovery] ${claim.key}: the all-clear threw, so it may have reached Slack; the claim is kept for ${claim.ttlSeconds} s rather than freed`)
     return false
   }
+  // False is an answer: Slack refused it, or no request went out. Freed so the next tick retries.
   if (!delivered) {
     await release()
     return false
