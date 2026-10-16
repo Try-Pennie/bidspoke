@@ -3083,6 +3083,7 @@ export type Database = {
         Args: { p_days_ahead?: number }
         Returns: number
       }
+      db_stall_snapshot: { Args: never; Returns: Json }
       delete_partner_config:
         | {
             Args: {
