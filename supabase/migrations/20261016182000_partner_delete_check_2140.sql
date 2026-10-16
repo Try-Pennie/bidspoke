@@ -18,17 +18,21 @@
 -- 3. partner_delete_check(p_org, p_id): STABLE, service role only. The partner,
 --    its dependents with their counts, and how many other partners name its
 --    Worker secret. The Worker adds the workflows and the buyer ledger.
--- 4. delete_partner_config(p_org, p_id, p_actor, p_actor_email, p_expected):
---    a new overload. Refuses BP023 while anything blocks, then BP024 when the
---    consequence differs from p_expected (the per table counts and the
---    (id, updated_at) set of the organization's workflows, read FOR SHARE), then
---    deletes the partner and its sub-account IDs in one transaction.
--- 5. delete_partner_config(p_org, p_id, p_actor, p_actor_email): replaced with
+-- 4. _delete_partner_config(p_org, p_id, p_actor, p_actor_email, p_expected):
+--    the one body both deletes run, internal (no grant). Refuses BP023 while
+--    anything blocks, then, when p_expected is given, BP024 when the
+--    consequence differs from it (the per table counts and the (id, updated_at)
+--    set of the organization's workflows, read FOR SHARE), then deletes the
+--    partner and its sub-account IDs in one transaction.
+-- 5. delete_partner_config(p_org, p_id, p_actor, p_actor_email, p_expected):
+--    a new overload, the one the Worker calls since #2140; p_expected is
+--    required.
+-- 6. delete_partner_config(p_org, p_id, p_actor, p_actor_email): replaced with
 --    its signature kept, so the release before keeps working. It also deletes
 --    the sub-account IDs now (decision 4). Replaced from 20260921221007, which
 --    is the body production runs (prosrc md5 5ef9428022fb3aaa610ca54fc95b8219 on
 --    production equals the replayed migration's, read 2026-10-16).
--- 6. change_partner_uuid: the add takes FOR KEY SHARE on the partner row, so an
+-- 7. change_partner_uuid: the add takes FOR KEY SHARE on the partner row, so an
 --    add racing a delete waits for it and then finds no partner, instead of
 --    leaving a mapping to a slug that no longer exists. Replaced from
 --    20261016170000 (prosrc md5 f284f97d97477cd0a130670cd92eb7cf on production
@@ -39,7 +43,7 @@
 -- notice trigger finds no partner for them and the page hears one notice for
 -- the delete, as it did before.
 --
--- Expand only (docs/adr/0007): three new functions and an overload; the two
+-- Expand only (docs/adr/0007): four new functions and an overload; the two
 -- replaced functions keep their signatures. The four argument delete is the
 -- contract half's to drop once no release calls it.
 

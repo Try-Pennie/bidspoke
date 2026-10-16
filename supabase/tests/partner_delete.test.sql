@@ -6,8 +6,10 @@
 --     right kind, so a new foreign key to partner_configs cannot reach the
 --     delete box unlabelled, and a label cannot outlive its table;
 --  2. partner_delete_check and partner_delete_dependents are STABLE, and the
---     grants are exact: anon and authenticated execute none of the new
---     functions, service_role only the check and the two deletes;
+--     grants are exact: anon and authenticated execute none of the new or
+--     replaced functions, and service_role only the check, the two deletes and
+--     change_partner_uuid, never the dependency walk, the counter or the
+--     shared delete body;
 --  3. the same rule as the delete: for each fixture partner the check reports a
 --     blocker exactly when delete_partner_config raises BP023;
 --  4. every row the delete removes is from a table the check reported, in the

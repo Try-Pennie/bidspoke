@@ -86,7 +86,11 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
     return fx.bidConfigs[id] ? ok(fx.bidConfigs[id]) : null
   }
   if ((m = /^\/api\/partner-bid-configs\/([^/]+)$/.exec(p))) return opts.matrix && m[1] === fx.matrix.list[0].id ? ok(fx.matrix.detail) : null
-  if ((m = /^\/api\/partners\/([^/]+)\/delete-check$/.exec(p))) return fx.deleteChecks[m[1]] && !m[1].startsWith('_') ? ok(fx.deleteChecks[m[1]].answer) : null
+  if ((m = /^\/api\/partners\/([^/]+)\/delete-check$/.exec(p))) {
+    // Own entries only: an inherited name (constructor) or the file's _about is no partner.
+    const id = m[1]
+    return Object.prototype.hasOwnProperty.call(fx.deleteChecks, id) && !id.startsWith('_') ? ok(fx.deleteChecks[id].answer) : null
+  }
   if (p === '/api/buyer-sales') return ok(fx.panels.buyer_sales)
   if (p === '/api/held-clicks') return ok(fx.panels.held_clicks)
   return null

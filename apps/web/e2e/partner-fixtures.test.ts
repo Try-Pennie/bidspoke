@@ -156,6 +156,7 @@ describe('answerFor', () => {
     expect(ready.removes.length).toBeGreaterThan(0)
     expect(answerFor('GET', `${W}/api/partners/${fx.partners.find((p) => p.slug === 'sofi')!.id}/delete-check`, fx)).toBeNull()
     expect(answerFor('GET', `${W}/api/partners/_about/delete-check`, fx)).toBeNull()
+    expect(answerFor('GET', `${W}/api/partners/constructor/delete-check`, fx)).toBeNull()
   })
 
   it('answers a page save only when asked to, and only with the recorded 409', () => {
