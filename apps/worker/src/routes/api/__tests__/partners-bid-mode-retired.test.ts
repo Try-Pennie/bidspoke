@@ -2,14 +2,11 @@
  * The partner routes no longer write partner_configs.bid_mode (#2182, the
  * contract step after PM-9, part of #2114).
  *
- * Nothing acts on bid_mode, and its column is dropped in a later migration
- * (docs/adr/0007). Before that drop a deployed Worker must neither send nor
- * store it: a create no longer names it (the column default applies until the
- * column goes), and a create, a save or a page save that names it is refused
- * by name before anything is read or written. Without the refusal, a save
- * naming it would reach save_partner_config, whose editable list still holds
- * it, and be stored; after the drop the same save would fail on a missing
- * column as a server error instead of a refusal.
+ * Nothing acts on bid_mode, and its column is dropped
+ * (20261016220000_drop_partner_bid_mode_2182.sql). A create never names it, and
+ * a create, a save or a page save that names it is refused by name before
+ * anything is read or written, so a stale client is told which field to leave
+ * out rather than reaching the database at all.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import type { Env } from '../../../index'
@@ -32,7 +29,7 @@ const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, 
 const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
 const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: { get: async () => null, put: async () => {}, delete: async () => {} } } as unknown as Env
 const SAVE_ID = '0b9f6c1e-3c2a-4d7e-8f10-2a3b4c5d6e7f'
-const RETIRED_MESSAGE = 'bid_mode is retired: nothing reads it, and its column is being removed (#2182). Send the save without it.'
+const RETIRED_MESSAGE = 'bid_mode is retired: nothing reads it, and its column was removed (#2182). Send the save without it.'
 
 // The route tree is imported once, before the tests, so its cold import is not
 // charged to whichever test runs first.
@@ -64,7 +61,7 @@ beforeEach(() => {
 })
 
 describe('bid_mode is no longer written by any partner route (#2182)', () => {
-  it('POST creates a partner without naming bid_mode, so the column default applies until the column goes', async () => {
+  it('POST creates a partner without naming bid_mode', async () => {
     const { sb } = supabase()
     const res = await call('POST', '/partners', { name: 'Acme', slug: 'acme' })
     expect(res.status).toBe(201)

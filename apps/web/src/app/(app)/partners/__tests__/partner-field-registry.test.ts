@@ -75,13 +75,12 @@ describe('the partners page field registry (#2132)', () => {
     }
   })
 
-  // PM-9 (#2136): the page no longer edits bid_mode, and since #2182 nothing
-  // reads or writes it. The column stays until the migration that drops it, so
-  // the column list keeps it, excluded as retired, until that migration.
-  it('bid_mode is not a path the page edits, and its column is excluded as retired', () => {
+  // PM-9 (#2136): the page no longer edits bid_mode, and #2182 dropped its
+  // column, so the column list has no entry for it either.
+  it('bid_mode is not a path the page edits, and the column list has no entry for it', () => {
     expect(PARTNER_BODY_KEYS).not.toContain('bid_mode')
     expect(registryEntriesFor('bid_mode')).toEqual([])
-    expect(columns.tables.partner_configs.bid_mode).toMatchObject({ excluded: 'retired' })
+    expect(columns.tables.partner_configs).not.toHaveProperty('bid_mode')
   })
 
   it('no two entries share a pattern', () => {
