@@ -25,6 +25,7 @@
     "@bidspoke/node-types": "workspace:*",
     "@bidspoke/workflow-definition": "workspace:*",
     "@bidspoke/partner-page-live": "workspace:*",
+    "@bidspoke/partner-history": "workspace:*",
     "@radix-ui/react-dialog": "1.1.23",
     "@radix-ui/react-popover": "1.1.23",
     "@radix-ui/react-select": "2.3.7",
