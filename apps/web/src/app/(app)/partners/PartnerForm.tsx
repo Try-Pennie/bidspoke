@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useMemo, useReducer, useRef } from 'react'
-import type { Partner, PartnerBody, PartnerUuid, PartnerBidConfig, BidResolverType, BidComparisonSource, ExtraExtractionConfig, PartnerPageSaveRequest, PartnerPageStale } from '@/lib/api'
+import type { Partner, PartnerBody, PartnerDeleted, PartnerUuid, PartnerBidConfig, BidResolverType, BidComparisonSource, ExtraExtractionConfig, PartnerPageSaveRequest, PartnerPageStale } from '@/lib/api'
 import { PARTNER_TYPES, isBuyerPartner, isSourcePartner, partnerTypeLabel, type PartnerType } from '@/lib/partner-roles'
 import {
   buildPartnerBody, changedPatch, draftReducer, initDraft, inversePatch, parseList, listToString, parseRoutingCode, snapshotOf, PARTNER_FIELD_REGISTRY,
@@ -12,7 +12,7 @@ import { formatEtDayTime } from '@/lib/dates'
 import { pickupSentence } from '@/lib/bidding-pickup'
 import { api } from '@/lib/api'
 import { errorSentence } from '@/lib/error-sentence'
-import { Save, Trash2, Loader2, Plus, Check, X } from 'lucide-react'
+import { Save, Loader2, Plus, Check, X } from 'lucide-react'
 import { BidResolverEditor } from '@/components/partners/BidResolverEditor'
 import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
 import { OutboundMappingEditor } from '@/components/partners/OutboundMappingEditor'
@@ -21,6 +21,7 @@ import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
 import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
 import { BuyerProfileSection, EMPTY_PROFILE } from '@/components/partners/buyer-profile/BuyerProfileSection'
 import { MergeDialog } from '@/components/partners/MergeDialog'
+import { PartnerDeleteBox } from '@/components/partners/PartnerDeleteBox'
 import { mergeThreeWay, sameMergeValue, type MergeResult, type MergeSide, type PageHalves } from '@/lib/partner-page-merge'
 import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
 import { clickDeliveryConsequences } from '@/components/partners/buyer-profile/click-delivery-consequences'
@@ -83,11 +84,8 @@ interface Props {
    */
   onSave: (body: PartnerBody, id?: string, pendingUuids?: string[], request?: PartnerPageSaveRequest) => Promise<PartnerSaveResult | void>
   onCancel: () => void
-  onDelete?: (id: string) => void
-  confirmingDelete?: boolean
-  onConfirmDelete?: () => void
-  onCancelDelete?: () => void
-  deleting?: boolean
+  /** The partner was deleted from the delete box at the foot (#2140), with the answer's warnings. */
+  onDeleted?: (id: string, answer: PartnerDeleted) => void
   /** Reports whether the form has unsaved edits, so the parent can guard partner-switch / New. */
   onDirtyChange?: (dirty: boolean) => void
 }
@@ -182,11 +180,7 @@ export default function PartnerForm({
   partner,
   onSave,
   onCancel,
-  onDelete,
-  confirmingDelete,
-  onConfirmDelete,
-  onCancelDelete,
-  deleting,
+  onDeleted,
   onDirtyChange,
 }: Props) {
   const [saveState, setSaveState] = useState<SaveState>('idle')
@@ -787,37 +781,6 @@ export default function PartnerForm({
           )}
         </div>
         <div className="flex items-center gap-2">
-          {!isNew && onDelete && (
-            confirmingDelete ? (
-              <div className="flex items-center gap-1.5">
-                <button
-                  type="button"
-                  onClick={onConfirmDelete}
-                  disabled={deleting}
-                  className="rounded-lg bg-red-500 px-3 py-2 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-50"
-                >
-                  {deleting ? 'Deleting…' : 'Confirm delete'}
-                </button>
-                <button
-                  type="button"
-                  onClick={onCancelDelete}
-                  className="text-sm text-gray-500 hover:text-gray-600"
-                >
-                  Cancel
-                </button>
-              </div>
-            ) : (
-              <button
-                type="button"
-                onClick={() => onDelete(partner.id)}
-                disabled={deleting}
-                className="flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-2 text-sm font-medium text-gray-500 hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
-              >
-                <Trash2 className="h-4 w-4" />
-                Delete
-              </button>
-            )
-          )}
           <button
             type="button"
             onClick={() => { if (dirty && !window.confirm(UNSAVED_CHANGES_MESSAGE)) return; onCancel() }}
@@ -1302,6 +1265,19 @@ export default function PartnerForm({
         </div>
 
       </form>
+
+      {/*
+        #2140, PM-13: Delete last, in its own box outside the form, so Enter in
+        its field can never submit the partner. It re-reads what a delete would
+        remove whenever the partner, its profile or its sub-account IDs change.
+      */}
+      {!isNew && onDeleted && (
+        <PartnerDeleteBox
+          partner={{ id: partner.id, name: partner.name }}
+          refreshKey={JSON.stringify([partner.version ?? 0, profile?.version ?? null, uuids.map((u) => u.uuid).sort()])}
+          onDeleted={(answer) => onDeleted(partner.id, answer)}
+        />
+      )}
     </div>
   )
 }

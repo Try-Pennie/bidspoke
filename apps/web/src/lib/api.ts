@@ -165,6 +165,67 @@ export interface PartnerWorkflowValues {
 }
 
 /**
+ * The partner delete check (#2140), the page's copy of the Worker's types in
+ * apps/worker/src/lib/partner-delete-shape.ts; partner-delete-answer-type.test.ts
+ * holds the two equal.
+ */
+export interface DependentNoun {
+  one: string
+  many: string
+}
+
+export interface PartnerDeleteTable {
+  table: string
+  kind: 'deleted' | 'cleared'
+  rows: number
+  noun: DependentNoun
+}
+
+export type PartnerDeleteBlocker =
+  | { kind: 'rows'; table: string; rows: number; noun: DependentNoun }
+  | { kind: 'ledger_unmirrored'; count: number }
+  | { kind: 'ledger_unresolved'; count: number }
+
+export interface PartnerDeleteWorkflow {
+  id: string
+  name: string
+  is_active: boolean
+}
+
+export interface PartnerDeleteReadingWorkflow extends PartnerDeleteWorkflow {
+  reads: 'by_name' | 'every_partner'
+  values: string[]
+}
+
+export interface PartnerDeleteFingerprint {
+  counts: Record<string, number>
+  workflows: Array<{ id: string; updated_at: string }>
+}
+
+export interface PartnerDeleteCheck {
+  partner: { id: string; name: string; slug: string; partner_type: string; is_active: boolean }
+  blockers: PartnerDeleteBlocker[]
+  removes: PartnerDeleteTable[]
+  workflows_naming_partner: PartnerDeleteWorkflow[]
+  workflows_reading_values: PartnerDeleteReadingWorkflow[]
+  secret: { name: string; other_partners: number } | null
+  fingerprint: PartnerDeleteFingerprint
+}
+
+export interface PartnerDeleted {
+  ok: true
+  stored_copy_warning?: string
+  state_reset_warning?: string
+}
+
+/** A refused delete (409): nothing was deleted, and check is the consequence as it stands now, or null when it could not be read. */
+export interface PartnerDeleteRefused {
+  error: 'blocked' | 'consequence_changed'
+  message: string
+  check: PartnerDeleteCheck | null
+}
+
+/**
  * What a stale page save is answered with (#2132, #2133): both halves as
  * stored now, the press that last saved, and who last changed either half.
  */
@@ -1050,8 +1111,12 @@ export const api = {
     // 409 body is a PartnerPageStale.
     savePage: (id: string, patch: Partial<PartnerBody>, request: PartnerPageSaveRequest) =>
       req<PartnerPageSaved>(`/api/partners/${id}/page`, { method: 'PUT', body: JSON.stringify({ ...request, patch }) }),
-    delete: (id: string) =>
-      req<{ ok: boolean } & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'DELETE' }),
+    // What deleting the partner would do (#2140), read before Delete is offered.
+    deleteCheck: (id: string) => req<PartnerDeleteCheck>(`/api/partners/${id}/delete-check`),
+    // The delete as reviewed: a refusal throws carrying `status` and the body; a
+    // 409 body is a PartnerDeleteRefused.
+    delete: (id: string, fingerprint: PartnerDeleteFingerprint) =>
+      req<PartnerDeleted>(`/api/partners/${id}`, { method: 'DELETE', body: JSON.stringify({ fingerprint }) }),
     getCapCount: (id: string) =>
       req<{ count: number; date: string; sold_on?: 'click'; day_zone?: string }>(`/api/partners/${id}/cap-count`),
     // The workflow values tab (#2142): which workflows read the partner's Constants values.

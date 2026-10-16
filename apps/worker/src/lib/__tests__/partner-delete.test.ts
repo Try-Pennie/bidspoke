@@ -5,7 +5,6 @@
 import { describe, it, expect } from 'vitest'
 import labels from '../../partner-delete/labels/dependents.json'
 import {
-  blockersSentence,
   buildDeleteCheck,
   dependentNoun,
   parseCheckAnswer,
@@ -68,15 +67,13 @@ describe('buildDeleteCheck', () => {
   it('rows a restrict key holds are blockers with their count; a blocking table with none is not', () => {
     const got = buildDeleteCheck(check(dependents({}, { buyer_sales: 6323 })), [], [], NONE, ZERO)
     expect(got.blockers).toEqual([{ kind: 'rows', table: 'buyer_sales', rows: 6323, noun: { one: 'sale', many: 'sales' } }])
-    expect(blockersSentence('Tripoint', got.blockers)).toBe('Tripoint cannot be deleted: 6,323 sales refer to it.')
   })
 
   it('a buyer with one unmirrored ledger entry and no buyer_sales row is blocked (L38, B1)', () => {
     const got = buildDeleteCheck(check(), [], [], NONE, { unmirrored: 1, unresolved: 0 })
     expect(got.blockers).toEqual([{ kind: 'ledger_unmirrored', count: 1 }])
-    expect(blockersSentence('Tripoint', got.blockers)).toBe('Tripoint cannot be deleted: 1 sale is not yet recorded.')
     const both = buildDeleteCheck(check(), [], [], NONE, { unmirrored: 2, unresolved: 3 })
-    expect(blockersSentence('Tripoint', both.blockers)).toBe('Tripoint cannot be deleted: 2 sales are not yet recorded, 3 sales are awaiting settlement.')
+    expect(both.blockers).toEqual([{ kind: 'ledger_unmirrored', count: 2 }, { kind: 'ledger_unresolved', count: 3 }])
   })
 
   it('a workflow reading constants.<Slug>SellOffOfferTitle and naming no partner id is listed as reading it by name', () => {

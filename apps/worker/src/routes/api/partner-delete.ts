@@ -41,7 +41,7 @@ import { dailyCapObjectName } from '../../lib/daily-cap-name'
 import { invalidatePartnerConstantsCache } from '../../lib/partner-constants-loader'
 import { retirePartnerLastGood } from '../../lib/partner-last-good'
 import { copyCleared, copyWarning } from '../../lib/stored-copy'
-import { blockersSentence, parseFingerprint, PartnerNotFoundError, runDeleteCheck, type PartnerDeleteCheck, type PartnerDeleted, type PartnerDeleteRefused } from '../../lib/partner-delete'
+import { parseFingerprint, PartnerNotFoundError, runDeleteCheck, type PartnerDeleteCheck, type PartnerDeleted, type PartnerDeleteRefused } from '../../lib/partner-delete'
 import { rebuildBuyerProfiles } from './partners'
 
 type AppContext = Context<{ Bindings: Env; Variables: AuthVariables }>
@@ -50,6 +50,8 @@ const partnerDelete = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 
 export const DELETE_CHECK_FAILED_MESSAGE = 'Could not check whether this partner can be deleted. Try again.'
 export const CONSEQUENCE_CHANGED_MESSAGE = 'What this delete would remove changed since it was shown. Nothing was deleted. Review it again below.'
+/** The page words the blockers itself, from the check the refusal carries; this is for a refusal whose check could not be read again. */
+export const BLOCKED_MESSAGE = 'Nothing was deleted: sales or held clicks now refer to this partner.'
 
 /**
  * The check for one partner of the caller's organization. Throws on any failed
@@ -159,7 +161,7 @@ partnerDelete.delete('/:id', async (c) => {
   }
   if (ledger.unmirrored > 0 || ledger.unresolved > 0) {
     const check = await checkAgain(c, id)
-    const refused: PartnerDeleteRefused = { error: 'blocked', message: check ? blockersSentence(name, check.blockers) : `${name} cannot be deleted while its sales are being recorded.`, check }
+    const refused: PartnerDeleteRefused = { error: 'blocked', message: BLOCKED_MESSAGE, check }
     return c.json(refused, 409)
   }
 
@@ -178,7 +180,7 @@ partnerDelete.delete('/:id', async (c) => {
       const check = await checkAgain(c, id)
       const refused: PartnerDeleteRefused =
         error.code === 'BP023'
-          ? { error: 'blocked', message: check ? blockersSentence(name, check.blockers) : `${name} cannot be deleted while other records refer to it.`, check }
+          ? { error: 'blocked', message: BLOCKED_MESSAGE, check }
           : { error: 'consequence_changed', message: CONSEQUENCE_CHANGED_MESSAGE, check }
       return c.json(refused, 409)
     }

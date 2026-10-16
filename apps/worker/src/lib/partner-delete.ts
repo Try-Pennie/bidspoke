@@ -188,13 +188,3 @@ export function parseFingerprint(value: unknown): PartnerDeleteFingerprint | nul
   }
   return { counts, workflows: out }
 }
-
-/** The blocker sentence parts, for the Worker's refusal message; the page composes its own from the same blockers. */
-export function blockersSentence(name: string, blockers: readonly PartnerDeleteBlocker[]): string {
-  const parts = blockers.map((b) => {
-    if (b.kind === 'rows') return `${b.rows.toLocaleString('en-US')} ${b.rows === 1 ? `${b.noun.one} refers` : `${b.noun.many} refer`} to it`
-    if (b.kind === 'ledger_unmirrored') return `${b.count.toLocaleString('en-US')} ${b.count === 1 ? 'sale is' : 'sales are'} not yet recorded`
-    return `${b.count.toLocaleString('en-US')} ${b.count === 1 ? 'sale is' : 'sales are'} awaiting settlement`
-  })
-  return `${name} cannot be deleted: ${parts.join(', ')}.`
-}

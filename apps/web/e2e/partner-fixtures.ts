@@ -7,7 +7,8 @@
  * writing to production. Here every request to the Worker is answered from
  * fixtures/partners/: the captured reads (capture-partners.mjs) and, under
  * synthetic/, the hand made answers for what cannot be read (a stale save's 409,
- * a matrix to delete, the usage panels a Durable Object answers in production).
+ * a matrix to delete, the usage panels a Durable Object answers in production,
+ * and the delete box's check, #2140, which joins a Durable Object's counts).
  * Nothing is forwarded: a Worker API call with no answer here is recorded as
  * unmatched and answered 599, and the spec fails on any unmatched call (the guard the plan
  * asks for), so a new Worker route on this page cannot go unscanned.
@@ -29,6 +30,8 @@ export interface PartnerFixtures {
   stale: Record<string, unknown> & { partner: { id: string } }
   matrix: { list: Array<{ id: string; partner_id: string }>; detail: unknown }
   panels: { history: unknown; buyer_sales: unknown; held_clicks: unknown; usage_offer: unknown; usage_click: unknown }
+  /** The delete box's check by partner id (#2140): Tripoint blocked by its sales, Liberty1 deletable. */
+  deleteChecks: Record<string, { answer: unknown }>
 }
 
 export function loadPartnerFixtures(): PartnerFixtures {
@@ -40,6 +43,7 @@ export function loadPartnerFixtures(): PartnerFixtures {
     stale: read('synthetic/page-save-409.tripoint.json'),
     matrix: read('synthetic/matrix.tripoint.json'),
     panels: read('synthetic/panels.json'),
+    deleteChecks: read('synthetic/delete-checks.json'),
   }
 }
 
@@ -82,6 +86,7 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
     return fx.bidConfigs[id] ? ok(fx.bidConfigs[id]) : null
   }
   if ((m = /^\/api\/partner-bid-configs\/([^/]+)$/.exec(p))) return opts.matrix && m[1] === fx.matrix.list[0].id ? ok(fx.matrix.detail) : null
+  if ((m = /^\/api\/partners\/([^/]+)\/delete-check$/.exec(p))) return fx.deleteChecks[m[1]] && !m[1].startsWith('_') ? ok(fx.deleteChecks[m[1]].answer) : null
   if (p === '/api/buyer-sales') return ok(fx.panels.buyer_sales)
   if (p === '/api/held-clicks') return ok(fx.panels.held_clicks)
   return null

@@ -145,6 +145,19 @@ describe('answerFor', () => {
     expect(answerFor('DELETE', `${W}/api/partners/${tripoint.id}`, fx)).toBeNull()
   })
 
+  // #2140: the two delete boxes the spec scans, and no other partner's, so a
+  // page opening another partner fails its scan as unmatched rather than passing.
+  it('answers the delete check of Tripoint, blocked by its sales, and Liberty1, deletable, only', () => {
+    const liberty1 = fx.partners.find((p) => p.slug === 'liberty1')!
+    const blocked = answerFor('GET', `${W}/api/partners/${tripoint.id}/delete-check`, fx)?.body as { blockers: Array<{ kind: string; table?: string }> }
+    expect(blocked.blockers).toEqual([expect.objectContaining({ kind: 'rows', table: 'buyer_sales' })])
+    const ready = answerFor('GET', `${W}/api/partners/${liberty1.id}/delete-check`, fx)?.body as { blockers: unknown[]; removes: unknown[] }
+    expect(ready.blockers).toEqual([])
+    expect(ready.removes.length).toBeGreaterThan(0)
+    expect(answerFor('GET', `${W}/api/partners/${fx.partners.find((p) => p.slug === 'sofi')!.id}/delete-check`, fx)).toBeNull()
+    expect(answerFor('GET', `${W}/api/partners/_about/delete-check`, fx)).toBeNull()
+  })
+
   it('answers a page save only when asked to, and only with the recorded 409', () => {
     expect(answerFor('PUT', `${W}/api/partners/${tripoint.id}/page`, fx)).toBeNull()
     expect(answerFor('PUT', `${W}/api/partners/${tripoint.id}/page`, fx, { staleSave: true })).toEqual({ status: 409, body: fx.stale })

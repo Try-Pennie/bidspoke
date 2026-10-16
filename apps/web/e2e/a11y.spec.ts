@@ -95,6 +95,31 @@ test.describe('Accessibility (axe-core)', () => {
     expect(unmatched).toEqual([])
   })
 
+  // #2140: the delete box at the foot of the partner, both ways it can stand.
+  // Each scan is limited to the box: the form above it still carries native
+  // controls PR6 replaces, which this pull request does not own.
+  test('the partners page delete box, blocked by sales, has no serious a11y violations', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl())
+    await openTripoint(page)
+    const box = page.getByRole('region', { name: 'Delete Tripoint' })
+    await expect(box.getByText(/Tripoint cannot be deleted: 6,339 sales refer to it\./)).toBeVisible()
+    await expect(box.getByLabel('Type DELETE to confirm')).toHaveCount(0)
+    await expectNoSeriousA11yViolations(page, [], '/partners', '[aria-labelledby="partner-delete-title"]')
+    expect(unmatched).toEqual([])
+  })
+
+  test('the partners page delete box, ready to delete, has no serious a11y violations', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl())
+    await page.goto('/partners?selected=liberty1')
+    const box = page.getByRole('region', { name: 'Delete Liberty1' })
+    await expect(box.getByLabel('Type DELETE to confirm')).toBeVisible()
+    await box.getByLabel('Type DELETE to confirm').fill('DELETE')
+    await expect(box.getByRole('button', { name: 'Delete Liberty1' })).toBeEnabled()
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', '[aria-labelledby="partner-delete-title"]')
+    expect(unmatched).toEqual([])
+  })
+
   for (const { name, path, exclude } of PAGES) {
     test(`${name} has no serious a11y violations`, async ({ page }) => {
       await page.goto(path)

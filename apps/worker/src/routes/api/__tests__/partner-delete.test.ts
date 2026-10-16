@@ -20,7 +20,7 @@ import { invalidatePartnerConstantsCache } from '../../../lib/partner-constants-
 import { refreshBuyerProfilesCache, type BuyerProfilesSnapshot } from '../../../lib/buyer-profile-loader'
 import { dailyCapObjectName } from '../../../lib/daily-cap-name'
 import { COPY_NOT_CLEARED_MESSAGE } from '../../../lib/stored-copy'
-import { DELETE_CHECK_FAILED_MESSAGE, CONSEQUENCE_CHANGED_MESSAGE } from '../partner-delete'
+import { BLOCKED_MESSAGE, DELETE_CHECK_FAILED_MESSAGE, CONSEQUENCE_CHANGED_MESSAGE } from '../partner-delete'
 import type { PartnerDeleteCheck, PartnerDeleted, PartnerDeleteRefused } from '../../../lib/partner-delete-shape'
 import labels from '../../../partner-delete/labels/dependents.json'
 import { makeSupabase } from './_supabase-mock'
@@ -255,7 +255,8 @@ describe('DELETE /partners/:id', () => {
     const res = await call(w.env, 'DELETE', '/partners/p-tp', { fingerprint: FP })
     expect(res.status).toBe(409)
     const body = await res.json() as PartnerDeleteRefused
-    expect(body).toMatchObject({ error: 'blocked', message: 'Tripoint cannot be deleted: 1 sale is not yet recorded.' })
+    expect(body).toMatchObject({ error: 'blocked', message: BLOCKED_MESSAGE })
+    expect(body.check?.blockers).toEqual([{ kind: 'ledger_unmirrored', count: 1 }])
     expect(w.rpc).not.toHaveBeenCalledWith('delete_partner_config', expect.anything())
   })
 
@@ -264,7 +265,7 @@ describe('DELETE /partners/:id', () => {
     const res = await call(w.env, 'DELETE', '/partners/p-tp', { fingerprint: FP })
     expect(res.status).toBe(409)
     const body = await res.json() as PartnerDeleteRefused
-    expect(body).toMatchObject({ error: 'blocked', message: 'Tripoint cannot be deleted: 1 sale refers to it.' })
+    expect(body).toMatchObject({ error: 'blocked', message: BLOCKED_MESSAGE })
     expect(body.check?.blockers).toEqual([{ kind: 'rows', table: 'buyer_sales', rows: 1, noun: { one: 'sale', many: 'sales' } }])
     expect(vi.mocked(invalidatePartnerConstantsCache)).not.toHaveBeenCalled()
   })

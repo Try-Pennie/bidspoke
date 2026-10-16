@@ -27,12 +27,15 @@ import partnersJson from '../../../../../web/e2e/fixtures/partners/partners.json
 import buyerProfilesJson from '../../../../../web/e2e/fixtures/partners/buyer-profiles.json'
 import uuidsJson from '../../../../../web/e2e/fixtures/partners/partner-uuids.json'
 import staleJson from '../../../../../web/e2e/fixtures/partners/synthetic/page-save-409.tripoint.json'
+import deleteChecksJson from '../../../../../web/e2e/fixtures/partners/synthetic/delete-checks.json'
 
 type Row = Record<string, unknown> & { id: string; slug: string; partner_type: string; accept_signals: unknown }
 const partners = partnersJson as unknown as Row[]
 const buyerProfiles = buyerProfilesJson as unknown as Record<string, { profile: Record<string, unknown> | null; accept_signals: unknown[]; other_sellers: Array<{ id: string; name: string }> }>
 const uuids = uuidsJson as unknown[]
 const stale = staleJson as unknown as Record<string, unknown> & { partner: Row; profile: Record<string, unknown> }
+interface DeleteCheckFixture { rpc: unknown; ledger: { unmirrored: number; unresolved: number }; uuids: Array<{ uuid: string }>; workflows: Record<string, unknown>[]; answer: unknown }
+const deleteChecks = Object.entries(deleteChecksJson).filter(([k]) => !k.startsWith('_')) as unknown as Array<[string, DeleteCheckFixture]>
 
 const testUser = { id: 'user-1', organization_id: String(partners[0].organization_id), email: 'editor-a@example.com' }
 const validPayload = { sub: 'user-1', email: 'editor-a@example.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -93,6 +96,23 @@ describe('the partners page fixtures are what their routes answer (#2134)', () =
     const res = await call('GET', '/partner-uuids')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual(uuids)
+  })
+
+  // #2140: the delete box's answers, for the partner blocked by its sales and the
+  // deletable one with the most dependents, from the real route over the inputs.
+  it.each(deleteChecks.map(([id, f]) => [partners.find((p) => p.id === id)!.slug, id, f] as const))('GET /partners/:id/delete-check for %s', async (_slug, id, f) => {
+    supabaseWith(
+      { workflows: { list: f.workflows }, partner_uuid_map: { list: f.uuids } },
+      async (name) => ({ data: name === 'partner_delete_check' ? f.rpc : null, error: null }),
+    )
+    const entries = (n: number) => Array.from({ length: n }, (_, i) => ({ lead_key: `l${i}` }))
+    const ledgerEnv = {
+      ...env,
+      BUYER_LEDGER: { idFromName: (n: string) => n, get: () => ({ fetch: async (url: string) => (new URL(url).pathname === '/unmirrored' ? Response.json({ entries: entries(f.ledger.unmirrored), oldest_age_ms: null }) : Response.json({ entries: entries(f.ledger.unresolved) })) }) },
+    } as unknown as Env
+    const res = await api.request(`/partners/${id}/delete-check`, { method: 'GET', headers: { Authorization: 'Bearer tok' } }, ledgerEnv, mockCtx)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(f.answer)
   })
 
   it('PUT /partners/:id/page: the stale save the merge dialog opens from is the 409 the route answers', async () => {
