@@ -76,21 +76,35 @@ export function BidMatrixViewer(p: Props) {
 
   const activeConfig = p.configs.find((c) => c.id === activeId) ?? null
 
+  // What is on screen NOW, read after a sync's awaits: the props and state the
+  // press closed over are the ones from before it, and the person may have
+  // switched matrices or added one while it ran.
+  const activeIdRef = useRef(activeId)
+  activeIdRef.current = activeId
+  const configsRef = useRef(p.configs)
+  configsRef.current = p.configs
+
   async function handleSync() {
     if (!activeConfig) return
+    const synced = activeConfig
     setSyncState('syncing')
     setSyncError(null)
     setProblems([])
     try {
-      const result = await api.partnerBidConfigs.sync(activeConfig.id)
-      const refreshed = await api.partnerBidConfigs.get(activeConfig.id)
+      const result = await api.partnerBidConfigs.sync(synced.id)
+      const refreshed = await api.partnerBidConfigs.get(synced.id)
+      p.onConfigsChange(configsRef.current.map((c) => c.id === synced.id ? refreshed.config : c))
+      // The sync answers for the matrix it started on. If another one is in view
+      // now, its rows and problems are its own read's, never this sync's (#2256).
+      if (activeIdRef.current !== synced.id) { setSyncState('idle'); return }
       setRowsRead({ state: 'loaded', rows: refreshed.rows })
       setProblems(result.problems ?? [])
-      p.onConfigsChange(p.configs.map((c) => c.id === activeConfig.id ? refreshed.config : c))
       setSyncState('synced')
       setTimeout(() => setSyncState('idle'), 2000)
     } catch (err) {
-      setSyncError(err instanceof Error ? err.message : 'Sync failed')
+      const why = err instanceof Error ? err.message : 'Sync failed'
+      // A failure is still said, naming the matrix when it is no longer the one shown.
+      setSyncError(activeIdRef.current === synced.id ? why : `The sync of "${synced.name}" failed: ${why}`)
       setSyncState('error')
       setTimeout(() => setSyncState('idle'), 4000)
     }
