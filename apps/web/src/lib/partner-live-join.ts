@@ -18,6 +18,8 @@ export const JOIN_TIMEOUT_MS = 10_000
 type SubscribeStatus = 'SUBSCRIBED' | 'TIMED_OUT' | 'CLOSED' | 'CHANNEL_ERROR'
 
 interface LiveChannelHandle {
+  /** realtime:<topic>, as the client names it. */
+  readonly topic: string
   on(type: 'broadcast', filter: { event: string }, handler: (message: { payload?: unknown }) => void): LiveChannelHandle
   subscribe(callback: (status: SubscribeStatus, err?: Error) => void): LiveChannelHandle
 }
@@ -29,6 +31,7 @@ export interface LiveSupabase {
     onAuthStateChange(callback: (event: string, session: { access_token: string } | null) => void): { data: { subscription: { unsubscribe(): void } } }
   }
   realtime: { setAuth(token: string): Promise<void> | void }
+  getChannels(): LiveChannelHandle[]
   channel(topic: string, opts: { config: { private: true } }): LiveChannelHandle
   removeChannel(channel: LiveChannelHandle): Promise<unknown>
 }
@@ -70,6 +73,15 @@ export function browserJoin(client: LiveSupabase, opts: BrowserJoinOptions = {})
       return { ok: false, reason: `Realtime did not accept the session: ${message(err)}`, missingPartition: false }
     }
 
+    // The client hands back the channel it still holds for a topic rather than
+    // a new one, so a join made before an older one was left (a form mounted
+    // twice, a quick partner switch) would share it, and the older join's leave
+    // would remove the newer one's channel. Each join takes its own: whatever
+    // the client holds for the topic is removed first, settling the older join
+    // as refused (seen locally, where it left the page connecting for ever).
+    for (const held of client.getChannels().filter((c) => c.topic === `realtime:${topic}`)) {
+      await client.removeChannel(held).catch(() => undefined)
+    }
     const channel = client
       .channel(topic, { config: { private: true } })
       .on('broadcast', { event: PARTNER_PAGE_NOTICE_EVENT }, (m) => onPayload(m.payload))

@@ -4,8 +4,9 @@
  * usePartnerPageLive (#2135, PR4 of #2114): the open partners page's live
  * channel. Joins partners:<organization> through the PartnerLiveContext's join,
  * hands each notice to the form, asks for a refetch when the channel becomes
- * Live again or the tab becomes visible, and ticks the seconds the header shows
- * while it is not Live. With no context (no provider) it does nothing.
+ * Live again or the tab becomes visible. With no context (no provider) it does
+ * nothing. The header's seconds are counted by LiveStatusLine itself, so the
+ * form is not drawn again every second.
  */
 import { useEffect, useRef, useState } from 'react'
 import type { PartnerPageNotice } from '@bidspoke/partner-page-live'
@@ -20,7 +21,6 @@ export interface PartnerPageLiveHandlers {
 
 export interface PartnerPageLive {
   status: LiveStatus | null
-  now: number
   retry: () => void
   /** The probe found a change no notice announced: show paused and join afresh. */
   suspect: (reason: string) => void
@@ -28,7 +28,6 @@ export interface PartnerPageLive {
 
 export function usePartnerPageLive(live: PartnerLiveDeps | null, organizationId: string | null, handlers: PartnerPageLiveHandlers): PartnerPageLive {
   const [status, setStatus] = useState<LiveStatus | null>(null)
-  const [now, setNow] = useState(() => live?.clock.now() ?? 0)
   const handlersRef = useRef(handlers)
   handlersRef.current = handlers
   const channelRef = useRef<PartnerLiveChannel | null>(null)
@@ -39,7 +38,7 @@ export function usePartnerPageLive(live: PartnerLiveDeps | null, organizationId:
       join: live.join,
       clock: live.clock,
       organizationId,
-      onStatus: (s) => { setStatus(s); setNow(live.clock.now()) },
+      onStatus: setStatus,
       onNotice: (n) => handlersRef.current.onNotice(n),
       onLive: (reconnected) => { if (reconnected) handlersRef.current.onCatchUp() },
     })
@@ -51,15 +50,6 @@ export function usePartnerPageLive(live: PartnerLiveDeps | null, organizationId:
       setStatus(null)
     }
   }, [live, organizationId])
-
-  // The seconds the header counts while connecting or paused.
-  const ticking = status?.kind === 'connecting' || status?.kind === 'reconnecting'
-  useEffect(() => {
-    if (!ticking || !live) return
-    return live.clock.setTimeout(function tick() {
-      setNow(live.clock.now())
-    }, 1_000)
-  }, [ticking, live, now])
 
   // A tab coming back to the front reads again; a failed channel tries again.
   useEffect(() => {
@@ -75,7 +65,6 @@ export function usePartnerPageLive(live: PartnerLiveDeps | null, organizationId:
 
   return {
     status,
-    now,
     retry: () => channelRef.current?.retry(),
     suspect: (reason) => channelRef.current?.suspect(reason),
   }

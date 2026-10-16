@@ -8,32 +8,35 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { LiveNotesContext, LivePageNotes, LiveSectionNote, LiveStatusLine } from '../live/PartnerLive'
 
+/** A clock stopped at one moment, whose timers never run. */
+const at = (now: number) => ({ now: () => now, setTimeout: () => () => {} })
+
 describe('LiveStatusLine (#2135)', () => {
   it('says Live', () => {
-    render(<LiveStatusLine status={{ kind: 'live', since: 0 }} now={5_000} onRetry={vi.fn()} />)
+    render(<LiveStatusLine status={{ kind: 'live', since: 0 }} clock={at(5_000)} onRetry={vi.fn()} />)
     expect(screen.getByRole('status').textContent).toBe('Live')
   })
 
   it('says paused and counts the seconds since it dropped', () => {
-    render(<LiveStatusLine status={{ kind: 'reconnecting', since: 10_000, reason: 'CHANNEL_ERROR' }} now={22_400} onRetry={vi.fn()} />)
+    render(<LiveStatusLine status={{ kind: 'reconnecting', since: 10_000, reason: 'CHANNEL_ERROR' }} clock={at(22_400)} onRetry={vi.fn()} />)
     expect(screen.getByRole('status').textContent).toBe('Live updates paused. Reconnecting, 12 s')
   })
 
   it('says it is connecting, with the seconds, before the first join answers', () => {
-    render(<LiveStatusLine status={{ kind: 'connecting', since: 0 }} now={3_000} onRetry={vi.fn()} />)
+    render(<LiveStatusLine status={{ kind: 'connecting', since: 0 }} clock={at(3_000)} onRetry={vi.fn()} />)
     expect(screen.getByRole('status').textContent).toBe('Connecting live updates, 3 s')
   })
 
   it('says failed with the reason, and Retry joins again', () => {
     const onRetry = vi.fn()
-    render(<LiveStatusLine status={{ kind: 'failed', reason: 'You are signed out.' }} now={0} onRetry={onRetry} />)
+    render(<LiveStatusLine status={{ kind: 'failed', reason: 'You are signed out.' }} clock={at(0)} onRetry={onRetry} />)
     expect(screen.getByRole('alert').textContent).toContain('Live updates failed: You are signed out.')
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(onRetry).toHaveBeenCalledTimes(1)
   })
 
   it('shows nothing when the page has no live channel', () => {
-    const { container } = render(<LiveStatusLine status={null} now={0} onRetry={vi.fn()} />)
+    const { container } = render(<LiveStatusLine status={null} clock={at(0)} onRetry={vi.fn()} />)
     expect(container.textContent).toBe('')
   })
 })

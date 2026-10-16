@@ -14,22 +14,33 @@ function fakeSupabase(token: string | null = 'jwt-1') {
   const setAuth = vi.fn(async (_t: string) => {})
   const removed: string[] = []
   const channels: Array<{ topic: string; opts: unknown; event: string | null; handler: ((m: { payload?: unknown }) => void) | null; status: ((s: Status, e?: Error) => void) | null }> = []
+  // Like realtime-js, channel() hands back the channel it still holds for a topic rather than a new one.
+  const held = new Map<string, { topic: string; api: unknown }>()
   const client: LiveSupabase = {
     auth: {
       getSession: async () => ({ data: { session: token ? { access_token: token } : null } }),
       onAuthStateChange: (cb) => { authListener = cb; return { data: { subscription: { unsubscribe: () => { authListener = null } } } } },
     },
     realtime: { setAuth },
+    getChannels: () => [...held.values()].map((h) => h.api) as ReturnType<LiveSupabase['getChannels']>,
     channel: (topic, opts) => {
+      const existing = held.get(topic)
+      if (existing) return existing.api as ReturnType<LiveSupabase['channel']>
       const ch = { topic, opts, event: null as string | null, handler: null as ((m: { payload?: unknown }) => void) | null, status: null as ((s: Status, e?: Error) => void) | null }
       channels.push(ch)
       const api = {
+        topic: `realtime:${topic}`,
         on: (_type: 'broadcast', filter: { event: string }, handler: (m: { payload?: unknown }) => void) => { ch.event = filter.event; ch.handler = handler; return api },
         subscribe: (cb: (s: Status, e?: Error) => void) => { ch.status = cb; return api },
       }
+      held.set(topic, { topic: `realtime:${topic}`, api })
       return api
     },
-    removeChannel: async () => { removed.push('channel'); return 'ok' },
+    removeChannel: async (c) => {
+      for (const [topic, h] of held) if (h.api === c) held.delete(topic)
+      removed.push('channel')
+      return 'ok'
+    },
   }
   return { client, setAuth, channels, removed, fireAuth: (event: string, session: { access_token: string } | null) => authListener?.(event, session), hasListener: () => authListener !== null }
 }
@@ -82,6 +93,25 @@ describe('browserJoin (#2135)', () => {
     await admitted.leave()
     s.channels[1].status!('CLOSED')
     expect(drops).toEqual(['socket closed'])
+  })
+
+  it('each join has its own channel, though the client hands back the one it holds for a topic, so an older join\'s leave cannot remove a newer one', async () => {
+    // A form mounted twice (React's development double mount, or a quick partner
+    // switch) starts a second join before the first is left (seen locally: the
+    // second join's channel was the first's, and the first's leave removed it).
+    const s = fakeSupabase()
+    const live = browserJoin(s.client)
+    const first = live.join('partners:org-1', () => {}, () => {})
+    await flush()
+    const second = live.join('partners:org-1', () => {}, () => {})
+    await flush()
+    expect(s.channels).toHaveLength(2)
+    s.channels[1].status!('SUBSCRIBED')
+    const admitted = await second
+    expect(admitted.ok).toBe(true)
+    s.channels[0].status!('CLOSED')
+    expect((await first).ok).toBe(false)
+    expect(s.client.getChannels()).toHaveLength(1)
   })
 
   it('a signed out page is refused without joining', async () => {

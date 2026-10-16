@@ -13,7 +13,6 @@
  *   changed directly in the database.
  */
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react'
-import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/form'
 import { createClient } from '@/lib/supabase/client'
 import type { JoinFn, LiveClock, LiveStatus } from '@/lib/partner-live-channel'
@@ -27,7 +26,8 @@ export interface PartnerLiveDeps {
 
 export const PartnerLiveContext = createContext<PartnerLiveDeps | null>(null)
 
-const browserClock: LiveClock = {
+/** The browser's own clock. */
+export const SYSTEM_CLOCK: LiveClock = {
   now: () => Date.now(),
   setTimeout: (fn, ms) => {
     const t = setTimeout(fn, ms)
@@ -40,22 +40,37 @@ export function PartnerLiveProvider({ children }: { children: ReactNode }) {
   const [live] = useState(() => {
     if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return null
     const joined = browserJoin(createClient())
-    return { deps: { join: joined.join, clock: browserClock }, dispose: joined.dispose }
+    return { deps: { join: joined.join, clock: SYSTEM_CLOCK }, dispose: joined.dispose }
   })
   useEffect(() => () => live?.dispose(), [live])
   return <PartnerLiveContext.Provider value={live?.deps ?? null}>{children}</PartnerLiveContext.Provider>
 }
 
-/** The header's live status: Live, paused with the seconds, or failed with Retry. */
-export function LiveStatusLine({ status, now, onRetry }: { status: LiveStatus | null; now: number; onRetry: () => void }) {
+/**
+ * The header's live status: Live, paused with the seconds, or failed with Retry.
+ * It counts its own seconds, so the form around it is not drawn again every
+ * second (a redraw each second closed an open dropdown, seen in the a11y spec).
+ */
+export function LiveStatusLine({ status, clock, onRetry }: { status: LiveStatus | null; clock: LiveClock; onRetry: () => void }) {
+  const [now, setNow] = useState(() => clock.now())
+  const ticking = status?.kind === 'connecting' || status?.kind === 'reconnecting'
+  useEffect(() => {
+    if (!ticking) return
+    return clock.setTimeout(() => setNow(clock.now()), 1_000)
+  }, [ticking, clock, now, status])
   if (!status) return null
-  const seconds = (since: number) => Math.max(0, Math.floor((now - since) / 1000))
+  const current = Math.max(now, clock.now())
+  const seconds = (since: number) => Math.max(0, Math.floor((current - since) / 1000))
   if (status.kind === 'live') return <p role="status" className="outcome outcome-done mt-1">Live</p>
   if (status.kind === 'connecting' || status.kind === 'reconnecting') {
+    // No spinning icon: the counted seconds say it is alive, and a spinner in the
+    // header stopped an open dropdown taking ArrowDown (3 of 3 runs with it, 0 of
+    // 3 without, the a11y spec's operator dropdown). The seconds are hidden from
+    // the live region, which would otherwise announce every second.
     return (
       <p role="status" className="outcome outcome-working mt-1">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-        {status.kind === 'connecting' ? 'Connecting live updates' : 'Live updates paused. Reconnecting'}, {seconds(status.since)} s
+        {status.kind === 'connecting' ? 'Connecting live updates' : 'Live updates paused. Reconnecting'}
+        <span aria-hidden="true">, {seconds(status.since)} s</span>
       </p>
     )
   }

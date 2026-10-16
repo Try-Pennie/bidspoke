@@ -38,7 +38,7 @@ import {
   type TabInputs, type UsageState,
 } from './partner-tabs'
 import { bidsInSentences } from './bid-group-usage-text'
-import { LiveNotesContext, LivePageNotes, LiveSectionNote, LiveStatusLine, PartnerLiveContext } from '@/components/partners/live/PartnerLive'
+import { LiveNotesContext, LivePageNotes, LiveSectionNote, LiveStatusLine, PartnerLiveContext, SYSTEM_CLOCK } from '@/components/partners/live/PartnerLive'
 import { usePartnerPageLive } from './use-partner-page-live'
 import {
   askedOnly, classifyNotice, directChangeNotes, liveConflictSentence, liveMissReport, liveTakenSentence, probeFindsGap, savedByName, tabClientId, updatedByNotes,
@@ -1077,7 +1077,7 @@ export default function PartnerForm({
           {!isNew && (
             <p className="mt-0.5 font-mono text-sm text-gray-500">{partner.slug}</p>
           )}
-          {!isNew && <LiveStatusLine status={liveChannel.status} now={liveChannel.now} onRetry={liveChannel.retry} />}
+          {!isNew && <LiveStatusLine status={liveChannel.status} clock={liveDeps?.clock ?? SYSTEM_CLOCK} onRetry={liveChannel.retry} />}
         </div>
         <div className="flex items-center gap-2">
           {!isNew && onDelete && (
