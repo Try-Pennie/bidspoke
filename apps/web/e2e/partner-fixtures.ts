@@ -33,7 +33,7 @@ export interface PartnerFixtures {
   stale: Record<string, unknown> & { partner: { id: string } }
   matrix: { list: Array<{ id: string; partner_id: string }>; detail: unknown }
   panels: { history: unknown; buyer_sales: unknown; held_clicks: unknown; usage_offer: unknown; usage_click: unknown }
-  /** The delete box's check by partner id (#2140): Tripoint blocked by its sales, Liberty1 deletable. */
+  /** The delete box's check for every listed partner, by id (#2140): Tripoint blocked by its sales, the others deletable. */
   deleteChecks: Record<string, { answer: unknown }>
   /** GET /api/partners/:id/usage by partner id (#2137), measured read only from production on 2026-10-16. */
   usage: Record<string, unknown>

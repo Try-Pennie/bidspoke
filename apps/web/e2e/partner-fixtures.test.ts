@@ -146,8 +146,6 @@ describe('answerFor', () => {
     expect(answerFor('DELETE', `${W}/api/partners/${tripoint.id}`, fx)).toBeNull()
   })
 
-  // #2140: the two delete boxes the spec scans, and no other partner's, so a
-  // page opening another partner fails its scan as unmatched rather than passing.
   // #2140: every partner the page can open carries the delete box on its
   // Partner tab, so every listed partner has a recorded check, derived from the
   // partner list rather than a hand list, and nothing else does.

@@ -158,8 +158,8 @@ describe('the partners page fixtures are what their routes answer (#2134)', () =
     expect(await res.json()).toEqual(uuids)
   })
 
-  // #2140: the delete box's answers, for the partner blocked by its sales and the
-  // deletable one with the most dependents, from the real route over the inputs.
+  // #2140: the delete box's answer for every listed partner (Tripoint blocked by
+  // its sales, the others deletable), from the real route over each one's inputs.
   it.each(deleteChecks.map(([id, f]) => [partners.find((p) => p.id === id)!.slug, id, f] as const))('GET /partners/:id/delete-check for %s', async (_slug, id, f) => {
     supabaseWith(
       { workflows: { list: f.workflows }, partner_uuid_map: { list: f.uuids } },
