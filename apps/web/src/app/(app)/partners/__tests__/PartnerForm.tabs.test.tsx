@@ -138,6 +138,18 @@ describe('the confirmation window (L630)', () => {
     expect(onSave.mock.calls[0][0]).toEqual({ confirmation_window_ms: 5000 })
   })
 
+  it('keeps a saved window in view while it is cleared, so emptying it does not hide the field', async () => {
+    const onSave = vi.fn().mockResolvedValue({ partner: { ...partner, version: 4 }, profile: null, copyWarning: null })
+    render(<PartnerForm partner={{ ...partner, confirmation_window_ms: 5000 }} onSave={onSave} onCancel={vi.fn()} />)
+    await waitFor(() => expect(api.partners.usage).toHaveBeenCalled())
+    await userEvent.click(await screen.findByRole('tab', { name: 'Bid Group' }))
+    fireEvent.change(screen.getByLabelText('Confirmation window (ms)'), { target: { value: '' } })
+    expect(screen.getByLabelText('Confirmation window (ms)')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    expect(onSave.mock.calls[0][0]).toEqual({ confirmation_window_ms: null })
+  })
+
   it('shows the field when a Latency Gate names the partner', async () => {
     vi.mocked(api.partners.usage).mockResolvedValue({ ...NONE, partner_bid: [step({ is_active: true, workflow_name: 'Lead Economy' })], latency_gate: [step({ is_active: true, workflow_name: 'Lead Economy' })] })
     render(<PartnerForm partner={partner} onSave={vi.fn()} onCancel={vi.fn()} />)

@@ -1148,7 +1148,7 @@ export default function PartnerForm({
                       blank to require a node-level override instead.
                     </p>
                     <Field id="partner-confirmation-window" label="Confirmation window (ms)" hint="e.g. 5000 = 5 seconds.">
-                      <NumberInput id="partner-confirmation-window" value={asNumber(confirmationWindowMs)} onChange={(v) => setConfirmationWindowMs(asText(v))} step={1} placeholder="(none)" describedBy={describedBy('partner-confirmation-window', true, false)} />
+                      <NumberInput id="partner-confirmation-window" value={asNumber(confirmationWindowMs)} onChange={(v) => { setConfirmationAdded(true); setConfirmationWindowMs(asText(v)) }} step={1} placeholder="(none)" describedBy={describedBy('partner-confirmation-window', true, false)} />
                     </Field>
                   </>
                 ) : (
