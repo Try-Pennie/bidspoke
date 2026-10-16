@@ -233,6 +233,29 @@ describe('the bookkeeping before the page cannot stop it', () => {
   })
 })
 
+// Merge review at 390cc55: a reader saying it answered is bookkeeping too, and
+// its callers (the cliff check, the probe's all-clear) must not stop on it.
+describe('recording an answered run cannot stop its caller', () => {
+  it('resolves and logs when KV refuses the reader record', async () => {
+    const kv = fakeKv()
+    kv.put = () => Promise.reject(new Error('KV PUT failed: 500'))
+    await expect(reportDatabaseReadable(kv, 'volume-cliff', T0)).resolves.toBeUndefined()
+    expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('KV PUT failed'))).toBe(true)
+  })
+
+  it('still sends an owed all-clear when the probe\'s own answered record is refused', async () => {
+    const kv = await kvWithCopy({ [RECOVERY]: new Date(T0 - 90 * MIN).toISOString(), [ACTIVE]: new Date(T0 - 60 * MIN).toISOString() })
+    for (let t = T0 - 40 * MIN; t <= T0 - MIN; t += MIN) {
+      await reportDatabaseReadable(kv, 'probe', t)
+      await reportDatabaseReadable(kv, 'volume-cliff', t)
+    }
+    const put = kv.put
+    kv.put = (k: string, v: string) => (k === 'db-reachability:source:probe' ? Promise.reject(new Error('KV PUT failed: 500')) : put(k, v))
+    await runDatabaseReachabilityProbe(probeDeps(kv, T0))
+    expect(sendDatabaseRecoveredAlert).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('the fast reads page only on a second failed minute in a row', () => {
   it('one failed probe does not page', async () => {
     const kv = await kvWithCopy()

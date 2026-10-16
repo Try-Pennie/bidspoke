@@ -139,11 +139,20 @@ function writeSource(kv: RecoveryKv, source: ReachabilitySource, record: SourceR
   return kv.put(sourceKey(source), JSON.stringify(record), { expirationTtl: RECOVERY_TTL_SECONDS })
 }
 
-/** A reader answered: extend its unbroken run, or start a new one after a gap. */
+/**
+ * A reader answered: extend its unbroken run, or start a new one after a gap.
+ * Never throws: it is bookkeeping, and its callers (the cliff check, the probe's
+ * all-clear) must go on. A refused write is logged; the answer it would have
+ * recorded is simply missing, which can only hold the all-clear longer.
+ */
 export async function reportDatabaseReadable(kv: RecoveryKv, source: ReachabilitySource, nowMs: number): Promise<void> {
-  const r = await readSource(kv, source)
-  const unbroken = r.healthySince !== null && r.lastHealthy !== null && nowMs - r.lastHealthy <= HEALTH_GAP_MS
-  await writeSource(kv, source, { healthySince: unbroken ? r.healthySince : nowMs, lastHealthy: nowMs, lastFailed: r.lastFailed })
+  try {
+    const r = await readSource(kv, source)
+    const unbroken = r.healthySince !== null && r.lastHealthy !== null && nowMs - r.lastHealthy <= HEALTH_GAP_MS
+    await writeSource(kv, source, { healthySince: unbroken ? r.healthySince : nowMs, lastHealthy: nowMs, lastFailed: r.lastFailed })
+  } catch (e) {
+    console.error(`[database-reachability] ${source} answered but it was not recorded, so the all-clear waits longer: ${formatErr(e)}`)
+  }
 }
 
 /**

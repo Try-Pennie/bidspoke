@@ -754,6 +754,16 @@ describe('runVolumeCliffCheck posts once per claim (#1298)', () => {
     expect(JSON.stringify(vi.mocked(postMessage).mock.calls[1][2])).toContain('reminder 2')
   })
 
+  // Merge review at 390cc55: recording this run as answered for the database
+  // owner is bookkeeping, so a KV refusal there must not stop the cliff page.
+  it('still pages the cliff when KV refuses the database owner\'s answered record', async () => {
+    const kv = fakeKv()
+    const put = kv.put
+    kv.put = (k: string, v: string) => (k.startsWith('db-reachability:') ? Promise.reject(new Error('KV PUT failed: 500')) : put(k, v))
+    await runVolumeCliffCheck(cliffSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+  })
+
   it('releases the claim when Slack refuses the post, so the next tick can retry', async () => {
     vi.mocked(postMessage).mockResolvedValue(null)
     const kv = fakeKv()
