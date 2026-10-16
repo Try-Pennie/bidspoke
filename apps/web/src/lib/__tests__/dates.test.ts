@@ -4,7 +4,23 @@
  * converts UTC to ET rather than echoing the ISO clock time.
  */
 import { describe, it, expect } from 'vitest'
-import { etDayHeading, etDayKey, formatEtClock, formatEtDayTime, formatLogTime } from '../dates'
+import { etDayHeading, etDayKey, formatElapsed, formatEtClock, formatEtDayTime, formatLogTime } from '../dates'
+
+describe('formatElapsed (#2138): the save bar\'s running time', () => {
+  it('counts whole seconds, one second singular, and moves to minutes past a minute', () => {
+    expect(formatElapsed(0)).toBe('0 seconds')
+    expect(formatElapsed(1_400)).toBe('1 second')
+    expect(formatElapsed(2_999)).toBe('2 seconds')
+    expect(formatElapsed(59_999)).toBe('59 seconds')
+    expect(formatElapsed(60_000)).toBe('1 minute')
+    expect(formatElapsed(61_000)).toBe('1 minute 1 second')
+    expect(formatElapsed(125_000)).toBe('2 minutes 5 seconds')
+  })
+
+  it('never counts below zero, so a clock that steps back says 0 seconds', () => {
+    expect(formatElapsed(-5_000)).toBe('0 seconds')
+  })
+})
 
 describe('formatLogTime (#113)', () => {
   it('converts a UTC instant to ET, not the raw UTC clock time', () => {

@@ -2,6 +2,7 @@ import { createClient } from './supabase/client'
 import type { Workflow, WorkflowSummary, WorkflowDef, WorkflowVersion, EnvVar, Folder, EnvVarFolder } from '@/types/workflow'
 import type { PartnerType } from './partner-roles'
 import type { LiveMissReportBody, PartnerPageVersions } from '@bidspoke/partner-page-live'
+import { holdAuthRedirect } from './leave-guard'
 
 export type { PartnerType }
 
@@ -559,8 +560,12 @@ async function authHeaders(): Promise<HeadersInit> {
   }
 }
 
+// Both auth redirects ask the leave guard first (#2138): while a page holds a
+// draft or a save not yet confirmed, the redirect is not made and the page
+// says why instead, so an expired session never takes unsaved work with it.
 function redirectToLogin() {
-  if (typeof window !== 'undefined') window.location.href = '/login'
+  if (typeof window === 'undefined' || holdAuthRedirect(401)) return
+  window.location.href = '/login'
 }
 
 // Handle an auth-level rejection from the Worker API. 401 = not authenticated
@@ -573,10 +578,19 @@ function redirectOnAuthRejection(status: number): boolean {
     return true
   }
   if (status === 403) {
-    if (typeof window !== 'undefined') window.location.href = '/access-denied'
+    if (typeof window !== 'undefined' && !holdAuthRedirect(403)) window.location.href = '/access-denied'
     return true
   }
   return false
+}
+
+/**
+ * The error an auth rejection throws, carrying its status (#2138), so a caller
+ * whose redirect was held can tell an expired session from a request that got
+ * no answer at all.
+ */
+function authRejection(status: 401 | 403): Error & { status: 401 | 403 } {
+  return Object.assign(new Error(status === 401 ? 'Not authenticated' : 'Access denied'), { status })
 }
 
 // Default ceiling for a normal request. Long-running operations (test runs,
@@ -634,12 +648,12 @@ async function req<T>(path: string, init?: ReqInit): Promise<T> {
     headers = await authHeaders()
   } catch {
     redirectToLogin()
-    throw new Error('Not authenticated')
+    throw authRejection(401)
   }
   const res = await fetchWithTimeout(`${WORKER_URL}${path}`, init ?? {}, headers)
   if (!res.ok) {
     if (redirectOnAuthRejection(res.status)) {
-      throw new Error(res.status === 401 ? 'Not authenticated' : 'Access denied')
+      throw authRejection(res.status === 401 ? 401 : 403)
     }
     // Surface the server's `error` field when the body is JSON, so users see
     // the actual rejection (e.g. "Workflow has a loop: ...") instead of an
@@ -943,12 +957,12 @@ export const api = {
         headers = await authHeaders()
       } catch {
         redirectToLogin()
-        throw new Error('Not authenticated')
+        throw authRejection(401)
       }
       const res = await fetchWithTimeout(`${WORKER_URL}/api/executions/${id}/replay`, { method: 'POST', timeoutMs: LONG_TIMEOUT_MS }, headers)
       if (!res.ok) {
         if (redirectOnAuthRejection(res.status)) {
-          throw new Error(res.status === 401 ? 'Not authenticated' : 'Access denied')
+          throw authRejection(res.status === 401 ? 401 : 403)
         }
         const errBody = await res.text().catch(() => '')
         throw new Error(`API ${res.status}: ${errBody}`)
@@ -963,12 +977,12 @@ export const api = {
         headers = await authHeaders()
       } catch {
         redirectToLogin()
-        throw new Error('Not authenticated')
+        throw authRejection(401)
       }
       const res = await fetchWithTimeout(`${WORKER_URL}/api/executions/${id}/resume`, { method: 'POST', timeoutMs: LONG_TIMEOUT_MS }, headers)
       if (!res.ok) {
         if (redirectOnAuthRejection(res.status)) {
-          throw new Error(res.status === 401 ? 'Not authenticated' : 'Access denied')
+          throw authRejection(res.status === 401 ? 401 : 403)
         }
         const errBody = await res.text().catch(() => '')
         throw new Error(`API ${res.status}: ${errBody}`)

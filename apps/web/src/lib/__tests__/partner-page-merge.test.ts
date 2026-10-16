@@ -14,7 +14,7 @@ import { describe, expect, it } from 'vitest'
 import { parseProfileDocument, type BuyerProfileDocument } from '@bidspoke/buyer-profile'
 import type { PartnerBody } from '@/lib/api'
 import { PARTNER_FIELD_REGISTRY } from '@/app/(app)/partners/partner-draft'
-import { mergeThreeWay, type PageHalves } from '../partner-page-merge'
+import { changedUnits, mergeThreeWay, type PageHalves } from '../partner-page-merge'
 
 const ACCEPT = [{ field: 'ok', equals: true }]
 
@@ -208,5 +208,32 @@ describe('mergeThreeWay', () => {
   it('leaves a profile alone when the page never read one', () => {
     const r = mergeThreeWay({ partner, profile: null }, { partner: { ...partner, name: 'A' }, profile: null }, { partner: { ...partner, is_active: false }, profile: null }, PARTNER_FIELD_REGISTRY)
     expect(r.merged).toEqual({ partner: { ...partner, name: 'A', is_active: false }, profile: null })
+  })
+})
+
+describe('changedUnits (#2138): what the save bar and the leave dialog name', () => {
+  it('names every unit changed from base, by the page\'s labels, in registry order, a row group by its day', () => {
+    const mine = side({ name: 'Tripoint 2', is_active: false }, { daily_lead_cap: 600, windows: [{ day_of_week: 1, opens_minute: 600, closes_minute: 1020 }] })
+    expect(changedUnits(base, mine, PARTNER_FIELD_REGISTRY).map((u) => u.label)).toEqual(['Name', 'Status', 'Leads per day', 'Hours, Monday'])
+  })
+
+  it('names nothing for a page equal to base, whatever order the database left an object\'s keys in', () => {
+    const reordered = { ...partner, alert_config: { permanent_errors: { alert: true }, transient_errors: { alert: true } } }
+    expect(changedUnits(base, { partner: reordered, profile: { ...profile } }, PARTNER_FIELD_REGISTRY)).toEqual([])
+  })
+
+  it('a row added where there were none, and click delivery set up, each count once', () => {
+    const delivery = { success_pattern: 'OK', routes: [{ name: 'All', url: 'https://x.example/a', states: [] }] }
+    const mine = side({}, { blackout_dates: [...profile.blackout_dates, { date: '2027-01-01', note: null }], click_delivery: delivery })
+    expect(changedUnits(base, mine, PARTNER_FIELD_REGISTRY).map((u) => u.label)).toEqual(['Blackout dates', 'Success reply', 'Routes'])
+  })
+
+  it('a draft mid edit that no registry path names yet (a route with no name) names the profile whole, never throws', () => {
+    const mine = side({ name: 'Tripoint 2' }, { click_delivery: { success_pattern: 'OK', routes: [{ name: '', url: 'https://x.example/a', states: [] }] } })
+    expect(changedUnits(base, mine, PARTNER_FIELD_REGISTRY).map((u) => u.label)).toEqual(['Name', 'Buyer profile'])
+  })
+
+  it('compares the partner alone when the page never read a profile', () => {
+    expect(changedUnits({ partner, profile: null }, { partner: { ...partner, min_bid: 5 }, profile: null }, PARTNER_FIELD_REGISTRY).map((u) => u.key)).toEqual(['min_bid'])
   })
 })

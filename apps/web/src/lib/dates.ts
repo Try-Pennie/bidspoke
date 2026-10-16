@@ -1,5 +1,18 @@
 const ET = 'America/New_York'
 
+/**
+ * "2 seconds", "1 minute 5 seconds": how long something has been running, for
+ * the partners page save bar (#2138), whose every time goes through this file.
+ */
+export function formatElapsed(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  const unit = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`
+  if (total < 60) return unit(total, 'second')
+  const minutes = Math.floor(total / 60)
+  const seconds = total % 60
+  return seconds === 0 ? unit(minutes, 'minute') : `${unit(minutes, 'minute')} ${unit(seconds, 'second')}`
+}
+
 /** "Apr 7, 2026, 2:34 PM EDT" */
 export function formatDatetime(dateStr: string): string {
   return new Intl.DateTimeFormat('en-US', {

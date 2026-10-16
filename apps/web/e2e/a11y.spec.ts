@@ -95,6 +95,43 @@ test.describe('Accessibility (axe-core)', () => {
     expect(unmatched).toEqual([])
   })
 
+  // #2138 (PM-5): leaving a partner with an unsaved change opens the page's own
+  // dialog, here from a click on another partner in the list. Nothing is saved:
+  // the scan is of the dialog, and Keep editing closes it.
+  test('the partners page leave dialog has no serious a11y violations', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl())
+    await openTripoint(page)
+    await page.getByLabel('Leads per day', { exact: true }).fill('301')
+    await page.getByRole('button', { name: 'AmOne', exact: true }).click()
+    await expect(page.getByRole('alertdialog', { name: 'Leave Tripoint with an unsaved change?' })).toBeVisible()
+    await expectDialogs(page)
+    await expectNoSeriousA11yViolations(page, [], '/partners', '[role="alertdialog"]')
+    await page.getByRole('button', { name: 'Keep editing' }).click()
+    await expect(page.getByRole('heading', { name: 'Tripoint' })).toBeVisible()
+    expect(unmatched).toEqual([])
+  })
+
+  // #2138 (PM-5): a refresh or a closed tab gets the browser's own leave
+  // warning (browsers allow no page dialog there and show their own fixed
+  // text), raised while a draft is unsaved and never on a clean page. Against
+  // the built app, because the warning is the browser's, not the page's.
+  test('the partners page raises the browser\'s own leave warning on a refresh only while something is unsaved', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl())
+    await openTripoint(page)
+    const raised: string[] = []
+    page.on('dialog', (dialog) => { raised.push(dialog.type()); void dialog.dismiss() })
+    // Clean: the reload goes ahead with no warning.
+    await page.reload()
+    await expect(page.getByRole('heading', { name: 'Tripoint' })).toBeVisible()
+    expect(raised).toEqual([])
+    // Dirty: the reload raises the browser's warning, and dismissing it keeps the page and the edit.
+    await page.getByLabel('Leads per day', { exact: true }).fill('301')
+    await page.reload({ timeout: 5_000 }).catch(() => {})
+    await expect.poll(() => raised).toEqual(['beforeunload'])
+    await expect(page.getByLabel('Leads per day', { exact: true })).toHaveValue('301')
+    expect(unmatched).toEqual([])
+  })
+
   // #2137: the shared controls, scanned open. A closed Select or calendar is a
   // button; what a screen reader meets is the open list or grid, so each is
   // opened by the keyboard, scanned, and driven. An open Select is modal: Radix
