@@ -110,6 +110,7 @@ import { formatErr } from './format-error'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
 import { getSlackConnection, sendSalesforceReadBackAlert, type SlackConnection } from './slack'
 import { BulkheadClient, salesforceBulkheadLimit } from './bulkhead-client'
+import { fieldsMovedSince, LAST_MODIFIED_MARGIN_MS, sameSalesforceValue } from './salesforce-field-conflict'
 import type { ReadBackAlertWrite, SalesforceReadBackAlert, UnreadReason } from './salesforce-read-back-alert'
 
 export const SF_READ_BACK_JOB = 'salesforce-read-back'
@@ -154,12 +155,8 @@ export const ENTRY_SCAN_LIMIT = 200
 /** The read-back has not finished a run for this long while writes wait: the liveness alert. */
 export const LIVENESS_AFTER_MS = 10 * 60_000
 
-/**
- * Salesforce keeps LastModifiedDate in whole seconds, and its clock is not the
- * Worker's. A record last written within this of a write's start is read as
- * written since, the side that overwrites nothing.
- */
-export const LAST_MODIFIED_MARGIN_MS = 2_000
+/** The moved field rule's margin and value comparison, shared with the drain (salesforce-field-conflict.ts). */
+export { LAST_MODIFIED_MARGIN_MS, sameSalesforceValue }
 
 const STATE_PREFIX = 'sf-read-back:state:'
 const CONFLICTS_PREFIX = 'sf-read-back:conflicts:'
@@ -377,43 +374,6 @@ async function scanHeldWrites(kv: ReadBackKv, keys: SecretKeyInput, wanted: numb
 const fieldsOf = (body: Record<string, unknown>) => Object.keys(body).filter((f) => f !== WRITE_MARKER_FIELD)
 /** The fields a held write set, for its alert: none for a credit inquiry post, which sets no field by name. */
 const heldFields = (h: Pick<Held, 'body' | 'inquiry'>) => (h.inquiry ? [] : fieldsOf(h.body))
-const isBlank = (v: unknown) => v === null || v === undefined || v === ''
-
-/** A Salesforce time read as ms: `2026-10-15T12:00:00.000+0000` included. NaN otherwise. */
-function salesforceTimeMs(v: unknown): number {
-  if (typeof v !== 'string' || !/^\d{4}-\d\d-\d\dT/.test(v)) return Number.NaN
-  return Date.parse(v.replace(/([+-]\d\d)(\d\d)$/, '$1:$2'))
-}
-
-/**
- * Whether a value Salesforce holds is the value a write sent, allowing for the
- * ways Salesforce spells a value back: a number as text or text as a number, a
- * time to the second in +0000, a checkbox as true or "true". Anything else
- * different is different, the side that overwrites nothing.
- */
-export function sameSalesforceValue(current: unknown, sent: unknown): boolean {
-  if (current === sent) return true
-  if (isBlank(current) && isBlank(sent)) return true
-  if (isBlank(current) || isBlank(sent)) return false
-  const asNumber = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : Number.NaN)
-  if (typeof current === 'number' || typeof sent === 'number') {
-    const a = asNumber(current)
-    const b = asNumber(sent)
-    return Number.isFinite(a) && Number.isFinite(b) && a === b
-  }
-  if (typeof current === 'boolean' || typeof sent === 'boolean') {
-    const asBoolean = (v: unknown) => (typeof v === 'boolean' ? v : v === 'true' ? true : v === 'false' ? false : null)
-    const a = asBoolean(current)
-    return a !== null && a === asBoolean(sent)
-  }
-  if (typeof current === 'string' && typeof sent === 'string') {
-    const a = salesforceTimeMs(current)
-    const b = salesforceTimeMs(sent)
-    if (Number.isFinite(a) && Number.isFinite(b)) return Math.floor(a / 1000) === Math.floor(b / 1000)
-    return false
-  }
-  return JSON.stringify(current) === JSON.stringify(sent)
-}
 
 export interface RecordEntry {
   id: string
@@ -440,7 +400,6 @@ export type RecordDecision =
 export function decideRecord(entries: RecordEntry[], current: Record<string, unknown>): RecordDecision[] {
   const stamp = parseWriteMarker(current[WRITE_MARKER_FIELD])
   const stampedId = stamp ? `${stamp.executionId}:${stamp.stepNamespace}` : null
-  const lastModifiedMs = salesforceTimeMs(current.LastModifiedDate)
   // The newest write of the run to set each field owns it.
   const owner = new Map<string, number>()
   entries.forEach((e, i) => fieldsOf(e.body).forEach((f) => owner.set(f, i)))
@@ -452,17 +411,10 @@ export function decideRecord(entries: RecordEntry[], current: Record<string, unk
     const own = fields.filter((f) => !ownedByLater.includes(f))
     if (own.length === 0) return { id: e.id, verdict: 'superseded' }
     if (e.attempts >= MAX_RESENDS) return { id: e.id, verdict: 'exhausted' }
-    // Nobody has written the record since this write began: whatever it holds
-    // came before the write, which is what the write was sent to replace.
-    const untouched = Number.isFinite(lastModifiedMs) && e.firstAttemptMs !== undefined && lastModifiedMs + LAST_MODIFIED_MARGIN_MS <= e.firstAttemptMs
-    const conflicts = untouched
-      ? []
-      : own.filter((f) => {
-          const now = current[f]
-          if (isBlank(now) || sameSalesforceValue(now, e.body[f])) return false
-          // A value an earlier write of the run sent is ours, and this newer write replaces it.
-          return !entries.slice(0, i).some((earlier) => Object.hasOwn(earlier.body, f) && sameSalesforceValue(now, earlier.body[f]))
-        })
+    // The one moved field rule (salesforce-field-conflict.ts), which the drain
+    // of stored writes also applies (#468): a value an earlier write of the run
+    // sent is ours, and this newer write replaces it.
+    const conflicts = fieldsMovedSince({ fields: own, body: e.body, current, sinceMs: e.firstAttemptMs, earlier: entries.slice(0, i).map((x) => x.body) })
     const send = own.filter((f) => !conflicts.includes(f))
     if (send.length === 0) return { id: e.id, verdict: 'conflict_only', conflicts, ownedByLater, candidates: own }
     return { id: e.id, verdict: 'resend', send: Object.fromEntries(send.map((f) => [f, e.body[f]])), conflicts, ownedByLater, candidates: own }
@@ -1153,21 +1105,25 @@ export async function checkSalesforceReadBackLiveness(deps: LivenessDeps): Promi
 // ── Production wiring ───────────────────────────────────────────────────────
 
 /**
- * The org's Slack connection. `supabase` is the scheduled handler's client, on
- * which getSlackConnection is bounded and falls back to the last-good copy
- * (#1303, scheduled-slack.ts), so a read-back alert still speaks while the
- * database is down.
+ * An organization's Slack for a minute job's alerts. `supabase` is the scheduled
+ * handler's client, on which getSlackConnection is bounded and falls back to the
+ * last-good copy (#1303, scheduled-slack.ts), so an alert still speaks while the
+ * database is down. The drain of stored writes uses it too (#468).
  */
-function slackForEnv(supabase: SupabaseClient) {
+export function slackForEnv(supabase: SupabaseClient) {
   return (orgId: string) => getSlackConnection(supabase, orgId)
 }
 
-/** Whether Salesforce's bulkhead has room, asked of the limiter itself and failing closed. */
-async function bulkheadBusy(env: Env): Promise<UnreadReason | null> {
+/**
+ * Whether Salesforce's bulkhead has room, asked of the limiter itself and
+ * failing closed. The drain of stored writes asks the same way (#468), naming
+ * itself in the log line.
+ */
+export async function bulkheadBusy(env: Env, job: string = SF_READ_BACK_JOB): Promise<Extract<UnreadReason, 'bulkhead_busy' | 'bulkhead_unknown'> | null> {
   if (!env.SALESFORCE_BULKHEAD) return null
   const asked = await raceDeadline(() => new BulkheadClient(env, 'salesforce', salesforceBulkheadLimit(env)).status(), 2_000)
   if (asked.kind !== 'ok') {
-    console.error(`[${SF_READ_BACK_JOB}] the Salesforce bulkhead could not be asked, so nothing is sent this minute: ${asked.kind === 'threw' ? formatErr(asked.error) : 'no answer'}`)
+    console.error(`[${job}] the Salesforce bulkhead could not be asked, so nothing is sent this minute: ${asked.kind === 'threw' ? formatErr(asked.error) : 'no answer'}`)
     return 'bulkhead_unknown'
   }
   return asked.value.inflight >= asked.value.limit ? 'bulkhead_busy' : null
