@@ -25,6 +25,7 @@ import configWarnings from './config-warnings'
 import fieldCoverage from './field-coverage'
 import buyerProfiles from './buyer-profiles'
 import partnerWorkflowValues from './partner-workflow-values'
+import partnerHistory from './partner-history'
 import buyerSales from './buyer-sales'
 import heldClicks from './held-clicks'
 import buyerSelectParity from './buyer-select-parity'
@@ -69,6 +70,8 @@ api.route('/field-coverage', fieldCoverage)
 api.route('/partners', buyerProfiles)
 // The workflow values tab (#2142): which workflows read the partner's Constants values.
 api.route('/partners', partnerWorkflowValues)
+// The partners page History (#2141), on the same prefix the same way.
+api.route('/partners', partnerHistory)
 api.route('/buyer-sales', buyerSales)
 // Held click claims a person releases from the partner page (#1552).
 api.route('/held-clicks', heldClicks)
