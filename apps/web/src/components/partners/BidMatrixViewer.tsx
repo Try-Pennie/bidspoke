@@ -79,8 +79,10 @@ export function BidMatrixViewer(p: Props) {
   // What is on screen NOW, for code that runs after an await (sync, create,
   // delete): the props and state a press closed over are the ones from before
   // it, and while it ran the person may have switched matrices, or the list may
-  // have changed (a matrix added, one refreshed by a sync). Every use of the
-  // props after an await reads `latest.current`, never `p` (#2256).
+  // have changed (a matrix added, one refreshed by a sync). Every use that
+  // applies an answer to the screen after an await reads `latest.current`
+  // (#2256). A request still names what was pressed on (`p.partnerId` in the
+  // delete's re-read, the create's body), because that is what was asked about.
   const activeIdRef = useRef(activeId)
   activeIdRef.current = activeId
   const latest = useRef(p)
