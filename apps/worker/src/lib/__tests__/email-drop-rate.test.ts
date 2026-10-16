@@ -162,6 +162,8 @@ const postMessage = vi.hoisted(() => vi.fn())
 const getSlackConnection = vi.hoisted(() => vi.fn())
 
 vi.mock('../slack', () => ({ postMessage, getSlackConnection }))
+import { registerScheduledSlack } from '../scheduled-slack'
+import { fakeClient, fakeTimers, kvWithCopy, TEST_KEY } from './_scheduled-slack-doubles'
 
 const { runEmailDropRateCheck } = await import('../email-drop-rate')
 
@@ -253,6 +255,25 @@ describe('runEmailDropRateCheck: who gets told (#744)', () => {
 })
 
 describe('runEmailDropRateCheck: failure paths (#744)', () => {
+  it('does not run its database checks from the saved copy\'s org list when the database did not answer (#1303)', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { client } = fakeClient([{ error: { message: 'connection terminated' } }])
+    const rpc = vi.fn(async () => ({ data: [], error: null }))
+    registerScheduledSlack(client, { kv: await kvWithCopy({ 'org-1': { bot_token: 't', default_channel: '#c' } }), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep })
+    await runEmailDropRateCheck(Object.assign(client, { rpc }) as never, makeKv())
+    expect(rpc).not.toHaveBeenCalled()
+    expect(err.mock.calls.some((c) => String(c[0]).includes('event=email_drop_orgs_query_failed'))).toBe(true)
+  })
+
+  it('logs the failed organization lookup as a failure and checks nothing', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const db = makeSupabase({ orgsError: 'connection reset' })
+    await runEmailDropRateCheck(db.client, makeKv())
+    expect(db.rpcCalls).toEqual([])
+    expect(err.mock.calls.some((c) => String(c[0]).includes('event=email_drop_orgs_query_failed'))).toBe(true)
+  })
+
   it('does not alert when the counts query fails, and does not throw', async () => {
     const kv = makeKv()
     const db = makeSupabase({ rpc: () => ({ data: null, error: { message: 'boom' } }) })

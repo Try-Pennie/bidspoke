@@ -31,7 +31,7 @@ import { makeAlertClaims, type AlertClaims } from './alert-claim'
 import { formatErr } from './format-error'
 import { resolveSlackForBlockAlert } from './partner-block-alert'
 import { etTime, readSlackConnectionForLead, sendBuyerClickAlert, type BuyerClickAlertMessage } from './slack'
-import { readLastGoodSlackConnections } from './volume-cliff'
+import { readLastGoodSlackConnections } from './slack-copy'
 import { secretKeys } from './secret-crypto'
 
 /**

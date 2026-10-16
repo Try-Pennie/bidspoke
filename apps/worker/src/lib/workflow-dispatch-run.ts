@@ -1,5 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { slackOrgIds } from './alert-fanout'
+import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import { sendWorkflowDispatchAlert } from './slack'
 import {
   type DispatchAttempt,
@@ -113,7 +113,7 @@ export async function runAndReportDispatch(
   // transient database error and a system with no Slack orgs are not confused
   // for each other (L10, L11).
   let delivered = false
-  const orgIds = await slackOrgIds(supabase, 'workflow-dispatch')
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'workflow-dispatch', 'tell-only'))
   for (const orgId of orgIds) {
     // Failing to DELIVER a verdict must not destroy the verdict, nor cost the
     // remaining orgs theirs (L73). The returned results and the run log above

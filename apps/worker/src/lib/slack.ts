@@ -30,6 +30,7 @@ import { type DispatchAttempt, dispatchFailed } from './workflow-dispatch-driver
 
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
 import { leadRead } from './lead-read-budget'
+import { copyUnreachableLine, describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason, type ScheduledSlack } from './scheduled-slack'
 import { composeSalesforceReadBackAlert, type SalesforceReadBackAlert } from './salesforce-read-back-alert'
 export type { SlackConnection } from './slack-connection'
 
@@ -65,11 +66,43 @@ export interface CircuitAlertPayload {
 // logged null so the dropped alert is at least visible, never silent.
 const SLACK_CONN_RETRY_DELAYS_MS = [150, 400]
 
+/**
+ * The org's Slack connection, or null. On the scheduled handler's client the
+ * lookup is bounded and falls back to the saved copy (lookupSlackConnection,
+ * #1303); on every other client it is the retried read it always was.
+ */
 export async function getSlackConnection(
   supabase: SupabaseClient,
   orgId: string,
   delaysMs: number[] = SLACK_CONN_RETRY_DELAYS_MS,
 ): Promise<SlackConnection | null> {
+  const found = await lookupSlackConnection(supabase, orgId, delaysMs)
+  return found.kind === 'live' || found.kind === 'stored' ? found.connection : null
+}
+
+/** Why a lookup could not say who to tell. `read_failed` only on a client with no saved copy to fall back on. */
+export type SlackUnreachableReason = CopyUnreachableReason | 'read_failed'
+
+/**
+ * What a Slack lookup found (#1303): the connection from the database, the
+ * connection from the saved copy (with that copy's age), no usable connection
+ * (the database answered), or nobody can be told and why. Each writes its own
+ * log line on the scheduled client.
+ */
+export type SlackLookup =
+  | { kind: 'live'; connection: SlackConnection }
+  | { kind: 'stored'; connection: SlackConnection; ageMs: number | null }
+  | { kind: 'none' }
+  | { kind: 'unreachable'; reason: SlackUnreachableReason }
+
+export async function lookupSlackConnection(
+  supabase: SupabaseClient,
+  orgId: string,
+  delaysMs: number[] = SLACK_CONN_RETRY_DELAYS_MS,
+): Promise<SlackLookup> {
+  const scheduled = scheduledSlackFor(supabase)
+  if (scheduled) return scheduledLookup(scheduled, supabase, orgId)
+
   let data: { config?: unknown } | null = null
   for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
     if (attempt > 0) await sleep(delaysMs[attempt - 1])
@@ -79,21 +112,53 @@ export async function getSlackConnection(
       break
     }
     const dbErr = toDbError(res.error)
-    // Schema drift / bad query can't be retried — fail fast, but LOG so the
-    // dropped alert isn't mistaken for a not-configured org.
+    // Schema drift or a bad query cannot be retried: fail fast, but LOG so the
+    // dropped alert is not mistaken for a not-configured org.
     if (isPermanentDbError(dbErr)) {
       console.error(`[slack] getSlackConnection permanent error for org ${orgId}: ${dbErr.message}; alert dropped`)
-      return null
+      return { kind: 'unreachable', reason: 'read_failed' }
     }
     if (attempt === delaysMs.length) {
       // Transient error survived every retry: the alert that needs this connection
       // will be dropped. Make it visible instead of returning a silent "no Slack".
       console.error(`[slack] getSlackConnection failed for org ${orgId} after ${delaysMs.length} retries: ${dbErr.message}; alert dropped`)
-      return null
+      return { kind: 'unreachable', reason: 'read_failed' }
     }
   }
 
-  return parseSlackConnection(data?.config)
+  const connection = parseSlackConnection(data?.config)
+  return connection ? { kind: 'live', connection } : { kind: 'none' }
+}
+
+/** The bounded lookup on the scheduled client: one read under the deadline, the saved copy on any non-answer. */
+async function scheduledLookup(scheduled: ScheduledSlack, supabase: SupabaseClient, orgId: string): Promise<SlackLookup> {
+  const subject = `slack connection for org ${orgId}`
+  // `.maybeSingle()` is typed as the base builder, which does not declare
+  // abortSignal although the object carries it (as in lead-read-budget.ts).
+  const query = slackConnectionQuery(supabase, orgId) as unknown as BoundableQuery<{ config?: unknown }>
+  const live = await scheduled.read(subject, query)
+  if (live.kind === 'answered') {
+    const connection = parseSlackConnection(live.data?.config)
+    if (connection) {
+      console.log(`[scheduled-slack] ${subject}: read live`)
+      return { kind: 'live', connection }
+    }
+    console.log(`[scheduled-slack] ${subject}: the database answered with no usable Slack connection`)
+    return { kind: 'none' }
+  }
+  const copy = await scheduled.copy()
+  if (copy.kind === 'read') {
+    const connection = copy.copy.connections.get(orgId)
+    if (connection) {
+      console.warn(`[scheduled-slack] ${subject}: answered from the saved copy (${describeCopyAge(copy.ageMs)}) because the database did not answer (${live.how})`)
+      return { kind: 'stored', connection, ageMs: copy.ageMs }
+    }
+    console.error(copyUnreachableLine(subject, 'org_not_in_copy'))
+    return { kind: 'unreachable', reason: 'org_not_in_copy' }
+  }
+  const reason: CopyUnreachableReason = copy.kind === 'absent' ? 'no_copy' : 'copy_unreadable'
+  console.error(copyUnreachableLine(subject, reason, copy.kind === 'unreadable' ? copy.detail : undefined))
+  return { kind: 'unreachable', reason }
 }
 
 /** The one read of an org's Slack connection row, for both readers below. */

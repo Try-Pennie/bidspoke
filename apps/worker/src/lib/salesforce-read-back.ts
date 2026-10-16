@@ -108,9 +108,7 @@ import { WAIT_UNTIL_LIMIT_MS } from './post-response-budget'
 import { completedKey } from './cron-heartbeat'
 import { formatErr } from './format-error'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
-import { boundedSlackFor } from './unconfirmed-write-sweep'
 import { getSlackConnection, sendSalesforceReadBackAlert, type SlackConnection } from './slack'
-import { readLastGoodSlackConnections } from './volume-cliff'
 import { BulkheadClient, salesforceBulkheadLimit } from './bulkhead-client'
 import { fieldsMovedSince, LAST_MODIFIED_MARGIN_MS, sameSalesforceValue } from './salesforce-field-conflict'
 import type { ReadBackAlertWrite, SalesforceReadBackAlert, UnreadReason } from './salesforce-read-back-alert'
@@ -1095,12 +1093,14 @@ export async function checkSalesforceReadBackLiveness(deps: LivenessDeps): Promi
 
 // ── Production wiring ───────────────────────────────────────────────────────
 
-/** An organization's Slack for a minute job's alerts, bounded, with the last good copy. The drain of stored writes uses it too (#468). */
-export function slackForEnv(supabase: SupabaseClient, env: Env) {
-  return boundedSlackFor(
-    (orgId) => getSlackConnection(supabase, orgId),
-    () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
-  )
+/**
+ * An organization's Slack for a minute job's alerts. `supabase` is the scheduled
+ * handler's client, on which getSlackConnection is bounded and falls back to the
+ * last-good copy (#1303, scheduled-slack.ts), so an alert still speaks while the
+ * database is down. The drain of stored writes uses it too (#468).
+ */
+export function slackForEnv(supabase: SupabaseClient) {
+  return (orgId: string) => getSlackConnection(supabase, orgId)
 }
 
 /**
@@ -1130,7 +1130,7 @@ export async function runSalesforceReadBackForEnv(supabase: SupabaseClient, env:
       ? makeSendClaims(env.ALERT_CLAIM)
       : { claim: () => Promise.resolve('unanswered' as const), release: () => Promise.resolve() },
     alertClaims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
-    slackFor: slackForEnv(supabase, env),
+    slackFor: slackForEnv(supabase),
     workflowNames: async (ids) => {
       const { data, error } = await supabase.from('workflows').select('id, name').in('id', ids)
       if (error) throw new Error(error.message)
@@ -1145,7 +1145,7 @@ export async function checkSalesforceReadBackLivenessForEnv(supabase: SupabaseCl
   return checkSalesforceReadBackLiveness({
     kv: env.IDEMPOTENCY,
     keys: secretKeys(env),
-    slackFor: slackForEnv(supabase, env),
+    slackFor: slackForEnv(supabase),
     alertClaims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
     appUrl: env.APP_URL,
   })
