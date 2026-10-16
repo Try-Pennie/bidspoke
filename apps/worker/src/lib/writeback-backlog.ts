@@ -208,6 +208,23 @@ export async function runWritebackBacklogCheck(deps: BacklogDeps): Promise<Backl
 
   for (const orgId of orgs) {
     const backlog = reading.byOrg.get(orgId) ?? null
+    if (!backlog && reading.partial) {
+      // The read stopped at its limit before reaching this organization, so its
+      // rows (if any) are past it: unknown, not empty. Hold its incident and its
+      // baseline exactly as a failed read does, and never send its all-clear.
+      const prior = previous?.counts[orgId]
+      if (prior !== undefined) next.counts[orgId] = prior
+      try {
+        if ((await deps.kv.get(recoveryKey(WRITEBACK_BACKLOG_SIGNAL, orgId))) !== null) {
+          await refreshAlerted(deps.kv, WRITEBACK_BACKLOG_SIGNAL, orgId)
+          next.open.push(orgId)
+        }
+      } catch (e) {
+        errors.push(`${orgId}: the open incident could not be kept: ${formatErr(e)}`)
+        next.open.push(orgId)
+      }
+      continue
+    }
     // One organization's fault never leaves the next unchecked.
     try {
       const open = await checkOrg(deps, orgId, backlog, previous, reading.partial, nowMs, summary)

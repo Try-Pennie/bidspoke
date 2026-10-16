@@ -72,7 +72,7 @@ So the tier-3 tier gets the one store this ADR otherwise avoids, scoped as narro
 - `POST /api/admin/held-writes/:id/replay` previews unless `dryRun` is `false`. The preview shows each field to be sent beside its current Salesforce value, and a person decides whether a changed field may be overwritten. A replay claims the row first (a compare and set on `attempts`), so two at once send once. It sends the stored body as literal JSON, never through template resolution, and through the node's own call path, so the bulkhead and timeout hold. The row ends `replayed`, `refused` (a business rejection), or stays `pending` with its last error. The logic is `lib/writeback-replay.ts`.
 - `POST /api/admin/held-writes/:id/abandon` closes a row a person dealt with in Salesforce, with a required reason.
 
-Not yet built: the automatic drain and the backlog alert (#468). Now that a pending row has an action that changes it, the alert has a remedy to name.
+Not yet built: the automatic drain (#468 step 3). The backlog alert (above, under Backlog alert) names the replay and abandon routes as its remedy.
 
 ## Post-response `waitUntil` write audit (#362)
 

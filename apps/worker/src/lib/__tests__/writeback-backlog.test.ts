@@ -223,6 +223,19 @@ describe('runWritebackBacklogCheck', () => {
     expect(h.notifyReadFailure).toHaveBeenCalledTimes(1)
   })
 
+  it('never all-clears an organization a partial reading did not reach, since its rows may lie past the limit', async () => {
+    const h = harness()
+    await h.run(reading({ [ORG_A]: org(1, 40 * MIN), [ORG_B]: org(1, 2 * MIN) }))
+    expect(h.kv.store.has(recoveryKey(WRITEBACK_BACKLOG_SIGNAL, ORG_A))).toBe(true)
+    // Another organization's older rows fill the whole read.
+    await h.run(reading({ [ORG_B]: org(1000, 60 * MIN) }, true), NOW + 5 * MIN)
+    expect(h.sendRecovery).not.toHaveBeenCalled()
+    expect(h.kv.store.has(recoveryKey(WRITEBACK_BACKLOG_SIGNAL, ORG_A))).toBe(true)
+    // Once a complete reading shows it empty, the all-clear goes.
+    await h.run(reading({ [ORG_B]: org(3, 60 * MIN) }), NOW + 10 * MIN)
+    expect(h.sendRecovery.mock.calls.map((c) => (c as unknown[])[0])).toEqual([ORG_A])
+  })
+
   it('remembers an organization whose all-clear is still owed, so a later check can send it', async () => {
     const h = harness()
     await h.run(reading({ [ORG_A]: org(1, 40 * MIN) }))
