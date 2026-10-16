@@ -4,7 +4,8 @@
  * converts UTC to ET rather than echoing the ISO clock time.
  */
 import { describe, it, expect } from 'vitest'
-import { etDayHeading, etDayKey, formatEtClock, formatEtDayTime, formatLogTime } from '../dates'
+import { DISPLAY_TIME_ZONES } from '@bidspoke/buyer-profile'
+import { etDayHeading, etDayKey, formatEtClock, formatEtDayTime, formatLogTime, zoneShiftFromEastern } from '../dates'
 
 describe('formatLogTime (#113)', () => {
   it('converts a UTC instant to ET, not the raw UTC clock time', () => {
@@ -60,5 +61,39 @@ describe('the incident card day headings (#2101)', () => {
 
   it('gives the clock time alone for a row under its day heading', () => {
     expect(formatEtClock('2026-10-14T18:34:00.000Z')).toBe('2:34 PM')
+  })
+})
+
+describe('a display zone for the partners page (#2143, PM-10)', () => {
+  // 6:34 PM UTC on Wednesday 14 October 2026: 2:34 PM Eastern, 11:34 AM Pacific.
+  const AT = '2026-10-14T18:34:00.000Z'
+
+  it('leaves every existing caller in Eastern when no zone is given', () => {
+    expect(formatEtClock(AT)).toBe(formatEtClock(AT, 'America/New_York'))
+    expect(formatEtDayTime(AT)).toBe(formatEtDayTime(AT, 'America/New_York'))
+    expect(etDayKey(AT)).toBe(etDayKey(AT, 'America/New_York'))
+  })
+
+  it('gives the clock time in each of the four zones', () => {
+    expect(DISPLAY_TIME_ZONES.map((z) => formatEtClock(AT, z))).toEqual(['2:34 PM', '1:34 PM', '12:34 PM', '11:34 AM'])
+    expect(formatEtClock(Date.parse(AT), 'America/Los_Angeles')).toBe('11:34 AM')
+  })
+
+  it('gives the day and the clock time in the zone, crossing back over midnight', () => {
+    expect(formatEtDayTime('2026-10-15T02:05:00.000Z', 'America/Los_Angeles')).toBe('Oct 14, 7:05 PM')
+  })
+
+  it('keys and heads a moment by the calendar day in the zone', () => {
+    // 1:30 AM Eastern on Oct 14 is 10:30 PM Pacific on Oct 13.
+    const early = '2026-10-14T05:30:00.000Z'
+    const now = Date.parse('2026-10-14T22:12:00.000Z')
+    expect(etDayKey(early)).toBe('2026-10-14')
+    expect(etDayKey(early, 'America/Los_Angeles')).toBe('2026-10-13')
+    expect(etDayHeading(early, now)).toBe('Today')
+    expect(etDayHeading(early, now, 'America/Los_Angeles')).toBe('Yesterday')
+  })
+
+  it('says how far each zone\'s clock is from Eastern, the shift weekly hours are drawn with', () => {
+    expect(DISPLAY_TIME_ZONES.map((z) => zoneShiftFromEastern(z))).toEqual([0, -60, -120, -180])
   })
 })
