@@ -105,7 +105,9 @@ describe('directChangeNotes (#2135)', () => {
     const v = versions({ newest: { partner: { changedAt: at, direct: true, fields: ['daily_cap', 'sell_off_offer_title'] }, profile: null } })
     const notes = directChangeNotes(v, atMs + 60_000)
     expect(notes).toEqual([{
-      sections: ['Bidding limits', 'Sell-off offer copy'],
+      // The sections the person sees the fields under: the sell-off offer is
+      // "Sell-off offer" on the Workflow values tab (#2142).
+      sections: ['Bidding limits', 'Sell-off offer'],
       text: `Changed directly in the database at 10:34 AM ET. Bidding picks this up within about ${BIDDING_PICKUP.partnerConstantsMinutes} minutes of that time while the database is reachable.`,
       expiresAt: atMs + BIDDING_PICKUP.partnerConstantsMinutes * 60_000,
     }])

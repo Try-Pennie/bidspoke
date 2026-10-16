@@ -38,6 +38,8 @@ import { ACCESS_REMOVED, SESSION_EXPIRED, namedAsShown, refusedSentence, unsaved
 import { Tabs, TabPanel } from '@/components/ui/Tabs'
 import { ProblemMark } from '@/components/ui/ProblemMark'
 import { PartnerHistoryPanel } from '@/components/partners/PartnerHistoryPanel'
+import { WorkflowValuesPanel } from '@/components/partners/WorkflowValuesPanel'
+import { OfferPreview } from '@/components/partners/OfferPreview'
 import type { PartnerUsage } from '@/lib/api'
 import type { PartnerTab } from './partner-draft'
 import {
@@ -45,6 +47,7 @@ import {
   type TabInputs, type UsageState,
 } from './partner-tabs'
 import { bidsInSentences } from './bid-group-usage-text'
+import { refreshKeyOf } from './workflow-values-text'
 import { LiveNotesContext, LivePageNotes, LiveSectionNote, LiveStatusLine, PartnerLiveContext, SYSTEM_CLOCK } from '@/components/partners/live/PartnerLive'
 import { usePartnerPageLive } from './use-partner-page-live'
 import {
@@ -1602,19 +1605,30 @@ export default function PartnerForm({
             </TabPanel>
           )}
           <TabPanel value="workflow_values" className="space-y-8">
-            {isBuyer && <Section title="Click URL">
+            {/* Each value with the name workflows read it by and who reads it (#2142); the controls are the form's own. */}
+            <WorkflowValuesPanel
+              partnerId={partner?.id ?? null}
+              slug={partner?.slug ?? slug}
+              refreshKey={refreshKeyOf(partner?.version ?? 0, uuids)}
+              isBuyer={isBuyer}
+              isSource={isSource}
+              isActive={isActive}
+              partnerName={name || partner?.name || 'This partner'}
+              controls={{
+            click_url: isBuyer ? <>
               {/* The labelled field with its error beside it (#1546): the buyer profile's click URL refusals name this field. */}
               <Field
                 id="partner-click-url"
                 label="Click URL"
-                hint="Where a lead sold to this buyer lands. Exposed as {Slug}ClickUrl in the Constants node, and carried on every buyer selection sale; a buyer profile cannot be enabled without one."
+                labelHidden
+                hint="Where a lead sold to this buyer lands. A buyer profile cannot be enabled without one."
                 error={clickUrlError}
               >
                 <TextInput id="partner-click-url" value={clickUrl} onChange={setClickUrl} placeholder="https://partner.com/apply" describedBy={describedBy('partner-click-url', true, Boolean(clickUrlError))} />
               </Field>
-            </Section>}
+            </> : undefined,
 
-            {isBuyer && <Section title="Per-sub-account min bids">
+            min_bids: isBuyer ? <>
               <p className="text-xs text-gray-500">
                 Optional per-sub-account floor. When a lead arrives with a matching sub-account UUID,
                 this floor overrides the partner-wide Minimum bid. Leave empty to use only the partner-wide floor.
@@ -1648,29 +1662,37 @@ export default function PartnerForm({
                   <Plus size={12} aria-hidden="true" /> Add row
                 </Button>
               </div>
-            </Section>}
+            </> : undefined,
 
-            {isSource && <Section title="Sell-off offer copy">
-              <p className="text-xs text-gray-500">
-                Used by the Constants node in bidding workflows to populate sell-off offer fields for this partner.
-              </p>
-              <Field id="partner-sell-off-title" label="Sell-off offer title">
-                <TextInput id="partner-sell-off-title" value={sellOffOfferTitle} onChange={setSellOffOfferTitle} placeholder="Get up to $50,000 in your account" />
-              </Field>
-              <Field id="partner-sell-off-details" label="Sell-off offer details">
-                <TextArea
-                  id="partner-sell-off-details"
-                  value={sellOffOfferDetails}
-                  onChange={setSellOffOfferDetails}
-                  placeholder="Personal loans from $5,000 to $100,000 with competitive rates."
-                  rows={3}
-                />
-              </Field>
-            </Section>}
+            // Edited beside a preview of how it is shown (the settled design's sell-off offer).
+            sell_off: isSource ? (
+              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+                <div className="min-w-0 space-y-3">
+                  <Field id="partner-sell-off-title" label="Title">
+                    <TextInput id="partner-sell-off-title" value={sellOffOfferTitle} onChange={setSellOffOfferTitle} placeholder="Get up to $50,000 in your account" />
+                  </Field>
+                  <Field id="partner-sell-off-details" label="Details">
+                    <TextArea
+                      id="partner-sell-off-details"
+                      value={sellOffOfferDetails}
+                      onChange={setSellOffOfferDetails}
+                      placeholder="Personal loans from $5,000 to $100,000 with competitive rates."
+                      rows={5}
+                      mono
+                      className="text-xs"
+                    />
+                  </Field>
+                </div>
+                <div className="min-w-0">
+                  <p className="mb-1 block text-xs font-medium text-gray-600">As shown</p>
+                  <OfferPreview title={sellOffOfferTitle} details={sellOffOfferDetails} />
+                </div>
+              </div>
+            ) : undefined,
 
-            {isSource && <Section title="Sub-account UUIDs">
+            sub_account_ids: isSource ? <>
               <p className="text-xs text-gray-500">
-                External UUIDs that map to this partner. Used by the Constants node to resolve inbound sub-account IDs to partner slugs.
+                Sub-account IDs a lead can arrive with, each meaning this partner.
               </p>
               <div className="space-y-1.5">
                 {isNew ? (
@@ -1754,7 +1776,9 @@ export default function PartnerForm({
                 </Button>
               </div>
               {uuidError && <p className="text-xs text-red-600">{uuidError}</p>}
-            </Section>}
+            </> : undefined,
+              }}
+            />
           </TabPanel>
           {!isNew && (
             <TabPanel value="history" className="space-y-8">

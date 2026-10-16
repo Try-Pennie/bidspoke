@@ -38,6 +38,8 @@ export interface PartnerFixtures {
   deleteChecks: Record<string, { answer: unknown }>
   /** GET /api/partners/:id/usage by partner id (#2137), measured read only from production on 2026-10-16. */
   usage: Record<string, unknown>
+  /** GET /api/partners/:id/workflow-values by partner id (#2142), built through the route's code from production's workflows (read only, 2026-10-16). */
+  workflowValues: Record<string, unknown>
   /**
    * GET /api/partners/:id/history by partner id (#2141): production's 59 audit
    * rows for the nine partners, read only on 2026-10-16, mapped as the route
@@ -65,6 +67,7 @@ export function loadPartnerFixtures(): PartnerFixtures {
     panels: read('synthetic/panels.json'),
     deleteChecks: read('synthetic/delete-checks.json'),
     usage: read('usage.json'),
+    workflowValues: read('workflow-values.json'),
     history: read('history.json'),
     historyMatrix: read('synthetic/history-matrix.tripoint.json'),
     heldClicks: read('synthetic/held-clicks.liberty1.json'),
@@ -80,6 +83,8 @@ export interface FixtureOptions {
   credentialWarningFor?: string
   /** Answer the usage read (#2137) with a 503, so the Bid Group tab's failed state is reached. */
   usageFails?: boolean
+  /** Answer the workflow values read (#2142) with a 503, so the Workflow values tab's failed state is reached. */
+  workflowValuesFails?: boolean
   /** Answer the History read (#2141) with the route's error for a failed users read. */
   historyFails?: boolean
   /** Give Tripoint the synthetic History holding matrix syncs and a matrix created. */
@@ -156,6 +161,11 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
     if (!history) return null
     if (opts.historyIncomplete && m[1] === tripointId) return ok({ partnerId: m[1], ...mergeHistory([{ entries: history.entries, truncated: true }]) })
     return ok(history)
+  }
+  if ((m = /^\/api\/partners\/([^/]+)\/workflow-values$/.exec(p))) {
+    if (opts.workflowValuesFails) return { status: 503, body: { error: 'Service unavailable' } }
+    const answer = ownEntry(fx.workflowValues, m[1])
+    return answer ? ok(answer) : null
   }
   if (p === '/api/partner-uuids') return ok(fx.uuids)
   if (p === '/api/partner-bid-configs') {

@@ -27,6 +27,16 @@ describe('Field', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Debt minimum must be a number.')
     expect(screen.getByRole('alert')).toHaveAttribute('id', 'f-error')
   })
+
+  it('a label a heading already says is kept for screen readers and hidden on screen (#2142)', () => {
+    render(
+      <Field id="f" label="Click URL" labelHidden>
+        <TextInput id="f" value="" onChange={() => {}} />
+      </Field>
+    )
+    expect(screen.getByLabelText('Click URL')).toHaveAttribute('id', 'f')
+    expect(screen.getByText('Click URL')).toHaveClass('sr-only')
+  })
 })
 
 describe('TextInput and Select carry their own classes', () => {

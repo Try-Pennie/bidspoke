@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event'
 
 vi.mock('@/lib/api', () => ({
   api: {
-    partners: { usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }) },
+    partners: { usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }), workflowValues: () => Promise.resolve({ partner: { id: 'p', slug: 'p' }, values: [], searched: { workflows: 0, with_constants_node: 0 } }) },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
     buyerProfiles: { get: vi.fn(), save: vi.fn(), history: vi.fn(), usage: vi.fn() },
@@ -127,8 +127,8 @@ describe('PartnerForm: a both partner exposes buyer and source config (#306)', (
     render(<PartnerForm partner={bothPartner} onSave={vi.fn()} onCancel={vi.fn()} />)
     await userEvent.click(screen.getByRole('tab', { name: 'Workflow values' }))
 
-    expect(screen.getByText('Sell-off offer copy')).toBeVisible()
-    expect(screen.getByText('Sub-account UUIDs')).toBeVisible()
+    expect(screen.getByText('Sell-off offer')).toBeVisible()
+    expect(screen.getByText('Sub-account IDs')).toBeVisible()
   })
 
   it('still hides the buyer tabs for a source-only partner', async () => {
@@ -139,15 +139,15 @@ describe('PartnerForm: a both partner exposes buyer and source config (#306)', (
     await waitFor(() => expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Partner', 'Workflow values', 'History']))
     expect(screen.queryByText('Bid resolution')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Set up for Bid Group' })).not.toBeInTheDocument()
-    expect(screen.getByText('Sell-off offer copy')).toBeVisible()
+    expect(screen.getByText('Sell-off offer')).toBeVisible()
   })
 
   it('still hides the source sections for a buyer-only partner', async () => {
     render(<PartnerForm partner={{ ...partner, partner_type: 'buyer' }} onSave={vi.fn()} onCancel={vi.fn()} />)
 
     await screen.findByRole('tab', { name: 'Buyer profile' })
-    expect(screen.queryByText('Sell-off offer copy')).not.toBeInTheDocument()
-    expect(screen.queryByText('Sub-account UUIDs')).not.toBeInTheDocument()
+    expect(screen.queryByText('Sell-off offer')).not.toBeInTheDocument()
+    expect(screen.queryByText('Sub-account IDs')).not.toBeInTheDocument()
   })
 
   it('switching a buyer to both brings the source sections and keeps the tab the person is on', async () => {
@@ -156,7 +156,7 @@ describe('PartnerForm: a both partner exposes buyer and source config (#306)', (
 
     fireEvent.click(screen.getByRole('radio', { name: 'Both' }))
 
-    await waitFor(() => expect(screen.getByText('Sell-off offer copy')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByText('Sell-off offer')).toBeInTheDocument())
     expect(screen.getByRole('tab', { name: 'Partner' })).toHaveAttribute('aria-selected', 'true')
   })
 })

@@ -10,7 +10,7 @@ import userEvent from '@testing-library/user-event'
 
 vi.mock('@/lib/api', () => ({
   api: {
-    partners: { usage: vi.fn(), history: vi.fn() },
+    partners: { usage: vi.fn(), history: vi.fn(), workflowValues: () => Promise.resolve({ partner: { id: 'p', slug: 'p' }, values: [], searched: { workflows: 0, with_constants_node: 0 } }) },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
     buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },

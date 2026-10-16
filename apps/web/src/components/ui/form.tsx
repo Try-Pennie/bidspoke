@@ -17,10 +17,14 @@ import { Loader2 } from 'lucide-react'
 
 // ── Field ─────────────────────────────────────────────────────────────────────
 
-export function Field({ id, label, hint, error, children }: { id: string; label: string; hint?: string; error?: string | null; children: ReactNode }) {
+/**
+ * A labelled control with its hint and error. `labelHidden` keeps the label for
+ * screen readers only, where a heading right above already says it (#2142).
+ */
+export function Field({ id, label, labelHidden, hint, error, children }: { id: string; label: string; labelHidden?: boolean; hint?: string; error?: string | null; children: ReactNode }) {
   return (
     <div className="field">
-      <label htmlFor={id} className="mb-1 block text-xs font-medium text-gray-600">{label}</label>
+      <label htmlFor={id} className={labelHidden ? 'sr-only' : 'mb-1 block text-xs font-medium text-gray-600'}>{label}</label>
       {children}
       {hint && <p id={`${id}-hint`} className="mt-1 text-xs text-gray-500">{hint}</p>}
       {error && <p id={`${id}-error`} role="alert" className="mt-1 text-xs text-red-700">{error}</p>}

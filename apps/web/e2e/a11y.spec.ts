@@ -377,6 +377,39 @@ test.describe('Accessibility (axe-core)', () => {
     expect(unmatched).toEqual([])
   })
 
+  // #2142: the Workflow values tab, from the measured answers: each value by the
+  // name workflows read it as, and who reads it, at the real count.
+  test('partners page: the Workflow values tab names who reads each value, Tripoint and Sofi', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl())
+    await page.goto('/partners?selected=tripoint&tab=workflow-values')
+    const panel = page.locator('[role="tabpanel"]:visible')
+    await expect(panel.getByText('Engine Bidding Workflow, in Build Response Body and Tripoint Ping.')).toBeVisible()
+    await expect(panel.getByText('constants.TripointClickUrl', { exact: true })).toBeVisible()
+    await expect(panel.getByText('Engine Bidding Workflow reads this value for every partner, in Validate.')).toBeVisible()
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await page.goto('/partners?selected=sofi&tab=workflow-values')
+    await expect(panel.getByText('constants.SofiSellOffOfferTitle', { exact: true })).toBeVisible()
+    // The offer as shown, built from the stored details: its bullets are a real list.
+    await expect(panel.getByText('As shown')).toBeVisible()
+    await expect(panel.getByRole('listitem').filter({ hasText: 'Terms and rates based on your income' })).toBeVisible()
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    expect(unmatched).toEqual([])
+  })
+
+  test('partners page: a failed workflow values read says so once, keeps the controls, and never says no workflow reads a value', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl(), { workflowValuesFails: true })
+    await page.goto('/partners?selected=tripoint&tab=workflow-values')
+    const panel = page.locator('[role="tabpanel"]:visible')
+    await expect(panel.getByRole('alert').filter({ hasText: 'Could not load which workflows read this. Try again.' })).toHaveCount(1)
+    await expect(panel.getByLabel('Click URL')).toBeVisible()
+    await expect(panel.getByText(/No workflow names this value/)).toHaveCount(0)
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    expect(unmatched).toEqual([])
+  })
+
   // #2137: jsdom has no layout, so clipping is measured here, in the real tabs,
   // the real scrolling form pane and the real Dialog shell.
   test('partners page: nothing is clipped, a dropdown at the foot of the scrolled form or the merge dialog, and the list stays in view', async ({ page }) => {
