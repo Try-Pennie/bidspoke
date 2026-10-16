@@ -16,7 +16,8 @@ import { Dialog } from '@/components/Dialog'
 import { Button, ChoiceGroup } from '@/components/ui/form'
 import { PROFILE_PREFIX } from '@/app/(app)/partners/partner-draft'
 import { unansweredCount, type MergeConflict, type MergeResult, type MergeSide, type MergeUnit } from '@/lib/partner-page-merge'
-import { formatDollars, formatProfileValue, minutesToTime } from './buyer-profile/labels'
+import { formatDollars, formatProfileValue } from './buyer-profile/labels'
+import { formatTime } from '@/components/ui/date-time'
 
 const CHOICES: ReadonlyArray<{ value: MergeSide; label: string }> = [
   { value: 'mine', label: 'Keep yours' },
@@ -32,7 +33,7 @@ const rowsOf = (value: unknown): Rows => (Array.isArray(value) ? value.filter((r
 export function describeMergeValue(key: string, value: unknown): string {
   if (key.startsWith(`${PROFILE_PREFIX}windows@`)) {
     const rows = rowsOf(value)
-    return rows.length === 0 ? 'closed' : rows.map((w) => `${minutesToTime(Number(w.opens_minute))} to ${minutesToTime(Number(w.closes_minute))}`).join(', ')
+    return rows.length === 0 ? 'closed' : rows.map((w) => `${formatTime(Number(w.opens_minute))} to ${formatTime(Number(w.closes_minute))}`).join(', ')
   }
   if (key.startsWith(`${PROFILE_PREFIX}tiers@`)) {
     const rows = rowsOf(value)

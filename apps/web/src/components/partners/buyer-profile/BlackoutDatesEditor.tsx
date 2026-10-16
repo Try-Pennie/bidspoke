@@ -6,19 +6,31 @@
  * date however many there are. A table, not a stack of labelled forms: the
  * Date and Note headers are said once, so sixty dates are sixty short rows
  * (L579), and each control is named for a screen reader through the header
- * it sits under plus its own row.
+ * it sits under plus its own row. A date is typed or picked from a calendar
+ * (design round 1 of #2137), and each row keeps a stable id, so committing a
+ * date that re-sorts the list keeps the focus in the field.
  */
 import { useId } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import type { ProfileBlackoutDocument } from '@bidspoke/buyer-profile'
 import { Button, TextInput } from '@/components/ui/form'
+import { DateField } from '@/components/ui/DateTimeFields'
+import { formatShortDate, isIsoDate } from '@/components/ui/date-time'
+import { useRowIds } from './row-ids'
+
+/** How a row is named to a screen reader: the date as the page shows it. */
+export function blackoutRowName(date: string): string {
+  if (date === '') return 'new date'
+  return isIsoDate(date) ? formatShortDate(date) : date
+}
 
 export function BlackoutDatesEditor({ value, onChange, errors = {} }: { value: readonly ProfileBlackoutDocument[]; onChange: (dates: ProfileBlackoutDocument[]) => void; errors?: Record<string, string> }) {
   const base = useId()
+  const rows = useRowIds<ProfileBlackoutDocument>()
   // Empty dates (a row just added) sort first so the person sees the row they asked for.
   const sorted = [...value].sort((a, b) => a.date.localeCompare(b.date))
   const update = (target: ProfileBlackoutDocument, next: ProfileBlackoutDocument | null) =>
-    onChange(sorted.flatMap((b) => (b === target ? (next ? [next] : []) : [b])))
+    onChange(sorted.flatMap((b) => (b === target ? (next ? [rows.carry(target, next)] : []) : [b])))
 
   return (
     <div className="space-y-2">
@@ -28,20 +40,21 @@ export function BlackoutDatesEditor({ value, onChange, errors = {} }: { value: r
         <table className="w-full text-sm">
           <thead>
             <tr className="text-left text-xs font-medium text-gray-600">
-              <th scope="col" className="w-40 pb-1 pr-2 font-medium">Date</th>
+              <th scope="col" className="w-48 pb-1 pr-2 font-medium">Date</th>
               <th scope="col" className="pb-1 pr-2 font-medium">Note</th>
               <th scope="col" className="w-10 pb-1"><span className="sr-only">Remove</span></th>
             </tr>
           </thead>
           <tbody>
-            {sorted.map((row, i) => {
-              const rowId = `${base}-${i}`
+            {sorted.map((row) => {
+              const key = rows.idOf(row)
+              const rowId = `${base}-${key}`
               const error = errors[`blackout_dates[${row.date}]`]
-              const name = row.date || 'new date'
+              const name = blackoutRowName(row.date)
               return (
-                <tr key={`${row.date}-${i}`} aria-label={`Blackout ${row.date || 'new'}`} className="align-top">
+                <tr key={key} aria-label={`Blackout ${name}`} className="align-top">
                   <td className="py-0.5 pr-2">
-                    <TextInput id={`${rowId}-date`} type="date" value={row.date} onChange={(d) => update(row, { ...row, date: d })} aria-label={`Date, ${name}`} />
+                    <DateField id={`${rowId}-date`} value={row.date} onChange={(d) => update(row, { ...row, date: d })} label={`Date, ${name}`} />
                     {error && <p role="alert" className="mt-1 text-xs text-red-700">{error}</p>}
                   </td>
                   <td className="py-0.5 pr-2">

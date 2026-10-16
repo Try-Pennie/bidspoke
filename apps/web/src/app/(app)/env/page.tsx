@@ -7,7 +7,8 @@ import { api } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import type { EnvVar, EnvVarFolder, WorkflowSummary } from '@/types/workflow'
 import { usedByLabel } from '@/lib/env-scope'
-import { Field, Select, describedBy } from '@/components/ui/form'
+import { Field, describedBy } from '@/components/ui/form'
+import { Select } from '@/components/ui/Select'
 import {
   Plus,
   Trash2,

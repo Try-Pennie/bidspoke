@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useId, useState } from 'react'
+import { TextArea } from '@/components/ui/form'
 
 interface Props {
   value: unknown
@@ -17,6 +18,7 @@ export function PartnerProbePanel({ value, onChange }: Props) {
   const initialText = value === null || value === undefined ? '' : safeStringify(value)
   const [text, setText] = useState(initialText)
   const [error, setError] = useState<string | null>(null)
+  const id = useId()
 
   function handleChange(next: string) {
     setText(next)
@@ -39,13 +41,18 @@ export function PartnerProbePanel({ value, onChange }: Props) {
       <p className="text-xs text-gray-500">
         Paste a representative response body. The fields here populate the autocomplete dropdown when configuring extraction paths below. Valid JSON saves automatically.
       </p>
-      <textarea
+      <TextArea
+        id={id}
+        aria-label="Sample response"
         value={text}
-        onChange={(e) => handleChange(e.target.value)}
+        onChange={handleChange}
+        rows={6}
         placeholder={'{\n  "ok": true,\n  "data": {\n    "createLead": { "id": "...", "resultCode": 1013 }\n  }\n}'}
-        className="min-h-[120px] w-full resize-y rounded-md border border-gray-200 bg-white p-2 font-mono text-xs focus:border-gray-400 focus:outline-none"
+        mono
+        describedBy={error ? `${id}-error` : undefined}
+        className="min-h-[120px] resize-y text-xs"
       />
-      {error && <p className="text-xs text-red-500">{error}</p>}
+      {error && <p id={`${id}-error`} role="alert" className="text-xs text-red-700">{error}</p>}
     </div>
   )
 }

@@ -10,7 +10,8 @@
 import { useId } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import { SIGNAL_OPERATORS, SIGNAL_OPERATOR_LABELS, type Signal, type SignalOperator } from '@bidspoke/buyer-profile'
-import { Button, Select, TextInput } from '@/components/ui/form'
+import { Button, TextInput } from '@/components/ui/form'
+import { Select } from '@/components/ui/Select'
 import { LIST_OPERATORS, operatorOf, signalFrom, valueTextOf } from '@/lib/signal-text'
 
 /**
@@ -38,19 +39,21 @@ export function AcceptRulesEditor({ value, onChange, refusal, kind = 'accept' }:
         const text = valueTextOf(rule)
         const rowId = `${base}-${i}`
         return (
-          <fieldset key={i} className="grid grid-cols-[1fr_auto_1fr_auto] items-end gap-2 rounded-md bg-gray-50 p-2" aria-label={`${Kind} rule ${i + 1}`}>
-            <div>
+          // The row wraps rather than cutting a long field or value short (#1458, L76):
+          // Tripoint's accept list read '1000,1001,1013,1' in a fixed grid.
+          <fieldset key={i} className="flex flex-wrap items-end gap-2 rounded-md bg-gray-50 p-2" aria-label={`${Kind} rule ${i + 1}`}>
+            <div className="min-w-[14rem] flex-1">
               <label htmlFor={`${rowId}-field`} className="mb-1 block text-xs text-gray-600">Field</label>
               <TextInput id={`${rowId}-field`} value={rule.field} onChange={(v) => update(i, signalFrom(v, op, text))} placeholder="data.createLead.resultCode" mono />
             </div>
-            <div>
+            <div className="w-44">
               <label htmlFor={`${rowId}-op`} className="mb-1 block text-xs text-gray-600">Operator</label>
               <Select id={`${rowId}-op`} value={op} onChange={(v) => update(i, signalFrom(rule.field, v as SignalOperator, text))} options={SIGNAL_OPERATORS.map((o) => ({ value: o, label: SIGNAL_OPERATOR_LABELS[o] }))} />
             </div>
             {op === 'present' ? (
-              <span className="text-xs text-gray-500">any value</span>
+              <span className="pb-2 text-xs text-gray-500">any value</span>
             ) : (
-              <div>
+              <div className="min-w-[16rem] flex-1">
                 <label htmlFor={`${rowId}-value`} className="mb-1 block text-xs text-gray-600">Value</label>
                 <TextInput id={`${rowId}-value`} value={text} onChange={(v) => update(i, signalFrom(rule.field, op, v))} placeholder={LIST_OPERATORS.has(op) ? '1000,1001' : 'true'} mono />
               </div>
