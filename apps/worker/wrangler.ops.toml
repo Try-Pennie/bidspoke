@@ -1,8 +1,8 @@
 # bidspoke-worker-ops: the minimal ops Worker (#1705, plan 0.R).
 #
 # One public route, POST /porting/capture/:hashid, receiving the porting
-# recorder's captures from Pipedream. Not public: a minute cron and a SELF binding
-# to its own OpsInternal entrypoint (#1946, below). It shares this package's source and dependencies but
+# recorder's captures from Pipedream. Not public: a SELF binding to its own
+# OpsInternal entrypoint (#1946, below). It shares this package's source and dependencies but
 # is a SEPARATE Worker: its own name, its own bindings, its own secrets, and
 # none of the money Worker's (no Supabase key, no partner credentials, no KV, no
 # Durable Objects). The full ops Worker grows from this in plan 0.E.
@@ -67,14 +67,6 @@ binding = "SELF"
 service = "bidspoke-worker-ops"
 entrypoint = "OpsInternal"
 
-# Spike 0's minute cron (#1946). The minute is the cadence the run engine's tick
-# will use, and Cloudflare sets a minute cron's limits by its interval (30 s CPU
-# below an hour), so the ceilings are measured on this exact schedule. INERT
-# unless the OPS_SPIKE_ARM secret is set: an unarmed tick touches no binding and
-# logs nothing (src/ops/spike/ceilings.ts).
-[triggers]
-crons = ["* * * * *"]
-
 # Traces go to the tail consumer, which skips this Worker's traces until Phase 1
 # points it at the ops database (apps/worker-tail, #1709): an ops execution id
 # names nothing in the bidding database's workflow_executions.
@@ -95,6 +87,3 @@ invocation_logs = true
 #                           not required: nothing reads the ops database until
 #                           Phase 1. Never the bidding database's URL or key,
 #                           which the client refuses.
-#   OPS_SPIKE_ARM           Spike 0 only (#1946): arms one ceiling probe, as JSON
-#                           {"probe","nonce","until"}. Unset in normal running.
-#                           docs/ops-ceilings-spike.md says how to set and clear it.
