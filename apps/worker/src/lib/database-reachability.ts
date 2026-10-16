@@ -187,17 +187,31 @@ export interface UnreachableOutcome {
  *
  * Each organization is its own failure boundary: a Slack post or KV write that
  * throws for one is logged with its reason and the rest are still paged, and
- * the result says which were told and which failed. Throws only when KV refuses
- * a write before the organizations are reached (the reader's record, the
- * failed minute).
+ * the result says which were told and which failed. A refused write of the
+ * reader's record or the failed minute is logged and does not stop the page,
+ * and a copy KV cannot read is reported as unreadable (readSlackCopy), so this
+ * does not throw.
  */
 export async function reportDatabaseUnreachable(deps: ReachabilityDeps, report: UnreachableReport): Promise<UnreachableOutcome> {
   const outcome: UnreachableOutcome = { told: [], failed: [] }
   const { kv } = deps
   const nowMs = (deps.now ?? Date.now)()
-  const record = await readSource(kv, report.source)
-  await writeSource(kv, report.source, { ...record, healthySince: null, lastFailed: nowMs })
-  const previousMinuteFailed = await noteFailedMinute(kv, nowMs)
+  // Bookkeeping first, but never at the page's expense: a KV refusal here is
+  // logged and the page still goes out. A failed minute that cannot be read or
+  // written counts as no failure the minute before, so a fast read is held
+  // rather than paged on a record nobody could read (the side that cannot flap).
+  let previousMinuteFailed = false
+  try {
+    const record = await readSource(kv, report.source)
+    await writeSource(kv, report.source, { ...record, healthySince: null, lastFailed: nowMs })
+  } catch (e) {
+    console.error(`[database-reachability] ${report.source} failure not recorded against its reader, the page goes on: ${formatErr(e)}`)
+  }
+  try {
+    previousMinuteFailed = await noteFailedMinute(kv, nowMs)
+  } catch (e) {
+    console.error(`[database-reachability] failed minute not recorded, so a fast read is held this minute: ${formatErr(e)}`)
+  }
   const pages = REACHABILITY_SOURCES[report.source].pages === 'at-once' || previousMinuteFailed
   const errorText = formatErr(report.error)
 

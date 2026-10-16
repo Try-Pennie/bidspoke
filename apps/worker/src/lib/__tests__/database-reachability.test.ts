@@ -219,6 +219,20 @@ describe('each organization is its own failure boundary', () => {
   })
 })
 
+// Merge review: the reader's record and the failed minute are bookkeeping; a
+// KV refusal writing them must not stop the page itself.
+describe('the bookkeeping before the page cannot stop it', () => {
+  it('still pages a volume check failure when the reader record and failed minute writes are refused', async () => {
+    const kv = await kvWithCopy()
+    const put = kv.put
+    kv.put = (k: string, v: string) => (k.startsWith('db-reachability:') ? Promise.reject(new Error('KV PUT failed: 500')) : put(k, v))
+    const result = await reportDatabaseUnreachable(deps(kv, T0), readFailure)
+    expect(sendDatabaseUnreachableAlert).toHaveBeenCalledTimes(1)
+    expect(result.told).toEqual([ORG])
+    expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('KV PUT failed'))).toBe(true)
+  })
+})
+
 describe('the fast reads page only on a second failed minute in a row', () => {
   it('one failed probe does not page', async () => {
     const kv = await kvWithCopy()
