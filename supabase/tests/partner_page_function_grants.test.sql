@@ -14,6 +14,7 @@
 -- from service_role on it left out (case 3 red: the default privileges grant it);
 -- #2143 replaced _apply_buyer_profile and buyer_profile_document and lists the
 -- second here.
+-- #2141: the REVOKE from service_role on audit_actor_stamp left out (case 3 red).
 
 CREATE TEMP TABLE IF NOT EXISTS suite_cases (name text PRIMARY KEY, ran_at timestamptz NOT NULL DEFAULT now());
 DELETE FROM suite_cases;
@@ -50,7 +51,10 @@ BEGIN
     'public.change_partner_uuid(uuid, text, text, text, uuid, text, text)',
     'public.monitor_partner_page_ping(uuid, uuid)',
     -- PR12 (#2143): _apply_buyer_profile is listed above
-    'public.buyer_profile_document(uuid)'
+    'public.buyer_profile_document(uuid)',
+    -- PR10 (#2141)
+    'public.audit_actor_stamp(uuid)',
+    'public.partner_uuid_map_audit()'
   ] LOOP
     IF has_function_privilege('anon', fn, 'EXECUTE') THEN bad := array_append(bad, 'anon can execute ' || fn); END IF;
     IF has_function_privilege('authenticated', fn, 'EXECUTE') THEN bad := array_append(bad, 'authenticated can execute ' || fn); END IF;
@@ -106,7 +110,14 @@ BEGIN
     'public.partner_configs_page_notice()',
     'public.buyer_profile_tables_page_notice()',
     'public.partner_uuid_map_page_notice()',
-    'public.partner_uuid_map_page_notice_one_side()'
+    'public.partner_uuid_map_page_notice_one_side()',
+    -- PR10 (#2141): the stamp and the audit triggers. A Worker calling the stamp
+    -- could not forge a row, but nothing calls it except a trigger, and two of
+    -- these trigger functions were granted to it by default until #2141.
+    'public.audit_actor_stamp(uuid)',
+    'public.partner_uuid_map_audit()',
+    'public.partner_configs_audit()',
+    'public.buyer_profile_tables_direct_sql_audit()'
   ] LOOP
     IF has_function_privilege('service_role', fn, 'EXECUTE') THEN
       RAISE EXCEPTION 'function grants wrong: service_role can execute %, which is internal', fn;
