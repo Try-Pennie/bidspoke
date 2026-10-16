@@ -47,6 +47,7 @@ import { recordAndCheckBranchSkew } from './lib/strand-branch-skew'
 import { runUnconfirmedWriteSweepForEnv, UNCONFIRMED_WRITE_SWEEP_JOB } from './lib/unconfirmed-write-sweep'
 import { runSalesforceReadBackForEnv, checkSalesforceReadBackLivenessForEnv, SF_READ_BACK_JOB } from './lib/salesforce-read-back'
 import { runWritebackBacklogCheckForEnv, WRITEBACK_BACKLOG_JOB } from './lib/writeback-backlog'
+import { runWritebackDrainForEnv, WRITEBACK_DRAIN_JOB } from './lib/writeback-drain'
 import { readAnswerJournal } from './engine/unconfirmed-writes'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
@@ -1081,6 +1082,24 @@ const scheduledJobs = {
             })
             .catch((e) => console.error(`[${SF_READ_BACK_JOB}] read back failed:`, e)),
           SF_READ_BACK_JOB,
+        ),
+      )
+      // Resends the Salesforce writes stored after they failed with an answer
+      // (#468): at most twice, oldest first per record, holding while the
+      // bulkhead is full and stopping at the first call Salesforce does not
+      // answer. Both stamps (L514); the minute heartbeat check reads them.
+      minuteJob('writeback-drain',
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, WRITEBACK_DRAIN_JOB)
+            .catch((e) => console.error(`[${WRITEBACK_DRAIN_JOB}] heartbeat write failed:`, e))
+            .then(() => runWritebackDrainForEnv(supabase, env))
+            .then((s) => {
+              if (s.listed > 0 || s.alerts > 0 || s.alert_failures > 0) {
+                console.log(`[${WRITEBACK_DRAIN_JOB}] listed=${s.listed} replayed=${s.replayed} refused=${s.refused} abandoned=${s.abandoned} moved=${s.moved} retrying=${s.retrying} waiting=${s.waiting} skipped=${s.skipped} deferred=${s.deferred} unread=${s.unread} alerts=${s.alerts} alert_failures=${s.alert_failures}${s.held ? ` held=${s.held}` : ''}${s.stopped ? ` stopped=${s.stopped}` : ''}`)
+              }
+            })
+            .catch((e) => console.error(`[${WRITEBACK_DRAIN_JOB}] drain failed:`, e)),
+          WRITEBACK_DRAIN_JOB,
         ),
       )
       // Whether that read back is still finishing runs while writes wait for it.
