@@ -12,7 +12,7 @@
 // KV refuses the edit, the change still answers 200, because it WAS saved and
 // recorded, with stored_copy_warning beside it (lib/stored-copy.ts) and the
 // failure logged. The next healthy minute rewrites the whole copy from the
-// database (volume-cliff.ts), which bounds how long a stale entry can last
+// database (the database probe, database-reachability.ts), which bounds how long a stale entry can last
 // while the database is up. KV is eventually consistent, so a reader in
 // another location can still see the old entry for up to about a minute.
 

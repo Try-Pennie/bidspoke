@@ -10,7 +10,7 @@
  * every one. This module is the single home for it.
  *
  * It deliberately does NOT cover the per-workflow / per-org cooldown alerts
- * (failure-rate, slow-execution-rate, volume-cliff's db-unreachable path): those
+ * (failure-rate, slow-execution-rate, database-reachability.ts): those
  * key their cooldown on a workflow or a single org and announce recovery, which
  * is a different shape. They still share `slackOrgIds` for the org lookup.
  *
@@ -158,18 +158,18 @@ async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what
 }
 
 /**
- * The volume check's read of every connection, the one whose answer is written
- * to the saved copy (volume-cliff.ts). Deliberately NOT the bounded read above
- * and never answered from the copy: what it reads becomes the copy, and its
- * failure is the volume check's own evidence that the database is down, judged
- * with the client's full deadline as before. #2061 moves the copy's writer to
- * the database probe.
+ * Every Slack connection, straight from the database and never from the copy,
+ * for the two readers whose failure is itself the evidence (#2061): the
+ * database reachability probe, which bounds it and writes what it reads to the
+ * saved copy (database-reachability.ts), and the volume check, which reads its
+ * organizations with it under the client's full deadline as before
+ * (volume-cliff.ts). Deliberately NOT the bounded read above.
  *
  * It takes no SlackListUse because it can only answer from the database: it is
  * 'measure-from-database' by construction. It must never be 'tell-only', since
  * writing the copy from the copy would re-date stale entries as fresh (#2060).
  */
-export function readSlackConnectionRowsForCopy(supabase: SupabaseClient) {
+export function readSlackConnectionRows(supabase: SupabaseClient) {
   return supabase.from('service_connections').select('organization_id, config').eq('service_type', 'slack')
 }
 

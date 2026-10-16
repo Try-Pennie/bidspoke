@@ -13,10 +13,11 @@ vi.mock('../slack', () => ({
   sendDatabaseUnreachableAlert: vi.fn(),
 }))
 
-import { detectCliff, runVolumeCliffCheck, sendCliffAlert, BASELINE_WINDOW_MINUTES, RECENT_WINDOW_MINUTES, MIN_BASELINE_PER_MIN, DB_UNREACHABLE_PREFIX } from '../volume-cliff'
-import { SLACK_CONNS_LASTGOOD_KEY, SLACK_COPY_SAVED_AT_KEY } from '../slack-copy'
+import { detectCliff, runVolumeCliffCheck, sendCliffAlert, BASELINE_WINDOW_MINUTES, RECENT_WINDOW_MINUTES, MIN_BASELINE_PER_MIN } from '../volume-cliff'
+import { DB_UNREACHABLE_PREFIX } from '../database-reachability'
+import { SLACK_CONNS_LASTGOOD_KEY } from '../slack-copy'
 import { getSlackConnection, postMessage, sendRecoveryAlert, sendDatabaseUnreachableAlert } from '../slack'
-import { encryptSecret, decryptSecret } from '../secret-crypto'
+import { encryptSecret } from '../secret-crypto'
 import { recoveryKey, RECOVERY_TTL_SECONDS } from '../alert-recovery'
 import { BACKOFF_STEPS_SECONDS } from '../alert-backoff'
 import type { AlertClaims } from '../alert-claim'
@@ -443,33 +444,26 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
   })
   afterEach(() => errSpy.mockRestore())
 
-  it('writes an encrypted last-good copy of the Slack connections on a healthy tick', async () => {
+  // #2061: the copy's writer moved to the database reachability probe, so the
+  // copy's freshness no longer depends on this check's heavy reads.
+  it('no longer writes the saved Slack copy on a healthy tick: the probe does', async () => {
     const kv = fakeKv()
     await runVolumeCliffCheck(healthySupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
-    const raw = kv.store.get(SLACK_CONNS_LASTGOOD_KEY)
-    expect(raw).toBeDefined()
-    expect(raw).not.toContain('xoxb')
-    const copy = JSON.parse(await decryptSecret(raw!, TEST_KEY)) as Record<string, { bot_token: string }>
-    expect(copy[ORG].bot_token).toBe('xoxb-t')
+    expect(kv.store.has(SLACK_CONNS_LASTGOOD_KEY)).toBe(false)
   })
 
-  // #2060: the copy is rewritten from every successful read, an empty one
-  // included, dated by the check's clock, and never from a failed read.
-  it('rewrites the copy as EMPTY when the read answers with no connected organization, replacing a stale one', async () => {
-    const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: await lastGood() })
-    const now = Date.parse('2026-10-15T03:04:00Z')
-    await runVolumeCliffCheck(healthySupabase([]), kv, 'https://app.example', 'https://self.example', TEST_KEY, undefined, () => now)
-    const copy = JSON.parse(await decryptSecret(kv.store.get(SLACK_CONNS_LASTGOOD_KEY)!, TEST_KEY)) as Record<string, unknown>
-    expect(copy).toEqual({ [SLACK_COPY_SAVED_AT_KEY]: '2026-10-15T03:04:00.000Z' })
-  })
-
-  it('dates the copy with the check clock on a healthy tick', async () => {
+  it('reports each run whose reads all answered to the reachability owner, dated by its clock', async () => {
     const kv = fakeKv()
     const now = Date.parse('2026-10-15T03:05:00Z')
     await runVolumeCliffCheck(healthySupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY, undefined, () => now)
-    const copy = JSON.parse(await decryptSecret(kv.store.get(SLACK_CONNS_LASTGOOD_KEY)!, TEST_KEY)) as Record<string, unknown>
-    expect(copy[SLACK_COPY_SAVED_AT_KEY]).toBe('2026-10-15T03:05:00.000Z')
-    expect(Object.keys(copy).sort()).toEqual([ORG, SLACK_COPY_SAVED_AT_KEY].sort())
+    expect(JSON.parse(kv.store.get('db-reachability:source:volume-cliff')!)).toEqual({ healthySince: now, lastHealthy: now, lastFailed: null })
+  })
+
+  it('reports a run with no connected organization as answered too', async () => {
+    const kv = fakeKv()
+    const now = Date.parse('2026-10-15T03:05:00Z')
+    await runVolumeCliffCheck(healthySupabase([]), kv, 'https://app.example', 'https://self.example', TEST_KEY, undefined, () => now)
+    expect(JSON.parse(kv.store.get('db-reachability:source:volume-cliff')!).lastHealthy).toBe(now)
   })
 
   it('leaves the copy exactly as it was when the Slack connections read fails', async () => {
@@ -547,18 +541,20 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
     expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('no last-good Slack connection'))).toBe(true)
   })
 
-  it('announces the all-clear once the database reads again', async () => {
+  // #2061: one healthy run of this check's cheap-to-pass reads is not a
+  // recovery; the owner sends the all-clear once the probe and these reads have
+  // answered for the whole window (database-reachability.test.ts).
+  it('no longer sends the database all-clear itself on a healthy tick', async () => {
     const kv = fakeKv({
       [recoveryKey(DB_UNREACHABLE_PREFIX, ORG)]: new Date(Date.now() - 45 * 60000).toISOString(),
       [`${DB_UNREACHABLE_PREFIX}-active:${ORG}`]: new Date(Date.now() - 40 * 60000).toISOString(),
     })
     await runVolumeCliffCheck(healthySupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
-    expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(sendRecoveryAlert).mock.calls[0][2]).toMatchObject({ signal: 'database unreachable' })
-    expect(kv.store.has(recoveryKey(DB_UNREACHABLE_PREFIX, ORG))).toBe(false)
+    expect(sendRecoveryAlert).not.toHaveBeenCalled()
+    expect(kv.store.has(recoveryKey(DB_UNREACHABLE_PREFIX, ORG))).toBe(true)
   })
 
-  it('records the outage to the KV outbox while every database read fails, and its end once it reads again (#2099)', async () => {
+  it('records the outage to the KV outbox while every database read fails (#2099)', async () => {
     const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: await lastGood() })
     // A clock that moves on every read: the opening and the page must share the
     // pass's one reading, or the page sorts first.
@@ -567,26 +563,7 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
       await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
     })
     expect(transitions(kv.store)).toEqual([`opened ${ORG}`, `paged ${ORG}`])
-    // Back-date the incident past the re-arm window, then let the database answer.
-    const back = new Date(Date.now() - 45 * 60000).toISOString()
-    kv.store.set(recoveryKey(DB_UNREACHABLE_PREFIX, ORG), back)
-    kv.store.set(`${DB_UNREACHABLE_PREFIX}-active:${ORG}`, back)
-    for (const k of [...kv.store.keys()]) if (k.startsWith('incident-outbox:')) kv.store.delete(k)
-    await runVolumeCliffCheck(healthySupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
-    expect(transitions(kv.store)).toEqual([`ended ${ORG} all_clear`])
-    expect(outboxEvents(kv.store)[0]).toMatchObject({ signal: 'db-unreachable', scope: 'org', organizationId: ORG, startedAt: back, endedAt: back })
-  })
-
-  it('resets the reminder schedule when the database reads again (#1337)', async () => {
-    const kv = fakeKv({
-      [recoveryKey(DB_UNREACHABLE_PREFIX, ORG)]: new Date(Date.now() - 45 * 60000).toISOString(),
-      [`${DB_UNREACHABLE_PREFIX}-active:${ORG}`]: new Date(Date.now() - 40 * 60000).toISOString(),
-      [`${DB_UNREACHABLE_PREFIX}:${ORG}:condition`]: '{"since":"2026-09-13T12:00:00.000Z","alerts":3}',
-      [`${DB_UNREACHABLE_PREFIX}:${ORG}:cooldown`]: '1',
-    })
-    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
-    await runVolumeCliffCheck(healthySupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY)
-    expect(kv.store.has(`${DB_UNREACHABLE_PREFIX}:${ORG}:condition`)).toBe(false)
+    expect(outboxEvents(kv.store)[0]).toMatchObject({ signal: 'db-unreachable', scope: 'org', organizationId: ORG })
   })
 })
 

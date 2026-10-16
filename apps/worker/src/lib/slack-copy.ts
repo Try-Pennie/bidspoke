@@ -2,12 +2,13 @@
  * The encrypted last-good copy of every organization's Slack connection (#1297).
  *
  * Every alert path looks the Slack token up in the database, so when the
- * database is down nobody could be told. The volume check therefore rewrites
- * this copy in KV on every healthy minute, ENCRYPTED because the token is a
- * secret and KV is not the place for plaintext (#491), and the paths that must
- * speak during an outage read it: the scheduled lookup (scheduled-slack.ts,
- * #1303), the volume check's own database alert, and the request path's block
- * and write-back alerts. One key, rewritten once a minute, well inside KV's one
+ * database is down nobody could be told. The minute database probe
+ * (database-reachability.ts, #2061; the volume check before it) therefore
+ * rewrites this copy in KV on every healthy minute, ENCRYPTED because the token
+ * is a secret and KV is not the place for plaintext (#491), and the paths that
+ * must speak during an outage read it: the scheduled lookup (scheduled-slack.ts,
+ * #1303), the database unreachable page, and the request path's block and
+ * write-back alerts. One key, rewritten once a minute, well inside KV's one
  * write a second per key.
  *
  * Its shape is a flat map of organization id to connection config. A reserved
@@ -76,7 +77,7 @@ async function decryptCopy(blob: string, secretKeys: SecretKeyInput): Promise<{ 
 
 /**
  * The copy as a plain map, for the readers that only need "who can be told"
- * (the request path's alerts and the volume check's database alert): empty when
+ * (the request path's alerts): empty when
  * there is no copy or it cannot be decrypted. A KV read that throws is thrown on,
  * as it always was, for those callers' own handling.
  */
