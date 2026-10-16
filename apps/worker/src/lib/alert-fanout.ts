@@ -164,6 +164,10 @@ async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what
  * failure is the volume check's own evidence that the database is down, judged
  * with the client's full deadline as before. #2061 moves the copy's writer to
  * the database probe.
+ *
+ * It takes no SlackListUse because it can only answer from the database: it is
+ * 'measure-from-database' by construction. It must never be 'tell-only', since
+ * writing the copy from the copy would re-date stale entries as fresh (#2060).
  */
 export function readSlackConnectionRowsForCopy(supabase: SupabaseClient) {
   return supabase.from('service_connections').select('organization_id, config').eq('service_type', 'slack')
