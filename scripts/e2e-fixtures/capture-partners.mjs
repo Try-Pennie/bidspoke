@@ -14,6 +14,7 @@
  *   partner-uuids.json       GET /api/partner-uuids
  *   partner-bid-configs.json GET /api/partner-bid-configs?partner_id=:id, by partner id, for each buyer
  *   usage.json               GET /api/partners/:id/usage, by partner id, for every partner (#2137)
+ *   history.json             GET /api/partners/:id/history, by partner id, for every partner (#2141)
  *
  * The files under synthetic/ (the 409 a save is answered with, a matrix to
  * delete, the usage panels' answers) are made by hand and never touched here.
@@ -38,7 +39,7 @@ const json = (value) => `${JSON.stringify(value, null, 2)}\n`
  * from read only SELECTs of the same rows, see the PR for #2134) went through
  * the same redaction a capture does.
  */
-export function writeFixtures({ partners, profiles, uuids, bidConfigs, usage }, outDir = FIXTURE_DIR) {
+export function writeFixtures({ partners, profiles, uuids, bidConfigs, usage, history }, outDir = FIXTURE_DIR) {
   const redact = createRedactor()
   mkdirSync(outDir, { recursive: true })
   // Code point order, not the machine's locale, so every machine writes the same bytes.
@@ -60,6 +61,13 @@ export function writeFixtures({ partners, profiles, uuids, bidConfigs, usage }, 
     const usageOut = {}
     for (const p of bySlug) if (usage[p.id]) usageOut[p.id] = usage[p.id]
     writeFileSync(path.join(outDir, 'usage.json'), json(usageOut))
+  }
+  // History (#2141): after the partners, with the same redactor, so an editor
+  // is the same alias in both files. Written only when captured.
+  if (history) {
+    const historyOut = {}
+    for (const p of bySlug) if (history[p.id]) historyOut[p.id] = redact.history(history[p.id])
+    writeFileSync(path.join(outDir, 'history.json'), json(historyOut))
   }
 }
 
@@ -102,9 +110,18 @@ async function main() {
     }
     usage[p.id] = answer
   }
+  const history = {}
+  for (const p of partners) {
+    const answer = await get(base, token, `/api/partners/${p.id}/history`)
+    // The History answer's own shape, refused at the read: a list of entries and whether it is complete.
+    if (!answer || typeof answer !== 'object' || !Array.isArray(answer.entries) || typeof answer.complete !== 'boolean') {
+      throw new Error(`GET /api/partners/${p.id}/history did not answer entries and complete, so nothing was written`)
+    }
+    history[p.id] = answer
+  }
   const uuids = await getList(base, token, '/api/partner-uuids')
-  writeFixtures({ partners, profiles, uuids, bidConfigs, usage })
-  console.log(`capture-partners: wrote ${partners.length} partners, ${buyers.length} buyers, ${uuids.length} sub-account IDs and ${Object.keys(usage).length} usage answers to ${FIXTURE_DIR}`)
+  writeFixtures({ partners, profiles, uuids, bidConfigs, usage, history })
+  console.log(`capture-partners: wrote ${partners.length} partners, ${buyers.length} buyers, ${uuids.length} sub-account IDs, ${Object.keys(usage).length} usage answers and ${Object.keys(history).length} histories to ${FIXTURE_DIR}`)
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

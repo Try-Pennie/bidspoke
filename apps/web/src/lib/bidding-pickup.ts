@@ -51,6 +51,14 @@ export const KV_PROPAGATION_MS = 60_000
 /** The longer of the two, which is the honest figure for a save that may touch either. */
 export const BIDDING_PICKUP_MINUTES = Math.max(BIDDING_PICKUP.partnerConstantsMinutes, BIDDING_PICKUP.buyerProfilesMinutes)
 
+/**
+ * A change the page did not make, timed from when it was made (#2141, History's
+ * note under a hand edit): the figure for the copy it lands in, never a typed number.
+ */
+export function pickupSentenceFrom(minutes: number): string {
+  return `Bidding picks this up within about ${minutes} minutes of that time while the database is reachable.`
+}
+
 /** The one sentence about when bidding sees a saved change, with the condition it holds under. */
 export function pickupSentence(): string {
   return `Bidding picks this up within about ${BIDDING_PICKUP_MINUTES} minutes while the database is reachable.`

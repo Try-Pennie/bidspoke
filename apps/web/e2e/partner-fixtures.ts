@@ -15,6 +15,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import type { Page } from '@playwright/test'
+import { mergeHistory, type PartnerHistory } from '@bidspoke/partner-history'
 
 const DIR = path.join(__dirname, 'fixtures', 'partners')
 const read = <T>(file: string): T => JSON.parse(readFileSync(path.join(DIR, file), 'utf8')) as T
@@ -31,6 +32,14 @@ export interface PartnerFixtures {
   panels: { history: unknown; buyer_sales: unknown; held_clicks: unknown; usage_offer: unknown; usage_click: unknown }
   /** GET /api/partners/:id/usage by partner id (#2137), measured read only from production on 2026-10-16. */
   usage: Record<string, unknown>
+  /**
+   * GET /api/partners/:id/history by partner id (#2141): production's 59 audit
+   * rows for the nine partners, read only on 2026-10-16, mapped as the route
+   * maps them and redacted as a capture is.
+   */
+  history: Record<string, PartnerHistory>
+  /** Tripoint's History with three synthetic matrix entries on top: production holds no matrix sync rows. */
+  historyMatrix: PartnerHistory
 }
 
 export function loadPartnerFixtures(): PartnerFixtures {
@@ -43,6 +52,8 @@ export function loadPartnerFixtures(): PartnerFixtures {
     matrix: read('synthetic/matrix.tripoint.json'),
     panels: read('synthetic/panels.json'),
     usage: read('usage.json'),
+    history: read('history.json'),
+    historyMatrix: read('synthetic/history-matrix.tripoint.json'),
   }
 }
 
@@ -55,6 +66,12 @@ export interface FixtureOptions {
   credentialWarningFor?: string
   /** Answer the usage read (#2137) with a 503, so the Bid Group tab's failed state is reached. */
   usageFails?: boolean
+  /** Answer the History read (#2141) with the route's error for a failed users read. */
+  historyFails?: boolean
+  /** Give Tripoint the synthetic History holding matrix syncs and a matrix created. */
+  historyMatrix?: boolean
+  /** Answer Tripoint's History as the route does when a source was cut at its bound (mergeHistory with the source truncated). */
+  historyIncomplete?: boolean
 }
 
 export interface Answer { status: number; body: unknown }
@@ -83,6 +100,15 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
   if ((m = /^\/api\/partners\/([^/]+)\/usage$/.exec(p))) {
     if (opts.usageFails) return { status: 503, body: { error: 'Service unavailable' } }
     return fx.usage[m[1]] ? ok(fx.usage[m[1]]) : null
+  }
+  if ((m = /^\/api\/partners\/([^/]+)\/history$/.exec(p))) {
+    if (opts.historyFails) return { status: 500, body: { error: 'history_unavailable', read: 'users', message: 'History could not be loaded: the users read failed.' } }
+    const tripointId = fx.historyMatrix.partnerId
+    if (opts.historyMatrix && m[1] === tripointId) return ok(fx.historyMatrix)
+    const history = fx.history[m[1]]
+    if (!history) return null
+    if (opts.historyIncomplete && m[1] === tripointId) return ok({ partnerId: m[1], ...mergeHistory([{ entries: history.entries, truncated: true }]) })
+    return ok(history)
   }
   if (p === '/api/partner-uuids') return ok(fx.uuids)
   if (p === '/api/partner-bid-configs') {

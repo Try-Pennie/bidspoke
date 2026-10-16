@@ -17,7 +17,7 @@ import { writeFixtures } from '../../../scripts/e2e-fixtures/capture-partners.mj
 import { answerFor, isWorkerApiRequest, loadPartnerFixtures } from './partner-fixtures'
 import { mergeThreeWay } from '../src/lib/partner-page-merge'
 import { buildPartnerBody, PARTNER_FIELD_REGISTRY, snapshotOf } from '../src/app/(app)/partners/partner-draft'
-import type { Partner } from '../src/lib/api'
+import type { Partner, PartnerHistory } from '../src/lib/api'
 
 const fx = loadPartnerFixtures()
 /** A captured buyer profile document with every field the redaction keeps. */
@@ -182,5 +182,65 @@ describe('answerFor', () => {
       PARTNER_FIELD_REGISTRY,
     )
     expect(r.conflicts.flatMap((s) => s.conflicts.map((c) => c.key))).toEqual(['profile.daily_lead_cap'])
+  })
+})
+
+// #2141: History, read from production's audit rows (read only, 2026-10-16) and
+// redacted as a capture is, plus a synthetic matrix history (production holds no
+// matrix sync rows) and the failed and incomplete answers.
+describe('the History fixtures', () => {
+  const tripoint = fx.partners.find((p) => p.slug === 'tripoint')!
+  const liberty1 = fx.partners.find((p) => p.slug === 'liberty1')!
+
+  it('hold every listed partner at the real count: 59 changes, 19 each for Tripoint and Liberty1', () => {
+    expect(Object.keys(fx.history).sort()).toEqual(fx.partners.map((p) => p.id).sort())
+    expect(fx.history[tripoint.id].entries).toHaveLength(19)
+    expect(fx.history[liberty1.id].entries).toHaveLength(19)
+    expect(Object.values(fx.history).reduce((n, h) => n + h.entries.length, 0)).toBe(59)
+  })
+
+  it('name no real person, carry no live webhook, prospect or buyer lead id', () => {
+    const all = stringsIn([fx.history, fx.historyMatrix])
+    expect(all.filter((s) => s.includes('@') && !s.endsWith('@example.com'))).toEqual([])
+    const people = [...Object.values(fx.history), fx.historyMatrix].flatMap((h) => h.entries).flatMap((e) => (e.editor.kind === 'person' ? [e.editor.name] : []))
+    expect(people.length).toBeGreaterThan(0)
+    expect(people.every((n) => /^Editor [A-Z]\d*$/.test(n))).toBe(true)
+    const urls = all.filter((s) => s.startsWith('http') && !s.startsWith('https://trypennie.com/'))
+    expect(urls.length).toBeGreaterThan(0)
+    expect(urls.every((u) => u.startsWith('https://hooks.example.com/redacted/'))).toBe(true)
+    const held = fx.history[liberty1.id].entries.filter((e) => e.entityType === 'held_click')
+    expect(held).toHaveLength(2)
+    for (const e of held) expect(e.changes).toMatchObject({ subject: { prospect_id: 'redacted' }, buyer_lead_id: { new: 'redacted' } })
+  })
+
+  it('give an editor the same alias the partner list gives them', () => {
+    const lastEditor = String(tripoint.updated_by)
+    const people = new Map(fx.history[tripoint.id].entries.flatMap((e) => (e.editor.kind === 'person' && e.editor.userId ? [[e.editor.userId, e.editor.name] as const] : [])))
+    expect(people.get(lastEditor)).toBe(tripoint.updated_by_name)
+  })
+
+  it('redact a captured answer the same way, from a raw shape the route returns', () => {
+    const r = createRedactor()
+    r.partner({ updated_by: 'u1', updated_by_name: 'Ann' })
+    const out = r.history({ partnerId: 'p', complete: true, completeSince: null, entries: [
+      { editor: { kind: 'person', userId: 'u1', name: 'Ann', via: 'sync_now' }, editorLabel: 'Ann, Sync now from Salesforce', changes: { _actor: { name: 'Bo', email: 'bo@x.com' }, 'click_delivery.routes[DV1]': { old: null, new: { url: 'https://live.example/hook', states: ['WA'] } } } },
+      { editor: { kind: 'direct' }, editorLabel: 'Changed directly in the database', changes: { added: [{ range: '1', source_url: 'https://sf.example/r1' }] } },
+    ] })
+    expect(out.entries[0]).toMatchObject({ editor: { userId: '00000000-0000-4000-8000-000000000001', name: 'Editor A' }, editorLabel: 'Editor A, Sync now from Salesforce' })
+    expect(out.entries[0].changes).toEqual({ _actor: { name: 'Editor B', email: 'editor-b@example.com' }, 'click_delivery.routes[DV1]': { old: null, new: { url: 'https://hooks.example.com/redacted/DV1', states: ['WA'] } } })
+    expect(out.entries[1]).toMatchObject({ editorLabel: 'Changed directly in the database', changes: { added: [{ range: '1' }] } })
+  })
+
+  it('answers the history read for every partner, fails it with the route\'s error when asked, and gives the matrix and incomplete answers only when asked', () => {
+    for (const p of fx.partners) expect(answerFor('GET', `${W}/api/partners/${p.id}/history`, fx), p.slug).toEqual({ status: 200, body: fx.history[p.id] })
+    expect(answerFor('GET', `${W}/api/partners/not-a-partner/history`, fx)).toBeNull()
+    expect(answerFor('GET', `${W}/api/partners/${tripoint.id}/history`, fx, { historyFails: true })).toEqual({ status: 500, body: { error: 'history_unavailable', read: 'users', message: 'History could not be loaded: the users read failed.' } })
+    expect(answerFor('GET', `${W}/api/partners/${tripoint.id}/history`, fx, { historyMatrix: true })?.body).toEqual(fx.historyMatrix)
+    expect(answerFor('GET', `${W}/api/partners/${liberty1.id}/history`, fx, { historyMatrix: true })?.body).toEqual(fx.history[liberty1.id])
+    const cut = answerFor('GET', `${W}/api/partners/${tripoint.id}/history`, fx, { historyIncomplete: true })?.body as PartnerHistory
+    const oldest = fx.history[tripoint.id].entries.at(-1)!
+    expect(cut.complete).toBe(false)
+    expect(Date.parse(cut.completeSince!)).toBe(Date.parse(oldest.at))
+    expect(cut.entries).toEqual(fx.history[tripoint.id].entries.slice(0, -1))
   })
 })
