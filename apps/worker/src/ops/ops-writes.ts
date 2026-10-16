@@ -318,7 +318,11 @@ export interface CompletedRun {
   runStatus: string | null
 }
 
-/** Ends the claim. Zero rows is an error (#1698 1.3): throws OpsClaimLostError when the run is not this claim's. */
+/**
+ * Ends the claim. The database answers one row whatever happens; a run that is
+ * not this claim's (claim_lost, or not_found in this organization) throws
+ * OpsClaimLostError, the error #1698 1.3 asks for where it says zero rows.
+ */
 export async function completeRunRequest(
   client: OpsSupabaseClient, organizationId: OrganizationId, runRequestId: string, claimToken: string, end: CompleteOutcome, options?: OpsRpcOptions,
 ): Promise<CompletedRun> {

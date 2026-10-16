@@ -166,7 +166,7 @@ describe('the typed wrappers', () => {
     await expect(extendRunLease(rpcFetch([{ extended: true }]).client, ORG, RUN, TOKEN, 60)).rejects.toThrow(/returned something other than true or false/)
   })
 
-  it('complete: zero rows is an error (claim lost or not found), and a repeat of its own success is not', async () => {
+  it('complete: a lost claim or a run not found throws, and a repeat of its own success does not', async () => {
     for (const outcome of ['claim_lost', 'not_found']) {
       const { client } = rpcFetch([{ outcome, run_status: 'running', state_version: 4 }])
       await expect(completeRunRequest(client, ORG, RUN, TOKEN, { outcome: 'done' })).rejects.toBeInstanceOf(OpsClaimLostError)
