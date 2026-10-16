@@ -71,7 +71,8 @@
         "population": "engine",
         "state": "{{trigger.payload.personalInformation.state}}",
         "debt": "{{steps.prospect_trades.output.body.tradeCalculations.engineDebt}}",
-        "loan_amount": "{{trigger.payload.loanInformation.loanAmount}}"
+        "loan_amount": "{{trigger.payload.loanInformation.loanAmount}}",
+        "collections": "{{steps.prospect_trades.output.body.tradeCalculations.eligibleCollectionTotalBalance}}"
       },
       "variables": {}
     },

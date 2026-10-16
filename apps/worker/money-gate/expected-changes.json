@@ -6,6 +6,39 @@
       "check": "supabase_write",
       "field": "insert execution_steps values[*].input.template.bid_mode",
       "reason": "The Partner Bid step no longer records the retired bid_mode in its input template, because the partner_configs column is being dropped (PM-9). Nothing ever acted on it: no request, route, response or decision changes, only the recorded step input of the two Bid Race partners (#2182)."
+    },
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "supabase_write",
+      "node": "*",
+      "field": "*.output.judged.lead.collections",
+      "reason": "Buyer_click_check now records (#2111) the collections figure, its share of the debt and the profile's collections cap it judged on. No fixture profile sets a cap and no fixture node has a collections template, so all three are null and no lead routes differently."
+    },
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "supabase_write",
+      "node": "*",
+      "field": "*.output.judged.lead.collections_percent",
+      "reason": "Buyer_click_check now records (#2111) the collections figure, its share of the debt and the profile's collections cap it judged on. No fixture profile sets a cap and no fixture node has a collections template, so all three are null and no lead routes differently."
+    },
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "supabase_write",
+      "node": "*",
+      "field": "*.output.judged.limits.collections_max_percent",
+      "reason": "Buyer_click_check now records (#2111) the collections figure, its share of the debt and the profile's collections cap it judged on. No fixture profile sets a cap and no fixture node has a collections template, so all three are null and no lead routes differently."
+    },
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "kv_state",
+      "field": "kv_state.WORKFLOW_CACHE.buyer-profiles:*",
+      "reason": "The cached buyer profiles now carry (#2111) each profile's collections cap (null on every fixture profile), so the cached copy and its content hash change. No profile judges differently."
+    },
+    {
+      "workflow": "Liberty1 Click Handler",
+      "check": "kv_state",
+      "field": "kv_state.WORKFLOW_CACHE.buyer-profiles:*",
+      "reason": "The cached buyer profiles now carry (#2111) each profile's collections cap (null on every fixture profile), so the cached copy and its content hash change. No profile judges differently."
     }
   ]
 }

@@ -46,9 +46,11 @@ export const CLICK_PAGE_COOLDOWN_SECONDS = 15 * 60
 export const CLICK_OVER_CAP_TTL_SECONDS = 26 * 60 * 60
 
 /**
- * The send side's seven, plus two from buyer_click_check: partner_not_click
+ * The send side's seven, plus three from buyer_click_check: partner_not_click
  * (#1557), a buyer picked on the offer side check whose profile is sold on the
- * offer, and click_url_has_no_prospect_id (#1546). The check routes not
+ * offer, click_url_has_no_prospect_id (#1546), and collections_not_wired
+ * (#2111), a profile that caps collections judged by a check with no
+ * collections template. The check routes not
  * eligible rather than failing Engine's execution, so these pages are how a
  * person hears about it.
  *
@@ -59,7 +61,7 @@ export const CLICK_OVER_CAP_TTL_SECONDS = 26 * 60 * 60
  * read, or an error the node does not classify), because an add that timed out
  * can still land.
  */
-export const CLICK_PAGE_REASONS = ['claim_in_doubt', 'outcome_unknown', 'sold_mark_failed', 'count_failed', 'count_unknown', 'free_failed', 'cap_unreadable', 'partner_not_click', 'click_url_has_no_prospect_id'] as const
+export const CLICK_PAGE_REASONS = ['claim_in_doubt', 'outcome_unknown', 'sold_mark_failed', 'count_failed', 'count_unknown', 'free_failed', 'cap_unreadable', 'partner_not_click', 'click_url_has_no_prospect_id', 'collections_not_wired'] as const
 export type ClickPageReason = (typeof CLICK_PAGE_REASONS)[number]
 
 export type ClickAlert =
@@ -166,6 +168,10 @@ const PAGE_WORDING: Record<ClickPageReason, { header: string; held: string; held
   partner_not_click: {
     header: 'is named on a Buyer Click Check but is not sold on the click',
     held: 'No lead is offered to it through this check. Either set its buyer profile to be sold on the click, or pick a buyer sold on the click on the node.',
+  },
+  collections_not_wired: {
+    header: 'caps collections, but its Buyer Click Check reads no collections figure',
+    held: 'No lead is offered to this buyer until the Buyer Click Check on the workflow has its Collections field filled in, or the cap is removed from the buyer profile.',
   },
   click_url_has_no_prospect_id: {
     header: 'click URL has no place for the prospect id',
