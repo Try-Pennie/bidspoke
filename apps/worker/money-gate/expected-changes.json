@@ -1,4 +1,19 @@
 {
   "about": "Differences a pull request MEANS to make to what the bidding engine sends or decides. Each entry: workflow, check, optional node pattern, field pattern (* matches anything), and a reason in words. An entry excuses differences only in the change that adds it; once on main it is carried over and excuses nothing, and once the live worker runs the commit that added it, every pull request fails until it is deleted. A new entry that matches no difference fails the gate. See README.md, Reading a red.",
-  "entries": []
+  "entries": [
+    {
+      "workflow": "Liberty1 Click Handler",
+      "check": "outbound_request",
+      "node": "update_submission",
+      "field": "* body.Bidspoke_Write__c",
+      "reason": "Submission__c now has the Bidspoke_Write__c field (Dan, 2026-10-15), so a post-answer Submission update carries its own write marker, <run>:<step>:0, exactly as Prospect, Applicant and Lead updates do, and the read-back can tell whether it landed (#2203). One added field on the PATCH; nothing else sent or decided changes."
+    },
+    {
+      "workflow": "Liberty1 Click Handler",
+      "check": "supabase_write",
+      "node": "insert execution_steps",
+      "field": "insert execution_steps values[*].input.resolved.body.Bidspoke_Write__c",
+      "reason": "The update_submission step row logs the request it sent, which now carries the write marker added to the PATCH (#2203). Nothing sent or decided changes."
+    }
+  ]
 }

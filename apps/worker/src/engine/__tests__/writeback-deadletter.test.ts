@@ -305,8 +305,8 @@ describe('a timed out update the at-risk record holds (#2163)', () => {
   // #2023: an update carrying this step's own engine stamp is the read-back's.
   // It reads the record back, resends a write that did not land, and alerts on
   // what it cannot settle, so the held alert would only repeat it.
-  it('leaves a stamped Prospect, Applicant or Lead update to the read-back, with no held alert', async () => {
-    for (const object of ['Prospect__c', 'Applicant__c', 'Lead']) {
+  it('leaves a stamped Prospect, Applicant, Lead or Submission update to the read-back, with no held alert', async () => {
+    for (const object of ['Prospect__c', 'Applicant__c', 'Lead', 'Submission__c']) {
       vi.mocked(recordOutcomeDeadLetter).mockClear()
       const db = fakeSupabase()
       const logged = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -347,10 +347,10 @@ describe('a timed out update the at-risk record holds (#2163)', () => {
     }
   })
 
-  // A Submission has no marker field, so the read-back (#2023) cannot judge its
-  // updates, and a held one is announced like any other: a wrong alert swapped
-  // for no alert would be the worse failure.
-  it('announces a held Submission write too, and stores no row', async () => {
+  // A Submission update held from before its stamp shipped (#2203) carries no
+  // marker, so the read-back cannot judge it, and it is announced like any
+  // other: a wrong alert swapped for no alert would be the worse failure.
+  it('announces an unstamped Submission write (held from before the stamp shipped), and stores no row', async () => {
     const db = fakeSupabase()
     const result = await captureFailedWriteback(
       { ...run, nodeType: 'salesforce', errorType: 'transient', error: timedOut, resolvedInput: noted('Submission__c', 'a04Ui00000NkhG1IAJ', { PDFlow_1__c: 'x' }), heldUntil: UNTIL },
@@ -382,5 +382,52 @@ describe('a timed out update the at-risk record holds (#2163)', () => {
     )
     expect(result).toEqual({ kind: 'skipped', reason: 'test run' })
     expect(recordOutcomeDeadLetter).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * #2172: a credit inquiry post whose outcome is unknown is held by the at-risk
+ * record, and the read-back judges it by the Lead's Inquiries file and resends it
+ * at most once. Calling it uncapturable would page about a post that is being
+ * handled; one nothing holds still says it cannot be replayed.
+ */
+describe('a held credit inquiry post is left to the read-back (#2172)', () => {
+  const UNTIL = '2026-10-16T00:29:54.000Z'
+  const post = (resolved: Record<string, unknown> = {}): ResolvedStepInput => ({
+    template: {},
+    resolved: { operation: 'apex', object: '', method: 'POST', url: 'https://sf/services/apexrest/credit-inquiries', body: { submissionId: 'a04Ui00000NkhG1IAJ', inquiriesJson: '{"inquiries":[{"type":"H"}]}' }, ...resolved },
+  })
+
+  it('stores no row and sends no alert when the at-risk record holds it, and logs it', async () => {
+    const db = fakeSupabase()
+    const logged = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const result = await captureFailedWriteback(
+        { ...run, stepNamespace: 'inquiry_apex_send_salesforce', nodeType: 'salesforce', errorType: 'transient', error: new Error('Salesforce API error (500)'), resolvedInput: post(), heldUntil: UNTIL },
+        { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+      )
+      expect(result).toEqual({ kind: 'held', until: UNTIL })
+      expect(logged.mock.calls.map((c) => c.join(' ')).join('\n')).toMatch(/credit inquiry post.*inquiry_apex_send_salesforce/)
+    } finally {
+      logged.mockRestore()
+    }
+    expect(db.inserts).toHaveLength(0)
+    expect(recordOutcomeDeadLetter).not.toHaveBeenCalled()
+  })
+
+  it('still dead-letters one nothing holds as uncapturable', async () => {
+    await captureFailedWriteback(
+      { ...run, nodeType: 'salesforce', errorType: 'permanent', error: new Error('Salesforce API error (404)'), resolvedInput: post(), heldUntil: null },
+      { supabase: fakeSupabase().client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(vi.mocked(recordOutcomeDeadLetter).mock.calls.map((c) => c[0])).toEqual([WRITEBACK_UNCAPTURABLE_LABEL])
+  })
+
+  it('is not mistaken for another Apex call that happens to be held', async () => {
+    await captureFailedWriteback(
+      { ...run, nodeType: 'salesforce', errorType: 'transient', error: new Error('x'), resolvedInput: post({ url: 'https://sf/services/apexrest/credit-trades' }), heldUntil: UNTIL },
+      { supabase: fakeSupabase().client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+    )
+    expect(vi.mocked(recordOutcomeDeadLetter).mock.calls.map((c) => c[0])).toEqual([WRITEBACK_UNCAPTURABLE_LABEL])
   })
 })

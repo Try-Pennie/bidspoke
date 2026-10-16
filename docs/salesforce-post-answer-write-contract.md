@@ -456,9 +456,9 @@ not a write):
 
 These workflows already use native Salesforce nodes, so their post-answer writes
 are already the shape #1680 is moving the Main Flow toward. Since #2020 and
-#2023 their updates on `Applicant__c`, `Prospect__c` and `Lead` carry a write
-marker and are read back and resent; their `Submission__c` updates are not (see
-"The write marker and the read-back" below).
+#2023 their post-answer updates on `Applicant__c`, `Prospect__c` and `Lead`
+carry a write marker and are read back and resent, and since #2203 so are their
+`Submission__c` updates (see "The write marker and the read-back" below).
 
 ### Engine Bidding Workflow (`da82a183`)
 
@@ -795,8 +795,9 @@ nothing.
   as the original would have.
 - An Inquiries resend that carries inquiries replaces the inquiry rows (safe)
   but attaches one more file to the Lead each time (not idempotent); one
-  without inquiries writes nothing. It is pre-answer, so #2023 does
-  not resend it.
+  without inquiries writes nothing. So it is never resent blind: the native
+  post is read back by its file first and resent at most once (#2172, see
+  "The credit inquiry post's read-back").
 - On Prospect, a resent `BidStatus__c` that would move backward is reverted
   without error, so the PATCH answers 204 and the field does not hold the
   resent value.
@@ -1171,16 +1172,19 @@ older one).
 
 ## The write marker and the read-back (#2023)
 
-**The marker.** Every post-answer `update` on `Applicant__c`, `Prospect__c` and
-`Lead` carries `Bidspoke_Write__c = <execution id>:<step namespace>:<attempt>`
-(Text 255, #2020). The engine adds it, not the canvas, so no workflow is edited
+**The marker.** Every post-answer `update` on `Applicant__c`, `Prospect__c`,
+`Lead` and `Submission__c` carries `Bidspoke_Write__c = <execution id>:<step
+namespace>:<attempt>` (Text 255: #2020 on the first three, #2203 on
+Submission). The engine adds it, not the canvas, so no workflow is edited
 for it: the walk decides "post-answer" by a response already pending when the
 step starts, the same fact that starts the at-risk watch (#2022), and hands the
 marker to the Salesforce node for that step only. A write before the answer is
 never stamped. Attempt 0 is the run's own step, every retry inside it included
 (they send the identical PATCH); 1 and 2 are the read-back's resends. A marker
 that would not fit 255 characters is not stamped at all, and that write keeps the
-held alert. Code: `apps/worker/src/engine/write-marker.ts`.
+held alert. Code: `apps/worker/src/engine/write-marker.ts`, whose one object list
+(`WRITE_MARKER_OBJECTS`) the stamp, the held alert's hand-off and the read-back
+all read, so an object is stamped exactly when the read-back can judge it.
 
 **The read-back** (`apps/worker/src/lib/salesforce-read-back.ts`, every minute)
 reads each held write's record once it is 3 minutes old (30 s for the last
@@ -1191,15 +1195,71 @@ earlier write), and resends what did not land, at most twice, under a claim that
 fails closed. A field another writer set since the write began is never
 overwritten and is named in a conflict alert. Its header has the rest.
 
-**Submission is not covered.** `Submission__c` has no marker field. The only
-native post-answer Submission write live today is Liberty1's `update_submission`
-(about 30 a day), and it carries this run's link in `PDFlow_3__c`, not
-`PDFlow_1__c`. The Main Flow's Submission writes are still relay posts (webhook
-nodes, which the at-risk watch does not record) until #1680 ports them. Using
-`PDFlow_3__c` as Liberty1's marker, or adding `Bidspoke_Write__c` to
-`Submission__c`, is a decision recorded on #2023; until it is made, a held
-Submission update keeps the held alert (#2163), as does any update held from
-before the marker shipped.
+**Submission is covered (#2203).** Dan chose on 2026-10-15 to give
+`Submission__c` the same marker rather than borrow a field such as Liberty1's
+run link in `PDFlow_3__c`: `Bidspoke_Write__c` (Text 255) is live on Submission
+and editable by the Bidspoke Integration user through the permission set
+`Bidspoke_Write_Marker` (deploy `0AfUi000001tOSXKA2`). So a cut off post-answer
+Submission update is stamped, read back by its own marker, dropped when it
+landed and resent when it did not, exactly as a Prospect update is, and no
+longer goes to the held alert. Live today that is Liberty1's `update_submission`
+(about 30 a day); once #1680 ports the Main Flow's outcome posts (about 3,300 a
+day) from relay webhooks, which the at-risk watch does not record, to native
+Submission updates, they are covered the same way. A Submission update held
+from before #2203 deployed carries no stamp, so it is never the read-back's and
+keeps the held alert (#2163), as does any update held from before the marker
+shipped for its object, or one whose marker would not fit.
+
+### The credit inquiry post's read-back (#2172)
+
+Dan's D5 (2026-10-15): an inquiry post whose outcome is unknown is never resent
+blind. It applies to the native Apex step, `operation: apex` posting to
+`/services/apexrest/credit-inquiries` (in the ported Main Flow,
+`inquiry_apex_<post>`, built by `portMainFlow`'s `inquiry` stage); the relay post
+`send_salesforce_inquiry` is untouched until phase 7 (#2176) moves it. Code:
+`apps/worker/src/engine/inquiry-post.ts`, and the at-risk watch and the read-back
+above, extended rather than copied.
+
+- **Never retried by the engine.** The engine reads a step's retries through
+  `stepRetries`, which answers 0 for this post whatever the step's config says,
+  in both the walk's own loop and a parallel node's children. The 401 fresh
+  login resend stays: a 401 means Salesforce ran nothing.
+- **Never sent when it cannot write.** An empty list (answered 200, nothing
+  written) and a missing list (answered 500 before any write, 2,562 of 21,848
+  live posts in 7 days) are skipped with `nothing_to_write`. A body the endpoint
+  cannot read at all (no Submission id, `inquiriesJson` not the JSON text of
+  `{ inquiries: [...] }`) fails the step, permanent, before any call.
+- **Recorded before it is sent.** Before or after the answer, the watch writes
+  the post (the Submission id and the whole body, encrypted) to KV at
+  `at-risk-write:<execution>:<step>` and the node waits for that write before the
+  call goes out, so an isolate cancelled mid call still leaves it. A 2xx clears it,
+  as does a definite refusal (a 404: no Submission, or no Lead). A timeout, no
+  answer or a 500 keeps it: `InquiryParserRest` does not roll back, so a 500 can
+  follow written rows with no file. A held post is not dead-lettered as
+  uncapturable; it is logged and left to the read-back.
+- **Read back by its file.** Once 3 minutes old, the minute read-back reads the
+  Submission's `Lead__c`, then asks for the file:
+  `SELECT Id FROM ContentDocumentLink WHERE LinkedEntityId = '<lead>' AND
+  ContentDocument.Title = 'Inquiries_<lead>' AND ContentDocument.CreatedDate >=
+  <post start less 2 s>`. Proved read only on the org on 2026-10-15: one row for a
+  Lead's file of that day, none with a later window. A file means landed. A held
+  post with an empty list is landed without asking; one with no list, or a body
+  the endpoint cannot read, is settled as nothing to send.
+- **Resent once.** No file: the held body is posted again exactly as sent, at most
+  once (`MAX_INQUIRY_RESENDS`), under the read-back's send claim, which fails
+  closed, with the attempt counted before the send. A 2xx confirms it. A refusal
+  is the "Credit inquiry post could not be resent" alert. A 500 or no answer is
+  read again a tick later; still no file is "Credit inquiry post still not
+  confirmed", as is one still unknown 15 minutes after it began. A Submission
+  that is gone or has no Lead is never sent, and is said in the first alert,
+  worded as not resent. The unread and not running alerts count posts with the
+  updates and say how many are posts.
+- **What it does not cover.** A post inside a parallel node is not recorded (the
+  watch's request hook is one slot on the run); the ported Main Flow has none
+  there. Two runs on one Lead within the same seconds could read each other's
+  file as their own. A resend shed by our own bulkhead uses up the one resend;
+  the read-back sends nothing while the bulkhead is full, so this needs a slot
+  to vanish between that check and the send.
 
 ## Open questions (consolidated)
 

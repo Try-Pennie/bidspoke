@@ -382,6 +382,7 @@ const REFUSAL_PATHS: Readonly<Record<string, string>> = {
   sold_on_locked: 'soldOn',
   click_delivery_on_offer_buyer: 'clickDelivery',
   click_delivery_invalid: 'clickDelivery',
+  display_time_zone_invalid: 'displayTimeZone',
 }
 
 /** The 409 a stale page save is answered with (save_partner_page's DETAIL), each part null when absent. */

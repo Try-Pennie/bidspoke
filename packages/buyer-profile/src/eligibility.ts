@@ -1,4 +1,4 @@
-import { easternParts, isOpen, type OperatingWindow } from './clock'
+import { easternParts, isOpen, type DisplayTimeZone, type OperatingWindow } from './clock'
 import { fnv1a32 } from './hash'
 import { parsePositiveAmount, parseUsState } from './parse'
 import { priceForDebt, type Price, type PricingTier } from './tiers'
@@ -35,6 +35,12 @@ export interface BuyerProfile {
    * request_url and success_pattern are still in force.
    */
   clickDelivery?: ClickDelivery | null
+  /**
+   * The zone the page SHOWS the hours in (#2143). Carried only so
+   * validateProfile can refuse a value outside the list: nothing that judges a
+   * lead reads it, because the hours above are Eastern whatever it says.
+   */
+  displayTimeZone?: DisplayTimeZone | null
 }
 
 /** The lead as the node resolved it from its templates, before any parsing. */

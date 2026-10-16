@@ -11,7 +11,9 @@
 -- Mutations tried: the REVOKE on partner_configs_bump_version() left out of the
 -- migration (case 1 red: PUBLIC keeps EXECUTE, so anon and authenticated have it);
 -- the REVOKE on _apply_buyer_profile left out (#2133, case 1 red); the REVOKE
--- from service_role on it left out (case 3 red: the default privileges grant it).
+-- from service_role on it left out (case 3 red: the default privileges grant it);
+-- #2143 replaced _apply_buyer_profile and buyer_profile_document and lists the
+-- second here.
 
 CREATE TEMP TABLE IF NOT EXISTS suite_cases (name text PRIMARY KEY, ran_at timestamptz NOT NULL DEFAULT now());
 DELETE FROM suite_cases;
@@ -46,7 +48,9 @@ BEGIN
     'public.partner_uuid_map_page_notice_one_side()',
     'public.save_partner_page(uuid, uuid, integer, jsonb, integer, jsonb, uuid, uuid, uuid, text, text)',
     'public.change_partner_uuid(uuid, text, text, text, uuid, text, text)',
-    'public.monitor_partner_page_ping(uuid, uuid)'
+    'public.monitor_partner_page_ping(uuid, uuid)',
+    -- PR12 (#2143): _apply_buyer_profile is listed above
+    'public.buyer_profile_document(uuid)'
   ] LOOP
     IF has_function_privilege('anon', fn, 'EXECUTE') THEN bad := array_append(bad, 'anon can execute ' || fn); END IF;
     IF has_function_privilege('authenticated', fn, 'EXECUTE') THEN bad := array_append(bad, 'authenticated can execute ' || fn); END IF;
@@ -70,7 +74,9 @@ BEGIN
     -- PR4 (#2135)
     'public.save_partner_page(uuid, uuid, integer, jsonb, integer, jsonb, uuid, uuid, uuid, text, text)',
     'public.change_partner_uuid(uuid, text, text, text, uuid, text, text)',
-    'public.monitor_partner_page_ping(uuid, uuid)'
+    'public.monitor_partner_page_ping(uuid, uuid)',
+    -- #2143: GET /partners/:id/buyer-profile reads the document through it
+    'public.buyer_profile_document(uuid)'
   ] LOOP
     IF NOT has_function_privilege('service_role', fn, 'EXECUTE') THEN bad := array_append(bad, 'service_role cannot execute ' || fn); END IF;
   END LOOP;

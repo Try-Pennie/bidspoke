@@ -281,6 +281,40 @@ describe('PUT /partners/:id/page: the whole page in one save (#2133)', () => {
     expect(((await res.json()) as { errors: unknown[] }).errors).toEqual([expect.objectContaining({ code: 'field_not_editable', field: 'slug' })])
   })
 
+  // #2143: the parser builds a new document from the fields it declares, so a
+  // display zone it did not declare would be dropped here and never saved.
+  it('carries the display time zone to the save and back: Pacific saved reads back Pacific', async () => {
+    const rpc = saved({ profile: { ...doc, version: 3, display_time_zone: 'America/Los_Angeles' } })
+    supabaseWith(rpc)
+    const res = await put(page({ profile: { ...doc, display_time_zone: 'America/Los_Angeles' } }))
+    expect(res.status).toBe(200)
+    expect((pageCalls(rpc)[0][1] as { p_profile: Record<string, unknown> }).p_profile.display_time_zone).toBe('America/Los_Angeles')
+    expect(((await res.json()) as { profile: Record<string, unknown> }).profile.display_time_zone).toBe('America/Los_Angeles')
+  })
+
+  it('sends no display time zone when the page did not speak about it, so the stored one is kept', async () => {
+    const rpc = saved()
+    supabaseWith(rpc)
+    expect((await put(page())).status).toBe(200)
+    expect('display_time_zone' in (pageCalls(rpc)[0][1] as { p_profile: Record<string, unknown> }).p_profile).toBe(false)
+  })
+
+  it('refuses a zone outside the list before calling anything, and names the database refusal by its registry path', async () => {
+    const rpc = saved()
+    supabaseWith(rpc)
+    const res = await put(page({ profile: { ...doc, display_time_zone: 'America/Phoenix' } }))
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ error: 'profile_malformed', errors: [{ path: 'display_time_zone' }] })
+    expect(pageCalls(rpc)).toEqual([])
+
+    supabaseWith(vi.fn(async () => ({ data: null, error: { code: 'BP422', message: 'display_time_zone_invalid', details: 'America/Phoenix' } })))
+    const refused = await put(page())
+    expect(refused.status).toBe(422)
+    expect(((await refused.json()) as { errors: unknown[] }).errors).toEqual([
+      { code: 'display_time_zone_invalid', path: 'displayTimeZone', field: 'profile.display_time_zone', message: 'America/Phoenix' },
+    ])
+  })
+
   it('P0002 from the function is 404, and a real database error is 500, never a false 404 or 409', async () => {
     supabaseWith(vi.fn(async () => ({ data: null, error: { code: 'P0002', message: 'partner_not_found' } })))
     expect((await put(page())).status).toBe(404)

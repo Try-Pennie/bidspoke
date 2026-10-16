@@ -629,6 +629,7 @@ export type Database = {
           daily_spend_cap_cents: number | null
           debt_max: number | null
           debt_min: number | null
+          display_time_zone: string | null
           hourly_lead_cap: number | null
           hourly_spend_cap_cents: number | null
           is_enabled: boolean
@@ -652,6 +653,7 @@ export type Database = {
           daily_spend_cap_cents?: number | null
           debt_max?: number | null
           debt_min?: number | null
+          display_time_zone?: string | null
           hourly_lead_cap?: number | null
           hourly_spend_cap_cents?: number | null
           is_enabled?: boolean
@@ -675,6 +677,7 @@ export type Database = {
           daily_spend_cap_cents?: number | null
           debt_max?: number | null
           debt_min?: number | null
+          display_time_zone?: string | null
           hourly_lead_cap?: number | null
           hourly_spend_cap_cents?: number | null
           is_enabled?: boolean
