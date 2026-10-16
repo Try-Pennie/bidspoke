@@ -3,9 +3,10 @@
  *
  * POST /partner-bid-configs/:id/sync credits the person who pressed Sync now:
  * it hands their users id to syncBidConfig, which writes it to
- * bid_config_history.changed_by. Creating and deleting a config write an audit
- * row carrying the partner it belongs to, so a deleted config's rows still
- * reach that partner's History once the config id no longer resolves to it.
+ * bid_config_history.changed_by. Creating, updating and deleting a config
+ * write an audit row carrying the partner it belongs to, so a deleted config's
+ * rows still reach that partner's History once the config id no longer
+ * resolves to it.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { Env } from '../../../index'
@@ -73,6 +74,19 @@ describe('matrix config routes record who and which partner (#2141)', () => {
     expect(res.status).toBe(201)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(expect.anything(), 'org-abc', 'partner_bid_config', 'c-9', 'created', 'user-1',
       { slug: 'sofi', name: 'SoFi', partner_id: 'p-1' })
+  })
+
+  it('an updated config is audited with its partner, so the row outlives the config', async () => {
+    const supabase = makeSupabase({
+      users: { single: testUser },
+      partner_bid_configs: [{ single: { id: 'c-1', partner_id: 'p-1' } }, { updateResult: { id: 'c-1', name: 'Renamed' } }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(supabase as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await send(app, 'PUT', '/partner-bid-configs/c-1', { name: 'Renamed' })
+    expect(res.status).toBe(200)
+    expect(supabase.calls['partner_bid_configs']).toContainEqual(['select', ['id, partner_id']])
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(expect.anything(), 'org-abc', 'partner_bid_config', 'c-1', 'updated', 'user-1',
+      { changed_fields: ['name'], partner_id: 'p-1' })
   })
 
   it('a deleted config is audited with its partner', async () => {

@@ -143,9 +143,9 @@ route.put('/:id', async (c) => {
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<BidConfigBody>()
 
-  const { error: fetchErr } = await supabase
+  const { data: current, error: fetchErr } = await supabase
     .from('partner_bid_configs')
-    .select('id')
+    .select('id, partner_id')
     .eq('id', id)
     .eq('organization_id', orgId)
     .single()
@@ -176,6 +176,8 @@ route.put('/:id', async (c) => {
   if (!data) return c.json({ error: 'Config not found' }, 404)
   await writeAuditLog(supabase, orgId, 'partner_bid_config', id, 'updated', userId, {
     changed_fields: Object.keys(updates).filter((k) => !k.startsWith('updated_')),
+    // As on create and delete (#2141): History still finds this row after the config is gone.
+    partner_id: current.partner_id,
   })
   return c.json(data)
 })
