@@ -14,6 +14,7 @@
 import { useEffect, useState, type ReactNode } from 'react'
 import { api, type PartnerWorkflowValue, type PartnerWorkflowValues } from '@/lib/api'
 import { Button } from '@/components/ui/form'
+import { LiveSectionNote } from './live/PartnerLive'
 import {
   accessLines, readerSentences, searchedSentence, sectionsOf, shadowSentences, type SectionKey, type ValueSection,
 } from '@/app/(app)/partners/workflow-values-text'
@@ -27,7 +28,12 @@ interface Props {
   /** Null for a partner not saved yet: nothing is read. */
   partnerId: string | null
   slug: string
-  /** Changes when the partner is saved, so the values as emitted are read again. */
+  /**
+   * Changes whenever what the step emits for the partner may have changed, so
+   * the values are read again: on a save (the partner's version) and on a
+   * sub-account ID added or removed (those are written at once, not on save).
+   * The form builds it as `<version>:<number of sub-account IDs>`.
+   */
   refreshKey: string
   isBuyer: boolean
   isSource: boolean
@@ -35,6 +41,18 @@ interface Props {
   isActive: boolean
   partnerName: string
   controls: WorkflowValueControls
+}
+
+/**
+ * The live notes (#2135) of the field registry sections this tab holds, each
+ * named literally so live-section-notes-guard.test.ts can read them. Sub-account
+ * IDs and Active have no registry section here: the IDs are written at once,
+ * outside the versioned save, and Active is the Partner tab's Status.
+ */
+const LIVE_NOTES: Partial<Record<SectionKey, ReactNode>> = {
+  click_url: <LiveSectionNote sections={['Click URL']} />,
+  sell_off: <LiveSectionNote sections={['Sell-off offer']} />,
+  min_bids: <LiveSectionNote sections={['Sub-account minimum bids']} />,
 }
 
 const sameList = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i])
@@ -86,6 +104,7 @@ function ValueSectionView({ section, read, slug, isActive, partnerName, control 
     <section data-value-section={section.key}>
       <h3 className="mb-4 text-xs font-semibold text-gray-500">{section.title}</h3>
       <div className="space-y-3">
+        {LIVE_NOTES[section.key]}
         {control}
         {section.key === 'active' && (
           <p className="text-sm text-gray-700">{`${partnerName} is ${isActive ? 'active' : 'inactive'}, so workflows read ${isActive ? 'true' : 'false'}. Active is set on the Partner tab.`}</p>

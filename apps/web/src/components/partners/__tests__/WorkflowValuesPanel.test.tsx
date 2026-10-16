@@ -13,6 +13,7 @@ vi.mock('@/lib/api', () => ({ api: { partners: { workflowValues: vi.fn() } } }))
 import { api } from '@/lib/api'
 import type { PartnerWorkflowValue, PartnerWorkflowValues } from '@/lib/api'
 import { WorkflowValuesPanel } from '../WorkflowValuesPanel'
+import { LiveNotesContext } from '../live/PartnerLive'
 import { PARTNER_VALUE_KINDS } from '@/app/(app)/partners/workflow-values-text'
 import fixture from '../../../../e2e/fixtures/partners/workflow-values.json'
 
@@ -139,6 +140,35 @@ describe('the read\'s other states', () => {
     await findSection('Click URL')
     rerender(<WorkflowValuesPanel {...props} partnerId="t" refreshKey="4" />)
     await waitFor(() => expect(api.partners.workflowValues).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('live notes (#2135)', () => {
+  it('each value section shows the live notes of its registry section, and only those', async () => {
+    vi.mocked(api.partners.workflowValues).mockResolvedValue(bySlug('tripoint'))
+    const notes = [
+      { sections: ['Click URL'], text: 'Updated by Editor A.' },
+      { sections: ['Sub-account minimum bids'], text: 'Changed directly in the database at 9:12 AM ET.' },
+    ]
+    render(
+      <LiveNotesContext.Provider value={notes}>
+        <WorkflowValuesPanel {...props} partnerId="t" controls={{ click_url: <input aria-label="Click URL" />, min_bids: <input aria-label="Minimum bid" /> }} />
+      </LiveNotesContext.Provider>,
+    )
+    const click = await findSection('Click URL')
+    expect(within(click).getByText('Updated by Editor A.')).toBeVisible()
+    expect(within(click).queryByText('Changed directly in the database at 9:12 AM ET.')).toBeNull()
+    expect(within(section('Sub-account minimum bids')).getByText('Changed directly in the database at 9:12 AM ET.')).toBeVisible()
+  })
+
+  it('a Sofi sell-off offer note lands in its section', async () => {
+    vi.mocked(api.partners.workflowValues).mockResolvedValue(bySlug('sofi'))
+    render(
+      <LiveNotesContext.Provider value={[{ sections: ['Sell-off offer'], text: 'Updated by Editor B.' }]}>
+        <WorkflowValuesPanel {...props} slug="sofi" partnerName="Sofi" isBuyer={false} isSource partnerId="s" />
+      </LiveNotesContext.Provider>,
+    )
+    expect(within(await findSection('Sell-off offer')).getByText('Updated by Editor B.')).toBeVisible()
   })
 })
 
