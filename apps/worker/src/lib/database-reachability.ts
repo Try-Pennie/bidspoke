@@ -166,13 +166,31 @@ async function noteFailedMinute(kv: RecoveryKv, nowMs: number): Promise<boolean>
   return previousFailed
 }
 
+/** What one report did, organization by organization. */
+export interface UnreachableOutcome {
+  /** Organizations a page reached on this report. */
+  told: string[]
+  /**
+   * Organizations whose page or its bookkeeping threw, with why. One whose page
+   * reached Slack before its bookkeeping threw is in both lists: it was told,
+   * and its next reminder may come early.
+   */
+  failed: { orgId: string; reason: string }[]
+}
+
 /**
  * A scheduled read failed. Recorded against its reader, stamped as the
  * incident's running end for every organization in the copy, and paged once per
  * cooldown per organization when the reader's rule says this report pages.
- * Throws only when KV refuses a write the incident depends on, as before.
+ *
+ * Each organization is its own failure boundary: a Slack post or KV write that
+ * throws for one is logged with its reason and the rest are still paged, and
+ * the result says which were told and which failed. Throws only when KV refuses
+ * a write before the organizations are reached (the reader's record, the
+ * failed minute).
  */
-export async function reportDatabaseUnreachable(deps: ReachabilityDeps, report: UnreachableReport): Promise<void> {
+export async function reportDatabaseUnreachable(deps: ReachabilityDeps, report: UnreachableReport): Promise<UnreachableOutcome> {
+  const outcome: UnreachableOutcome = { told: [], failed: [] }
   const { kv } = deps
   const nowMs = (deps.now ?? Date.now)()
   const record = await readSource(kv, report.source)
@@ -186,7 +204,7 @@ export async function reportDatabaseUnreachable(deps: ReachabilityDeps, report: 
     const why = copy.kind === 'unreadable' ? `the saved Slack copy cannot be read (${copy.detail})` : 'there is no last-good Slack connection in KV'
     // The exact words a log alert can match on (#1303 decision 2).
     console.error(`[database-reachability] ${report.what} read failed and ${why}, so nobody can be told: ${errorText}`)
-    return
+    return outcome
   }
   const copyAgeMs = copy.savedAtMs === null ? null : Math.max(0, nowMs - copy.savedAtMs)
   if (!pages) {
@@ -195,33 +213,46 @@ export async function reportDatabaseUnreachable(deps: ReachabilityDeps, report: 
 
   for (const [orgId, conn] of copy.connections) {
     if (!conn.volume_alerts_enabled) continue
-    await markSpikeSeen(kv, DB_UNREACHABLE_PREFIX, orgId, nowMs)
-    if (!pages) continue
-    const backoff = backoffKey(orgId)
-    // The claim key phase 3 gave this page, kept so a claim held across the
-    // deploy still counts; taken before the cooldown read that decides and held
-    // for the minute alert TTL (#2062, L157).
-    let standing: Awaited<ReturnType<typeof readCondition>> = null
-    const outcome = await postMinutePage({
-      claims: deps.claims,
-      key: `${DB_UNREACHABLE_PREFIX}:${orgId}`,
-      inCooldown: () => inCooldown(kv, backoff),
-      send: async () => {
-        // Unchanged is false since the error text can move between reminders (#1337).
-        standing = await readCondition(kv, backoff)
-        const repeat = describeRepeat(standing, nowMs, false, DB_UNREACHABLE_STEPS) ?? undefined
-        return Boolean(await sendDatabaseUnreachableAlert(conn, conn.default_channel, { what: report.what, error: errorText, appUrl: deps.appUrl, repeat, copyAgeMs }))
-      },
-    })
-    if (outcome === 'claimed_elsewhere') console.log(`[database-reachability] database unreachable alert claimed by another reporter org=${orgId}`)
-    if (outcome === 'sent') {
-      // The marker before the cooldown (#2058): a cut between them then costs at
-      // worst a repeated page, never a lost all-clear.
-      await markAlerted(kv, DB_UNREACHABLE_PREFIX, orgId, incident(orgId), nowMs)
-      await recordPaged(kv, DB_UNREACHABLE_PREFIX, orgId, incident(orgId), nowMs)
-      await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: DB_UNREACHABLE_STEPS, conditionTtlSeconds: CONDITION_TTL_SECONDS })
+    try {
+      await markSpikeSeen(kv, DB_UNREACHABLE_PREFIX, orgId, nowMs)
+      if (!pages) continue
+      const backoff = backoffKey(orgId)
+      // The claim key phase 3 gave this page, kept so a claim held across the
+      // deploy still counts; taken before the cooldown read that decides and held
+      // for the minute alert TTL (#2062, L157).
+      let standing: Awaited<ReturnType<typeof readCondition>> = null
+      const posted = await postMinutePage({
+        claims: deps.claims,
+        key: `${DB_UNREACHABLE_PREFIX}:${orgId}`,
+        inCooldown: () => inCooldown(kv, backoff),
+        send: async () => {
+          // Unchanged is false since the error text can move between reminders (#1337).
+          standing = await readCondition(kv, backoff)
+          const repeat = describeRepeat(standing, nowMs, false, DB_UNREACHABLE_STEPS) ?? undefined
+          return Boolean(await sendDatabaseUnreachableAlert(conn, conn.default_channel, { what: report.what, error: errorText, appUrl: deps.appUrl, repeat, copyAgeMs }))
+        },
+      })
+      if (posted === 'claimed_elsewhere') console.log(`[database-reachability] database unreachable alert claimed by another reporter org=${orgId}`)
+      if (posted === 'sent') {
+        outcome.told.push(orgId)
+        // The marker before the cooldown (#2058): a cut between them then costs at
+        // worst a repeated page, never a lost all-clear.
+        await markAlerted(kv, DB_UNREACHABLE_PREFIX, orgId, incident(orgId), nowMs)
+        await recordPaged(kv, DB_UNREACHABLE_PREFIX, orgId, incident(orgId), nowMs)
+        await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: DB_UNREACHABLE_STEPS, conditionTtlSeconds: CONDITION_TTL_SECONDS })
+      }
+    } catch (e) {
+      // This organization only: the others are still paged. The claim is not
+      // freed here: postMinutePage frees it when nothing was posted (a refusal,
+      // or a cooldown read that threw), and keeps it when the post threw or
+      // went out before the bookkeeping threw, since that page may have reached
+      // Slack (#2062). At worst the next page is late, never doubled.
+      const reason = formatErr(e)
+      outcome.failed.push({ orgId, reason })
+      console.error(`[database-reachability] database unreachable page for org=${orgId} failed, the other organizations are still paged: ${reason}`)
     }
   }
+  return outcome
 }
 
 /**
@@ -250,11 +281,21 @@ async function measuredHealthy(kv: RecoveryKv, nowMs: number): Promise<string | 
  * Announce the all-clear to each organization that was paged, once every reader
  * has been healthy for the window. Called by the probe on a healthy minute with
  * the connections it has just read, so an organization that disconnected is not
- * told.
+ * told. Each organization is its own failure boundary, as for the page: one
+ * whose all-clear or settling throws is logged and the rest are still told, and
+ * its incident stays open for the next healthy minute to try again.
  */
 async function announceDatabaseReadable(deps: ReachabilityDeps, connections: Map<string, SlackConnection>, nowMs: number): Promise<void> {
   let measured: Promise<string | null> | null = null
   for (const [orgId, conn] of connections) {
+    try {
+      await announceOne(orgId, conn)
+    } catch (e) {
+      console.error(`[database-reachability] database all-clear for org=${orgId} failed, the other organizations are still told: ${formatErr(e)}`)
+    }
+  }
+
+  async function announceOne(orgId: string, conn: SlackConnection): Promise<void> {
     const backoff = backoffKey(orgId)
     let sentence: string | null = null
     const recovered = await announceRecovery(
