@@ -215,3 +215,101 @@ describe('BidMatrixViewer: deleting a matrix (#2134)', () => {
     }
   })
 })
+
+// #2217: a rows read that failed rendered the empty state, "No rows yet", so a
+// load failure read as a matrix with no rows (L10). The read now has three
+// states of its own: loading, failed with Try again, and empty.
+describe('BidMatrixViewer: the rows read has loading, failed and empty states (#2217)', () => {
+  const rows = [
+    { id: 'r1', config_id: 'cfg-1', is_sell_off: false, row_low: 0, row_high: 9999, range_low: 600, range_high: 699, bid_amount: 10 },
+  ]
+
+  it('while the read is in flight it says it is loading, never that there are no rows', async () => {
+    vi.mocked(api.partnerBidConfigs.get).mockImplementation(() => new Promise(() => {}))
+    renderViewer()
+    expect(await screen.findByRole('status', { name: 'Loading the matrix rows' })).toBeInTheDocument()
+    expect(screen.queryByText(/No rows yet/)).toBeNull()
+  })
+
+  it('a rejected read shows the error and why, never "No rows yet", and Try again reads again', async () => {
+    vi.mocked(api.partnerBidConfigs.get).mockRejectedValueOnce(Object.assign(new Error('partner bid config read failed'), { status: 500 }))
+    vi.mocked(api.partnerBidConfigs.get).mockResolvedValueOnce({ config, rows } as never)
+    renderViewer()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent("This matrix's rows could not be loaded.")
+    expect(alert).toHaveTextContent('partner bid config read failed')
+    expect(alert).toHaveTextContent('Nothing has changed.')
+    expect(screen.queryByText(/No rows yet/)).toBeNull()
+    fireEvent.click(within(alert).getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('Standard rows (1)')).toBeInTheDocument()
+    expect(api.partnerBidConfigs.get).toHaveBeenCalledTimes(2)
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('a read that ran out of time says the server did not answer within 30 seconds', async () => {
+    vi.mocked(api.partnerBidConfigs.get).mockRejectedValue(Object.assign(new Error('Timed out after 30s. It may still be processing. Check execution history before retrying.'), { timedOut: true }))
+    renderViewer()
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('The server did not answer within 30 seconds.')
+    expect(alert).not.toHaveTextContent(/execution history/)
+  })
+
+  it('a read that answers with no rows is the empty state', async () => {
+    renderViewer()
+    expect(await screen.findByText(/No rows yet/)).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+})
+
+// #2217: deleting the matrix the partner's resolver points at left
+// bid_config_id naming the deleted matrix, and the selectedConfigId effect put
+// the deleted id back on screen. The page draft is now cleared to "No matrix",
+// so the save sends it and the unsaved state shows it.
+describe('BidMatrixViewer: deleting the matrix the partner uses (#2217)', () => {
+  const second = { ...config, id: 'cfg-2', name: 'sofi spare', is_default: false } as unknown as PartnerBidConfig
+
+  /** Wired the way PartnerForm wires it: the resolver config is the page draft. */
+  function Host({ initial, onDraft }: { initial: string | null; onDraft: (cfg: Record<string, unknown>) => void }) {
+    const [configs, setConfigs] = useState([config, second])
+    const [resolverConfig, setResolverConfig] = useState<Record<string, unknown>>({ bid_config_id: initial })
+    return (
+      <BidMatrixViewer
+        partnerId="p-1"
+        partnerSlug="sofi"
+        configs={configs}
+        onConfigsChange={setConfigs}
+        selectedConfigId={typeof resolverConfig.bid_config_id === 'string' ? resolverConfig.bid_config_id : undefined}
+        onSelectConfig={(id) => { const next = { ...resolverConfig, bid_config_id: id }; setResolverConfig(next); onDraft(next) }}
+      />
+    )
+  }
+
+  async function deleteShown() {
+    fireEvent.click(screen.getByRole('button', { name: 'Delete this matrix' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete matrix' }))
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+  }
+
+  it('clears the draft to no matrix, and never shows or reads the deleted matrix again', async () => {
+    vi.mocked(api.partnerBidConfigs.delete).mockResolvedValue({ ok: true })
+    const onDraft = vi.fn()
+    render(<Host initial="cfg-1" onDraft={onDraft} />)
+    await screen.findByText(/No rows yet/)
+    await deleteShown()
+    expect(onDraft).toHaveBeenLastCalledWith({ bid_config_id: null })
+    expect(screen.getByRole('combobox', { name: 'Matrix shown' })).toHaveTextContent('No matrix')
+    expect(screen.queryByText(/no longer available/)).toBeNull()
+    // The read before the delete is the only read of cfg-1: nothing reads the deleted matrix after it.
+    expect(vi.mocked(api.partnerBidConfigs.get).mock.calls.filter(([id]) => id === 'cfg-1')).toHaveLength(1)
+    expect(screen.getByRole('button', { name: 'Delete this matrix' })).toBeDisabled()
+  })
+
+  it('deleting a matrix the partner does not use leaves the draft alone', async () => {
+    vi.mocked(api.partnerBidConfigs.delete).mockResolvedValue({ ok: true })
+    const onDraft = vi.fn()
+    render(<Host initial={null} onDraft={onDraft} />)
+    await screen.findByText(/No rows yet/)
+    await deleteShown()
+    expect(onDraft).not.toHaveBeenCalled()
+  })
+})

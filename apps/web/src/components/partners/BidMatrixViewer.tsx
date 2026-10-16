@@ -7,6 +7,7 @@ import { Loader2, RefreshCw, Plus, Check, AlertTriangle, Trash2 } from 'lucide-r
 import { Dialog } from '@/components/Dialog'
 import { Button } from '@/components/ui/form'
 import { Select } from '@/components/ui/Select'
+import { Skeleton } from '@/components/ui/Skeleton'
 import { errorSentence } from '@/lib/error-sentence'
 
 interface Props {
@@ -15,17 +16,33 @@ interface Props {
   configs: PartnerBidConfig[]
   onConfigsChange: (configs: PartnerBidConfig[]) => void
   selectedConfigId?: string
-  onSelectConfig?: (id: string) => void
+  /** Sets the partner's matrix in the page draft; null is "No matrix" (#2217). */
+  onSelectConfig?: (id: string | null) => void
 }
 
 type SyncState = 'idle' | 'syncing' | 'synced' | 'error'
 
+/**
+ * The rows read of the matrix in view (#2217): a failed read is its own state,
+ * never the empty one, so a load failure cannot read as a matrix with no rows (L10).
+ */
+type RowsRead =
+  | { state: 'none' }
+  | { state: 'loading' }
+  | { state: 'failed'; why: string }
+  | { state: 'loaded'; rows: BidMatrixRow[] }
+
+/** Why a rows read failed, in the design's words for a read that ran out of time. */
+function readFailure(err: unknown): string {
+  if ((err as { timedOut?: unknown } | null)?.timedOut === true) return 'The server did not answer within 30 seconds.'
+  return errorSentence(err, 'The read failed.')
+}
+
 export function BidMatrixViewer(p: Props) {
   const [activeId, setActiveId] = useState<string | null>(p.selectedConfigId ?? p.configs[0]?.id ?? null)
-  const [rows, setRows] = useState<BidMatrixRow[]>([])
-  /** False when the rows could not be read, so nothing claims how many there are. */
-  const [rowsKnown, setRowsKnown] = useState(false)
-  const [loadingRows, setLoadingRows] = useState(false)
+  const [rowsRead, setRowsRead] = useState<RowsRead>({ state: 'none' })
+  /** Bumped by Try again, so the same matrix is read again. */
+  const [rowsAttempt, setRowsAttempt] = useState(0)
   const [syncState, setSyncState] = useState<SyncState>('idle')
   const [syncError, setSyncError] = useState<string | null>(null)
   // Structural problems (overlaps/gaps) from the last manual sync (#208). Surfaced
@@ -45,19 +62,17 @@ export function BidMatrixViewer(p: Props) {
   }, [p.selectedConfigId, activeId])
 
   useEffect(() => {
-    if (!activeId) { setRows([]); setRowsKnown(false); return }
+    if (!activeId) { setRowsRead({ state: 'none' }); return }
     let cancelled = false
-    // A different matrix is now in view — its problems (if any) come from its own
+    // A different matrix is now in view: its problems (if any) come from its own
     // sync, not the one we may have just shown.
     setProblems([])
-    setLoadingRows(true)
-    setRowsKnown(false)
+    setRowsRead({ state: 'loading' })
     api.partnerBidConfigs.get(activeId)
-      .then((res) => { if (!cancelled) { setRows(res.rows); setRowsKnown(true) } })
-      .catch(() => { if (!cancelled) setRows([]) })
-      .finally(() => { if (!cancelled) setLoadingRows(false) })
+      .then((res) => { if (!cancelled) setRowsRead({ state: 'loaded', rows: res.rows }) })
+      .catch((err: unknown) => { if (!cancelled) setRowsRead({ state: 'failed', why: readFailure(err) }) })
     return () => { cancelled = true }
-  }, [activeId])
+  }, [activeId, rowsAttempt])
 
   const activeConfig = p.configs.find((c) => c.id === activeId) ?? null
 
@@ -69,7 +84,7 @@ export function BidMatrixViewer(p: Props) {
     try {
       const result = await api.partnerBidConfigs.sync(activeConfig.id)
       const refreshed = await api.partnerBidConfigs.get(activeConfig.id)
-      setRows(refreshed.rows)
+      setRowsRead({ state: 'loaded', rows: refreshed.rows })
       setProblems(result.problems ?? [])
       p.onConfigsChange(p.configs.map((c) => c.id === activeConfig.id ? refreshed.config : c))
       setSyncState('synced')
@@ -140,6 +155,16 @@ export function BidMatrixViewer(p: Props) {
     setDeleteAsk(null)
     const remaining = p.configs.filter((c) => c.id !== activeConfig.id)
     p.onConfigsChange(remaining)
+    // The partner priced from the matrix just deleted (#2217): its draft is
+    // cleared to "No matrix", so the page shows an unsaved change and the save
+    // sends it. Never another matrix picked for it, which would price leads from
+    // a matrix nobody chose. Left as it was, selectedConfigId would also put the
+    // deleted id straight back into view.
+    if (p.onSelectConfig && p.selectedConfigId === activeConfig.id) {
+      p.onSelectConfig(null)
+      setActiveId(null)
+      return
+    }
     setActiveId(remaining[0]?.id ?? null)
   }
 
@@ -149,7 +174,8 @@ export function BidMatrixViewer(p: Props) {
    * matrix synced from Salesforce can come back.
    */
   function deleteConsequence(config: PartnerBidConfig): string {
-    const what = rowsKnown ? `Its ${rows.length} ${rows.length === 1 ? 'row' : 'rows'} and its change history are` : 'Its rows and its change history are'
+    const count = rowsRead.state === 'loaded' ? rowsRead.rows.length : null
+    const what = count !== null ? `Its ${count} ${count === 1 ? 'row' : 'rows'} and its change history are` : 'Its rows and its change history are'
     const back = config.sync_source === 'salesforce'
       ? 'Salesforce still holds the rows, so adding a matrix and syncing brings them back; the history does not come back.'
       : 'Neither can be brought back.'
@@ -170,6 +196,7 @@ export function BidMatrixViewer(p: Props) {
               id={`${baseId}-matrix`}
               aria-label="Matrix shown"
               value={activeId ?? ''}
+              placeholder="No matrix"
               options={p.configs.map((c) => ({ value: c.id, label: `${c.name}${c.is_default ? ' (default)' : ''}` }))}
               onChange={(id) => { setActiveId(id); p.onSelectConfig?.(id) }}
               className="w-auto min-w-[12rem]"
@@ -187,7 +214,7 @@ export function BidMatrixViewer(p: Props) {
                 ? <><AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-hidden="true" /> Retry sync</>
                 : <><RefreshCw className="h-3.5 w-3.5" aria-hidden="true" /> Sync now</>}
             </Button>
-            <Button variant="danger" onClick={() => setDeleteAsk({ deleting: false, error: null })} aria-label="Delete this matrix" title="Delete this matrix">
+            <Button variant="danger" onClick={() => setDeleteAsk({ deleting: false, error: null })} disabled={!activeConfig} aria-label="Delete this matrix" title="Delete this matrix">
               <Trash2 className="h-4 w-4" aria-hidden="true" />
             </Button>
           </>
@@ -220,7 +247,7 @@ export function BidMatrixViewer(p: Props) {
             </div>
           )}
           {problems.length > 0 && <MatrixProblems problems={problems} />}
-          <MatrixTable rows={rows} dimensions={activeConfig.dimensions} loading={loadingRows} />
+          <MatrixRows read={rowsRead} dimensions={activeConfig.dimensions} onRetry={() => setRowsAttempt((n) => n + 1)} />
         </div>
       )}
     </div>
@@ -273,10 +300,32 @@ function ConfigBadge({ config }: { config: PartnerBidConfig }) {
   )
 }
 
-function MatrixTable({ rows, dimensions, loading }: { rows: BidMatrixRow[]; dimensions: BidConfigDimension[]; loading: boolean }) {
-  if (loading) {
-    return <div className="rounded-lg border border-gray-200 px-3 py-6 text-center text-sm text-gray-500">Loading matrix…</div>
+/** The rows of the matrix in view, in whichever of the read's states it is in (#2217). */
+function MatrixRows({ read, dimensions, onRetry }: { read: RowsRead; dimensions: BidConfigDimension[]; onRetry: () => void }) {
+  if (read.state === 'none') return null
+  if (read.state === 'loading') {
+    // The design's loading pattern: grey placeholders while the read is live. The
+    // read's own 30 second ceiling turns it into the failed state below.
+    return (
+      <div role="status" aria-label="Loading the matrix rows" className="space-y-2 rounded-lg border border-gray-200 px-3 py-3">
+        <Skeleton className="h-3 w-1/3" />
+        <Skeleton className="h-3 w-2/3" />
+        <Skeleton className="h-3 w-1/2" />
+      </div>
+    )
   }
+  if (read.state === 'failed') {
+    return (
+      <div role="alert" className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <span className="flex-1">This matrix&apos;s rows could not be loaded. {read.why} Nothing has changed.</span>
+        <Button variant="secondary" onClick={onRetry}>Try again</Button>
+      </div>
+    )
+  }
+  return <MatrixTable rows={read.rows} dimensions={dimensions} />
+}
+
+function MatrixTable({ rows, dimensions }: { rows: BidMatrixRow[]; dimensions: BidConfigDimension[] }) {
   if (rows.length === 0) {
     return <div className="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500">No rows yet. Click <span className="font-medium">Sync now</span> to pull from Salesforce.</div>
   }
