@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   BETTER_STACK_ALERT_NAME,
+  drillNobodyToldPage,
   NOBODY_TOLD_KV_WRITE_DEADLINE_MS,
   createNobodyToldPager,
   NOBODY_TOLD_KV_PREFIX,
@@ -96,11 +97,12 @@ function pager(opts: { token?: string | undefined; url?: string | undefined; fet
 }
 
 describe('the fixed line', () => {
-  it('is exactly the text the Better Stack alert "Bidspoke nobody can be told in Slack" matches on', () => {
-    // The Better Stack alert matches on this text in the `message` field of the
+  it('is exactly the text the Better Stack alert "Bidspoke Slack alerts down" matches on', () => {
+    // The Better Stack alert matches on this text in the raw event of the
     // source (docs/reference/observability.md). Change it here and the alert
     // stops matching: change the alert in the same change, never only this.
-    expect(BETTER_STACK_ALERT_NAME).toBe('Bidspoke nobody can be told in Slack')
+    // The alert's name is Dan's (2026-10-16); the line is what it matches on.
+    expect(BETTER_STACK_ALERT_NAME).toBe('Bidspoke Slack alerts down')
     expect(NOBODY_TOLD_LINE).toBe('bidspoke nobody can be told in Slack: the database did not answer and no saved Slack copy could stand in')
   })
 })
@@ -259,5 +261,82 @@ describe('inert until the secrets are set', () => {
     expect(sent).toHaveLength(0)
     const said = logs.filter((l) => l.includes('BETTERSTACK_OUTAGE_TOKEN'))
     expect(said).toHaveLength(1)
+  })
+})
+
+/**
+ * The drill (#1303): one page sent on demand, through the same POST the real
+ * outage makes, so a person can prove the stored URL and token are right and
+ * that the alert fires. It must say what actually happened, and it must never
+ * leave anything that would hold back a real page (it takes no KV at all; the
+ * route test proves the IDEMPOTENCY binding is untouched).
+ */
+describe('the drill', () => {
+  function drill(opts: { token?: string | undefined; url?: string | undefined; fetchMode?: number | 'stall' | 'throw'; delay?: (ms: number) => Promise<void> } = {}) {
+    const f = fakeFetch(opts.fetchMode ?? 202)
+    const done = drillNobodyToldPage({
+      token: 'token' in opts ? opts.token : TOKEN,
+      url: 'url' in opts ? opts.url : URL_,
+      fetch: f.fetchFn,
+      now: () => NOW,
+      delay: opts.delay ?? (() => new Promise<void>(() => {})),
+    })
+    return { done, ...f }
+  }
+
+  it('sends the fixed line the alert matches on, marked as a drill, with no organization', async () => {
+    const { done, sent } = drill()
+    await done
+    expect(sent).toHaveLength(1)
+    expect(sent[0].url).toBe(URL_)
+    expect(sent[0].init.method).toBe('POST')
+    const headers = new Headers(sent[0].init.headers)
+    expect(headers.get('Authorization')).toBe(`Bearer ${TOKEN}`)
+    expect(headers.get('Content-Type')).toBe('application/json')
+    expect(sent[0].body).toStrictEqual({ message: NOBODY_TOLD_LINE, organization_id: null, reason: 'drill', dt: '2026-10-16T14:05:00.000Z' })
+  })
+
+  it('sends the same request a real page sends, apart from the reason', async () => {
+    const real = pager()
+    await real.pager.page(null, 'no_copy')
+    const { done, sent } = drill()
+    await done
+    expect(sent[0].url).toBe(real.sent[0].url)
+    expect(sent[0].init.method).toBe(real.sent[0].init.method)
+    expect([...new Headers(sent[0].init.headers)]).toEqual([...new Headers(real.sent[0].init.headers)])
+    expect({ ...sent[0].body, reason: 'no_copy' }).toStrictEqual(real.sent[0].body)
+  })
+
+  it('answers sent with the status Better Stack gave', async () => {
+    await expect(drill({ fetchMode: 202 }).done).resolves.toStrictEqual({ outcome: 'sent', status: 202 })
+  })
+
+  it('answers refused with the status when Better Stack refuses', async () => {
+    await expect(drill({ fetchMode: 401 }).done).resolves.toStrictEqual({ outcome: 'refused', status: 401 })
+    await expect(drill({ fetchMode: 500 }).done).resolves.toStrictEqual({ outcome: 'refused', status: 500 })
+  })
+
+  it('answers no answer at the page deadline, and aborts the send', async () => {
+    const d = controlledDelay()
+    const { done, signals } = drill({ fetchMode: 'stall', delay: d.delay })
+    await vi.waitFor(() => expect(d.pending.some((x) => x.ms === NOBODY_TOLD_PAGE_DEADLINE_MS)).toBe(true))
+    d.expire(NOBODY_TOLD_PAGE_DEADLINE_MS)
+    await expect(done).resolves.toStrictEqual({ outcome: 'no_answer', deadline_ms: NOBODY_TOLD_PAGE_DEADLINE_MS })
+    expect(signals[0].aborted).toBe(true)
+  })
+
+  it('answers threw with the failure when the send throws', async () => {
+    await expect(drill({ fetchMode: 'throw' }).done).resolves.toStrictEqual({ outcome: 'threw', error: 'fetch failed' })
+  })
+
+  it.each([
+    ['the token', { token: undefined }, ['BETTERSTACK_OUTAGE_TOKEN']],
+    ['the URL', { url: undefined }, ['BETTERSTACK_OUTAGE_URL']],
+    ['a blank token', { token: '  ' }, ['BETTERSTACK_OUTAGE_TOKEN']],
+    ['both', { token: undefined, url: '' }, ['BETTERSTACK_OUTAGE_TOKEN', 'BETTERSTACK_OUTAGE_URL']],
+  ])('answers not configured, sending nothing, without %s', async (_label, opts, missing) => {
+    const { done, sent } = drill(opts)
+    await expect(done).resolves.toStrictEqual({ outcome: 'not_configured', missing })
+    expect(sent).toHaveLength(0)
   })
 })
