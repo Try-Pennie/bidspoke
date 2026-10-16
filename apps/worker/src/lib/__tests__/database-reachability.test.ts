@@ -196,8 +196,9 @@ describe('each organization is its own failure boundary', () => {
     expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes(ORG) && String(c[0]).includes('Slack exploded'))).toBe(true)
   })
 
-  // Lessons review at a14c900: freeing the claim of the org whose page threw
-  // can throw too (a KV refusal in the same outage); it must not end the loop.
+  // Lessons review at a14c900: freeing the claim of an org whose page did not
+  // go out can throw too (a refusal from the claim object in the same outage);
+  // it must not end the loop. Since #2062 only a refused post frees a claim.
   it('still pages the second organization when freeing the first one\'s claim also throws', async () => {
     const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: await copyBlob({ [ORG]: CONN, [ORG2]: CONN2 }) })
     // A refusal Slack answered is what frees a claim since #2062 (a post that
