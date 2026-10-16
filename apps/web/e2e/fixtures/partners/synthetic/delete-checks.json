@@ -1,5 +1,2989 @@
 {
-  "_about": "Delete check fixtures for the accessibility job (#2140). Each entry is the route's inputs (the SQL check's answer, the ledger's counts, the organization's workflows and the sub-account IDs) and the answer the real route gives for them, which partners-fixtures-contract.test.ts holds. Counts and workflow ids, names and updated_at were read from production on 2026-10-16, read only; the ledger counts and the reduced definitions are synthetic. Tripoint is blocked by its sales; Liberty1, the deletable partner with the most dependents, is not.",
+  "_about": "Delete check fixtures for the accessibility job (#2140), one for every partner in partners.json (partner-fixtures.test.ts holds that). Each entry is the route's inputs (the SQL check's answer, the ledger's counts, the organization's workflows and the sub-account IDs) and the answer the real route gives for them, which partners-fixtures-contract.test.ts holds. Counts, workflow ids, names and updated_at, and which workflows name each partner by id, were read from production on 2026-10-16, read only; the ledger counts and the reduced definitions are synthetic. Tripoint is blocked by its sales; the others can be deleted.",
+  "58d50fe7-3e86-4d71-85c7-4533ab08acb0": {
+    "rpc": {
+      "partner": {
+        "id": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+        "name": "AmOne",
+        "slug": "amone",
+        "partner_type": "buyer",
+        "is_active": true
+      },
+      "dependents": [
+        {
+          "table": "buyer_sales",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "held_click_claims",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_profiles",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_pricing_tiers",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_operating_windows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_blackout_dates",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_daily_counts",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_bid_configs",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_matrix_rows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_config_history",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_uuid_map",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        }
+      ],
+      "secret": {
+        "name": "AMONE_PROXY_SECRET",
+        "other_partners": 0
+      }
+    },
+    "ledger": {
+      "unmirrored": 0,
+      "unresolved": 0
+    },
+    "uuids": [],
+    "workflows": [
+      {
+        "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+        "name": "Main Flow (v2)",
+        "is_active": false,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T16:02:46.045726+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+        "name": "Bidding - LendSwift",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:50.956357+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+        "name": "Offer Wall by Submission ID",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-06-12T16:25:12.896358+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+        "name": "Main Flow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-07T16:39:59.496957+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+        "name": "RML - Bidding Workflow (GigFi)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:23.988525+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+        "name": "Lead Economy - Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:16.226636+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+        "name": "Liberty1 Click Handler",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-send",
+              "type": "buyer_click_send",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-14T21:48:55.183829+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+        "name": "Engine Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-constants",
+              "namespace": "constants",
+              "type": "constants",
+              "config": {
+                "data": {}
+              }
+            },
+            {
+              "id": "n-active",
+              "namespace": "active_bidding",
+              "label": "Active bidding",
+              "type": "code",
+              "config": {
+                "script": "return { on: steps.constants.output.activeBidding[sourceName] }"
+              }
+            },
+            {
+              "id": "n-check",
+              "type": "buyer_click_check",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:56:11.675418+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+        "name": "RML - Bidding Workflow (LendSwift)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:14:41.894522+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+        "name": "Delegate Gmail Access for Offboarded Agents",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-09-17T14:20:25.190452+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+        "name": "Forms <> Engine <> Data Store (Loan only)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:59.211412+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      }
+    ],
+    "answer": {
+      "partner": {
+        "id": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+        "name": "AmOne",
+        "slug": "amone",
+        "partner_type": "buyer",
+        "is_active": true
+      },
+      "blockers": [],
+      "removes": [],
+      "workflows_naming_partner": [
+        {
+          "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+          "name": "Main Flow (v2)",
+          "is_active": false
+        },
+        {
+          "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+          "name": "Main Flow",
+          "is_active": true
+        }
+      ],
+      "workflows_reading_values": [
+        {
+          "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+          "name": "Engine Bidding Workflow",
+          "is_active": true,
+          "reads": "every_partner",
+          "values": [
+            "activeBidding"
+          ]
+        }
+      ],
+      "secret": {
+        "name": "AMONE_PROXY_SECRET",
+        "other_partners": 0
+      },
+      "fingerprint": {
+        "counts": {
+          "buyer_sales": 0,
+          "held_click_claims": 0,
+          "buyer_profiles": 0,
+          "buyer_pricing_tiers": 0,
+          "buyer_operating_windows": 0,
+          "buyer_blackout_dates": 0,
+          "partner_daily_counts": 0,
+          "partner_bid_configs": 0,
+          "bid_matrix_rows": 0,
+          "bid_config_history": 0,
+          "partner_uuid_map": 0
+        },
+        "workflows": [
+          {
+            "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+            "updated_at": "2026-10-15T16:02:46.045726+00:00"
+          },
+          {
+            "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+            "updated_at": "2026-10-15T14:15:50.956357+00:00"
+          },
+          {
+            "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+            "updated_at": "2026-06-12T16:25:12.896358+00:00"
+          },
+          {
+            "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+            "updated_at": "2026-10-07T16:39:59.496957+00:00"
+          },
+          {
+            "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+            "updated_at": "2026-10-15T14:15:23.988525+00:00"
+          },
+          {
+            "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+            "updated_at": "2026-10-15T14:16:16.226636+00:00"
+          },
+          {
+            "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+            "updated_at": "2026-10-14T21:48:55.183829+00:00"
+          },
+          {
+            "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "updated_at": "2026-10-15T14:56:11.675418+00:00"
+          },
+          {
+            "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+            "updated_at": "2026-10-15T14:14:41.894522+00:00"
+          },
+          {
+            "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+            "updated_at": "2026-09-17T14:20:25.190452+00:00"
+          },
+          {
+            "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+            "updated_at": "2026-10-15T14:16:59.211412+00:00"
+          }
+        ]
+      }
+    }
+  },
+  "84fa3d0a-c382-41c1-983b-70d75d97cf4c": {
+    "rpc": {
+      "partner": {
+        "id": "84fa3d0a-c382-41c1-983b-70d75d97cf4c",
+        "name": "Brainsome",
+        "slug": "brainsome",
+        "partner_type": "source",
+        "is_active": true
+      },
+      "dependents": [
+        {
+          "table": "buyer_sales",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "held_click_claims",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_profiles",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_pricing_tiers",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_operating_windows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_blackout_dates",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_daily_counts",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_bid_configs",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_matrix_rows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_config_history",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_uuid_map",
+          "kind": "deleted",
+          "rows": 1,
+          "blocking_rows": 0
+        }
+      ],
+      "secret": null
+    },
+    "ledger": {
+      "unmirrored": 0,
+      "unresolved": 0
+    },
+    "uuids": [
+      {
+        "uuid": "f8b2633f-b8d0-4d74-a361-39365630b761"
+      }
+    ],
+    "workflows": [
+      {
+        "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+        "name": "Main Flow (v2)",
+        "is_active": false,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T16:02:46.045726+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+        "name": "Bidding - LendSwift",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:50.956357+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+        "name": "Offer Wall by Submission ID",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-06-12T16:25:12.896358+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+        "name": "Main Flow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-07T16:39:59.496957+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+        "name": "RML - Bidding Workflow (GigFi)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:23.988525+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+        "name": "Lead Economy - Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:16.226636+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+        "name": "Liberty1 Click Handler",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-send",
+              "type": "buyer_click_send",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-14T21:48:55.183829+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+        "name": "Engine Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-constants",
+              "namespace": "constants",
+              "type": "constants",
+              "config": {
+                "data": {}
+              }
+            },
+            {
+              "id": "n-active",
+              "namespace": "active_bidding",
+              "label": "Active bidding",
+              "type": "code",
+              "config": {
+                "script": "return { on: steps.constants.output.activeBidding[sourceName] }"
+              }
+            },
+            {
+              "id": "n-check",
+              "type": "buyer_click_check",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:56:11.675418+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+        "name": "RML - Bidding Workflow (LendSwift)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:14:41.894522+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+        "name": "Delegate Gmail Access for Offboarded Agents",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-09-17T14:20:25.190452+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+        "name": "Forms <> Engine <> Data Store (Loan only)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:59.211412+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      }
+    ],
+    "answer": {
+      "partner": {
+        "id": "84fa3d0a-c382-41c1-983b-70d75d97cf4c",
+        "name": "Brainsome",
+        "slug": "brainsome",
+        "partner_type": "source",
+        "is_active": true
+      },
+      "blockers": [],
+      "removes": [
+        {
+          "table": "partner_uuid_map",
+          "kind": "deleted",
+          "rows": 1,
+          "noun": {
+            "one": "sub-account ID",
+            "many": "sub-account IDs"
+          }
+        }
+      ],
+      "workflows_naming_partner": [],
+      "workflows_reading_values": [
+        {
+          "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+          "name": "Engine Bidding Workflow",
+          "is_active": true,
+          "reads": "every_partner",
+          "values": [
+            "activeBidding"
+          ]
+        }
+      ],
+      "secret": null,
+      "fingerprint": {
+        "counts": {
+          "buyer_sales": 0,
+          "held_click_claims": 0,
+          "buyer_profiles": 0,
+          "buyer_pricing_tiers": 0,
+          "buyer_operating_windows": 0,
+          "buyer_blackout_dates": 0,
+          "partner_daily_counts": 0,
+          "partner_bid_configs": 0,
+          "bid_matrix_rows": 0,
+          "bid_config_history": 0,
+          "partner_uuid_map": 1
+        },
+        "workflows": [
+          {
+            "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+            "updated_at": "2026-10-15T16:02:46.045726+00:00"
+          },
+          {
+            "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+            "updated_at": "2026-10-15T14:15:50.956357+00:00"
+          },
+          {
+            "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+            "updated_at": "2026-06-12T16:25:12.896358+00:00"
+          },
+          {
+            "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+            "updated_at": "2026-10-07T16:39:59.496957+00:00"
+          },
+          {
+            "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+            "updated_at": "2026-10-15T14:15:23.988525+00:00"
+          },
+          {
+            "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+            "updated_at": "2026-10-15T14:16:16.226636+00:00"
+          },
+          {
+            "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+            "updated_at": "2026-10-14T21:48:55.183829+00:00"
+          },
+          {
+            "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "updated_at": "2026-10-15T14:56:11.675418+00:00"
+          },
+          {
+            "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+            "updated_at": "2026-10-15T14:14:41.894522+00:00"
+          },
+          {
+            "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+            "updated_at": "2026-09-17T14:20:25.190452+00:00"
+          },
+          {
+            "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+            "updated_at": "2026-10-15T14:16:59.211412+00:00"
+          }
+        ]
+      }
+    }
+  },
+  "205785c3-09cf-4993-8765-4edd81c62af8": {
+    "rpc": {
+      "partner": {
+        "id": "205785c3-09cf-4993-8765-4edd81c62af8",
+        "name": "Dot818",
+        "slug": "dot818",
+        "partner_type": "source",
+        "is_active": true
+      },
+      "dependents": [
+        {
+          "table": "buyer_sales",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "held_click_claims",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_profiles",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_pricing_tiers",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_operating_windows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_blackout_dates",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_daily_counts",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_bid_configs",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_matrix_rows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_config_history",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_uuid_map",
+          "kind": "deleted",
+          "rows": 1,
+          "blocking_rows": 0
+        }
+      ],
+      "secret": null
+    },
+    "ledger": {
+      "unmirrored": 0,
+      "unresolved": 0
+    },
+    "uuids": [
+      {
+        "uuid": "1b715767-547f-4f89-b792-5bb151434531"
+      }
+    ],
+    "workflows": [
+      {
+        "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+        "name": "Main Flow (v2)",
+        "is_active": false,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T16:02:46.045726+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+        "name": "Bidding - LendSwift",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:50.956357+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+        "name": "Offer Wall by Submission ID",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-06-12T16:25:12.896358+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+        "name": "Main Flow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-07T16:39:59.496957+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+        "name": "RML - Bidding Workflow (GigFi)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:23.988525+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+        "name": "Lead Economy - Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:16.226636+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+        "name": "Liberty1 Click Handler",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-send",
+              "type": "buyer_click_send",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-14T21:48:55.183829+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+        "name": "Engine Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-constants",
+              "namespace": "constants",
+              "type": "constants",
+              "config": {
+                "data": {}
+              }
+            },
+            {
+              "id": "n-active",
+              "namespace": "active_bidding",
+              "label": "Active bidding",
+              "type": "code",
+              "config": {
+                "script": "return { on: steps.constants.output.activeBidding[sourceName] }"
+              }
+            },
+            {
+              "id": "n-check",
+              "type": "buyer_click_check",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:56:11.675418+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+        "name": "RML - Bidding Workflow (LendSwift)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:14:41.894522+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+        "name": "Delegate Gmail Access for Offboarded Agents",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-09-17T14:20:25.190452+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+        "name": "Forms <> Engine <> Data Store (Loan only)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:59.211412+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      }
+    ],
+    "answer": {
+      "partner": {
+        "id": "205785c3-09cf-4993-8765-4edd81c62af8",
+        "name": "Dot818",
+        "slug": "dot818",
+        "partner_type": "source",
+        "is_active": true
+      },
+      "blockers": [],
+      "removes": [
+        {
+          "table": "partner_uuid_map",
+          "kind": "deleted",
+          "rows": 1,
+          "noun": {
+            "one": "sub-account ID",
+            "many": "sub-account IDs"
+          }
+        }
+      ],
+      "workflows_naming_partner": [],
+      "workflows_reading_values": [
+        {
+          "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+          "name": "Engine Bidding Workflow",
+          "is_active": true,
+          "reads": "every_partner",
+          "values": [
+            "activeBidding"
+          ]
+        }
+      ],
+      "secret": null,
+      "fingerprint": {
+        "counts": {
+          "buyer_sales": 0,
+          "held_click_claims": 0,
+          "buyer_profiles": 0,
+          "buyer_pricing_tiers": 0,
+          "buyer_operating_windows": 0,
+          "buyer_blackout_dates": 0,
+          "partner_daily_counts": 0,
+          "partner_bid_configs": 0,
+          "bid_matrix_rows": 0,
+          "bid_config_history": 0,
+          "partner_uuid_map": 1
+        },
+        "workflows": [
+          {
+            "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+            "updated_at": "2026-10-15T16:02:46.045726+00:00"
+          },
+          {
+            "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+            "updated_at": "2026-10-15T14:15:50.956357+00:00"
+          },
+          {
+            "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+            "updated_at": "2026-06-12T16:25:12.896358+00:00"
+          },
+          {
+            "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+            "updated_at": "2026-10-07T16:39:59.496957+00:00"
+          },
+          {
+            "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+            "updated_at": "2026-10-15T14:15:23.988525+00:00"
+          },
+          {
+            "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+            "updated_at": "2026-10-15T14:16:16.226636+00:00"
+          },
+          {
+            "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+            "updated_at": "2026-10-14T21:48:55.183829+00:00"
+          },
+          {
+            "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "updated_at": "2026-10-15T14:56:11.675418+00:00"
+          },
+          {
+            "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+            "updated_at": "2026-10-15T14:14:41.894522+00:00"
+          },
+          {
+            "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+            "updated_at": "2026-09-17T14:20:25.190452+00:00"
+          },
+          {
+            "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+            "updated_at": "2026-10-15T14:16:59.211412+00:00"
+          }
+        ]
+      }
+    }
+  },
+  "e82b748a-3d32-4777-b3e3-b7d75d8580f1": {
+    "rpc": {
+      "partner": {
+        "id": "e82b748a-3d32-4777-b3e3-b7d75d8580f1",
+        "name": "GigFi",
+        "slug": "gigfi",
+        "partner_type": "buyer",
+        "is_active": true
+      },
+      "dependents": [
+        {
+          "table": "buyer_sales",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "held_click_claims",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_profiles",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_pricing_tiers",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_operating_windows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_blackout_dates",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_daily_counts",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_bid_configs",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_matrix_rows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_config_history",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_uuid_map",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        }
+      ],
+      "secret": null
+    },
+    "ledger": {
+      "unmirrored": 0,
+      "unresolved": 0
+    },
+    "uuids": [],
+    "workflows": [
+      {
+        "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+        "name": "Main Flow (v2)",
+        "is_active": false,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T16:02:46.045726+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+        "name": "Bidding - LendSwift",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:50.956357+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+        "name": "Offer Wall by Submission ID",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-06-12T16:25:12.896358+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+        "name": "Main Flow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-07T16:39:59.496957+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+        "name": "RML - Bidding Workflow (GigFi)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:23.988525+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+        "name": "Lead Economy - Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:16.226636+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+        "name": "Liberty1 Click Handler",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-send",
+              "type": "buyer_click_send",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-14T21:48:55.183829+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+        "name": "Engine Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-constants",
+              "namespace": "constants",
+              "type": "constants",
+              "config": {
+                "data": {}
+              }
+            },
+            {
+              "id": "n-active",
+              "namespace": "active_bidding",
+              "label": "Active bidding",
+              "type": "code",
+              "config": {
+                "script": "return { on: steps.constants.output.activeBidding[sourceName] }"
+              }
+            },
+            {
+              "id": "n-check",
+              "type": "buyer_click_check",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:56:11.675418+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+        "name": "RML - Bidding Workflow (LendSwift)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:14:41.894522+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+        "name": "Delegate Gmail Access for Offboarded Agents",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-09-17T14:20:25.190452+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+        "name": "Forms <> Engine <> Data Store (Loan only)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:59.211412+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      }
+    ],
+    "answer": {
+      "partner": {
+        "id": "e82b748a-3d32-4777-b3e3-b7d75d8580f1",
+        "name": "GigFi",
+        "slug": "gigfi",
+        "partner_type": "buyer",
+        "is_active": true
+      },
+      "blockers": [],
+      "removes": [],
+      "workflows_naming_partner": [],
+      "workflows_reading_values": [
+        {
+          "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+          "name": "Engine Bidding Workflow",
+          "is_active": true,
+          "reads": "every_partner",
+          "values": [
+            "activeBidding"
+          ]
+        }
+      ],
+      "secret": null,
+      "fingerprint": {
+        "counts": {
+          "buyer_sales": 0,
+          "held_click_claims": 0,
+          "buyer_profiles": 0,
+          "buyer_pricing_tiers": 0,
+          "buyer_operating_windows": 0,
+          "buyer_blackout_dates": 0,
+          "partner_daily_counts": 0,
+          "partner_bid_configs": 0,
+          "bid_matrix_rows": 0,
+          "bid_config_history": 0,
+          "partner_uuid_map": 0
+        },
+        "workflows": [
+          {
+            "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+            "updated_at": "2026-10-15T16:02:46.045726+00:00"
+          },
+          {
+            "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+            "updated_at": "2026-10-15T14:15:50.956357+00:00"
+          },
+          {
+            "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+            "updated_at": "2026-06-12T16:25:12.896358+00:00"
+          },
+          {
+            "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+            "updated_at": "2026-10-07T16:39:59.496957+00:00"
+          },
+          {
+            "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+            "updated_at": "2026-10-15T14:15:23.988525+00:00"
+          },
+          {
+            "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+            "updated_at": "2026-10-15T14:16:16.226636+00:00"
+          },
+          {
+            "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+            "updated_at": "2026-10-14T21:48:55.183829+00:00"
+          },
+          {
+            "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "updated_at": "2026-10-15T14:56:11.675418+00:00"
+          },
+          {
+            "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+            "updated_at": "2026-10-15T14:14:41.894522+00:00"
+          },
+          {
+            "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+            "updated_at": "2026-09-17T14:20:25.190452+00:00"
+          },
+          {
+            "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+            "updated_at": "2026-10-15T14:16:59.211412+00:00"
+          }
+        ]
+      }
+    }
+  },
+  "4ad955bd-744f-4c1f-acbb-19a22b9e5c64": {
+    "rpc": {
+      "partner": {
+        "id": "4ad955bd-744f-4c1f-acbb-19a22b9e5c64",
+        "name": "LendSwift",
+        "slug": "lendswift",
+        "partner_type": "buyer",
+        "is_active": true
+      },
+      "dependents": [
+        {
+          "table": "buyer_sales",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "held_click_claims",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_profiles",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_pricing_tiers",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_operating_windows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_blackout_dates",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_daily_counts",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_bid_configs",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_matrix_rows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_config_history",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_uuid_map",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        }
+      ],
+      "secret": null
+    },
+    "ledger": {
+      "unmirrored": 0,
+      "unresolved": 0
+    },
+    "uuids": [],
+    "workflows": [
+      {
+        "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+        "name": "Main Flow (v2)",
+        "is_active": false,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T16:02:46.045726+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+        "name": "Bidding - LendSwift",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:50.956357+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+        "name": "Offer Wall by Submission ID",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-06-12T16:25:12.896358+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+        "name": "Main Flow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-07T16:39:59.496957+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+        "name": "RML - Bidding Workflow (GigFi)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:23.988525+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+        "name": "Lead Economy - Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:16.226636+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+        "name": "Liberty1 Click Handler",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-send",
+              "type": "buyer_click_send",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-14T21:48:55.183829+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+        "name": "Engine Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-constants",
+              "namespace": "constants",
+              "type": "constants",
+              "config": {
+                "data": {}
+              }
+            },
+            {
+              "id": "n-active",
+              "namespace": "active_bidding",
+              "label": "Active bidding",
+              "type": "code",
+              "config": {
+                "script": "return { on: steps.constants.output.activeBidding[sourceName] }"
+              }
+            },
+            {
+              "id": "n-check",
+              "type": "buyer_click_check",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:56:11.675418+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+        "name": "RML - Bidding Workflow (LendSwift)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:14:41.894522+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+        "name": "Delegate Gmail Access for Offboarded Agents",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-09-17T14:20:25.190452+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+        "name": "Forms <> Engine <> Data Store (Loan only)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:59.211412+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      }
+    ],
+    "answer": {
+      "partner": {
+        "id": "4ad955bd-744f-4c1f-acbb-19a22b9e5c64",
+        "name": "LendSwift",
+        "slug": "lendswift",
+        "partner_type": "buyer",
+        "is_active": true
+      },
+      "blockers": [],
+      "removes": [],
+      "workflows_naming_partner": [],
+      "workflows_reading_values": [
+        {
+          "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+          "name": "Engine Bidding Workflow",
+          "is_active": true,
+          "reads": "every_partner",
+          "values": [
+            "activeBidding"
+          ]
+        }
+      ],
+      "secret": null,
+      "fingerprint": {
+        "counts": {
+          "buyer_sales": 0,
+          "held_click_claims": 0,
+          "buyer_profiles": 0,
+          "buyer_pricing_tiers": 0,
+          "buyer_operating_windows": 0,
+          "buyer_blackout_dates": 0,
+          "partner_daily_counts": 0,
+          "partner_bid_configs": 0,
+          "bid_matrix_rows": 0,
+          "bid_config_history": 0,
+          "partner_uuid_map": 0
+        },
+        "workflows": [
+          {
+            "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+            "updated_at": "2026-10-15T16:02:46.045726+00:00"
+          },
+          {
+            "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+            "updated_at": "2026-10-15T14:15:50.956357+00:00"
+          },
+          {
+            "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+            "updated_at": "2026-06-12T16:25:12.896358+00:00"
+          },
+          {
+            "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+            "updated_at": "2026-10-07T16:39:59.496957+00:00"
+          },
+          {
+            "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+            "updated_at": "2026-10-15T14:15:23.988525+00:00"
+          },
+          {
+            "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+            "updated_at": "2026-10-15T14:16:16.226636+00:00"
+          },
+          {
+            "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+            "updated_at": "2026-10-14T21:48:55.183829+00:00"
+          },
+          {
+            "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "updated_at": "2026-10-15T14:56:11.675418+00:00"
+          },
+          {
+            "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+            "updated_at": "2026-10-15T14:14:41.894522+00:00"
+          },
+          {
+            "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+            "updated_at": "2026-09-17T14:20:25.190452+00:00"
+          },
+          {
+            "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+            "updated_at": "2026-10-15T14:16:59.211412+00:00"
+          }
+        ]
+      }
+    }
+  },
+  "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3": {
+    "rpc": {
+      "partner": {
+        "id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "name": "Liberty1",
+        "slug": "liberty1",
+        "partner_type": "buyer",
+        "is_active": true
+      },
+      "dependents": [
+        {
+          "table": "buyer_sales",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "held_click_claims",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_profiles",
+          "kind": "deleted",
+          "rows": 1,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_pricing_tiers",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_operating_windows",
+          "kind": "deleted",
+          "rows": 5,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_blackout_dates",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_daily_counts",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_bid_configs",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_matrix_rows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_config_history",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_uuid_map",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        }
+      ],
+      "secret": null
+    },
+    "ledger": {
+      "unmirrored": 0,
+      "unresolved": 0
+    },
+    "uuids": [],
+    "workflows": [
+      {
+        "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+        "name": "Main Flow (v2)",
+        "is_active": false,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T16:02:46.045726+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+        "name": "Bidding - LendSwift",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:50.956357+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+        "name": "Offer Wall by Submission ID",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-06-12T16:25:12.896358+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+        "name": "Main Flow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-07T16:39:59.496957+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+        "name": "RML - Bidding Workflow (GigFi)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:23.988525+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+        "name": "Lead Economy - Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:16.226636+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+        "name": "Liberty1 Click Handler",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-send",
+              "type": "buyer_click_send",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-14T21:48:55.183829+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+        "name": "Engine Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-constants",
+              "namespace": "constants",
+              "type": "constants",
+              "config": {
+                "data": {}
+              }
+            },
+            {
+              "id": "n-active",
+              "namespace": "active_bidding",
+              "label": "Active bidding",
+              "type": "code",
+              "config": {
+                "script": "return { on: steps.constants.output.activeBidding[sourceName] }"
+              }
+            },
+            {
+              "id": "n-check",
+              "type": "buyer_click_check",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:56:11.675418+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+        "name": "RML - Bidding Workflow (LendSwift)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:14:41.894522+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+        "name": "Delegate Gmail Access for Offboarded Agents",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-09-17T14:20:25.190452+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+        "name": "Forms <> Engine <> Data Store (Loan only)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:59.211412+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      }
+    ],
+    "answer": {
+      "partner": {
+        "id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "name": "Liberty1",
+        "slug": "liberty1",
+        "partner_type": "buyer",
+        "is_active": true
+      },
+      "blockers": [],
+      "removes": [
+        {
+          "table": "buyer_profiles",
+          "kind": "deleted",
+          "rows": 1,
+          "noun": {
+            "one": "buyer profile",
+            "many": "buyer profiles"
+          }
+        },
+        {
+          "table": "buyer_operating_windows",
+          "kind": "deleted",
+          "rows": 5,
+          "noun": {
+            "one": "operating window",
+            "many": "operating windows"
+          }
+        }
+      ],
+      "workflows_naming_partner": [
+        {
+          "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+          "name": "Liberty1 Click Handler",
+          "is_active": true
+        },
+        {
+          "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+          "name": "Engine Bidding Workflow",
+          "is_active": true
+        }
+      ],
+      "workflows_reading_values": [
+        {
+          "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+          "name": "Engine Bidding Workflow",
+          "is_active": true,
+          "reads": "every_partner",
+          "values": [
+            "activeBidding"
+          ]
+        }
+      ],
+      "secret": null,
+      "fingerprint": {
+        "counts": {
+          "buyer_sales": 0,
+          "held_click_claims": 0,
+          "buyer_profiles": 1,
+          "buyer_pricing_tiers": 0,
+          "buyer_operating_windows": 5,
+          "buyer_blackout_dates": 0,
+          "partner_daily_counts": 0,
+          "partner_bid_configs": 0,
+          "bid_matrix_rows": 0,
+          "bid_config_history": 0,
+          "partner_uuid_map": 0
+        },
+        "workflows": [
+          {
+            "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+            "updated_at": "2026-10-15T16:02:46.045726+00:00"
+          },
+          {
+            "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+            "updated_at": "2026-10-15T14:15:50.956357+00:00"
+          },
+          {
+            "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+            "updated_at": "2026-06-12T16:25:12.896358+00:00"
+          },
+          {
+            "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+            "updated_at": "2026-10-07T16:39:59.496957+00:00"
+          },
+          {
+            "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+            "updated_at": "2026-10-15T14:15:23.988525+00:00"
+          },
+          {
+            "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+            "updated_at": "2026-10-15T14:16:16.226636+00:00"
+          },
+          {
+            "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+            "updated_at": "2026-10-14T21:48:55.183829+00:00"
+          },
+          {
+            "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "updated_at": "2026-10-15T14:56:11.675418+00:00"
+          },
+          {
+            "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+            "updated_at": "2026-10-15T14:14:41.894522+00:00"
+          },
+          {
+            "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+            "updated_at": "2026-09-17T14:20:25.190452+00:00"
+          },
+          {
+            "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+            "updated_at": "2026-10-15T14:16:59.211412+00:00"
+          }
+        ]
+      }
+    }
+  },
+  "73bcc351-724d-4705-be3b-b27d0ffc17ad": {
+    "rpc": {
+      "partner": {
+        "id": "73bcc351-724d-4705-be3b-b27d0ffc17ad",
+        "name": "NerdWallet",
+        "slug": "nerdwallet",
+        "partner_type": "source",
+        "is_active": true
+      },
+      "dependents": [
+        {
+          "table": "buyer_sales",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "held_click_claims",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_profiles",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_pricing_tiers",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_operating_windows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_blackout_dates",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_daily_counts",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_bid_configs",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_matrix_rows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_config_history",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_uuid_map",
+          "kind": "deleted",
+          "rows": 1,
+          "blocking_rows": 0
+        }
+      ],
+      "secret": null
+    },
+    "ledger": {
+      "unmirrored": 0,
+      "unresolved": 0
+    },
+    "uuids": [
+      {
+        "uuid": "76024d2a-1cdf-496e-980e-44732d341c13"
+      }
+    ],
+    "workflows": [
+      {
+        "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+        "name": "Main Flow (v2)",
+        "is_active": false,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T16:02:46.045726+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+        "name": "Bidding - LendSwift",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:50.956357+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+        "name": "Offer Wall by Submission ID",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-06-12T16:25:12.896358+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+        "name": "Main Flow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-07T16:39:59.496957+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+        "name": "RML - Bidding Workflow (GigFi)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:23.988525+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+        "name": "Lead Economy - Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:16.226636+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+        "name": "Liberty1 Click Handler",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-send",
+              "type": "buyer_click_send",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-14T21:48:55.183829+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+        "name": "Engine Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-constants",
+              "namespace": "constants",
+              "type": "constants",
+              "config": {
+                "data": {}
+              }
+            },
+            {
+              "id": "n-active",
+              "namespace": "active_bidding",
+              "label": "Active bidding",
+              "type": "code",
+              "config": {
+                "script": "return { on: steps.constants.output.activeBidding[sourceName] }"
+              }
+            },
+            {
+              "id": "n-check",
+              "type": "buyer_click_check",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:56:11.675418+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+        "name": "RML - Bidding Workflow (LendSwift)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:14:41.894522+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+        "name": "Delegate Gmail Access for Offboarded Agents",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-09-17T14:20:25.190452+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+        "name": "Forms <> Engine <> Data Store (Loan only)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:59.211412+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      }
+    ],
+    "answer": {
+      "partner": {
+        "id": "73bcc351-724d-4705-be3b-b27d0ffc17ad",
+        "name": "NerdWallet",
+        "slug": "nerdwallet",
+        "partner_type": "source",
+        "is_active": true
+      },
+      "blockers": [],
+      "removes": [
+        {
+          "table": "partner_uuid_map",
+          "kind": "deleted",
+          "rows": 1,
+          "noun": {
+            "one": "sub-account ID",
+            "many": "sub-account IDs"
+          }
+        }
+      ],
+      "workflows_naming_partner": [],
+      "workflows_reading_values": [
+        {
+          "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+          "name": "Engine Bidding Workflow",
+          "is_active": true,
+          "reads": "every_partner",
+          "values": [
+            "activeBidding"
+          ]
+        }
+      ],
+      "secret": null,
+      "fingerprint": {
+        "counts": {
+          "buyer_sales": 0,
+          "held_click_claims": 0,
+          "buyer_profiles": 0,
+          "buyer_pricing_tiers": 0,
+          "buyer_operating_windows": 0,
+          "buyer_blackout_dates": 0,
+          "partner_daily_counts": 0,
+          "partner_bid_configs": 0,
+          "bid_matrix_rows": 0,
+          "bid_config_history": 0,
+          "partner_uuid_map": 1
+        },
+        "workflows": [
+          {
+            "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+            "updated_at": "2026-10-15T16:02:46.045726+00:00"
+          },
+          {
+            "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+            "updated_at": "2026-10-15T14:15:50.956357+00:00"
+          },
+          {
+            "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+            "updated_at": "2026-06-12T16:25:12.896358+00:00"
+          },
+          {
+            "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+            "updated_at": "2026-10-07T16:39:59.496957+00:00"
+          },
+          {
+            "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+            "updated_at": "2026-10-15T14:15:23.988525+00:00"
+          },
+          {
+            "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+            "updated_at": "2026-10-15T14:16:16.226636+00:00"
+          },
+          {
+            "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+            "updated_at": "2026-10-14T21:48:55.183829+00:00"
+          },
+          {
+            "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "updated_at": "2026-10-15T14:56:11.675418+00:00"
+          },
+          {
+            "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+            "updated_at": "2026-10-15T14:14:41.894522+00:00"
+          },
+          {
+            "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+            "updated_at": "2026-09-17T14:20:25.190452+00:00"
+          },
+          {
+            "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+            "updated_at": "2026-10-15T14:16:59.211412+00:00"
+          }
+        ]
+      }
+    }
+  },
+  "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68": {
+    "rpc": {
+      "partner": {
+        "id": "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68",
+        "name": "Sofi",
+        "slug": "sofi",
+        "partner_type": "source",
+        "is_active": true
+      },
+      "dependents": [
+        {
+          "table": "buyer_sales",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "held_click_claims",
+          "kind": "blocks",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_profiles",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_pricing_tiers",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_operating_windows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "buyer_blackout_dates",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_daily_counts",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_bid_configs",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_matrix_rows",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "bid_config_history",
+          "kind": "deleted",
+          "rows": 0,
+          "blocking_rows": 0
+        },
+        {
+          "table": "partner_uuid_map",
+          "kind": "deleted",
+          "rows": 4,
+          "blocking_rows": 0
+        }
+      ],
+      "secret": null
+    },
+    "ledger": {
+      "unmirrored": 0,
+      "unresolved": 0
+    },
+    "uuids": [
+      {
+        "uuid": "dd56c162-0b24-4c53-a76c-a6b2f717051b"
+      },
+      {
+        "uuid": "189b30c2-b93c-42dd-945a-e88246d0362a"
+      },
+      {
+        "uuid": "026f93f3-3d57-44b0-b52f-82426c91e547"
+      },
+      {
+        "uuid": "c439f8ab-eea4-4684-805e-6f305994543b"
+      }
+    ],
+    "workflows": [
+      {
+        "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+        "name": "Main Flow (v2)",
+        "is_active": false,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T16:02:46.045726+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+        "name": "Bidding - LendSwift",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:50.956357+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+        "name": "Offer Wall by Submission ID",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-06-12T16:25:12.896358+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+        "name": "Main Flow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-bg",
+              "type": "bid_group",
+              "config": {
+                "partner_ids": [
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+                ]
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-07T16:39:59.496957+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+        "name": "RML - Bidding Workflow (GigFi)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:15:23.988525+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+        "name": "Lead Economy - Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:16.226636+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+        "name": "Liberty1 Click Handler",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-send",
+              "type": "buyer_click_send",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-14T21:48:55.183829+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+        "name": "Engine Bidding Workflow",
+        "is_active": true,
+        "definition": {
+          "nodes": [
+            {
+              "id": "n-constants",
+              "namespace": "constants",
+              "type": "constants",
+              "config": {
+                "data": {}
+              }
+            },
+            {
+              "id": "n-active",
+              "namespace": "active_bidding",
+              "label": "Active bidding",
+              "type": "code",
+              "config": {
+                "script": "return { on: steps.constants.output.activeBidding[sourceName] }"
+              }
+            },
+            {
+              "id": "n-check",
+              "type": "buyer_click_check",
+              "config": {
+                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
+              }
+            }
+          ],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:56:11.675418+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+        "name": "RML - Bidding Workflow (LendSwift)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:14:41.894522+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+        "name": "Delegate Gmail Access for Offboarded Agents",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-09-17T14:20:25.190452+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      },
+      {
+        "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+        "name": "Forms <> Engine <> Data Store (Loan only)",
+        "is_active": true,
+        "definition": {
+          "nodes": [],
+          "edges": []
+        },
+        "updated_at": "2026-10-15T14:16:59.211412+00:00",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "deleted_at": null
+      }
+    ],
+    "answer": {
+      "partner": {
+        "id": "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68",
+        "name": "Sofi",
+        "slug": "sofi",
+        "partner_type": "source",
+        "is_active": true
+      },
+      "blockers": [],
+      "removes": [
+        {
+          "table": "partner_uuid_map",
+          "kind": "deleted",
+          "rows": 4,
+          "noun": {
+            "one": "sub-account ID",
+            "many": "sub-account IDs"
+          }
+        }
+      ],
+      "workflows_naming_partner": [],
+      "workflows_reading_values": [
+        {
+          "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+          "name": "Engine Bidding Workflow",
+          "is_active": true,
+          "reads": "every_partner",
+          "values": [
+            "activeBidding"
+          ]
+        }
+      ],
+      "secret": null,
+      "fingerprint": {
+        "counts": {
+          "buyer_sales": 0,
+          "held_click_claims": 0,
+          "buyer_profiles": 0,
+          "buyer_pricing_tiers": 0,
+          "buyer_operating_windows": 0,
+          "buyer_blackout_dates": 0,
+          "partner_daily_counts": 0,
+          "partner_bid_configs": 0,
+          "bid_matrix_rows": 0,
+          "bid_config_history": 0,
+          "partner_uuid_map": 4
+        },
+        "workflows": [
+          {
+            "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+            "updated_at": "2026-10-15T16:02:46.045726+00:00"
+          },
+          {
+            "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
+            "updated_at": "2026-10-15T14:15:50.956357+00:00"
+          },
+          {
+            "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
+            "updated_at": "2026-06-12T16:25:12.896358+00:00"
+          },
+          {
+            "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+            "updated_at": "2026-10-07T16:39:59.496957+00:00"
+          },
+          {
+            "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+            "updated_at": "2026-10-15T14:15:23.988525+00:00"
+          },
+          {
+            "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+            "updated_at": "2026-10-15T14:16:16.226636+00:00"
+          },
+          {
+            "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+            "updated_at": "2026-10-14T21:48:55.183829+00:00"
+          },
+          {
+            "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
+            "updated_at": "2026-10-15T14:56:11.675418+00:00"
+          },
+          {
+            "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
+            "updated_at": "2026-10-15T14:14:41.894522+00:00"
+          },
+          {
+            "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
+            "updated_at": "2026-09-17T14:20:25.190452+00:00"
+          },
+          {
+            "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
+            "updated_at": "2026-10-15T14:16:59.211412+00:00"
+          }
+        ]
+      }
+    }
+  },
   "1b9cbd8f-1d23-496c-b046-b11d64edae29": {
     "rpc": {
       "partner": {
@@ -99,7 +3083,8 @@
               "type": "bid_group",
               "config": {
                 "partner_ids": [
-                  "1b9cbd8f-1d23-496c-b046-b11d64edae29"
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
                 ]
               }
             }
@@ -145,7 +3130,8 @@
               "type": "bid_group",
               "config": {
                 "partner_ids": [
-                  "1b9cbd8f-1d23-496c-b046-b11d64edae29"
+                  "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+                  "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
                 ]
               }
             }
@@ -356,393 +3342,6 @@
           "buyer_profiles": 1,
           "buyer_pricing_tiers": 2,
           "buyer_operating_windows": 7,
-          "buyer_blackout_dates": 0,
-          "partner_daily_counts": 0,
-          "partner_bid_configs": 0,
-          "bid_matrix_rows": 0,
-          "bid_config_history": 0,
-          "partner_uuid_map": 0
-        },
-        "workflows": [
-          {
-            "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
-            "updated_at": "2026-10-15T16:02:46.045726+00:00"
-          },
-          {
-            "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
-            "updated_at": "2026-10-15T14:15:50.956357+00:00"
-          },
-          {
-            "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
-            "updated_at": "2026-06-12T16:25:12.896358+00:00"
-          },
-          {
-            "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
-            "updated_at": "2026-10-07T16:39:59.496957+00:00"
-          },
-          {
-            "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
-            "updated_at": "2026-10-15T14:15:23.988525+00:00"
-          },
-          {
-            "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
-            "updated_at": "2026-10-15T14:16:16.226636+00:00"
-          },
-          {
-            "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
-            "updated_at": "2026-10-14T21:48:55.183829+00:00"
-          },
-          {
-            "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
-            "updated_at": "2026-10-15T14:56:11.675418+00:00"
-          },
-          {
-            "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
-            "updated_at": "2026-10-15T14:14:41.894522+00:00"
-          },
-          {
-            "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
-            "updated_at": "2026-09-17T14:20:25.190452+00:00"
-          },
-          {
-            "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
-            "updated_at": "2026-10-15T14:16:59.211412+00:00"
-          }
-        ]
-      }
-    }
-  },
-  "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3": {
-    "rpc": {
-      "partner": {
-        "id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
-        "name": "Liberty1",
-        "slug": "liberty1",
-        "partner_type": "buyer",
-        "is_active": true
-      },
-      "dependents": [
-        {
-          "table": "buyer_sales",
-          "kind": "blocks",
-          "rows": 0,
-          "blocking_rows": 0
-        },
-        {
-          "table": "held_click_claims",
-          "kind": "blocks",
-          "rows": 0,
-          "blocking_rows": 0
-        },
-        {
-          "table": "buyer_profiles",
-          "kind": "deleted",
-          "rows": 1,
-          "blocking_rows": 0
-        },
-        {
-          "table": "buyer_pricing_tiers",
-          "kind": "deleted",
-          "rows": 0,
-          "blocking_rows": 0
-        },
-        {
-          "table": "buyer_operating_windows",
-          "kind": "deleted",
-          "rows": 5,
-          "blocking_rows": 0
-        },
-        {
-          "table": "buyer_blackout_dates",
-          "kind": "deleted",
-          "rows": 0,
-          "blocking_rows": 0
-        },
-        {
-          "table": "partner_daily_counts",
-          "kind": "deleted",
-          "rows": 0,
-          "blocking_rows": 0
-        },
-        {
-          "table": "partner_bid_configs",
-          "kind": "deleted",
-          "rows": 0,
-          "blocking_rows": 0
-        },
-        {
-          "table": "bid_matrix_rows",
-          "kind": "deleted",
-          "rows": 0,
-          "blocking_rows": 0
-        },
-        {
-          "table": "bid_config_history",
-          "kind": "deleted",
-          "rows": 0,
-          "blocking_rows": 0
-        },
-        {
-          "table": "partner_uuid_map",
-          "kind": "deleted",
-          "rows": 0,
-          "blocking_rows": 0
-        }
-      ],
-      "secret": null
-    },
-    "ledger": {
-      "unmirrored": 0,
-      "unresolved": 0
-    },
-    "uuids": [],
-    "workflows": [
-      {
-        "id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
-        "name": "Main Flow (v2)",
-        "is_active": false,
-        "definition": {
-          "nodes": [
-            {
-              "id": "n-bg",
-              "type": "bid_group",
-              "config": {
-                "partner_ids": [
-                  "1b9cbd8f-1d23-496c-b046-b11d64edae29"
-                ]
-              }
-            }
-          ],
-          "edges": []
-        },
-        "updated_at": "2026-10-15T16:02:46.045726+00:00",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "deleted_at": null
-      },
-      {
-        "id": "0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5",
-        "name": "Bidding - LendSwift",
-        "is_active": true,
-        "definition": {
-          "nodes": [],
-          "edges": []
-        },
-        "updated_at": "2026-10-15T14:15:50.956357+00:00",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "deleted_at": null
-      },
-      {
-        "id": "40616a00-9f48-411c-8973-91e7a6869e2f",
-        "name": "Offer Wall by Submission ID",
-        "is_active": true,
-        "definition": {
-          "nodes": [],
-          "edges": []
-        },
-        "updated_at": "2026-06-12T16:25:12.896358+00:00",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "deleted_at": null
-      },
-      {
-        "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
-        "name": "Main Flow",
-        "is_active": true,
-        "definition": {
-          "nodes": [
-            {
-              "id": "n-bg",
-              "type": "bid_group",
-              "config": {
-                "partner_ids": [
-                  "1b9cbd8f-1d23-496c-b046-b11d64edae29"
-                ]
-              }
-            }
-          ],
-          "edges": []
-        },
-        "updated_at": "2026-10-07T16:39:59.496957+00:00",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "deleted_at": null
-      },
-      {
-        "id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
-        "name": "RML - Bidding Workflow (GigFi)",
-        "is_active": true,
-        "definition": {
-          "nodes": [],
-          "edges": []
-        },
-        "updated_at": "2026-10-15T14:15:23.988525+00:00",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "deleted_at": null
-      },
-      {
-        "id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
-        "name": "Lead Economy - Bidding Workflow",
-        "is_active": true,
-        "definition": {
-          "nodes": [],
-          "edges": []
-        },
-        "updated_at": "2026-10-15T14:16:16.226636+00:00",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "deleted_at": null
-      },
-      {
-        "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
-        "name": "Liberty1 Click Handler",
-        "is_active": true,
-        "definition": {
-          "nodes": [
-            {
-              "id": "n-send",
-              "type": "buyer_click_send",
-              "config": {
-                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
-              }
-            }
-          ],
-          "edges": []
-        },
-        "updated_at": "2026-10-14T21:48:55.183829+00:00",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "deleted_at": null
-      },
-      {
-        "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
-        "name": "Engine Bidding Workflow",
-        "is_active": true,
-        "definition": {
-          "nodes": [
-            {
-              "id": "n-constants",
-              "namespace": "constants",
-              "type": "constants",
-              "config": {
-                "data": {}
-              }
-            },
-            {
-              "id": "n-active",
-              "namespace": "active_bidding",
-              "label": "Active bidding",
-              "type": "code",
-              "config": {
-                "script": "return { on: steps.constants.output.activeBidding[sourceName] }"
-              }
-            },
-            {
-              "id": "n-check",
-              "type": "buyer_click_check",
-              "config": {
-                "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3"
-              }
-            }
-          ],
-          "edges": []
-        },
-        "updated_at": "2026-10-15T14:56:11.675418+00:00",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "deleted_at": null
-      },
-      {
-        "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
-        "name": "RML - Bidding Workflow (LendSwift)",
-        "is_active": true,
-        "definition": {
-          "nodes": [],
-          "edges": []
-        },
-        "updated_at": "2026-10-15T14:14:41.894522+00:00",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "deleted_at": null
-      },
-      {
-        "id": "ee8ebc50-07dc-4670-89c7-d8ae47401558",
-        "name": "Delegate Gmail Access for Offboarded Agents",
-        "is_active": true,
-        "definition": {
-          "nodes": [],
-          "edges": []
-        },
-        "updated_at": "2026-09-17T14:20:25.190452+00:00",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "deleted_at": null
-      },
-      {
-        "id": "ff1a9f52-7346-452a-bab7-af9f95d36dda",
-        "name": "Forms <> Engine <> Data Store (Loan only)",
-        "is_active": true,
-        "definition": {
-          "nodes": [],
-          "edges": []
-        },
-        "updated_at": "2026-10-15T14:16:59.211412+00:00",
-        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
-        "deleted_at": null
-      }
-    ],
-    "answer": {
-      "partner": {
-        "id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
-        "name": "Liberty1",
-        "slug": "liberty1",
-        "partner_type": "buyer",
-        "is_active": true
-      },
-      "blockers": [],
-      "removes": [
-        {
-          "table": "buyer_profiles",
-          "kind": "deleted",
-          "rows": 1,
-          "noun": {
-            "one": "buyer profile",
-            "many": "buyer profiles"
-          }
-        },
-        {
-          "table": "buyer_operating_windows",
-          "kind": "deleted",
-          "rows": 5,
-          "noun": {
-            "one": "operating window",
-            "many": "operating windows"
-          }
-        }
-      ],
-      "workflows_naming_partner": [
-        {
-          "id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
-          "name": "Liberty1 Click Handler",
-          "is_active": true
-        },
-        {
-          "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
-          "name": "Engine Bidding Workflow",
-          "is_active": true
-        }
-      ],
-      "workflows_reading_values": [
-        {
-          "id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
-          "name": "Engine Bidding Workflow",
-          "is_active": true,
-          "reads": "every_partner",
-          "values": [
-            "activeBidding"
-          ]
-        }
-      ],
-      "secret": null,
-      "fingerprint": {
-        "counts": {
-          "buyer_sales": 0,
-          "held_click_claims": 0,
-          "buyer_profiles": 1,
-          "buyer_pricing_tiers": 0,
-          "buyer_operating_windows": 5,
           "buyer_blackout_dates": 0,
           "partner_daily_counts": 0,
           "partner_bid_configs": 0,

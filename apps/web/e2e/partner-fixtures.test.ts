@@ -148,14 +148,17 @@ describe('answerFor', () => {
 
   // #2140: the two delete boxes the spec scans, and no other partner's, so a
   // page opening another partner fails its scan as unmatched rather than passing.
-  it('answers the delete check of Tripoint, blocked by its sales, and Liberty1, deletable, only', () => {
-    const liberty1 = fx.partners.find((p) => p.slug === 'liberty1')!
-    const blocked = answerFor('GET', `${W}/api/partners/${tripoint.id}/delete-check`, fx)?.body as { blockers: Array<{ kind: string; table?: string }> }
-    expect(blocked.blockers).toEqual([expect.objectContaining({ kind: 'rows', table: 'buyer_sales' })])
-    const ready = answerFor('GET', `${W}/api/partners/${liberty1.id}/delete-check`, fx)?.body as { blockers: unknown[]; removes: unknown[] }
-    expect(ready.blockers).toEqual([])
-    expect(ready.removes.length).toBeGreaterThan(0)
-    expect(answerFor('GET', `${W}/api/partners/${fx.partners.find((p) => p.slug === 'sofi')!.id}/delete-check`, fx)).toBeNull()
+  // #2140: every partner the page can open carries the delete box on its
+  // Partner tab, so every listed partner has a recorded check, derived from the
+  // partner list rather than a hand list, and nothing else does.
+  it('answers the delete check of every listed partner, Tripoint blocked by its sales and the rest deletable', () => {
+    for (const p of fx.partners) {
+      const answer = answerFor('GET', `${W}/api/partners/${p.id}/delete-check`, fx)?.body as { partner: { id: string }; blockers: Array<{ kind: string; table?: string }> } | undefined
+      expect(answer?.partner.id, p.slug).toBe(p.id)
+      if (p.slug === 'tripoint') expect(answer!.blockers).toEqual([expect.objectContaining({ kind: 'rows', table: 'buyer_sales' })])
+      else expect(answer!.blockers, p.slug).toEqual([])
+    }
+    expect(answerFor('GET', `${W}/api/partners/not-a-partner/delete-check`, fx)).toBeNull()
     expect(answerFor('GET', `${W}/api/partners/_about/delete-check`, fx)).toBeNull()
     expect(answerFor('GET', `${W}/api/partners/constructor/delete-check`, fx)).toBeNull()
   })
