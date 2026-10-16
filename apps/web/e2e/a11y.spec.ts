@@ -350,6 +350,8 @@ async function openTripoint(page: Page) {
   await page.goto('/partners?selected=tripoint')
   await expect(page.getByRole('region', { name: 'Buyer profile' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Tripoint' })).toBeVisible()
+  // The live channel (#2135) joins through the routed socket, so each scan sees the header as it settles.
+  await expect(page.getByRole('status').filter({ hasText: /^Live$/ })).toBeVisible()
   await page.waitForLoadState('networkidle')
 }
 
