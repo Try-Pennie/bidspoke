@@ -75,9 +75,9 @@ export interface OutcomeDeps {
 export type OutcomeAlertDeps = Omit<OutcomeDeps, 'supabase'>
 
 // Each writeOutcome failure already survived the full retry ladder, so a single
-// exhausted loss is a real must-not-lose miss — alert on the first one. A cooldown
-// then rate-aggregates a burst so one outage pages once, not once per lead.
-export const OUTCOME_DEAD_LETTER_THRESHOLD = 1
+// exhausted loss is a real must-not-lose miss: every label alerts on the first
+// one, so there is no threshold to reach. A cooldown then rate-aggregates a burst
+// so one outage pages once, not once per lead.
 export const OUTCOME_DEAD_LETTER_COOLDOWN_TTL_SECONDS = 30 * 60
 export const OUTCOME_DEAD_LETTER_WINDOW_MINUTES = OUTCOME_DEAD_LETTER_COOLDOWN_TTL_SECONDS / 60
 
@@ -212,9 +212,8 @@ export async function recordUnconfirmedOutcome(
   }
 }
 
-// Shared dead-letter handler. Increments a per-(org,label) streak in KV and fires
-// a rate-aggregated Slack alert once the streak crosses the threshold, deduped by
-// a cooldown. Reuses the existing failure channel + config_alerts_enabled toggle.
+// Shared dead-letter handler. Increments a per-(org,label) window count in KV and
+// fires a rate-aggregated Slack alert, deduped by the alert claim or a cooldown. Reuses the existing failure channel + config_alerts_enabled toggle.
 // Callable directly (tier-3 SF writeback) as well as via writeOutcome.
 export async function recordOutcomeDeadLetter(
   label: string,
@@ -238,7 +237,7 @@ export async function recordOutcomeDeadLetter(
   })
 
   // Tally this loss into its UTC day for ADR 0002's build-now condition (#355),
-  // before the alert threshold so the count survives a suppressed alert. Bounded by
+  // before the alert claim so the count survives a suppressed alert. Bounded by
   // a short deadline so a hung KV cannot delay the alert or exhaust the reserve, and
   // on the run's own clock so the loss lands on the run's UTC day. If the deadline
   // abandons the tally it is LOGGED, not swallowed: under-counting the sustained half
@@ -250,8 +249,6 @@ export async function recordOutcomeDeadLetter(
   if (tally.timedOut) {
     console.error(`[durability] build-now volume tally abandoned after ${DEAD_LETTER_VOLUME_DEADLINE_MS}ms for ${label}; the daily count may under-report`)
   }
-
-  if (windowCount < OUTCOME_DEAD_LETTER_THRESHOLD) return false
 
   // Who posts (#1881). The KV cooldown below is a read then a later write, and KV
   // is eventually consistent across isolates, so every dead letter of one burst

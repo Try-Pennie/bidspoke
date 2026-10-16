@@ -1000,7 +1000,7 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
       label: 'continuation_unfinished',
       window_loss_count: 3,
       window_minutes: 30,
-      error_message: "The run's work after the answer did not finish within 12 s of the answer. Still running then: Achieve under 10k (achieve_under_10k). It may still finish, but nothing confirmed it.",
+      error_message: "The run's work after the answer did not finish within 12 s of the answer. Still running then: Achieve under 10k (achieve_under_10k). Nothing confirmed whether it finished.",
       run: {
         workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-08T03:20:17Z',
         still_running: ['Achieve under 10k (achieve_under_10k)'],
