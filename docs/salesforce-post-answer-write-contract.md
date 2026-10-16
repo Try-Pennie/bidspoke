@@ -1261,6 +1261,45 @@ above, extended rather than copied.
   the read-back sends nothing while the bulkhead is full, so this needs a slot
   to vanish between that check and the send.
 
+### The credit inquiry post on a replay or a resume (#2176)
+
+Dan's decision on #2176 (2026-10-15): a recovery run checks first and sends only
+if missing. Not a blind resend, and not the flat refusal buyer_click_send makes
+(#1542). A replay or a resume runs every node again from the entry, so without
+this every recovery of a run whose post landed would attach a second file. Code:
+`checkRecoveredInquiryPost` in `apps/worker/src/engine/nodes/salesforce.ts`,
+`apps/worker/src/engine/recovery-origin.ts`, and `lookupInquiryMarker` in
+`apps/worker/src/engine/inquiry-post.ts`, the one Lead lookup and file query the
+read-back above uses too.
+
+- **Since when.** The file query's window starts at the ROOT run of the
+  recovery's lineage, read from its `workflow_executions` row (each row names its
+  parent, so a replay of a replay reads back to the first run), less 2 s. The
+  original step's own start is not used: its row is flushed after the walk, can
+  fail to flush, and is archived after 7 days, so a recovery run cannot count on
+  it. The run's start is never later than the post, so the window is only wider,
+  which errs toward not sending. The root rather than the run directly recovered,
+  because a replay of a replay that skipped would otherwise look only after the
+  first replay began, miss the original file, and post a second one.
+- **Found**: nothing is sent, no intent record is written, and the step completes
+  as `{ skipped: true, skip_reason: 'already_landed', lead_id, recovered_from,
+  marker_since }`.
+- **Not found**: the post goes out exactly as on a normal run, intent record
+  first, read back and resent at most once by the read-back if its outcome is
+  unknown.
+- **The check cannot be answered** (no answer, a non 2xx, an answer that is not
+  the object asked for, a lineage row no longer kept or refused, a chain longer
+  than 10 or looping): nothing is sent, no intent record is written, and the step
+  fails saying whether the file landed is unknown. Fail closed: a missing post
+  is said and can be run again; a second file cannot be taken back. A Submission
+  with no Lead fails the step, permanent, unsent, since Salesforce refuses it.
+- **A normal run makes no check.**
+- **What it does not cover.** The check and the post are two calls, not one: a
+  post of the original run still in flight, or a read-back resend of it, at the
+  moment of the check can land beside the recovery's post. A recovery is a
+  person's action taken minutes or more after the run, and the read-back's own
+  resend reads the file first, so this needs both within the same seconds.
+
 ### The unfinished work alert (#2024)
 
 A run that answered early keeps walking, and finalize stops waiting 12 s after
