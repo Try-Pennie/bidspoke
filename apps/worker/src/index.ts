@@ -44,6 +44,7 @@ import { runReduceFinalizeStrandedExecutions } from './lib/stranded-executions'
 import { recordAndCheckBranchSkew } from './lib/strand-branch-skew'
 import { runUnconfirmedWriteSweepForEnv, UNCONFIRMED_WRITE_SWEEP_JOB } from './lib/unconfirmed-write-sweep'
 import { runSalesforceReadBackForEnv, checkSalesforceReadBackLivenessForEnv, SF_READ_BACK_JOB } from './lib/salesforce-read-back'
+import { runWritebackBacklogCheckForEnv, WRITEBACK_BACKLOG_JOB } from './lib/writeback-backlog'
 import { readAnswerJournal } from './engine/unconfirmed-writes'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
@@ -860,6 +861,27 @@ const scheduledJobs = {
             })
             .catch((e) => console.error('[incident-drain] drain failed:', e)),
           INCIDENT_DRAIN_JOB,
+        ),
+      )
+      // The backlog alert on stored Salesforce writes (#468): pages an organization
+      // whose oldest waiting write is past 30 minutes or whose count grew since the
+      // last check, and sends the all-clear once none waits. Its liveness is the
+      // cron heartbeat's, read by the minute tick from KV alone, so this check
+      // failing cannot silence the alarm about it (L71); both stamps (L514).
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, WRITEBACK_BACKLOG_JOB)
+            .catch((e) => console.error(`[${WRITEBACK_BACKLOG_JOB}] heartbeat write failed:`, e))
+            .then(() => runWritebackBacklogCheckForEnv(supabase, env.IDEMPOTENCY))
+            .then((s) => {
+              if (s.read === 'failed') console.error(`[${WRITEBACK_BACKLOG_JOB}] read failed: ${s.error}`)
+              else if (s.pending > 0 || s.paged.length || s.allClear.length) {
+                console.log(`[${WRITEBACK_BACKLOG_JOB}] pending=${s.pending}${s.partial ? '+' : ''} paged=${s.paged.join(',') || '-'} all_clear=${s.allClear.join(',') || '-'}`)
+              }
+              if (s.errors.length) console.error(`[${WRITEBACK_BACKLOG_JOB}] errors=${s.errors.join(' | ')}`)
+            })
+            .catch((e) => console.error(`[${WRITEBACK_BACKLOG_JOB}] check failed:`, e)),
+          WRITEBACK_BACKLOG_JOB,
         ),
       )
     } else if (event.cron === '*/15 * * * *') {

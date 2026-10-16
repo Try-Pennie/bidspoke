@@ -191,6 +191,18 @@ export const CRON_JOBS: CronJob[] = [
       'the database running short of memory goes unreported until it stalls, as it did on 2026-10-08 after a week of swapping nobody saw (#1928)',
   },
   {
+    id: 'writeback-backlog',
+    label: 'Waiting Salesforce writes check',
+    triggerCron: '*/5 * * * *',
+    // 5 minute cadence, 10 minutes slack, matching the other jobs on this cron.
+    staleMs: 15 * MIN,
+    // One bounded read of the pending rows, a few KV reads and writes per
+    // organization, and at most one Slack post each.
+    maxRunMs: 2 * MIN,
+    dependents:
+      'a Salesforce write that failed after a lead was answered and is stored to be resent can wait for ever with nobody told, however many pile up (#468)',
+  },
+  {
     id: 'buyer-sale-drain',
     label: 'Buyer ledger outbox drain',
     triggerCron: '* * * * *',

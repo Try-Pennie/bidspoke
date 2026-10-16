@@ -3148,6 +3148,109 @@ export async function sendPgCronRecoveryAlert(
   )
 }
 
+// ── Salesforce writes waiting to be resent (#468) ──────────────────────────────
+
+/**
+ * What the backlog page on outcome_writeback_deadletters says (#468): counts,
+ * objects and ages only. Never a record id, an execution id or a field value,
+ * because the rows hold lead data and the page goes to a shared channel.
+ */
+export interface WritebackBacklogAlert {
+  /** Pending writes for the organization. A lower bound when `partial`. */
+  count: number
+  /** True when the read stopped at its row limit, so the count is "at least". */
+  partial: boolean
+  /** Pending writes per Salesforce object, in the order to show them. */
+  objects: Array<{ object: string; count: number }>
+  /** When the oldest pending write was stored, or null when that time could not be read. */
+  oldestAt: string | null
+  aged: boolean
+  /** Set when the count grew since the last check: what it was then, and when that check ran. */
+  growing: { from: number; lastCheckAt: string } | null
+  /** The reminder sentence, when this page repeats one already sent. */
+  repeat?: string
+}
+
+/** A Salesforce object's API name as a reader says it: `Prospect__c` is "Prospect". */
+const salesforceObjectWords = (apiName: string) => slackText(apiName.replace(/__c$/, '').replace(/_/g, ' '))
+
+const joinWithAnd = (items: string[]): string =>
+  items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
+
+/** The page's title and sentences, separate from the send so the words can be tested. */
+export function writebackBacklogMessage(alert: WritebackBacklogAlert, nowMs: number): { title: string; sections: string[] } {
+  const one = alert.count === 1
+  const counted = `${alert.partial ? 'At least ' : ''}${alert.count} Salesforce write${one ? '' : 's'}`
+  const where = joinWithAnd(alert.objects.map((o) => `${o.count} to ${salesforceObjectWords(o.object)}`))
+  const findings = [
+    `${counted} failed after a lead was answered and ${one ? 'is' : 'are'} waiting to be resent${where ? `: ${where}` : ''}.`,
+  ]
+  if (alert.aged) {
+    const oldestMs = alert.oldestAt ? Date.parse(alert.oldestAt) : Number.NaN
+    const waited = Number.isFinite(oldestMs) ? describeDuration(nowMs - oldestMs) : null
+    findings.push(
+      waited !== null && alert.oldestAt
+        ? `The oldest has waited ${waited}, since ${etTime(alert.oldestAt)}.`
+        : 'The oldest has a creation time that could not be read.',
+    )
+  }
+  if (alert.growing) {
+    findings.push(`There were ${alert.growing.from} at the last check, at ${etTime(alert.growing.lastCheckAt)}, so more are arriving than are being resent.`)
+  }
+  const sections = [
+    findings.join(' '),
+    '*Fix:* list them at `/api/admin/held-writes?status=pending`, then replay each one, or abandon one that was already put right in Salesforce.',
+  ]
+  if (alert.repeat) sections.push(alert.repeat)
+  return { title: 'Salesforce writes are waiting to be resent', sections }
+}
+
+/**
+ * Pages one organization about its own waiting writes (#468). Gated on the
+ * configuration alerts toggle, as the other post-answer write alerts are; a
+ * muted organization is not delivered to, so nothing is armed for it.
+ */
+export async function sendWritebackBacklogAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  alert: WritebackBacklogAlert,
+  nowMs: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  const m = writebackBacklogMessage(alert, nowMs)
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
+    ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+}
+
+/** What the backlog's all-clear calls its subject; the incident record's label is the same words. */
+export const WRITEBACK_BACKLOG_RECOVERY_SUBJECT = 'Failed Salesforce writes'
+
+export const writebackBacklogRecoveryWording: RecoveryWording = {
+  signal: 'failed Salesforce writes',
+  recoveredPhrase: 'are all handled, and none is waiting to be resent',
+}
+
+/** The all-clear once an organization's backlog is empty (#468). Returns whether it reached Slack. */
+export async function sendWritebackBacklogRecoveryAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  recovery: { alertedAt: string; endedAt: string | null },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  return sendRecoveryAlert(
+    connection,
+    connection.default_channel,
+    { subject: WRITEBACK_BACKLOG_RECOVERY_SUBJECT, alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, ...writebackBacklogRecoveryWording },
+    now,
+  )
+}
+
 /**
  * All-clear for a scheduled GitHub workflow the schedule watch had paged (#851,
  * #805). The same shape as the pg_cron one: the plain workflow label, the shared
