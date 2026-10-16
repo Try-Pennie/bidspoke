@@ -8,6 +8,7 @@ vi.mock('../slack', () => ({
 import { signalMatches, matchesMutedSignal, detectFailureSpike, countWindowMatches, runFailureRateCheck, hasSucceedingRuns } from '../failure-rate'
 import type { MutedFailureSignal } from '../failure-rate'
 import { getSlackConnection, sendFailureSpikeAlert, sendRecoveryAlert } from '../slack'
+import { claimLedger, gate, overlap } from './_claims-double'
 
 const sig = (match: string, count = 10, window_minutes = 5): MutedFailureSignal => ({ match, count, window_minutes })
 
@@ -514,5 +515,71 @@ describe('runFailureRateCheck and the incident record (#2099)', () => {
     })
     await runFailureRateCheck(sb as never, kv as never, 'https://app.example.com')
     expect(transitions(kv.store)).toEqual([])
+  })
+})
+
+// ── Overlapping minute ticks (#2062) ─────────────────────────────────────────
+//
+// runCronTickOnce stops a second delivery of the same minute; a stalled tick
+// overlapping the next minute's is stopped here, by a claim. Each tick is held
+// at its post while the other reaches the same point (L157).
+describe('runFailureRateCheck posts once across overlapping ticks (#2062)', () => {
+  const CONN = { bot_token: 'xoxb-t', default_channel: 'C1' }
+  const url = 'https://app.example.com'
+  const spiking = () => makeSupabase({
+    service_connections: [{ organization_id: 'org-1' }],
+    workflows: [wf],
+    workflow_executions: [failRow('ACRO_GATEWAY a'), failRow('ACRO_GATEWAY b'), failRow('ACRO_GATEWAY c')],
+  })
+  const healthy = () => makeSupabase({ service_connections: [{ organization_id: 'org-1' }], workflows: [wf], workflow_executions: [okRow()] })
+  const owed = () => makeKv({ 'failure-rate-recovery:wf-1:ACRO_GATEWAY': new Date(Date.now() - 90 * 60_000).toISOString() })
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(getSlackConnection).mockResolvedValue(CONN as never)
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+  })
+
+
+  it('control: with no claim the two ticks page twice, so the fixture really overlaps', async () => {
+    const held = gate<string>()
+    vi.mocked(sendFailureSpikeAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+    const kv = makeKv()
+    await overlap(() => runFailureRateCheck(spiking() as never, kv as never, url), () => held.open('ts-1'), () => vi.mocked(sendFailureSpikeAlert).mock.calls.length === 2)
+    expect(sendFailureSpikeAlert).toHaveBeenCalledTimes(2)
+  })
+
+  it('pages once, under the minute page claim', async () => {
+    const held = gate<string>()
+    vi.mocked(sendFailureSpikeAlert).mockImplementationOnce(() => held.promise)
+    const kv = makeKv()
+    const { claims, log } = claimLedger()
+    await overlap(() => runFailureRateCheck(spiking() as never, kv as never, url, claims), () => held.open('ts-1'), () => log.length === 2)
+    expect(sendFailureSpikeAlert).toHaveBeenCalledTimes(1)
+    expect(log).toEqual(['claim minute-alert:page:failure-rate:wf-1:ACRO_GATEWAY', 'claim minute-alert:page:failure-rate:wf-1:ACRO_GATEWAY'])
+  })
+
+  it('control: with no claim the two ticks send the all-clear twice', async () => {
+    const held = gate<boolean>()
+    vi.mocked(sendRecoveryAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+    const kv = owed()
+    await overlap(() => runFailureRateCheck(healthy() as never, kv as never, url), () => held.open(true), () => vi.mocked(sendRecoveryAlert).mock.calls.length === 2)
+    expect(sendRecoveryAlert).toHaveBeenCalledTimes(2)
+  })
+
+  it('sends the all-clear once, under the minute all-clear claim', async () => {
+    const held = gate<boolean>()
+    vi.mocked(sendRecoveryAlert).mockImplementationOnce(() => held.promise)
+    const kv = owed()
+    const { claims, log } = claimLedger()
+    await overlap(() => runFailureRateCheck(healthy() as never, kv as never, url, claims), () => held.open(true), () => log.length === 2)
+    expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
+    expect(log).toEqual(['claim minute-alert:all-clear:failure-rate:wf-1:ACRO_GATEWAY', 'claim minute-alert:all-clear:failure-rate:wf-1:ACRO_GATEWAY'])
+  })
+
+  it('makes no claim call on a healthy tick with nothing owed', async () => {
+    const { claims, log } = claimLedger()
+    await runFailureRateCheck(healthy() as never, makeKv() as never, url, claims)
+    expect(log).toEqual([])
   })
 })

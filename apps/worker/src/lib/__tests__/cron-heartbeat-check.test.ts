@@ -7,6 +7,7 @@ vi.mock('../slack', () => ({
 }))
 
 import { sendCronHeartbeatAlert, sendCronHeartbeatRecoveryAlert } from '../slack'
+import { claimLedger, gate, overlap } from './_claims-double'
 import {
   runHeartbeatChecks,
   writeHeartbeat,
@@ -419,5 +420,167 @@ describe('the never finished all-clear says only what a completion shows (#2057 
     expect(sentTo).toEqual(['org-1', 'org-2', 'org-2'])
     await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 3 * 60_000)
     expect(vi.mocked(sendCronHeartbeatRecoveryAlert).mock.calls).toHaveLength(3)
+  })
+})
+
+// A stalled minute tick overlapping the next minute's (#2062): each tick is
+// held at its post while the other reaches the same point (L157).
+describe('runHeartbeatChecks posts once across overlapping ticks (#2062)', () => {
+  const archive = () => cronJob('execution-archive')
+  const orgs = [{ organization_id: 'org-1' }]
+  const dark = () => fakeKv({
+    ...allFresh(NOW),
+    [heartbeatKey(archive().id)]: iso(NOW - archive().maxRunMs - 5 * 60_000),
+    [completedWatchKey(archive().id)]: iso(NOW - 24 * H),
+  })
+  /** A vanished page already sent, and the run it named now finished: the all-clear is owed. */
+  async function owed() {
+    const kv = dark()
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW)
+    expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(1)
+    kv.store.set(completedKey(archive().id), iso(NOW + 30_000))
+    return kv
+  }
+
+
+  it('control: with no claim the two ticks page twice, so the fixture really overlaps', async () => {
+    const held = gate<boolean>()
+    vi.mocked(sendCronHeartbeatAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+    const kv = dark()
+    await overlap(() => runHeartbeatChecks(fakeSupabase(orgs), kv, NOW), () => held.open(true), () => vi.mocked(sendCronHeartbeatAlert).mock.calls.length === 2)
+    expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(2)
+  })
+
+  it('pages once, under the minute page claim', async () => {
+    const held = gate<boolean>()
+    vi.mocked(sendCronHeartbeatAlert).mockImplementationOnce(() => held.promise)
+    const kv = dark()
+    const { claims, log } = claimLedger()
+    await overlap(() => runHeartbeatChecks(fakeSupabase(orgs), kv, NOW, claims), () => held.open(true), () => log.length === 2)
+    expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(1)
+    expect(log).toEqual(['claim minute-alert:page:cron-heartbeat:execution-archive', 'claim minute-alert:page:cron-heartbeat:execution-archive'])
+  })
+
+  it('control: with no claim the two ticks send the never finished all-clear twice', async () => {
+    const kv = await owed()
+    const held = gate<boolean>()
+    vi.mocked(sendCronHeartbeatRecoveryAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+    await overlap(() => runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000), () => held.open(true), () => vi.mocked(sendCronHeartbeatRecoveryAlert).mock.calls.length === 2)
+    expect(sendCronHeartbeatRecoveryAlert).toHaveBeenCalledTimes(2)
+  })
+
+  it('sends the never finished all-clear once, under the minute all-clear claim', async () => {
+    const kv = await owed()
+    const held = gate<boolean>()
+    vi.mocked(sendCronHeartbeatRecoveryAlert).mockImplementationOnce(() => held.promise)
+    const { claims, log } = claimLedger()
+    await overlap(() => runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000, claims), () => held.open(true), () => log.length === 2)
+    expect(sendCronHeartbeatRecoveryAlert).toHaveBeenCalledTimes(1)
+    expect(log).toEqual(['claim minute-alert:all-clear:cron-heartbeat:execution-archive', 'claim minute-alert:all-clear:cron-heartbeat:execution-archive'])
+  })
+
+  it('frees the all-clear claim when an org was not told, so the next tick retries', async () => {
+    const kv = await owed()
+    vi.mocked(sendCronHeartbeatRecoveryAlert).mockResolvedValueOnce(false)
+    const { claims, held } = claimLedger()
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000, claims)
+    expect([...held]).toEqual([])
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 2 * 60_000, claims)
+    expect(sendCronHeartbeatRecoveryAlert).toHaveBeenCalledTimes(2)
+  })
+
+  it('makes no claim call when every job is healthy', async () => {
+    const { claims, log } = claimLedger()
+    await runHeartbeatChecks(fakeSupabase(orgs), fakeKv(allFresh(NOW)), NOW, claims)
+    expect(log).toEqual([])
+  })
+
+  it('makes no claim call inside the cooldown of a page already sent', async () => {
+    const kv = dark()
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW)
+    const { claims, log } = claimLedger()
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000, claims)
+    expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(1)
+    expect(log).toEqual([])
+  })
+})
+
+describe('the never finished all-clear claim never strands the check (#2062 review)', () => {
+  const archive = () => cronJob('execution-archive')
+  const orgs = [{ organization_id: 'org-1' }]
+  async function owed() {
+    const kv = fakeKv({
+      ...allFresh(NOW),
+      [heartbeatKey(archive().id)]: iso(NOW - archive().maxRunMs - 5 * 60_000),
+      [completedWatchKey(archive().id)]: iso(NOW - 24 * H),
+    })
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW)
+    kv.store.set(completedKey(archive().id), iso(NOW + 30_000))
+    return kv
+  }
+
+  it('checks every job after it when freeing the claim throws', async () => {
+    const kv = await owed()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(sendCronHeartbeatRecoveryAlert).mockResolvedValueOnce(false)
+    const claims = { claim: async () => true, release: async () => { throw new Error('release refused') } }
+    const results = await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000, claims)
+    expect(results).toHaveLength(CRON_JOBS.length)
+    vi.mocked(console.error).mockRestore()
+  })
+
+  it('frees the claim when the record it re-read no longer owes an all-clear', async () => {
+    const kv = await owed()
+    const { claims, held } = claimLedger()
+    const racing = {
+      claim: async (k: string, ttl: number) => {
+        const won = await claims.claim(k, ttl)
+        // Another tick stood the incident down while this one claimed.
+        kv.store.delete(`cron-heartbeat:${archive().id}:alerted-status`)
+        return won
+      },
+      release: claims.release,
+    }
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000, racing)
+    expect(sendCronHeartbeatRecoveryAlert).not.toHaveBeenCalled()
+    expect(held.size).toBe(0)
+  })
+})
+
+// A throw cannot say whether Slack took the post, so it keeps the claim for its
+// TTL: the next minute's tick is late rather than a second post (#2062 review).
+describe('a heartbeat post that throws keeps its claim (#2062 review)', () => {
+  const archive = () => cronJob('execution-archive')
+  const orgs = [{ organization_id: 'org-1' }]
+  const dark = () => fakeKv({
+    ...allFresh(NOW),
+    [heartbeatKey(archive().id)]: iso(NOW - archive().maxRunMs - 5 * 60_000),
+    [completedWatchKey(archive().id)]: iso(NOW - 24 * H),
+  })
+
+  it('does not page again from the next tick after a page that threw once Slack had taken it', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const kv = dark()
+    const { claims, held } = claimLedger()
+    vi.mocked(sendCronHeartbeatAlert).mockImplementationOnce(async () => { throw new Error('Network connection lost.') })
+    await expect(runHeartbeatChecks(fakeSupabase(orgs), kv, NOW, claims)).rejects.toThrow('Network connection lost.')
+    expect(held.has('minute-alert:page:cron-heartbeat:execution-archive')).toBe(true)
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000, claims)
+    expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(1)
+    vi.mocked(console.error).mockRestore()
+  })
+
+  it('does not send the never finished all-clear again from the next tick after one that threw', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const kv = dark()
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW)
+    kv.store.set(completedKey(archive().id), iso(NOW + 30_000))
+    const { claims, held } = claimLedger()
+    vi.mocked(sendCronHeartbeatRecoveryAlert).mockImplementationOnce(async () => { throw new Error('Network connection lost.') })
+    await expect(runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000, claims)).rejects.toThrow('Network connection lost.')
+    expect(held.has('minute-alert:all-clear:cron-heartbeat:execution-archive')).toBe(true)
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 2 * 60_000, claims)
+    expect(sendCronHeartbeatRecoveryAlert).toHaveBeenCalledTimes(1)
+    vi.mocked(console.error).mockRestore()
   })
 })

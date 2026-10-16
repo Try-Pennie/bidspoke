@@ -18,7 +18,8 @@
 // Config (trigger.config.muted_failure_signals, alongside duration_alert_ms) is
 // the domain type MutedFailureSignal in ../types; re-exported so callers can
 // import it from here.
-import { orgIdsToTell, slackOrgIds } from './alert-fanout'
+import { minuteAlertClaimKey, minuteAllClearClaim, orgIdsToTell, postMinutePage, slackOrgIds } from './alert-fanout'
+import type { AlertClaims } from './alert-claim'
 import { logReadFailure } from './scheduled-read'
 import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { getSlackConnection, sendRecoveryAlert } from './slack'
@@ -131,11 +132,16 @@ export function countWindowMatches(
  * window and fire ONE alert per signal when the count crosses its threshold.
  * Cooldown per (workflow, signal) so a sustained outage pages once. Mirrors
  * runSlowExecutionCheck.
+ *
+ * `claims` makes a stalled tick overlapping the next minute's post the page and
+ * the all-clear once (#2062, alert-fanout.ts); the scheduled handler always
+ * passes it.
  */
 export async function runFailureRateCheck(
   supabase: SupabaseClient,
   kv: KvLike,
   appUrl: string,
+  claims?: AlertClaims,
 ): Promise<void> {
   const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'failure-rate', 'measure-from-database'))
   if (orgIds.length === 0) return
@@ -253,6 +259,7 @@ export async function runFailureRateCheck(
                 lookbackStart,
                 MIN_RECOVERY_SUCCEEDING_RUNS,
               ),
+            claim: minuteAllClearClaim(claims, 'failure-rate', recoveryId),
           },
         )
         continue
@@ -263,26 +270,31 @@ export async function runFailureRateCheck(
       // cadence and lose the tail of every outage longer than one cooldown.
       await markSpikeSeen(kv, 'failure-rate', recoveryId, now)
 
-      if (await kv.get(cooldownKey)) continue
-
-      console.log(`[failure-spike] workflow=${wf.name} workflow_id=${wfId} signal="${signal.match}" count=${count}/${signal.count} window=${signal.window_minutes}m`)
-
-      const sent = await sendFailureSpikeAlert(
-        supabase,
-        wf.organization_id as string,
-        (wf.slack_channel as string | null) ?? null,
-        {
-          workflow_id: wfId,
-          workflow_name: wf.name as string,
-          signal: signal.match,
-          failure_count: count,
-          window_minutes: signal.window_minutes,
-          timestamp: new Date(now).toISOString(),
+      // Claim, then read the cooldown, then post (#2062, L157).
+      const outcome = await postMinutePage({
+        claims,
+        key: minuteAlertClaimKey('page', 'failure-rate', recoveryId),
+        inCooldown: async () => (await kv.get(cooldownKey)) !== null,
+        send: async () => {
+          console.log(`[failure-spike] workflow=${wf.name} workflow_id=${wfId} signal="${signal.match}" count=${count}/${signal.count} window=${signal.window_minutes}m`)
+          return Boolean(await sendFailureSpikeAlert(
+            supabase,
+            wf.organization_id as string,
+            (wf.slack_channel as string | null) ?? null,
+            {
+              workflow_id: wfId,
+              workflow_name: wf.name as string,
+              signal: signal.match,
+              failure_count: count,
+              window_minutes: signal.window_minutes,
+              timestamp: new Date(now).toISOString(),
+            },
+            appUrl,
+          ))
         },
-        appUrl,
-      )
+      })
 
-      if (sent) {
+      if (outcome === 'sent') {
         // The marker before the cooldown (#2058): a cut or a refused write
         // between them then costs at worst a repeated page, never a lost all-clear.
         await markAlerted(kv, 'failure-rate', recoveryId, incident, now)

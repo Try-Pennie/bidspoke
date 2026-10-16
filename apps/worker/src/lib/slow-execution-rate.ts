@@ -22,7 +22,8 @@
  * Cooldown: 30 min per workflow via KV, so a sustained slow period pages once.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { orgIdsToTell, slackOrgIds } from './alert-fanout'
+import { minuteAlertClaimKey, minuteAllClearClaim, orgIdsToTell, postMinutePage, slackOrgIds } from './alert-fanout'
+import type { AlertClaims } from './alert-claim'
 import { logReadFailure } from './scheduled-read'
 import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { getSlackConnection, sendRecoveryAlert } from './slack'
@@ -106,11 +107,16 @@ export function buildSlowDurations(
  * Run the slow-execution-spike check across all active workflows that have a
  * duration_alert_ms configured, in orgs with Slack connected. Called from the
  * Worker scheduled handler on the minute cron.
+ *
+ * `claims` makes a stalled tick overlapping the next minute's post the page and
+ * the all-clear once (#2062, alert-fanout.ts); the scheduled handler always
+ * passes it.
  */
 export async function runSlowExecutionCheck(
   supabase: SupabaseClient,
   kv: KvLike,
-  appUrl: string
+  appUrl: string,
+  claims?: AlertClaims,
 ): Promise<void> {
   const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'slow-execution-rate', 'measure-from-database'))
   if (orgIds.length === 0) return
@@ -234,7 +240,7 @@ export async function runSlowExecutionCheck(
             { signal: 'slow execution', subject: wf.name as string, alertedAt, endedAt, measuredWindowMinutes: WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
           )
         },
-        { hasEvidence: () => (finishedByWorkflow.get(wfId) ?? 0) >= MIN_RECOVERY_RUNS },
+        { hasEvidence: () => (finishedByWorkflow.get(wfId) ?? 0) >= MIN_RECOVERY_RUNS, claim: minuteAllClearClaim(claims, 'slow-spike', wfId) },
       )
       continue
     }
@@ -246,28 +252,31 @@ export async function runSlowExecutionCheck(
     // rather than how long ago we last spoke about it (#814).
     await markSpikeSeen(kv, 'slow-spike', wfId, now)
 
-    if (await kv.get(cooldownKey)) {
-      console.log(`[slow-spike] suppressed by cooldown workflow_id=${wfId}`)
-      continue
-    }
-
-    const sent = await sendSlowSpikeAlert(
-      supabase,
-      wf.organization_id as string,
-      (wf.slack_channel as string | null) ?? null,
-      {
-        workflow_id: wfId,
-        workflow_name: wf.name as string,
-        slow_count: spike.slowCount,
-        total_count: spike.totalCount,
-        threshold_ms: threshold,
-        slowest_ms: spike.slowestMs,
-        median_slow_ms: spike.medianSlowMs,
-        window_minutes: WINDOW_MINUTES,
-        timestamp: new Date(now).toISOString(),
-      },
-      appUrl
-    )
+    // Claim, then read the cooldown, then post (#2062, L157).
+    const outcome = await postMinutePage({
+      claims,
+      key: minuteAlertClaimKey('page', 'slow-spike', wfId),
+      inCooldown: async () => (await kv.get(cooldownKey)) !== null,
+      send: async () => Boolean(await sendSlowSpikeAlert(
+        supabase,
+        wf.organization_id as string,
+        (wf.slack_channel as string | null) ?? null,
+        {
+          workflow_id: wfId,
+          workflow_name: wf.name as string,
+          slow_count: spike.slowCount,
+          total_count: spike.totalCount,
+          threshold_ms: threshold,
+          slowest_ms: spike.slowestMs,
+          median_slow_ms: spike.medianSlowMs,
+          window_minutes: WINDOW_MINUTES,
+          timestamp: new Date(now).toISOString(),
+        },
+        appUrl
+      )),
+    })
+    if (outcome === 'in_cooldown') console.log(`[slow-spike] suppressed by cooldown workflow_id=${wfId}`)
+    const sent = outcome === 'sent'
 
     // Start the cooldown only once the alert delivered — a kicked bot (Slack
     // ok:false) would otherwise suppress retries while the spike kept going.
