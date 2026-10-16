@@ -7,7 +7,6 @@ import type { PartnerHistory } from '@bidspoke/partner-history'
 export type { PartnerType }
 
 export type BidResolverType = 'formula' | 'matrix' | 'api'
-export type BidMode = 'commit' | 'ping_only'
 export type BidComparisonSource = 'auto' | 'api' | 'formula' | 'matrix'
 
 export type ExtraExtractionSpec =
@@ -31,8 +30,6 @@ export interface Partner {
   bid_resolver_type: BidResolverType
   bid_resolver_config: Record<string, unknown>
   outbound_field_mapping: Record<string, unknown> | null
-  /** Read only (PM-9, #2136): off the page, kept until its contract step drops the column. */
-  bid_mode: BidMode
   bid_comparison_source: BidComparisonSource
   extra_extraction: ExtraExtractionConfig | null
   last_probe_response: unknown
@@ -79,10 +76,10 @@ export interface Partner {
 
 /**
  * The fields a partner save may name: the row less its identity, its
- * bookkeeping, what the Worker derives, and bid_mode, which the page no longer
- * edits (PM-9, #2136), so no save the page makes can carry it.
+ * bookkeeping and what the Worker derives. bid_mode is not a Partner field
+ * at all since #2182: nothing reads it, and the Worker refuses a save naming it.
  */
-export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email' | 'updated_by_name' | 'credential_warning' | 'version' | 'last_save_id' | 'bid_mode'>>
+export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email' | 'updated_by_name' | 'credential_warning' | 'version' | 'last_save_id'>>
 
 /**
  * The page's one save beside its partner patch (#2133): the pair of versions it

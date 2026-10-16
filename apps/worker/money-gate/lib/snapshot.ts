@@ -60,7 +60,7 @@ export const SNAPSHOT_COLUMNS = {
   partner_configs: {
     synthesize: true,
     columns: [
-      'id', 'organization_id', 'name', 'slug', 'partner_type', 'is_active', 'bid_mode', 'bid_resolver_type', 'bid_resolver_config',
+      'id', 'organization_id', 'name', 'slug', 'partner_type', 'is_active', 'bid_resolver_type', 'bid_resolver_config',
       'bid_comparison_source', 'bid_formula', 'api_endpoint', 'cf_secret_key', 'daily_cap', 'min_bid', 'dedup_endpoint',
       'response_classification', 'alert_config', 'circuit_enabled', 'circuit_error_threshold', 'circuit_window_seconds',
       'circuit_cooldown_seconds', 'priority', 'sell_off_offer_title', 'sell_off_offer_details', 'click_url', 'outbound_field_mapping',

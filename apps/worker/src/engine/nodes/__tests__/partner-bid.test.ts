@@ -355,6 +355,39 @@ describe('executePartnerBidNode', () => {
     })
   })
 
+  // #2182: partner_configs.bid_mode is being dropped (the contract step after
+  // PM-9). The node neither selects it nor copies it into the step's recorded
+  // input, so the column can go without this read failing on a missing column.
+  // The row here still carries it, as production rows do until the drop.
+  describe('bid_mode is neither read nor recorded (#2182)', () => {
+    it('selects no bid_mode column, and the step input carries none even when the row has one', async () => {
+      const selects: string[] = []
+      const row = { ...makePartner({ bid_formula: 'debt_amount * 0.65' }), bid_mode: 'ping_only' }
+      const chain: unknown = new Proxy({}, {
+        get(_, prop) {
+          if (typeof prop === 'symbol') return undefined
+          if (prop === 'select') return (cols: string) => { selects.push(cols); return chain }
+          if (prop === 'single') return () => Promise.resolve({ data: row, error: null })
+          return () => chain
+        },
+      })
+      const result = await executePartnerBidNode(
+        makeNode({ partner_id: 'p1' }),
+        makeCtx({ debt_amount: 10000 }),
+        makeEnv(),
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        { from: () => chain } as any
+      )
+      expect(selects.length).toBeGreaterThan(0)
+      for (const cols of selects) expect(cols).not.toMatch(/\bbid_mode\b/)
+      expect((result.output as PartnerBidOutput).bid).toBe(6500)
+      const input = result.resolvedInput as { template: Record<string, unknown>; resolved: Record<string, unknown> }
+      expect(input.template.partner_slug).toBe('tripoint')
+      expect('bid_mode' in input.template).toBe(false)
+      expect('bid_mode' in input.resolved).toBe(false)
+    })
+  })
+
   describe('formula-only bid', () => {
     it('evaluates the bid formula and returns the computed bid', async () => {
       const result = await executePartnerBidNode(
