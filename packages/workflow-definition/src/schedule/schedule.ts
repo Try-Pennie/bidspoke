@@ -79,7 +79,8 @@ function timingOf(input: ScheduleTimingInput, zone: ScheduleZone): ScheduleTimin
  * The shortest gap between two consecutive fires, in seconds: how often the
  * schedule normally fires. A weekday cron's period is a day (its Friday to
  * Monday gap is three), a daily New York cron's is 23 hours (the spring change).
- * Sampled as up to 800 fires from each of five fixed instants (below): 800 fires
+ * Sampled as up to 800 fires from each of the five fixed instants in
+ * PERIOD_SAMPLE_FROM_MS (above): 800 fires
  * are about 13 hours of an every minute cron and up to the eight year search
  * horizon of a monthly one, so the samples are placed so that some sample
  * crosses each change whatever the cron's frequency.
