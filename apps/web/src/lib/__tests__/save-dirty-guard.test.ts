@@ -1,11 +1,10 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect } from 'vitest'
 import {
   computeEditSignature,
   isDirtyAgainst,
   resolvePostSaveStateBySignature,
   deriveDirty,
   deriveDraggingState,
-  confirmDiscardIfDirty,
 } from '../save-dirty-guard'
 
 // #213: the derive effect serializes the whole workflow (flowToDef + JSON) on
@@ -92,31 +91,6 @@ describe('resolvePostSaveStateBySignature (#212)', () => {
       remainDirty: true,
       switchToView: false,
     })
-  })
-})
-
-// #478: the canvas's "← Workflows" back link navigated away with no dirty
-// check, silently discarding unsaved edits. This mirrors the confirm gate
-// PartnerForm already uses for its own away-clicks (isDirty ? confirm : proceed),
-// extracted as a pure function so the decision is testable without mounting the
-// 3800-line WorkflowCanvas component.
-describe('confirmDiscardIfDirty (#478)', () => {
-  it('allows navigation without prompting when the canvas is clean', () => {
-    const confirmFn = vi.fn(() => false)
-    expect(confirmDiscardIfDirty(false, confirmFn)).toBe(true)
-    expect(confirmFn).not.toHaveBeenCalled()
-  })
-
-  it('prompts and allows navigation when dirty and the user confirms', () => {
-    const confirmFn = vi.fn(() => true)
-    expect(confirmDiscardIfDirty(true, confirmFn)).toBe(true)
-    expect(confirmFn).toHaveBeenCalledOnce()
-  })
-
-  it('prompts and blocks navigation when dirty and the user cancels', () => {
-    const confirmFn = vi.fn(() => false)
-    expect(confirmDiscardIfDirty(true, confirmFn)).toBe(false)
-    expect(confirmFn).toHaveBeenCalledOnce()
   })
 })
 

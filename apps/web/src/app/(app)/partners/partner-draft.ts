@@ -24,15 +24,28 @@ export interface FieldEntry {
   tab: PartnerTab
   section: string
   label: string
-  /** A row list's rows merge as whole rows, keyed within this group (PR3). */
-  mergeGroup?: string
+  /** A row list's rows merge as row groups, never one flattened row at a time (#2134). */
+  mergeGroup?: MergeGroup
+}
+
+/**
+ * How a row list merges (#2134). A flattened row's key holds an editable value
+ * (a window's opening minute, a tier's lower bound), so moving it would read as
+ * a delete plus an add. Rows therefore merge as groups: one group per value of
+ * `by` (a day, a population), or the whole list as one group when there is no
+ * `by`. A group changed by one side is taken whole from that side; a group both
+ * changed to different contents is one question.
+ */
+export interface MergeGroup {
+  name: 'windows' | 'tiers' | 'blackout_dates' | 'click_delivery.routes'
+  by?: 'day_of_week' | 'population'
 }
 
 /** Buyer profile paths are namespaced: `priority` is both a partner field and a profile field. */
 export const PROFILE_PREFIX = 'profile.'
 
 const partnerField = (pattern: keyof PartnerBody, section: string, label: string, tab: PartnerTab = 'partner'): FieldEntry => ({ pattern, tab, section, label })
-const profileField = (path: string, section: string, label: string, mergeGroup?: string): FieldEntry => ({ pattern: `${PROFILE_PREFIX}${path}`, tab: 'buyer_profile', section, label, ...(mergeGroup ? { mergeGroup } : {}) })
+const profileField = (path: string, section: string, label: string, mergeGroup?: MergeGroup): FieldEntry => ({ pattern: `${PROFILE_PREFIX}${path}`, tab: 'buyer_profile', section, label, ...(mergeGroup ? { mergeGroup } : {}) })
 
 /**
  * Every path the page edits, each exactly once (partner-field-registry.test.ts,
@@ -84,19 +97,21 @@ export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
   profileField('daily_spend_cap_cents', 'Caps', FIELD_LABELS.daily_spend_cap_cents),
   // #2143: stored by the server half; the page half adds the control and moves this label into FIELD_LABELS.
   profileField('display_time_zone', SECTION_LABELS.windows, 'Show times in'),
-  profileField('windows[*]', SECTION_LABELS.windows, SECTION_LABELS.windows, 'windows'),
-  profileField('blackout_dates[*]', SECTION_LABELS.blackout_dates, SECTION_LABELS.blackout_dates, 'blackout_dates'),
-  profileField('tiers[*]', SECTION_LABELS.tiers, SECTION_LABELS.tiers, 'tiers'),
+  profileField('windows[*]', SECTION_LABELS.windows, SECTION_LABELS.windows, { name: 'windows', by: 'day_of_week' }),
+  profileField('blackout_dates[*]', SECTION_LABELS.blackout_dates, SECTION_LABELS.blackout_dates, { name: 'blackout_dates' }),
+  profileField('tiers[*]', SECTION_LABELS.tiers, SECTION_LABELS.tiers, { name: 'tiers', by: 'population' }),
   profileField('click_delivery.success_pattern', 'Click delivery', 'Success reply'),
-  profileField('click_delivery.routes[*]', 'Click delivery', 'Routes', 'click_delivery.routes'),
+  profileField('click_delivery.routes[*]', 'Click delivery', 'Routes', { name: 'click_delivery.routes' }),
 ]
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-const PATTERN_RES = new Map(PARTNER_FIELD_REGISTRY.map((e) => [e.pattern, new RegExp(`^${escapeRe(e.pattern).replace(/\\\[\\\*\\\]/g, '\\[[^\\]]+\\]')}$`)]))
+const toRe = (pattern: string): RegExp => new RegExp(`^${escapeRe(pattern).replace(/\\\[\\\*\\\]/g, '\\[[^\\]]+\\]')}$`)
+const PATTERN_RES = new Map(PARTNER_FIELD_REGISTRY.map((e) => [e.pattern, toRe(e.pattern)]))
+const patternRe = (pattern: string): RegExp => PATTERN_RES.get(pattern) ?? toRe(pattern)
 
 /** The registry entries a path matches; exactly one for every path the page edits. */
-export function registryEntriesFor(path: string): FieldEntry[] {
-  return PARTNER_FIELD_REGISTRY.filter((e) => PATTERN_RES.get(e.pattern)!.test(path))
+export function registryEntriesFor(path: string, registry: readonly FieldEntry[] = PARTNER_FIELD_REGISTRY): FieldEntry[] {
+  return registry.filter((e) => patternRe(e.pattern).test(path))
 }
 
 /**
@@ -253,6 +268,64 @@ export function parseRules(raw: unknown): SignalRules {
     }
   }
   return result
+}
+
+/** The stored per sub account floors as editable rows. */
+export function floorsFromMap(map: Record<string, number> | null | undefined): SubAccountFloor[] {
+  if (!map) return []
+  return Object.entries(map).map(([uuid, bid]) => ({ id: uid(), uuid, bid: String(bid) }))
+}
+
+const sameJson = (a: unknown, b: unknown): boolean => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+
+/**
+ * The form's values for a partner (#2134): the one mapping from a stored row, or
+ * a body the merge built, to what the form shows, so the page's initial state
+ * and a merged save cannot disagree about a default. The inverse of
+ * buildPartnerBody: buildPartnerBody(snapshotOf(body)) is body again.
+ *
+ * `prev` keeps the rows the form already has when they say the same thing, so
+ * their row ids (and with them what reads as edited) do not change under a
+ * person when a merge puts back what was already on screen.
+ */
+export function snapshotOf(partner: PartnerBody | undefined, prev?: FormSnapshot): FormSnapshot {
+  const p = partner ?? {}
+  const alerts = p.alert_config as { transient_errors?: { alert?: boolean }; permanent_errors?: { alert?: boolean } } | null | undefined
+  const rules = prev && sameJson(serializeRules(prev.signalRules), p.response_classification) ? prev.signalRules : parseRules(p.response_classification)
+  const floors = prev && sameJson(floorsToMap(prev.subAccountFloors), p.sub_account_min_bids ?? null) ? prev.subAccountFloors : floorsFromMap(p.sub_account_min_bids)
+  return {
+    name: p.name ?? '',
+    apiEndpoint: p.api_endpoint ?? '',
+    cfSecretKey: p.cf_secret_key ?? '',
+    clickUrl: p.click_url ?? '',
+    isActive: p.is_active ?? true,
+    priority: String(p.priority ?? 0),
+    dailyCap: p.daily_cap != null ? String(p.daily_cap) : '',
+    minBid: p.min_bid != null ? String(p.min_bid) : '',
+    bidFormula: p.bid_formula ?? '',
+    resolverType: p.bid_resolver_type ?? 'api',
+    resolverConfig: p.bid_resolver_config ?? {},
+    outboundMapping: p.outbound_field_mapping ?? null,
+    bidComparisonSource: p.bid_comparison_source ?? 'auto',
+    extraExtraction: p.extra_extraction ?? null,
+    lastProbeResponse: p.last_probe_response ?? null,
+    dedupEndpoint: p.dedup_endpoint ?? '',
+    circuitEnabled: p.circuit_enabled ?? true,
+    circuitThreshold: String(p.circuit_error_threshold ?? 5),
+    circuitWindow: String(p.circuit_window_seconds ?? 60),
+    circuitCooldown: String(p.circuit_cooldown_seconds ?? 300),
+    signalRules: rules,
+    alertTransient: alerts?.transient_errors?.alert !== false,
+    alertPermanent: alerts?.permanent_errors?.alert !== false,
+    sellOffOfferTitle: p.sell_off_offer_title ?? '',
+    sellOffOfferDetails: p.sell_off_offer_details ?? '',
+    partnerType: p.partner_type ?? 'buyer',
+    confirmationWindowMs: p.confirmation_window_ms != null ? String(p.confirmation_window_ms) : '',
+    subAccountFloors: floors,
+    acceptSignals: Array.isArray(p.accept_signals) ? p.accept_signals : [],
+    externalRoutingCode: p.external_routing_code != null ? String(p.external_routing_code) : '',
+    duplicateSignals: Array.isArray(p.duplicate_signals) ? p.duplicate_signals : [],
+  }
 }
 
 export function floorsToMap(floors: SubAccountFloor[]): Record<string, number> | null {

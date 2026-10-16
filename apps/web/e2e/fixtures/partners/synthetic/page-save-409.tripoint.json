@@ -1,0 +1,256 @@
+{
+  "error": "stale_version",
+  "partner": {
+    "id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+    "name": "Tripoint",
+    "slug": "tripoint",
+    "min_bid": null,
+    "version": 1,
+    "bid_mode": "commit",
+    "priority": 0,
+    "click_url": "https://trypennie.com/portal/tpl",
+    "daily_cap": null,
+    "is_active": true,
+    "created_at": "2026-04-21T19:46:00.407619+00:00",
+    "updated_at": "2026-10-15T18:02:00+00:00",
+    "updated_by": "00000000-0000-4000-8000-000000000001",
+    "bid_formula": null,
+    "alert_config": {
+      "permanent_errors": {
+        "alert": true
+      },
+      "transient_errors": {
+        "alert": true
+      }
+    },
+    "api_endpoint": "https://tripoint-proxy.trypennie.dev/leads/create",
+    "last_save_id": "f0f0f0f0-0000-4000-8000-000000002134",
+    "partner_type": "buyer",
+    "cf_secret_key": "TRIPOINT_PROXY_SECRET",
+    "accept_signals": [
+      {
+        "field": "ok",
+        "equals": true
+      },
+      {
+        "in": [
+          1000,
+          1001,
+          1013,
+          1014,
+          1015,
+          1016,
+          1017
+        ],
+        "field": "data.createLead.resultCode"
+      }
+    ],
+    "dedup_endpoint": null,
+    "circuit_enabled": true,
+    "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+    "updated_by_name": "Editor A",
+    "extra_extraction": {
+      "leadId": "data.createLead.id",
+      "result": {
+        "classifier": "tripoint_result"
+      },
+      "result_code": "data.createLead.resultCode",
+      "buyer_reference": "data.createLead.id"
+    },
+    "updated_by_email": "editor-a@example.com",
+    "bid_resolver_type": "api",
+    "duplicate_signals": [
+      {
+        "in": [
+          1002,
+          1003,
+          1004,
+          1005,
+          1020
+        ],
+        "field": "data.createLead.resultCode"
+      }
+    ],
+    "bid_resolver_config": {
+      "tiers": [
+        {
+          "above": 12499,
+          "multiplier": 0.0013
+        }
+      ],
+      "pricing_mode": "tiered_multiplier",
+      "source_field": "context.finalDebt",
+      "min_source_value": 10000,
+      "default_multiplier": 0.0009
+    },
+    "last_probe_response": {
+      "ok": true,
+      "data": {
+        "createLead": {
+          "id": "redacted",
+          "bidValue": 145.5,
+          "resultCode": 1013
+        }
+      }
+    },
+    "sell_off_offer_title": null,
+    "sub_account_min_bids": null,
+    "bid_comparison_source": "formula",
+    "external_routing_code": 2,
+    "circuit_window_seconds": 60,
+    "confirmation_window_ms": null,
+    "outbound_field_mapping": null,
+    "sell_off_offer_details": null,
+    "circuit_error_threshold": 5,
+    "response_classification": {
+      "rejection_signals": [
+        {
+          "field": "data.createLead.resultCode",
+          "not_in": [
+            1000,
+            1001,
+            1013,
+            1014,
+            1015,
+            1016,
+            1017
+          ]
+        },
+        {
+          "field": "details[].message",
+          "any_item_contains": "Cannot return null for non-nullable field CreateLeadResponse.id"
+        },
+        {
+          "field": "details[].message",
+          "any_item_word_prefix_ci": "invalid"
+        }
+      ]
+    },
+    "circuit_cooldown_seconds": 300
+  },
+  "profile": {
+    "tiers": [
+      {
+        "debt_to": 12500,
+        "debt_from": 10000,
+        "multiplier": 0.0009,
+        "population": "engine"
+      },
+      {
+        "debt_to": null,
+        "debt_from": 12500,
+        "multiplier": 0.0013,
+        "population": "engine"
+      }
+    ],
+    "sold_on": "offer",
+    "version": 6,
+    "windows": [
+      {
+        "day_of_week": 0,
+        "opens_minute": 0,
+        "closes_minute": 1440
+      },
+      {
+        "day_of_week": 1,
+        "opens_minute": 0,
+        "closes_minute": 1440
+      },
+      {
+        "day_of_week": 2,
+        "opens_minute": 0,
+        "closes_minute": 1440
+      },
+      {
+        "day_of_week": 3,
+        "opens_minute": 0,
+        "closes_minute": 1440
+      },
+      {
+        "day_of_week": 4,
+        "opens_minute": 0,
+        "closes_minute": 1440
+      },
+      {
+        "day_of_week": 5,
+        "opens_minute": 0,
+        "closes_minute": 1440
+      },
+      {
+        "day_of_week": 6,
+        "opens_minute": 0,
+        "closes_minute": 1440
+      }
+    ],
+    "debt_max": null,
+    "debt_min": null,
+    "priority": 1,
+    "is_enabled": true,
+    "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+    "allowed_states": [
+      "AK",
+      "AL",
+      "AR",
+      "AZ",
+      "CA",
+      "CO",
+      "CT",
+      "DC",
+      "DE",
+      "FL",
+      "GA",
+      "HI",
+      "IA",
+      "ID",
+      "IL",
+      "IN",
+      "KS",
+      "KY",
+      "LA",
+      "MA",
+      "MD",
+      "ME",
+      "MI",
+      "MN",
+      "MO",
+      "MS",
+      "MT",
+      "NC",
+      "ND",
+      "NE",
+      "NH",
+      "NJ",
+      "NM",
+      "NV",
+      "NY",
+      "OH",
+      "OK",
+      "OR",
+      "PA",
+      "RI",
+      "SC",
+      "SD",
+      "TN",
+      "TX",
+      "UT",
+      "VA",
+      "VT",
+      "WA",
+      "WI",
+      "WV",
+      "WY"
+    ],
+    "blackout_dates": [],
+    "click_delivery": null,
+    "daily_lead_cap": 250,
+    "hourly_lead_cap": null,
+    "loan_amount_min": 3000,
+    "daily_spend_cap_cents": null,
+    "hourly_spend_cap_cents": null
+  },
+  "partner_version": 1,
+  "profile_version": 6,
+  "last_save_id": "f0f0f0f0-0000-4000-8000-000000002134",
+  "changed_by_name": "Editor A",
+  "changed_at": "2026-10-15T18:02:00Z"
+}

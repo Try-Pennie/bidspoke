@@ -37,7 +37,6 @@ import {
   applyValidationToNodes,
   validationSignature,
 } from '@/lib/node-warning'
-import { useFocusTrap } from '@/hooks/useFocusTrap'
 import { shouldCalmWarnings } from '@/lib/warning-glow'
 import { ConvergeEdge } from './edges/ConvergeEdge'
 import { LateBendEdge } from './edges/LateBendEdge'
@@ -68,7 +67,7 @@ import type { ExecutionStep } from '@/types/workflow'
 import { writeClipboard, readClipboard } from '@/lib/clipboard'
 import { computeEdgesAfterDelete } from '@/lib/splice-edges'
 import { onBeforeNodeDelete } from '@/lib/delete-routing'
-import { resolvePostSaveStateBySignature, computeEditSignature, deriveDirty, deriveDraggingState, confirmDiscardIfDirty, UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
+import { resolvePostSaveStateBySignature, computeEditSignature, deriveDirty, deriveDraggingState } from '@/lib/save-dirty-guard'
 import { classifySave } from '@/lib/save-verification'
 import { findBranchLabelConflicts } from '@/lib/branch-validation'
 import { EMPTY_HISTORY, pushSnapshot, reduceUndo, reduceRedo, type HistoryModel } from '@/lib/canvas-history'
@@ -80,6 +79,7 @@ import {
   renameNamespaceInList,
 } from '@/lib/rename-step-references'
 import RenameConfirmDialog, { type PartnerFormulaImpact } from './RenameConfirmDialog'
+import { ContainerDeleteDialog, LeaveCanvasDialog } from './CanvasDialogs'
 import { edgeRunStates } from './edges/edge-run-state'
 import { DEFAULT_ALERT_OVER_PERCENT } from '@bidspoke/buyer-profile'
 import WorkflowActiveBadge from '@/components/WorkflowActiveBadge'
@@ -2371,12 +2371,9 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     containerLabel: string
     edgeIds: string[]
   } | null>(null)
-  // Focus trap for the container-delete confirm dialog below (#288). Activates
-  // when the dialog is open; Escape / focus-restore handled by the hook.
-  const containerDeleteRef = useFocusTrap<HTMLDivElement>(
-    !!pendingContainerDelete,
-    () => setPendingContainerDelete(null),
-  )
+  // Leaving by the back link with unsaved edits asks first, in the page's own
+  // dialog rather than the browser's (#478, #2134).
+  const [leavePrompt, setLeavePrompt] = useState(false)
 
   const executeNodesDelete = useCallback(
     (ids: string[], alsoRemoveEdgeIds: string[] = []) => {
@@ -2895,10 +2892,11 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
               // this tab's unsaved edits aren't going anywhere.
               if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return
               // #478: this Link never fires beforeunload, so a client-side navigation away
-              // from a dirty canvas silently discarded the edits. Gate it the same way
-              // PartnerForm guards its own away-clicks.
-              if (!confirmDiscardIfDirty(isDirty, () => window.confirm(UNSAVED_CHANGES_MESSAGE))) {
+              // from a dirty canvas silently discarded the edits. It asks in the page's
+              // own dialog (#2134), and only Discard and leave navigates.
+              if (isDirty) {
                 e.preventDefault()
+                setLeavePrompt(true)
                 return
               }
               if (typeof document === 'undefined' || !('startViewTransition' in document)) return
@@ -3781,52 +3779,24 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
 
       {pendingContainerDelete && (() => {
         const { outerIds, innerIds, containerLabel, edgeIds } = pendingContainerDelete
-        const innerCount = innerIds.length
-        const cancel = () => setPendingContainerDelete(null)
-        const leave = () => { executeNodesDelete(outerIds, edgeIds); setPendingContainerDelete(null) }
-        const includeInner = () => { executeNodesDelete([...outerIds, ...innerIds], edgeIds); setPendingContainerDelete(null) }
         return (
-          // eslint-disable-next-line jsx-a11y/no-static-element-interactions, jsx-a11y/click-events-have-key-events -- presentational click-outside backdrop; keyboard close is handled by the dialog's focus trap (Escape)
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={cancel}>
-            {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions, jsx-a11y/click-events-have-key-events -- propagation guard so a click inside the dialog doesn't dismiss it via the backdrop */}
-            <div
-              ref={containerDeleteRef}
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="container-delete-title"
-              className="w-[440px] rounded-xl bg-white p-5 shadow-2xl"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <p id="container-delete-title" className="font-semibold text-graphite">
-                Delete {containerLabel}?
-              </p>
-              <p className="mt-1 text-sm text-gray-600">
-                {innerCount} {innerCount === 1 ? 'node' : 'nodes'} sit inside this container. Should they be deleted with it, or left disconnected on the canvas?
-              </p>
-              <div className="mt-5 flex justify-end gap-2">
-                <button
-                  className="rounded-lg px-3 py-1.5 text-sm text-gray-600 hover:bg-gray-100"
-                  onClick={cancel}
-                >
-                  Cancel
-                </button>
-                <button
-                  className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-gray-700 hover:bg-beige"
-                  onClick={leave}
-                >
-                  Leave them
-                </button>
-                <button
-                  className="rounded-lg bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700"
-                  onClick={includeInner}
-                >
-                  Delete inside too
-                </button>
-              </div>
-            </div>
-          </div>
+          <ContainerDeleteDialog
+            containerLabel={containerLabel}
+            innerCount={innerIds.length}
+            onCancel={() => setPendingContainerDelete(null)}
+            onLeaveThem={() => { executeNodesDelete(outerIds, edgeIds); setPendingContainerDelete(null) }}
+            onDeleteInside={() => { executeNodesDelete([...outerIds, ...innerIds], edgeIds); setPendingContainerDelete(null) }}
+          />
         )
       })()}
+
+      {leavePrompt && (
+        <LeaveCanvasDialog
+          workflowName={name}
+          onKeepEditing={() => setLeavePrompt(false)}
+          onDiscard={() => { setLeavePrompt(false); router.push('/workflows') }}
+        />
+      )}
     </div>
   )
 }
