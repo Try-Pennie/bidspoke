@@ -60,7 +60,7 @@ describe('the partner form on the shared controls (#2137)', () => {
     fireEvent.change(screen.getByLabelText('Error threshold'), { target: { value: '7' } })
     fireEvent.change(screen.getByLabelText('Confirmation window (ms)'), { target: { value: '5000' } })
     fireEvent.click(screen.getByRole('switch', { name: 'Partner active', hidden: true }))
-    fireEvent.click(screen.getByRole('switch', { name: 'Transient error alerts', hidden: true }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Alert on errors that are retried', hidden: true }))
     save()
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
     const [body] = onSave.mock.calls[0]
@@ -85,7 +85,7 @@ describe('the partner form on the shared controls (#2137)', () => {
 
   it('the switches are Radix switches with the shared class, and the type is a radio group', () => {
     renderForm()
-    for (const name of ['Partner active', 'Circuit breaker enabled', 'Transient error alerts', 'Permanent error alerts']) {
+    for (const name of ['Partner active', 'Circuit breaker enabled', 'Alert on errors that are retried', 'Alert on errors that are not retried']) {
       expect(screen.getByRole('switch', { name, hidden: true })).toHaveClass('toggle')
     }
     expect(screen.getByRole('radiogroup', { name: 'Type', hidden: true })).toBeInTheDocument()

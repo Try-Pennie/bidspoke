@@ -51,6 +51,26 @@ describe('CapsGrid', () => {
     expect(onChange).toHaveBeenLastCalledWith({ ...none, daily_lead_cap: 60 })
   })
 
+  // #2143, PM-10: the reset is said in the profile's display zone, at the hour it
+  // falls on the night it happens. These nows are the evening before, Pacific.
+  it.each([
+    ['America/New_York', '2026-01-15T03:00:00.000Z', 'The count resets at 3:00 AM Eastern time.'],
+    ['America/New_York', '2026-03-08T03:00:00.000Z', 'The count resets at 4:00 AM Eastern time.'],
+    ['America/New_York', '2026-11-01T03:00:00.000Z', 'The count resets at 2:00 AM Eastern time.'],
+    ['America/Denver', '2026-03-08T03:00:00.000Z', 'The count resets at 1:00 AM Mountain time.'],
+    ['America/Los_Angeles', '2026-07-15T03:00:00.000Z', 'The count resets at midnight Pacific time.'],
+  ] as const)('a click buyer\'s note says when the count resets, in %s at %s', (zone, now, sentence) => {
+    render(<CapsGrid value={{ ...none, daily_lead_cap: 50 }} onChange={() => {}} soldOn="click" zone={zone} nowMs={Date.parse(now)} />)
+    expect(screen.getByText(new RegExp(sentence.replace(/\./g, '\\.')))).toBeInTheDocument()
+    expect(screen.queryByText(/midnight to midnight Pacific/)).toBeNull()
+  })
+
+  it('an offer buyer\'s note says when its day starts, in the display zone', () => {
+    render(<CapsGrid value={none} onChange={() => {}} zone="America/Los_Angeles" nowMs={0} />)
+    expect(screen.getByText(/A day runs from 9:00 PM to 9:00 PM Pacific time, starting the evening before\./)).toBeInTheDocument()
+    expect(screen.queryByText(/Eastern time/)).toBeNull()
+  })
+
   it('renders a field error beside the control it names', () => {
     render(<CapsGrid value={{ ...none, hourly_lead_cap: 600, daily_lead_cap: 500 }} onChange={() => {}} errors={{ hourlyLeadCap: 'Hourly cap is above the daily cap.' }} />)
     expect(screen.getByRole('alert')).toHaveTextContent('Hourly cap is above the daily cap.')

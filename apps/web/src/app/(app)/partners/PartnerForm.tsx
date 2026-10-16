@@ -18,12 +18,13 @@ import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
 import { OutboundMappingEditor } from '@/components/partners/OutboundMappingEditor'
 import { ExtraExtractionEditor } from '@/components/partners/ExtraExtractionEditor'
 import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
-import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
+import { ErrorRuleLists } from '@/components/partners/ErrorRuleLists'
 import { BuyerProfileSection, EMPTY_PROFILE } from '@/components/partners/buyer-profile/BuyerProfileSection'
 import { MergeDialog } from '@/components/partners/MergeDialog'
 import { mergeThreeWay, sameMergeValue, type MergeResult, type MergeSide, type PageHalves } from '@/lib/partner-page-merge'
 import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
 import { clickDeliveryConsequences } from '@/components/partners/buyer-profile/click-delivery-consequences'
+import { profileWithChangedZoneOnly } from '@/components/partners/buyer-profile/display-zone'
 import { Button, ChoiceGroup, Field, NumberInput, Outcome, TextArea, TextInput, describedBy, type OutcomeState } from '@/components/ui/form'
 import { Toggle } from '@/components/ui/Toggle'
 import { documentToProfile, soldOnSwitchBlocked, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal, type StoredKind } from '@bidspoke/buyer-profile'
@@ -815,7 +816,8 @@ export default function PartnerForm({
     setSaveOutcome({ kind: 'working', label: 'Saving', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
     // One request for the whole page (#2133): both halves land or neither does,
     // so the button says Saved only when everything this press saves has saved.
-    const result = await savePage(patch, saveProfileToo ? profile : null)
+    // The display zone goes only when it changed (#2143): absent keeps the stored one.
+    const result = await savePage(patch, saveProfileToo ? profileWithChangedZoneOnly(profile, profileBefore) : null)
     if (result.kind !== 'saved') {
       setSaveState('idle')
       return
@@ -1126,13 +1128,17 @@ export default function PartnerForm({
               </Section>
 
               <Section title="Response classification">
-                <p className="text-xs text-gray-500">
-                  Override how this partner&apos;s responses are classified. Rules are evaluated before the defaults.
-                  Leave all sections empty to use default classification by HTTP status.
-                </p>
                 {/* The decline group (rejection) is edited in the Buyer profile section beside
-                    the accept rules, so it is not repeated here (#1412, L605). */}
-                <SignalRuleBuilder value={signalRules} onChange={setSignalRules} sections={SIGNAL_SECTIONS.filter((s) => s.cat !== 'rejection')} />
+                    the accept rules, so it is not repeated here (#1412, L605). The defaults
+                    and each list's Alert switch are drawn with the lists (#2143, PM-11). */}
+                <ErrorRuleLists
+                  value={signalRules}
+                  onChange={setSignalRules}
+                  alertRetried={alertTransient}
+                  onAlertRetried={setAlertTransient}
+                  alertNotRetried={alertPermanent}
+                  onAlertNotRetried={setAlertPermanent}
+                />
               </Section>
 
               <Section title="Confirmation window">
@@ -1157,28 +1163,6 @@ export default function PartnerForm({
                 )}
               </Section>
 
-              <Section title="Alert configuration">
-                <p className="text-xs text-gray-500">
-                  Default: alert on all errors. Turn off alert types that produce noise for this partner.
-                  Business rejections never alert regardless.
-                </p>
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
-                    <div>
-                      <p className="text-sm font-medium text-gray-800">Transient error alerts</p>
-                      <p className="text-xs text-gray-500">Network failures, timeouts, 429, 502 to 504</p>
-                    </div>
-                    <Toggle id="partner-alert-transient" checked={alertTransient} onChange={setAlertTransient} label="Transient error alerts" />
-                  </div>
-                  <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
-                    <div>
-                      <p className="text-sm font-medium text-gray-800">Permanent error alerts</p>
-                      <p className="text-xs text-gray-500">4xx errors, auth failures, bad responses</p>
-                    </div>
-                    <Toggle id="partner-alert-permanent" checked={alertPermanent} onChange={setAlertPermanent} label="Permanent error alerts" />
-                  </div>
-                </div>
-              </Section>
             </TabPanel>
           )}
           <TabPanel value="workflow_values" className="space-y-8">

@@ -94,7 +94,7 @@ export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
   partnerField('confirmation_window_ms', 'Confirmation window', 'Confirmation window (ms)', 'bid_group'),
   partnerField('sell_off_offer_title', 'Sell-off offer', 'Sell-off offer title', 'workflow_values'),
   partnerField('sell_off_offer_details', 'Sell-off offer', 'Sell-off offer details', 'workflow_values'),
-  partnerField('alert_config', 'Alert configuration', 'Alerts', 'bid_group'),
+  partnerField('alert_config', 'Response classification', 'Alerts', 'bid_group'),
   partnerField('accept_signals', 'Outcome rules', SECTION_LABELS.accept_signals, 'buyer_profile'),
   partnerField('duplicate_signals', 'Outcome rules', SECTION_LABELS.duplicate_signals, 'buyer_profile'),
   partnerField('external_routing_code', 'Outcome rules', FIELD_LABELS.external_routing_code, 'buyer_profile'),
@@ -111,8 +111,7 @@ export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
   profileField('daily_lead_cap', 'Caps', FIELD_LABELS.daily_lead_cap),
   profileField('hourly_spend_cap_cents', 'Caps', FIELD_LABELS.hourly_spend_cap_cents),
   profileField('daily_spend_cap_cents', 'Caps', FIELD_LABELS.daily_spend_cap_cents),
-  // #2143: stored by the server half; the page half adds the control and moves this label into FIELD_LABELS.
-  profileField('display_time_zone', SECTION_LABELS.windows, 'Show times in'),
+  profileField('display_time_zone', SECTION_LABELS.windows, FIELD_LABELS.display_time_zone),
   profileField('windows[*]', SECTION_LABELS.windows, SECTION_LABELS.windows, { name: 'windows', by: 'day_of_week' }),
   profileField('blackout_dates[*]', SECTION_LABELS.blackout_dates, SECTION_LABELS.blackout_dates, { name: 'blackout_dates' }),
   profileField('tiers[*]', SECTION_LABELS.tiers, SECTION_LABELS.tiers, { name: 'tiers', by: 'population' }),
