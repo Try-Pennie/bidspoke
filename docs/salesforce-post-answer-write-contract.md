@@ -1261,6 +1261,54 @@ above, extended rather than copied.
   the read-back sends nothing while the bulkhead is full, so this needs a slot
   to vanish between that check and the send.
 
+### The credit inquiry post on a replay or a resume (#2176)
+
+Dan's decision on #2176 (2026-10-15): a recovery run checks first and sends only
+if missing. Not a blind resend, and not the flat refusal buyer_click_send makes
+(#1542). A replay or a resume runs every node again from the entry, so without
+this every recovery of a run whose post landed would attach a second file. Code:
+`checkRecoveredInquiryPost` in `apps/worker/src/engine/nodes/salesforce.ts`,
+`apps/worker/src/engine/recovery-origin.ts`, and `lookupInquiryMarker` in
+`apps/worker/src/engine/inquiry-post.ts`, the one Lead lookup and file query the
+read-back above uses too.
+
+- **Since when.** The file query's window starts at the ROOT run of the
+  recovery's lineage, read from its `workflow_executions` row (each row names its
+  parent, so a replay of a replay reads back to the first run), less 2 s. The
+  original step's own start is not used: its row is flushed after the walk, can
+  fail to flush, and is archived after 7 days, so a recovery run cannot count on
+  it. The run's start is never later than the post, so the window is only wider,
+  which errs toward not sending. The root rather than the run directly recovered,
+  because a replay of a replay that skipped would otherwise look only after the
+  first replay began, miss the original file, and post a second one.
+- **First, the read-back's hold** (Dan, 2026-10-16). Before anything is read
+  from Salesforce, each run of the lineage, nearest first, is asked of
+  `readBackHoldsStep` for this step: the read-back's own classifier on that run's
+  at-risk record. While the read-back holds a post of any of them it is that
+  post's one sender, so nothing is sent and the step fails as unknown, saying the
+  original post is still being settled by the read-back; a replay after it
+  settles checks again. A hold check that throws, or a run with no way to ask,
+  sends nothing either.
+- **Found**: nothing is sent, no intent record is written, and the step completes
+  as `{ skipped: true, skip_reason: 'already_landed', lead_id, recovered_from,
+  marker_since }`.
+- **Not found**: the post goes out exactly as on a normal run, intent record
+  first, read back and resent at most once by the read-back if its outcome is
+  unknown.
+- **The check cannot be answered** (no answer, a non 2xx, an answer that is not
+  the object asked for, a lineage row no longer kept or refused, a chain longer
+  than 10 or looping): nothing is sent, no intent record is written, and the step
+  fails saying whether the file landed is unknown. Fail closed: a missing post
+  is said and can be run again; a second file cannot be taken back. A Submission
+  with no Lead fails the step, permanent, unsent, since Salesforce refuses it.
+- **A normal run makes no check.**
+- **The race with the read-back is closed.** A post of the lineage still in
+  flight, or one the read-back may resend, is held by the read-back from before
+  it was sent (its intent record is written first) until it is settled, and a
+  recovery sends nothing while it is held. What is left is a post the read-back
+  does not hold: one inside a parallel node (not recorded, see above), or one
+  whose record could not be written, which its own run already logs as an error.
+
 ### The unfinished work alert (#2024)
 
 A run that answered early keeps walking, and finalize stops waiting 12 s after
