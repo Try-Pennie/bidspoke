@@ -49,7 +49,8 @@ export function unsavedSentence(units: readonly MergeUnit[], consequences: reado
   if (units.length === 0) return 'Unsaved changes'
   const named = consequences.length > 0 ? units.filter((u) => !isClickDelivery(u)) : units
   const labels = andList(named.map((u) => u.label))
-  const said = [labels, ...consequences].filter((s) => s !== '').join(labels !== '' && consequences.length > 0 ? '. ' : ' ')
+  // Each consequence is a sentence of its own, already ending in a full stop.
+  const said = consequences.length === 0 ? labels : labels === '' ? consequences.join(' ') : `${labels}. ${consequences.join(' ')}`
   return `${units.length} unsaved change${units.length === 1 ? '' : 's'}: ${said}`
 }
 

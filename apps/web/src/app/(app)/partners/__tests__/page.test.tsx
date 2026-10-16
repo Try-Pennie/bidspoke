@@ -17,7 +17,6 @@ vi.mock('next/navigation', () => ({
 // so we can drive and observe the page's behaviour without the heavy real form.
 vi.mock('../PartnerForm', () => ({
   __esModule: true,
-  UNSAVED_CHANGES_MESSAGE: 'unsaved',
   default: (props: {
     partner?: { id: string }
     deleting?: boolean

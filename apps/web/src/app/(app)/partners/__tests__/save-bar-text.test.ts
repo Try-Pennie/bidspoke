@@ -23,6 +23,10 @@ describe('the unsaved change sentence (PM-4, PM-6)', () => {
   it('says a click delivery change as what it does, in place of its label (PM-6)', () => {
     expect(unsavedSentence([ROUTES], [CD])).toBe(`1 unsaved change: ${CD}`)
     expect(unsavedSentence([NAME, ROUTES], [CD])).toBe(`2 unsaved changes: Name. ${CD}`)
+    // Several consequences are sentences of their own, one full stop each.
+    const REPLY = 'A click counts as sent only when the reply matches X instead of Y.'
+    expect(unsavedSentence([ROUTES], [CD, REPLY])).toBe(`1 unsaved change: ${CD} ${REPLY}`)
+    expect(unsavedSentence([NAME, ROUTES], [CD, REPLY])).toBe(`2 unsaved changes: Name. ${CD} ${REPLY}`)
   })
 
   it('keeps the label of a click delivery edit that moves no click', () => {

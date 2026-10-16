@@ -376,15 +376,12 @@ export default function PartnerForm({
   // stored copy warning stands beside it (#1846), which stays until the next edit.
   useEffect(() => {
     if (undoSecondsLeft <= 0) return
+    // Each state write is made here, never inside another's updater, which React may run twice.
     const t = setTimeout(() => {
-      setUndoSecondsLeft((s) => {
-        if (s <= 1) {
-          setUndo(null)
-          if (!copyWarningText) setSaveOutcome((o) => (o.kind === 'done' ? { kind: 'idle' } : o))
-          return 0
-        }
-        return s - 1
-      })
+      if (undoSecondsLeft > 1) { setUndoSecondsLeft(undoSecondsLeft - 1); return }
+      setUndoSecondsLeft(0)
+      setUndo(null)
+      if (!copyWarningText) setSaveOutcome((o) => (o.kind === 'done' ? { kind: 'idle' } : o))
     }, 1000)
     return () => clearTimeout(t)
   }, [undoSecondsLeft, copyWarningText])
