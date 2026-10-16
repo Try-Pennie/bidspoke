@@ -710,8 +710,11 @@ BEGIN
       END IF;
     END IF;
 
+    -- The claim is over: its token goes, so the old holder's complete answers
+    -- claim_lost, never already_completed (a token is kept past a complete only
+    -- so that the holder's own repeat is recognised).
     UPDATE public.run_requests r
-    SET status = v_status, status_reason = v_reason, claim_expires_at = NULL,
+    SET status = v_status, status_reason = v_reason, claim_expires_at = NULL, claim_token = NULL,
         lease_requeues = r.lease_requeues + CASE WHEN v_run.status = 'claimed' AND v_queue THEN 1 ELSE 0 END,
         resume_reason = CASE WHEN v_run.status = 'running' AND v_queue THEN 'retry' ELSE r.resume_reason END,
         not_before = CASE WHEN v_queue THEN v_now ELSE r.not_before END,

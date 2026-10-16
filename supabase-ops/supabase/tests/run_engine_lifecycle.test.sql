@@ -394,6 +394,47 @@ BEGIN
 END
 $do$;
 
+-- ── sweep: the holder it swept cannot complete ───────────────────────────────
+-- A swept run's claim is gone even before anyone re-claims it, so its old holder
+-- must hear claim_lost, never already_completed (which would tell it the run it
+-- lost had finished). Found by the lessons review of #1948.
+DO $do$
+DECLARE
+  v_org uuid := 'aaaaaaaa-0000-4000-8000-000000001948';
+  v_retried uuid;
+  v_human uuid;
+  r record;
+  s record;
+BEGIN
+  PERFORM pg_temp.re_reset();
+  v_retried := pg_temp.re_enqueue('00000000-0000-4000-8000-0000000000ac', 'swept-retry');
+  SELECT * INTO r FROM public.claim_run_requests('tick-1', 1, 1, 60);
+  PERFORM public.start_run_execution(v_org, v_retried, r.claim_token, gen_random_uuid());
+  UPDATE public.run_requests SET claim_expires_at = now() - interval '1 second' WHERE id = v_retried;
+  PERFORM public.sweep_expired_leases(100);
+  IF (SELECT status FROM public.run_requests WHERE id = v_retried) <> 'queued' THEN RAISE EXCEPTION 'setup: the swept run was not requeued'; END IF;
+  IF (SELECT outcome FROM public.complete_run_request(v_org, v_retried, r.claim_token, 'done')) <> 'claim_lost' THEN
+    RAISE EXCEPTION 'the holder of a swept run was told its complete succeeded';
+  END IF;
+  IF (SELECT status FROM public.run_requests WHERE id = v_retried) <> 'queued' THEN RAISE EXCEPTION 'the swept holder''s complete changed the run'; END IF;
+
+  -- Likewise after the sweep sends it to a person (from no rows again: the
+  -- requeued run above would be claimed first).
+  PERFORM pg_temp.re_reset();
+  v_human :=pg_temp.re_enqueue('00000000-0000-4000-8000-0000000000ad', 'swept-human');
+  SELECT * INTO r FROM public.claim_run_requests('tick-2', 1, 1, 60);
+  SELECT * INTO s FROM public.start_run_execution(v_org, v_human, r.claim_token, gen_random_uuid());
+  PERFORM public.record_send_intent(v_org, v_human, r.claim_token, s.state_version, 'n', 1, 'POST', 'h', false, NULL);
+  UPDATE public.run_requests SET claim_expires_at = now() - interval '1 second' WHERE id = v_human;
+  PERFORM public.sweep_expired_leases(100);
+  IF (SELECT outcome FROM public.complete_run_request(v_org, v_human, r.claim_token, 'done')) <> 'claim_lost' THEN
+    RAISE EXCEPTION 'the holder of a run swept to needs_human was told its complete succeeded';
+  END IF;
+  IF (SELECT status FROM public.run_requests WHERE id = v_human) <> 'needs_human' THEN RAISE EXCEPTION 'the swept holder''s complete changed a needs_human run'; END IF;
+  INSERT INTO re_cases VALUES ('sweep: the holder of a swept run hears claim_lost, never already_completed');
+END
+$do$;
+
 -- ── ledger: fenced intents, and the stalled holder (D2) ──────────────────────
 DO $do$
 DECLARE
@@ -639,7 +680,7 @@ $do$;
 DO $do$
 DECLARE v_n integer := (SELECT count(*) FROM re_cases);
 BEGIN
-  IF v_n <> 16 THEN RAISE EXCEPTION 'run_engine_lifecycle: % of 16 cases ran', v_n; END IF;
+  IF v_n <> 17 THEN RAISE EXCEPTION 'run_engine_lifecycle: % of 17 cases ran', v_n; END IF;
   RAISE NOTICE 'run_engine_lifecycle: % cases passed', v_n;
 END
 $do$;

@@ -11,10 +11,11 @@
  * - every read goes through readOpsRows, which takes an OrganizationId by type,
  *   re-checks it at run time, filters on it, and refuses a row of any other
  *   organization that comes back anyway;
- * - apps/web/src/lib/__guards__/worker/ops-reads-through-helper.test.ts fails on
- *   a `.from(`, `.rpc(` or `.schema(` against this client anywhere outside
- *   readOpsRows, and on the client being handed to anything typed wider than
- *   OpsSupabaseClient, where that scan could no longer follow it.
+ * - apps/web/src/lib/__guards__/worker/ops-reads-through-helper.test.ts allows a
+ *   `.from(` on this client only inside readOpsRows and a `.rpc(` only inside
+ *   callOpsRpc (ops-writes.ts), and fails on any other `.from(`, `.rpc(` or
+ *   `.schema(` against it, and on the client being handed to anything typed
+ *   wider than OpsSupabaseClient, where that scan could no longer follow it.
  *
  * Nothing reads the ops database yet: the run engine's tables exist (#1948) but
  * nothing calls them until its tick (#1949). So OPS_SUPABASE_URL and

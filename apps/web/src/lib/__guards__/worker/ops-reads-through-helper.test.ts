@@ -29,8 +29,11 @@
  * caught the same as the variable the factory returned. The ops client is told
  * from the bidding one by its brand (OpsSupabaseClient).
  *
- * Seen red on 2026-10-06 against a planted file (the last test here, kept so the
- * check stays proven) and against a real `.from(` added to src/ops/index.ts.
+ * Seen red on 2026-10-06 against a planted file (the "planted way round" test,
+ * kept so the check stays proven) and against a real `.from(` added to
+ * src/ops/index.ts; on 2026-10-16 (#1948) against a real `.rpc(` added there,
+ * and, in the last two tests, against a helper of the right name in the wrong
+ * file and the wrong method inside callOpsRpc.
  */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -128,7 +131,7 @@ export function scanOpsQueries(program: ts.Program, files: string[]): { offender
 const SOURCE_FILES = listTsFiles(WORKER_SRC)
 const fmt = (f: Finding) => `${f.file}:${f.line} ${f.what}`
 
-describe('every ops database query goes through readOpsRows (#1709)', () => {
+describe('every ops database query goes through readOpsRows or callOpsRpc (#1709, #1948)', () => {
   const program = buildWorkerProgram(SOURCE_FILES)
   const result = scanOpsQueries(program, SOURCE_FILES)
 
@@ -155,7 +158,7 @@ describe('every ops database query goes through readOpsRows (#1709)', () => {
     expect(result.offenders.map(fmt)).toEqual([])
   })
 
-  it('fails on each planted way round the helper, by file, line and kind', () => {
+  it('fails on each planted way round the helpers, by file, line and kind', () => {
     const planted = path.join(WORKER_SRC, 'ops/__planted_ops_query__.ts')
     const src = [
       "import type { SupabaseClient } from '@supabase/supabase-js'",
