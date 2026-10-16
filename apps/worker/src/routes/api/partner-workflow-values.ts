@@ -31,7 +31,7 @@ import { fetchAllPaged } from '../../lib/paginate'
 import { readOrgWorkflows } from '../../lib/org-workflows'
 import { partnerConstantsFromRows, type PartnerConstantsPartnerRow, type PartnerConstantsUuidRow } from '../../lib/partner-constants-loader'
 import { partnerConstantOutput } from '../../engine/nodes/constants'
-import { CLICK_URL_READERS_OUTSIDE_WORKFLOWS, scanPartnerValueReaders } from '../../lib/partner-workflow-values'
+import { CLICK_URL_READERS_OUTSIDE_WORKFLOWS, carriesConstantsNode, scanPartnerValueReaders } from '../../lib/partner-workflow-values'
 import type { WorkflowValue, WorkflowValuesAnswer } from '../../lib/workflow-values-shape'
 
 const workflowValues = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
@@ -100,10 +100,7 @@ workflowValues.get('/:id/workflow-values', async (c) => {
     }
   })
 
-  const withConstants = workflows.filter((w) => {
-    const nodes = (w.definition as { nodes?: unknown } | null)?.nodes
-    return Array.isArray(nodes) && nodes.some((n) => (n as { type?: unknown } | null)?.type === 'constants')
-  }).length
+  const withConstants = workflows.filter(carriesConstantsNode).length
 
   const answer: WorkflowValuesAnswer = {
     partner: { id: row.id, slug: row.slug },

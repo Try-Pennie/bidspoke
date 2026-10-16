@@ -419,7 +419,7 @@ export async function getOrgHistoryWarnings(
   // and the config panel, so the audit never flags a node those surfaces call
   // fine (or vice versa).
   const results = await mapWithConcurrency(
-    data ?? [],
+    data,
     opts.concurrency ?? Number.POSITIVE_INFINITY,
     async (w) => {
       const definition = w.definition as WorkflowDefinition | null

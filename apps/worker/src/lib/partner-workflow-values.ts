@@ -116,6 +116,13 @@ function definitionOf(w: ScannableWorkflow): { nodes: DefNode[]; edges: DefEdge[
   }
 }
 
+const constantsNodesOf = (nodes: DefNode[]): DefNode[] => nodes.filter((n) => n.type === 'constants')
+
+/** Whether a workflow carries a Constants node, the only workflows the scan can find a reader in. */
+export function carriesConstantsNode(w: ScannableWorkflow): boolean {
+  return constantsNodesOf(definitionOf(w).nodes).length > 0
+}
+
 /** Every place in a definition that can read the Constants output, with its text. The Constants node's own data is not a read. */
 function textPlaces(nodes: DefNode[], edges: DefEdge[]): TextPlace[] {
   const out: TextPlace[] = []
@@ -226,7 +233,7 @@ export function scanPartnerValueReaders(workflows: readonly ScannableWorkflow[],
 
   for (const w of workflows) {
     const { nodes, edges } = definitionOf(w)
-    const constantsNodes = nodes.filter((n) => n.type === 'constants')
+    const constantsNodes = constantsNodesOf(nodes)
     if (constantsNodes.length === 0) continue
     const namespaces = constantsNodes.map((n) => str(n.namespace)).filter((ns): ns is string => ns !== null && ns !== '')
 
