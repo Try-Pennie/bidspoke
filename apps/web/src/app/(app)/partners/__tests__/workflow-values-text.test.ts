@@ -49,7 +49,7 @@ describe('the kinds the tab knows', () => {
   })
 })
 
-describe('which sections a partner shows, in the answer order', () => {
+describe('which sections a partner shows, in the page fixed order', () => {
   it('a buyer: its click URL and minimum bids, and Active, which every partner carries', () => {
     const v = all()
     v[5] = { ...v[5], emitted: true, value: true }

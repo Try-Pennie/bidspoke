@@ -33,7 +33,7 @@ export const SECTION_TITLES: Readonly<Record<Exclude<SectionKey, 'other'>, strin
   active: 'Active',
 }
 
-/** The sections a partner of each type edits here, in the answer's order. */
+/** The sections a partner of each type edits here; the tab draws them in the page's fixed ORDER. */
 const EDITED_BY: Readonly<Record<Exclude<SectionKey, 'other'>, 'buyer' | 'source' | null>> = {
   click_url: 'buyer',
   sell_off: 'source',
@@ -72,7 +72,7 @@ function inUse(v: PartnerWorkflowValue): boolean {
 }
 
 /**
- * The sections the tab shows, in the answer's order: those the partner's type
+ * The sections the tab shows, in the page's fixed ORDER (unknown kinds last): those the partner's type
  * edits, and any other value in use (set, named by a workflow, or replacing a
  * workflow data key), so nothing a workflow reads of this partner is hidden.
  * A value read only for every partner, with nothing set, is left off a partner
