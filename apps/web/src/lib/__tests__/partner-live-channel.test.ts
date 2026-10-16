@@ -181,6 +181,7 @@ describe('PartnerLiveChannel (#2135)', () => {
       await flush()
       if (t.last().kind === 'failed') break
       await t.clock.advance(MISSING_PARTITION_RETRY_MS)
+      if (t.last().kind === 'failed') break
     }
     const last = t.last()
     expect(last.kind === 'failed' && last.reason).toMatch(/^MissingPartition: no partition \(\d+ joins refused for a missing partition\)$/)
@@ -211,9 +212,35 @@ describe('PartnerLiveChannel (#2135)', () => {
     u.channel.start()
     u.f.answer(refused('nope'))
     await flush()
-    expect(u.clock.pending()).toBe(1)
+    // The rejoin and the outage's deadline.
+    expect(u.clock.pending()).toBe(2)
     u.channel.stop()
     expect(u.clock.pending()).toBe(0)
+  })
+
+  it('a join that never answers still ends in failed at FAIL_AFTER_MS, and its late answer is left, not taken', async () => {
+    const t = make()
+    t.channel.start()
+    await t.clock.advance(FAIL_AFTER_MS - 1)
+    expect(t.last().kind).toBe('connecting')
+    await t.clock.advance(1)
+    expect(t.last()).toEqual({ kind: 'failed', reason: `Realtime gave no answer within ${FAIL_AFTER_MS / 1000} seconds` })
+    t.f.answer(admitted(t.f))
+    await flush()
+    expect(t.last().kind).toBe('failed')
+    expect(t.f.left).toBe(1)
+  })
+
+  it('start() while a join is held leaves it and cancels any rejoin timer, so two joins never run at once', async () => {
+    const t = make()
+    t.channel.start()
+    t.f.answer(admitted(t.f))
+    await flush()
+    t.channel.start()
+    await flush()
+    expect(t.f.left).toBe(1)
+    expect(t.f.calls).toHaveLength(2)
+    expect(t.clock.pending()).toBe(1) // only the new join's deadline
   })
 
   it('a notice or drop from a join it has already left is ignored', async () => {

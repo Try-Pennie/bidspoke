@@ -70,6 +70,7 @@ export class PartnerLiveChannel {
   private stopped = false
   private leave: (() => Promise<void>) | null = null
   private cancelTimer: (() => void) | null = null
+  private cancelDeadline: (() => void) | null = null
   /** Each join gets a number; an answer, notice or drop from an older one is ignored. */
   private generation = 0
   private failedAttempts = 0
@@ -84,10 +85,17 @@ export class PartnerLiveChannel {
   }
 
   start(): void {
+    // Whatever was in hand is let go first, so two joins never run at once.
     this.stopped = false
+    this.generation++
+    this.cancelTimer?.()
+    this.cancelTimer = null
+    this.leaveCurrent()
     this.outageSince = this.opts.clock.now()
     this.failedAttempts = 0
+    this.lastReason = ''
     this.setStatus({ kind: 'connecting', since: this.outageSince })
+    this.armDeadline()
     void this.join()
   }
 
@@ -111,7 +119,35 @@ export class PartnerLiveChannel {
     this.generation++
     this.cancelTimer?.()
     this.cancelTimer = null
+    this.cancelDeadline?.()
+    this.cancelDeadline = null
     this.leaveCurrent()
+  }
+
+  /**
+   * The outage's deadline: not Live by FAIL_AFTER_MS from when it began is
+   * failed, whether joins were refused or one never answered at all (a JoinFn
+   * is meant to time out, but this state must not rest on it).
+   */
+  private armDeadline(): void {
+    this.cancelDeadline?.()
+    const left = Math.max(0, FAIL_AFTER_MS - (this.opts.clock.now() - this.outageSince))
+    this.cancelDeadline = this.opts.clock.setTimeout(() => {
+      this.cancelDeadline = null
+      if (!this.stopped && this.status?.kind !== 'live') this.fail()
+    }, left)
+  }
+
+  private fail(): void {
+    // A join still out is let go: its answer, when it comes, is left (generation).
+    this.generation++
+    this.cancelTimer?.()
+    this.cancelTimer = null
+    this.cancelDeadline?.()
+    this.cancelDeadline = null
+    const reason = this.lastReason || `Realtime gave no answer within ${FAIL_AFTER_MS / 1000} seconds`
+    const partitions = this.missingPartitionRefusals > 0 ? ` (${this.missingPartitionRefusals} joins refused for a missing partition)` : ''
+    this.setStatus({ kind: 'failed', reason: `${reason}${partitions}` })
   }
 
   private setStatus(status: LiveStatus): void {
@@ -147,6 +183,8 @@ export class PartnerLiveChannel {
     if (answer.ok) {
       this.leave = answer.leave
       this.failedAttempts = 0
+      this.cancelDeadline?.()
+      this.cancelDeadline = null
       const reconnected = this.everLive
       this.everLive = true
       this.setStatus({ kind: 'live', since: this.opts.clock.now() })
@@ -167,14 +205,14 @@ export class PartnerLiveChannel {
     this.outageSince = this.opts.clock.now()
     this.failedAttempts = 0
     this.setStatus({ kind: 'reconnecting', since: this.outageSince, reason })
+    this.armDeadline()
     this.retryAfter(REJOIN_DELAYS_MS[0], reason)
   }
 
   private retryAfter(ms: number, reason: string): void {
     this.lastReason = reason
     if (this.opts.clock.now() - this.outageSince >= FAIL_AFTER_MS) {
-      const partitions = this.missingPartitionRefusals > 0 ? ` (${this.missingPartitionRefusals} joins refused for a missing partition)` : ''
-      this.setStatus({ kind: 'failed', reason: `${this.lastReason}${partitions}` })
+      this.fail()
       return
     }
     this.cancelTimer?.()
