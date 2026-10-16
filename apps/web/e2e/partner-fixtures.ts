@@ -43,6 +43,12 @@ export interface PartnerFixtures {
   history: Record<string, PartnerHistory>
   /** Tripoint's History with three synthetic matrix entries on top: production holds no matrix sync rows. */
   historyMatrix: PartnerHistory
+  /**
+   * Liberty1's held clicks (#2139), invented because production holds none, and
+   * the answer to adding a lead id to its sale with none. held-clicks-fixtures-contract.test.ts
+   * in the Worker holds both to what the routes answer.
+   */
+  heldClicks: { list: { entries: Array<{ id: string }>; total: number }; lead_id: unknown }
 }
 
 export function loadPartnerFixtures(): PartnerFixtures {
@@ -57,6 +63,7 @@ export function loadPartnerFixtures(): PartnerFixtures {
     usage: read('usage.json'),
     history: read('history.json'),
     historyMatrix: read('synthetic/history-matrix.tripoint.json'),
+    heldClicks: read('synthetic/held-clicks.liberty1.json'),
   }
 }
 
@@ -75,6 +82,8 @@ export interface FixtureOptions {
   historyMatrix?: boolean
   /** Answer Tripoint's History as the route does when a source was cut at its bound (mergeHistory with the source truncated). */
   historyIncomplete?: boolean
+  /** Give Liberty1 its invented held clicks (#2139), and answer adding a lead id to one, so the cards, the lead id box and the Remove dialog are scanned. */
+  heldClicks?: boolean
 }
 
 export interface Answer { status: number; body: unknown }
@@ -90,6 +99,10 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
   }
   // #2135: a change the page's probe found that no live notice announced. Recorded only.
   if (method === 'POST' && p === '/api/partners/live-miss') return { status: 201, body: { ok: true, id: LIVE_MISS_ID } }
+  if (method === 'POST' && (m = /^\/api\/held-clicks\/([^/]+)\/lead-id$/.exec(p))) {
+    const id = m[1]
+    return opts.heldClicks && fx.heldClicks.list.entries.some((e) => e.id === id) ? ok(fx.heldClicks.lead_id) : null
+  }
   if (method !== 'GET') return null
   // #2135: the versions probe, read on open and while a draft is dirty. Nothing has changed since the capture.
   if ((m = /^\/api\/partners\/([^/]+)\/versions$/.exec(p))) {
@@ -135,7 +148,10 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
   }
   if ((m = /^\/api\/partner-bid-configs\/([^/]+)$/.exec(p))) return opts.matrix && m[1] === fx.matrix.list[0].id ? ok(fx.matrix.detail) : null
   if (p === '/api/buyer-sales') return ok(fx.panels.buyer_sales)
-  if (p === '/api/held-clicks') return ok(fx.panels.held_clicks)
+  if (p === '/api/held-clicks') {
+    const liberty1 = fx.partners.find((row) => row.slug === 'liberty1')
+    return ok(opts.heldClicks && liberty1 && u.searchParams.get('partner_id') === liberty1.id ? fx.heldClicks.list : fx.panels.held_clicks)
+  }
   return null
 }
 

@@ -184,6 +184,16 @@ describe('held clicks, sub-account IDs and matrices', () => {
     expect(d.unregistered).toEqual([])
   })
 
+  it('a lead id added to a sold click (#2139) says the lead id, beside its Salesforce updates', () => {
+    expect(lines(entry({ entityType: 'held_click', changes: {
+      buyer_lead_id: { old: null, new: 'L1F-779' }, claim_generation: { old: 2, new: 3 },
+      salesforce_writes: { old: { complete: false }, new: { complete: true } }, subject: { prospect_id: 'p6' }, _actor: { name: 'Editor B' },
+    } }))).toEqual([
+      { kind: 'change', label: 'Held click, prospect p6, lead id', from: 'none', to: 'L1F-779' },
+      { kind: 'change', label: 'Held click, prospect p6, Salesforce updates', from: 'not all written', to: 'all written' },
+    ])
+  })
+
   it('a held_click pair on a row that is not a clear is shown and counted, never dropped', () => {
     const d = describeEntry(entry({ entityType: 'held_click', action: 'updated', changes: { held_click: { old: { prospect_id: 'p5' }, new: { prospect_id: 'p5', reason: 'x' } } } }))
     expect(d.lines).toEqual([{ kind: 'change', label: 'held_click', from: '{"prospect_id":"p5"}', to: '{"prospect_id":"p5","reason":"x"}' }])

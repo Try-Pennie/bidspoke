@@ -304,7 +304,13 @@ function describeHeldClick(e: HistoryEntry, c: Record<string, unknown>, out: Lin
   }
   for (const [key, v] of Object.entries(c)) {
     // held_click is read above only as a clear's subject; on any other row it falls through and is shown.
-    if (key.startsWith('_') || key === 'subject' || key === 'claim_generation' || key === 'buyer_lead_id') continue
+    if (key.startsWith('_') || key === 'subject' || key === 'claim_generation') continue
+    if (key === 'buyer_lead_id') {
+      // With a claim state it is part of that line (marked sent, lead id ...);
+      // alone it is a lead id added to a sold click (held-clicks.ts lead-id route).
+      if (isPair(v) && !isPair(c.claim_state)) out.value(`Held click, prospect ${prospect}, lead id`, formatSetting(v.old), formatSetting(v.new), false, false)
+      continue
+    }
     if (key === 'salesforce_writes' && isPair(v)) {
       out.value(`Held click, prospect ${prospect}, Salesforce updates`, writesSide(v.old), writesSide(v.new), false, false)
       continue
