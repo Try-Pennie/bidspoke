@@ -28,7 +28,7 @@
 import type { RecoveryMarkerSignal } from './incident-signals'
 import { reportRecordError, writeIncidentEvent, type IncidentContext, type IncidentEnd } from './incident-outbox'
 import { formatErr } from './format-error'
-import type { AlertClaims } from './alert-claim'
+import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
 
 export type { IncidentContext, IncidentEnd } from './incident-outbox'
 
@@ -357,14 +357,7 @@ export async function announceRecovery(
   const claim = opts.claim
   // Never throws: a failed release must not replace the send's own failure or
   // turn a held all-clear into a throw (the claim then lapses at its TTL).
-  const release = async () => {
-    if (!claim?.claims) return
-    try {
-      await claim.claims.release(claim.key)
-    } catch (e) {
-      console.error(`[alert-recovery] release ${claim.key} failed: ${formatErr(e)}`)
-    }
-  }
+  const release = () => (claim ? releaseClaimQuietly(claim.claims, claim.key) : Promise.resolve())
   if (claim?.claims) {
     if (!(await claim.claims.claim(claim.key, claim.ttlSeconds))) {
       console.log(`[alert-recovery] ${prefix} all-clear for ${id} claimed by another tick`)

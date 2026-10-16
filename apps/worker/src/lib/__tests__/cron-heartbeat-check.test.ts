@@ -504,3 +504,45 @@ describe('runHeartbeatChecks posts once across overlapping ticks (#2062)', () =>
     expect(log).toEqual([])
   })
 })
+
+describe('the never finished all-clear claim never strands the check (#2062 review)', () => {
+  const archive = () => cronJob('execution-archive')
+  const orgs = [{ organization_id: 'org-1' }]
+  async function owed() {
+    const kv = fakeKv({
+      ...allFresh(NOW),
+      [heartbeatKey(archive().id)]: iso(NOW - archive().maxRunMs - 5 * 60_000),
+      [completedWatchKey(archive().id)]: iso(NOW - 24 * H),
+    })
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW)
+    kv.store.set(completedKey(archive().id), iso(NOW + 30_000))
+    return kv
+  }
+
+  it('checks every job after it when freeing the claim throws', async () => {
+    const kv = await owed()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(sendCronHeartbeatRecoveryAlert).mockResolvedValueOnce(false)
+    const claims = { claim: async () => true, release: async () => { throw new Error('release refused') } }
+    const results = await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000, claims)
+    expect(results).toHaveLength(CRON_JOBS.length)
+    vi.mocked(console.error).mockRestore()
+  })
+
+  it('frees the claim when the record it re-read no longer owes an all-clear', async () => {
+    const kv = await owed()
+    const { claims, held } = claimLedger()
+    const racing = {
+      claim: async (k: string, ttl: number) => {
+        const won = await claims.claim(k, ttl)
+        // Another tick stood the incident down while this one claimed.
+        kv.store.delete(`cron-heartbeat:${archive().id}:alerted-status`)
+        return won
+      },
+      release: claims.release,
+    }
+    await runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000, racing)
+    expect(sendCronHeartbeatRecoveryAlert).not.toHaveBeenCalled()
+    expect(held.size).toBe(0)
+  })
+})

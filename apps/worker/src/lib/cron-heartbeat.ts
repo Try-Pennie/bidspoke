@@ -55,7 +55,7 @@ import { MINUTE_ALERT_CLAIM_TTL_SECONDS, minuteAlertClaimKey, orgIdsToTell, post
 import { logReadFailure } from './scheduled-read'
 import { sendCronHeartbeatAlert, sendCronHeartbeatRecoveryAlert } from './slack'
 import { BACKOFF_STEPS_SECONDS, clearCondition, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf, type Recurrence, type StandingCondition } from './alert-backoff'
-import type { AlertClaims } from './alert-claim'
+import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
 import { reportRecordError, writeIncidentEvent, type IncidentContext } from './incident-outbox'
 import type { IncidentEndReason } from './incident-signals'
 import { formatErr } from './format-error'
@@ -642,7 +642,10 @@ async function checkJob(
             return result('healthy', false, verdict.ageMs)
           }
           const fresh = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
-          if (fresh?.status !== 'vanished') return result('healthy', false, verdict.ageMs)
+          if (fresh?.status !== 'vanished') {
+            await releaseClaimQuietly(claims, clearKey)
+            return result('healthy', false, verdict.ageMs)
+          }
           reported = fresh
         }
         const owed = reported
@@ -664,7 +667,7 @@ async function checkJob(
           if (owed.attempts < ALL_CLEAR_MAX_ATTEMPTS) {
             await writeAlertedStatus(kv, job.id, owed, nowMs)
             // Freed so the next tick can retry the organizations it missed.
-            if (claims) await claims.release(clearKey)
+            await releaseClaimQuietly(claims, clearKey)
             return result('healthy', false, verdict.ageMs)
           }
           console.error(
