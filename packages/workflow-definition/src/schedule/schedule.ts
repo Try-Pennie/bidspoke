@@ -54,11 +54,21 @@ export const CATCH_UP_PERIOD_THRESHOLD_SECONDS = DAY_S
 /**
  * Where the period is sampled from: fixed instants, never the clock, so a
  * schedule's defaults and validation are the same whenever they are computed.
- * 1 January, plus a few days before each of 2027's US daylight saving changes
- * (14 March and 7 November), because a frequent cron's 800 fires from January
- * end long before March and would never see the shorter gap a change makes.
+ * 1 January; three days before each of 2027's US daylight saving changes (14
+ * March and 7 November), for a cron sparse enough that its fires around the
+ * change are a day or more apart; and 05:00 UTC on each change day, which is
+ * before 02:00 local in New York and Los Angeles alike, for a cron so frequent
+ * that 800 fires from three days earlier end before the change. A single sample
+ * from January misses the shorter gap a change makes in every cron that fires
+ * more than a few times a day.
  */
-const PERIOD_SAMPLE_FROM_MS = [Date.UTC(2027, 0, 1), Date.UTC(2027, 2, 11), Date.UTC(2027, 10, 4)]
+const PERIOD_SAMPLE_FROM_MS = [
+  Date.UTC(2027, 0, 1),
+  Date.UTC(2027, 2, 11),
+  Date.UTC(2027, 2, 14, 5),
+  Date.UTC(2027, 10, 4),
+  Date.UTC(2027, 10, 7, 4),
+]
 const PERIOD_SAMPLE_FIRES = 800
 
 function timingOf(input: ScheduleTimingInput, zone: ScheduleZone): ScheduleTiming {
@@ -69,10 +79,10 @@ function timingOf(input: ScheduleTimingInput, zone: ScheduleZone): ScheduleTimin
  * The shortest gap between two consecutive fires, in seconds: how often the
  * schedule normally fires. A weekday cron's period is a day (its Friday to
  * Monday gap is three), a daily New York cron's is 23 hours (the spring change).
- * Sampled as up to 800 fires from each of three fixed instants: about 13 hours
- * of an every minute cron, and up to the eight year search horizon of a monthly
- * one. The two samples that start a few days before a change cross it whatever
- * the cron's frequency, which a single 800 fire sample from January does not.
+ * Sampled as up to 800 fires from each of five fixed instants (below): 800 fires
+ * are about 13 hours of an every minute cron and up to the eight year search
+ * horizon of a monthly one, so the samples are placed so that some sample
+ * crosses each change whatever the cron's frequency.
  */
 export function schedulePeriodSeconds(input: ScheduleTimingInput, zone: ScheduleZone): number {
   const timing = timingOf(input, zone)

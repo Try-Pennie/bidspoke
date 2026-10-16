@@ -45,6 +45,15 @@ describe('schedulePeriodSeconds: the shortest gap between consecutive fires', ()
     expect(schedulePeriodSeconds({ cron: '0 */2 * * *' }, 'UTC')).toBe(2 * HOUR_S)
   })
 
+  it('sees a spring change gap in a cron so frequent that 800 fires from days before it end before it', () => {
+    // 30 fires an hour on odd hours only: 360 a day, so 800 last about two days. Its
+    // ordinary shortest gap is 2 minutes (and 01:59 to 03:00 is 61), but on 2027-03-14
+    // 01:59 EST is 06:59Z and 03:00 EDT is 07:00Z, one minute later.
+    const cron = '0-56/2,59 1,3,5,7,9,11,13,15,17,19,21,23 * * *'
+    expect(schedulePeriodSeconds({ cron }, NY)).toBe(60)
+    expect(schedulePeriodSeconds({ cron }, 'UTC')).toBe(120)
+  })
+
   it('is five minutes for an every five minute cron', () => {
     expect(schedulePeriodSeconds({ cron: '*/5 8-20 * * SUN-SAT' }, NY)).toBe(300)
   })
