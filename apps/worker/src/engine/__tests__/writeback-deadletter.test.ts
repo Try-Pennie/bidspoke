@@ -17,6 +17,9 @@ import {
   WRITEBACK_HELD_LABEL,
 } from '../writeback-deadletter'
 import type { ResolvedStepInput } from '../../types'
+import { VirtualClock } from '../../lib/__tests__/_virtual-clock'
+import { startAtRiskWatch, runWatched, heldUntilOf, atRiskKey, AT_RISK_AFTER_MS } from '../at-risk-writes'
+import { salesforceAnswerOf } from '../nodes/salesforce'
 
 vi.mock('../durability', async (importOriginal) => {
   const real = await importOriginal<typeof import('../durability')>()
@@ -429,5 +432,104 @@ describe('a held credit inquiry post is left to the read-back (#2172)', () => {
       { supabase: fakeSupabase().client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
     )
     expect(vi.mocked(recordOutcomeDeadLetter).mock.calls.map((c) => c[0])).toEqual([WRITEBACK_UNCAPTURABLE_LABEL])
+  })
+})
+
+/**
+ * #468 step 1, one owner per write: an update that fails WITH a Salesforce answer
+ * after the 2 s mark (a retried 5xx, a refusal after a retry, a bulkhead shed)
+ * keeps its at-risk record as unknown and carries its own request. When the
+ * read-back owns that record (its own engine stamp on an object with the marker
+ * field) it reads the record back and resends it, so a pending row here would be
+ * a second sender: the replay (#471) or the drain would send it again. Driven
+ * through the real watch, the way the walk hands the failure to the capture.
+ */
+describe('a write the at-risk record keeps for the read-back is not also stored (#468)', () => {
+  const STEP = 'patch_prospect_reject'
+  const stampedBody = { BidStatus__c: 'Rejected', Bidspoke_Write__c: `${run.executionId}:${STEP}:0` }
+
+  function memoryKv() {
+    const store = new Map<string, string>()
+    return {
+      store,
+      put: async (k: string, v: string) => { store.set(k, v) },
+      delete: async (k: string) => { store.delete(k) },
+    }
+  }
+
+  /** One watched step that fails with `failure` after the 2 s mark, then the capture, as the walk hands it over. */
+  async function failAndCapture(opts: { object: string; body: Record<string, unknown>; failure: () => Error; errorType: 'transient' | 'permanent'; retries: number }) {
+    const held = memoryKv()
+    const clock = new VirtualClock()
+    const watch = startAtRiskWatch({ kv: held, keys: KEY, clock, run: { orgId: run.orgId, workflowId: run.workflowId, executionId: run.executionId }, stepNamespace: STEP })
+    const request = { object: opts.object, record_id: 'a06Ui00002sLkNuIAK', operation: 'update' as const, body: opts.body }
+    const own: ResolvedStepInput = { template: {}, resolved: { ...request, method: 'PATCH', url: 'https://sf/x' } }
+    let thrown: unknown
+    const done = runWatched(watch, () => {}, async () => {
+      watch.note(request)
+      await clock.delay(AT_RISK_AFTER_MS + 1000)
+      throw Object.assign(opts.failure(), { resolvedInput: own })
+    }, () => opts.retries).catch((e) => { thrown = e })
+    await clock.run()
+    await done
+    const db = fakeSupabase()
+    const logged = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let result
+    try {
+      result = await captureFailedWriteback(
+        {
+          ...run,
+          stepNamespace: STEP,
+          nodeType: 'salesforce',
+          errorType: opts.errorType,
+          error: thrown,
+          resolvedInput: (thrown as { resolvedInput?: ResolvedStepInput }).resolvedInput,
+          heldUntil: heldUntilOf(thrown),
+          salesforceAnswer: salesforceAnswerOf(thrown),
+        },
+        { supabase: db.client, kv, orgId: run.orgId, appUrl: 'https://app', encryptionKeys: KEY },
+      )
+    } finally {
+      logged.mockRestore()
+    }
+    return { result, inserts: db.inserts, keptInKv: held.store.has(atRiskKey(run.executionId, STEP)) }
+  }
+
+  const answered = (status: number, text: string, extra: Record<string, unknown> = {}) => () =>
+    Object.assign(new Error(`Salesforce API error (${status}): ${text}`), { status, salesforceAnswer: { status, text }, ...extra })
+
+  it('holds a read-back owned update that failed with a 5xx after 2 s in KV, and stores no row', async () => {
+    const { result, inserts, keptInKv } = await failAndCapture({ object: 'Prospect__c', body: stampedBody, failure: answered(503, 'unavailable'), errorType: 'transient', retries: 1 })
+    expect(keptInKv).toBe(true)
+    expect(inserts).toHaveLength(0)
+    expect(result).toMatchObject({ kind: 'held' })
+    expect(recordOutcomeDeadLetter).not.toHaveBeenCalled()
+  })
+
+  it('holds a read-back owned update refused for a login or permission fault after a retry, and stores no row', async () => {
+    const { inserts, keptInKv } = await failAndCapture({ object: 'Submission__c', body: stampedBody, failure: answered(403, '[{"errorCode":"INSUFFICIENT_ACCESS_OR_READONLY"}]', { permanent: true }), errorType: 'permanent', retries: 1 })
+    expect(keptInKv).toBe(true)
+    expect(inserts).toHaveLength(0)
+  })
+
+  it('still stores pending an update the read-back does not own (no stamp), since nothing else resends it', async () => {
+    const { result, inserts, keptInKv } = await failAndCapture({ object: 'Prospect__c', body: { BidStatus__c: 'Rejected' }, failure: answered(503, 'unavailable'), errorType: 'transient', retries: 1 })
+    expect(keptInKv).toBe(true)
+    expect(result).toEqual({ kind: 'stored' })
+    expect(inserts).toHaveLength(1)
+    expect(inserts[0]).toMatchObject({ status: 'pending', replayable: true })
+  })
+
+  it('still stores pending an update on an object with no marker field, stamp or not', async () => {
+    const { inserts } = await failAndCapture({ object: 'Opportunity', body: stampedBody, failure: answered(503, 'unavailable'), errorType: 'transient', retries: 1 })
+    expect(inserts).toHaveLength(1)
+    expect(inserts[0]).toMatchObject({ status: 'pending' })
+  })
+
+  it('still stores a definite rejection as refused, the at-risk record cleared', async () => {
+    const { result, inserts, keptInKv } = await failAndCapture({ object: 'Prospect__c', body: stampedBody, failure: answered(400, FIELD_ERROR, { permanent: true }), errorType: 'permanent', retries: 0 })
+    expect(keptInKv).toBe(false)
+    expect(result).toEqual({ kind: 'stored' })
+    expect(inserts[0]).toMatchObject({ status: 'refused', replayable: false })
   })
 })
