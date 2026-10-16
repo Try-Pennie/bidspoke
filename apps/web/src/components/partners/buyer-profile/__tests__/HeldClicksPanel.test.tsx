@@ -257,7 +257,7 @@ describe('HeldClicksPanel a sale marked sent (#2139)', () => {
     expect(h.onClear).toHaveBeenCalledTimes(1)
   })
 
-  // HeldClicksPanel.tsx line 198 before #2139: "already marked sent" with no id must not say "as".
+  // Before #2139 the panel wrote "already marked sent as <id>": with no id it must not say "as".
   it('with no lead id: says none was given, never "as", and offers to add one', () => {
     panel({ held: { entries: [row({ claim: soldAs(null), salesforce: { status: 'recorded', at: 'x', writes: allWritten(null) }, salesforce_standing: 'written' })], total: 1 } })
     expect(card()).toHaveTextContent("Marked sent Liberty1's lead id: none given. Completed in Salesforce.")

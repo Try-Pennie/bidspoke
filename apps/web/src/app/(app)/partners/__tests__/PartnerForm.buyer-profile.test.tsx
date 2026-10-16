@@ -636,7 +636,7 @@ describe('how the buyer is sold', () => {
     }
   })
 
-  it('a Salesforce update that fails after Mark sent is named on the row, the mark stands, and Retry writes again until every record lands', async () => {
+  it('a Salesforce update that fails after Mark sent is named on the card, the mark stands, and Retry writes again until every record lands', async () => {
     vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
     vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: { added: true, count: 12, date: '2027-09-20' }, salesforce: submissionFailed, audit_recorded: true, list_cleared: false })
     vi.mocked(api.heldClicks.retrySalesforce).mockResolvedValue({ outcome: 'written', salesforce: allUpdated, audit_recorded: true, list_cleared: true })
@@ -656,7 +656,7 @@ describe('how the buyer is sold', () => {
     expect(within(row).queryByRole('alert')).toBeNull()
   })
 
-  it('an audit entry that did not land is said on the row, since a reload will not know the Salesforce outcome', async () => {
+  it('an audit entry that did not land is said on the card, since a reload will not know the Salesforce outcome', async () => {
     vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
     vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: { added: true, count: 12, date: '2027-09-20' }, salesforce: allUpdated, audit_recorded: false, list_cleared: true })
     await renderWith(clickDoc, { name: 'Liberty1' })

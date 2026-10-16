@@ -233,7 +233,7 @@ export function BuyerProfileSection(props: Props) {
     return () => { cancelled = true }
   }, [partnerId, soldOnClick])
 
-  /** Runs one release with the three visible states (working with a clock, done, failed) on its row. */
+  /** Runs one release with the three visible states (working with a clock, done, failed) on its card. */
   async function release(id: string, label: string, act: () => Promise<string>) {
     const startedAt = Date.now()
     setHeldOutcomes((o) => ({ ...o, [id]: { kind: 'working', label, startedAt, now: startedAt, stalledAfterMs: 30_000 } }))
@@ -248,7 +248,7 @@ export function BuyerProfileSection(props: Props) {
     }
   }
 
-  /** Puts what a release returned on its row, so the row's controls follow the claim and its Salesforce updates without a reload. */
+  /** Puts what a release returned on its card, so the card's controls follow the claim and its Salesforce updates without a reload. */
   const patchHeld = (id: string, patch: Partial<HeldClick>) =>
     setHeld((h) => (h ? { ...h, entries: h.entries.map((e) => (e.id === id ? { ...e, ...patch } : e)) } : h))
 
