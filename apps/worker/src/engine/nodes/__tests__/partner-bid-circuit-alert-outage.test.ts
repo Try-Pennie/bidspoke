@@ -16,7 +16,7 @@ import type { Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../../index'
 import { CIRCUIT_ALERT_DEADLINE_MS, alertIfTripped } from '../partner-bid'
 import { createLeadSupabaseClient, LEAD_READ_DEADLINE_MS } from '../../../lib/lead-read-budget'
-import { readLastGoodSlackConnections, SLACK_CONNS_LASTGOOD_KEY } from '../../../lib/volume-cliff'
+import { readLastGoodSlackConnections, SLACK_CONNS_LASTGOOD_KEY } from '../../../lib/slack-copy'
 import { encryptSecret } from '../../../lib/secret-crypto'
 
 const env = { SUPABASE_URL: 'https://db.example.test', SUPABASE_SECRET_KEY: 'k' } as unknown as Env

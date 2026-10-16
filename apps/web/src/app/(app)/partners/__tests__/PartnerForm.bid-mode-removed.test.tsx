@@ -2,10 +2,11 @@
  * Bid mode is off the partners page (PM-9, #2136, part of #2114).
  *
  * The Commit and Ping only control is gone and no save the page makes carries
- * bid_mode, for an existing partner or a new one. The column, the Worker's
- * acceptance of it, and the engine's and the money gate's reads of it stay until the contract step,
- * so a partner stored as ping_only keeps that value: PR1's Worker test proves
- * an omitted bid_mode is left as stored, and this file proves the page omits it.
+ * bid_mode, for an existing partner or a new one. Since #2182 bid_mode is not a
+ * Partner field and the Worker refuses a save that names it, but the Worker
+ * still returns the column on a read (select *) until the later migration drops
+ * it, so the partner here carries it as a read does: the page must never echo
+ * it back, or every save of that partner would be refused.
  *
  * The section the control sat in is asserted present first (its Sample
  * response panel), so the control's absence is not read off a section that
@@ -28,8 +29,9 @@ import PartnerForm from '../PartnerForm'
 import { api } from '@/lib/api'
 import type { Partner } from '@/lib/api'
 
-// A buyer on the Partner API resolver: the only partner the control was ever shown for.
-const partner: Partner = {
+// A buyer on the Partner API resolver: the only partner the control was ever
+// shown for, with bid_mode as a read returns it until the column is dropped.
+const partner = {
   id: 'p1', organization_id: 'org-1', name: 'M1', slug: 'm1', api_endpoint: 'https://m1.example/ping', cf_secret_key: null, daily_cap: null, min_bid: null,
   bid_formula: null, bid_resolver_type: 'api', bid_resolver_config: {}, outbound_field_mapping: null, bid_mode: 'ping_only',
   bid_comparison_source: 'auto', extra_extraction: null, last_probe_response: null, dedup_endpoint: null, response_classification: null,
@@ -37,7 +39,7 @@ const partner: Partner = {
   confirmation_window_ms: null, is_active: true, priority: 0, sell_off_offer_title: null, sell_off_offer_details: null, click_url: null,
   sub_account_min_bids: null, partner_type: 'buyer', created_at: '', updated_at: '2026-10-15T14:00:00Z', updated_by_email: null, updated_by_name: null,
   version: 3,
-}
+} as Partner
 
 beforeEach(() => {
   vi.clearAllMocks()

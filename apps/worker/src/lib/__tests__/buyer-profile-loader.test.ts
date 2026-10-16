@@ -25,6 +25,7 @@ const ROW = {
   debt_min: 15000,
   debt_max: null,
   loan_amount_min: null,
+  collections_max_percent: null,
   hourly_lead_cap: 50,
   daily_lead_cap: null,
   hourly_spend_cap_cents: null,
@@ -96,7 +97,7 @@ describe('loadBuyerProfiles', () => {
     expect(calls[0].select).toMatch(/(^|, )sold_on,/)
     expect(b.partner).toMatchObject({ name: 'Tripoint', click_url: 'https://trypennie.com/portal/tpl', external_routing_code: 2, duplicate_signals: [{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }] })
     expect(b.profile).toEqual({
-      partnerId: 'p-1', soldOn: 'offer', isEnabled: true, priority: 1, allowedStates: ['TX', 'FL'], debtMin: 15000, debtMax: null, loanAmountMin: null,
+      partnerId: 'p-1', soldOn: 'offer', isEnabled: true, priority: 1, allowedStates: ['TX', 'FL'], debtMin: 15000, debtMax: null, loanAmountMin: null, collectionsMaxPercent: null,
       hourlyLeadCap: 50, dailyLeadCap: null, hourlySpendCapCents: null, dailySpendCapCents: 500000,
       windows: [{ dayOfWeek: 1, opensMinute: 540, closesMinute: 1080 }],
       blackoutDates: ['2026-11-26'],
@@ -107,6 +108,22 @@ describe('loadBuyerProfiles', () => {
     // Cached for the hot path, with the TTL the plan set, and kept as the last good copy.
     expect(store.get('buyer-profiles:org-1')?.ttl).toBe(BUYER_PROFILES_CACHE_TTL_SECONDS)
     expect(store.has('buyer-profiles:org-1:lastgood')).toBe(true)
+  })
+
+  it('reads the collections cap in the same query, so both nodes judge the cap the profile holds (#2111)', async () => {
+    const { supabase, calls } = fakeSupabase({ data: [{ ...ROW, collections_max_percent: 75 }], error: null })
+    const { kv } = fakeKv()
+    const snapshot = await loadBuyerProfiles('org-1', kv, supabase)
+    expect(calls[0].select).toMatch(/(^|, )collections_max_percent,/)
+    expect(snapshot.buyers[0].profile.collectionsMaxPercent).toBe(75)
+  })
+
+  it('a row with no collections cap key at all is no cap, never a cap of NaN that refuses every lead', async () => {
+    const { collections_max_percent: _omitted, ...row } = ROW
+    const { supabase } = fakeSupabase({ data: [row], error: null })
+    const { kv } = fakeKv()
+    const snapshot = await loadBuyerProfiles('org-1', kv, supabase)
+    expect(snapshot.buyers[0].profile.collectionsMaxPercent).toBeNull()
   })
 
   it('reads a click buyer delivery in the same query and shapes it for buyer_click_send (#1639)', async () => {

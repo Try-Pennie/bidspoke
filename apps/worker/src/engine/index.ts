@@ -72,7 +72,7 @@ import { readBlockRecords, type SandboxBlockRecord } from './code-response'
 import { reportPartnerBlock, resolveSlackForBlockAlert, type PartnerBlockDeps } from '../lib/partner-block-alert'
 import { makeAlertClaims } from '../lib/alert-claim'
 import { getSlackConnection } from '../lib/slack'
-import { readLastGoodSlackConnections } from '../lib/volume-cliff'
+import { readLastGoodSlackConnections } from '../lib/slack-copy'
 import { matchesMutedSignal } from '../lib/failure-rate'
 import { classifyOutageCause } from '../lib/upstream-outage'
 import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailableError } from './source-assignment'
@@ -81,6 +81,7 @@ import { assertDefinitionRunsInLane, assertWorkflowServedInLane, laneRefusalFor,
 import { runRealityOfOptions, shadowRunRefusal, stampRunReality } from './run-reality'
 import { startAtRiskWatch, startWatchSafely, runWatched, heldUntilOf } from './at-risk-writes'
 import { isCreditInquiryPost, stepRetries } from './inquiry-post'
+import { readRecoveryOrigin, type RecoveryOrigin } from './recovery-origin'
 import { writeMarker, withWriteMarker, ENGINE_ATTEMPT } from './write-marker'
 import { unfinishedWorkPages } from './unfinished-work'
 import { readBackHoldsStep } from '../lib/salesforce-read-back'
@@ -519,6 +520,16 @@ export async function executeWorkflow(
   // every node from the entry, so it would post a click a second time.
   if (options.resumeFromExecutionId) ctx.recovery = 'resume'
   else if (options.parentExecutionId) ctx.recovery = 'replay'
+  // And where its lineage began, read only when a credit inquiry post asks, once a
+  // run (#2176): the post checks for its file since then before it sends.
+  const recoveredFrom = options.resumeFromExecutionId ?? options.parentExecutionId
+  if (recoveredFrom) {
+    let origin: Promise<RecoveryOrigin> | undefined
+    ctx.recoveryOrigin = () => (origin ??= readRecoveryOrigin(runDb, recoveredFrom))
+    // And whether the read-back still holds a post of that lineage, asked of the
+    // at-risk records the watch writes, by the read-back's own classifier.
+    ctx.readBackHolds = (id, stepNamespace) => readBackHoldsStep(env.IDEMPOTENCY, secretKeys(env), id, stepNamespace)
+  }
 
   // Resume re-runs the workflow from the entry node — no completed steps are
   // pre-loaded and nothing is skipped (it behaves like a fresh run, same as
@@ -2130,7 +2141,7 @@ export async function walkGraph(
       recordStepOutput(ctx, node.namespace, { output: checkOutput, status: checkStatus, error: checkFailure?.message, error_type: checkErrorType }, { chainStep: true })
       const checkConfig = node.config as Record<string, unknown>
       const checkInput: ResolvedStepInput = {
-        template: { partner_id: checkConfig.partner_id, population: checkConfig.population, state: checkConfig.state, debt: checkConfig.debt, loan_amount: checkConfig.loan_amount },
+        template: { partner_id: checkConfig.partner_id, population: checkConfig.population, state: checkConfig.state, debt: checkConfig.debt, loan_amount: checkConfig.loan_amount, collections: checkConfig.collections },
         resolved: { partner_id: checkOutput.partner_id, partner_slug: checkOutput.partner_slug, population: checkOutput.population },
       }
       logStep(stepLogQueue, executionId, executionStartedAt, node, checkStatus, checkInput, checkOutput, checkFailure?.message, checkErrorType, 0, checkStartedAt, stepOrder)

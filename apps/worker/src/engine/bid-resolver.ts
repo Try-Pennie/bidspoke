@@ -26,7 +26,6 @@ import { containsHtmlDocument } from '../lib/html-error-summary'
 import { noteBlockSighting, sightingFromResponse } from './block-sightings'
 
 export type BidResolverType = 'formula' | 'matrix' | 'api'
-export type BidMode = 'commit' | 'ping_only'
 export type BidComparisonSource = 'auto' | 'api' | 'formula' | 'matrix'
 
 /**
@@ -51,7 +50,6 @@ export interface PartnerForResolver {
   outbound_field_mapping?: Record<string, unknown> | null
   response_classification: ResponseClassificationConfig | null
   alert_config: AlertConfig | null
-  bid_mode?: BidMode | null
   bid_comparison_source?: BidComparisonSource | null
   extra_extraction?: ExtraExtractionConfig | null
 }

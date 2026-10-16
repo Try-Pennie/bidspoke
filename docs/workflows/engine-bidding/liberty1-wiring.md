@@ -41,8 +41,9 @@ Every step below is safe to save on its own: until both scripts are pasted the o
    | State | `{{trigger.payload.personalInformation.state}}` |
    | Debt | `{{steps.prospect_trades.output.body.tradeCalculations.engineDebt}}` |
    | Loan amount | `{{trigger.payload.loanInformation.loanAmount}}` |
+   | Collections | `{{steps.prospect_trades.output.body.tradeCalculations.eligibleCollectionTotalBalance}}` (#2111: Liberty1's profile caps collections at 75 percent of `engineDebt`) |
 
-   The three templates were checked against the live definition: buyer_select already reads the state and engineDebt at these paths, and `prospect_body` reads `loanInformation.loanAmount` from the same payload.
+   The state, debt and loan amount templates were checked against the live definition: buyer_select already reads the state and engineDebt at these paths, and `prospect_body` reads `loanInformation.loanAmount` from the same payload. The collections template (#2111) was checked against live runs instead, since no node read it before: `prospect_trades` returned `tradeCalculations.eligibleCollectionTotalBalance` beside `engineDebt` on every Liberty1 checked lead from 2026-10-07 to 2026-10-16.
 4. **Rewire.** Remove these two live edges:
    - Tripoint Ping to Build Response Body;
    - Buyer Select `no_sale` to Build Response Body.

@@ -187,6 +187,8 @@ export async function recordAndCheckBranchSkew(
     ttlSeconds: SKEW_COOLDOWN_SECONDS,
     supabase: deps.supabase,
     logLabel: 'strand-branch-skew',
+    // The finding is measured before the list is read (#1303).
+    use: 'tell-only',
     perOrg: async (orgId) => {
       const slack = await getSlackConnection(deps.supabase, orgId)
       if (!slack || !slack.config_alerts_enabled) return false

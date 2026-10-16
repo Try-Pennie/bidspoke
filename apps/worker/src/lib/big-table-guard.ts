@@ -88,6 +88,8 @@ export async function runBigTableGuard(
     ttlSeconds: COOLDOWN_TTL_SECONDS,
     supabase,
     logLabel: 'big-table-guard',
+    // The finding is measured before the list is read (#1303).
+    use: 'tell-only',
     perOrg: (orgId) => sendBigTableGrowthAlert(supabase, orgId, offenders),
   })
   return { offenders: names, alerted }
