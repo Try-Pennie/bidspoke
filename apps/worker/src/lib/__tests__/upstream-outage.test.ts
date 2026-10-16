@@ -648,7 +648,7 @@ describe('runUpstreamOutageCheck posts once across overlapping ticks (#2062)', (
 
   it('pages the cause once, under the minute page claim', async () => {
     const held = gate<string>()
-    vi.mocked(sendUpstreamOutageAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+    vi.mocked(sendUpstreamOutageAlert).mockImplementationOnce(() => held.promise)
     const kv = makeKv()
     const { claims, log } = claimLedger()
     await overlap(() => runUpstreamOutageCheck(causeOrg() as never, kv as never, url, claims), () => held.open('ts-1'))
@@ -667,7 +667,7 @@ describe('runUpstreamOutageCheck posts once across overlapping ticks (#2062)', (
 
   it('pages saturation once, under the minute page claim', async () => {
     const held = gate<boolean>()
-    vi.mocked(sendFailureSaturationAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+    vi.mocked(sendFailureSaturationAlert).mockImplementationOnce(() => held.promise)
     const kv = makeKv()
     const { claims, log } = claimLedger()
     await overlap(() => runUpstreamOutageCheck(saturatedOrg() as never, kv as never, url, claims), () => held.open(true))

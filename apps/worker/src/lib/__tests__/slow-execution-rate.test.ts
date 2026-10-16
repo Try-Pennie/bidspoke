@@ -255,7 +255,7 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
 
     it('pages once, under the minute page claim', async () => {
       const held = gate<string>()
-      vi.mocked(sendSlowSpikeAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+      vi.mocked(sendSlowSpikeAlert).mockImplementationOnce(() => held.promise)
       const kv = makeKv()
       const { claims, log } = claimLedger()
       await overlap(() => runSlowExecutionCheck(spiking() as never, kv as never, url, claims), () => held.open('ts-1'))
@@ -273,7 +273,7 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
 
     it('sends the all-clear once, under the minute all-clear claim', async () => {
       const held = gate<boolean>()
-      vi.mocked(sendRecoveryAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+      vi.mocked(sendRecoveryAlert).mockImplementationOnce(() => held.promise)
       const kv = owed()
       const { claims, log } = claimLedger()
       await overlap(() => runSlowExecutionCheck(healthy() as never, kv as never, url, claims), () => held.open(true))

@@ -560,7 +560,7 @@ describe('runFailureRateCheck posts once across overlapping ticks (#2062)', () =
 
   it('pages once, under the minute page claim', async () => {
     const held = gate<string>()
-    vi.mocked(sendFailureSpikeAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+    vi.mocked(sendFailureSpikeAlert).mockImplementationOnce(() => held.promise)
     const kv = makeKv()
     const { claims, log } = claimLedger()
     await overlap(() => runFailureRateCheck(spiking() as never, kv as never, url, claims), () => held.open('ts-1'))
@@ -578,7 +578,7 @@ describe('runFailureRateCheck posts once across overlapping ticks (#2062)', () =
 
   it('sends the all-clear once, under the minute all-clear claim', async () => {
     const held = gate<boolean>()
-    vi.mocked(sendRecoveryAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+    vi.mocked(sendRecoveryAlert).mockImplementationOnce(() => held.promise)
     const kv = owed()
     const { claims, log } = claimLedger()
     await overlap(() => runFailureRateCheck(healthy() as never, kv as never, url, claims), () => held.open(true))
