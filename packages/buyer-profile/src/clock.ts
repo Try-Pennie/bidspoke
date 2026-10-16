@@ -75,8 +75,8 @@ export function isDisplayTimeZone(value: unknown): value is DisplayTimeZone {
 
 /**
  * The zones a workflow schedule may fire in (#1952): the product zones plus
- * UTC, which 8 of the 77 timers in the 2026-09-30 Pipedream export use (as `UTC`
- * or `Etc/UTC`). Kept apart from CLOCK_ZONES so nothing that judges a lead can
+ * UTC, which 14 of the 77 timers in the 2026-09-30 Pipedream export use (12 as
+ * `UTC`, 2 as `Etc/UTC`; the fixture is packages/workflow-definition/src/schedule/fixtures/pipedream-timers.json). Kept apart from CLOCK_ZONES so nothing that judges a lead can
  * start reading UTC, and closed for the same reason CLOCK_ZONES is: a zone the
  * offsets below do not cover would make zonedWallTimeToUtc guess.
  */

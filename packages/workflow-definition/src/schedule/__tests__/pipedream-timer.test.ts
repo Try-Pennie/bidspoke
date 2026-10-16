@@ -53,6 +53,9 @@ describe('the fixture is the measured export', () => {
 
   it('names only zones the converter reads', () => {
     expect([...new Set(timers.map((t) => t.props.timezone))].sort()).toEqual(['America/New_York', 'Etc/UTC', 'UTC'])
+    // The counts clock.ts's SCHEDULE_ZONES comment cites.
+    expect(timers.filter((t) => t.props.timezone === 'UTC')).toHaveLength(12)
+    expect(timers.filter((t) => t.props.timezone === 'Etc/UTC')).toHaveLength(2)
   })
 })
 

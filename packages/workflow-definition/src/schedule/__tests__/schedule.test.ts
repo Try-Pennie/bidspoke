@@ -21,13 +21,13 @@ const daily = (over: Partial<ScheduleConfig> = {}): ScheduleConfig => ({
 const reasons = (config: unknown) => validateSchedule(config).map((p) => p.reason)
 
 describe('schedulePeriodSeconds: the shortest gap between consecutive fires', () => {
-  it('is a day for a daily cron, though the spring change makes one gap 23 hours', () => {
+  it('is 23 hours for a daily New York cron (the spring change) and 24 for a daily UTC one', () => {
     // The shortest gap is what the period means: how often it normally fires.
     expect(schedulePeriodSeconds({ cron: '0 8 * * *' }, NY)).toBe(23 * HOUR_S)
     expect(schedulePeriodSeconds({ cron: '0 8 * * *' }, 'UTC')).toBe(DAY_S)
   })
 
-  it('is a day for a weekday cron, whose Friday to Monday gap is three', () => {
+  it('is 24 hours for a weekday UTC cron, whose Friday to Monday gap of three days is not the shortest', () => {
     expect(schedulePeriodSeconds({ cron: '0 8 * * MON-FRI' }, 'UTC')).toBe(DAY_S)
   })
 
