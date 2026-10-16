@@ -37,6 +37,8 @@
     "record_alert_incident_ended",
     "record_alert_incident_marker_check",
     "save_partner_config",
-    "save_partner_page"
+    "save_partner_page",
+    "change_partner_uuid",
+    "monitor_partner_page_ping"
   ]
 }

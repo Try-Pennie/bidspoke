@@ -361,7 +361,10 @@ Response `201` (the only time the key is shown in full):
 | GET | `/api/partners/:id` | Get one partner. |
 | POST | `/api/partners` | Create a partner. |
 | PUT | `/api/partners/:id` | Update a partner. |
+| PUT | `/api/partners/:id/page` | The partners page's one save (#2133): `{ expected_partner_version, patch, expected_profile_version, profile, save_id, client_id? }`, the partner patch and the buyer profile in one transaction through `save_partner_page`, or neither. 409 `stale_version` carrying both halves. The optional `client_id` (a UUID naming the browser tab, #2135) rides on the one live notice the save sends, so that tab can recognise its own echo. |
 | DELETE | `/api/partners/:id` | Delete a partner. |
+| GET | `/api/partners/:id/versions` | The partners page's delivery probe (#2135): `{ partnerId, partnerVersion, profileVersion, lastSaveId, profileLastSaveId, latestChange, newest: { partner, profile } }`, each change `{ changedAt, direct, fields }`, where `direct` means the newest audit row of that half had no actor (a hand run SQL write). `profileVersion` is 0 with no profile. Shape in `packages/partner-page-live`. |
+| POST | `/api/partners/live-miss` | Record a change the page's probe found that no live notice announced (#2135). Body `{ partner_id, cause: 'delivery' \| 'direct_sql', noticed, observed, since_last_notice_ms }`, each of `noticed` and `observed` a `{ partner_version, profile_version }` pair. 400 `live_miss_invalid` naming the `field`, 404 for a partner outside the organization, 201 `{ ok, id }`. Recorded in `partner_page_live_misses`, never alerted on. |
 | GET | `/api/partners/:id/cap-count` | Current daily cap count (from the Daily Cap Durable Object). For a buyer sold on the click, today's distinct clicks from its click counter instead, on the Pacific day: `{ sold_on: 'click', count, date, day_zone }`, 503 `click_count_unavailable` when the counter does not answer. |
 | GET | `/api/partners/:id/buyer-profile` | The buyer profile document, the partner's accept rules, and the live workflows selling to this partner outside buyer selection (`other_sellers`). `profile` is null until one is saved. |
 | PUT | `/api/partners/:id/buyer-profile` | Save the profile. Body `{ expected_version, profile }`. Validated with the shared package first (422 `profile_invalid` with the errors), then saved through `save_buyer_profile`. A stale `expected_version` is 409 `stale_version` carrying the current document, so the form can show both sides. Switching a buyer sold on the click to the offer while a live workflow names it on a Buyer Click Check or Buyer Click Send node is 409 `sold_on_in_use`, with a `message` naming them and the `workflows` list; 503 `sold_on_unavailable` when the stored kind cannot be read. |
@@ -415,8 +418,8 @@ The releases refuse 409 `claim_changed` when the claim moved since the page read
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/partner-uuids` | List partner UUID entries. |
-| POST | `/api/partner-uuids` | Add an entry. |
-| DELETE | `/api/partner-uuids/:id` | Remove an entry. |
+| POST | `/api/partner-uuids` | Add an entry, through `change_partner_uuid` so the partners page notice knows who made it (#2135). 404 for a slug no partner of the organization holds, 409 for a taken UUID. |
+| DELETE | `/api/partner-uuids/:id` | Remove an entry of this organization, through `change_partner_uuid`. 404 when the organization holds no such entry. |
 
 ## Endpoints (custom webhook endpoints)
 

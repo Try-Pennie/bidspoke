@@ -1,6 +1,7 @@
 import { createClient } from './supabase/client'
 import type { Workflow, WorkflowSummary, WorkflowDef, WorkflowVersion, EnvVar, Folder, EnvVarFolder } from '@/types/workflow'
 import type { PartnerType } from './partner-roles'
+import type { LiveMissReportBody, PartnerPageVersions } from '@bidspoke/partner-page-live'
 
 export type { PartnerType }
 
@@ -93,7 +94,14 @@ export interface PartnerPageSaveRequest {
   expected_profile_version: number | null
   profile: BuyerProfileDocument | null
   save_id: string
+  /**
+   * This browser tab (#2135), carried on the live notice the save sends, so the
+   * tab recognises its own echo by client_id plus save_id. Optional; a UUID.
+   */
+  client_id?: string
 }
+
+export type { PartnerPageVersions, PartnerPageChange, PartnerPageNotice, LiveMissCause, LiveMissReportBody } from '@bidspoke/partner-page-live'
 
 /** What a page save answers (#2133): both halves as stored after it, and the stored copy warning when there is one. */
 export interface PartnerPageSaved extends StoredCopyAnswer {
@@ -993,6 +1001,12 @@ export const api = {
       req<{ ok: boolean } & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'DELETE' }),
     getCapCount: (id: string) =>
       req<{ count: number; date: string; sold_on?: 'click'; day_zone?: string }>(`/api/partners/${id}/cap-count`),
+    // The live channel's versions probe (#2135): both versions, the last press,
+    // and the newest change of each half, direct or not.
+    versions: (id: string) => req<PartnerPageVersions>(`/api/partners/${id}/versions`),
+    // A change the probe found that no notice announced (#2135). Recorded only.
+    reportLiveMiss: (report: LiveMissReportBody) =>
+      req<{ ok: true; id: string }>('/api/partners/live-miss', { method: 'POST', body: JSON.stringify(report) }),
   },
 
   // The buyer profile read routes (#1412). The profile is saved with the

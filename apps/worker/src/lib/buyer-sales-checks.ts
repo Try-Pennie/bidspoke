@@ -694,10 +694,13 @@ export function productionChecksDeps(supabase: SupabaseClient, env: Env): Checks
     listBuyers: async () => {
       const { data, error } = await supabase
         .from('buyer_profiles')
-        .select('partner_id, hourly_lead_cap, daily_lead_cap, hourly_spend_cap_cents, daily_spend_cap_cents, partner_configs!inner(organization_id, slug)')
+        .select('partner_id, hourly_lead_cap, daily_lead_cap, hourly_spend_cap_cents, daily_spend_cap_cents, partner_configs!inner(organization_id, slug), organizations!inner(is_synthetic)')
         // A click sold buyer (#1541) has no ledger day and no buyer_sales rows,
         // so listing it would turn every run unmeasured.
         .eq('sold_on', 'offer')
+        // Never a synthetic organization's buyer (#2135): the one predicate that
+        // marks the partners page delivery monitor's organization (L261).
+        .eq('organizations.is_synthetic', false)
       if (error) throw new Error(`buyer_profiles: ${error.message}`)
       return ((data ?? []) as unknown as ProfileRow[]).map((r) => ({
         partner_id: r.partner_id,
