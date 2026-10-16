@@ -960,9 +960,14 @@ export default function PartnerForm({
                 <div className="divide-y divide-gray-100 rounded-lg border border-gray-200">
                   <div className="flex items-center justify-between gap-4 px-4 py-2.5">
                     <span className="text-sm text-graphite">Buyer profile</span>
-                    {profile !== null && (profile.version ?? 0) > 0
-                      ? <span className="text-sm text-gray-600">Set up</span>
-                      : <Button variant="secondary" onClick={() => chooseTab('buyer_profile')}>Set up a buyer profile</Button>}
+                    {/* The read's own states first, so a buyer with a profile is never told to set one up (L10). */}
+                    {profileLoadError !== null
+                      ? <span className="text-sm text-red-700">Could not be read</span>
+                      : partner && profile === null
+                        ? <span role="status" className="text-sm text-gray-600">Checking…</span>
+                        : profile !== null && (profile.version ?? 0) > 0
+                          ? <span className="text-sm text-gray-600">Set up</span>
+                          : <Button variant="secondary" onClick={() => chooseTab('buyer_profile')}>Set up a buyer profile</Button>}
                   </div>
                   <div className="flex items-center justify-between gap-4 px-4 py-2.5">
                     <span className="text-sm text-graphite">Bid Group</span>

@@ -99,6 +99,29 @@ describe('the Bid Group tab and its usage read (#2137)', () => {
   })
 })
 
+describe('Sold through on the Partner tab', () => {
+  const soldThrough = () => screen.getByText('Buyer profile', { selector: 'span' }).parentElement as HTMLElement
+
+  it('never tells a buyer to set up a profile while the read runs or after it failed', async () => {
+    vi.mocked(api.buyerProfiles.get).mockReturnValueOnce(new Promise(() => {}))
+    const { unmount } = render(<PartnerForm partner={partner} requestedTab="partner" onSave={vi.fn()} onCancel={vi.fn()} />)
+    expect(soldThrough()).toHaveTextContent('Checking…')
+    expect(screen.queryByRole('button', { name: 'Set up a buyer profile' })).toBeNull()
+    unmount()
+
+    vi.mocked(api.buyerProfiles.get).mockRejectedValueOnce(new Error('503'))
+    render(<PartnerForm partner={partner} requestedTab="partner" onSave={vi.fn()} onCancel={vi.fn()} />)
+    await waitFor(() => expect(soldThrough()).toHaveTextContent('Could not be read'))
+    expect(screen.queryByRole('button', { name: 'Set up a buyer profile' })).toBeNull()
+  })
+
+  it('offers a buyer with no saved profile to set one up, and opens its tab', async () => {
+    render(<PartnerForm partner={partner} requestedTab="partner" onSave={vi.fn()} onCancel={vi.fn()} />)
+    await userEvent.click(await screen.findByRole('button', { name: 'Set up a buyer profile' }))
+    expect(screen.getByRole('tab', { name: 'Buyer profile' })).toHaveAttribute('aria-selected', 'true')
+  })
+})
+
 describe('the confirmation window (L630)', () => {
   it('a partner named by no workflow can set it up and save it', async () => {
     const onSave = vi.fn().mockResolvedValue({ partner: { ...partner, version: 4 }, profile: null, copyWarning: null })
