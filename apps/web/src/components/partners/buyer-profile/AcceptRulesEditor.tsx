@@ -10,7 +10,7 @@
 import { useId } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import { SIGNAL_OPERATORS, SIGNAL_OPERATOR_LABELS, type Signal, type SignalOperator } from '@bidspoke/buyer-profile'
-import { Button, TextInput } from '@/components/ui/form'
+import { Button, FieldError, TextInput } from '@/components/ui/form'
 import { Select } from '@/components/ui/Select'
 import { LIST_OPERATORS, operatorOf, signalFrom, valueTextOf } from '@/lib/signal-text'
 
@@ -51,7 +51,7 @@ export function AcceptRulesEditor({ value, onChange, refusal, kind = 'accept' }:
               <Select id={`${rowId}-op`} value={op} onChange={(v) => update(i, signalFrom(rule.field, v as SignalOperator, text))} options={SIGNAL_OPERATORS.map((o) => ({ value: o, label: SIGNAL_OPERATOR_LABELS[o] }))} />
             </div>
             {op === 'present' ? (
-              <span className="pb-2 text-xs text-gray-500">any value</span>
+              <span className="pb-2 text-xs text-hint">any value</span>
             ) : (
               <div className="min-w-[16rem] flex-1">
                 <label htmlFor={`${rowId}-value`} className="mb-1 block text-xs text-gray-600">Value</label>
@@ -64,7 +64,7 @@ export function AcceptRulesEditor({ value, onChange, refusal, kind = 'accept' }:
           </fieldset>
         )
       })}
-      {refusal && <p role="alert" className="text-xs text-red-700">{refusal}</p>}
+      {refusal && <FieldError alert size="xs">{refusal}</FieldError>}
       <Button variant="ghost" aria-label={`Add ${kind} rule`} onClick={() => onChange([...value, { field: '', equals: '' }])}>
         <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add rule
       </Button>

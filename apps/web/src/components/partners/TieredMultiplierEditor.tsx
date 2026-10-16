@@ -66,21 +66,21 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
     <div className="space-y-3">
       <div>
         <label htmlFor={sourceFieldId} className="mb-1 block text-xs font-medium text-gray-600">Multiply this field</label>
-        <p className="mb-1.5 text-xs text-gray-500">A reference to a value in the workflow. Common pattern: <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.&lt;field&gt;</code> for a step output, or a bare field name on the trigger payload.</p>
+        <p className="mb-1.5 text-xs text-hint">A reference to a value in the workflow. Common pattern: <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.&lt;field&gt;</code> for a step output, or a bare field name on the trigger payload.</p>
         <TextInput id={sourceFieldId} value={c.source_field} onChange={(v) => patch({ source_field: v })} placeholder={PLACEHOLDER_FIELD} mono />
       </div>
 
       <div className="rounded-lg border border-gray-200 bg-white p-3">
         <p className="mb-2 text-xs font-medium text-gray-600">Tiers</p>
-        <p className="mb-3 text-xs text-gray-500">Each tier picks a multiplier when the field is above the threshold. First matching tier wins (highest threshold first). If nothing matches, the default multiplier below is used.</p>
+        <p className="mb-3 text-xs text-hint">Each tier picks a multiplier when the field is above the threshold. First matching tier wins (highest threshold first). If nothing matches, the default multiplier below is used.</p>
         {c.tiers.length > 0 && (
           <div className="mb-2 space-y-1.5">
             {c.tiers.map((tier, i) => (
               <div key={i} className="flex items-center gap-1.5 text-xs">
-                <span className="text-gray-500">When &gt;</span>
+                <span className="text-hint">When &gt;</span>
                 {/* An emptied box is 0, as it was before (#2137): a tier needs a number. */}
                 <NumberInput id={`${tierId}-${i}-above`} aria-label={`Threshold, tier ${i + 1}`} value={tier.above} onChange={(v) => updateTier(i, { above: v ?? 0 })} mono className="w-28" />
-                <span className="text-gray-500">multiply by</span>
+                <span className="text-hint">multiply by</span>
                 <NumberInput id={`${tierId}-${i}-multiplier`} aria-label={`Multiplier, tier ${i + 1}`} value={tier.multiplier} onChange={(v) => updateTier(i, { multiplier: v ?? 0 })} step={0.01} mono className="w-24" />
                 <Button variant="ghost" onClick={() => removeTier(i)} aria-label={`Remove tier ${i + 1}`} title="Remove tier" className="ml-auto">
                   <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
@@ -97,13 +97,13 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
 
       <div>
         <label htmlFor={defaultMultiplierId} className="mb-1 block text-xs font-medium text-gray-600">Default multiplier</label>
-        <p className="mb-1.5 text-xs text-gray-500">Used when no tier matches.</p>
+        <p className="mb-1.5 text-xs text-hint">Used when no tier matches.</p>
         <NumberInput id={defaultMultiplierId} value={c.default_multiplier} onChange={(v) => patch({ default_multiplier: v })} step={0.01} placeholder="0.10" mono className="w-32" />
       </div>
 
       <div>
         <label htmlFor={minimumId} className="mb-1 block text-xs font-medium text-gray-600">Minimum value</label>
-        <p className="mb-1.5 text-xs text-gray-500">Below this, no bid is made at all. Leave empty to bid at any value.</p>
+        <p className="mb-1.5 text-xs text-hint">Below this, no bid is made at all. Leave empty to bid at any value.</p>
         {/* Empty means no floor. Zero is a floor of zero, a different rule, so the
             box keeps null and 0 apart (#1199). */}
         <NumberInput id={minimumId} value={c.min_source_value} onChange={(v) => patch({ min_source_value: v })} placeholder="none" mono className="w-32" />

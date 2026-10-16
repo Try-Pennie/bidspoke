@@ -10,7 +10,7 @@
 import { useId } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import { successPatternOf, type ClickDeliveryDocument, type ClickRoute } from '@bidspoke/buyer-profile'
-import { Button, Field, TextInput, describedBy } from '@/components/ui/form'
+import { Button, Field, FieldError, TextInput, describedBy } from '@/components/ui/form'
 import { StatePicker } from './StatePicker'
 import { NODE_ADDRESS } from './click-delivery-consequences'
 
@@ -36,7 +36,7 @@ export function ClickDeliveryEditor({ value, onChange, errors = {} }: {
     return (
       <div className="space-y-2">
         <p className="text-sm text-gray-600">Clicks go to {NODE_ADDRESS}.</p>
-        {whole && <p role="alert" className="text-xs text-red-700">{whole}</p>}
+        {whole && <FieldError alert size="xs">{whole}</FieldError>}
         <Button variant="secondary" onClick={() => onChange({ routes: [{ ...EMPTY_ROUTE }], success_pattern: '' })}>
           <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add click delivery
         </Button>
@@ -54,7 +54,7 @@ export function ClickDeliveryEditor({ value, onChange, errors = {} }: {
 
   return (
     <div className="space-y-4">
-      {whole && <p role="alert" className="text-xs text-red-700">{whole}</p>}
+      {whole && <FieldError alert size="xs">{whole}</FieldError>}
       <ol className="space-y-3">
         {value.routes.map((route, i) => {
           const n = i + 1
@@ -84,12 +84,12 @@ export function ClickDeliveryEditor({ value, onChange, errors = {} }: {
                 emptyNote="Every state no other route lists."
                 emptyIsWarning={false}
               />
-              {statesError && <p role="alert" className="text-xs text-red-700">{statesError}</p>}
+              {statesError && <FieldError alert size="xs">{statesError}</FieldError>}
             </li>
           )
         })}
       </ol>
-      {routesError && <p role="alert" className="text-xs text-red-700">{routesError}</p>}
+      {routesError && <FieldError alert size="xs">{routesError}</FieldError>}
       <Button variant="ghost" onClick={() => onChange({ ...value, routes: [...value.routes, { ...EMPTY_ROUTE }] })}>
         <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add route
       </Button>

@@ -1024,7 +1024,7 @@ The settled design is [docs/design/partners-page.html](./docs/design/partners-pa
 - **PM-13 Delete.** In a pale red box at the foot of the Partner tab, confirmed by typing DELETE (case sensitive); the consequence names only what the partner has. When sales refer to the partner, the box says why it cannot be deleted, with no field, and that turning off Active stops it. The page knows this before offering Delete.
 - **PM-14 Editors by name.** History groups changes by day with the time and the editor's name resolved from the users table, the old value struck through and the new one in bold.
 - **PM-15 Workflow values tab.** Each value workflows read by name, with that exact name and the workflows that read it. The click URL moves here from the Sale row.
-- **PM-16 Colour.** Navy #1D212F marks a selection; blue #1B72BA is for buttons only; red is reserved for a genuine problem. This is a rule for the whole app (see `.impeccable.md`).
+- **PM-16 Colour.** Navy #1D212F marks a selection; blue #1B72BA is for buttons only; red is reserved for a genuine problem. Grey hint and secondary text is the `hint` token, #697081, which clears WCAG AA on the beige page (Dan, 2026-10-16). The rule holds on the partners page now (#2144, enforced by `partner-page-colour-guard.test.ts`); the rest of the app is #2126 (see `.impeccable.md`).
 
 ### 6.5 Test Runner
 

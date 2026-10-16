@@ -5,7 +5,7 @@ import type { PartnerBidConfig, BidMatrixRow, BidConfigDimension, MatrixProblem 
 import { api } from '@/lib/api'
 import { Loader2, RefreshCw, Plus, Check, AlertTriangle, Trash2 } from 'lucide-react'
 import { Dialog } from '@/components/Dialog'
-import { Button } from '@/components/ui/form'
+import { Button, FieldError } from '@/components/ui/form'
 import { Select } from '@/components/ui/Select'
 import { errorSentence } from '@/lib/error-sentence'
 
@@ -207,7 +207,7 @@ export function BidMatrixViewer(p: Props) {
             </>
           }
         >
-          {deleteAsk.error && <p role="alert" className="text-sm text-red-700">{deleteAsk.error}</p>}
+          {deleteAsk.error && <FieldError alert size="sm">{deleteAsk.error}</FieldError>}
         </Dialog>
       )}
 
@@ -215,9 +215,9 @@ export function BidMatrixViewer(p: Props) {
         <div className="space-y-2">
           <ConfigBadge config={activeConfig} />
           {syncError && (
-            <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+            <FieldError as="div" boxed size="xs">
               {syncError}
-            </div>
+            </FieldError>
           )}
           {problems.length > 0 && <MatrixProblems problems={problems} />}
           <MatrixTable rows={rows} dimensions={activeConfig.dimensions} loading={loadingRows} />
@@ -255,19 +255,17 @@ function ConfigBadge({ config }: { config: PartnerBidConfig }) {
   const synced = config.last_synced_at ? new Date(config.last_synced_at).toLocaleString() : null
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs">
-      <span className="inline-flex items-center gap-1 rounded-full bg-p-blue-light/10 px-2 py-0.5 font-medium text-p-blue-dark">
-        Synced from Salesforce
-      </span>
+      <span className="font-medium text-graphite">Synced from Salesforce</span>
       {synced ? (
-        <span className="text-gray-500">Last synced {synced}</span>
+        <span className="text-hint">Last synced {synced}</span>
       ) : (
-        <span className="text-gray-500">Never synced</span>
+        <span className="text-hint">Never synced</span>
       )}
       {config.last_sync_error && (
-        <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-red-600">
-          <AlertTriangle className="h-3 w-3" />
+        <FieldError as="span" className="inline-flex items-center gap-1">
+          <AlertTriangle className="h-3 w-3" aria-hidden="true" />
           Last sync failed
-        </span>
+        </FieldError>
       )}
     </div>
   )
@@ -275,10 +273,10 @@ function ConfigBadge({ config }: { config: PartnerBidConfig }) {
 
 function MatrixTable({ rows, dimensions, loading }: { rows: BidMatrixRow[]; dimensions: BidConfigDimension[]; loading: boolean }) {
   if (loading) {
-    return <div className="rounded-lg border border-gray-200 px-3 py-6 text-center text-sm text-gray-500">Loading matrix…</div>
+    return <div className="rounded-lg border border-gray-200 px-3 py-6 text-center text-sm text-hint">Loading matrix…</div>
   }
   if (rows.length === 0) {
-    return <div className="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-gray-500">No rows yet. Click <span className="font-medium">Sync now</span> to pull from Salesforce.</div>
+    return <div className="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-sm text-hint">No rows yet. Click <span className="font-medium">Sync now</span> to pull from Salesforce.</div>
   }
 
   const rowDim = dimensions.find((d) => d.column === 'row')
@@ -300,7 +298,7 @@ function RowGroup({ label, rows, rowDim, rangeDim }: { label: string; rows: BidM
       <div className="border-b border-gray-200 bg-gray-50 px-3 py-1.5 text-xs font-medium text-gray-600">{label} ({rows.length})</div>
       <table className="w-full text-sm">
         <thead className="bg-gray-50/50">
-          <tr className="text-left text-xs text-gray-500">
+          <tr className="text-left text-xs text-hint">
             <th className="px-3 py-2 font-medium">{rowDim?.name ?? 'Row'} band</th>
             {rangeDim && <th className="px-3 py-2 font-medium">{rangeDim.name} band</th>}
             <th className="px-3 py-2 text-right font-medium">Bid</th>

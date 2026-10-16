@@ -12,7 +12,7 @@
 import { useId } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import { DAYS_OF_WEEK, type ProfileWindowDocument } from '@bidspoke/buyer-profile'
-import { Button } from '@/components/ui/form'
+import { Button, FieldError } from '@/components/ui/form'
 import { TimeField } from '@/components/ui/DateTimeFields'
 import { formatTime } from '@/components/ui/date-time'
 import { useRowIds } from './row-ids'
@@ -31,7 +31,7 @@ export function WeeklyHoursEditor({ value, onChange }: { value: readonly Profile
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between">
-        <p className="text-xs text-gray-500">{value.length === 0 ? 'With no hours the buyer is never offered a lead.' : ''}</p>
+        <p className="text-xs text-hint">{value.length === 0 ? 'With no hours the buyer is never offered a lead.' : ''}</p>
         <Button variant="ghost" onClick={() => onChange(DAYS_OF_WEEK.map((d) => ({ day_of_week: d.index, opens_minute: 0, closes_minute: 1440 })))}>Always open</Button>
       </div>
       <div className="grid grid-cols-[7rem_9rem_9rem_1fr] items-center gap-x-2 text-xs font-medium text-gray-600" aria-hidden="true">
@@ -49,7 +49,7 @@ export function WeeklyHoursEditor({ value, onChange }: { value: readonly Profile
               <div className="grid grid-cols-[7rem_1fr] items-center gap-x-2">
                 <span className="text-xs font-medium text-gray-600" aria-hidden="true">{day.label}</span>
                 <div className="flex items-center gap-2">
-                  <span className="text-xs text-gray-500">Closed</span>
+                  <span className="text-xs text-hint">Closed</span>
                   <Button variant="ghost" aria-label={`Add hours on ${day.label}`} onClick={() => addWindow(day.index)}>
                     <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add hours
                   </Button>
@@ -79,7 +79,7 @@ export function WeeklyHoursEditor({ value, onChange }: { value: readonly Profile
                           )}
                         </div>
                       </div>
-                      {invalid && <p role="alert" className="mt-1 text-xs text-red-700">Closes must be after opens.</p>}
+                      {invalid && <FieldError alert size="xs" className="mt-1">Closes must be after opens.</FieldError>}
                     </div>
                   )
                 })}

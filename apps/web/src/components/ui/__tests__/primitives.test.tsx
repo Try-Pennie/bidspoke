@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { useState, type ReactNode } from 'react'
 import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { Field, TextInput, NumberInput, Checkbox, Button, Outcome, ChoiceGroup, type OutcomeState } from '../form'
+import { Field, FieldError, TextInput, NumberInput, Checkbox, Button, Outcome, ChoiceGroup, type OutcomeState } from '../form'
 import { Toggle } from '../Toggle'
 import { Select } from '../Select'
 import { chooseOption, readSelect } from './_select'
@@ -26,6 +26,35 @@ describe('Field', () => {
     expect(screen.getByText('Dollars.')).toHaveAttribute('id', 'f-hint')
     expect(screen.getByRole('alert')).toHaveTextContent('Debt minimum must be a number.')
     expect(screen.getByRole('alert')).toHaveAttribute('id', 'f-error')
+  })
+
+  it('draws the hint in the hint token and the error through FieldError (#2144)', () => {
+    render(
+      <Field id="g" label="Cap" hint="Leads a day." error="Cap must be a whole number.">
+        <TextInput id="g" value="" onChange={() => {}} />
+      </Field>
+    )
+    expect(screen.getByText('Leads a day.')).toHaveClass('text-hint')
+    expect(screen.getByText('Leads a day.')).not.toHaveClass('text-gray-500')
+    expect(screen.getByRole('alert')).toHaveClass('field-error', 'text-xs')
+  })
+})
+
+describe('FieldError (#2144)', () => {
+  it('is quiet unless asked to announce, takes the size around it unless given one, and can stand on its own panel', () => {
+    render(
+      <>
+        <FieldError>Could not be read</FieldError>
+        <FieldError alert size="sm" boxed as="div" className="mb-4">The partners could not be loaded.</FieldError>
+      </>
+    )
+    const quiet = screen.getByText('Could not be read')
+    expect(quiet.tagName).toBe('P')
+    expect(quiet).not.toHaveAttribute('role')
+    expect(quiet.className).toBe('field-error')
+    const loud = screen.getByRole('alert')
+    expect(loud.tagName).toBe('DIV')
+    expect(loud).toHaveClass('field-error', 'text-sm', 'field-error-box', 'mb-4')
   })
 })
 

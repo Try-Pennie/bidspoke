@@ -9,7 +9,7 @@ import type { Partner, PartnerBody, PartnerPageSaveRequest, PartnerPageSaved, Pa
 import NavLayout from '@/components/NavLayout'
 import { Plus, CircleCheck, CircleOff, AlertTriangle } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
-import { Button } from '@/components/ui/form'
+import { Button, FieldError } from '@/components/ui/form'
 import { ProblemMark } from '@/components/ui/ProblemMark'
 import PartnerForm, { UNSAVED_CHANGES_MESSAGE, type PartnerSaveResult } from './PartnerForm'
 import { partnersUrl, tabFromParam } from './partner-tabs'
@@ -197,7 +197,7 @@ export default function PartnersPage() {
             ) : partners.length === 0 ? (
               <div className="p-6 text-center">
                 <p className="text-base font-semibold text-graphite">No partners yet</p>
-                <p className="mt-1 text-xs text-gray-500">Partners are the lenders or buyers your workflows route leads to.</p>
+                <p className="mt-1 text-xs text-hint">Partners are the lenders or buyers your workflows route leads to.</p>
                 <Button variant="ghost" onClick={() => { clearSelection(); setCreating(true) }} className="mt-3">
                   Add your first partner
                 </Button>
@@ -218,7 +218,7 @@ export default function PartnersPage() {
                             onClick={() => { if (selected?.id !== partner.id && !confirmDiscardIfDirty()) return; setFormDirty(false); setFormProblem(false); selectPartner(partner) }}
                             className={`transition-[colors,opacity] duration-150 ${
                               selected?.id === partner.id
-                                ? 'bg-gray-100'
+                                ? 'bg-beige-deep'
                                 : 'hover:bg-beige'
                             } ${removingId === partner.id ? 'opacity-0' : ''
                             }`}
@@ -246,10 +246,10 @@ export default function PartnersPage() {
         {/* Detail / form */}
         <div className="flex-1 overflow-y-auto p-8" data-form-pane="">
           {error && (
-            <div className="mb-6 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+            <FieldError as="div" boxed size="sm" className="mb-6 flex items-center gap-2 px-4 py-3">
               <AlertTriangle className="h-4 w-4 flex-shrink-0" />
               {error}
-            </div>
+            </FieldError>
           )}
 
           {showForm ? (

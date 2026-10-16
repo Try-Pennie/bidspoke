@@ -22,10 +22,32 @@ export function Field({ id, label, hint, error, children }: { id: string; label:
     <div className="field">
       <label htmlFor={id} className="mb-1 block text-xs font-medium text-gray-600">{label}</label>
       {children}
-      {hint && <p id={`${id}-hint`} className="mt-1 text-xs text-gray-500">{hint}</p>}
-      {error && <p id={`${id}-error`} role="alert" className="mt-1 text-xs text-red-700">{error}</p>}
+      {hint && <p id={`${id}-hint`} className="mt-1 text-xs text-hint">{hint}</p>}
+      {error && <FieldError id={`${id}-error`} alert size="xs" className="mt-1">{error}</FieldError>}
     </div>
   )
+}
+
+/**
+ * Text saying something is genuinely wrong (#2144): a field's error, a refused
+ * save, a read or a write that failed. Red is kept for that and nothing else
+ * (.impeccable.md), so every such sentence on the partners page is drawn here
+ * and the page's colour scan refuses red anywhere else. `alert` announces it as
+ * it appears; `boxed` sets it on a pale red panel for a failure that stands on
+ * its own rather than under a field. `size` is left out to take the text size
+ * around it.
+ */
+export function FieldError({ id, alert, size, boxed, as: Tag = 'p', className, children }: {
+  id?: string
+  alert?: boolean
+  size?: 'xs' | 'sm'
+  boxed?: boolean
+  as?: 'p' | 'span' | 'div' | 'li'
+  className?: string
+  children: ReactNode
+}) {
+  const classes = ['field-error', size ? `text-${size}` : '', boxed ? 'field-error-box' : '', className ?? ''].filter(Boolean).join(' ')
+  return <Tag id={id} role={alert ? 'alert' : undefined} className={classes}>{children}</Tag>
 }
 
 /** The ids a control should be described by, given which of hint and error are present. */

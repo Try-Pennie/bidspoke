@@ -19,7 +19,7 @@ function when(iso: string): string {
 }
 
 export function BuyerProfileHistory({ entries }: { entries: readonly HistoryEntry[] }) {
-  if (entries.length === 0) return <p className="text-xs text-gray-500">This profile has never been saved.</p>
+  if (entries.length === 0) return <p className="text-xs text-hint">This profile has never been saved.</p>
   return (
     <ol className="space-y-3">
       {entries.map((entry, i) => (

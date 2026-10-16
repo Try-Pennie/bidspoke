@@ -40,7 +40,7 @@ export function OutboundMappingEditor({ value, onChange }: Props) {
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-gray-500">
+      <p className="text-xs text-hint">
         Reshape the lead payload before posting to this partner. Source is a payload field path (dot-notation supported, e.g. <code className="rounded bg-gray-100 px-1 font-mono">lead.debt_amount</code>). Target is the wire-format field name (e.g. <code className="rounded bg-gray-100 px-1 font-mono">DebtAmount__c</code>). Missing fields become null. Leave empty to send the payload unchanged.
       </p>
 

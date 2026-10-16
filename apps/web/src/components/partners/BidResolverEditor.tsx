@@ -3,7 +3,7 @@
 import { useId } from 'react'
 import type { BidResolverType, BidComparisonSource } from '@/lib/api'
 import { TieredMultiplierEditor } from './TieredMultiplierEditor'
-import { Checkbox, ChoiceGroup, TextArea, TextInput } from '@/components/ui/form'
+import { Checkbox, ChoiceGroup, FieldError, TextArea, TextInput } from '@/components/ui/form'
 import { Select } from '@/components/ui/Select'
 
 type BidValueMode = 'response' | 'tiered' | 'formula'
@@ -60,21 +60,21 @@ export function BidResolverEditor(p: Props) {
           onChange={p.onTypeChange}
           describedBy={`${resolverId}-hint`}
         />
-        <p id={`${resolverId}-hint`} className="mt-1 text-xs text-gray-500">How Bidspoke determines the bid amount for this partner.</p>
+        <p id={`${resolverId}-hint`} className="mt-1 text-xs text-hint">How Bidspoke determines the bid amount for this partner.</p>
       </div>
 
       {p.resolverType === 'api' && (
         <div className="space-y-3">
           <div>
             <label htmlFor={apiEndpointId} className="mb-1 block text-xs font-medium text-gray-600">API endpoint</label>
-            <p className="mb-1.5 text-xs text-gray-500">POSTed with the trigger payload on every bid.</p>
+            <p className="mb-1.5 text-xs text-hint">POSTed with the trigger payload on every bid.</p>
             <TextInput id={apiEndpointId} value={p.apiEndpoint} onChange={p.onApiEndpointChange} placeholder="https://partner.example/bid" mono />
           </div>
           <div>
             <label htmlFor={cfSecretId} className="mb-1 block text-xs font-medium text-gray-600">Auth secret name</label>
-            <p className="mb-1.5 text-xs text-gray-500">Cloudflare worker secret containing the bearer token. Optional.</p>
+            <p className="mb-1.5 text-xs text-hint">Cloudflare worker secret containing the bearer token. Optional.</p>
             <TextInput id={cfSecretId} value={p.cfSecretKey} onChange={p.onCfSecretKeyChange} placeholder="PARTNER_TOKEN" mono describedBy={p.cfSecretKeyError ? `${cfSecretId}-problem` : undefined} />
-            {p.cfSecretKeyError && <p id={`${cfSecretId}-problem`} className="mt-1 text-xs text-red-700">{p.cfSecretKeyError}</p>}
+            {p.cfSecretKeyError && <FieldError id={`${cfSecretId}-problem`} size="xs" className="mt-1">{p.cfSecretKeyError}</FieldError>}
           </div>
 
           <BidValueSourceRadio
@@ -119,7 +119,7 @@ export function BidResolverEditor(p: Props) {
       {p.resolverType === 'formula' && (
         <div>
           <label htmlFor={formulaId} className="mb-1 block text-xs font-medium text-gray-600">Formula</label>
-          <p className="mb-1.5 text-xs text-gray-500">Arithmetic expression. Use any numeric trigger.payload field by name. Supports +, -, *, /, ** and Math.floor / min / max / round / abs / sqrt.</p>
+          <p className="mb-1.5 text-xs text-hint">Arithmetic expression. Use any numeric trigger.payload field by name. Supports +, -, *, /, ** and Math.floor / min / max / round / abs / sqrt.</p>
           <TextArea id={formulaId} value={p.bidFormula} onChange={p.onFormulaChange} placeholder="debt_amount * 0.65" rows={2} mono />
         </div>
       )}
@@ -158,7 +158,7 @@ function BidValueSourceRadio({
       {mode === 'response' && (
         <div>
           <label htmlFor={bidPathId} className="mb-1 block text-xs font-medium text-gray-600">Bid response path (optional)</label>
-          <p className="mb-1.5 text-xs text-gray-500">Where the bid value lives in the response. Leave blank if it&apos;s at the top level under one of: <code className="rounded bg-gray-100 px-1 font-mono">bid</code>, <code className="rounded bg-gray-100 px-1 font-mono">bid_amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">price</code>, <code className="rounded bg-gray-100 px-1 font-mono">offer</code>.</p>
+          <p className="mb-1.5 text-xs text-hint">Where the bid value lives in the response. Leave blank if it&apos;s at the top level under one of: <code className="rounded bg-gray-100 px-1 font-mono">bid</code>, <code className="rounded bg-gray-100 px-1 font-mono">bid_amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">price</code>, <code className="rounded bg-gray-100 px-1 font-mono">offer</code>.</p>
           <TextInput
             id={bidPathId}
             value={typeof resolverConfig.bid_path === 'string' ? resolverConfig.bid_path : ''}
@@ -181,7 +181,7 @@ function BidValueSourceRadio({
       {mode === 'formula' && (
         <div>
           <label htmlFor={bidFormulaId} className="mb-1 block text-xs font-medium text-gray-600">Bid formula</label>
-          <p className="mb-1.5 text-xs text-gray-500">Arithmetic that produces a number. References: <code className="rounded bg-gray-100 px-1 font-mono">trigger.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">env.*</code>, or a bare payload field name.</p>
+          <p className="mb-1.5 text-xs text-hint">Arithmetic that produces a number. References: <code className="rounded bg-gray-100 px-1 font-mono">trigger.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">env.*</code>, or a bare payload field name.</p>
           <TextArea
             id={bidFormulaId}
             value={typeof resolverConfig.formula === 'string' ? resolverConfig.formula : ''}
@@ -219,9 +219,9 @@ function MatrixResolverConfig({
     <div className="space-y-3">
       <div>
         <label htmlFor={bidMatrixId} className="mb-1 block text-xs font-medium text-gray-600">Bid matrix</label>
-        <p className="mb-1.5 text-xs text-gray-500">Pick a matrix to look up bids from. Matrices are managed below.</p>
+        <p className="mb-1.5 text-xs text-hint">Pick a matrix to look up bids from. Matrices are managed below.</p>
         {options.length === 0 ? (
-          <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-gray-500">
+          <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-hint">
             No matrices configured for this partner yet.
           </p>
         ) : (

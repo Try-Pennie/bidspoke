@@ -159,7 +159,7 @@ export function SignalRuleBuilder({ value, onChange, sections = SIGNAL_SECTIONS 
           <div className="mb-2 flex items-start justify-between gap-4">
             <div>
               <p className="text-sm font-medium text-gray-700">{label}</p>
-              <p className="text-xs text-gray-500">{desc}</p>
+              <p className="text-xs text-hint">{desc}</p>
             </div>
             <Button variant="ghost" onClick={() => add(cat)} className="shrink-0">
               <Plus className="h-3 w-3" aria-hidden="true" />
@@ -167,7 +167,7 @@ export function SignalRuleBuilder({ value, onChange, sections = SIGNAL_SECTIONS 
             </Button>
           </div>
           {value[cat].length === 0 ? (
-            <p className="rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-500">
+            <p className="rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs text-hint">
               No rules. Uses default HTTP status classification.
             </p>
           ) : (

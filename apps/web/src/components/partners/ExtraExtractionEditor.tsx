@@ -73,7 +73,7 @@ export function ExtraExtractionEditor({ value, onChange, sampleResponse }: Props
 
   return (
     <div className="space-y-3">
-      <p className="text-xs text-gray-500">
+      <p className="text-xs text-hint">
         Pull partner-specific values out of the API response into <code className="rounded bg-gray-100 px-1 font-mono">output.extra</code>. Use a dot-path (e.g. <code className="rounded bg-gray-100 px-1 font-mono">data.createLead.id</code>) or a registered classifier function. Downstream Transform nodes read these via <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;node&gt;.output.extra.&lt;key&gt;</code>.
       </p>
 
@@ -112,7 +112,7 @@ export function ExtraExtractionEditor({ value, onChange, sampleResponse }: Props
       </Button>
 
       {pathSuggestions.length === 0 && (
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-hint">
           Paste a sample API response above to enable path autocomplete.
         </p>
       )}

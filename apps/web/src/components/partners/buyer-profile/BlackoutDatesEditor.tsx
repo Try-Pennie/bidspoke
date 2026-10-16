@@ -13,7 +13,7 @@
 import { useId } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import type { ProfileBlackoutDocument } from '@bidspoke/buyer-profile'
-import { Button, TextInput } from '@/components/ui/form'
+import { Button, FieldError, TextInput } from '@/components/ui/form'
 import { DateField } from '@/components/ui/DateTimeFields'
 import { formatShortDate, isIsoDate } from '@/components/ui/date-time'
 import { useRowIds } from './row-ids'
@@ -35,7 +35,7 @@ export function BlackoutDatesEditor({ value, onChange, errors = {} }: { value: r
   return (
     <div className="space-y-2">
       {sorted.length === 0 ? (
-        <p className="text-xs text-gray-500">No days off.</p>
+        <p className="text-xs text-hint">No days off.</p>
       ) : (
         <table className="w-full text-sm">
           <thead>
@@ -55,7 +55,7 @@ export function BlackoutDatesEditor({ value, onChange, errors = {} }: { value: r
                 <tr key={key} aria-label={`Blackout ${name}`} className="align-top">
                   <td className="py-0.5 pr-2">
                     <DateField id={`${rowId}-date`} value={row.date} onChange={(d) => update(row, { ...row, date: d })} label={`Date, ${name}`} />
-                    {error && <p role="alert" className="mt-1 text-xs text-red-700">{error}</p>}
+                    {error && <FieldError alert size="xs" className="mt-1">{error}</FieldError>}
                   </td>
                   <td className="py-0.5 pr-2">
                     <TextInput id={`${rowId}-note`} value={row.note ?? ''} onChange={(n) => update(row, { ...row, note: n === '' ? null : n })} aria-label={`Note, ${name}`} />

@@ -17,6 +17,14 @@ const config: Config = {
         navy: '#1D212F',
         graphite: '#343434',
         beige: '#F9F6F0',
+        // The chosen partner's row in the list, a deeper beige than the hover
+        // (the settled design's navy variant, #2114 round 7).
+        'beige-deep': '#F3EEE4',
+        // Grey hint and secondary text, app wide through the shared Field (#2144,
+        // Dan 2026-10-16): the lightest grey of gray-500's hue that clears WCAG AA,
+        // 4.60 to 1 on beige, 4.51 on gray-100 and 4.96 on white. text-gray-500
+        // fails on beige (4.48). partner-page-colour-guard.test.ts measures it.
+        hint: '#697081',
         'p-blue': {
           light: '#ECF8FF',
           DEFAULT: '#82D0FF',

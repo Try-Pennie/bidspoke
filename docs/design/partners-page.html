@@ -696,6 +696,7 @@ body.doc { margin: 0; background: #f4f1ea; color: #1d212f; font-family: Mori, -a
 <li><b>Click delivery changes</b> no second confirmation. The bar says what the change does (Clicks from WY will go to DI4 instead of DV1) beside the one Save button.</li>
 <li><b>Mark sent</b> pressing it opens an optional lead id box in the card; without an id the click is still counted and Completed in Salesforce.</li>
 <li><b>Salesforce not fully updated</b> every record listed with its result, the failure in Salesforce&#x27;s own words, then Retry Salesforce and Remove from the list (which asks first).</li>
+<li><b>Grey hint text</b> #697081, the lightest grey of the same hue that clears WCAG AA on both surfaces it sits on (4.60 to 1 on the beige page, 4.51 behind code on gray-100, 4.96 on white), so hints stay as quiet as they are and step back from the labels as far as AA allows. Today&#x27;s text-gray-500 fails (4.48 on beige); the darker 6 to 1 option sat too close to the labels. One token, text-hint, app wide through the shared Field. Settled in round 1 of #2144 (Dan, 2026-10-16), option &quot;Just passes&quot;. Section names stay dark, as drawn.</li>
 </ol>
 
 <h2 class="part" id="requirements">Behaviour changes the design commits to</h2>

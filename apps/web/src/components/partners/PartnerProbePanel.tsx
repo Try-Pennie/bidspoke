@@ -1,7 +1,7 @@
 'use client'
 
 import { useId, useState } from 'react'
-import { TextArea } from '@/components/ui/form'
+import { FieldError, TextArea } from '@/components/ui/form'
 
 interface Props {
   value: unknown
@@ -38,7 +38,7 @@ export function PartnerProbePanel({ value, onChange }: Props) {
 
   return (
     <div className="space-y-2">
-      <p className="text-xs text-gray-500">
+      <p className="text-xs text-hint">
         Paste a representative response body. The fields here populate the autocomplete dropdown when configuring extraction paths below. Valid JSON saves automatically.
       </p>
       <TextArea
@@ -52,7 +52,7 @@ export function PartnerProbePanel({ value, onChange }: Props) {
         describedBy={error ? `${id}-error` : undefined}
         className="min-h-[120px] resize-y text-xs"
       />
-      {error && <p id={`${id}-error`} role="alert" className="text-xs text-red-700">{error}</p>}
+      {error && <FieldError id={`${id}-error`} alert size="xs">{error}</FieldError>}
     </div>
   )
 }

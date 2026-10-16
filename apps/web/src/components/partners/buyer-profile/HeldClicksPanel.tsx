@@ -23,7 +23,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { HELD_CLICK_REASON_LABELS, SALE_RECORD_LABELS, type HeldClickReason, type SaleWrite, type SalesforceWritesView } from '@bidspoke/buyer-profile'
 import type { HeldClick } from '@/lib/api'
-import { Button, Outcome, TextInput, type OutcomeState } from '@/components/ui/form'
+import { Button, FieldError, Outcome, TextInput, type OutcomeState } from '@/components/ui/form'
 
 const PACIFIC = 'America/Los_Angeles'
 
@@ -82,21 +82,23 @@ function SalesforceUpdates({ sold, view, busy, onRetry }: { sold: boolean; view:
   if (!sold || !view || !needsRetry(view)) return null
   let body
   if (view.status === 'unreadable') {
-    body = <p className="text-red-700">{view.message}</p>
+    body = <FieldError>{view.message}</FieldError>
   } else if (view.status === 'none') {
-    body = <p className="text-red-700">No Salesforce update is recorded for this sale.</p>
+    body = <FieldError>No Salesforce update is recorded for this sale.</FieldError>
   } else {
     const writes = view.writes.writes
     const reason = sharedReason(writes)
     // Nothing was attempted, for one reason: say it once (L605).
     body = reason !== null ? (
-      <p className="text-red-700">Salesforce was not updated: {reason}</p>
+      <FieldError>Salesforce was not updated: {reason}</FieldError>
     ) : (
       <>
-        <p className="text-red-700">Salesforce was not fully updated.</p>
+        <FieldError>Salesforce was not fully updated.</FieldError>
         <ul className="list-disc pl-4">
           {writes.map((w) => (
-            <li key={w.record} className={w.outcome === 'written' ? 'text-graphite' : w.outcome === 'not_named' ? 'text-gray-600' : 'text-red-700'}>{writeLine(w)}</li>
+            w.outcome === 'written' || w.outcome === 'not_named'
+              ? <li key={w.record} className={w.outcome === 'written' ? 'text-graphite' : 'text-gray-600'}>{writeLine(w)}</li>
+              : <FieldError as="li" key={w.record}>{writeLine(w)}</FieldError>
           ))}
         </ul>
       </>
@@ -128,7 +130,7 @@ interface Props {
 export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent, onFree, onClear, onRetrySalesforce }: Props) {
   const [pending, setPending] = useState<Pending | null>(null)
 
-  if (error) return <p role="alert" className="text-xs text-red-700">The held clicks could not be read: {error}</p>
+  if (error) return <FieldError alert size="xs">The held clicks could not be read: {error}</FieldError>
   if (!held) return <p role="status" className="text-xs text-gray-600">Reading the held clicks…</p>
   if (held.entries.length === 0) return <p className="text-xs text-green-700">No clicks are held for {partnerName}: every click sent has an outcome.</p>
 
@@ -187,7 +189,7 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
                         {row.cleared ? null : <SalesforceUpdates sold={row.claim.status === 'sold'} view={row.salesforce} busy={busy} onRetry={() => void onRetrySalesforce(row)} />}
                       </div>
                     ) :row.claim.status === 'unreadable' ? (
-                      <p role="alert" className="text-red-700">{row.claim.message}</p>
+                      <FieldError alert>{row.claim.message}</FieldError>
                     ) : row.claim.status === 'sending' ? (
                       <p className="text-gray-600">Still sending. It can be released after {pacificTime(row.claim.releasable_at)}.</p>
                     ) : row.claim.status === 'free' || row.claim.status === 'sold' ? (

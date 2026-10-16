@@ -14,7 +14,7 @@ import { useEffect, useState } from 'react'
 import { api, type Partner } from '@/lib/api'
 import { errorSentence } from '@/lib/error-sentence'
 import { formatEtDayTime } from '@/lib/dates'
-import { Button } from '@/components/ui/form'
+import { Button, FieldError } from '@/components/ui/form'
 import { BuyerProfileHistory, type HistoryEntry } from './buyer-profile/BuyerProfileHistory'
 
 /** "Last saved Oct 13, 2:05 PM ET by Brian Nelms." (formatEtDayTime, no year), the editor by name where the row carries one. */
@@ -47,12 +47,12 @@ export function PartnerHistoryPanel({ partner, isBuyer, shown }: { partner: Part
       <p className="text-sm text-gray-700">{lastSavedSentence(partner)}</p>
       {isBuyer && (
         <div className="space-y-3">
-          <h3 className="text-xs font-semibold text-gray-500">Buyer profile saves</h3>
+          <h3 className="text-xs font-semibold text-graphite">Buyer profile saves</h3>
           {error ? (
-            <div role="alert" className="flex items-center gap-3 text-sm text-red-700">
+            <FieldError as="div" alert size="sm" className="flex items-center gap-3">
               <span className="flex-1">Could not load the buyer profile history: {error}</span>
               <Button variant="secondary" onClick={() => setAttempt((n) => n + 1)}>Try again</Button>
-            </div>
+            </FieldError>
           ) : entries === null ? (
             <p role="status" className="text-xs text-gray-600">Reading the history…</p>
           ) : (

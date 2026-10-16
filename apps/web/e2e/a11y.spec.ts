@@ -190,7 +190,7 @@ test.describe('Accessibility (axe-core)', () => {
         await expect(page.locator('[role="tabpanel"]:visible'), `${name}, ${tab}: exactly one panel is visible`).toHaveCount(1)
         // A rule row fades in when its panel is shown (@starting-style); scan once it has.
         await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'))
-        await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+        await expectNoSeriousA11yViolations(page, [], '/partners')
         scanned++
       }
     }
@@ -209,7 +209,7 @@ test.describe('Accessibility (axe-core)', () => {
     // The URL is untouched: the problem tab is where it opens, not what it asks for.
     expect(new URL(page.url()).searchParams.get('tab')).toBeNull()
     await page.waitForLoadState('networkidle')
-    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await expectNoSeriousA11yViolations(page, [], '/partners')
     expect(unmatched).toEqual([])
   })
 
@@ -222,7 +222,7 @@ test.describe('Accessibility (axe-core)', () => {
     await page.reload()
     await expect(page.getByRole('tab', { name: 'Bid Group' })).toHaveAttribute('aria-selected', 'true')
     await page.waitForLoadState('networkidle')
-    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await expectNoSeriousA11yViolations(page, [], '/partners')
     expect(unmatched).toEqual([])
   })
 
@@ -291,13 +291,6 @@ test.describe('Accessibility (axe-core)', () => {
     })
   }
 })
-
-/**
- * The partners form's grey hint text (text-gray-500) on the beige page fails
- * contrast; PR13 (#2144) sets its new shade once Dan picks it (decision 3,
- * 2026-10-15), and deletes this waiver. Every other contrast failure still fails.
- */
-const GREY_HINTS = { className: 'text-gray-500', issue: '#2144' }
 
 /** The Worker the built page calls, as api.ts reads it. */
 function workerUrl(): string {

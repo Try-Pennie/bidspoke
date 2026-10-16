@@ -24,7 +24,7 @@ import { MergeDialog } from '@/components/partners/MergeDialog'
 import { mergeThreeWay, sameMergeValue, type MergeResult, type MergeSide, type PageHalves } from '@/lib/partner-page-merge'
 import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
 import { clickDeliveryConsequences } from '@/components/partners/buyer-profile/click-delivery-consequences'
-import { Button, ChoiceGroup, Field, NumberInput, Outcome, TextArea, TextInput, describedBy, type OutcomeState } from '@/components/ui/form'
+import { Button, ChoiceGroup, Field, FieldError, NumberInput, Outcome, TextArea, TextInput, describedBy, type OutcomeState } from '@/components/ui/form'
 import { Toggle } from '@/components/ui/Toggle'
 import { documentToProfile, soldOnSwitchBlocked, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal, type StoredKind } from '@bidspoke/buyer-profile'
 import { UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
@@ -58,10 +58,10 @@ function BidsInRow({ usage, partnerName, partnerNames, reason, onRetry }: { usag
   if (usage.kind === 'loading') return <p role="status" className="text-sm text-gray-600">Checking which workflows use this partner…</p>
   if (usage.kind === 'failed') {
     return (
-      <div role="alert" className="flex items-center gap-3 text-sm text-red-700">
+      <FieldError as="div" alert size="sm" className="flex items-center gap-3">
         <span className="flex-1">Could not check which workflows use this partner. Try again.</span>
         <Button variant="secondary" onClick={onRetry}>Try again</Button>
-      </div>
+      </FieldError>
     )
   }
   const sentences = bidsInSentences(usage.usage, partnerNames)
@@ -168,7 +168,7 @@ const asText = (n: number | null): string => (n === null ? '' : String(n))
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <h3 className="mb-4 text-xs font-semibold text-gray-500">{title}</h3>
+      <h3 className="mb-4 text-xs font-semibold text-graphite">{title}</h3>
       <div className="space-y-4">{children}</div>
     </div>
   )
@@ -842,11 +842,11 @@ export default function PartnerForm({
       <div className="mb-6 flex items-center justify-between">
         <div>
           {isNew
-            ? <h2 className="text-lg font-medium text-gray-500">New partner</h2>
+            ? <h2 className="text-lg font-medium text-hint">New partner</h2>
             : <h2 className="text-2xl font-bold text-graphite">{name || <span className="text-gray-300">Unnamed</span>}</h2>
           }
           {!isNew && (
-            <p className="mt-0.5 font-mono text-sm text-gray-500">{partner.slug}</p>
+            <p className="mt-0.5 font-mono text-sm text-hint">{partner.slug}</p>
           )}
         </div>
         <div className="flex items-center gap-2">
@@ -872,9 +872,9 @@ export default function PartnerForm({
       </div>
 
       {error && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
+        <FieldError as="div" boxed size="sm" className="mb-4 px-4 py-3">
           {error}
-        </div>
+        </FieldError>
       )}
 
       {/*
@@ -887,10 +887,10 @@ export default function PartnerForm({
       {pageProblems.length > 0 && (
         <ul className="mb-4 space-y-1">
           {pageProblems.map((p, i) => (
-            <li key={i} className="flex items-center gap-2 text-sm text-red-700">
+            <FieldError as="li" key={i} size="sm" className="flex items-center gap-2">
               <ProblemMark label="Problem:" />
               {p.message}
-            </li>
+            </FieldError>
           ))}
         </ul>
       )}
@@ -942,7 +942,7 @@ export default function PartnerForm({
                   onChange={setPartnerType}
                   describedBy="partner-type-hint"
                 />
-                <p id="partner-type-hint" className="mt-1 text-xs text-gray-500">Source partners send leads to Pennie. Buyer partners receive bids. Both does each, on one record.</p>
+                <p id="partner-type-hint" className="mt-1 text-xs text-hint">Source partners send leads to Pennie. Buyer partners receive bids. Both does each, on one record.</p>
               </div>
               <div className="flex items-center gap-6">
                 <div>
@@ -962,7 +962,7 @@ export default function PartnerForm({
                     <span className="text-sm text-graphite">Buyer profile</span>
                     {/* The read's own states first, so a buyer with a profile is never told to set one up (L10). */}
                     {profileLoadError !== null
-                      ? <span className="text-sm text-red-700">Could not be read</span>
+                      ? <FieldError as="span" size="sm">Could not be read</FieldError>
                       : partner && profile === null
                         ? <span role="status" className="text-sm text-gray-600">Checking…</span>
                         : profile !== null && (profile.version ?? 0) > 0
@@ -1008,7 +1008,7 @@ export default function PartnerForm({
               </Section>
 
               {credentialProblem && resolverType !== 'api' && (
-                <p className="text-sm text-red-700">{credentialProblem}</p>
+                <FieldError size="sm">{credentialProblem}</FieldError>
               )}
               <Section title="Bid resolution">
                 <BidResolverEditor
@@ -1028,10 +1028,10 @@ export default function PartnerForm({
                   cfSecretKeyError={credentialProblem}
                 />
                 {bidConfigsLoadError && (
-                  <div role="alert" className="mt-4 flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  <FieldError as="div" alert boxed size="sm" className="mt-4 flex items-center gap-3">
                     <span className="flex-1">Could not load bid matrices. Try again.</span>
                     <Button variant="secondary" onClick={() => setBidConfigsAttempt((n) => n + 1)}>Try again</Button>
-                  </div>
+                  </FieldError>
                 )}
                 {resolverType === 'matrix' && partner && !bidConfigsLoadError && (
                   <div className="mt-4 border-t border-gray-100 pt-4">
@@ -1047,7 +1047,7 @@ export default function PartnerForm({
                   </div>
                 )}
                 {resolverType === 'matrix' && !partner && (
-                  <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-gray-500">
+                  <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-hint">
                     Save the partner first to attach a bid matrix.
                   </p>
                 )}
@@ -1102,7 +1102,7 @@ export default function PartnerForm({
                   <Toggle id="partner-circuit-enabled" checked={circuitEnabled} onChange={setCircuitEnabled} label="Circuit breaker enabled" />
                   <span className="text-sm text-gray-700">{circuitEnabled ? 'Enabled' : 'Disabled'}</span>
                   <span className="text-gray-300">·</span>
-                  <p className="text-xs text-gray-500">
+                  <p className="text-xs text-hint">
                     Pauses bids to this partner after repeated failures, then retries automatically.
                   </p>
                 </div>
@@ -1124,7 +1124,7 @@ export default function PartnerForm({
               </Section>
 
               <Section title="Response classification">
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-hint">
                   Override how this partner&apos;s responses are classified. Rules are evaluated before the defaults.
                   Leave all sections empty to use default classification by HTTP status.
                 </p>
@@ -1136,7 +1136,7 @@ export default function PartnerForm({
               <Section title="Confirmation window">
                 {confirmationWindowShown(usage, confirmationWindowMs, confirmationAdded) ? (
                   <>
-                    <p className="text-xs text-gray-500">
+                    <p className="text-xs text-hint">
                       Used by the Latency Gate node. Maximum acceptable time between our bid and this partner&apos;s
                       Bid Win Confirmation. Confirmations slower than this are rejected (reject due to latency). Leave
                       blank to require a node-level override instead.
@@ -1150,13 +1150,13 @@ export default function PartnerForm({
                     <Button variant="secondary" onClick={() => setConfirmationAdded(true)}>
                       <Plus className="h-4 w-4" aria-hidden="true" /> Set up a confirmation window
                     </Button>
-                    <p className="text-xs text-gray-500">Used only by a Latency Gate step. No workflow has one for {name || 'this partner'}.</p>
+                    <p className="text-xs text-hint">Used only by a Latency Gate step. No workflow has one for {name || 'this partner'}.</p>
                   </div>
                 )}
               </Section>
 
               <Section title="Alert configuration">
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-hint">
                   Default: alert on all errors. Turn off alert types that produce noise for this partner.
                   Business rejections never alert regardless.
                 </p>
@@ -1164,14 +1164,14 @@ export default function PartnerForm({
                   <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
                     <div>
                       <p className="text-sm font-medium text-gray-800">Transient error alerts</p>
-                      <p className="text-xs text-gray-500">Network failures, timeouts, 429, 502 to 504</p>
+                      <p className="text-xs text-hint">Network failures, timeouts, 429, 502 to 504</p>
                     </div>
                     <Toggle id="partner-alert-transient" checked={alertTransient} onChange={setAlertTransient} label="Transient error alerts" />
                   </div>
                   <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
                     <div>
                       <p className="text-sm font-medium text-gray-800">Permanent error alerts</p>
-                      <p className="text-xs text-gray-500">4xx errors, auth failures, bad responses</p>
+                      <p className="text-xs text-hint">4xx errors, auth failures, bad responses</p>
                     </div>
                     <Toggle id="partner-alert-permanent" checked={alertPermanent} onChange={setAlertPermanent} label="Permanent error alerts" />
                   </div>
@@ -1193,7 +1193,7 @@ export default function PartnerForm({
             </Section>}
 
             {isBuyer && <Section title="Per-sub-account min bids">
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-hint">
                 Optional per-sub-account floor. When a lead arrives with a matching sub-account UUID,
                 this floor overrides the partner-wide Minimum bid. Leave empty to use only the partner-wide floor.
               </p>
@@ -1229,7 +1229,7 @@ export default function PartnerForm({
             </Section>}
 
             {isSource && <Section title="Sell-off offer copy">
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-hint">
                 Used by the Constants node in bidding workflows to populate sell-off offer fields for this partner.
               </p>
               <Field id="partner-sell-off-title" label="Sell-off offer title">
@@ -1247,7 +1247,7 @@ export default function PartnerForm({
             </Section>}
 
             {isSource && <Section title="Sub-account UUIDs">
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-hint">
                 External UUIDs that map to this partner. Used by the Constants node to resolve inbound sub-account IDs to partner slugs.
               </p>
               <div className="space-y-1.5">
@@ -1261,10 +1261,10 @@ export default function PartnerForm({
                     </div>
                   ))
                 ) : uuidsLoadError ? (
-                  <div role="alert" className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  <FieldError as="div" alert boxed size="sm" className="flex items-center gap-3">
                     <span className="flex-1">Could not load sub-account IDs. Try again.</span>
                     <Button variant="secondary" onClick={() => setUuidsAttempt((n) => n + 1)}>Try again</Button>
-                  </div>
+                  </FieldError>
                 ) : (
                   uuids.map((u) => (
                     <div key={u.id} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
@@ -1331,7 +1331,7 @@ export default function PartnerForm({
                   Add
                 </Button>
               </div>
-              {uuidError && <p className="text-xs text-red-600">{uuidError}</p>}
+              {uuidError && <FieldError size="xs">{uuidError}</FieldError>}
             </Section>}
           </TabPanel>
           {!isNew && (
@@ -1383,7 +1383,7 @@ export default function PartnerForm({
             </Button>
           )}
           {dirty && saveState !== 'saving' && (
-            <span className="flex items-center gap-1.5 text-xs font-medium text-amber-600">
+            <span className="flex items-center gap-1.5 text-xs font-medium text-amber-800">
               <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
               Unsaved changes
             </span>

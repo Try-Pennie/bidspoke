@@ -23,7 +23,7 @@ import { soldOnPatch } from './sold-on-switch'
 import type { SignalRules } from '@/app/(app)/partners/partner-draft'
 import { api, type HeldClick, type MarkSentResult } from '@/lib/api'
 import { errorSentence } from '@/lib/error-sentence'
-import { ChoiceGroup, Field, NumberInput, describedBy, type OutcomeState } from '@/components/ui/form'
+import { ChoiceGroup, Field, FieldError, NumberInput, describedBy, type OutcomeState } from '@/components/ui/form'
 import { Toggle } from '@/components/ui/Toggle'
 import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
 import { AcceptRulesEditor } from './AcceptRulesEditor'
@@ -308,11 +308,11 @@ export function BuyerProfileSection(props: Props) {
   const routingCodeRefusal = errorFor(errors, 'externalRoutingCode') ?? null
 
   return (
-    <section aria-label="Buyer profile" className="space-y-6 rounded-lg border border-emerald-100 bg-emerald-50/30 p-4">
+    <section aria-label="Buyer profile" className="space-y-6">
       {!partnerId ? (
         <p className="text-sm text-gray-600">Save the partner first. The buyer profile is kept against the saved partner.</p>
       ) : loadError ? (
-        <p role="alert" className="text-sm text-red-700">The buyer profile could not be read: {loadError}</p>
+        <FieldError alert size="sm">The buyer profile could not be read: {loadError}</FieldError>
       ) : !profile ? (
         <p role="status" className="text-sm text-gray-600">Reading the buyer profile…</p>
       ) : (
@@ -328,9 +328,9 @@ export function BuyerProfileSection(props: Props) {
               disabled={soldOnLock !== null}
               describedBy={['bp-sold-on-hint', soldOnLock ? 'bp-sold-on-lock' : null, soldOnError ? 'bp-sold-on-error' : null].filter(Boolean).join(' ')}
             />
-            <p id="bp-sold-on-hint" className="text-xs text-gray-500">The offer: sold through buyer selection at a priced rate. The click: quoted at the Engine bid and sent to the buyer only when the person clicks.</p>
+            <p id="bp-sold-on-hint" className="text-xs text-hint">The offer: sold through buyer selection at a priced rate. The click: quoted at the Engine bid and sent to the buyer only when the person clicks.</p>
             {soldOnLock && <p id="bp-sold-on-lock" className="text-xs text-gray-600">{soldOnLock}</p>}
-            {soldOnError && <p id="bp-sold-on-error" role="alert" className="text-xs text-red-700">{soldOnError}</p>}
+            {soldOnError && <FieldError id="bp-sold-on-error" alert size="xs">{soldOnError}</FieldError>}
           </div>
 
           <div className="space-y-4">
@@ -338,7 +338,7 @@ export function BuyerProfileSection(props: Props) {
             <div className="flex items-center gap-3">
               <Toggle id="bp-enabled" checked={profile.is_enabled} onChange={(v) => patch({ is_enabled: v })} label="Enabled" />
               <label htmlFor="bp-enabled" className="text-sm text-graphite">Enabled</label>
-              {errorFor(errors, 'isEnabled') && <p role="alert" className="text-xs text-red-700">{errorFor(errors, 'isEnabled')}</p>}
+              {errorFor(errors, 'isEnabled') && <FieldError alert size="xs">{errorFor(errors, 'isEnabled')}</FieldError>}
             </div>
             {/* A click buyer is never ranked: buyer selection does not offer it a lead (#1541). */}
             {!click && (
@@ -347,7 +347,7 @@ export function BuyerProfileSection(props: Props) {
               </Field>
             )}
             <StatePicker value={profile.allowed_states} onChange={(states) => patch({ allowed_states: states })} />
-            {errorFor(errors, 'allowedStates') && <p role="alert" className="text-xs text-red-700">{errorFor(errors, 'allowedStates')}</p>}
+            {errorFor(errors, 'allowedStates') && <FieldError alert size="xs">{errorFor(errors, 'allowedStates')}</FieldError>}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <Field id="bp-debt-min" label="Debt minimum" hint="Dollars, inclusive." error={errorFor(errors, 'debtMin')}>
                 <NumberInput id="bp-debt-min" value={profile.debt_min} onChange={(v) => patch({ debt_min: v })} min={0} describedBy={describedBy('bp-debt-min', true, Boolean(errorFor(errors, 'debtMin')))} />
@@ -362,7 +362,7 @@ export function BuyerProfileSection(props: Props) {
             <div>
               <h5 className="mb-2 text-xs font-medium text-gray-600">{SECTION_LABELS.windows}</h5>
               <WeeklyHoursEditor value={profile.windows} onChange={(windows) => patch({ windows })} />
-              {errorFor(errors, 'windows') && <p role="alert" className="text-xs text-red-700">{errorFor(errors, 'windows')}</p>}
+              {errorFor(errors, 'windows') && <FieldError alert size="xs">{errorFor(errors, 'windows')}</FieldError>}
             </div>
           </div>
 
@@ -371,7 +371,7 @@ export function BuyerProfileSection(props: Props) {
             <div className="space-y-3">
               <h4 className="text-sm font-medium text-gray-700">{SECTION_LABELS.tiers}</h4>
               <PricingTiersEditor value={profile.tiers} onChange={(tiers) => patch({ tiers })} errors={byPath} />
-              {errorFor(errors, 'tiers') && <p role="alert" className="text-xs text-red-700">{errorFor(errors, 'tiers')}</p>}
+              {errorFor(errors, 'tiers') && <FieldError alert size="xs">{errorFor(errors, 'tiers')}</FieldError>}
             </div>
           )}
 
@@ -384,7 +384,7 @@ export function BuyerProfileSection(props: Props) {
               soldOn={profile.sold_on}
             />
             {usage === null && usageError === null ? (
-              <p role="status" className="text-xs text-gray-500">Reading the usage counts…</p>
+              <p role="status" className="text-xs text-hint">Reading the usage counts…</p>
             ) : usageError === null && usage !== null && profile.sold_on !== null && usage.sold_on !== profile.sold_on ? (
               // An unsaved change of kind (#1557): nothing is wrong, the route answers the saved kind.
               <p role="status" className="text-xs text-gray-600">{click ? 'The clicks show once the change to the click is saved.' : 'The ledger counts show once the change to the offer is saved.'}</p>
@@ -429,14 +429,14 @@ export function BuyerProfileSection(props: Props) {
             {!click && (
               <div>
                 <p className="mb-1 text-sm font-medium text-gray-700">{SECTION_LABELS.accept_signals}</p>
-                <p className="mb-2 text-xs text-gray-500">The buyer took the lead. A sale counts only when the answer is 2xx and every rule here matches.</p>
+                <p className="mb-2 text-xs text-hint">The buyer took the lead. A sale counts only when the answer is 2xx and every rule here matches.</p>
                 <AcceptRulesEditor value={acceptSignals} onChange={onAcceptSignalsChange} refusal={acceptRefusal} />
               </div>
             )}
             <SignalRuleBuilder value={signalRules} onChange={onSignalRulesChange} sections={DECLINE_SECTION} />
             <div>
               <p className="mb-1 text-sm font-medium text-gray-700">{SECTION_LABELS.duplicate_signals}</p>
-              <p className="mb-2 text-xs text-gray-500">The buyer already holds this lead. A decline matching any rule here is recorded in Salesforce as Duplicate; any other decline as Fail.</p>
+              <p className="mb-2 text-xs text-hint">The buyer already holds this lead. A decline matching any rule here is recorded in Salesforce as Duplicate; any other decline as Fail.</p>
               <AcceptRulesEditor kind="duplicate" value={duplicateSignals} onChange={onDuplicateSignalsChange} />
             </div>
             <Field id="bp-routing-code" label="Salesforce routing code" hint="Written to the prospect as ExternalRoutingCode__c on every sale to this buyer. Tripoint is 2." error={routingCodeRefusal}>
@@ -449,13 +449,13 @@ export function BuyerProfileSection(props: Props) {
             <div className="space-y-3">
               <h4 className="text-sm font-medium text-gray-700">Unresolved sales</h4>
               {unresolvedError ? (
-                <p role="alert" className="text-xs text-red-700">{unresolvedError}</p>
+                <FieldError alert size="xs">{unresolvedError}</FieldError>
               ) : unresolved === null ? (
-                <p role="status" className="text-xs text-gray-500">Reading the unresolved sales…</p>
+                <p role="status" className="text-xs text-hint">Reading the unresolved sales…</p>
               ) : (
                 <>
                   <UnresolvedSalesList rows={unresolved.rows} total={unresolved.total} onSettle={settle} outcomes={settleOutcomes} onMore={loadMoreUnresolved} loadingMore={loadingMore} />
-                  {loadMoreError && <p role="alert" className="text-xs text-red-700">{loadMoreError}</p>}
+                  {loadMoreError && <FieldError alert size="xs">{loadMoreError}</FieldError>}
                 </>
               )}
             </div>
