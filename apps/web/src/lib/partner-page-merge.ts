@@ -281,6 +281,45 @@ function refusals(merged: PageHalves, theirsProfile: BuyerProfileDocument, their
   return validation.errors.map((e) => ({ registryPath: registryPathOf(e.path, routeNames), message: e.message }))
 }
 
+/**
+ * Every unit the page on screen changed from what was loaded or last saved,
+ * named as the merge names it, in registry order (#2138): the save bar's
+ * "N unsaved changes" and the leave dialog read this, so they name the same
+ * units, by the same labels, that a merge would.
+ */
+export function changedUnits(base: PageHalves, mine: PageHalves, registry: readonly FieldEntry[]): MergeUnit[] {
+  const out: Array<MergeUnit & { at: number }> = []
+  const add = (key: string, entry: FieldEntry) => out.push({ key, tab: entry.tab, section: entry.section, label: unitLabel(key, entry), at: registry.indexOf(entry) })
+  for (const k of PARTNER_BODY_KEYS) {
+    if (sameMergeValue(base.partner[k] ?? null, mine.partner[k] ?? null)) continue
+    const entries = registryEntriesFor(k, registry)
+    // This runs in the page's render, so a key the registry does not name once
+    // (which partner-field-registry.test.ts forbids) is named by its key, last,
+    // rather than taking the page down.
+    if (entries.length !== 1) out.push({ key: k, tab: 'partner', section: 'Partner', label: k, at: registry.length })
+    else add(k, entries[0])
+  }
+  if (base.profile && mine.profile) {
+    let b: Map<string, Unit>
+    let m: Map<string, Unit>
+    try {
+      b = profileUnits(base.profile, registry)
+      m = profileUnits(mine.profile, registry)
+    } catch {
+      // A draft mid edit can hold a row no registry path names yet (a route
+      // still without a name): the profile is then named as a whole, never dropped.
+      if (!sameMergeValue(base.profile, mine.profile)) out.push({ key: `${PROFILE_PREFIX}*`, tab: 'buyer_profile', section: 'Buyer profile', label: 'Buyer profile', at: registry.length })
+      return out.sort((x, y) => x.at - y.at || x.key.localeCompare(y.key)).map(({ at: _at, ...unit }) => unit)
+    }
+    for (const key of new Set([...b.keys(), ...m.keys()])) {
+      const entry = (m.get(key) ?? b.get(key))!.entry
+      const empty = entry.mergeGroup || key.startsWith(`${PROFILE_PREFIX}click_delivery`) ? [] : null
+      if (!sameMergeValue(b.get(key)?.value ?? empty, m.get(key)?.value ?? empty)) add(key, entry)
+    }
+  }
+  return out.sort((x, y) => x.at - y.at || x.key.localeCompare(y.key)).map(({ at: _at, ...unit }) => unit)
+}
+
 /** How many questions are still unanswered. */
 export function unansweredCount(result: MergeResult): number {
   return result.conflicts.reduce((n, s) => n + s.conflicts.filter((c) => c.choice === null).length, 0)

@@ -263,20 +263,26 @@ export function Checkbox({ id, checked, onChange, label, disabled }: { id: strin
  */
 export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'destructive' | 'ghost' | 'row'
 
-export function Button({ variant, type = 'button', onClick, disabled, busy, children, 'aria-label': ariaLabel, title, className }: {
+export function Button({ variant, type = 'button', form, onClick, disabled, busy, children, 'aria-label': ariaLabel, describedBy: db, title, className }: {
   variant: ButtonVariant
   type?: 'button' | 'submit'
+  /** The form a submit button belongs to when it is drawn outside it (the partners save bar, #2138). */
+  form?: string
   onClick?: () => void
   disabled?: boolean
   busy?: boolean
   children: ReactNode
   'aria-label'?: string
+  /** The id of the sentence saying why the button is as it is (a disabled Discard, #2138). */
+  describedBy?: string
   title?: string
   className?: string
 }) {
   return (
     <button
       type={type}
+      form={form}
+      aria-describedby={db}
       onClick={onClick}
       disabled={disabled || busy}
       aria-busy={busy ? 'true' : undefined}

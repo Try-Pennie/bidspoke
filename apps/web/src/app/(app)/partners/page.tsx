@@ -12,7 +12,8 @@ import { Plus, CircleCheck, CircleOff, AlertTriangle } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Button } from '@/components/ui/form'
 import { ProblemMark } from '@/components/ui/ProblemMark'
-import PartnerForm, { UNSAVED_CHANGES_MESSAGE, type PartnerSaveResult } from './PartnerForm'
+import PartnerForm, { type PartnerSaveResult } from './PartnerForm'
+import { leaveThen } from '@/lib/leave-guard'
 import { PartnerLiveProvider } from '@/components/partners/live/PartnerLive'
 import { partnersUrl, tabFromParam } from './partner-tabs'
 import { groupPartners } from './partner-list'
@@ -45,16 +46,11 @@ export default function PartnersPage() {
   // What a committed delete left to say (#2140): never an error, because the
   // delete happened. The delete box itself guards against a double press.
   const [deletedNotice, setDeletedNotice] = useState<string[] | null>(null)
-  const [formDirty, setFormDirty] = useState(false)
   /** The open partner holds a problem (a refused save's field), marked on its row beside a missing credential. */
   const [formProblem, setFormProblem] = useState(false)
   const partnerNames = useMemo(() => new Map(partners.map((p) => [p.id, p.name])), [partners])
-
-  // Confirm before discarding unsaved partner-form edits. Used to guard the
-  // in-page <button> navigations (partner switch, New) the form can't intercept.
-  function confirmDiscardIfDirty(): boolean {
-    return !formDirty || window.confirm(UNSAVED_CHANGES_MESSAGE)
-  }
+  /** The foot of the form pane, where the form draws its save bar (#2138). */
+  const [barSlot, setBarSlot] = useState<HTMLDivElement | null>(null)
 
   async function load() {
     try {
@@ -91,7 +87,6 @@ export default function PartnersPage() {
   function clearSelection() {
     setCreating(false)
     setSelected(null)
-    setFormDirty(false)
     setFormProblem(false)
     if (slugParam) writeUrl(null, null)
   }
@@ -169,7 +164,8 @@ export default function PartnersPage() {
         <div className="flex w-72 flex-shrink-0 flex-col border-r border-gray-200 bg-white">
           <div className="flex items-center justify-between border-b border-gray-200 px-4 py-4">
             <h1 className="text-3xl font-bold text-graphite">Partners</h1>
-            <Button variant="primary" onClick={() => { if (!confirmDiscardIfDirty()) return; clearSelection(); setCreating(true) }} className="px-3 py-1.5 text-xs">
+            {/* Leaving a partner with something unsaved asks first, in the form's own dialog (#2138, PM-5). */}
+            <Button variant="primary" onClick={() => leaveThen({ kind: 'page', name: 'a new partner' }, () => { clearSelection(); setCreating(true) })} className="px-3 py-1.5 text-xs">
               <Plus className="h-3.5 w-3.5" aria-hidden="true" />
               New
             </Button>
@@ -206,7 +202,10 @@ export default function PartnersPage() {
                           <Button
                             key={partner.id}
                             variant="row"
-                            onClick={() => { if (selected?.id !== partner.id && !confirmDiscardIfDirty()) return; setFormDirty(false); setFormProblem(false); selectPartner(partner) }}
+                            onClick={() => {
+                              if (selected?.id === partner.id) return selectPartner(partner)
+                              leaveThen({ kind: 'partner', name: partner.name }, () => { setFormProblem(false); selectPartner(partner) })
+                            }}
                             className={`transition-[colors,opacity] duration-150 ${
                               selected?.id === partner.id
                                 ? 'bg-gray-100'
@@ -234,7 +233,8 @@ export default function PartnersPage() {
           </div>
         </div>
 
-        {/* Detail / form */}
+        {/* Detail / form, with the save bar across its foot under the scrolling form (#2138). */}
+        <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex-1 overflow-y-auto p-8" data-form-pane="">
           {error && (
             <div className="mb-6 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -256,7 +256,8 @@ export default function PartnersPage() {
               onSave={handleSave}
               onCancel={clearSelection}
               onDeleted={handleDeleted}
-              onDirtyChange={setFormDirty}
+              barSlot={barSlot}
+              onSaveConfirmed={(saved) => { setPartners((prev) => prev.map((p) => (p.id === saved.id ? saved : p))); setSelected(saved) }}
               requestedTab={selected ? requestedTab : null}
               onTabChange={(tab) => { if (selected) writeUrl(selected.slug, tab) }}
               partnerNames={partnerNames}
@@ -290,6 +291,8 @@ export default function PartnersPage() {
               </div>
             </div>
           )}
+        </div>
+        <div ref={setBarSlot} />
         </div>
 
       </div>

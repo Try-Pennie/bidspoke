@@ -20,7 +20,6 @@ vi.mock('next/navigation', () => ({
 const formProps = vi.fn()
 vi.mock('../PartnerForm', () => ({
   __esModule: true,
-  UNSAVED_CHANGES_MESSAGE: 'unsaved',
   default: (props: Record<string, unknown>) => {
     formProps(props)
     return <div data-testid="form">{String((props.partner as { slug?: string } | undefined)?.slug ?? 'new')}</div>
