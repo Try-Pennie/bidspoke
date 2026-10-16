@@ -19,7 +19,9 @@ vi.mock('../../../lib/buyer-profile-loader')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
-import { readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
+import { readBuyerProfileVersion, readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
+// What the accessibility job's router answers these two routes with (#2135), so a route and its fixture cannot drift apart.
+import { LIVE_MISS_ID, versionsFor } from '../../../../../web/e2e/partner-live-fixtures'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
 
 // The fixtures the accessibility job is answered from (apps/web/e2e/fixtures/partners).
@@ -151,6 +153,30 @@ describe('the partners page fixtures are what their routes answer (#2134)', () =
     const res = await call('GET', '/partner-uuids')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual(uuids)
+  })
+
+  // #2135: the live channel's versions probe and its miss report, which the
+  // fixture router answers (answerFor in apps/web/e2e/partner-fixtures.ts).
+  it.each(partners.map((p) => [p.slug, p.id]))('GET /partners/:id/versions for %s is what the fixture router answers', async (_slug, id) => {
+    const row = partners.find((p) => p.id === id)!
+    const fixtureProfile = buyerProfiles[id]?.profile as { version?: number } | null | undefined
+    vi.mocked(readBuyerProfileVersion).mockResolvedValue(fixtureProfile ? { version: fixtureProfile.version ?? 0, lastSaveId: null } : null)
+    supabaseWith({ partner_configs: { single: { id, version: row.version, last_save_id: row.last_save_id } }, audit_log: { list: [] } })
+    const res = await call('GET', `/partners/${id}/versions`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(versionsFor(row, buyerProfiles))
+  })
+
+  it('POST /partners/live-miss answers what the fixture router answers', async () => {
+    const tripoint = partners.find((p) => p.slug === 'tripoint')!
+    supabaseWith({ partner_configs: { single: { id: tripoint.id } }, partner_page_live_misses: { insertResult: { id: LIVE_MISS_ID } } })
+    const res = await call('POST', '/partners/live-miss', {
+      partner_id: tripoint.id, cause: 'delivery',
+      noticed: { partner_version: 0, profile_version: 5 }, observed: { partner_version: 1, profile_version: 5 }, since_last_notice_ms: 61_000,
+    })
+    // The router answers 201 { ok: true, id: LIVE_MISS_ID } (partner-fixtures.test.ts holds it to that).
+    expect(res.status).toBe(201)
+    expect(await res.json()).toEqual({ ok: true, id: LIVE_MISS_ID })
   })
 
   it('PUT /partners/:id/page: the stale save the merge dialog opens from is the 409 the route answers', async () => {
