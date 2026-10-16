@@ -321,5 +321,11 @@ What it says for B1 to B3:
 4. Disarmed (`npx wrangler secret delete OPS_SPIKE_ARM --config wrangler.ops.toml`)
    and removed the probe code, keeping `SELF` and `OpsInternal.ping`. The
    `spike/1946/` objects expire under the bucket's 90 day lifecycle rule.
+   Removing the `[triggers]` block did NOT remove the cron: wrangler deploy keeps a
+   Worker's schedules when the config names none, so from 19:05 UTC the minute
+   cron threw "Handler does not export a scheduled() function" every minute until a
+   deploy with `crons = []` removed it. Re-measure:
+   `curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" https://api.cloudflare.com/client/v4/accounts/3e7f907a9c19e51417873e2cce4fbc5c/workers/scripts/bidspoke-worker-ops/schedules | jq .result`
+   should list no schedules.
 5. Not run: P9 against the real Micro once B1's tables exist (#1948). That puts load
    on the production ops database and needs its own approval.

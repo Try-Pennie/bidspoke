@@ -84,9 +84,18 @@ describe('wrangler.ops.toml (#1709)', () => {
     expect(toml).not.toMatch(/^service = "bidspoke-worker"$/m)
   })
 
-  it("declares no cron: Spike 0's probe cron is gone and the run engine's tick (B2) adds its own (#1946)", () => {
-    expect(tables(toml, 'triggers')).toEqual([])
-    expect(toml).not.toMatch(/^crons\s*=/m)
+  /**
+   * An EMPTY crons list, not an absent one (#1946). wrangler deploy leaves a
+   * Worker's existing schedules alone when the config names no triggers, so
+   * removing Spike 0's [triggers] block left its minute cron firing into a Worker
+   * with no scheduled() handler, an exception every minute (measured 2026-10-16,
+   * 19:05 UTC). Only `crons = []` makes the deploy delete it. The run engine's
+   * tick (B2) replaces this with its own cron and handler.
+   */
+  it("declares an empty crons list, so a deploy removes Spike 0's minute cron (#1946)", () => {
+    const triggers = tables(toml, 'triggers')
+    expect(triggers).toHaveLength(1)
+    expect(triggers[0]).toMatch(/^crons = \[\]$/m)
   })
 
   it('exports the OpsInternal entrypoint the SELF binding names from its main module', () => {
