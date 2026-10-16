@@ -254,6 +254,27 @@ html {
   .dialog-actions {
     @apply mt-2 flex flex-wrap items-center justify-end gap-2;
   }
+  /* The partners page save bar (#2138, components/partners/SaveBar.tsx), as the
+     settled design draws it: a navy bar across the foot of the form pane, white
+     words, its secondary buttons outlined on the navy, a failure's words pink. */
+  .save-bar {
+    @apply flex flex-none flex-wrap items-center gap-3 border-t border-navy bg-navy px-8 py-3 text-[13px] text-white;
+  }
+  .save-bar-message {
+    @apply inline-flex min-w-0 flex-1 items-center gap-2;
+  }
+  .save-bar-note {
+    @apply text-xs text-white/80;
+  }
+  .save-bar-failed .save-bar-message {
+    @apply text-[#ffc9c2];
+  }
+  .save-bar a {
+    @apply text-white underline underline-offset-2;
+  }
+  .save-bar .btn-secondary {
+    @apply border-[#4a5068] bg-transparent text-white hover:border-[#6b7290] hover:bg-white/10;
+  }
   /* A whole list row that is one control (a partner in the list): left aligned,
      full width, the row's own padding (#2137). */
   .btn-row {

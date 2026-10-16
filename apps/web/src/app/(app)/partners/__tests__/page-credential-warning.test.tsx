@@ -24,7 +24,6 @@ vi.mock('next/navigation', () => ({
 }))
 vi.mock('../PartnerForm', () => ({
   __esModule: true,
-  UNSAVED_CHANGES_MESSAGE: 'unsaved',
   default: () => <div />,
 }))
 vi.mock('@/lib/api', () => ({

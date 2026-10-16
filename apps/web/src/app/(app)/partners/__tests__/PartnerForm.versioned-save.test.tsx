@@ -13,7 +13,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 
 vi.mock('@/lib/api', () => ({
   api: {
-    partners: { usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }), workflowValues: () => Promise.resolve({ partner: { id: 'p', slug: 'p' }, values: [], searched: { workflows: 0, with_constants_node: 0 } }) },
+    partners: { usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }), versions: vi.fn(), workflowValues: () => Promise.resolve({ partner: { id: 'p', slug: 'p' }, values: [], searched: { workflows: 0, with_constants_node: 0 } }) },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
     buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },
@@ -46,6 +46,8 @@ beforeEach(() => {
   vi.mocked(api.buyerProfiles.history).mockResolvedValue({ entries: [] })
   vi.mocked(api.buyerProfiles.usage).mockRejectedValue(Object.assign(new Error('usage_unavailable'), { status: 503 }))
   vi.mocked(api.buyerSales.list).mockResolvedValue({ entries: [], total: 0, page: 1, limit: 100 })
+  // The probe an unconfirmed save asks (#2138): nothing of this page's has landed.
+  vi.mocked(api.partners.versions).mockResolvedValue({ partnerId: 'p1', partnerVersion: 3, profileVersion: 0, lastSaveId: null, profileLastSaveId: null, latestChange: null, newest: { partner: null, profile: null } })
 })
 
 function saved(over: Partial<Partner> = {}, copyWarning: string | null = null) {
@@ -58,8 +60,8 @@ function renderForm(onSave = vi.fn().mockResolvedValue(saved())) {
 }
 
 const rename = (value = 'M1 renamed') => fireEvent.change(screen.getByDisplayValue(/^M1/), { target: { value } })
-// The submit button, whatever it reads now (Save changes, Saving, Saved).
-const save = () => fireEvent.click(document.querySelector('button[type="submit"]')!)
+// The save bar's button that saves, whatever it reads now (#2138): Save changes, or Try again after no answer or a failure.
+const save = () => fireEvent.click(screen.getByRole('button', { name: /^(Save changes|Try again)$/ }))
 const stale = (over: Record<string, unknown>) => Object.assign(new Error('stale_version'), {
   status: 409,
   body: { error: 'stale_version', partner: { ...partner, name: 'M1 (theirs)', version: 5 }, profile: null, partner_version: 5, profile_version: 0, last_save_id: 'f0f0f0f0-0000-4000-8000-000000000001', changed_by_name: 'Brian Nelms', changed_at: '2026-10-15T18:02:00Z', ...over },
@@ -135,7 +137,8 @@ describe('a versioned save of only what changed (#2132)', () => {
     save()
     expect(await screen.findByText('Not saved. Brian Nelms saved this partner at Oct 15, 2:02 PM ET. Your changes are still here.')).toBeInTheDocument()
     expect(screen.getByDisplayValue('M1 renamed')).toBeInTheDocument()
-    expect(screen.getByText('Unsaved changes')).toBeInTheDocument()
+    // Still unsaved: the bar, behind the merge dialog, offers to discard it.
+    expect(screen.getByRole('button', { name: 'Discard changes', hidden: true })).toBeInTheDocument()
   })
 
   it('a 409 from someone else asks about a field both changed, in the merge dialog', async () => {
@@ -200,7 +203,8 @@ describe('a versioned save of only what changed (#2132)', () => {
       save()
       await keepMineAndSave()
       await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
-      await screen.findByText(/Nothing saved/)
+      // No answer is not a failure (L766): the bar says it is not confirmed yet.
+      await screen.findByText('Not confirmed yet, checking.')
       save()
       await waitFor(() => expect(onSave).toHaveBeenCalledTimes(3))
       expect(onSave.mock.calls[2][3].save_id).toBe(onSave.mock.calls[1][3].save_id)
@@ -271,10 +275,11 @@ describe('a versioned save of only what changed (#2132)', () => {
     expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
   })
 
-  it('a save with nothing changed on the partner record writes nothing', async () => {
+  it('a partner with nothing changed offers no Save at all, so nothing can be written (#2138)', async () => {
     const onSave = renderForm()
-    save()
-    await screen.findByText('Nothing to save.')
+    await screen.findByRole('tablist')
+    expect(screen.queryByRole('button', { name: /^Save changes$/ })).toBeNull()
+    expect(document.querySelector('[data-save-bar]')).toBeNull()
     expect(onSave).not.toHaveBeenCalled()
   })
 })
