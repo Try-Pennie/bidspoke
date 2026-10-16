@@ -63,6 +63,15 @@ export interface FixtureOptions {
 
 export interface Answer { status: number; body: unknown }
 
+/**
+ * A fixture's own entry for a partner id, or undefined. A JSON object's inherited
+ * names (constructor, toString) are no partner, and nor is a file's own note key
+ * (one starting with _), so a page asking for one gets no answer.
+ */
+function ownEntry<T>(record: Record<string, T>, id: string): T | undefined {
+  return Object.prototype.hasOwnProperty.call(record, id) && !id.startsWith('_') ? record[id] : undefined
+}
+
 /** The answer to one Worker request, or null when the fixtures hold none. Pure, so it is unit tested. */
 export function answerFor(method: string, url: string, fx: PartnerFixtures, opts: FixtureOptions = {}): Answer | null {
   const u = new URL(url)
@@ -78,27 +87,31 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
       ? { ...row, credential_warning: `Credential '${String(row.cf_secret_key ?? 'PARTNER_SECRET')}' is not set, so this partner will fail on the next live lead.` }
       : row)))
   }
-  if ((m = /^\/api\/partners\/([^/]+)\/buyer-profile$/.exec(p))) return fx.buyerProfiles[m[1]] ? ok(fx.buyerProfiles[m[1]]) : null
+  if ((m = /^\/api\/partners\/([^/]+)\/buyer-profile$/.exec(p))) {
+    const answer = ownEntry(fx.buyerProfiles, m[1])
+    return answer ? ok(answer) : null
+  }
   if (/^\/api\/partners\/[^/]+\/buyer-profile\/history$/.test(p)) return ok(fx.panels.history)
   if ((m = /^\/api\/partners\/([^/]+)\/buyer-usage$/.exec(p))) {
-    const soldOn = fx.buyerProfiles[m[1]]?.profile?.sold_on
+    const soldOn = ownEntry(fx.buyerProfiles, m[1])?.profile?.sold_on
     return ok(soldOn === 'click' ? fx.panels.usage_click : fx.panels.usage_offer)
   }
   if ((m = /^\/api\/partners\/([^/]+)\/usage$/.exec(p))) {
     if (opts.usageFails) return { status: 503, body: { error: 'Service unavailable' } }
-    return fx.usage[m[1]] ? ok(fx.usage[m[1]]) : null
+    const answer = ownEntry(fx.usage, m[1])
+    return answer ? ok(answer) : null
   }
   if (p === '/api/partner-uuids') return ok(fx.uuids)
   if (p === '/api/partner-bid-configs') {
     const id = u.searchParams.get('partner_id') ?? ''
     if (opts.matrix && id === fx.matrix.list[0].partner_id) return ok(fx.matrix.list)
-    return fx.bidConfigs[id] ? ok(fx.bidConfigs[id]) : null
+    const answer = ownEntry(fx.bidConfigs, id)
+    return answer ? ok(answer) : null
   }
   if ((m = /^\/api\/partner-bid-configs\/([^/]+)$/.exec(p))) return opts.matrix && m[1] === fx.matrix.list[0].id ? ok(fx.matrix.detail) : null
   if ((m = /^\/api\/partners\/([^/]+)\/delete-check$/.exec(p))) {
-    // Own entries only: an inherited name (constructor) or the file's _about is no partner.
-    const id = m[1]
-    return Object.prototype.hasOwnProperty.call(fx.deleteChecks, id) && !id.startsWith('_') ? ok(fx.deleteChecks[id].answer) : null
+    const entry = ownEntry(fx.deleteChecks, m[1])
+    return entry ? ok(entry.answer) : null
   }
   if (p === '/api/buyer-sales') return ok(fx.panels.buyer_sales)
   if (p === '/api/held-clicks') return ok(fx.panels.held_clicks)

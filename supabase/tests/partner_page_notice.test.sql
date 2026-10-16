@@ -220,6 +220,29 @@ CREATE FUNCTION pg_temp.partner_keyed_candidates() RETURNS TABLE (t text, col te
     SELECT m.t, m.col FROM measured_partner_columns m
 $$;
 
+-- Columns that hold a partner's name or id as a VALUE rather than a key, with
+-- the reason, written once for both guards (case 2 and case 2b): neither the
+-- page's notices nor a partner delete has anything to do with them.
+CREATE TEMP TABLE partner_value_columns (t text NOT NULL, col text NOT NULL, reason text NOT NULL);
+INSERT INTO partner_value_columns VALUES
+  ('lead_sightings', 'winning_partner_slug', 'the sighting''s recorded outcome, history kept by design'),
+  ('lead_sightings', 'external_partner_name', 'the sighting''s recorded outcome, history kept by design'),
+  ('lead_sightings', 'partners_attempted', 'the sighting''s recorded outcome, history kept by design'),
+  ('lead_sightings', 'partners_responded', 'the sighting''s recorded outcome, history kept by design'),
+  ('organizations', 'slug', 'an organization, not a partner'),
+  ('service_presets', 'slug', 'a service preset, not a partner'),
+  ('sf_bid_matrix_audit', 'partner_flags', 'a snapshot of the Salesforce bid matrix, not a partner setting'),
+  ('api_sources', 'name', 'an API source''s own name, which a source partner''s slug can equal'),
+  ('source_workflow_assignments', 'source_name', 'an API source''s name, which a source partner''s slug can equal'),
+  ('webhook_endpoints', 'source_name', 'an API source''s name, which a source partner''s slug can equal'),
+  ('webhook_endpoints', 'subdomain', 'an endpoint''s host name, which a source partner''s slug can equal'),
+  ('workflow_executions', 'source', 'the run''s recorded source, history kept by design');
+-- A column excluded by its name on whatever table holds it, with its reason.
+CREATE TEMP TABLE partner_value_column_names (col text NOT NULL, reason text NOT NULL);
+INSERT INTO partner_value_column_names VALUES
+  ('buyer_reference', 'the buyer''s own lead id, a value rather than a key to a partner'),
+  ('partner_lead_id', 'the buyer''s own lead id, a value rather than a key to a partner');
+
 CREATE FUNCTION pg_temp.partner_page_unregistered() RETURNS TABLE (candidate text) LANGUAGE sql AS $$
   WITH candidates AS (
     SELECT k.t, k.col FROM pg_temp.partner_keyed_candidates() k
@@ -232,32 +255,13 @@ CREATE FUNCTION pg_temp.partner_page_unregistered() RETURNS TABLE (candidate tex
     ('lead_sighting_bids', 'monthly partitioned bid attempt history keyed by partner_slug'),
     ('partner_page_live_misses', 'observations of this channel''s delivery, not settings'),
     ('audit_log', 'the history of changes, written by the triggers this page reads')
-  ),
-  excluded_columns(t, col, reason) AS (VALUES
-    ('lead_sightings', 'winning_partner_slug', 'the sighting''s recorded outcome, history kept by design'),
-    ('lead_sightings', 'external_partner_name', 'the sighting''s recorded outcome, history kept by design'),
-    ('lead_sightings', 'partners_attempted', 'the sighting''s recorded outcome, history kept by design'),
-    ('lead_sightings', 'partners_responded', 'the sighting''s recorded outcome, history kept by design'),
-    ('organizations', 'slug', 'an organization, not a partner'),
-    ('service_presets', 'slug', 'a service preset, not a partner'),
-    ('sf_bid_matrix_audit', 'partner_flags', 'a snapshot of the Salesforce bid matrix, not a page setting'),
-    ('api_sources', 'name', 'an API source''s own name, which a source partner''s slug can equal'),
-    ('source_workflow_assignments', 'source_name', 'an API source''s name, which a source partner''s slug can equal'),
-    ('webhook_endpoints', 'source_name', 'an API source''s name, which a source partner''s slug can equal'),
-    ('webhook_endpoints', 'subdomain', 'an endpoint''s host name, which a source partner''s slug can equal'),
-    ('workflow_executions', 'source', 'the run''s recorded source, history kept by design')
-  ),
-  -- A column excluded by its name on whatever table holds it, with its reason.
-  excluded_column_names(col, reason) AS (VALUES
-    ('buyer_reference', 'the buyer''s own lead id, a value rather than a key to a partner'),
-    ('partner_lead_id', 'the buyer''s own lead id, a value rather than a key to a partner')
   )
   SELECT c.t || coalesce('.' || c.col, ' (foreign key)')
   FROM candidates c
   WHERE c.t <> ALL (public.partner_page_notice_tables())
     AND NOT EXISTS (SELECT 1 FROM excluded_tables e WHERE e.t = c.t)
-    AND NOT EXISTS (SELECT 1 FROM excluded_columns e WHERE e.t = c.t AND e.col = c.col)
-    AND NOT EXISTS (SELECT 1 FROM excluded_column_names e WHERE e.col = c.col)
+    AND NOT EXISTS (SELECT 1 FROM partner_value_columns e WHERE e.t = c.t AND e.col = c.col)
+    AND NOT EXISTS (SELECT 1 FROM partner_value_column_names e WHERE e.col = c.col)
   ORDER BY 1;
 $$;
 
@@ -316,32 +320,14 @@ CREATE FUNCTION pg_temp.partner_delete_unregistered() RETURNS TABLE (candidate t
     ('lead_sighting_bids', 'bid attempt history, kept by design when a partner is deleted'),
     ('partner_page_live_misses', 'observations of the live channel''s delivery, not the partner''s'),
     ('audit_log', 'the history of changes, kept by design, the delete''s own row included')
-  ),
-  excluded_columns(t, col, reason) AS (VALUES
-    ('lead_sightings', 'winning_partner_slug', 'the sighting''s recorded outcome, kept by design'),
-    ('lead_sightings', 'external_partner_name', 'the sighting''s recorded outcome, kept by design'),
-    ('lead_sightings', 'partners_attempted', 'the sighting''s recorded outcome, kept by design'),
-    ('lead_sightings', 'partners_responded', 'the sighting''s recorded outcome, kept by design'),
-    ('organizations', 'slug', 'an organization, not a partner'),
-    ('service_presets', 'slug', 'a service preset, not a partner'),
-    ('sf_bid_matrix_audit', 'partner_flags', 'a snapshot of the Salesforce bid matrix, not the partner''s'),
-    ('api_sources', 'name', 'an API source''s own name, which a source partner''s slug can equal'),
-    ('source_workflow_assignments', 'source_name', 'an API source''s name, which a source partner''s slug can equal'),
-    ('webhook_endpoints', 'source_name', 'an API source''s name, which a source partner''s slug can equal'),
-    ('webhook_endpoints', 'subdomain', 'an endpoint''s host name, which a source partner''s slug can equal'),
-    ('workflow_executions', 'source', 'the run''s recorded source, kept by design')
-  ),
-  excluded_column_names(col, reason) AS (VALUES
-    ('buyer_reference', 'the buyer''s own lead id, a value rather than a key to a partner'),
-    ('partner_lead_id', 'the buyer''s own lead id, a value rather than a key to a partner')
   )
   SELECT DISTINCT k.t || coalesce('.' || k.col, ' (foreign key)')
   FROM pg_temp.partner_keyed_candidates() k
   WHERE NOT EXISTS (SELECT 1 FROM public.partner_delete_dependents() d WHERE d.table_name = k.t)
     AND k.t <> 'partner_configs'
     AND NOT EXISTS (SELECT 1 FROM excluded_tables e WHERE e.t = k.t)
-    AND NOT EXISTS (SELECT 1 FROM excluded_columns e WHERE e.t = k.t AND e.col = k.col)
-    AND NOT EXISTS (SELECT 1 FROM excluded_column_names e WHERE e.col = k.col)
+    AND NOT EXISTS (SELECT 1 FROM partner_value_columns e WHERE e.t = k.t AND e.col = k.col)
+    AND NOT EXISTS (SELECT 1 FROM partner_value_column_names e WHERE e.col = k.col)
   ORDER BY 1;
 $$;
 

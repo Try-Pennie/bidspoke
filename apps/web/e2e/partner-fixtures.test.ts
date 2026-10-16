@@ -163,6 +163,10 @@ describe('answerFor', () => {
   it('answers the usage read for every listed partner, and fails it only when asked to', () => {
     for (const p of fx.partners) expect(answerFor('GET', `${W}/api/partners/${p.id}/usage`, fx), p.slug).toMatchObject({ status: 200 })
     expect(answerFor('GET', `${W}/api/partners/not-a-partner/usage`, fx)).toBeNull()
+    // An inherited name of a plain object is no partner either (each read keyed by partner id).
+    for (const path of ['partners/constructor/usage', 'partners/constructor/buyer-profile', 'partner-bid-configs?partner_id=constructor', 'partners/toString/delete-check']) {
+      expect(answerFor('GET', `${W}/api/${path}`, fx), path).toBeNull()
+    }
     expect(answerFor('GET', `${W}/api/partners/${tripoint.id}/usage`, fx, { usageFails: true })?.status).toBe(503)
   })
 
