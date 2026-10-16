@@ -147,6 +147,10 @@ async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what
   const copy = await scheduled.copy()
   if (copy.kind === 'read') {
     console.warn(`[scheduled-slack] ${subject}: answered from the saved copy (${describeCopyAge(copy.ageMs)}, ${copy.copy.connections.size} organizations) because the database did not answer (${live.how})`)
+    // A copy that names nobody stands in for a list of nobody: the caller tells
+    // no one, which is the same case as an org missing from the copy, for every
+    // org at once (#2063). The answer itself is unchanged.
+    if (copy.copy.connections.size === 0) scheduled.nobodyCanBeTold(subject, null, 'org_not_in_copy')
     return { kind: 'stored', copy: copy.copy.connections, ageMs: copy.ageMs }
   }
   const reason = copy.kind === 'absent' ? 'no_copy' : 'copy_unreadable'

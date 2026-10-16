@@ -85,6 +85,22 @@ describe('a lookup nobody can be told from pages, once, through waitUntil', () =
     expect(pages).toEqual([{ orgId: null, reason: 'no_copy' }])
   })
 
+  it('the all organization list read pages when the saved copy answers with no organization in it', async () => {
+    // The copy stands in but names nobody (written while no org had Slack, or
+    // every entry unparseable), so the check tells nobody: the same case.
+    const { client } = fakeClient([{ error: { message: 'boom' } }])
+    const { pager, pages } = recordingPager()
+    registerScheduledSlack(client, { kv: await kvWithCopy({}), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep, pager, waitUntil: () => {} })
+    expect(await slackOrgIds(client, 'test', 'tell-only')).toEqual({ kind: 'stored', orgIds: [], ageMs: null })
+    expect(pages).toEqual([{ orgId: null, reason: 'org_not_in_copy' }])
+  })
+
+  it('a copy that names an organization does not page from the list read', async () => {
+    const { client, pages } = await setup([{ error: { message: 'boom' } }], 'copy')
+    expect(await slackOrgIds(client, 'test', 'tell-only')).toEqual({ kind: 'stored', orgIds: [ORG], ageMs: null })
+    expect(pages).toEqual([])
+  })
+
   it('a check that measures from the database and judges nothing does not page', async () => {
     const { client, pages } = await setup([{ error: { message: 'boom' } }], 'empty')
     expect(await slackOrgIds(client, 'test', 'measure-from-database')).toEqual({ kind: 'unreachable', reason: 'database_not_answering' })
