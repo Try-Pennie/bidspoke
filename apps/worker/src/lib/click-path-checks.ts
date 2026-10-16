@@ -20,14 +20,21 @@
  *   QUIET         two absences, each judged only for a buyer whose profile is
  *                 enabled (read through the one profile loader), because an off
  *                 switch explains both:
- *                   no eligible  the last three hours were ALL inside the
- *                                buyer's selling hours (its operating windows
- *                                and blackout dates), at least QUIET_MIN_RUNS
- *                                leads reached the check, and none was
- *                                eligible. Runs the disabled profile answered
- *                                are not counted, and a run at the day's cap
- *                                stands the check down, because then not
- *                                eligible is the cap working.
+ *                   no eligible  none of the leads that reached the check
+ *                                inside the buyer's selling hours (its
+ *                                operating windows and blackout dates) in up
+ *                                to six hours, never before the profile last
+ *                                changed, was eligible, and at the eligible
+ *                                rate the buyer has had since that change so
+ *                                many with none happens less than once in
+ *                                1,000 (#2104). No rate is trusted from fewer
+ *                                than QUIET_RATE_MIN_RUNS leads or with none
+ *                                eligible, so a profile switched on or edited
+ *                                minutes ago is never judged on those minutes.
+ *                                Runs the disabled profile answered are not
+ *                                counted, and a run at the day's cap stands
+ *                                the check down, because then not eligible is
+ *                                the cap working.
  *                   no click     at least NO_CLICK_MIN_OFFERS offers were made
  *                                in the last three hours and no execution of a
  *                                workflow sending this buyer's clicks ran, or
@@ -129,11 +136,33 @@ export const CHECK_ERROR_MIN_SHARE = 0.2
 /** Below the minimum, an hour in which every run errored and there were at least this many pages anyway (L139). */
 export const CHECK_ERROR_SATURATION_MIN_RUNS = 5
 
-/** The absence window the issue names. */
-export const QUIET_WINDOW_MS = 3 * HOUR
-/** Leads that must have reached the check in the three hours before zero eligible means anything. */
+/**
+ * The no eligible window (#2104): up to six hours, and never further back than
+ * the profile's last change, of which only the leads that arrived inside the
+ * buyer's selling hours count. Six, not three, because a buyer whose rules let
+ * few leads through needs that long to see enough of them: Liberty1 at 4
+ * percent eligible after its collections cap (#2111) sees about 47 judged leads
+ * an hour, and needs about 170 before none is unusual. The no click half keeps
+ * its own three hours (NO_CLICK_WINDOW_MS).
+ */
+export const QUIET_WINDOW_MS = 6 * HOUR
+/** Leads below which zero eligible is never judged, whatever the rate says. */
 export const QUIET_MIN_RUNS = 10
-/** How finely the three hours are checked against the operating windows. Windows are whole minutes; five is finer than any window anyone sets. */
+/**
+ * How far back the buyer's eligible rate is measured, never past the profile's
+ * last change, because a change of rules (a cap, a floor, a state) changes the
+ * rate, and a rate from before it set the bar the 2026-10-14 false page tripped.
+ */
+export const QUIET_RATE_WINDOW_MS = 24 * HOUR
+/** Leads in the rate window, inside selling hours, before the rate is trusted at all. */
+export const QUIET_RATE_MIN_RUNS = 100
+/**
+ * Zero eligible pages only when, at the measured rate, that many leads with none
+ * eligible would happen less often than this. At one in 1,000 a run every 15
+ * minutes through a 12 hour selling day pages by chance about once a month.
+ */
+export const QUIET_MAX_CHANCE = 0.001
+/** How finely selling time is checked against the operating windows. Windows are whole minutes; five is finer than any window anyone sets. */
 export const QUIET_OPEN_SAMPLE_MS = 5 * MIN
 /**
  * Offers in three hours with no click execution before that pages. No click
@@ -142,6 +171,8 @@ export const QUIET_OPEN_SAMPLE_MS = 5 * MIN
  * rate we expect to be well above that, and is the first number to re-measure.
  */
 export const NO_CLICK_MIN_OFFERS = 30
+/** The no click window: offers made and no click execution in this long. */
+export const NO_CLICK_WINDOW_MS = 3 * HOUR
 /** The step row's started_at trails the sighting's attempted_at, so eligible runs are read this much further back than the offers. */
 const OFFER_MATCH_SLACK_MS = 5 * MIN
 
@@ -385,13 +416,25 @@ export function judgeRefusals(runs: readonly SendRun[], nowMs: number): Judged<'
   return { verdict: 'normal', detail: `${refused} of ${answered.length} refused, ${percent(share)}` }
 }
 
-/** Whether the buyer was open for sale at every sample across [fromMs, toMs], both ends included. */
-export function openThroughout(buyer: LoadedBuyer, fromMs: number, toMs: number): boolean {
+/** Minutes of [fromMs, toMs) the buyer was open for sale, sampled every QUIET_OPEN_SAMPLE_MS. */
+export function openMinutes(buyer: LoadedBuyer, fromMs: number, toMs: number): number {
+  let open = 0
   for (let t = fromMs; t < toMs; t += QUIET_OPEN_SAMPLE_MS) {
-    if (!isOpen(buyer.profile.windows, buyer.profile.blackoutDates, t)) return false
+    if (isOpen(buyer.profile.windows, buyer.profile.blackoutDates, t)) open += 1
   }
-  return isOpen(buyer.profile.windows, buyer.profile.blackoutDates, toMs)
+  return (open * QUIET_OPEN_SAMPLE_MS) / MIN
 }
+
+/**
+ * Leads needed with none eligible before that is less likely than QUIET_MAX_CHANCE
+ * at eligible rate p: the smallest n with (1 - p)^n below it, never under QUIET_MIN_RUNS.
+ */
+export function quietRunsNeeded(p: number): number {
+  return Math.max(QUIET_MIN_RUNS, Math.ceil(Math.log(QUIET_MAX_CHANCE) / Math.log(1 - p)))
+}
+
+/** A rate for a person: one decimal, no trailing zero. */
+const rateWords = (p: number): string => `${Math.round(p * 1000) / 10}%`
 
 // ── The run ───────────────────────────────────────────────────────────────────
 
@@ -481,13 +524,14 @@ async function checkSubject(deps: ClickPathDeps, subject: ClickSubject, now: num
   }
   const slug = partner?.slug ?? null
 
-  // Three hours and a little, once: the rate check uses the last hour of it,
-  // the quiet check all of it, and the offer match the slack before it.
-  const quietFrom = now - QUIET_WINDOW_MS
+  // The rate window and a little, once: the error check uses the last hour of
+  // it, the no eligible half its six hours, the eligible rate all of it (#2104),
+  // and the offer match the slack before the no click window.
+  const readFrom = now - Math.max(QUIET_RATE_WINDOW_MS, QUIET_WINDOW_MS, NO_CLICK_WINDOW_MS + OFFER_MATCH_SLACK_MS)
   let checks: CheckRun[] | null = null
   let checksError = ''
   try {
-    checks = subject.check.workflow_ids.length === 0 ? [] : await deps.readCheckRuns(subject, quietFrom - OFFER_MATCH_SLACK_MS, now + 1)
+    checks = subject.check.workflow_ids.length === 0 ? [] : await deps.readCheckRuns(subject, readFrom, now + 1)
   } catch (err) {
     checksError = messageOf(err)
   }
@@ -524,32 +568,58 @@ async function judgeQuiet(
   if (read.buyer === null) return { verdict: 'not_enabled' }
   if (read.buyer.profile.soldOn !== 'click') return { verdict: 'not_enabled', detail: 'the profile is sold on the offer' }
   if (read.checks === null) return { verdict: 'unmeasured', reason: `buyer_click_check steps: ${read.checksError}` }
-  const from = now - QUIET_WINDOW_MS
+  const buyer = read.buyer
   const found: string[] = []
-  const window = read.checks.filter((r) => r.reason !== null && inWindow(r.started_at, from, now + 1))
 
-  // No eligible, judged only when every moment of the three hours was open for sale.
-  const open = openThroughout(read.buyer, from, now)
-  const counted = window.filter((r) => r.reason !== 'profile_disabled')
+  // No eligible (#2104). Judged on the leads that arrived inside the buyer's
+  // selling hours, read from its stored windows rather than from what the check
+  // decided (L721), since the profile last changed, against the eligible rate
+  // the buyer has had since then. A profile switched on or edited a few minutes
+  // ago has no rate yet and a window of minutes, so it is never judged on them.
+  const changedAt = Date.parse(buyer.updated_at)
+  const since = (windowMs: number) => (Number.isFinite(changedAt) ? Math.max(now - windowMs, changedAt) : now - windowMs)
+  const counts = (r: CheckRun, fromMs: number) =>
+    r.reason !== null && r.reason !== 'profile_disabled' && inWindow(r.started_at, fromMs, now + 1) &&
+    isOpen(buyer.profile.windows, buyer.profile.blackoutDates, Date.parse(r.started_at))
+  const judgedFrom = since(QUIET_WINDOW_MS)
+  const counted = read.checks.filter((r) => counts(r, judgedFrom))
   const eligible = counted.filter((r) => r.route === 'eligible').length
+  const minutes = openMinutes(buyer, judgedFrom, now)
+  const rateRuns = read.checks.filter((r) => counts(r, since(QUIET_RATE_WINDOW_MS)))
+  const rateEligible = rateRuns.filter((r) => r.route === 'eligible').length
   const atCap = counted.some((r) => r.reason === 'daily_click_cap')
-  if (open && !atCap && eligible === 0 && counted.length >= QUIET_MIN_RUNS) {
-    found.push(`${counted.length} leads reached the Buyer Click Check in the last 3 hours, all inside its selling hours, and none was eligible (${tally(counted.map((r) => r.reason))})`)
+  const seen = `${counted.length} leads in ${minutes} minutes of selling time`
+  let notJudged: string | null = null
+  if (minutes === 0) {
+    notJudged = 'not_open'
+  } else if (rateRuns.length < QUIET_RATE_MIN_RUNS) {
+    notJudged = `${seen}; its eligible rate is not known yet: ${rateRuns.length} leads since the profile last changed, fewer than ${QUIET_RATE_MIN_RUNS}`
+  } else if (rateEligible === 0) {
+    notJudged = `${seen}; its eligible rate is not known: none of ${rateRuns.length} leads since the profile last changed was eligible`
+  }
+  const rate = rateRuns.length === 0 ? 0 : rateEligible / rateRuns.length
+  const needed = notJudged === null ? quietRunsNeeded(rate) : Infinity
+  if (!atCap && eligible === 0 && counted.length >= needed) {
+    found.push(
+      `${counted.length} leads reached the Buyer Click Check in ${minutes} minutes of its selling hours and none was eligible. ` +
+      `${rateWords(rate)} of leads have been eligible since its profile last changed, so this many with none happens less than once in ${Math.round(1 / QUIET_MAX_CHANCE).toLocaleString('en-US')} (${tally(counted.map((r) => r.reason))})`,
+    )
   }
 
   // No click: offers made by this org's own eligible check runs, and no click execution.
   // A half that cannot be read never discards what the other half found (L530): it is
   // reported beside it, and only a run that found nothing says unmeasured.
-  const noClick = await judgeNoClick(deps, subject, read.slug, read.partnerError, read.checks, from, now)
+  const noClick = await judgeNoClick(deps, subject, read.slug, read.partnerError, read.checks, now - NO_CLICK_WINDOW_MS, now)
   if (noClick.line) found.push(noClick.line)
   if (noClick.unread && found.length > 0) found.push(`whether the offers turned into clicks is not known: ${noClick.unread}`)
   const offers = noClick.offers
 
   if (found.length > 0) return { verdict: 'quiet', lines: found }
   if (noClick.unread) return { verdict: 'unmeasured', reason: noClick.unread }
-  if (!open) return { verdict: 'not_open', detail: `${counted.length} runs, ${eligible} eligible, ${offers} offers` }
-  if (counted.length < QUIET_MIN_RUNS) return { verdict: 'too_few', detail: `${counted.length} runs, ${offers} offers` }
-  return { verdict: 'normal', detail: `${counted.length} runs, ${eligible} eligible, ${offers} offers` }
+  if (notJudged === 'not_open') return { verdict: 'not_open', detail: `no selling time in the last ${QUIET_WINDOW_MS / HOUR} hours, ${offers} offers` }
+  if (notJudged !== null) return { verdict: 'too_few', detail: notJudged }
+  if (counted.length < needed) return { verdict: 'too_few', detail: `${seen}, ${needed} needed at ${rateWords(rate)} eligible` }
+  return { verdict: 'normal', detail: `${seen}, ${eligible} eligible, ${offers} offers` }
 }
 
 /** The offers-but-no-clicks half of the quiet check: a finding, or the reason it could not be read. */

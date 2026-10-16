@@ -32,6 +32,7 @@ import {
   clickRemedyFor,
   NO_CLICK_MIN_OFFERS,
   QUIET_MIN_RUNS,
+  QUIET_RATE_WINDOW_MS,
   REFUSAL_MIN_COUNT,
   endingOf,
   judgeCheckErrors,
@@ -60,7 +61,7 @@ const SUBJECT: ClickSubject = {
   send: { workflow_ids: ['wf-click'], namespaces: ['click_send'] },
 }
 
-function buyer(over: Partial<LoadedBuyer['profile']> = {}): LoadedBuyer {
+function buyer(over: Partial<LoadedBuyer['profile']> = {}, updatedAt = '2027-09-20T10:00:00.000Z'): LoadedBuyer {
   return {
     partner: {
       id: PARTNER, slug: 'liberty1', is_active: true, api_endpoint: null, cf_secret_key: null, outbound_field_mapping: null, extra_extraction: null,
@@ -74,7 +75,7 @@ function buyer(over: Partial<LoadedBuyer['profile']> = {}): LoadedBuyer {
       windows: WEEKDAYS, blackoutDates: [], tiers: [], ...over,
     },
     version: 1,
-    updated_at: '2027-09-20T10:00:00.000Z',
+    updated_at: updatedAt,
   }
 }
 
@@ -83,6 +84,16 @@ function checkRuns(reason: string, n: number, spanMs = HOUR, prefix = reason): C
   return Array.from({ length: n }, (_, i) => ({
     execution_id: `${prefix}-${i}`,
     started_at: new Date(NOW - Math.floor(((i + 1) * spanMs) / (n + 1))).toISOString(),
+    route: reason === 'eligible' ? 'eligible' : 'not_eligible',
+    reason,
+  }))
+}
+
+/** n check runs spread evenly over [fromMs, toMs), one reason each. */
+function runsBetween(reason: string, n: number, fromMs: number, toMs: number, prefix = reason): CheckRun[] {
+  return Array.from({ length: n }, (_, i) => ({
+    execution_id: `${prefix}-${i}`,
+    started_at: new Date(fromMs + Math.floor(((i + 0.5) * (toMs - fromMs)) / n)).toISOString(),
     route: reason === 'eligible' ? 'eligible' : 'not_eligible',
     reason,
   }))
@@ -214,57 +225,125 @@ describe('check errors: a share of the runs that reached the check, never a coun
   })
 })
 
-describe('quiet: zero eligible for three hours inside the selling hours', () => {
-  const noneEligible = () => [...checkRuns('state_not_allowed', 20, 3 * HOUR, 'a'), ...checkRuns('missing_lead_field', 14, 3 * HOUR, 'b')]
+// #2104: zero eligible is judged against the buyer's own eligible rate since its
+// profile last changed, over up to six hours of its selling time, and only pages
+// when that many leads with none eligible would happen less than once in 1,000.
+describe('quiet: zero eligible, judged against the buyer\'s own eligible rate', () => {
+  /** Monday 2027-09-20, 17:00 to 21:00 Eastern: the selling hours the day before NOW, inside the 24 hour rate window. */
+  const MON_FROM = Date.UTC(2027, 8, 20, 21, 0)
+  const MON_TO = Date.UTC(2027, 8, 21, 1, 0)
+  /** Tuesday 11:00 to 17:00 Eastern: the six hours of selling time before NOW. */
+  const TUE_FROM = NOW - 6 * HOUR
+  /** A Monday with 25 eligible in 100: with today's 100 none eligible, the rate is 12.5 percent and 52 leads with none is under 1 in 1,000. */
+  const monday = (eligible = 25, total = 100) => [...runsBetween('eligible', eligible, MON_FROM, MON_TO, 'mon-e'), ...runsBetween('state_not_allowed', total - eligible, MON_FROM, MON_TO, 'mon-s')]
+  const today = (n = 100) => [...runsBetween('state_not_allowed', Math.ceil(n * 0.6), TUE_FROM, NOW, 'tue-s'), ...runsBetween('missing_lead_field', Math.floor(n * 0.4), TUE_FROM, NOW, 'tue-m')]
 
-  it('fires when leads kept reaching the check for three open hours and none was eligible, naming why', async () => {
-    const { d, pages } = deps({ checks: noneEligible() })
-    await runClickPathChecks(d)
+  it('fires when today\'s leads with none eligible would happen less than once in 1,000 at the buyer\'s own rate, naming the minutes, the rate and why', async () => {
+    const { d, pages } = deps({ checks: [...monday(), ...today()] })
+    const s = await runClickPathChecks(d)
+    expect(s.subjects[0].quiet.verdict).toBe('quiet')
     const lines = last(pages, CLICK_PATH_QUIET_JOB) ?? []
     expect(lines).toHaveLength(1)
-    expect(lines[0]).toMatch(/34 leads reached the Buyer Click Check/)
+    expect(lines[0]).toMatch(/100 leads reached the Buyer Click Check in 360 minutes of its selling hours/)
     expect(lines[0]).toMatch(/none was eligible/)
-    expect(lines[0]).toMatch(/state_not_allowed 20/)
+    expect(lines[0]).toMatch(/12.5% of leads have been eligible/)
+    expect(lines[0]).toMatch(/state_not_allowed 60/)
   })
 
-  it('stays quiet when one lead in the three hours was eligible', async () => {
-    const { d, pages } = deps({ checks: [...noneEligible(), ...checkRuns('eligible', 1, 3 * HOUR, 'e')], offers: [] })
-    await runClickPathChecks(d)
+  it('stays quiet when the buyer\'s rate is low enough that this many with none is ordinary, and says what it would take', async () => {
+    // 12 eligible in 300 on Monday plus 100 none today: 3 percent, so it takes 227 leads.
+    const { d, pages } = deps({ checks: [...monday(12, 300), ...today()] })
+    const s = await runClickPathChecks(d)
     expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
+    expect(s.subjects[0].quiet).toMatchObject({ verdict: 'too_few' })
+    expect((s.subjects[0].quiet as { detail?: string }).detail).toMatch(/100 leads.*227 needed at 3% eligible/)
   })
 
-  it('stays quiet when the three hours were not all inside the selling hours (the window opened an hour ago)', async () => {
-    // 16:00 UTC is 9am Pacific: the window opened at 8am, so the three hours reach back before it.
+  it('does not page on a profile switched on 15 minutes before the run, however many leads it has seen since (#2104)', async () => {
+    const switchedOn = new Date(NOW - 15 * MIN).toISOString()
+    // 60, not the issue's 30: at Monday's rate (25 in 160) 41 with none would page, so only the switch on keeps this quiet.
+    const runs = [...monday(), ...runsBetween('state_not_allowed', 60, NOW - 15 * MIN, NOW, 'since')]
+    const { d, pages } = deps({ checks: runs, buyer: buyer({}, switchedOn) })
+    const s = await runClickPathChecks(d)
+    expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
+    expect(s.subjects[0].quiet).toMatchObject({ verdict: 'too_few' })
+  })
+
+  it('judges only the runs since the profile last changed: a rule change today resets both the rate and the window', async () => {
+    // Monday's busy rate would make today's 100 none eligible a page, but the profile changed two hours ago, so only the 33 since count.
+    const changed = new Date(NOW - 2 * HOUR).toISOString()
+    const { d, pages } = deps({ checks: [...monday(), ...today()], buyer: buyer({}, changed) })
+    const s = await runClickPathChecks(d)
+    expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
+    expect(s.subjects[0].quiet).toMatchObject({ verdict: 'too_few' })
+  })
+
+  it('cannot judge a buyer with no eligible lead since its profile changed, and says its rate is not known rather than paging', async () => {
+    const { d, pages } = deps({ checks: [...runsBetween('state_not_allowed', 100, MON_FROM, MON_TO, 'mon'), ...today()] })
+    const s = await runClickPathChecks(d)
+    expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
+    expect((s.subjects[0].quiet as { detail?: string }).detail).toMatch(/rate is not known/)
+  })
+
+  it('counts only leads that arrived inside the selling hours, judged from the profile\'s own windows', async () => {
+    // 12:00 Eastern: selling since 11:00, so the six hours reach back to 06:00 and the leads before 11:00 do not count.
     const now = Date.UTC(2027, 8, 21, 16, 0)
-    const runs = noneEligible().map((r, i) => ({ ...r, started_at: new Date(now - (i + 1) * 3 * MIN).toISOString() }))
-    const { d, pages } = deps({ checks: runs, now })
+    const early = runsBetween('state_not_allowed', 200, now - 6 * HOUR, now - HOUR, 'early')
+    const open = runsBetween('state_not_allowed', 20, now - HOUR, now, 'open')
+    const { d, pages } = deps({ checks: [...monday(), ...early, ...open], now })
+    const s = await runClickPathChecks(d)
+    expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
+    expect((s.subjects[0].quiet as { detail?: string }).detail).toMatch(/^20 leads in 60 minutes/)
+  })
+
+  it('is not open when none of the six hours were selling time', async () => {
+    // Sunday 2027-09-19 17:00 Eastern: no window on Sundays.
+    const now = Date.UTC(2027, 8, 19, 21, 0)
+    const { d, pages } = deps({ checks: runsBetween('state_not_allowed', 80, now - 6 * HOUR, now, 'sun'), now })
     const s = await runClickPathChecks(d)
     expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
     expect(s.subjects[0].quiet.verdict).toBe('not_open')
   })
 
-  it('stays quiet when the day\'s cap was reached, because not eligible is then the cap working', async () => {
-    const { d, pages } = deps({ checks: [...noneEligible(), ...checkRuns('daily_click_cap', 5, 3 * HOUR, 'c')] })
+  it('stays quiet when one lead in the six hours was eligible', async () => {
+    const { d, pages } = deps({ checks: [...monday(), ...today(), ...runsBetween('eligible', 1, TUE_FROM, NOW, 'e')], offers: [] })
     await runClickPathChecks(d)
     expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
   })
 
-  it('stays quiet below the minimum of leads, and does not count runs the disabled profile answered', async () => {
-    const few = checkRuns('state_not_allowed', QUIET_MIN_RUNS - 1, 3 * HOUR)
-    const { d, pages } = deps({ checks: [...few, ...checkRuns('profile_disabled', 50, 3 * HOUR, 'off')] })
+  it('stays quiet when the day\'s cap was reached, because not eligible is then the cap working', async () => {
+    const { d, pages } = deps({ checks: [...monday(), ...today(), ...runsBetween('daily_click_cap', 5, TUE_FROM, NOW, 'c')] })
     await runClickPathChecks(d)
     expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
+  })
+
+  it('never judges fewer than QUIET_MIN_RUNS, and does not count runs the disabled profile answered', async () => {
+    // A rate so high one lead would do: the absolute minimum still holds.
+    const { d, pages } = deps({ checks: [...monday(90, 100), ...runsBetween('state_not_allowed', QUIET_MIN_RUNS - 1, TUE_FROM, NOW, 'few'), ...runsBetween('profile_disabled', 50, TUE_FROM, NOW, 'off')] })
+    const s = await runClickPathChecks(d)
+    expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
+    expect(s.subjects[0].quiet).toMatchObject({ verdict: 'too_few' })
+  })
+
+  it('reads the check runs back across the whole rate window, once', async () => {
+    const { d } = deps({ checks: [...monday(), ...today()] })
+    const calls: Array<[number, number]> = []
+    const read = d.readCheckRuns
+    d.readCheckRuns = async (s, from, to) => { calls.push([from, to]); return read(s, from, to) }
+    await runClickPathChecks(d)
+    expect(calls).toHaveLength(1)
+    expect(NOW - calls[0][0]).toBeGreaterThanOrEqual(QUIET_RATE_WINDOW_MS)
   })
 
   it('is not judged for a buyer with no enabled profile, which is the switch being off', async () => {
-    const { d, pages } = deps({ checks: noneEligible(), buyer: null })
+    const { d, pages } = deps({ checks: [...monday(), ...today()], buyer: null })
     const s = await runClickPathChecks(d)
     expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
     expect(s.subjects[0].quiet.verdict).toBe('not_enabled')
   })
 
   it('a profile that cannot be read leaves the quiet check unmeasured, never clean', async () => {
-    const { d, pages } = deps({ checks: noneEligible(), buyer: new Error('db down') })
+    const { d, pages } = deps({ checks: [...monday(), ...today()], buyer: new Error('db down') })
     const s = await runClickPathChecks(d)
     expect(s.subjects[0].quiet).toMatchObject({ verdict: 'unmeasured' })
     expect(endingOf(s).outcome).toBe('unmeasured')
@@ -273,7 +352,7 @@ describe('quiet: zero eligible for three hours inside the selling hours', () => 
   })
 
   it('keeps a found no-eligible problem when the offer half cannot be read, and says that half is unknown', async () => {
-    const { d, pages } = deps({ checks: noneEligible() })
+    const { d, pages } = deps({ checks: [...monday(), ...today()] })
     d.readPartner = async () => { throw new Error('partner read failed') }
     const s = await runClickPathChecks(d)
     expect(s.subjects[0].quiet.verdict).toBe('quiet')
