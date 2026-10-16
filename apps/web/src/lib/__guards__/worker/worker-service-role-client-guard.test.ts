@@ -53,11 +53,34 @@ export function findClientCalls(files: { path: string; src: string }[]): ClientC
 
 const workerFiles = listTsFiles(WORKER_SRC).map((path) => ({ path, src: readFileSync(path, 'utf8') }))
 
+/**
+ * The one file allowed a client that is not service_role, and why (#2135). The
+ * partners page delivery monitor signs in as its monitor user and joins a private
+ * Realtime channel with that user's JWT, which must not be the service key or it
+ * would prove nothing about what a person's page can do. The exemption holds only
+ * while the file runs no query: a `.from(` or `.rpc(` there fails below, so the
+ * statement_timeout fact above stays true of every query the Worker makes.
+ */
+const SIGNED_IN_AS_A_PERSON: Record<string, string> = {
+  'lib/partner-page-monitor-realtime.ts': 'the delivery monitor\'s sign in and private Realtime join, as its monitor user',
+}
+
+const relative = (file: string) => file.replace(/\\/g, '/').replace(/.*apps\/worker\/src\//, '')
+
 describe('worker Supabase clients are service_role (#614)', () => {
   it('builds every client with SUPABASE_SECRET_KEY', () => {
-    const wrong = findClientCalls(workerFiles).filter((c) => !c.key.includes('SUPABASE_SECRET_KEY'))
+    const wrong = findClientCalls(workerFiles).filter((c) => !c.key.includes('SUPABASE_SECRET_KEY') && !(relative(c.file) in SIGNED_IN_AS_A_PERSON))
     const described = wrong.map((c) => `${c.file.replace(/.*apps\//, 'apps/')}:${c.line} uses ${c.key}`)
     expect(described, 'a non-service_role client changes the statement_timeout the docs cite').toEqual([])
+  })
+
+  it('lets the signed in files run no query, so the exemption cannot carry one', () => {
+    for (const rel of Object.keys(SIGNED_IN_AS_A_PERSON)) {
+      const file = workerFiles.find((f) => relative(f.path) === rel)
+      expect(file, `${rel} is exempt but no longer exists; remove its entry`).toBeDefined()
+      const code = sanitizeSource(file!.src, { blankStrings: true })
+      expect(/\.(from|rpc)\s*\(/.test(code), `${rel} runs a query with a client that is not service_role`).toBe(false)
+    }
   })
 
   it('found a client call at all, so it cannot pass vacuously', () => {

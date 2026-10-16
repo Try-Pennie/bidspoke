@@ -145,6 +145,12 @@ export interface Env {
   // Set via `wrangler secret put GITHUB_ACTIONS_TOKEN --name bidspoke-worker`.
   GITHUB_ACTIONS_TOKEN?: string
 
+  // The partners page delivery monitor's password (#2135): the monitor user of
+  // the one is_synthetic organization signs in with it every five minutes. Set
+  // via `wrangler secret put PARTNER_PAGE_MONITOR_PASSWORD --name bidspoke-worker`;
+  // unset, the monitor reports that it cannot run (and pages after 30 minutes).
+  PARTNER_PAGE_MONITOR_PASSWORD?: string
+
   // Anthropic API: used to draft changelog summaries on workflow save
   // Optional: set via `wrangler secret put ANTHROPIC_API_KEY --name bidspoke-worker`
   ANTHROPIC_API_KEY?: string

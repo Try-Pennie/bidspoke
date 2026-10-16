@@ -111,6 +111,52 @@ After the migration is applied to production. Run from the repository root of th
 3. The measured run (a new login if more than five minutes have passed): `node scripts/realtime-spike/run.mjs --i-have-approval --ledger <scratchpad>/2131/realtime-spike-ledger.json`.
 4. If either run was killed in a way no handler could catch: `node scripts/realtime-spike/run.mjs --cleanup <that ledger>`.
 
+## The sender as built (PR4, #2135)
+
+Migration `20261016170000_partner_page_notice_2135.sql`:
+
+- `notify_partner_page(org, partner, kind, changed_columns, direct, save_id, client_id)` sends one private broadcast, event `partner_changed`, on `partners:<org>`, carrying ids, the two versions as they stand, column names and whether the change had no actor, never a field value. Any failure becomes a `WARNING`, so a notice never fails the write it describes. No grant to anyone, service role included.
+- Three AFTER STATEMENT triggers on each table `partner_page_notice_tables()` names (`partner_configs`, `buyer_profiles` and its three child tables, `partner_uuid_map`), sending once per partner per statement when a version moved, a partner or profile came or went, or a sub-account ID mapping changed. A `last_probe_response` only change moves no version and sends nothing. A partner delete sends one `deleted`; the profile rows its cascade removes are skipped as rows of a partner that no longer exists (a cascade runs at trigger depth 1, so depth cannot tell it from a hand write).
+- `save_partner_page` gains `p_client_id` (an overload; the ten argument form calls it with NULL) and sends the page save's one notice at its end, when either version moved; its own statements run under `bidspoke.audit_handled = 'save_partner_page'`, which keeps the triggers quiet.
+- `change_partner_uuid` makes the sub-account ID add and remove with `bidspoke.actor_*` set, so a `partner_uuid_map` notice is `direct` only for a hand run SQL write.
+- The notice's shape, its kinds and its parser live once, in `packages/partner-page-live`, read by the Worker's monitor and by the page.
+
+`supabase/tests/partner_page_notice.test.sql` proves each table's triggers by `pg_trigger`, every other table keyed to a partner against a written exclusion list (by foreign key, by column name, and by the columns a production sample found holding a partner id or slug), and who sends what, with the mutations it was seen to fail on in its header.
+
+## Delivery monitor (PR4, #2135, decision 2)
+
+A Worker check on the existing five minute cron (`lib/partner-page-monitor.ts`, heartbeat `partner-page-monitor`): it signs in as the one user of the one organization marked `is_synthetic`, joins `partners:<that organization>` (retrying a join refused as `MissingPartition`), calls `monitor_partner_page_ping`, which sends through `notify_partner_page` without writing a setting, and waits 10 seconds for its own notice.
+
+- **Pages** (signal `partner-page-live`): the notice did not arrive, or the join was refused, on the run that sees it. The check unable to run (no secret, no monitor organization, sign in or the ping failing) for 30 minutes on the clock, as its own message. Both stand down with an all-clear.
+- **Records, never pages:** each run's outcome, latency and whether today's and tomorrow's `realtime.messages` partitions exist, in `job_runs` (job `partner-page-monitor`), and the live misses pages post to `POST /api/partners/live-miss`, in `partner_page_live_misses`. A send made while today's partition was absent is `partition_missing_at_send`, never a failure. No miss threshold ships; the issue that sets one from a measured week is filed with #2135.
+- `monitor_partner_page_ping` refuses any organization that is not `is_synthetic`, and a monitor organization holding anything but one source partner (no buyer profile, workflow, service connection or environment variable), by name. That refusal is what keeps the monitor organization out of every job that lists workflows, Slack connections or credentials across organizations; the two jobs that list buyer profiles across organizations (the buyer sale drain and the buyer sales checks) filter `organizations.is_synthetic = false` themselves.
+
+Pass and fail counts, on production:
+
+```sql
+SELECT outcome, count(*), percentile_disc(0.5) WITHIN GROUP (ORDER BY (summary ->> 'latency_ms')::int) AS p50_ms
+FROM job_runs WHERE job = 'partner-page-monitor' AND started_at > now() - interval '7 days' GROUP BY 1;
+```
+
+### Setting it up (once, after the migration is applied)
+
+1. Generate the monitor's password and keep it in the `Bidspoke recovery keys` 1Password item: `openssl rand -base64 32`.
+2. Create the organization and allow the address, through `/db-apply`. The signup trigger files a new user under the organization whose slug is the email domain with every character outside `a-z0-9` turned into `-`, so the slug below is the one `monitor@partner-page-monitor.trypennie.dev` lands in:
+   ```sql
+   INSERT INTO public.organizations (name, slug, is_synthetic) VALUES ('Partners page delivery monitor', 'partner-page-monitor-trypennie-dev', true);
+   INSERT INTO public.user_allowlist (email, added_by) VALUES ('monitor@partner-page-monitor.trypennie.dev', 'partners page delivery monitor (#2135)');
+   ```
+3. Create the user in Supabase, Authentication, Users, Add user, Create new user: that address, the password, Auto Confirm User on. Confirm its `public.users` row has the monitor organization's id.
+4. Give the organization its one source partner, inactive so nothing ever uses it:
+   ```sql
+   INSERT INTO public.partner_configs (organization_id, name, slug, partner_type, is_active)
+   SELECT id, 'Delivery monitor source', 'partner-page-monitor-source', 'source', false FROM public.organizations WHERE slug = 'partner-page-monitor-trypennie-dev';
+   ```
+5. Set the Worker secret from `apps/worker`, pasting the password at the prompt: `npx wrangler secret put PARTNER_PAGE_MONITOR_PASSWORD --name bidspoke-worker`.
+6. Within ten minutes `job_runs` shows `partner-page-monitor` runs with outcome `received`.
+
+Until steps 1 to 5 are done the check records `unmeasured` with the step it stopped at, and pages that it cannot run after 30 minutes.
+
 ## Consequences
 
 - `realtime.messages` carries one policy; any later policy on it (presence, another page) is a new migration and a new case in the SQL suite.
