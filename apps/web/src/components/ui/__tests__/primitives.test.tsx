@@ -169,6 +169,19 @@ describe('ChoiceGroup', () => {
     expect(radios.map((r) => r.tabIndex)).toEqual([0, -1])
   })
 
+  // #2134: under a heading that already says it, the label is shortened or
+  // hidden on screen and the group is still named in full.
+  it('shows a shorter label without changing the group\'s name, or none at all', () => {
+    const options = [{ value: 'a', label: 'A' }] as const
+    const { unmount } = render(<ChoiceGroup id="m" label="Hours, Monday" visibleLabel="Monday" value={null} options={options} onChange={() => {}} />)
+    expect(screen.getByRole('radiogroup', { name: 'Hours, Monday' })).toBeInTheDocument()
+    expect(screen.getByText('Monday')).toBeVisible()
+    unmount()
+    render(<ChoiceGroup id="b" label="Blackout dates" visibleLabel="" value={null} options={options} onChange={() => {}} />)
+    expect(screen.getByRole('radiogroup', { name: 'Blackout dates' })).toBeInTheDocument()
+    expect(document.getElementById('b-label')).toHaveClass('sr-only')
+  })
+
   it('a click chooses, marks the choice checked and makes it the tab stop', () => {
     const onChange = vi.fn()
     render(<Controlled initial={null} onChange={onChange} />)

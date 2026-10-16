@@ -45,12 +45,12 @@ describe('RenameConfirmDialog', () => {
     expect(screen.getByText('No downstream references found.')).toBeInTheDocument()
   })
 
-  // Focus trap + dialog semantics (#288).
+  // Focus trap + dialog semantics (#288), now from the one Dialog shell (#2134):
+  // named by its title, whatever id the shell gives it.
   it('is a labelled modal dialog', () => {
     render(<RenameConfirmDialog {...baseProps} />)
-    const dialog = screen.getByRole('dialog')
+    const dialog = screen.getByRole('dialog', { name: /Rename old_data/ })
     expect(dialog).toHaveAttribute('aria-modal', 'true')
-    expect(dialog).toHaveAttribute('aria-labelledby', 'rename-dialog-title')
   })
 
   it('moves focus into the dialog on open', () => {

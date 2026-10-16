@@ -16,7 +16,7 @@ import {
   zonedDayStartUtc,
 } from '../clock'
 import { documentToProfile, parseProfileDocument, type BuyerProfileDocument } from '../document'
-import { flattenProfileDocument, diffProfileDocuments } from '../diff'
+import { flattenProfileDocument, unflattenProfileDocument } from '../diff'
 import { registryPathOf } from '../paths'
 import { validateProfile, type PartnerRulesForValidation } from '../validate'
 
@@ -112,12 +112,13 @@ describe('the document carries the display time zone (L425)', () => {
     expect(parseProfileDocument({ ...doc, display_time_zone: 5 })).toMatchObject({ ok: false, errors: [{ path: 'display_time_zone' }] })
   })
 
-  it('flattens as a scalar, so a change shows in the history and the conflict view', () => {
+  it('flattens as a scalar, so a change shows in the history and the merge dialog', () => {
     expect(flattenProfileDocument({ ...doc, display_time_zone: 'America/Chicago' }).get('display_time_zone')).toBe('America/Chicago')
     expect(flattenProfileDocument(doc).get('display_time_zone')).toBeNull()
-    expect(diffProfileDocuments({ ...doc, display_time_zone: 'America/Chicago' }, { ...doc, display_time_zone: 'America/Denver' })).toEqual([
-      { path: 'display_time_zone', mine: 'America/Chicago', theirs: 'America/Denver' },
-    ])
+    // #2134 deleted diffProfileDocuments with the 409 side by side; the merge
+    // decides by these paths (partner-page-merge.test.ts asks about a zone both
+    // changed), and the rebuild gives the zone back.
+    expect(unflattenProfileDocument(flattenProfileDocument({ ...doc, display_time_zone: 'America/Chicago' })).display_time_zone).toBe('America/Chicago')
   })
 })
 

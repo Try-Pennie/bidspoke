@@ -5,17 +5,11 @@
 // or reloading silently dropped the edit. The post-save state is now resolved by
 // comparing content signatures (resolvePostSaveStateBySignature, #212).
 
-// Shared across every away-click guard (canvas back link, partner form's own
-// link/cancel guards) so the prompt copy stays identical.
+// The partners page's leave prompts (PartnerForm's link and Cancel guards, the
+// list's partner switch and New), which are still the browser's own confirm
+// until PR7 (#2138) replaces them with the page's own dialog. The canvas asks in
+// its own dialog since #2134 (LeaveCanvasDialog).
 export const UNSAVED_CHANGES_MESSAGE = 'You have unsaved changes. Leave without saving?'
-
-// #478: decide whether an in-app navigation away from a dirty editor should
-// proceed. A clean editor never prompts; a dirty one defers to confirmFn (in
-// practice window.confirm) and only proceeds if the user confirms. Kept pure
-// (confirmFn injected) so this is unit-testable without touching the DOM.
-export function confirmDiscardIfDirty(isDirty: boolean, confirmFn: () => boolean): boolean {
-  return !isDirty || confirmFn()
-}
 
 export interface PostSaveState {
   /** Keep isDirty true: an edit landed during the save window. */
