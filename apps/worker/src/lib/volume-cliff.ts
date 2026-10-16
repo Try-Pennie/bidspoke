@@ -291,8 +291,10 @@ export async function runVolumeCliffCheck(
   // always passes it, and without it two ticks that pass the cooldown together
   // both post.
   claims?: AlertClaims,
-  // The clock this check reads: the saved Slack copy is dated by it (#2060) and
-  // the volume windows are measured on it, so the two cannot disagree.
+  // The clock that dates the saved Slack copy (#2060) and places the volume
+  // windows, so those two cannot disagree. The incident records (the database
+  // and cliff alerts' markers and cooldowns) still take their own wall clock
+  // reading, one per org or workflow, as before.
   clock: () => number = Date.now,
 ): Promise<void> {
   const { data: slackOrgs, error: slackOrgsError } = await readSlackConnectionRowsForCopy(supabase)
