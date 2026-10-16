@@ -22,7 +22,8 @@
  * fails writes no record, so the next tick tries again.
  *
  * It never fails or delays its caller: `page` resolves in every case, bounded by
- * NOBODY_TOLD_PAGE_DEADLINE_MS, and the scheduled client hands it to waitUntil
+ * NOBODY_TOLD_PAGE_DEADLINE_MS for the send plus NOBODY_TOLD_KV_WRITE_DEADLINE_MS
+ * for recording it, and the scheduled client hands it to waitUntil
  * rather than awaiting it.
  *
  * Inert until BETTERSTACK_OUTAGE_TOKEN and BETTERSTACK_OUTAGE_URL are set (the
@@ -43,11 +44,14 @@ export const BETTER_STACK_ALERT_NAME = 'Bidspoke nobody can be told in Slack'
 /** The one line the alert matches on, sent as the event's `message`. */
 export const NOBODY_TOLD_LINE = 'bidspoke nobody can be told in Slack: the database did not answer and no saved Slack copy could stand in'
 
-/** How long one page may take, KV read and send together. Well inside the minute job deadline. */
+/** How long the send may take, dedupe KV read included. The record write after it has its own 1 s, so a page is bounded at 6 s. */
 export const NOBODY_TOLD_PAGE_DEADLINE_MS = 5_000
 
 /** How long the KV read that dedupes may take before the page is sent anyway. */
 export const NOBODY_TOLD_KV_READ_DEADLINE_MS = 1_000
+
+/** How long the KV record of an accepted page may take; outside the send's deadline, after it. */
+export const NOBODY_TOLD_KV_WRITE_DEADLINE_MS = 1_000
 
 /** How long a sent page holds off the next one for the same organization. */
 export const NOBODY_TOLD_TTL_SECONDS = 3_600
@@ -104,7 +108,7 @@ export function createNobodyToldPager(options: NobodyToldPagerOptions): NobodyTo
   const handled = new Set<string>()
   let saidInert = false
 
-  const send = async (key: string, orgId: string | null, reason: CopyUnreachableReason, signal: AbortSignal): Promise<'sent' | 'already' | 'sent_unrecorded'> => {
+  const send = async (key: string, orgId: string | null, reason: CopyUnreachableReason, signal: AbortSignal): Promise<'sent' | 'already'> => {
     const recordKey = `${NOBODY_TOLD_KV_PREFIX}${key}`
     // Paging matters more than a repeat: a KV read that fails or hangs sends anyway.
     const prior = await raceDeadline(() => options.kv.get(recordKey), NOBODY_TOLD_KV_READ_DEADLINE_MS, delay)
@@ -119,13 +123,23 @@ export function createNobodyToldPager(options: NobodyToldPagerOptions): NobodyTo
       signal,
     })
     if (!res.ok) throw new Error(`Better Stack answered ${res.status}`)
-    try {
-      await options.kv.put(recordKey, String(now()), { expirationTtl: NOBODY_TOLD_TTL_SECONDS })
-      return 'sent'
-    } catch (e) {
-      console.error(`[nobody-told-page] paged for ${key}, but the page could not be recorded (${formatErr(e)}), so the next tick may page again`)
-      return 'sent_unrecorded'
-    }
+    return 'sent'
+  }
+
+  /**
+   * The record of a sent page, OUTSIDE the send's deadline: once Better Stack has
+   * accepted the page, a KV write that hangs or fails is a page sent but not
+   * recorded, never a send that got no answer (lessons review of #2259).
+   */
+  const record = async (key: string): Promise<void> => {
+    const wrote = await raceDeadline(
+      () => options.kv.put(`${NOBODY_TOLD_KV_PREFIX}${key}`, String(now()), { expirationTtl: NOBODY_TOLD_TTL_SECONDS }),
+      NOBODY_TOLD_KV_WRITE_DEADLINE_MS,
+      delay,
+    )
+    if (wrote.kind === 'ok') return
+    const why = wrote.kind === 'threw' ? formatErr(wrote.error) : `no answer in ${NOBODY_TOLD_KV_WRITE_DEADLINE_MS} ms`
+    console.error(`[nobody-told-page] paged for ${key}, but the page could not be recorded (${why}), so the next tick may page again`)
   }
 
   return {
@@ -150,8 +164,9 @@ export function createNobodyToldPager(options: NobodyToldPagerOptions): NobodyTo
           console.error(`[nobody-told-page] page for ${key} (${reason}) failed: ${formatErr(outcome.error)}; the next tick tries again`)
         } else if (outcome.value === 'already') {
           console.log(`[nobody-told-page] ${key} was already paged in this outage, so nothing was sent`)
-        } else if (outcome.value === 'sent') {
+        } else {
           console.warn(`[nobody-told-page] paged Better Stack for ${key} (${reason})`)
+          await record(key)
         }
       } catch (e) {
         // raceDeadline folds every failure into a value; this is only for a log call throwing.

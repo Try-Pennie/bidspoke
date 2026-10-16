@@ -12,6 +12,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   BETTER_STACK_ALERT_NAME,
+  NOBODY_TOLD_KV_WRITE_DEADLINE_MS,
   createNobodyToldPager,
   NOBODY_TOLD_KV_PREFIX,
   NOBODY_TOLD_LINE,
@@ -53,7 +54,7 @@ function fakeFetch(mode: number | 'stall' | 'throw' = 202) {
   return { fetchFn, sent, signals }
 }
 
-function fakeKv(store: Record<string, string> = {}, mode: 'ok' | 'get-throws' | 'get-stalls' | 'put-throws' = 'ok') {
+function fakeKv(store: Record<string, string> = {}, mode: 'ok' | 'get-throws' | 'get-stalls' | 'put-throws' | 'put-stalls' = 'ok') {
   const puts: { key: string; value: string; ttl: number | undefined }[] = []
   const kv: NobodyToldKv = {
     get(key: string) {
@@ -63,6 +64,7 @@ function fakeKv(store: Record<string, string> = {}, mode: 'ok' | 'get-throws' | 
     },
     put(key: string, value: string, opts?: { expirationTtl?: number }) {
       if (mode === 'put-throws') return Promise.reject(new Error('kv put 500'))
+      if (mode === 'put-stalls') return new Promise<void>(() => {})
       puts.push({ key, value, ttl: opts?.expirationTtl })
       store[key] = value
       return Promise.resolve()
@@ -204,6 +206,23 @@ describe('at most once per organization per incident', () => {
     await p.page('org-1', 'no_copy')
     expect(sent).toHaveLength(1)
     expect(logs.some((l) => l.includes('[nobody-told-page]') && l.includes('could not be recorded'))).toBe(true)
+  })
+
+  it('reports an accepted page whose KV write hangs as sent but unrecorded, never as a send with no answer', async () => {
+    const d = controlledDelay()
+    const { pager: p, sent, signals } = pager({ kv: fakeKv({}, 'put-stalls'), delay: d.delay })
+    const done = p.page('org-1', 'no_copy')
+    // The write's deadline is asked for only once the send is over (the read's comes first).
+    await vi.waitFor(() => expect(logs.some((l) => l.includes('paged Better Stack for org-1'))).toBe(true))
+    expect(d.pending.filter((x) => x.ms === NOBODY_TOLD_KV_WRITE_DEADLINE_MS).length).toBeGreaterThan(0)
+    // The send's own deadline passing now must change nothing: the send is over.
+    d.expire(NOBODY_TOLD_PAGE_DEADLINE_MS)
+    d.expire(NOBODY_TOLD_KV_WRITE_DEADLINE_MS)
+    await expect(done).resolves.toBeUndefined()
+    expect(sent).toHaveLength(1)
+    expect(signals[0].aborted).toBe(false)
+    expect(logs.some((l) => l.includes('could not be recorded') && l.includes(`${NOBODY_TOLD_KV_WRITE_DEADLINE_MS} ms`))).toBe(true)
+    expect(logs.some((l) => l.includes('got no answer'))).toBe(false)
   })
 })
 
