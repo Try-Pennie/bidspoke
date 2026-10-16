@@ -143,6 +143,21 @@ The volume, matrix, and config toggles live on the Integrations page (Slack sett
 
 The volume-cliff and slow-spike checks run on a per-minute cron and only evaluate active workflows in orgs that have Slack connected.
 
+### When nobody can be told in Slack (Better Stack)
+
+A scheduled check finds who to tell by reading the org's Slack connection. When the database does not answer, it falls back to the saved copy of the Slack connections. When that fallback fails too, no Slack alert can be posted at all, and the worker's own log lines do not reach Better Stack (log forwarding was narrowed on 2026-09-09 to keep applicant data out, #1007). For that one case the worker sends a fixed line straight to a Better Stack HTTP log source (#2063, `apps/worker/src/lib/nobody-told-page.ts`). Neither the database nor Slack is on that path.
+
+| | |
+|---|---|
+| Alert | `Bidspoke nobody can be told in Slack`, a Better Stack logs alert on the source below |
+| Match | `message` equals `bidspoke nobody can be told in Slack: the database did not answer and no saved Slack copy could stand in` (the constant `NOBODY_TOLD_LINE`, pinned by `nobody-told-page.test.ts`; change both together or the alert stops matching) |
+| Means | The database did not answer a scheduled Slack lookup and the saved copy could not stand in: `reason` is `no_copy` (there is no saved copy, as after a fresh deploy), `org_not_in_copy` (the copy holds no connection for that organization) or `copy_unreadable` (the copy did not decrypt, most likely written under a key since rotated). Every scheduled alert for that organization is going unsaid. Check the database first (the Supabase dashboard), then the saved copy. |
+| Source | A Better Stack HTTP log source used for nothing else. Its token is the worker secret `BETTERSTACK_OUTAGE_TOKEN`, its ingesting host `BETTERSTACK_OUTAGE_URL`. |
+| Fields | Exactly four: `message`, `organization_id` (null when the read was for every organization at once), `reason`, and `dt` (when it happened). Never applicant data or any other field; a test pins the whole event. |
+| Cadence | At most once per organization per scheduled tick, and once sent, not again for that organization for an hour (a KV record in `IDEMPOTENCY` under `nobody-told-page:`). A send Better Stack refuses or that takes over 5 seconds writes no record, so the next tick tries again. It never delays or fails the check that raised it. |
+
+**The source and the alert are created by hand in Better Stack, separately from this code**, and until both secrets are set the worker pages nobody here: each tick that would have paged logs `BETTERSTACK_OUTAGE_TOKEN or BETTERSTACK_OUTAGE_URL is unset`. To switch it on: create an HTTP log source, set its token and `https://<ingesting host>` as the two worker secrets, then create the logs alert on that source matching the line above and route it to the on call escalation policy.
+
 ## Estimated cost per execution
 
 Each execution gets an estimated USD cost in `workflow_executions.cost_usd` (and CPU time in `cpu_ms`). It is assembled in two parts:
