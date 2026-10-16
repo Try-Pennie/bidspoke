@@ -193,6 +193,7 @@ describe('held clicks, sub-account IDs and matrices', () => {
     const matrix = { configId: 'c1', configName: 'Tripoint default', source: null }
     expect(lines(entry({ entityType: 'partner_bid_config', action: 'created', matrix, changes: { slug: 'tp', name: 'Tripoint default', partner_id: PARTNER } }))).toEqual([{ kind: 'text', text: 'Created the bid matrix Tripoint default.' }])
     expect(lines(entry({ entityType: 'partner_bid_config', action: 'updated', matrix, changes: { changed_fields: ['sf_object', 'is_default'], partner_id: PARTNER } }))).toEqual([{ kind: 'text', text: 'Saved the bid matrix Tripoint default: Salesforce object, Default matrix; the values were not recorded.' }])
+    expect(lines(entry({ entityType: 'partner_bid_config', action: 'updated', matrix, changes: { changed_fields: [], partner_id: PARTNER } }))).toEqual([{ kind: 'text', text: 'Saved the bid matrix Tripoint default; what changed was not recorded.' }])
     expect(lines(entry({ entityType: 'partner_bid_config', action: 'deleted', matrix: { ...matrix, configName: null }, changes: { name: 'Old matrix', partner_id: PARTNER } }))).toEqual([{ kind: 'text', text: 'Deleted the bid matrix Old matrix.' }])
   })
 

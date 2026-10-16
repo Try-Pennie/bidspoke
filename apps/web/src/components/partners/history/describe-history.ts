@@ -330,7 +330,9 @@ function describeMatrixConfig(e: HistoryEntry, c: Record<string, unknown>, out: 
   if (e.action === 'created') return out.text(`Created the bid matrix ${name}.`)
   if (e.action === 'deleted') return out.text(`Deleted the bid matrix ${name}.`)
   const fields = Array.isArray(c.changed_fields) ? c.changed_fields.map(String) : []
-  out.text(`Saved the bid matrix ${name}: ${joinLabels(fields, (k) => matrixConfigLabel(k, out))}; the values were not recorded.`)
+  out.text(fields.length === 0
+    ? `Saved the bid matrix ${name}; what changed was not recorded.`
+    : `Saved the bid matrix ${name}: ${joinLabels(fields, (k) => matrixConfigLabel(k, out))}; the values were not recorded.`)
 }
 
 interface MatrixRow { range?: unknown; is_sell_off?: unknown; bid_amount?: unknown; changes?: unknown }
