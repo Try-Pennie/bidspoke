@@ -30,6 +30,15 @@
  * is left to the Salesforce read-back (#2023); every other one is announced with
  * the record, the field names and the expiry (see announceHeld).
  *
+ * ONE OWNER PER WRITE (#468). An update that failed WITH an answer after the 2 s
+ * mark (a retried 5xx, a refusal after a retry, a bulkhead shed) carries its own
+ * request and its at-risk record is kept too. When the read-back owns that record
+ * (the watch's read_back_owns, judged by the read-back's own rule) the failure
+ * arrives held, and it is left to the read-back exactly like a timeout: a pending
+ * row here would let the replay or the drain send it a second time. One the
+ * read-back does not own arrives unheld and is stored as before, and a definite
+ * rejection (the record cleared) is still stored refused.
+ *
  * A credit inquiry post the at-risk record holds (#2172) is the read-back's too:
  * it is judged by the Lead's Inquiries file and resent at most once, so it is
  * logged here and neither stored nor announced. One nothing holds (a refusal)
@@ -102,9 +111,11 @@ export interface FailedWriteback {
   error: unknown
   resolvedInput: ResolvedStepInput | null | undefined
   /**
-   * When the at-risk record holding this request expires (#2163), set only when
-   * the request came from the watch because the failure carried none of its own
-   * (a timeout, an abort, a dropped connection) and the watch kept the record.
+   * When the at-risk record holding this request expires, set only when the
+   * watch kept the record and either the request came from the watch because the
+   * failure carried none of its own (a timeout, an abort, a dropped connection,
+   * #2163) or the read-back owns the record (#468), so the write is never stored
+   * here beside the read-back's resend.
    */
   heldUntil?: string | null
   /**

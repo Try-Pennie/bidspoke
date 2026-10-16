@@ -97,8 +97,8 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../env'
-import { AT_RISK_WRITE_PREFIX, AT_RISK_WRITE_TTL_SECONDS, atRiskKey, parseAtRiskEntry, type AtRiskEntry } from '../engine/at-risk-writes'
-import { WRITE_MARKER_FIELD, parseWriteMarker, readBackOwns, stampsWrites, writeMarker } from '../engine/write-marker'
+import { AT_RISK_WRITE_PREFIX, AT_RISK_WRITE_TTL_SECONDS, atRiskKey, parseAtRiskEntry, readBackOwnsHeld, type AtRiskEntry } from '../engine/at-risk-writes'
+import { WRITE_MARKER_FIELD, parseWriteMarker, stampsWrites, writeMarker } from '../engine/write-marker'
 import { salesforceRejectedTheWrite } from '../engine/nodes/salesforce'
 import { CREDIT_INQUIRY_APEX_PATH, inquiryMarkerQuery, inquiryPostOf, type InquiryPost } from '../engine/inquiry-post'
 import { decryptSecret, secretKeys, type SecretKeyInput } from './secret-crypto'
@@ -322,9 +322,10 @@ async function readHeldWrite(kv: Pick<ReadBackKv, 'get'>, keys: SecretKeyInput, 
     console.error(`[${SF_READ_BACK_JOB}] could not open the held write ${id}:`, formatErr(e))
     return { kind: 'unopenable', held: { ...base, body: {}, ...asPost } }
   }
-  if (inquiryPost) return { kind: 'owned', held: { ...base, body, inquiry: inquiryPostOf(body) } }
-  if (!readBackOwns(entry.sf_object, body, entry.execution_id, entry.step_namespace)) return { kind: 'not_ours' }
-  return { kind: 'owned', held: { ...base, body } }
+  // The one rule the watch also reports a kept record by, so the capture never
+  // stores a write for the replay that this job resends (#468).
+  if (!readBackOwnsHeld(entry, body)) return { kind: 'not_ours' }
+  return { kind: 'owned', held: { ...base, body, ...(inquiryPost ? { inquiry: inquiryPostOf(body) } : {}) } }
 }
 
 /**

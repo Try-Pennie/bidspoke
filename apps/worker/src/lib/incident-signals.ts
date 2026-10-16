@@ -151,6 +151,13 @@ export const INCIDENT_SIGNALS = [
     startMeans: FIRST_PAGE,
     windowMinutes: null,
   },
+  // #468. Post-answer Salesforce writes waiting in outcome_writeback_deadletters
+  // past their age, or a waiting count that grew between checks. Each row belongs
+  // to one organization and only that organization can replay it, so it is that
+  // organization's incident, keyed on its id. It judges a state, the backlog, so
+  // it has no window. The label is the subject its all-clear names (slack.ts
+  // WRITEBACK_BACKLOG_RECOVERY_SUBJECT).
+  { signal: 'writeback-backlog', label: 'Failed Salesforce writes', scope: 'org', subject: 'organization', startMeans: FIRST_PAGE, windowMinutes: null },
 ] as const satisfies readonly IncidentSignalEntry[]
 
 export type IncidentSignal = (typeof INCIDENT_SIGNALS)[number]['signal']
