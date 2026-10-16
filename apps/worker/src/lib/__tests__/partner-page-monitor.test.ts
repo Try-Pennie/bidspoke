@@ -24,6 +24,7 @@ import {
   runPartnerPageMonitor,
   JOIN_ATTEMPTS,
   RECEIPT_DEADLINE_MS,
+  PING_RETRY_MS,
   UNMEASURED_ALERT_AFTER_MS,
   PARTNER_PAGE_LIVE_KEY,
   PARTNER_PAGE_MONITOR_UNMEASURED_KEY,
@@ -56,6 +57,14 @@ interface World {
   ping: { ok: true; partitionToday: boolean; partitionTomorrow: boolean } | { ok: false; reason: string }
   /** What arrives on the channel when the ping is sent, and after how long. */
   delivers: { payload: unknown; afterMs: number } | null
+  /**
+   * How many of the first pings are sent but never streamed: Realtime woken from
+   * an idle shutdown answers SUBSCRIBED before its replication reader exists
+   * (2026-10-16 01:45 UTC), so the first notice is lost and later ones arrive.
+   */
+  lostPings?: number
+  /** What every ping after the first answers, when it differs from the first. */
+  reping?: World['ping']
 }
 
 function world(over: Partial<World> = {}): World {
@@ -72,7 +81,7 @@ function world(over: Partial<World> = {}): World {
 }
 
 function measureDeps(w: World, log: string[] = []) {
-  const calls = { joins: 0, pings: 0, sleeps: [] as number[], left: 0, signedOut: 0, signIns: [] as string[], topics: [] as string[] }
+  const calls = { joins: 0, pings: 0, pingSaveIds: [] as string[], pingTimes: [] as number[], sleeps: [] as number[], left: 0, signedOut: 0, signIns: [] as string[], topics: [] as string[] }
   let onPayload: ((p: unknown) => void) | null = null
   let pendingDelivery: (() => void) | null = null
   const deps: MeasureDeps = {
@@ -93,7 +102,10 @@ function measureDeps(w: World, log: string[] = []) {
     },
     ping: async (_org, saveId) => {
       calls.pings += 1
-      if (w.ping.ok && w.delivers) {
+      calls.pingSaveIds.push(saveId)
+      calls.pingTimes.push(w.now)
+      const answer = calls.pings > 1 && w.reping ? w.reping : w.ping
+      if (answer.ok && w.delivers && calls.pings > (w.lostPings ?? 0)) {
         const d = w.delivers
         const payload = typeof d.payload === 'object' && d.payload !== null && (d.payload as { save_id?: unknown }).save_id === SAVE
           ? { ...(d.payload as object), save_id: saveId }
@@ -103,7 +115,7 @@ function measureDeps(w: World, log: string[] = []) {
         pendingDelivery = () => onPayload?.(payload)
         if (d.afterMs === 0) { pendingDelivery(); pendingDelivery = null }
       }
-      return w.ping
+      return answer
     },
     newSaveId: () => SAVE,
     now: () => w.now,
@@ -128,7 +140,7 @@ describe('measurePartnerPageDelivery', () => {
     const w = world()
     const { deps, calls } = measureDeps(w)
     const outcome = await measurePartnerPageDelivery(deps)
-    expect(outcome).toEqual({ kind: 'received', latencyMs: 120, partitionToday: true, partitionTomorrow: true, joinAttempts: 1 })
+    expect(outcome).toEqual({ kind: 'received', latencyMs: 120, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
     expect(calls.signIns).toEqual(['monitor@partner-page-monitor.trypennie.dev'])
     expect(calls.topics).toEqual([`partners:${ORG}`])
     // Everything it opened is closed.
@@ -136,13 +148,51 @@ describe('measurePartnerPageDelivery', () => {
     expect(calls.signedOut).toBe(1)
   })
 
-  it('a notice that does not arrive within the deadline is not received, and pings once', async () => {
+  it('a notice that never arrives is re-pinged every PING_RETRY_MS with the same save id, then is not received at the deadline', async () => {
     const w = world({ delivers: null })
     const { deps, calls } = measureDeps(w)
-    expect(await measurePartnerPageDelivery(deps)).toEqual({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1 })
-    expect(calls.pings).toBe(1)
-    expect(calls.sleeps).toContain(RECEIPT_DEADLINE_MS)
+    const pings = RECEIPT_DEADLINE_MS / PING_RETRY_MS
+    expect(await measurePartnerPageDelivery(deps)).toEqual({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings })
+    expect(calls.pings).toBe(pings)
+    expect(new Set(calls.pingSaveIds)).toEqual(new Set([SAVE]))
+    // Every wait is the injected sleep, none longer than the re-ping interval,
+    // and together they spend exactly the deadline: no fixed wait after the join.
+    expect(calls.sleeps.every((ms) => ms <= PING_RETRY_MS)).toBe(true)
+    expect(calls.sleeps.reduce((a, b) => a + b, 0)).toBe(RECEIPT_DEADLINE_MS)
+    expect(calls.pingTimes.map((t) => t - calls.pingTimes[0])).toEqual(Array.from({ length: pings }, (_, i) => i * PING_RETRY_MS))
     expect(calls.left).toBe(1)
+  })
+
+  it('a cold start that loses the first notice is received on the re-ping, timed from the first send', async () => {
+    // 2026-10-16 01:45 UTC: Realtime woke from an idle shutdown, answered
+    // SUBSCRIBED at once, and began streaming realtime.messages 0.66 s after
+    // the ping was stored, so that notice was never sent; the 01:50 run got one
+    // in 211 ms.
+    const w = world({ lostPings: 1, delivers: { payload: pingNotice(), afterMs: 120 } })
+    const { deps, calls } = measureDeps(w)
+    expect(await measurePartnerPageDelivery(deps)).toEqual({
+      kind: 'received', latencyMs: PING_RETRY_MS + 120, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 2,
+    })
+    expect(calls.pings).toBe(2)
+  })
+
+  it('a re-ping the database refuses is logged and the run waits out the deadline for the pings already sent', async () => {
+    const log: string[] = []
+    const w = world({ delivers: null, reping: { ok: false, reason: 'statement timeout' } })
+    const { deps, calls } = measureDeps(w, log)
+    expect(await measurePartnerPageDelivery(deps)).toEqual({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
+    expect(calls.pings).toBe(RECEIPT_DEADLINE_MS / PING_RETRY_MS)
+    expect(log.filter((l) => l.includes('re-ping could not be sent: statement timeout'))).toHaveLength(RECEIPT_DEADLINE_MS / PING_RETRY_MS - 1)
+  })
+
+  it('takes its partition figures from the first ping only', async () => {
+    const w = world({
+      lostPings: 1,
+      ping: { ok: true, partitionToday: true, partitionTomorrow: false },
+      reping: { ok: true, partitionToday: true, partitionTomorrow: true },
+    })
+    const { deps } = measureDeps(w)
+    expect(await measurePartnerPageDelivery(deps)).toMatchObject({ kind: 'received', partitionTomorrow: false, pings: 2 })
   })
 
   it('ignores a notice that is not its own ping (another save, another ping)', async () => {
@@ -232,12 +282,12 @@ function fakeClaims(clock: { now: number }) {
   }
 }
 
-function monitorHarness(opts: { env?: Record<string, string | undefined> } = {}) {
+function monitorHarness(opts: { env?: Record<string, string | undefined>; measure?: () => Promise<Outcome> } = {}) {
   const clock = { now: Date.parse('2026-10-15T17:00:00Z') }
   const kv = fakeKv(clock)
   const sent: Array<{ kind: string; payload: Record<string, unknown> }> = []
   const records: Array<{ outcome: string; summary: Record<string, unknown> }> = []
-  let next: Outcome = { kind: 'received', latencyMs: 90, partitionToday: true, partitionTomorrow: true, joinAttempts: 1 }
+  let next: Outcome = { kind: 'received', latencyMs: 90, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 }
   const answer = (kind: string) => (_s: unknown, _c: string, payload: Record<string, unknown>) => {
     sent.push({ kind, payload })
     return Promise.resolve(kind === 'recovery' ? true : 'ts')
@@ -246,7 +296,7 @@ function monitorHarness(opts: { env?: Record<string, string | undefined> } = {})
     kv,
     claims: fakeClaims(clock),
     env: opts.env ?? {},
-    measure: async () => next,
+    measure: opts.measure ?? (async () => next),
     record: async (outcome, summary) => { records.push({ outcome, summary }) },
     resolveSlack: async () => [{ bot_token: 't', default_channel: '#ops' }],
     senders: {
@@ -274,26 +324,43 @@ describe('runPartnerPageMonitor', () => {
     const h = monitorHarness()
     await h.every5(10)
     expect(h.records.map((r) => r.outcome)).toEqual(['received', 'received', 'received'])
-    expect(h.records[0].summary).toMatchObject({ latency_ms: 90, partition_today: true, partition_tomorrow: true, join_attempts: 1 })
+    expect(h.records[0].summary).toMatchObject({ latency_ms: 90, partition_today: true, partition_tomorrow: true, join_attempts: 1, pings: 1 })
     expect(h.sent).toEqual([])
   })
 
   it('pages at once when its notice does not arrive, keeps the incident, then sends one all-clear once it has arrived for the rearm window', async () => {
     const h = monitorHarness()
-    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1 })
+    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
     const first = await h.run()
     expect(first.alerts).toEqual(['channel'])
     expect(h.sent.map((s) => s.kind)).toEqual(['live'])
     expect(h.sent[0].payload).toMatchObject({ problem: 'channel' })
     expect((await readCondition(h.kv, PARTNER_PAGE_LIVE_KEY))?.alerts).toBe(1)
 
-    h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1 })
+    h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
     await h.every5(RECOVERY_REARM_MINUTES + 5)
     expect(h.sent.filter((s) => s.kind === 'recovery')).toHaveLength(1)
     expect(await readCondition(h.kv, PARTNER_PAGE_LIVE_KEY)).toBeNull()
     expect(transitions(h.kv.store as unknown as Map<string, { value: string }>)).toEqual([
       'opened channel', 'paged channel', 'ended channel all_clear',
     ])
+  })
+
+  it('a cold start whose first notice is lost records received with the ping count, and pages nothing', async () => {
+    const h = monitorHarness({ measure: () => measurePartnerPageDelivery(measureDeps(world({ lostPings: 1 })).deps) })
+    const summary = await h.run()
+    expect(summary.alerts).toEqual([])
+    expect(h.records).toEqual([{ outcome: 'received', summary: expect.objectContaining({ latency_ms: PING_RETRY_MS + 120, pings: 2 }) }])
+    expect(h.sent).toEqual([])
+  })
+
+  it('control: when no ping is ever delivered the run still records not_received with every ping counted, and pages', async () => {
+    const h = monitorHarness({ measure: () => measurePartnerPageDelivery(measureDeps(world({ delivers: null })).deps) })
+    const summary = await h.run()
+    expect(summary.alerts).toEqual(['channel'])
+    expect(h.records).toEqual([{ outcome: 'not_received', summary: expect.objectContaining({ pings: RECEIPT_DEADLINE_MS / PING_RETRY_MS, deadline_ms: RECEIPT_DEADLINE_MS }) }])
+    expect(h.sent.map((s) => s.kind)).toEqual(['live'])
+    expect(h.sent[0].payload).toMatchObject({ problem: 'channel', reason: 'no notice arrived within 10 seconds of the first ping, after 4 pings' })
   })
 
   it('a join refused pages as a broken channel too, naming the refusal', async () => {
@@ -305,7 +372,7 @@ describe('runPartnerPageMonitor', () => {
 
   it('a send while the partition is absent neither pages nor counts toward an all-clear', async () => {
     const h = monitorHarness()
-    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1 })
+    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
     await h.run()
     h.set({ kind: 'partition_missing_at_send', partitionTomorrow: true, joinAttempts: 1 })
     await h.every5(RECOVERY_REARM_MINUTES + 10)
@@ -323,7 +390,7 @@ describe('runPartnerPageMonitor', () => {
     expect(h.sent.at(-1)?.payload).toMatchObject({ problem: 'monitor', reason: 'PARTNER_PAGE_MONITOR_PASSWORD is not set on the worker' })
     expect(h.records.every((r) => r.outcome === 'unmeasured')).toBe(true)
 
-    h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1 })
+    h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
     await h.every5(RECOVERY_REARM_MINUTES + 5)
     expect(h.sent.filter((s) => s.kind === 'recovery')).toHaveLength(1)
     expect(await readCondition(h.kv, PARTNER_PAGE_MONITOR_UNMEASURED_KEY)).toBeNull()
@@ -331,7 +398,7 @@ describe('runPartnerPageMonitor', () => {
 
   it('a check that cannot run is never read as a working channel: a standing channel incident gets no all-clear from it', async () => {
     const h = monitorHarness()
-    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1 })
+    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
     await h.run()
     h.set({ kind: 'unmeasured', reason: 'the ping could not be sent: timeout' })
     await h.every5(RECOVERY_REARM_MINUTES + 10)
@@ -339,7 +406,7 @@ describe('runPartnerPageMonitor', () => {
     // The first run that measures again starts the quiet window; it does not
     // close an incident whose last sighting was only the start of the gap.
     h.clock.now += 5 * MIN
-    h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1 })
+    h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
     await h.run()
     expect(h.sent.filter((s) => s.kind === 'recovery' && (s.payload as { signal?: string }).signal === 'partners page live updates')).toHaveLength(0)
   })
@@ -366,7 +433,7 @@ function harnessDeps(h: ReturnType<typeof monitorHarness>): MonitorDeps {
     kv: h.kv,
     claims: fakeClaims(h.clock),
     env: {},
-    measure: async () => ({ kind: 'received', latencyMs: 1, partitionToday: true, partitionTomorrow: true, joinAttempts: 1 }),
+    measure: async () => ({ kind: 'received', latencyMs: 1, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 }),
     record: async (outcome, summary) => { h.records.push({ outcome, summary }) },
     resolveSlack: async () => [],
     senders: { live: (async () => 'ts') as unknown as MonitorDeps['senders']['live'], recovery: (async () => true) as unknown as MonitorDeps['senders']['recovery'] },
