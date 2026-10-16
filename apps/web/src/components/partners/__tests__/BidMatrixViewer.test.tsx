@@ -383,3 +383,52 @@ describe('BidMatrixViewer: a sync that answers after the view moved (#2217)', ()
     expect(await screen.findByText('The sync of "sofi default" failed: Salesforce did not answer')).toBeInTheDocument()
   })
 })
+
+// Lessons review on #2256: a create or a delete that answers after the list of
+// matrices changed (another matrix added, or one refreshed by a sync) must
+// build on the list as it is then, never on the one its press closed over.
+describe('BidMatrixViewer: a create or delete that answers after the list changed (#2217)', () => {
+  const second = { ...config, id: 'cfg-2', name: 'sofi spare', is_default: false } as unknown as PartnerBidConfig
+  const third = { ...config, id: 'cfg-3', name: 'sofi late', is_default: false } as unknown as PartnerBidConfig
+
+  /** Records every list the viewer hands back, and can add a matrix from outside while a request is in flight. */
+  function Host({ onList }: { onList: (configs: PartnerBidConfig[]) => void }) {
+    const [configs, setConfigs] = useState([config, second])
+    return (
+      <>
+        <button type="button" onClick={() => setConfigs((cs) => [...cs, third])}>add late</button>
+        <BidMatrixViewer partnerId="p-1" partnerSlug="sofi" configs={configs} onConfigsChange={(cs) => { setConfigs(cs); onList(cs) }} />
+      </>
+    )
+  }
+
+  const ids = (cs: PartnerBidConfig[]) => cs.map((c) => c.id)
+
+  it('a create keeps a matrix added while it was in flight', async () => {
+    let finish: () => void = () => {}
+    const created = { ...config, id: 'cfg-new', name: 'sofi default', is_default: false } as unknown as PartnerBidConfig
+    vi.mocked(api.partnerBidConfigs.create).mockImplementation(() => new Promise((resolve) => { finish = () => resolve(created) }))
+    const onList = vi.fn()
+    render(<Host onList={onList} />)
+    await screen.findByText(/No rows yet/)
+    fireEvent.click(screen.getByRole('button', { name: 'Add another matrix' }))
+    fireEvent.click(screen.getByRole('button', { name: 'add late' }))
+    finish()
+    await waitFor(() => expect(onList).toHaveBeenCalled())
+    expect(ids(onList.mock.lastCall![0])).toEqual(['cfg-1', 'cfg-2', 'cfg-3', 'cfg-new'])
+  })
+
+  it('a delete keeps a matrix added while it was in flight', async () => {
+    let finish: () => void = () => {}
+    vi.mocked(api.partnerBidConfigs.delete).mockImplementation(() => new Promise((resolve) => { finish = () => resolve({ ok: true }) }))
+    const onList = vi.fn()
+    render(<Host onList={onList} />)
+    await screen.findByText(/No rows yet/)
+    fireEvent.click(screen.getByRole('button', { name: 'Delete this matrix' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete matrix' }))
+    fireEvent.click(screen.getByRole('button', { name: 'add late', hidden: true }))
+    finish()
+    await waitFor(() => expect(onList).toHaveBeenCalled())
+    expect(ids(onList.mock.lastCall![0])).toEqual(['cfg-2', 'cfg-3'])
+  })
+})

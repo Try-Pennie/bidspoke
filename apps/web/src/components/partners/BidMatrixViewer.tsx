@@ -76,13 +76,15 @@ export function BidMatrixViewer(p: Props) {
 
   const activeConfig = p.configs.find((c) => c.id === activeId) ?? null
 
-  // What is on screen NOW, read after a sync's awaits: the props and state the
-  // press closed over are the ones from before it, and the person may have
-  // switched matrices or added one while it ran.
+  // What is on screen NOW, for code that runs after an await (sync, create,
+  // delete): the props and state a press closed over are the ones from before
+  // it, and while it ran the person may have switched matrices, or the list may
+  // have changed (a matrix added, one refreshed by a sync). Every use of the
+  // props after an await reads `latest.current`, never `p` (#2256).
   const activeIdRef = useRef(activeId)
   activeIdRef.current = activeId
-  const configsRef = useRef(p.configs)
-  configsRef.current = p.configs
+  const latest = useRef(p)
+  latest.current = p
 
   async function handleSync() {
     if (!activeConfig) return
@@ -93,7 +95,8 @@ export function BidMatrixViewer(p: Props) {
     try {
       const result = await api.partnerBidConfigs.sync(synced.id)
       const refreshed = await api.partnerBidConfigs.get(synced.id)
-      p.onConfigsChange(configsRef.current.map((c) => c.id === synced.id ? refreshed.config : c))
+      const now = latest.current
+      now.onConfigsChange(now.configs.map((c) => c.id === synced.id ? refreshed.config : c))
       // The sync answers for the matrix it started on. If another one is in view
       // now, its rows and problems are its own read's, never this sync's (#2256).
       if (activeIdRef.current !== synced.id) { setSyncState('idle'); return }
@@ -125,9 +128,10 @@ export function BidMatrixViewer(p: Props) {
         sf_filters: { partner_flag: defaultPartnerFlag(p.partnerSlug) },
         dimensions: defaultDimensions(),
       })
-      p.onConfigsChange([...p.configs, created])
+      const now = latest.current
+      now.onConfigsChange([...now.configs, created])
       setActiveId(created.id)
-      p.onSelectConfig?.(created.id)
+      now.onSelectConfig?.(created.id)
     } finally {
       setCreating(false)
     }
@@ -167,15 +171,16 @@ export function BidMatrixViewer(p: Props) {
     }
     deletingRef.current = false
     setDeleteAsk(null)
-    const remaining = p.configs.filter((c) => c.id !== activeConfig.id)
-    p.onConfigsChange(remaining)
+    const now = latest.current
+    const remaining = now.configs.filter((c) => c.id !== activeConfig.id)
+    now.onConfigsChange(remaining)
     // The partner priced from the matrix just deleted (#2217): its draft is
     // cleared to "No matrix", so the page shows an unsaved change and the save
     // sends it. Never another matrix picked for it, which would price leads from
     // a matrix nobody chose. Left as it was, selectedConfigId would also put the
     // deleted id straight back into view.
-    if (p.onSelectConfig && p.selectedConfigId === activeConfig.id) {
-      p.onSelectConfig(null)
+    if (now.onSelectConfig && now.selectedConfigId === activeConfig.id) {
+      now.onSelectConfig(null)
       setActiveId(null)
       return
     }
