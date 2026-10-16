@@ -180,6 +180,15 @@ describe('PartnerDeleteBox', () => {
     log.mockRestore()
   })
 
+  it('a delete with no clear answer says it may still have gone through', async () => {
+    vi.mocked(api.partners.deleteCheck).mockResolvedValue(clean())
+    vi.mocked(api.partners.delete).mockRejectedValueOnce(Object.assign(new Error('The server could not be reached.'), { status: 503 }))
+    renderBox()
+    fireEvent.change(await screen.findByLabelText('Type DELETE to confirm'), { target: { value: 'DELETE' } })
+    fireEvent.click(button())
+    expect(await screen.findByRole('alert')).toHaveTextContent('The server could not be reached. The delete may still have gone through: reload the page to see whether Tripoint is still listed.')
+  })
+
   it('checks again when what it would remove may have changed', async () => {
     vi.mocked(api.partners.deleteCheck).mockResolvedValue(clean())
     const { rerender } = renderBox('k1')

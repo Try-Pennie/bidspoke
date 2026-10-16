@@ -103,6 +103,23 @@ describe('a delete in flight while the person changes tab (#2140)', () => {
     await waitFor(() => expect(onDeleted).toHaveBeenCalledWith(ID, { ok: true }))
   })
 
+  it('a delete that fails after the person changed tab says so on that tab, until they return to the Partner tab', async () => {
+    const { deps } = liveHarness()
+    const onDeleted = renderForm(deps)
+    let fail!: (e: unknown) => void
+    vi.mocked(api.partners.delete).mockReturnValue(new Promise((_r, j) => { fail = j }))
+    await userEvent.click(await screen.findByRole('tab', { name: 'Partner' }))
+    await userEvent.type(await screen.findByLabelText('Type DELETE to confirm'), 'DELETE')
+    await userEvent.click(screen.getByRole('button', { name: 'Delete M1' }))
+    await userEvent.click(screen.getByRole('tab', { name: 'History' }))
+    await act(async () => { fail(Object.assign(new Error('The server could not be reached.'), { status: 503 })) })
+    expect(await screen.findByRole('alert')).toHaveTextContent('The server could not be reached.')
+    expect(onDeleted).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('tab', { name: 'Partner' }))
+    await userEvent.click(screen.getByRole('tab', { name: 'History' }))
+    expect(screen.queryByRole('region', { name: 'Delete M1' })).toBeNull()
+  })
+
   it('the page\'s own delete heard on the live channel is not reported as someone else deleting the partner', async () => {
     const h = liveHarness()
     renderForm(h.deps)

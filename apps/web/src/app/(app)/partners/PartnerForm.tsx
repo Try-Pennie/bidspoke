@@ -744,8 +744,16 @@ export default function PartnerForm({
   liveStatusRef.current = liveChannel.status
 
   /** A delete pressed in the box at the foot and not yet refused or failed (#2140). */
-  const [deleteRunning, setDeleteRunning] = useState(false)
   const deleteRunningRef = useRef(false)
+  /**
+   * The box stays mounted from the press until the person is back on the Partner
+   * tab with no delete running, so a refusal or failure that lands on another tab
+   * is still on screen there rather than lost with the box.
+   */
+  const [deletePinned, setDeletePinned] = useState(false)
+  useEffect(() => {
+    if (tab === 'partner' && !deleteRunningRef.current) setDeletePinned(false)
+  }, [tab])
 
   function handleNotice(n: PartnerPageNotice) {
     if (!partner) return
@@ -1608,14 +1616,15 @@ export default function PartnerForm({
       {/*
         A delete in flight keeps the box mounted on whatever tab is open, saying
         it is running, so its answer always reaches the page: the server commits
-        it whether or not the person stayed on the Partner tab.
+        it whether or not the person stayed on the Partner tab. A refusal or a
+        failure stays there too, until the person is back on the Partner tab.
       */}
-      {!isNew && onDeleted && (tab === 'partner' || deleteRunning) && (
+      {!isNew && onDeleted && (tab === 'partner' || deletePinned) && (
         <PartnerDeleteBox
           partner={{ id: partner.id, name: partner.name }}
           refreshKey={JSON.stringify([partner.version ?? 0, profile?.version ?? null, uuids.map((u) => u.uuid).sort()])}
           onDeleted={(answer) => onDeleted(partner.id, answer)}
-          onRunningChange={(running) => { deleteRunningRef.current = running; setDeleteRunning(running) }}
+          onRunningChange={(running) => { deleteRunningRef.current = running; if (running) setDeletePinned(true) }}
         />
       )}
     </div>

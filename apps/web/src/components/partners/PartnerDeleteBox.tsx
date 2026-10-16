@@ -97,7 +97,11 @@ export function PartnerDeleteBox({ partner, refreshKey, onDeleted, onRunningChan
         else setView({ kind: 'ready', check: e.body.check, notice: e.body.error === 'consequence_changed' ? e.body.message : 'Nothing was deleted.' })
         refreshWaiting.current = false
       } else {
-        setDeleteError(e.message || 'The delete did not go through. Nothing was deleted.')
+        // No answer, or the server failing, cannot say whether the delete
+        // committed before the failure, so the message claims neither (L11).
+        const unclear = e.status === undefined || e.status >= 500
+        const said = e.message || 'The delete got no answer.'
+        setDeleteError(unclear ? `${said} The delete may still have gone through: reload the page to see whether ${partner.name} is still listed.` : said)
         // A change seen while the delete was in flight is checked now.
         if (refreshWaiting.current) {
           refreshWaiting.current = false
