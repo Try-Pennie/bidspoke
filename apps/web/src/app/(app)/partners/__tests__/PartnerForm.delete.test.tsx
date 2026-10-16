@@ -84,6 +84,8 @@ async function startDelete() {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // A queued answer a failed test left behind must not answer the next test.
+  vi.mocked(api.partners.delete).mockReset()
   vi.mocked(api.partnerUuids.list).mockResolvedValue([])
   vi.mocked(api.partnerBidConfigs.list).mockResolvedValue([])
   vi.mocked(api.buyerProfiles.get).mockResolvedValue({ profile: null, accept_signals: [], other_sellers: [] })
@@ -118,6 +120,23 @@ describe('a delete in flight while the person changes tab (#2140)', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Partner' }))
     await userEvent.click(screen.getByRole('tab', { name: 'History' }))
     expect(screen.queryByRole('region', { name: 'Delete M1' })).toBeNull()
+  })
+
+  it('a delete that fails or is refused while the person is on the Partner tab does not follow them to another tab', async () => {
+    const { deps } = liveHarness()
+    renderForm(deps)
+    vi.mocked(api.partners.delete)
+      .mockRejectedValueOnce(Object.assign(new Error('The server could not be reached.'), { status: 503 }))
+      .mockRejectedValueOnce(Object.assign(new Error('changed'), { status: 409, body: { error: 'consequence_changed', message: 'What this delete would remove changed since it was shown. Nothing was deleted. Review it again below.', check } }))
+    await userEvent.click(await screen.findByRole('tab', { name: 'Partner' }))
+    for (const seen of [/may still have gone through/, /changed since it was shown/]) {
+      await userEvent.type(await screen.findByLabelText('Type DELETE to confirm'), 'DELETE')
+      await userEvent.click(screen.getByRole('button', { name: 'Delete M1' }))
+      expect(await screen.findByText(seen)).toBeTruthy()
+      await userEvent.click(screen.getByRole('tab', { name: 'History' }))
+      expect(screen.queryByRole('region', { name: 'Delete M1' }), String(seen)).toBeNull()
+      await userEvent.click(screen.getByRole('tab', { name: 'Partner' }))
+    }
   })
 
   it('the page\'s own delete heard on the live channel is not reported as someone else deleting the partner', async () => {

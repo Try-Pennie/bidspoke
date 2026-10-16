@@ -746,14 +746,22 @@ export default function PartnerForm({
   /** A delete pressed in the box at the foot and not yet refused or failed (#2140). */
   const deleteRunningRef = useRef(false)
   /**
-   * The box stays mounted from the press until the person is back on the Partner
-   * tab with no delete running, so a refusal or failure that lands on another tab
-   * is still on screen there rather than lost with the box.
+   * The box follows the person off the Partner tab while a delete runs, and while
+   * a refusal or failure that landed on another tab has not been seen there. An
+   * outcome that lands on the Partner tab is seen where it lands, so it pins
+   * nothing; the next visit to the Partner tab clears an outcome seen elsewhere.
    */
   const [deletePinned, setDeletePinned] = useState(false)
+  const tabRef = useRef(tab)
+  tabRef.current = tab
   useEffect(() => {
     if (tab === 'partner' && !deleteRunningRef.current) setDeletePinned(false)
   }, [tab])
+  function deleteRunningChanged(running: boolean) {
+    deleteRunningRef.current = running
+    if (running) setDeletePinned(true)
+    else if (tabRef.current === 'partner') setDeletePinned(false)
+  }
 
   function handleNotice(n: PartnerPageNotice) {
     if (!partner) return
@@ -1624,7 +1632,7 @@ export default function PartnerForm({
           partner={{ id: partner.id, name: partner.name }}
           refreshKey={JSON.stringify([partner.version ?? 0, profile?.version ?? null, uuids.map((u) => u.uuid).sort()])}
           onDeleted={(answer) => onDeleted(partner.id, answer)}
-          onRunningChange={(running) => { deleteRunningRef.current = running; if (running) setDeletePinned(true) }}
+          onRunningChange={deleteRunningChanged}
         />
       )}
     </div>
