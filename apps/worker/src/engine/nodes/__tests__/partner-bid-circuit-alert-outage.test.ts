@@ -6,7 +6,8 @@
  * lead's client, no retries, so a database that hung held the lead for ever, and
  * one that refused dropped the page. The lookup now goes through leadRead (one
  * bounded attempt) and falls back to the encrypted last-good copy of the Slack
- * connections the volume check keeps, and the whole page is bounded.
+ * connections the database probe keeps (database-reachability.ts), and the
+ * whole page is bounded.
  *
  * The real supabase-js client runs throughout; only the network beneath it is
  * replaced. Slack's own address is answered by a stubbed global fetch.
