@@ -11,6 +11,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 
 vi.mock('@/lib/api', () => ({
   api: {
+    partners: { usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }) },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
     buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },
@@ -49,6 +50,8 @@ function renderForm() {
 }
 const save = () => fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
 
+// Every tab's panel stays mounted (#2137), so a control on a tab not open is
+// found with hidden: true; which tab each is drawn on is tested in partner-tabs.
 describe('the partner form on the shared controls (#2137)', () => {
   it('number boxes save numbers, an emptied box saves null, and a switch saves a boolean', async () => {
     const onSave = renderForm()
@@ -56,8 +59,8 @@ describe('the partner form on the shared controls (#2137)', () => {
     fireEvent.change(screen.getByLabelText('Minimum bid ($)'), { target: { value: '' } })
     fireEvent.change(screen.getByLabelText('Error threshold'), { target: { value: '7' } })
     fireEvent.change(screen.getByLabelText('Confirmation window (ms)'), { target: { value: '5000' } })
-    fireEvent.click(screen.getByRole('switch', { name: 'Partner active' }))
-    fireEvent.click(screen.getByRole('switch', { name: 'Transient error alerts' }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Partner active', hidden: true }))
+    fireEvent.click(screen.getByRole('switch', { name: 'Transient error alerts', hidden: true }))
     save()
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
     const [body] = onSave.mock.calls[0]
@@ -72,7 +75,7 @@ describe('the partner form on the shared controls (#2137)', () => {
 
   it('a sub-account floor typed into the shared boxes saves as a number keyed by its UUID', async () => {
     const onSave = renderForm()
-    fireEvent.click(screen.getByRole('button', { name: /Add row/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Add row/, hidden: true }))
     fireEvent.change(screen.getByLabelText('Sub-account UUID, floor 1'), { target: { value: '22222222-2222-2222-2222-222222222222' } })
     fireEvent.change(screen.getByLabelText('Minimum bid, floor 1'), { target: { value: '1.25' } })
     save()
@@ -83,9 +86,9 @@ describe('the partner form on the shared controls (#2137)', () => {
   it('the switches are Radix switches with the shared class, and the type is a radio group', () => {
     renderForm()
     for (const name of ['Partner active', 'Circuit breaker enabled', 'Transient error alerts', 'Permanent error alerts']) {
-      expect(screen.getByRole('switch', { name })).toHaveClass('toggle')
+      expect(screen.getByRole('switch', { name, hidden: true })).toHaveClass('toggle')
     }
-    expect(screen.getByRole('radiogroup', { name: 'Type' })).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'Buyer' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radiogroup', { name: 'Type', hidden: true })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Buyer', hidden: true })).toHaveAttribute('aria-checked', 'true')
   })
 })

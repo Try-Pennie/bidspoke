@@ -11,6 +11,7 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 
 vi.mock('@/lib/api', () => ({
   api: {
+    partners: { usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }) },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn(), get: vi.fn(), delete: vi.fn(), sync: vi.fn(), create: vi.fn() },
     buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },
@@ -54,7 +55,8 @@ beforeEach(() => {
 describe('deleting the matrix the partner uses (#2217)', () => {
   it('clears the partner to no matrix as an unsaved change, and the save sends it', async () => {
     const onSave = vi.fn().mockResolvedValue({ partner: { ...partner, bid_resolver_config: { bid_config_id: null }, version: 4 }, profile: null, copyWarning: null })
-    render(<PartnerForm partner={partner} onSave={onSave} onCancel={vi.fn()} />)
+    // The matrix is on the Bid Group tab (#2137), opened as the URL would ask.
+    render(<PartnerForm partner={partner} requestedTab="bid_group" onSave={onSave} onCancel={vi.fn()} />)
     await waitFor(() => expect(api.partnerBidConfigs.get).toHaveBeenCalledWith('cfg-1'))
     expect(screen.queryByText('Unsaved changes')).toBeNull()
 
