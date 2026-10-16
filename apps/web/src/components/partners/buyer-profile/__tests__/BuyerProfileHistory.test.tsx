@@ -58,8 +58,8 @@ describe('rows as audit_log holds them (#1672)', () => {
         'tiers.engine.10000.debt_to': { old: null, new: 12500 },
       },
     }]} />)
-    expect(screen.getByText('Monday hours from 11:00: open until 21:00 to none')).toBeInTheDocument()
-    expect(screen.getByText('Monday hours from 09:00: none to open until 21:00')).toBeInTheDocument()
+    expect(screen.getByText('Monday hours from 11:00 AM: open until 9:00 PM to none')).toBeInTheDocument()
+    expect(screen.getByText('Monday hours from 9:00 AM: none to open until 9:00 PM')).toBeInTheDocument()
     expect(screen.getByText('Engine tier from $10,000 multiplier: none to 0.0009')).toBeInTheDocument()
     expect(screen.getByText('Engine tier from $10,000 upper bound: none to $12,500.00')).toBeInTheDocument()
   })

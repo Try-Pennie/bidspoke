@@ -63,7 +63,7 @@ describe('MergeDialog', () => {
     expect(caps).toHaveTextContent('Was 500')
     expect(caps).toHaveTextContent('Yours 600')
     expect(caps).toHaveTextContent('Theirs 250')
-    expect(question('Hours, Monday')).toHaveTextContent('Yours 10:00 to 17:00')
+    expect(question('Hours, Monday')).toHaveTextContent('Yours 10:00 AM to 5:00 PM')
   })
 
   it('the choice is described by the values it chooses between, and by the reason when there is one', () => {
