@@ -33,7 +33,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { minuteAllClearClaim, postMinutePage, readSlackConnectionRows } from './alert-fanout'
-import { boundedRead, type BoundableQuery } from './scheduled-slack'
+import { boundedRead, type BoundableQuery, type ScheduledSlack } from './scheduled-slack'
 import { readSlackCopy, rememberSlackConnections } from './slack-copy'
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
 import { sendDatabaseRecoveredAlert, sendDatabaseUnreachableAlert } from './slack'
@@ -103,6 +103,13 @@ export interface ReachabilityDeps {
   /** Decides which of several simultaneous reporters posts (#1298); production always passes it. */
   claims?: AlertClaims
   now?: () => number
+  /**
+   * The tick's scheduled Slack (scheduled-slack.ts), whose Better Stack pager
+   * the owner pages through when no saved copy can stand in (#2061, #2063): one
+   * pager per tick, shared with the lookups, so a lookup and the owner noticing
+   * the same outage page it once. The scheduled handler always passes it.
+   */
+  scheduled?: Pick<ScheduledSlack, 'nobodyCanBeTold'>
 }
 
 export interface UnreachableReport {
@@ -225,8 +232,16 @@ export async function reportDatabaseUnreachable(deps: ReachabilityDeps, report: 
   const copy = await readSlackCopy(kv, deps.secretKeys)
   if (copy.kind !== 'read' || copy.connections.size === 0) {
     const why = copy.kind === 'unreadable' ? `the saved Slack copy cannot be read (${copy.detail})` : 'there is no last-good Slack connection in KV'
-    // The exact words a log alert can match on (#1303 decision 2).
     console.error(`[database-reachability] ${report.what} read failed and ${why}, so nobody can be told: ${errorText}`)
+    // The page the Better Stack alert matches on, through the tick's pager. It
+    // is handed to waitUntil and never awaited, and handing it over can throw
+    // only if something is broken, so the bookkeeping above always stands.
+    // An empty copy is nobody to post to as surely as no copy is.
+    try {
+      deps.scheduled?.nobodyCanBeTold(`database-reachability ${report.what}`, null, copy.kind === 'unreadable' ? 'copy_unreadable' : 'no_copy', copy.kind === 'unreadable' ? copy.detail : undefined)
+    } catch (e) {
+      console.error(`[database-reachability] the Better Stack page for nobody can be told could not be handed over: ${formatErr(e)}`)
+    }
     return outcome
   }
   const copyAgeMs = copy.savedAtMs === null ? null : Math.max(0, nowMs - copy.savedAtMs)

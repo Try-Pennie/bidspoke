@@ -4,13 +4,13 @@ import { cors } from 'hono/cors'
 import webhooks from './routes/webhooks'
 import shadow from './routes/shadow'
 import api from './routes/api/index'
-import { createScheduledSupabaseClient } from './lib/scheduled-slack'
+import { createScheduledSupabaseClient, scheduledSlackFor } from './lib/scheduled-slack'
 import { runInScheduledTick } from './lib/outage-notice'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runBidRecordingCoverageCheck } from './lib/bid-recording-coverage'
 import { runTripointRevenueFillForEnv } from './lib/tripoint-revenue-fill'
 import { runVolumeCliffCheck } from './lib/volume-cliff'
-import { DATABASE_REACHABILITY_JOB, reportDatabaseUnreachable, runDatabaseReachabilityProbe } from './lib/database-reachability'
+import { DATABASE_REACHABILITY_JOB, reportDatabaseUnreachable, runDatabaseReachabilityProbe, type ReachabilityDeps } from './lib/database-reachability'
 import { runBuyerSaleDrainForEnv, BUYER_SALE_DRAIN_JOB } from './lib/buyer-sale-drain'
 import { runBuyerSalesChecksForEnv, BUYER_SALES_CHECKS_JOB } from './lib/buyer-sales-checks'
 import { runClickPathChecksForEnv, CLICK_PATH_CHECKS_JOB } from './lib/click-path-checks'
@@ -184,6 +184,8 @@ const scheduledJobs = {
       secretKeys: secretKeys(env),
       appUrl: env.APP_URL,
       claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
+      // The tick client's scheduled Slack, set once the client is built below (#2061).
+      scheduled: undefined as ReachabilityDeps['scheduled'],
     }
     // One client for every job this tick starts, registered so each Slack lookup
     // on it is bounded and falls back to the saved copy (#1303, scheduled-slack.ts),
@@ -198,6 +200,9 @@ const scheduledJobs = {
           'database-reachability-report',
         ),
     })
+    // The owner pages Better Stack through this client's pager when no saved copy
+    // can stand in (#2061), the same pager its lookups use, so one is sent a tick.
+    reachability.scheduled = scheduledSlackFor(supabase)
     const ctx: Pick<ExecutionContext, 'waitUntil'> = { waitUntil: (p: Promise<unknown>) => handOver(p) }
     // A minute job carries its name, so a slow minute tick names the job that held it up.
     // It is also given MINUTE_JOB_DEADLINE_MS (#2058): what is waited on, by

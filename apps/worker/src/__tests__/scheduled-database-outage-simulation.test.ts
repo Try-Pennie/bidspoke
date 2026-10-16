@@ -32,6 +32,7 @@ import { AlertClaimObject } from '../durable-objects/alert-claim'
 import { CRON_JOBS, completedKey, heartbeatKey } from '../lib/cron-heartbeat'
 import { encryptSecret } from '../lib/secret-crypto'
 import { SLACK_CONNS_LASTGOOD_KEY, SLACK_COPY_SAVED_AT_KEY } from '../lib/slack-copy'
+import { NOBODY_TOLD_LINE } from '../lib/nobody-told-page'
 import { TEST_KEY } from '../lib/__tests__/_scheduled-slack-doubles'
 
 const ORG = '55555555-5555-4555-8555-555555555555'
@@ -41,6 +42,7 @@ const MIN = 60 * SEC
 // 9:00 PM EDT on 2026-10-14: the stall starts with the first tick.
 const T0 = Date.parse('2026-10-15T01:00:00Z')
 const STALE_JOB = CRON_JOBS.find((j) => j.id === 'sightings-export')!
+const BETTER_STACK_URL = 'https://in.example.betterstackdata.com'
 
 /** Which tick a call comes from, and whether that tick's invocation has ended. */
 const tickOf = new AsyncLocalStorage<{ startedAt: number; ended: boolean }>()
@@ -100,6 +102,8 @@ let posts: Post[]
 /** Posts an abandoned job tried after its invocation ended: production never makes them. */
 let cutPosts: Post[]
 let supabaseRequests: number
+/** Every page sent to the Better Stack source the "nobody can be told" alert reads. */
+let betterStackPages: { message: string; organization_id: string | null; reason: string }[]
 let idempotency: ReturnType<typeof memoryKv>
 
 /**
@@ -130,6 +134,10 @@ function stubNetwork() {
       if (process.env.SIM_DEBUG) process.stdout.write(`POST ${new Date(Date.now()).toISOString()} ${body.text} ${JSON.stringify(body.blocks).slice(0, 300)}\n`)
       return Promise.resolve(new Response(JSON.stringify({ ok: true, ts: String(posts.length) }), { status: 200 }))
     }
+    if (url === BETTER_STACK_URL) {
+      betterStackPages.push(JSON.parse(String(init?.body)) as (typeof betterStackPages)[number])
+      return Promise.resolve(new Response(null, { status: 202 }))
+    }
     return Promise.resolve(new Response('refused by the simulation', { status: 503 }))
   })
 }
@@ -157,6 +165,8 @@ function env(): Env {
     SUPABASE_SECRET_KEY: 'service-key',
     SECRET_ENCRYPTION_KEY: TEST_KEY,
     APP_URL: 'https://app.example',
+    BETTERSTACK_OUTAGE_TOKEN: 'bs-token',
+    BETTERSTACK_OUTAGE_URL: BETTER_STACK_URL,
   } as unknown as Env
 }
 
@@ -207,6 +217,7 @@ beforeEach(async () => {
   posts = []
   cutPosts = []
   supabaseRequests = 0
+  betterStackPages = []
   idempotency = memoryKv()
   await seedCopy(idempotency)
   stubNetwork()
@@ -241,6 +252,8 @@ describe('a stalled database through the real scheduled handler (#2061)', () => 
     expect(outageLines(heartbeat[0])[0].elements![0].text).toMatch(
       /^Sent during the database outage reported at Oct 14, 9:01 PM EDT \(database reads last failed at Oct 14, 9:0\d PM EDT\), so this alert may be a consequence of it\. It was posted using Slack settings saved \d+ minutes ago\.$/,
     )
+    // Slack could be told, so Better Stack is not paged.
+    expect(betterStackPages).toEqual([])
     // Both went to the channel in the saved copy, the only place the token lives in an outage.
     expect(posts.every((p) => p.channel === CONN.default_channel)).toBe(true)
   })
@@ -279,5 +292,18 @@ describe('a stalled database through the real scheduled handler (#2061)', () => 
     expect(outageLines(heartbeat[0])).toEqual([])
     expect(posts.filter(isDatabasePage)).toHaveLength(1)
     expect(posts).toHaveLength(2)
+  })
+
+  // The full outage the coordinator found uncovered (#2061, #2246 phase 3):
+  // the database down and no saved Slack copy. Nobody can be told in Slack, so
+  // the one page that matters is Better Stack's, through the tick's one pager,
+  // from the owner and the lookups alike, and it is sent once.
+  it('with no saved copy, pages Better Stack once with the pager line and posts nothing to Slack', async () => {
+    idempotency.store.delete(SLACK_CONNS_LASTGOOD_KEY)
+    seedHeartbeats(idempotency, T0 + 150 * SEC)
+    await runStalledMinutes(env(), 6)
+
+    expect(posts).toEqual([])
+    expect(betterStackPages).toEqual([{ message: NOBODY_TOLD_LINE, organization_id: null, reason: 'no_copy', dt: expect.any(String) }])
   })
 })
