@@ -3,7 +3,8 @@
 Spike 0 gates the #1698 run engine (plan: discussion #1945): the lease length, the
 slice budget, the per tick claim count `k` and whether R2 checkpoint resume (B4) is
 needed all follow from the ceilings measured here. Every premise below carries the
-command that re-measures it. A reading is what that command returned when it was
+command that re-measures it, or says what re-measuring it would take where no
+command in the repository can (P3). A reading is what that command returned when it was
 last run; re-run the command before relying on the number (L316).
 
 The work was in two stages. Stage 1 (#2266) measured everything that needed no
@@ -23,13 +24,13 @@ Logs: the invocation's own `$workers.outcome`, `wallTimeMs` and `cpuTimeMs`.
 |---|---|
 | `dispatch_ping` (s0-ping-01) | `scheduled()` reached `OpsInternal` through `SELF`: `result.json` = `{lane: ops, entrypoint: OpsInternal}`. The upload with a binding to the Worker's own new entrypoint was ACCEPTED in one step. |
 | `cron_subrequests` (s0-csub-01) | Ran sequential R2 HEADs at about 4.7 a second (about 210 ms each) and was ended by the WALL limit before the subrequest limit: outcome `canceled`, wall 899,751 ms, CPU 822 ms, about 3,900 subrequests done. The 10,000 subrequest ceiling was not reached and stays documented, not measured. |
-| `dispatch_subrequests` (s0-dsub-01) | The callee is its own invocation (`eventType: jsrpc`, entrypoint `OpsInternal`, its own requestId) and made about 4,600 R2 HEADs. Caller and callee were both ended at the same instant when the caller hit the cron wall: caller `canceled` at 899,986 ms, callee `canceled` at 899,368 ms (CPU 982 ms). |
+| `dispatch_subrequests` (s0-dsub-01) | The callee is its own invocation (`eventType: jsrpc`, entrypoint `OpsInternal`, its own requestId) and made about 4,600 R2 HEADs. Caller and callee were both ended at the same logged instant (16:24:48.685 UTC) when the caller hit the cron wall; the callee's wall time is about 600 ms shorter because it started about 600 ms later: caller `canceled` at 899,986 ms, callee `canceled` at 899,368 ms (CPU 982 ms). |
 | `dispatch_fanout` (s0-fan-01) | 40 concurrent `ping()` dispatches from one `scheduled()`: 40 fulfilled, 0 refused, each its own `jsrpc` invocation of about 7 ms. The documented 32 invocations per request did NOT refuse 40 fanned out calls; a larger fan out was not tried. |
 | `dispatch_detached` (s0-det-01) | A dispatch the caller did not await was CANCELED when the caller's invocation ended: callee `canceled` at 908 ms, before its first 10 s progress step. |
 | `cron_cpu` (s0-ccpu-01) | Outcome `exceededCpu` at CPU 32,000 ms (wall 36,974 ms). The minute cron's CPU ceiling is the documented 30 s plus the platform's small allowance. |
 | `dispatch_cpu` (s0-dcpu-01) | The callee has its OWN CPU budget: callee `exceededCpu` at 32,000 ms (wall 36,056 ms) while the caller used 1 ms and ended `ok`, receiving `Worker exceeded CPU time limit.` as the call's error. |
 | `cron_wall` (s0-cwall-01) | Outcome `canceled` (not `exceededWallTime`) at wall 899,707 ms, CPU 7 ms; the last progress line read 890,000 ms. The minute cron's wall ceiling is 15 minutes, as for the hourly crons. |
-| `dispatch_wall` (s0-dwall-01) | A callee asked to wait 16 minutes was ended with its caller: caller `canceled` at 899,749 ms, callee `canceled` at 899,057 ms, the same instant (17:05:48.507 UTC). A dispatched run has no wall clock of its own beyond its tick's. |
+| `dispatch_wall` (s0-dwall-01) | A callee asked to wait 16 minutes was ended with its caller: caller `canceled` at 899,749 ms, callee `canceled` at 899,057 ms, both logged at 17:05:48.507 UTC (the callee started about 700 ms later). A dispatched run has no wall clock of its own beyond its tick's. |
 
 Also measured on the way:
 
@@ -235,8 +236,9 @@ curl -sS -o /dev/null -D - -X POST -H 'content-type: application/json' --data '{
   secret, `PORTING_CAPTURE_MASTER`; after it, also `SELF` (service, entrypoint
   `OpsInternal`), and no cron. `OPS_SUPABASE_URL` and `OPS_SUPABASE_SECRET_KEY` are
   NOT set, so the ops Worker cannot read the ops database yet.
-- Re-measure: `q invocations-by-type.json bidspoke-worker-ops 168` and the
-  settings `curl` in P2 (add `bindings` to the `jq`).
+- Re-measure the current state (not the pre Stage 2 reading, which is past log
+  retention): `q invocations-by-type.json bidspoke-worker-ops 168` and the settings
+  `curl` in P2 (add `bindings` to the `jq`).
 
 ### P8. The ops database: 1,000 rows per read, and an 8 s (not 30 s) statement timeout
 
