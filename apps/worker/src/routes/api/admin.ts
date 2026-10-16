@@ -938,7 +938,7 @@ admin.post('/reencrypt-secrets', async (c) => {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
-const REPLAY_STATUS: Record<ReplayResult['kind'], 200 | 404 | 409 | 500 | 502> = {
+const REPLAY_STATUS: Record<ReplayResult['kind'], 200 | 404 | 409 | 500 | 502 | 503> = {
   not_found: 404,
   not_replayable: 409,
   conflict: 409,
@@ -947,6 +947,8 @@ const REPLAY_STATUS: Record<ReplayResult['kind'], 200 | 404 | 409 | 500 | 502> =
   replayed: 200,
   refused: 200,
   still_pending: 200,
+  // The Salesforce bulkhead was full, so nothing was sent and no attempt spent: try again shortly.
+  held: 503,
 }
 
 admin.get('/held-writes', async (c) => {

@@ -32,7 +32,7 @@
  * window of real readings (L172).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { forEachSlackOrg } from './alert-fanout'
+import { anyDelivered, forEachSlackOrg } from './alert-fanout'
 import { formatErr } from './format-error'
 import { logReadFailure } from './scheduled-read'
 import { sendQueryTimeoutAlert } from './slack'
@@ -281,7 +281,7 @@ export async function runQueryTimeoutWatchLive(supabase: SupabaseClient, kv: KVN
     read: () => readSlowStatements(supabase),
     kv,
     send: (offenders) =>
-      forEachSlackOrg(supabase, 'query-timeout-watch', (orgId) => sendQueryTimeoutAlert(supabase, orgId, offenders)).then((rs) => rs.some(Boolean)),
+      forEachSlackOrg(supabase, 'query-timeout-watch', 'tell-only', (orgId) => sendQueryTimeoutAlert(supabase, orgId, offenders)).then(anyDelivered),
     now: () => Date.now(),
     log: (line) => console.log(line),
   })

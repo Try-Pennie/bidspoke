@@ -145,10 +145,12 @@ const ROUTED: Array<[string, () => Harness, ExecutionContext | undefined, BuyerC
   ['a state not in the list', () => harness(), ctx({ state: 'ND' }), 'state_not_allowed'],
   ['outside the hours', () => harness({ clockMs: Date.UTC(2027, 8, 25, 18, 0) }), undefined, 'closed'],
   ['a click URL with no {prospect_id} placeholder', () => harness({ profiles: snapshot(clickBuyer({}, { click_url: 'https://trypennie.com/portal/libertyone/' })) }), undefined, 'click_url_has_no_prospect_id'],
+  // #2111: node() has no collections template, so a capped profile is judged by a step that reads no figure.
+  ['a collections cap on a step that reads no collections figure', () => harness({ profiles: snapshot(clickBuyer({ collectionsMaxPercent: 75 })) }), undefined, 'collections_not_wired'],
 ]
 
 /** The reasons that page a person, each through the click alert path's cooldown. */
-const PAGING_REASONS: ReadonlySet<string> = new Set(['partner_not_click', 'click_url_has_no_prospect_id'])
+const PAGING_REASONS: ReadonlySet<string> = new Set(['partner_not_click', 'click_url_has_no_prospect_id', 'collections_not_wired'])
 
 const run = (h: Harness, n = node(), c = ctx()) => executeBuyerClickCheckNode(n, c, h.deps)
 
@@ -509,9 +511,9 @@ describe('the saved copy of the count (#1632)', () => {
 // without joining prospect_trades and the trigger payload.
 describe('the values it judged (#1654)', () => {
   /** The default lead of ctx(), as parsed. */
-  const LEAD: JudgedLead = { state: 'TX', debt: 25000, loan_amount: 5000 }
+  const LEAD: JudgedLead = { state: 'TX', debt: 25000, loan_amount: 5000, collections: null, collections_percent: null }
   /** clickBuyer()'s limits, as recorded. */
-  const LIMITS: JudgedLimits = { debt_min: 20000, debt_max: null, loan_amount_min: 2500, state_allowed: true, allowed_state_count: 2, daily_lead_cap: 50 }
+  const LIMITS: JudgedLimits = { debt_min: 20000, debt_max: null, loan_amount_min: 2500, collections_max_percent: null, state_allowed: true, allowed_state_count: 2, daily_lead_cap: 50 }
 
   const cases: Array<[string, () => Harness, ExecutionContext, BuyerClickCheckOutput['reason'], BuyerClickCheckOutput['judged']]> = [
     ['room under the cap', () => harness({ count: 12 }), ctx(), 'eligible', { lead: LEAD, limits: LIMITS }],
@@ -536,6 +538,7 @@ describe('the values it judged (#1654)', () => {
     ['a debt of zero, which is not an amount the box can judge', () => harness(), ctx({ engineDebt: 0 }), 'missing_lead_field', { lead: { ...LEAD, debt: null }, limits: LIMITS }],
     ['a missing loan amount', () => harness(), ctx({ loanAmount: null }), 'missing_lead_field', { lead: { ...LEAD, loan_amount: null }, limits: LIMITS }],
     ['a state that is not a state, so it was never looked up in the list', () => harness(), ctx({ state: 'PR' }), 'missing_lead_field', { lead: { ...LEAD, state: null }, limits: { ...LIMITS, state_allowed: null } }],
+    ['a collections cap on a step that reads no collections figure', () => harness({ profiles: snapshot(clickBuyer({ collectionsMaxPercent: 75 })) }), ctx(), 'collections_not_wired', { lead: LEAD, limits: { ...LIMITS, collections_max_percent: 75 } }],
   ]
   for (const [what, make, c, reason, judged] of cases) {
     it(`${what}: ${reason}, recording the values that decided it`, async () => {
@@ -549,7 +552,7 @@ describe('the values it judged (#1654)', () => {
     // Every case above whose limits are null stopped before the box: no profile,
     // or a refusal of the buyer itself (offer sold, disabled, switched off, no
     // placeholder). Every case whose limits are set reached the box.
-    const boxReasons: ReadonlySet<string> = new Set(['eligible', 'daily_click_cap', 'no_daily_cap', 'state_not_allowed', 'blackout', 'closed', 'debt_below_min', 'debt_above_max', 'loan_amount_below_min', 'missing_lead_field'])
+    const boxReasons: ReadonlySet<string> = new Set(['eligible', 'daily_click_cap', 'no_daily_cap', 'state_not_allowed', 'blackout', 'closed', 'debt_below_min', 'debt_above_max', 'loan_amount_below_min', 'missing_lead_field', 'collections_not_wired'])
     for (const [what, , , reason, judged] of cases) {
       if (reason === 'cap_check_error') continue
       expect(judged?.limits !== null, what).toBe(boxReasons.has(reason))
@@ -592,5 +595,62 @@ describe('the values it judged (#1654)', () => {
     const r = await run(harness(), node({ partner_id: 'liberty1' }))
     expect(r.failure?.reason).toBe('partner_id_invalid')
     expect(r.output.judged).toEqual({ lead: LEAD, limits: null })
+  })
+})
+
+// #2111: Liberty1 caps collections at 75 percent of the debt the box judges.
+describe('the collections cap (#2111)', () => {
+  const COLLECTIONS = '{{trigger.payload.collections}}'
+  const capped = () => harness({ profiles: snapshot(clickBuyer({ collectionsMaxPercent: 75 })) })
+  /** 75 percent of ctx()'s debt of 25,000. */
+  const AT_CAP = 18750
+
+  it('offers a lead with collections at exactly the cap, recording the figure, its share and the cap', async () => {
+    const r = await run(capped(), node({ collections: COLLECTIONS }), ctx({ collections: AT_CAP }))
+    expect(r.output.reason).toBe('eligible')
+    expect(r.output.judged.lead).toMatchObject({ collections: AT_CAP, collections_percent: 75 })
+    expect(r.output.judged.limits?.collections_max_percent).toBe(75)
+  })
+
+  it('refuses one cent over the cap as collections_above_max before the count is read, and pages nobody', async () => {
+    const h = capped()
+    const r = await run(h, node({ collections: COLLECTIONS }), ctx({ collections: AT_CAP + 0.01 }))
+    expect(r.failure).toBeUndefined()
+    expect(r.output).toMatchObject({ _route: 'not_eligible', reason: 'collections_above_max' })
+    expect(h.counterReads).toEqual([])
+    expect(h.alerts).toEqual([])
+  })
+
+  it('offers a lead with no collections at all', async () => {
+    const r = await run(capped(), node({ collections: COLLECTIONS }), ctx({ collections: 0 }))
+    expect(r.output.reason).toBe('eligible')
+  })
+
+  it('refuses a lead whose collections template resolves to nothing as missing_lead_field, recording null', async () => {
+    const r = await run(capped(), node({ collections: COLLECTIONS }), ctx())
+    expect(r.output.reason).toBe('missing_lead_field')
+    expect(r.output.judged.lead).toMatchObject({ collections: null, collections_percent: null })
+  })
+
+  it('a cap on a step with no collections template routes every lead out as collections_not_wired and pages, never failing the step', async () => {
+    for (const config of [{}, { collections: '' }, { collections: '   ' }]) {
+      const h = capped()
+      const r = await run(h, node(config), ctx({ collections: 0 }))
+      expect(r.failure, JSON.stringify(config)).toBeUndefined()
+      expect(r.output, JSON.stringify(config)).toMatchObject({ _route: 'not_eligible', reason: 'collections_not_wired' })
+      expect(r.output.detail).toContain('collections')
+      expect(h.counterReads).toEqual([])
+      expect(h.alerts).toEqual([expect.objectContaining({ kind: 'page', reason: 'collections_not_wired', partner_id: PARTNER_ID, partner_slug: 'liberty1', prospect_id: null, workflow_id: 'wf-1', trace_id: 'trace-1' })])
+    }
+  })
+
+  it('without a cap, a template is read and recorded but decides nothing, and no template changes nothing', async () => {
+    const withTemplate = await run(harness(), node({ collections: COLLECTIONS }), ctx({ collections: 25000 }))
+    expect(withTemplate.output.reason).toBe('eligible')
+    expect(withTemplate.output.judged.lead).toMatchObject({ collections: 25000, collections_percent: 100 })
+    expect(withTemplate.output.judged.limits?.collections_max_percent).toBeNull()
+    const without = await run(harness(), node(), ctx({ collections: 25000 }))
+    expect(without.output.reason).toBe('eligible')
+    expect(without.output.judged.lead).toMatchObject({ collections: null, collections_percent: null })
   })
 })

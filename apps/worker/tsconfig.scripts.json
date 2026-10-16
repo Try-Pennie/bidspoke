@@ -23,5 +23,5 @@
   // money-gate holds Node side code too: the replay service, the comparator, the
   // fixture tests (#1704). Its workerd harness is typechecked by tsconfig.do.json.
   "include": ["scripts", "src", "money-gate"],
-  "exclude": ["src/durable-objects/__tests__/*.workers.test.ts", "money-gate/harness/*.workers.test.ts", "money-gate/harness/replay-core.ts", "money-gate/harness/isolate-memory.ts", "money-gate/harness/import-meta.d.ts"]
+  "exclude": ["src/durable-objects/__tests__/*.workers.test.ts", "src/ops/__tests__/*.workers.test.ts", "money-gate/harness/*.workers.test.ts", "money-gate/harness/replay-core.ts", "money-gate/harness/isolate-memory.ts", "money-gate/harness/import-meta.d.ts"]
 }

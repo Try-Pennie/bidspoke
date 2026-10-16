@@ -100,7 +100,7 @@ M1's bidding flow is fundamentally different from Tripoint's, and must be implem
 3. **No accept/post step in the main flow.** The post on conversion is handled by a separate endpoint Brian built, triggered when Denise's frontend sends the user to the click URL.
 4. **60-second delay on M1 conversion endpoint** — Brian's conversion API has a 60-second intentional delay before forwarding the request. This is a product requirement from M1, not a bug. Do not remove it.
 
-**Implication for Partner Bid node config:** M1 needs a `bid_mode: 'ping_only'` (or similar) flag so the node knows to return the click URL as part of its output without attempting a second confirmation call. The Bid Evaluation node then uses `bid_amount` for comparison but passes `click_through_url` through to the Response node for the final payload.
+**Implication for Partner Bid node config:** M1 needs a `bid_mode: 'ping_only'` (or similar) flag so the node knows to return the click URL as part of its output without attempting a second confirmation call. The Bid Evaluation node then uses `bid_amount` for comparison but passes `click_through_url` through to the Response node for the final payload. (Later note: the `bid_mode` flag was built but never acted on by the node, left the partners page in PM-9, and was retired in #2182.)
 
 **Enabling M1:** Bruno confirmed it's currently hard-coded off (returns 0 bid, always loses). To enable: remove the early-return override and pull from the Partner Bid Config. Coordinate with Brian on M1's current API response shape before flipping on.
 

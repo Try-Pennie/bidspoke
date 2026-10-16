@@ -29,7 +29,6 @@ const partner: Partner = {
   bid_resolver_type: 'api',
   bid_resolver_config: {},
   outbound_field_mapping: null,
-  bid_mode: 'commit',
   bid_comparison_source: 'auto',
   extra_extraction: null,
   last_probe_response: null,

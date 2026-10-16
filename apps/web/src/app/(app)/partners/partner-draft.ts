@@ -32,6 +32,12 @@ export interface FieldEntry {
   label: string
   /** A row list's rows merge as row groups, never one flattened row at a time (#2134). */
   mergeGroup?: MergeGroup
+  /**
+   * No tab draws a control for it (#2137): kept so the merge and the history can
+   * name a change made outside the page, and a problem with it is said at page
+   * level rather than marking a tab with nothing to show.
+   */
+  offPage?: true
 }
 
 /**
@@ -62,7 +68,9 @@ export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
   partnerField('name', 'Identity', 'Name'),
   partnerField('slug', 'Identity', 'Slug'),
   partnerField('partner_type', 'Identity', 'Type'),
-  partnerField('priority', 'Identity', 'List order'),
+  // List order left the page with the alphabetical list (#2137, PM-1); the column
+  // stays in the data, so the merge and the history still name it.
+  { ...partnerField('priority', 'Identity', 'List order (not shown on this page)'), offPage: true },
   partnerField('is_active', 'Identity', 'Status'),
   partnerField('bid_resolver_type', 'Bid resolution', 'Resolver', 'bid_group'),
   partnerField('bid_resolver_config', 'Bid resolution', 'Resolver settings', 'bid_group'),
@@ -71,7 +79,7 @@ export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
   partnerField('cf_secret_key', 'Bid resolution', 'Credential', 'bid_group'),
   partnerField('bid_comparison_source', 'Bid resolution', 'Compare bids from', 'bid_group'),
   partnerField('click_url', 'Click URL', 'Click URL', 'workflow_values'),
-  partnerField('dedup_endpoint', 'Endpoints', 'Dedup endpoint', 'bid_group'),
+  partnerField('dedup_endpoint', 'Duplicate check', 'Dedup endpoint', 'bid_group'),
   partnerField('outbound_field_mapping', 'Outbound field mapping', 'Outbound field mapping', 'bid_group'),
   partnerField('extra_extraction', 'Response handling', 'Extra extraction', 'bid_group'),
   partnerField('last_probe_response', 'Response handling', 'Sample response', 'bid_group'),
@@ -83,7 +91,7 @@ export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
   partnerField('circuit_window_seconds', 'Circuit breaker', 'Window (seconds)', 'bid_group'),
   partnerField('circuit_cooldown_seconds', 'Circuit breaker', 'Pause duration (seconds)', 'bid_group'),
   partnerField('response_classification', 'Response classification', 'Response classification', 'bid_group'),
-  partnerField('confirmation_window_ms', 'Bid confirmation latency', 'Confirmation window (ms)', 'bid_group'),
+  partnerField('confirmation_window_ms', 'Confirmation window', 'Confirmation window (ms)', 'bid_group'),
   partnerField('sell_off_offer_title', 'Sell-off offer', 'Sell-off offer title', 'workflow_values'),
   partnerField('sell_off_offer_details', 'Sell-off offer', 'Sell-off offer details', 'workflow_values'),
   partnerField('alert_config', 'Alert configuration', 'Alerts', 'bid_group'),
@@ -97,6 +105,8 @@ export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
   profileField('debt_min', 'Eligibility', FIELD_LABELS.debt_min),
   profileField('debt_max', 'Eligibility', FIELD_LABELS.debt_max),
   profileField('loan_amount_min', 'Eligibility', FIELD_LABELS.loan_amount_min),
+  // #2111: stored by the server half; #2268 adds the control and moves this label into FIELD_LABELS.
+  profileField('collections_max_percent', 'Eligibility', 'Collections at most (% of debt)'),
   profileField('hourly_lead_cap', 'Caps', FIELD_LABELS.hourly_lead_cap),
   profileField('daily_lead_cap', 'Caps', FIELD_LABELS.daily_lead_cap),
   profileField('hourly_spend_cap_cents', 'Caps', FIELD_LABELS.hourly_spend_cap_cents),
