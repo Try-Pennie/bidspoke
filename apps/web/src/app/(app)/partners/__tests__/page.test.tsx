@@ -17,7 +17,6 @@ vi.mock('next/navigation', () => ({
 // committed, which the stub drives through onDeleted.
 vi.mock('../PartnerForm', () => ({
   __esModule: true,
-  UNSAVED_CHANGES_MESSAGE: 'unsaved',
   default: (props: {
     partner?: { id: string }
     onDeleted?: (id: string, answer: { ok: true; stored_copy_warning?: string; state_reset_warning?: string }) => void

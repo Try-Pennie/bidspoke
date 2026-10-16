@@ -30,6 +30,7 @@ import { api } from '@/lib/api'
 import type { Partner, PartnerDeleteCheck, PartnerDeleted } from '@/lib/api'
 import { PartnerLiveContext, type PartnerLiveDeps } from '@/components/partners/live/PartnerLive'
 import type { JoinFn } from '@/lib/partner-live-channel'
+import { leaveThen } from '@/lib/leave-guard'
 
 const ORG = '9d9d0d3a-1959-41d5-95ca-c1399fa54590'
 const ID = '2b0c6c39-1d1e-4a3f-9d0f-3c0b5a6e7f81'
@@ -94,6 +95,22 @@ beforeEach(() => {
   vi.mocked(api.partners.deleteCheck).mockResolvedValue(check)
   // The History tab a test moves to reads the partner history (#2141).
   vi.mocked(api.partners.history).mockResolvedValue({ partnerId: ID, entries: [], complete: true, completeSince: null })
+})
+
+describe('a delete is not an unsaved edit (#2138 with #2140)', () => {
+  it('DELETE typed in the box, and the delete running, raise no save bar, no leave question and no browser warning', async () => {
+    const { deps } = liveHarness()
+    renderForm(deps)
+    await startDelete()
+    expect(document.querySelector('[data-save-bar]')).toBeNull()
+    const unload = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(unload)
+    expect(unload.defaultPrevented).toBe(false)
+    const go = vi.fn()
+    leaveThen({ kind: 'partner', name: 'AmOne' }, go)
+    expect(go).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+  })
 })
 
 describe('a delete in flight while the person changes tab (#2140)', () => {

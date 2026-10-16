@@ -5,7 +5,23 @@
  */
 import { describe, it, expect } from 'vitest'
 import { DISPLAY_TIME_ZONES } from '@bidspoke/buyer-profile'
-import { etDayHeading, etDayKey, formatCalendarDay, formatEtClock, formatEtDateTime, formatEtDayTime, formatInZone, formatLogTime, zoneShiftFromEastern } from '../dates'
+import { etDayHeading, etDayKey, formatCalendarDay, formatElapsed, formatEtClock, formatEtDateTime, formatEtDayTime, formatInZone, formatLogTime, zoneShiftFromEastern } from '../dates'
+
+describe('formatElapsed (#2138): the save bar\'s running time', () => {
+  it('counts whole seconds, one second singular, and moves to minutes past a minute', () => {
+    expect(formatElapsed(0)).toBe('0 seconds')
+    expect(formatElapsed(1_400)).toBe('1 second')
+    expect(formatElapsed(2_999)).toBe('2 seconds')
+    expect(formatElapsed(59_999)).toBe('59 seconds')
+    expect(formatElapsed(60_000)).toBe('1 minute')
+    expect(formatElapsed(61_000)).toBe('1 minute 1 second')
+    expect(formatElapsed(125_000)).toBe('2 minutes 5 seconds')
+  })
+
+  it('never counts below zero, so a clock that steps back says 0 seconds', () => {
+    expect(formatElapsed(-5_000)).toBe('0 seconds')
+  })
+})
 
 // #2135: the partners page's times all go through dates.ts (dates-in-partners guard).
 describe('formatEtDateTime and formatCalendarDay (#2135)', () => {
