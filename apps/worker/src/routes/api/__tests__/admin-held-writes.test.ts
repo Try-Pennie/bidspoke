@@ -125,6 +125,25 @@ describe('the held Salesforce write actions', () => {
     expect(vi.mocked(writeAuditLog).mock.calls[0][6]).toMatchObject({ outcome: 'replayed', recorded: true })
   })
 
+  // #468: the replay asks the Salesforce read-back whether it holds the row's
+  // write, through the at-risk record of that run's step in the binding the walk
+  // writes it to, before anything is sent.
+  it('hands the replay a read-back check that reads the row\'s own at-risk record', async () => {
+    vi.mocked(replayHeldWrite).mockResolvedValue({ kind: 'replayed', recorded: true })
+    const asked: string[] = []
+    const env = { ...testEnv, IDEMPOTENCY: { get: async (k: string) => { asked.push(k); return null } } } as unknown as Env
+    const res = await app.request(
+      `/admin/held-writes/${ID}/replay`,
+      { method: 'POST', headers: { Authorization: 'Bearer tok', 'Content-Type': 'application/json' }, body: JSON.stringify({ dryRun: false }) },
+      env,
+      mockCtx,
+    )
+    expect(res.status).toBe(200)
+    const deps = vi.mocked(replayHeldWrite).mock.calls[0][0]
+    expect(await deps.readBackHolds('01920000-0000-7000-8000-000000000471', 'patch_submission')).toBe(false)
+    expect(asked).toEqual(['at-risk-write:01920000-0000-7000-8000-000000000471:patch_submission'])
+  })
+
   it('answers each outcome with a status that says what happened', async () => {
     const cases: Array<[Awaited<ReturnType<typeof replayHeldWrite>>, number]> = [
       [{ kind: 'not_found' }, 404],
