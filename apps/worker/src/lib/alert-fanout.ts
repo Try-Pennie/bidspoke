@@ -183,10 +183,10 @@ export type SlackFanout =
 /**
  * Run `perOrg` once for each org with a Slack connection, in order, and return
  * each result. `perOrg` returns true when it delivered (or was a legitimate
- * no-op, e.g. the org opted out). Callers fold the results themselves:
- * drain-stall and big-table-guard want "any delivered" (`.some`),
- * sf-matrix-audit wants "every delivered" (`.every`) and also that the list
- * was read at all.
+ * no-op, e.g. the org opted out). Callers fold the `SlackFanout` with
+ * `anyDelivered` (drain-stall, big-table-guard and the other once per incident
+ * alerts, through rateLimitedOrgAlert) or `everyDelivered` (sf-matrix-audit),
+ * both false when the list could not be read at all.
  */
 export async function forEachSlackOrg(
   supabase: SupabaseClient,
