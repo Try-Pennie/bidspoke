@@ -9,12 +9,13 @@
  * job is what reads those records, and it is the only automatic resender of
  * post-answer writes, so #468 is narrowed to writes outside it.
  *
- * WHAT IT JUDGES. Writes to Applicant__c, Prospect__c and Lead carrying their own
- * engine stamp (engine/write-marker.ts). "Landed" means the record holds THIS
- * write's marker, never that its fields look equal. A Submission__c has no
- * marker field, so its held updates, and any update held from before the stamp
- * shipped, are left to the held alert (#2163), which the capture still sends for
- * them. That decision is recorded on #2023.
+ * WHAT IT JUDGES. Writes to Applicant__c, Prospect__c, Lead and, since #2203,
+ * Submission__c carrying their own engine stamp (engine/write-marker.ts, whose
+ * one object list the stamp and this job both read). "Landed" means the record
+ * holds THIS write's marker, never that its fields look equal. An update held
+ * without its own stamp (one recorded before the stamp shipped for its object,
+ * or one whose marker would not fit) is never this job's, and is left to the
+ * held alert (#2163), which the capture still sends for it.
  *
  * EACH TICK, separate from the database read-back (lib/unconfirmed-write-sweep.ts):
  * its own KV prefix, answering flag, read budget and minimum age, so Salesforce
@@ -67,6 +68,27 @@
  * from a separate check run by another minute job, the read-back not running
  * while writes wait (checkSalesforceReadBackLiveness).
  *
+ * A CREDIT INQUIRY POST (#2172, Dan's D5 on #1680, 2026-10-15) is held the same
+ * way, recorded before it is sent (engine/at-risk-writes.ts), and judged here by
+ * the one marker every successful post that carries inquiries leaves: the
+ * `Inquiries_<leadId>` file linked to the Submission's Lead, created since the
+ * post began (#2169, 150 of 150; engine/inquiry-post.ts). It has no fields to
+ * merge or conflict on, so each post is its own unit:
+ *  - an empty list wrote nothing and was answered 200, so it landed; a missing
+ *    list, or a body the endpoint cannot read, is answered 500 before any write,
+ *    so there is nothing to send. Both are settled at once, unread and unsent;
+ *  - otherwise the Submission's Lead is read, then the file. Present is landed.
+ *    Absent is resent ONCE (MAX_INQUIRY_RESENDS), the held body exactly as sent,
+ *    under the same claim that fails closed, its attempt counted before the send;
+ *  - a resend answered 2xx is confirmed. One refused (a 404) is the resend
+ *    failed alert. One answered 500 is unknown (the class does not roll back, so
+ *    rows can be written without the file) and is read again, as is one with no
+ *    answer; still no file after the one resend is the still not confirmed alert;
+ *  - a Submission gone, or with no Lead, is never sent (Salesforce refuses it)
+ *    and is said in the resend failed alert, worded as not resent.
+ * The minimum age, the windows, the liveness check and the unread alert are the
+ * updates' own: the post is sent once, at its step's start, so the same bound holds.
+ *
  * Its own state is in KV beside the held writes, under `sf-read-back:`, and holds
  * field names, counts and times, never a value, so the key rotation does not
  * touch it. A write's record expires with the held write it describes (24 hours),
@@ -78,6 +100,7 @@ import type { Env } from '../env'
 import { AT_RISK_WRITE_PREFIX, AT_RISK_WRITE_TTL_SECONDS, parseAtRiskEntry, type AtRiskEntry } from '../engine/at-risk-writes'
 import { WRITE_MARKER_FIELD, parseWriteMarker, readBackOwns, stampsWrites, writeMarker } from '../engine/write-marker'
 import { salesforceRejectedTheWrite } from '../engine/nodes/salesforce'
+import { CREDIT_INQUIRY_APEX_PATH, inquiryMarkerQuery, inquiryPostOf, type InquiryPost } from '../engine/inquiry-post'
 import { decryptSecret, secretKeys, type SecretKeyInput } from './secret-crypto'
 import { makeAlertClaims, makeSendClaims, raceDeadline, type AlertClaims, type SendClaims } from './alert-claim'
 import { isSalesforceApiName, isSalesforceRecordId, salesforcePortFor, type SalesforcePort } from './writeback-replay'
@@ -107,6 +130,9 @@ export const UNREAD_ALERT_AFTER_MS = 15 * 60_000
 
 /** Resends per write, at most. */
 export const MAX_RESENDS = 2
+
+/** Resends per credit inquiry post, at most: each one that lands attaches another file (D5). */
+export const MAX_INQUIRY_RESENDS = 1
 
 /** Salesforce calls this job has out at once. */
 export const SF_CONCURRENCY = 2
@@ -183,10 +209,12 @@ export interface ReadBackSummary {
   truncated: boolean
   /** Gone between the list and the read, or not a record the watch wrote. */
   skipped: number
-  /** Not the read-back's: a Submission, or an update held from before the stamp. */
+  /** Not the read-back's: an update held without its own stamp (from before the stamp shipped for its object). */
   not_ours: number
   /** A body the keys could not open. */
   unreadable_entries: number
+  /** Credit inquiry posts that could never write anything (no list, or a body the endpoint cannot read). */
+  nothing_to_send: number
   /** Settled earlier and waiting to expire. */
   finished: number
   young: number
@@ -255,11 +283,13 @@ interface Held {
   firstAttemptMs: number
   /** When KV deletes the held write: its last write plus 24 hours. */
   expiresAtMs: number
+  /** Set for a credit inquiry post (#2172): what its body can write. */
+  inquiry?: InquiryPost
 }
 
 /**
- * What one held write is to the read-back: gone, not its own (a Submission, or
- * held without its own marker, which keeps the held alert), settled (waiting
+ * What one held write is to the read-back: gone, not its own (held without its
+ * own marker, which keeps the held alert), settled (waiting
  * only for KV to expire it), unopenable with the keys, or owned and unsettled.
  * The one classifier the tick and the liveness check both use, so "waiting for
  * the read-back" means the same thing in both (merge review, #2201).
@@ -275,10 +305,14 @@ async function readHeldWrite(kv: ReadBackKv, keys: SecretKeyInput, name: string)
   const id = name.slice(AT_RISK_WRITE_PREFIX.length)
   const entry = parseAtRiskEntry(await kv.get(name))
   if (!entry) return { kind: 'gone' }
-  if (!stampsWrites(entry.sf_object)) return { kind: 'not_ours' }
+  // A credit inquiry post (#2172) is always the read-back's: it needs no stamp.
+  const inquiryPost = entry.sf_operation === 'apex' && entry.apex_path === CREDIT_INQUIRY_APEX_PATH
+  if (!inquiryPost && !stampsWrites(entry.sf_object)) return { kind: 'not_ours' }
   const state = parseState(await kv.get(`${STATE_PREFIX}${id}`))
   const base = { id, key: name, entry, state, firstAttemptMs: Date.parse(entry.first_attempt_at), expiresAtMs: Date.parse(entry.recorded_at) + AT_RISK_WRITE_TTL_SECONDS * 1000 }
-  if (state.done) return { kind: 'settled', held: { ...base, body: {} } }
+  // Marks a settled or unopenable post as one, so its alert is worded as a post.
+  const asPost: Partial<Held> = inquiryPost ? { inquiry: { kind: 'malformed', reason: 'not opened' } } : {}
+  if (state.done) return { kind: 'settled', held: { ...base, body: {}, ...asPost } }
   let body: Record<string, unknown>
   try {
     const parsed: unknown = JSON.parse(await decryptSecret(entry.body_encrypted, keys))
@@ -286,8 +320,9 @@ async function readHeldWrite(kv: ReadBackKv, keys: SecretKeyInput, name: string)
     body = parsed as Record<string, unknown>
   } catch (e) {
     console.error(`[${SF_READ_BACK_JOB}] could not open the held write ${id}:`, formatErr(e))
-    return { kind: 'unopenable', held: { ...base, body: {} } }
+    return { kind: 'unopenable', held: { ...base, body: {}, ...asPost } }
   }
+  if (inquiryPost) return { kind: 'owned', held: { ...base, body, inquiry: inquiryPostOf(body) } }
   if (!readBackOwns(entry.sf_object, body, entry.execution_id, entry.step_namespace)) return { kind: 'not_ours' }
   return { kind: 'owned', held: { ...base, body } }
 }
@@ -303,8 +338,8 @@ export const MAX_KEYS_SCANNED = 1000
  * Lists the held writes oldest first and classifies them, page after page, until
  * `wanted` writes waiting for the read-back (owned and unsettled, or unopenable)
  * are found, the list ends, or MAX_KEYS_SCANNED keys have been looked at. Paging
- * matters because settled writes stay in KV until they expire, and Submission and
- * unstamped ones are never the read-back's: a single first page can be full of
+ * matters because settled writes stay in KV until they expire, and unstamped ones
+ * are never the read-back's: a single first page can be full of
  * them and hide every write still waiting (#2201 review).
  */
 async function scanHeldWrites(kv: ReadBackKv, keys: SecretKeyInput, wanted: number): Promise<{ reads: HeldRead[]; listed: number; truncated: boolean }> {
@@ -327,6 +362,8 @@ async function scanHeldWrites(kv: ReadBackKv, keys: SecretKeyInput, wanted: numb
 }
 
 const fieldsOf = (body: Record<string, unknown>) => Object.keys(body).filter((f) => f !== WRITE_MARKER_FIELD)
+/** The fields a held write set, for its alert: none for a credit inquiry post, which sets no field by name. */
+const heldFields = (h: Pick<Held, 'body' | 'inquiry'>) => (h.inquiry ? [] : fieldsOf(h.body))
 const isBlank = (v: unknown) => v === null || v === undefined || v === ''
 
 /** A Salesforce time read as ms: `2026-10-15T12:00:00.000+0000` included. NaN otherwise. */
@@ -421,7 +458,7 @@ export function decideRecord(entries: RecordEntry[], current: Record<string, unk
 
 function emptySummary(): ReadBackSummary {
   return {
-    listed: 0, truncated: false, skipped: 0, not_ours: 0, unreadable_entries: 0, finished: 0, young: 0, unread: 0, reads: 0,
+    listed: 0, truncated: false, skipped: 0, not_ours: 0, unreadable_entries: 0, nothing_to_send: 0, finished: 0, young: 0, unread: 0, reads: 0,
     landed: 0, landed_by_resend: 0, superseded: 0, resent: 0, resent_confirmed: 0, resend_unanswered: 0, resend_refused: 0,
     exhausted: 0, conflicts: 0, deferred: 0, conflict_fields: {}, alerts: 0,
   }
@@ -431,7 +468,7 @@ function emptySummary(): ReadBackSummary {
 interface Finding {
   kind: 'resend_failed' | 'unknown' | 'conflict'
   flag: 'done' | 'unknown'
-  held: Pick<Held, 'id' | 'entry' | 'expiresAtMs'> & { state: ReadBackState }
+  held: Pick<Held, 'id' | 'entry' | 'expiresAtMs' | 'inquiry'> & { state: ReadBackState }
   fields: string[]
   detail?: string
   conflict_fields?: string[]
@@ -474,7 +511,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
   }
   const finish = async (h: Held, done: Omit<NonNullable<ReadBackState['done']>, 'at' | 'fields'>, extra: Partial<Finding> = {}) => {
     resolved.add(h.id)
-    const fields = fieldsOf(h.body)
+    const fields = heldFields(h)
     const state: ReadBackState = { ...h.state, done: { ...done, at: new Date(now()).toISOString(), fields } }
     // A write already said to be still not confirmed is not said again when the
     // read-back stops trying.
@@ -510,13 +547,25 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
       // The capture left it to the read-back, so nothing else will say it: it is
       // reported with the unread writes, under its own reason (L13).
       unopenable.push(r.held)
+    } else if (r.held.inquiry && r.held.inquiry.kind !== 'inquiries') {
+      // A credit inquiry post that can write nothing is settled without reading
+      // Salesforce: an empty list landed (answered 200, nothing written), and a
+      // missing list or an unreadable body is answered 500 before any write, so
+      // there is nothing to send, now or ever.
+      const post = r.held.inquiry
+      const why = post.kind === 'empty' ? 'an empty inquiry list, which writes nothing' : post.kind === 'missing_list' ? 'no inquiry list, which Salesforce refuses before writing anything' : post.reason
+      console.log(`[${SF_READ_BACK_JOB}] credit inquiry post ${r.held.id} needs no read back: ${why}`)
+      if (post.kind === 'empty') s.landed++
+      else s.nothing_to_send++
+      await forget(r.held)
     } else held.push(r.held)
   }
 
   // ── Group by record, oldest write first, and keep the records due ─────────
   const byRecord = new Map<string, Held[]>()
   for (const h of held) {
-    const k = `${h.entry.org_id}|${h.entry.sf_object}|${h.entry.sf_record_id}`
+    // A credit inquiry post is its own unit: nothing of it merges with an update.
+    const k = h.inquiry ? `inquiry|${h.id}` : `${h.entry.org_id}|${h.entry.sf_object}|${h.entry.sf_record_id}`
     byRecord.set(k, [...(byRecord.get(k) ?? []), h])
   }
   // An unreadable resend time reads as just sent: the side that sends nothing early (L50).
@@ -561,6 +610,36 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
     }
   }
 
+  /**
+   * The claim, then the attempt counted, before anything is sent. Only a won
+   * claim spends an attempt. One the object could not answer sends nothing and
+   * spends nothing, so a claim object that is down cannot use up a write's
+   * resends; one another tick holds is that tick's to send. An attempt that
+   * cannot be counted is not made, and its claim is freed so the next tick can
+   * make it. True when the caller may send.
+   */
+  const claimAttempt = async (h: Held, attempt: number, extra: Partial<ReadBackState> = {}): Promise<boolean> => {
+    const claimKey = `${RESEND_CLAIM_PREFIX}${h.id}:${attempt}`
+    const claimed = await deps.resendClaims.claim(claimKey, AT_RISK_WRITE_TTL_SECONDS)
+    if (claimed !== 'claimed') {
+      s.deferred++
+      deferred.add(h.id)
+      return false
+    }
+    const state: ReadBackState = { ...h.state, ...extra, attempts: attempt, last_attempt_at: new Date(now()).toISOString() }
+    try {
+      await putState(h, state)
+    } catch (e) {
+      console.error(`[${SF_READ_BACK_JOB}] could not record attempt ${attempt} of ${h.id}, so it is not sent:`, formatErr(e))
+      await deps.resendClaims.release(claimKey)
+      s.deferred++
+      deferred.add(h.id)
+      return false
+    }
+    h.state = state
+    return true
+  }
+
   const resend = async (h: Held, d: Extract<RecordDecision, { verdict: 'resend' }>, port: SalesforcePort, path: string): Promise<UnreadReason | null> => {
     const attempt = h.state.attempts + 1
     const marker = writeMarker(h.entry.execution_id, h.entry.step_namespace, attempt)
@@ -570,30 +649,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
       s.deferred++
       return null
     }
-    // The claim first: only a won claim spends an attempt. One the object could
-    // not answer sends nothing and spends nothing, so a claim object that is down
-    // cannot use up a write's resends; one another tick holds is that tick's to send.
-    const claimKey = `${RESEND_CLAIM_PREFIX}${h.id}:${attempt}`
-    const claimed = await deps.resendClaims.claim(claimKey, AT_RISK_WRITE_TTL_SECONDS)
-    if (claimed !== 'claimed') {
-      s.deferred++
-      deferred.add(h.id)
-      return null
-    }
-    // Then the attempt is counted, before anything is sent.
-    const state: ReadBackState = { ...h.state, attempts: attempt, last_attempt_at: new Date(now()).toISOString(), owned_by_later: d.ownedByLater }
-    try {
-      await putState(h, state)
-    } catch (e) {
-      // An attempt that cannot be counted is not made, and its claim is freed so
-      // the next tick can make it.
-      console.error(`[${SF_READ_BACK_JOB}] could not record attempt ${attempt} of ${h.id}, so it is not sent:`, formatErr(e))
-      await deps.resendClaims.release(claimKey)
-      s.deferred++
-      deferred.add(h.id)
-      return null
-    }
-    h.state = state
+    if (!(await claimAttempt(h, attempt, { owned_by_later: d.ownedByLater }))) return null
     count(h, d.candidates, d.conflicts)
     if (d.conflicts.length > 0) s.conflicts++
     s.resent++
@@ -619,6 +675,89 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
     return stopFor(answer.status)
   }
 
+  /** One read for a credit inquiry post: its body, or how the post was settled or the tick stopped. */
+  const readFor = async (h: Held, port: SalesforcePort, path: string, what: string): Promise<{ body: Record<string, unknown> } | { unread?: boolean; stop?: UnreadReason; settled?: boolean }> => {
+    s.reads++
+    const read = await call(port, 'GET', path)
+    if (read.kind === 'no_answer') {
+      console.warn(`[${SF_READ_BACK_JOB}] reading the ${what} for ${h.id} got no answer: ${read.error}`)
+      return { unread: true, stop: 'salesforce_not_answering' }
+    }
+    if (read.status < 200 || read.status >= 300) {
+      if (salesforceRejectedTheWrite(read.status, read.text)) {
+        const code = errorCodeOf(read.text)
+        await finish(h, {
+          kind: 'resend_failed',
+          resent: false,
+          detail: read.status === 404 ? `the ${what} no longer exists in Salesforce` : `Salesforce refused to read the ${what} (${read.status}${code ? ` ${code}` : ''})`,
+        })
+        return { settled: true }
+      }
+      return { unread: true, stop: stopFor(read.status) }
+    }
+    try {
+      const parsed: unknown = JSON.parse(read.text)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
+      return { body: parsed as Record<string, unknown> }
+    } catch {
+      return { unread: true, stop: 'salesforce_not_answering' }
+    }
+  }
+
+  /** One credit inquiry post that carries inquiries (#2172): its Lead, its file, and at most one resend. */
+  const processInquiry = async (h: Held, post: Extract<InquiryPost, { kind: 'inquiries' }>, port: SalesforcePort): Promise<{ unread?: boolean; stop?: UnreadReason }> => {
+    const sub = await readFor(h, port, `/sobjects/Submission__c/${post.submissionId}?fields=Lead__c`, 'Submission')
+    if (!('body' in sub)) return sub.settled ? {} : sub
+    const lead = sub.body.Lead__c
+    if (typeof lead !== 'string' || !isSalesforceRecordId(lead)) {
+      // InquiryParserRest answers 404 for a Submission with no Lead, writing nothing.
+      await finish(h, { kind: 'resend_failed', resent: false, detail: 'the Submission has no Lead, so Salesforce refuses the post' })
+      return {}
+    }
+    const marker = await readFor(h, port, `/query?q=${encodeURIComponent(inquiryMarkerQuery(lead, h.firstAttemptMs))}`, 'Inquiries file')
+    if (!('body' in marker)) return marker.settled ? {} : marker
+    const found = marker.body.totalSize
+    if (typeof found !== 'number') return { unread: true, stop: 'salesforce_not_answering' }
+    if (found > 0) {
+      s.landed++
+      if (h.state.attempts > 0) s.landed_by_resend++
+      await forget(h)
+      return {}
+    }
+    if (h.state.attempts >= MAX_INQUIRY_RESENDS) {
+      s.exhausted++
+      await finish(h, { kind: 'unknown' }, { still_trying: false })
+      return {}
+    }
+    const attempt = h.state.attempts + 1
+    if (!(await claimAttempt(h, attempt))) return {}
+    s.resent++
+    // The held body exactly as the run sent it: the endpoint has no marker field to add.
+    const raced = await raceDeadline(() => port.postApex(CREDIT_INQUIRY_APEX_PATH, JSON.stringify(h.body)), SF_CALL_DEADLINE_MS, deps.callDeadline)
+    if (raced.kind !== 'ok') {
+      console.warn(`[${SF_READ_BACK_JOB}] resend ${attempt} of credit inquiry post ${h.id} got no answer: ${raced.kind === 'threw' ? formatErr(raced.error) : 'past its deadline'}`)
+      s.resend_unanswered++
+      return { stop: 'salesforce_not_answering' }
+    }
+    const { status, text } = raced.value
+    if (status >= 200 && status < 300) {
+      s.resent_confirmed++
+      await forget(h)
+      return {}
+    }
+    if (salesforceRejectedTheWrite(status, text)) {
+      s.resend_refused++
+      await finish(h, { kind: 'resend_failed', resent: true, detail: `Salesforce answered ${status}` })
+      return {}
+    }
+    // A 500 is the class's own catch, which does not roll back: rows may be
+    // written without the file, so it is unknown and read again. Salesforce did
+    // answer, so the tick goes on; a login refusal or a rate limit stops it.
+    s.resend_unanswered++
+    console.warn(`[${SF_READ_BACK_JOB}] resend ${attempt} of credit inquiry post ${h.id} was answered ${status}, so whether it landed is read again`)
+    return status >= 500 ? {} : { stop: stopFor(status) }
+  }
+
   const processRecord = async (group: Held[]): Promise<{ unread?: boolean; stop?: UnreadReason }> => {
     const head = group[0].entry
     const portKey = `${head.org_id}|${head.workflow_id}`
@@ -635,6 +774,8 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
       unreadReason = 'credentials'
       return { unread: true }
     }
+    const inquiry = group[0].inquiry
+    if (inquiry) return inquiry.kind === 'inquiries' ? processInquiry(group[0], inquiry, port) : {}
     const fields = [...new Set(group.flatMap((h) => fieldsOf(h.body)))]
     const settleAll = async (detail: string) => {
       for (const h of group) await finish(h, { kind: 'resend_failed', detail })
@@ -727,7 +868,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
     // Never read is the unread alert's; read and resent, or read and not resendable, is this one.
     if (h.state.attempts < 1 && !deferred.has(h.id)) continue
     if (startedAt - h.firstAttemptMs < UNKNOWN_WINDOW_MS) continue
-    findings.push({ kind: 'unknown', flag: 'unknown', held: h, fields: fieldsOf(h.body), still_trying: h.state.attempts < MAX_RESENDS })
+    findings.push({ kind: 'unknown', flag: 'unknown', held: h, fields: heldFields(h), still_trying: h.state.attempts < (h.inquiry ? MAX_INQUIRY_RESENDS : MAX_RESENDS) })
   }
 
   // ── Conflict counts per field, by ET day ──────────────────────────────────
@@ -743,7 +884,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
   if (deps.recordRun && (s.reads > 0 || s.unread > 0 || s.alerts > 0)) {
     await deps.recordRun(startedAt, {
       outcome: s.resend_refused > 0 || s.exhausted > 0 ? 'unresolved-found' : s.unread > 0 ? 'unread' : 'resolved',
-      detail: `landed=${s.landed} resent=${s.resent} confirmed=${s.resent_confirmed} unanswered=${s.resend_unanswered} refused=${s.resend_refused} conflicts=${s.conflicts} unread=${s.unread} young=${s.young}`,
+      detail: `landed=${s.landed} nothing_to_send=${s.nothing_to_send} resent=${s.resent} confirmed=${s.resent_confirmed} unanswered=${s.resend_unanswered} refused=${s.resend_refused} conflicts=${s.conflicts} unread=${s.unread} young=${s.young}`,
       summary: { ...s },
     }).catch((e) => console.error(`[${SF_READ_BACK_JOB}] could not record the run:`, formatErr(e)))
   }
@@ -800,7 +941,8 @@ async function deliverFindings(
   const names = await workflowNamesFor(deps, [...new Set(findings.map((f) => f.held.entry.workflow_id))])
   const groups = new Map<string, Finding[]>()
   for (const f of findings) {
-    const k = `${f.held.entry.org_id}|${f.kind}`
+    // A credit inquiry post is worded as one, so it is never grouped with updates.
+    const k = `${f.held.entry.org_id}|${f.kind}|${f.held.inquiry ? 'inquiry' : 'update'}`
     groups.set(k, [...(groups.get(k) ?? []), f])
   }
   let delivered = 0
@@ -823,6 +965,7 @@ async function deliverFindings(
       first_attempt_at: f.held.entry.first_attempt_at,
       expires_at: new Date(f.held.expiresAtMs).toISOString(),
       resends: f.held.state.attempts,
+      ...(f.held.inquiry ? { inquiry_post: true } : {}),
       ...(f.detail ? { detail: f.detail } : {}),
       ...(f.still_trying !== undefined ? { still_trying: f.still_trying } : {}),
       ...(f.conflict_fields ? { conflict_fields: f.conflict_fields } : {}),
@@ -857,6 +1000,12 @@ async function deliverFindings(
   return delivered
 }
 
+/** How many of the waiting writes are credit inquiry posts, for the alert to say; nothing when none are. */
+function inquiryCount(entries: AtRiskEntry[]): { inquiry_posts?: number } {
+  const n = entries.filter((e) => e.sf_operation === 'apex').length
+  return n > 0 ? { inquiry_posts: n } : {}
+}
+
 /** The oldest unread write per org, once it has waited UNREAD_ALERT_AFTER_MS. Returns alerts delivered. */
 async function reportUnread(deps: SalesforceReadBackDeps, unread: Held[], reason: UnreadReason, nowMs: number): Promise<number> {
   const byOrg = new Map<string, Held[]>()
@@ -878,6 +1027,7 @@ async function reportUnread(deps: SalesforceReadBackDeps, unread: Held[], reason
               kind: 'unread',
               writes: [],
               count: list.length,
+              ...inquiryCount(list.map((h) => h.entry)),
               oldest_at: oldest.entry.first_attempt_at,
               oldest_expires_at: new Date(Math.min(...list.map((h) => h.expiresAtMs))).toISOString(),
               reason,
@@ -972,6 +1122,7 @@ export async function checkSalesforceReadBackLiveness(deps: LivenessDeps): Promi
               kind: 'not_running',
               writes: [],
               count: entries.length,
+              ...inquiryCount(entries),
               oldest_at: oldest,
               oldest_expires_at: new Date(oldestExpiry).toISOString(),
               last_finished_at: lastFinished,

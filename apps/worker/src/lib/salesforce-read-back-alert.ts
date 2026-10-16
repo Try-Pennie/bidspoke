@@ -6,6 +6,10 @@
  * Every alert names the record and the field names a write set, never a value:
  * the values are lead data, and the run page shows them when its step was logged.
  * Times are in ET.
+ *
+ * A credit inquiry post (#2172) sets no field by name, so its alerts are worded
+ * as a post for its Submission, with the check a person can make: the Inquiries
+ * file on that Submission's Lead. The read-back never groups posts with updates.
  */
 
 export type ReadBackAlertKind = 'resend_failed' | 'unknown' | 'conflict' | 'unread' | 'not_running'
@@ -41,6 +45,8 @@ export interface ReadBackAlertWrite {
   still_trying?: boolean
   /** conflict: the fields left out because each held a different value. */
   conflict_fields?: string[]
+  /** A credit inquiry post (#2172) rather than an update: it sets no field by name, and is worded as a post. */
+  inquiry_post?: true
   /** conflict: whether the other fields were written. */
   resent?: boolean
 }
@@ -52,6 +58,8 @@ export interface SalesforceReadBackAlert {
   conflict_rates?: Array<{ sf_object: string; field: string; conflicts: number; candidates: number }>
   /** unread and not_running: how many writes are waiting. */
   count?: number
+  /** unread and not_running: how many of those are credit inquiry posts (#2172). Absent when none are. */
+  inquiry_posts?: number
   /** ISO: the oldest waiting write's step start. */
   oldest_at?: string
   /** ISO: when the oldest waiting write's request is deleted. */
@@ -107,6 +115,71 @@ function lines(writes: ReadBackAlertWrite[], appUrl: string, line: (w: ReadBackA
 }
 
 const earliest = (writes: ReadBackAlertWrite[]) => writes.map((w) => w.expires_at).sort()[0]
+
+/** "Main Flow posted a lead's credit inquiries ... for Submission X", the opening every post alert shares. */
+const posted = (w: ReadBackAlertWrite) =>
+  `${plain(w.workflow_name)} posted a lead's credit inquiries to Salesforce at ${clock(w.first_attempt_at)} ET, for ${record(w)}`
+
+function postResendFailed(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert {
+  const title = 'Credit inquiry post could not be resent'
+  const [w] = p.writes
+  const why = (x: ReadBackAlertWrite) => plain(x.detail ?? 'Salesforce refused it')
+  if (p.writes.length === 1) {
+    return {
+      title,
+      fallback: `${title}: ${record(w)}`,
+      sections: [
+        `${posted(w)}, and the post did not land. ` +
+          (w.resent === false ? `Bidspoke did not send it again, because ${why(w)}.` : `Bidspoke sent it again and it failed: ${why(w)}.`),
+        "Bidspoke will not send it again. Until the lead's next credit pull, its Lead keeps the inquiry rows and counts it had before.",
+        'Fix: open that Submission in Salesforce and check why the post was refused. The run below shows what Bidspoke was sending, if its step was recorded.',
+        runLink(appUrl, w, 'View the run →'),
+      ],
+    }
+  }
+  return {
+    title,
+    fallback: `${title}: ${p.writes.length} posts`,
+    sections: [
+      `${p.writes.length} credit inquiry posts to Salesforce did not land, and Bidspoke could not send them again. Bidspoke will not send them again.`,
+      lines(p.writes, appUrl, (x) => `${plain(x.workflow_name)} at ${clock(x.first_attempt_at)} ET: ${record(x)}. ${why(x)}.`),
+      'Fix: open each Submission in Salesforce and check why its post was refused. Each run shows what Bidspoke was sending, if its step was recorded.',
+    ],
+  }
+}
+
+function postUnknown(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert {
+  const title = 'Credit inquiry post still not confirmed'
+  const [w] = p.writes
+  if (p.writes.length === 1) {
+    const until = clockOnDay(w.expires_at)
+    return {
+      title,
+      fallback: `${title}: ${record(w)}`,
+      sections: [
+        `${posted(w)}, and the post did not land in time. ` +
+          (w.resends === 0
+            ? 'Bidspoke found no Inquiries file on its Lead, and has not been able to send it again.'
+            : `Bidspoke sent it again ${times(w.resends)}, and Salesforce did not confirm it, so it is still not known whether it landed.`),
+        w.still_trying
+          ? `Bidspoke keeps trying, and holds the post until ${until}.`
+          : `Bidspoke will not send it again, because each post that lands attaches another file to the Lead. It holds the post until ${until}.`,
+        `Fix: before ${until}, open that Submission's Lead in Salesforce and look for an Inquiries file from ${clock(w.first_attempt_at)} ET or later. If there is none, the post did not land.`,
+        runLink(appUrl, w, 'View the run →'),
+      ],
+    }
+  }
+  const until = clockOnDay(earliest(p.writes))
+  return {
+    title,
+    fallback: `${title}: ${p.writes.length} posts`,
+    sections: [
+      `${p.writes.length} credit inquiry posts to Salesforce did not land in time, and Bidspoke has not been able to confirm any of them since, so it is still not known whether they landed.`,
+      lines(p.writes, appUrl, (x) => `${plain(x.workflow_name)} at ${clock(x.first_attempt_at)} ET: ${record(x)}.`),
+      `Fix: before ${until}, when the first held post is deleted, open each Submission's Lead in Salesforce and look for an Inquiries file from the time shown or later. If there is none, that post did not land.`,
+    ],
+  }
+}
 
 function resendFailed(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert {
   const title = 'Salesforce update could not be resent'
@@ -218,8 +291,21 @@ const UNREAD_BECAUSE: Record<UnreadReason, { why: string; fix: string }> = {
   },
 }
 
+/**
+ * What is waiting, with its verb: the updates as before, the credit inquiry posts
+ * by name (#2172), or both with how many of each.
+ */
+function waiting(n: number, posts = 0): string {
+  const updates = n - posts
+  const update = (k: number) => (k === 1 ? '1 update' : `${k} updates`)
+  const post = (k: number) => (k === 1 ? '1 credit inquiry post' : `${k} credit inquiry posts`)
+  if (posts <= 0) return `${n === 1 ? '1 Salesforce update' : `${n} Salesforce updates`} made after leads were answered ${n === 1 ? 'is' : 'are'}`
+  if (updates <= 0) return `${post(posts)} to Salesforce ${posts === 1 ? 'is' : 'are'}`
+  return `${n} Salesforce writes (${post(posts)} and ${update(updates)} made after leads were answered) are`
+}
+
 function unread(p: SalesforceReadBackAlert): ComposedAlert {
-  const title = 'Salesforce updates waiting to be checked'
+  const title = p.inquiry_posts ? 'Salesforce writes waiting to be checked' : 'Salesforce updates waiting to be checked'
   const n = p.count ?? 0
   const because = UNREAD_BECAUSE[p.reason ?? 'salesforce_not_answering']
   const until = p.oldest_expires_at ? clockOnDay(p.oldest_expires_at) : 'its deletion'
@@ -227,7 +313,7 @@ function unread(p: SalesforceReadBackAlert): ComposedAlert {
     title,
     fallback: `${title}: ${n}`,
     sections: [
-      `${n === 1 ? '1 Salesforce update' : `${n} Salesforce updates`} made after leads were answered ${n === 1 ? 'is' : 'are'} waiting to be read back, the oldest from ${p.oldest_at ? clock(p.oldest_at) : 'an unknown time'} ET. ` +
+      `${waiting(n, p.inquiry_posts)} waiting to be read back, the oldest from ${p.oldest_at ? clock(p.oldest_at) : 'an unknown time'} ET. ` +
         `Bidspoke could not read ${n === 1 ? 'it' : 'them'} this minute because ${because.why}.`,
       `It keeps trying every minute. Each held request is deleted 24 hours after it was made, the oldest at ${until}.`,
       `Fix: ${because.fix}.`,
@@ -244,7 +330,7 @@ function notRunning(p: SalesforceReadBackAlert): ComposedAlert {
     title,
     fallback: `${title}: ${n} waiting`,
     sections: [
-      `${n === 1 ? '1 Salesforce update' : `${n} Salesforce updates`} made after leads were answered ${n === 1 ? 'is' : 'are'} waiting to be read back, the oldest from ${p.oldest_at ? clock(p.oldest_at) : 'an unknown time'} ET, ` +
+      `${waiting(n, p.inquiry_posts)} waiting to be read back, the oldest from ${p.oldest_at ? clock(p.oldest_at) : 'an unknown time'} ET, ` +
         `and the job that reads them back has not finished a run ${since}.`,
       `Until it runs, nothing confirms or resends them. Each held request is deleted 24 hours after it was made, the oldest at ${until}.`,
       "Fix: check the worker's minute cron, and its logs for the Salesforce read back.",
@@ -255,9 +341,9 @@ function notRunning(p: SalesforceReadBackAlert): ComposedAlert {
 export function composeSalesforceReadBackAlert(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert {
   switch (p.kind) {
     case 'resend_failed':
-      return resendFailed(p, appUrl)
+      return p.writes.every((w) => w.inquiry_post) && p.writes.length > 0 ? postResendFailed(p, appUrl) : resendFailed(p, appUrl)
     case 'unknown':
-      return unknown(p, appUrl)
+      return p.writes.every((w) => w.inquiry_post) && p.writes.length > 0 ? postUnknown(p, appUrl) : unknown(p, appUrl)
     case 'conflict':
       return conflict(p, appUrl)
     case 'unread':

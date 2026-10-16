@@ -82,6 +82,8 @@ function salesforce(answer: { status: number; text: string } | Error, current: R
       if (answer instanceof Error) throw answer
       return answer
     },
+    // The replay resends updates only.
+    postApex: () => Promise.reject(new Error('the replay posted to Apex')),
   }
   return { port, sent }
 }
@@ -111,7 +113,7 @@ describe('previewReplay', () => {
 
   it('still previews the fields when Salesforce cannot be read, and says so', async () => {
     const { store } = memoryStore(rows)
-    const port: SalesforcePort = { send: async () => { throw new Error('token refused') } }
+    const port: SalesforcePort = { send: async () => { throw new Error('token refused') }, postApex: async () => { throw new Error('token refused') } }
     const p = await previewReplay(deps(store, port), ORG, ID)
     if (p.kind !== 'preview') throw new Error('not a preview')
     expect(p.current_unreadable).toMatch(/token refused/)

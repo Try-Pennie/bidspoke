@@ -4,7 +4,7 @@
  * must refuse the same value before it is saved), so the two cannot drift.
  */
 import { describe, expect, it } from 'vitest'
-import { ALERT_OVER_PERCENT_MAX, ALERT_OVER_PERCENT_MIN, CLICK_URL_PROSPECT_PLACEHOLDER, DEFAULT_ALERT_OVER_PERCENT, alertOverPercentOf, clickUrlCarriesProspectId, isCap, isPartnerId, partnerIdOf } from '../click-send'
+import { ALERT_OVER_PERCENT_MAX, ALERT_OVER_PERCENT_MIN, CLICK_URL_PROSPECT_PLACEHOLDER, DEFAULT_ALERT_OVER_PERCENT, alertOverPercentOf, buyerLeadIdOf, clickUrlCarriesProspectId, isCap, isPartnerId, partnerIdOf, salesforceStandingOf, type SaleWrites } from '../click-send'
 
 describe('clickUrlCarriesProspectId (#1546)', () => {
   it('is true only for a string holding the {prospect_id} placeholder', () => {
@@ -96,5 +96,59 @@ describe('partnerIdOf', () => {
 
   it('isPartnerId takes no trimming: a padded id is not itself an id', () => {
     expect(isPartnerId(` ${ID}`)).toBe(false)
+  })
+})
+
+describe('buyerLeadIdOf (#2139): the one reading of a lead id a person types', () => {
+  it('trims, and takes anything with no space inside up to 200 characters', () => {
+    expect(buyerLeadIdOf(' a0B5f00000XyZ12AAB ')).toEqual({ ok: true, id: 'a0B5f00000XyZ12AAB' })
+    expect(buyerLeadIdOf('x'.repeat(200))).toEqual({ ok: true, id: 'x'.repeat(200) })
+  })
+
+  it('reads nothing typed as no lead id, which Mark sent allows (PM-7)', () => {
+    for (const v of [undefined, null, '', '   ']) expect(buyerLeadIdOf(v), JSON.stringify(v)).toEqual({ ok: true, id: null })
+  })
+
+  it('refuses a space inside, an id past 200 characters, and anything that is not text', () => {
+    for (const v of ['a0B 5f', 'x'.repeat(201), 7, {}, ['a']]) expect(buyerLeadIdOf(v), JSON.stringify(v)).toEqual({ ok: false })
+  })
+})
+
+describe('salesforceStandingOf (#2139): what a sold held click still needs from Salesforce', () => {
+  const written = (buyerLeadId?: string | null): SaleWrites => ({
+    complete: true,
+    records_from: 'step_log',
+    writes: [{ record: 'prospect', object: 'Prospect__c', id: 'a0B1', outcome: 'written' }],
+    ...(buyerLeadId === undefined ? {} : { buyer_lead_id: buyerLeadId }),
+  })
+  const failed: SaleWrites = {
+    complete: false,
+    records_from: 'step_log',
+    buyer_lead_id: 'L1',
+    writes: [{ record: 'prospect', object: 'Prospect__c', id: 'a0B1', outcome: 'failed', message: 'UNABLE_TO_LOCK_ROW' }],
+  }
+  const at = '2027-09-22T18:01:00Z'
+
+  it('written when the last updates all landed with the lead id the claim holds, an absent id included', () => {
+    expect(salesforceStandingOf({ status: 'recorded', at, writes: written('L1') }, 'L1')).toBe('written')
+    expect(salesforceStandingOf({ status: 'recorded', at, writes: written(null) }, null)).toBe('written')
+  })
+
+  it('incomplete when any update did not land, whatever lead id it carried', () => {
+    expect(salesforceStandingOf({ status: 'recorded', at, writes: failed }, 'L1')).toBe('incomplete')
+  })
+
+  it('lead_id_not_written when the updates landed with another lead id than the claim now holds, so an amend that stopped before Salesforce is still retried', () => {
+    expect(salesforceStandingOf({ status: 'recorded', at, writes: written(null) }, 'L1')).toBe('lead_id_not_written')
+    expect(salesforceStandingOf({ status: 'recorded', at, writes: written('L1') }, 'L2')).toBe('lead_id_not_written')
+  })
+
+  it('a record from before the lead id was recorded is judged by its completeness alone', () => {
+    expect(salesforceStandingOf({ status: 'recorded', at, writes: written() }, 'L1')).toBe('written')
+  })
+
+  it('not_recorded when no update was ever recorded, and unreadable when the record could not be read', () => {
+    expect(salesforceStandingOf({ status: 'none' }, 'L1')).toBe('not_recorded')
+    expect(salesforceStandingOf({ status: 'unreadable', message: 'timeout' }, 'L1')).toBe('unreadable')
   })
 })

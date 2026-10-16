@@ -31,6 +31,7 @@ import { fetchAllPaged } from './paginate'
 import { loadEnvVars } from './env-loader'
 import { buildSandboxEnv } from './sandbox-env'
 import { salesforceBulkheads } from './bulkhead-client'
+import { isSalesforceApiName, isSalesforceRecordId } from './salesforce-names'
 import {
   getSalesforceToken,
   performSalesforceCall,
@@ -86,7 +87,16 @@ export interface HeldWriteStore {
 export interface SalesforcePort {
   /** `path` is below `/services/data/v60.0`. Throws when no answer came back. */
   send(method: 'GET' | 'PATCH', path: string, body?: string): Promise<{ status: number; text: string }>
+  /**
+   * A POST to an Apex REST endpoint, `path` below the instance (`/services/apexrest/...`),
+   * through the same call path. The read-back's one resend of a credit inquiry
+   * post (#2172). Throws when no answer came back.
+   */
+  postApex(path: string, body: string): Promise<{ status: number; text: string }>
 }
+
+/** An Apex REST path a port may post to: plain path segments under /services/apexrest/. */
+const APEX_PATH = /^\/services\/apexrest(?:\/[A-Za-z0-9_-]+)+$/
 
 export interface ReplayDeps {
   store: HeldWriteStore
@@ -137,20 +147,15 @@ export type AbandonResult =
  */
 export const REPLAY_LEASE_MS = 2 * 60 * 1000
 
-/** Salesforce names: an API name, and a 15 or 18 character record id. Nothing else reaches a URL. */
-const API_NAME = /^[A-Za-z][A-Za-z0-9_]*$/
-const RECORD_ID = /^[A-Za-z0-9]{15}(?:[A-Za-z0-9]{3})?$/
-
-/** The same rules for the Salesforce read-back (#2023), which builds the same URLs. */
-export const isSalesforceApiName = (name: string): boolean => API_NAME.test(name)
-export const isSalesforceRecordId = (id: string): boolean => RECORD_ID.test(id)
+/** Salesforce names: the one rule (salesforce-names.ts), re-exported for the read-back (#2023), which builds the same URLs. */
+export { isSalesforceApiName, isSalesforceRecordId }
 
 function whyNotReplayable(row: HeldWriteRow): string | null {
   if (row.status !== 'pending') return `the write is already ${row.status}`
   if (!row.replayable) return 'the write failed for good, so Salesforce would refuse it again'
   if (row.sf_operation !== 'update') return `a ${row.sf_operation} cannot be replayed, only an update`
-  if (!API_NAME.test(row.sf_object)) return 'the stored object name is not a Salesforce API name'
-  if (!RECORD_ID.test(row.sf_record_id)) return 'the stored record id is not a Salesforce record id'
+  if (!isSalesforceApiName(row.sf_object)) return 'the stored object name is not a Salesforce API name'
+  if (!isSalesforceRecordId(row.sf_record_id)) return 'the stored record id is not a Salesforce record id'
   return null
 }
 
@@ -158,7 +163,7 @@ async function readBody(row: HeldWriteRow, keys: SecretKeyInput): Promise<Record
   const parsed: unknown = JSON.parse(await decryptSecret(row.body_encrypted, keys))
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('the stored body is not an object')
   const body = parsed as Record<string, unknown>
-  const bad = Object.keys(body).find((f) => !API_NAME.test(f))
+  const bad = Object.keys(body).find((f) => !isSalesforceApiName(f))
   if (bad !== undefined) throw new Error(`the stored body names a field that is not a Salesforce API name: ${bad}`)
   return body
 }
@@ -401,14 +406,16 @@ export async function salesforcePortFor(
   }
   // A replay, and the read-back that shares this port (#2023), run on their own
   // schedule, outside any run's post-answer window, so they take the main bulkhead
-  // as they always have, not the post-answer share (#2170).
+  // as they always have, not the post-answer share (#2170). The read-back's one
+  // resend of a credit inquiry post (#2172) goes the same way.
   const { gates: bulkheads, waitMs: defaultWaitMs } = salesforceBulkheads(env, false)
   const waitMs = opts.waitMs ?? defaultWaitMs
-  const call = async (method: 'GET' | 'PATCH', path: string, body: string | undefined) => {
+  const call = async (method: 'GET' | 'PATCH' | 'POST', path: string, body: string | undefined) => {
     const tokenStart = Date.now()
     const token = await getSalesforceToken(env, orgId, instanceUrl, clientId, clientSecret)
+    const apex = method === 'POST'
     const { res, responseText } = await performSalesforceCall(body, {
-      url: `${instanceUrl}/services/data/v60.0${path}`,
+      url: apex ? `${instanceUrl}${path}` : `${instanceUrl}/services/data/v60.0${path}`,
       method,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
       bulkheads,
@@ -416,20 +423,27 @@ export async function salesforcePortFor(
       signal: undefined,
       resolvedInput: { template: {}, resolved: {} },
       traceId: 'writeback-replay',
-      operation: method === 'GET' ? 'query' : 'update',
+      operation: apex ? 'apex' : method === 'GET' ? 'query' : 'update',
       targetLabel: path.split('?')[0],
       tokenMs: Date.now() - tokenStart,
     })
     return { status: res.status, text: responseText }
   }
+  // A revoked cached token (#1741): Salesforce refused before running anything,
+  // so one more send with a fresh login cannot write twice, an Apex post included.
+  const withFreshLogin = async (send: () => Promise<{ status: number; text: string }>) => {
+    const first = await send()
+    if (first.status !== 401) return first
+    await env.WORKFLOW_CACHE.delete(salesforceTokenCacheKey(orgId))
+    return send()
+  }
   return {
-    async send(method, path, body) {
-      const first = await call(method, path, body)
-      if (first.status !== 401) return first
-      // A revoked cached token (#1741): Salesforce refused before running
-      // anything, so one more send with a fresh login cannot write twice.
-      await env.WORKFLOW_CACHE.delete(salesforceTokenCacheKey(orgId))
-      return call(method, path, body)
+    send(method, path, body) {
+      return withFreshLogin(() => call(method, path, body))
+    },
+    postApex(path, body) {
+      if (!APEX_PATH.test(path)) return Promise.reject(new Error(`not an Apex REST path: ${path.slice(0, 80)}`))
+      return withFreshLogin(() => call('POST', path, body))
     },
   }
 }

@@ -110,6 +110,77 @@ describe('composeSalesforceReadBackAlert', () => {
   })
 })
 
+/**
+ * #2172: a credit inquiry post sets no field by name and is worded as a post,
+ * for the Submission it was for, with what a person can check: the Lead's
+ * Inquiries file. Never a value: the inquiries are lead data.
+ */
+describe('a credit inquiry post', () => {
+  const post = (over: Partial<ReadBackAlertWrite> = {}) =>
+    write({ workflow_name: 'Main Flow', sf_object: 'Submission__c', sf_record_id: 'a0XUi00000AbCdEFGH', fields: [], inquiry_post: true, ...over })
+
+  it('a refused resend says the post was sent again and refused, and what the Lead keeps meanwhile', () => {
+    const c = composeSalesforceReadBackAlert({ kind: 'resend_failed', writes: [post({ resent: true, detail: 'Salesforce answered 404' })] }, APP)
+    expect(c.title).toBe('Credit inquiry post could not be resent')
+    expect(c.fallback).toBe('Credit inquiry post could not be resent: Submission a0XUi00000AbCdEFGH')
+    expect(c.sections[0]).toBe(
+      "Main Flow posted a lead's credit inquiries to Salesforce at 8:29 PM ET, for Submission a0XUi00000AbCdEFGH, and the post did not land. " +
+        'Bidspoke sent it again and it failed: Salesforce answered 404.',
+    )
+    expect(c.sections[1]).toBe("Bidspoke will not send it again. Until the lead's next credit pull, its Lead keeps the inquiry rows and counts it had before.")
+    expect(c.sections[2]).toBe('Fix: open that Submission in Salesforce and check why the post was refused. The run below shows what Bidspoke was sending, if its step was recorded.')
+  })
+
+  it('one never resent says why, without claiming a resend', () => {
+    const t = text({ kind: 'resend_failed', writes: [post({ resent: false, resends: 0, detail: 'the Submission has no Lead, so Salesforce refuses the post' })] })
+    expect(t).toContain('Bidspoke did not send it again, because the Submission has no Lead, so Salesforce refuses the post.')
+    expect(t).not.toMatch(/sent it again and/)
+  })
+
+  it('one still not confirmed after its one resend says so, why there is no second, and how to check', () => {
+    const t = text({ kind: 'unknown', writes: [post({ resends: 1, still_trying: false })] })
+    expect(t).toContain('Credit inquiry post still not confirmed')
+    expect(t).toContain('Bidspoke sent it again once, and Salesforce did not confirm it, so it is still not known whether it landed.')
+    expect(t).toContain('Bidspoke will not send it again, because each post that lands attaches another file to the Lead. It holds the post until 8:29 PM ET on Oct 15.')
+    expect(t).toContain("Fix: before 8:29 PM ET on Oct 15, open that Submission's Lead in Salesforce and look for an Inquiries file from 8:29 PM ET or later. If there is none, the post did not land.")
+  })
+
+  it('one it could not resend at all does not claim a resend was sent', () => {
+    const t = text({ kind: 'unknown', writes: [post({ resends: 0, still_trying: true })] })
+    expect(t).toContain('Bidspoke found no Inquiries file on its Lead, and has not been able to send it again.')
+    expect(t).toContain('Bidspoke keeps trying, and holds the post until 8:29 PM ET on Oct 15.')
+    expect(t).not.toMatch(/sent it again once/)
+  })
+
+  it('several are named one line each', () => {
+    const t = text({ kind: 'unknown', writes: [post(), post({ sf_record_id: 'a0XUi00000AbCdEFGI' })] })
+    expect(t).toContain('2 credit inquiry posts to Salesforce did not land in time, and Bidspoke has not been able to confirm any of them since')
+    expect(t).toContain('Main Flow at 8:29 PM ET: Submission a0XUi00000AbCdEFGI.')
+    const f = text({ kind: 'resend_failed', writes: [post({ detail: 'Salesforce answered 404' }), post({ detail: 'Salesforce answered 404' })] })
+    expect(f).toContain('2 credit inquiry posts to Salesforce did not land, and Bidspoke could not send them again. Bidspoke will not send them again.')
+  })
+
+  it('the waiting count says how many are posts, and reads as before when none are', () => {
+    expect(text({ kind: 'unread', writes: [], count: 1, inquiry_posts: 1, oldest_at: '2026-10-15T00:29:54.000Z', reason: 'salesforce_not_answering' }))
+      .toContain('Salesforce writes waiting to be checked\n1 credit inquiry post to Salesforce is waiting to be read back, the oldest from 8:29 PM ET. Bidspoke could not read it this minute because Salesforce did not answer.')
+    expect(text({ kind: 'not_running', writes: [], count: 3, inquiry_posts: 1, oldest_at: '2026-10-15T00:29:54.000Z', last_finished_at: null }))
+      .toContain('3 Salesforce writes (1 credit inquiry post and 2 updates made after leads were answered) are waiting to be read back, the oldest from 8:29 PM ET, and the job')
+  })
+
+  it('never carries a dash as punctuation', () => {
+    const all: SalesforceReadBackAlert[] = [
+      { kind: 'resend_failed', writes: [post({ resent: true, detail: 'x' })] },
+      { kind: 'resend_failed', writes: [post({ resent: false, detail: 'x' })] },
+      { kind: 'resend_failed', writes: [post(), post()] },
+      { kind: 'unknown', writes: [post({ still_trying: true, resends: 0 })] },
+      { kind: 'unknown', writes: [post(), post()] },
+      { kind: 'unread', writes: [], count: 2, inquiry_posts: 1, reason: 'bulkhead_busy' },
+      { kind: 'not_running', writes: [], count: 1, inquiry_posts: 1, last_finished_at: null },
+    ]
+    for (const p of all) expect(text(p)).not.toMatch(DASHES)
+  })
+})
+
 describe('sendSalesforceReadBackAlert', () => {
   afterEach(() => vi.unstubAllGlobals())
 

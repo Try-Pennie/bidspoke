@@ -29,6 +29,11 @@
  * stored here and never called uncapturable. One carrying its own write marker
  * is left to the Salesforce read-back (#2023); every other one is announced with
  * the record, the field names and the expiry (see announceHeld).
+ *
+ * A credit inquiry post the at-risk record holds (#2172) is the read-back's too:
+ * it is judged by the Lead's Inquiries file and resent at most once, so it is
+ * logged here and neither stored nor announced. One nothing holds (a refusal)
+ * is still dead-lettered as uncapturable: the replay resends updates only.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { ErrorType, ResolvedStepInput } from '../types'
@@ -39,14 +44,16 @@ import { recordOutcomeDeadLetter, writeOutcome, type OutcomeAlertDeps } from './
 import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_HELD_LABEL } from './dead-letter-labels'
 import { salesforceRejectedTheWrite, type SalesforceAnswer } from './nodes/salesforce'
 import { readBackOwns, WRITE_MARKER_FIELD } from './write-marker'
+import { CREDIT_INQUIRY_APEX_PATH } from './inquiry-post'
 
 /** The durable path's label for the store's insert, declared in the leaf label module (#2084). */
 export { WRITEBACK_STORE_LABEL }
 
 /**
  * A timed out or cut off update whose request the at-risk watch holds (#2163),
- * and that the Salesforce read-back (#2023) does not own: every Submission__c
- * one, and any other without its own write marker. Declared in the leaf label module.
+ * and that the Salesforce read-back (#2023) does not own: one held without its
+ * own write marker (from before the stamp shipped for its object, Submission__c's
+ * included, #2203). Declared in the leaf label module.
  */
 export { WRITEBACK_HELD_LABEL }
 
@@ -143,9 +150,9 @@ export type CaptureResult =
  * Every other held update expires unread, so it is announced (#2163) with what a
  * person needs to check it: the record, the field names (never the values, and
  * never the marker, which is not something it set), and when the held request is
- * deleted. That covers every Submission__c update (no marker field, so no
- * read-back), and a Prospect, Applicant or Lead update held from before the
- * stamp shipped or whose marker would not fit.
+ * deleted. That covers an update on any of the marker's objects (Prospect,
+ * Applicant, Lead, and Submission since #2203) held from before the stamp
+ * shipped for it, or whose marker would not fit.
  */
 async function announceHeld(
   f: FailedWriteback,
@@ -178,9 +185,21 @@ async function announceHeld(
   return { kind: 'held', until }
 }
 
+/** Whether a failed step's request is the credit inquiry post (#2172), by its endpoint, from the node or the watch. */
+function isHeldInquiryPost(resolvedInput: ResolvedStepInput | null | undefined): boolean {
+  const r = resolvedInput?.resolved as Record<string, unknown> | undefined
+  if (!r || r.operation !== 'apex') return false
+  if (r.apex_path === CREDIT_INQUIRY_APEX_PATH) return true
+  return typeof r.url === 'string' && r.url.replace(/\/+$/, '').endsWith(CREDIT_INQUIRY_APEX_PATH)
+}
+
 /** Stores a failed post-answer Salesforce write, or says why it did not. Never throws. */
 export async function captureFailedWriteback(f: FailedWriteback, deps: CaptureDeps): Promise<CaptureResult> {
   if (f.isTest) return { kind: 'skipped', reason: 'test run' }
+  if (f.heldUntil && f.nodeType === 'salesforce' && isHeldInquiryPost(f.resolvedInput)) {
+    console.warn(`[writeback-deadletter] credit inquiry post held for the Salesforce read-back: execution ${f.executionId}, step ${f.stepNamespace}, until ${f.heldUntil}`)
+    return { kind: 'held', until: f.heldUntil }
+  }
   const w = writebackFromFailure(f.nodeType, f.resolvedInput)
   // An update that timed out or was cut off has an unknown outcome, and the
   // at-risk record already holds its request (#2163). It is neither a refusal

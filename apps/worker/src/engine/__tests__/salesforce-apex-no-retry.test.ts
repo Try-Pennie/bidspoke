@@ -31,6 +31,8 @@ import { buildContext } from '../context'
 
 const INSTANCE = 'https://trypennie.my.salesforce.com'
 const APEX_URL = `${INSTANCE}/services/apexrest/credit-inquiries`
+const TRADES_PATH = '/services/apexrest/credit-trades'
+const TRADES_URL = `${INSTANCE}${TRADES_PATH}`
 
 // A cached token, so every fetch is the Apex call itself; no bulkhead binding.
 const env = {
@@ -46,7 +48,7 @@ const supabase = {} as SupabaseClient
 
 let retryDelays: number[] = []
 const ctxFor = () => {
-  const ctx = buildContext({ Submission__c: 'a0X1' }, 'website_form', 'wf-1', 'trace-1', {
+  const ctx = buildContext({ Submission__c: 'a0XUi00000AbCdEFGH' }, 'website_form', 'wf-1', 'trace-1', {
     SALESFORCE_CLIENT_ID: 'client-id',
     SALESFORCE_CLIENT_SECRET: 'client-secret',
     SALESFORCE_INSTANCE_URL: INSTANCE,
@@ -58,11 +60,11 @@ const ctxFor = () => {
 const edge = (source: string, target: string): EdgeDefinition => ({ id: `${source}-${target}`, source, target })
 
 /** An Apex step then an exit. `retries` is left out of the config when undefined. */
-function apexLine(retries: number | undefined, timeoutMs: number) {
+function apexLine(retries: number | undefined, timeoutMs: number, apexPath = '/services/apexrest/credit-inquiries') {
   const config: Record<string, unknown> = {
     operation: 'apex',
-    apex_path: '/services/apexrest/credit-inquiries',
-    body: { submissionId: '{{trigger.payload.Submission__c}}', inquiriesJson: '[]' },
+    apex_path: apexPath,
+    body: { submissionId: '{{trigger.payload.Submission__c}}', inquiriesJson: '{"inquiries":[{"type":"H"}]}' },
     timeout_ms: timeoutMs,
   }
   if (retries !== undefined) config.retries = retries
@@ -78,7 +80,7 @@ async function walk(def: ReturnType<typeof apexLine>, queue: StepLogEntry[]) {
     .then(() => null, (e: Error) => e)
 }
 
-const apexCalls = (fetchMock: FetchMock) => fetchMock.mock.calls.filter((c) => c[0] === APEX_URL).length
+const apexCalls = (fetchMock: FetchMock, url = APEX_URL) => fetchMock.mock.calls.filter((c) => c[0] === url).length
 
 /** A call that never answers until the step's deadline aborts it. */
 function hangUntilAborted(_url: string, init: { signal?: AbortSignal }): Promise<unknown> {
@@ -132,18 +134,79 @@ describe('an Apex step with retries: 0 makes exactly one Salesforce call (#2170)
   })
 })
 
-describe('the same Apex step left at the engine default resends (control)', () => {
+describe('a credit inquiry post is never retried by the engine, whatever its config says (#2172)', () => {
+  it('one call on a timeout with retries left out, so the engine default of 2 does not apply', async () => {
+    fetchMock.mockImplementation(hangUntilAborted)
+    const queue: StepLogEntry[] = []
+    await walk(apexLine(undefined, 1), queue)
+    expect(apexCalls(fetchMock)).toBe(1)
+    expect(retryDelays).toEqual([])
+    expect(queue.find((r) => r.step_namespace === 'inquiry_apex')).toMatchObject({ status: 'failed', retries_used: 0 })
+  })
+
+  it('one call on a 5xx with retries: 2 written into the step', async () => {
+    fetchMock.mockImplementation(serverError)
+    await walk(apexLine(2, 30_000), [])
+    expect(apexCalls(fetchMock)).toBe(1)
+    expect(retryDelays).toEqual([])
+  })
+
+  it('one call inside a parallel node, whose children run their own retry loop', async () => {
+    fetchMock.mockImplementation(serverError)
+    const line = apexLine(2, 30_000)
+    const def = {
+      nodes: [
+        { id: 'n-par', namespace: 'par', type: 'parallel', config: { wait_for: 'all', on_child_error: 'continue', timeout_ms: 60_000, children: [{ id: 'child-0', label: 'inquiry_apex' }] } },
+        { ...line.nodes[0] },
+        { id: 'n-end', namespace: 'par_end', type: 'parallel_end', config: { pair_id: 'n-par' } },
+        { id: 'n-done', namespace: 'done', type: 'exit', config: {} },
+      ] as NodeDefinition[],
+      edges: [
+        { id: 'e1', source: 'n-par', target: 'n-apex', source_handle: 'child-0' },
+        edge('n-apex', 'n-end'),
+        edge('n-par', 'n-end'),
+        edge('n-end', 'n-done'),
+      ],
+    }
+    await walk(def, [])
+    expect(apexCalls(fetchMock)).toBe(1)
+    expect(retryDelays).toEqual([])
+  })
+})
+
+describe('another Apex step left at the engine default still resends (control)', () => {
   it('three calls on a timeout, two backoffs asked for', async () => {
     fetchMock.mockImplementation(hangUntilAborted)
-    await walk(apexLine(undefined, 1), [])
-    expect(apexCalls(fetchMock)).toBe(3)
+    await walk(apexLine(undefined, 1, TRADES_PATH), [])
+    expect(apexCalls(fetchMock, TRADES_URL)).toBe(3)
     expect(retryDelays).toEqual([500, 1000])
   })
 
   it('three calls on a 5xx', async () => {
     fetchMock.mockImplementation(serverError)
-    await walk(apexLine(undefined, 30_000), [])
-    expect(apexCalls(fetchMock)).toBe(3)
+    await walk(apexLine(undefined, 30_000, TRADES_PATH), [])
+    expect(apexCalls(fetchMock, TRADES_URL)).toBe(3)
+  })
+
+  it('three calls inside a parallel node on a 5xx', async () => {
+    fetchMock.mockImplementation(serverError)
+    const line = apexLine(undefined, 30_000, TRADES_PATH)
+    const def = {
+      nodes: [
+        { id: 'n-par', namespace: 'par', type: 'parallel', config: { wait_for: 'all', on_child_error: 'continue', timeout_ms: 60_000, children: [{ id: 'child-0', label: 'inquiry_apex' }] } },
+        { ...line.nodes[0] },
+        { id: 'n-end', namespace: 'par_end', type: 'parallel_end', config: { pair_id: 'n-par' } },
+        { id: 'n-done', namespace: 'done', type: 'exit', config: {} },
+      ] as NodeDefinition[],
+      edges: [
+        { id: 'e1', source: 'n-par', target: 'n-apex', source_handle: 'child-0' },
+        edge('n-apex', 'n-end'),
+        edge('n-par', 'n-end'),
+        edge('n-end', 'n-done'),
+      ],
+    }
+    await walk(def, [])
+    expect(apexCalls(fetchMock, TRADES_URL)).toBe(3)
   })
 })
 

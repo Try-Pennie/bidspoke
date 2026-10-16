@@ -14,7 +14,7 @@ export type ExtraExtractionSpec =
 
 export type ExtraExtractionConfig = Record<string, ExtraExtractionSpec>
 
-import type { BuyerProfileDocument, SaleWrites, SalesforceWritesView } from '@bidspoke/buyer-profile'
+import type { BuyerProfileDocument, SaleWrites, SalesforceStanding, SalesforceWritesView } from '@bidspoke/buyer-profile'
 
 export interface Partner {
   id: string
@@ -195,6 +195,14 @@ export interface HeldClick {
   claim: HeldClaim
   /** A sold entry's last Salesforce updates (#1659); null while the claim is not sold. */
   salesforce: SalesforceWritesView | null
+  /**
+   * Where a sold entry stands in Salesforce, read by the Worker with
+   * salesforceStandingOf (#2139): every value but written offers Retry
+   * Salesforce. Null while the claim is not sold; absent from a Worker older
+   * than #2139. A sold entry with written and no lead id is on the list only so
+   * the lead id can be added (L1008).
+   */
+  salesforce_standing?: SalesforceStanding | null
   /** Set on the page only, once the server confirmed the entry left the list; its Salesforce retry went with it. */
   cleared?: boolean
 }
@@ -215,6 +223,21 @@ export type MarkSentResult =
 /** Writing a marked sent click's Salesforce updates again (#1659). */
 export interface SalesforceRetryResult {
   outcome: 'written' | 'incomplete'
+  salesforce: SaleWrites
+  /** False when the audit entry, the only record of this outcome, did not land. */
+  audit_recorded: boolean
+  list_cleared: boolean
+}
+
+/**
+ * Adding or correcting a marked sent sale's lead id (#2139, decision 3). The
+ * new id stands whatever Salesforce answers; `salesforce` says what each record
+ * took, in Salesforce's own words when it refused, and an entry whose updates
+ * did not all land stays listed for Retry Salesforce.
+ */
+export interface LeadIdResult {
+  outcome: 'amended'
+  generation: number
   salesforce: SaleWrites
   /** False when the audit entry, the only record of this outcome, did not land. */
   audit_recorded: boolean
@@ -1065,8 +1088,12 @@ export const api = {
   heldClicks: {
     list: (partnerId: string) =>
       req<{ entries: HeldClick[]; total: number }>(`/api/held-clicks?partner_id=${encodeURIComponent(partnerId)}`),
-    markSent: (id: string, generation: number, buyerLeadId: string) =>
+    /** `buyerLeadId` is optional (PM-7): null or blank marks it sent with no lead id, still counted and Completed in Salesforce. */
+    markSent: (id: string, generation: number, buyerLeadId: string | null) =>
       req<MarkSentResult>(`/api/held-clicks/${id}/mark-sent`, { method: 'POST', body: JSON.stringify({ generation, buyer_lead_id: buyerLeadId }) }),
+    /** Add or correct the lead id of a sale a person marked sent, at the generation the page read (#2139). */
+    setLeadId: (id: string, generation: number, buyerLeadId: string) =>
+      req<LeadIdResult>(`/api/held-clicks/${id}/lead-id`, { method: 'POST', body: JSON.stringify({ generation, buyer_lead_id: buyerLeadId }) }),
     free: (id: string, generation: number) =>
       req<{ outcome: 'freed'; generation: number; list_cleared: boolean }>(`/api/held-clicks/${id}/free`, { method: 'POST', body: JSON.stringify({ generation }) }),
     clear: (id: string) =>

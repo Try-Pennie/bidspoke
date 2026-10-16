@@ -13,6 +13,7 @@ import {
   stampWriteMarker,
   stampsWrites,
   readBackOwns,
+  WRITE_MARKER_OBJECTS,
   withWriteMarker,
 } from '../write-marker'
 
@@ -47,16 +48,30 @@ describe('writeMarker', () => {
 describe('stampWriteMarker', () => {
   const marker = writeMarker(EXEC, 'patch_prospect', 0)!
 
-  it('adds the marker to an update on the three objects that carry the field', () => {
+  it('adds the marker to an update on the three objects that first carried the field', () => {
     for (const object of ['Prospect__c', 'Applicant__c', 'Lead']) {
       expect(stampsWrites(object)).toBe(true)
       expect(stampWriteMarker({ BidStatus__c: 'Bid' }, object, marker)).toEqual({ BidStatus__c: 'Bid', [WRITE_MARKER_FIELD]: marker })
     }
   })
 
-  it('leaves a Submission alone: it has no such field, and a PATCH naming one would be refused', () => {
-    expect(stampsWrites('Submission__c')).toBe(false)
-    expect(stampWriteMarker({ External_Exchange_Status__c: 'Completed' }, 'Submission__c', marker)).toEqual({ External_Exchange_Status__c: 'Completed' })
+  // #2203: Dan gave Submission__c the same field on 2026-10-15 (Text 255, the
+  // Bidspoke_Write_Marker permission set), so its post-answer updates are
+  // stamped exactly as the other three are.
+  it('adds the marker to a Submission update too', () => {
+    expect(stampsWrites('Submission__c')).toBe(true)
+    expect(stampWriteMarker({ External_Exchange_Status__c: 'Completed' }, 'Submission__c', marker)).toEqual({ External_Exchange_Status__c: 'Completed', [WRITE_MARKER_FIELD]: marker })
+  })
+
+  it('is one list of exactly the four objects that have the field, which the stamp and the read-back both read', () => {
+    expect([...WRITE_MARKER_OBJECTS].sort()).toEqual(['Applicant__c', 'Lead', 'Prospect__c', 'Submission__c'])
+  })
+
+  it('leaves an object without the field alone, since a PATCH naming one would be refused', () => {
+    for (const object of ['Inquiry__c', 'Contact', 'Opportunity']) {
+      expect(stampsWrites(object)).toBe(false)
+      expect(stampWriteMarker({ Status__c: 'Done' }, object, marker)).toEqual({ Status__c: 'Done' })
+    }
   })
 
   it('leaves the body alone when the step is not a post-answer write', () => {
@@ -75,10 +90,15 @@ describe('readBackOwns', () => {
     expect(readBackOwns('Prospect__c', body(`${EXEC}:patch_prospect_reject:0`), EXEC, 'patch_prospect_reject')).toBe(true)
   })
 
-  it('does not own one made before the stamp shipped, one for another step, or one on a Submission', () => {
+  it('owns a stamped Submission update the same way (#2203)', () => {
+    expect(readBackOwns('Submission__c', body(`${EXEC}:update_submission:0`), EXEC, 'update_submission')).toBe(true)
+  })
+
+  it('does not own one made before the stamp shipped, or one for another step', () => {
     expect(readBackOwns('Prospect__c', { BidStatus__c: 'Rejected' }, EXEC, 'patch_prospect_reject')).toBe(false)
     expect(readBackOwns('Prospect__c', body(`${EXEC}:patch_prospect:0`), EXEC, 'patch_prospect_reject')).toBe(false)
-    expect(readBackOwns('Submission__c', body(`${EXEC}:update_submission:0`), EXEC, 'update_submission')).toBe(false)
+    // A Submission update held before #2203 shipped carries no stamp: it keeps the held alert.
+    expect(readBackOwns('Submission__c', { PDFlow_3__c: 'x' }, EXEC, 'update_submission')).toBe(false)
   })
 })
 
