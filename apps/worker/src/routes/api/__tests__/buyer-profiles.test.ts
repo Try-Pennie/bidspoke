@@ -56,8 +56,8 @@ const doc: BuyerProfileDocument = {
   tiers: [{ population: 'engine', debt_from: 15000, debt_to: null, multiplier: 0.0012 }],
 }
 
-const mainFlow = { id: 'wf-main', name: 'Main Flow', is_active: true, definition: { nodes: [{ type: 'bid_group', config: { partner_ids: ['p-1'] } }] } }
-const engine = { id: 'wf-engine', name: 'Engine Bidding', is_active: true, definition: { nodes: [{ type: 'buyer_select', config: { population: 'engine' } }] } }
+const mainFlow = { id: 'wf-main', name: 'Main Flow', is_active: true, organization_id: 'org-abc', deleted_at: null, definition: { nodes: [{ type: 'bid_group', config: { partner_ids: ['p-1'] } }] } }
+const engine = { id: 'wf-engine', name: 'Engine Bidding', is_active: true, organization_id: 'org-abc', deleted_at: null, definition: { nodes: [{ type: 'buyer_select', config: { population: 'engine' } }] } }
 
 async function makeApp() {
   const { default: api } = await import('../index')
@@ -355,8 +355,8 @@ describe('PUT /partners/:id/buyer-profile', () => {
   // #1557: a live click workflow names this buyer; switched to the offer, its
   // check would stop offering and its send would stop judging the cap, silently.
   describe('switching a click buyer to the offer while a live workflow names it on a click node', () => {
-    const clickCheckFlow = { id: 'wf-l1', name: 'Engine Bidding', is_active: true, definition: { nodes: [{ type: 'buyer_click_check', config: { partner_id: 'p-1' } }] } }
-    const clickSendFlow = { id: 'wf-send', name: 'Liberty1 click', is_active: true, definition: { nodes: [{ type: 'buyer_click_send', config: { partner_id: 'p-1' } }] } }
+    const clickCheckFlow = { id: 'wf-l1', name: 'Engine Bidding', is_active: true, organization_id: 'org-abc', deleted_at: null, definition: { nodes: [{ type: 'buyer_click_check', config: { partner_id: 'p-1' } }] } }
+    const clickSendFlow = { id: 'wf-send', name: 'Liberty1 click', is_active: true, organization_id: 'org-abc', deleted_at: null, definition: { nodes: [{ type: 'buyer_click_send', config: { partner_id: 'p-1' } }] } }
     afterEach(() => { vi.mocked(readBuyerSoldOn).mockReset() })
 
     it('is refused 409 sold_on_in_use, naming each live workflow, and nothing is saved', async () => {

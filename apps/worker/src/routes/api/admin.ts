@@ -50,6 +50,7 @@ import { recordAuditLog, writeAuditLog } from '../../lib/audit'
 import { SCHEDULED_DRILL_DEADLINE_MS, buyerObjectsHealth, runBuyerObjectsDrill } from '../../lib/buyer-objects-health'
 import { withDeadline } from '@bidspoke/buyer-profile'
 import { BETTER_STACK_ALERT_NAME, drillNobodyToldPage, type NobodyToldDrillOutcome } from '../../lib/nobody-told-page'
+import { readOrgWorkflows } from '../../lib/org-workflows'
 
 const admin = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 
@@ -62,15 +63,12 @@ admin.post('/migrate-code-workers', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
 
-  const { data: workflows, error } = await supabase
-    .from('workflows')
-    .select('id, name, definition')
-    .eq('organization_id', orgId)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-
-  if (error) return dbError(c, error)
-  if (!workflows) return c.json({ migrated: 0, results: [] })
+  let workflows
+  try {
+    workflows = await readOrgWorkflows(supabase, orgId, { activeOnly: true })
+  } catch (err) {
+    return dbError(c, err)
+  }
 
   const results = await Promise.all(
     workflows.map(async (w) => {

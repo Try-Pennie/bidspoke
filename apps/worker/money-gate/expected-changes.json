@@ -4,8 +4,37 @@
     {
       "workflow": "Main Flow",
       "check": "supabase_write",
-      "field": "insert execution_steps values[*].input.template.bid_mode",
-      "reason": "The Partner Bid step no longer records the retired bid_mode in its input template, because the partner_configs column is being dropped (PM-9). Nothing ever acted on it: no request, route, response or decision changes, only the recorded step input of the two Bid Race partners (#2182)."
+      "node": "insert execution_steps",
+      "field": "insert execution_steps values[*].input.resolved.partner_constants_keys*",
+      "reason": "The Constants step's logged input now lists every partner key the node emits, the two maps subAccountIdsMap and activeBidding included, from partnerConstantOutputKeys (#2142). The node's output, and everything sent or decided, is unchanged."
+    },
+    {
+      "workflow": "RML - Bidding Workflow (GigFi)",
+      "check": "supabase_write",
+      "node": "insert execution_steps",
+      "field": "insert execution_steps values[*].input.resolved.partner_constants_keys*",
+      "reason": "The Constants step's logged input now lists every partner key the node emits, the two maps subAccountIdsMap and activeBidding included, from partnerConstantOutputKeys (#2142). The node's output, and everything sent or decided, is unchanged."
+    },
+    {
+      "workflow": "Lead Economy - Bidding Workflow",
+      "check": "supabase_write",
+      "node": "insert execution_steps",
+      "field": "insert execution_steps values[*].input.resolved.partner_constants_keys*",
+      "reason": "The Constants step's logged input now lists every partner key the node emits, the two maps subAccountIdsMap and activeBidding included, from partnerConstantOutputKeys (#2142). The node's output, and everything sent or decided, is unchanged."
+    },
+    {
+      "workflow": "Engine Bidding Workflow",
+      "check": "supabase_write",
+      "node": "insert execution_steps",
+      "field": "insert execution_steps values[*].input.resolved.partner_constants_keys*",
+      "reason": "The Constants step's logged input now lists every partner key the node emits, the two maps subAccountIdsMap and activeBidding included, from partnerConstantOutputKeys (#2142). The node's output, and everything sent or decided, is unchanged."
+    },
+    {
+      "workflow": "RML - Bidding Workflow (LendSwift)",
+      "check": "supabase_write",
+      "node": "insert execution_steps",
+      "field": "insert execution_steps values[*].input.resolved.partner_constants_keys*",
+      "reason": "The Constants step's logged input now lists every partner key the node emits, the two maps subAccountIdsMap and activeBidding included, from partnerConstantOutputKeys (#2142). The node's output, and everything sent or decided, is unchanged."
     },
     {
       "workflow": "Engine Bidding Workflow",

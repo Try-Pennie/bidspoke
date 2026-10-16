@@ -112,6 +112,59 @@ export interface PartnerPageSaved extends StoredCopyAnswer {
 }
 
 /**
+ * The workflow values tab's answer (#2142, GET /api/partners/:id/workflow-values):
+ * every value the Constants node emits for the partner, with the workflows that
+ * read it. Held to the Worker's own type by
+ * apps/web/src/lib/__tests__/workflow-values-answer-type.test.ts.
+ */
+export type PartnerValueKind = 'ClickUrl' | 'SellOffOfferTitle' | 'SellOffOfferDetails' | 'SubAccountMinBids' | 'subAccountIdsMap' | 'activeBidding'
+
+/** `by_name`: names this partner's value, or its entry in a map. `every_partner`: reads it for every partner at once. */
+export type PartnerValueReadHow = 'by_name' | 'every_partner'
+
+export interface PartnerValueReadingPlace {
+  node_id: string | null
+  namespace: string | null
+  label: string | null
+  node_type: string | null
+  edge_id: string | null
+  reads: PartnerValueReadHow
+}
+
+export interface PartnerValueReadingWorkflow {
+  workflow_id: string
+  workflow_name: string
+  is_active: boolean
+  reads: PartnerValueReadHow
+  places: PartnerValueReadingPlace[]
+}
+
+export interface PartnerWorkflowValue {
+  /** The name the Constants node emits it under. */
+  constant_name: string
+  kind: PartnerValueKind
+  /** One of the two maps holding every partner's entry. */
+  map: boolean
+  access: { template: string; code: string }
+  /** Whether the node emits it now. */
+  emitted: boolean
+  /** As the node emits it: the value, or this partner's part of a map: its entry in activeBidding, its id to slug entries in subAccountIdsMap. */
+  value: unknown
+  readers: PartnerValueReadingWorkflow[]
+  /** Workflow data keys with this name, which the partner value replaces. */
+  shadowed_data_keys: Array<{ workflow_id: string; workflow_name: string; is_active: boolean; node_id: string; namespace: string }>
+  /** For the click URL: the engine's readers outside workflows. */
+  readers_outside_workflows: Array<{ reader: string; description: string }>
+}
+
+export interface PartnerWorkflowValues {
+  partner: { id: string; slug: string }
+  values: PartnerWorkflowValue[]
+  /** What was searched, so an empty reader list can be worded as what it measured. */
+  searched: { workflows: number; with_constants_node: number }
+}
+
+/**
  * What a stale page save is answered with (#2132, #2133): both halves as
  * stored now, the press that last saved, and who last changed either half.
  */
@@ -1001,6 +1054,8 @@ export const api = {
       req<{ ok: boolean } & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'DELETE' }),
     getCapCount: (id: string) =>
       req<{ count: number; date: string; sold_on?: 'click'; day_zone?: string }>(`/api/partners/${id}/cap-count`),
+    // The workflow values tab (#2142): which workflows read the partner's Constants values.
+    workflowValues: (id: string) => req<PartnerWorkflowValues>(`/api/partners/${id}/workflow-values`),
     // The live channel's versions probe (#2135): both versions, the last press,
     // and the newest change of each half, direct or not.
     versions: (id: string) => req<PartnerPageVersions>(`/api/partners/${id}/versions`),
