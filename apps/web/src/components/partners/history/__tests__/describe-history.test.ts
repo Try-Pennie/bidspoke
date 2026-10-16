@@ -216,6 +216,22 @@ describe('held clicks, sub-account IDs and matrices', () => {
     ])
   })
 
+  it('an edited sell-off row is named as a sell-off row, as an added or removed one is', () => {
+    expect(lines(entry({ source: 'bid_config_history', entityType: 'bid_matrix', action: 'synced', matrix: { configId: 'c1', configName: 'M', source: 'salesforce_sync' }, changes: {
+      added: [], removed: [], edited: [{ range: '500 to 549', is_sell_off: true, changes: [{ field: 'bid_amount', before: 2, after: 2.5 }] }],
+    } })).slice(1)).toEqual([{ kind: 'change', label: 'Sell-off row 500 to 549 bid', from: '$2.00', to: '$2.50' }])
+  })
+
+  it('a kind of change this page has not met is shown by its raw name with its values, and counted', () => {
+    const d = describeEntry(entry({ entityType: 'something_new' as HistoryEntry['entityType'], action: 'updated', changes: { cap: { old: 1, new: 2 }, note: 'x', _source: 'job' } }))
+    expect(d.lines).toEqual([
+      { kind: 'text', text: 'something_new updated.' },
+      { kind: 'change', label: 'cap', from: '1', to: '2' },
+      { kind: 'text', text: 'note: x' },
+    ])
+    expect(d.unregistered).toEqual(['something_new'])
+  })
+
   it('a sync that changed nothing still says what it read', () => {
     expect(lines(entry({ source: 'bid_config_history', entityType: 'bid_matrix', action: 'synced', matrix: { configId: 'c1', configName: null, source: 'salesforce_sync' }, changes: { rows_fetched: 3, added: [], removed: [], edited: [] } }))).toEqual([
       { kind: 'text', text: 'Bid matrix: no rows changed (3 rows read from Salesforce).' },

@@ -354,7 +354,8 @@ function describeMatrixSync(e: HistoryEntry, c: Record<string, unknown>, out: Li
       const label = MATRIX_ROW_FIELD_LABELS[field]
       if (!label) out.unregistered.push(field)
       const fmt = field === 'bid_amount' ? money : formatSetting
-      out.value(`${rowLabel({ ...r, is_sell_off: false })} ${label ?? field}`, fmt(ch.before), fmt(ch.after), false, false)
+      // Named as an added or removed row is: by what the row is now, sell-off or not.
+      out.value(`${rowLabel(r)} ${label ?? field}`, fmt(ch.before), fmt(ch.after), false, false)
     }
   }
   for (const r of removed) out.value(rowLabel(r), money(r.bid_amount), 'removed', false, false)
@@ -371,6 +372,16 @@ export function describeEntry(e: HistoryEntry): DescribedEntry {
     case 'partner_uuid': describeSubAccount(e, c, out); break
     case 'partner_bid_config': describeMatrixConfig(e, c, out); break
     case 'bid_matrix': describeMatrixSync(e, c, out); break
+    default:
+      // A kind the route started returning before this page learned it: shown
+      // by its raw name with its values, and counted, never dropped (L96).
+      out.unregistered.push(String(e.entityType))
+      out.text(`${String(e.entityType)} ${e.action}.`)
+      for (const [key, v] of Object.entries(c)) {
+        if (key.startsWith('_')) continue
+        if (isPair(v)) out.value(key, formatSetting(v.old), formatSetting(v.new), false, false)
+        else out.text(`${key}: ${formatSetting(v)}`)
+      }
   }
   if (out.lines.length === 0) out.text(`${e.action[0]?.toUpperCase() ?? ''}${e.action.slice(1)}; no values were recorded.`)
   return { lines: out.lines, unregistered: out.unregistered }
