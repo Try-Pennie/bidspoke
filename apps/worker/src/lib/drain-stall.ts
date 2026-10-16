@@ -74,6 +74,8 @@ export async function runDrainStallCheck(
     ttlSeconds: COOLDOWN_TTL_SECONDS,
     supabase,
     logLabel: 'drain-stall',
+    // The finding is measured before the list is read (#1303).
+    use: 'tell-only',
     perOrg: (orgId) => sendDrainStallAlert(supabase, orgId, stranded),
   })
   return { stranded, alerted }

@@ -13,7 +13,8 @@ vi.mock('../slack', () => ({
   sendDatabaseUnreachableAlert: vi.fn(),
 }))
 
-import { detectCliff, runVolumeCliffCheck, sendCliffAlert, BASELINE_WINDOW_MINUTES, RECENT_WINDOW_MINUTES, MIN_BASELINE_PER_MIN, SLACK_CONNS_LASTGOOD_KEY, DB_UNREACHABLE_PREFIX } from '../volume-cliff'
+import { detectCliff, runVolumeCliffCheck, sendCliffAlert, BASELINE_WINDOW_MINUTES, RECENT_WINDOW_MINUTES, MIN_BASELINE_PER_MIN, DB_UNREACHABLE_PREFIX } from '../volume-cliff'
+import { SLACK_CONNS_LASTGOOD_KEY } from '../slack-copy'
 import { getSlackConnection, postMessage, sendRecoveryAlert, sendDatabaseUnreachableAlert } from '../slack'
 import { encryptSecret, decryptSecret } from '../secret-crypto'
 import { recoveryKey, RECOVERY_TTL_SECONDS } from '../alert-recovery'
