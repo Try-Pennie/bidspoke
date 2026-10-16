@@ -172,8 +172,9 @@ export async function runOpsTickReportCheck(
     kept = { ...unreadableReport(formatErr(err), new Date(nowMs).toISOString()), received_at: new Date(nowMs).toISOString() }
   }
   const receivedMs = Date.parse(kept.received_at)
-  // An unreadable time pages through the heartbeat, not as a fresh verdict (L50).
-  if (!Number.isFinite(receivedMs) || nowMs - receivedMs > OPS_TICK_REPORT_FRESH_MS) return 'stale'
+  // An unreadable time is judged as fresh, the side that pages, never read as an
+  // old report and left quiet (L50). Only a readable, old one is the heartbeat's.
+  if (Number.isFinite(receivedMs) && nowMs - receivedMs > OPS_TICK_REPORT_FRESH_MS) return 'stale'
   if (kept.outcome === 'ok') {
     await deps.notifyRecovery(kv, OPS_TICK_JOB, nowMs)
     return 'healthy'

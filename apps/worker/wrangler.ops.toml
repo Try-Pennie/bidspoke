@@ -62,7 +62,8 @@ outbound = { service = "bidspoke-ops-outbound" }
 # unreachable from the public edge, which only ever invokes the default export.
 # Never an HTTP fetch of ops.trypennie.dev: that would put the internal surface on
 # the public route. apps/web/src/lib/__tests__/ops-worker-config.test.ts allows
-# exactly this one service binding and no binding to the bidding Worker.
+# exactly two service bindings, this one and OPS_GATEWAY below, each to a named
+# entrypoint and never to either Worker's default export.
 [[services]]
 binding = "SELF"
 service = "bidspoke-worker-ops"

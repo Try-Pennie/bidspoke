@@ -155,6 +155,13 @@ describe('runOpsTickReportCheck', () => {
     expect(d.recovered).toEqual([])
   })
 
+  it('judges a report whose received time is unreadable, rather than reading it as old and staying quiet (L50)', async () => {
+    const store = kv()
+    store.m.set(OPS_TICK_REPORT_KEY, stored({ outcome: 'problems', problems: ['x'], received_at: 'garbled' }))
+    const d = deps()
+    expect(await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW, d)).toBe('alerted')
+  })
+
   it('pages on a stored report it cannot read', async () => {
     const store = kv()
     store.m.set(OPS_TICK_REPORT_KEY, 'not json')
