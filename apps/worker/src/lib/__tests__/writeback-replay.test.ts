@@ -11,12 +11,14 @@ import { encryptSecret, decryptSecret } from '../secret-crypto'
 import {
   previewReplay,
   replayHeldWrite,
+  drainHeldWrite,
   abandonHeldWrite,
   REPLAY_LEASE_MS,
   type HeldWriteRow,
   type HeldWriteStore,
   type SalesforcePort,
 } from '../writeback-replay'
+import { isSalesforceBulkheadShed } from '../../engine/nodes/salesforce'
 
 const KEY = Buffer.from(new Uint8Array(32).map((_, i) => i + 3)).toString('base64')
 const ORG = '11111111-1111-1111-1111-111111111471'
@@ -295,5 +297,190 @@ describe('abandonHeldWrite', () => {
     rows[0] = await row({ status: 'replayed', finished_at: '2026-10-13T20:00:01Z' })
     const { store } = memoryStore(rows)
     expect(await abandonHeldWrite(store, ORG, ID)).toMatchObject({ kind: 'not_pending' })
+  })
+})
+
+/**
+ * The drain's send (#468 step 3): the same path as a person's replay, with the
+ * three things a person decides by hand decided by rule. It reads the record
+ * first and leaves out any field another writer changed since the row was
+ * written (the read-back's conflict rule, newer wins on LastModifiedDate), it
+ * closes the row as abandoned once its last allowed attempt fails, and a read
+ * that gets no usable answer spends nothing.
+ */
+describe('drainHeldWrite (#468 step 3)', () => {
+  // The row was written at 20:00:00 UTC (row()'s created_at).
+  const BEFORE_THE_ROW = '2026-10-13T19:59:00.000+0000'
+  const AFTER_THE_ROW = '2026-10-13T20:05:00.000+0000'
+
+  /** A port whose GET answers `read` and whose PATCH answers `patch`. */
+  function port(read: { status: number; text: string } | Error, patch: { status: number; text: string } | Error = { status: 204, text: '' }) {
+    const sent: Array<{ method: string; path: string; body?: string }> = []
+    const p: SalesforcePort = {
+      async send(method, path, body) {
+        sent.push({ method, path, body })
+        const answer = method === 'GET' ? read : patch
+        if (answer instanceof Error) throw answer
+        return answer
+      },
+      postApex: () => Promise.reject(new Error('the drain posted to Apex')),
+    }
+    return { port: p, sent }
+  }
+  const current = (fields: Record<string, unknown>) => ({ status: 200, text: JSON.stringify(fields) })
+  const patches = (sent: Array<{ method: string; body?: string }>) => sent.filter((s) => s.method === 'PATCH')
+
+  it('reads the record first, naming LastModifiedDate and every field, then sends the patch and marks it replayed', async () => {
+    const { store } = memoryStore(rows)
+    const sf = port(current({ LastModifiedDate: BEFORE_THE_ROW, External_Exchange_Status__c: 'Pending', Offer_Amount__c: 1 }))
+    const r = await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 })
+    expect(r).toMatchObject({ kind: 'replayed', recorded: true, moved: [] })
+    expect(sf.sent[0]).toMatchObject({ method: 'GET', path: '/sobjects/Submission__c/a04Ui00000NkhG1IAJ?fields=LastModifiedDate,External_Exchange_Status__c,Offer_Amount__c' })
+    expect(JSON.parse(patches(sf.sent)[0].body!)).toEqual({ External_Exchange_Status__c: 'Completed', Offer_Amount__c: 5000 })
+    expect(rows[0]).toMatchObject({ status: 'replayed', attempts: 1 })
+  })
+
+  it('leaves out and names a field another writer changed since the row was written, and sends the rest', async () => {
+    const { store } = memoryStore(rows)
+    const sf = port(current({ LastModifiedDate: AFTER_THE_ROW, External_Exchange_Status__c: 'Funded', Offer_Amount__c: null }))
+    const r = await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 })
+    expect(r).toMatchObject({ kind: 'replayed', moved: ['External_Exchange_Status__c'] })
+    expect(JSON.parse(patches(sf.sent)[0].body!)).toEqual({ Offer_Amount__c: 5000 })
+    expect(rows[0].status).toBe('replayed')
+    expect(await decryptSecret(rows[0].last_error_encrypted!, KEY)).toContain('External_Exchange_Status__c')
+  })
+
+  it('treats a value an earlier write of the same record sent as its own, so the newer write wins', async () => {
+    const { store } = memoryStore(rows)
+    const sf = port(current({ LastModifiedDate: AFTER_THE_ROW, External_Exchange_Status__c: 'Pending', Offer_Amount__c: 5000 }))
+    const r = await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2, earlier: [{ External_Exchange_Status__c: 'Pending' }] })
+    expect(r).toMatchObject({ kind: 'replayed', moved: [] })
+  })
+
+  it('sends every field to a record nobody has written since the row, whatever it holds', async () => {
+    const { store } = memoryStore(rows)
+    const sf = port(current({ LastModifiedDate: BEFORE_THE_ROW, External_Exchange_Status__c: 'Funded', Offer_Amount__c: 1 }))
+    expect(await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 })).toMatchObject({ kind: 'replayed', moved: [] })
+  })
+
+  it('closes the row as abandoned, sending nothing and spending no attempt, when every field has moved', async () => {
+    const { store } = memoryStore(rows)
+    const sf = port(current({ LastModifiedDate: AFTER_THE_ROW, External_Exchange_Status__c: 'Funded', Offer_Amount__c: 7000 }))
+    const r = await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 })
+    expect(r).toMatchObject({ kind: 'all_moved', moved: ['External_Exchange_Status__c', 'Offer_Amount__c'], recorded: true })
+    expect(patches(sf.sent)).toEqual([])
+    expect(rows[0]).toMatchObject({ status: 'abandoned', attempts: 0 })
+  })
+
+  it('spends nothing when the read gets no answer', async () => {
+    const { store } = memoryStore(rows)
+    const sf = port(new Error('socket hang up'))
+    expect(await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 })).toMatchObject({ kind: 'read_unanswered' })
+    expect(patches(sf.sent)).toEqual([])
+    expect(rows[0]).toMatchObject({ status: 'pending', attempts: 0 })
+  })
+
+  it('spends nothing when the read is answered with a failure that is not a refusal', async () => {
+    for (const status of [503, 401, 429]) {
+      rows = [await row()]
+      const { store } = memoryStore(rows)
+      const sf = port({ status, text: 'unavailable' })
+      expect((await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 })).kind, String(status)).toBe('read_failed')
+      expect(rows[0], String(status)).toMatchObject({ status: 'pending', attempts: 0 })
+    }
+  })
+
+  it('closes the row as refused, unsent, when Salesforce refuses the read itself (the record is gone)', async () => {
+    const { store } = memoryStore(rows)
+    const sf = port({ status: 404, text: '[{"errorCode":"NOT_FOUND"}]' })
+    const r = await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 })
+    expect(r).toMatchObject({ kind: 'refused', resent: false, recorded: true })
+    expect(patches(sf.sent)).toEqual([])
+    expect(rows[0]).toMatchObject({ status: 'refused', replayable: false, attempts: 0 })
+  })
+
+  it('closes a rejected resend as refused, through the one rejection rule', async () => {
+    const { store } = memoryStore(rows)
+    const sf = port(current({ LastModifiedDate: BEFORE_THE_ROW }), { status: 400, text: '[{"errorCode":"FIELD_CUSTOM_VALIDATION_EXCEPTION"}]' })
+    expect(await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 })).toMatchObject({ kind: 'refused', resent: true })
+    expect(rows[0]).toMatchObject({ status: 'refused', replayable: false, attempts: 1 })
+  })
+
+  it('leaves the first failed attempt pending and closes the last one as abandoned', async () => {
+    const { store } = memoryStore(rows)
+    const sf = port(current({ LastModifiedDate: BEFORE_THE_ROW }), { status: 503, text: 'unavailable' })
+    expect(await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 })).toMatchObject({ kind: 'still_pending', answered: true })
+    expect(rows[0]).toMatchObject({ status: 'pending', attempts: 1 })
+    expect(await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 })).toMatchObject({ kind: 'abandoned', answered: true, recorded: true })
+    expect(rows[0]).toMatchObject({ status: 'abandoned', attempts: 2 })
+    expect(typeof rows[0].finished_at).toBe('string')
+  })
+
+  it('says when the last attempt got no answer, since that write may have landed', async () => {
+    rows = [await row({ attempts: 1 })]
+    const { store } = memoryStore(rows)
+    const sf = port(current({ LastModifiedDate: BEFORE_THE_ROW }), new Error('aborted'))
+    expect(await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 })).toMatchObject({ kind: 'abandoned', answered: false })
+  })
+
+  it('sends once when two drains race over one row', async () => {
+    const { store } = memoryStore(rows)
+    const sf = port(current({ LastModifiedDate: BEFORE_THE_ROW }))
+    const [a, b] = await Promise.all([
+      drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 }),
+      drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 }),
+    ])
+    expect([a.kind, b.kind].sort()).toEqual(['conflict', 'replayed'])
+    expect(patches(sf.sent)).toHaveLength(1)
+  })
+
+  it('reads nothing for a row the read-back holds', async () => {
+    const { store } = memoryStore(rows)
+    const sf = port(current({ LastModifiedDate: BEFORE_THE_ROW }))
+    expect(await drainHeldWrite(deps(store, sf.port, async () => true), ORG, ID, { maxAttempts: 2 })).toMatchObject({ kind: 'not_replayable' })
+    expect(sf.sent).toEqual([])
+  })
+})
+
+/**
+ * A full bulkhead refuses the call before anything leaves (#468): nothing was
+ * sent, so it is a hold, not a failed attempt, for a person's replay and the
+ * drain alike.
+ */
+describe('a send the Salesforce bulkhead refused', () => {
+  const shed = () => Object.assign(new Error('Salesforce bulkhead: at capacity (salesforce, 8/8 inflight, waited 0ms)'), { bulkheadShed: true })
+
+  it('gives the attempt back and keeps the row pending', async () => {
+    const { store } = memoryStore(rows)
+    const r = await replayHeldWrite(deps(store, salesforce(shed()).port), ORG, ID)
+    expect(r).toMatchObject({ kind: 'held' })
+    expect(rows[0]).toMatchObject({ status: 'pending', attempts: 0 })
+  })
+
+  it('never closes the row on the drain\'s last attempt', async () => {
+    rows = [await row({ attempts: 1 })]
+    const { store } = memoryStore(rows)
+    const sf: SalesforcePort = {
+      send: async (method) => {
+        if (method === 'GET') return { status: 200, text: JSON.stringify({ LastModifiedDate: '2026-10-13T19:00:00.000+0000' }) }
+        throw shed()
+      },
+      postApex: () => Promise.reject(new Error('no')),
+    }
+    expect(await drainHeldWrite(deps(store, sf), ORG, ID, { maxAttempts: 2 })).toMatchObject({ kind: 'held' })
+    expect(rows[0]).toMatchObject({ status: 'pending', attempts: 1 })
+  })
+
+  it('says held, not unanswered, when the bulkhead refuses the drain\'s read', async () => {
+    const { store } = memoryStore(rows)
+    const sf: SalesforcePort = { send: async () => { throw shed() }, postApex: () => Promise.reject(new Error('no')) }
+    expect(await drainHeldWrite(deps(store, sf), ORG, ID, { maxAttempts: 2 })).toMatchObject({ kind: 'held' })
+    expect(rows[0]).toMatchObject({ status: 'pending', attempts: 0 })
+  })
+
+  it('is recognised by the mark the Salesforce call path puts on its refusal, never by its wording', () => {
+    expect(isSalesforceBulkheadShed(shed())).toBe(true)
+    expect(isSalesforceBulkheadShed(new Error('Salesforce bulkhead: at capacity'))).toBe(false)
+    expect(isSalesforceBulkheadShed('bulkheadShed')).toBe(false)
   })
 })

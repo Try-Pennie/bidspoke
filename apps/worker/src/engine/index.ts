@@ -81,6 +81,7 @@ import { assertDefinitionRunsInLane, assertWorkflowServedInLane, laneRefusalFor,
 import { runRealityOfOptions, shadowRunRefusal, stampRunReality } from './run-reality'
 import { startAtRiskWatch, startWatchSafely, runWatched, heldUntilOf } from './at-risk-writes'
 import { isCreditInquiryPost, stepRetries } from './inquiry-post'
+import { readRecoveryOrigin, type RecoveryOrigin } from './recovery-origin'
 import { writeMarker, withWriteMarker, ENGINE_ATTEMPT } from './write-marker'
 import { unfinishedWorkPages } from './unfinished-work'
 import { readBackHoldsStep } from '../lib/salesforce-read-back'
@@ -519,6 +520,16 @@ export async function executeWorkflow(
   // every node from the entry, so it would post a click a second time.
   if (options.resumeFromExecutionId) ctx.recovery = 'resume'
   else if (options.parentExecutionId) ctx.recovery = 'replay'
+  // And where its lineage began, read only when a credit inquiry post asks, once a
+  // run (#2176): the post checks for its file since then before it sends.
+  const recoveredFrom = options.resumeFromExecutionId ?? options.parentExecutionId
+  if (recoveredFrom) {
+    let origin: Promise<RecoveryOrigin> | undefined
+    ctx.recoveryOrigin = () => (origin ??= readRecoveryOrigin(runDb, recoveredFrom))
+    // And whether the read-back still holds a post of that lineage, asked of the
+    // at-risk records the watch writes, by the read-back's own classifier.
+    ctx.readBackHolds = (id, stepNamespace) => readBackHoldsStep(env.IDEMPOTENCY, secretKeys(env), id, stepNamespace)
+  }
 
   // Resume re-runs the workflow from the entry node — no completed steps are
   // pre-loaded and nothing is skipped (it behaves like a fresh run, same as
