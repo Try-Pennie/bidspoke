@@ -16,12 +16,12 @@ vi.mock('../../../lib/jwt')
 vi.mock('../../../lib/supabase')
 vi.mock('../../../lib/audit', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../lib/audit')>()
-  return { ...actual, writeAuditLog: vi.fn().mockResolvedValue(undefined) }
+  return { ...actual, recordAuditLog: vi.fn().mockResolvedValue(true) }
 })
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
-import { writeAuditLog } from '../../../lib/audit'
+import { recordAuditLog } from '../../../lib/audit'
 import { BETTER_STACK_ALERT_NAME, NOBODY_TOLD_LINE, NOBODY_TOLD_PAGE_DEADLINE_MS, createNobodyToldPager } from '../../../lib/nobody-told-page'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
@@ -118,7 +118,7 @@ describe('POST /admin/nobody-told-page/drill', () => {
     const sent = stubFetch(202)
     const res = await post(env())
     expect(res.status).toBe(200)
-    expect(await res.json()).toStrictEqual({ ok: true, outcome: 'sent', status: 202, alert: BETTER_STACK_ALERT_NAME })
+    expect(await res.json()).toStrictEqual({ ok: true, outcome: 'sent', status: 202, alert: BETTER_STACK_ALERT_NAME, audited: true })
     expect(sent).toHaveLength(1)
     expect(sent[0].url).toBe(URL_)
     expect(sent[0].auth).toBe(`Bearer ${TOKEN}`)
@@ -149,14 +149,14 @@ describe('POST /admin/nobody-told-page/drill', () => {
     stubFetch(401)
     const res = await post(env())
     expect(res.status).toBe(502)
-    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'refused', status: 401, alert: BETTER_STACK_ALERT_NAME })
+    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'refused', status: 401, alert: BETTER_STACK_ALERT_NAME, audited: true })
   })
 
   it('answers threw with the failure when the send throws', async () => {
     stubFetch('throw')
     const res = await post(env())
     expect(res.status).toBe(502)
-    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'threw', error: 'fetch failed', alert: BETTER_STACK_ALERT_NAME })
+    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'threw', error: 'fetch failed', alert: BETTER_STACK_ALERT_NAME, audited: true })
   })
 
   it('answers no answer when Better Stack does not answer within the deadline', async () => {
@@ -166,22 +166,22 @@ describe('POST /admin/nobody-told-page/drill', () => {
     await vi.advanceTimersByTimeAsync(NOBODY_TOLD_PAGE_DEADLINE_MS)
     const res = await pending
     expect(res.status).toBe(504)
-    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'no_answer', deadline_ms: NOBODY_TOLD_PAGE_DEADLINE_MS, alert: BETTER_STACK_ALERT_NAME })
+    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'no_answer', deadline_ms: NOBODY_TOLD_PAGE_DEADLINE_MS, alert: BETTER_STACK_ALERT_NAME, audited: true })
   })
 
   it('answers not configured, naming the unset secret and sending nothing', async () => {
     const sent = stubFetch(202)
     const res = await post(env({ BETTERSTACK_OUTAGE_URL: undefined }))
     expect(res.status).toBe(503)
-    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'not_configured', missing: ['BETTERSTACK_OUTAGE_URL'], alert: BETTER_STACK_ALERT_NAME })
+    expect(await res.json()).toStrictEqual({ ok: false, outcome: 'not_configured', missing: ['BETTERSTACK_OUTAGE_URL'], alert: BETTER_STACK_ALERT_NAME, audited: true })
     expect(sent).toEqual([])
   })
 
   it('audits who ran the drill and what came of it, scoped to their organization', async () => {
     stubFetch(401)
     await post(env())
-    expect(writeAuditLog).toHaveBeenCalledTimes(1)
-    expect(writeAuditLog).toHaveBeenCalledWith(
+    expect(recordAuditLog).toHaveBeenCalledTimes(1)
+    expect(recordAuditLog).toHaveBeenCalledWith(
       expect.anything(),
       'org-abc',
       'outage_page',
@@ -192,9 +192,17 @@ describe('POST /admin/nobody-told-page/drill', () => {
     )
   })
 
+  it('says the audit row was not written when it was not, without hiding that the page went out', async () => {
+    vi.mocked(recordAuditLog).mockResolvedValueOnce(false)
+    stubFetch(202)
+    const res = await post(env())
+    expect(res.status).toBe(200)
+    expect(await res.json()).toStrictEqual({ ok: true, outcome: 'sent', status: 202, alert: BETTER_STACK_ALERT_NAME, audited: false })
+  })
+
   it('audits a drill that sent nothing because a secret is unset', async () => {
     stubFetch(202)
     await post(env({ BETTERSTACK_OUTAGE_TOKEN: undefined, BETTERSTACK_OUTAGE_URL: undefined }))
-    expect(vi.mocked(writeAuditLog).mock.calls[0][6]).toStrictEqual({ outcome: 'not_configured', missing: ['BETTERSTACK_OUTAGE_TOKEN', 'BETTERSTACK_OUTAGE_URL'] })
+    expect(vi.mocked(recordAuditLog).mock.calls[0][6]).toStrictEqual({ outcome: 'not_configured', missing: ['BETTERSTACK_OUTAGE_TOKEN', 'BETTERSTACK_OUTAGE_URL'] })
   })
 })

@@ -46,7 +46,7 @@ import {
   type ReplayResult,
 } from '../../lib/writeback-replay'
 import { readBackHoldsStep } from '../../lib/salesforce-read-back'
-import { writeAuditLog } from '../../lib/audit'
+import { recordAuditLog, writeAuditLog } from '../../lib/audit'
 import { SCHEDULED_DRILL_DEADLINE_MS, buyerObjectsHealth, runBuyerObjectsDrill } from '../../lib/buyer-objects-health'
 import { withDeadline } from '@bidspoke/buyer-profile'
 import { BETTER_STACK_ALERT_NAME, drillNobodyToldPage, type NobodyToldDrillOutcome } from '../../lib/nobody-told-page'
@@ -664,7 +664,8 @@ admin.post('/buyer-objects/drill', async (c) => {
  * organization; the caller's organization is used only for the audit row. It
  * never reads or writes the IDEMPOTENCY record a real page dedupes on, so it
  * cannot hold back a real outage's page. Every outcome is its own answer, never
- * a blanket ok, and every attempt is audited, one that sent nothing included.
+ * a blanket ok, and every attempt is audited, one that sent nothing included;
+ * `audited` in the answer says whether that row actually landed.
  */
 const DRILL_STATUS: Record<NobodyToldDrillOutcome['outcome'], 200 | 502 | 503 | 504> = {
   sent: 200,
@@ -677,8 +678,10 @@ const DRILL_STATUS: Record<NobodyToldDrillOutcome['outcome'], 200 | 502 | 503 | 
 admin.post('/nobody-told-page/drill', async (c) => {
   const { orgId, email } = c.get('user')
   const result = await drillNobodyToldPage({ token: c.env.BETTERSTACK_OUTAGE_TOKEN, url: c.env.BETTERSTACK_OUTAGE_URL })
-  await writeAuditLog(createSupabaseClient(c.env), orgId, 'outage_page', BETTER_STACK_ALERT_NAME, 'outage_page_drilled', email ?? 'unknown', { ...result })
-  return c.json({ ok: result.outcome === 'sent', ...result, alert: BETTER_STACK_ALERT_NAME }, DRILL_STATUS[result.outcome])
+  // recordAuditLog, not writeAuditLog: the answer says whether the row landed
+  // rather than claiming every attempt is audited when the write failed (L11).
+  const audited = await recordAuditLog(createSupabaseClient(c.env), orgId, 'outage_page', BETTER_STACK_ALERT_NAME, 'outage_page_drilled', email ?? 'unknown', { ...result })
+  return c.json({ ok: result.outcome === 'sent', ...result, alert: BETTER_STACK_ALERT_NAME, audited }, DRILL_STATUS[result.outcome])
 })
 
 admin.post('/archive-settings-check', async (c) => {
