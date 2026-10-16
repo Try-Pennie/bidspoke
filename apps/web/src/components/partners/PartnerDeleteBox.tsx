@@ -49,10 +49,17 @@ export function PartnerDeleteBox({ partner, refreshKey, onDeleted }: {
   const [deleteError, setDeleteError] = useState<string | null>(null)
   // A state flag alone cannot stop a same tick double press (#495).
   const deletingRef = useRef(false)
+  // A check asked for while a delete is in flight waits for its answer, so the
+  // two never race to set the box; the answer of a refusal carries its own check.
+  const refreshWaiting = useRef(false)
   const checkingSeconds = useElapsed(view.kind === 'checking')
   const deletingSeconds = useElapsed(deleting)
 
   useEffect(() => {
+    if (deletingRef.current) {
+      refreshWaiting.current = true
+      return
+    }
     let cancelled = false
     setView({ kind: 'checking' })
     setTyped('')
@@ -66,10 +73,12 @@ export function PartnerDeleteBox({ partner, refreshKey, onDeleted }: {
   async function handleDelete() {
     if (view.kind !== 'ready' || view.check.blockers.length > 0 || typed !== CONFIRM_WORD || deletingRef.current) return
     deletingRef.current = true
+    refreshWaiting.current = false
     setDeleting(true)
     setDeleteError(null)
+    let answer: PartnerDeleted
     try {
-      onDeleted(await api.partners.delete(partner.id, view.check.fingerprint))
+      answer = await api.partners.delete(partner.id, view.check.fingerprint)
     } catch (err) {
       const e = err as { status?: number; body?: unknown; message?: string }
       if (e.status === 409 && isRefusal(e.body)) {
@@ -77,12 +86,27 @@ export function PartnerDeleteBox({ partner, refreshKey, onDeleted }: {
         setTyped('')
         if (e.body.check === null) setView({ kind: 'failed' })
         else setView({ kind: 'ready', check: e.body.check, notice: e.body.error === 'consequence_changed' ? e.body.message : 'Nothing was deleted.' })
+        refreshWaiting.current = false
       } else {
         setDeleteError(e.message || 'The delete did not go through. Nothing was deleted.')
+        // A change seen while the delete was in flight is checked now.
+        if (refreshWaiting.current) {
+          refreshWaiting.current = false
+          setAttempt((a) => a + 1)
+        }
       }
+      return
     } finally {
       deletingRef.current = false
       setDeleting(false)
+    }
+    // Outside the try: the delete committed, so nothing the page does with the
+    // answer can be reported as a failed delete. A page that throws on it is a
+    // defect in the page, logged as such, never shown as the delete failing.
+    try {
+      onDeleted(answer)
+    } catch (err) {
+      console.error(`[partner-delete] ${partner.name} was deleted, but the page could not take the answer: ${err instanceof Error ? err.message : 'non Error thrown'}`)
     }
   }
 

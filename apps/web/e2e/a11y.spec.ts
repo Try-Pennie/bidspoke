@@ -110,6 +110,8 @@ test.describe('Accessibility (axe-core)', () => {
   test('the partners page delete box, ready to delete, has no serious a11y violations', async ({ page }) => {
     const { unmatched } = await routePartnerFixtures(page, workerUrl())
     await page.goto('/partners?selected=liberty1')
+    await expect(page.getByRole('heading', { name: 'Liberty1', exact: true })).toBeVisible()
+    await page.waitForLoadState('networkidle')
     const box = page.getByRole('region', { name: 'Delete Liberty1' })
     await expect(box.getByLabel('Type DELETE to confirm')).toBeVisible()
     await box.getByLabel('Type DELETE to confirm').fill('DELETE')

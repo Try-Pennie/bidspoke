@@ -153,6 +153,33 @@ describe('PartnerDeleteBox', () => {
     expect(field()).toHaveValue('DELETE')
   })
 
+  it('a change seen while a delete is in flight does not race it, and is checked after a failed delete', async () => {
+    vi.mocked(api.partners.deleteCheck).mockResolvedValue(clean())
+    let reject!: (e: unknown) => void
+    vi.mocked(api.partners.delete).mockReturnValue(new Promise((_r, j) => { reject = j }))
+    const onDeleted = vi.fn()
+    const { rerender } = render(<PartnerDeleteBox partner={PARTNER} refreshKey="k1" onDeleted={onDeleted} />)
+    fireEvent.change(await screen.findByLabelText('Type DELETE to confirm'), { target: { value: 'DELETE' } })
+    fireEvent.click(button())
+    rerender(<PartnerDeleteBox partner={PARTNER} refreshKey="k2" onDeleted={onDeleted} />)
+    expect(api.partners.deleteCheck).toHaveBeenCalledTimes(1)
+    reject(Object.assign(new Error('The server could not be reached.'), { status: 500 }))
+    await waitFor(() => expect(api.partners.deleteCheck).toHaveBeenCalledTimes(2))
+  })
+
+  it('a page that throws on the answer of a committed delete is logged, never shown as a failed delete', async () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(api.partners.deleteCheck).mockResolvedValue(clean())
+    vi.mocked(api.partners.delete).mockResolvedValue({ ok: true })
+    const onDeleted = vi.fn(() => { throw new Error('page broke') })
+    renderBox('k1', onDeleted)
+    fireEvent.change(await screen.findByLabelText('Type DELETE to confirm'), { target: { value: 'DELETE' } })
+    fireEvent.click(button())
+    await waitFor(() => expect(log).toHaveBeenCalledWith(expect.stringContaining('Tripoint was deleted, but the page could not take the answer: page broke')))
+    expect(screen.queryByRole('alert')).toBeNull()
+    log.mockRestore()
+  })
+
   it('checks again when what it would remove may have changed', async () => {
     vi.mocked(api.partners.deleteCheck).mockResolvedValue(clean())
     const { rerender } = renderBox('k1')
