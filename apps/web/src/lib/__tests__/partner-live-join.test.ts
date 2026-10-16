@@ -132,6 +132,17 @@ describe('browserJoin (#2135)', () => {
     expect(s.hasListener()).toBe(false)
   })
 
+  it('listens again on the next join after a dispose, as a provider mounted twice needs', async () => {
+    const s = fakeSupabase()
+    const live = browserJoin(s.client)
+    live.dispose()
+    void live.join('partners:org-1', () => {}, () => {})
+    await flush()
+    expect(s.hasListener()).toBe(true)
+    s.fireAuth('TOKEN_REFRESHED', { access_token: 'jwt-9' })
+    expect(s.setAuth).toHaveBeenLastCalledWith('jwt-9')
+  })
+
   it('gives up on a join that gets no answer within the timeout, on the injected clock', async () => {
     const s = fakeSupabase()
     let fire: (() => void) | null = null

@@ -53,13 +53,21 @@ export function browserJoin(client: LiveSupabase, opts: BrowserJoinOptions = {})
   const schedule = opts.setTimeout ?? realSetTimeout
   // A refreshed session gets a new token; Realtime is told at once (the issue's
   // "re-run setAuth on session refresh"), so a rejoin is never made on the old one.
-  const { data } = client.auth.onAuthStateChange((event, session) => {
-    if (session?.access_token && (event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN')) {
-      void Promise.resolve(client.realtime.setAuth(session.access_token)).catch(() => undefined)
-    }
-  })
+  // Listening is armed again by the next join after a dispose, so a provider
+  // mounted twice (React's development double mount) still listens.
+  let subscription: { unsubscribe(): void } | null = null
+  const listen = () => {
+    if (subscription) return
+    subscription = client.auth.onAuthStateChange((event, session) => {
+      if (session?.access_token && (event === 'TOKEN_REFRESHED' || event === 'SIGNED_IN')) {
+        void Promise.resolve(client.realtime.setAuth(session.access_token)).catch(() => undefined)
+      }
+    }).data.subscription
+  }
+  listen()
 
   const join: JoinFn = async (topic, onPayload, onDrop) => {
+    listen()
     let token: string | undefined
     try {
       token = (await client.auth.getSession()).data.session?.access_token
@@ -123,5 +131,11 @@ export function browserJoin(client: LiveSupabase, opts: BrowserJoinOptions = {})
     })
   }
 
-  return { join, dispose: () => data.subscription.unsubscribe() }
+  return {
+    join,
+    dispose: () => {
+      subscription?.unsubscribe()
+      subscription = null
+    },
+  }
 }
