@@ -31,7 +31,9 @@ import { containsHtmlDocument, summarizeHtmlErrorBody } from '../../lib/html-err
 import { attachBlockSighting, noteBlockSighting, sightingFromResponse } from '../block-sightings'
 import { salesforceConfigProblem } from '@bidspoke/workflow-definition'
 import { stampWriteMarker } from '../write-marker'
-import { CREDIT_INQUIRY_APEX_PATH, inquiryPostOf, isCreditInquiryPost, type InquiryPost } from '../inquiry-post'
+import { CREDIT_INQUIRY_APEX_PATH, INQUIRY_MARKER_MARGIN_MS, inquiryPostOf, isCreditInquiryPost, lookupInquiryMarker, type InquiryPost, type SalesforceRead } from '../inquiry-post'
+import type { RecoveryOrigin } from '../recovery-origin'
+import { formatErr } from '../../lib/format-error'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
@@ -75,7 +77,7 @@ interface SalesforceConfig {
 }
 
 /** Why a write was skipped rather than sent (#2170), recorded on the step's output. */
-export type SalesforceSkipReason = 'nothing_to_write' | 'no_record_id'
+export type SalesforceSkipReason = 'nothing_to_write' | 'no_record_id' | 'already_landed'
 
 // Token cache TTL slightly under SF default of 3600s to avoid races
 const TOKEN_TTL_S = 3500
@@ -409,6 +411,28 @@ export async function executeSalesforceNode(
     }
   }
   noteUpdate(resolvedBodyForInput)
+  // A credit inquiry post on a replay or a resume checks first and sends only if
+  // its file is missing (#2176). Before the intent record: a post not sent holds none.
+  if (inquiryPost && ctx.recovery) {
+    const read = async (path: string): Promise<SalesforceRead> => {
+      const get: SalesforceCallOptions = { ...callOpts, url: `${instanceUrl}/services/data/v60.0${path}`, method: 'GET', operation: 'query', targetLabel: path.split('?')[0] }
+      try {
+        let { res, responseText } = await performSalesforceCall(undefined, get)
+        // A revoked cached token (#1741): refused before anything ran, so read once
+        // more with a fresh login, which the post then goes out with too.
+        if (res.status === 401) {
+          await env.WORKFLOW_CACHE.delete(salesforceTokenCacheKey(ctx.trigger.org_id))
+          headers.Authorization = `Bearer ${await getSalesforceToken(env, ctx.trigger.org_id, instanceUrl, clientId, clientSecret, { signal })}`
+          ;({ res, responseText } = await performSalesforceCall(undefined, get))
+        }
+        return { kind: 'answer', status: res.status, text: responseText }
+      } catch (e) {
+        return { kind: 'no_answer', error: formatErr(e) }
+      }
+    }
+    const landed = await checkRecoveredInquiryPost(ctx, ctx.recovery, inquiryPost, read, resolvedInput, warnLogs)
+    if (landed) return landed
+  }
   // A credit inquiry post is recorded BEFORE it goes out, and this waits for the
   // record, so an isolate cancelled mid call still leaves it (#2172, D5). Its
   // record names the Submission the body is for.
@@ -990,6 +1014,65 @@ async function fetchQueryPage(
 const SKIP_MESSAGES: Record<SalesforceSkipReason, string> = {
   nothing_to_write: 'Skipped the Salesforce write: the body had nothing to write, so no request was sent.',
   no_record_id: 'Skipped the Salesforce write: the record id was empty, so there was no record to write to and no request was sent.',
+  already_landed: 'Skipped the credit inquiry post: this run recovers an earlier one, and that run\'s Inquiries file is already on the Lead, so no request was sent.',
+}
+
+/**
+ * A credit inquiry post on a recovery run checks first and sends only if
+ * missing (#2176, Dan, 2026-10-15). A replay or a resume runs every node again
+ * from the entry, and a second post that lands attaches a second Inquiries file,
+ * so before it posts it looks for the original's file on the Lead, through the
+ * read-back's own lookup (lookupInquiryMarker), since the root run of the
+ * lineage began (engine/recovery-origin.ts says why that start).
+ *
+ * Returns the skipped result when the file is there, nothing when it is not (the
+ * post goes out as on any run, intent record first), and throws when the check
+ * cannot be answered: fail closed, because a post not sent is said on the step
+ * and can be run again, and a second file cannot be taken back. Not a refusal of
+ * every recovery run, as buyer_click_send's is (#1542): a post that never landed
+ * is sent.
+ */
+async function checkRecoveredInquiryPost(
+  ctx: ExecutionContext,
+  recovery: NonNullable<ExecutionContext['recovery']>,
+  post: Extract<InquiryPost, { kind: 'inquiries' }>,
+  read: (path: string) => Promise<SalesforceRead>,
+  resolvedInput: ResolvedStepInput,
+  logs: StepLogEntry[],
+): Promise<StepExecutionResult | undefined> {
+  const notSent = (why: string, permanent = false) => {
+    const message = `Salesforce credit inquiry post not sent: this is a ${recovery} of an earlier execution, and ${why}`
+    console.warn(`[salesforce] event=inquiry_recovery_check_failed recovery=${recovery} trace=${ctx.trigger.trace_id} ${message}`)
+    const err = permanent ? permanentError(message, resolvedInput) : Object.assign(new Error(message), { resolvedInput })
+    if (logs.length > 0) Object.assign(err, { logs })
+    return err
+  }
+  const unknown = (cause: string) =>
+    notSent(`whether its Inquiries file already landed is unknown (${cause}). It is not sent, because a second post attaches a second file; run it again once that can be read.`)
+  if (!ctx.recoveryOrigin) throw unknown('the run does not say which execution its lineage began with')
+  let origin: RecoveryOrigin
+  try {
+    origin = await ctx.recoveryOrigin()
+  } catch (e) {
+    throw unknown(`where its lineage began could not be read: ${formatErr(e)}`)
+  }
+  const looked = await lookupInquiryMarker(read, post.submissionId, origin.startedAtMs)
+  if (looked.kind === 'unread') {
+    throw unknown(looked.read.kind === 'no_answer' ? `no answer reading the ${looked.what}: ${looked.read.error}` : `Salesforce answered ${looked.read.status} reading the ${looked.what}`)
+  }
+  if (looked.kind === 'unreadable') throw unknown(`reading the ${looked.what} did not answer with what was asked`)
+  if (looked.kind === 'no_lead') throw notSent('the Submission has no Lead, so Salesforce refuses the post and writes nothing.', true)
+  if (looked.kind === 'absent') {
+    console.log(`[salesforce] event=inquiry_recovery_check result=absent recovery=${recovery} recovered_from=${origin.executionId} lead=${looked.leadId} trace=${ctx.trigger.trace_id}`)
+    return undefined
+  }
+  const since = new Date(origin.startedAtMs - INQUIRY_MARKER_MARGIN_MS).toISOString()
+  console.log(`[salesforce] event=salesforce_write_skipped reason=already_landed recovery=${recovery} recovered_from=${origin.executionId} lead=${looked.leadId} trace=${ctx.trigger.trace_id}`)
+  return {
+    output: { skipped: true, skip_reason: 'already_landed' satisfies SalesforceSkipReason, lead_id: looked.leadId, recovered_from: origin.executionId, marker_since: since },
+    resolvedInput: { ...resolvedInput, resolved: { ...(resolvedInput.resolved as Record<string, unknown>), skip_reason: 'already_landed' } },
+    logs: [...logs, { level: 'info', message: `${SKIP_MESSAGES.already_landed} It found Lead ${looked.leadId}'s file created since ${since}, when execution ${origin.executionId} began, less 2 s.`, ts: new Date().toISOString() }],
+  }
 }
 
 function permanentError(message: string, resolvedInput?: ResolvedStepInput): Error {

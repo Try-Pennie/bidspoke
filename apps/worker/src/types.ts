@@ -247,6 +247,13 @@ export interface ExecutionContext {
    * click would otherwise post to the buyer a second time.
    */
   recovery?: 'resume' | 'replay'
+  /**
+   * Set with `recovery` (#2176): the root run of this recovery's lineage and when
+   * it started, read only when asked (engine/recovery-origin.ts), at most once a
+   * run. A credit inquiry post on a recovery run checks for its file since then
+   * before it posts, and does not post when this is absent or throws.
+   */
+  recoveryOrigin?: () => Promise<import('./engine/recovery-origin').RecoveryOrigin>
 }
 
 export interface StepOutput {
