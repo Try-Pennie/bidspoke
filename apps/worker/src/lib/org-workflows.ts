@@ -14,8 +14,9 @@
  * - `routes/api/workflows.ts`: the step rename impact route (`excludeId`, the
  *   workflow being renamed);
  * - `routes/api/admin.ts`: the code worker migration (`activeOnly`);
- * - `lib/timeout-audit.ts`: the timeout audit (`activeOnly`).
- * The delete check (#2140) is to call it next.
+ * - `lib/timeout-audit.ts`: the timeout audit (`activeOnly`);
+ * - `routes/api/partner-delete.ts`: the partner delete check (#2140), whose
+ *   fingerprint reads `updated_at`.
  *
  * The Worker connects as service_role, which bypasses row level security, so
  * this read is what scopes the answer to one organization: it filters
@@ -40,6 +41,13 @@ export interface OrgWorkflow {
   name: string
   is_active: boolean
   definition: unknown
+  /**
+   * As PostgREST answered it, to the microsecond. The delete check (#2140)
+   * sends the (id, updated_at) set of the workflows it scanned back with the
+   * delete, and delete_partner_config compares it with the rows it locks, so
+   * it is passed through untouched, never parsed into a Date (milliseconds).
+   */
+  updated_at: string
 }
 
 export interface OrgWorkflowsOptions {
@@ -62,7 +70,7 @@ export async function readOrgWorkflows(supabase: SupabaseClient, orgId: string, 
     (from, to) => {
       let query = supabase
         .from('workflows')
-        .select('id, name, is_active, definition, organization_id, deleted_at')
+        .select('id, name, is_active, definition, updated_at, organization_id, deleted_at')
         .eq('organization_id', orgId)
         .is('deleted_at', null)
       if (options.activeOnly) query = query.eq('is_active', true)
@@ -82,7 +90,7 @@ export async function readOrgWorkflows(supabase: SupabaseClient, orgId: string, 
     }
     if (options.activeOnly && row.is_active !== true) continue
     if (row.id === options.excludeId) continue
-    out.push({ id: row.id, name: row.name, is_active: row.is_active === true, definition: row.definition })
+    out.push({ id: row.id, name: row.name, is_active: row.is_active === true, definition: row.definition, updated_at: row.updated_at })
   }
   return out
 }

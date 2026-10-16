@@ -27,8 +27,9 @@ import { fetchAllPaged } from '../../lib/paginate'
 import { jsonEqual } from '../../lib/stable-json'
 import type { Database } from '../../types/database'
 import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
-import { loadBuyerProfiles, partnersPricedFor } from '../../lib/buyer-profile-loader'
-import { populationsInUse, workflowsUsingPartner as workflowsUsingPartnerShared } from '../../lib/partner-workflow-finder'
+import { loadBuyerProfiles } from '../../lib/buyer-profile-loader'
+import { pricedPartnersByPopulation } from '../../lib/priced-partners'
+import { workflowsUsingPartner as workflowsUsingPartnerShared } from '../../lib/partner-workflow-finder'
 import { readOrgWorkflows } from '../../lib/org-workflows'
 import { secretKeys } from '../../lib/secret-crypto'
 import { retirePartnerLastGood } from '../../lib/partner-last-good'
@@ -1232,21 +1233,14 @@ workflows.get('/:id/rename-impact', async (c) => {
   // refuses the whole answer rather than reporting a partner as unshared (L98).
   // The finder itself is shared with the buyer profile route (#1412, L613).
   const others = otherWorkflows
-  const populations = populationsInUse(others)
-  const pricedPartnersByPopulation = new Map<string, Set<string>>()
-  if (populations.size > 0) {
-    let snapshot
-    try {
-      snapshot = await loadBuyerProfiles(orgId, c.env.WORKFLOW_CACHE, supabase)
-    } catch (err) {
-      console.error(`[workflows] rename impact could not read buyer profiles for org ${orgId}: ${err instanceof Error ? err.message : 'non Error thrown'}`)
-      return c.json({ error: 'Buyer profiles could not be read, so which workflows share these partners cannot be determined. Try again.' }, 503)
-    }
-    for (const population of populations) {
-      pricedPartnersByPopulation.set(population, new Set(partnersPricedFor(snapshot, population)))
-    }
+  let pricedPartners: Map<string, Set<string>>
+  try {
+    pricedPartners = await pricedPartnersByPopulation(others, () => loadBuyerProfiles(orgId, c.env.WORKFLOW_CACHE, supabase))
+  } catch (err) {
+    console.error(`[workflows] rename impact could not read buyer profiles for org ${orgId}: ${err instanceof Error ? err.message : 'non Error thrown'}`)
+    return c.json({ error: 'Buyer profiles could not be read, so which workflows share these partners cannot be determined. Try again.' }, 503)
   }
-  const workflowsUsingPartner = workflowsUsingPartnerShared(others, pricedPartnersByPopulation, { includeBuyerSelect: true, includeClickNodes: true })
+  const workflowsUsingPartner = workflowsUsingPartnerShared(others, pricedPartners, { includeBuyerSelect: true, includeClickNodes: true })
 
   const partner_formulas = affected.map((p) => {
     const resolverFormula =

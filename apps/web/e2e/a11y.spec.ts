@@ -95,6 +95,35 @@ test.describe('Accessibility (axe-core)', () => {
     expect(unmatched).toEqual([])
   })
 
+  // #2140: the delete box at the foot of the Partner tab, both ways it can stand.
+  // A buyer opens on its Buyer profile tab, so each test opens the Partner tab.
+  // Each scan is limited to the box, which is what this pull request adds.
+  test('the partners page delete box, blocked by sales, has no serious a11y violations', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl())
+    await openTripoint(page)
+    await page.getByRole('tab', { name: 'Partner', exact: true }).click()
+    const box = page.getByRole('region', { name: 'Delete Tripoint' })
+    await expect(box.getByText(/Tripoint cannot be deleted: 6,339 sales refer to it\./)).toBeVisible()
+    await expect(box.getByLabel('Type DELETE to confirm')).toHaveCount(0)
+    await expectNoSeriousA11yViolations(page, [], '/partners', '[aria-labelledby="partner-delete-title"]')
+    expect(unmatched).toEqual([])
+  })
+
+  test('the partners page delete box, ready to delete, has no serious a11y violations', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl())
+    await page.goto('/partners?selected=liberty1')
+    await expect(page.getByRole('heading', { name: 'Liberty1', exact: true })).toBeVisible()
+    await page.waitForLoadState('networkidle')
+    await page.getByRole('tab', { name: 'Partner', exact: true }).click()
+    const box = page.getByRole('region', { name: 'Delete Liberty1' })
+    await expect(box.getByLabel('Type DELETE to confirm')).toBeVisible()
+    await box.getByLabel('Type DELETE to confirm').fill('DELETE')
+    await expect(box.getByRole('button', { name: 'Delete Liberty1' })).toBeEnabled()
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', '[aria-labelledby="partner-delete-title"]')
+    expect(unmatched).toEqual([])
+  })
+
   // #2137: the shared controls, scanned open. A closed Select or calendar is a
   // button; what a screen reader meets is the open list or grid, so each is
   // opened by the keyboard, scanned, and driven. An open Select is modal: Radix
@@ -393,7 +422,7 @@ function workerUrl(): string {
 async function openTripoint(page: Page) {
   await page.goto('/partners?selected=tripoint')
   await expect(page.getByRole('region', { name: 'Buyer profile' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Tripoint' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Tripoint', exact: true })).toBeVisible()
   // The live channel (#2135) joins through the routed socket, so each scan sees the header as it settles.
   await expect(page.getByRole('status').filter({ hasText: /^Live$/ })).toBeVisible()
   await page.waitForLoadState('networkidle')

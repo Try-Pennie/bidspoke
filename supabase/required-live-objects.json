@@ -325,10 +325,20 @@
       "p_org": "00000000-0000-0000-0000-000000000000",
       "p_id": "00000000-0000-0000-0000-000000000000",
       "p_actor": "00000000-0000-0000-0000-000000000000",
-      "p_actor_email": "probe@invalid"
+      "p_actor_email": "probe@invalid",
+      "p_expected": { "counts": {}, "workflows": [] }
     },
     "anon": "denied",
-    "note": "Deletes a partner with the actor on its audit row (#1409). A WRITE. Probed with the all zero id, which no row carries, so a successful probe refuses partner_not_found."
+    "note": "Deletes a partner and its sub-account IDs as the delete check reviewed them (#1409, #2140). A WRITE. Probed through the five argument overload the Worker calls since #2140, with the all zero id, which no row carries, so a successful probe refuses partner_not_found. The four argument overload stays for the release before #2140."
+  },
+  {
+    "name": "partner_delete_check",
+    "args": {
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_id": "00000000-0000-0000-0000-000000000000"
+    },
+    "anon": "denied",
+    "note": "What deleting one partner would do (#2140): its dependents with row counts and blockers. STABLE, read only. Probed with the all zero id, which no row carries, so a successful probe refuses partner_not_found."
   },
   {
     "name": "rename_partner_step_namespace",
