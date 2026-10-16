@@ -11,8 +11,9 @@ last run; re-run the command before relying on the number (L316).
 The work was in two stages. Stage 1 (#2266) measured everything that needed no
 deploy and shipped the probe code, inert. Stage 2 (2026-10-16, approved by Dan)
 deployed it to the ops Worker, ran each probe once, and recorded the readings
-below. The change that closes #1946 then removed the probes, the cron and the
-`OPS_SPIKE_ARM` allowlist entry, keeping the `SELF` binding and `OpsInternal.ping`
+below. #2286 then removed the probes and the `OPS_SPIKE_ARM` allowlist entry,
+and a following change set `crons = []` to remove the cron (dropping the
+`[triggers]` block alone left it registered), keeping the `SELF` binding and `OpsInternal.ping`
 for the run engine's tick (B2).
 
 ## Measured in production (Stage 2)
@@ -231,8 +232,9 @@ curl -sS -o /dev/null -D - -X POST -H 'content-type: application/json' --data '{
 ### P7. The ops Worker before Stage 2
 
 - Before Stage 2: 33 fetch invocations in 7 days, max wall 3 ms, max CPU 2 ms, no
-  scheduled invocations (Stage 2 then ran a minute cron for about 80 minutes,
-  since removed). Compatibility date 2024-09-23, no flags, no `[limits]`, usage model
+  scheduled invocations (Stage 2 then registered a minute cron at 15:32 UTC, which
+  ran the probes until about 17:06 and kept firing, from 19:05 throwing for want of
+  a handler, until the `crons = []` deploy removed it; see Stage 2 step 4). Compatibility date 2024-09-23, no flags, no `[limits]`, usage model
   standard. Bindings before Stage 2: `PORTING_TEE`, `CODE_NODES_OPS`, `LANE`, and one
   secret, `PORTING_CAPTURE_MASTER`; after it, also `SELF` (service, entrypoint
   `OpsInternal`), and no cron. `OPS_SUPABASE_URL` and `OPS_SUPABASE_SECRET_KEY` are
