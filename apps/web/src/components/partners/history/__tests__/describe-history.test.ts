@@ -171,6 +171,18 @@ describe('held clicks, sub-account IDs and matrices', () => {
     } }))).toEqual([{ kind: 'change', label: 'Held click, prospect prospect-1', from: 'held', to: 'marked sent, lead id lead-1' }])
   })
 
+  it('a held click cleared from the list names its prospect from the cleared claim, and its Salesforce updates say whether they all landed', () => {
+    expect(lines(entry({ entityType: 'held_click', action: 'deleted', changes: {
+      held_click: { old: { partner_id: PARTNER, prospect_id: 'p3', reason: 'outcome_unknown', held_at: '2026-09-30T15:57:55Z' }, new: null },
+      claim_state: { old: 'sold', new: 'sold' }, _actor: { name: 'Editor B', email: 'editor-b@example.com' },
+    } }))).toEqual([{ kind: 'text', text: 'Cleared the held click for prospect p3 from the list; it was marked sent.' }])
+    const d = describeEntry(entry({ entityType: 'held_click', changes: {
+      subject: { prospect_id: 'p4' }, salesforce_writes: { old: { complete: false }, new: { complete: true, writes: [] } },
+    } }))
+    expect(d.lines).toEqual([{ kind: 'change', label: 'Held click, prospect p4, Salesforce updates', from: 'not all written', to: 'all written' }])
+    expect(d.unregistered).toEqual([])
+  })
+
   it('a held click freed', () => {
     expect(lines(entry({ entityType: 'held_click', changes: { subject: { prospect_id: 'p2' }, claim_state: { new: 'free', old: 'in_flight' } } }))).toEqual([
       { kind: 'change', label: 'Held click, prospect p2', from: 'held', to: 'freed' },

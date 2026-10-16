@@ -113,6 +113,12 @@ export function createRedactor() {
   }
 }
 
+/** A held click's subject with the prospect replaced; the partner, reason and time stay. */
+function redactHeldSubject(s) {
+  if (!s || typeof s !== 'object') return s
+  return { ...s, ...('prospect_id' in s ? { prospect_id: 'redacted' } : {}) }
+}
+
 /** One History entry's changes with the identifying values replaced, its shape kept. */
 function redactChanges(changes, personName) {
   if (!changes || typeof changes !== 'object' || Array.isArray(changes)) return changes
@@ -126,7 +132,15 @@ function redactChanges(changes, personName) {
       const side = (s) => (s && typeof s === 'object' ? { ...s, url: `https://hooks.example.com/redacted/${encodeURIComponent(route)}` } : s)
       out[key] = { old: side(v.old), new: side(v.new) }
     } else if (key === 'subject' && v && typeof v === 'object') {
-      out[key] = { ...v, ...('prospect_id' in v ? { prospect_id: 'redacted' } : {}) }
+      out[key] = redactHeldSubject(v)
+    } else if (key === 'held_click' && v && typeof v === 'object') {
+      // A cleared claim carries its subject here (held-clicks.ts), which is
+      // also how History ties it to the partner (held_click.old.partner_id).
+      out[key] = { old: redactHeldSubject(v.old), new: redactHeldSubject(v.new) }
+    } else if (key === 'salesforce_writes' && v && typeof v === 'object') {
+      // A sale's Salesforce updates name the records they wrote: every text
+      // goes, the shape (counts, true or false) stays.
+      out[key] = { old: redactSample(v.old), new: redactSample(v.new) }
     } else if (key === 'buyer_lead_id' && v && typeof v === 'object') {
       out[key] = { old: v.old === null ? null : 'redacted', new: v.new === null ? null : 'redacted' }
     } else if (key === 'last_probe_response' && v && typeof v === 'object') {

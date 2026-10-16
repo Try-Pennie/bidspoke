@@ -290,11 +290,24 @@ function describeProfile(e: HistoryEntry, c: Record<string, unknown>, out: Lines
 
 // ── Held clicks, sub-account IDs and matrices ───────────────────────────────
 
-function describeHeldClick(c: Record<string, unknown>, out: Lines) {
-  const subject = isRecord(c.subject) ? c.subject : {}
+/** Whether a sale's Salesforce updates all landed, as held-clicks.ts records them. */
+const writesSide = (v: unknown) => (isRecord(v) ? (v.complete === true ? 'all written' : 'not all written') : 'none')
+
+function describeHeldClick(e: HistoryEntry, c: Record<string, unknown>, out: Lines) {
+  // A cleared claim carries its subject under held_click.old (held-clicks.ts), every other row under subject.
+  const cleared = isPair(c.held_click) && isRecord(c.held_click.old) ? c.held_click.old : null
+  const subject = isRecord(c.subject) ? c.subject : cleared ?? {}
   const prospect = typeof subject.prospect_id === 'string' ? subject.prospect_id : 'unknown'
+  if (e.action === 'deleted' && cleared) {
+    const state = isPair(c.claim_state) ? HELD_STATE[String(c.claim_state.old)] : undefined
+    return out.text(`Cleared the held click for prospect ${prospect} from the list${state ? `; it was ${state}` : ''}.`)
+  }
   for (const [key, v] of Object.entries(c)) {
     if (key.startsWith('_') || key === 'subject' || key === 'claim_generation' || key === 'buyer_lead_id' || key === 'held_click') continue
+    if (key === 'salesforce_writes' && isPair(v)) {
+      out.value(`Held click, prospect ${prospect}, Salesforce updates`, writesSide(v.old), writesSide(v.new), false, false)
+      continue
+    }
     if (key === 'claim_state' && isPair(v)) {
       const state = (s: unknown) => HELD_STATE[String(s)] ?? formatSetting(s)
       const lead = isPair(c.buyer_lead_id) && !absent(c.buyer_lead_id.new) ? `, lead id ${String(c.buyer_lead_id.new)}` : ''
@@ -370,7 +383,7 @@ export function describeEntry(e: HistoryEntry): DescribedEntry {
   switch (e.entityType) {
     case 'partner_config': describePartner(e, c, out); break
     case 'buyer_profile': describeProfile(e, c, out); break
-    case 'held_click': describeHeldClick(c, out); break
+    case 'held_click': describeHeldClick(e, c, out); break
     case 'partner_uuid': describeSubAccount(e, c, out); break
     case 'partner_bid_config': describeMatrixConfig(e, c, out); break
     case 'bid_matrix': describeMatrixSync(e, c, out); break

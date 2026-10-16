@@ -231,6 +231,21 @@ describe('the History fixtures', () => {
     expect(out.entries[1]).toMatchObject({ editorLabel: 'Changed directly in the database', changes: { added: [{ range: '1' }] } })
   })
 
+  it('redacts every held click shape the route ties to a partner: a cleared claim\'s held_click.old and the Salesforce writes, as well as the subject', () => {
+    const subject = { partner_id: 'p', prospect_id: 'a06REALPROSPECT', reason: 'outcome_unknown', held_at: '2026-09-30T15:57:55Z' }
+    const out = createRedactor().history({ partnerId: 'p', complete: true, completeSince: null, entries: [
+      { editor: { kind: 'direct' }, editorLabel: 'Changed directly in the database', changes: { held_click: { old: subject, new: null }, claim_state: { old: 'sold', new: 'sold' } } },
+      { editor: { kind: 'direct' }, editorLabel: 'Changed directly in the database', changes: {
+        subject, claim_state: { old: 'in_flight', new: 'sold' }, buyer_lead_id: { old: null, new: 'REALLEAD' },
+        salesforce_writes: { old: null, new: { complete: true, writes: [{ record: 'prospect', id: 'a06REALPROSPECT', message: 'updated a06REALPROSPECT' }] } },
+      } },
+    ] })
+    const strings = stringsIn(out)
+    expect(strings.filter((s) => s.includes('REAL'))).toEqual([])
+    expect(out.entries[0].changes).toMatchObject({ held_click: { old: { partner_id: 'p', prospect_id: 'redacted', reason: 'outcome_unknown' }, new: null } })
+    expect(out.entries[1].changes).toMatchObject({ salesforce_writes: { old: null, new: { complete: true, writes: [{ record: 'redacted', id: 'redacted' }] } } })
+  })
+
   it('answers the history read for every partner, fails it with the route\'s error when asked, and gives the matrix and incomplete answers only when asked', () => {
     for (const p of fx.partners) expect(answerFor('GET', `${W}/api/partners/${p.id}/history`, fx), p.slug).toEqual({ status: 200, body: fx.history[p.id] })
     expect(answerFor('GET', `${W}/api/partners/not-a-partner/history`, fx)).toBeNull()
