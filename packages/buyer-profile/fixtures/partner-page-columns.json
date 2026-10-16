@@ -60,6 +60,7 @@
       "daily_spend_cap_cents": { "path": "profile.daily_spend_cap_cents" },
       "click_delivery": { "paths": ["profile.click_delivery.success_pattern", "profile.click_delivery.routes[*]"] },
       "display_time_zone": { "path": "profile.display_time_zone" },
+      "collections_max_percent": { "path": "profile.collections_max_percent" },
       "version": { "excluded": "bookkeeping", "reason": "The profile's version, sent as expected_version." },
       "last_save_id": { "excluded": "bookkeeping", "reason": "The save press that last wrote the profile." },
       "updated_by": { "excluded": "bookkeeping", "reason": "Who saved last, set by the save." },
