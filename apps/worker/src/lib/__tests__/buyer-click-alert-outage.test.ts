@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Env } from '../../index'
 import { productionClickAlert, type ClickAlert } from '../buyer-click-alert'
 import { createLeadSupabaseClient, noteLeadWriteUnanswered } from '../lead-read-budget'
-import { SLACK_CONNS_LASTGOOD_KEY } from '../volume-cliff'
+import { SLACK_CONNS_LASTGOOD_KEY } from '../slack-copy'
 import { encryptSecret } from '../secret-crypto'
 
 const KEY = btoa('2'.repeat(32))
