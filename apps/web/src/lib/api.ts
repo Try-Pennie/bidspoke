@@ -148,7 +148,7 @@ export interface PartnerWorkflowValue {
   access: { template: string; code: string }
   /** Whether the node emits it now. */
   emitted: boolean
-  /** As the node emits it: the value, or this partner's entry (activeBidding) or sub-account ids (subAccountIdsMap). */
+  /** As the node emits it: the value, or this partner's part of a map: its entry in activeBidding, its id to slug entries in subAccountIdsMap. */
   value: unknown
   readers: PartnerValueReadingWorkflow[]
   /** Workflow data keys with this name, which the partner value replaces. */

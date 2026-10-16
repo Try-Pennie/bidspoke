@@ -35,7 +35,6 @@ const wfRow = (id: string, nodes: unknown[], over: Record<string, unknown> = {})
   id,
   name: `Workflow ${id}`,
   is_active: true,
-  updated_at: '2026-10-15T00:00:00Z',
   definition: { nodes, edges: [] },
   organization_id: ORG,
   deleted_at: null,
@@ -96,7 +95,7 @@ describe('GET /api/partners/:id/workflow-values', () => {
     expect(byKey.TripointSellOffOfferTitle).toMatchObject({ emitted: false, value: null })
     expect(byKey.TripointSubAccountMinBids).toMatchObject({ emitted: true, value: { 'uuid-1': 4 } })
     expect(byKey.activeBidding).toMatchObject({ emitted: true, value: true })
-    expect(byKey.subAccountIdsMap).toMatchObject({ emitted: true, value: ['uuid-1'] })
+    expect(byKey.subAccountIdsMap).toMatchObject({ emitted: true, value: { 'uuid-1': 'tripoint' } })
     expect(byKey.TripointClickUrl.readers_outside_workflows.map((r) => r.reader)).toEqual(['buyer_select', 'buyer_click_check', 'click_alert'])
     expect(byKey.TripointSellOffOfferTitle.readers_outside_workflows).toEqual([])
     expect(body.searched).toEqual({ workflows: 0, with_constants_node: 0 })

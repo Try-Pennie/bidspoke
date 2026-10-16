@@ -27,8 +27,6 @@ export interface OrgWorkflow {
   id: string
   name: string
   is_active: boolean
-  /** With the id, what the delete check (#2140, not built yet) is to fingerprint the set of workflows by. */
-  updated_at: string
   definition: unknown
 }
 
@@ -50,7 +48,7 @@ export async function readOrgWorkflows(supabase: SupabaseClient, orgId: string, 
     (from, to) => {
       let query = supabase
         .from('workflows')
-        .select('id, name, is_active, updated_at, definition, organization_id, deleted_at')
+        .select('id, name, is_active, definition, organization_id, deleted_at')
         .eq('organization_id', orgId)
         .is('deleted_at', null)
       if (options.activeOnly) query = query.eq('is_active', true)
@@ -68,7 +66,7 @@ export async function readOrgWorkflows(supabase: SupabaseClient, orgId: string, 
       continue
     }
     if (options.activeOnly && row.is_active !== true) continue
-    out.push({ id: row.id, name: row.name, is_active: row.is_active === true, updated_at: row.updated_at, definition: row.definition })
+    out.push({ id: row.id, name: row.name, is_active: row.is_active === true, definition: row.definition })
   }
   return out
 }

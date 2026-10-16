@@ -12,7 +12,6 @@ const row = (id: string, over: Record<string, unknown> = {}) => ({
   id,
   name: `Workflow ${id}`,
   is_active: true,
-  updated_at: '2026-10-15T12:00:00Z',
   definition: { nodes: [] },
   organization_id: ORG,
   deleted_at: null,

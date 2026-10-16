@@ -60,7 +60,7 @@ export interface PartnerValueReaders extends PartnerValueName {
 export interface WorkflowValue extends PartnerValueReaders {
   /** Whether the Constants node emits it now: a flat value only when set, a map entry only when present. */
   emitted: boolean
-  /** As the node emits it: the flat value, or this partner's entry (activeBidding) or sub-account ids (subAccountIdsMap). */
+  /** As the node emits it: the flat value, or this partner's part of a map: its entry in activeBidding, its id to slug entries in subAccountIdsMap. */
   value: unknown
   readers_outside_workflows: Array<{ reader: string; description: string }>
 }

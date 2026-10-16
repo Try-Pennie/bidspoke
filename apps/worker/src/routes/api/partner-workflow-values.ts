@@ -86,8 +86,12 @@ workflowValues.get('/:id/workflow-values', async (c) => {
       isEmitted = Object.prototype.hasOwnProperty.call(entries, row.slug)
       value = isEmitted ? entries[row.slug] : null
     } else if (v.kind === 'subAccountIdsMap') {
-      isEmitted = subAccountIds.length > 0
-      value = subAccountIds
+      // The node emits the map whole; this partner's part is the entries mapping to its slug.
+      const entries = Object.fromEntries(
+        Object.entries(emitted.subAccountIdsMap as Record<string, string>).filter(([, slug]) => slug === row.slug)
+      )
+      isEmitted = Object.keys(entries).length > 0
+      value = entries
     } else {
       isEmitted = Object.prototype.hasOwnProperty.call(emitted, v.constant_name)
       value = isEmitted ? emitted[v.constant_name] : null
