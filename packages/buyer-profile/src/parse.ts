@@ -1,13 +1,7 @@
 import { US_STATES, type UsState } from './vocab'
 
-/**
- * A positive finite amount from a payload value, or null.
- *
- * Null is the only failure value, and callers map it to `missing_lead_field`
- * BEFORE any comparison, so NaN can never pass a minimum and a zero or negative
- * debt can never produce a negative payout (L50, L706, #1328, #1359).
- */
-export function parsePositiveAmount(input: unknown): number | null {
+/** A finite amount from a payload value, or null: a number, or text with an optional $ and commas. */
+function parseAmount(input: unknown): number | null {
   let n: number
   if (typeof input === 'number') {
     n = input
@@ -18,8 +12,29 @@ export function parsePositiveAmount(input: unknown): number | null {
   } else {
     return null
   }
-  if (!Number.isFinite(n) || n <= 0) return null
-  return n
+  return Number.isFinite(n) ? n : null
+}
+
+/**
+ * A positive finite amount from a payload value, or null.
+ *
+ * Null is the only failure value, and callers map it to `missing_lead_field`
+ * BEFORE any comparison, so NaN can never pass a minimum and a zero or negative
+ * debt can never produce a negative payout (L50, L706, #1328, #1359).
+ */
+export function parsePositiveAmount(input: unknown): number | null {
+  const n = parseAmount(input)
+  return n !== null && n > 0 ? n : null
+}
+
+/**
+ * A finite amount of zero or more, or null (#2111). For a figure where zero is
+ * a real answer and the commonest one, a lead's collections balance: no
+ * collections at all must never read as a missing field.
+ */
+export function parseNonNegativeAmount(input: unknown): number | null {
+  const n = parseAmount(input)
+  return n !== null && n >= 0 ? n : null
 }
 
 const STATE_NAMES: Record<string, UsState> = {

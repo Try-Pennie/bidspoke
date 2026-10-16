@@ -192,7 +192,7 @@ describe('evaluateClickEligibility', () => {
   }
 
   it('accepts a lead inside every bound with no pricing step, carrying the debt it judged', () => {
-    expect(evaluateClickEligibility(libertyClick, goodLead, noon)).toEqual({ eligible: true, debtCents: 2500000, lead: { state: 'ND', debt: 25000, loan_amount: 5000 } })
+    expect(evaluateClickEligibility(libertyClick, goodLead, noon)).toEqual({ eligible: true, debtCents: 2500000, lead: { state: 'ND', debt: 25000, loan_amount: 5000, collections: null, collections_percent: null } })
   })
 
   // #1654: the lead as the box parsed it rides on every answer, so a caller
@@ -200,9 +200,9 @@ describe('evaluateClickEligibility', () => {
   it('carries the lead exactly as the box parsed it on every answer, refusals included', () => {
     const lead: LeadInput = { state: ' north dakota ', debt: '$19,999.50', loanAmount: '3,000' }
     const r = evaluateClickEligibility(libertyClick, lead, noon)
-    expect(r).toEqual({ eligible: false, reason: 'debt_below_min', lead: { state: 'ND', debt: 19999.5, loan_amount: 3000 } })
-    expect(evaluateClickEligibility({ ...libertyClick, isEnabled: false }, goodLead, noon).lead).toEqual({ state: 'ND', debt: 25000, loan_amount: 5000 })
-    expect(evaluateClickEligibility(libertyClick, { state: undefined, debt: 0, loanAmount: 'n/a' }, noon)).toEqual({ eligible: false, reason: 'missing_lead_field', lead: { state: null, debt: null, loan_amount: null } })
+    expect(r).toEqual({ eligible: false, reason: 'debt_below_min', lead: { state: 'ND', debt: 19999.5, loan_amount: 3000, collections: null, collections_percent: null } })
+    expect(evaluateClickEligibility({ ...libertyClick, isEnabled: false }, goodLead, noon).lead).toEqual({ state: 'ND', debt: 25000, loan_amount: 5000, collections: null, collections_percent: null })
+    expect(evaluateClickEligibility(libertyClick, { state: undefined, debt: 0, loanAmount: 'n/a' }, noon)).toEqual({ eligible: false, reason: 'missing_lead_field', lead: { state: null, debt: null, loan_amount: null, collections: null, collections_percent: null } })
   })
 
   it('refuses for the same reasons, in the same order, as the offer evaluator up to pricing', () => {
@@ -217,6 +217,10 @@ describe('evaluateClickEligibility', () => {
       ['debt low', libertyClick, { ...goodLead, debt: libertyClick.debtMin! - 1 }, noon],
       ['debt high', libertyClick, { ...goodLead, debt: libertyClick.debtMax! + 1 }, noon],
       ['loan low', libertyClick, { ...goodLead, loanAmount: libertyClick.loanAmountMin! - 1 }, noon],
+      // #2111
+      ['collections high', { ...libertyClick, collectionsMaxPercent: 75 }, { ...goodLead, collections: 18750.01, collectionsWired: true }, noon],
+      ['collections missing', { ...libertyClick, collectionsMaxPercent: 75 }, { ...goodLead, collections: 'n/a', collectionsWired: true }, noon],
+      ['collections not wired', { ...libertyClick, collectionsMaxPercent: 75 }, goodLead, noon],
     ]
     for (const [name, profile, lead, instant] of cases) {
       // The offer evaluator on the same box priced for the population, so the only
@@ -236,13 +240,13 @@ describe('evaluateClickEligibility', () => {
 // #1654: the values a buyer check judged, recorded on its output.
 describe('parseLead and judgedLimits', () => {
   it('parses each field with the evaluator\'s own parsers, null where a field is not a state or a positive amount', () => {
-    expect(parseLead({ state: 'n.d.', debt: '25,000', loanAmount: 5000 })).toEqual({ state: 'ND', debt: 25000, loan_amount: 5000 })
-    expect(parseLead({ state: 'PR', debt: -1, loanAmount: undefined })).toEqual({ state: null, debt: null, loan_amount: null })
+    expect(parseLead({ state: 'n.d.', debt: '25,000', loanAmount: 5000 })).toEqual({ state: 'ND', debt: 25000, loan_amount: 5000, collections: null, collections_percent: null })
+    expect(parseLead({ state: 'PR', debt: -1, loanAmount: undefined })).toEqual({ state: null, debt: null, loan_amount: null, collections: null, collections_percent: null })
   })
 
   it('records the limits in force and whether the parsed state is in the allowed list', () => {
     expect(judgedLimits(libertyOne, parseLead(goodLead))).toEqual({
-      debt_min: 20000, debt_max: 60000, loan_amount_min: 2500, state_allowed: true, allowed_state_count: 3, daily_lead_cap: 50,
+      debt_min: 20000, debt_max: 60000, loan_amount_min: 2500, collections_max_percent: null, state_allowed: true, allowed_state_count: 3, daily_lead_cap: 50,
     })
     expect(judgedLimits(libertyOne, parseLead({ ...goodLead, state: 'NY' })).state_allowed).toBe(false)
   })
@@ -277,6 +281,8 @@ describe('the box checks live once in eligibility.ts', () => {
     ["out('debt_below_min')"],
     ["out('debt_above_max')"],
     ["out('loan_amount_below_min')"],
+    ["out('collections_above_max')"],
+    ["out('collections_not_wired')"],
     ['parseUsState('],
     ['isOpen('],
   ])('%s appears exactly once', (needle) => {

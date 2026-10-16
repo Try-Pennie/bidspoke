@@ -4,7 +4,7 @@
  * generation, click URL key generation, loader errors propagate.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { executeConstantsNode } from '../constants'
+import { executeConstantsNode, partnerConstantOutputKeys } from '../constants'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
 import type { Env } from '../../../index'
 import type { PartnerConstants } from '../../../lib/partner-constants-loader'
@@ -140,5 +140,45 @@ describe('executeConstantsNode', () => {
     await executeConstantsNode(makeNode(), ctx, mockEnv, mockSupabase)
     const calls = vi.mocked(loadPartnerConstants).mock.calls
     expect(calls[calls.length - 1][0]).toBe('org-specific')
+  })
+})
+
+// ── The partner derived keys (#2142) ──────────────────────────────────────────
+
+describe('partnerConstantOutputKeys', () => {
+  // Every kind of partner value present, for two partners, plus workflow data
+  // whose names collide with none of them.
+  const everyKind = makeConstants({
+    subAccountIdsMap: { 'uuid-1': 'tripoint', 'uuid-2': 'sofi' },
+    activeBidding: { tripoint: true, sofi: false },
+    sellOff: { sofi: { title: 'T', details: 'D' } },
+    clickUrls: { tripoint: 'https://trypennie.com/portal/tpl', sofi: 'https://trypennie.com/portal' },
+    subAccountMinBids: { tripoint: { 'uuid-1': 5 } },
+    slugsById: { 'p-1': 'tripoint', 'p-2': 'sofi' },
+  })
+  const data = { pennieClickUrl: 'https://trypennie.com', mainOfferTitle: 'Main', states: ['TX'] }
+
+  beforeEach(() => {
+    vi.mocked(loadPartnerConstants).mockResolvedValue(everyKind)
+  })
+
+  it('names exactly the partner derived keys the executor emits, the two maps included', async () => {
+    const { output } = await executeConstantsNode(makeNode(data), makeCtx(), mockEnv, mockSupabase)
+    const partnerDerived = Object.keys(output as Record<string, unknown>).filter((k) => !(k in data))
+    expect([...partnerDerived].sort()).toEqual([...partnerConstantOutputKeys(everyKind)].sort())
+    expect(partnerConstantOutputKeys(everyKind)).toEqual(expect.arrayContaining(['subAccountIdsMap', 'activeBidding']))
+  })
+
+  it('a partner with no value of a kind emits no name for it', () => {
+    const keys = partnerConstantOutputKeys(everyKind)
+    expect(keys).toContain('TripointClickUrl')
+    expect(keys).not.toContain('TripointSellOffOfferTitle')
+    expect(keys).not.toContain('SofiSubAccountMinBids')
+  })
+
+  it('the step log lists every partner derived key, the two maps included', async () => {
+    const { resolvedInput } = await executeConstantsNode(makeNode(data), makeCtx(), mockEnv, mockSupabase)
+    const resolved = resolvedInput?.resolved as { partner_constants_keys: string[] }
+    expect(resolved.partner_constants_keys).toEqual(partnerConstantOutputKeys(everyKind))
   })
 })

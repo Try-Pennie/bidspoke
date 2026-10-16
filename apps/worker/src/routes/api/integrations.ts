@@ -1,8 +1,30 @@
-// Integrations management — Slack connection (Phase 1.7), others (Phase 3)
-// POST   /api/integrations/slack/resolve — validate token, return workspace name + channel list
-// POST   /api/integrations/slack        — save/update Slack connection
-// GET    /api/integrations/slack        — get current Slack connection (token masked)
-// DELETE /api/integrations/slack        — disconnect
+// Integrations management: the Slack connection (Phase 1.7).
+// POST   /api/integrations/slack/resolve   validate a token, return the workspace name and channel list
+// POST   /api/integrations/slack           save or replace the Slack connection
+// GET    /api/integrations/slack           the current Slack connection (token never returned)
+// GET    /api/integrations/slack/channels  search channels by name
+// PATCH  /api/integrations/slack/settings  alert toggles and channels
+// DELETE /api/integrations/slack           disconnect
+//
+// The saved Slack copy (#2060): alerts post from an encrypted copy of every
+// org's connection while the database is down (lib/slack-copy.ts). POST, PATCH
+// and DELETE each edit that org's entry in the copy with editSlackCopyEntry,
+// after the database write and after the audit row, so an outage does not post
+// to a connection just removed or a category just switched off. The audit row
+// comes first because it records the change that happened in the database: a
+// request cut off between the two loses at worst the copy edit, which the next
+// healthy minute repairs, never the record of the change. The edit leaves the
+// copy's save time alone (see editSlackCopyEntry).
+//
+// When KV refuses the edit, the change still answers 200, because it WAS saved
+// and recorded, with stored_copy_warning beside it (lib/stored-copy.ts) and the
+// failure logged; everything the edit needs (the key ring included) is read
+// inside copyCleared, so nothing about the copy can fail the request. A copy no
+// reader can decrypt is left alone without a warning, since nobody can post
+// from it. The next healthy minute rewrites the whole copy from the database
+// (volume-cliff.ts), which bounds how long a stale entry can last while the
+// database is up. KV is eventually consistent, so a reader in another location
+// can still see the old entry for up to about a minute.
 
 import { Hono } from 'hono'
 import { dbError, dbErrorUnlessNotFound, requireRowOr404, rowsTouched } from '../../lib/api-error'
@@ -11,6 +33,10 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
+import { copyCleared, copyWarning } from '../../lib/stored-copy'
+import { editSlackCopyEntry } from '../../lib/slack-copy'
+import { parseSlackConnection } from '../../lib/slack-connection'
+import { secretKeys } from '../../lib/secret-crypto'
 
 type Variables = AuthVariables
 
@@ -94,7 +120,12 @@ integrations.post('/slack', async (c) => {
     default_channel: config.default_channel,
   })
 
-  return c.json({ ok: true })
+  const copyEdited = await copyCleared(
+    () => editSlackCopyEntry(c.env.IDEMPOTENCY, secretKeys(c.env), orgId, parseSlackConnection(config)).then(() => undefined),
+    `the saved Slack copy for org ${orgId}`,
+  )
+
+  return c.json({ ok: true, ...copyWarning(copyEdited) })
 })
 
 integrations.get('/slack', async (c) => {
@@ -234,7 +265,12 @@ integrations.patch('/slack/settings', async (c) => {
     backup_alerts_enabled: body.backup_alerts_enabled,
   })
 
-  return c.json({ ok: true })
+  const copyEdited = await copyCleared(
+    () => editSlackCopyEntry(c.env.IDEMPOTENCY, secretKeys(c.env), orgId, parseSlackConnection(nextConfig)).then(() => undefined),
+    `the saved Slack copy for org ${orgId}`,
+  )
+
+  return c.json({ ok: true, ...copyWarning(copyEdited) })
 })
 
 integrations.delete('/slack', async (c) => {
@@ -255,7 +291,14 @@ integrations.delete('/slack', async (c) => {
     await writeAuditLog(supabase, orgId, 'service_connection', removed.id, 'deleted', userId, { service_type: 'slack' })
   }
 
-  return c.json({ ok: true })
+  // Removed from the copy even when the delete matched no row: the database now
+  // holds no connection for this org, so neither should the copy.
+  const copyEdited = await copyCleared(
+    () => editSlackCopyEntry(c.env.IDEMPOTENCY, secretKeys(c.env), orgId, null).then(() => undefined),
+    `the saved Slack copy for org ${orgId}`,
+  )
+
+  return c.json({ ok: true, ...copyWarning(copyEdited) })
 })
 
 export default integrations

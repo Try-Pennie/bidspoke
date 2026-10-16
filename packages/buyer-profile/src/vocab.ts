@@ -129,6 +129,12 @@ export const OUT_REASONS = [
   // offer script refuses such a URL on every lead, so the check routes it out
   // by name and pages rather than let every offer fail one step later.
   'click_url_has_no_prospect_id',
+  // #2111: a lead whose collections are above the share of its debt the
+  // profile accepts, and a profile that caps collections judged by a step that
+  // reads no collections figure. The second is a configuration fault, named so
+  // it is never read as a lead the buyer turned down.
+  'collections_above_max',
+  'collections_not_wired',
 ] as const
 export type OutReason = (typeof OUT_REASONS)[number]
 
@@ -165,6 +171,8 @@ export const OUT_REASON_LABELS: Record<OutReason, string> = {
   daily_click_cap: 'Daily click cap reached',
   profile_copy_stale: 'Only an old copy of the buyer profiles could be read, so the buyer was not offered',
   click_url_has_no_prospect_id: 'Click URL has no place for the prospect id, so no offer can be made',
+  collections_above_max: 'Collections above the share of debt the buyer accepts',
+  collections_not_wired: 'The profile caps collections, but this step reads no collections figure',
 }
 
 /**
