@@ -75,9 +75,9 @@ describe('mergeThreeWay', () => {
     const one = mergeThreeWay(base, side({}, { daily_lead_cap: 600 }), theirsAt({}, { display_time_zone: 'America/Chicago' }), PARTNER_FIELD_REGISTRY)
     expect(conflictKeys(one)).toEqual([])
     expect(one.merged.profile).toMatchObject({ daily_lead_cap: 600, display_time_zone: 'America/Chicago' })
-    expect(one.autoTaken.map((k) => k.label)).toEqual(['Show times in'])
+    expect(one.autoTaken.map((k) => k.label)).toEqual(['Time zone'])
     const both = mergeThreeWay(base, side({}, { display_time_zone: 'America/Denver' }), theirsAt({}, { display_time_zone: 'America/Chicago' }), PARTNER_FIELD_REGISTRY)
-    expect(both.conflicts.flatMap((sec) => sec.conflicts).map((c) => [c.key, c.label, c.mine, c.theirs])).toEqual([['profile.display_time_zone', 'Show times in', 'America/Denver', 'America/Chicago']])
+    expect(both.conflicts.flatMap((sec) => sec.conflicts).map((c) => [c.key, c.label, c.mine, c.theirs])).toEqual([['profile.display_time_zone', 'Time zone', 'America/Denver', 'America/Chicago']])
   })
 
   it('a whole JSON column is one field, compared regardless of key order', () => {
