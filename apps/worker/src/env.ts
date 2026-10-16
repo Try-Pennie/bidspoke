@@ -155,6 +155,14 @@ export interface Env {
   // Optional: set via `wrangler secret put ANTHROPIC_API_KEY --name bidspoke-worker`
   ANTHROPIC_API_KEY?: string
 
+  // Better Stack page for "nobody can be told" (#2063, lib/nobody-told-page.ts):
+  // the HTTP log source's token and its ingesting host as a URL (per source, so
+  // it is set too). Optional and feature gated: unset, nothing is paged and each
+  // scheduled tick that would have paged says so once. Set both with
+  // `wrangler secret put <NAME> --name bidspoke-worker`, piping the value in.
+  BETTERSTACK_OUTAGE_TOKEN?: string
+  BETTERSTACK_OUTAGE_URL?: string
+
   // Set to 'true' ONLY in apps/worker/.dev.vars (gitignored, never in production).
   // Local `wrangler dev` shares the real production Supabase project and Slack
   // connection (there is no separate local backend), so this flags "running

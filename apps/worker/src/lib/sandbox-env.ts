@@ -52,6 +52,10 @@ export const ENV_SANDBOX_POLICY: Record<EnvStringKey, 'block' | 'expose'> = {
   ANTHROPIC_API_KEY: 'block',
   // A login of the partners page delivery monitor (#2135): never handed to a code node.
   PARTNER_PAGE_MONITOR_PASSWORD: 'block',
+  // The Better Stack page for "nobody can be told" (#2063): a code node holding
+  // these could raise a false page, or bury a real one under its own.
+  BETTERSTACK_OUTAGE_TOKEN: 'block',
+  BETTERSTACK_OUTAGE_URL: 'block',
   // Non-secret config — safe to expose.
   SUPABASE_URL: 'expose',
   SUPABASE_PUBLISHABLE_KEY: 'expose',

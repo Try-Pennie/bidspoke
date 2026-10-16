@@ -31,6 +31,7 @@ import { createSupabaseClient } from './supabase'
 import { secretKeys, type SecretKeyInput } from './secret-crypto'
 import { readSlackCopy, type SlackCopyRead } from './slack-copy'
 import { formatErr } from './format-error'
+import { createNobodyToldPager, type NobodyToldPager } from './nobody-told-page'
 
 /**
  * How long a scheduled Slack read waits before the copy answers. Above healthy
@@ -50,6 +51,13 @@ export interface ScheduledSlackOptions {
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>
   /** The clock the copy's age is measured on. */
   now?: () => number
+  /**
+   * Pages Better Stack when nobody can be told (#2063, nobody-told-page.ts).
+   * Absent, nothing is paged; the scheduled handler's client always has one.
+   */
+  pager?: NobodyToldPager
+  /** Keeps a page alive past the job that raised it, without anything awaiting it. */
+  waitUntil?: (p: Promise<unknown>) => void
 }
 
 /** One live read's outcome: the database answered, or did not and why. */
@@ -75,6 +83,13 @@ export interface ScheduledSlack {
   copy(): Promise<TickCopy>
   /** The first read that failed this tick, or null while every read has answered. */
   readonly unreachable: { what: string; how: string } | null
+  /**
+   * The database did not answer and no saved copy could stand in: logs the one
+   * line for `reason` and pages Better Stack for `orgId` (null for every
+   * organization), handed to waitUntil and never awaited, so it cannot delay
+   * or fail the caller (#2063).
+   */
+  nobodyCanBeTold(subject: string, orgId: string | null, reason: CopyUnreachableReason, detail?: string): void
 }
 
 const realSleep = (ms: number, signal: AbortSignal): Promise<void> =>
@@ -107,6 +122,16 @@ export function registerScheduledSlack(client: object, options: ScheduledSlackOp
   const slack: ScheduledSlack = {
     get unreachable() {
       return unreachable
+    },
+    nobodyCanBeTold(subject, orgId, reason, detail) {
+      console.error(copyUnreachableLine(subject, reason, detail))
+      if (!options.pager) return
+      // The pager never rejects; the catch is so a future one that does cannot
+      // surface as an unhandled rejection on the tick.
+      const paged = Promise.resolve()
+        .then(() => options.pager?.page(orgId, reason))
+        .catch((e: unknown) => console.error(`[scheduled-slack] the Better Stack page for ${subject} failed: ${formatErr(e)}`))
+      options.waitUntil?.(paged)
     },
     async read<T>(what: string, query: BoundableQuery<T>): Promise<LiveRead<T>> {
       if (unreachable) return { kind: 'failed', how: 'skipped', detail: `not asked: ${unreachable.what} failed earlier this tick (${unreachable.how})` }
@@ -147,10 +172,23 @@ export function registerScheduledSlack(client: object, options: ScheduledSlackOp
  */
 export function createScheduledSupabaseClient(
   env: Env,
-  options: { fetch?: typeof fetch } & Pick<ScheduledSlackOptions, 'sleep' | 'now' | 'deadlineMs'> = {},
+  /**
+   * The platform's waitUntil, required so the Better Stack page (#2063) is kept
+   * alive past the job that raised it. Called directly rather than through the
+   * tick's job list, so the tick never waits on a page.
+   */
+  waitUntil: (p: Promise<unknown>) => void,
+  options: { fetch?: typeof fetch; pageFetch?: typeof fetch } & Pick<ScheduledSlackOptions, 'sleep' | 'now' | 'deadlineMs'> = {},
 ): SupabaseClient<Database> {
   const client = createSupabaseClient(env, { fetch: options.fetch })
-  registerScheduledSlack(client, { kv: env.IDEMPOTENCY, secretKeys: secretKeys(env), sleep: options.sleep, now: options.now, deadlineMs: options.deadlineMs })
+  const pager = createNobodyToldPager({
+    token: env.BETTERSTACK_OUTAGE_TOKEN,
+    url: env.BETTERSTACK_OUTAGE_URL,
+    kv: env.IDEMPOTENCY,
+    fetch: options.pageFetch,
+    now: options.now,
+  })
+  registerScheduledSlack(client, { kv: env.IDEMPOTENCY, secretKeys: secretKeys(env), sleep: options.sleep, now: options.now, deadlineMs: options.deadlineMs, pager, waitUntil })
   return client
 }
 

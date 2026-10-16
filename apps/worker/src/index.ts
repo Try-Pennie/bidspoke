@@ -165,7 +165,7 @@ const scheduledJobs = {
   start(event: ScheduledEvent, env: Env, platformCtx: ExecutionContext, timer?: TickTimer): Promise<unknown>[] {
     // One client for every job this tick starts, registered so each Slack lookup
     // on it is bounded and falls back to the saved copy (#1303, scheduled-slack.ts).
-    const supabase = createScheduledSupabaseClient(env)
+    const supabase = createScheduledSupabaseClient(env, (p) => platformCtx.waitUntil(p))
     // Every job's work is tracked, so once it has all settled the stored copies
     // any of them served or refused (#1848) are counted, in one write.
     const work: Promise<unknown>[] = []
