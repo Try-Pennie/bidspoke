@@ -14,7 +14,8 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { createRedactor, stringsIn } from '../../../scripts/e2e-fixtures/redact.mjs'
 import { writeFixtures } from '../../../scripts/e2e-fixtures/capture-partners.mjs'
-import { answerFor, isWorkerApiRequest, loadPartnerFixtures } from './partner-fixtures'
+import { answerFor, isWorkerApiRequest, LIVE_MISS_ID, loadPartnerFixtures, realtimeReplies, versionsFor } from './partner-fixtures'
+import { RealtimeClient } from '@supabase/supabase-js'
 import { mergeThreeWay } from '../src/lib/partner-page-merge'
 import { buildPartnerBody, PARTNER_FIELD_REGISTRY, snapshotOf } from '../src/app/(app)/partners/partner-draft'
 import type { Partner, PartnerHistory } from '../src/lib/api'
@@ -171,6 +172,26 @@ describe('answerFor', () => {
     expect(answerFor('GET', `${W}/api/partner-bid-configs/${fx.matrix.list[0].id}`, fx, { matrix: true })?.body).toEqual(fx.matrix.detail)
   })
 
+  // #2135: the live channel's versions probe, its refetch and its miss report.
+  it('answers the versions probe for every listed partner from its captured version and profile, and nothing for another', () => {
+    for (const p of fx.partners) {
+      const answer = answerFor('GET', `${W}/api/partners/${p.id}/versions`, fx)
+      expect(answer, p.slug).toEqual({ status: 200, body: versionsFor(p, fx.buyerProfiles) })
+      const body = answer!.body as { partnerVersion: number; profileVersion: number; latestChange: unknown }
+      expect(body.partnerVersion, p.slug).toBe(p.version)
+      expect(body.latestChange).toBeNull()
+    }
+    const tripointProfile = fx.buyerProfiles[tripoint.id].profile as { version: number }
+    expect((answerFor('GET', `${W}/api/partners/${tripoint.id}/versions`, fx)!.body as { profileVersion: number }).profileVersion).toBe(tripointProfile.version)
+    expect(answerFor('GET', `${W}/api/partners/not-a-partner/versions`, fx)).toBeNull()
+  })
+
+  it('answers the refetch of one partner with its captured row, and a live miss report as recorded', () => {
+    expect(answerFor('GET', `${W}/api/partners/${tripoint.id}`, fx)).toEqual({ status: 200, body: tripoint })
+    expect(answerFor('GET', `${W}/api/partners/not-a-partner`, fx)).toBeNull()
+    expect(answerFor('POST', `${W}/api/partners/live-miss`, fx)).toEqual({ status: 201, body: { ok: true, id: LIVE_MISS_ID } })
+  })
+
   it('the recorded 409 conflicts with the edit the spec makes (Leads per day to 300), so the merge dialog opens', () => {
     const profile = fx.buyerProfiles[tripoint.id].profile as BuyerProfileDocument
     const partner = buildPartnerBody(snapshotOf(tripoint as unknown as Partner), { slug: 'tripoint', isExisting: true })
@@ -263,5 +284,62 @@ describe('the History fixtures', () => {
     expect(cut.complete).toBe(false)
     expect(Date.parse(cut.completeSince!)).toBe(Date.parse(oldest.at))
     expect(cut.entries).toEqual(fx.history[tripoint.id].entries.slice(0, -1))
+  })
+})
+
+// #2135: the live channel's socket is answered in the browser, never by production's Realtime.
+describe('realtimeReplies', () => {
+  const ORG = String(fx.partners[0].organization_id)
+
+  it('admits the partners page join, and answers a heartbeat, a token refresh and a leave', () => {
+    const join = realtimeReplies(JSON.stringify(['1', '1', `realtime:partners:${ORG}`, 'phx_join', { config: { private: true } }]))
+    expect(join.unexpected).toBeNull()
+    expect(JSON.parse(join.replies[0])).toEqual(['1', '1', `realtime:partners:${ORG}`, 'phx_reply', { status: 'ok', response: { postgres_changes: [] } }])
+    for (const event of ['heartbeat', 'access_token', 'phx_leave']) expect(realtimeReplies(JSON.stringify([null, '2', 'phoenix', event, {}])).replies, event).toHaveLength(1)
+  })
+
+  it('records a join to any other topic, and ignores what it cannot read', () => {
+    expect(realtimeReplies(JSON.stringify(['1', '1', 'realtime:test-run-1', 'phx_join', {}]))).toEqual({ replies: [], unexpected: 'JOIN realtime:test-run-1' })
+    // Only a UUID: not any 36 characters of hex and dashes.
+    const dashes = `realtime:partners:${'-'.repeat(36)}`
+    expect(realtimeReplies(JSON.stringify(['1', '1', dashes, 'phx_join', {}]))).toEqual({ replies: [], unexpected: `JOIN ${dashes}` })
+    expect(realtimeReplies('not json')).toEqual({ replies: [], unexpected: null })
+  })
+
+  it('is enough for the real Realtime client to subscribe the page\'s private channel', async () => {
+    // A socket that answers through realtimeReplies, given to the real client as its transport.
+    class FixtureSocket {
+      static readonly CONNECTING = 0
+      static readonly OPEN = 1
+      static readonly CLOSING = 2
+      static readonly CLOSED = 3
+      readyState = 0
+      binaryType = 'arraybuffer'
+      url: string
+      protocol = ''
+      onopen: ((e: unknown) => void) | null = null
+      onmessage: ((e: { data: string }) => void) | null = null
+      onclose: ((e: unknown) => void) | null = null
+      onerror: ((e: unknown) => void) | null = null
+      constructor(url: string) {
+        this.url = url
+        queueMicrotask(() => { this.readyState = 1; this.onopen?.({}) })
+      }
+      send(data: string) {
+        for (const r of realtimeReplies(data).replies) queueMicrotask(() => this.onmessage?.({ data: r }))
+      }
+      close() { this.readyState = 3; this.onclose?.({ code: 1000 }) }
+      addEventListener() {}
+      removeEventListener() {}
+      dispatchEvent() { return true }
+    }
+    type Options = NonNullable<ConstructorParameters<typeof RealtimeClient>[1]>
+    const client = new RealtimeClient('wss://fixture.example/realtime/v1', { params: { apikey: 'fixture' }, transport: FixtureSocket as unknown as Options['transport'] })
+    await client.setAuth('fixture-jwt')
+    const status = await new Promise<string>((resolve) => {
+      client.channel(`partners:${ORG}`, { config: { private: true } }).subscribe((s) => resolve(s))
+    })
+    expect(status).toBe('SUBSCRIBED')
+    client.disconnect()
   })
 })

@@ -21,7 +21,7 @@ import type { HistoryEntry } from '@bidspoke/partner-history'
 import { PROFILE_PREFIX, registryEntriesFor } from '@/app/(app)/partners/partner-draft'
 import { formatDollars, formatProfileValue, profileFieldLabel, SECTION_LABELS } from '@/components/partners/buyer-profile/labels'
 import { formatTime } from '@/components/ui/date-time'
-import { BIDDING_PICKUP, pickupSentenceFrom } from '@/lib/bidding-pickup'
+import { directChangeMinutes, pickupSentenceFrom } from '@/lib/bidding-pickup'
 import { etDayHeading, etDayKey } from '@/lib/dates'
 
 export type HistoryLine =
@@ -418,33 +418,41 @@ export function groupByEtDay(entries: readonly HistoryEntry[], now: number): His
 }
 
 /**
- * The minutes bidding takes to see a hand edit, by the copy the change lands in
- * (#2135's rule): the buyer profiles copy for a profile, the partner constants
- * copy for partner settings and sub-account IDs. Other kinds are not read
- * through either copy, so they carry no note.
+ * Which half of the page a hand edit lands in, for directChangeMinutes in
+ * bidding-pickup.ts (the rule #2135's live notice uses too): partner settings
+ * and sub-account IDs are read through the partner constants copy, a profile
+ * through the buyer profiles copy. Other kinds are read through neither copy,
+ * so they carry no note.
  */
-const PICKUP_MINUTES: Partial<Record<HistoryEntry['entityType'], number>> = {
-  partner_config: BIDDING_PICKUP.partnerConstantsMinutes,
-  partner_uuid: BIDDING_PICKUP.partnerConstantsMinutes,
-  buyer_profile: BIDDING_PICKUP.buyerProfilesMinutes,
+const PICKUP_HALF: Partial<Record<HistoryEntry['entityType'], 'partner' | 'profile'>> = {
+  partner_config: 'partner',
+  partner_uuid: 'partner',
+  buyer_profile: 'profile',
+}
+
+/** When the note under a hand edit stops applying, or null when it carries none. */
+function pickupEnds(e: HistoryEntry): number | null {
+  if (e.editor.kind !== 'direct') return null
+  const half = PICKUP_HALF[e.entityType]
+  const at = Date.parse(e.at)
+  if (!half || Number.isNaN(at)) return null
+  return at + directChangeMinutes(half) * 60_000
 }
 
 /** For a change with no actor at all, while bidding may still be catching up to it, when it will. */
 export function pickupNote(e: HistoryEntry, now: number): string | null {
-  if (e.editor.kind !== 'direct') return null
-  const minutes = PICKUP_MINUTES[e.entityType]
-  if (minutes === undefined) return null
-  const at = Date.parse(e.at)
-  if (Number.isNaN(at) || now - at > minutes * 60_000) return null
-  return pickupSentenceFrom(minutes)
+  const ends = pickupEnds(e)
+  const half = PICKUP_HALF[e.entityType]
+  if (ends === null || !half || now > ends) return null
+  return pickupSentenceFrom(half)
 }
 
 /** When the soonest pickup note on the list stops applying, so the panel can drop it then. */
 export function nextPickupExpiry(entries: readonly HistoryEntry[], now: number): number | null {
   let soonest: number | null = null
   for (const e of entries) {
-    if (pickupNote(e, now) === null) continue
-    const end = Date.parse(e.at) + (PICKUP_MINUTES[e.entityType] ?? 0) * 60_000
+    const end = pickupEnds(e)
+    if (end === null || now > end) continue
     soonest = soonest === null ? end : Math.min(soonest, end)
   }
   return soonest

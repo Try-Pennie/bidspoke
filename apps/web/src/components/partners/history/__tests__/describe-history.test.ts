@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import type { HistoryEntry } from '@bidspoke/partner-history'
 import { describeEntry, groupByEtDay, pickupNote, type HistoryLine } from '../describe-history'
+import { directChangeSentence } from '@/lib/bidding-pickup'
 
 const PARTNER = '1b9cbd8f-1d23-496c-b046-b11d64edae29'
 const person = { kind: 'person' as const, userId: '00000000-0000-4000-8000-000000000002', name: 'Editor B', via: null }
@@ -279,5 +280,12 @@ describe('days and the pickup note', () => {
     expect(pickupNote(direct, Date.parse(at) + 8 * 60_000 + 1)).toBeNull()
     expect(pickupNote(entry({ at }), Date.parse(at) + 60_000)).toBeNull()
     expect(pickupNote({ ...direct, entityType: 'held_click' }, Date.parse(at) + 60_000)).toBeNull()
+  })
+
+  it('says the same bound in the same words as the live notice (#2135), from one rule', () => {
+    const at = '2026-10-15T16:00:00Z'
+    const direct = entry({ at, editor: { kind: 'direct' }, editorLabel: 'Changed directly in the database' })
+    expect(directChangeSentence('12:00 PM', 'partner')).toBe(`Changed directly in the database at 12:00 PM ET. ${pickupNote(direct, Date.parse(at))}`)
+    expect(directChangeSentence('12:00 PM', 'profile')).toBe(`Changed directly in the database at 12:00 PM ET. ${pickupNote({ ...direct, entityType: 'buyer_profile' }, Date.parse(at))}`)
   })
 })
