@@ -8,13 +8,15 @@
  * rules. `sections` says which groups this instance renders; the state is one
  * object owned by the form, so a rule is never held in two places.
  */
-import { useRef, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { Plus, X } from 'lucide-react'
 import { SIGNAL_OPERATORS, SIGNAL_OPERATOR_LABELS } from '@bidspoke/buyer-profile'
 import {
   type Rule, type BodyRule, type StatusRule, type BodyCondition, type StatusCondition, type SignalCategory, type SignalRules,
 } from '@/app/(app)/partners/partner-draft'
 import { LIST_OPERATORS } from '@/lib/signal-text'
+import { Button, NumberInput, TextInput } from '@/components/ui/form'
+import { Select } from '@/components/ui/Select'
 
 type RuleKind = 'body' | 'status'
 
@@ -38,104 +40,89 @@ export const SIGNAL_SECTIONS: readonly SignalSection[] = [
   { cat: 'permanent', label: 'Permanent error', desc: 'Unrecoverable failure. No retry, triggers alerts.' },
 ]
 
-const inputCls = 'rounded border border-gray-200 bg-white px-2 py-1 text-sm text-graphite placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-p-blue-dark'
+const KIND_OPTIONS: ReadonlyArray<{ value: RuleKind; label: string }> = [
+  { value: 'body', label: 'Body field' },
+  { value: 'status', label: 'HTTP status' },
+]
+const BODY_CONDITION_OPTIONS = SIGNAL_OPERATORS.map((op) => ({ value: op, label: SIGNAL_OPERATOR_LABELS[op] }))
+const STATUS_CONDITION_OPTIONS = STATUS_CONDITIONS.map((op) => ({ value: op, label: SIGNAL_OPERATOR_LABELS[op] }))
 
+/** One rule, on the shared controls (#1458): the same Select, boxes and button as the Buyer profile beside it. */
 function RuleRow({ rule, onChange, onRemove, removing }: {
   rule: Rule
   onChange: (r: Rule) => void
   onRemove: () => void
   removing?: boolean
 }) {
+  const id = useId()
   return (
     <div className={`rule-row flex flex-wrap items-center gap-1.5 rounded-lg bg-gray-50 px-3 py-2${removing ? ' rule-row-exiting' : ''}`}>
-      <select
-        value={rule.kind}
+      <Select
+        id={`${id}-kind`}
         aria-label="Rule kind"
-        onChange={(e) => {
-          const k = e.target.value as RuleKind
-          onChange(k === 'body' ? { ...emptyBody(), id: rule.id } : { ...emptyStatus(), id: rule.id })
-        }}
-        className={`${inputCls} flex-shrink-0`}
-      >
-        <option value="body">Body field</option>
-        <option value="status">HTTP status</option>
-      </select>
+        value={rule.kind}
+        options={KIND_OPTIONS}
+        onChange={(k) => onChange(k === 'body' ? { ...emptyBody(), id: rule.id } : { ...emptyStatus(), id: rule.id })}
+        className="w-32 shrink-0"
+      />
 
       {rule.kind === 'body' ? (
         <>
-          <input
-            value={rule.field}
-            onChange={(e) => onChange({ ...rule, field: e.target.value })}
-            placeholder="field"
-            aria-label="Field"
-            className={`${inputCls} w-44 flex-shrink-0`}
-          />
-          <select
-            value={rule.condition}
+          <TextInput id={`${id}-field`} aria-label="Field" value={rule.field} onChange={(v) => onChange({ ...rule, field: v })} placeholder="field" className="w-44 shrink-0" />
+          <Select
+            id={`${id}-condition`}
             aria-label="Condition"
-            onChange={(e) => onChange({ ...rule, condition: e.target.value as BodyCondition })}
-            className={`${inputCls} flex-shrink-0`}
-          >
-            {SIGNAL_OPERATORS.map((op) => (
-              <option key={op} value={op}>{SIGNAL_OPERATOR_LABELS[op]}</option>
-            ))}
-          </select>
+            value={rule.condition}
+            options={BODY_CONDITION_OPTIONS}
+            onChange={(c) => onChange({ ...rule, condition: c as BodyCondition })}
+            className="w-56 shrink-0"
+          />
           {rule.condition !== 'present' && (
-            <input
-              value={rule.value}
-              onChange={(e) => onChange({ ...rule, value: e.target.value })}
-              placeholder={LIST_OPERATORS.has(rule.condition) ? 'value1,value2,value3' : 'value'}
+            <TextInput
+              id={`${id}-value`}
               aria-label="Value"
-              className={`${inputCls} min-w-[16rem] flex-1`}
+              value={rule.value}
+              onChange={(v) => onChange({ ...rule, value: v })}
+              placeholder={LIST_OPERATORS.has(rule.condition) ? 'value1,value2,value3' : 'value'}
+              className="min-w-[16rem] flex-1"
             />
           )}
         </>
       ) : (
         <>
-          <input
-            value={rule.code}
-            onChange={(e) => onChange({ ...rule, code: e.target.value })}
-            placeholder="status"
-            type="number"
+          <NumberInput
+            id={`${id}-code`}
             aria-label="Status code"
-            className={`${inputCls} w-20`}
+            value={rule.code === '' ? null : Number(rule.code)}
+            onChange={(v) => onChange({ ...rule, code: v === null ? '' : String(v) })}
+            step={1}
+            placeholder="status"
+            className="w-24"
           />
-          <input
-            value={rule.bodyField}
-            onChange={(e) => onChange({ ...rule, bodyField: e.target.value })}
-            placeholder="body field"
-            aria-label="Body field"
-            className={`${inputCls} w-28`}
-          />
-          <select
-            value={rule.condition}
+          <TextInput id={`${id}-body-field`} aria-label="Body field" value={rule.bodyField} onChange={(v) => onChange({ ...rule, bodyField: v })} placeholder="body field" className="w-32" />
+          <Select
+            id={`${id}-condition`}
             aria-label="Condition"
-            onChange={(e) => onChange({ ...rule, condition: e.target.value as StatusCondition })}
-            className={`${inputCls} flex-shrink-0`}
-          >
-            {STATUS_CONDITIONS.map((op) => (
-              <option key={op} value={op}>{SIGNAL_OPERATOR_LABELS[op]}</option>
-            ))}
-          </select>
+            value={rule.condition}
+            options={STATUS_CONDITION_OPTIONS}
+            onChange={(c) => onChange({ ...rule, condition: c as StatusCondition })}
+            className="w-40 shrink-0"
+          />
           {rule.condition !== 'present' && (
-            <input
-              value={rule.value}
-              onChange={(e) => onChange({ ...rule, value: e.target.value })}
-              placeholder={rule.condition === 'in' || rule.condition === 'not_in' ? 'value1,value2,value3' : 'value'}
+            <TextInput
+              id={`${id}-value`}
               aria-label="Value"
-              className={`${inputCls} min-w-0 flex-1`}
+              value={rule.value}
+              onChange={(v) => onChange({ ...rule, value: v })}
+              placeholder={rule.condition === 'in' || rule.condition === 'not_in' ? 'value1,value2,value3' : 'value'}
+              className="min-w-0 flex-1"
             />
           )}
         </>
       )}
-      <button
-        type="button"
-        onClick={onRemove}
-        aria-label="Remove rule"
-        className="ml-auto flex-shrink-0 rounded p-0.5 text-gray-500 hover:bg-gray-200 hover:text-gray-600"
-      >
-        <X className="h-3.5 w-3.5" />
-      </button>
+      <Button variant="ghost" onClick={onRemove} aria-label="Remove rule" className="ml-auto shrink-0">
+        <X className="h-3.5 w-3.5" aria-hidden="true" />
+      </Button>
     </div>
   )
 }
@@ -174,14 +161,10 @@ export function SignalRuleBuilder({ value, onChange, sections = SIGNAL_SECTIONS 
               <p className="text-sm font-medium text-gray-700">{label}</p>
               <p className="text-xs text-gray-500">{desc}</p>
             </div>
-            <button
-              type="button"
-              onClick={() => add(cat)}
-              className="flex flex-shrink-0 items-center gap-1 rounded px-2 py-1 text-xs font-medium text-p-blue-dark hover:bg-p-blue-light"
-            >
-              <Plus className="h-3 w-3" />
+            <Button variant="ghost" onClick={() => add(cat)} className="shrink-0">
+              <Plus className="h-3 w-3" aria-hidden="true" />
               Add rule
-            </button>
+            </Button>
           </div>
           {value[cat].length === 0 ? (
             <p className="rounded-lg border border-dashed border-gray-200 px-3 py-2 text-xs text-gray-500">

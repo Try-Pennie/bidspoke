@@ -9,6 +9,7 @@ import type { Partner, PartnerBody, PartnerPageSaveRequest, PartnerPageSaved, Pa
 import NavLayout from '@/components/NavLayout'
 import { Plus, ChevronRight, CircleCheck, CircleOff, AlertTriangle } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { Button } from '@/components/ui/form'
 import PartnerForm, { UNSAVED_CHANGES_MESSAGE, type PartnerSaveResult } from './PartnerForm'
 
 export default function PartnersPage() {
@@ -157,13 +158,10 @@ export default function PartnersPage() {
         <div className="flex w-72 flex-shrink-0 flex-col border-r border-gray-200 bg-white">
           <div className="flex items-center justify-between border-b border-gray-200 px-4 py-4">
             <h1 className="text-3xl font-bold text-graphite">Partners</h1>
-            <button
-              onClick={() => { if (!confirmDiscardIfDirty()) return; clearSelection(); setCreating(true) }}
-              className="flex items-center gap-1.5 rounded-lg bg-p-blue-dark px-3 py-1.5 text-xs font-medium text-white hover:bg-[#155E99]"
-            >
-              <Plus className="h-3.5 w-3.5" />
+            <Button variant="primary" onClick={() => { if (!confirmDiscardIfDirty()) return; clearSelection(); setCreating(true) }} className="px-3 py-1.5 text-xs">
+              <Plus className="h-3.5 w-3.5" aria-hidden="true" />
               New
-            </button>
+            </Button>
           </div>
 
           <div className="flex-1 overflow-y-auto">
@@ -180,20 +178,18 @@ export default function PartnersPage() {
               <div className="p-6 text-center">
                 <p className="text-base font-semibold text-graphite">No partners yet</p>
                 <p className="mt-1 text-xs text-gray-500">Partners are the lenders or buyers your workflows route leads to.</p>
-                <button
-                  onClick={() => { clearSelection(); setCreating(true) }}
-                  className="mt-3 text-xs font-medium text-p-blue-dark hover:text-p-blue-dark"
-                >
-                  Add your first partner →
-                </button>
+                <Button variant="ghost" onClick={() => { clearSelection(); setCreating(true) }} className="mt-3">
+                  Add your first partner
+                </Button>
               </div>
             ) : (
               <div className="space-y-0.5 p-2">
                 {partners.map((partner) => (
-                  <button
+                  <Button
                     key={partner.id}
+                    variant="row"
                     onClick={() => { if (selected?.id !== partner.id && !confirmDiscardIfDirty()) return; setFormDirty(false); selectPartner(partner) }}
-                    className={`group flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-[colors,opacity] duration-150 ${
+                    className={`group gap-3 transition-[colors,opacity] duration-150 ${
                       selected?.id === partner.id
                         ? 'bg-gray-100'
                         : 'hover:bg-beige'
@@ -230,7 +226,7 @@ export default function PartnersPage() {
                       <p className="mt-0.5 truncate font-mono text-xs text-gray-500">{partner.slug}</p>
                     </div>
                     <ChevronRight className="h-3.5 w-3.5 flex-shrink-0 text-gray-300 group-hover:text-gray-500" />
-                  </button>
+                  </Button>
                 ))}
               </div>
             )}

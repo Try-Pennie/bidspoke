@@ -102,9 +102,9 @@ describe('PartnerForm: a both partner exposes buyer and source config (#306)', (
   it('offers all three partner types on the type toggle', () => {
     render(<PartnerForm partner={bothPartner} onSave={vi.fn()} onCancel={vi.fn()} />)
 
-    expect(screen.getByRole('button', { name: 'Source' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Buyer' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Both' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Source' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Buyer' })).toBeInTheDocument()
+    expect(screen.getByRole('radio', { name: 'Both' })).toBeInTheDocument()
   })
 
   it('shows the buyer-only sections for a both partner', () => {
@@ -142,7 +142,7 @@ describe('PartnerForm: a both partner exposes buyer and source config (#306)', (
     const onSave = vi.fn()
     render(<PartnerForm partner={{ ...partner, partner_type: 'buyer' }} onSave={onSave} onCancel={vi.fn()} />)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Both' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Both' }))
 
     await waitFor(() => expect(screen.getByText('Sell-off offer copy')).toBeInTheDocument())
     expect(screen.getByText('Bid resolution')).toBeInTheDocument()

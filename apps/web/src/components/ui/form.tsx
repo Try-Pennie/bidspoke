@@ -4,10 +4,15 @@
  * The design system form primitives (#1412, L607). Every control on a new
  * surface comes from here: each has its own class (a select is not an input),
  * a real label reachable by id, and one place to fix geometry or contrast.
- * The raw elements live in this file and nowhere else on the buyer profile
- * surface; a scan guard enforces that (buyer-profile-controls-guard.test.ts).
+ * The raw elements and every Radix import live in components/ui and nowhere
+ * else; scan guards enforce both (partner-page-controls-guard.test.ts). Radix is
+ * the base for the app's controls (Dan, 2026-10-15, #2137): callers import
+ * these components and never Radix itself. The Select (Select.tsx), the Toggle
+ * (Toggle.tsx) and the date and time fields (DateTimeFields.tsx) have files of
+ * their own, so a route that uses only a button here does not load their Radix
+ * code (#2137, measured on /dashboard and the canvas).
  */
-import type { ReactNode } from 'react'
+import type { KeyboardEvent, ReactNode } from 'react'
 import { Loader2 } from 'lucide-react'
 
 // ── Field ─────────────────────────────────────────────────────────────────────
@@ -29,6 +34,13 @@ export function describedBy(id: string, hint: boolean, error: boolean): string |
   return ids.length ? ids.join(' ') : undefined
 }
 
+/** Keeps Enter from submitting the form around a field (#1552, L596). */
+export function holdEnter(e: KeyboardEvent<HTMLElement>, then?: () => void) {
+  if (e.key !== 'Enter') return
+  e.preventDefault()
+  then?.()
+}
+
 // ── Inputs ────────────────────────────────────────────────────────────────────
 
 interface TextInputProps {
@@ -36,12 +48,16 @@ interface TextInputProps {
   value: string
   onChange: (value: string) => void
   placeholder?: string
-  type?: 'text' | 'time' | 'date'
   mono?: boolean
   disabled?: boolean
   describedBy?: string
   'aria-label'?: string
   className?: string
+  /**
+   * Values the box offers as the person types (a path seen in a sample
+   * response, say). Typing anything else stays allowed.
+   */
+  suggestions?: readonly string[]
   /**
    * Enter commits this field through its own action. The key is kept from the
    * form around it, so committing a field never also submits the form (#1552, L596).
@@ -49,20 +65,29 @@ interface TextInputProps {
   onEnter?: () => void
 }
 
-export function TextInput({ id, value, onChange, placeholder, type = 'text', mono, disabled, describedBy: db, className, onEnter, ...aria }: TextInputProps) {
+export function TextInput({ id, value, onChange, placeholder, mono, disabled, describedBy: db, className, onEnter, suggestions, ...aria }: TextInputProps) {
+  const listId = suggestions && suggestions.length > 0 ? `${id}-suggestions` : undefined
   return (
-    <input
-      id={id}
-      type={type}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      onKeyDown={onEnter ? (e) => { if (e.key === 'Enter') { e.preventDefault(); onEnter() } } : undefined}
-      placeholder={placeholder}
-      disabled={disabled}
-      aria-describedby={db}
-      aria-label={aria['aria-label']}
-      className={`input ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}
-    />
+    <>
+      <input
+        id={id}
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={onEnter ? (e) => holdEnter(e, onEnter) : undefined}
+        placeholder={placeholder}
+        disabled={disabled}
+        list={listId}
+        aria-describedby={db}
+        aria-label={aria['aria-label']}
+        className={`input ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}
+      />
+      {listId && (
+        <datalist id={listId}>
+          {suggestions!.map((s) => <option key={s} value={s} />)}
+        </datalist>
+      )}
+    </>
   )
 }
 
@@ -76,12 +101,13 @@ interface NumberInputProps {
   step?: number | 'any'
   placeholder?: string
   disabled?: boolean
+  mono?: boolean
   describedBy?: string
   'aria-label'?: string
   className?: string
 }
 
-export function NumberInput({ id, value, onChange, min, max, step = 'any', placeholder, disabled, describedBy: db, className, ...aria }: NumberInputProps) {
+export function NumberInput({ id, value, onChange, min, max, step = 'any', placeholder, disabled, mono, describedBy: db, className, ...aria }: NumberInputProps) {
   return (
     <input
       id={id}
@@ -105,42 +131,34 @@ export function NumberInput({ id, value, onChange, min, max, step = 'any', place
         const n = Number(raw)
         if (Number.isFinite(n)) onChange(n)
       }}
-      className={`input ${className ?? ''}`.trim()}
+      className={`input ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}
     />
   )
 }
 
-interface SelectProps {
+export function TextArea({ id, value, onChange, rows = 3, placeholder, mono, className, describedBy: db, 'aria-label': ariaLabel }: {
   id: string
   value: string
-  onChange: (value: string) => void
-  options: ReadonlyArray<{ value: string; label: string }>
-  disabled?: boolean
+  onChange: (v: string) => void
+  rows?: number
+  placeholder?: string
+  mono?: boolean
+  className?: string
   describedBy?: string
   'aria-label'?: string
-  className?: string
-}
-
-export function Select({ id, value, onChange, options, disabled, describedBy: db, className, ...aria }: SelectProps) {
+}) {
   return (
-    <select
+    <textarea
       id={id}
       value={value}
-      onChange={(e) => onChange(e.target.value)}
-      disabled={disabled}
+      rows={rows}
+      placeholder={placeholder}
       aria-describedby={db}
-      aria-label={aria['aria-label']}
-      className={`select ${className ?? ''}`.trim()}
-    >
-      {options.map((o) => (
-        <option key={o.value} value={o.value}>{o.label}</option>
-      ))}
-    </select>
+      aria-label={ariaLabel}
+      onChange={(e) => onChange(e.target.value)}
+      className={`textarea ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}
+    />
   )
-}
-
-export function TextArea({ id, value, onChange, rows = 3, placeholder, describedBy: db, 'aria-label': ariaLabel }: { id: string; value: string; onChange: (v: string) => void; rows?: number; placeholder?: string; describedBy?: string; 'aria-label'?: string }) {
-  return <textarea id={id} value={value} rows={rows} placeholder={placeholder} aria-describedby={db} aria-label={ariaLabel} onChange={(e) => onChange(e.target.value)} className="textarea" />
 }
 
 // ── Choice group ──────────────────────────────────────────────────────────────
@@ -151,9 +169,10 @@ export function TextArea({ id, value, onChange, rows = 3, placeholder, described
  * accessible name, one tab stop (the chosen option, or the first when nothing
  * is chosen), and arrow keys that move and choose as the radio pattern does.
  * Every option is a button of type button, so no key it handles submits the
- * form around it (L596).
+ * form around it (L596). `stacked` lays the options out one per line, each
+ * with its hint under its label, for choices that need a sentence to tell apart.
  */
-export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, options, onChange, disabled, describedBy: db }: {
+export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, options, onChange, disabled, describedBy: db, stacked }: {
   id: string
   label: string
   /**
@@ -163,10 +182,11 @@ export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, 
    */
   visibleLabel?: string
   value: T | null
-  options: ReadonlyArray<{ value: T; label: string }>
+  options: ReadonlyArray<{ value: T; label: string; hint?: string }>
   onChange: (value: T) => void
   disabled?: boolean
   describedBy?: string
+  stacked?: boolean
 }) {
   const labelId = `${id}-label`
   const chosen = options.findIndex((o) => o.value === value)
@@ -183,7 +203,7 @@ export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, 
       {visibleLabel === undefined || visibleLabel === label
         ? <span id={labelId} className="mb-1 block text-xs font-medium text-gray-600">{label}</span>
         : <span id={labelId} className={visibleLabel === '' ? 'sr-only' : 'mb-1 block text-xs font-medium text-gray-600'}><span className="sr-only">{label}</span>{visibleLabel !== '' && <span aria-hidden="true">{visibleLabel}</span>}</span>}
-      <div id={id} role="radiogroup" aria-labelledby={labelId} aria-describedby={db} aria-disabled={disabled || undefined} className="choice-group">
+      <div id={id} role="radiogroup" aria-labelledby={labelId} aria-describedby={db} aria-disabled={disabled || undefined} className={stacked ? 'choice-stack' : 'choice-group'}>
         {options.map((o, i) => {
           const on = o.value === value
           return (
@@ -194,6 +214,8 @@ export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, 
               aria-checked={on}
               tabIndex={i === tabStop ? 0 : -1}
               disabled={disabled}
+              aria-labelledby={stacked ? `${id}-${i}-label` : undefined}
+              aria-describedby={stacked && o.hint ? `${id}-${i}-hint` : undefined}
               onClick={() => { if (!disabled) onChange(o.value) }}
               onKeyDown={(e) => {
                 const step = e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0
@@ -201,9 +223,17 @@ export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, 
                 e.preventDefault()
                 choose(i + step, e.currentTarget.parentElement)
               }}
-              className={`choice ${on ? 'choice-on' : ''}`.trim()}
+              className={stacked ? `choice-row ${on ? 'choice-row-on' : ''}`.trim() : `choice ${on ? 'choice-on' : ''}`.trim()}
             >
-              {o.label}
+              {stacked ? (
+                <>
+                  <span aria-hidden="true" className="choice-dot" />
+                  <span className="text-left">
+                    <span id={`${id}-${i}-label`} className="block font-medium text-graphite">{o.label}</span>
+                    {o.hint && <span id={`${id}-${i}-hint`} className="block text-gray-600">{o.hint}</span>}
+                  </span>
+                </>
+              ) : o.label}
             </button>
           )
         })}
@@ -212,24 +242,7 @@ export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, 
   )
 }
 
-// ── Toggle and checkbox ───────────────────────────────────────────────────────
-
-export function Toggle({ id, checked, onChange, label, disabled }: { id: string; checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
-  return (
-    <button
-      id={id}
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={`toggle ${checked ? 'toggle-on' : ''}`.trim()}
-    >
-      <span aria-hidden="true" className="toggle-knob" />
-    </button>
-  )
-}
+// ── Checkbox ──────────────────────────────────────────────────────────────────
 
 export function Checkbox({ id, checked, onChange, label, disabled }: { id: string; checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
   return (
@@ -242,10 +255,15 @@ export function Checkbox({ id, checked, onChange, label, disabled }: { id: strin
 
 // ── Button ────────────────────────────────────────────────────────────────────
 
-/** destructive: the solid red button that answers a dialog with a deletion; danger is the quieter outlined one beside a row. */
-export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'destructive' | 'ghost'
+/**
+ * destructive: the solid red button that answers a dialog with a deletion;
+ * danger is the quieter outlined one beside a row. `row` is a whole list row
+ * that is one control (a partner in the list): left aligned and full width,
+ * its own class because its geometry is not a button's.
+ */
+export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'destructive' | 'ghost' | 'row'
 
-export function Button({ variant, type = 'button', onClick, disabled, busy, children, 'aria-label': ariaLabel, className }: {
+export function Button({ variant, type = 'button', onClick, disabled, busy, children, 'aria-label': ariaLabel, title, className }: {
   variant: ButtonVariant
   type?: 'button' | 'submit'
   onClick?: () => void
@@ -253,6 +271,7 @@ export function Button({ variant, type = 'button', onClick, disabled, busy, chil
   busy?: boolean
   children: ReactNode
   'aria-label'?: string
+  title?: string
   className?: string
 }) {
   return (
@@ -262,6 +281,7 @@ export function Button({ variant, type = 'button', onClick, disabled, busy, chil
       disabled={disabled || busy}
       aria-busy={busy ? 'true' : undefined}
       aria-label={ariaLabel}
+      title={title}
       className={`btn btn-${variant} ${className ?? ''}`.trim()}
     >
       {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />}

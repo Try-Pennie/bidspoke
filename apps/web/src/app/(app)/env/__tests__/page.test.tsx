@@ -16,6 +16,7 @@ vi.mock('@/lib/api', () => ({
 
 import EnvPage from '../page'
 import { api } from '@/lib/api'
+import { chooseOption, readSelect } from '@/components/ui/__tests__/_select'
 
 const folder = { id: 'fol-1', organization_id: 'org-1', parent_id: null, name: 'Secrets', created_at: '', updated_at: '' }
 const plainVar = { id: 'var-1', key: 'MY_VAR', value: 'hello', is_secret: false, scope: 'global', folder_id: null, updated_at: '2026-01-01T00:00:00Z' }
@@ -174,9 +175,10 @@ describe('Env page: a variable for one workflow (#1774)', () => {
     vi.mocked(api.env.create).mockResolvedValue({ ...mainChannel, id: 'var-9' } as never)
     await openForm()
 
+    // Ported from reading the native select's options and firing a native change (#2137).
     const usedBy = screen.getByLabelText('Used by')
-    expect(within(usedBy).getAllByRole('option').map((o) => o.textContent)).toEqual(['All workflows', 'Achieve Offers', 'Main Flow'])
-    fireEvent.change(usedBy, { target: { value: 'wf-main' } })
+    expect(readSelect(usedBy).options).toEqual(['All workflows', 'Achieve Offers', 'Main Flow'])
+    chooseOption(usedBy, 'Main Flow')
     fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'CHANNEL' } })
     fireEvent.change(screen.getByLabelText('Value'), { target: { value: '#main' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -189,13 +191,13 @@ describe('Env page: a variable for one workflow (#1774)', () => {
     vi.mocked(api.env.create).mockResolvedValue({ ...mainChannel, id: 'var-9' } as never)
     await openForm()
 
-    fireEvent.change(screen.getByLabelText('Used by'), { target: { value: 'wf-main' } })
+    chooseOption(screen.getByLabelText('Used by'), 'Main Flow')
     fireEvent.change(screen.getByLabelText('Key'), { target: { value: 'CHANNEL' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save & add another' }))
 
     await waitFor(() => expect(api.env.create).toHaveBeenCalledTimes(1))
     await waitFor(() => expect(screen.getByLabelText('Key')).toHaveValue(''))
-    expect(screen.getByLabelText('Used by')).toHaveValue('wf-main')
+    expect(readSelect(screen.getByLabelText('Used by')).selected).toBe('Main Flow')
   })
 
   it('saves a variable for all workflows without naming one', async () => {
@@ -213,7 +215,7 @@ describe('Env page: a variable for one workflow (#1774)', () => {
     await openForm()
     expect(screen.getByText(/synced to Cloudflare/)).toBeInTheDocument()
 
-    fireEvent.change(screen.getByLabelText('Used by'), { target: { value: 'wf-main' } })
+    chooseOption(screen.getByLabelText('Used by'), 'Main Flow')
 
     expect(screen.queryByText(/Cloudflare/)).not.toBeInTheDocument()
   })
@@ -223,7 +225,7 @@ describe('Env page: a variable for one workflow (#1774)', () => {
     await openForm()
 
     const usedBy = screen.getByLabelText('Used by')
-    expect(within(usedBy).getAllByRole('option').map((o) => o.textContent)).toEqual(['All workflows'])
     expect(usedBy).toBeDisabled()
+    expect(usedBy).toHaveTextContent('All workflows')
   })
 })
