@@ -129,13 +129,12 @@ export function hourBucket(instantMs: number): number {
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/
 
 /**
- * The UTC instant an Eastern calendar day begins (#1412). Eastern midnight is
- * 04:00 or 05:00 UTC depending on daylight saving, so the candidate is checked
- * against easternParts rather than assumed; the one that lands on minute 0 of
- * the asked for date is the answer. A value that is not a calendar date is
- * refused, never coerced to a neighbouring day (L50).
+ * The year, month (1 to 12) and day of a YYYY-MM-DD calendar date, the one
+ * check every reader here takes a date through. A value that is not a calendar
+ * date (the wrong shape, or a 30th of February) is refused, never coerced to a
+ * neighbouring day (L50).
  */
-export function easternDayStartUtc(isoDate: string): number {
+function calendarDate(isoDate: string): [number, number, number] {
   const m = ISO_DATE.exec(isoDate)
   if (!m) throw new Error(`${isoDate} is not a calendar date (YYYY-MM-DD)`)
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
@@ -143,6 +142,18 @@ export function easternDayStartUtc(isoDate: string): number {
   if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) {
     throw new Error(`${isoDate} is not a calendar date`)
   }
+  return [y, mo, d]
+}
+
+/**
+ * The UTC instant an Eastern calendar day begins (#1412). Eastern midnight is
+ * 04:00 or 05:00 UTC depending on daylight saving, so the candidate is checked
+ * against easternParts rather than assumed; the one that lands on minute 0 of
+ * the asked for date is the answer. A value that is not a calendar date is
+ * refused, never coerced to a neighbouring day (L50).
+ */
+export function easternDayStartUtc(isoDate: string): number {
+  const [y, mo, d] = calendarDate(isoDate)
   for (const offsetHours of [4, 5]) {
     const candidate = Date.UTC(y, mo - 1, d, offsetHours)
     const parts = easternParts(candidate)
@@ -159,13 +170,7 @@ export function easternDayStartUtc(isoDate: string): number {
  * exactly as easternDayStartUtc does.
  */
 export function zonedDayStartUtc(isoDate: string, zone: ClockZone): number {
-  const m = ISO_DATE.exec(isoDate)
-  if (!m) throw new Error(`${isoDate} is not a calendar date (YYYY-MM-DD)`)
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
-  const probe = new Date(Date.UTC(y, mo - 1, d))
-  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) {
-    throw new Error(`${isoDate} is not a calendar date`)
-  }
+  const [y, mo, d] = calendarDate(isoDate)
   for (const offsetHours of [4, 5, 7, 8]) {
     const candidate = Date.UTC(y, mo - 1, d, offsetHours)
     const parts = zonedParts(candidate, zone)
@@ -195,13 +200,7 @@ export type WallTimeKind = 'exact' | 'gap_shifted' | 'overlap_first'
  * outside the day is refused, never coerced (L50).
  */
 export function zonedWallTimeToUtc(isoDate: string, minuteOfDay: number, zone: ScheduleZone): { utcMs: number; kind: WallTimeKind } {
-  const m = ISO_DATE.exec(isoDate)
-  if (!m) throw new Error(`${isoDate} is not a calendar date (YYYY-MM-DD)`)
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
-  const probe = new Date(Date.UTC(y, mo - 1, d))
-  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) {
-    throw new Error(`${isoDate} is not a calendar date`)
-  }
+  const [y, mo, d] = calendarDate(isoDate)
   if (!Number.isInteger(minuteOfDay) || minuteOfDay < 0 || minuteOfDay >= 1440) {
     throw new Error(`${minuteOfDay} is not a minute of the day (0 to 1439)`)
   }
