@@ -91,7 +91,10 @@ invocation_logs = true
 #                           hashid) and the redaction key. Cannot be re derived
 #                           if lost: escrow it with the other recovery keys.
 #   OPS_SUPABASE_URL        the ops database ("Bidspoke Ops"), and
-#   OPS_SUPABASE_SECRET_KEY its service role key (src/ops/ops-db.ts). Allowed,
-#                           not required: nothing reads the ops database until
-#                           Phase 1. Never the bidding database's URL or key,
-#                           which the client refuses.
+#   OPS_SUPABASE_SECRET_KEY a named secret key (sb_secret_...) Dan creates for
+#                           this Worker, which acts as service_role
+#                           (src/ops/ops-db.ts). Not the legacy service_role key:
+#                           the project's legacy keys are disabled. Allowed, not
+#                           required: nothing calls the ops database until the
+#                           run engine's tick (#1949). Never the bidding
+#                           database's URL or key, which the client refuses.

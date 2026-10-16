@@ -11,21 +11,25 @@
  * - every read goes through readOpsRows, which takes an OrganizationId by type,
  *   re-checks it at run time, filters on it, and refuses a row of any other
  *   organization that comes back anyway;
- * - apps/web/src/lib/__guards__/worker/ops-reads-through-helper.test.ts fails on
- *   a `.from(`, `.rpc(` or `.schema(` against this client anywhere outside
- *   readOpsRows, and on the client being handed to anything typed wider than
- *   OpsSupabaseClient, where that scan could no longer follow it.
+ * - apps/web/src/lib/__guards__/worker/ops-reads-through-helper.test.ts allows a
+ *   `.from(` on this client only inside readOpsRows and a `.rpc(` only inside
+ *   callOpsRpc (ops-writes.ts), and fails on any other `.from(`, `.rpc(` or
+ *   `.schema(` against it, and on the client being handed to anything typed
+ *   wider than OpsSupabaseClient, where that scan could no longer follow it.
  *
- * Nothing reads the ops database yet: the ops run engine arrives in Phase 1
- * (#1698). So OPS_SUPABASE_URL and OPS_SUPABASE_SECRET_KEY are on the ops
- * Worker's allowlist (lib/secret-lists.ts) and not its required list, which
- * would alert on two secrets no code needs.
+ * Nothing reads the ops database yet: the run engine's tables exist (#1948) but
+ * nothing calls them until its tick (#1949). So OPS_SUPABASE_URL and
+ * OPS_SUPABASE_SECRET_KEY are on the ops Worker's allowlist (lib/secret-lists.ts)
+ * and not its required list, which would alert on two secrets no code needs.
  *
- * No writer here. When Phase 1 writes run rows, the writes get a helper of
- * their own, named in that scan with its reason, rather than a bare `.from(`.
+ * Writes are not here: every ops write is a database function called through
+ * callOpsRpc in ops-writes.ts, the one `.rpc(` on this client, which the same
+ * scan allows by name. The database enforces it too: service_role holds only
+ * SELECT on the run engine's tables (supabase-ops migration 20261016200000).
  */
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { guardLocalDevWrites, type LocalDevFlags, type RpcClassification } from '../lib/local-dev-write-guard'
+import { OPS_MUTATING_RPCS, OPS_READ_ONLY_RPCS } from './ops-rpcs'
 
 export interface OpsDbEnv extends LocalDevFlags {
   OPS_SUPABASE_URL?: string
@@ -36,8 +40,9 @@ declare const OPS_CLIENT: unique symbol
 /**
  * A client of the ops database, and nothing else is one. The brand keeps the
  * bidding client out of readOpsRows at compile time, and is how the scan tells
- * this client from the bidding one. Untyped by tables until Phase 1 creates the
- * first ops table and generates its types.
+ * this client from the bidding one. Not typed by tables: no ops database types
+ * are generated yet, so the run engine's results are checked at run time by
+ * each wrapper in ops-writes.ts, and readOpsRows's rows are typed by its caller.
  */
 export type OpsSupabaseClient = SupabaseClient & { readonly [OPS_CLIENT]: 'ops' }
 
@@ -69,13 +74,14 @@ export class OpsReadError extends Error {
 const BIDDING_PROJECT_REF = 'xvrmivmpfykwwtriqwpg'
 
 /**
- * The ops database classifies no rpc as read only yet, so under the local dev
- * guard every rpc is refused. The first ops rpc is classified here.
+ * The ops database's functions, classified in ops-rpcs.ts. Under the local dev
+ * guard a mutating one, or one on neither list, is refused against a remote
+ * database.
  */
 const OPS_RPCS: RpcClassification = {
-  readOnly: new Set<string>(),
-  mutating: new Set<string>(),
-  listFile: 'apps/worker/src/ops/ops-db.ts (OPS_RPCS)',
+  readOnly: new Set<string>(OPS_READ_ONLY_RPCS),
+  mutating: new Set<string>(OPS_MUTATING_RPCS),
+  listFile: 'apps/worker/src/ops/ops-rpcs.ts',
 }
 
 /** PostgREST answers at most this many rows to one read (the project's max rows). */
@@ -107,8 +113,12 @@ function databaseUrlFrom(env: OpsDbEnv): string {
 }
 
 /**
- * A service_role client of the ops database, carrying the local dev write guard
- * the bidding client carries (#669). `options.fetch` is for tests.
+ * A client of the ops database, connecting with OPS_SUPABASE_SECRET_KEY: a named
+ * secret key (sb_secret_...) that Dan creates for the ops Worker, which acts as
+ * service_role. The project's legacy anon and service_role keys are disabled and
+ * its legacy JWT secret revoked (2026-10-16), so it is never one of those.
+ * Carries the local dev write guard the bidding client carries (#669).
+ * `options.fetch` is for tests.
  */
 export function createOpsSupabaseClient(env: OpsDbEnv, options: { fetch?: typeof fetch } = {}): OpsSupabaseClient {
   const url = databaseUrlFrom(env)
