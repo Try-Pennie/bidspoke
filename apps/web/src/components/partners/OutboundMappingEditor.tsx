@@ -1,6 +1,8 @@
 'use client'
 
+import { useId } from 'react'
 import { ArrowRight, Plus, Trash2 } from 'lucide-react'
+import { Button, TextInput } from '@/components/ui/form'
 
 interface MappingRule {
   source: string
@@ -13,6 +15,7 @@ interface Props {
 }
 
 export function OutboundMappingEditor({ value, onChange }: Props) {
+  const base = useId()
   const rules = readRules(value)
 
   function update(next: MappingRule[]) {
@@ -45,41 +48,21 @@ export function OutboundMappingEditor({ value, onChange }: Props) {
         <div className="space-y-2">
           {rules.map((row, i) => (
             <div key={i} className="flex items-center gap-1.5">
-              <input
-                value={row.source}
-                onChange={(e) => updateRow(i, { source: e.target.value })}
-                placeholder="debt_amount"
-                className="min-w-0 flex-1 rounded-md border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-gray-400 focus:outline-none"
-              />
-              <ArrowRight className="h-3 w-3 flex-shrink-0 text-gray-300" />
-              <input
-                value={row.target}
-                onChange={(e) => updateRow(i, { target: e.target.value })}
-                placeholder="DebtAmount"
-                className="min-w-0 flex-1 rounded-md border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-gray-400 focus:outline-none"
-              />
-              <button
-                type="button"
-                onClick={() => removeRow(i)}
-                className="flex-shrink-0 text-gray-300 hover:text-red-400"
-                aria-label="Remove mapping"
-                title="Remove"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
+              <TextInput id={`${base}-${i}-source`} aria-label={`Source field, mapping ${i + 1}`} value={row.source} onChange={(v) => updateRow(i, { source: v })} placeholder="debt_amount" mono className="min-w-0 flex-1" />
+              <ArrowRight className="h-3 w-3 flex-shrink-0 text-gray-300" aria-hidden="true" />
+              <TextInput id={`${base}-${i}-target`} aria-label={`Target field, mapping ${i + 1}`} value={row.target} onChange={(v) => updateRow(i, { target: v })} placeholder="DebtAmount" mono className="min-w-0 flex-1" />
+              <Button variant="ghost" onClick={() => removeRow(i)} aria-label={`Remove mapping ${i + 1}`} title="Remove" className="shrink-0">
+                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+              </Button>
             </div>
           ))}
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={addRow}
-        className="flex items-center gap-1 text-xs text-p-blue-dark hover:text-navy"
-      >
-        <Plus className="h-3.5 w-3.5" />
+      <Button variant="ghost" onClick={addRow}>
+        <Plus className="h-3.5 w-3.5" aria-hidden="true" />
         Add field
-      </button>
+      </Button>
     </div>
   )
 }

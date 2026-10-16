@@ -1,11 +1,12 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import type { PartnerBidConfig, BidMatrixRow, BidConfigDimension, MatrixProblem } from '@/lib/api'
 import { api } from '@/lib/api'
 import { Loader2, RefreshCw, Plus, Check, AlertTriangle, Trash2 } from 'lucide-react'
 import { Dialog } from '@/components/Dialog'
 import { Button } from '@/components/ui/form'
+import { Select } from '@/components/ui/Select'
 import { errorSentence } from '@/lib/error-sentence'
 
 interface Props {
@@ -35,6 +36,7 @@ export function BidMatrixViewer(p: Props) {
   /** The delete dialog (#2134): null when closed; otherwise whether it is deleting and why it last failed. */
   const [deleteAsk, setDeleteAsk] = useState<{ deleting: boolean; error: string | null } | null>(null)
   const deletingRef = useRef(false)
+  const baseId = useId()
 
   useEffect(() => {
     if (p.selectedConfigId && p.selectedConfigId !== activeId) {
@@ -158,62 +160,36 @@ export function BidMatrixViewer(p: Props) {
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         {p.configs.length === 0 ? (
-          <button
-            type="button"
-            onClick={handleCreate}
-            disabled={creating}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-dashed border-gray-300 px-3 py-1.5 text-sm text-gray-600 hover:border-gray-400 hover:text-graphite disabled:opacity-50"
-          >
-            {creating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+          <Button variant="secondary" onClick={handleCreate} busy={creating}>
+            {!creating && <Plus className="h-4 w-4" aria-hidden="true" />}
             Add matrix
-          </button>
+          </Button>
         ) : (
           <>
-            <select
+            <Select
+              id={`${baseId}-matrix`}
+              aria-label="Matrix shown"
               value={activeId ?? ''}
-              onChange={(e) => { setActiveId(e.target.value); p.onSelectConfig?.(e.target.value) }}
-              className="rounded-lg border border-gray-200 px-3 py-1.5 text-sm text-graphite focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
-            >
-              {p.configs.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}{c.is_default ? ' (default)' : ''}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              onClick={handleCreate}
-              disabled={creating}
-              className="inline-flex items-center gap-1 rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-graphite"
-              aria-label="Add another matrix"
-              title="Add another matrix"
-            >
-              <Plus className="h-4 w-4" />
-            </button>
+              options={p.configs.map((c) => ({ value: c.id, label: `${c.name}${c.is_default ? ' (default)' : ''}` }))}
+              onChange={(id) => { setActiveId(id); p.onSelectConfig?.(id) }}
+              className="w-auto min-w-[12rem]"
+            />
+            <Button variant="ghost" onClick={handleCreate} disabled={creating} aria-label="Add another matrix" title="Add another matrix">
+              <Plus className="h-4 w-4" aria-hidden="true" />
+            </Button>
             <div className="flex-1" />
-            <button
-              type="button"
-              onClick={handleSync}
-              disabled={syncState === 'syncing' || !activeConfig}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-gray-300 hover:bg-gray-50 disabled:opacity-50"
-            >
+            <Button variant="secondary" onClick={handleSync} disabled={syncState === 'syncing' || !activeConfig}>
               {syncState === 'syncing'
-                ? <><Loader2 className="h-3.5 w-3.5 animate-spin" /> Syncing…</>
+                ? <><Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" /> Syncing…</>
                 : syncState === 'synced'
-                ? <><Check className="h-3.5 w-3.5 text-green-600" /> Synced</>
+                ? <><Check className="h-3.5 w-3.5 text-green-600" aria-hidden="true" /> Synced</>
                 : syncState === 'error'
-                ? <><AlertTriangle className="h-3.5 w-3.5 text-amber-500" /> Retry sync</>
-                : <><RefreshCw className="h-3.5 w-3.5" /> Sync now</>}
-            </button>
-            <button
-              type="button"
-              onClick={() => setDeleteAsk({ deleting: false, error: null })}
-              className="rounded-md p-1.5 text-gray-500 hover:bg-red-50 hover:text-red-600"
-              aria-label="Delete this matrix"
-              title="Delete this matrix"
-            >
-              <Trash2 className="h-4 w-4" />
-            </button>
+                ? <><AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-hidden="true" /> Retry sync</>
+                : <><RefreshCw className="h-3.5 w-3.5" aria-hidden="true" /> Sync now</>}
+            </Button>
+            <Button variant="danger" onClick={() => setDeleteAsk({ deleting: false, error: null })} aria-label="Delete this matrix" title="Delete this matrix">
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+            </Button>
           </>
         )}
       </div>

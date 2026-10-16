@@ -8,6 +8,7 @@ import type { ServicePreset } from '@/lib/api'
 import NavLayout from '@/components/NavLayout'
 import { CheckCircle, Unlink, Loader2, Plus, Trash2 } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
+import { Toggle } from '@/components/ui/Toggle'
 
 function slugify(name: string) {
   return name.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '')
@@ -425,7 +426,8 @@ export default function IntegrationsPage() {
                     Daily check for unexpectedly high or low execution volume. Turn off during testing or low-traffic periods.
                   </p>
                 </div>
-                <SlackToggle
+                <Toggle
+                  id="slack-volume-alerts"
                   checked={slack.volume_alerts_enabled !== false}
                   onChange={async (next) => {
                     setSlack((s) => (s ? { ...s, volume_alerts_enabled: next } : s))
@@ -446,7 +448,8 @@ export default function IntegrationsPage() {
                     Daily audit that flags live workflow nodes whose timeout is below the reliable floor for their type. Turn off to mute the digest.
                   </p>
                 </div>
-                <SlackToggle
+                <Toggle
+                  id="slack-config-alerts"
                   checked={slack.config_alerts_enabled !== false}
                   onChange={async (next) => {
                     setSlack((s) => (s ? { ...s, config_alerts_enabled: next } : s))
@@ -467,7 +470,8 @@ export default function IntegrationsPage() {
                     Warns when workflow backups to GitHub keep failing (an expired token, wrong repo, or GitHub outage). Protects the off-Supabase copy of every workflow. Separate from configuration warnings so muting noise can&apos;t silently disable it.
                   </p>
                 </div>
-                <SlackToggle
+                <Toggle
+                  id="slack-backup-alerts"
                   checked={slack.backup_alerts_enabled !== false}
                   onChange={async (next) => {
                     setSlack((s) => (s ? { ...s, backup_alerts_enabled: next } : s))
@@ -489,7 +493,8 @@ export default function IntegrationsPage() {
                       Posted at the top of every hour when the Salesforce bid matrix has any rows added, edited, or removed since the last sync. Pick a separate channel below, or leave empty to use the default channel.
                     </p>
                   </div>
-                  <SlackToggle
+                  <Toggle
+                    id="slack-matrix-alerts"
                     checked={slack.matrix_alerts_enabled !== false}
                     onChange={async (next) => {
                       setSlack((s) => (s ? { ...s, matrix_alerts_enabled: next } : s))
@@ -876,23 +881,5 @@ export default function IntegrationsPage() {
 
       </div>
     </NavLayout>
-  )
-}
-
-function SlackToggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark focus-visible:ring-offset-1 ${checked ? 'bg-p-blue-dark' : 'bg-gray-200'}`}
-    >
-      <span className="sr-only">{label}</span>
-      <span
-        aria-hidden="true"
-        className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm ring-0 transition-transform duration-150 ${checked ? 'translate-x-4' : 'translate-x-0'}`}
-      />
-    </button>
   )
 }

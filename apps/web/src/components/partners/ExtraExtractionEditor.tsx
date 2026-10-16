@@ -1,13 +1,20 @@
 'use client'
 
-import { useMemo, useState, useEffect } from 'react'
+import { useId, useMemo, useState, useEffect } from 'react'
 import { ArrowRight, Plus, Trash2 } from 'lucide-react'
 import type { ExtraExtractionConfig, ExtraExtractionSpec } from '@/lib/api'
+import { Button, TextInput } from '@/components/ui/form'
+import { Select } from '@/components/ui/Select'
 
 // Classifiers registered in apps/worker/src/engine/bid-resolver.ts CLASSIFIERS.
 // Keep this list in sync when new classifiers ship.
 const CLASSIFIERS: { value: string; label: string }[] = [
   { value: 'tripoint_result', label: 'tripoint_result (Success / Duplicate / Fail)' },
+]
+
+const KIND_OPTIONS: ReadonlyArray<{ value: Row['kind']; label: string }> = [
+  { value: 'path', label: 'path' },
+  { value: 'classifier', label: 'classifier' },
 ]
 
 interface Row {
@@ -36,6 +43,7 @@ export function ExtraExtractionEditor({ value, onChange, sampleResponse }: Props
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [valueKey])
 
+  const base = useId()
   const pathSuggestions = useMemo(() => collectPaths(sampleResponse), [sampleResponse])
 
   function update(next: Row[]) {
@@ -73,69 +81,35 @@ export function ExtraExtractionEditor({ value, onChange, sampleResponse }: Props
         <div className="space-y-2">
           {rows.map((row, i) => (
             <div key={i} className="flex items-center gap-1.5">
-              <input
-                value={row.key}
-                onChange={(e) => updateRow(i, { key: e.target.value })}
-                placeholder="leadId"
-                className="w-32 flex-shrink-0 rounded-md border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-gray-400 focus:outline-none"
-              />
-              <ArrowRight className="h-3 w-3 flex-shrink-0 text-gray-300" />
-              <select
-                value={row.kind}
-                onChange={(e) => updateRow(i, { kind: e.target.value as 'path' | 'classifier' })}
-                className="flex-shrink-0 rounded-md border border-gray-200 bg-white px-1.5 py-1.5 text-xs text-gray-700 focus:border-gray-400 focus:outline-none"
-              >
-                <option value="path">path</option>
-                <option value="classifier">classifier</option>
-              </select>
+              <TextInput id={`${base}-${i}-key`} aria-label={`Output key, extraction ${i + 1}`} value={row.key} onChange={(v) => updateRow(i, { key: v })} placeholder="leadId" mono className="w-32 shrink-0" />
+              <ArrowRight className="h-3 w-3 flex-shrink-0 text-gray-300" aria-hidden="true" />
+              <Select id={`${base}-${i}-kind`} aria-label={`Source, extraction ${i + 1}`} value={row.kind} options={KIND_OPTIONS} onChange={(v) => updateRow(i, { kind: v as Row['kind'] })} className="w-32 shrink-0" />
               {row.kind === 'classifier' ? (
-                <select
-                  value={row.classifier}
-                  onChange={(e) => updateRow(i, { classifier: e.target.value })}
-                  className="min-w-0 flex-1 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-xs text-gray-800 focus:border-gray-400 focus:outline-none"
-                >
-                  {CLASSIFIERS.map((c) => (
-                    <option key={c.value} value={c.value}>{c.label}</option>
-                  ))}
-                </select>
+                <Select id={`${base}-${i}-classifier`} aria-label={`Classifier, extraction ${i + 1}`} value={row.classifier} options={CLASSIFIERS} onChange={(v) => updateRow(i, { classifier: v })} className="min-w-0 flex-1" />
               ) : (
-                <>
-                  <input
-                    list={`extra-paths-${i}`}
-                    value={row.path}
-                    onChange={(e) => updateRow(i, { path: e.target.value })}
-                    placeholder="data.createLead.id"
-                    className="min-w-0 flex-1 rounded-md border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-gray-400 focus:outline-none"
-                  />
-                  <datalist id={`extra-paths-${i}`}>
-                    {pathSuggestions.map((p) => (
-                      <option key={p} value={p} />
-                    ))}
-                  </datalist>
-                </>
+                <TextInput
+                  id={`${base}-${i}-path`}
+                  aria-label={`Path, extraction ${i + 1}`}
+                  value={row.path}
+                  onChange={(v) => updateRow(i, { path: v })}
+                  placeholder="data.createLead.id"
+                  mono
+                  suggestions={pathSuggestions}
+                  className="min-w-0 flex-1"
+                />
               )}
-              <button
-                type="button"
-                onClick={() => removeRow(i)}
-                className="flex-shrink-0 text-gray-300 hover:text-red-400"
-                aria-label="Remove row"
-                title="Remove"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
+              <Button variant="ghost" onClick={() => removeRow(i)} aria-label={`Remove extraction ${i + 1}`} title="Remove" className="shrink-0">
+                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+              </Button>
             </div>
           ))}
         </div>
       )}
 
-      <button
-        type="button"
-        onClick={addRow}
-        className="flex items-center gap-1 text-xs text-p-blue-dark hover:text-navy"
-      >
-        <Plus className="h-3.5 w-3.5" />
+      <Button variant="ghost" onClick={addRow}>
+        <Plus className="h-3.5 w-3.5" aria-hidden="true" />
         Add extraction
-      </button>
+      </Button>
 
       {pathSuggestions.length === 0 && (
         <p className="text-xs text-gray-500">

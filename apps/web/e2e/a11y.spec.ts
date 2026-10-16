@@ -54,9 +54,8 @@ test.describe('Accessibility (axe-core)', () => {
   // answered from fixtures. Each asserts the surface it is about is on screen
   // before it scans, so a scan of the wrong page or of nothing cannot pass, and
   // that no Worker call went unanswered. A dialog's scan is limited to the
-  // dialog: the open partner's form behind it still carries native controls
-  // without names, which PR6 (#2137) replaces, and scanning it here would fail
-  // every run on a finding this pull request does not own.
+  // dialog, the surface the test is about; the form behind it is a separate
+  // finding (its muted text on the beige background, #2137's report).
   test('partners page, with a missing credential, has no serious a11y violations', async ({ page }) => {
     const { unmatched } = await routePartnerFixtures(page, workerUrl(), { credentialWarningFor: 'amone' })
     await page.goto('/partners')
@@ -87,7 +86,7 @@ test.describe('Accessibility (axe-core)', () => {
   test('the partners page matrix delete dialog has no serious a11y violations', async ({ page }) => {
     const { unmatched } = await routePartnerFixtures(page, workerUrl(), { matrix: true })
     await openTripoint(page)
-    await page.getByRole('button', { name: 'Matrix lookup' }).click()
+    await page.getByRole('radio', { name: 'Matrix lookup' }).click()
     await page.getByRole('button', { name: 'Delete this matrix' }).click()
     await expect(page.getByRole('alertdialog', { name: /^Delete matrix/ })).toBeVisible()
     await expectDialogs(page)
@@ -117,6 +116,77 @@ test.describe('Accessibility (axe-core)', () => {
     await expect(box.getByRole('button', { name: 'Delete Liberty1' })).toBeEnabled()
     await page.waitForLoadState('networkidle')
     await expectNoSeriousA11yViolations(page, [], '/partners', '[aria-labelledby="partner-delete-title"]')
+    expect(unmatched).toEqual([])
+  })
+
+  // #2137: the shared controls, scanned open. A closed Select or calendar is a
+  // button; what a screen reader meets is the open list or grid, so each is
+  // opened by the keyboard, scanned, and driven. An open Select is modal: Radix
+  // hides the page behind it from assistive tech while the list holds the focus,
+  // so axe would report every button behind it as hidden yet focusable; the
+  // scan is of the list, and the page keeps its own closed scan. Nothing here
+  // presses Save.
+  test('environment page: the Used by dropdown, open, has no serious a11y violations and the keyboard drives it', async ({ page }) => {
+    await page.goto('/env')
+    await page.waitForLoadState('networkidle')
+    await page.getByRole('button', { name: 'Add variable' }).click()
+    const usedBy = page.getByRole('combobox', { name: 'Used by' })
+    const before = (await usedBy.textContent())?.trim() ?? ''
+    await usedBy.focus()
+    await page.keyboard.press('Enter')
+    const list = page.getByRole('listbox')
+    await expect(list).toBeVisible()
+    await expect(list.getByRole('option', { name: 'All workflows' })).toBeVisible()
+    await expectNoSeriousA11yViolations(page, [], '/env', '[role="listbox"]')
+    // Escape closes it without a change and gives the focus back to the dropdown.
+    await page.keyboard.press('Escape')
+    await expect(list).toBeHidden()
+    await expect(usedBy).toHaveText(before)
+    await expect(usedBy).toBeFocused()
+  })
+
+  test('partners page: an accept rule operator dropdown, open, has no serious a11y violations and the keyboard drives it', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl())
+    await openTripoint(page)
+    // Tripoint's first accept rule is `ok` equals true.
+    const operator = page.getByRole('combobox', { name: 'Operator' }).first()
+    await expect(operator).toHaveText('equals')
+    await operator.focus()
+    await page.keyboard.press('Enter')
+    const list = page.getByRole('listbox')
+    await expect(list).toBeVisible()
+    await expectNoSeriousA11yViolations(page, [], '/partners', '[role="listbox"]')
+    // The list opens on the chosen operator; ArrowDown and Enter choose the next one.
+    await page.keyboard.press('ArrowDown')
+    await page.keyboard.press('Enter')
+    await expect(list).toBeHidden()
+    await expect(operator).toHaveText('contains')
+    await expect(operator).toBeFocused()
+    expect(unmatched).toEqual([])
+  })
+
+  test('partners page: the blackout date calendar, open, has no serious a11y violations, and the date box takes typing', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl())
+    await openTripoint(page)
+    await page.getByRole('button', { name: 'Add date' }).click()
+    const calendarButton = page.getByRole('button', { name: 'Choose Date, new date from a calendar' })
+    await calendarButton.click()
+    const grid = page.getByRole('grid')
+    await expect(grid).toBeVisible()
+    await expectNoSeriousA11yViolations(page, [], '/partners', '[role="dialog"]')
+    // The focused day moves with the arrows, and Escape returns the focus to the button.
+    const first = await page.evaluate(() => document.activeElement?.getAttribute('aria-label'))
+    await page.keyboard.press('ArrowRight')
+    const second = await page.evaluate(() => document.activeElement?.getAttribute('aria-label'))
+    expect(second, 'the arrow key did not move the focused day').not.toBe(first)
+    await page.keyboard.press('Escape')
+    await expect(grid).toBeHidden()
+    await expect(calendarButton).toBeFocused()
+    // A typed date commits on Enter and reads back in the box's one spelling.
+    const box = page.getByRole('textbox', { name: 'Date, new date' })
+    await box.fill('1/1/2027')
+    await box.press('Enter')
+    await expect(page.getByRole('textbox', { name: 'Date, Jan 1, 2027' })).toHaveValue('Jan 1, 2027')
     expect(unmatched).toEqual([])
   })
 

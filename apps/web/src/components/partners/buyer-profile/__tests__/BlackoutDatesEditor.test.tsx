@@ -6,6 +6,7 @@
  * not sixty labelled forms.
  */
 import { describe, expect, it, vi } from 'vitest'
+import { useState } from 'react'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import type { ProfileBlackoutDocument } from '@bidspoke/buyer-profile'
 import { BlackoutDatesEditor } from '../BlackoutDatesEditor'
@@ -20,7 +21,7 @@ describe('BlackoutDatesEditor', () => {
     render(<BlackoutDatesEditor value={dates} onChange={() => {}} />)
     const rows = screen.getAllByRole('row', { name: /blackout/i })
     expect(rows).toHaveLength(2)
-    expect(within(rows[0]).getByLabelText(/date/i)).toHaveValue('2027-11-25')
+    expect(within(rows[0]).getByRole('textbox', { name: /date/i })).toHaveValue('Nov 25, 2027')
     expect(within(rows[1]).getByLabelText(/note/i)).toHaveValue('Christmas')
     // The third header names the remove column for a screen reader only.
     expect(screen.getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Date', 'Note', 'Remove'])
@@ -37,8 +38,26 @@ describe('BlackoutDatesEditor', () => {
     const row = screen.getByRole('row', { name: /blackout/i })
     fireEvent.change(within(row).getByLabelText(/note/i), { target: { value: 'Christmas Day' } })
     expect(onChange).toHaveBeenLastCalledWith([{ date: '2027-12-25', note: 'Christmas Day' }])
-    fireEvent.click(within(row).getByRole('button', { name: /remove 2027-12-25/i }))
+    fireEvent.click(within(row).getByRole('button', { name: 'Remove Dec 25, 2027' }))
     expect(onChange).toHaveBeenLastCalledWith([])
+  })
+
+  it('a date typed into a middle row that re-sorts the list keeps the focus in that field (#2137)', () => {
+    function Owned() {
+      const [value, setValue] = useState<ProfileBlackoutDocument[]>([
+        { date: '2027-01-01', note: null }, { date: '2027-06-01', note: null }, { date: '2027-12-01', note: null },
+      ])
+      return <BlackoutDatesEditor value={value} onChange={setValue} />
+    }
+    render(<Owned />)
+    const middle = screen.getByRole('textbox', { name: 'Date, Jun 1, 2027' })
+    middle.focus()
+    fireEvent.change(middle, { target: { value: 'Dec 31, 2027' } })
+    fireEvent.keyDown(middle, { key: 'Enter' })
+    const boxes = screen.getAllByRole('row', { name: /blackout/i }).map((r) => within(r).getByRole('textbox', { name: /^date/i }))
+    expect(boxes.map((b) => (b as HTMLInputElement).value)).toEqual(['Jan 1, 2027', 'Dec 1, 2027', 'Dec 31, 2027'])
+    expect(boxes[2]).toBe(middle)
+    expect(document.activeElement).toBe(middle)
   })
 
   it('renders sixty dates as sixty rows', () => {

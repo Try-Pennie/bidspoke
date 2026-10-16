@@ -25,7 +25,8 @@ import { PartnerDeleteBox } from '@/components/partners/PartnerDeleteBox'
 import { mergeThreeWay, sameMergeValue, type MergeResult, type MergeSide, type PageHalves } from '@/lib/partner-page-merge'
 import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
 import { clickDeliveryConsequences } from '@/components/partners/buyer-profile/click-delivery-consequences'
-import { Button as UiButton, Field as UiField, NumberInput, Outcome, describedBy, type OutcomeState } from '@/components/ui/form'
+import { Button, ChoiceGroup, Field, NumberInput, Outcome, TextArea, TextInput, describedBy, type OutcomeState } from '@/components/ui/form'
+import { Toggle } from '@/components/ui/Toggle'
 import { documentToProfile, soldOnSwitchBlocked, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal, type StoredKind } from '@bidspoke/buyer-profile'
 import { UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
 
@@ -34,8 +35,6 @@ import { UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
 export { UNSAVED_CHANGES_MESSAGE }
 
 function uid() { return Math.random().toString(36).slice(2) }
-
-// ── Form field primitives ─────────────────────────────────────────────────────
 
 /**
  * What the page hands back for a saved partner (#2132, #2133): the row and the
@@ -106,55 +105,13 @@ function fieldErrorsOf(err: unknown): ProfileError[] {
   )
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <label className="mb-1 block text-xs font-medium text-gray-600">{label}</label>
-      {children}
-      {hint && <p className="mt-1 text-xs text-gray-500">{hint}</p>}
-    </div>
-  )
-}
-
-function Input({ id, value, onChange, placeholder, type = 'text', mono, describedBy }: {
-  id?: string
-  value: string | number
-  onChange: (v: string) => void
-  placeholder?: string
-  type?: string
-  mono?: boolean
-  describedBy?: string
-}) {
-  return (
-    <input
-      id={id}
-      aria-describedby={describedBy}
-      type={type}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      className={`w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark ${mono ? 'font-mono' : ''}`}
-    />
-  )
-}
-
-function Toggle({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark focus-visible:ring-offset-1 ${checked ? 'bg-p-blue-dark' : 'bg-gray-200'}`}
-    >
-      <span className="sr-only">{label}</span>
-      <span
-        aria-hidden="true"
-        className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow-sm ring-0 transition-transform duration-150 ${checked ? 'translate-x-4' : 'translate-x-0'}`}
-      />
-    </button>
-  )
-}
+/**
+ * The form keeps numbers as the text it loaded them as (partner-draft.ts parses
+ * them on save), so a number box reads and writes through these two: an empty
+ * box is '' and stays apart from 0.
+ */
+const asNumber = (text: string): number | null => (text.trim() === '' ? null : Number(text))
+const asText = (n: number | null): string => (n === null ? '' : String(n))
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -781,13 +738,9 @@ export default function PartnerForm({
           )}
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => { if (dirty && !window.confirm(UNSAVED_CHANGES_MESSAGE)) return; onCancel() }}
-            className="px-3 py-2 text-sm font-medium text-gray-500 hover:text-graphite"
-          >
+          <Button variant="secondary" onClick={() => { if (dirty && !window.confirm(UNSAVED_CHANGES_MESSAGE)) return; onCancel() }}>
             Cancel
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -822,54 +775,51 @@ export default function PartnerForm({
       <form onSubmit={handleSubmit} className="space-y-8">
 
         <Section title="Identity">
-          <Field label="Name" hint="Display name shown in the UI.">
-            <Input value={name} onChange={handleNameChange} placeholder="Tripoint" />
+          <Field id="partner-name" label="Name" hint="Display name shown in the UI.">
+            <TextInput id="partner-name" value={name} onChange={handleNameChange} placeholder="Tripoint" describedBy={describedBy('partner-name', true, false)} />
           </Field>
           {isNew && (
             <Field
+              id="partner-slug"
               label="Slug"
               hint="Lowercase identifier used in logs and workflow references. Cannot be changed after creation."
             >
-              <Input
+              <TextInput
+                id="partner-slug"
                 value={slug}
                 onChange={(v) => { setSlug(v); setSlugManuallyEdited(true) }}
                 placeholder="tripoint"
                 mono
+                describedBy={describedBy('partner-slug', true, false)}
               />
             </Field>
           )}
-          <Field label="Type" hint="Source partners send leads to Pennie. Buyer partners receive bids. Both does each, on one record.">
-            <div className="mt-1 inline-flex rounded-lg border border-gray-200 p-0.5">
-              {PARTNER_TYPES.map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  onClick={() => setPartnerType(t)}
-                  className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors duration-100 ${
-                    partnerType === t
-                      ? 'bg-p-blue-dark text-white'
-                      : 'text-gray-500 hover:text-graphite'
-                  }`}
-                >
-                  {partnerTypeLabel(t)}
-                </button>
-              ))}
-            </div>
-          </Field>
+          <div>
+            <ChoiceGroup
+              id="partner-type"
+              label="Type"
+              value={partnerType}
+              options={PARTNER_TYPES.map((t) => ({ value: t, label: partnerTypeLabel(t) }))}
+              onChange={setPartnerType}
+              describedBy="partner-type-hint"
+            />
+            <p id="partner-type-hint" className="mt-1 text-xs text-gray-500">Source partners send leads to Pennie. Buyer partners receive bids. Both does each, on one record.</p>
+          </div>
           <div className="flex items-center gap-6">
             {/* Relabelled from Priority (#1412, L118): the buyer profile's priority is
                 who is offered a lead first; this field only orders the partner list. */}
             {isBuyerPartner(partnerType) && (
-              <UiField id="partner-list-order" label="List order" hint="Orders the partner list. It does not affect who is offered a lead.">
+              <Field id="partner-list-order" label="List order" hint="Orders the partner list. It does not affect who is offered a lead.">
                 <NumberInput id="partner-list-order" value={priority === '' ? null : Number(priority)} onChange={(v) => setPriority(v === null ? '' : String(v))} step={1} describedBy={describedBy('partner-list-order', true, false)} />
-              </UiField>
+              </Field>
             )}
-            <Field label="Status">
+            <div>
+              <span className="mb-1 block text-xs font-medium text-gray-600">Status</span>
               <div className="flex items-center gap-2.5 pt-1">
-                <Toggle checked={isActive} onChange={setIsActive} label="Partner active" />
+                <Toggle id="partner-active" checked={isActive} onChange={setIsActive} label="Partner active" />
                 <span className="text-sm text-gray-700">{isActive ? 'Active' : 'Inactive'}</span>
               </div>
-            </Field>
+            </div>
           </div>
         </Section>
 
@@ -912,7 +862,7 @@ export default function PartnerForm({
           {bidConfigsLoadError && (
             <div role="alert" className="mt-4 flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
               <span className="flex-1">Could not load bid matrices. Try again.</span>
-              <UiButton variant="secondary" onClick={() => setBidConfigsAttempt((n) => n + 1)}>Try again</UiButton>
+              <Button variant="secondary" onClick={() => setBidConfigsAttempt((n) => n + 1)}>Try again</Button>
             </div>
           )}
           {resolverType === 'matrix' && partner && !bidConfigsLoadError && (
@@ -937,19 +887,20 @@ export default function PartnerForm({
 
         {isBuyerPartner(partnerType) && <Section title="Endpoints">
           {/* The labelled field with its error beside it (#1546): the buyer profile's click URL refusals name this field. */}
-          <UiField
+          <Field
             id="partner-click-url"
             label="Click URL"
             hint="Where a lead sold to this buyer lands. Exposed as {Slug}ClickUrl in the Constants node, and carried on every buyer selection sale; a buyer profile cannot be enabled without one."
             error={clickUrlError}
           >
-            <Input id="partner-click-url" value={clickUrl} onChange={setClickUrl} placeholder="https://partner.com/apply" describedBy={describedBy('partner-click-url', true, Boolean(clickUrlError))} />
-          </UiField>
+            <TextInput id="partner-click-url" value={clickUrl} onChange={setClickUrl} placeholder="https://partner.com/apply" describedBy={describedBy('partner-click-url', true, Boolean(clickUrlError))} />
+          </Field>
           <Field
+            id="partner-dedup-endpoint"
             label="Dedup endpoint"
             hint="Optional. Called before each bid to check if this lead has already been sold to this partner."
           >
-            <Input value={dedupEndpoint} onChange={setDedupEndpoint} placeholder="https://api.partner.com/dedup" />
+            <TextInput id="partner-dedup-endpoint" value={dedupEndpoint} onChange={setDedupEndpoint} placeholder="https://api.partner.com/dedup" describedBy={describedBy('partner-dedup-endpoint', true, false)} />
           </Field>
         </Section>}
 
@@ -978,11 +929,11 @@ export default function PartnerForm({
           <div className="grid grid-cols-2 gap-4">
             {/* Relabelled from Daily cap (#1412, L118): the buyer profile has its own
                 daily lead cap for buyer selection; this one bounds Partner Bid attempts. */}
-            <UiField id="partner-daily-attempt-cap" label="Daily attempt cap (bidding workflows)" hint="Max bid attempts per day through Partner Bid and Bid Group. Leave blank for unlimited.">
+            <Field id="partner-daily-attempt-cap" label="Daily attempt cap (bidding workflows)" hint="Max bid attempts per day through Partner Bid and Bid Group. Leave blank for unlimited.">
               <NumberInput id="partner-daily-attempt-cap" value={dailyCap === '' ? null : Number(dailyCap)} onChange={(v) => setDailyCap(v === null ? '' : String(v))} min={0} step={1} describedBy={describedBy('partner-daily-attempt-cap', true, false)} />
-            </UiField>
-            <Field label="Minimum bid ($)" hint="Reject bids below this amount. Leave blank to accept any bid down to $0. Set a positive amount (e.g. 0.01) to treat a $0 bid as a decline.">
-              <Input value={minBid} onChange={setMinBid} type="number" placeholder="0.00" />
+            </Field>
+            <Field id="partner-min-bid" label="Minimum bid ($)" hint="Reject bids below this amount. Leave blank to accept any bid down to $0. Set a positive amount (e.g. 0.01) to treat a $0 bid as a decline.">
+              <NumberInput id="partner-min-bid" value={asNumber(minBid)} onChange={(v) => setMinBid(asText(v))} placeholder="0.00" describedBy={describedBy('partner-min-bid', true, false)} />
             </Field>
           </div>
         </Section>}
@@ -995,43 +946,37 @@ export default function PartnerForm({
           <div className="space-y-1.5">
             {subAccountFloors.map((f, i) => (
               <div key={f.id} className="grid grid-cols-[1fr_120px_auto] items-center gap-2">
-                <input
+                <TextInput
+                  id={`floor-${f.id}-uuid`}
+                  aria-label={`Sub-account UUID, floor ${i + 1}`}
                   value={f.uuid}
-                  onChange={(e) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, uuid: e.target.value } : row))}
+                  onChange={(v) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, uuid: v } : row))}
                   placeholder="sub-account UUID"
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-xs text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
+                  mono
+                  className="text-xs"
                 />
-                <input
-                  value={f.bid}
-                  onChange={(e) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, bid: e.target.value } : row))}
-                  type="number"
-                  step="0.01"
+                <NumberInput
+                  id={`floor-${f.id}-bid`}
+                  aria-label={`Minimum bid, floor ${i + 1}`}
+                  value={asNumber(f.bid)}
+                  onChange={(v) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, bid: asText(v) } : row))}
+                  step={0.01}
                   placeholder="0.00"
-                  className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
                 />
-                <button
-                  type="button"
-                  onClick={() => setSubAccountFloors((prev) => prev.filter((_, j) => j !== i))}
-                  className="rounded p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-600"
-                  aria-label="Remove row"
-                >
-                  <X size={14} />
-                </button>
+                <Button variant="ghost" onClick={() => setSubAccountFloors((prev) => prev.filter((_, j) => j !== i))} aria-label="Remove row">
+                  <X size={14} aria-hidden="true" />
+                </Button>
               </div>
             ))}
-            <button
-              type="button"
-              onClick={() => setSubAccountFloors((prev) => [...prev, { id: uid(), uuid: '', bid: '' }])}
-              className="flex items-center gap-1.5 rounded-lg border border-dashed border-gray-300 px-3 py-1.5 text-xs text-gray-500 hover:border-gray-400 hover:text-graphite"
-            >
-              <Plus size={12} /> Add row
-            </button>
+            <Button variant="secondary" onClick={() => setSubAccountFloors((prev) => [...prev, { id: uid(), uuid: '', bid: '' }])} className="text-xs">
+              <Plus size={12} aria-hidden="true" /> Add row
+            </Button>
           </div>
         </Section>}
 
         {isBuyerPartner(partnerType) && <Section title="Circuit breaker">
           <div className="flex items-center gap-2.5">
-            <Toggle checked={circuitEnabled} onChange={setCircuitEnabled} label="Circuit breaker enabled" />
+            <Toggle id="partner-circuit-enabled" checked={circuitEnabled} onChange={setCircuitEnabled} label="Circuit breaker enabled" />
             <span className="text-sm text-gray-700">{circuitEnabled ? 'Enabled' : 'Disabled'}</span>
             <span className="text-gray-300">·</span>
             <p className="text-xs text-gray-500">
@@ -1041,14 +986,14 @@ export default function PartnerForm({
           <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${circuitEnabled ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
             <div className="min-h-0 overflow-hidden">
               <div className="grid grid-cols-3 gap-4 pt-1">
-                <Field label="Error threshold" hint="Errors before pausing.">
-                  <Input value={circuitThreshold} onChange={setCircuitThreshold} type="number" placeholder="5" />
+                <Field id="partner-circuit-threshold" label="Error threshold" hint="Errors before pausing.">
+                  <NumberInput id="partner-circuit-threshold" value={asNumber(circuitThreshold)} onChange={(v) => setCircuitThreshold(asText(v))} step={1} placeholder="5" describedBy={describedBy('partner-circuit-threshold', true, false)} />
                 </Field>
-                <Field label="Window (seconds)" hint="Time period to count errors in.">
-                  <Input value={circuitWindow} onChange={setCircuitWindow} type="number" placeholder="60" />
+                <Field id="partner-circuit-window" label="Window (seconds)" hint="Time period to count errors in.">
+                  <NumberInput id="partner-circuit-window" value={asNumber(circuitWindow)} onChange={(v) => setCircuitWindow(asText(v))} step={1} placeholder="60" describedBy={describedBy('partner-circuit-window', true, false)} />
                 </Field>
-                <Field label="Pause duration (seconds)" hint="How long to wait before retrying.">
-                  <Input value={circuitCooldown} onChange={setCircuitCooldown} type="number" placeholder="300" />
+                <Field id="partner-circuit-cooldown" label="Pause duration (seconds)" hint="How long to wait before retrying.">
+                  <NumberInput id="partner-circuit-cooldown" value={asNumber(circuitCooldown)} onChange={(v) => setCircuitCooldown(asText(v))} step={1} placeholder="300" describedBy={describedBy('partner-circuit-cooldown', true, false)} />
                 </Field>
               </div>
             </div>
@@ -1071,8 +1016,8 @@ export default function PartnerForm({
             Bid Win Confirmation. Confirmations slower than this are rejected (reject due to latency). Leave
             blank to require a node-level override instead.
           </p>
-          <Field label="Confirmation window (ms)" hint="e.g. 5000 = 5 seconds.">
-            <Input value={confirmationWindowMs} onChange={setConfirmationWindowMs} type="number" placeholder="(none)" />
+          <Field id="partner-confirmation-window" label="Confirmation window (ms)" hint="e.g. 5000 = 5 seconds.">
+            <NumberInput id="partner-confirmation-window" value={asNumber(confirmationWindowMs)} onChange={(v) => setConfirmationWindowMs(asText(v))} step={1} placeholder="(none)" describedBy={describedBy('partner-confirmation-window', true, false)} />
           </Field>
         </Section>
 
@@ -1080,16 +1025,16 @@ export default function PartnerForm({
           <p className="text-xs text-gray-500">
             Used by the Constants node in bidding workflows to populate sell-off offer fields for this partner.
           </p>
-          <Field label="Sell-off offer title">
-            <Input value={sellOffOfferTitle} onChange={setSellOffOfferTitle} placeholder="Get up to $50,000 in your account" />
+          <Field id="partner-sell-off-title" label="Sell-off offer title">
+            <TextInput id="partner-sell-off-title" value={sellOffOfferTitle} onChange={setSellOffOfferTitle} placeholder="Get up to $50,000 in your account" />
           </Field>
-          <Field label="Sell-off offer details">
-            <textarea
+          <Field id="partner-sell-off-details" label="Sell-off offer details">
+            <TextArea
+              id="partner-sell-off-details"
               value={sellOffOfferDetails}
-              onChange={(e) => setSellOffOfferDetails(e.target.value)}
-              placeholder="Personal loans from $5,000–$100,000 with competitive rates."
+              onChange={setSellOffOfferDetails}
+              placeholder="Personal loans from $5,000 to $100,000 with competitive rates."
               rows={3}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
             />
           </Field>
         </Section>}
@@ -1103,27 +1048,22 @@ export default function PartnerForm({
               pendingUuids.map((uuid, i) => (
                 <div key={i} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
                   <span className="flex-1 truncate font-mono text-xs text-graphite">{uuid}</span>
-                  <button
-                    type="button"
-                    onClick={() => setPendingUuids((prev) => prev.filter((_, j) => j !== i))}
-                    aria-label="Remove UUID"
-                    className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-600"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
+                  <Button variant="ghost" onClick={() => setPendingUuids((prev) => prev.filter((_, j) => j !== i))} aria-label="Remove UUID">
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  </Button>
                 </div>
               ))
             ) : uuidsLoadError ? (
               <div role="alert" className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
                 <span className="flex-1">Could not load sub-account IDs. Try again.</span>
-                <UiButton variant="secondary" onClick={() => setUuidsAttempt((n) => n + 1)}>Try again</UiButton>
+                <Button variant="secondary" onClick={() => setUuidsAttempt((n) => n + 1)}>Try again</Button>
               </div>
             ) : (
               uuids.map((u) => (
                 <div key={u.id} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
                   <span className="flex-1 truncate font-mono text-xs text-graphite">{u.uuid}</span>
-                  <button
-                    type="button"
+                  <Button
+                    variant="ghost"
                     aria-label="Remove UUID"
                     disabled={removingUuidId === u.id}
                     onClick={async () => {
@@ -1138,24 +1078,27 @@ export default function PartnerForm({
                         setRemovingUuidId(null)
                       }
                     }}
-                    className="rounded p-1 text-gray-500 hover:bg-gray-200 hover:text-gray-600 disabled:opacity-50"
                   >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
+                    <X className="h-3.5 w-3.5" aria-hidden="true" />
+                  </Button>
                 </div>
               ))
             )}
           </div>
           <div className="flex gap-2">
-            <input
+            <TextInput
+              id="partner-new-uuid"
+              aria-label="New sub-account UUID"
               value={newUuid}
-              onChange={(e) => { setNewUuid(e.target.value); setUuidError(null) }}
+              onChange={(v) => { setNewUuid(v); setUuidError(null) }}
               placeholder="Enter UUID"
-              className="flex-1 rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
+              mono
+              className="flex-1"
             />
-            <button
-              type="button"
-              disabled={!newUuid.trim() || addingUuid}
+            <Button
+              variant="primary"
+              disabled={!newUuid.trim()}
+              busy={addingUuid}
               onClick={async () => {
                 if (!newUuid.trim()) return
                 if (isNew) {
@@ -1176,11 +1119,10 @@ export default function PartnerForm({
                   setAddingUuid(false)
                 }
               }}
-              className="flex items-center gap-1.5 rounded-lg bg-p-blue-dark px-3 py-2 text-sm font-medium text-white hover:bg-[#155E99] disabled:opacity-50"
             >
-              {addingUuid ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              {!addingUuid && <Plus className="h-4 w-4" aria-hidden="true" />}
               Add
-            </button>
+            </Button>
           </div>
           {uuidError && <p className="text-xs text-red-600">{uuidError}</p>}
         </Section>}
@@ -1196,14 +1138,14 @@ export default function PartnerForm({
                 <p className="text-sm font-medium text-gray-800">Transient error alerts</p>
                 <p className="text-xs text-gray-500">Network failures, timeouts, 429, 502–504</p>
               </div>
-              <Toggle checked={alertTransient} onChange={setAlertTransient} label="Transient error alerts" />
+              <Toggle id="partner-alert-transient" checked={alertTransient} onChange={setAlertTransient} label="Transient error alerts" />
             </div>
             <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
               <div>
                 <p className="text-sm font-medium text-gray-800">Permanent error alerts</p>
                 <p className="text-xs text-gray-500">4xx errors, auth failures, bad responses</p>
               </div>
-              <Toggle checked={alertPermanent} onChange={setAlertPermanent} label="Permanent error alerts" />
+              <Toggle id="partner-alert-permanent" checked={alertPermanent} onChange={setAlertPermanent} label="Permanent error alerts" />
             </div>
           </div>
         </Section>}
@@ -1215,24 +1157,23 @@ export default function PartnerForm({
               {deliveryConfirm.map((line) => <li key={line} className="break-all">{line}</li>)}
             </ul>
             <div className="flex items-center gap-2">
-              <UiButton variant="primary" onClick={() => { void submit(true) }}>Save these changes</UiButton>
-              <UiButton variant="secondary" onClick={() => setDeliveryConfirm(null)}>Keep editing</UiButton>
+              <Button variant="primary" onClick={() => { void submit(true) }}>Save these changes</Button>
+              <Button variant="secondary" onClick={() => setDeliveryConfirm(null)}>Keep editing</Button>
             </div>
           </div>
         )}
 
         <div className="flex items-center gap-3 border-t border-gray-100 pt-6">
-          <button
+          <Button
+            variant="primary"
             type="submit"
             disabled={saveState === 'saving' || !name}
-            className={`flex min-w-[130px] items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium text-white transition-colors duration-150 disabled:opacity-50 ${
-              saveState === 'saved' ? 'bg-green-600 hover:bg-green-700' : 'bg-p-blue-dark hover:bg-[#155E99]'
-            }`}
+            className={`min-w-[130px] ${saveState === 'saved' ? 'bg-green-700 hover:bg-green-700' : ''}`.trim()}
           >
-            {saveState === 'saving' && <><Loader2 className="h-4 w-4 animate-spin" /> Saving…</>}
-            {saveState === 'saved'  && <><Check  className="h-4 w-4" /> Saved</>}
-            {saveState === 'idle'   && <><Save   className="h-4 w-4" /> {isNew ? 'Create partner' : 'Save changes'}</>}
-          </button>
+            {saveState === 'saving' && <><Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Saving…</>}
+            {saveState === 'saved'  && <><Check  className="h-4 w-4" aria-hidden="true" /> Saved</>}
+            {saveState === 'idle'   && <><Save   className="h-4 w-4" aria-hidden="true" /> {isNew ? 'Create partner' : 'Save changes'}</>}
+          </Button>
           <Outcome state={saveOutcome} />
           {/*
             Saved, but a stored copy of the old version could not be refreshed
@@ -1243,13 +1184,9 @@ export default function PartnerForm({
             <p role="status" className="text-xs text-amber-800">{copyWarningText}</p>
           )}
           {undo && (
-            <button
-              type="button"
-              onClick={handleUndo}
-              className="text-xs text-gray-500 transition-colors hover:text-gray-700"
-            >
+            <Button variant="ghost" onClick={handleUndo}>
               Undo · {undoSecondsLeft}s
-            </button>
+            </Button>
           )}
           {dirty && saveState !== 'saving' && (
             <span className="flex items-center gap-1.5 text-xs font-medium text-amber-600">
