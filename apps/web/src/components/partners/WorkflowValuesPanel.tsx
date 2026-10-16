@@ -90,14 +90,14 @@ function ValueSectionView({ section, read, slug, isActive, partnerName, control 
           <p className="text-sm text-gray-700">{`${partnerName} is ${isActive ? 'active' : 'inactive'}, so workflows read ${isActive ? 'true' : 'false'}. Active is set on the Partner tab.`}</p>
         )}
         {control === undefined && section.key !== 'active' && section.values.map((v) => (
-          <p key={v.constant_name} className="break-all font-mono text-xs text-graphite">{valueText(v.value)}</p>
+          <p key={v.constant_name} className="font-mono text-xs text-graphite [overflow-wrap:anywhere]">{valueText(v.value)}</p>
         ))}
         {answer && (
           <div className="space-y-1 text-sm text-gray-700">
             {accessLines(section.values, slug).map((l) => (
               <p key={l.code}>
-                {`${l.lead} `}<code className="break-all font-mono text-xs text-graphite">{l.code}</code>
-                {' in a Code node and '}<code className="break-all font-mono text-xs text-graphite">{l.template}</code>
+                {`${l.lead} `}<code className="font-mono text-xs text-graphite [overflow-wrap:anywhere]">{l.code}</code>
+                {' in a Code node and '}<code className="font-mono text-xs text-graphite [overflow-wrap:anywhere]">{l.template}</code>
                 {` in a template${l.tail || '.'}`}
               </p>
             ))}
