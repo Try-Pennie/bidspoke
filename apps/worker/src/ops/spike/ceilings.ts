@@ -278,8 +278,9 @@ async function runProbe(arm: SpikeArm, env: SpikeEnv, rt: ProbeRuntime): Promise
       const startedAt = rt.now()
       // Not awaited, on purpose: whether the callee outlives this return is the
       // measurement. The callee runs the ordinary wall probe (wallCapMs), far
-      // longer than this caller lives, so its last progress line dates its end. The handler is attached at once so a late rejection is a
-      // logged outcome, never an unhandled one (L749).
+      // longer than this caller lives, so its last progress line dates its end.
+      // Both handlers are attached at once, so a late rejection is a logged
+      // outcome, never an unhandled one (L749).
       call('wall').then(
         (result) => emit(rt, { stage: 'detached_callee_finished', probe: arm.probe, nonce: arm.nonce, result }),
         (err) => emit(rt, { stage: 'detached_callee_failed', probe: arm.probe, nonce: arm.nonce, error: errorText(err) }),
