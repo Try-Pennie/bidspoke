@@ -489,6 +489,23 @@ describe('live mode', () => {
     expect(h.sales).toEqual([])
   })
 
+  // #2111: the collections cap judges an offer buyer here too, so a cap set on
+  // any profile is never silently ignored. The template below points at the
+  // debt itself, so the lead's collections are 100 percent of its debt.
+  it('a collections cap refuses an offer buyer over it, and passes one under it, as collections_above_max', async () => {
+    const asCollections = { collections: '{{steps.prospect_trades.output.body.tradeCalculations.engineDebt}}' }
+    const h = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1, { collectionsMaxPercent: 75 }), buyer('p-2', 'liberty', 2, { collectionsMaxPercent: 100 })) })
+    const r = await run(h, ctx(), node(asCollections))
+    expect(out(r).considered.map((c) => [c.partner, c.reason ?? c.outcome])).toEqual([['tripoint', 'collections_above_max'], ['liberty', 'sold']])
+    expect(h.buyerCalls.map((c) => c.slug)).toEqual(['liberty'])
+  })
+
+  it('a collections cap on a node with no collections template refuses that buyer as collections_not_wired, and sells the next', async () => {
+    const h = harness({ profiles: snapshot(buyer('p-1', 'tripoint', 1, { collectionsMaxPercent: 75 }), buyer('p-2', 'liberty', 2)) })
+    const r = await run(h)
+    expect(out(r).considered.map((c) => [c.partner, c.reason ?? c.outcome])).toEqual([['tripoint', 'collections_not_wired'], ['liberty', 'sold']])
+  })
+
   // #1541, #1543: a click sold buyer is sold by buyer_click_check and the click
   // workflow, never by this node. It is left out of the considered list rather
   // than shown as "No pricing for this lead source", which was false: it has no

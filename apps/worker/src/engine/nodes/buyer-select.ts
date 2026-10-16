@@ -143,6 +143,12 @@ export interface BuyerSelectConfig {
   state?: string
   debt?: string
   loan_amount?: string
+  /**
+   * The lead's collections balance (#2111), judged only against a profile that
+   * caps collections. Unset or blank, a capped buyer is out as
+   * collections_not_wired on every lead.
+   */
+  collections?: string
   sale_payload: SalePayloadSpec
   /** Ignored, and reported as such: the node runs once whatever the definition says. */
   retries?: number
@@ -547,6 +553,8 @@ class Run {
       state: this.resolveMaybe(this.config.state).value,
       debt: this.resolveMaybe(this.config.debt).value,
       loanAmount: this.resolveMaybe(this.config.loan_amount).value,
+      collections: this.resolveMaybe(this.config.collections).value,
+      collectionsWired: typeof this.config.collections === 'string' && this.config.collections.trim() !== '',
     }
     this.out.lead_state = parseUsState(lead.state)
     this.out.lead_debt = recordedAmount(lead.debt)

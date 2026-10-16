@@ -28,7 +28,7 @@ import { pickupSentence } from '@/lib/bidding-pickup'
 
 const partner: Partner = {
   id: 'p1', organization_id: 'org-1', name: 'M1', slug: 'm1', api_endpoint: null, cf_secret_key: null, daily_cap: null, min_bid: null,
-  bid_formula: null, bid_resolver_type: 'api', bid_resolver_config: {}, outbound_field_mapping: null, bid_mode: 'ping_only',
+  bid_formula: null, bid_resolver_type: 'api', bid_resolver_config: {}, outbound_field_mapping: null,
   bid_comparison_source: 'auto', extra_extraction: null, last_probe_response: null, dedup_endpoint: null, response_classification: null,
   alert_config: null, circuit_error_threshold: 5, circuit_window_seconds: 60, circuit_cooldown_seconds: 300, circuit_enabled: true,
   confirmation_window_ms: null, is_active: true, priority: 0, sell_off_offer_title: null, sell_off_offer_details: null, click_url: null,
@@ -84,12 +84,12 @@ describe('a versioned save of only what changed (#2132)', () => {
     expect(versioning.expected_profile_version).toBeNull()
   })
 
-  it('never sends a field the person did not touch, so a stored ping_only bid mode is left alone', async () => {
+  it('never sends a field the person did not touch', async () => {
     const onSave = renderForm()
     rename()
     save()
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
-    expect('bid_mode' in onSave.mock.calls[0][0]).toBe(false)
+    expect(Object.keys(onSave.mock.calls[0][0])).toEqual(['name'])
   })
 
   it('the next save names the version the last one produced, and mints a new save id', async () => {

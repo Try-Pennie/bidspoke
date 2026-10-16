@@ -4,17 +4,17 @@ import { cors } from 'hono/cors'
 import webhooks from './routes/webhooks'
 import shadow from './routes/shadow'
 import api from './routes/api/index'
-import { createSupabaseClient } from './lib/supabase'
+import { createScheduledSupabaseClient } from './lib/scheduled-slack'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runBidRecordingCoverageCheck } from './lib/bid-recording-coverage'
 import { runTripointRevenueFillForEnv } from './lib/tripoint-revenue-fill'
-import { runVolumeCliffCheck, readLastGoodSlackConnections } from './lib/volume-cliff'
+import { runVolumeCliffCheck } from './lib/volume-cliff'
 import { runBuyerSaleDrainForEnv, BUYER_SALE_DRAIN_JOB } from './lib/buyer-sale-drain'
 import { runBuyerSalesChecksForEnv, BUYER_SALES_CHECKS_JOB } from './lib/buyer-sales-checks'
 import { runClickPathChecksForEnv, CLICK_PATH_CHECKS_JOB } from './lib/click-path-checks'
 import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB, EVERY_ORGANIZATION } from './lib/buyer-select-parity'
 import { runEngineScriptDriftForEnv, ENGINE_SCRIPT_DRIFT_JOB } from './lib/engine-script-drift'
-import { getSlackConnection, sendGroupedRecoveryAlert, sendPartnerPageLiveAlert, sendTitledAlert } from './lib/slack'
+import { sendGroupedRecoveryAlert, sendPartnerPageLiveAlert, sendTitledAlert } from './lib/slack'
 import { makeAlertClaims, raceDeadline } from './lib/alert-claim'
 import { runCronTickOnce } from './lib/cron-once'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
@@ -47,6 +47,7 @@ import { recordAndCheckBranchSkew } from './lib/strand-branch-skew'
 import { runUnconfirmedWriteSweepForEnv, UNCONFIRMED_WRITE_SWEEP_JOB } from './lib/unconfirmed-write-sweep'
 import { runSalesforceReadBackForEnv, checkSalesforceReadBackLivenessForEnv, SF_READ_BACK_JOB } from './lib/salesforce-read-back'
 import { runWritebackBacklogCheckForEnv, WRITEBACK_BACKLOG_JOB } from './lib/writeback-backlog'
+import { runWritebackDrainForEnv, WRITEBACK_DRAIN_JOB } from './lib/writeback-drain'
 import { readAnswerJournal } from './engine/unconfirmed-writes'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
@@ -162,7 +163,9 @@ export const MINUTE_JOB_DEADLINE_MS = 50_000
 const scheduledJobs = {
   /** Starts every job the cron names and returns their work, to be awaited. */
   start(event: ScheduledEvent, env: Env, platformCtx: ExecutionContext, timer?: TickTimer): Promise<unknown>[] {
-    const supabase = createSupabaseClient(env)
+    // One client for every job this tick starts, registered so each Slack lookup
+    // on it is bounded and falls back to the saved copy (#1303, scheduled-slack.ts).
+    const supabase = createScheduledSupabaseClient(env, (p) => platformCtx.waitUntil(p))
     // Every job's work is tracked, so once it has all settled the stored copies
     // any of them served or refused (#1848) are counted, in one write.
     const work: Promise<unknown>[] = []
@@ -776,8 +779,7 @@ const scheduledJobs = {
               probe: (target) => fetchProbe(target),
               resolveSlack: () => resolveSlackForEveryOrg({
                 supabase,
-                getConnection: getSlackConnection,
-                lastGood: () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
+                use: 'tell-only',
                 log: (line) => console.error(line),
                 logPrefix: '[partner-reachability]',
               }),
@@ -813,8 +815,7 @@ const scheduledJobs = {
                   : Promise.resolve({ kind: 'failed' as const, reason: 'SUPABASE_URL is not a URL the metrics feed can be built from' }),
                 resolveSlack: () => resolveSlackForEveryOrg({
                   supabase,
-                  getConnection: getSlackConnection,
-                  lastGood: () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
+                  use: 'tell-only',
                   log: (line) => console.error(line),
                   logPrefix: '[database-memory]',
                 }),
@@ -845,8 +846,7 @@ const scheduledJobs = {
               claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
               resolveSlack: () => resolveSlackForEveryOrg({
                 supabase,
-                getConnection: getSlackConnection,
-                lastGood: () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
+                use: 'tell-only',
                 log: (line) => console.error(line),
                 logPrefix: '[partner-page-monitor]',
               }),
@@ -875,8 +875,7 @@ const scheduledJobs = {
               claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
               resolveSlack: () => resolveSlackForEveryOrg({
                 supabase,
-                getConnection: getSlackConnection,
-                lastGood: () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
+                use: 'tell-only',
                 log: (line) => console.error(line),
                 logPrefix: '[incident-drain]',
               }),
@@ -1016,7 +1015,6 @@ const scheduledJobs = {
             kv: env.IDEMPOTENCY,
             copies: env.WORKFLOW_CACHE,
             supabase,
-            secretKeys: secretKeys(env),
             claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
             appUrl: env.APP_URL,
             sweep,
@@ -1084,6 +1082,24 @@ const scheduledJobs = {
             })
             .catch((e) => console.error(`[${SF_READ_BACK_JOB}] read back failed:`, e)),
           SF_READ_BACK_JOB,
+        ),
+      )
+      // Resends the Salesforce writes stored after they failed with an answer
+      // (#468): at most twice, oldest first per record, holding while the
+      // bulkhead is full and stopping at the first call Salesforce does not
+      // answer. Both stamps (L514); the minute heartbeat check reads them.
+      minuteJob('writeback-drain',
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, WRITEBACK_DRAIN_JOB)
+            .catch((e) => console.error(`[${WRITEBACK_DRAIN_JOB}] heartbeat write failed:`, e))
+            .then(() => runWritebackDrainForEnv(supabase, env))
+            .then((s) => {
+              if (s.listed > 0 || s.alerts > 0 || s.alert_failures > 0) {
+                console.log(`[${WRITEBACK_DRAIN_JOB}] listed=${s.listed} replayed=${s.replayed} refused=${s.refused} abandoned=${s.abandoned} moved=${s.moved} retrying=${s.retrying} waiting=${s.waiting} skipped=${s.skipped} deferred=${s.deferred} unread=${s.unread} alerts=${s.alerts} alert_failures=${s.alert_failures}${s.held ? ` held=${s.held}` : ''}${s.stopped ? ` stopped=${s.stopped}` : ''}`)
+              }
+            })
+            .catch((e) => console.error(`[${WRITEBACK_DRAIN_JOB}] drain failed:`, e)),
+          WRITEBACK_DRAIN_JOB,
         ),
       )
       // Whether that read back is still finishing runs while writes wait for it.

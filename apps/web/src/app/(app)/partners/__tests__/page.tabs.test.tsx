@@ -86,6 +86,8 @@ describe('the partner list (#2137)', () => {
     const props = formProps.mock.calls.at(-1)![0] as { onProblemChange: (b: boolean) => void }
     act(() => props.onProblemChange(true))
     expect(container.querySelectorAll('[data-problem-mark]')).toHaveLength(2)
+    // True whether the problem marks a tab or sits at page level (an off page field like List order).
+    expect(screen.getByRole('button', { name: /^Tripoint/ })).toHaveAccessibleName('TripointThis partner has a problem: see the form.')
   })
 })
 

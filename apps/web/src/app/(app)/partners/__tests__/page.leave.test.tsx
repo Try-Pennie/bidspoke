@@ -42,7 +42,7 @@ import type { Partner } from '@/lib/api'
 
 const row = (id: string, name: string): Partner => ({
   id, organization_id: 'org-1', name, slug: name.toLowerCase(), api_endpoint: null, cf_secret_key: null, daily_cap: null, min_bid: null,
-  bid_formula: null, bid_resolver_type: 'formula', bid_resolver_config: {}, outbound_field_mapping: null, bid_mode: 'commit',
+  bid_formula: null, bid_resolver_type: 'formula', bid_resolver_config: {}, outbound_field_mapping: null,
   bid_comparison_source: 'auto', extra_extraction: null, last_probe_response: null, dedup_endpoint: null, response_classification: null,
   alert_config: null, circuit_error_threshold: 5, circuit_window_seconds: 60, circuit_cooldown_seconds: 300, circuit_enabled: true,
   confirmation_window_ms: null, is_active: true, priority: 0, sell_off_offer_title: null, sell_off_offer_details: null, click_url: null,

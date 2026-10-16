@@ -37,7 +37,7 @@ import type { MarkSentResult, Partner, PartnerBody, PartnerPageSaveRequest } fro
 const partner: Partner = {
   id: 'p1', organization_id: 'org-1', name: 'Tripoint', slug: 'tripoint',
   api_endpoint: 'https://tripoint.example/leads', cf_secret_key: null, daily_cap: 250, min_bid: null, bid_formula: null,
-  bid_resolver_type: 'api', bid_resolver_config: {}, outbound_field_mapping: null, bid_mode: 'commit', bid_comparison_source: 'auto',
+  bid_resolver_type: 'api', bid_resolver_config: {}, outbound_field_mapping: null, bid_comparison_source: 'auto',
   extra_extraction: null, last_probe_response: null, dedup_endpoint: null,
   response_classification: { rejection_signals: [{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }] },
   accept_signals: [{ field: 'ok', equals: true }],
