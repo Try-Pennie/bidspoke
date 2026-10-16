@@ -531,6 +531,23 @@ BEGIN
     RAISE EXCEPTION 'a fire queued behind a running queue schedule was refused';
   END IF;
   IF (SELECT count(*) FROM public.claim_run_requests('t2', 10, 10, 60)) <> 0 THEN RAISE EXCEPTION 'a queue schedule ran two at once'; END IF;
+
+  -- The claimed run's lease lapses before it starts while a later fire holds the
+  -- one waiting slot: the sweep must requeue it without tripping the overlap
+  -- index, or one such row fails every sweep after it (found by the lessons review).
+  -- now() is one instant in this transaction, so the first run is dated a minute
+  -- earlier, as it would be: otherwise the order falls to a random id tie break.
+  UPDATE public.run_requests SET claim_expires_at = now() - interval '1 second', created_at = now() - interval '1 minute' WHERE id = c.run_request_id;
+  PERFORM public.sweep_expired_leases(100);
+  IF NOT EXISTS (SELECT 1 FROM public.run_requests WHERE id = c.run_request_id AND status = 'queued' AND resume_reason = 'retry') THEN
+    RAISE EXCEPTION 'the lapsed queue run was left as %', (SELECT row_to_json(x) FROM public.run_requests x WHERE id = c.run_request_id);
+  END IF;
+  -- And it goes first, still one at a time.
+  SELECT * INTO r FROM public.claim_run_requests('t3', 10, 10, 60);
+  IF r.run_request_id IS DISTINCT FROM c.run_request_id THEN RAISE EXCEPTION 'the requeued first run lost its place to the later fire'; END IF;
+  IF (SELECT count(*) FROM public.run_requests WHERE workflow_id = v_queue AND status IN ('claimed', 'running')) <> 1 THEN
+    RAISE EXCEPTION 'a queue schedule had two runs in flight after a requeue';
+  END IF;
   INSERT INTO re_cases VALUES ('overlap: skip refuses a second active run, queue holds one waiting and runs one at a time');
 END
 $do$;

@@ -721,7 +721,14 @@ BEGIN
     UPDATE public.run_requests r
     SET status = v_status, status_reason = v_reason, claim_expires_at = NULL, claim_token = NULL,
         lease_requeues = r.lease_requeues + CASE WHEN v_run.status = 'claimed' AND v_queue THEN 1 ELSE 0 END,
-        resume_reason = CASE WHEN v_run.status = 'running' AND v_queue THEN 'retry' ELSE r.resume_reason END,
+        -- A run put back in the queue is no longer a first start: it keeps its
+        -- reason (a continuation stays one) or becomes a retry. Never NULL, or an
+        -- overlap 'queue' workflow whose waiting slot a later fire now holds trips
+        -- run_requests_overlap_queue_idx, and that one row fails every sweep.
+        resume_reason = CASE
+          WHEN v_queue AND v_run.status = 'running' THEN 'retry'
+          WHEN v_queue THEN coalesce(r.resume_reason, 'retry')
+          ELSE r.resume_reason END,
         not_before = CASE WHEN v_queue THEN v_now ELSE r.not_before END,
         last_error = CASE WHEN v_run.status = 'running' THEN 'lease expired' ELSE r.last_error END,
         state_version = r.state_version + 1, updated_at = v_now,
