@@ -248,6 +248,21 @@ export const CRON_JOBS: CronJob[] = [
       'a write that timed out after a lead was answered is never read back, so one that never landed is never reported as lost and one that landed is never cleared (#1880)',
   },
   {
+    id: 'database-reachability',
+    label: 'Database reachability probe',
+    triggerCron: '* * * * *',
+    // 1 minute cadence, 9 minutes slack, matching the other minute jobs. It is
+    // also the writer of the saved Slack copy (#2061), so while it is dark the
+    // copy grows old and the database page names that age.
+    staleMs: 10 * MIN,
+    // One read bounded at 5 s, one KV write of the copy, and at most a page or
+    // an all-clear per organization.
+    maxRunMs: 50 * 1000,
+    completionDroughtMs: 10 * MIN,
+    dependents:
+      'the saved Slack copy every outage alert is posted from stops being refreshed, the database probe stops measuring, and the database unreachable all-clear cannot be sent (#2061)',
+  },
+  {
     id: 'salesforce-read-back',
     label: 'Salesforce read back',
     triggerCron: '* * * * *',
