@@ -81,8 +81,11 @@ describe('the scheduled handler\'s client is the registered one (#1303)', () => 
 
   it('builds the tick\'s client with createScheduledSupabaseClient and no other client', () => {
     expect(start).toBeGreaterThan(-1)
-    // With or without options (the reachability report, #2061).
-    expect(body).toMatch(/const supabase = createScheduledSupabaseClient\(env[,)]/)
+    // Handed the PLATFORM's waitUntil (#2063): a Better Stack page raised by a
+    // lookup is kept alive past its job, but never joins the tick's own job list
+    // (handOver), which the tick waits on, so a slow page cannot hold a tick up.
+    // Options may follow (the reachability report, #2061).
+    expect(body).toMatch(/const supabase = createScheduledSupabaseClient\(env, \(p\) => platformCtx\.waitUntil\(p\)[,)]/)
     expect(body).not.toMatch(/createSupabaseClient\(/)
   })
 
@@ -90,6 +93,6 @@ describe('the scheduled handler\'s client is the registered one (#1303)', () => 
   // owner is told by. Unwired, a stall only a Slack lookup noticed is reported
   // to nobody, and no test of the owner would see it.
   it('reports the first failed read of a tick to the database reachability owner', () => {
-    expect(body).toMatch(/createScheduledSupabaseClient\(env, \{\s*onUnreachable:[\s\S]{0,200}?reportDatabaseUnreachable\([^,]+, \{ source: 'scheduled-read'/)
+    expect(body).toMatch(/createScheduledSupabaseClient\(env, \(p\) => platformCtx\.waitUntil\(p\), \{\s*onUnreachable:[\s\S]{0,200}?reportDatabaseUnreachable\([^,]+, \{ source: 'scheduled-read'/)
   })
 })

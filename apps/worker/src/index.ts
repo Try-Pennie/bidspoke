@@ -185,8 +185,10 @@ const scheduledJobs = {
     }
     // One client for every job this tick starts, registered so each Slack lookup
     // on it is bounded and falls back to the saved copy (#1303, scheduled-slack.ts),
-    // and so its first failed read is reported to the owner.
-    const supabase = createScheduledSupabaseClient(env, {
+    // and so its first failed read is reported to the owner. A Better Stack page
+    // raised by a lookup is handed to the platform's waitUntil, never the tick's
+    // job list (#2063); the owner's report is a timed job like any other.
+    const supabase = createScheduledSupabaseClient(env, (p) => platformCtx.waitUntil(p), {
       onUnreachable: (f) =>
         handOver(
           reportDatabaseUnreachable(reachability, { source: 'scheduled-read', what: f.what, error: `${f.how}: ${f.detail}` })
