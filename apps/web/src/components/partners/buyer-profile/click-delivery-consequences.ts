@@ -1,9 +1,10 @@
 /**
  * What saving a click delivery change does, in the domain's words (#1639, L180):
  * derived from the two deliveries themselves, state by state through the same
- * pickClickRoute buyer_click_send uses, so the confirmation says exactly where
- * each click will go instead of where it went, and says nothing for an edit that
- * moves no click (a route renamed, states reordered).
+ * pickClickRoute buyer_click_send uses, so the partners page save bar (PM-6,
+ * #2138) says, beside the one Save, exactly where each click will go instead of
+ * where it went, and says nothing for an edit that moves no click (a route
+ * renamed, states reordered).
  */
 import { US_STATES, clickDeliveryFromDocument, pickClickRoute, type ClickDeliveryDocument } from '@bidspoke/buyer-profile'
 
