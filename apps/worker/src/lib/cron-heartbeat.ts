@@ -53,7 +53,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { MINUTE_ALERT_CLAIM_TTL_SECONDS, minuteAlertClaimKey, orgIdsToTell, postMinutePage, slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
-import { scheduledSlackFor, type BoundableQuery } from './scheduled-slack'
+import { scheduledSlackFor } from './scheduled-slack'
 import { sendCronHeartbeatAlert, sendCronHeartbeatRecoveryAlert } from './slack'
 import { BACKOFF_STEPS_SECONDS, clearCondition, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf, type Recurrence, type StandingCondition } from './alert-backoff'
 import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
@@ -558,7 +558,7 @@ export async function lastFinishedRun(supabase: SupabaseClient, jobId: string): 
     const scheduled = scheduledSlackFor(supabase)
     let data: unknown
     if (scheduled) {
-      const read = await scheduled.read(`cron-heartbeat job_runs for ${jobId}`, query as unknown as BoundableQuery<unknown>)
+      const read = await scheduled.read(`cron-heartbeat job_runs for ${jobId}`, query)
       if (read.kind === 'failed') {
         console.error(`[cron-heartbeat] job_runs for ${jobId} not read (${read.how}: ${read.detail}), so the verdict stands without it`)
         return null

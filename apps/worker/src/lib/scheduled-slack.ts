@@ -31,6 +31,7 @@ import { createSupabaseClient } from './supabase'
 import { secretKeys, type SecretKeyInput } from './secret-crypto'
 import { readSlackCopy, type SlackCopyRead } from './slack-copy'
 import { formatErr } from './format-error'
+import { attachOutageNotice } from './outage-notice'
 
 /**
  * How long a scheduled Slack read waits before the copy answers. Above healthy
@@ -179,13 +180,16 @@ export function registerScheduledSlack(client: object, options: ScheduledSlackOp
  * The scheduled handler's ONE client for a tick, registered: every job the tick
  * starts is handed this client, so every Slack lookup they make is bounded and
  * can fall back to the saved copy without any of them passing anything new.
+ * Built inside runInScheduledTick, it also gives the tick what it reads an open
+ * database outage with, so every alert the tick posts can name it (#2061,
+ * outage-notice.ts).
  */
 export function createScheduledSupabaseClient(
   env: Env,
   options: { fetch?: typeof fetch } & Pick<ScheduledSlackOptions, 'sleep' | 'now' | 'deadlineMs' | 'onUnreachable'> = {},
 ): SupabaseClient<Database> {
   const client = createSupabaseClient(env, { fetch: options.fetch })
-  registerScheduledSlack(client, {
+  const slack = registerScheduledSlack(client, {
     kv: env.IDEMPOTENCY,
     secretKeys: secretKeys(env),
     sleep: options.sleep,
@@ -193,6 +197,7 @@ export function createScheduledSupabaseClient(
     deadlineMs: options.deadlineMs,
     onUnreachable: options.onUnreachable,
   })
+  attachOutageNotice({ kv: env.IDEMPOTENCY, scheduled: slack })
   return client
 }
 

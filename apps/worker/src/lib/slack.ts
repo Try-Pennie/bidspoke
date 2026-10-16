@@ -32,6 +32,7 @@ import { parseSlackConnection, type SlackConnection } from './slack-connection'
 import { leadRead } from './lead-read-budget'
 import { copyUnreachableLine, describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason, type ScheduledSlack } from './scheduled-slack'
 import { composeSalesforceReadBackAlert, type SalesforceReadBackAlert } from './salesforce-read-back-alert'
+import { openOutageForPost, type OpenOutage } from './outage-notice'
 export type { SlackConnection } from './slack-connection'
 
 export interface FailureAlertPayload {
@@ -3005,13 +3006,7 @@ export interface DatabaseUnreachablePayload {
  * copy written before it was dated says so, never a guessed age (L11).
  */
 export function describeSavedSettingsAge(ageMs: number | null): string {
-  if (ageMs === null) return 'Alerts during this outage are posted using Slack settings saved at a time that was not recorded.'
-  const minutes = Math.floor(ageMs / 60_000)
-  if (minutes < 1) return 'Alerts during this outage are posted using Slack settings saved less than a minute ago.'
-  if (minutes < 120) return `Alerts during this outage are posted using Slack settings saved ${minutes} minute${minutes === 1 ? '' : 's'} ago.`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 48) return `Alerts during this outage are posted using Slack settings saved ${hours} hours ago.`
-  return `Alerts during this outage are posted using Slack settings saved ${Math.floor(hours / 24)} days ago.`
+  return `Alerts during this outage are posted using Slack settings ${savedSettingsAgo(ageMs)}.`
 }
 
 /** When the database unreachable page says its all-clear will come (database-reachability.ts). */
@@ -3064,7 +3059,7 @@ export async function sendDatabaseUnreachableAlert(
     ...(payload.repeat ? [{ type: 'section', text: { type: 'mrkdwn', text: payload.repeat } }] : []),
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/dashboard|Open dashboard>` } },
   ]
-  return postMessage(slack.bot_token, channel, blocks, 'Bidspoke cannot read its database')
+  return postOutageOwnerMessage(slack.bot_token, channel, blocks, 'Bidspoke cannot read its database')
 }
 
 /** The same alert when the read got a Cloudflare error page instead of an answer. */
@@ -3100,7 +3095,7 @@ function sendDatabaseUnreachableThroughCloudflare(
     ...(payload.repeat ? [{ type: 'section', text: { type: 'mrkdwn', text: payload.repeat } }] : []),
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/dashboard|Open dashboard>` } },
   ]
-  return postMessage(slack.bot_token, channel, blocks, title)
+  return postOutageOwnerMessage(slack.bot_token, channel, blocks, title)
 }
 
 /**
@@ -3154,7 +3149,7 @@ export async function sendDatabaseRecoveredAlert(
     { type: 'section', text: { type: 'mrkdwn', text: payload.measured } },
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/dashboard|Open dashboard>` } },
   ]
-  return (await postMessage(slack.bot_token, channel, blocks, 'Recovered: Bidspoke can read its database again')) !== null
+  return (await postOutageOwnerMessage(slack.bot_token, channel, blocks, 'Recovered: Bidspoke can read its database again')) !== null
 }
 
 /**
@@ -3477,11 +3472,68 @@ export function etTime(at: number | string | Date): string {
 
 // ── Internal ──────────────────────────────────────────────────────────────────
 
+/**
+ * The one line an alert posted by a scheduled tick carries while the database
+ * outage is open (#2061, outage-notice.ts). It names only what the owner
+ * measured: when it reported the outage and when a read last failed, and, when
+ * this tick's Slack lookups fell back to the saved copy, that copy's age. The
+ * owner's own page says the rest (which read, how to fix, when the all-clear
+ * comes), so this does not repeat it.
+ */
+export function databaseOutageLine(outage: OpenOutage): string {
+  const failed = outage.lastFailedAtMs === null ? '' : ` (database reads last failed at ${etTime(outage.lastFailedAtMs)})`
+  const sentence = `Sent during the database outage reported at ${etTime(outage.reportedAtMs)}${failed}, so this alert may be a consequence of it.`
+  if (outage.copyAgeMs === undefined) return sentence
+  return `${sentence} It was posted using Slack settings ${savedSettingsAgo(outage.copyAgeMs)}.`
+}
+
+/** How long ago the saved Slack settings were saved, as the outage line says it. */
+function savedSettingsAgo(ageMs: number | null): string {
+  if (ageMs === null) return 'saved at a time that was not recorded'
+  const minutes = Math.floor(ageMs / 60_000)
+  if (minutes < 1) return 'saved less than a minute ago'
+  if (minutes < 120) return `saved ${minutes} minute${minutes === 1 ? '' : 's'} ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 48) return `saved ${hours} hours ago`
+  return `saved ${Math.floor(hours / 24)} days ago`
+}
+
+/** The blocks with the outage line under the title (first when there is none), in a new array. */
+function withOutageLine(blocks: unknown[], outage: OpenOutage): unknown[] {
+  const line = { type: 'context', elements: [{ type: 'mrkdwn', text: databaseOutageLine(outage) }] }
+  const first = blocks[0] as { type?: unknown } | undefined
+  const at = first?.type === 'header' ? 1 : 0
+  return [...blocks.slice(0, at), line, ...blocks.slice(at)]
+}
+
 // Post a Slack message. Returns the message ts on success, or null on any
 // failure — an HTTP error OR an API-level error (Slack returns HTTP 200 with
 // { ok: false, error } for channel_not_found / not_in_channel / invalid_auth).
 // Callers that gate a cooldown must treat null as "not delivered".
+//
+// Every alert goes through here, so this is where a scheduled tick's alert
+// gets the outage line while the database outage is open (#2061). Reading the
+// incident never throws and never waits past its own deadline.
 export async function postMessage(
+  botToken: string,
+  channel: string,
+  blocks: unknown[],
+  text: string
+): Promise<string | null> {
+  const outage = await openOutageForPost()
+  return deliverMessage(botToken, channel, outage ? withOutageLine(blocks, outage) : blocks, text)
+}
+
+/**
+ * The database owner's own page and all-clear (#2061): never the outage line,
+ * which would name the outage on the message that announces it. Private to this
+ * module, so no other sender can leave the line out.
+ */
+function postOutageOwnerMessage(botToken: string, channel: string, blocks: unknown[], text: string): Promise<string | null> {
+  return deliverMessage(botToken, channel, blocks, text)
+}
+
+async function deliverMessage(
   botToken: string,
   channel: string,
   blocks: unknown[],

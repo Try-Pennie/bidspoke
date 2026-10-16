@@ -5,6 +5,7 @@ import webhooks from './routes/webhooks'
 import shadow from './routes/shadow'
 import api from './routes/api/index'
 import { createScheduledSupabaseClient } from './lib/scheduled-slack'
+import { runInScheduledTick } from './lib/outage-notice'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runBidRecordingCoverageCheck } from './lib/bid-recording-coverage'
 import { runTripointRevenueFillForEnv } from './lib/tripoint-revenue-fill'
@@ -1192,7 +1193,9 @@ export default {
     platformCtx.waitUntil(isolateCronGuardRecorder.flush(env.IDEMPOTENCY))
     const run = runCronTickOnce(env.ALERT_CLAIM, event, async () => {
       const timer = tickTimer()
-      const work = scheduledJobs.start(event, env, platformCtx, timer)
+      // Every job of the tick runs in its context, so each alert it posts names
+      // an open database outage with one line (#2061, lib/outage-notice.ts).
+      const work = runInScheduledTick(() => scheduledJobs.start(event, env, platformCtx, timer))
       // Only the minute tick is reported: the hourly and daily ones run for
       // minutes by design. The checkpoint covers a tick killed before its end.
       const minuteTick = event.cron === '* * * * *'
