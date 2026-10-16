@@ -55,7 +55,8 @@ export function classifyNotice(n: PartnerPageNotice, c: NoticeContext): NoticeAc
   if (n.kind === 'deleted') return 'deleted'
   // partner_uuid_map has no version: its notice carries the pair as it stands.
   if (n.kind === 'uuids') return 'uuids'
-  const partnerAhead = n.partnerVersion !== null && n.partnerVersion > c.known.partnerVersion
+  // A version it cannot compare is read again: the fail safe side (L50).
+  const partnerAhead = n.partnerVersion === null || n.partnerVersion > c.known.partnerVersion
   const profileAhead = c.known.profileVersion !== null && n.profileVersion !== null && n.profileVersion > c.known.profileVersion
   return partnerAhead || profileAhead ? 'refetch' : 'already_held'
 }

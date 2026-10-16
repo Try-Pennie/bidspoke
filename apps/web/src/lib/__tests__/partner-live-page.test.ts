@@ -59,6 +59,10 @@ describe('classifyNotice (#2135)', () => {
     expect(classifyNotice(notice({ kind: 'profile', partnerVersion: 7, profileVersion: 9 }), ctx({ known: { partnerVersion: 7, profileVersion: null } }))).toBe('already_held')
     expect(classifyNotice(notice({ kind: 'profile', partnerVersion: 7, profileVersion: 4 }), ctx())).toBe('refetch')
   })
+
+  it('a notice whose partner version it cannot compare is read again, never taken as already held (L50)', () => {
+    expect(classifyNotice(notice({ kind: 'partner', partnerVersion: null, profileVersion: 3 }), ctx())).toBe('refetch')
+  })
 })
 
 const versions = (over: Partial<PartnerPageVersions> = {}): PartnerPageVersions => ({

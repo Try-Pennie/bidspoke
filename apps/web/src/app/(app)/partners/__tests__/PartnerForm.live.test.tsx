@@ -11,7 +11,7 @@
  * timer (L524).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import type { ReactNode } from 'react'
 
 vi.mock('@/lib/api', () => ({
@@ -115,6 +115,11 @@ describe('another person\'s save, live (#2135)', () => {
     const { deps } = liveHarness()
     renderLive(deps)
     expect(await screen.findByText('Live')).toBeTruthy()
+    cleanup()
+    render(<PartnerForm partner={partner} onSave={vi.fn()} onCancel={vi.fn()} />)
+    await screen.findByLabelText('Name')
+    expect(screen.queryByText(/^Live$|live updates/i)).toBeNull()
+    expect(api.partners.versions).toHaveBeenCalledTimes(1)
   })
 
   it('a field only they changed updates in place, its section says who, the bar names it, and the next save is made from their version', async () => {
