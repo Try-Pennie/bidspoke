@@ -419,7 +419,7 @@ export async function listDrainRows(supabase: SupabaseClient): Promise<DrainRow[
     .order('id', { ascending: true })
     .limit(DRAIN_LIST_LIMIT)
   if (error) throw new Error(`reading the stored Salesforce writes failed: ${error.message}`)
-  return (data ?? []) as unknown as DrainRow[]
+  return data ?? []
 }
 
 export async function runWritebackDrainForEnv(supabase: SupabaseClient, env: Env): Promise<DrainSummary> {
