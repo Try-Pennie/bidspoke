@@ -81,7 +81,10 @@ describe('the scheduled handler\'s client is the registered one (#1303)', () => 
 
   it('builds the tick\'s client with createScheduledSupabaseClient and no other client', () => {
     expect(start).toBeGreaterThan(-1)
-    expect(body).toMatch(/const supabase = createScheduledSupabaseClient\(env\)/)
+    // Handed the PLATFORM's waitUntil (#2063): a Better Stack page raised by a
+    // lookup is kept alive past its job, but never joins the tick's own job list
+    // (handOver), which the tick waits on, so a slow page cannot hold a tick up.
+    expect(body).toMatch(/const supabase = createScheduledSupabaseClient\(env, \(p\) => platformCtx\.waitUntil\(p\)\)/)
     expect(body).not.toMatch(/createSupabaseClient\(/)
   })
 })
