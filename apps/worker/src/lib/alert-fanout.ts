@@ -14,8 +14,11 @@
  * key their cooldown on a workflow or a single org and announce recovery, which
  * is a different shape. They still share `slackOrgIds` for the org lookup.
  *
- * Every read of `service_connections` lives here or in slack.ts (#1303, guarded
- * by service-connections-readers.test.ts). The org lists answer a discriminated
+ * Every read of `service_connections` outside the signed-in app's routes
+ * (routes/api/) lives here or in slack.ts (#1303, guarded by
+ * service-connections-readers.test.ts); the routes that change a Slack
+ * connection also edit the saved copy (#2060, last-good-copies-retired.test.ts).
+ * The org lists answer a discriminated
  * result (`SlackOrgList`, `SlackFanout`, `SlackConnectionsRead`): from the
  * database, from the saved copy, or unreachable and why, so "no orgs" and "could
  * not read" differ. A caller whose next step is the same either way folds it with
@@ -166,6 +169,10 @@ async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what
  * failure is the volume check's own evidence that the database is down, judged
  * with the client's full deadline as before. #2061 moves the copy's writer to
  * the database probe.
+ *
+ * It takes no SlackListUse because it can only answer from the database: it is
+ * 'measure-from-database' by construction. It must never be 'tell-only', since
+ * writing the copy from the copy would re-date stale entries as fresh (#2060).
  */
 export function readSlackConnectionRowsForCopy(supabase: SupabaseClient) {
   return supabase.from('service_connections').select('organization_id, config').eq('service_type', 'slack')
