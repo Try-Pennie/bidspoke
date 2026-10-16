@@ -4,9 +4,12 @@
  * scheduled client that read waited for the client's full 45 s deadline and its
  * retries, past the 50 s minute deadline, so in a stalled database the heartbeat
  * page, which the #1303 plan counts on to speak from KV, was cut off with its
- * job and never posted. On the scheduled client it is now one bounded read
- * through the tick's budget; a read that does not answer is no evidence, which
- * leaves the verdict standing, as a failed read always did (L98).
+ * job and never posted. On the scheduled client it now goes through readAside:
+ * the tick's 3 s deadline, skipped once the tick has seen the database fail,
+ * but its own failure never marks the tick or tells the database owner, since a
+ * fault in this one table is not a database outage. A read that does not answer
+ * is no evidence, which leaves the verdict standing, as a failed read always
+ * did (L98).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { lastFinishedRun } from '../cron-heartbeat'

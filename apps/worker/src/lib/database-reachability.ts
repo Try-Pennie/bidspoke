@@ -236,7 +236,13 @@ export async function reportDatabaseUnreachable(deps: ReachabilityDeps, report: 
     // The page the Better Stack alert matches on, through the tick's pager. It
     // is handed to waitUntil and never awaited, and handing it over can throw
     // only if something is broken, so the bookkeeping above always stands.
-    // An empty copy is nobody to post to as surely as no copy is.
+    // An empty copy is nobody to post to as surely as no copy is. It keeps the
+    // owner's rule: a fast read's first failed minute is held, as its Slack
+    // page would be (lessons review of #2250).
+    if (!pages) {
+      console.warn(`[database-reachability] ${REACHABILITY_SOURCES[report.source].words} pages only when the minute before also failed, so the Better Stack page is held`)
+      return outcome
+    }
     try {
       deps.scheduled?.nobodyCanBeTold(`database-reachability ${report.what}`, null, copy.kind === 'unreadable' ? 'copy_unreadable' : 'no_copy', copy.kind === 'unreadable' ? copy.detail : undefined)
     } catch (e) {

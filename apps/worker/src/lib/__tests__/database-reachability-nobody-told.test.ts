@@ -130,6 +130,22 @@ describe('the owner pages Better Stack when nobody can be told (#2061)', () => {
     expect(kv.store.has(`${NOBODY_TOLD_KV_PREFIX}all`)).toBe(true)
   })
 
+  // Lessons review of #2250: the owner's own rule holds a fast read's first
+  // failed minute, and its Better Stack page keeps that rule.
+  it('holds the page for one failed probe, and pages on the second failed minute in a row', async () => {
+    const kv = fakeKv()
+    const probeFailure = { source: 'probe' as const, what: 'the minute database probe', error: 'timeout: no answer in 5000 ms' }
+    const first = tick(kv)
+    await reportDatabaseUnreachable(deps(kv, first.scheduled, T0 - MIN), probeFailure)
+    await first.settled()
+    expect(first.sent).toEqual([])
+    expect(errors.some((e) => e.includes('so nobody can be told'))).toBe(true)
+    const second = tick(kv)
+    await reportDatabaseUnreachable(deps(kv, second.scheduled), probeFailure)
+    await second.settled()
+    expect(second.sent.map((s) => s.message)).toEqual([NOBODY_TOLD_LINE])
+  })
+
   it('pages nothing, and still logs, on a client with no scheduled Slack (a direct caller)', async () => {
     const kv = fakeKv()
     await expect(reportDatabaseUnreachable(deps(kv, undefined), readFailure)).resolves.toEqual({ told: [], failed: [] })
