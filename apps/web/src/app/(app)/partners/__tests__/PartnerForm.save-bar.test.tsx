@@ -174,6 +174,27 @@ describe('saving, and a save whose answer was lost (L766)', () => {
     expect(bar()).toHaveTextContent(/^Partner saved\./)
   })
 
+  it('an Undo whose answer was lost and which the probe finds landed hands the page the row as the Undo left it', async () => {
+    const onSave = vi.fn()
+      .mockResolvedValueOnce({ partner: { ...partner, name: 'M1 renamed', version: 4 }, profile: null, copyWarning: null })
+      .mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    const onSaveConfirmed = vi.fn()
+    render(<PartnerForm partner={partner} onSave={onSave} onCancel={vi.fn()} onSaveConfirmed={onSaveConfirmed} />)
+    await settle()
+    fireEvent.click(screen.getByRole('tab', { name: 'Partner' }))
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'M1 renamed' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await settle()
+    fireEvent.click(screen.getByRole('button', { name: /^Undo/ }))
+    await settle()
+    const undoId = onSave.mock.calls[1][3].save_id as string
+    vi.mocked(api.partners.versions).mockResolvedValue(versions(undoId, 5))
+    await advance(5_000)
+    expect(bar()).toHaveTextContent(/^Undone\./)
+    expect(onSaveConfirmed).toHaveBeenCalledWith(expect.objectContaining({ id: 'p1', name: 'M1', version: 5 }))
+    expect(screen.getByLabelText('Name')).toHaveValue('M1')
+  })
+
   it('a save not yet confirmed arms the browser\'s leave warning even with nothing on screen unsaved', async () => {
     // An Undo whose answer was lost: the page shows what is stored, so nothing is dirty, yet the outcome is unknown.
     const onSave = vi.fn()

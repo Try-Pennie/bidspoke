@@ -149,6 +149,23 @@ describe('navigations the app starts (leaveThen)', () => {
   })
 })
 
+describe('a release does not outlive the draft it was given for', () => {
+  it('when the page stays mounted after leaving (a link to itself), the next unsaved draft is guarded again', () => {
+    const onAsk = vi.fn()
+    const { getByText, rerender } = render(<Guarded blocking onAsk={onAsk} />)
+    leaveThen({ kind: 'page', name: 'Partners' }, vi.fn())
+    ;(onAsk.mock.calls[0][0] as LeaveRequest).proceed()
+    // The draft was discarded and the page stayed; then the person edits again.
+    rerender(<Guarded blocking={false} onAsk={onAsk} />)
+    rerender(<Guarded blocking onAsk={onAsk} />)
+    fireEvent.click(getByText('Workflows'))
+    expect(onAsk).toHaveBeenCalledTimes(2)
+    const e = unloadEvent()
+    window.dispatchEvent(e)
+    expect(e.defaultPrevented).toBe(true)
+  })
+})
+
 describe('auth redirects (holdAuthRedirect)', () => {
   it('are made when nothing would be lost, and held, with the page told, when something would', () => {
     expect(holdAuthRedirect(401)).toBe(false)

@@ -189,6 +189,9 @@ export function useLeaveGuard({ blocking, onAsk, onAuthRejected }: LeaveGuardOpt
 
   useEffect(() => {
     if (!blocking) return
+    // Something new would be lost: a release given for an earlier leave (whose
+    // navigation kept this page, a link to itself, say) no longer stands.
+    leaving.current = false
     const guard = guardRef.current!
     const onUnload = beforeUnloadListener(guard.blocking)
     window.addEventListener('beforeunload', onUnload)

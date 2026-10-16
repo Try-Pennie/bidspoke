@@ -42,6 +42,7 @@ import {
   bidGroupSettingsSet, bidGroupShown, confirmationWindowShown, openingTab, problemsOf, problemTabs, visibleTabs, TAB_LABELS,
   type TabInputs, type UsageState,
 } from './partner-tabs'
+import { bidsInSentences } from './bid-group-usage-text'
 
 /** How often a save whose answer was lost asks whether it landed (#2138, L766). */
 const PROBE_EVERY_MS = 5_000
@@ -49,7 +50,6 @@ const PROBE_EVERY_MS = 5_000
 const UNCONFIRMED_GIVE_UP_MS = 120_000
 /** How long Saved stays when there is no Undo to offer, before the bar slides away. */
 const DONE_SHOWN_MS = 5_000
-import { bidsInSentences } from './bid-group-usage-text'
 
 const NO_USAGE: PartnerUsage = { bid_group: [], partner_bid: [], latency_gate: [] }
 const NO_NAMES: ReadonlyMap<string, string> = new Map()
@@ -846,7 +846,12 @@ export default function PartnerForm({
     if (result.kind === 'unconfirmed') {
       setSaveOutcome({
         kind: 'unconfirmed', since: Date.now(), saveId: result.saveId, retry: () => runUndo(info),
-        confirm: (v) => { versionRef.current = v.partnerVersion; finish({ profile: profileBefore ? { ...profileBefore, version: v.profileVersion } : null, copyWarning: null }) },
+        confirm: (v) => {
+          versionRef.current = v.partnerVersion
+          finish({ profile: profileBefore ? { ...profileBefore, version: v.profileVersion } : null, copyWarning: null })
+          // The page's row is the partner as the Undo left it, as a save whose answer came back would set it.
+          if (partner) onSaveConfirmed?.({ ...partner, ...patch, version: v.partnerVersion } as Partner)
+        },
       })
       return 'not_saved'
     }
@@ -1531,7 +1536,8 @@ export default function PartnerForm({
           unconfirmed={unconfirmed}
           destination={leaveAsk.destination}
           onKeepEditing={() => setLeaveAsk(null)}
-          onDiscard={() => { const request = leaveAsk; setLeaveAsk(null); request.proceed() }}
+          // Discard means discard: if the way away keeps this page (a link to it), what is left is clean.
+          onDiscard={() => { const request = leaveAsk; setLeaveAsk(null); discardChanges(); request.proceed() }}
           onSave={() => { void saveThenLeave(leaveAsk) }}
         />
       )}
