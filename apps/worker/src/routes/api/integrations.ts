@@ -3,6 +3,18 @@
 // POST   /api/integrations/slack        — save/update Slack connection
 // GET    /api/integrations/slack        — get current Slack connection (token masked)
 // DELETE /api/integrations/slack        — disconnect
+//
+// The saved Slack copy (#2060): alerts post from an encrypted copy of every
+// org's connection while the database is down (lib/slack-copy.ts). Every route
+// here that changes an org's connection edits that org's entry in the copy
+// right after its database write, with editSlackCopyEntry, so an outage does
+// not post to a connection just removed or a category just switched off. When
+// KV refuses the edit, the change still answers 200, because it WAS saved and
+// recorded, with stored_copy_warning beside it (lib/stored-copy.ts) and the
+// failure logged. The next healthy minute rewrites the whole copy from the
+// database (volume-cliff.ts), which bounds how long a stale entry can last
+// while the database is up. KV is eventually consistent, so a reader in
+// another location can still see the old entry for up to about a minute.
 
 import { Hono } from 'hono'
 import { dbError, dbErrorUnlessNotFound, requireRowOr404, rowsTouched } from '../../lib/api-error'
@@ -11,6 +23,10 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
+import { copyCleared, copyWarning } from '../../lib/stored-copy'
+import { editSlackCopyEntry } from '../../lib/slack-copy'
+import { parseSlackConnection } from '../../lib/slack-connection'
+import { secretKeys } from '../../lib/secret-crypto'
 
 type Variables = AuthVariables
 
@@ -87,6 +103,11 @@ integrations.post('/slack', async (c) => {
 
   if (error) return dbError(c, error)
 
+  const copyEdited = await copyCleared(
+    () => editSlackCopyEntry(c.env.IDEMPOTENCY, secretKeys(c.env), orgId, parseSlackConnection(config)).then(() => undefined),
+    `the saved Slack copy for org ${orgId}`,
+  )
+
   const isNew = upserted.created_at === upserted.updated_at
   await writeAuditLog(supabase, orgId, 'service_connection', upserted.id, isNew ? 'created' : 'updated', userId, {
     service_type: 'slack',
@@ -94,7 +115,7 @@ integrations.post('/slack', async (c) => {
     default_channel: config.default_channel,
   })
 
-  return c.json({ ok: true })
+  return c.json({ ok: true, ...copyWarning(copyEdited) })
 })
 
 integrations.get('/slack', async (c) => {
@@ -224,6 +245,11 @@ integrations.patch('/slack/settings', async (c) => {
   )
   if (updateBlocked) return updateBlocked
 
+  const copyEdited = await copyCleared(
+    () => editSlackCopyEntry(c.env.IDEMPOTENCY, secretKeys(c.env), orgId, parseSlackConnection(nextConfig)).then(() => undefined),
+    `the saved Slack copy for org ${orgId}`,
+  )
+
   await writeAuditLog(supabase, orgId, 'service_connection', existing.id, 'updated', userId, {
     service_type: 'slack',
     volume_alerts_enabled: body.volume_alerts_enabled,
@@ -234,7 +260,7 @@ integrations.patch('/slack/settings', async (c) => {
     backup_alerts_enabled: body.backup_alerts_enabled,
   })
 
-  return c.json({ ok: true })
+  return c.json({ ok: true, ...copyWarning(copyEdited) })
 })
 
 integrations.delete('/slack', async (c) => {
@@ -250,12 +276,19 @@ integrations.delete('/slack', async (c) => {
   )
   if (blocked) return blocked
 
+  // Removed from the copy even when the delete matched no row: the database now
+  // holds no connection for this org, so neither should the copy.
+  const copyEdited = await copyCleared(
+    () => editSlackCopyEntry(c.env.IDEMPOTENCY, secretKeys(c.env), orgId, null).then(() => undefined),
+    `the saved Slack copy for org ${orgId}`,
+  )
+
   const removed = rows[0]
   if (removed) {
     await writeAuditLog(supabase, orgId, 'service_connection', removed.id, 'deleted', userId, { service_type: 'slack' })
   }
 
-  return c.json({ ok: true })
+  return c.json({ ok: true, ...copyWarning(copyEdited) })
 })
 
 export default integrations

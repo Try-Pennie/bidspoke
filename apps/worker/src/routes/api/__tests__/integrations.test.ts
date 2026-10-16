@@ -12,6 +12,9 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { makeSupabase } from './_supabase-mock'
+import { readSlackCopy, rememberSlackConnections } from '../../../lib/slack-copy'
+import { parseSlackConnection } from '../../../lib/slack-connection'
+import { COPY_NOT_CLEARED_MESSAGE } from '../../../lib/stored-copy'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
@@ -32,9 +35,13 @@ const USER_ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 
+// No saved Slack copy by default, so a route editing it finds nothing to edit (#2060).
+const NO_COPY_KV = { get: async () => null, put: async () => {} }
 const testEnv = {
   SUPABASE_JWKS_URL: 'https://fake.jwks',
   WORKFLOW_CACHE: {},
+  IDEMPOTENCY: NO_COPY_KV,
+  SECRET_ENCRYPTION_KEY: btoa(String.fromCharCode(...new Uint8Array(32).fill(7))),
 } as unknown as Env
 
 async function makeApp() {
@@ -267,5 +274,120 @@ describe('DELETE /integrations/slack', () => {
     const res = await request(app, 'DELETE', '/integrations/slack')
     expect(res.status).toBe(500)
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+})
+
+// ── The saved Slack copy (#2060) ─────────────────────────────────────────────
+//
+// Alerts post from an encrypted copy of every org's Slack connection while the
+// database is down. A route that disconnects an org or changes its settings
+// edits that org's entry in the copy in the same request, so an outage does not
+// post to a connection that was just removed or a category just switched off.
+// A copy that cannot be edited is reported beside the success, the way every
+// other stored copy is (stored_copy_warning, lib/stored-copy.ts).
+describe('the saved Slack copy follows the Slack settings routes (#2060)', () => {
+  const KEY = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)))
+  const OTHER_ORG = 'org-other'
+  const SAVED_AT = Date.parse('2026-10-15T03:00:00Z')
+  let app: Awaited<ReturnType<typeof makeApp>>
+  let store: Map<string, string>
+  let putFails: boolean
+  const env = testEnv as unknown as Record<string, unknown>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    store = new Map()
+    putFails = false
+    env.SECRET_ENCRYPTION_KEY = KEY
+    env.IDEMPOTENCY = {
+      get: async (k: string) => store.get(k) ?? null,
+      put: async (k: string, v: string) => {
+        if (putFails) throw new Error('KV put failed: 503')
+        store.set(k, v)
+      },
+    }
+    await rememberSlackConnections(env.IDEMPOTENCY as never, KEY, new Map([
+      [USER_ORG, parseSlackConnection({ bot_token: 'xoxb-mine', default_channel: '#mine' })!],
+      [OTHER_ORG, parseSlackConnection({ bot_token: 'xoxb-other', default_channel: '#other' })!],
+    ]), SAVED_AT)
+    app = await makeApp()
+  })
+  afterEach(() => {
+    env.IDEMPOTENCY = NO_COPY_KV
+    vi.restoreAllMocks()
+  })
+
+  async function copy() {
+    const read = await readSlackCopy(env.IDEMPOTENCY as never, KEY)
+    if (read.kind !== 'read') throw new Error(`expected a copy, found ${read.kind}`)
+    return read
+  }
+
+  it('disconnecting removes the org from the copy in the same request, keeping the others and the save time', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, service_connections: { writeRows: [{ id: 'sc-9' }] } }) as never
+    )
+    const res = await request(app, 'DELETE', '/integrations/slack')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true })
+    const after = await copy()
+    expect([...after.connections.keys()]).toEqual([OTHER_ORG])
+    expect(after.savedAtMs).toBe(SAVED_AT)
+  })
+
+  it('a disconnect the database refused leaves the copy as it was', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, service_connections: { deleteError: { code: '08006', message: 'connection refused' } } }) as never
+    )
+    const res = await request(app, 'DELETE', '/integrations/slack')
+    expect(res.status).toBe(500)
+    expect([...(await copy()).connections.keys()].sort()).toEqual([OTHER_ORG, USER_ORG].sort())
+  })
+
+  it('switching a category off updates the org entry in the copy', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        service_connections: {
+          maybeSingle: { id: 'sc-1', config: { bot_token: 'xoxb-mine', default_channel: '#mine' } },
+          writeRows: [{ id: 'sc-1' }],
+        },
+      }) as never
+    )
+    const res = await request(app, 'PATCH', '/integrations/slack/settings', { body: { volume_alerts_enabled: false } })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true })
+    const after = await copy()
+    expect(after.connections.get(USER_ORG)).toMatchObject({ bot_token: 'xoxb-mine', volume_alerts_enabled: false })
+    expect(after.connections.get(OTHER_ORG)?.volume_alerts_enabled).toBe(true)
+  })
+
+  it('saving a new connection replaces the org entry in the copy', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        service_connections: { upsertResult: { id: 'sc-1', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-10-15T00:00:00Z' } },
+      }) as never
+    )
+    const res = await request(app, 'POST', '/integrations/slack', { body: { bot_token: 'xoxb-new', default_channel: '#new' } })
+    expect(res.status).toBe(200)
+    expect((await copy()).connections.get(USER_ORG)).toMatchObject({ bot_token: 'xoxb-new', default_channel: '#new' })
+  })
+
+  it('still answers 200 when the copy cannot be edited, saying so beside the success and in the log', async () => {
+    const errors: string[] = []
+    vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => { errors.push(a.map(String).join(' ')) })
+    putFails = true
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, service_connections: { writeRows: [{ id: 'sc-9' }] } }) as never
+    )
+    const res = await request(app, 'DELETE', '/integrations/slack')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, stored_copy_warning: COPY_NOT_CLEARED_MESSAGE })
+    expect(errors.some((l) => l.includes('saved Slack copy') && l.includes('KV put failed'))).toBe(true)
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalled()
   })
 })

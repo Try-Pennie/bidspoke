@@ -101,6 +101,13 @@ connections.post('/', async (c) => {
 connections.delete('/:service_type', async (c) => {
   const { orgId, userId } = c.get('user')
   const serviceType = c.req.param('service_type')
+  // Only the types this route manages. Before #2060 any type was accepted, so
+  // DELETE /api/connections/slack removed the Slack connection without taking
+  // the org out of the saved Slack copy, which only its own route does
+  // (integrations.ts).
+  if (!SERVICE_TYPES.has(serviceType)) {
+    return c.json({ error: `service_type must be one of: ${[...SERVICE_TYPES].join(', ')}` }, 400)
+  }
 
   const supabase = createSupabaseClient(c.env)
   const { data: existing, error: existingError } = await supabase
