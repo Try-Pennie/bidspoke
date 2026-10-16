@@ -32,20 +32,30 @@ const GUARD_MODULE = 'lib/leave-guard.ts'
 const NAVIGATIONS: ReadonlyArray<{ name: string; re: RegExp }> = [
   { name: 'router.push', re: /\brouter\s*\.\s*push\s*\(/g },
   { name: 'router.replace', re: /\brouter\s*\.\s*replace\s*\(/g },
-  { name: 'location assignment', re: /\blocation(?:\s*\.\s*href)?\s*=(?!=)/g },
+  // location, location.href, location.pathname or location.search set (a hash is a jump within the page).
+  { name: 'location assignment', re: /\blocation(?:\s*\.\s*(?:href|pathname|search))?\s*=(?!=)/g },
   { name: 'location.assign', re: /\blocation\s*\.\s*assign\s*\(/g },
   { name: 'location.replace', re: /\blocation\s*\.\s*replace\s*\(/g },
-  // Moving through history leaves the page too. (window.open is not here: it opens another tab, which loses nothing.)
+  // Moving through history leaves the page too.
   { name: 'router.back or forward', re: /\brouter\s*\.\s*(?:back|forward)\s*\(/g },
   { name: 'history.back, forward or go', re: /\bhistory\s*\.\s*(?:back|forward|go)\s*\(/g },
 ]
 
+/**
+ * Spellings that need the string literals kept: window.open into this tab
+ * ('_self') leaves the page, while into another tab it loses nothing.
+ */
+const NAVIGATIONS_IN_STRINGS: ReadonlyArray<{ name: string; re: RegExp }> = [
+  { name: "window.open into '_self'", re: /\bwindow\s*\.\s*open\s*\([^)]*(['"`])_self\1/g },
+]
+
 export function navigationsIn(file: string, source: string): string[] {
   if (file === GUARD_MODULE) return []
-  const code = sanitizeSource(source)
   const found: string[] = []
-  for (const { name, re } of NAVIGATIONS) {
-    for (const m of code.matchAll(re)) found.push(`${file}:${lineOf(code, m.index ?? 0)} ${name}`)
+  for (const [code, list] of [[sanitizeSource(source), NAVIGATIONS], [sanitizeSource(source, { blankStrings: false }), NAVIGATIONS_IN_STRINGS]] as const) {
+    for (const { name, re } of list) {
+      for (const m of code.matchAll(re)) found.push(`${file}:${lineOf(code, m.index ?? 0)} ${name}`)
+    }
   }
   return found
 }
@@ -103,9 +113,12 @@ describe('navigations started in code go through the leave guard (#2138)', () =>
       "router.push('/x')", 'router . replace(`/y`)', "window.location.href = '/login'", 'location = next',
       "window.location.assign('/a')", "location.replace('/b')",
       'router.back()', 'router.forward()', 'window.history.back()', 'history.forward()', 'window.history.go(-2)',
+      "window.location.pathname = '/x'", "location.search = '?a=1'", "window.open('/x', '_self')",
     ]
     for (const line of scratch) expect(navigationsIn('app/(app)/partners/PartnerForm.tsx', line), line).toHaveLength(1)
     expect(navigationsIn(GUARD_MODULE, "window.location.assign('/a')")).toEqual([])
+    // Another tab, or a jump within the page, leaves nothing behind.
+    expect(navigationsIn('components/Scratch.tsx', "window.open('/docs', '_blank')\nlocation.hash = '#top'")).toEqual([])
     expect(navigationsIn('components/Scratch.tsx', "// router.push('/x') in a comment\nconst s = \"location.href = '/'\"\nif (location.href === x) {}")).toEqual([])
   })
 
