@@ -9,6 +9,7 @@
 import { useState } from 'react'
 import { Button, Outcome, type OutcomeState } from '@/components/ui/form'
 import { formatCents } from './labels'
+import { formatEtDayTime } from '@/lib/dates'
 
 export interface UnresolvedSale {
   id: string
@@ -30,8 +31,7 @@ function answerOf(row: UnresolvedSale): string {
 }
 
 function reservedAt(iso: string): string {
-  const d = new Date(iso)
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+  return Number.isNaN(Date.parse(iso)) ? iso : formatEtDayTime(iso)
 }
 
 export function UnresolvedSalesList({ rows, total, onSettle, outcomes, onMore, loadingMore = false }: {

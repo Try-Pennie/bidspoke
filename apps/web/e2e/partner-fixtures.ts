@@ -15,6 +15,9 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import type { Page } from '@playwright/test'
+import { LIVE_MISS_ID, realtimeReplies, versionsFor } from './partner-live-fixtures'
+
+export { LIVE_MISS_ID, realtimeReplies, versionsFor }
 
 const DIR = path.join(__dirname, 'fixtures', 'partners')
 const read = <T>(file: string): T => JSON.parse(readFileSync(path.join(DIR, file), 'utf8')) as T
@@ -68,7 +71,21 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
   if (method === 'PUT' && (m = /^\/api\/partners\/([^/]+)\/page$/.exec(p))) {
     return opts.staleSave && m[1] === fx.stale.partner.id ? { status: 409, body: fx.stale } : null
   }
+  // #2135: a change the page's probe found that no live notice announced. Recorded only.
+  if (method === 'POST' && p === '/api/partners/live-miss') return { status: 201, body: { ok: true, id: LIVE_MISS_ID } }
   if (method !== 'GET') return null
+  // #2135: the versions probe, read on open and while a draft is dirty. Nothing has changed since the capture.
+  if ((m = /^\/api\/partners\/([^/]+)\/versions$/.exec(p))) {
+    const id = m[1]
+    const row = fx.partners.find((r) => r.id === id)
+    return row ? ok(versionsFor(row, fx.buyerProfiles)) : null
+  }
+  // #2135: the refetch after a live notice, a reconnect or the tab coming back.
+  if ((m = /^\/api\/partners\/([^/]+)$/.exec(p))) {
+    const id = m[1]
+    const row = fx.partners.find((r) => r.id === id)
+    return row ? ok(row) : null
+  }
   if (p === '/api/partners') {
     return ok(fx.partners.map((row) => (opts.credentialWarningFor && row.slug === opts.credentialWarningFor
       ? { ...row, credential_warning: `Credential '${String(row.cf_secret_key ?? 'PARTNER_SECRET')}' is not set, so this partner will fail on the next live lead.` }
@@ -122,6 +139,15 @@ export async function routePartnerFixtures(page: Page, workerUrl: string, opts: 
       return route.fulfill({ status: 599, headers: cors, contentType: 'application/json', body: JSON.stringify({ error: 'no_fixture' }) })
     }
     return route.fulfill({ status: answer.status, headers: cors, contentType: 'application/json', body: JSON.stringify(answer.body) })
+  })
+  // The live channel's socket (#2135), answered here so the scan never joins production's Realtime.
+  await page.routeWebSocket(/\/realtime\/v1\/websocket/, (ws) => {
+    ws.onMessage((frame) => {
+      if (typeof frame !== 'string') return
+      const { replies, unexpected } = realtimeReplies(frame)
+      if (unexpected) unmatched.push(unexpected)
+      for (const r of replies) ws.send(r)
+    })
   })
   return { unmatched }
 }
