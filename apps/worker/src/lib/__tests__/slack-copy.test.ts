@@ -13,7 +13,7 @@ import { decryptSecret, encryptSecret, type SecretKeyInput } from '../secret-cry
 import { parseSlackConnection, type SlackConnection } from '../slack-connection'
 import { lookupSlackConnection } from '../slack'
 import { registerScheduledSlack } from '../scheduled-slack'
-import { STORED_COPY_MAX_AGE_MS } from '../stored-copy-age'
+import { STORED_COPY_AGE_EXEMPTIONS, STORED_COPY_MAX_AGE_MS } from '../stored-copy-age'
 import {
   editSlackCopyEntry,
   readLastGoodSlackConnections,
@@ -121,6 +121,11 @@ describe('compatibility both ways across a mixed deploy or a rollback', () => {
 })
 
 describe('the copy is used at any age (Dan, 2026-10-14, #1874)', () => {
+  it('is recorded beside the thirty minute limit as the one exemption, under the key the copy is kept at, with its reason', () => {
+    expect(Object.keys(STORED_COPY_AGE_EXEMPTIONS)).toEqual([SLACK_CONNS_LASTGOOD_KEY])
+    expect(STORED_COPY_AGE_EXEMPTIONS[SLACK_CONNS_LASTGOOD_KEY]).toMatch(/#1874/)
+  })
+
   it('a copy far past the thirty minute stored copy limit still answers the scheduled lookup, naming its age', async () => {
     const kv = memoryKv()
     await rememberSlackConnections(kv, TEST_KEY, new Map([[ORG_A, conn('xoxb-a')]]), SAVED_AT)
