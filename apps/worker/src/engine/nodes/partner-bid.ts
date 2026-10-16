@@ -22,7 +22,7 @@ import type { Env } from '../../index'
 import { CircuitBreakerClient } from '../../lib/circuit-breaker-client'
 import { readSlackConnectionForLead, sendCircuitAlert, type SlackConnection } from '../../lib/slack'
 import { resolveSlackForBlockAlert } from '../../lib/partner-block-alert'
-import { readLastGoodSlackConnections } from '../../lib/volume-cliff'
+import { readLastGoodSlackConnections } from '../../lib/slack-copy'
 import { secretKeys } from '../../lib/secret-crypto'
 import { withDeadline, type Timers } from '@bidspoke/buyer-profile'
 import { parseJson } from '../../lib/json'
@@ -214,7 +214,7 @@ export const CIRCUIT_ALERT_DEADLINE_MS = 3_000
 
 export interface CircuitAlertDeps {
   /**
-   * The last-good copy of the Slack connections (lib/volume-cliff.ts), the page's
+   * The last-good copy of the Slack connections (lib/slack-copy.ts), the page's
    * fallback when the connection row cannot be read. Required, so no caller can
    * page without one by forgetting it (L168).
    */

@@ -164,6 +164,8 @@ export async function runKillRateDriftCheck(
     ttlSeconds: DRIFT_COOLDOWN_SECONDS,
     supabase,
     logLabel: 'killrate-drift',
+    // The finding is measured before the list is read (#1303).
+    use: 'tell-only',
     perOrg: async (orgId) => {
       const slack = await getSlackConnection(supabase, orgId)
       if (!slack || !slack.config_alerts_enabled) return false

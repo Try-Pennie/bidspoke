@@ -51,7 +51,7 @@
  * external uptime monitor.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { slackOrgIds } from './alert-fanout'
+import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
 import { sendCronHeartbeatAlert, sendCronHeartbeatRecoveryAlert } from './slack'
 import { BACKOFF_STEPS_SECONDS, clearCondition, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
@@ -767,7 +767,7 @@ export async function runHeartbeatChecks(
   kv: KVNamespace,
   nowMs: number = Date.now(),
 ): Promise<HeartbeatCheckResult[]> {
-  const orgIds = await slackOrgIds(supabase, 'cron-heartbeat')
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'cron-heartbeat', 'tell-only'))
 
   const results: HeartbeatCheckResult[] = []
   for (const job of CRON_JOBS) {

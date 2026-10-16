@@ -433,7 +433,7 @@ export async function runWritebackDrainForEnv(supabase: SupabaseClient, env: Env
     busy: () => bulkheadBusy(env, WRITEBACK_DRAIN_JOB),
     kv: env.IDEMPOTENCY,
     alertClaims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
-    slackFor: slackForEnv(supabase, env),
+    slackFor: slackForEnv(supabase),
     recordRun: (startedAtMs, ending) => recordFinishedJobRun(supabase, WRITEBACK_DRAIN_JOB, startedAtMs, ending),
   })
 }

@@ -25,7 +25,7 @@
  * that job, which is exactly the silence being removed.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { slackOrgIds } from './alert-fanout'
+import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
 import { formatErr } from './format-error'
 import { sendPgCronAlert, sendPgCronRecoveryAlert } from './slack'
@@ -393,7 +393,7 @@ export async function runPgCronWatch(
     throw new Error(`could not read pg_cron health: ${error ? error.message : 'the response was not a list'}`)
   }
 
-  const orgIds = await slackOrgIds(supabase, 'pg-cron-watch')
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'pg-cron-watch', 'tell-only'))
 
   const results: PgCronCheckResult[] = []
   for (const row of data as PgCronJob[]) {
