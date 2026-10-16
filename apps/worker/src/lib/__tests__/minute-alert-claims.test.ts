@@ -61,6 +61,10 @@ describe('the claim TTL covers the worst case from claim to cooldown write', () 
 })
 
 describe('the overlap helper', () => {
+  it('fails with its own message once its stated deadline passes', async () => {
+    await expect(until(() => false, 'the thing', 20)).rejects.toThrow('the thing did not happen within 20 ms')
+  })
+
   it('refuses to wait under fake timers rather than hang', async () => {
     vi.useFakeTimers()
     try {
