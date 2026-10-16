@@ -33,6 +33,7 @@ import { leadRead } from './lead-read-budget'
 import { describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason, type ScheduledSlack } from './scheduled-slack'
 import { composeSalesforceReadBackAlert, type SalesforceReadBackAlert } from './salesforce-read-back-alert'
 import { openOutageForPost, type OpenOutage } from './outage-notice'
+import { STALL_SNAPSHOT_DEADLINE_MS, STALL_SNAPSHOT_TTL_SECONDS, type StallSnapshotCount } from './db-stall-snapshot'
 export type { SlackConnection } from './slack-connection'
 
 export interface FailureAlertPayload {
@@ -1556,6 +1557,43 @@ export interface SlowdownSummaryAlert {
   /** First seen time of the earliest and latest timed out write, ISO. */
   from: string
   to: string
+  /**
+   * The database snapshots taken during it (#2292): counted, never shown. Null
+   * when they could not be looked up; absent, no line is written.
+   */
+  snapshots?: StallSnapshotCount | null
+}
+
+/**
+ * The one line a slowdown alert gives the database snapshots taken during it
+ * (#2292). Counts and where to read them, never their contents: a snapshot
+ * holds query text, which can carry customer data. Null when there is nothing
+ * to say. `during` is "it" for one slowdown and "them" for several.
+ */
+export function stallSnapshotLine(
+  snapshots: StallSnapshotCount | null | undefined,
+  during: 'it' | 'them',
+  withDay = false,
+): string | null {
+  if (snapshots === undefined) return null
+  if (snapshots === null) return `Bidspoke could not look up its database snapshots for ${during}; \`GET /api/admin/db-stall-snapshots\` lists them.`
+  if (snapshots.attempts === 0) return `No database snapshot was taken during ${during}.`
+  const first = snapshots.first_at ? new Date(snapshots.first_at) : null
+  const time = (d: Date) => new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(d)
+  const day = (d: Date) => new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' }).format(d)
+  const at = first ? (withDay ? `on ${day(first)} at ${time(first)} ET` : `at ${time(first)} ET`) : ''
+  const where = `Read ${snapshots.attempts === 1 ? 'it' : 'them'} with \`GET /api/admin/db-stall-snapshots\`, kept for ${STALL_SNAPSHOT_TTL_SECONDS / 86_400} days.`
+  const meaning = snapshots.timed_out > 0
+    ? ` A snapshot that timed out means the database, or the connection pool in front of it, did not answer a ${STALL_SNAPSHOT_DEADLINE_MS / 1000} second read either.`
+    : ''
+  if (snapshots.attempts === 1 && snapshots.taken === 1) return `A database snapshot was taken during ${during}${at ? ` ${at}` : ''}. ${where}`
+  const outcomes = [
+    snapshots.taken > 0 ? `${snapshots.taken} answered` : '',
+    snapshots.timed_out > 0 ? `${snapshots.timed_out} timed out` : '',
+    snapshots.failed > 0 ? `${snapshots.failed} failed` : '',
+  ].filter(Boolean).join(', ')
+  const n = snapshots.attempts === 1 ? '1 database snapshot' : `${snapshots.attempts} database snapshots`
+  return `Bidspoke took ${n} during ${during}${at ? `, the first ${at}` : ''}: ${outcomes}.${meaning} ${where}`
 }
 
 /**
@@ -1613,6 +1651,8 @@ export async function sendSlowdownSummaryAlert(
     { type: 'section', text: { type: 'mrkdwn', text: fix } },
   ]
   if (listed.length > 0) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: lostLinks } })
+  const snapshotLine = stallSnapshotLine(payload.snapshots, 'it')
+  if (snapshotLine) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: snapshotLine } })
   blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard →>` } })
   return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${runs}`)) !== null
 }
@@ -1629,6 +1669,8 @@ export interface RepeatedSlowdownAlert {
   }>
   /** The rolling window they fell in, in hours. */
   window_hours: number
+  /** The database snapshots taken across them (#2292); see SlowdownSummaryAlert. */
+  snapshots?: StallSnapshotCount | null
 }
 
 /**
@@ -1666,8 +1708,10 @@ export async function sendRepeatedSlowdownAlert(
     },
     { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
     { type: 'section', text: { type: 'mrkdwn', text: '*Fix:* Check the database load on Supabase. A longer slowdown can lose records.' } },
-    { type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard →>` } },
   ]
+  const snapshotLine = stallSnapshotLine(payload.snapshots, 'them', true)
+  if (snapshotLine) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: snapshotLine } })
+  blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/dashboard|Open dashboard →>` } })
   return (await postMessage(connection.bot_token, connection.default_channel, blocks, `${title}: ${n} in ${payload.window_hours} hours`)) !== null
 }
 

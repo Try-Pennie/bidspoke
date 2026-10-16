@@ -44,6 +44,7 @@ import {
 } from './lead-sightings'
 import { deriveCodeNodeBidAttempts } from './bid-log'
 import { recordOutcomeDeadLetter, recordUnconfirmedOutcome, type OutcomeAlertDeps } from './durability'
+import { captureStallSnapshot, stallSnapshotRead, type StallSnapshotGate } from '../lib/db-stall-snapshot'
 import { captureFailedWriteback } from './writeback-deadletter'
 import { CONTINUATION_UNFINISHED_LABEL } from './dead-letter-labels'
 import { putAnswerJournal, type AnswerJournal } from './unconfirmed-writes'
@@ -205,6 +206,12 @@ export interface EngineRuntime {
    * are never written. Production never sets it.
    */
   observeStep?: (entry: StepLogEntry) => void
+  /**
+   * Decides, per isolate, whether a timed out write takes a database snapshot
+   * (#2292). Absent in production, which shares the isolate's own gate; a test
+   * passes a fresh one so its runs do not share a window.
+   */
+  stallSnapshotGate?: StallSnapshotGate
 }
 
 /** The bidding Worker's runtime: one client for config and run alike. */
@@ -446,6 +453,24 @@ export async function executeWorkflow(
     run: { workflow_id: workflowId, workflow_name, execution_id: executionId },
     // One alert per (org, label, cause) per window, decided atomically (#1881).
     claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
+    // A write that timed out means the database is stalling now, so a snapshot
+    // of what it is doing is taken while it still is (#2292). Handed to
+    // waitUntil, so no write and no response waits for it; it never rejects.
+    // Its deadline runs on the run's clock as a watch, never as a retry wait.
+    onUnconfirmed: (trigger) =>
+      executionCtx.waitUntil(
+        captureStallSnapshot(
+          {
+            kv: env.IDEMPOTENCY,
+            claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
+            read: stallSnapshotRead(runDb),
+            now: () => retryClock.now(),
+            sleep: (ms, signal) => retryClock.timer(ms, signal),
+            gate: runtime.stallSnapshotGate,
+          },
+          trigger,
+        ),
+      ),
   }
 
   // Awaited by the finalize block below: finalize UPDATEs the row this promise

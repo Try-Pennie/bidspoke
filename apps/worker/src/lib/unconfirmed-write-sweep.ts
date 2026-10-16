@@ -44,6 +44,7 @@ import { formatErr } from './format-error'
 import { NO_ROW_MATCHED_CODE, READ_BACK_MISSING_CODE } from './db-retry'
 import { getSlackConnection, sendRepeatedSlowdownAlert, sendSlowdownSummaryAlert, sendUnconfirmedWritesAlert, type SlackConnection } from './slack'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
+import { countStallSnapshots, type StallSnapshotCount } from './db-stall-snapshot'
 import type { Env } from '../env'
 import { recordOutcomeDeadLetter } from '../engine/durability'
 import {
@@ -89,7 +90,7 @@ export interface SweepKv {
   get(key: string): Promise<string | null>
   put(key: string, value: string, opts?: { expiration?: number; expirationTtl?: number }): Promise<void>
   delete(key: string): Promise<void>
-  list(opts: { prefix: string; limit: number }): Promise<{ keys: Array<{ name: string }> }>
+  list(opts: { prefix: string; limit: number; cursor?: string }): Promise<{ keys: Array<{ name: string; metadata?: unknown }>; list_complete?: boolean; cursor?: string }>
 }
 
 export interface UnconfirmedSweepDeps {
@@ -611,6 +612,37 @@ async function noteAllSaved(deps: UnconfirmedSweepDeps, orgId: string, tally: Sl
   return true
 }
 
+/**
+ * How much the snapshot window reaches past a slowdown's first and last timed
+ * out write. A snapshot starts the instant its write is recorded, so this only
+ * covers clock skew between isolates and the claim's own wait.
+ */
+const SNAPSHOT_WINDOW_MARGIN_MS = 60_000
+
+/**
+ * The database snapshots taken during these slowdowns (#2292), summed, for the
+ * alert's one line. Null when KV could not be read, so the alert says it could
+ * not look rather than that none was taken (L11); never throws, because the
+ * alert matters more than this line.
+ */
+async function snapshotsDuring(kv: SweepKv, windows: Array<{ from: string; to: string }>): Promise<StallSnapshotCount | null> {
+  const total: StallSnapshotCount = { attempts: 0, taken: 0, timed_out: 0, failed: 0, first_at: null }
+  try {
+    for (const w of windows) {
+      const c = await countStallSnapshots(kv, Date.parse(w.from) - SNAPSHOT_WINDOW_MARGIN_MS, Date.parse(w.to) + SNAPSHOT_WINDOW_MARGIN_MS)
+      total.attempts += c.attempts
+      total.taken += c.taken
+      total.timed_out += c.timed_out
+      total.failed += c.failed
+      if (c.first_at && (total.first_at === null || c.first_at < total.first_at)) total.first_at = c.first_at
+    }
+    return total
+  } catch (e) {
+    console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] could not count the database snapshots for the slowdown alert:`, formatErr(e))
+    return null
+  }
+}
+
 /** True when the repeat alert is delivered, or alerts are switched off for the org. */
 async function postRepeat(deps: UnconfirmedSweepDeps, orgId: string, slowdowns: AllSavedSlowdown[]): Promise<boolean> {
   try {
@@ -620,7 +652,8 @@ async function postRepeat(deps: UnconfirmedSweepDeps, orgId: string, slowdowns: 
       return false
     }
     if (!slack.config_alerts_enabled) return true
-    return await sendRepeatedSlowdownAlert(slack, { slowdowns, window_hours: ALL_SAVED_REPEAT_WINDOW_MS / (60 * 60 * 1000) }, deps.appUrl)
+    const snapshots = await snapshotsDuring(deps.kv, slowdowns)
+    return await sendRepeatedSlowdownAlert(slack, { slowdowns, window_hours: ALL_SAVED_REPEAT_WINDOW_MS / (60 * 60 * 1000), snapshots }, deps.appUrl)
   } catch (e) {
     console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] repeated slowdown alert failed for org ${orgId}:`, formatErr(e))
     return false
@@ -636,6 +669,7 @@ async function postSummary(deps: UnconfirmedSweepDeps, orgId: string, tally: Slo
       return false
     }
     if (!slack.config_alerts_enabled) return true
+    const snapshots = await snapshotsDuring(deps.kv, [tally])
     return await sendSlowdownSummaryAlert(
       slack,
       {
@@ -649,6 +683,7 @@ async function postSummary(deps: UnconfirmedSweepDeps, orgId: string, tally: Slo
         unconfirmed,
         from: tally.from,
         to: tally.to,
+        snapshots,
       },
       deps.appUrl,
     )
