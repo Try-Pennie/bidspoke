@@ -15,6 +15,7 @@ const row = (id: string, over: Record<string, unknown> = {}) => ({
   definition: { nodes: [] },
   organization_id: ORG,
   deleted_at: null,
+  updated_at: '2026-10-15T12:00:00.123456+00:00',
   ...over,
 })
 
@@ -49,6 +50,13 @@ describe('readOrgWorkflows', () => {
     const got = await readOrgWorkflows(asClient(sb), ORG)
     expect(got.map((w) => w.id)).toEqual(['mine'])
     expect(err).toHaveBeenCalledTimes(2)
+  })
+
+  it('carries each workflow\'s updated_at exactly as read, for the delete check\'s fingerprint (#2140)', async () => {
+    const sb = makeSupabase({ workflows: { list: [row('a', { updated_at: '2026-10-16T01:02:03.456789+00:00' })] } })
+    const got = await readOrgWorkflows(asClient(sb), ORG)
+    expect(sb.calls.workflows.find(([m]) => m === 'select')?.[1][0]).toMatch(/\bupdated_at\b/)
+    expect(got[0].updated_at).toBe('2026-10-16T01:02:03.456789+00:00')
   })
 
   it('leaves out a named workflow in the query, so it never takes a page slot', async () => {

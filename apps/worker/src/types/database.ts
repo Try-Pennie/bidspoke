@@ -2975,6 +2975,16 @@ export type Database = {
         }
         Returns: Json
       }
+      _delete_partner_config: {
+        Args: {
+          p_actor: string
+          p_actor_email: string
+          p_expected: Json
+          p_id: string
+          p_org: string
+        }
+        Returns: undefined
+      }
       alert_incident_moved_from: {
         Args: { p_signal: string; p_started_at: string; p_subject: string }
         Returns: string
@@ -3073,15 +3083,27 @@ export type Database = {
         Args: { p_days_ahead?: number }
         Returns: number
       }
-      delete_partner_config: {
-        Args: {
-          p_actor: string
-          p_actor_email: string
-          p_id: string
-          p_org: string
-        }
-        Returns: undefined
-      }
+      db_stall_snapshot: { Args: never; Returns: Json }
+      delete_partner_config:
+        | {
+            Args: {
+              p_actor: string
+              p_actor_email: string
+              p_id: string
+              p_org: string
+            }
+            Returns: undefined
+          }
+        | {
+            Args: {
+              p_actor: string
+              p_actor_email: string
+              p_expected: Json
+              p_id: string
+              p_org: string
+            }
+            Returns: undefined
+          }
       drain_lead_sightings_purge: { Args: never; Returns: undefined }
       drop_exported_sighting_partitions: {
         Args: { p_grace?: string }
@@ -3159,6 +3181,30 @@ export type Database = {
         Returns: undefined
       }
       partner_configs_unversioned_columns: { Args: never; Returns: string[] }
+      partner_delete_check: {
+        Args: { p_id: string; p_org: string }
+        Returns: Json
+      }
+      partner_delete_counts: {
+        Args: { p_id: string; p_lock: boolean; p_org: string }
+        Returns: {
+          blocking_rows: number
+          depth: number
+          kind: string
+          row_count: number
+          table_name: string
+        }[]
+      }
+      partner_delete_dependents: {
+        Args: never
+        Returns: {
+          depth: number
+          on_delete: string
+          reached_by: string
+          row_query: string
+          table_name: string
+        }[]
+      }
       partner_page_notice_tables: { Args: never; Returns: string[] }
       pg_cron_health: {
         Args: { window_hours?: number }

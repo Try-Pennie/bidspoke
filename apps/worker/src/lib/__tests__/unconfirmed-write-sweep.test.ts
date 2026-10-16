@@ -41,6 +41,7 @@ import {
 import { putUnconfirmedWrite, UNCONFIRMED_WRITE_PREFIX, type ReadBack, type UnconfirmedWrite } from '../../engine/unconfirmed-writes'
 import { NO_ROW_MATCHED_CODE, READ_BACK_MISSING_CODE } from '../db-retry'
 import type { AlertClaims } from '../alert-claim'
+import { stallSnapshotKey, STALL_SNAPSHOT_PREFIX } from '../db-stall-snapshot'
 import type { JobRunEnding } from '../job-run-record'
 
 const T0 = Date.parse('2026-10-08T12:20:30.000Z')
@@ -903,5 +904,82 @@ describe('a slowdown that saved every record (#2165)', () => {
     await runUnconfirmedWriteSweep(deps(kv, db, T0 + 2 * HOUR + SUMMARY_QUIET_MS))
     expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
     expect(sendRepeatedSlowdownAlert).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * #2292: the summary says whether a database snapshot was taken during the
+ * slowdown, counted from KV, so whoever reads it knows the evidence exists.
+ */
+describe('the database snapshots taken during a slowdown (#2292)', () => {
+  const HOUR = 60 * 60 * 1000
+  const LANDED_ROW = { id: 's-1', execution_started_at_utc: STARTED, outcome_state: 'finalized' }
+
+  async function snapshot(kv: ReturnType<typeof makeKv>, atMs: number, status: 'taken' | 'timed_out', id: string) {
+    const record = { v: 1, id, started_at: new Date(atMs).toISOString(), status, elapsed_ms: 5, deadline_ms: 3000, trigger: { label: 'lead_sightings.insert' } }
+    await kv.put(stallSnapshotKey(atMs, id), JSON.stringify(record))
+  }
+
+  it('counts the snapshots taken during the slowdown into its summary, and none from another hour', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    await snapshot(kv, T0, 'taken', 'a')
+    await snapshot(kv, T0 + 2_000, 'timed_out', 'b')
+    await snapshot(kv, T0 - 3 * HOUR, 'taken', 'old')
+    await runUnconfirmedWriteSweep(deps(kv, db, QUIET))
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendSlowdownSummaryAlert).mock.calls[0][1].snapshots).toEqual({
+      attempts: 2,
+      taken: 1,
+      timed_out: 1,
+      failed: 0,
+      first_at: new Date(T0).toISOString(),
+    })
+  })
+
+  it('says none was taken when there is none', async () => {
+    const kv = makeKv()
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    await runUnconfirmedWriteSweep(deps(kv, makeDb(), QUIET))
+    expect(vi.mocked(sendSlowdownSummaryAlert).mock.calls[0][1].snapshots).toMatchObject({ attempts: 0 })
+  })
+
+  it('still posts the summary, saying it could not look, when the snapshots cannot be listed', async () => {
+    const kv = makeKv()
+    await seed(kv, 'lead_sightings.insert', SIGHT_IN)
+    const list = kv.list.getMockImplementation()!
+    kv.list.mockImplementation(async (opts: { prefix?: string; limit?: number }) => {
+      if (opts.prefix?.startsWith(STALL_SNAPSHOT_PREFIX)) throw new Error('KV list failed')
+      return list(opts)
+    })
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await runUnconfirmedWriteSweep(deps(kv, makeDb(), QUIET))
+    expect(sendSlowdownSummaryAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendSlowdownSummaryAlert).mock.calls[0][1].snapshots).toBeNull()
+    expect(err.mock.calls.flat().join(' ')).toMatch(/snapshot/)
+    err.mockRestore()
+  })
+
+  it('counts the snapshots of each repeated slowdown into the repeat alert, and none between them', async () => {
+    const kv = makeKv()
+    const db = makeDb()
+    const claims = makeClaims()
+    db.tables.lead_sightings.push(LANDED_ROW)
+    const starts = [T0, T0 + 2 * HOUR, T0 + 5 * HOUR]
+    for (const [i, at] of starts.entries()) await snapshot(kv, at, 'taken', `s${i}`)
+    await snapshot(kv, T0 + HOUR, 'taken', 'between')
+    for (const at of starts) {
+      await seed(kv, 'lead_sightings.insert', SIGHT_IN, at, 'org-1', { ...RUN, execution_id: `ex-at-${at}` })
+      await runUnconfirmedWriteSweep(deps(kv, db, at + SUMMARY_QUIET_MS, { claims }))
+    }
+    expect(sendRepeatedSlowdownAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendRepeatedSlowdownAlert).mock.calls[0][1].snapshots).toEqual({
+      attempts: 3,
+      taken: 3,
+      timed_out: 0,
+      failed: 0,
+      first_at: new Date(T0).toISOString(),
+    })
   })
 })

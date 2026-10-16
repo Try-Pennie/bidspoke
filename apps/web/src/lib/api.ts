@@ -3,6 +3,7 @@ import type { Workflow, WorkflowSummary, WorkflowDef, WorkflowVersion, EnvVar, F
 import type { PartnerType } from './partner-roles'
 import type { LiveMissReportBody, PartnerPageVersions } from '@bidspoke/partner-page-live'
 import type { PartnerHistory } from '@bidspoke/partner-history'
+import { holdAuthRedirect } from './leave-guard'
 
 export type { PartnerType }
 
@@ -183,6 +184,67 @@ export interface PartnerWorkflowValues {
   values: PartnerWorkflowValue[]
   /** What was searched, so an empty reader list can be worded as what it measured. */
   searched: { workflows: number; with_constants_node: number }
+}
+
+/**
+ * The partner delete check (#2140), the page's copy of the Worker's types in
+ * apps/worker/src/lib/partner-delete-shape.ts; partner-delete-answer-type.test.ts
+ * holds the two equal.
+ */
+export interface DependentNoun {
+  one: string
+  many: string
+}
+
+export interface PartnerDeleteTable {
+  table: string
+  kind: 'deleted' | 'cleared'
+  rows: number
+  noun: DependentNoun
+}
+
+export type PartnerDeleteBlocker =
+  | { kind: 'rows'; table: string; rows: number; noun: DependentNoun }
+  | { kind: 'ledger_unmirrored'; count: number }
+  | { kind: 'ledger_unresolved'; count: number }
+
+export interface PartnerDeleteWorkflow {
+  id: string
+  name: string
+  is_active: boolean
+}
+
+export interface PartnerDeleteReadingWorkflow extends PartnerDeleteWorkflow {
+  reads: 'by_name' | 'every_partner'
+  values: string[]
+}
+
+export interface PartnerDeleteFingerprint {
+  counts: Record<string, number>
+  workflows: Array<{ id: string; updated_at: string }>
+}
+
+export interface PartnerDeleteCheck {
+  partner: { id: string; name: string; slug: string; partner_type: string; is_active: boolean }
+  blockers: PartnerDeleteBlocker[]
+  removes: PartnerDeleteTable[]
+  workflows_naming_partner: PartnerDeleteWorkflow[]
+  workflows_reading_values: PartnerDeleteReadingWorkflow[]
+  secret: { name: string; other_partners: number } | null
+  fingerprint: PartnerDeleteFingerprint
+}
+
+export interface PartnerDeleted {
+  ok: true
+  stored_copy_warning?: string
+  state_reset_warning?: string
+}
+
+/** A refused delete (409): nothing was deleted, and check is the consequence as it stands now, or null when it could not be read. */
+export interface PartnerDeleteRefused {
+  error: 'blocked' | 'consequence_changed'
+  message: string
+  check: PartnerDeleteCheck | null
 }
 
 /**
@@ -612,8 +674,12 @@ async function authHeaders(): Promise<HeadersInit> {
   }
 }
 
+// Both auth redirects ask the leave guard first (#2138): while a page holds a
+// draft or a save not yet confirmed, the redirect is not made and the page
+// says why instead, so an expired session never takes unsaved work with it.
 function redirectToLogin() {
-  if (typeof window !== 'undefined') window.location.href = '/login'
+  if (typeof window === 'undefined' || holdAuthRedirect(401)) return
+  window.location.href = '/login'
 }
 
 // Handle an auth-level rejection from the Worker API. 401 = not authenticated
@@ -626,10 +692,19 @@ function redirectOnAuthRejection(status: number): boolean {
     return true
   }
   if (status === 403) {
-    if (typeof window !== 'undefined') window.location.href = '/access-denied'
+    if (typeof window !== 'undefined' && !holdAuthRedirect(403)) window.location.href = '/access-denied'
     return true
   }
   return false
+}
+
+/**
+ * The error an auth rejection throws, carrying its status (#2138), so a caller
+ * whose redirect was held can tell an expired session from a request that got
+ * no answer at all.
+ */
+function authRejection(status: 401 | 403): Error & { status: 401 | 403 } {
+  return Object.assign(new Error(status === 401 ? 'Not authenticated' : 'Access denied'), { status })
 }
 
 // Default ceiling for a normal request. Long-running operations (test runs,
@@ -687,12 +762,12 @@ async function req<T>(path: string, init?: ReqInit): Promise<T> {
     headers = await authHeaders()
   } catch {
     redirectToLogin()
-    throw new Error('Not authenticated')
+    throw authRejection(401)
   }
   const res = await fetchWithTimeout(`${WORKER_URL}${path}`, init ?? {}, headers)
   if (!res.ok) {
     if (redirectOnAuthRejection(res.status)) {
-      throw new Error(res.status === 401 ? 'Not authenticated' : 'Access denied')
+      throw authRejection(res.status === 401 ? 401 : 403)
     }
     // Surface the server's `error` field when the body is JSON, so users see
     // the actual rejection (e.g. "Workflow has a loop: ...") instead of an
@@ -996,12 +1071,12 @@ export const api = {
         headers = await authHeaders()
       } catch {
         redirectToLogin()
-        throw new Error('Not authenticated')
+        throw authRejection(401)
       }
       const res = await fetchWithTimeout(`${WORKER_URL}/api/executions/${id}/replay`, { method: 'POST', timeoutMs: LONG_TIMEOUT_MS }, headers)
       if (!res.ok) {
         if (redirectOnAuthRejection(res.status)) {
-          throw new Error(res.status === 401 ? 'Not authenticated' : 'Access denied')
+          throw authRejection(res.status === 401 ? 401 : 403)
         }
         const errBody = await res.text().catch(() => '')
         throw new Error(`API ${res.status}: ${errBody}`)
@@ -1016,12 +1091,12 @@ export const api = {
         headers = await authHeaders()
       } catch {
         redirectToLogin()
-        throw new Error('Not authenticated')
+        throw authRejection(401)
       }
       const res = await fetchWithTimeout(`${WORKER_URL}/api/executions/${id}/resume`, { method: 'POST', timeoutMs: LONG_TIMEOUT_MS }, headers)
       if (!res.ok) {
         if (redirectOnAuthRejection(res.status)) {
-          throw new Error(res.status === 401 ? 'Not authenticated' : 'Access denied')
+          throw authRejection(res.status === 401 ? 401 : 403)
         }
         const errBody = await res.text().catch(() => '')
         throw new Error(`API ${res.status}: ${errBody}`)
@@ -1071,8 +1146,12 @@ export const api = {
     // 409 body is a PartnerPageStale.
     savePage: (id: string, patch: Partial<PartnerBody>, request: PartnerPageSaveRequest) =>
       req<PartnerPageSaved>(`/api/partners/${id}/page`, { method: 'PUT', body: JSON.stringify({ ...request, patch }) }),
-    delete: (id: string) =>
-      req<{ ok: boolean } & StoredCopyAnswer>(`/api/partners/${id}`, { method: 'DELETE' }),
+    // What deleting the partner would do (#2140), read before Delete is offered.
+    deleteCheck: (id: string) => req<PartnerDeleteCheck>(`/api/partners/${id}/delete-check`),
+    // The delete as reviewed: a refusal throws carrying `status` and the body; a
+    // 409 body is a PartnerDeleteRefused.
+    delete: (id: string, fingerprint: PartnerDeleteFingerprint) =>
+      req<PartnerDeleted>(`/api/partners/${id}`, { method: 'DELETE', body: JSON.stringify({ fingerprint }) }),
     getCapCount: (id: string) =>
       req<{ count: number; date: string; sold_on?: 'click'; day_zone?: string }>(`/api/partners/${id}/cap-count`),
     // The workflow values tab (#2142): which workflows read the partner's Constants values.

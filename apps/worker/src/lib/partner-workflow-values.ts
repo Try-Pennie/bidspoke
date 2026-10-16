@@ -2,9 +2,9 @@
  * Which workflows read a partner's values from the Constants node (#2142, PM-15).
  *
  * The one scanner and matcher: the partners page's workflow values tab
- * (`GET /api/partners/:id/workflow-values`) calls it, and the delete check
- * (#2140, not built yet) is to call it too, to list the workflows that will
- * read nothing for a partner after it is deleted, rather than keep a copy.
+ * (`GET /api/partners/:id/workflow-values`) calls it, and so does the delete
+ * check (#2140, lib/partner-delete.ts), to list the workflows that will read
+ * nothing for a partner after it is deleted, rather than keep a copy.
  *
  * The names searched for come from the function that builds them
  * (`partnerConstantName` in engine/nodes/constants.ts, L564): a test fails when

@@ -7,7 +7,8 @@
  * writing to production. Here every request to the Worker is answered from
  * fixtures/partners/: the captured reads (capture-partners.mjs) and, under
  * synthetic/, the hand made answers for what cannot be read (a stale save's 409,
- * a matrix to delete, the usage panels a Durable Object answers in production).
+ * a matrix to delete, the usage panels a Durable Object answers in production,
+ * and the delete box's check, #2140, which joins a Durable Object's counts).
  * Nothing is forwarded: a Worker API call with no answer here is recorded as
  * unmatched and answered 599, and the spec fails on any unmatched call (the guard the plan
  * asks for), so a new Worker route on this page cannot go unscanned.
@@ -15,6 +16,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import type { Page } from '@playwright/test'
+import { mergeHistory, type PartnerHistory } from '@bidspoke/partner-history'
 import { LIVE_MISS_ID, realtimeReplies, versionsFor } from './partner-live-fixtures'
 
 export { LIVE_MISS_ID, realtimeReplies, versionsFor }
@@ -32,8 +34,18 @@ export interface PartnerFixtures {
   stale: Record<string, unknown> & { partner: { id: string } }
   matrix: { list: Array<{ id: string; partner_id: string }>; detail: unknown }
   panels: { history: unknown; buyer_sales: unknown; held_clicks: unknown; usage_offer: unknown; usage_click: unknown }
+  /** The delete box's check for every listed partner, by id (#2140): Tripoint blocked by its sales, the others deletable. */
+  deleteChecks: Record<string, { answer: unknown }>
   /** GET /api/partners/:id/usage by partner id (#2137), measured read only from production on 2026-10-16. */
   usage: Record<string, unknown>
+  /**
+   * GET /api/partners/:id/history by partner id (#2141): production's 59 audit
+   * rows for the nine partners, read only on 2026-10-16, mapped as the route
+   * maps them and redacted as a capture is.
+   */
+  history: Record<string, PartnerHistory>
+  /** Tripoint's History with three synthetic matrix entries on top: production holds no matrix sync rows. */
+  historyMatrix: PartnerHistory
   /**
    * Liberty1's held clicks (#2139), invented because production holds none, and
    * the answer to adding a lead id to its sale with none. held-clicks-fixtures-contract.test.ts
@@ -51,7 +63,10 @@ export function loadPartnerFixtures(): PartnerFixtures {
     stale: read('synthetic/page-save-409.tripoint.json'),
     matrix: read('synthetic/matrix.tripoint.json'),
     panels: read('synthetic/panels.json'),
+    deleteChecks: read('synthetic/delete-checks.json'),
     usage: read('usage.json'),
+    history: read('history.json'),
+    historyMatrix: read('synthetic/history-matrix.tripoint.json'),
     heldClicks: read('synthetic/held-clicks.liberty1.json'),
   }
 }
@@ -65,11 +80,26 @@ export interface FixtureOptions {
   credentialWarningFor?: string
   /** Answer the usage read (#2137) with a 503, so the Bid Group tab's failed state is reached. */
   usageFails?: boolean
+  /** Answer the History read (#2141) with the route's error for a failed users read. */
+  historyFails?: boolean
+  /** Give Tripoint the synthetic History holding matrix syncs and a matrix created. */
+  historyMatrix?: boolean
+  /** Answer Tripoint's History as the route does when a source was cut at its bound (mergeHistory with the source truncated). */
+  historyIncomplete?: boolean
   /** Give Liberty1 its invented held clicks (#2139), and answer adding a lead id to one, so the cards, the lead id box and the Remove dialog are scanned. */
   heldClicks?: boolean
 }
 
 export interface Answer { status: number; body: unknown }
+
+/**
+ * A fixture's own entry for a partner id, or undefined. A JSON object's inherited
+ * names (constructor, toString) are no partner, and nor is a file's own note key
+ * (one starting with _), so a page asking for one gets no answer.
+ */
+function ownEntry<T>(record: Record<string, T>, id: string): T | undefined {
+  return Object.prototype.hasOwnProperty.call(record, id) && !id.startsWith('_') ? record[id] : undefined
+}
 
 /** The answer to one Worker request, or null when the fixtures hold none. Pure, so it is unit tested. */
 export function answerFor(method: string, url: string, fx: PartnerFixtures, opts: FixtureOptions = {}): Answer | null {
@@ -104,23 +134,41 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
       ? { ...row, credential_warning: `Credential '${String(row.cf_secret_key ?? 'PARTNER_SECRET')}' is not set, so this partner will fail on the next live lead.` }
       : row)))
   }
-  if ((m = /^\/api\/partners\/([^/]+)\/buyer-profile$/.exec(p))) return fx.buyerProfiles[m[1]] ? ok(fx.buyerProfiles[m[1]]) : null
+  if ((m = /^\/api\/partners\/([^/]+)\/buyer-profile$/.exec(p))) {
+    const answer = ownEntry(fx.buyerProfiles, m[1])
+    return answer ? ok(answer) : null
+  }
   if (/^\/api\/partners\/[^/]+\/buyer-profile\/history$/.test(p)) return ok(fx.panels.history)
   if ((m = /^\/api\/partners\/([^/]+)\/buyer-usage$/.exec(p))) {
-    const soldOn = fx.buyerProfiles[m[1]]?.profile?.sold_on
+    const soldOn = ownEntry(fx.buyerProfiles, m[1])?.profile?.sold_on
     return ok(soldOn === 'click' ? fx.panels.usage_click : fx.panels.usage_offer)
   }
   if ((m = /^\/api\/partners\/([^/]+)\/usage$/.exec(p))) {
     if (opts.usageFails) return { status: 503, body: { error: 'Service unavailable' } }
-    return fx.usage[m[1]] ? ok(fx.usage[m[1]]) : null
+    const answer = ownEntry(fx.usage, m[1])
+    return answer ? ok(answer) : null
+  }
+  if ((m = /^\/api\/partners\/([^/]+)\/history$/.exec(p))) {
+    if (opts.historyFails) return { status: 500, body: { error: 'history_unavailable', read: 'users', message: 'History could not be loaded: the users read failed.' } }
+    const tripointId = fx.historyMatrix.partnerId
+    if (opts.historyMatrix && m[1] === tripointId) return ok(fx.historyMatrix)
+    const history = ownEntry(fx.history, m[1])
+    if (!history) return null
+    if (opts.historyIncomplete && m[1] === tripointId) return ok({ partnerId: m[1], ...mergeHistory([{ entries: history.entries, truncated: true }]) })
+    return ok(history)
   }
   if (p === '/api/partner-uuids') return ok(fx.uuids)
   if (p === '/api/partner-bid-configs') {
     const id = u.searchParams.get('partner_id') ?? ''
     if (opts.matrix && id === fx.matrix.list[0].partner_id) return ok(fx.matrix.list)
-    return fx.bidConfigs[id] ? ok(fx.bidConfigs[id]) : null
+    const answer = ownEntry(fx.bidConfigs, id)
+    return answer ? ok(answer) : null
   }
   if ((m = /^\/api\/partner-bid-configs\/([^/]+)$/.exec(p))) return opts.matrix && m[1] === fx.matrix.list[0].id ? ok(fx.matrix.detail) : null
+  if ((m = /^\/api\/partners\/([^/]+)\/delete-check$/.exec(p))) {
+    const entry = ownEntry(fx.deleteChecks, m[1])
+    return entry ? ok(entry.answer) : null
+  }
   if (p === '/api/buyer-sales') return ok(fx.panels.buyer_sales)
   if (p === '/api/held-clicks') {
     const liberty1 = fx.partners.find((row) => row.slug === 'liberty1')

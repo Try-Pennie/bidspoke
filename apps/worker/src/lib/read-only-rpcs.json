@@ -20,7 +20,9 @@
     "unpaginated_big_tables",
     "workflow_stats_rollup",
     "buyer_profile_document",
-    "sightings_buffer_lag"
+    "sightings_buffer_lag",
+    "partner_delete_check",
+    "db_stall_snapshot"
   ],
   "mutating": [
     "record_archive_day_measurement",

@@ -5,6 +5,7 @@ import Link from 'next/link'
 
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
+import { leaveThen } from '@/lib/leave-guard'
 import { GitBranch, Settings, LogOut, Puzzle, KeyRound, Users, LayoutDashboard, Globe, BookOpen } from 'lucide-react'
 
 const NAV = [
@@ -21,10 +22,15 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const router = useRouter()
 
-  async function handleSignOut() {
-    const supabase = createClient()
-    await supabase.auth.signOut()
-    router.push('/login')
+  // A page holding unsaved work asks first, in its own dialog (#2138, PM-5).
+  function handleSignOut() {
+    leaveThen({ kind: 'sign-out' }, () => {
+      void (async () => {
+        const supabase = createClient()
+        await supabase.auth.signOut()
+        router.push('/login')
+      })()
+    })
   }
 
   return (

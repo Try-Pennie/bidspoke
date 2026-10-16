@@ -325,10 +325,20 @@
       "p_org": "00000000-0000-0000-0000-000000000000",
       "p_id": "00000000-0000-0000-0000-000000000000",
       "p_actor": "00000000-0000-0000-0000-000000000000",
-      "p_actor_email": "probe@invalid"
+      "p_actor_email": "probe@invalid",
+      "p_expected": { "counts": {}, "workflows": [] }
     },
     "anon": "denied",
-    "note": "Deletes a partner with the actor on its audit row (#1409). A WRITE. Probed with the all zero id, which no row carries, so a successful probe refuses partner_not_found."
+    "note": "Deletes a partner and its sub-account IDs as the delete check reviewed them (#1409, #2140). A WRITE. Probed through the five argument overload the Worker calls since #2140, with the all zero id, which no row carries, so a successful probe refuses partner_not_found. The four argument overload stays for the release before #2140."
+  },
+  {
+    "name": "partner_delete_check",
+    "args": {
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_id": "00000000-0000-0000-0000-000000000000"
+    },
+    "anon": "denied",
+    "note": "What deleting one partner would do (#2140): its dependents with row counts and blockers. STABLE, read only. Probed with the all zero id, which no row carries, so a successful probe refuses partner_not_found."
   },
   {
     "name": "rename_partner_step_namespace",
@@ -480,5 +490,11 @@
     "args": {},
     "anon": "denied",
     "note": "The cron guard fail-open record's retention (#2166): run daily by the purge-cron-guard-fail-opens pg_cron job, deleting cron_guard_fail_opens rows over 7 days old. A DELETE, revoked from anon and authenticated, so anon must be denied. It takes no arguments, so an empty body names it."
+  },
+  {
+    "name": "db_stall_snapshot",
+    "args": {},
+    "anon": "denied",
+    "note": "Called by the Worker the moment a post-response write times out (#2292, lib/db-stall-snapshot.ts) to record what every backend is doing during the stall. Security definer, reading every running query's first 300 characters, which can carry customer data, so it MUST be denied to anon (#762). If it is missing, every stall's snapshot is stored as failed and the cause goes unrecorded again. It takes no arguments, so an empty body names it."
   }
 ]

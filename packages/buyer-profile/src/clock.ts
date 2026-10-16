@@ -8,6 +8,12 @@
  * Pacific, because clicks arrive after offers and an Eastern day would push a
  * late evening click into the next day's count. `easternParts` is
  * `zonedParts` in New York, so the two readings cannot drift apart.
+ *
+ * Workflow schedules (#1952) extend this clock in place rather than fork a
+ * second one (L655): a cron fires at a wall time in its zone, so they need the
+ * inverse reading, `zonedWallTimeToUtc`, and UTC as a zone (SCHEDULE_ZONES).
+ * Both go through zonedParts, so a schedule and a buyer's hours cannot read the
+ * same instant differently at a daylight saving change.
  */
 
 export interface OperatingWindow {
@@ -67,9 +73,34 @@ export function isDisplayTimeZone(value: unknown): value is DisplayTimeZone {
   return typeof value === 'string' && (DISPLAY_TIME_ZONES as readonly string[]).includes(value)
 }
 
-const FORMATTERS = new Map<ClockZone, Intl.DateTimeFormat>()
+/**
+ * The zones a workflow schedule may fire in (#1952): the product zones plus
+ * UTC, which 14 of the 77 timers in the 2026-09-30 Pipedream export use (12 as
+ * `UTC`, 2 as `Etc/UTC`; the fixture is packages/workflow-definition/src/schedule/fixtures/pipedream-timers.json). Kept apart from CLOCK_ZONES so nothing that judges a lead can
+ * start reading UTC, and closed for the same reason CLOCK_ZONES is: a zone the
+ * offsets below do not cover would make zonedWallTimeToUtc guess.
+ */
+export const SCHEDULE_ZONES = [...CLOCK_ZONES, 'UTC'] as const
+export type ScheduleZone = (typeof SCHEDULE_ZONES)[number]
 
-function formatterFor(zone: ClockZone): Intl.DateTimeFormat {
+export function isScheduleZone(value: unknown): value is ScheduleZone {
+  return typeof value === 'string' && (SCHEDULE_ZONES as readonly string[]).includes(value)
+}
+
+/**
+ * Every whole hour offset BEHIND UTC each zone keeps across the year. A wall
+ * time is tried at each, and the candidates that read back as that wall time
+ * are the answer; none or two is a daylight saving change.
+ */
+const OFFSET_HOURS_BEHIND_UTC: Readonly<Record<ScheduleZone, readonly number[]>> = {
+  'America/New_York': [4, 5],
+  'America/Los_Angeles': [7, 8],
+  UTC: [0],
+}
+
+const FORMATTERS = new Map<ScheduleZone, Intl.DateTimeFormat>()
+
+function formatterFor(zone: ScheduleZone): Intl.DateTimeFormat {
   let f = FORMATTERS.get(zone)
   if (!f) {
     f = new Intl.DateTimeFormat('en-US', {
@@ -98,13 +129,12 @@ export function hourBucket(instantMs: number): number {
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/
 
 /**
- * The UTC instant an Eastern calendar day begins (#1412). Eastern midnight is
- * 04:00 or 05:00 UTC depending on daylight saving, so the candidate is checked
- * against easternParts rather than assumed; the one that lands on minute 0 of
- * the asked for date is the answer. A value that is not a calendar date is
- * refused, never coerced to a neighbouring day (L50).
+ * The year, month (1 to 12) and day of a YYYY-MM-DD calendar date, the one
+ * check every reader here takes a date through. A value that is not a calendar
+ * date (the wrong shape, or a 30th of February) is refused, never coerced to a
+ * neighbouring day (L50).
  */
-export function easternDayStartUtc(isoDate: string): number {
+function calendarDate(isoDate: string): [number, number, number] {
   const m = ISO_DATE.exec(isoDate)
   if (!m) throw new Error(`${isoDate} is not a calendar date (YYYY-MM-DD)`)
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
@@ -112,6 +142,18 @@ export function easternDayStartUtc(isoDate: string): number {
   if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) {
     throw new Error(`${isoDate} is not a calendar date`)
   }
+  return [y, mo, d]
+}
+
+/**
+ * The UTC instant an Eastern calendar day begins (#1412). Eastern midnight is
+ * 04:00 or 05:00 UTC depending on daylight saving, so the candidate is checked
+ * against easternParts rather than assumed; the one that lands on minute 0 of
+ * the asked for date is the answer. A value that is not a calendar date is
+ * refused, never coerced to a neighbouring day (L50).
+ */
+export function easternDayStartUtc(isoDate: string): number {
+  const [y, mo, d] = calendarDate(isoDate)
   for (const offsetHours of [4, 5]) {
     const candidate = Date.UTC(y, mo - 1, d, offsetHours)
     const parts = easternParts(candidate)
@@ -128,13 +170,7 @@ export function easternDayStartUtc(isoDate: string): number {
  * exactly as easternDayStartUtc does.
  */
 export function zonedDayStartUtc(isoDate: string, zone: ClockZone): number {
-  const m = ISO_DATE.exec(isoDate)
-  if (!m) throw new Error(`${isoDate} is not a calendar date (YYYY-MM-DD)`)
-  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
-  const probe = new Date(Date.UTC(y, mo - 1, d))
-  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) {
-    throw new Error(`${isoDate} is not a calendar date`)
-  }
+  const [y, mo, d] = calendarDate(isoDate)
   for (const offsetHours of [4, 5, 7, 8]) {
     const candidate = Date.UTC(y, mo - 1, d, offsetHours)
     const parts = zonedParts(candidate, zone)
@@ -147,8 +183,40 @@ export function easternParts(instantMs: number): EasternParts {
   return zonedParts(instantMs, EASTERN)
 }
 
+/** How a wall time was read: as written, moved forward out of a spring gap, or the first of an autumn repeat. */
+export type WallTimeKind = 'exact' | 'gap_shifted' | 'overlap_first'
+
+/**
+ * The UTC instant a wall clock time on a calendar date names in a zone (#1952),
+ * the inverse of zonedParts, for schedules that fire at wall times. Each of the
+ * zone's offsets is tried and checked against zonedParts rather than assumed,
+ * as zonedDayStartUtc does, so the two readings cannot disagree.
+ *
+ * The two ambiguous cases follow RFC 5545 (3.3.5) and Temporal's 'compatible'
+ * disambiguation: a time the spring change skips is read with the offset in
+ * force before it (02:04 becomes 03:04 daylight time, the later candidate), and
+ * a time the autumn change repeats is its first occurrence. The kind says which,
+ * so a caller can record it. A date that is not a calendar date or a minute
+ * outside the day is refused, never coerced (L50).
+ */
+export function zonedWallTimeToUtc(isoDate: string, minuteOfDay: number, zone: ScheduleZone): { utcMs: number; kind: WallTimeKind } {
+  const [y, mo, d] = calendarDate(isoDate)
+  if (!Number.isInteger(minuteOfDay) || minuteOfDay < 0 || minuteOfDay >= 1440) {
+    throw new Error(`${minuteOfDay} is not a minute of the day (0 to 1439)`)
+  }
+  const wallAsUtc = Date.UTC(y, mo - 1, d, 0, minuteOfDay)
+  const candidates = OFFSET_HOURS_BEHIND_UTC[zone].map((h) => wallAsUtc + h * 3_600_000)
+  const exact = candidates.filter((c) => {
+    const parts = zonedParts(c, zone)
+    return parts.date === isoDate && parts.minuteOfDay === minuteOfDay
+  })
+  if (exact.length === 1) return { utcMs: exact[0], kind: 'exact' }
+  if (exact.length > 1) return { utcMs: Math.min(...exact), kind: 'overlap_first' }
+  return { utcMs: Math.max(...candidates), kind: 'gap_shifted' }
+}
+
 /** The calendar date, weekday and minute of the day at an instant in a named zone. */
-export function zonedParts(instantMs: number, zone: ClockZone): EasternParts {
+export function zonedParts(instantMs: number, zone: ScheduleZone): EasternParts {
   const fields: Record<string, string> = {}
   for (const part of formatterFor(zone).formatToParts(new Date(instantMs))) {
     if (part.type !== 'literal') fields[part.type] = part.value

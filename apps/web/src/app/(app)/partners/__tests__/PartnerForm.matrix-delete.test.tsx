@@ -58,17 +58,19 @@ describe('deleting the matrix the partner uses (#2217)', () => {
     // The matrix is on the Bid Group tab (#2137), opened as the URL would ask.
     render(<PartnerForm partner={partner} requestedTab="bid_group" onSave={onSave} onCancel={vi.fn()} />)
     await waitFor(() => expect(api.partnerBidConfigs.get).toHaveBeenCalledWith('cfg-1'))
-    expect(screen.queryByText('Unsaved changes')).toBeNull()
+    // Nothing unsaved: no save bar (#2138).
+    expect(document.querySelector('[data-save-bar]')).toBeNull()
 
     fireEvent.click(await screen.findByRole('button', { name: 'Delete this matrix' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Delete matrix' }))
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
 
-    expect(await screen.findByText('Unsaved changes')).toBeInTheDocument()
+    // The cleared matrix is an unsaved change, named in the save bar.
+    expect(await screen.findByText('1 unsaved change: Resolver settings')).toBeInTheDocument()
     expect(screen.getByLabelText('Bid matrix')).toHaveTextContent('No matrix')
     expect(screen.queryByText(/no longer available/)).toBeNull()
 
-    fireEvent.click(document.querySelector('button[type="submit"]')!)
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
     expect(onSave.mock.calls[0][0]).toEqual({ bid_resolver_config: { bid_config_id: null } })
   })

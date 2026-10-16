@@ -18,10 +18,10 @@
  *
  * Product source only: __tests__, __guards__, e2e and *.test files are out of
  * scope (so the local alert helper in drift-alert-state.test.ts is not a
- * native call). The allowlists name PR7 (#2138), which replaces the partners
- * page's leave prompts and its inline click delivery confirmation and empties
- * them; each entry is held to its exact count, so a new call in an allowlisted
- * file still fails.
+ * native call). Both allowlists are empty since PR7 (#2138) replaced the
+ * partners page's leave prompts with its own leave dialog and moved its inline
+ * click delivery confirmation into the save bar. An entry added back is held
+ * to its exact count and must name the issue that removes it.
  *
  * Seen failing: a role="dialog" div added to ConfirmDialog.tsx, a
  * window.confirm added to BidMatrixViewer.tsx, a bare confirm( added to
@@ -53,9 +53,7 @@ const MARKUP: ReadonlyArray<{ name: string; re: RegExp }> = [
 const SHELL = 'components/Dialog.tsx'
 
 /** Markup allowed outside the shell until the named issue removes it, with how many. */
-const MARKUP_ALLOWED: Readonly<Record<string, { count: number; issue: string; what: string }>> = {
-  'app/(app)/partners/PartnerForm.tsx': { count: 1, issue: '#2138', what: 'the inline click delivery confirmation (deliveryConfirm), deleted by PR7' },
-}
+const MARKUP_ALLOWED: Readonly<Record<string, { count: number; issue: string; what: string }>> = {}
 
 export function dialogMarkupIn(file: string, source: string): string[] {
   if (file === SHELL) return []
@@ -98,11 +96,8 @@ export function nativeDialogsIn(file: string, source: string): string[] {
   return found
 }
 
-/** Native dialogs allowed until PR7 (#2138) replaces the partners page's leave prompts. */
-const NATIVE_ALLOWED: Readonly<Record<string, { count: number; issue: string }>> = {
-  'app/(app)/partners/PartnerForm.tsx': { count: 2, issue: '#2138' },
-  'app/(app)/partners/page.tsx': { count: 1, issue: '#2138' },
-}
+/** Native dialogs allowed until the named issue removes them: none since PR7 (#2138). */
+const NATIVE_ALLOWED: Readonly<Record<string, { count: number; issue: string }>> = {}
 
 const PARTNERS_DIRS = ['app/(app)/partners/', 'components/partners/']
 const MERGE_DIALOG = 'components/partners/MergeDialog.tsx'
@@ -160,11 +155,12 @@ describe('dialog markup lives only in the Dialog shell (#2134)', () => {
     expect(dialogMarkupIn('components/Scratch.tsx', `// role="${DIALOG}" in a comment`)).toEqual([])
   })
 
-  it('no product file outside the shell holds dialog markup, beyond the PR7 allowlist', () => {
+  it('no product file outside the shell holds dialog markup', () => {
     expect(beyondAllowance(sources.flatMap((s) => dialogMarkupIn(s.file, s.source)), MARKUP_ALLOWED)).toEqual([])
   })
 
-  it('every allowlist entry names the issue that removes it', () => {
+  it('the allowlist is empty since PR7 (#2138), and any entry added back names the issue that removes it', () => {
+    expect(Object.keys(MARKUP_ALLOWED)).toEqual([])
     for (const entry of Object.values(MARKUP_ALLOWED)) expect(entry.issue).toMatch(/^#\d+$/)
   })
 })
@@ -180,13 +176,12 @@ describe('no native dialogs in product source (#2134, L607)', () => {
     expect(nativeDialogsIn('components/Scratch.tsx', '// window.confirm(x) in a comment\nconst s = "alert(1)"')).toEqual([])
   })
 
-  it('no product file calls one, beyond the partners page leave prompts PR7 replaces', () => {
+  it('no product file calls one', () => {
     expect(beyondAllowance(sources.flatMap((s) => nativeDialogsIn(s.file, s.source)), NATIVE_ALLOWED)).toEqual([])
   })
 
-  it('the allowlist holds only the partners page, naming PR7', () => {
-    expect(Object.keys(NATIVE_ALLOWED).every((f) => f.startsWith('app/(app)/partners/'))).toBe(true)
-    for (const entry of Object.values(NATIVE_ALLOWED)) expect(entry.issue).toBe('#2138')
+  it('the allowlist is empty since PR7 (#2138) replaced the partners page leave prompts', () => {
+    expect(Object.keys(NATIVE_ALLOWED)).toEqual([])
   })
 })
 

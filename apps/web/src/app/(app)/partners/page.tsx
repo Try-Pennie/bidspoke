@@ -5,13 +5,15 @@ export const runtime = 'edge'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { api } from '@/lib/api'
-import type { Partner, PartnerBody, PartnerPageSaveRequest, PartnerPageSaved, PartnerPageStale } from '@/lib/api'
+import type { Partner, PartnerBody, PartnerDeleted, PartnerPageSaveRequest, PartnerPageSaved, PartnerPageStale } from '@/lib/api'
+import { BIDDING_PICKUP } from '@/lib/bidding-pickup'
 import NavLayout from '@/components/NavLayout'
 import { Plus, CircleCheck, CircleOff, AlertTriangle } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
 import { Button } from '@/components/ui/form'
 import { ProblemMark } from '@/components/ui/ProblemMark'
-import PartnerForm, { UNSAVED_CHANGES_MESSAGE, type PartnerSaveResult } from './PartnerForm'
+import PartnerForm, { type PartnerSaveResult } from './PartnerForm'
+import { leaveThen } from '@/lib/leave-guard'
 import { PartnerLiveProvider } from '@/components/partners/live/PartnerLive'
 import { partnersUrl, tabFromParam } from './partner-tabs'
 import { groupPartners } from './partner-list'
@@ -39,25 +41,16 @@ export default function PartnersPage() {
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Partner | null>(null)
   const [creating, setCreating] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
-  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [removingId, setRemovingId] = useState<string | null>(null)
   const removeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [deletingId, setDeletingId] = useState<string | null>(null)
-  // Synchronous re-entry guard: a state flag alone can't block a same-tick
-  // double-click (no re-render between the two clicks), so the delete would
-  // fire twice against a money-path config (#495).
-  const deletingRef = useRef(false)
-  const [formDirty, setFormDirty] = useState(false)
+  // What a committed delete left to say (#2140): never an error, because the
+  // delete happened. The delete box itself guards against a double press.
+  const [deletedNotice, setDeletedNotice] = useState<string[] | null>(null)
   /** The open partner holds a problem (a refused save's field), marked on its row beside a missing credential. */
   const [formProblem, setFormProblem] = useState(false)
   const partnerNames = useMemo(() => new Map(partners.map((p) => [p.id, p.name])), [partners])
-
-  // Confirm before discarding unsaved partner-form edits. Used to guard the
-  // in-page <button> navigations (partner switch, New) the form can't intercept.
-  function confirmDiscardIfDirty(): boolean {
-    return !formDirty || window.confirm(UNSAVED_CHANGES_MESSAGE)
-  }
+  /** The foot of the form pane, where the form draws its save bar (#2138). */
+  const [barSlot, setBarSlot] = useState<HTMLDivElement | null>(null)
 
   async function load() {
     try {
@@ -84,6 +77,7 @@ export default function PartnersPage() {
   }, [slugParam, partners, selected?.slug])
 
   function selectPartner(p: Partner) {
+    setDeletedNotice(null)
     setCreating(false)
     setSelected(p)
     // A different partner opens on its own tab; the same one keeps the tab it is on.
@@ -93,41 +87,30 @@ export default function PartnersPage() {
   function clearSelection() {
     setCreating(false)
     setSelected(null)
-    setFormDirty(false)
     setFormProblem(false)
     if (slugParam) writeUrl(null, null)
   }
 
-  function requestDelete(id: string) {
-    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
-    setConfirmDelete(id)
-    deleteTimerRef.current = setTimeout(() => setConfirmDelete(null), 4000)
-  }
-
-  async function handleDelete(id: string) {
-    if (deletingRef.current) return
-    deletingRef.current = true
-    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
-    setDeletingId(id)
-    try {
-      // Wait for the server before removing the row, so the button shows a real
-      // in-flight state and a failure leaves the config in place (#495).
-      const r = await api.partners.delete(id)
-      // Deleted, but its stored outage copy could not be cleared yet: say so (#1846).
-      if (r.stored_copy_warning) setError(r.stored_copy_warning)
-      setConfirmDelete(null)
-      if (selected?.id === id) clearSelection()
-      setRemovingId(id)
-      removeTimerRef.current = setTimeout(() => {
-        setPartners((prev) => prev.filter((p) => p.id !== id))
-        setRemovingId(null)
-      }, 150)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete partner')
-    } finally {
-      deletingRef.current = false
-      setDeletingId(null)
+  /**
+   * The delete box committed a delete (#2140). The row fades out, and what the
+   * answer says is shown as a standing notice, not an error: a stored copy not
+   * yet cleared (with when bidding stops using it), or state kept under the
+   * slug that could not be reset.
+   */
+  function handleDeleted(id: string, answer: PartnerDeleted) {
+    const name = partners.find((p) => p.id === id)?.name ?? 'The partner'
+    const lines = [`${name} was deleted.`]
+    if (answer.stored_copy_warning) {
+      lines.push(answer.stored_copy_warning, `Bidding stops using ${name} within about ${BIDDING_PICKUP.partnerConstantsMinutes} minutes while the database is reachable.`)
     }
+    if (answer.state_reset_warning) lines.push(answer.state_reset_warning)
+    setDeletedNotice(lines)
+    if (selected?.id === id) clearSelection()
+    setRemovingId(id)
+    removeTimerRef.current = setTimeout(() => {
+      setPartners((prev) => prev.filter((p) => p.id !== id))
+      setRemovingId(null)
+    }, 150)
   }
 
   async function handleSave(body: PartnerBody, id?: string, pendingUuids?: string[], request?: PartnerPageSaveRequest): Promise<PartnerSaveResult | void> {
@@ -181,7 +164,8 @@ export default function PartnersPage() {
         <div className="flex w-72 flex-shrink-0 flex-col border-r border-gray-200 bg-white">
           <div className="flex items-center justify-between border-b border-gray-200 px-4 py-4">
             <h1 className="text-3xl font-bold text-graphite">Partners</h1>
-            <Button variant="primary" onClick={() => { if (!confirmDiscardIfDirty()) return; clearSelection(); setCreating(true) }} className="px-3 py-1.5 text-xs">
+            {/* Leaving a partner with something unsaved asks first, in the form's own dialog (#2138, PM-5). */}
+            <Button variant="primary" onClick={() => leaveThen({ kind: 'page', name: 'a new partner' }, () => { clearSelection(); setCreating(true) })} className="px-3 py-1.5 text-xs">
               <Plus className="h-3.5 w-3.5" aria-hidden="true" />
               New
             </Button>
@@ -218,7 +202,10 @@ export default function PartnersPage() {
                           <Button
                             key={partner.id}
                             variant="row"
-                            onClick={() => { if (selected?.id !== partner.id && !confirmDiscardIfDirty()) return; setFormDirty(false); setFormProblem(false); selectPartner(partner) }}
+                            onClick={() => {
+                              if (selected?.id === partner.id) return selectPartner(partner)
+                              leaveThen({ kind: 'partner', name: partner.name }, () => { setFormProblem(false); selectPartner(partner) })
+                            }}
                             className={`transition-[colors,opacity] duration-150 ${
                               selected?.id === partner.id
                                 ? 'bg-gray-100'
@@ -246,12 +233,19 @@ export default function PartnersPage() {
           </div>
         </div>
 
-        {/* Detail / form */}
+        {/* Detail / form, with the save bar across its foot under the scrolling form (#2138). */}
+        <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex-1 overflow-y-auto p-8" data-form-pane="">
           {error && (
             <div className="mb-6 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
               <AlertTriangle className="h-4 w-4 flex-shrink-0" />
               {error}
+            </div>
+          )}
+
+          {deletedNotice && (
+            <div role="status" className={`mb-6 space-y-1 rounded-lg border px-4 py-3 text-sm ${deletedNotice.length > 1 ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-gray-200 bg-white text-gray-700'}`}>
+              {deletedNotice.map((line) => <p key={line}>{line}</p>)}
             </div>
           )}
 
@@ -261,12 +255,9 @@ export default function PartnersPage() {
               partner={selected ?? undefined}
               onSave={handleSave}
               onCancel={clearSelection}
-              onDelete={selected ? (id) => requestDelete(id) : undefined}
-              confirmingDelete={confirmDelete === selected?.id}
-              onConfirmDelete={selected ? () => handleDelete(selected.id) : undefined}
-              onCancelDelete={() => { if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current); setConfirmDelete(null) }}
-              deleting={deletingId === selected?.id}
-              onDirtyChange={setFormDirty}
+              onDeleted={handleDeleted}
+              barSlot={barSlot}
+              onSaveConfirmed={(saved) => { setPartners((prev) => prev.map((p) => (p.id === saved.id ? saved : p))); setSelected(saved) }}
               requestedTab={selected ? requestedTab : null}
               onTabChange={(tab) => { if (selected) writeUrl(selected.slug, tab) }}
               partnerNames={partnerNames}
@@ -300,6 +291,8 @@ export default function PartnersPage() {
               </div>
             </div>
           )}
+        </div>
+        <div ref={setBarSlot} />
         </div>
 
       </div>

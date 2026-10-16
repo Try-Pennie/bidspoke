@@ -18,7 +18,7 @@ import { answerFor, isWorkerApiRequest, LIVE_MISS_ID, loadPartnerFixtures, realt
 import { RealtimeClient } from '@supabase/supabase-js'
 import { mergeThreeWay } from '../src/lib/partner-page-merge'
 import { buildPartnerBody, PARTNER_FIELD_REGISTRY, snapshotOf } from '../src/app/(app)/partners/partner-draft'
-import type { Partner } from '../src/lib/api'
+import type { Partner, PartnerHistory } from '../src/lib/api'
 
 const fx = loadPartnerFixtures()
 /** A captured buyer profile document with every field the redaction keeps. */
@@ -146,10 +146,29 @@ describe('answerFor', () => {
     expect(answerFor('DELETE', `${W}/api/partners/${tripoint.id}`, fx)).toBeNull()
   })
 
+  // #2140: every partner the page can open carries the delete box on its
+  // Partner tab, so every listed partner has a recorded check, derived from the
+  // partner list rather than a hand list, and nothing else does.
+  it('answers the delete check of every listed partner, Tripoint blocked by its sales and the rest deletable', () => {
+    for (const p of fx.partners) {
+      const answer = answerFor('GET', `${W}/api/partners/${p.id}/delete-check`, fx)?.body as { partner: { id: string }; blockers: Array<{ kind: string; table?: string }> } | undefined
+      expect(answer?.partner.id, p.slug).toBe(p.id)
+      if (p.slug === 'tripoint') expect(answer!.blockers).toEqual([expect.objectContaining({ kind: 'rows', table: 'buyer_sales' })])
+      else expect(answer!.blockers, p.slug).toEqual([])
+    }
+    expect(answerFor('GET', `${W}/api/partners/not-a-partner/delete-check`, fx)).toBeNull()
+    expect(answerFor('GET', `${W}/api/partners/_about/delete-check`, fx)).toBeNull()
+    expect(answerFor('GET', `${W}/api/partners/constructor/delete-check`, fx)).toBeNull()
+  })
+
   // #2137: the Bid Group tab reads which workflow steps name each partner.
   it('answers the usage read for every listed partner, and fails it only when asked to', () => {
     for (const p of fx.partners) expect(answerFor('GET', `${W}/api/partners/${p.id}/usage`, fx), p.slug).toMatchObject({ status: 200 })
     expect(answerFor('GET', `${W}/api/partners/not-a-partner/usage`, fx)).toBeNull()
+    // An inherited name of a plain object is no partner either (each read keyed by partner id).
+    for (const path of ['partners/constructor/history', 'partners/constructor/usage', 'partners/constructor/buyer-profile', 'partner-bid-configs?partner_id=constructor', 'partners/toString/delete-check']) {
+      expect(answerFor('GET', `${W}/api/${path}`, fx), path).toBeNull()
+    }
     expect(answerFor('GET', `${W}/api/partners/${tripoint.id}/usage`, fx, { usageFails: true })?.status).toBe(503)
   })
 
@@ -223,6 +242,87 @@ describe('answerFor', () => {
       PARTNER_FIELD_REGISTRY,
     )
     expect(r.conflicts.flatMap((s) => s.conflicts.map((c) => c.key))).toEqual(['profile.daily_lead_cap'])
+  })
+})
+
+// #2141: History, read from production's audit rows (read only, 2026-10-16) and
+// redacted as a capture is, plus a synthetic matrix history (production holds no
+// matrix sync rows) and the failed and incomplete answers.
+describe('the History fixtures', () => {
+  const tripoint = fx.partners.find((p) => p.slug === 'tripoint')!
+  const liberty1 = fx.partners.find((p) => p.slug === 'liberty1')!
+
+  it('hold every listed partner at the real count: 59 changes, 19 each for Tripoint and Liberty1', () => {
+    expect(Object.keys(fx.history).sort()).toEqual(fx.partners.map((p) => p.id).sort())
+    expect(fx.history[tripoint.id].entries).toHaveLength(19)
+    expect(fx.history[liberty1.id].entries).toHaveLength(19)
+    expect(Object.values(fx.history).reduce((n, h) => n + h.entries.length, 0)).toBe(59)
+  })
+
+  it('name no real person, carry no live webhook, prospect or buyer lead id', () => {
+    const all = stringsIn([fx.history, fx.historyMatrix])
+    expect(all.filter((s) => s.includes('@') && !s.endsWith('@example.com'))).toEqual([])
+    const people = [...Object.values(fx.history), fx.historyMatrix].flatMap((h) => h.entries).flatMap((e) => (e.editor.kind === 'person' ? [e.editor.name] : []))
+    expect(people.length).toBeGreaterThan(0)
+    expect(people.every((n) => /^Editor [A-Z]\d*$/.test(n))).toBe(true)
+    const urls = all.filter((s) => s.startsWith('http') && !s.startsWith('https://trypennie.com/'))
+    expect(urls.length).toBeGreaterThan(0)
+    expect(urls.every((u) => u.startsWith('https://hooks.example.com/redacted/'))).toBe(true)
+    const held = fx.history[liberty1.id].entries.filter((e) => e.entityType === 'held_click')
+    expect(held).toHaveLength(2)
+    for (const e of held) expect(e.changes).toMatchObject({ subject: { prospect_id: 'redacted' }, buyer_lead_id: { new: 'redacted' } })
+  })
+
+  it('give an editor the same alias the partner list gives them', () => {
+    const lastEditor = String(tripoint.updated_by)
+    const people = new Map(fx.history[tripoint.id].entries.flatMap((e) => (e.editor.kind === 'person' && e.editor.userId ? [[e.editor.userId, e.editor.name] as const] : [])))
+    expect(people.get(lastEditor)).toBe(tripoint.updated_by_name)
+  })
+
+  it('redact a captured answer the same way, from a raw shape the route returns', () => {
+    const r = createRedactor()
+    r.partner({ updated_by: 'u1', updated_by_name: 'Ann' })
+    const out = r.history({ partnerId: 'p', complete: true, completeSince: null, entries: [
+      { editor: { kind: 'person', userId: 'u1', name: 'Ann', via: 'sync_now' }, editorLabel: 'Ann, Sync now from Salesforce', changes: { _actor: { name: 'Bo', email: 'bo@x.com' }, 'click_delivery.routes[DV1]': { old: null, new: { url: 'https://live.example/hook', states: ['WA'] } } } },
+      { editor: { kind: 'direct' }, editorLabel: 'Changed directly in the database', changes: { added: [{ range: '1', source_url: 'https://sf.example/r1' }] } },
+    ] })
+    expect(out.entries[0]).toMatchObject({ editor: { userId: '00000000-0000-4000-8000-000000000001', name: 'Editor A' }, editorLabel: 'Editor A, Sync now from Salesforce' })
+    expect(out.entries[0].changes).toEqual({ _actor: { name: 'Editor B', email: 'editor-b@example.com' }, 'click_delivery.routes[DV1]': { old: null, new: { url: 'https://hooks.example.com/redacted/DV1', states: ['WA'] } } })
+    expect(out.entries[1]).toMatchObject({ editorLabel: 'Changed directly in the database', changes: { added: [{ range: '1' }] } })
+  })
+
+  it('refuses a person editor with no name rather than scattering the alias through the label', () => {
+    expect(() => createRedactor().history({ partnerId: 'p', complete: true, completeSince: null, entries: [
+      { editor: { kind: 'person', userId: 'u1', name: '', via: null }, editorLabel: 'Ann', changes: {} },
+    ] })).toThrow(/no name/)
+  })
+
+  it('redacts every held click shape the route ties to a partner: a cleared claim\'s held_click.old and the Salesforce writes, as well as the subject', () => {
+    const subject = { partner_id: 'p', prospect_id: 'a06REALPROSPECT', reason: 'outcome_unknown', held_at: '2026-09-30T15:57:55Z' }
+    const out = createRedactor().history({ partnerId: 'p', complete: true, completeSince: null, entries: [
+      { editor: { kind: 'direct' }, editorLabel: 'Changed directly in the database', changes: { held_click: { old: subject, new: null }, claim_state: { old: 'sold', new: 'sold' } } },
+      { editor: { kind: 'direct' }, editorLabel: 'Changed directly in the database', changes: {
+        subject, claim_state: { old: 'in_flight', new: 'sold' }, buyer_lead_id: { old: null, new: 'REALLEAD' },
+        salesforce_writes: { old: null, new: { complete: true, writes: [{ record: 'prospect', id: 'a06REALPROSPECT', message: 'updated a06REALPROSPECT' }] } },
+      } },
+    ] })
+    const strings = stringsIn(out)
+    expect(strings.filter((s) => s.includes('REAL'))).toEqual([])
+    expect(out.entries[0].changes).toMatchObject({ held_click: { old: { partner_id: 'p', prospect_id: 'redacted', reason: 'outcome_unknown' }, new: null } })
+    expect(out.entries[1].changes).toMatchObject({ salesforce_writes: { old: null, new: { complete: true, writes: [{ record: 'redacted', id: 'redacted' }] } } })
+  })
+
+  it('answers the history read for every partner, fails it with the route\'s error when asked, and gives the matrix and incomplete answers only when asked', () => {
+    for (const p of fx.partners) expect(answerFor('GET', `${W}/api/partners/${p.id}/history`, fx), p.slug).toEqual({ status: 200, body: fx.history[p.id] })
+    expect(answerFor('GET', `${W}/api/partners/not-a-partner/history`, fx)).toBeNull()
+    expect(answerFor('GET', `${W}/api/partners/${tripoint.id}/history`, fx, { historyFails: true })).toEqual({ status: 500, body: { error: 'history_unavailable', read: 'users', message: 'History could not be loaded: the users read failed.' } })
+    expect(answerFor('GET', `${W}/api/partners/${tripoint.id}/history`, fx, { historyMatrix: true })?.body).toEqual(fx.historyMatrix)
+    expect(answerFor('GET', `${W}/api/partners/${liberty1.id}/history`, fx, { historyMatrix: true })?.body).toEqual(fx.history[liberty1.id])
+    const cut = answerFor('GET', `${W}/api/partners/${tripoint.id}/history`, fx, { historyIncomplete: true })?.body as PartnerHistory
+    const oldest = fx.history[tripoint.id].entries.at(-1)!
+    expect(cut.complete).toBe(false)
+    expect(Date.parse(cut.completeSince!)).toBe(Date.parse(oldest.at))
+    expect(cut.entries).toEqual(fx.history[tripoint.id].entries.slice(0, -1))
   })
 })
 

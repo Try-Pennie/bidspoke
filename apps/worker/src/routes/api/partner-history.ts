@@ -93,7 +93,7 @@ async function attempt<T>(read: HistoryRead, run: () => Promise<T>): Promise<T> 
 /**
  * The audit rows that belong to this partner. A row is tied to it by its own
  * key (partner settings, the buyer profile), by one of its matrix configs, or
- * by the partner_id its writer carried in changes: a config's create and delete
+ * by the partner_id its writer carried in changes: a config's create, update and delete
  * (#2141), a sub-account ID (the partner_uuid_map_audit trigger, and the
  * partner it was moved off), and a held click (subject.partner_id, or the
  * deleted claim's held_click.old.partner_id).
