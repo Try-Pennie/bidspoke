@@ -4,8 +4,9 @@
  *
  * The partners page can lose a draft or a save not yet confirmed, and the leave
  * guard (lib/leave-guard.ts) is what asks first. A navigation the app starts in
- * code (router.push, router.replace, an assignment to location, location.assign
- * or location.replace) does not pass through a link click the guard can hold,
+ * code (router.push, router.replace, router.back or forward, history.back,
+ * forward or go, an assignment to location, location.assign or
+ * location.replace) does not pass through a link click the guard can hold,
  * so each one is either inside the guard's own module, or allowlisted here with
  * the reason it cannot lose a guarded draft. An entry marked `consults` names
  * the guard function its file calls before navigating, and the file must call
@@ -34,6 +35,9 @@ const NAVIGATIONS: ReadonlyArray<{ name: string; re: RegExp }> = [
   { name: 'location assignment', re: /\blocation(?:\s*\.\s*href)?\s*=(?!=)/g },
   { name: 'location.assign', re: /\blocation\s*\.\s*assign\s*\(/g },
   { name: 'location.replace', re: /\blocation\s*\.\s*replace\s*\(/g },
+  // Moving through history leaves the page too. (window.open is not here: it opens another tab, which loses nothing.)
+  { name: 'router.back or forward', re: /\brouter\s*\.\s*(?:back|forward)\s*\(/g },
+  { name: 'history.back, forward or go', re: /\bhistory\s*\.\s*(?:back|forward|go)\s*\(/g },
 ]
 
 export function navigationsIn(file: string, source: string): string[] {
@@ -98,6 +102,7 @@ describe('navigations started in code go through the leave guard (#2138)', () =>
     const scratch = [
       "router.push('/x')", 'router . replace(`/y`)', "window.location.href = '/login'", 'location = next',
       "window.location.assign('/a')", "location.replace('/b')",
+      'router.back()', 'router.forward()', 'window.history.back()', 'history.forward()', 'window.history.go(-2)',
     ]
     for (const line of scratch) expect(navigationsIn('app/(app)/partners/PartnerForm.tsx', line), line).toHaveLength(1)
     expect(navigationsIn(GUARD_MODULE, "window.location.assign('/a')")).toEqual([])

@@ -17,8 +17,9 @@
  *   `holdAuthRedirect` first, so an expired session keeps the draft on screen.
  *
  * lib/__guards__/leave-guard-navigation-guard.test.ts fails on a
- * router.push, router.replace or assignment to location anywhere in
- * apps/web/src outside this file and an allowlist naming each site's reason.
+ * router.push, router.replace, router.back or forward, history.back, forward
+ * or go, or a change to location anywhere in apps/web/src outside this file
+ * and an allowlist naming each site's reason.
  */
 import { useEffect, useRef } from 'react'
 
