@@ -25,6 +25,7 @@ import configWarnings from './config-warnings'
 import fieldCoverage from './field-coverage'
 import buyerProfiles from './buyer-profiles'
 import partnerWorkflowValues from './partner-workflow-values'
+import partnerDelete from './partner-delete'
 import buyerSales from './buyer-sales'
 import heldClicks from './held-clicks'
 import buyerSelectParity from './buyer-select-parity'
@@ -69,6 +70,8 @@ api.route('/field-coverage', fieldCoverage)
 api.route('/partners', buyerProfiles)
 // The workflow values tab (#2142): which workflows read the partner's Constants values.
 api.route('/partners', partnerWorkflowValues)
+// The delete and its check (#2140): DELETE /partners/:id lives here, not in partners.ts.
+api.route('/partners', partnerDelete)
 api.route('/buyer-sales', buyerSales)
 // Held click claims a person releases from the partner page (#1552).
 api.route('/held-clicks', heldClicks)

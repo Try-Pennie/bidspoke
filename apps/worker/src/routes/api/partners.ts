@@ -130,7 +130,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const CONSTANTS_FIELDS = ['sell_off_offer_title', 'sell_off_offer_details', 'click_url', 'sub_account_min_bids', 'is_active'] as const
 
 /** The profile rebuild, made to throw when it fails, so copyCleared counts it as not cleared. */
-async function rebuildBuyerProfiles(orgId: string, kv: KVNamespace, supabase: ReturnType<typeof createSupabaseClient>): Promise<void> {
+export async function rebuildBuyerProfiles(orgId: string, kv: KVNamespace, supabase: ReturnType<typeof createSupabaseClient>): Promise<void> {
   const snapshot = await refreshBuyerProfilesCache(orgId, kv, supabase)
   if (snapshot === null) throw new Error('the buyer profiles copy could not be rebuilt')
 }
@@ -530,44 +530,7 @@ partners.put('/:id/page', async (c) => {
 })
 
 // ── Delete ────────────────────────────────────────────────────────────────────
-
-partners.delete('/:id', async (c) => {
-  const { orgId, userId, email } = c.get('user')
-  const id = c.req.param('id')
-  const supabase = createSupabaseClient(c.env)
-
-  // The delete goes through delete_partner_config (#1409): a delete sets no
-  // column, so the table's audit trigger cannot see who did it from the row, and
-  // the function carries the actor in for it. The function refuses by name: P0002
-  // when there is no such partner in this org (a row that raced away, or another
-  // org's, #588, #303), BP023 when sales still reference it, with the detail
-  // naming the blocking table. A real database error surfaces as a 500.
-  const { error } = await supabase.rpc('delete_partner_config', {
-    p_org: orgId,
-    p_id: id,
-    p_actor: userId,
-    p_actor_email: email,
-  })
-  if (error) {
-    if (error.code === 'P0002') return c.json({ error: 'Partner not found' }, 404) // db-guard-ok: P0002 is the function's own named refusal for no such partner in this org, raised after the lookup, never a transport or query error
-    if (error.code === 'BP023') {
-      const detail = (error as { details?: string | null }).details ?? ''
-      return c.json({ error: `Partner cannot be deleted while other records refer to it. ${detail}`.trim() }, 409)
-    }
-    return dbError(c, error)
-  }
-
-  // A deleted partner must never bid from its stored copy in an outage (#1846).
-  // First, and never throws, so a refresh below that throws cannot leave it.
-  // Deleting again would find no row, so a failure is warned about and repaired
-  // by the sweep.
-  const cleared = await copyCleared(() => retirePartnerLastGood(c.env.WORKFLOW_CACHE, id), `partner copy ${id}`)
-
-  await invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE)
-  await refreshBuyerProfilesCache(orgId, c.env.WORKFLOW_CACHE, supabase)
-
-  return c.json({ ok: true, ...copyWarning(cleared) })
-})
+// DELETE /partners/:id and its check live in partner-delete.ts (#2140).
 
 // ── The live channel's versions probe and its misses (#2135) ──────────────────
 

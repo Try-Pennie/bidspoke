@@ -76,6 +76,19 @@ describe('circuit routes (#103)', () => {
     )
   })
 
+  // #2140: the client used to ignore the object's answer, so a failed reset was
+  // reported as closed. It throws now, and nothing says closed or is audited.
+  it('a reset the breaker object refuses is a failure, never reported closed or audited', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    doFetch.mockResolvedValueOnce(new Response('boom', { status: 500 }))
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, partner_configs: { maybeSingle: { id: 'p-1', slug: 'tripoint' } } }) as never
+    )
+    const res = await request(app, 'POST', '/circuit/tripoint/reset')
+    expect(res.status).toBe(500)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
   it('404s reset for a slug not in the caller org and does not reset the breaker', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({ users: { single: testUser }, partner_configs: { maybeSingle: null } }) as never

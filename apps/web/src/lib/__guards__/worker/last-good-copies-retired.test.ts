@@ -120,6 +120,19 @@ export function sqlFunctionsWriting(kind: Kind, migrations: Array<{ name: string
   }
   const out = new Set<string>()
   for (const [name, body] of bodies) if (kind.sqlWrites.test(body)) out.add(name)
+  // A function that calls a writer writes too (#2140: both delete_partner_config
+  // overloads reach the table through _delete_partner_config), followed until
+  // nothing new is found.
+  for (let grew = true; grew; ) {
+    grew = false
+    for (const [name, body] of bodies) {
+      if (out.has(name)) continue
+      if ([...out].some((w) => new RegExp(`\\b(?:public\\.)?${w}\\s*\\(`, 'i').test(body))) {
+        out.add(name)
+        grew = true
+      }
+    }
+  }
   return out
 }
 
@@ -269,7 +282,7 @@ describe('every handler writing partner_configs retires the partner copy (#1846)
   it('the enumeration finds the partner routes, the delete function and the rename function (L1)', () => {
     expect(found.handlers).toEqual(expect.arrayContaining([
       'apps/worker/src/routes/api/partners.ts PUT /:id',
-      'apps/worker/src/routes/api/partners.ts DELETE /:id',
+      'apps/worker/src/routes/api/partner-delete.ts DELETE /:id',
       'apps/worker/src/routes/api/workflows.ts POST /:id/rename-apply',
     ]))
     expect([...sqlFunctionsWriting(PARTNERS, readMigrations())]).toEqual(expect.arrayContaining(['delete_partner_config', 'rename_partner_step_namespace']))
@@ -311,5 +324,15 @@ describe('the detector', () => {
     ]
     expect([...sqlFunctionsWriting(PARTNERS, mig)]).toEqual([])
     expect([...sqlFunctionsWriting(PARTNERS, mig.slice(0, 1))].sort()).toEqual(['a', 'b'])
+  })
+
+  it('counts a function that reaches the table through another function, however deep (#2140)', () => {
+    const mig = [{ name: '1.sql', text: [
+      'CREATE FUNCTION public._body(p uuid) RETURNS void AS $$ BEGIN DELETE FROM partner_configs WHERE id = p; END $$ LANGUAGE plpgsql;',
+      'CREATE FUNCTION public.outer_one(p uuid) RETURNS void AS $$ BEGIN PERFORM public._body(p); END $$ LANGUAGE plpgsql;',
+      'CREATE FUNCTION public.outer_two(p uuid) RETURNS void AS $$ BEGIN PERFORM outer_one(p); END $$ LANGUAGE plpgsql;',
+      'CREATE FUNCTION public.reader(p uuid) RETURNS void AS $$ SELECT 1 FROM partner_configs $$ LANGUAGE sql;',
+    ].join('\n') }]
+    expect([...sqlFunctionsWriting(PARTNERS, mig)].sort()).toEqual(['_body', 'outer_one', 'outer_two'])
   })
 })
