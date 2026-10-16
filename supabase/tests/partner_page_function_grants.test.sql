@@ -50,7 +50,14 @@ BEGIN
     'public.change_partner_uuid(uuid, text, text, text, uuid, text, text)',
     'public.monitor_partner_page_ping(uuid, uuid)',
     -- PR12 (#2143): _apply_buyer_profile is listed above
-    'public.buyer_profile_document(uuid)'
+    'public.buyer_profile_document(uuid)',
+    -- PR9 (#2140); change_partner_uuid is listed above
+    'public.partner_delete_dependents()',
+    'public.partner_delete_counts(uuid, uuid, boolean)',
+    'public.partner_delete_check(uuid, uuid)',
+    'public._delete_partner_config(uuid, uuid, uuid, text, jsonb)',
+    'public.delete_partner_config(uuid, uuid, uuid, text, jsonb)',
+    'public.delete_partner_config(uuid, uuid, uuid, text)'
   ] LOOP
     IF has_function_privilege('anon', fn, 'EXECUTE') THEN bad := array_append(bad, 'anon can execute ' || fn); END IF;
     IF has_function_privilege('authenticated', fn, 'EXECUTE') THEN bad := array_append(bad, 'authenticated can execute ' || fn); END IF;
@@ -76,7 +83,10 @@ BEGIN
     'public.change_partner_uuid(uuid, text, text, text, uuid, text, text)',
     'public.monitor_partner_page_ping(uuid, uuid)',
     -- #2143: GET /partners/:id/buyer-profile reads the document through it
-    'public.buyer_profile_document(uuid)'
+    'public.buyer_profile_document(uuid)',
+    -- PR9 (#2140): the delete check and the reviewed delete
+    'public.partner_delete_check(uuid, uuid)',
+    'public.delete_partner_config(uuid, uuid, uuid, text, jsonb)'
   ] LOOP
     IF NOT has_function_privilege('service_role', fn, 'EXECUTE') THEN bad := array_append(bad, 'service_role cannot execute ' || fn); END IF;
   END LOOP;
@@ -106,7 +116,12 @@ BEGIN
     'public.partner_configs_page_notice()',
     'public.buyer_profile_tables_page_notice()',
     'public.partner_uuid_map_page_notice()',
-    'public.partner_uuid_map_page_notice_one_side()'
+    'public.partner_uuid_map_page_notice_one_side()',
+    -- PR9 (#2140): the dependency walk, the counter, and the shared delete body,
+    -- which skips the fingerprint when handed none.
+    'public.partner_delete_dependents()',
+    'public.partner_delete_counts(uuid, uuid, boolean)',
+    'public._delete_partner_config(uuid, uuid, uuid, text, jsonb)'
   ] LOOP
     IF has_function_privilege('service_role', fn, 'EXECUTE') THEN
       RAISE EXCEPTION 'function grants wrong: service_role can execute %, which is internal', fn;
