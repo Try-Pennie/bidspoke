@@ -77,17 +77,17 @@ retry of a killed cron all stand down. A probe that survives writes
 `spike/1946/<nonce>/result.json`. Probes built to be killed leave only the claim;
 the kill itself, with its CPU and wall time, is in Workers Logs.
 
-| Probe | Measures | Expected end |
+| Probe | Measures | How it ended in Stage 2 |
 |---|---|---|
-| `cron_wall` | wall clock of a minute cron | killed near 900,000 ms, outcome `exceededWallTime` |
-| `cron_cpu` | CPU of a minute cron | killed, outcome `exceededCpu`; documented 30,000 ms |
-| `cron_subrequests` | subrequests per invocation (R2 HEADs) | refused near 10,000 (`Too many subrequests`), recorded in `result.json` |
-| `dispatch_ping` | `scheduled()` reaches `OpsInternal` over `SELF` | `result.json` holds `{lane: ops, entrypoint: OpsInternal}` |
-| `dispatch_wall` | wall clock of a dispatched sub-invocation | which of caller and callee is killed first, and when |
-| `dispatch_cpu` | CPU of a dispatched sub-invocation | whether the callee has its own CPU limit or shares the caller's |
-| `dispatch_subrequests` | subrequests inside a sub-invocation | whether the callee has its own budget |
-| `dispatch_detached` | a sub-invocation not awaited by its caller | how long the callee's progress lines continue after `detached_returned`. `result.json` holds only `{detached: true, returnedAt}`; the callee's end is in Workers Logs (`detached_callee_finished` or `detached_callee_failed`, or simply its last progress line) |
-| `dispatch_fanout` | 40 concurrent dispatches from one invocation | how many succeed, and the first refusal's text (documented limit 32) |
+| `cron_wall` | wall clock of a minute cron | `canceled` at 899,707 ms (not `exceededWallTime`) |
+| `cron_cpu` | CPU of a minute cron | `exceededCpu` at 32,000 ms |
+| `cron_subrequests` | subrequests per invocation (R2 HEADs) | wall limit first, about 3,900 done, no refusal (the HEADs are sequential) |
+| `dispatch_ping` | `scheduled()` reaches `OpsInternal` over `SELF` | reached; `result.json` holds `{lane: ops, entrypoint: OpsInternal}` |
+| `dispatch_wall` | wall clock of a dispatched sub-invocation | both `canceled` at the same instant, about 899,000 ms |
+| `dispatch_cpu` | CPU of a dispatched sub-invocation | callee `exceededCpu` at 32,000 ms on its own budget; caller `ok` |
+| `dispatch_subrequests` | subrequests inside a sub-invocation | wall limit first, about 4,600 done; own or shared budget not settled |
+| `dispatch_detached` | a sub-invocation not awaited by its caller | callee `canceled` at 908 ms, as soon as its caller ended |
+| `dispatch_fanout` | 40 concurrent dispatches from one invocation | 40 of 40 succeeded (documented limit 32) |
 
 ## Premises, with the command that re-measures each
 
@@ -121,8 +121,8 @@ q() { # q <query file> <worker> <hours back>
   319,877 ms, `23 * * * *` 402,421 ms, `37 */2 * * *` 316,091 ms, `0 * * * *`
   99,332 ms. No non `ok` scheduled outcome in the window. So a minute cron already
   runs for minutes and overlaps the next minute's.
-- Measured on the ops Worker: see `cron_wall` and `cron_subrequests` in the readings
-  table (outcome `canceled` at 899,751 ms). Re-measure: `q scheduled-ceilings.json bidspoke-worker 168`,
+- Measured on the ops Worker: `cron_wall` ended `canceled` at 899,707 ms and
+  `cron_subrequests` at 899,751 ms (readings table). Re-measure: `q scheduled-ceilings.json bidspoke-worker 168`,
   or redeploy the #2266 probes and arm `cron_wall`.
 
 ### P2. A minute cron's CPU ceiling is 30 seconds, an hourly one's 15 minutes
