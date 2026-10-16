@@ -100,7 +100,7 @@ import type { Env } from '../env'
 import { AT_RISK_WRITE_PREFIX, AT_RISK_WRITE_TTL_SECONDS, atRiskKey, parseAtRiskEntry, readBackOwnsHeld, type AtRiskEntry } from '../engine/at-risk-writes'
 import { WRITE_MARKER_FIELD, parseWriteMarker, stampsWrites, writeMarker } from '../engine/write-marker'
 import { salesforceRejectedTheWrite } from '../engine/nodes/salesforce'
-import { CREDIT_INQUIRY_APEX_PATH, inquiryMarkerQuery, inquiryPostOf, type InquiryPost } from '../engine/inquiry-post'
+import { CREDIT_INQUIRY_APEX_PATH, inquiryPostOf, lookupInquiryMarker, type InquiryMarkerReadName, type InquiryPost, type SalesforceRead } from '../engine/inquiry-post'
 import { decryptSecret, secretKeys, type SecretKeyInput } from './secret-crypto'
 import { makeAlertClaims, makeSendClaims, raceDeadline, type AlertClaims, type SendClaims } from './alert-claim'
 import { isSalesforceApiName, isSalesforceRecordId, salesforcePortFor, type SalesforcePort } from './writeback-replay'
@@ -110,6 +110,7 @@ import { formatErr } from './format-error'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
 import { getSlackConnection, sendSalesforceReadBackAlert, type SlackConnection } from './slack'
 import { BulkheadClient, salesforceBulkheadLimit } from './bulkhead-client'
+import { fieldsMovedSince, LAST_MODIFIED_MARGIN_MS, sameSalesforceValue } from './salesforce-field-conflict'
 import type { ReadBackAlertWrite, SalesforceReadBackAlert, UnreadReason } from './salesforce-read-back-alert'
 
 export const SF_READ_BACK_JOB = 'salesforce-read-back'
@@ -154,12 +155,8 @@ export const ENTRY_SCAN_LIMIT = 200
 /** The read-back has not finished a run for this long while writes wait: the liveness alert. */
 export const LIVENESS_AFTER_MS = 10 * 60_000
 
-/**
- * Salesforce keeps LastModifiedDate in whole seconds, and its clock is not the
- * Worker's. A record last written within this of a write's start is read as
- * written since, the side that overwrites nothing.
- */
-export const LAST_MODIFIED_MARGIN_MS = 2_000
+/** The moved field rule's margin and value comparison, shared with the drain (salesforce-field-conflict.ts). */
+export { LAST_MODIFIED_MARGIN_MS, sameSalesforceValue }
 
 const STATE_PREFIX = 'sf-read-back:state:'
 const CONFLICTS_PREFIX = 'sf-read-back:conflicts:'
@@ -377,43 +374,6 @@ async function scanHeldWrites(kv: ReadBackKv, keys: SecretKeyInput, wanted: numb
 const fieldsOf = (body: Record<string, unknown>) => Object.keys(body).filter((f) => f !== WRITE_MARKER_FIELD)
 /** The fields a held write set, for its alert: none for a credit inquiry post, which sets no field by name. */
 const heldFields = (h: Pick<Held, 'body' | 'inquiry'>) => (h.inquiry ? [] : fieldsOf(h.body))
-const isBlank = (v: unknown) => v === null || v === undefined || v === ''
-
-/** A Salesforce time read as ms: `2026-10-15T12:00:00.000+0000` included. NaN otherwise. */
-function salesforceTimeMs(v: unknown): number {
-  if (typeof v !== 'string' || !/^\d{4}-\d\d-\d\dT/.test(v)) return Number.NaN
-  return Date.parse(v.replace(/([+-]\d\d)(\d\d)$/, '$1:$2'))
-}
-
-/**
- * Whether a value Salesforce holds is the value a write sent, allowing for the
- * ways Salesforce spells a value back: a number as text or text as a number, a
- * time to the second in +0000, a checkbox as true or "true". Anything else
- * different is different, the side that overwrites nothing.
- */
-export function sameSalesforceValue(current: unknown, sent: unknown): boolean {
-  if (current === sent) return true
-  if (isBlank(current) && isBlank(sent)) return true
-  if (isBlank(current) || isBlank(sent)) return false
-  const asNumber = (v: unknown) => (typeof v === 'number' ? v : typeof v === 'string' && /^-?\d+(\.\d+)?$/.test(v.trim()) ? Number(v) : Number.NaN)
-  if (typeof current === 'number' || typeof sent === 'number') {
-    const a = asNumber(current)
-    const b = asNumber(sent)
-    return Number.isFinite(a) && Number.isFinite(b) && a === b
-  }
-  if (typeof current === 'boolean' || typeof sent === 'boolean') {
-    const asBoolean = (v: unknown) => (typeof v === 'boolean' ? v : v === 'true' ? true : v === 'false' ? false : null)
-    const a = asBoolean(current)
-    return a !== null && a === asBoolean(sent)
-  }
-  if (typeof current === 'string' && typeof sent === 'string') {
-    const a = salesforceTimeMs(current)
-    const b = salesforceTimeMs(sent)
-    if (Number.isFinite(a) && Number.isFinite(b)) return Math.floor(a / 1000) === Math.floor(b / 1000)
-    return false
-  }
-  return JSON.stringify(current) === JSON.stringify(sent)
-}
 
 export interface RecordEntry {
   id: string
@@ -440,7 +400,6 @@ export type RecordDecision =
 export function decideRecord(entries: RecordEntry[], current: Record<string, unknown>): RecordDecision[] {
   const stamp = parseWriteMarker(current[WRITE_MARKER_FIELD])
   const stampedId = stamp ? `${stamp.executionId}:${stamp.stepNamespace}` : null
-  const lastModifiedMs = salesforceTimeMs(current.LastModifiedDate)
   // The newest write of the run to set each field owns it.
   const owner = new Map<string, number>()
   entries.forEach((e, i) => fieldsOf(e.body).forEach((f) => owner.set(f, i)))
@@ -452,17 +411,10 @@ export function decideRecord(entries: RecordEntry[], current: Record<string, unk
     const own = fields.filter((f) => !ownedByLater.includes(f))
     if (own.length === 0) return { id: e.id, verdict: 'superseded' }
     if (e.attempts >= MAX_RESENDS) return { id: e.id, verdict: 'exhausted' }
-    // Nobody has written the record since this write began: whatever it holds
-    // came before the write, which is what the write was sent to replace.
-    const untouched = Number.isFinite(lastModifiedMs) && e.firstAttemptMs !== undefined && lastModifiedMs + LAST_MODIFIED_MARGIN_MS <= e.firstAttemptMs
-    const conflicts = untouched
-      ? []
-      : own.filter((f) => {
-          const now = current[f]
-          if (isBlank(now) || sameSalesforceValue(now, e.body[f])) return false
-          // A value an earlier write of the run sent is ours, and this newer write replaces it.
-          return !entries.slice(0, i).some((earlier) => Object.hasOwn(earlier.body, f) && sameSalesforceValue(now, earlier.body[f]))
-        })
+    // The one moved field rule (salesforce-field-conflict.ts), which the drain
+    // of stored writes also applies (#468): a value an earlier write of the run
+    // sent is ours, and this newer write replaces it.
+    const conflicts = fieldsMovedSince({ fields: own, body: e.body, current, sinceMs: e.firstAttemptMs, earlier: entries.slice(0, i).map((x) => x.body) })
     const send = own.filter((f) => !conflicts.includes(f))
     if (send.length === 0) return { id: e.id, verdict: 'conflict_only', conflicts, ownedByLater, candidates: own }
     return { id: e.id, verdict: 'resend', send: Object.fromEntries(send.map((f) => [f, e.body[f]])), conflicts, ownedByLater, candidates: own }
@@ -489,7 +441,7 @@ interface Finding {
   still_trying?: boolean
 }
 
-type CallResult = { kind: 'answer'; status: number; text: string } | { kind: 'no_answer'; error: string }
+type CallResult = SalesforceRead
 
 function errorCodeOf(text: string): string | null {
   try {
@@ -688,50 +640,39 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
     return stopFor(answer.status)
   }
 
-  /** One read for a credit inquiry post: its body, or how the post was settled or the tick stopped. */
-  const readFor = async (h: Held, port: SalesforcePort, path: string, what: string): Promise<{ body: Record<string, unknown> } | { unread?: boolean; stop?: UnreadReason; settled?: boolean }> => {
-    s.reads++
-    const read = await call(port, 'GET', path)
+  /** A credit inquiry post's read that failed: how the post was settled, or why the tick stopped. */
+  const settleFailedRead = async (h: Held, what: InquiryMarkerReadName, read: SalesforceRead): Promise<{ unread?: boolean; stop?: UnreadReason }> => {
     if (read.kind === 'no_answer') {
       console.warn(`[${SF_READ_BACK_JOB}] reading the ${what} for ${h.id} got no answer: ${read.error}`)
       return { unread: true, stop: 'salesforce_not_answering' }
     }
-    if (read.status < 200 || read.status >= 300) {
-      if (salesforceRejectedTheWrite(read.status, read.text)) {
-        const code = errorCodeOf(read.text)
-        await finish(h, {
-          kind: 'resend_failed',
-          resent: false,
-          detail: read.status === 404 ? `the ${what} no longer exists in Salesforce` : `Salesforce refused to read the ${what} (${read.status}${code ? ` ${code}` : ''})`,
-        })
-        return { settled: true }
-      }
-      return { unread: true, stop: stopFor(read.status) }
+    if (salesforceRejectedTheWrite(read.status, read.text)) {
+      const code = errorCodeOf(read.text)
+      await finish(h, {
+        kind: 'resend_failed',
+        resent: false,
+        detail: read.status === 404 ? `the ${what} no longer exists in Salesforce` : `Salesforce refused to read the ${what} (${read.status}${code ? ` ${code}` : ''})`,
+      })
+      return {}
     }
-    try {
-      const parsed: unknown = JSON.parse(read.text)
-      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
-      return { body: parsed as Record<string, unknown> }
-    } catch {
-      return { unread: true, stop: 'salesforce_not_answering' }
-    }
+    return { unread: true, stop: stopFor(read.status) }
   }
 
   /** One credit inquiry post that carries inquiries (#2172): its Lead, its file, and at most one resend. */
   const processInquiry = async (h: Held, post: Extract<InquiryPost, { kind: 'inquiries' }>, port: SalesforcePort): Promise<{ unread?: boolean; stop?: UnreadReason }> => {
-    const sub = await readFor(h, port, `/sobjects/Submission__c/${post.submissionId}?fields=Lead__c`, 'Submission')
-    if (!('body' in sub)) return sub.settled ? {} : sub
-    const lead = sub.body.Lead__c
-    if (typeof lead !== 'string' || !isSalesforceRecordId(lead)) {
+    // The one Lead lookup and marker query a recovery run checks too (#2176).
+    const looked = await lookupInquiryMarker((path) => {
+      s.reads++
+      return call(port, 'GET', path)
+    }, post.submissionId, h.firstAttemptMs)
+    if (looked.kind === 'unread') return settleFailedRead(h, looked.what, looked.read)
+    if (looked.kind === 'unreadable') return { unread: true, stop: 'salesforce_not_answering' }
+    if (looked.kind === 'no_lead') {
       // InquiryParserRest answers 404 for a Submission with no Lead, writing nothing.
       await finish(h, { kind: 'resend_failed', resent: false, detail: 'the Submission has no Lead, so Salesforce refuses the post' })
       return {}
     }
-    const marker = await readFor(h, port, `/query?q=${encodeURIComponent(inquiryMarkerQuery(lead, h.firstAttemptMs))}`, 'Inquiries file')
-    if (!('body' in marker)) return marker.settled ? {} : marker
-    const found = marker.body.totalSize
-    if (typeof found !== 'number') return { unread: true, stop: 'salesforce_not_answering' }
-    if (found > 0) {
+    if (looked.kind === 'landed') {
       s.landed++
       if (h.state.attempts > 0) s.landed_by_resend++
       await forget(h)
@@ -1153,21 +1094,25 @@ export async function checkSalesforceReadBackLiveness(deps: LivenessDeps): Promi
 // ── Production wiring ───────────────────────────────────────────────────────
 
 /**
- * The org's Slack connection. `supabase` is the scheduled handler's client, on
- * which getSlackConnection is bounded and falls back to the last-good copy
- * (#1303, scheduled-slack.ts), so a read-back alert still speaks while the
- * database is down.
+ * An organization's Slack for a minute job's alerts. `supabase` is the scheduled
+ * handler's client, on which getSlackConnection is bounded and falls back to the
+ * last-good copy (#1303, scheduled-slack.ts), so an alert still speaks while the
+ * database is down. The drain of stored writes uses it too (#468).
  */
-function slackForEnv(supabase: SupabaseClient) {
+export function slackForEnv(supabase: SupabaseClient) {
   return (orgId: string) => getSlackConnection(supabase, orgId)
 }
 
-/** Whether Salesforce's bulkhead has room, asked of the limiter itself and failing closed. */
-async function bulkheadBusy(env: Env): Promise<UnreadReason | null> {
+/**
+ * Whether Salesforce's bulkhead has room, asked of the limiter itself and
+ * failing closed. The drain of stored writes asks the same way (#468), naming
+ * itself in the log line.
+ */
+export async function bulkheadBusy(env: Env, job: string = SF_READ_BACK_JOB): Promise<Extract<UnreadReason, 'bulkhead_busy' | 'bulkhead_unknown'> | null> {
   if (!env.SALESFORCE_BULKHEAD) return null
   const asked = await raceDeadline(() => new BulkheadClient(env, 'salesforce', salesforceBulkheadLimit(env)).status(), 2_000)
   if (asked.kind !== 'ok') {
-    console.error(`[${SF_READ_BACK_JOB}] the Salesforce bulkhead could not be asked, so nothing is sent this minute: ${asked.kind === 'threw' ? formatErr(asked.error) : 'no answer'}`)
+    console.error(`[${job}] the Salesforce bulkhead could not be asked, so nothing is sent this minute: ${asked.kind === 'threw' ? formatErr(asked.error) : 'no answer'}`)
     return 'bulkhead_unknown'
   }
   return asked.value.inflight >= asked.value.limit ? 'bulkhead_busy' : null

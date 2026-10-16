@@ -213,10 +213,14 @@ export function anyDelivered(fanout: SlackFanout): boolean {
 
 /**
  * True only when the list was read (live or from the copy) and every org was
- * told; an unread list is never "everyone was told" (#1303).
+ * told; an unread list is never "everyone was told" (#1303). An empty list is
+ * "everyone" only when the database said so: an empty saved copy during an
+ * outage names nobody, so nobody was told, and it is false.
  */
 export function everyDelivered(fanout: SlackFanout): boolean {
-  return fanout.kind === 'ran' && fanout.results.every(Boolean)
+  if (fanout.kind !== 'ran') return false
+  if (fanout.source === 'stored' && fanout.results.length === 0) return false
+  return fanout.results.every(Boolean)
 }
 
 /**

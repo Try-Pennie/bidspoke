@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { slackOrgIds, forEachSlackOrg, rateLimitedOrgAlert } from '../alert-fanout'
+import { everyDelivered, slackOrgIds, forEachSlackOrg, rateLimitedOrgAlert } from '../alert-fanout'
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 // Minimal Supabase double for the one query these helpers make:
@@ -63,6 +63,15 @@ describe('forEachSlackOrg', () => {
     const results = await forEachSlackOrg(supabaseWithOrgs([], { message: 'boom' }), 'test', 'tell-only', perOrg)
     expect(results).toEqual({ kind: 'unreachable', reason: 'read_failed' })
     expect(perOrg).not.toHaveBeenCalled()
+  })
+})
+
+describe('everyDelivered', () => {
+  it('is true for a live empty list (the database answered: no org has Slack) and false for an empty list from the saved copy (nobody was told)', () => {
+    expect(everyDelivered({ kind: 'ran', source: 'live', results: [] })).toBe(true)
+    expect(everyDelivered({ kind: 'ran', source: 'stored', results: [] })).toBe(false)
+    expect(everyDelivered({ kind: 'ran', source: 'stored', results: [true, true] })).toBe(true)
+    expect(everyDelivered({ kind: 'unreachable', reason: 'no_copy' })).toBe(false)
   })
 })
 
