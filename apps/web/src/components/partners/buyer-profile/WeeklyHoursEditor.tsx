@@ -2,7 +2,7 @@
 
 /**
  * The weekly hours editor (#1412): seven days from the shared vocabulary, any
- * number of windows a day in Eastern time, an "Always open" preset, and a
+ * number of windows a day (stored in Eastern time), an "Always open" preset, and a
  * window whose close is not after its open flagged beside it. No windows means
  * the buyer is never offered a lead (L72), stated once. Opens and Closes are
  * column headers said once over the seven rows, not labels on each (L579).

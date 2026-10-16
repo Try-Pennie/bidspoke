@@ -1,6 +1,7 @@
 /**
  * The weekly hours editor (#1412): seven days from the shared vocabulary, one
- * or more windows a day in Eastern time, an "Always open" preset, and a window
+ * or more windows a day, stored in Eastern time and drawn in the profile's
+ * display zone (#2143), an "Always open" preset, and a window
  * whose close is not after its open flagged beside it. No windows means never
  * open, and the editor says so (L72). The Opens and Closes words are column
  * headers said once, not labels repeated on every row (L579).
