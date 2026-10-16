@@ -1318,7 +1318,8 @@ async function sendHeldWritebackAlert(
 
 /**
  * Work after the answer still running when finalize stopped waiting for it
- * (#1860). Its outcome is unknown, not failed, so the alert says that and asks
+ * (#1860), and not all of it held by the Salesforce read-back (#2024). Its
+ * outcome is unknown, not failed, so the alert says nothing confirmed it and asks
  * for a check rather than a repair. It names the step the run was still on
  * (#1882): it used to point at the Salesforce update, which on 2026-10-08 had
  * finished 87 ms after the answer while the slow step was the Achieve call.
@@ -1347,11 +1348,17 @@ async function sendUnfinishedWorkAlert(
   // do (L30). What this renderer drops is the singular alternate wording ("This
   // happened once", "View the run"): one vocabulary regardless of count (#1944).
   const period = deadLetterPeriod(n, payload.window_minutes)
+  // #2024: this fires only for work the Salesforce read-back does not hold, and
+  // on 2026-10-13, 8 of 18 such writes had not landed, so it never suggests the
+  // work probably finished. Work after the named step may not have run either.
+  const unconfirmed = named.length > 0
+    ? `Nothing confirmed whether ${one ? 'it' : 'they'} or the steps after ${one ? 'it' : 'them'} finished.`
+    : 'Nothing confirmed whether they finished.'
   const summary =
     `${who}, but ${steps} ${one ? 'was' : 'were'} still running when Bidspoke stopped waiting. ` +
-    `${one ? 'It' : 'They'} may have finished, but nothing confirmed it. This happened about ${n} ${n === 1 ? 'time' : 'times'} ${period}.`
+    `${unconfirmed} This happened about ${n} ${n === 1 ? 'time' : 'times'} ${period}.`
   const fix = named.length > 0
-    ? `Fix: open the run below and check what ${listSteps(named)} did. If this keeps happening, ${one ? 'that step is' : 'those steps are'} running slowly.`
+    ? `Fix: open the run below and check what ${listSteps(named)} did, and whether the steps after ${one ? 'it' : 'them'} ran. If this keeps happening, ${one ? 'that step is' : 'those steps are'} running slowly.`
     : run
       ? 'Fix: open the run below and check what its last steps did. If this keeps happening, those steps are running slowly.'
       : 'Fix: open the recent runs on the dashboard and check what their last steps did. If this keeps happening, those steps are running slowly.'
@@ -3184,6 +3191,52 @@ export async function sendSalesforceReadBackAlert(
     ...sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
   ]
   return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback)) !== null
+}
+
+export interface PartnerPageLivePayload {
+  /** `channel`: the monitor's own notice did not arrive. `monitor`: the check could not run. */
+  problem: 'channel' | 'monitor'
+  reason: string
+  since: string
+  repeat: string | null
+  at: number
+}
+
+/**
+ * The partners page delivery monitor (#2135). Two problems with two remedies
+ * (L11): the channel did not deliver the monitor's own test notice, which every
+ * person editing a partner depends on, or the check itself could not run, so a
+ * broken channel would go unreported.
+ */
+export async function sendPartnerPageLiveAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: PartnerPageLivePayload,
+): Promise<string | null> {
+  const reason = `\`${stripUrlQueriesInText(truncateErrorForAlert(payload.reason))}\``
+  const broken = payload.problem === 'channel'
+  const header = broken ? 'Partners page live updates are not arriving' : 'Bidspoke cannot check partners page live updates'
+  const lines = broken
+    ? [
+        `Since ${etTime(Date.parse(payload.since))} the delivery check has not received its own test notice on the partners page channel. ` +
+          "Someone editing a partner will not see another person's save appear, and finds out about it only when they save. " +
+          `The last check found: ${reason}.`,
+      ]
+    : [
+        `Since ${etTime(Date.parse(payload.since))} the delivery check for partners page live updates has not been able to run, so live updates stopping would go unreported. ` +
+          `The last attempt stopped at: ${reason}.`,
+      ]
+  if (payload.repeat) lines.push(payload.repeat)
+  lines.push(`Seen at ${etTime(payload.at)}.`)
+  const fix = broken
+    ? `*What to do:* check Realtime on <https://status.supabase.com|status.supabase.com> and the Realtime logs in the Supabase dashboard. Saves are not affected: a save made from an older version is still refused and shown to the person. An all-clear follows here once the check has received its notice for ${RECOVERY_REARM_MINUTES} minutes.`
+    : `*How to fix:* the reason names the step that failed. A missing secret or monitor organization is set up as docs/adr/0012-partner-page-live-channel.md describes under Delivery monitor. Search the worker's logs for \`event=partner_page_monitor\` for each run. Leads and saves are not affected. An all-clear follows here once the check has run for ${RECOVERY_REARM_MINUTES} minutes.`
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n\n') } },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+  ]
+  return postMessage(slack.bot_token, channel, blocks, header)
 }
 
 /** One ET timestamp format, so a new alert does not add another copy of it. */

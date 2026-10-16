@@ -129,11 +129,12 @@ export interface ExecutionContext {
   /** Namespace of the most recent step that completed successfully. Drives outcome classification. */
   lastCompletedNamespace?: string
   /**
-   * The step or steps the walk is on right now, by `stepName` (#1882). Set by the
-   * walk as it reaches each node, so a run whose work after the answer is still
-   * out at the cut-off can name what it was waiting on.
+   * The step or steps the walk is on right now, by namespace (#1882, #2024). Set
+   * by the walk as it reaches each node, so a run whose work after the answer is
+   * still out at the cut-off can name what it was waiting on, and ask the
+   * Salesforce read-back whether it holds each of them.
    */
-  runningSteps?: string[]
+  runningNamespaces?: string[]
   /**
    * True once the walk has handed its answer over (continue after response), so
    * every step from then on runs after the answer. Set only by the walk, at the

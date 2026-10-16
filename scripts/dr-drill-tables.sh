@@ -52,6 +52,8 @@ DRILL_STRUCTURE_ONLY_TABLES=(
   job_runs purge_run_log field_presence_daily
   # The incident record (#2100): alert history, not needed to bid
   alert_incidents
+  # Partners page live misses (#2135): delivery measurements, not needed to bid
+  partner_page_live_misses
   # The cron guard's fail-open record (#2166): seven days of monitor history
   cron_guard_fail_opens
   # The field presence rollup watermark (#1150): one timestamp. After a restore
