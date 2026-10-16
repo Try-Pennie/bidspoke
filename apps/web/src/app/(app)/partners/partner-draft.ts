@@ -86,7 +86,7 @@ export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
   partnerField('confirmation_window_ms', 'Bid confirmation latency', 'Confirmation window (ms)', 'bid_group'),
   partnerField('sell_off_offer_title', 'Sell-off offer copy', 'Sell-off offer title', 'workflow_values'),
   partnerField('sell_off_offer_details', 'Sell-off offer copy', 'Sell-off offer details', 'workflow_values'),
-  partnerField('alert_config', 'Alert configuration', 'Alerts', 'bid_group'),
+  partnerField('alert_config', 'Response classification', 'Alerts', 'bid_group'),
   partnerField('accept_signals', 'Outcome rules', SECTION_LABELS.accept_signals, 'buyer_profile'),
   partnerField('duplicate_signals', 'Outcome rules', SECTION_LABELS.duplicate_signals, 'buyer_profile'),
   partnerField('external_routing_code', 'Outcome rules', FIELD_LABELS.external_routing_code, 'buyer_profile'),
