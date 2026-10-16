@@ -240,7 +240,7 @@ describe('PUT /partners/:id/page: the whole page in one save (#2133)', () => {
   it('refuses a switch away from the click while a live workflow sells the buyer on a click node, naming it, and calls nothing', async () => {
     vi.mocked(readBuyerSoldOn).mockResolvedValue('click')
     const rpc = saved()
-    const live = { id: 'wf-1', name: 'Liberty Flow', is_active: true, definition: { nodes: [{ type: 'buyer_click_send', config: { partner_id: 'p-1' } }] } }
+    const live = { id: 'wf-1', name: 'Liberty Flow', is_active: true, organization_id: testUser.organization_id, deleted_at: null, definition: { nodes: [{ type: 'buyer_click_send', config: { partner_id: 'p-1' } }] } }
     supabaseWith(rpc, { workflows: { list: [live] } })
     const res = await put(page())
     expect(res.status).toBe(409)

@@ -85,6 +85,13 @@ describe('the Bid Group tab and its usage read (#2137)', () => {
     expect(screen.queryByText(/No workflow's Bid Group/)).toBeNull()
   })
 
+  it('reads the bid matrices only once the Bid Group tab applies', async () => {
+    render(<PartnerForm partner={{ ...partner, partner_type: 'source' }} onSave={vi.fn()} onCancel={vi.fn()} />)
+    await waitFor(() => expect(api.partners.usage).toHaveBeenCalled())
+    await waitFor(() => expect(tabs()).toEqual(['Partner', 'Workflow values', 'History']))
+    expect(api.partnerBidConfigs.list).not.toHaveBeenCalled()
+  })
+
   it('a minimum bid alone shows the tab, and says that is why', async () => {
     render(<PartnerForm partner={{ ...partner, min_bid: 3.08 }} onSave={vi.fn()} onCancel={vi.fn()} />)
     await userEvent.click(await screen.findByRole('tab', { name: 'Bid Group' }))

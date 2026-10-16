@@ -14,12 +14,20 @@ import { checkScannedPage } from '../src/lib/scanned-page'
  *
  * `include` limits the scan to one surface, a dialog for example (#2134), so a
  * test about that surface measures it rather than the page behind it.
+ *
+ * `contrastWaiver` lets through ONE known colour-contrast failure, text in the
+ * named class (or inside it), until the named issue sets its new shade. Every
+ * other contrast failure, and every other rule, still fails the scan. It exists
+ * for the partners page form (#2137), whose grey hint text on the beige
+ * background PR13 (#2144) recolours once Dan picks the shade; the waiver is
+ * deleted there.
  */
 export async function expectNoSeriousA11yViolations(
   page: Page,
   exclude: string[] = [],
   expectedPath?: string,
   include?: string,
+  contrastWaiver?: { className: string; issue: string },
 ) {
   // Prove the page under the scanner is the page that was asked for, and that
   // it rendered, BEFORE measuring it (#797). The rule itself is a pure function
@@ -38,9 +46,26 @@ export async function expectNoSeriousA11yViolations(
   if (include) builder = builder.include(include)
 
   const results = await builder.analyze()
-  const blocking = results.violations.filter(
+  let blocking = results.violations.filter(
     (v) => v.impact === 'serious' || v.impact === 'critical',
   )
+  if (contrastWaiver) {
+    const waived = async (target: unknown) => page.evaluate(
+      ([selector, cls]) => {
+        const el = document.querySelector(selector)
+        return el !== null && el.closest('.' + cls) !== null
+      },
+      [String(Array.isArray(target) ? target[target.length - 1] : target), contrastWaiver.className] as const,
+    )
+    const kept = []
+    for (const v of blocking) {
+      if (v.id !== 'color-contrast') { kept.push(v); continue }
+      const nodes = []
+      for (const n of v.nodes) if (!(await waived(n.target))) nodes.push(n)
+      if (nodes.length > 0) kept.push({ ...v, nodes })
+    }
+    blocking = kept
+  }
 
   // Surface a readable summary when it fails (id + help + affected nodes).
   const summary = blocking

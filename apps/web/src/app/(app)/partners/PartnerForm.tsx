@@ -330,15 +330,6 @@ export default function PartnerForm({
       .catch(() => { if (!cancelled) setUuidsLoadError(true) })
     return () => { cancelled = true }
   }, [partnerSlug, uuidsAttempt])
-  useEffect(() => {
-    if (!partnerId) return
-    let cancelled = false
-    setBidConfigsLoadError(false)
-    api.partnerBidConfigs.list(partnerId)
-      .then((configs) => { if (!cancelled) setBidConfigs(configs) })
-      .catch(() => { if (!cancelled) setBidConfigsLoadError(true) })
-    return () => { cancelled = true }
-  }, [partnerId, bidConfigsAttempt])
 
   // The buyer profile is read once the partner is known to be a buyer. A read
   // that fails is its own state on the section, never an empty profile (L10).
@@ -453,6 +444,18 @@ export default function PartnerForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible.join(), tab, usage.kind])
   useEffect(() => { onProblemChange?.(problems.length > 0) }, [problems.length, onProblemChange])
+  // The bid matrices are read once the Bid Group tab applies (#2137): only its
+  // resolver offers them, so a partner without the tab makes no read for them.
+  const bidGroupApplies = visible.includes('bid_group')
+  useEffect(() => {
+    if (!partnerId || !bidGroupApplies) return
+    let cancelled = false
+    setBidConfigsLoadError(false)
+    api.partnerBidConfigs.list(partnerId)
+      .then((configs) => { if (!cancelled) setBidConfigs(configs) })
+      .catch(() => { if (!cancelled) setBidConfigsLoadError(true) })
+    return () => { cancelled = true }
+  }, [partnerId, bidConfigsAttempt, bidGroupApplies])
   // A problem on a tab other than the one open: the outcome offers to show it.
   const showMeTab = tabsWithProblems.includes(tab) ? null : tabsWithProblems.find((t) => visible.includes(t)) ?? null
 

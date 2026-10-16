@@ -244,7 +244,7 @@ export default function PartnersPage() {
         </div>
 
         {/* Detail / form */}
-        <div className="flex-1 overflow-y-auto p-8">
+        <div className="flex-1 overflow-y-auto p-8" data-form-pane="">
           {error && (
             <div className="mb-6 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
               <AlertTriangle className="h-4 w-4 flex-shrink-0" />
