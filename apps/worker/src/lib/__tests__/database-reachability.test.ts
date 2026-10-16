@@ -460,3 +460,26 @@ describe('the owner posts once across overlapping ticks (#2062)', () => {
     expect(log).toEqual([])
   })
 })
+
+// A post that throws may have reached Slack, so its claim is kept for the TTL
+// while the other organizations are still paged (#2062 review, with the phase 3
+// per organization boundary).
+describe('a database page that throws keeps its claim, and the others are still paged (#2062)', () => {
+  const ORG2 = '66666666-6666-4666-8666-666666666666'
+  const CONN2 = { bot_token: 'xoxb-2', default_channel: 'C2', volume_alerts_enabled: true }
+
+  it('keeps the thrown organization\'s claim, pages the other, and does not page the first again on the next report', async () => {
+    const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: await copyBlob({ [ORG]: CONN, [ORG2]: CONN2 }) })
+    vi.mocked(sendDatabaseUnreachableAlert).mockImplementation(async (slack) => {
+      if (slack.bot_token === 'xoxb-t') throw new Error('Network connection lost.')
+      return 'ts-2'
+    })
+    const { claims, held } = claimLedger()
+    const result = await reportDatabaseUnreachable(deps(kv, T0, claims), readFailure)
+    expect(result.told).toEqual([ORG2])
+    expect(held.has(`db-unreachable:${ORG}`)).toBe(true)
+    vi.mocked(sendDatabaseUnreachableAlert).mockResolvedValue('ts-db')
+    await reportDatabaseUnreachable(deps(kv, T0 + MIN, claims), readFailure)
+    expect(vi.mocked(sendDatabaseUnreachableAlert).mock.calls.map((c) => c[1])).toEqual(['C1', 'C2'])
+  })
+})
