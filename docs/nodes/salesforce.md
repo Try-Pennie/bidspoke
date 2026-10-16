@@ -75,7 +75,7 @@ With `skip_when_empty: true`, an update or an Apex POST is skipped rather than s
 | `nothing_to_write` | apex POST | The body resolves to null or nothing. An empty object is still sent to any other Apex endpoint. The credit inquiry post has its own rules, below: it is also skipped for an empty or missing `inquiries` list, flag or not. |
 | `no_record_id` | update | The record id resolves empty. |
 
-A skipped step makes no Salesforce call at all (not even a token request), completes rather than fails, and records `{ "skipped": true, "skip_reason": "<reason>" }` as its output, the same keys a skipped partner bid records. Without the flag both keep their old behaviour: an update with a missing record id fails the step and one with a null body sends `{}`, and an Apex POST with a null body sends `null`, except the credit inquiry post, which fails the step before any call (below).
+A step skipped this way makes no Salesforce call at all (not even a token request), completes rather than fails, and records `{ "skipped": true, "skip_reason": "<reason>" }` as its output, the same keys a skipped partner bid records. Without the flag both keep their old behaviour: an update with a missing record id fails the step and one with a null body sends `{}`, and an Apex POST with a null body sends `null`, except the credit inquiry post, which fails the step before any call (below).
 
 ### The credit inquiry post
 
@@ -133,7 +133,7 @@ On success:
 
 For `update`, Salesforce returns `204 No Content`, so `body` is `null`. For `query`, `body` is the SOQL result envelope (`{ totalSize, done, records }`). Read downstream as `steps.<namespace>.output.body.id`, `steps.<namespace>.output.body.records`, etc.
 
-When a write is skipped (`skip_when_empty`), the output is `{ skipped: true, skip_reason }` and the run continues.
+When a write is skipped (`skip_when_empty`), the output is `{ skipped: true, skip_reason }` and the run continues. A credit inquiry post skipped on a replay or a resume because its file already landed is `{ skipped: true, skip_reason: "already_landed", lead_id, recovered_from, marker_since }`.
 
 When an `expected_errors` entry matches, the output is `{ status, ok: false, errorCode, message, body }` and the run exits at this node.
 

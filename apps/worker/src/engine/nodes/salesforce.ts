@@ -1090,7 +1090,7 @@ async function checkRecoveredInquiryPost(
   return {
     output: { skipped: true, skip_reason: 'already_landed' satisfies SalesforceSkipReason, lead_id: looked.leadId, recovered_from: origin.executionId, marker_since: since },
     resolvedInput: { ...resolvedInput, resolved: { ...(resolvedInput.resolved as Record<string, unknown>), skip_reason: 'already_landed' } },
-    logs: [...logs, { level: 'info', message: `${SKIP_MESSAGES.already_landed} It found Lead ${looked.leadId}'s file created since ${since}, when execution ${origin.executionId} began, less 2 s.`, ts: new Date().toISOString() }],
+    logs: [...logs, { level: 'info', message: `${SKIP_MESSAGES.already_landed} It found Lead ${looked.leadId}'s file created since ${since}, when execution ${origin.executionId} began, less ${INQUIRY_MARKER_MARGIN_MS / 1000} s.`, ts: new Date().toISOString() }],
   }
 }
 

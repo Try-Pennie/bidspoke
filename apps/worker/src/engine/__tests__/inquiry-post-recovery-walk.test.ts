@@ -4,8 +4,10 @@
  *
  * Before it posts, a replay or a resume reads the Submission's Lead and looks for
  * the Lead's `Inquiries_<leadId>` file created since the original run began, less
- * 2 s: the marker the read-back judges a held post by (#2212), read by the same
- * code (lookupInquiryMarker).
+ * INQUIRY_MARKER_MARGIN_MS: the marker the read-back judges a held post by
+ * (#2212), read by the same code (lookupInquiryMarker). First it asks whether the
+ * read-back still holds a post of any run of the lineage, and sends nothing while
+ * it does (Dan, 2026-10-16).
  *  - The file is there: nothing is sent, the step completes as skipped, already
  *    landed, and says which Lead and since when.
  *  - It is not: the post goes out exactly as on a normal run, intent record first.
@@ -34,7 +36,7 @@ vi.mock('../step-logger', () => ({
 import { walkGraph } from '../index'
 import { buildContext } from '../context'
 import { startAtRiskWatch, atRiskKey, parseAtRiskEntry } from '../at-risk-writes'
-import { CREDIT_INQUIRY_APEX_PATH, inquiryMarkerQuery } from '../inquiry-post'
+import { CREDIT_INQUIRY_APEX_PATH, INQUIRY_MARKER_MARGIN_MS, inquiryMarkerQuery } from '../inquiry-post'
 
 const INSTANCE = 'https://trypennie.my.salesforce.com'
 const DATA = `${INSTANCE}/services/data/v60.0`
@@ -153,7 +155,7 @@ describe('a recovery run whose original post landed', () => {
       expect(holdsAsked).toEqual([`${ORIGINAL}:${STEP}`])
       expect(stepRow(queue)).toMatchObject({
         status: 'completed',
-        output: { skipped: true, skip_reason: 'already_landed', lead_id: LEAD, recovered_from: ORIGINAL, marker_since: new Date(ORIGINAL_START - 2_000).toISOString() },
+        output: { skipped: true, skip_reason: 'already_landed', lead_id: LEAD, recovered_from: ORIGINAL, marker_since: new Date(ORIGINAL_START - INQUIRY_MARKER_MARGIN_MS).toISOString() },
       })
       expect(kv.put).not.toHaveBeenCalled()
     })
