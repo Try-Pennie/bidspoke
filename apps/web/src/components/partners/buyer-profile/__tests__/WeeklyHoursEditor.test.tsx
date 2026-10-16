@@ -1,6 +1,7 @@
 /**
  * The weekly hours editor (#1412): seven days from the shared vocabulary, one
- * or more windows a day in Eastern time, an "Always open" preset, and a window
+ * or more windows a day, stored in Eastern time and drawn in the profile's
+ * display zone (#2143), an "Always open" preset, and a window
  * whose close is not after its open flagged beside it. No windows means never
  * open, and the editor says so (L72). The Opens and Closes words are column
  * headers said once, not labels repeated on every row (L579).
@@ -78,5 +79,35 @@ describe('WeeklyHoursEditor', () => {
   it('says once that no hours means the buyer is never offered a lead', () => {
     render(<WeeklyHoursEditor value={[]} onChange={() => {}} />)
     expect(screen.getAllByText(/never offered a lead/i)).toHaveLength(1)
+  })
+})
+
+describe('WeeklyHoursEditor in a display zone (#2143, PM-10)', () => {
+  const box = (day: string, which: RegExp, i = 0) => within(screen.getByRole('group', { name: day })).getAllByLabelText(which)[i] as HTMLInputElement
+
+  it('draws a window that crosses midnight in the display zone on the right days', () => {
+    // Monday 1:00 AM to 9:00 AM Eastern is Sunday 10:00 PM to Monday 6:00 AM Pacific.
+    render(<WeeklyHoursEditor value={[{ day_of_week: 1, opens_minute: 60, closes_minute: 540 }]} onChange={() => {}} zone="America/Los_Angeles" />)
+    expect([box('Sunday', /opens/i).value, box('Sunday', /closes/i).value]).toEqual(['10:00 PM', '12:00 AM'])
+    expect([box('Monday', /opens/i).value, box('Monday', /closes/i).value]).toEqual(['12:00 AM', '6:00 AM'])
+    expect(within(screen.getByRole('group', { name: 'Tuesday' })).getByText(/closed/i)).toBeInTheDocument()
+  })
+
+  it('stores an edit made in Pacific as the Eastern window it means', () => {
+    const onChange = vi.fn()
+    render(<WeeklyHoursEditor value={[{ day_of_week: 2, opens_minute: 540, closes_minute: 1020 }]} onChange={onChange} zone="America/Los_Angeles" />)
+    expect([box('Tuesday', /opens/i).value, box('Tuesday', /closes/i).value]).toEqual(['6:00 AM', '2:00 PM'])
+    const closes = box('Tuesday', /closes/i)
+    fireEvent.change(closes, { target: { value: '3:00 PM' } })
+    fireEvent.keyDown(closes, { key: 'Enter' })
+    expect(onChange).toHaveBeenLastCalledWith([{ day_of_week: 2, opens_minute: 540, closes_minute: 1080 }])
+  })
+
+  it('adds hours on a display day as the Eastern window it means', () => {
+    const onChange = vi.fn()
+    render(<WeeklyHoursEditor value={[]} onChange={onChange} zone="America/Chicago" />)
+    fireEvent.click(within(screen.getByRole('group', { name: 'Tuesday' })).getByRole('button', { name: /add hours/i }))
+    // 9:00 AM to 5:00 PM Central is 10:00 AM to 6:00 PM Eastern.
+    expect(onChange).toHaveBeenLastCalledWith([{ day_of_week: 2, opens_minute: 600, closes_minute: 1080 }])
   })
 })
