@@ -249,6 +249,15 @@ describe('POST /connections/:service_type/sync-schema', () => {
     expect(res.status).toBe(404)
   })
 
+  it('refuses a service type it does not manage before touching the table, so it never writes a Slack row (#2060)', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, service_connections: { single: { id: 'sc-slack', cf_secret_key: '', service_type: 'slack' } } })
+    const from = vi.spyOn(sb, 'from')
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    const res = await request(app, 'POST', '/connections/slack/sync-schema')
+    expect(res.status).toBe(400)
+    expect(from.mock.calls.filter(([t]) => t === 'service_connections')).toEqual([])
+  })
+
   it('returns 500 when CF secret is not in env', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn } }) as never

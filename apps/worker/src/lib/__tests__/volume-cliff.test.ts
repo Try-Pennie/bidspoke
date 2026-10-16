@@ -168,6 +168,18 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
     vi.mocked(sendRecoveryAlert).mockReset()
   })
 
+  it('measures its volume windows on the injected clock, the one that dates the saved Slack copy (#2060)', async () => {
+    // Steady minutes ending at a fixed instant a day before the real clock: read
+    // on that instant they are healthy volume, read on the real clock they are
+    // empty buckets and nothing has recovered.
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+    const at = Math.floor((Date.now() - 24 * 60 * 60000) / 60000) * 60000
+    const minutes = Array.from({ length: 60 }, (_, i) => ({ minute: new Date(at - 59 * 60000 + i * 60000).toISOString(), cnt: 50 }))
+    const kv = fakeKv({ 'volume-cliff-recovery:wf-1': new Date(Date.now() - 45 * 60000).toISOString(), 'volume-cliff:wf-1:cooldown': '1' })
+    await runVolumeCliffCheck(fakeSupabase(minutes), kv, 'https://app.example', 'https://self.example', TEST_KEY, undefined, () => at + 30_000)
+    expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
+  })
+
   it('announces the all-clear when a previously alerted workflow is healthy again', async () => {
     vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
     const alertedAt = new Date(Date.now() - 45 * 60000).toISOString()
