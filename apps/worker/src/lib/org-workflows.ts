@@ -1,9 +1,14 @@
 /**
  * An organization's workflows with their definitions (#2142, L613): the one
  * read every route and check asking "which of this organization's workflows
- * ..." makes, instead of a copy per caller. Today: the workflow values scanner
- * (partners page tab; the delete check, #2140, is to call it next), the buyer profile routes,
- * the step rename impact route, the code worker migration and the timeout audit.
+ * ..." makes, instead of a copy per caller. Its callers today (a guard,
+ * `__guards__/worker/org-workflows-one-read.test.ts` in apps/web, fails on a
+ * hand written copy): the workflow values route
+ * (`routes/api/partner-workflow-values.ts`, which hands the rows to the pure
+ * scanner), the buyer profile routes (other sellers, and the sold on switch
+ * refusal), the step rename impact route (`excludeId`, the workflow being
+ * renamed), the code worker migration and the timeout audit (both
+ * `activeOnly`). The delete check (#2140) is to call it next.
  *
  * The Worker connects as service_role, which bypasses row level security, so
  * this read is what scopes the answer to one organization: it filters
@@ -33,6 +38,8 @@ export interface OrgWorkflow {
 export interface OrgWorkflowsOptions {
   /** Only workflows that are switched on. */
   activeOnly?: boolean
+  /** Leave out one workflow (the rename impact route asks about the OTHER workflows), in the query so it takes no page slot. */
+  excludeId?: string
 }
 
 /** Pages of 1,000: 20 pages is twenty thousand workflows, far past any organization's count (11 live on 2026-10-15). */
@@ -52,6 +59,7 @@ export async function readOrgWorkflows(supabase: SupabaseClient, orgId: string, 
         .eq('organization_id', orgId)
         .is('deleted_at', null)
       if (options.activeOnly) query = query.eq('is_active', true)
+      if (options.excludeId !== undefined) query = query.neq('id', options.excludeId)
       return query.order('id', { ascending: true }).range(from, to)
     },
     `workflows of organization ${orgId}`,
@@ -66,6 +74,7 @@ export async function readOrgWorkflows(supabase: SupabaseClient, orgId: string, 
       continue
     }
     if (options.activeOnly && row.is_active !== true) continue
+    if (row.id === options.excludeId) continue
     out.push({ id: row.id, name: row.name, is_active: row.is_active === true, definition: row.definition })
   }
   return out

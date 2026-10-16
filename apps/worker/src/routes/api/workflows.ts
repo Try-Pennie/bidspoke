@@ -1220,7 +1220,7 @@ workflows.get('/:id/rename-impact', async (c) => {
   // them to the user and (by default) skip the rewrite.
   let otherWorkflows
   try {
-    otherWorkflows = (await readOrgWorkflows(supabase, orgId)).filter((w) => w.id !== id)
+    otherWorkflows = await readOrgWorkflows(supabase, orgId, { excludeId: id })
   } catch (err) {
     return dbError(c, err)
   }

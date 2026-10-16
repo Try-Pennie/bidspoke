@@ -168,6 +168,16 @@ describe('scanPartnerValueReaders: the two maps', () => {
     expect(readsOf(scanScript('steps.constants.output.subAccountIdsMap[source]'), 'subAccountIdsMap')).toEqual(['every_partner'])
   })
 
+  it('a literal entry is followed to its end however much space sits before it', () => {
+    const gap = `\n${' '.repeat(300)}\n`
+    expect(readsOf(scanScript(`constants.activeBidding${gap}?.tripoint`), 'activeBidding')).toEqual(['by_name'])
+    expect(readsOf(scanScript(`constants.activeBidding${gap}['sofi']`), 'activeBidding')).toEqual([])
+  })
+
+  it('a map handed to a local name is counted for every partner, since what the name reads next is not followed', () => {
+    expect(readsOf(scanScript("const m = constants.subAccountIdsMap;\nreturn m['uuid-tp-1']"), 'subAccountIdsMap')).toEqual(['every_partner'])
+  })
+
   it('a method call on the map is not a literal entry', () => {
     expect(readsOf(scanScript('constants.activeBidding.hasOwnProperty(slug)'), 'activeBidding')).toEqual(['every_partner'])
   })

@@ -25,10 +25,12 @@
  * `subAccountIdsMap` keyed by sub-account id), a literal entry
  * (`activeBidding.tripoint`, `subAccountIdsMap['<id>']`) is a read of that one
  * partner's entry, and anything else (`activeBidding[sourceName]`,
- * `Object.keys(constants.subAccountIdsMap)`, the map passed on whole) reads the
- * value for every partner. So does reading the whole output by a computed name
- * (`constants[name]`, `Object.keys(constants)`, a spread): that is reported on
- * every value, as every partner.
+ * `Object.keys(constants.subAccountIdsMap)`, the map passed on whole, or handed
+ * to a local name, `const m = constants.subAccountIdsMap`, whose later entries
+ * are not followed) reads the value for every partner. An entry is followed to
+ * the end of its expression, however much space sits before it. Reading the
+ * whole output by a computed name (`constants[name]`, `Object.keys(constants)`,
+ * a spread) is reported on every value, as every partner.
  *
  * The scan errs toward reporting a reader (L648): a commented out access still
  * counts, because missing a reader would let a delete break a workflow while
@@ -255,7 +257,7 @@ function readsOfKey(text: string, root: string, key: string): KeyRead[] {
   const patterns: RegExp[] = [new RegExp(String.raw`${root}\s*(?:\?\.)?\s*\[\s*(?:'${esc(key)}'|"${esc(key)}"|\`${esc(key)}\`)\s*\]`, 'g')]
   if (IDENT.test(key)) patterns.push(new RegExp(String.raw`${root}${DOT}${esc(key)}(?![\w$])`, 'g'))
   for (const p of patterns) {
-    for (const m of text.matchAll(p)) out.push({ rest: text.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + 200) })
+    for (const m of text.matchAll(p)) out.push({ rest: text.slice((m.index ?? 0) + m[0].length) })
   }
   for (const named of destructuresFrom(text, root)) if (named.includes(key)) out.push({ rest: null })
   return out

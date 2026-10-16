@@ -51,6 +51,20 @@ describe('readOrgWorkflows', () => {
     expect(err).toHaveBeenCalledTimes(2)
   })
 
+  it('leaves out a named workflow in the query, so it never takes a page slot', async () => {
+    const sb = makeSupabase({ workflows: { list: [row('other')] } })
+    const got = await readOrgWorkflows(asClient(sb), ORG, { excludeId: 'self' })
+    expect(sb.calls.workflows).toContainEqual(['neq', ['id', 'self']])
+    expect(got.map((w) => w.id)).toEqual(['other'])
+  })
+
+  it('never hands back the excluded workflow even if the query lets it through', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const sb = makeSupabase({ workflows: { list: [row('self'), row('other')] } })
+    const got = await readOrgWorkflows(asClient(sb), ORG, { excludeId: 'self' })
+    expect(got.map((w) => w.id)).toEqual(['other'])
+  })
+
   it('reads past the 1,000 row cap', async () => {
     const page1 = Array.from({ length: 1000 }, (_, i) => row(`w${String(i).padStart(4, '0')}`))
     const sb = makeSupabase({ workflows: [{ list: page1 }, { list: [row('w1000')] }] })
