@@ -814,7 +814,7 @@ export async function runWorkflowScheduleWatch(
   nowMs: number = Date.now(),
   fetchImpl: typeof fetch = fetch,
 ): Promise<ScheduleCheckResult[]> {
-  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'workflow-schedule-watch'))
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'workflow-schedule-watch', 'tell-only'))
 
   // Configuration and credential first, once. Every workflow shares the answer,
   // so asking per workflow would produce N identical failures and would leave a

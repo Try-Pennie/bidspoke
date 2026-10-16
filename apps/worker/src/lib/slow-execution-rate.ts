@@ -112,7 +112,7 @@ export async function runSlowExecutionCheck(
   kv: KvLike,
   appUrl: string
 ): Promise<void> {
-  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'slow-execution-rate'))
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'slow-execution-rate', 'measure-from-database'))
   if (orgIds.length === 0) return
 
   const { data: workflows, error: workflowsError } = await supabase

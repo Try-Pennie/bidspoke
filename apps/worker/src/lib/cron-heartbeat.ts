@@ -752,7 +752,7 @@ export async function runHeartbeatChecks(
   kv: KVNamespace,
   nowMs: number = Date.now(),
 ): Promise<HeartbeatCheckResult[]> {
-  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'cron-heartbeat'))
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'cron-heartbeat', 'tell-only'))
 
   const results: HeartbeatCheckResult[] = []
   for (const job of CRON_JOBS) {

@@ -778,6 +778,7 @@ const scheduledJobs = {
               probe: (target) => fetchProbe(target),
               resolveSlack: () => resolveSlackForEveryOrg({
                 supabase,
+                use: 'tell-only',
                 log: (line) => console.error(line),
                 logPrefix: '[partner-reachability]',
               }),
@@ -813,6 +814,7 @@ const scheduledJobs = {
                   : Promise.resolve({ kind: 'failed' as const, reason: 'SUPABASE_URL is not a URL the metrics feed can be built from' }),
                 resolveSlack: () => resolveSlackForEveryOrg({
                   supabase,
+                  use: 'tell-only',
                   log: (line) => console.error(line),
                   logPrefix: '[database-memory]',
                 }),
@@ -843,6 +845,7 @@ const scheduledJobs = {
               claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
               resolveSlack: () => resolveSlackForEveryOrg({
                 supabase,
+                use: 'tell-only',
                 log: (line) => console.error(line),
                 logPrefix: '[partner-page-monitor]',
               }),
@@ -871,6 +874,7 @@ const scheduledJobs = {
               claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
               resolveSlack: () => resolveSlackForEveryOrg({
                 supabase,
+                use: 'tell-only',
                 log: (line) => console.error(line),
                 logPrefix: '[incident-drain]',
               }),

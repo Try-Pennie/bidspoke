@@ -336,7 +336,7 @@ export async function notifyExportFailure(
   }
   const repeat = recurrence.kind === 'reminder' ? (describeRepeat(recurrence.standing, nowMs, recurrence.unchanged) ?? undefined) : undefined
 
-  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'export-alerts'))
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'export-alerts', 'tell-only'))
 
   let delivered = false
   for (const orgId of orgIds) {

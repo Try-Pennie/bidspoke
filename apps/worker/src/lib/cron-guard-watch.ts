@@ -373,7 +373,7 @@ export async function runCronGuardWatchLive(supabase: SupabaseClient, kv: KVName
     now: () => Date.now(),
     tailFailOpens: supabaseTailCopyReader(supabase),
     send: (kind, count, capped, sources) =>
-      forEachSlackOrg(supabase, 'cron-guard-watch', (orgId) =>
+      forEachSlackOrg(supabase, 'cron-guard-watch', 'tell-only', (orgId) =>
         sendExportFailureAlert(supabase, orgId, null, { jobName: 'cron-guard-watch', ...cronGuardMessage(kind, count, capped, sources) }),
       ).then(anyDelivered),
     log: (line) => console.log(line),

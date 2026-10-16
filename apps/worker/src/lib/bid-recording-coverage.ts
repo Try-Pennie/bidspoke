@@ -198,7 +198,7 @@ export async function runBidRecordingCoverageCheck(
 ): Promise<void> {
   // The coverage reads below need the database, so an org list answered from the
   // saved copy (the database did not answer) is a failed lookup here too (#1303).
-  const orgs = await slackOrgIds(supabase, 'bid-recording')
+  const orgs = await slackOrgIds(supabase, 'bid-recording', 'measure-from-database')
   if (orgs.kind !== 'live') {
     console.error(`[bid-recording] event=bid_recording_orgs_query_failed reason=${orgs.kind === 'stored' ? 'database_not_answering' : orgs.reason}`)
     return

@@ -102,7 +102,7 @@ export async function runVolumeAnomalyCheck(
   supabase: SupabaseClient
 ): Promise<void> {
   // 1. Find orgs with Slack connections
-  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'volume-anomaly'))
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'volume-anomaly', 'measure-from-database'))
   if (orgIds.length === 0) return
 
   // 2. Get workflow IDs for those orgs

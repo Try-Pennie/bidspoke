@@ -695,7 +695,7 @@ describe('resolveSlackForEveryOrg: the probe belongs to no org, so it posts to e
       { organization_id: 'a', config: { bot_token: 'ta', default_channel: '#a' } },
       { organization_id: 'b', config: null },
     ] }], null)
-    const found = await resolveSlackForEveryOrg({ supabase: client, log: () => {}, logPrefix: '[partner-reachability]' })
+    const found = await resolveSlackForEveryOrg({ supabase: client, use: 'tell-only', log: () => {}, logPrefix: '[partner-reachability]' })
     expect(found).toEqual([expect.objectContaining({ bot_token: 'ta', default_channel: '#a' })])
     expect(calls).toHaveLength(1)
   })
@@ -707,7 +707,7 @@ describe('resolveSlackForEveryOrg: the probe belongs to no org, so it posts to e
     const { resolveSlackForEveryOrg } = await import('../standing-alert')
     const logs: string[] = []
     const { client } = await scheduledClient(['stall'], { a: { bot_token: 'tk', default_channel: '#k' } })
-    const found = await resolveSlackForEveryOrg({ supabase: client, log: (l) => { logs.push(l) }, logPrefix: '[partner-reachability]' })
+    const found = await resolveSlackForEveryOrg({ supabase: client, use: 'tell-only', log: (l) => { logs.push(l) }, logPrefix: '[partner-reachability]' })
     expect(found).toEqual([expect.objectContaining({ bot_token: 'tk', default_channel: '#k' })])
     expect(logs.some((l) => l.includes('saved copy'))).toBe(true)
   })
@@ -717,7 +717,7 @@ describe('resolveSlackForEveryOrg: the probe belongs to no org, so it posts to e
     const { resolveSlackForEveryOrg } = await import('../standing-alert')
     const logs: string[] = []
     const { client } = await scheduledClient([{ error: { message: 'down' } }], null)
-    const found = await resolveSlackForEveryOrg({ supabase: client, log: (l) => { logs.push(l) }, logPrefix: '[partner-reachability]' })
+    const found = await resolveSlackForEveryOrg({ supabase: client, use: 'tell-only', log: (l) => { logs.push(l) }, logPrefix: '[partner-reachability]' })
     expect(found).toEqual([])
     expect(logs.some((l) => l.includes('no_copy'))).toBe(true)
   })
@@ -726,7 +726,7 @@ describe('resolveSlackForEveryOrg: the probe belongs to no org, so it posts to e
     quiet()
     const { resolveSlackForEveryOrg } = await import('../standing-alert')
     const { client } = await scheduledClient([{ data: [] }], { a: { bot_token: 'tk', default_channel: '#k' } })
-    expect(await resolveSlackForEveryOrg({ supabase: client, log: () => {}, logPrefix: '[partner-reachability]' })).toEqual([])
+    expect(await resolveSlackForEveryOrg({ supabase: client, use: 'tell-only', log: () => {}, logPrefix: '[partner-reachability]' })).toEqual([])
   })
 
   it('reports an unresolved Slack destination in the run summary, not only in a log line', async () => {

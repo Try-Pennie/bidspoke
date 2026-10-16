@@ -8,7 +8,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
-import { readEverySlackConnection } from './alert-fanout'
+import { readEverySlackConnection, type SlackListUse } from './alert-fanout'
 import { describeCopyAge } from './scheduled-slack'
 import { describeRepeat, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf, touchCondition, type BackoffKv } from './alert-backoff'
 
@@ -27,12 +27,14 @@ export type SlackTarget = { bot_token: string; default_channel: string }
  */
 export async function resolveSlackForEveryOrg(deps: {
   supabase: SupabaseClient
+  /** What the caller does with the connections (alert-fanout.ts SlackListUse); required so none can leave it out. */
+  use: SlackListUse
   log: (line: string) => void
   /** Names the calling check in the log, so a fallback is traced to the right one. */
   logPrefix: string
 }): Promise<SlackTarget[]> {
   try {
-    const read = await readEverySlackConnection(deps.supabase, deps.logPrefix.replace(/^\[|\]$/g, ''))
+    const read = await readEverySlackConnection(deps.supabase, deps.logPrefix.replace(/^\[|\]$/g, ''), deps.use)
     if (read.kind === 'unreachable') {
       deps.log(`${deps.logPrefix} nobody can be told: the Slack connections could not be read (${read.reason})`)
       return []

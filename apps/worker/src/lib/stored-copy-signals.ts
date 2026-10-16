@@ -254,7 +254,8 @@ export function servingMessage(reading: LedgerReading): TitledMessage & { refusi
  * which is exactly when this alert speaks. The read logs why when nobody can be told.
  */
 async function servingAlertTargets(supabase: SupabaseClient): Promise<SlackTarget[]> {
-  const read = await readEverySlackConnection(supabase, 'stored-copy-checks')
+  // Tell-only: the finding is the stored copy ledger in KV (#1303).
+  const read = await readEverySlackConnection(supabase, 'stored-copy-checks', 'tell-only')
   if (read.kind === 'unreachable') return []
   return [...read.connections.values()].filter((c) => c.volume_alerts_enabled)
 }

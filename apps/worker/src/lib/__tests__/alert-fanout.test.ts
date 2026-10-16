@@ -33,16 +33,16 @@ describe('slackOrgIds', () => {
       { organization_id: 'org-2' },
       { organization_id: 'org-1' },
     ])
-    expect(await slackOrgIds(supabase, 'test')).toEqual({ kind: 'live', orgIds: ['org-1', 'org-2'] })
+    expect(await slackOrgIds(supabase, 'test', 'tell-only')).toEqual({ kind: 'live', orgIds: ['org-1', 'org-2'] })
   })
 
   it('says it could not read, rather than answering an empty list, when the read fails (#1303)', async () => {
     const supabase = supabaseWithOrgs([], { message: 'boom' })
-    expect(await slackOrgIds(supabase, 'test')).toEqual({ kind: 'unreachable', reason: 'read_failed' })
+    expect(await slackOrgIds(supabase, 'test', 'tell-only')).toEqual({ kind: 'unreachable', reason: 'read_failed' })
   })
 
   it('answers an empty live list when the database has no Slack organizations', async () => {
-    expect(await slackOrgIds(supabaseWithOrgs([]), 'test')).toEqual({ kind: 'live', orgIds: [] })
+    expect(await slackOrgIds(supabaseWithOrgs([]), 'test', 'tell-only')).toEqual({ kind: 'live', orgIds: [] })
   })
 })
 
@@ -50,7 +50,7 @@ describe('forEachSlackOrg', () => {
   it('invokes perOrg once per unique org and returns each result in order', async () => {
     const supabase = supabaseWithOrgs([{ organization_id: 'a' }, { organization_id: 'b' }, { organization_id: 'a' }])
     const seen: string[] = []
-    const results = await forEachSlackOrg(supabase, 'test', async (orgId) => {
+    const results = await forEachSlackOrg(supabase, 'test', 'tell-only', async (orgId) => {
       seen.push(orgId)
       return orgId === 'a'
     })
@@ -60,7 +60,7 @@ describe('forEachSlackOrg', () => {
 
   it('runs nothing and says so when the org list could not be read (#1303)', async () => {
     const perOrg = vi.fn(async () => true)
-    const results = await forEachSlackOrg(supabaseWithOrgs([], { message: 'boom' }), 'test', perOrg)
+    const results = await forEachSlackOrg(supabaseWithOrgs([], { message: 'boom' }), 'test', 'tell-only', perOrg)
     expect(results).toEqual({ kind: 'unreachable', reason: 'read_failed' })
     expect(perOrg).not.toHaveBeenCalled()
   })
@@ -77,6 +77,7 @@ describe('rateLimitedOrgAlert', () => {
       ttlSeconds: 100,
       supabase,
       logLabel: 'test',
+      use: 'tell-only',
       perOrg,
     })
     expect(alerted).toBe(true)
@@ -93,6 +94,7 @@ describe('rateLimitedOrgAlert', () => {
       ttlSeconds: 100,
       supabase,
       logLabel: 'test',
+      use: 'tell-only',
       perOrg: async () => false,
     })
     expect(alerted).toBe(false)
@@ -109,6 +111,7 @@ describe('rateLimitedOrgAlert', () => {
       ttlSeconds: 100,
       supabase,
       logLabel: 'test',
+      use: 'tell-only',
       perOrg,
     })
     expect(alerted).toBe(false)

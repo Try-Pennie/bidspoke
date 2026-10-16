@@ -281,7 +281,7 @@ export async function runQueryTimeoutWatchLive(supabase: SupabaseClient, kv: KVN
     read: () => readSlowStatements(supabase),
     kv,
     send: (offenders) =>
-      forEachSlackOrg(supabase, 'query-timeout-watch', (orgId) => sendQueryTimeoutAlert(supabase, orgId, offenders)).then(anyDelivered),
+      forEachSlackOrg(supabase, 'query-timeout-watch', 'tell-only', (orgId) => sendQueryTimeoutAlert(supabase, orgId, offenders)).then(anyDelivered),
     now: () => Date.now(),
     log: (line) => console.log(line),
   })

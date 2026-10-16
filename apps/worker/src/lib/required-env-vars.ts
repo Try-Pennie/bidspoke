@@ -54,7 +54,7 @@ export async function runRequiredEnvVarsCheck(
   supabase: SupabaseClient,
   env: Env,
 ): Promise<RequiredEnvVarsResult> {
-  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'required-env-vars'))
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'required-env-vars', 'measure-from-database'))
 
   const missingAcrossOrgs = new Set<string>()
   let alerted = false

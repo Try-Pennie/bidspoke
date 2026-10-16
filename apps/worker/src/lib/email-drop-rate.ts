@@ -133,7 +133,7 @@ export async function runEmailDropRateCheck(supabase: SupabaseClient, kv: KvLike
   // otherwise, and the query is not free.
   // The counts below need the database, so an org list answered from the saved
   // copy (the database did not answer) is a failed lookup here too (#1303).
-  const orgs = await slackOrgIds(supabase, 'email-drop-rate')
+  const orgs = await slackOrgIds(supabase, 'email-drop-rate', 'measure-from-database')
   if (orgs.kind !== 'live') {
     console.error(`[email-drop-rate] event=email_drop_orgs_query_failed reason=${orgs.kind === 'stored' ? 'database_not_answering' : orgs.reason}`)
     return
