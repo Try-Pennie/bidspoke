@@ -613,9 +613,11 @@ async function noteAllSaved(deps: UnconfirmedSweepDeps, orgId: string, tally: Sl
 }
 
 /**
- * How much the snapshot window reaches past a slowdown's first and last timed
- * out write. A snapshot starts the instant its write is recorded, so this only
- * covers clock skew between isolates and the claim's own wait.
+ * The margin added before a slowdown's first timed out write and after its
+ * last when counting the snapshots taken during it. A snapshot is started at
+ * the same moment its write is recorded as timed out, so the margin is there
+ * only for clock differences between isolates and the claim's wait (at most
+ * 2 seconds).
  */
 const SNAPSHOT_WINDOW_MARGIN_MS = 60_000
 
