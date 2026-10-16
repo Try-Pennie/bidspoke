@@ -1,0 +1,569 @@
+[
+  {
+    "id": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+    "name": "AmOne",
+    "slug": "amone",
+    "min_bid": null,
+    "version": 0,
+    "bid_mode": "ping_only",
+    "priority": 0,
+    "click_url": null,
+    "daily_cap": null,
+    "is_active": true,
+    "created_at": "2026-05-14T17:56:31.378301+00:00",
+    "updated_at": "2026-06-08T13:30:19.8208+00:00",
+    "updated_by": "00000000-0000-4000-8000-000000000001",
+    "bid_formula": null,
+    "alert_config": {
+      "permanent_errors": {
+        "alert": true
+      },
+      "transient_errors": {
+        "alert": true
+      }
+    },
+    "api_endpoint": "https://am-one-proxy.trypennie.dev/leads/ping",
+    "last_save_id": null,
+    "partner_type": "buyer",
+    "cf_secret_key": "AMONE_PROXY_SECRET",
+    "accept_signals": [],
+    "dedup_endpoint": null,
+    "circuit_enabled": true,
+    "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+    "updated_by_name": "Editor A",
+    "extra_extraction": {
+      "clickUrl": "data.ClickThrough_url"
+    },
+    "updated_by_email": "editor-a@example.com",
+    "bid_resolver_type": "api",
+    "duplicate_signals": [],
+    "bid_resolver_config": {
+      "bid_path": "data.bid"
+    },
+    "last_probe_response": {
+      "ok": true,
+      "data": {
+        "bid": "redacted",
+        "Status": "redacted",
+        "bid_id": "redacted",
+        "ClickThrough_url": "redacted"
+      }
+    },
+    "sell_off_offer_title": null,
+    "sub_account_min_bids": null,
+    "bid_comparison_source": "auto",
+    "external_routing_code": null,
+    "circuit_window_seconds": 60,
+    "confirmation_window_ms": null,
+    "outbound_field_mapping": null,
+    "sell_off_offer_details": null,
+    "circuit_error_threshold": 5,
+    "response_classification": null,
+    "circuit_cooldown_seconds": 300,
+    "credential_warning": null
+  },
+  {
+    "id": "84fa3d0a-c382-41c1-983b-70d75d97cf4c",
+    "name": "Brainsome",
+    "slug": "brainsome",
+    "min_bid": null,
+    "version": 0,
+    "bid_mode": "commit",
+    "priority": 0,
+    "click_url": null,
+    "daily_cap": null,
+    "is_active": true,
+    "created_at": "2026-04-21T19:48:30.396372+00:00",
+    "updated_at": "2026-04-21T19:48:30.396372+00:00",
+    "updated_by": "00000000-0000-4000-8000-000000000002",
+    "bid_formula": null,
+    "alert_config": {
+      "permanent_errors": {
+        "alert": true
+      },
+      "transient_errors": {
+        "alert": true
+      }
+    },
+    "api_endpoint": null,
+    "last_save_id": null,
+    "partner_type": "source",
+    "cf_secret_key": null,
+    "accept_signals": [],
+    "dedup_endpoint": null,
+    "circuit_enabled": true,
+    "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+    "updated_by_name": "Editor B",
+    "extra_extraction": null,
+    "updated_by_email": "editor-b@example.com",
+    "bid_resolver_type": "api",
+    "duplicate_signals": [],
+    "bid_resolver_config": {},
+    "last_probe_response": null,
+    "sell_off_offer_title": null,
+    "sub_account_min_bids": null,
+    "bid_comparison_source": "auto",
+    "external_routing_code": null,
+    "circuit_window_seconds": 60,
+    "confirmation_window_ms": null,
+    "outbound_field_mapping": null,
+    "sell_off_offer_details": null,
+    "circuit_error_threshold": 5,
+    "response_classification": null,
+    "circuit_cooldown_seconds": 300,
+    "credential_warning": null
+  },
+  {
+    "id": "205785c3-09cf-4993-8765-4edd81c62af8",
+    "name": "Dot818",
+    "slug": "dot818",
+    "min_bid": null,
+    "version": 0,
+    "bid_mode": "commit",
+    "priority": 0,
+    "click_url": null,
+    "daily_cap": null,
+    "is_active": true,
+    "created_at": "2026-04-21T19:48:15.321221+00:00",
+    "updated_at": "2026-04-21T19:48:15.321221+00:00",
+    "updated_by": "00000000-0000-4000-8000-000000000002",
+    "bid_formula": null,
+    "alert_config": {
+      "permanent_errors": {
+        "alert": true
+      },
+      "transient_errors": {
+        "alert": true
+      }
+    },
+    "api_endpoint": null,
+    "last_save_id": null,
+    "partner_type": "source",
+    "cf_secret_key": null,
+    "accept_signals": [],
+    "dedup_endpoint": null,
+    "circuit_enabled": true,
+    "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+    "updated_by_name": "Editor B",
+    "extra_extraction": null,
+    "updated_by_email": "editor-b@example.com",
+    "bid_resolver_type": "api",
+    "duplicate_signals": [],
+    "bid_resolver_config": {},
+    "last_probe_response": null,
+    "sell_off_offer_title": null,
+    "sub_account_min_bids": null,
+    "bid_comparison_source": "auto",
+    "external_routing_code": null,
+    "circuit_window_seconds": 60,
+    "confirmation_window_ms": null,
+    "outbound_field_mapping": null,
+    "sell_off_offer_details": null,
+    "circuit_error_threshold": 5,
+    "response_classification": null,
+    "circuit_cooldown_seconds": 300,
+    "credential_warning": null
+  },
+  {
+    "id": "e82b748a-3d32-4777-b3e3-b7d75d8580f1",
+    "name": "GigFi",
+    "slug": "gigfi",
+    "min_bid": null,
+    "version": 0,
+    "bid_mode": "commit",
+    "priority": 0,
+    "click_url": null,
+    "daily_cap": null,
+    "is_active": true,
+    "created_at": "2026-06-09T15:04:37.115371+00:00",
+    "updated_at": "2026-06-09T15:04:37.115371+00:00",
+    "updated_by": "00000000-0000-4000-8000-000000000002",
+    "bid_formula": null,
+    "alert_config": {
+      "permanent_errors": {
+        "alert": true
+      },
+      "transient_errors": {
+        "alert": true
+      }
+    },
+    "api_endpoint": null,
+    "last_save_id": null,
+    "partner_type": "buyer",
+    "cf_secret_key": null,
+    "accept_signals": [],
+    "dedup_endpoint": null,
+    "circuit_enabled": true,
+    "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+    "updated_by_name": "Editor B",
+    "extra_extraction": null,
+    "updated_by_email": "editor-b@example.com",
+    "bid_resolver_type": "api",
+    "duplicate_signals": [],
+    "bid_resolver_config": {},
+    "last_probe_response": null,
+    "sell_off_offer_title": null,
+    "sub_account_min_bids": {
+      "0d868153-1e04-4425-95f9-ce2320a030b0": 6.15,
+      "34c7f980-f343-4348-b85f-562697bd2980": 4.62,
+      "3714027c-81cf-4ab9-9db3-77f8dc0cbf80": 9.23,
+      "462a8345-3957-4fb2-b3f1-68b63fd4c5f3": 4.62,
+      "47430d99-6e9b-465a-b92b-d13be78e2d9e": 3.85,
+      "b3918028-6417-4a3d-acd7-c0f4ca1f9e28": 6.15,
+      "bc36a297-28a5-476b-a68b-22a16baa60bf": 3.08,
+      "f7d57eb6-4c87-437b-8686-fdf088a29846": 9.23
+    },
+    "bid_comparison_source": "auto",
+    "external_routing_code": null,
+    "circuit_window_seconds": 60,
+    "confirmation_window_ms": null,
+    "outbound_field_mapping": null,
+    "sell_off_offer_details": null,
+    "circuit_error_threshold": 5,
+    "response_classification": null,
+    "circuit_cooldown_seconds": 300,
+    "credential_warning": null
+  },
+  {
+    "id": "4ad955bd-744f-4c1f-acbb-19a22b9e5c64",
+    "name": "LendSwift",
+    "slug": "lendswift",
+    "min_bid": 3.08,
+    "version": 0,
+    "bid_mode": "commit",
+    "priority": 0,
+    "click_url": null,
+    "daily_cap": null,
+    "is_active": true,
+    "created_at": "2026-05-29T19:19:39.185639+00:00",
+    "updated_at": "2026-05-29T19:19:39.185639+00:00",
+    "updated_by": "00000000-0000-4000-8000-000000000002",
+    "bid_formula": null,
+    "alert_config": {
+      "permanent_errors": {
+        "alert": true
+      },
+      "transient_errors": {
+        "alert": true
+      }
+    },
+    "api_endpoint": null,
+    "last_save_id": null,
+    "partner_type": "buyer",
+    "cf_secret_key": null,
+    "accept_signals": [],
+    "dedup_endpoint": null,
+    "circuit_enabled": true,
+    "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+    "updated_by_name": "Editor B",
+    "extra_extraction": null,
+    "updated_by_email": "editor-b@example.com",
+    "bid_resolver_type": "api",
+    "duplicate_signals": [],
+    "bid_resolver_config": {},
+    "last_probe_response": null,
+    "sell_off_offer_title": null,
+    "sub_account_min_bids": {
+      "0d868153-1e04-4425-95f9-ce2320a030b0": 6.15,
+      "34c7f980-f343-4348-b85f-562697bd2980": 4.62,
+      "3714027c-81cf-4ab9-9db3-77f8dc0cbf80": 9.23,
+      "462a8345-3957-4fb2-b3f1-68b63fd4c5f3": 4.62,
+      "47430d99-6e9b-465a-b92b-d13be78e2d9e": 3.85,
+      "b3918028-6417-4a3d-acd7-c0f4ca1f9e28": 6.15,
+      "bc36a297-28a5-476b-a68b-22a16baa60bf": 3.08,
+      "f7d57eb6-4c87-437b-8686-fdf088a29846": 9.23
+    },
+    "bid_comparison_source": "auto",
+    "external_routing_code": null,
+    "circuit_window_seconds": 60,
+    "confirmation_window_ms": null,
+    "outbound_field_mapping": null,
+    "sell_off_offer_details": null,
+    "circuit_error_threshold": 5,
+    "response_classification": null,
+    "circuit_cooldown_seconds": 300,
+    "credential_warning": null
+  },
+  {
+    "id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+    "name": "Liberty1",
+    "slug": "liberty1",
+    "min_bid": null,
+    "version": 0,
+    "bid_mode": "commit",
+    "priority": 0,
+    "click_url": "https://trypennie.com/portal/liberty/{prospect_id}",
+    "daily_cap": null,
+    "is_active": true,
+    "created_at": "2026-09-25T14:14:11.258801+00:00",
+    "updated_at": "2026-10-14T20:52:19.417605+00:00",
+    "updated_by": "00000000-0000-4000-8000-000000000001",
+    "bid_formula": null,
+    "alert_config": {
+      "permanent_errors": {
+        "alert": true
+      },
+      "transient_errors": {
+        "alert": true
+      }
+    },
+    "api_endpoint": null,
+    "last_save_id": null,
+    "partner_type": "buyer",
+    "cf_secret_key": null,
+    "accept_signals": [],
+    "dedup_endpoint": null,
+    "circuit_enabled": true,
+    "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+    "updated_by_name": "Editor A",
+    "extra_extraction": null,
+    "updated_by_email": "editor-a@example.com",
+    "bid_resolver_type": "api",
+    "duplicate_signals": [],
+    "bid_resolver_config": {},
+    "last_probe_response": null,
+    "sell_off_offer_title": null,
+    "sub_account_min_bids": null,
+    "bid_comparison_source": "auto",
+    "external_routing_code": 4,
+    "circuit_window_seconds": 60,
+    "confirmation_window_ms": null,
+    "outbound_field_mapping": null,
+    "sell_off_offer_details": null,
+    "circuit_error_threshold": 5,
+    "response_classification": null,
+    "circuit_cooldown_seconds": 300,
+    "credential_warning": null
+  },
+  {
+    "id": "73bcc351-724d-4705-be3b-b27d0ffc17ad",
+    "name": "NerdWallet",
+    "slug": "nerdwallet",
+    "min_bid": null,
+    "version": 0,
+    "bid_mode": "commit",
+    "priority": 0,
+    "click_url": null,
+    "daily_cap": null,
+    "is_active": true,
+    "created_at": "2026-04-21T19:46:34.124358+00:00",
+    "updated_at": "2026-04-21T19:46:34.124358+00:00",
+    "updated_by": "00000000-0000-4000-8000-000000000002",
+    "bid_formula": null,
+    "alert_config": {
+      "permanent_errors": {
+        "alert": true
+      },
+      "transient_errors": {
+        "alert": true
+      }
+    },
+    "api_endpoint": null,
+    "last_save_id": null,
+    "partner_type": "source",
+    "cf_secret_key": null,
+    "accept_signals": [],
+    "dedup_endpoint": null,
+    "circuit_enabled": true,
+    "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+    "updated_by_name": "Editor B",
+    "extra_extraction": null,
+    "updated_by_email": "editor-b@example.com",
+    "bid_resolver_type": "api",
+    "duplicate_signals": [],
+    "bid_resolver_config": {},
+    "last_probe_response": null,
+    "sell_off_offer_title": null,
+    "sub_account_min_bids": null,
+    "bid_comparison_source": "auto",
+    "external_routing_code": null,
+    "circuit_window_seconds": 60,
+    "confirmation_window_ms": null,
+    "outbound_field_mapping": null,
+    "sell_off_offer_details": null,
+    "circuit_error_threshold": 5,
+    "response_classification": null,
+    "circuit_cooldown_seconds": 300,
+    "credential_warning": null
+  },
+  {
+    "id": "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68",
+    "name": "Sofi",
+    "slug": "sofi",
+    "min_bid": null,
+    "version": 0,
+    "bid_mode": "commit",
+    "priority": 0,
+    "click_url": null,
+    "daily_cap": null,
+    "is_active": true,
+    "created_at": "2026-04-21T19:25:01.985728+00:00",
+    "updated_at": "2026-10-15T14:15:57.587588+00:00",
+    "updated_by": "00000000-0000-4000-8000-000000000002",
+    "bid_formula": null,
+    "alert_config": {
+      "permanent_errors": {
+        "alert": true
+      },
+      "transient_errors": {
+        "alert": true
+      }
+    },
+    "api_endpoint": null,
+    "last_save_id": null,
+    "partner_type": "source",
+    "cf_secret_key": null,
+    "accept_signals": [],
+    "dedup_endpoint": null,
+    "circuit_enabled": true,
+    "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+    "updated_by_name": "Editor B",
+    "extra_extraction": null,
+    "updated_by_email": "editor-b@example.com",
+    "bid_resolver_type": "api",
+    "duplicate_signals": [],
+    "bid_resolver_config": {},
+    "last_probe_response": null,
+    "sell_off_offer_title": "Denied a personal loan? Need an income-based financing solution?",
+    "sub_account_min_bids": null,
+    "bid_comparison_source": "auto",
+    "external_routing_code": null,
+    "circuit_window_seconds": 60,
+    "confirmation_window_ms": null,
+    "outbound_field_mapping": null,
+    "sell_off_offer_details": "<p>Access up to $100,000 with rates tailored to your income</p><ul><li>Terms and rates based on your income</li><li>Approval in minutes, not weeks</li><li>Funding as soon as the next business day</li></ul>",
+    "circuit_error_threshold": 5,
+    "response_classification": null,
+    "circuit_cooldown_seconds": 300,
+    "credential_warning": null
+  },
+  {
+    "id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+    "name": "Tripoint",
+    "slug": "tripoint",
+    "min_bid": null,
+    "version": 0,
+    "bid_mode": "commit",
+    "priority": 0,
+    "click_url": "https://trypennie.com/portal/tpl",
+    "daily_cap": null,
+    "is_active": true,
+    "created_at": "2026-04-21T19:46:00.407619+00:00",
+    "updated_at": "2026-10-13T15:30:04.158057+00:00",
+    "updated_by": "00000000-0000-4000-8000-000000000001",
+    "bid_formula": null,
+    "alert_config": {
+      "permanent_errors": {
+        "alert": true
+      },
+      "transient_errors": {
+        "alert": true
+      }
+    },
+    "api_endpoint": "https://tripoint-proxy.trypennie.dev/leads/create",
+    "last_save_id": null,
+    "partner_type": "buyer",
+    "cf_secret_key": "TRIPOINT_PROXY_SECRET",
+    "accept_signals": [
+      {
+        "field": "ok",
+        "equals": true
+      },
+      {
+        "in": [
+          1000,
+          1001,
+          1013,
+          1014,
+          1015,
+          1016,
+          1017
+        ],
+        "field": "data.createLead.resultCode"
+      }
+    ],
+    "dedup_endpoint": null,
+    "circuit_enabled": true,
+    "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+    "updated_by_name": "Editor A",
+    "extra_extraction": {
+      "leadId": "data.createLead.id",
+      "result": {
+        "classifier": "tripoint_result"
+      },
+      "result_code": "data.createLead.resultCode",
+      "buyer_reference": "data.createLead.id"
+    },
+    "updated_by_email": "editor-a@example.com",
+    "bid_resolver_type": "api",
+    "duplicate_signals": [
+      {
+        "in": [
+          1002,
+          1003,
+          1004,
+          1005,
+          1020
+        ],
+        "field": "data.createLead.resultCode"
+      }
+    ],
+    "bid_resolver_config": {
+      "tiers": [
+        {
+          "above": 12499,
+          "multiplier": 0.0013
+        }
+      ],
+      "pricing_mode": "tiered_multiplier",
+      "source_field": "context.finalDebt",
+      "min_source_value": 10000,
+      "default_multiplier": 0.0009
+    },
+    "last_probe_response": {
+      "ok": true,
+      "data": {
+        "createLead": {
+          "id": "redacted",
+          "bidValue": 145.5,
+          "resultCode": 1013
+        }
+      }
+    },
+    "sell_off_offer_title": null,
+    "sub_account_min_bids": null,
+    "bid_comparison_source": "formula",
+    "external_routing_code": 2,
+    "circuit_window_seconds": 60,
+    "confirmation_window_ms": null,
+    "outbound_field_mapping": null,
+    "sell_off_offer_details": null,
+    "circuit_error_threshold": 5,
+    "response_classification": {
+      "rejection_signals": [
+        {
+          "field": "data.createLead.resultCode",
+          "not_in": [
+            1000,
+            1001,
+            1013,
+            1014,
+            1015,
+            1016,
+            1017
+          ]
+        },
+        {
+          "field": "details[].message",
+          "any_item_contains": "Cannot return null for non-nullable field CreateLeadResponse.id"
+        },
+        {
+          "field": "details[].message",
+          "any_item_word_prefix_ci": "invalid"
+        }
+      ]
+    },
+    "circuit_cooldown_seconds": 300,
+    "credential_warning": null
+  }
+]

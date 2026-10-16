@@ -21,12 +21,12 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { normaliseSqlPath, registryPathOf } from '@bidspoke/buyer-profile'
+import { flattenProfileDocument, normaliseSqlPath, registryPathOf, type BuyerProfileDocument } from '@bidspoke/buyer-profile'
 import { PARTNER_BODY_KEYS, PARTNER_FIELD_REGISTRY, PROFILE_PREFIX, registryEntriesFor } from '../partner-draft'
 import { REPO_ROOT } from '@/lib/__tests__/_scan-utils'
 
 const fixtures = path.join(REPO_ROOT, 'packages/buyer-profile/fixtures')
-const flatten = JSON.parse(readFileSync(path.join(fixtures, 'flatten-cases.json'), 'utf8')) as { cases: Array<{ paths: { ts: string[]; sql: string[] } }> }
+const flatten = JSON.parse(readFileSync(path.join(fixtures, 'flatten-cases.json'), 'utf8')) as { cases: Array<{ document: BuyerProfileDocument; paths: { ts: string[]; sql: string[] } }> }
 const columns = JSON.parse(readFileSync(path.join(fixtures, 'partner-page-columns.json'), 'utf8')) as { tables: Record<string, Record<string, { path?: string; paths?: string[]; excluded?: string }>> }
 
 function exactlyOne(paths: string[]): string[] {
@@ -47,6 +47,16 @@ describe('the partners page field registry (#2132)', () => {
     const sql = flatten.cases.flatMap((c) => c.paths.sql.map(normaliseSqlPath))
     expect(ts.length).toBeGreaterThan(10)
     expect(exactlyOne([...new Set([...ts, ...sql])].map((p) => `${PROFILE_PREFIX}${p}`))).toEqual([])
+  })
+
+  // #2134: the merge decides a profile path by path in flattenProfileDocument's
+  // own output, so every path it produces, not only the ones the fixture lists,
+  // must place in exactly one entry, and a row path in one with a merge group.
+  it('every path flattenProfileDocument produces for the fixture documents matches exactly one entry', () => {
+    const produced = flatten.cases.flatMap((c) => [...flattenProfileDocument(c.document).keys()]).map((p) => `${PROFILE_PREFIX}${p}`)
+    expect(produced.length).toBeGreaterThan(10)
+    expect(exactlyOne(produced)).toEqual([])
+    for (const p of produced.filter((x) => x.endsWith(']'))) expect(registryEntriesFor(p)[0].mergeGroup, p).toBeTruthy()
   })
 
   it('every listed column path matches exactly one entry', () => {

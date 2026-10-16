@@ -33,7 +33,6 @@ import { CapsGrid, type CapsErrors } from './CapsGrid'
 import { ClickDeliveryEditor } from './ClickDeliveryEditor'
 import { HeldClicksPanel } from './HeldClicksPanel'
 import { PricingTiersEditor } from './PricingTiersEditor'
-import { ProfileConflictView } from './ProfileConflictView'
 import { StatePicker } from './StatePicker'
 import { UnresolvedSalesList, type SettleOutcome, type UnresolvedSale } from './UnresolvedSalesList'
 import { WeeklyHoursEditor } from './WeeklyHoursEditor'
@@ -57,11 +56,6 @@ export const EMPTY_PROFILE: BuyerProfileDocument = {
   tiers: [],
 }
 
-export interface ProfileConflict {
-  theirs: BuyerProfileDocument
-  changedBy: string | null
-}
-
 interface Props {
   partnerId: string | null
   partnerName: string
@@ -81,9 +75,6 @@ interface Props {
   signalRules: SignalRules
   onSignalRulesChange: (next: SignalRules) => void
   otherSellers: Array<{ id: string; name: string }>
-  conflict: ProfileConflict | null
-  onSaveOverTheirs: (theirVersion: number) => void
-  onTakeTheirs: (theirs: BuyerProfileDocument) => void
   /**
    * Why the kind cannot be switched now, or null when it can (#1541): a stored
    * profile with pricing or accept rules stored keeps its kind until they are
@@ -170,7 +161,7 @@ function markSentMessage(result: MarkSentResult, leadId: string, partnerName: st
 }
 
 export function BuyerProfileSection(props: Props) {
-  const { partnerId, partnerName, profile, loadError, onProfileChange, errors, acceptSignals, onAcceptSignalsChange, duplicateSignals, onDuplicateSignalsChange, externalRoutingCode, onExternalRoutingCodeChange, signalRules, onSignalRulesChange, otherSellers, conflict, onSaveOverTheirs, onTakeTheirs, soldOnLock } = props
+  const { partnerId, partnerName, profile, loadError, onProfileChange, errors, acceptSignals, onAcceptSignalsChange, duplicateSignals, onDuplicateSignalsChange, externalRoutingCode, onExternalRoutingCodeChange, signalRules, onSignalRulesChange, otherSellers, soldOnLock } = props
   const [usage, setUsage] = useState<BuyerUsage | ClickUsage | null>(null)
   const [usageError, setUsageError] = useState<string | null>(null)
   const [history, setHistory] = useState<HistoryEntry[] | null>(null)
@@ -329,8 +320,6 @@ export function BuyerProfileSection(props: Props) {
         <p role="status" className="text-sm text-gray-600">Reading the buyer profile…</p>
       ) : (
         <>
-          {conflict && <ProfileConflictView mine={profile} theirs={conflict.theirs} changedBy={conflict.changedBy} onSaveOverTheirs={onSaveOverTheirs} onTakeTheirs={onTakeTheirs} />}
-
           {/* First, because the answer decides which of the rules below apply (#1541, L609). */}
           <div className="space-y-1">
             <ChoiceGroup

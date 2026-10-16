@@ -153,9 +153,15 @@ export function TextArea({ id, value, onChange, rows = 3, placeholder, described
  * Every option is a button of type button, so no key it handles submits the
  * form around it (L596).
  */
-export function ChoiceGroup<T extends string>({ id, label, value, options, onChange, disabled, describedBy: db }: {
+export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, options, onChange, disabled, describedBy: db }: {
   id: string
   label: string
+  /**
+   * What is shown when it differs from the accessible name, so a heading above
+   * the control is not repeated on screen (L605): '' shows nothing. The group
+   * is still named by `label` in full.
+   */
+  visibleLabel?: string
   value: T | null
   options: ReadonlyArray<{ value: T; label: string }>
   onChange: (value: T) => void
@@ -174,7 +180,9 @@ export function ChoiceGroup<T extends string>({ id, label, value, options, onCha
   }
   return (
     <div>
-      <span id={labelId} className="mb-1 block text-xs font-medium text-gray-600">{label}</span>
+      {visibleLabel === undefined || visibleLabel === label
+        ? <span id={labelId} className="mb-1 block text-xs font-medium text-gray-600">{label}</span>
+        : <span id={labelId} className={visibleLabel === '' ? 'sr-only' : 'mb-1 block text-xs font-medium text-gray-600'}><span className="sr-only">{label}</span>{visibleLabel !== '' && <span aria-hidden="true">{visibleLabel}</span>}</span>}
       <div id={id} role="radiogroup" aria-labelledby={labelId} aria-describedby={db} aria-disabled={disabled || undefined} className="choice-group">
         {options.map((o, i) => {
           const on = o.value === value
@@ -234,7 +242,8 @@ export function Checkbox({ id, checked, onChange, label, disabled }: { id: strin
 
 // ── Button ────────────────────────────────────────────────────────────────────
 
-export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost'
+/** destructive: the solid red button that answers a dialog with a deletion; danger is the quieter outlined one beside a row. */
+export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'destructive' | 'ghost'
 
 export function Button({ variant, type = 'button', onClick, disabled, busy, children, 'aria-label': ariaLabel, className }: {
   variant: ButtonVariant
