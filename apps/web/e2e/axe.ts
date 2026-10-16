@@ -2,7 +2,6 @@ import type { Page } from '@playwright/test'
 import { expect } from '@playwright/test'
 import AxeBuilder from '@axe-core/playwright'
 import { checkScannedPage } from '../src/lib/scanned-page'
-import { waivableSelector, waivedInDocument, type ContrastWaiver } from './contrast-waiver'
 
 /**
  * Run axe-core against the current page and fail the test on any serious or
@@ -16,20 +15,14 @@ import { waivableSelector, waivedInDocument, type ContrastWaiver } from './contr
  * `include` limits the scan to one surface, a dialog for example (#2134), so a
  * test about that surface measures it rather than the page behind it.
  *
- * `contrastWaiver` lets through ONE known colour-contrast failure, text in the
- * named class inside the named surface, in the main document only
- * (contrast-waiver.ts), until the named issue sets its new shade. Every
- * other contrast failure, and every other rule, still fails the scan. It exists
- * for the partners page form (#2137), whose grey hint text on the beige
- * background PR13 (#2144) recolours once Dan picks the shade; the waiver is
- * deleted there.
+ * There is no contrast waiver: the partners page's grey hints took the hint
+ * token (#2144), and every colour-contrast failure fails the scan.
  */
 export async function expectNoSeriousA11yViolations(
   page: Page,
   exclude: string[] = [],
   expectedPath?: string,
   include?: string,
-  contrastWaiver?: ContrastWaiver,
 ) {
   // Prove the page under the scanner is the page that was asked for, and that
   // it rendered, BEFORE measuring it (#797). The rule itself is a pure function
@@ -48,25 +41,16 @@ export async function expectNoSeriousA11yViolations(
   if (include) builder = builder.include(include)
 
   const results = await builder.analyze()
-  let blocking = results.violations.filter(
+  const blocking = results.violations.filter(
     (v) => v.impact === 'serious' || v.impact === 'critical',
   )
-  if (contrastWaiver) {
-    // Only a main document node, inside the waiver's surface and class (contrast-waiver.ts).
-    const waived = async (target: unknown) => {
-      const selector = waivableSelector(target)
-      if (selector === null) return false
-      return page.evaluate(`(${waivedInDocument.toString()})(document, ${JSON.stringify(selector)}, ${JSON.stringify(contrastWaiver)})`) as Promise<boolean>
-    }
-    const kept = []
-    for (const v of blocking) {
-      if (v.id !== 'color-contrast') { kept.push(v); continue }
-      const nodes = []
-      for (const n of v.nodes) if (!(await waived(n.target))) nodes.push(n)
-      if (nodes.length > 0) kept.push({ ...v, nodes })
-    }
-    blocking = kept
-  }
+
+  // A scan that measured the contrast of no text at all is not a pass (L98), so
+  // the count is asserted and printed: green is shown to mean scanned (#2144).
+  const contrastPassed = results.passes.find((r) => r.id === 'color-contrast')?.nodes.length ?? 0
+  const contrastFailed = results.violations.find((r) => r.id === 'color-contrast')?.nodes.length ?? 0
+  console.log(`  [axe] ${expectedPath ?? new URL(page.url()).pathname}${include ? ` ${include}` : ''}: ${contrastPassed} elements passed color-contrast, ${contrastFailed} failed`)
+  expect(contrastPassed + contrastFailed, 'axe measured the contrast of no text').toBeGreaterThan(0)
 
   // Surface a readable summary when it fails (id + help + affected nodes).
   const summary = blocking

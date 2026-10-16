@@ -8,6 +8,7 @@
  * with no numbers (L633).
  */
 import type { CapsValue } from './CapsGrid'
+import { FieldError } from '@/components/ui/form'
 import { alsoSellTo, CAP_NEAR_SHARE, formatCents, formatWhole } from './labels'
 
 export interface BuyerUsage {
@@ -33,7 +34,7 @@ export function BuyerUsagePanel({ usage, error, caps, otherSellers, partnerName 
   partnerName: string
 }) {
   if (error || !usage) {
-    return <p role="alert" className="text-xs text-red-700">{error ?? 'The usage counts could not be read.'}</p>
+    return <FieldError alert size="xs">{error ?? 'The usage counts could not be read.'}</FieldError>
   }
   const s = usage.day.by_status
   const inFlight = s.reserved ?? 0
@@ -51,7 +52,7 @@ export function BuyerUsagePanel({ usage, error, caps, otherSellers, partnerName 
 
   return (
     <div className="space-y-2 text-sm text-graphite">
-      <p className="text-xs text-gray-500">Counted for {usage.et_day}, as the buyer ledger holds it right now.</p>
+      <p className="text-xs text-hint">Counted for {usage.et_day}, as the buyer ledger holds it right now.</p>
       <ul className="grid grid-cols-1 gap-1 sm:grid-cols-2">
         <li>{line(formatWhole(usage.day.leads), caps.daily_lead_cap === null ? null : formatWhole(caps.daily_lead_cap), 'leads today')}</li>
         <li>{line(formatCents(usage.day.spend_cents), caps.daily_spend_cap_cents === null ? null : formatCents(caps.daily_spend_cap_cents), 'today')}</li>

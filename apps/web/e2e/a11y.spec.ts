@@ -256,7 +256,7 @@ test.describe('Accessibility (axe-core)', () => {
         await expect(page.locator('[role="tabpanel"]:visible'), `${name}, ${tab}: exactly one panel is visible`).toHaveCount(1)
         // A rule row fades in when its panel is shown (@starting-style); scan once it has.
         await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'))
-        await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+        await expectNoSeriousA11yViolations(page, [], '/partners')
         scanned++
       }
     }
@@ -275,7 +275,7 @@ test.describe('Accessibility (axe-core)', () => {
     // The URL is untouched: the problem tab is where it opens, not what it asks for.
     expect(new URL(page.url()).searchParams.get('tab')).toBeNull()
     await page.waitForLoadState('networkidle')
-    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await expectNoSeriousA11yViolations(page, [], '/partners')
     expect(unmatched).toEqual([])
   })
 
@@ -288,7 +288,7 @@ test.describe('Accessibility (axe-core)', () => {
     await page.reload()
     await expect(page.getByRole('tab', { name: 'Bid Group' })).toHaveAttribute('aria-selected', 'true')
     await page.waitForLoadState('networkidle')
-    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await expectNoSeriousA11yViolations(page, [], '/partners')
     expect(unmatched).toEqual([])
   })
 
@@ -303,14 +303,14 @@ test.describe('Accessibility (axe-core)', () => {
     // Twice: set up with them, then moved to open at 9:00 AM.
     await expect(panel.getByText('Hours, Monday to Friday')).toHaveCount(2)
     await page.waitForLoadState('networkidle')
-    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await expectNoSeriousA11yViolations(page, [], '/partners')
     await page.goto('/partners?selected=tripoint&tab=history')
     await expect(panel.getByRole('listitem')).toHaveCount(22)
     await expect(panel.getByText('Bidspoke, hourly Salesforce matrix sync')).toBeVisible()
     await expect(panel.getByText('Editor B, Sync now from Salesforce')).toBeVisible()
     await expect(panel.getByText('Changed directly in the database')).toBeVisible()
     await page.waitForLoadState('networkidle')
-    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await expectNoSeriousA11yViolations(page, [], '/partners')
     expect(unmatched).toEqual([])
   })
 
@@ -321,7 +321,7 @@ test.describe('Accessibility (axe-core)', () => {
     await expect(panel.getByRole('alert').filter({ hasText: 'Could not load history. Try again.' })).toBeVisible()
     await expect(panel.getByRole('listitem')).toHaveCount(0)
     await page.waitForLoadState('networkidle')
-    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await expectNoSeriousA11yViolations(page, [], '/partners')
     expect(unmatched).toEqual([])
   })
 
@@ -332,7 +332,7 @@ test.describe('Accessibility (axe-core)', () => {
     await expect(panel.getByRole('listitem')).toHaveCount(18)
     await expect(panel.getByText(/^History is complete back to Apr 21, 3:46 PM ET; older changes are not listed\.$/)).toBeVisible()
     await page.waitForLoadState('networkidle')
-    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await expectNoSeriousA11yViolations(page, [], '/partners')
     expect(unmatched).toEqual([])
   })
 
@@ -354,7 +354,7 @@ test.describe('Accessibility (axe-core)', () => {
     const box = page.getByLabel("Liberty1's lead id, if you have it")
     await expect(box).toBeVisible()
     await expect(box).toHaveAccessibleDescription(/Salesforce marks the sale Completed with no lead id/)
-    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await expectNoSeriousA11yViolations(page, [], '/partners')
     await cards.nth(0).getByRole('button', { name: 'Cancel' }).click()
 
     // The Remove dialog of the sale Salesforce refused, naming the retry it takes.
@@ -373,7 +373,7 @@ test.describe('Accessibility (axe-core)', () => {
     await page.getByLabel("Liberty1's lead id", { exact: true }).fill('L1F-779')
     await cards.nth(1).getByRole('button', { name: 'Add the lead id' }).click()
     await expect(cards.nth(1).getByRole('status')).toHaveText('Lead id L1F-779 added. Salesforce updated: Prospect, Submission, Lead.')
-    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await expectNoSeriousA11yViolations(page, [], '/partners')
     expect(unmatched).toEqual([])
   })
 
@@ -387,14 +387,14 @@ test.describe('Accessibility (axe-core)', () => {
     await expect(panel.getByText('constants.TripointClickUrl', { exact: true })).toBeVisible()
     await expect(panel.getByText('Engine Bidding Workflow reads this value for every partner, in Validate.')).toBeVisible()
     await page.waitForLoadState('networkidle')
-    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await expectNoSeriousA11yViolations(page, [], '/partners')
     await page.goto('/partners?selected=sofi&tab=workflow-values')
     await expect(panel.getByText('constants.SofiSellOffOfferTitle', { exact: true })).toBeVisible()
     // The offer as shown, built from the stored details: its bullets are a real list.
     await expect(panel.getByText('As shown')).toBeVisible()
     await expect(panel.getByRole('listitem').filter({ hasText: 'Terms and rates based on your income' })).toBeVisible()
     await page.waitForLoadState('networkidle')
-    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await expectNoSeriousA11yViolations(page, [], '/partners')
     expect(unmatched).toEqual([])
   })
 
@@ -406,7 +406,7 @@ test.describe('Accessibility (axe-core)', () => {
     await expect(panel.getByLabel('Click URL')).toBeVisible()
     await expect(panel.getByText(/No workflow names this value/)).toHaveCount(0)
     await page.waitForLoadState('networkidle')
-    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await expectNoSeriousA11yViolations(page, [], '/partners')
     expect(unmatched).toEqual([])
   })
 
@@ -475,13 +475,6 @@ test.describe('Accessibility (axe-core)', () => {
     })
   }
 })
-
-/**
- * The partners form's grey hint text (text-gray-500) on the beige page fails
- * contrast; PR13 (#2144) sets its new shade once Dan picks it (decision 3,
- * 2026-10-15), and deletes this waiver. Every other contrast failure still fails.
- */
-const GREY_HINTS = { className: 'text-gray-500', within: '[data-form-pane]', issue: '#2144' }
 
 /** The Worker the built page calls, as api.ts reads it. */
 function workerUrl(): string {

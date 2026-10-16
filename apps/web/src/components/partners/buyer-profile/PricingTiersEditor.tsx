@@ -11,7 +11,7 @@
 import { useId } from 'react'
 import { MULTIPLIER_CEILING, POPULATIONS, WIRED_POPULATIONS, type Population, type ProfileTierDocument } from '@bidspoke/buyer-profile'
 import { Trash2, Plus } from 'lucide-react'
-import { Button, NumberInput } from '@/components/ui/form'
+import { Button, FieldError, NumberInput } from '@/components/ui/form'
 import { POPULATION_LABELS, formatWhole } from './labels'
 
 const WIRED: ReadonlySet<string> = new Set(WIRED_POPULATIONS)
@@ -24,7 +24,7 @@ export function PricingTiersEditor({ value, onChange, errors = {} }: { value: re
 
   return (
     <div className="space-y-4">
-      <p className="text-xs text-gray-500">
+      <p className="text-xs text-hint">
         A tier prices every lead whose debt falls in its range at debt times the multiplier. $18,250 of debt at 0.0012 pays $21.90. A multiplier is a share of the debt, so it is never above {MULTIPLIER_CEILING}. Tiers must touch with no gap and no overlap, from the debt minimum to the debt maximum. The upper bound is not included: a Salesforce band written 10,000 to 12,499 is entered as 10,000 to 12,500, and the next tier starts at 12,500.
       </p>
       {POPULATIONS.map((population: Population) => {
@@ -35,7 +35,7 @@ export function PricingTiersEditor({ value, onChange, errors = {} }: { value: re
           <fieldset key={population} data-population={population} className="rounded-lg border border-gray-200 p-3">
             <legend className="px-1 text-xs font-medium text-gray-600">{label}</legend>
             {!wired ? (
-              <p className="text-xs text-gray-500">Not yet in use: no workflow sells these leads through buyer selection.</p>
+              <p className="text-xs text-hint">Not yet in use: no workflow sells these leads through buyer selection.</p>
             ) : (
               <div className="space-y-2">
                 {tiers.length === 0 ? (
@@ -63,7 +63,7 @@ export function PricingTiersEditor({ value, onChange, errors = {} }: { value: re
                           <tr key={i} className="align-top">
                             <td className="py-0.5 pr-2">
                               <NumberInput id={`${rowId}-from`} value={Number(tier.debt_from)} onChange={(v) => update({ debt_from: v ?? 0 })} min={0} step={1} aria-label={`Debt from, ${name}`} />
-                              {error && <p role="alert" className="mt-1 text-xs text-red-700">{error}</p>}
+                              {error && <FieldError alert size="xs" className="mt-1">{error}</FieldError>}
                             </td>
                             <td className="py-0.5 pr-2">
                               <NumberInput id={`${rowId}-to`} value={tier.debt_to === null ? null : Number(tier.debt_to)} onChange={(v) => update({ debt_to: v })} min={0} step={1} placeholder="no upper bound" aria-label={`Debt to, ${name}`} />

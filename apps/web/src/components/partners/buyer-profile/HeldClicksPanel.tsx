@@ -30,7 +30,7 @@ import { Plus } from 'lucide-react'
 import { BUYER_LEAD_ID_MAX, HELD_CLICK_REASON_LABELS, SALE_RECORD_LABELS, buyerLeadIdOf, salesforceStandingOf, type HeldClickReason, type SaleWrite, type SalesforceStanding } from '@bidspoke/buyer-profile'
 import type { HeldClick } from '@/lib/api'
 import { Dialog } from '@/components/Dialog'
-import { Button, Outcome, TextInput, describedBy, type OutcomeState } from '@/components/ui/form'
+import { Button, FieldError, Outcome, TextInput, describedBy, type OutcomeState } from '@/components/ui/form'
 import { formatInZone } from '@/lib/dates'
 
 const PACIFIC = 'America/Los_Angeles'
@@ -86,28 +86,30 @@ function SalesforceProblem({ row, claim, standing }: { row: HeldClick; claim: So
   const view = row.salesforce
   let body
   if (standing === 'unreadable') {
-    body = <p className="text-red-700">{view?.status === 'unreadable' ? view.message : 'Where this sale stands in Salesforce could not be read.'}</p>
+    body = <FieldError>{view?.status === 'unreadable' ? view.message : 'Where this sale stands in Salesforce could not be read.'}</FieldError>
   } else if (standing === 'not_recorded') {
-    body = <p className="text-red-700">No Salesforce update is recorded for this sale.</p>
+    body = <FieldError>No Salesforce update is recorded for this sale.</FieldError>
   } else if (standing === 'lead_id_not_written') {
     const carried = view?.status === 'recorded' ? view.writes.buyer_lead_id ?? null : null
     body = (
-      <p className="text-red-700">
+      <FieldError>
         Salesforce does not have {claim.partner_lead_id ? `lead id ${claim.partner_lead_id}` : "this sale's lead id"} yet: its last updates carried {carried ? `lead id ${carried}` : 'no lead id'}.
-      </p>
+      </FieldError>
     )
   } else {
     const writes = view?.status === 'recorded' ? view.writes.writes : []
     const reason = sharedReason(writes)
     // Nothing was attempted, for one reason: say it once (L605).
     body = reason !== null ? (
-      <p className="text-red-700">Salesforce was not updated: {reason}</p>
+      <FieldError>Salesforce was not updated: {reason}</FieldError>
     ) : (
       <>
-        <p className="text-red-700">Salesforce was not fully updated.</p>
+        <FieldError>Salesforce was not fully updated.</FieldError>
         <ul className="list-disc pl-4">
           {writes.map((w) => (
-            <li key={w.record} className={w.outcome === 'written' ? 'text-graphite' : w.outcome === 'not_named' ? 'text-gray-600' : 'text-red-700'}>{writeLine(w)}</li>
+            w.outcome === 'written' || w.outcome === 'not_named'
+              ? <li key={w.record} className={w.outcome === 'written' ? 'text-graphite' : 'text-gray-600'}>{writeLine(w)}</li>
+              : <FieldError as="li" key={w.record}>{writeLine(w)}</FieldError>
           ))}
         </ul>
       </>
@@ -164,7 +166,7 @@ function leadSentence(partnerName: string, entries: readonly HeldClick[], trunca
 export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent, onFree, onClear, onRetrySalesforce, onSetLeadId }: Props) {
   const [pending, setPending] = useState<Pending | null>(null)
 
-  if (error) return <p role="alert" className="text-xs text-red-700">The held clicks could not be read: {error}</p>
+  if (error) return <FieldError alert size="xs">The held clicks could not be read: {error}</FieldError>
   if (!held) return <p role="status" className="text-xs text-gray-600">Reading the held clicks…</p>
   if (held.entries.length === 0) return <p className="text-xs text-green-700">No clicks are held for {partnerName}: every click sent has an outcome.</p>
 
@@ -211,7 +213,7 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
             The click is counted in {partnerName}&apos;s clicks for {day} (Pacific), and Salesforce marks the sale Completed with {parsed.id === null ? 'no lead id' : `lead id ${parsed.id}`}. A later click on this prospect will not send.
           </p>
         ) : (
-          <p id={`${inputId}-error`} role="alert" className="text-red-700">{LEAD_ID_INVALID}</p>
+          <FieldError id={`${inputId}-error`} alert>{LEAD_ID_INVALID}</FieldError>
         )}
       </div>
     )
@@ -241,7 +243,7 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
         </div>
         {hint !== null
           ? <p id={`${inputId}-hint`} className="text-gray-600">{hint}</p>
-          : <p id={`${inputId}-error`} role="alert" className="text-red-700">{LEAD_ID_INVALID}</p>}
+          : <FieldError id={`${inputId}-error`} alert>{LEAD_ID_INVALID}</FieldError>}
       </div>
     )
   }
@@ -291,7 +293,7 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
     if (row.cleared) return <Outcome state={outcome} />
     if (claim.status === 'sold') return soldBody(row, claim, outcome, busy)
     if (outcome.kind === 'done') return <Outcome state={outcome} />
-    if (claim.status === 'unreadable') return <p role="alert" className="text-red-700">{claim.message}</p>
+    if (claim.status === 'unreadable') return <FieldError alert>{claim.message}</FieldError>
     if (claim.status === 'sending') return <p className="text-gray-600">Still sending. It can be released after {pacificTime(claim.releasable_at)}.</p>
     if (claim.status === 'free') {
       return (

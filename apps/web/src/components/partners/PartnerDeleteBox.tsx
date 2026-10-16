@@ -21,7 +21,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, type PartnerDeleteCheck, type PartnerDeleted, type PartnerDeleteRefused } from '@/lib/api'
 import { useElapsed } from '@/hooks/useElapsed'
-import { Button, Outcome, TextInput } from '@/components/ui/form'
+import { Button, FieldError, Outcome, TextInput } from '@/components/ui/form'
 import { blockedSentences, consequenceSentence, secretSentence, workflowSentences } from './delete-copy'
 
 export const DELETE_CHECK_FAILED = 'Could not check whether this partner can be deleted. Try again.'
@@ -125,7 +125,7 @@ export function PartnerDeleteBox({ partner, refreshKey, onDeleted, onRunningChan
 
   const name = partner.name
   return (
-    <section aria-labelledby="partner-delete-title" className="mt-10 space-y-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3">
+    <section aria-labelledby="partner-delete-title" className="destructive-box mt-10 space-y-2 px-4 py-3">
       <h3 id="partner-delete-title" className="text-sm font-semibold text-graphite">Delete {name}</h3>
 
       {view.kind === 'checking' && (
@@ -134,7 +134,7 @@ export function PartnerDeleteBox({ partner, refreshKey, onDeleted, onRunningChan
 
       {view.kind === 'failed' && (
         <div className="flex items-center gap-3">
-          <p role="alert" className="text-sm text-red-700">{DELETE_CHECK_FAILED}</p>
+          <FieldError alert size="sm">{DELETE_CHECK_FAILED}</FieldError>
           <Button variant="secondary" onClick={() => setAttempt((a) => a + 1)}>Try again</Button>
         </div>
       )}
@@ -157,7 +157,7 @@ export function PartnerDeleteBox({ partner, refreshKey, onDeleted, onRunningChan
                 </div>
               </div>
               {deleting && <Outcome state={{ kind: 'working', label: `Deleting ${name}`, startedAt: 0, now: deletingSeconds * 1000, stalledAfterMs: 30_000 }} />}
-              {deleteError && <p role="alert" className="text-sm text-red-700">{deleteError}</p>}
+              {deleteError && <FieldError alert size="sm">{deleteError}</FieldError>}
             </>
           )}
         </>

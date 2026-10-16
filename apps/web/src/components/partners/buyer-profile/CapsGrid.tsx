@@ -58,7 +58,7 @@ export function CapsGrid({ value, onChange, errors = {}, soldOn = null, zone = D
             <NumberInput id={`${base}-dl`} value={value.daily_lead_cap} onChange={(v) => patch({ daily_lead_cap: v })} min={0} step={1} describedBy={db} />
           ))}
         </div>
-        <p id={noteId} className="text-xs text-gray-500">Once the clicks in a day reach it, the buyer is no longer offered that day. With the box empty the buyer is not offered at all. {clickCountResetSentence(nowMs ?? Date.now(), zone)}</p>
+        <p id={noteId} className="text-xs text-hint">Once the clicks in a day reach it, the buyer is no longer offered that day. With the box empty the buyer is not offered at all. {clickCountResetSentence(nowMs ?? Date.now(), zone)}</p>
       </div>
     )
   }
@@ -79,7 +79,7 @@ export function CapsGrid({ value, onChange, errors = {}, soldOn = null, zone = D
           <NumberInput id={`${base}-ds`} value={centsToDollars(value.daily_spend_cap_cents)} onChange={(v) => patch({ daily_spend_cap_cents: dollarsToCents(v) })} min={0} step={0.01} describedBy={db} />
         ))}
       </div>
-      <p id={noteId} className="text-xs text-gray-500">Spend is in dollars. An empty box is no cap. Counts sales made through buyer selection: {scope}. {easternDayResetSentence(zone)}</p>
+      <p id={noteId} className="text-xs text-hint">Spend is in dollars. An empty box is no cap. Counts sales made through buyer selection: {scope}. {easternDayResetSentence(zone)}</p>
     </div>
   )
 }

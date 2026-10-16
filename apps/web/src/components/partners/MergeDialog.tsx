@@ -13,7 +13,7 @@
  */
 import { useId } from 'react'
 import { Dialog } from '@/components/Dialog'
-import { Button, ChoiceGroup } from '@/components/ui/form'
+import { Button, ChoiceGroup, FieldError } from '@/components/ui/form'
 import { PROFILE_PREFIX } from '@/app/(app)/partners/partner-draft'
 import { unansweredCount, type MergeConflict, type MergeResult, type MergeSide, type MergeUnit } from '@/lib/partner-page-merge'
 import { formatDollars, formatProfileValue } from './buyer-profile/labels'
@@ -83,7 +83,7 @@ function ConflictRow({ conflict, onChoose }: { conflict: MergeConflict; onChoose
           <p key={word} className="grid grid-cols-[3.5rem_1fr] items-baseline"><span className="text-xs font-medium text-gray-600">{word}</span> <span className="break-words">{describeMergeValue(conflict.key, value)}</span></p>
         ))}
       </div>
-      {conflict.reason && <p id={`${id}-reason`} className="text-xs text-red-700">These cannot be saved together: {conflict.reason}</p>}
+      {conflict.reason && <FieldError id={`${id}-reason`} size="xs">These cannot be saved together: {conflict.reason}</FieldError>}
     </div>
   )
 }

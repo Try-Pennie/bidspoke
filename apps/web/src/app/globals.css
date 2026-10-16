@@ -177,7 +177,7 @@ html {
     @apply w-full rounded border border-gray-200 px-2.5 py-1.5 text-sm text-graphite placeholder-gray-400 focus:border-p-blue-dark focus:outline-none focus:ring-2 focus:ring-p-blue-dark;
   }
   .checkbox {
-    @apply h-4 w-4 shrink-0 rounded border-gray-300 text-p-blue-dark focus:ring-2 focus:ring-p-blue-dark focus:ring-offset-1;
+    @apply h-4 w-4 shrink-0 rounded border-gray-300 accent-navy focus:ring-2 focus:ring-p-blue-dark focus:ring-offset-1;
   }
   /* A choice between a few named answers (#1541): a bordered strip at rest, so it
      reads as a control before it is hovered (L49), the chosen one filled. */
@@ -187,14 +187,15 @@ html {
   .choice {
     @apply rounded-md px-3 py-1.5 text-sm font-medium text-gray-700 transition-colors duration-100 hover:bg-gray-50 hover:text-graphite focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark disabled:cursor-not-allowed disabled:opacity-60;
   }
+  /* Navy marks a selection; blue is for buttons only (#2144, .impeccable.md). */
   .choice-on {
-    @apply bg-p-blue-dark text-white hover:bg-p-blue-dark hover:text-white;
+    @apply bg-navy text-white hover:bg-navy hover:text-white;
   }
   .toggle {
     @apply relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent bg-gray-300 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50;
   }
   .toggle-on {
-    @apply bg-p-blue-dark;
+    @apply bg-navy;
   }
   .toggle-knob {
     @apply pointer-events-none inline-block h-4 w-4 translate-x-0 rounded-full bg-white shadow-sm transition-transform duration-150;
@@ -309,7 +310,7 @@ html {
     @apply italic text-gray-600;
   }
   .select-item-indicator {
-    @apply absolute left-2 inline-flex items-center text-p-blue-dark;
+    @apply absolute left-2 inline-flex items-center text-navy;
   }
   /* A choice whose options each need a sentence (#2137): one per line, a dot
      that fills when chosen, the hint under the label. */
@@ -323,7 +324,7 @@ html {
     @apply mt-0.5 inline-block h-3.5 w-3.5 shrink-0 rounded-full border border-gray-500 bg-white;
   }
   .choice-row-on .choice-dot {
-    @apply border-[4px] border-p-blue-dark;
+    @apply border-[4px] border-navy;
   }
   /* A typed date with its calendar button inside the box (design round 1 of #2137). */
   .date-field {
@@ -378,6 +379,20 @@ html {
   .outcome-failed,
   .outcome-stalled {
     @apply text-red-700;
+  }
+  /* The one way to say something is genuinely wrong in text (#2144,
+     components/ui/form.tsx FieldError): red is kept for that and nothing else. */
+  .field-error {
+    @apply text-red-700;
+  }
+  .field-error-box {
+    @apply rounded-lg border border-red-200 bg-red-50 px-3 py-2;
+  }
+  /* The pale red box an irreversible action stands in, the partner's Delete
+     (#2144, the settled design's round 34): red because it destroys, as a
+     destructive button is. */
+  .destructive-box {
+    @apply rounded-lg border border-red-200 bg-red-50;
   }
   /* The one set of tabs (#2137, components/ui/Tabs.tsx), as the settled design
      draws them: plain words on a line, the open tab bold with a navy line under it. */

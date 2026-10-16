@@ -13,7 +13,7 @@
  */
 import { useEffect, useState, type ReactNode } from 'react'
 import { api, type PartnerWorkflowValue, type PartnerWorkflowValues } from '@/lib/api'
-import { Button } from '@/components/ui/form'
+import { Button, FieldError } from '@/components/ui/form'
 import { LiveSectionNote } from './live/PartnerLive'
 import {
   accessLines, editsSection, readerSentences, searchedSentence, sectionsOf, shadowSentences, type SectionKey, type ValueSection,
@@ -127,7 +127,7 @@ function ValueSectionView({ section, read, slug, isActive, partnerName, control,
   // control under it (the Click URL box) carries the same name for screen readers.
   return (
     <section data-value-section={section.key}>
-      <h3 className="mb-4 text-xs font-semibold text-gray-500">{section.title}</h3>
+      <h3 className="mb-4 text-xs font-semibold text-graphite">{section.title}</h3>
       <div className="space-y-3">
         {LIVE_NOTES[section.key]}
         {control}
@@ -184,14 +184,14 @@ export function WorkflowValuesPanel({ partnerId, slug, refreshKey, isBuyer, isSo
       {read.kind === 'none' && <p className="text-sm text-gray-700">Which workflows read these values shows once the partner is saved.</p>}
       {read.kind === 'loading' && <p role="status" className="text-sm text-gray-600">Checking which workflows read these values…</p>}
       {(read.kind === 'failed' || (read.kind === 'found' && read.refreshFailed)) && (
-        <div role="alert" className="flex items-center gap-3 text-sm text-red-700">
+        <FieldError as="div" alert size="sm" className="flex items-center gap-3">
           <span className="flex-1">
             {read.kind === 'found'
               ? 'Could not load which workflows read this. Try again. What is shown is from the last read.'
               : 'Could not load which workflows read this. Try again.'}
           </span>
           <Button variant="secondary" onClick={() => setAttempt((n) => n + 1)}>Try again</Button>
-        </div>
+        </FieldError>
       )}
       {sections.map((s) => (
         <ValueSectionView

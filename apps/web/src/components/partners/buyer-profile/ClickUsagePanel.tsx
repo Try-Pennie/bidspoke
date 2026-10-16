@@ -11,6 +11,7 @@
  * with no cap is not offered, are both said by the caps note above; this panel
  * shows the date and the count against the cap.
  */
+import { FieldError } from '@/components/ui/form'
 import { alsoSellTo, CAP_NEAR_SHARE, formatWhole } from './labels'
 
 export interface ClickUsage {
@@ -29,7 +30,7 @@ export function ClickUsagePanel({ usage, error, cap, otherSellers, partnerName }
   partnerName: string
 }) {
   if (error || !usage) {
-    return <p role="alert" className="text-xs text-red-700">{error ?? 'The clicks could not be read.'}</p>
+    return <FieldError alert size="xs">{error ?? 'The clicks could not be read.'}</FieldError>
   }
   const count = formatWhole(usage.count)
   const state = cap === null ? null : usage.count >= cap ? 'reached' : usage.count >= cap * CAP_NEAR_SHARE ? 'near' : 'room'

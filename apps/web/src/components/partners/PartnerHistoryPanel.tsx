@@ -20,7 +20,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api, type Partner, type PartnerHistory } from '@/lib/api'
 import { formatEtClock, formatEtDayTime } from '@/lib/dates'
-import { Button } from '@/components/ui/form'
+import { Button, FieldError } from '@/components/ui/form'
 import { describeEntry, groupByEtDay, nextPickupExpiry, pickupNote, type HistoryLine } from './history/describe-history'
 
 type Read = { kind: 'idle' } | { kind: 'reading' } | { kind: 'failed' } | { kind: 'read'; history: PartnerHistory }
@@ -111,10 +111,10 @@ export function PartnerHistoryPanel({ partner, shown, clock = Date.now }: { part
 
   if (read.kind === 'failed') {
     return (
-      <div role="alert" className="flex items-center gap-3 text-sm text-red-700">
+      <FieldError as="div" alert size="sm" className="flex items-center gap-3">
         <span className="flex-1">Could not load history. Try again.</span>
         <Button variant="secondary" onClick={() => setAttempt((n) => n + 1)}>Try again</Button>
-      </div>
+      </FieldError>
     )
   }
   if (read.kind !== 'read' || !described) {
