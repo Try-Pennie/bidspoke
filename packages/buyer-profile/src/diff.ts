@@ -15,7 +15,7 @@ import { parseProfileDocument, type BuyerProfileDocument } from './document'
 const SCALARS = [
   'sold_on', 'is_enabled', 'priority', 'debt_min', 'debt_max', 'loan_amount_min',
   'hourly_lead_cap', 'daily_lead_cap', 'hourly_spend_cap_cents', 'daily_spend_cap_cents',
-  'display_time_zone',
+  'display_time_zone', 'collections_max_percent',
 ] as const
 
 /** The document as paths in this package's spelling, each with its value. */
@@ -85,6 +85,8 @@ export function unflattenProfileDocument(paths: ReadonlyMap<string, unknown>): B
     daily_spend_cap_cents: scalar('daily_spend_cap_cents') as number | null,
     // flatten writes an absent zone as null, so null comes back: the zone shown when none is chosen (#2143).
     display_time_zone: scalar('display_time_zone') as BuyerProfileDocument['display_time_zone'],
+    // Likewise null for no cap (#2111), so a page that merges and saves carries the stored cap back.
+    collections_max_percent: scalar('collections_max_percent') as number | null,
     windows: rows<BuyerProfileDocument['windows'][number]>('windows'),
     blackout_dates: rows<BuyerProfileDocument['blackout_dates'][number]>('blackout_dates'),
     tiers: rows<BuyerProfileDocument['tiers'][number]>('tiers'),

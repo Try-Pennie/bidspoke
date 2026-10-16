@@ -125,11 +125,22 @@ Migration `20261016170000_partner_page_notice_2135.sql`:
 
 ## Delivery monitor (PR4, #2135, decision 2)
 
-A Worker check on the existing five minute cron (`lib/partner-page-monitor.ts`, heartbeat `partner-page-monitor`): it signs in as the one user of the one organization marked `is_synthetic`, joins `partners:<that organization>` (retrying a join refused as `MissingPartition`), calls `monitor_partner_page_ping`, which sends through `notify_partner_page` without writing a setting, and waits 10 seconds for its own notice.
+A Worker check on the existing five minute cron (`lib/partner-page-monitor.ts`, heartbeat `partner-page-monitor`): it signs in as the one user of the one organization marked `is_synthetic`, joins `partners:<that organization>` (retrying a join refused as `MissingPartition`), calls `monitor_partner_page_ping`, which sends through `notify_partner_page` without writing a setting, and waits up to 10 seconds from that first ping for its own notice, sending the same ping again every 2.5 seconds until it arrives (see the cold start below).
 
 - **Pages** (signal `partner-page-live`): the notice did not arrive, or the join was refused, on the run that sees it. The check unable to run (no secret, no monitor organization, sign in or the ping failing) for 30 minutes on the clock, as its own message. Both stand down with an all-clear.
 - **Records, never pages:** each run's outcome, latency and whether today's and tomorrow's `realtime.messages` partitions exist, in `job_runs` (job `partner-page-monitor`), and the live misses pages post to `POST /api/partners/live-miss`, in `partner_page_live_misses`. A send made while today's partition was absent is `partition_missing_at_send`, never a failure. No miss threshold ships; the issue that sets one from a measured week is filed with #2135.
 - `monitor_partner_page_ping` refuses any organization that is not `is_synthetic`, and a monitor organization holding anything but one source partner (no buyer profile, workflow, service connection or environment variable), by name. That refusal is what keeps the monitor organization out of every job that lists workflows, Slack connections or credentials across organizations; the two jobs that list buyer profiles across organizations (the buyer sale drain and the buyer sales checks) filter `organizations.is_synthetic = false` themselves.
+
+**A cold Realtime can lose the first notice (#2135, measured 2026-10-16).** Realtime can answer a private join `SUBSCRIBED` before it is streaming database broadcasts. After an idle shutdown (this project's Realtime tenant was shut down at 17:01:50 UTC on 2026-10-15), the join that wakes it starts the tenant, and the reader that streams `realtime.messages` is created only afterwards: on the 01:45 UTC run the tenant logged `is initializing` at 01:45:09.165, the monitor's ping row was stored at 01:45:09.580, and `Create replication slot ...` followed at 01:45:10.239, so that notice was never streamed and the run recorded `not_received` and paged. The 01:50 run, with the same code, received in 211 ms. So a notice sent within about a second of the join that wakes Realtime can be lost. The spike never sent straight after such a join, so it did not see this. A page is unaffected in practice (its notices come from other people's saves, long after its join), but the monitor sends straight after joining, so it re-pings with the same save id every `PING_RETRY_MS` (2.5 s) within its 10 second deadline, times latency from the first send, keeps the first ping's partition figures, and records how many pings it took as `pings` in `job_runs.summary`. A run with `pings` above 1 is a startup race the re-ping absorbed; a count of them stays readable. To check a future `not_received`, look in the Realtime logs around the run's `started_at` for the tenant starting:
+
+```sql
+-- Supabase logs (query_logs), a window of a few minutes around the run
+select timestamp, event_message from logs
+where source = 'realtime_logs' and (event_message like '%is initializing%' or event_message like '%replication slot%')
+order by timestamp
+```
+
+A `Tenant <ref> is initializing` line at the run's minute, with `Create replication slot` after the run's ping, means the channel was starting. A `not_received` whose later pings were sent after the replication slot was created is not explained by a cold start, whatever else the logs show.
 
 Pass and fail counts, on production:
 

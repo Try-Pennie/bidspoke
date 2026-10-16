@@ -82,6 +82,7 @@ export const WATCHED_CONFIG_FIELDS: Readonly<Record<string, readonly FieldRule[]
     { field: 'state', why: 'the template for the state the profile box is judged on' },
     { field: 'debt', why: 'the template for the debt figure the profile box is judged on' },
     { field: 'loan_amount', why: 'the template for the loan amount the profile box is judged on' },
+    { field: 'collections', why: "the template for the collections balance a profile's collections cap is judged on (#2111)" },
   ],
   buyer_select: [
     {
@@ -97,6 +98,7 @@ export const WATCHED_CONFIG_FIELDS: Readonly<Record<string, readonly FieldRule[]
     { field: 'state', why: 'the template for the state buyer profiles are judged on' },
     { field: 'debt', why: 'the template for the debt buyer profiles are judged on' },
     { field: 'loan_amount', why: 'the template for the loan amount buyer profiles are judged on' },
+    { field: 'collections', why: "the template for the collections balance a profile's collections cap is judged on (#2111)" },
     { field: 'sale_payload', why: 'the body sold to the buyer, every templated and normalised field of it' },
   ],
   branch: [

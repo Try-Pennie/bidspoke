@@ -150,9 +150,10 @@ export interface FieldErrorLike {
   message: string
 }
 
-/** The tab a registry path is drawn on; null for a path no registry entry matches. */
+/** The tab a registry path is drawn on; null for a path no registry entry matches, or one no tab draws. */
 export function tabOfRegistryPath(path: string): PartnerTab | null {
-  return registryEntriesFor(path)[0]?.tab ?? null
+  const entry = registryEntriesFor(path)[0]
+  return entry && !entry.offPage ? entry.tab : null
 }
 
 export function problemsOf({ credentialWarning, errors, routeNames = [] }: { credentialWarning: string | null | undefined; errors: readonly FieldErrorLike[]; routeNames?: readonly string[] }): PageProblem[] {

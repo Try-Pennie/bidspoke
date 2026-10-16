@@ -30,6 +30,7 @@ import { type DispatchAttempt, dispatchFailed } from './workflow-dispatch-driver
 
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
 import { leadRead } from './lead-read-budget'
+import { describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason, type ScheduledSlack } from './scheduled-slack'
 import { composeSalesforceReadBackAlert, type SalesforceReadBackAlert } from './salesforce-read-back-alert'
 export type { SlackConnection } from './slack-connection'
 
@@ -65,11 +66,43 @@ export interface CircuitAlertPayload {
 // logged null so the dropped alert is at least visible, never silent.
 const SLACK_CONN_RETRY_DELAYS_MS = [150, 400]
 
+/**
+ * The org's Slack connection, or null. On the scheduled handler's client the
+ * lookup is bounded and falls back to the saved copy (lookupSlackConnection,
+ * #1303); on every other client it is the retried read it always was.
+ */
 export async function getSlackConnection(
   supabase: SupabaseClient,
   orgId: string,
   delaysMs: number[] = SLACK_CONN_RETRY_DELAYS_MS,
 ): Promise<SlackConnection | null> {
+  const found = await lookupSlackConnection(supabase, orgId, delaysMs)
+  return found.kind === 'live' || found.kind === 'stored' ? found.connection : null
+}
+
+/** Why a lookup could not say who to tell. `read_failed` only on a client with no saved copy to fall back on. */
+export type SlackUnreachableReason = CopyUnreachableReason | 'read_failed'
+
+/**
+ * What a Slack lookup found (#1303): the connection from the database, the
+ * connection from the saved copy (with that copy's age), no usable connection
+ * (the database answered), or nobody can be told and why. Each writes its own
+ * log line on the scheduled client.
+ */
+export type SlackLookup =
+  | { kind: 'live'; connection: SlackConnection }
+  | { kind: 'stored'; connection: SlackConnection; ageMs: number | null }
+  | { kind: 'none' }
+  | { kind: 'unreachable'; reason: SlackUnreachableReason }
+
+export async function lookupSlackConnection(
+  supabase: SupabaseClient,
+  orgId: string,
+  delaysMs: number[] = SLACK_CONN_RETRY_DELAYS_MS,
+): Promise<SlackLookup> {
+  const scheduled = scheduledSlackFor(supabase)
+  if (scheduled) return scheduledLookup(scheduled, supabase, orgId)
+
   let data: { config?: unknown } | null = null
   for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
     if (attempt > 0) await sleep(delaysMs[attempt - 1])
@@ -79,21 +112,53 @@ export async function getSlackConnection(
       break
     }
     const dbErr = toDbError(res.error)
-    // Schema drift / bad query can't be retried — fail fast, but LOG so the
-    // dropped alert isn't mistaken for a not-configured org.
+    // Schema drift or a bad query cannot be retried: fail fast, but LOG so the
+    // dropped alert is not mistaken for a not-configured org.
     if (isPermanentDbError(dbErr)) {
       console.error(`[slack] getSlackConnection permanent error for org ${orgId}: ${dbErr.message}; alert dropped`)
-      return null
+      return { kind: 'unreachable', reason: 'read_failed' }
     }
     if (attempt === delaysMs.length) {
       // Transient error survived every retry: the alert that needs this connection
       // will be dropped. Make it visible instead of returning a silent "no Slack".
       console.error(`[slack] getSlackConnection failed for org ${orgId} after ${delaysMs.length} retries: ${dbErr.message}; alert dropped`)
-      return null
+      return { kind: 'unreachable', reason: 'read_failed' }
     }
   }
 
-  return parseSlackConnection(data?.config)
+  const connection = parseSlackConnection(data?.config)
+  return connection ? { kind: 'live', connection } : { kind: 'none' }
+}
+
+/** The bounded lookup on the scheduled client: one read under the deadline, the saved copy on any non-answer. */
+async function scheduledLookup(scheduled: ScheduledSlack, supabase: SupabaseClient, orgId: string): Promise<SlackLookup> {
+  const subject = `slack connection for org ${orgId}`
+  // `.maybeSingle()` is typed as the base builder, which does not declare
+  // abortSignal although the object carries it (as in lead-read-budget.ts).
+  const query = slackConnectionQuery(supabase, orgId) as unknown as BoundableQuery<{ config?: unknown }>
+  const live = await scheduled.read(subject, query)
+  if (live.kind === 'answered') {
+    const connection = parseSlackConnection(live.data?.config)
+    if (connection) {
+      console.log(`[scheduled-slack] ${subject}: read live`)
+      return { kind: 'live', connection }
+    }
+    console.log(`[scheduled-slack] ${subject}: the database answered with no usable Slack connection`)
+    return { kind: 'none' }
+  }
+  const copy = await scheduled.copy()
+  if (copy.kind === 'read') {
+    const connection = copy.copy.connections.get(orgId)
+    if (connection) {
+      console.warn(`[scheduled-slack] ${subject}: answered from the saved copy (${describeCopyAge(copy.ageMs)}) because the database did not answer (${live.how})`)
+      return { kind: 'stored', connection, ageMs: copy.ageMs }
+    }
+    scheduled.nobodyCanBeTold(subject, orgId, 'org_not_in_copy')
+    return { kind: 'unreachable', reason: 'org_not_in_copy' }
+  }
+  const reason: CopyUnreachableReason = copy.kind === 'absent' ? 'no_copy' : 'copy_unreadable'
+  scheduled.nobodyCanBeTold(subject, orgId, reason, copy.kind === 'unreadable' ? copy.detail : undefined)
+  return { kind: 'unreachable', reason }
 }
 
 /** The one read of an org's Slack connection row, for both readers below. */
@@ -3249,6 +3314,88 @@ export async function sendWritebackBacklogRecoveryAlert(
     { subject: WRITEBACK_BACKLOG_RECOVERY_SUBJECT, alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, ...writebackBacklogRecoveryWording },
     now,
   )
+}
+
+// ── What the drain of stored Salesforce writes could not finish (#468) ─────────
+
+/**
+ * One alert per organization and kind from the drain (writeback-drain.ts): a
+ * resend Salesforce refused, a write given up after its tries, or a write sent
+ * without fields another writer had changed. Objects and field names only, never
+ * a value, a record id or a run id: the rows hold lead data and the alert goes to
+ * a shared channel. The held writes list carries the rest to people who may see it.
+ */
+export interface WritebackDrainAlert {
+  kind: 'refused' | 'abandoned' | 'moved'
+  /** The attempts the drain allows a write. */
+  tries: number
+  writes: Array<{
+    sf_object: string
+    /** moved: the fields left out. */
+    fields?: string[]
+    /** refused: false when Salesforce refused to read the record, so nothing was sent. moved: whether the rest was sent. */
+    resent?: boolean
+    /** abandoned: false when the last try got no answer, so the write may have landed. */
+    answered?: boolean
+  }>
+}
+
+const tryCount = (n: number) => (n === 1 ? 'once' : n === 2 ? 'twice' : `${n} times`)
+
+/** The alert's title and sentences, separate from the send so the words can be tested. */
+export function writebackDrainMessage(alert: WritebackDrainAlert): { title: string; sections: string[] } {
+  const n = alert.writes.length
+  const one = n === 1
+  const counted = `${n} Salesforce write${one ? '' : 's'} that failed after a lead was answered`
+  const perObject = new Map<string, number>()
+  for (const w of alert.writes) perObject.set(w.sf_object, (perObject.get(w.sf_object) ?? 0) + 1)
+  const where = joinWithAnd([...perObject].map(([object, count]) => `${count} to ${salesforceObjectWords(object)}`))
+  const them = one ? 'it' : 'them'
+  if (alert.kind === 'refused') {
+    return {
+      title: `Salesforce write${one ? '' : 's'} could not be resent`,
+      sections: [
+        `${counted} could not be resent, because Salesforce refused ${them}: ${where}. Bidspoke will not send ${them} again.`,
+        '*Fix:* list them at `/api/admin/held-writes?status=refused`, then set those fields by hand in Salesforce, unless the refusal was right.',
+      ],
+    }
+  }
+  if (alert.kind === 'abandoned') {
+    const unanswered = alert.writes.filter((w) => w.answered === false).length
+    const mayHaveLanded =
+      unanswered === 0 ? '' : one ? ' The last try got no answer, so it may have landed.' : ` The last try for ${unanswered} of them got no answer, so ${unanswered === 1 ? 'it' : 'they'} may have landed.`
+    return {
+      title: `Salesforce write${one ? ' was' : 's were'} given up`,
+      sections: [
+        `${counted} did not land when Bidspoke sent ${them} again ${tryCount(alert.tries)}: ${where}. Bidspoke has stopped trying.${mayHaveLanded}`,
+        '*Fix:* list them at `/api/admin/held-writes?status=abandoned`, then check each record in Salesforce and set the fields by hand where the write did not land.',
+      ],
+    }
+  }
+  const fieldList = (fields: string[] | undefined) => joinWithAnd((fields ?? []).map((f) => slackText(f)))
+  const lines = alert.writes.map((w) =>
+    w.resent === false
+      ? `A write to ${salesforceObjectWords(w.sf_object)} was not sent again, because every field it set (${fieldList(w.fields)}) had changed. Bidspoke closed it.`
+      : `A write to ${salesforceObjectWords(w.sf_object)} was sent again without ${fieldList(w.fields)}.`,
+  )
+  return {
+    title: `Salesforce write${one ? '' : 's'} resent without some fields`,
+    sections: [
+      `${counted} found fields changed in Salesforce since ${one ? 'it' : 'they'} failed, so Bidspoke left those fields as they were.`,
+      lines.join('\n'),
+      '*Fix:* open each record in Salesforce and decide whether those fields should keep their current values. The writes are listed at `/api/admin/held-writes`.',
+    ],
+  }
+}
+
+/** Posts one drain alert to an organization's channel. Returns whether Slack took it. */
+export async function sendWritebackDrainAlert(connection: { bot_token: string; default_channel: string }, alert: WritebackDrainAlert): Promise<boolean> {
+  const m = writebackDrainMessage(alert)
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
+    ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
 }
 
 /**

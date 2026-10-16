@@ -17,8 +17,9 @@
  *     history-based suggested value); over-provisioned stays dashboard-only.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { slackOrgIds } from './alert-fanout'
+import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
+import { readOrgWorkflows, type OrgWorkflow } from './org-workflows'
 import type { WorkflowDefinition } from '../types'
 import { suggestionFloorMs } from './timeout-floor'
 import { DEFAULT_RETRIES, SAMPLE_CONFIDENT, suggestedTimeoutMs, timeoutSeverity } from './timeout-suggestion'
@@ -171,22 +172,41 @@ export function warningsSignature(
     .join('|')
 }
 
+/**
+ * The organization's active workflows through the shared read (#2142), or none
+ * with the failure logged and named in the caller's failures list, so the daily
+ * alert judges nothing for an org it could not read (#1303) while the dashboard
+ * shows what it got.
+ */
+async function activeWorkflowsOrNone(
+  supabase: SupabaseClient,
+  orgId: string,
+  what: string,
+  failure: { failures?: string[]; label: string }
+): Promise<OrgWorkflow[]> {
+  try {
+    return await readOrgWorkflows(supabase, orgId, { activeOnly: true })
+  } catch (err) {
+    logReadFailure('timeout-audit', what, err)
+    failure.failures?.push(failure.label)
+    return []
+  }
+}
+
 /** Fetch active workflows (with live definitions) for an org and scan them. */
 export async function getOrgTimeoutWarnings(
   supabase: SupabaseClient,
-  orgId: string
+  orgId: string,
+  // The daily alert passes a list and judges nothing for the org when a read
+  // lands in it (#1303 review): an empty answer from a failed read is not a
+  // clean bill of health. The dashboard leaves it out and shows what it got.
+  opts: { failures?: string[] } = {},
 ): Promise<WorkflowTimeoutWarnings[]> {
-  const { data, error: dataError } = await supabase
-    .from('workflows')
-    .select('id, name, definition')
-    .eq('organization_id', orgId)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-  logReadFailure('timeout-audit', 'step durations', dataError)
+  const data = await activeWorkflowsOrNone(supabase, orgId, 'step durations', { failures: opts.failures, label: 'workflows (timeout settings)' })
   return scanWorkflowDefinitions(
-    (data ?? []).map((w) => ({
-      id: w.id as string,
-      name: w.name as string,
+    data.map((w) => ({
+      id: w.id,
+      name: w.name,
       definition: w.definition as WorkflowDefinition | null,
     }))
   )
@@ -336,7 +356,11 @@ export interface OrgHistoryWarnings {
 export async function collectWorkflowDurationStats(
   supabase: SupabaseClient,
   workflowId: string,
-  namespaces: string[]
+  namespaces: string[],
+  // Told when the FIRST window cannot be read, so nothing was measured (#1303
+  // review). A wider window failing keeps the narrower stats by design, which the
+  // confident sample rule already discounts, so it is not a failure here.
+  failures?: string[],
 ): Promise<{ stats: Map<string, NodeDurationStats>; windowDays: number }> {
   const HOUR = 60 * 60 * 1000
   const windows = [
@@ -374,6 +398,7 @@ export async function collectWorkflowDurationStats(
       console.warn(
         `[timeout-audit] widening query failed for workflow ${workflowId} at ${w.days}d window (${pending.length} pending namespaces, kept ${stats.size} from narrower windows): ${String((error as { message?: string })?.message ?? error)}`
       )
+      if (w === windows[0]) failures?.push(`step durations for workflow ${workflowId}`)
       break
     }
     for (const r of (data ?? []) as Array<{ step_namespace: string; p50?: number | null; p99: number | null; max_ms: number | null; sample_size: number }>) {
@@ -400,15 +425,9 @@ export async function collectWorkflowDurationStats(
 export async function getOrgHistoryWarnings(
   supabase: SupabaseClient,
   orgId: string,
-  opts: { concurrency?: number } = {}
+  opts: { concurrency?: number; failures?: string[] } = {}
 ): Promise<OrgHistoryWarnings> {
-  const { data, error: dataError } = await supabase
-    .from('workflows')
-    .select('id, name, definition')
-    .eq('organization_id', orgId)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-  logReadFailure('timeout-audit', 'step timeouts', dataError)
+  const data = await activeWorkflowsOrNone(supabase, orgId, 'step timeouts', { failures: opts.failures, label: 'workflows (step history)' })
 
   // Adaptive grouped percentile queries per workflow, run in parallel so the
   // dashboard load doesn't serialize them; the daily cron passes a small
@@ -416,7 +435,7 @@ export async function getOrgHistoryWarnings(
   // and the config panel, so the audit never flags a node those surfaces call
   // fine (or vice versa).
   const results = await mapWithConcurrency(
-    data ?? [],
+    data,
     opts.concurrency ?? Number.POSITIVE_INFINITY,
     async (w) => {
       const definition = w.definition as WorkflowDefinition | null
@@ -424,13 +443,14 @@ export async function getOrgHistoryWarnings(
 
       const { stats } = await collectWorkflowDurationStats(
         supabase,
-        w.id as string,
-        definition.nodes.map((n) => n.namespace)
+        w.id,
+        definition.nodes.map((n) => n.namespace),
+        opts.failures,
       )
 
       return {
-        workflow_id: w.id as string,
-        workflow_name: w.name as string,
+        workflow_id: w.id,
+        workflow_name: w.name,
         under: findUnderProvisionedNodes(definition, stats),
         over: findOverProvisionedNodes(definition, stats),
       }
@@ -484,14 +504,22 @@ export async function mapWithConcurrency<T, R>(
  * the offending set changes. Called from the Worker scheduled handler.
  */
 export async function runTimeoutAuditCheck(supabase: SupabaseClient, kv: KvLike, appUrl: string): Promise<void> {
-  const orgIds = await slackOrgIds(supabase, 'timeout-audit')
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'timeout-audit', 'measure-from-database'))
   if (orgIds.length === 0) return
 
   for (const orgId of orgIds) {
+    const failures: string[] = []
     const [warnings, history] = await Promise.all([
-      getOrgTimeoutWarnings(supabase, orgId),
-      getOrgHistoryWarnings(supabase, orgId, { concurrency: TIMEOUT_AUDIT_RPC_CONCURRENCY }),
+      getOrgTimeoutWarnings(supabase, orgId, { failures }),
+      getOrgHistoryWarnings(supabase, orgId, { concurrency: TIMEOUT_AUDIT_RPC_CONCURRENCY, failures }),
     ])
+    // A read that failed answers empty, which would read as "all clear" and be
+    // recorded, and the unchanged set would then re-alert as new once the reads
+    // came back (#1303 review). So an org with any failed read is not judged.
+    if (failures.length > 0) {
+      console.error(`[timeout-audit] org ${orgId} not judged this run, because these reads failed: ${failures.join(', ')}`)
+      continue
+    }
     // Only alert on under-provisioned nodes whose p99 came from a confident
     // sample — a thin sample from a timed-out widening query is the false-alarm
     // source, not a real signal. The dashboard panel keeps the full set.
