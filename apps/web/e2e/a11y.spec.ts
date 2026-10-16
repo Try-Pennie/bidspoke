@@ -86,6 +86,7 @@ test.describe('Accessibility (axe-core)', () => {
   test('the partners page matrix delete dialog has no serious a11y violations', async ({ page }) => {
     const { unmatched } = await routePartnerFixtures(page, workerUrl(), { matrix: true })
     await openTripoint(page)
+    await page.getByRole('tab', { name: 'Bid Group' }).click()
     await page.getByRole('radio', { name: 'Matrix lookup' }).click()
     await page.getByRole('button', { name: 'Delete this matrix' }).click()
     await expect(page.getByRole('alertdialog', { name: /^Delete matrix/ })).toBeVisible()
@@ -165,6 +166,121 @@ test.describe('Accessibility (axe-core)', () => {
     expect(unmatched).toEqual([])
   })
 
+  // #2137: every tab of every fixture partner, each scanned with exactly one
+  // panel visible, so a tab nobody opened by hand is still scanned (L400).
+  test('partners page: every tab of every partner has no serious a11y violations, one panel at a time', async ({ page }) => {
+    test.setTimeout(240_000)
+    const { unmatched } = await routePartnerFixtures(page, workerUrl())
+    await page.goto('/partners')
+    const rows = page.getByRole('region', { name: /^(Buyers|Sources)$/ }).getByRole('button')
+    await expect(rows.first()).toBeVisible()
+    const names = [...new Set((await rows.allTextContents()).map((t) => t.trim()))]
+    expect(names, 'the fixture list is the real nine').toHaveLength(9)
+    let scanned = 0
+    for (const name of names) {
+      await page.getByRole('button', { name, exact: true }).first().click()
+      const tablist = page.getByRole('tablist', { name: `${name} settings` })
+      await expect(tablist).toBeVisible()
+      await page.waitForLoadState('networkidle')
+      const tabs = await tablist.getByRole('tab').allTextContents()
+      expect(tabs[0]).toBe('Partner')
+      for (const tab of tabs) {
+        await tablist.getByRole('tab', { name: tab, exact: true }).click()
+        await expect(tablist.getByRole('tab', { name: tab, exact: true })).toHaveAttribute('aria-selected', 'true')
+        await expect(page.locator('[role="tabpanel"]:visible'), `${name}, ${tab}: exactly one panel is visible`).toHaveCount(1)
+        // A rule row fades in when its panel is shown (@starting-style); scan once it has.
+        await page.waitForFunction(() => document.getAnimations().every((a) => a.playState !== 'running'))
+        await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+        scanned++
+      }
+    }
+    expect(scanned).toBeGreaterThan(30)
+    expect(unmatched).toEqual([])
+  })
+
+  test('partners page: a partner with a missing credential opens on the tab holding it, marked there and in the list', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl(), { credentialWarningFor: 'amone' })
+    await page.goto('/partners?selected=amone')
+    // The mark is read after the label (a browser may put a space before its comma).
+    const tab = page.getByRole('tab', { name: /^Bid Group ?, has a problem$/ })
+    await expect(tab).toHaveAttribute('aria-selected', 'true')
+    await expect(page.getByLabel('Auth secret name')).toHaveAccessibleDescription(/AMONE_PROXY_SECRET is not set|Credential 'AMONE_PROXY_SECRET' is not set/)
+    await expect(page.getByRole('button', { name: /^AmOne.*not set/ })).toBeVisible()
+    // The URL is untouched: the problem tab is where it opens, not what it asks for.
+    expect(new URL(page.url()).searchParams.get('tab')).toBeNull()
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    expect(unmatched).toEqual([])
+  })
+
+  test('partners page: a failed usage read shows the Bid Group tab with its error, and the tab in the URL survives a reload', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl(), { usageFails: true })
+    await page.goto('/partners?selected=liberty1')
+    await page.getByRole('tab', { name: 'Bid Group' }).click()
+    await expect(page.getByRole('alert').filter({ hasText: 'Could not check which workflows use this partner. Try again.' })).toBeVisible()
+    await expect(page).toHaveURL(/[?&]tab=bid-group/)
+    await page.reload()
+    await expect(page.getByRole('tab', { name: 'Bid Group' })).toHaveAttribute('aria-selected', 'true')
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    expect(unmatched).toEqual([])
+  })
+
+  // #2137: jsdom has no layout, so clipping is measured here, in the real tabs,
+  // the real scrolling form pane and the real Dialog shell.
+  test('partners page: nothing is clipped, a dropdown at the foot of the scrolled form or the merge dialog, and the list stays in view', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl(), { staleSave: true })
+    await openTripoint(page)
+    const viewport = page.viewportSize()!
+    // Put the first operator dropdown 8px above the bottom of the form's pane, then open it.
+    const operator = page.getByRole('combobox', { name: 'Operator' }).first()
+    await operator.evaluate((el) => {
+      const pane = el.closest('[data-form-pane]') as HTMLElement
+      pane.scrollTop += el.getBoundingClientRect().bottom - pane.getBoundingClientRect().bottom + 8
+    })
+    const paneBottom = await page.locator('[data-form-pane]').evaluate((p) => p.getBoundingClientRect().bottom)
+    const trigger = (await operator.boundingBox())!
+    expect(trigger.y + trigger.height, 'the dropdown sits at the foot of the pane').toBeGreaterThan(paneBottom - 60)
+    await operator.focus()
+    await page.keyboard.press('Enter')
+    const list = page.getByRole('listbox')
+    await expect(list).toBeVisible()
+    const box = (await list.boundingBox())!
+    expect(box.y).toBeGreaterThanOrEqual(0)
+    expect(box.y + box.height).toBeLessThanOrEqual(viewport.height)
+    // Every option is the topmost thing at its own centre: nothing covers or cuts it.
+    for (const option of await list.getByRole('option').all()) {
+      const ob = (await option.boundingBox())!
+      const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('[role="option"]')?.textContent ?? null, [ob.x + ob.width / 2, ob.y + ob.height / 2])
+      expect(hit, 'an option is covered or cut off').toBe(await option.textContent())
+    }
+    await page.keyboard.press('Escape')
+
+    // The list stays in view however far the form is scrolled (#2137): only the pane scrolls.
+    await page.locator('[data-form-pane]').evaluate((p) => { p.scrollTop = p.scrollHeight })
+    expect(await page.evaluate(() => window.scrollY)).toBe(0)
+    const row = (await page.getByRole('button', { name: 'Tripoint', exact: true }).boundingBox())!
+    expect(row.y).toBeGreaterThanOrEqual(0)
+    expect(row.y + row.height).toBeLessThanOrEqual(viewport.height)
+
+    // The merge dialog: inside the window, and each of its buttons reachable at its own point.
+    await page.locator('[data-form-pane]').evaluate((p) => { p.scrollTop = 0 })
+    await page.getByLabel('Leads per day', { exact: true }).fill('300')
+    await page.getByRole('button', { name: /Save changes/ }).click()
+    const dialog = page.getByRole('dialog', { name: /saved this partner while you were editing/ })
+    await expect(dialog).toBeVisible()
+    const db = (await dialog.boundingBox())!
+    expect(db.y).toBeGreaterThanOrEqual(0)
+    expect(db.y + db.height).toBeLessThanOrEqual(viewport.height)
+    for (const button of await dialog.getByRole('button').all()) {
+      await button.scrollIntoViewIfNeeded()
+      const bb = (await button.boundingBox())!
+      const hit = await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.closest('button')?.textContent ?? null, [bb.x + bb.width / 2, bb.y + bb.height / 2])
+      expect(hit, 'a dialog button is covered or cut off').toBe(await button.textContent())
+    }
+    expect(unmatched).toEqual([])
+  })
+
   for (const { name, path, exclude } of PAGES) {
     test(`${name} has no serious a11y violations`, async ({ page }) => {
       await page.goto(path)
@@ -175,6 +291,13 @@ test.describe('Accessibility (axe-core)', () => {
     })
   }
 })
+
+/**
+ * The partners form's grey hint text (text-gray-500) on the beige page fails
+ * contrast; PR13 (#2144) sets its new shade once Dan picks it (decision 3,
+ * 2026-10-15), and deletes this waiver. Every other contrast failure still fails.
+ */
+const GREY_HINTS = { className: 'text-gray-500', within: '[data-form-pane]', issue: '#2144' }
 
 /** The Worker the built page calls, as api.ts reads it. */
 function workerUrl(): string {

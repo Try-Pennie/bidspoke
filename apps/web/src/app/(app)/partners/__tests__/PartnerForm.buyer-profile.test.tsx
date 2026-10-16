@@ -14,6 +14,7 @@ import type { BuyerProfileDocument, SaleWrites } from '@bidspoke/buyer-profile'
 
 vi.mock('@/lib/api', () => ({
   api: {
+    partners: { usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }) },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
     buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },
@@ -102,11 +103,12 @@ describe('the Buyer profile section', () => {
     expect(screen.getAllByRole('region', { name: 'Buyer profile' })).toHaveLength(1)
   })
 
-  it('the word priority appears once on the composed page: the legacy field is List order (L118)', async () => {
+  // #2137: the list is alphabetical, so List order (the partner record's
+  // priority) left the page and stays in the data (L118, PM-1).
+  it('the word priority appears once on the composed page, and List order has left it', async () => {
     await renderBuyer()
     expect(screen.getAllByText(/priority/i)).toHaveLength(1)
-    expect(screen.getByLabelText('List order')).toHaveValue(2)
-    expect(screen.getByText('Orders the partner list. It does not affect who is offered a lead.')).toBeInTheDocument()
+    expect(screen.queryByLabelText('List order')).toBeNull()
     expect(screen.getByLabelText('Daily attempt cap (bidding workflows)')).toHaveValue(250)
   })
 
@@ -123,12 +125,12 @@ describe('the Buyer profile section', () => {
 
   it('saves the partner record and the profile in one request at the pair of versions, and says both landed (#2133)', async () => {
     const onSave = await renderBuyer()
-    fireEvent.change(screen.getByLabelText('List order'), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText('Daily attempt cap (bidding workflows)'), { target: { value: '300' } })
     fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
     // Only the changed partner field is sent (#2132): the accept rules were not edited, so they are not written.
-    expect(onSave.mock.calls[0][0]).toEqual({ priority: 3 })
+    expect(onSave.mock.calls[0][0]).toEqual({ daily_cap: 300 })
     expect(onSave.mock.calls[0][3]).toEqual({ expected_partner_version: 0, expected_profile_version: 3, profile: expect.objectContaining({ daily_lead_cap: 600 }), save_id: SAVE_ID })
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Partner saved\. Buyer profile saved, version 4\./))
   })
@@ -136,7 +138,7 @@ describe('the Buyer profile section', () => {
   it('the button says Saved only once the one save has landed, never while it is in flight, and a failure says nothing was saved', async () => {
     let fail!: (e: unknown) => void
     const onSave = await renderBuyer(vi.fn().mockImplementation(() => new Promise((_res, rej) => { fail = rej })))
-    fireEvent.change(screen.getByLabelText('List order'), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText('Daily attempt cap (bidding workflows)'), { target: { value: '300' } })
     fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
@@ -151,7 +153,7 @@ describe('the Buyer profile section', () => {
 
   it('a profile only save with a partner edit that stores nothing (a blank floor row) leaves nothing reading as unsaved', async () => {
     const onSave = await renderBuyer()
-    fireEvent.click(screen.getByRole('button', { name: /Add row/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Add row/, hidden: true }))
     fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/^Buyer profile saved, version 4\./))
@@ -179,7 +181,7 @@ describe('the Buyer profile section', () => {
       .mockImplementationOnce(pageSaver(5, 9))
     render(<PartnerForm partner={{ ...partner, version: 7 }} onSave={onSave} onCancel={vi.fn()} />)
     await waitFor(() => expect(screen.getByLabelText('Leads per day')).toHaveValue(500))
-    fireEvent.change(screen.getByLabelText('List order'), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText('Daily attempt cap (bidding workflows)'), { target: { value: '300' } })
     const price = screen.getAllByRole('spinbutton').find((el) => (el as HTMLInputElement).value === '0.0012') as HTMLInputElement
     fireEvent.change(price, { target: { value: '0.002' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
@@ -191,12 +193,12 @@ describe('the Buyer profile section', () => {
     expect(screen.queryByText(/does not reverse/i)).toBeNull()
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
     const [patch, , , request] = onSave.mock.calls[1] as [PartnerBody, string, undefined, PartnerPageSaveRequest]
-    expect(patch).toEqual({ priority: 2 })
+    expect(patch).toEqual({ daily_cap: 250 })
     expect(request).toMatchObject({ expected_partner_version: 8, expected_profile_version: 4 })
     expect(request.profile).toMatchObject({ daily_lead_cap: 500, tiers: [{ population: 'engine', debt_from: 15000, debt_to: null, multiplier: 0.0012 }] })
     // Both halves are back on screen as they were, and nothing reads as unsaved.
     await waitFor(() => expect(screen.getAllByRole('spinbutton').some((el) => (el as HTMLInputElement).value === '0.0012')).toBe(true))
-    expect(screen.getByLabelText('List order')).toHaveValue(2)
+    expect(screen.getByLabelText('Daily attempt cap (bidding workflows)')).toHaveValue(250)
     expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
   })
 
@@ -388,7 +390,7 @@ describe('the Buyer profile section', () => {
 
   it('a new partner has no profile to edit yet and says so', () => {
     render(<PartnerForm onSave={vi.fn()} onCancel={vi.fn()} />)
-    expect(screen.getByRole('region', { name: 'Buyer profile' })).toHaveTextContent(/save the partner first/i)
+    expect(screen.getByRole('region', { name: 'Buyer profile', hidden: true })).toHaveTextContent(/save the partner first/i)
     expect(api.buyerProfiles.get).not.toHaveBeenCalled()
   })
 })
@@ -409,7 +411,7 @@ describe('how the buyer is sold', () => {
   it('a partner with no profile yet has no answer chosen, and saving the partner alone does not ask for one', async () => {
     const onSave = await renderWith(null)
     expect(within(screen.getByRole('radiogroup', { name: 'Sold on' })).getAllByRole('radio').map((r) => r.getAttribute('aria-checked'))).toEqual(['false', 'false'])
-    fireEvent.change(screen.getByLabelText('List order'), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText('Daily attempt cap (bidding workflows)'), { target: { value: '300' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
     expect(profileSent(onSave)).toEqual([null])
