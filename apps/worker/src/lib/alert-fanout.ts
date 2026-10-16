@@ -46,6 +46,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AlertClaims } from './alert-claim'
 import type { AllClearClaim } from './alert-recovery'
 import { logReadFailure } from './scheduled-read'
+import { formatErr } from './format-error'
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
 import { copyUnreachableLine, describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason } from './scheduled-slack'
 
@@ -317,7 +318,16 @@ export async function postMinutePage(opts: {
     console.log(`[alert-claim] ${key} claimed by another tick`)
     return 'claimed_elsewhere'
   }
-  const release = async () => { if (claims) await claims.release(key) }
+  // Never throws: a release that fails must not replace the post's own error,
+  // or turn a refused post into a throw (the claim then lapses at its TTL).
+  const release = async () => {
+    if (!claims) return
+    try {
+      await claims.release(key)
+    } catch (e) {
+      console.error(`[alert-claim] release ${key} failed: ${formatErr(e)}`)
+    }
+  }
   if (await opts.inCooldown()) {
     await release()
     return 'in_cooldown'

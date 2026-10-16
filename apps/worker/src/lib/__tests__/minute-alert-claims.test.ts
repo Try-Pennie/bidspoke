@@ -46,6 +46,8 @@ describe('the claim TTL covers the worst case from claim to cooldown write', () 
     // the claim's own deadline are inside that bound.
     expect(SCHEDULED_SLACK_READ_DEADLINE_MS + CLAIM_DEADLINE_MS).toBeLessThan(MINUTE_JOB_DEADLINE_MS)
     expect(MINUTE_ALERT_CLAIM_TTL_SECONDS * 1000).toBeGreaterThanOrEqual(MINUTE_JOB_DEADLINE_MS)
+    // alert-fanout.ts says six times over: the margin it claims is held here too.
+    expect(MINUTE_ALERT_CLAIM_TTL_SECONDS * 1000).toBeGreaterThanOrEqual(6 * MINUTE_JOB_DEADLINE_MS)
     expect(MINUTE_ALERT_CLAIM_TTL_SECONDS).toBe(5 * 60)
   })
 
@@ -138,6 +140,19 @@ describe('postMinutePage: claim first, then read the cooldown (L157)', () => {
     expect(held.has('k')).toBe(false)
   })
 
+  it('keeps the post error when freeing the claim also throws, and logs the release failure', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const claims = { claim: async () => true, release: async () => { throw new Error('release refused') } }
+    await expect(postMinutePage({ claims, key: 'k', inCooldown: async () => false, send: async () => { throw new Error('boom') } })).rejects.toThrow('boom')
+    expect(err.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/release k failed: .*release refused/)
+  })
+
+  it('still answers not_sent when freeing the claim after a refused post throws', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const claims = { claim: async () => true, release: async () => { throw new Error('release refused') } }
+    expect(await postMinutePage({ claims, key: 'k', inCooldown: async () => false, send: async () => false })).toBe('not_sent')
+  })
+
   it('fails open and logs when the claim object cannot be asked', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {})
     const ns = { idFromName: () => { throw new Error('object unreachable') }, get: () => { throw new Error('unused') } } as unknown as DurableObjectNamespace
@@ -214,6 +229,31 @@ describe('announceRecovery claims an all-clear only once it is owed', () => {
     const send = vi.fn(async () => true)
     expect(await announceRecovery(kv, 'failure-rate', id, null, incident, send, { now: T0, claim: { claims: wrapped, key: 'k', ttlSeconds: 300 } })).toBe(false)
     expect(send).not.toHaveBeenCalled()
+  })
+
+  it('frees the claim when the marker it re-read is gone', async () => {
+    const kv = owed()
+    const { claims, held } = claimLedger()
+    const wrapped = {
+      claim: async (k: string, ttl: number) => {
+        const won = await claims.claim(k, ttl)
+        kv.store.delete(recoveryKey('failure-rate', id))
+        return won
+      },
+      release: claims.release,
+    }
+    await announceRecovery(kv, 'failure-rate', id, null, incident, async () => true, { now: T0, claim: { claims: wrapped, key: 'k', ttlSeconds: 300 } })
+    expect(held.size).toBe(0)
+  })
+
+  it('still returns false when freeing the claim after a refused all-clear throws', async () => {
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const claims = { claim: async () => true, release: async () => { throw new Error('release refused') } }
+    expect(await announceRecovery(owed(), 'failure-rate', id, null, incident, async () => false, { now: T0, claim: { claims, key: 'k', ttlSeconds: 300 } })).toBe(false)
+    expect(await announceRecovery(owed(), 'failure-rate', id, null, incident, async () => { throw new Error('boom') }, { now: T0, claim: { claims, key: 'k', ttlSeconds: 300 } })).toBe(false)
+    const logged = err.mock.calls.map((c) => c.map(String).join(' ')).join('\n')
+    expect(logged).toMatch(/all-clear failed for wf-1:ACRO: Error: boom/)
+    expect(logged).toMatch(/release k failed: .*release refused/)
   })
 
   it('frees the claim and keeps the incident when the all-clear does not deliver', async () => {

@@ -355,14 +355,26 @@ export async function announceRecovery(
   // claim (L157): a tick that judged it owed before another tick's claim lapsed
   // must not send an all-clear that tick already settled.
   const claim = opts.claim
+  // Never throws: a failed release must not replace the send's own failure or
+  // turn a held all-clear into a throw (the claim then lapses at its TTL).
+  const release = async () => {
+    if (!claim?.claims) return
+    try {
+      await claim.claims.release(claim.key)
+    } catch (e) {
+      console.error(`[alert-recovery] release ${claim.key} failed: ${formatErr(e)}`)
+    }
+  }
   if (claim?.claims) {
     if (!(await claim.claims.claim(claim.key, claim.ttlSeconds))) {
       console.log(`[alert-recovery] ${prefix} all-clear for ${id} claimed by another tick`)
       return false
     }
-    if (!(await kv.get(recoveryKey(prefix, id)))) return false
+    if (!(await kv.get(recoveryKey(prefix, id)))) {
+      await release()
+      return false
+    }
   }
-  const release = async () => { if (claim?.claims) await claim.claims.release(claim.key) }
 
   let delivered: boolean
   try {
