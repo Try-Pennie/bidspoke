@@ -441,6 +441,9 @@ export async function drainHeldWrite(deps: ReplayDeps, orgId: string, id: string
   try {
     read = await sf.send('GET', `${recordPath(row)}?fields=${['LastModifiedDate', ...names].join(',')}`)
   } catch (e) {
+    // A read the full bulkhead refused never left: a hold, not Salesforce silent.
+    // Nothing is claimed yet, so there is nothing to give back.
+    if (isSalesforceBulkheadShed(e)) return { kind: 'held', error: formatErr(e), recorded: true }
     return { kind: 'read_unanswered', error: formatErr(e) }
   }
   if (read.status < 200 || read.status >= 300) {

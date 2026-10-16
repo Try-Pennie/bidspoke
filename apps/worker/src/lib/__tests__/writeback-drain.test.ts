@@ -310,6 +310,14 @@ describe('runWritebackDrain', () => {
     expect(rows.map((r) => r.attempts)).toEqual([0, 0])
   })
 
+  it('stops as a full bulkhead, not as Salesforce not answering, when the bulkhead refuses the read', async () => {
+    rows.push(await row(), await row({ sf_record_id: 'a0B000000000002AAA' }))
+    const shed = Object.assign(new Error('Salesforce bulkhead: at capacity (salesforce, 20/20 inflight, waited 0ms)'), { bulkheadShed: true })
+    const sf = salesforce({ read: () => shed })
+    expect((await runWritebackDrain(deps(sf.port))).stopped).toBe('bulkhead_busy')
+    expect(rows.map((r) => r.attempts)).toEqual([0, 0])
+  })
+
   it('sends a row once when two ticks run at the same moment', async () => {
     rows.push(await row())
     const sf = salesforce()

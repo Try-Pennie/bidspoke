@@ -471,6 +471,13 @@ describe('a send the Salesforce bulkhead refused', () => {
     expect(rows[0]).toMatchObject({ status: 'pending', attempts: 1 })
   })
 
+  it('says held, not unanswered, when the bulkhead refuses the drain\'s read', async () => {
+    const { store } = memoryStore(rows)
+    const sf: SalesforcePort = { send: async () => { throw shed() }, postApex: () => Promise.reject(new Error('no')) }
+    expect(await drainHeldWrite(deps(store, sf), ORG, ID, { maxAttempts: 2 })).toMatchObject({ kind: 'held' })
+    expect(rows[0]).toMatchObject({ status: 'pending', attempts: 0 })
+  })
+
   it('is recognised by the mark the Salesforce call path puts on its refusal, never by its wording', () => {
     expect(isSalesforceBulkheadShed(shed())).toBe(true)
     expect(isSalesforceBulkheadShed(new Error('Salesforce bulkhead: at capacity'))).toBe(false)
