@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { findMissingRequiredSecrets, REQUIRED_SECRETS, REQUIRED_PARTNER_SECRETS } from '../required-secrets'
+import { FEATURE_GATED_SECRETS } from '../secret-lists'
 import type { Env } from '../../index'
 
 /** An env where every required secret (core + partner) is present and non-empty. */
@@ -107,6 +108,14 @@ describe('findMissingRequiredSecrets', () => {
     expect(all).not.toContain('ACHIEVE_PASSWORD')
     expect(all).not.toContain('ACHIEVE_API_URL')
     expect(all).not.toContain('SCOUT_KEY')
+  })
+
+  it('registers the Better Stack page secrets (#2063) as feature gated, so the daily check stays quiet until Dan sets them', () => {
+    expect(FEATURE_GATED_SECRETS).toEqual(expect.arrayContaining(['BETTERSTACK_OUTAGE_TOKEN', 'BETTERSTACK_OUTAGE_URL']))
+    const all = [...REQUIRED_SECRETS, ...REQUIRED_PARTNER_SECRETS] as string[]
+    for (const name of FEATURE_GATED_SECRETS) expect(all).not.toContain(name)
+    // Unset, they are not reported missing.
+    expect(findMissingRequiredSecrets(fullSecretEnv() as unknown as Env)).toEqual([])
   })
 })
 
