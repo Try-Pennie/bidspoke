@@ -72,6 +72,9 @@ const reachabilityLiteral = (() => {
   return at < 0 ? '' : index.slice(at, index.indexOf('}', at))
 })()
 
+/** The owner's claims are the real claim object whenever the binding exists. */
+const reachabilityHasClaims = /\bclaims:\s*env\.ALERT_CLAIM\s*\?\s*makeAlertClaims\(env\.ALERT_CLAIM\)/.test(reachabilityLiteral)
+
 describe('the minute alert claims are wired to the minute alerts only (#2062)', () => {
   it('the modules that claim are exactly the minute alerts listed here', () => {
     const claiming = [...sources.entries()]
@@ -97,7 +100,10 @@ describe('the minute alert claims are wired to the minute alerts only (#2062)', 
         for (const c of calls) {
           const inMinute = c.at > branch.start && c.at < branch.end
           if (!ANY_TICK.has(fn)) expect(inMinute, `${fn} is called outside the minute cron branch`).toBe(true)
-          const hasClaims = /\bclaims\b/.test(c.args) || (/\.\.\.reachability\b|\breachability\b/.test(c.args) && /\bclaims:/.test(reachabilityLiteral))
+          // The claims are the owner's (`reachability.claims`), passed by name, by
+          // spreading `reachability`, or as `reachability` itself (the owner's
+          // deps); a bare `claims` word could be anything.
+          const hasClaims = (/\breachability\.claims\b/.test(c.args) || /\.\.\.reachability\b/.test(c.args) || /^\(\s*reachability\s*,/.test(c.args)) && reachabilityHasClaims
           expect(hasClaims, `${fn}${c.args.replace(/\s+/g, ' ')} is not handed its claims`).toBe(true)
         }
       })

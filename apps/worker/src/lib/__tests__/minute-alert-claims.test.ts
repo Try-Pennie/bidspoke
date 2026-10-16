@@ -19,7 +19,7 @@ import { announceRecovery, recoveryKey, type IncidentContext } from '../alert-re
 import { CLAIM_DEADLINE_MS, makeAlertClaims } from '../alert-claim'
 import { SCHEDULED_SLACK_READ_DEADLINE_MS } from '../scheduled-slack'
 import { MINUTE_JOB_DEADLINE_MS } from '../../index'
-import { claimLedger, gate, overlap } from './_claims-double'
+import { claimLedger, gate, overlap, until } from './_claims-double'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -57,6 +57,17 @@ describe('the claim TTL covers the worst case from claim to cooldown write', () 
     const kv = fakeKv({ [recoveryKey('failure-rate', 'wf-1:X')]: new Date(T0 - 90 * MIN).toISOString() })
     await announceRecovery(kv, 'failure-rate', 'wf-1:X', null, incident, async () => true, { now: T0, claim: minuteAllClearClaim(claims, 'failure-rate', 'wf-1:X') })
     expect([...ttls.values()]).toEqual([MINUTE_ALERT_CLAIM_TTL_SECONDS, MINUTE_ALERT_CLAIM_TTL_SECONDS])
+  })
+})
+
+describe('the overlap helper', () => {
+  it('refuses to wait under fake timers rather than hang', async () => {
+    vi.useFakeTimers()
+    try {
+      await expect(until(() => false)).rejects.toThrow(/fake timers/)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
