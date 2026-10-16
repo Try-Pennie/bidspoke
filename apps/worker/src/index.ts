@@ -176,6 +176,7 @@ const scheduledJobs = {
     }
     // The database reachability owner (#2061): the probe below, the volume check's
     // reads, and the first scheduled read of a tick that fails all report to it.
+    // Its claims are also the ones the other minute alerts post under (#2062).
     const reachability = {
       kv: env.IDEMPOTENCY,
       secretKeys: secretKeys(env),
@@ -1129,7 +1130,7 @@ const scheduledJobs = {
           .catch((e) => console.error('[volume-cliff] check failed:', e))
       )
       minuteJob('slow-execution-check',
-        runSlowExecutionCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
+        runSlowExecutionCheck(supabase, env.IDEMPOTENCY, env.APP_URL, reachability.claims)
           .catch((e) => console.error('[slow-spike] check failed:', e))
       )
       minuteJob('stranded-executions',
@@ -1146,15 +1147,15 @@ const scheduledJobs = {
           .catch((e) => console.error('[stranded-executions] check failed:', e))
       )
       minuteJob('failure-rate-check',
-        runFailureRateCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
+        runFailureRateCheck(supabase, env.IDEMPOTENCY, env.APP_URL, reachability.claims)
           .catch((e) => console.error('[failure-spike] check failed:', e))
       )
       minuteJob('upstream-outage-check',
-        runUpstreamOutageCheck(supabase, env.IDEMPOTENCY, env.APP_URL)
+        runUpstreamOutageCheck(supabase, env.IDEMPOTENCY, env.APP_URL, reachability.claims)
           .catch((e) => console.error('[upstream-outage] check failed:', e))
       )
       minuteJob('heartbeat-checks',
-        runHeartbeatChecks(supabase, env.IDEMPOTENCY)
+        runHeartbeatChecks(supabase, env.IDEMPOTENCY, Date.now(), reachability.claims)
           .then((rs) => {
             for (const r of rs) {
               if (r.status === 'stale' || r.status === 'never_ran' || r.status === 'vanished') {
