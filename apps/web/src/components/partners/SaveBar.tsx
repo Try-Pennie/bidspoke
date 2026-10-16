@@ -7,8 +7,10 @@
  * through each state, and every time it prints goes through dates.ts.
  *
  * Saving shows the seconds counting. A save with no answer is unconfirmed,
- * never failed (L766): Try again resends the same press, and Discard waits for
- * the outcome. A failure stays until the person acts on it.
+ * never failed (L766): Try again saves what is on screen (the same press, under
+ * the same save id, when nothing changed since). Discard waits while the save
+ * is still being checked, and is open again once checking stops after two
+ * minutes (L665). A failure stays until the person acts on it.
  */
 import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/form'
