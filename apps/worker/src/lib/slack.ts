@@ -3016,7 +3016,7 @@ export function describeSavedSettingsAge(ageMs: number | null): string {
 
 /** When the database unreachable page says its all-clear will come (database-reachability.ts). */
 const DATABASE_ALL_CLEAR_PROMISE =
-  `An all-clear follows here once the minute database probe and the volume check have answered for ${RECOVERY_REARM_MINUTES} minutes with no scheduled read failing.`
+  `An all-clear follows here once no scheduled read has failed for ${RECOVERY_REARM_MINUTES} minutes and the minute database probe and the volume check have answered throughout them.`
 
 /**
  * Bidspoke cannot read its own database (#1297). Posted by its one owner
