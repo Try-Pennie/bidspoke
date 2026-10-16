@@ -1555,7 +1555,7 @@ export default function PartnerForm({
           </TabPanel>
           {!isNew && (
             <TabPanel value="history" className="space-y-8">
-              {partner && <PartnerHistoryPanel partner={partner} isBuyer={isBuyer} shown={tab === 'history'} />}
+              {partner && <PartnerHistoryPanel partner={partner} shown={tab === 'history'} />}
             </TabPanel>
           )}
         </Tabs>

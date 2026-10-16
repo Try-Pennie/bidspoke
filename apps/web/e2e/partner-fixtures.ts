@@ -16,6 +16,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import type { Page } from '@playwright/test'
+import { mergeHistory, type PartnerHistory } from '@bidspoke/partner-history'
 import { LIVE_MISS_ID, realtimeReplies, versionsFor } from './partner-live-fixtures'
 
 export { LIVE_MISS_ID, realtimeReplies, versionsFor }
@@ -38,6 +39,14 @@ export interface PartnerFixtures {
   /** GET /api/partners/:id/usage by partner id (#2137), measured read only from production on 2026-10-16. */
   usage: Record<string, unknown>
   /**
+   * GET /api/partners/:id/history by partner id (#2141): production's 59 audit
+   * rows for the nine partners, read only on 2026-10-16, mapped as the route
+   * maps them and redacted as a capture is.
+   */
+  history: Record<string, PartnerHistory>
+  /** Tripoint's History with three synthetic matrix entries on top: production holds no matrix sync rows. */
+  historyMatrix: PartnerHistory
+  /**
    * Liberty1's held clicks (#2139), invented because production holds none, and
    * the answer to adding a lead id to its sale with none. held-clicks-fixtures-contract.test.ts
    * in the Worker holds both to what the routes answer.
@@ -56,6 +65,8 @@ export function loadPartnerFixtures(): PartnerFixtures {
     panels: read('synthetic/panels.json'),
     deleteChecks: read('synthetic/delete-checks.json'),
     usage: read('usage.json'),
+    history: read('history.json'),
+    historyMatrix: read('synthetic/history-matrix.tripoint.json'),
     heldClicks: read('synthetic/held-clicks.liberty1.json'),
   }
 }
@@ -69,6 +80,12 @@ export interface FixtureOptions {
   credentialWarningFor?: string
   /** Answer the usage read (#2137) with a 503, so the Bid Group tab's failed state is reached. */
   usageFails?: boolean
+  /** Answer the History read (#2141) with the route's error for a failed users read. */
+  historyFails?: boolean
+  /** Give Tripoint the synthetic History holding matrix syncs and a matrix created. */
+  historyMatrix?: boolean
+  /** Answer Tripoint's History as the route does when a source was cut at its bound (mergeHistory with the source truncated). */
+  historyIncomplete?: boolean
   /** Give Liberty1 its invented held clicks (#2139), and answer adding a lead id to one, so the cards, the lead id box and the Remove dialog are scanned. */
   heldClicks?: boolean
 }
@@ -130,6 +147,15 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
     if (opts.usageFails) return { status: 503, body: { error: 'Service unavailable' } }
     const answer = ownEntry(fx.usage, m[1])
     return answer ? ok(answer) : null
+  }
+  if ((m = /^\/api\/partners\/([^/]+)\/history$/.exec(p))) {
+    if (opts.historyFails) return { status: 500, body: { error: 'history_unavailable', read: 'users', message: 'History could not be loaded: the users read failed.' } }
+    const tripointId = fx.historyMatrix.partnerId
+    if (opts.historyMatrix && m[1] === tripointId) return ok(fx.historyMatrix)
+    const history = fx.history[m[1]]
+    if (!history) return null
+    if (opts.historyIncomplete && m[1] === tripointId) return ok({ partnerId: m[1], ...mergeHistory([{ entries: history.entries, truncated: true }]) })
+    return ok(history)
   }
   if (p === '/api/partner-uuids') return ok(fx.uuids)
   if (p === '/api/partner-bid-configs') {

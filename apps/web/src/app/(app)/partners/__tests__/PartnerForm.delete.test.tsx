@@ -16,7 +16,7 @@ vi.mock('@/lib/api', () => ({
   api: {
     partners: {
       usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }),
-      get: vi.fn(), versions: vi.fn(), reportLiveMiss: vi.fn(), workflowValues: vi.fn(), deleteCheck: vi.fn(), delete: vi.fn(),
+      get: vi.fn(), versions: vi.fn(), reportLiveMiss: vi.fn(), workflowValues: vi.fn(), deleteCheck: vi.fn(), delete: vi.fn(), history: vi.fn(),
     },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
@@ -92,6 +92,8 @@ beforeEach(() => {
   vi.mocked(api.partners.versions).mockResolvedValue({ partnerId: ID, partnerVersion: 3, profileVersion: 0, lastSaveId: null, profileLastSaveId: null, latestChange: null, newest: { partner: null, profile: null } })
   vi.mocked(api.partners.workflowValues).mockResolvedValue({ partner: { id: ID, slug: 'm1' }, values: [], searched: { workflows: 0, with_constants_node: 0 } })
   vi.mocked(api.partners.deleteCheck).mockResolvedValue(check)
+  // The History tab a test moves to reads the partner history (#2141).
+  vi.mocked(api.partners.history).mockResolvedValue({ partnerId: ID, entries: [], complete: true, completeSince: null })
 })
 
 describe('a delete in flight while the person changes tab (#2140)', () => {

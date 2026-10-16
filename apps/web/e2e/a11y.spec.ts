@@ -255,6 +255,50 @@ test.describe('Accessibility (axe-core)', () => {
     expect(unmatched).toEqual([])
   })
 
+  // #2141: History at the real count (Liberty1's 19 changes, read from
+  // production), Tripoint's with the synthetic matrix syncs, and the failed and
+  // incomplete answers, each asserted on screen before it is scanned.
+  test('partners page: History lists every change at the real count, a matrix sync included, with no serious a11y violations', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl(), { historyMatrix: true })
+    await page.goto('/partners?selected=liberty1&tab=history')
+    const panel = page.locator('[role="tabpanel"]:visible')
+    await expect(panel.getByRole('listitem')).toHaveCount(19)
+    // Twice: set up with them, then moved to open at 9:00 AM.
+    await expect(panel.getByText('Hours, Monday to Friday')).toHaveCount(2)
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await page.goto('/partners?selected=tripoint&tab=history')
+    await expect(panel.getByRole('listitem')).toHaveCount(22)
+    await expect(panel.getByText('Bidspoke, hourly Salesforce matrix sync')).toBeVisible()
+    await expect(panel.getByText('Editor B, Sync now from Salesforce')).toBeVisible()
+    await expect(panel.getByText('Changed directly in the database')).toBeVisible()
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    expect(unmatched).toEqual([])
+  })
+
+  test('partners page: a failed History read is the one error state, with no list, and no serious a11y violations', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl(), { historyFails: true })
+    await page.goto('/partners?selected=tripoint&tab=history')
+    const panel = page.locator('[role="tabpanel"]:visible')
+    await expect(panel.getByRole('alert').filter({ hasText: 'Could not load history. Try again.' })).toBeVisible()
+    await expect(panel.getByRole('listitem')).toHaveCount(0)
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    expect(unmatched).toEqual([])
+  })
+
+  test('partners page: an incomplete History says how far back it is complete, with no serious a11y violations', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl(), { historyIncomplete: true })
+    await page.goto('/partners?selected=tripoint&tab=history')
+    const panel = page.locator('[role="tabpanel"]:visible')
+    await expect(panel.getByRole('listitem')).toHaveCount(18)
+    await expect(panel.getByText(/^History is complete back to Apr 21, 3:46 PM ET; older changes are not listed\.$/)).toBeVisible()
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    expect(unmatched).toEqual([])
+  })
+
   // #2139: the held clicks cards, open. Liberty1 is given three invented held
   // clicks (production holds none): one still held, a sale with no lead id and a
   // sale whose Submission update Salesforce refused. The Mark sent box and the

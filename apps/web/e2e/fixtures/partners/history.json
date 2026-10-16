@@ -1,0 +1,2509 @@
+{
+  "58d50fe7-3e86-4d71-85c7-4533ab08acb0": {
+    "partnerId": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+    "entries": [
+      {
+        "key": "audit:1667e0f4-d009-4aa5-b160-c3d7116177a0",
+        "source": "audit_log",
+        "at": "2026-06-08T13:30:19.95086+00:00",
+        "entityType": "partner_config",
+        "entityId": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000001",
+          "name": "Editor A",
+          "via": null
+        },
+        "editorLabel": "Editor A",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "confirmation_window_ms",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type",
+            "sub_account_min_bids"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:f192386f-6307-4e2e-941b-51fd03d8dc5d",
+        "source": "audit_log",
+        "at": "2026-06-06T00:02:11.585762+00:00",
+        "entityType": "partner_config",
+        "entityId": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "confirmation_window_ms",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type",
+            "sub_account_min_bids"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:9702aeb5-d753-4e71-a296-7274fee4bf90",
+        "source": "audit_log",
+        "at": "2026-05-15T14:47:36.777364+00:00",
+        "entityType": "partner_config",
+        "entityId": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:6a962068-39a7-435f-879d-e3b11b45dad2",
+        "source": "audit_log",
+        "at": "2026-05-14T20:58:33.616625+00:00",
+        "entityType": "partner_config",
+        "entityId": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:53f5624b-5967-4415-a526-76928bff2316",
+        "source": "audit_log",
+        "at": "2026-05-14T20:50:12.098049+00:00",
+        "entityType": "partner_config",
+        "entityId": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:8f12db56-714f-4f7a-b2fb-211bbf253b32",
+        "source": "audit_log",
+        "at": "2026-05-14T20:49:08.040672+00:00",
+        "entityType": "partner_config",
+        "entityId": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:65512b65-3299-4ab3-b2c4-fc781dc64dcb",
+        "source": "audit_log",
+        "at": "2026-05-14T20:48:28.500956+00:00",
+        "entityType": "partner_config",
+        "entityId": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:cf425c60-60f3-4ed9-8be2-ddb634ed6e15",
+        "source": "audit_log",
+        "at": "2026-05-14T20:46:24.428915+00:00",
+        "entityType": "partner_config",
+        "entityId": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:2fc38fcf-259d-4d29-bbeb-383af24e1819",
+        "source": "audit_log",
+        "at": "2026-05-14T20:44:08.410704+00:00",
+        "entityType": "partner_config",
+        "entityId": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:269450dc-05de-4e40-b555-71af92579564",
+        "source": "audit_log",
+        "at": "2026-05-14T20:35:51.584867+00:00",
+        "entityType": "partner_config",
+        "entityId": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:555b78f9-e4b6-4fcf-8d16-b8d5239c3e61",
+        "source": "audit_log",
+        "at": "2026-05-14T18:38:15.898373+00:00",
+        "entityType": "partner_config",
+        "entityId": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:e6d9bc54-f218-4ef6-ab1d-c04cf9e9a898",
+        "source": "audit_log",
+        "at": "2026-05-14T17:56:31.473999+00:00",
+        "entityType": "partner_config",
+        "entityId": "58d50fe7-3e86-4d71-85c7-4533ab08acb0",
+        "action": "created",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "name": "AmOne",
+          "slug": "amone"
+        },
+        "matrix": null
+      }
+    ],
+    "complete": true,
+    "completeSince": null
+  },
+  "84fa3d0a-c382-41c1-983b-70d75d97cf4c": {
+    "partnerId": "84fa3d0a-c382-41c1-983b-70d75d97cf4c",
+    "entries": [
+      {
+        "key": "audit:069711fa-e4a7-435d-b102-f44966371ea9",
+        "source": "audit_log",
+        "at": "2026-04-21T19:48:30.518473+00:00",
+        "entityType": "partner_config",
+        "entityId": "84fa3d0a-c382-41c1-983b-70d75d97cf4c",
+        "action": "created",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "name": "Brainsome",
+          "slug": "brainsome"
+        },
+        "matrix": null
+      }
+    ],
+    "complete": true,
+    "completeSince": null
+  },
+  "205785c3-09cf-4993-8765-4edd81c62af8": {
+    "partnerId": "205785c3-09cf-4993-8765-4edd81c62af8",
+    "entries": [
+      {
+        "key": "audit:63533a4c-5f9d-4bb3-819a-b8703d965101",
+        "source": "audit_log",
+        "at": "2026-04-21T19:48:15.443481+00:00",
+        "entityType": "partner_config",
+        "entityId": "205785c3-09cf-4993-8765-4edd81c62af8",
+        "action": "created",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "name": "Dot818",
+          "slug": "dot818"
+        },
+        "matrix": null
+      }
+    ],
+    "complete": true,
+    "completeSince": null
+  },
+  "e82b748a-3d32-4777-b3e3-b7d75d8580f1": {
+    "partnerId": "e82b748a-3d32-4777-b3e3-b7d75d8580f1",
+    "entries": [
+      {
+        "key": "audit:ec5801bb-6a9f-458f-ae1f-a8d94a8e03e3",
+        "source": "audit_log",
+        "at": "2026-06-09T15:04:37.229417+00:00",
+        "entityType": "partner_config",
+        "entityId": "e82b748a-3d32-4777-b3e3-b7d75d8580f1",
+        "action": "created",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "name": "GigFi",
+          "slug": "gigfi"
+        },
+        "matrix": null
+      }
+    ],
+    "complete": true,
+    "completeSince": null
+  },
+  "4ad955bd-744f-4c1f-acbb-19a22b9e5c64": {
+    "partnerId": "4ad955bd-744f-4c1f-acbb-19a22b9e5c64",
+    "entries": [
+      {
+        "key": "audit:42052664-b74c-4e32-9683-0f26813875e9",
+        "source": "audit_log",
+        "at": "2026-05-29T19:19:39.286174+00:00",
+        "entityType": "partner_config",
+        "entityId": "4ad955bd-744f-4c1f-acbb-19a22b9e5c64",
+        "action": "created",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "name": "LendSwift",
+          "slug": "lendswift"
+        },
+        "matrix": null
+      }
+    ],
+    "complete": true,
+    "completeSince": null
+  },
+  "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3": {
+    "partnerId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+    "entries": [
+      {
+        "key": "audit:158b22d1-3aa4-420e-834d-aa5a5e577123",
+        "source": "audit_log",
+        "at": "2026-10-14T20:52:21.130684+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000001",
+          "name": "Editor A",
+          "via": null
+        },
+        "editorLabel": "Editor A",
+        "changes": {
+          "loan_amount_min": {
+            "new": 10000,
+            "old": 2500
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:3cea656b-d88c-41c6-80d1-734f99d806ed",
+        "source": "audit_log",
+        "at": "2026-10-14T19:45:18.198544+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "is_enabled": {
+            "new": true,
+            "old": false
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:e6b8df72-212d-478b-abcd-97760eb84077",
+        "source": "audit_log",
+        "at": "2026-10-14T15:09:02.883507+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "is_enabled": {
+            "new": false,
+            "old": true
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:bb9d4fac-0a90-41cc-8241-40eb8482c698",
+        "source": "audit_log",
+        "at": "2026-10-01T23:32:19.553356+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "windows.1.540": {
+            "new": 1260,
+            "old": null
+          },
+          "windows.1.660": {
+            "new": null,
+            "old": 1260
+          },
+          "windows.2.540": {
+            "new": 1260,
+            "old": null
+          },
+          "windows.2.660": {
+            "new": null,
+            "old": 1260
+          },
+          "windows.3.540": {
+            "new": 1260,
+            "old": null
+          },
+          "windows.3.660": {
+            "new": null,
+            "old": 1260
+          },
+          "windows.4.540": {
+            "new": 1260,
+            "old": null
+          },
+          "windows.4.660": {
+            "new": null,
+            "old": 1260
+          },
+          "windows.5.540": {
+            "new": 1260,
+            "old": null
+          },
+          "windows.5.660": {
+            "new": null,
+            "old": 1260
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:75afce7a-d41c-4da3-8ed4-d23009161afd",
+        "source": "audit_log",
+        "at": "2026-09-30T19:00:35.694025+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "click_delivery.routes[DI4]": {
+            "old": null,
+            "new": {
+              "url": "https://hooks.example.com/redacted/DI4",
+              "states": []
+            }
+          },
+          "click_delivery.routes[DV1]": {
+            "old": null,
+            "new": {
+              "url": "https://hooks.example.com/redacted/DV1",
+              "states": [
+                "DE",
+                "HI",
+                "IA",
+                "MN",
+                "OR",
+                "RI",
+                "VT",
+                "WA",
+                "WI",
+                "WY"
+              ]
+            }
+          },
+          "click_delivery.success_pattern": {
+            "new": "^\\s*\\{(?=[\\s\\S]*\"status\"\\s*:\\s*\"Success)[\\s\\S]*?\"id\"\\s*:\\s*\"(?<id>[A-Za-z0-9]{15,20})\"[\\s\\S]*\\}\\s*$",
+            "old": null
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:ec58f802-9d7d-40d7-8005-7af9f0ca469b",
+        "source": "audit_log",
+        "at": "2026-09-30T15:59:14.710373+00:00",
+        "entityType": "held_click",
+        "entityId": "9a5da2a6-59a8-4d96-94b9-828e30778337",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "subject": {
+            "reason": "outcome_unknown",
+            "held_at": "2026-09-30T15:57:55.231331+00:00",
+            "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+            "prospect_id": "redacted"
+          },
+          "claim_state": {
+            "new": "sold",
+            "old": "in_flight"
+          },
+          "buyer_lead_id": {
+            "old": null,
+            "new": "redacted"
+          },
+          "claim_generation": {
+            "new": 2,
+            "old": 1
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:b5a8347a-2cc0-411b-b832-8901154e5c80",
+        "source": "audit_log",
+        "at": "2026-09-30T15:57:01.622883+00:00",
+        "entityType": "held_click",
+        "entityId": "eef9ff94-e734-4209-8dc3-c73635019e10",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "subject": {
+            "reason": "outcome_unknown",
+            "held_at": "2026-09-30T15:52:18.694882+00:00",
+            "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+            "prospect_id": "redacted"
+          },
+          "claim_state": {
+            "new": "sold",
+            "old": "in_flight"
+          },
+          "buyer_lead_id": {
+            "old": null,
+            "new": "redacted"
+          },
+          "claim_generation": {
+            "new": 2,
+            "old": 1
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:1abbc42a-3d15-4b7a-b43d-6528902b351e",
+        "source": "audit_log",
+        "at": "2026-09-30T15:45:29.790854+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "is_enabled": {
+            "new": true,
+            "old": false
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:f13909f1-a4cb-418f-ba66-213aa98e3d36",
+        "source": "audit_log",
+        "at": "2026-09-29T23:09:22.340428+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "is_enabled": {
+            "new": false,
+            "old": true
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:5109c47d-8174-49fe-81c5-e6b6698ad7f1",
+        "source": "audit_log",
+        "at": "2026-09-29T17:38:32.675576+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "allowed_states": {
+            "new": [
+              "AK",
+              "AL",
+              "AR",
+              "AZ",
+              "CA",
+              "CO",
+              "CT",
+              "DC",
+              "FL",
+              "GA",
+              "ID",
+              "IL",
+              "IN",
+              "KS",
+              "KY",
+              "LA",
+              "MA",
+              "MD",
+              "ME",
+              "MI",
+              "MO",
+              "MS",
+              "MT",
+              "NC",
+              "NE",
+              "NH",
+              "NJ",
+              "NM",
+              "NV",
+              "NY",
+              "OH",
+              "OK",
+              "PA",
+              "SC",
+              "SD",
+              "TN",
+              "TX",
+              "UT",
+              "VA",
+              "WV"
+            ],
+            "old": [
+              "AK",
+              "AL",
+              "AR",
+              "AZ",
+              "CA",
+              "CO",
+              "CT",
+              "DC",
+              "FL",
+              "GA",
+              "ID",
+              "IL",
+              "IN",
+              "KS",
+              "KY",
+              "LA",
+              "MA",
+              "MD",
+              "ME",
+              "MI",
+              "MO",
+              "MS",
+              "MT",
+              "NC",
+              "NE",
+              "NH",
+              "NJ",
+              "NM",
+              "NV",
+              "NY",
+              "OH",
+              "OK",
+              "PA",
+              "RI",
+              "SC",
+              "SD",
+              "TN",
+              "TX",
+              "UT",
+              "VA",
+              "WV"
+            ]
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:c50b4dc5-d6c6-4ad6-8167-e1ef9f7491cc",
+        "source": "audit_log",
+        "at": "2026-09-29T17:37:49.843577+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "allowed_states": {
+            "new": [
+              "AK",
+              "AL",
+              "AR",
+              "AZ",
+              "CA",
+              "CO",
+              "CT",
+              "DC",
+              "FL",
+              "GA",
+              "ID",
+              "IL",
+              "IN",
+              "KS",
+              "KY",
+              "LA",
+              "MA",
+              "MD",
+              "ME",
+              "MI",
+              "MO",
+              "MS",
+              "MT",
+              "NC",
+              "NE",
+              "NH",
+              "NJ",
+              "NM",
+              "NV",
+              "NY",
+              "OH",
+              "OK",
+              "PA",
+              "RI",
+              "SC",
+              "SD",
+              "TN",
+              "TX",
+              "UT",
+              "VA",
+              "WV"
+            ],
+            "old": [
+              "AK",
+              "AL",
+              "AR",
+              "AZ",
+              "CA",
+              "CO",
+              "CT",
+              "DC",
+              "DE",
+              "FL",
+              "GA",
+              "HI",
+              "IA",
+              "ID",
+              "IL",
+              "IN",
+              "KS",
+              "KY",
+              "LA",
+              "MA",
+              "MD",
+              "ME",
+              "MI",
+              "MN",
+              "MO",
+              "MS",
+              "MT",
+              "NC",
+              "NE",
+              "NH",
+              "NJ",
+              "NM",
+              "NV",
+              "NY",
+              "OH",
+              "OK",
+              "OR",
+              "PA",
+              "RI",
+              "SC",
+              "SD",
+              "TN",
+              "TX",
+              "UT",
+              "VA",
+              "VT",
+              "WA",
+              "WI",
+              "WV",
+              "WY"
+            ]
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:3db40886-f507-4037-9c80-23d2117f0af1",
+        "source": "audit_log",
+        "at": "2026-09-29T17:30:19.686772+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000001",
+          "name": "Editor A",
+          "via": null
+        },
+        "editorLabel": "Editor A",
+        "changes": {
+          "debt_max": {
+            "new": 60000,
+            "old": null
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:6c25100f-c56e-48be-94a8-12accf6034f2",
+        "source": "audit_log",
+        "at": "2026-09-29T16:47:00.330101+00:00",
+        "entityType": "partner_config",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "click_url": {
+            "new": "https://trypennie.com/portal/liberty/{prospect_id}",
+            "old": "https://trypennie.com/portal/libertyone/{prospect_id}"
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:2fbd7a0d-888e-4268-9606-deb45f43b3a5",
+        "source": "audit_log",
+        "at": "2026-09-29T16:18:34.407774+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "is_enabled": {
+            "new": true,
+            "old": false
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:0be34043-6cf9-40f3-a2ea-b2f40e8b27b1",
+        "source": "audit_log",
+        "at": "2026-09-29T16:01:20.144545+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "is_enabled": {
+            "new": false,
+            "old": true
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:de4be1a0-6af4-44b5-bf0c-e308a5d41012",
+        "source": "audit_log",
+        "at": "2026-09-29T15:55:00.696786+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "is_enabled": {
+            "new": true,
+            "old": false
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:07a5dd6f-23a9-40f1-a696-3d71d939eff3",
+        "source": "audit_log",
+        "at": "2026-09-25T14:16:54.187074+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "created",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "sold_on": {
+            "new": "click",
+            "old": null
+          },
+          "debt_min": {
+            "new": 20000,
+            "old": null
+          },
+          "is_enabled": {
+            "new": false,
+            "old": null
+          },
+          "windows.1.660": {
+            "new": 1260,
+            "old": null
+          },
+          "windows.2.660": {
+            "new": 1260,
+            "old": null
+          },
+          "windows.3.660": {
+            "new": 1260,
+            "old": null
+          },
+          "windows.4.660": {
+            "new": 1260,
+            "old": null
+          },
+          "windows.5.660": {
+            "new": 1260,
+            "old": null
+          },
+          "allowed_states": {
+            "new": [
+              "AK",
+              "AL",
+              "AR",
+              "AZ",
+              "CA",
+              "CO",
+              "CT",
+              "DC",
+              "DE",
+              "FL",
+              "GA",
+              "HI",
+              "IA",
+              "ID",
+              "IL",
+              "IN",
+              "KS",
+              "KY",
+              "LA",
+              "MA",
+              "MD",
+              "ME",
+              "MI",
+              "MN",
+              "MO",
+              "MS",
+              "MT",
+              "NC",
+              "NE",
+              "NH",
+              "NJ",
+              "NM",
+              "NV",
+              "NY",
+              "OH",
+              "OK",
+              "OR",
+              "PA",
+              "RI",
+              "SC",
+              "SD",
+              "TN",
+              "TX",
+              "UT",
+              "VA",
+              "VT",
+              "WA",
+              "WI",
+              "WV",
+              "WY"
+            ],
+            "old": null
+          },
+          "daily_lead_cap": {
+            "new": 50,
+            "old": null
+          },
+          "loan_amount_min": {
+            "new": 2500,
+            "old": null
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:01b10cd3-e393-4196-bf4f-5b6fed743efa",
+        "source": "audit_log",
+        "at": "2026-09-25T14:16:53.202129+00:00",
+        "entityType": "partner_config",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "external_routing_code": {
+            "new": 4,
+            "old": null
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:8f3cb56e-4e43-465f-a517-4158750d09d7",
+        "source": "audit_log",
+        "at": "2026-09-25T14:14:11.258801+00:00",
+        "entityType": "partner_config",
+        "entityId": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+        "action": "created",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "id": {
+            "new": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
+            "old": null
+          },
+          "name": {
+            "new": "Liberty1",
+            "old": null
+          },
+          "slug": {
+            "new": "liberty1",
+            "old": null
+          },
+          "bid_mode": {
+            "new": "commit",
+            "old": null
+          },
+          "priority": {
+            "new": 0,
+            "old": null
+          },
+          "click_url": {
+            "new": "https://trypennie.com/portal/libertyone/{prospect_id}",
+            "old": null
+          },
+          "is_active": {
+            "new": true,
+            "old": null
+          },
+          "created_at": {
+            "new": "2026-09-25T14:14:11.258801+00:00",
+            "old": null
+          },
+          "alert_config": {
+            "new": {
+              "permanent_errors": {
+                "alert": true
+              },
+              "transient_errors": {
+                "alert": true
+              }
+            },
+            "old": null
+          },
+          "partner_type": {
+            "new": "buyer",
+            "old": null
+          },
+          "accept_signals": {
+            "new": [],
+            "old": null
+          },
+          "circuit_enabled": {
+            "new": true,
+            "old": null
+          },
+          "organization_id": {
+            "new": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+            "old": null
+          },
+          "bid_resolver_type": {
+            "new": "api",
+            "old": null
+          },
+          "duplicate_signals": {
+            "new": [],
+            "old": null
+          },
+          "bid_resolver_config": {
+            "new": {},
+            "old": null
+          },
+          "bid_comparison_source": {
+            "new": "auto",
+            "old": null
+          },
+          "circuit_window_seconds": {
+            "new": 60,
+            "old": null
+          },
+          "circuit_error_threshold": {
+            "new": 5,
+            "old": null
+          },
+          "circuit_cooldown_seconds": {
+            "new": 300,
+            "old": null
+          }
+        },
+        "matrix": null
+      }
+    ],
+    "complete": true,
+    "completeSince": null
+  },
+  "73bcc351-724d-4705-be3b-b27d0ffc17ad": {
+    "partnerId": "73bcc351-724d-4705-be3b-b27d0ffc17ad",
+    "entries": [
+      {
+        "key": "audit:0d56d607-405e-4d9d-a66b-e904fd72b6e2",
+        "source": "audit_log",
+        "at": "2026-04-21T19:46:34.243032+00:00",
+        "entityType": "partner_config",
+        "entityId": "73bcc351-724d-4705-be3b-b27d0ffc17ad",
+        "action": "created",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "name": "NerdWallet",
+          "slug": "nerdwallet"
+        },
+        "matrix": null
+      }
+    ],
+    "complete": true,
+    "completeSince": null
+  },
+  "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68": {
+    "partnerId": "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68",
+    "entries": [
+      {
+        "key": "audit:f53d90dc-38ed-412a-a338-32de572c243f",
+        "source": "audit_log",
+        "at": "2026-10-15T14:15:57.587588+00:00",
+        "entityType": "partner_config",
+        "entityId": "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "sell_off_offer_details": {
+            "new": "<p>Access up to $100,000 with rates tailored to your income</p><ul><li>Terms and rates based on your income</li><li>Approval in minutes, not weeks</li><li>Funding as soon as the next business day</li></ul>",
+            "old": "<p>Access up to $100,000 with rates tailored to your income</p><ul><li>Terms and rates based on your income</li><li>Approval in minutes, not weeks</li><li>Funding as soon as the next business day</li></ul>\""
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:fc1feb80-e795-4b33-bdc8-1468a69c9bee",
+        "source": "audit_log",
+        "at": "2026-04-21T19:34:31.789318+00:00",
+        "entityType": "partner_config",
+        "entityId": "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:c33f80fa-2c20-4967-9ca3-41bcd19873b6",
+        "source": "audit_log",
+        "at": "2026-04-21T19:31:08.585893+00:00",
+        "entityType": "partner_config",
+        "entityId": "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:ed8116fb-91be-4ccd-b6f4-1d0159bbee2c",
+        "source": "audit_log",
+        "at": "2026-04-21T19:25:02.155404+00:00",
+        "entityType": "partner_config",
+        "entityId": "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68",
+        "action": "created",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "name": "Sofi",
+          "slug": "sofi"
+        },
+        "matrix": null
+      }
+    ],
+    "complete": true,
+    "completeSince": null
+  },
+  "1b9cbd8f-1d23-496c-b046-b11d64edae29": {
+    "partnerId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+    "entries": [
+      {
+        "key": "audit:fe338ae5-332b-40f3-9357-e15c7617142d",
+        "source": "audit_log",
+        "at": "2026-10-13T15:30:06.087961+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000001",
+          "name": "Editor A",
+          "via": null
+        },
+        "editorLabel": "Editor A",
+        "changes": {
+          "loan_amount_min": {
+            "new": 2000,
+            "old": null
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:a4ddc746-5a78-4ea6-a3e5-3b7782325196",
+        "source": "audit_log",
+        "at": "2026-10-02T16:40:22.77998+00:00",
+        "entityType": "partner_config",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "direct"
+        },
+        "editorLabel": "Changed directly in the database",
+        "changes": {
+          "_source": "direct_sql",
+          "extra_extraction": {
+            "new": {
+              "leadId": "data.createLead.id",
+              "result": {
+                "classifier": "tripoint_result"
+              },
+              "result_code": "data.createLead.resultCode",
+              "buyer_reference": "data.createLead.id"
+            },
+            "old": {
+              "leadId": "data.createLead.id",
+              "result": {
+                "classifier": "tripoint_result"
+              }
+            }
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:0b9303bd-26ab-434c-94b4-45ba2103944a",
+        "source": "audit_log",
+        "at": "2026-10-01T13:38:45.151947+00:00",
+        "entityType": "partner_config",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "note": "Tripoint high tier 0.0012 to 0.0013 to match Salesforce Lead.ExternalRevenue__c edited 2026-09-30 17:32 UTC",
+          "after": 0.0013,
+          "before": 0.0012,
+          "changed_fields": [
+            "bid_resolver_config"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:de9878d3-425e-490d-a12a-f6d094d8a040",
+        "source": "audit_log",
+        "at": "2026-10-01T13:38:45.151947+00:00",
+        "entityType": "partner_config",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "bid_resolver_config": {
+            "new": {
+              "tiers": [
+                {
+                  "above": 12499,
+                  "multiplier": 0.0013
+                }
+              ],
+              "pricing_mode": "tiered_multiplier",
+              "source_field": "context.finalDebt",
+              "min_source_value": 10000,
+              "default_multiplier": 0.0009
+            },
+            "old": {
+              "tiers": [
+                {
+                  "above": 12499,
+                  "multiplier": 0.0012
+                }
+              ],
+              "pricing_mode": "tiered_multiplier",
+              "source_field": "context.finalDebt",
+              "min_source_value": 10000,
+              "default_multiplier": 0.0009
+            }
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:381eca8d-fcd1-485c-a438-746b3240371f",
+        "source": "audit_log",
+        "at": "2026-09-30T14:43:57.018807+00:00",
+        "entityType": "partner_config",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "duplicate_signals": {
+            "new": [
+              {
+                "in": [
+                  1002,
+                  1003,
+                  1004,
+                  1005,
+                  1020
+                ],
+                "field": "data.createLead.resultCode"
+              }
+            ],
+            "old": [
+              {
+                "in": [
+                  1003,
+                  1004,
+                  1020
+                ],
+                "field": "data.createLead.resultCode"
+              }
+            ]
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:3be00e68-a364-4855-9037-d2591a43131b",
+        "source": "audit_log",
+        "at": "2026-09-24T15:32:12.133515+00:00",
+        "entityType": "partner_config",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "duplicate_signals": {
+            "new": [
+              {
+                "in": [
+                  1003,
+                  1004,
+                  1020
+                ],
+                "field": "data.createLead.resultCode"
+              }
+            ],
+            "old": []
+          },
+          "external_routing_code": {
+            "new": 2,
+            "old": null
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:22bb3923-173f-42a8-8c90-5026d4a2c7e1",
+        "source": "audit_log",
+        "at": "2026-09-23T15:47:10.49461+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "tiers.engine.0.debt_to": {
+            "new": null,
+            "old": 12500
+          },
+          "tiers.engine.0.multiplier": {
+            "new": null,
+            "old": 0.0009
+          },
+          "tiers.engine.10000.debt_to": {
+            "new": 12500,
+            "old": null
+          },
+          "tiers.engine.10000.multiplier": {
+            "new": 0.0009,
+            "old": null
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:dd15ed03-57a1-4234-8dac-b6e2e2b8eb0a",
+        "source": "audit_log",
+        "at": "2026-09-23T15:44:03.187833+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "tiers.engine.0.debt_to": {
+            "new": 12500,
+            "old": null
+          },
+          "tiers.engine.0.multiplier": {
+            "new": 0.0009,
+            "old": null
+          },
+          "tiers.engine.10000.debt_to": {
+            "new": null,
+            "old": 20000
+          },
+          "tiers.engine.10000.multiplier": {
+            "new": null,
+            "old": 0.001
+          },
+          "tiers.engine.12500.multiplier": {
+            "new": 0.0013,
+            "old": null
+          },
+          "tiers.engine.20000.multiplier": {
+            "new": null,
+            "old": 0.0016
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:9672d6fb-836c-49fb-a3eb-c3d3ffdcbc40",
+        "source": "audit_log",
+        "at": "2026-09-22T21:39:13.288962+00:00",
+        "entityType": "partner_config",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "response_classification": {
+            "new": {
+              "rejection_signals": [
+                {
+                  "field": "data.createLead.resultCode",
+                  "not_in": [
+                    1000,
+                    1001,
+                    1013,
+                    1014,
+                    1015,
+                    1016,
+                    1017
+                  ]
+                },
+                {
+                  "field": "details[].message",
+                  "any_item_contains": "Cannot return null for non-nullable field CreateLeadResponse.id"
+                },
+                {
+                  "field": "details[].message",
+                  "any_item_word_prefix_ci": "invalid"
+                }
+              ]
+            },
+            "old": {
+              "rejection_signals": [
+                {
+                  "field": "data.createLead.resultCode",
+                  "not_in": [
+                    1000,
+                    1001,
+                    1013,
+                    1014,
+                    1015,
+                    1016,
+                    1017
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:bab8329c-f8e1-441c-bef5-9ac4ed843291",
+        "source": "audit_log",
+        "at": "2026-09-22T20:02:51.919853+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "tiers.engine.10000.debt_to": {
+            "new": 20000,
+            "old": null
+          },
+          "tiers.engine.12500.debt_to": {
+            "new": null,
+            "old": 15000
+          },
+          "tiers.engine.10000.multiplier": {
+            "new": 0.001,
+            "old": null
+          },
+          "tiers.engine.12500.multiplier": {
+            "new": null,
+            "old": 0.0012
+          },
+          "tiers.engine.15000.multiplier": {
+            "new": null,
+            "old": 0.0013
+          },
+          "tiers.engine.20000.multiplier": {
+            "new": 0.0016,
+            "old": null
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:b10da0b4-7388-401f-96ad-7e7ece7a460f",
+        "source": "audit_log",
+        "at": "2026-09-22T19:59:30.017405+00:00",
+        "entityType": "buyer_profile",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "created",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "priority": {
+            "new": 1,
+            "old": null
+          },
+          "is_enabled": {
+            "new": true,
+            "old": null
+          },
+          "windows.0.0": {
+            "new": 1440,
+            "old": null
+          },
+          "windows.1.0": {
+            "new": 1440,
+            "old": null
+          },
+          "windows.2.0": {
+            "new": 1440,
+            "old": null
+          },
+          "windows.3.0": {
+            "new": 1440,
+            "old": null
+          },
+          "windows.4.0": {
+            "new": 1440,
+            "old": null
+          },
+          "windows.5.0": {
+            "new": 1440,
+            "old": null
+          },
+          "windows.6.0": {
+            "new": 1440,
+            "old": null
+          },
+          "allowed_states": {
+            "new": [
+              "AK",
+              "AL",
+              "AR",
+              "AZ",
+              "CA",
+              "CO",
+              "CT",
+              "DC",
+              "DE",
+              "FL",
+              "GA",
+              "HI",
+              "IA",
+              "ID",
+              "IL",
+              "IN",
+              "KS",
+              "KY",
+              "LA",
+              "MA",
+              "MD",
+              "ME",
+              "MI",
+              "MN",
+              "MO",
+              "MS",
+              "MT",
+              "NC",
+              "ND",
+              "NE",
+              "NH",
+              "NJ",
+              "NM",
+              "NV",
+              "NY",
+              "OH",
+              "OK",
+              "OR",
+              "PA",
+              "RI",
+              "SC",
+              "SD",
+              "TN",
+              "TX",
+              "UT",
+              "VA",
+              "VT",
+              "WA",
+              "WI",
+              "WV",
+              "WY"
+            ],
+            "old": null
+          },
+          "tiers.engine.12500.debt_to": {
+            "new": 15000,
+            "old": null
+          },
+          "tiers.engine.12500.multiplier": {
+            "new": 0.0012,
+            "old": null
+          },
+          "tiers.engine.15000.multiplier": {
+            "new": 0.0013,
+            "old": null
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:37564e91-eeae-4a82-83ea-feedfe0186c9",
+        "source": "audit_log",
+        "at": "2026-09-22T19:59:29.159296+00:00",
+        "entityType": "partner_config",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "accept_signals": {
+            "new": [
+              {
+                "field": "ok",
+                "equals": true
+              },
+              {
+                "in": [
+                  1000,
+                  1001,
+                  1013,
+                  1014,
+                  1015,
+                  1016,
+                  1017
+                ],
+                "field": "data.createLead.resultCode"
+              }
+            ],
+            "old": []
+          }
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:8b841470-67e0-42fa-b148-797bc073c66e",
+        "source": "audit_log",
+        "at": "2026-09-09T15:46:06.476372+00:00",
+        "entityType": "partner_config",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "confirmation_window_ms",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type",
+            "sub_account_min_bids"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:17971762-cf15-484a-88d6-6c00c1a33bd5",
+        "source": "audit_log",
+        "at": "2026-09-06T19:04:09.299383+00:00",
+        "entityType": "partner_config",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "confirmation_window_ms",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type",
+            "sub_account_min_bids"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:811b406f-1d86-4d84-8082-20e619845004",
+        "source": "audit_log",
+        "at": "2026-05-21T19:34:38.349659+00:00",
+        "entityType": "partner_config",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:7feed73b-c285-4e82-8b12-6740f960dc26",
+        "source": "audit_log",
+        "at": "2026-05-15T15:30:01.143438+00:00",
+        "entityType": "partner_config",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:60ddb3a1-2160-4ac7-ab40-57ebb0cbebce",
+        "source": "audit_log",
+        "at": "2026-05-15T15:28:37.286187+00:00",
+        "entityType": "partner_config",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:8345a5ae-e590-45b6-864f-564549393aaf",
+        "source": "audit_log",
+        "at": "2026-05-15T14:49:50.418668+00:00",
+        "entityType": "partner_config",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "updated",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "changed_fields": [
+            "name",
+            "api_endpoint",
+            "cf_secret_key",
+            "daily_cap",
+            "min_bid",
+            "bid_formula",
+            "bid_resolver_type",
+            "bid_resolver_config",
+            "outbound_field_mapping",
+            "bid_mode",
+            "bid_comparison_source",
+            "extra_extraction",
+            "last_probe_response",
+            "dedup_endpoint",
+            "response_classification",
+            "alert_config",
+            "circuit_error_threshold",
+            "circuit_window_seconds",
+            "circuit_cooldown_seconds",
+            "circuit_enabled",
+            "is_active",
+            "priority",
+            "sell_off_offer_title",
+            "sell_off_offer_details",
+            "click_url",
+            "partner_type"
+          ]
+        },
+        "matrix": null
+      },
+      {
+        "key": "audit:3b07a9f8-e966-46bd-ac12-84523f7b0725",
+        "source": "audit_log",
+        "at": "2026-04-21T19:46:00.530408+00:00",
+        "entityType": "partner_config",
+        "entityId": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "action": "created",
+        "editor": {
+          "kind": "person",
+          "userId": "00000000-0000-4000-8000-000000000002",
+          "name": "Editor B",
+          "via": null
+        },
+        "editorLabel": "Editor B",
+        "changes": {
+          "name": "Tripoint",
+          "slug": "tripoint"
+        },
+        "matrix": null
+      }
+    ],
+    "complete": true,
+    "completeSince": null
+  }
+}

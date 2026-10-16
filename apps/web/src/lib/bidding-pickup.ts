@@ -51,6 +51,21 @@ export const KV_PROPAGATION_MS = 60_000
 /** The longer of the two, which is the honest figure for a save that may touch either. */
 export const BIDDING_PICKUP_MINUTES = Math.max(BIDDING_PICKUP.partnerConstantsMinutes, BIDDING_PICKUP.buyerProfilesMinutes)
 
+/**
+ * The minutes bidding takes to see a change the page did not make, by the half
+ * it touched: partner columns (and sub-account IDs) are read through the
+ * partner constants copy, profile fields through the buyer profiles copy.
+ * The live notice (#2135) and History's note (#2141) both read it.
+ */
+export function directChangeMinutes(half: 'partner' | 'profile'): number {
+  return half === 'partner' ? BIDDING_PICKUP.partnerConstantsMinutes : BIDDING_PICKUP.buyerProfilesMinutes
+}
+
+/** The bound for such a change, timed from when it was made: History's note under a hand edit, and the tail of directChangeSentence. */
+export function pickupSentenceFrom(half: 'partner' | 'profile'): string {
+  return `Bidding picks this up within about ${directChangeMinutes(half)} minutes of that time while the database is reachable.`
+}
+
 /** The one sentence about when bidding sees a saved change, with the condition it holds under. */
 export function pickupSentence(): string {
   return `Bidding picks this up within about ${BIDDING_PICKUP_MINUTES} minutes while the database is reachable.`
@@ -64,6 +79,5 @@ export function pickupSentence(): string {
  * the condition, never whether bidding uses the new values yet (L11).
  */
 export function directChangeSentence(clockEt: string, half: 'partner' | 'profile'): string {
-  const minutes = half === 'partner' ? BIDDING_PICKUP.partnerConstantsMinutes : BIDDING_PICKUP.buyerProfilesMinutes
-  return `Changed directly in the database at ${clockEt} ET. Bidding picks this up within about ${minutes} minutes of that time while the database is reachable.`
+  return `Changed directly in the database at ${clockEt} ET. ${pickupSentenceFrom(half)}`
 }
