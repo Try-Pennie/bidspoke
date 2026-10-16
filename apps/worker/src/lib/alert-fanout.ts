@@ -27,8 +27,24 @@
  * Every list helper requires a `SlackListUse`, so a check that measures its
  * finding from the database cannot be handed the copy's list by forgetting to
  * say so: it judges nothing on a tick the database did not answer.
+ *
+ * CLAIMS FOR THE MINUTE ALERTS ONLY (#2062, #1303 phase 4). A second delivery of
+ * the same tick is already stopped before any job starts (runCronTickOnce,
+ * cron-once.ts). What that cannot stop is a tick from one minute still running
+ * when the next minute's starts, which needs a tick longer than a minute: what
+ * a stalled database or KV produces. Only the every minute cron runs often
+ * enough to overlap itself like that, so only its alerts take a claim here:
+ * failure-rate, slow-execution-rate, upstream-outage, the cron heartbeat and the
+ * database reachability owner (which keeps the claim key it already had,
+ * `db-unreachable:<org>`). The volume check claims its page under its own key
+ * from before (#1298). The hourly and daily checks get no claim: one of their
+ * ticks would have to run for a whole hour or day to meet the next, and a claim
+ * per check per tick would be a Durable Object call for a race that cannot
+ * happen. web guard minute-alert-claims-wired.test.ts holds both halves.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
+import type { AlertClaims } from './alert-claim'
+import type { AllClearClaim } from './alert-recovery'
 import { logReadFailure } from './scheduled-read'
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
 import { copyUnreachableLine, describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason } from './scheduled-slack'
@@ -240,4 +256,79 @@ export async function rateLimitedOrgAlert(opts: {
   const alerted = anyDelivered(await forEachSlackOrg(opts.supabase, opts.logLabel, opts.use, opts.perOrg))
   if (alerted) await opts.kv.put(opts.cooldownKey, '1', { expirationTtl: opts.ttlSeconds })
   return alerted
+}
+
+/**
+ * How long a minute alert's claim is held (#2062). At least the worst case from
+ * the claim to the cooldown write, so a tick behind the claimant cannot post
+ * before the cooldown is there to stop it. Everything between the two runs
+ * inside one minute job: the bounded Slack lookup (SCHEDULED_SLACK_READ_DEADLINE_MS,
+ * 3 s), the claim's own deadline (CLAIM_DEADLINE_MS) and the post, which has no
+ * deadline of its own, and past MINUTE_JOB_DEADLINE_MS (50 s, index.ts) the
+ * minute stops waiting and Cloudflare cancels the calls it left (#2058). Five
+ * minutes is that bound six times over, which also outlasts KV's propagation of
+ * the cooldown to another location. The cost is on the other side: a claimant
+ * that dies before posting holds the page back for up to five minutes.
+ * minute-alert-claims.test.ts ties it to those deadlines.
+ */
+export const MINUTE_ALERT_CLAIM_TTL_SECONDS = 5 * 60
+
+/**
+ * A minute alert's claim key: `minute-alert:` is its own namespace, so it can
+ * never meet an existing alert claim (volume-cliff:<wf>, db-unreachable:<org>,
+ * <signal>-recovery-<id>) or the cron tick claim.
+ */
+export function minuteAlertClaimKey(kind: 'page' | 'all-clear', signal: string, id: string): string {
+  return `minute-alert:${kind}:${signal}:${id}`
+}
+
+/** The claim a minute alert passes to announceRecovery, which takes it only once the all-clear is owed and evident. */
+export function minuteAllClearClaim(claims: AlertClaims | undefined, signal: string, id: string): AllClearClaim {
+  return { claims, key: minuteAlertClaimKey('all-clear', signal, id), ttlSeconds: MINUTE_ALERT_CLAIM_TTL_SECONDS }
+}
+
+export type MinutePageOutcome = 'sent' | 'not_sent' | 'in_cooldown' | 'claimed_elsewhere'
+
+/**
+ * Post a minute alert's page under a claim (#2062): claim, THEN read the
+ * cooldown that decides, then post (L157). Reading the cooldown first and
+ * claiming after would act on a judgement formed before the claim: two ticks
+ * both read no cooldown, the first posts and writes it, its claim lapses, and
+ * the second claims and posts the same page again.
+ *
+ * The cooldown is also read once before the claim, which can only ever skip: a
+ * standing cooldown means a post already went out, so a tick inside it makes no
+ * call to the claim object. The read that lets a post through is the second.
+ *
+ * The claim is kept on a delivered post, for its TTL, and freed when the post is
+ * refused or throws, so the next tick can retry. With no claims (a test, or a
+ * worker with no ALERT_CLAIM binding) it posts as before. A claim that cannot be
+ * asked fails open and is logged by makeAlertClaims.
+ */
+export async function postMinutePage(opts: {
+  claims: AlertClaims | undefined
+  key: string
+  inCooldown: () => Promise<boolean>
+  send: () => Promise<boolean>
+}): Promise<MinutePageOutcome> {
+  const { claims, key } = opts
+  if (await opts.inCooldown()) return 'in_cooldown'
+  if (claims && !(await claims.claim(key, MINUTE_ALERT_CLAIM_TTL_SECONDS))) {
+    console.log(`[alert-claim] ${key} claimed by another tick`)
+    return 'claimed_elsewhere'
+  }
+  const release = async () => { if (claims) await claims.release(key) }
+  if (await opts.inCooldown()) {
+    await release()
+    return 'in_cooldown'
+  }
+  let sent: boolean
+  try {
+    sent = await opts.send()
+  } catch (e) {
+    await release()
+    throw e
+  }
+  if (!sent) await release()
+  return sent ? 'sent' : 'not_sent'
 }
