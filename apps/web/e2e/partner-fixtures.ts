@@ -152,7 +152,7 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
     if (opts.historyFails) return { status: 500, body: { error: 'history_unavailable', read: 'users', message: 'History could not be loaded: the users read failed.' } }
     const tripointId = fx.historyMatrix.partnerId
     if (opts.historyMatrix && m[1] === tripointId) return ok(fx.historyMatrix)
-    const history = fx.history[m[1]]
+    const history = ownEntry(fx.history, m[1])
     if (!history) return null
     if (opts.historyIncomplete && m[1] === tripointId) return ok({ partnerId: m[1], ...mergeHistory([{ entries: history.entries, truncated: true }]) })
     return ok(history)
