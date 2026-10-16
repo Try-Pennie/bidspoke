@@ -54,6 +54,26 @@ binding = "CODE_NODES_OPS"
 namespace = "bidspoke-code-nodes-ops"
 outbound = { service = "bidspoke-ops-outbound" }
 
+# Self-dispatch (#1946, the #1698 run engine's Spike 0): a service binding to this
+# Worker's OWN named entrypoint, OpsInternal (src/ops/internal.ts). It is script
+# config, not a zone route, so CI's token can deploy it, and a named entrypoint is
+# unreachable from the public edge, which only ever invokes the default export.
+# Never an HTTP fetch of ops.trypennie.dev: that would put the internal surface on
+# the public route. apps/web/src/lib/__tests__/ops-worker-config.test.ts allows
+# exactly this one service binding and no binding to the bidding Worker.
+[[services]]
+binding = "SELF"
+service = "bidspoke-worker-ops"
+entrypoint = "OpsInternal"
+
+# Spike 0's minute cron (#1946). The minute is the cadence the run engine's tick
+# will use, and Cloudflare sets a minute cron's limits by its interval (30 s CPU
+# below an hour), so the ceilings are measured on this exact schedule. INERT
+# unless the OPS_SPIKE_ARM secret is set: an unarmed tick touches no binding and
+# logs nothing (src/ops/spike/ceilings.ts).
+[triggers]
+crons = ["* * * * *"]
+
 # Traces go to the tail consumer, which skips this Worker's traces until Phase 1
 # points it at the ops database (apps/worker-tail, #1709): an ops execution id
 # names nothing in the bidding database's workflow_executions.
@@ -74,3 +94,6 @@ invocation_logs = true
 #                           not required: nothing reads the ops database until
 #                           Phase 1. Never the bidding database's URL or key,
 #                           which the client refuses.
+#   OPS_SPIKE_ARM           Spike 0 only (#1946): arms one ceiling probe, as JSON
+#                           {"probe","nonce","until"}. Unset in normal running.
+#                           docs/ops-ceilings-spike.md says how to set and clear it.
