@@ -84,6 +84,11 @@ describe('wrangler.ops.toml (#1709)', () => {
     expect(toml).not.toMatch(/^service = "bidspoke-worker"$/m)
   })
 
+  it("declares no cron: Spike 0's probe cron is gone and the run engine's tick (B2) adds its own (#1946)", () => {
+    expect(tables(toml, 'triggers')).toEqual([])
+    expect(toml).not.toMatch(/^crons\s*=/m)
+  })
+
   it('exports the OpsInternal entrypoint the SELF binding names from its main module', () => {
     expect(toml).toMatch(/^main = "src\/ops\/index\.ts"$/m)
     expect(read('apps/worker/src/ops/index.ts')).toMatch(/^export \{ OpsInternal \} from '\.\/internal'$/m)
