@@ -33,6 +33,7 @@ import {
   matrixEditor,
   mergeHistory,
   readNewest,
+  type HistoryAuditEntityType,
   type HistoryEntityType,
   type HistoryEntry,
   type PartnerHistory,
@@ -97,16 +98,26 @@ async function attempt<T>(read: HistoryRead, run: () => Promise<T>): Promise<T> 
  * partner it was moved off), and a held click (subject.partner_id, or the
  * deleted claim's held_click.old.partner_id).
  */
+const AUDIT_ARMS: Record<HistoryAuditEntityType, (partnerId: string, configIds: string[]) => string[]> = {
+  partner_config: (p) => [`entity_id.eq.${p}`],
+  buyer_profile: (p) => [`entity_id.eq.${p}`],
+  partner_bid_config: (p, configIds) => [
+    ...(configIds.length > 0 ? [`entity_id.in.(${configIds.join(',')})`] : []),
+    `changes->>partner_id.eq.${p}`,
+  ],
+  partner_uuid: (p) => [`changes->>partner_id.eq.${p}`, `changes->>old_partner_id.eq.${p}`],
+  held_click: (p) => [`changes->subject->>partner_id.eq.${p}`, `changes->held_click->old->>partner_id.eq.${p}`],
+}
+
+/**
+ * One source for both halves of the audit read (L41): the entity_type list it
+ * narrows by is HISTORY_AUDIT_ENTITY_TYPES, and AUDIT_ARMS is keyed by that
+ * same type, so a type added to one without the other does not compile.
+ */
 function auditFilter(partnerId: string, configIds: string[]): string {
-  return [
-    `and(entity_type.in.(partner_config,buyer_profile),entity_id.eq.${partnerId})`,
-    configIds.length > 0 ? `and(entity_type.eq.partner_bid_config,entity_id.in.(${configIds.join(',')}))` : null,
-    `and(entity_type.eq.partner_bid_config,changes->>partner_id.eq.${partnerId})`,
-    `and(entity_type.eq.partner_uuid,changes->>partner_id.eq.${partnerId})`,
-    `and(entity_type.eq.partner_uuid,changes->>old_partner_id.eq.${partnerId})`,
-    `and(entity_type.eq.held_click,changes->subject->>partner_id.eq.${partnerId})`,
-    `and(entity_type.eq.held_click,changes->held_click->old->>partner_id.eq.${partnerId})`,
-  ].filter((part): part is string => part !== null).join(',')
+  return HISTORY_AUDIT_ENTITY_TYPES
+    .flatMap((type) => AUDIT_ARMS[type](partnerId, configIds).map((cond) => `and(entity_type.eq.${type},${cond})`))
+    .join(',')
 }
 
 partnerHistory.get('/:id/history', async (c) => {
@@ -144,7 +155,9 @@ partnerHistory.get('/:id/history', async (c) => {
     const configIds = configs.map((r) => r.id)
     const configNames = new Map(configs.map((r) => [r.id, r.name]))
 
-    const [audit, matrix] = await Promise.all([
+    // allSettled: both reads finish before anything is answered, every failure
+    // is handled, and the error names audit_log first when both fail.
+    const [auditRead, matrixRead] = await Promise.allSettled([
       attempt('audit_log', () => readNewest<AuditRow>((from, to) => supabase
         .from('audit_log')
         .select('id, changed_at, changed_by, entity_type, entity_id, action, changes')
@@ -164,6 +177,10 @@ partnerHistory.get('/:id/history', async (c) => {
           .order('id', { ascending: false })
           .range(from, to))),
     ])
+    if (auditRead.status === 'rejected') throw auditRead.reason
+    if (matrixRead.status === 'rejected') throw matrixRead.reason
+    const audit = auditRead.value
+    const matrix = matrixRead.value
 
     const editorIds = [...new Set([...audit.rows, ...matrix.rows].map((r) => r.changed_by).filter((v): v is string => !!v))]
     const users = await attempt('users', async () => {
@@ -212,7 +229,15 @@ partnerHistory.get('/:id/history', async (c) => {
         }
       })
     } catch (err) {
-      if (err instanceof UnresolvedEditorError) throw new ReadFailed('users', err)
+      // audit_log_changed_by_fkey and bid_config_history_changed_by_fkey
+      // (validated, NO ACTION, not deferrable) keep a users row for every
+      // non null changed_by, so this is reachable only by a write that bypassed
+      // the constraint. It is an error in its own words, never a guessed name
+      // and never "the users read failed", which it did not (L11).
+      if (err instanceof UnresolvedEditorError) {
+        console.error(`[partner-history] editor ${err.userId} has no users row`)
+        return c.json({ error: 'history_unavailable', read: 'users', message: 'History could not be loaded: an editor has no users row.' }, 500)
+      }
       throw err
     }
 

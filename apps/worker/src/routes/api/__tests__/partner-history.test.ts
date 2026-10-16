@@ -122,8 +122,15 @@ describe('GET /partners/:id/history (#2141)', () => {
     expect(supabase.eqCalls['audit_log']).toEqual([['organization_id', ORG]])
     const auditCalls = supabase.calls['audit_log']
     const or = auditCalls.find(([m]) => m === 'or')?.[1][0] as string
-    expect(or).toContain(`and(entity_type.in.(partner_config,buyer_profile),entity_id.eq.${PARTNER})`)
+    expect(or).toContain(`and(entity_type.eq.partner_config,entity_id.eq.${PARTNER})`)
+    expect(or).toContain(`and(entity_type.eq.buyer_profile,entity_id.eq.${PARTNER})`)
     expect(or).toContain(`and(entity_type.eq.partner_bid_config,entity_id.in.(${CONFIG}))`)
+    // One source for both (L41): the entity_type list the read narrows by is
+    // exactly the set of types the or arms name, so the two cannot drift.
+    const armTypes = [...new Set([...or.matchAll(/and\(entity_type\.eq\.([a-z_]+),/g)].map((m) => m[1]))].sort()
+    const inList = (auditCalls.find(([m, args]) => m === 'in' && args[0] === 'entity_type')?.[1][1] as string[]).slice().sort()
+    expect(inList).toEqual(armTypes)
+    expect(armTypes).toEqual(['buyer_profile', 'held_click', 'partner_bid_config', 'partner_config', 'partner_uuid'])
     expect(or).toContain(`and(entity_type.eq.partner_bid_config,changes->>partner_id.eq.${PARTNER})`)
     expect(or).toContain(`and(entity_type.eq.partner_uuid,changes->>partner_id.eq.${PARTNER})`)
     expect(or).toContain(`and(entity_type.eq.partner_uuid,changes->>old_partner_id.eq.${PARTNER})`)
@@ -185,11 +192,46 @@ describe('GET /partners/:id/history (#2141)', () => {
     })
   }
 
-  it('is an error, never an unnamed editor, when an editor has no users row', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+  // audit_log_changed_by_fkey and bid_config_history_changed_by_fkey (validated,
+  // NO ACTION, not deferrable; 0 orphans in production on 2026-10-16) mean a
+  // referenced users row cannot be deleted, so this is reachable only by a
+  // write that bypassed the constraint. It stays an error, with its own words,
+  // never a page of guessed names and never "the users read failed" (L11).
+  it('is an error saying an editor has no users row, never an unnamed editor and never a failed read', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
     wire({ partner_bid_configs: { list: [] }, audit_log: { list: [AUDIT[0]] }, users: { list: [] } })
     const res = await get()
     expect(res.status).toBe(500)
-    expect(await res.json()).toMatchObject({ error: 'history_unavailable', read: 'users' })
+    expect(await res.json()).toEqual({
+      error: 'history_unavailable',
+      read: 'users',
+      message: 'History could not be loaded: an editor has no users row.',
+    })
+    expect(errors.mock.calls.some((c) => String(c[0]).includes('[partner-history] editor user-erin has no users row'))).toBe(true)
+  })
+
+  // Both history reads run at once. When both fail, the answer names the
+  // first, and the second's failure is still handled: an unobserved rejection
+  // is reported by the runtime as a crash of a request that already answered.
+  it('handles every failed read when both history reads fail, and names audit_log', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const unhandled: unknown[] = []
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason) }
+    process.on('unhandledRejection', onUnhandled)
+    try {
+      wire({
+        partner_bid_configs: { list: [{ id: CONFIG, name: 'SoFi default' }] },
+        audit_log: { listError: { code: '57014', message: 'timeout' } },
+        bid_config_history: { listError: { code: '57014', message: 'timeout too' } },
+      })
+      const res = await get()
+      expect(res.status).toBe(500)
+      expect(await res.json()).toMatchObject({ read: 'audit_log' })
+      await new Promise((resolve) => setImmediate(resolve))
+      await new Promise((resolve) => setImmediate(resolve))
+      expect(unhandled).toEqual([])
+    } finally {
+      process.off('unhandledRejection', onUnhandled)
+    }
   })
 })

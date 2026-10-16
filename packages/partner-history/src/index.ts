@@ -27,7 +27,8 @@ export type HistoryEditor =
   | { kind: 'job'; job: string }
   | { kind: 'direct' }
 
-export type HistoryEntityType = 'partner_config' | 'buyer_profile' | 'partner_bid_config' | 'partner_uuid' | 'held_click' | 'bid_matrix'
+/** An audit entity type, or `bid_matrix` for a bid_config_history sync. */
+export type HistoryEntityType = HistoryAuditEntityType | 'bid_matrix'
 
 export interface HistoryEntry {
   /** Unique across both sources: `audit:<id>` or `matrix:<id>`. */
@@ -58,6 +59,7 @@ export interface PartnerHistory {
 
 /** The audit entity types History reads. */
 export const HISTORY_AUDIT_ENTITY_TYPES = ['partner_config', 'buyer_profile', 'partner_bid_config', 'partner_uuid', 'held_click'] as const
+export type HistoryAuditEntityType = (typeof HISTORY_AUDIT_ENTITY_TYPES)[number]
 
 /** The hourly Salesforce matrix sync, which writes bid_config_history with no person. */
 export const MATRIX_SYNC_JOB = 'salesforce_matrix_sync'
@@ -76,7 +78,9 @@ export const DIRECT_EDIT_LABEL = 'Changed directly in the database'
 
 /**
  * The most rows one source is read to: five PostgREST pages of 1,000. The
- * busiest partner held 56 rows in production on 2026-10-15; a source past this
+ * busiest partners, Tripoint and Liberty1, held 19 audit rows each in
+ * production on 2026-10-15 (Liberty1: 17 partner and profile rows plus 2 held
+ * click rows), and bid_config_history held 0; a source past this
  * bound makes the answer incomplete by name (completeSince), never silently
  * shorter.
  */
