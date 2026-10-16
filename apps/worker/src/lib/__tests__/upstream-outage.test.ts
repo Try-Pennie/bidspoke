@@ -18,7 +18,7 @@ import {
   describeHowToCheck,
 } from '../upstream-outage'
 import { sendUpstreamOutageAlert, sendFailureSaturationAlert } from '../slack'
-import { claimLedger, gate, settle } from './_claims-double'
+import { claimLedger, gate, overlap } from './_claims-double'
 
 describe('classifyOutageCause (#331)', () => {
   it('classifies Salesforce 5xx and concurrency-governor errors as the salesforce cause', () => {
@@ -629,20 +629,12 @@ describe('runUpstreamOutageCheck posts once across overlapping ticks (#2062)', (
 
   beforeEach(() => vi.clearAllMocks())
 
-  async function overlap(run: () => Promise<void>, open: () => void) {
-    const a = run()
-    await settle()
-    const b = run()
-    await settle()
-    open()
-    await Promise.all([a, b])
-  }
 
   it('control: with no claim the two ticks page the cause twice, so the fixture really overlaps', async () => {
     const held = gate<string>()
     vi.mocked(sendUpstreamOutageAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
     const kv = makeKv()
-    await overlap(() => runUpstreamOutageCheck(causeOrg() as never, kv as never, url), () => held.open('ts-1'))
+    await overlap(() => runUpstreamOutageCheck(causeOrg() as never, kv as never, url), () => held.open('ts-1'), () => vi.mocked(sendUpstreamOutageAlert).mock.calls.length === 2)
     expect(sendUpstreamOutageAlert).toHaveBeenCalledTimes(2)
   })
 
@@ -651,7 +643,7 @@ describe('runUpstreamOutageCheck posts once across overlapping ticks (#2062)', (
     vi.mocked(sendUpstreamOutageAlert).mockImplementationOnce(() => held.promise)
     const kv = makeKv()
     const { claims, log } = claimLedger()
-    await overlap(() => runUpstreamOutageCheck(causeOrg() as never, kv as never, url, claims), () => held.open('ts-1'))
+    await overlap(() => runUpstreamOutageCheck(causeOrg() as never, kv as never, url, claims), () => held.open('ts-1'), () => log.length === 2)
     expect(sendUpstreamOutageAlert).toHaveBeenCalledTimes(1)
     expect(log).toEqual(['claim minute-alert:page:upstream-outage:org-1:salesforce', 'claim minute-alert:page:upstream-outage:org-1:salesforce'])
     expect(kv.store.has('upstream-outage-cooldown:org-1:salesforce')).toBe(true)
@@ -661,7 +653,7 @@ describe('runUpstreamOutageCheck posts once across overlapping ticks (#2062)', (
     const held = gate<boolean>()
     vi.mocked(sendFailureSaturationAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
     const kv = makeKv()
-    await overlap(() => runUpstreamOutageCheck(saturatedOrg() as never, kv as never, url), () => held.open(true))
+    await overlap(() => runUpstreamOutageCheck(saturatedOrg() as never, kv as never, url), () => held.open(true), () => vi.mocked(sendFailureSaturationAlert).mock.calls.length === 2)
     expect(sendFailureSaturationAlert).toHaveBeenCalledTimes(2)
   })
 
@@ -670,7 +662,9 @@ describe('runUpstreamOutageCheck posts once across overlapping ticks (#2062)', (
     vi.mocked(sendFailureSaturationAlert).mockImplementationOnce(() => held.promise)
     const kv = makeKv()
     const { claims, log } = claimLedger()
-    await overlap(() => runUpstreamOutageCheck(saturatedOrg() as never, kv as never, url, claims), () => held.open(true))
+    // The cause rule may claim its own page too; only saturation's two claims mark the decision point.
+    const saturation = () => log.filter((l) => l.includes('failure-saturation'))
+    await overlap(() => runUpstreamOutageCheck(saturatedOrg() as never, kv as never, url, claims), () => held.open(true), () => saturation().length === 2)
     expect(sendFailureSaturationAlert).toHaveBeenCalledTimes(1)
     expect(log.filter((l) => l.includes('failure-saturation'))).toEqual(['claim minute-alert:page:failure-saturation:org-1:wf-1', 'claim minute-alert:page:failure-saturation:org-1:wf-1'])
   })

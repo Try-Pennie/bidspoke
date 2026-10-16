@@ -8,7 +8,7 @@ vi.mock('../slack', () => ({
 import { signalMatches, matchesMutedSignal, detectFailureSpike, countWindowMatches, runFailureRateCheck, hasSucceedingRuns } from '../failure-rate'
 import type { MutedFailureSignal } from '../failure-rate'
 import { getSlackConnection, sendFailureSpikeAlert, sendRecoveryAlert } from '../slack'
-import { claimLedger, gate, settle } from './_claims-double'
+import { claimLedger, gate, overlap } from './_claims-double'
 
 const sig = (match: string, count = 10, window_minutes = 5): MutedFailureSignal => ({ match, count, window_minutes })
 
@@ -540,21 +540,12 @@ describe('runFailureRateCheck posts once across overlapping ticks (#2062)', () =
     vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
   })
 
-  /** Two ticks, the second started while the first is held at its post. */
-  async function overlap(run: () => Promise<void>, open: () => void) {
-    const a = run()
-    await settle()
-    const b = run()
-    await settle()
-    open()
-    await Promise.all([a, b])
-  }
 
   it('control: with no claim the two ticks page twice, so the fixture really overlaps', async () => {
     const held = gate<string>()
     vi.mocked(sendFailureSpikeAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
     const kv = makeKv()
-    await overlap(() => runFailureRateCheck(spiking() as never, kv as never, url), () => held.open('ts-1'))
+    await overlap(() => runFailureRateCheck(spiking() as never, kv as never, url), () => held.open('ts-1'), () => vi.mocked(sendFailureSpikeAlert).mock.calls.length === 2)
     expect(sendFailureSpikeAlert).toHaveBeenCalledTimes(2)
   })
 
@@ -563,7 +554,7 @@ describe('runFailureRateCheck posts once across overlapping ticks (#2062)', () =
     vi.mocked(sendFailureSpikeAlert).mockImplementationOnce(() => held.promise)
     const kv = makeKv()
     const { claims, log } = claimLedger()
-    await overlap(() => runFailureRateCheck(spiking() as never, kv as never, url, claims), () => held.open('ts-1'))
+    await overlap(() => runFailureRateCheck(spiking() as never, kv as never, url, claims), () => held.open('ts-1'), () => log.length === 2)
     expect(sendFailureSpikeAlert).toHaveBeenCalledTimes(1)
     expect(log).toEqual(['claim minute-alert:page:failure-rate:wf-1:ACRO_GATEWAY', 'claim minute-alert:page:failure-rate:wf-1:ACRO_GATEWAY'])
   })
@@ -572,7 +563,7 @@ describe('runFailureRateCheck posts once across overlapping ticks (#2062)', () =
     const held = gate<boolean>()
     vi.mocked(sendRecoveryAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
     const kv = owed()
-    await overlap(() => runFailureRateCheck(healthy() as never, kv as never, url), () => held.open(true))
+    await overlap(() => runFailureRateCheck(healthy() as never, kv as never, url), () => held.open(true), () => vi.mocked(sendRecoveryAlert).mock.calls.length === 2)
     expect(sendRecoveryAlert).toHaveBeenCalledTimes(2)
   })
 
@@ -581,7 +572,7 @@ describe('runFailureRateCheck posts once across overlapping ticks (#2062)', () =
     vi.mocked(sendRecoveryAlert).mockImplementationOnce(() => held.promise)
     const kv = owed()
     const { claims, log } = claimLedger()
-    await overlap(() => runFailureRateCheck(healthy() as never, kv as never, url, claims), () => held.open(true))
+    await overlap(() => runFailureRateCheck(healthy() as never, kv as never, url, claims), () => held.open(true), () => log.length === 2)
     expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
     expect(log).toEqual(['claim minute-alert:all-clear:failure-rate:wf-1:ACRO_GATEWAY', 'claim minute-alert:all-clear:failure-rate:wf-1:ACRO_GATEWAY'])
   })

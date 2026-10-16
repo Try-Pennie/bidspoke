@@ -7,7 +7,7 @@ vi.mock('../slack', () => ({
 }))
 
 import { sendCronHeartbeatAlert, sendCronHeartbeatRecoveryAlert } from '../slack'
-import { claimLedger, gate, settle } from './_claims-double'
+import { claimLedger, gate, overlap } from './_claims-double'
 import {
   runHeartbeatChecks,
   writeHeartbeat,
@@ -442,20 +442,12 @@ describe('runHeartbeatChecks posts once across overlapping ticks (#2062)', () =>
     return kv
   }
 
-  async function overlap(run: () => Promise<unknown>, open: () => void) {
-    const a = run()
-    await settle()
-    const b = run()
-    await settle()
-    open()
-    await Promise.all([a, b])
-  }
 
   it('control: with no claim the two ticks page twice, so the fixture really overlaps', async () => {
     const held = gate<boolean>()
     vi.mocked(sendCronHeartbeatAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
     const kv = dark()
-    await overlap(() => runHeartbeatChecks(fakeSupabase(orgs), kv, NOW), () => held.open(true))
+    await overlap(() => runHeartbeatChecks(fakeSupabase(orgs), kv, NOW), () => held.open(true), () => vi.mocked(sendCronHeartbeatAlert).mock.calls.length === 2)
     expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(2)
   })
 
@@ -464,7 +456,7 @@ describe('runHeartbeatChecks posts once across overlapping ticks (#2062)', () =>
     vi.mocked(sendCronHeartbeatAlert).mockImplementationOnce(() => held.promise)
     const kv = dark()
     const { claims, log } = claimLedger()
-    await overlap(() => runHeartbeatChecks(fakeSupabase(orgs), kv, NOW, claims), () => held.open(true))
+    await overlap(() => runHeartbeatChecks(fakeSupabase(orgs), kv, NOW, claims), () => held.open(true), () => log.length === 2)
     expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(1)
     expect(log).toEqual(['claim minute-alert:page:cron-heartbeat:execution-archive', 'claim minute-alert:page:cron-heartbeat:execution-archive'])
   })
@@ -473,7 +465,7 @@ describe('runHeartbeatChecks posts once across overlapping ticks (#2062)', () =>
     const kv = await owed()
     const held = gate<boolean>()
     vi.mocked(sendCronHeartbeatRecoveryAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
-    await overlap(() => runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000), () => held.open(true))
+    await overlap(() => runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000), () => held.open(true), () => vi.mocked(sendCronHeartbeatRecoveryAlert).mock.calls.length === 2)
     expect(sendCronHeartbeatRecoveryAlert).toHaveBeenCalledTimes(2)
   })
 
@@ -482,7 +474,7 @@ describe('runHeartbeatChecks posts once across overlapping ticks (#2062)', () =>
     const held = gate<boolean>()
     vi.mocked(sendCronHeartbeatRecoveryAlert).mockImplementationOnce(() => held.promise)
     const { claims, log } = claimLedger()
-    await overlap(() => runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000, claims), () => held.open(true))
+    await overlap(() => runHeartbeatChecks(fakeSupabase(orgs), kv, NOW + 60_000, claims), () => held.open(true), () => log.length === 2)
     expect(sendCronHeartbeatRecoveryAlert).toHaveBeenCalledTimes(1)
     expect(log).toEqual(['claim minute-alert:all-clear:cron-heartbeat:execution-archive', 'claim minute-alert:all-clear:cron-heartbeat:execution-archive'])
   })

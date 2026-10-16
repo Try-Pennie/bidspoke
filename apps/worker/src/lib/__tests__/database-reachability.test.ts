@@ -28,7 +28,7 @@ import { RECOVERY_REARM_MINUTES } from '../alert-recovery'
 import type { AlertClaims } from '../alert-claim'
 import { fakeTimers, tableClient, TEST_KEY } from './_scheduled-slack-doubles'
 import { outboxEvents, transitions } from './_incident-events'
-import { claimLedger, gate, settle } from './_claims-double'
+import { claimLedger, gate, overlap } from './_claims-double'
 import { MINUTE_ALERT_CLAIM_TTL_SECONDS } from '../alert-fanout'
 
 const ORG = '55555555-5555-4555-8555-555555555555'
@@ -355,14 +355,6 @@ describe('the owner posts once across overlapping ticks (#2062)', () => {
     for (let t = T0 - 40 * MIN; t <= T0 - MIN; t += MIN) for (const s of ['probe', 'volume-cliff'] as const) await reportDatabaseReadable(kv, s, t)
     return kv
   }
-  async function overlap(run: () => Promise<unknown>, open: () => void) {
-    const a = run()
-    await settle()
-    const b = run()
-    await settle()
-    open()
-    await Promise.all([a, b])
-  }
 
   it('claims the page before the read that decides: a cooldown written while it claimed stops the page', async () => {
     const kv = await kvWithCopy()
@@ -393,8 +385,8 @@ describe('the owner posts once across overlapping ticks (#2062)', () => {
     const kv = await kvWithCopy()
     const held = gate<string>()
     vi.mocked(sendDatabaseUnreachableAlert).mockImplementationOnce(() => held.promise)
-    const { claims } = claimLedger()
-    await overlap(() => reportDatabaseUnreachable(deps(kv, T0, claims), readFailure), () => held.open('ts-db'))
+    const { claims, log } = claimLedger()
+    await overlap(() => reportDatabaseUnreachable(deps(kv, T0, claims), readFailure), () => held.open('ts-db'), () => log.length === 2)
     expect(sendDatabaseUnreachableAlert).toHaveBeenCalledTimes(1)
   })
 
@@ -402,7 +394,7 @@ describe('the owner posts once across overlapping ticks (#2062)', () => {
     const kv = await owed()
     const held = gate<boolean>()
     vi.mocked(sendDatabaseRecoveredAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
-    await overlap(() => runDatabaseReachabilityProbe(probeDeps(kv, T0)), () => held.open(true))
+    await overlap(() => runDatabaseReachabilityProbe(probeDeps(kv, T0)), () => held.open(true), () => vi.mocked(sendDatabaseRecoveredAlert).mock.calls.length === 2)
     expect(sendDatabaseRecoveredAlert).toHaveBeenCalledTimes(2)
   })
 
@@ -411,7 +403,7 @@ describe('the owner posts once across overlapping ticks (#2062)', () => {
     const held = gate<boolean>()
     vi.mocked(sendDatabaseRecoveredAlert).mockImplementationOnce(() => held.promise)
     const { claims, log } = claimLedger()
-    await overlap(() => runDatabaseReachabilityProbe(probeDeps(kv, T0, answering(), claims)), () => held.open(true))
+    await overlap(() => runDatabaseReachabilityProbe(probeDeps(kv, T0, answering(), claims)), () => held.open(true), () => log.length === 2)
     expect(sendDatabaseRecoveredAlert).toHaveBeenCalledTimes(1)
     expect(log).toEqual([`claim minute-alert:all-clear:db-unreachable:${ORG}`, `claim minute-alert:all-clear:db-unreachable:${ORG}`])
   })

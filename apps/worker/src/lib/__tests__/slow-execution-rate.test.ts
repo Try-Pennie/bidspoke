@@ -13,7 +13,7 @@ vi.mock('../slack', () => ({
 import { detectSlowSpike, buildSlowDurations, runSlowExecutionCheck, MIN_SLOW_COUNT, SLOW_FRACTION_PCT } from '../slow-execution-rate'
 import { getSlackConnection, sendRecoveryAlert, sendSlowSpikeAlert } from '../slack'
 import { transitions, withTickingClock } from './_incident-events'
-import { claimLedger, gate, settle } from './_claims-double'
+import { claimLedger, gate, overlap } from './_claims-double'
 
 const THRESHOLD = 5000 // 5s
 
@@ -236,20 +236,12 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
       })
     const owed = () => makeKv({ 'slow-spike-recovery:wf-1': new Date(Date.now() - 90 * 60_000).toISOString() })
 
-    async function overlap(run: () => Promise<void>, open: () => void) {
-      const a = run()
-      await settle()
-      const b = run()
-      await settle()
-      open()
-      await Promise.all([a, b])
-    }
 
     it('control: with no claim the two ticks page twice, so the fixture really overlaps', async () => {
       const held = gate<string>()
       vi.mocked(sendSlowSpikeAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
       const kv = makeKv()
-      await overlap(() => runSlowExecutionCheck(spiking() as never, kv as never, url), () => held.open('ts-1'))
+      await overlap(() => runSlowExecutionCheck(spiking() as never, kv as never, url), () => held.open('ts-1'), () => vi.mocked(sendSlowSpikeAlert).mock.calls.length === 2)
       expect(sendSlowSpikeAlert).toHaveBeenCalledTimes(2)
     })
 
@@ -258,7 +250,7 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
       vi.mocked(sendSlowSpikeAlert).mockImplementationOnce(() => held.promise)
       const kv = makeKv()
       const { claims, log } = claimLedger()
-      await overlap(() => runSlowExecutionCheck(spiking() as never, kv as never, url, claims), () => held.open('ts-1'))
+      await overlap(() => runSlowExecutionCheck(spiking() as never, kv as never, url, claims), () => held.open('ts-1'), () => log.length === 2)
       expect(sendSlowSpikeAlert).toHaveBeenCalledTimes(1)
       expect(log).toEqual(['claim minute-alert:page:slow-spike:wf-1', 'claim minute-alert:page:slow-spike:wf-1'])
     })
@@ -267,7 +259,7 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
       const held = gate<boolean>()
       vi.mocked(sendRecoveryAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
       const kv = owed()
-      await overlap(() => runSlowExecutionCheck(healthy() as never, kv as never, url), () => held.open(true))
+      await overlap(() => runSlowExecutionCheck(healthy() as never, kv as never, url), () => held.open(true), () => vi.mocked(sendRecoveryAlert).mock.calls.length === 2)
       expect(sendRecoveryAlert).toHaveBeenCalledTimes(2)
     })
 
@@ -276,7 +268,7 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
       vi.mocked(sendRecoveryAlert).mockImplementationOnce(() => held.promise)
       const kv = owed()
       const { claims, log } = claimLedger()
-      await overlap(() => runSlowExecutionCheck(healthy() as never, kv as never, url, claims), () => held.open(true))
+      await overlap(() => runSlowExecutionCheck(healthy() as never, kv as never, url, claims), () => held.open(true), () => log.length === 2)
       expect(sendRecoveryAlert).toHaveBeenCalledTimes(1)
       expect(log).toEqual(['claim minute-alert:all-clear:slow-spike:wf-1', 'claim minute-alert:all-clear:slow-spike:wf-1'])
     })

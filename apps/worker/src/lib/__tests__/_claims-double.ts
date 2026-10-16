@@ -36,5 +36,31 @@ export function gate<T>() {
   return { promise, open }
 }
 
-/** Lets every queued microtask and macrotask run, so a held tick reaches its await. */
+/** Lets every queued microtask and macrotask run once. */
 export const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+
+/**
+ * Waits on the condition itself, never a fixed number of turns (L290): a tick
+ * that walks every registered job takes more turns to reach its post on a busy
+ * machine, and releasing the held post before it got there would test no
+ * overlap at all.
+ */
+export async function until(ready: () => boolean, what = 'both ticks reaching the decision point'): Promise<void> {
+  for (let i = 0; i < 2000; i++) {
+    if (ready()) return
+    await settle()
+  }
+  throw new Error(`${what} never happened`)
+}
+
+/**
+ * Two ticks of one alert overlapping: both started, the post held until
+ * `ready` says both have reached the decision point, then released.
+ */
+export async function overlap(run: () => Promise<unknown>, open: () => void, ready: () => boolean): Promise<void> {
+  const a = run()
+  const b = run()
+  await until(ready)
+  open()
+  await Promise.all([a, b])
+}

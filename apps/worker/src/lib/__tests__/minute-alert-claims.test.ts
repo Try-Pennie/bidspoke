@@ -19,7 +19,7 @@ import { announceRecovery, recoveryKey, type IncidentContext } from '../alert-re
 import { CLAIM_DEADLINE_MS, makeAlertClaims } from '../alert-claim'
 import { SCHEDULED_SLACK_READ_DEADLINE_MS } from '../scheduled-slack'
 import { MINUTE_JOB_DEADLINE_MS } from '../../index'
-import { claimLedger, gate, settle } from './_claims-double'
+import { claimLedger, gate, overlap } from './_claims-double'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -109,17 +109,14 @@ describe('postMinutePage: claim first, then read the cooldown (L157)', () => {
   })
 
   it('posts once when two overlapping ticks reach the post together', async () => {
-    const { claims } = claimLedger()
+    const { claims, log } = claimLedger()
     let cooldown = false
     const held = gate<boolean>()
     const send = vi.fn(() => held.promise)
-    const tick = () => postMinutePage({ claims, key: 'k', inCooldown: async () => cooldown, send }).then((o) => { if (o === 'sent') cooldown = true; return o })
-    const a = tick()
-    await settle()
-    const b = tick()
-    await settle()
-    held.open(true)
-    expect((await Promise.all([a, b])).sort()).toEqual(['claimed_elsewhere', 'sent'])
+    const outcomes: string[] = []
+    const tick = () => postMinutePage({ claims, key: 'k', inCooldown: async () => cooldown, send }).then((o) => { if (o === 'sent') cooldown = true; outcomes.push(o) })
+    await overlap(tick, () => held.open(true), () => log.length === 2)
+    expect(outcomes.sort()).toEqual(['claimed_elsewhere', 'sent'])
     expect(send).toHaveBeenCalledTimes(1)
   })
 
@@ -191,16 +188,13 @@ describe('announceRecovery claims an all-clear only once it is owed', () => {
 
   it('posts once when two overlapping ticks find it owed together', async () => {
     const kv = owed()
-    const { claims } = claimLedger()
+    const { claims, log } = claimLedger()
     const held = gate<boolean>()
     const send = vi.fn(() => held.promise)
-    const tick = () => announceRecovery(kv, 'failure-rate', id, null, incident, send, { now: T0, claim: minuteAllClearClaim(claims, 'failure-rate', id) })
-    const a = tick()
-    await settle()
-    const b = tick()
-    await settle()
-    held.open(true)
-    expect((await Promise.all([a, b])).sort()).toEqual([false, true])
+    const outcomes: boolean[] = []
+    const tick = () => announceRecovery(kv, 'failure-rate', id, null, incident, send, { now: T0, claim: minuteAllClearClaim(claims, 'failure-rate', id) }).then((o) => { outcomes.push(o) })
+    await overlap(tick, () => held.open(true), () => log.length === 2)
+    expect(outcomes.sort()).toEqual([false, true])
     expect(send).toHaveBeenCalledTimes(1)
     expect(kv.store.has(recoveryKey('failure-rate', id))).toBe(false)
   })
