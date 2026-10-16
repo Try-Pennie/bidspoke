@@ -2,6 +2,7 @@ import { createClient } from './supabase/client'
 import type { Workflow, WorkflowSummary, WorkflowDef, WorkflowVersion, EnvVar, Folder, EnvVarFolder } from '@/types/workflow'
 import type { PartnerType } from './partner-roles'
 import type { LiveMissReportBody, PartnerPageVersions } from '@bidspoke/partner-page-live'
+import type { PartnerHistory } from '@bidspoke/partner-history'
 
 export type { PartnerType }
 
@@ -123,6 +124,8 @@ export interface PartnerPageSaveRequest {
 }
 
 export type { PartnerPageVersions, PartnerPageChange, PartnerPageNotice, LiveMissCause, LiveMissReportBody } from '@bidspoke/partner-page-live'
+// The partners page History (#2141): entries newest first, each naming who made it.
+export type { PartnerHistory, HistoryEntry, HistoryEditor, HistoryEntityType } from '@bidspoke/partner-history'
 
 /** What a page save answers (#2133): both halves as stored after it, and the stored copy warning when there is one. */
 export interface PartnerPageSaved extends StoredCopyAnswer {
@@ -1030,6 +1033,10 @@ export const api = {
       req<{ ok: true; id: string }>('/api/partners/live-miss', { method: 'POST', body: JSON.stringify(report) }),
     // Which workflow steps name the partner, per node kind (#2137). A failure throws: never read as "none".
     usage: (id: string) => req<PartnerUsage>(`/api/partners/${id}/usage`),
+    // History (#2141): audit_log and the matrix syncs merged, newest first. Any
+    // read failing is an error naming it (`history_unavailable`), never a
+    // shorter list; the page groups by Eastern day through dates.ts.
+    history: (id: string) => req<PartnerHistory>(`/api/partners/${id}/history`),
   },
 
   // The buyer profile read routes (#1412). The profile is saved with the
