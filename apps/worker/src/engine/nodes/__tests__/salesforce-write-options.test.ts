@@ -146,7 +146,8 @@ describe('a JSON text body is rendered then parsed, byte for byte what the relay
 
   it('apex keeps its body as configured: a text body resolving to text is not parsed', async () => {
     await executeSalesforceNode(
-      makeNode({ operation: 'apex', apex_path: '/services/apexrest/credit-inquiries', body: '{{steps.build.output.text}}' }),
+      // Another Apex endpoint: a credit inquiry post's body is judged by its own rule (#2172).
+      makeNode({ operation: 'apex', apex_path: '/services/apexrest/credit-trades', body: '{{steps.build.output.text}}' }),
       makeCtx({}, { build: { text: '{"a":1}' } }),
       makeEnv(),
     )
@@ -387,7 +388,7 @@ describe('skip_when_empty: nothing to write, or no record, skips the write as th
 
   it('an Apex POST with a body is sent as configured (control)', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('{"statusCode":200}'), headers: new Headers() })
-    const body = { submissionId: 'a0X1', inquiriesJson: '{"inquiries":[]}' }
+    const body = { submissionId: 'a0XUi00000AbCdEFGH', inquiriesJson: '{"inquiries":[{"type":"H"}]}' }
     await executeSalesforceNode(
       apex({ body: '{{steps.inquiry_body.output}}', skip_when_empty: true }),
       makeCtx({}, { inquiry_body: body }),
@@ -397,10 +398,19 @@ describe('skip_when_empty: nothing to write, or no record, skips the write as th
     expect(sentBody(fetchMock)).toEqual(body)
   })
 
-  it('without the flag, an Apex POST with a null body still sends it as it always has', async () => {
+  it('without the flag, another Apex POST with a null body still sends it as it always has', async () => {
     fetchMock.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve('{}'), headers: new Headers() })
-    await executeSalesforceNode(apex({ body: '{{steps.inquiry_body.output}}' }), makeCtx({}, { inquiry_body: null }), makeEnv())
+    await executeSalesforceNode(apex({ apex_path: '/services/apexrest/credit-trades', body: '{{steps.inquiry_body.output}}' }), makeCtx({}, { inquiry_body: null }), makeEnv())
     expect(fetchMock.mock.calls[0][1].body).toBe('null')
+  })
+
+  // #2172: a credit inquiry post the endpoint cannot read would be answered 500
+  // before any write, so it is refused here, by name, and never sent.
+  it('without the flag, a credit inquiry post with a null body is refused by name before any call', async () => {
+    await expect(
+      executeSalesforceNode(apex({ body: '{{steps.inquiry_body.output}}' }), makeCtx({}, { inquiry_body: null }), makeEnv()),
+    ).rejects.toThrow(/credit inquiry post not sent/)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('without the flag, a missing record id still fails as it always has', async () => {

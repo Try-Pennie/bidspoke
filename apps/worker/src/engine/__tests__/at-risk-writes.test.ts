@@ -20,8 +20,10 @@ import {
   AT_RISK_WRITE_PREFIX,
   AT_RISK_AFTER_MS,
   AT_RISK_WRITE_TTL_SECONDS,
+  parseAtRiskEntry,
   type AtRiskEntry,
 } from '../at-risk-writes'
+import { CREDIT_INQUIRY_APEX_PATH } from '../inquiry-post'
 
 const KEY = Buffer.from(new Uint8Array(32).map((_, i) => i + 11)).toString('base64')
 const NEXT = Buffer.from(new Uint8Array(32).map((_, i) => i + 47)).toString('base64')
@@ -299,5 +301,104 @@ describe('a failed write carries the request the node noted (#2163)', () => {
     w2.note(REQ)
     await clock.run(clock.now() + AT_RISK_AFTER_MS)
     expect(await w2.settle('unknown')).toEqual({ key: atRiskKey('ex-1', 'patch_submission'), expires_at: new Date(clock.now() + AT_RISK_WRITE_TTL_SECONDS * 1000).toISOString() })
+  })
+})
+
+/**
+ * #2172 (D5): a credit inquiry post is recorded BEFORE it is sent, not 2 s later,
+ * and the node waits for the record before sending, so an isolate cancelled mid
+ * call still leaves it. It is cleared only by a confirmed answer.
+ */
+describe('a credit inquiry post is recorded before it is sent (#2172)', () => {
+  const INQUIRY = {
+    object: 'Submission__c',
+    record_id: 'a04Ui00000NkhG1IAJ',
+    operation: 'apex' as const,
+    apex_path: CREDIT_INQUIRY_APEX_PATH,
+    body: { submissionId: 'a04Ui00000NkhG1IAJ', inquiriesJson: '{"inquiries":[{"type":"H"}]}' },
+  }
+
+  it('writes the record at once, and the note resolves only once it is written', async () => {
+    const store = kv()
+    const clock = new VirtualClock()
+    let release: () => void = () => {}
+    const gate = new Promise<void>((r) => { release = r })
+    const put = store.put
+    store.put = async (k, v, o) => { await gate; await put(k, v, o) }
+    const w = watch(store, clock)
+    let noted = false
+    const pending = w.recordNow(INQUIRY).then(() => { noted = true })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(noted).toBe(false)
+    release()
+    await pending
+    expect(noted).toBe(true)
+    expect(clock.now()).toBe(0)
+    const entry = parseAtRiskEntry(store.store.get(atRiskKey('ex-1', 'patch_submission'))!.value)
+    expect(entry).toMatchObject({ sf_operation: 'apex', apex_path: CREDIT_INQUIRY_APEX_PATH, sf_object: 'Submission__c', sf_record_id: 'a04Ui00000NkhG1IAJ' })
+    expect(JSON.parse(await decryptSecret(entry!.body_encrypted, KEY))).toEqual(INQUIRY.body)
+    await w.settle('unknown')
+  })
+
+  it('is written once, not again when the post is still out at the 2 s mark', async () => {
+    const store = kv()
+    const clock = new VirtualClock()
+    const w = watch(store, clock)
+    await w.recordNow(INQUIRY)
+    await clock.run(AT_RISK_AFTER_MS + 1000)
+    await w.settle('unknown')
+    expect(store.ops).toEqual([`put ${atRiskKey('ex-1', 'patch_submission')}`])
+  })
+
+  it('clears it on a confirmed answer, and keeps it when the outcome is unknown', async () => {
+    const store = kv()
+    const clock = new VirtualClock()
+    const w = watch(store, clock)
+    await w.recordNow(INQUIRY)
+    await w.settle('landed')
+    expect(store.store.size).toBe(0)
+    const w2 = watch(store, clock)
+    await w2.recordNow(INQUIRY)
+    expect(await w2.settle('unknown')).not.toBeNull()
+    expect(store.store.size).toBe(1)
+  })
+
+  it('lets the post go ahead, said loudly, when the record cannot be written', async () => {
+    const store = kv()
+    store.put = async () => { throw new Error('kv unavailable') }
+    const errors: unknown[][] = []
+    const original = console.error
+    console.error = (...a: unknown[]) => { errors.push(a) }
+    try {
+      const w = watch(store, new VirtualClock())
+      await w.recordNow(INQUIRY)
+      expect(await w.settle('unknown')).toBeNull()
+    } finally {
+      console.error = original
+    }
+    expect(errors.map((e) => e.join(' ')).join('\n')).toMatch(/at-risk.*patch_submission.*kv unavailable/s)
+  })
+
+  it('marks a failure held even when the executor attached its own request, since nothing else holds a post', async () => {
+    const store = kv()
+    const clock = new VirtualClock()
+    const w = watch(store, clock)
+    const own = { template: {}, resolved: { operation: 'apex', url: 'x', body: INQUIRY.body } }
+    let thrown: unknown
+    await runWatched(w, () => {}, async () => {
+      await w.recordNow(INQUIRY)
+      throw Object.assign(new Error('Salesforce API error (500)'), { status: 500, resolvedInput: own })
+    }, () => 0).catch((e) => { thrown = e })
+    expect((thrown as { resolvedInput: unknown }).resolvedInput).toBe(own)
+    expect(heldUntilOf(thrown)).toBe(new Date(AT_RISK_WRITE_TTL_SECONDS * 1000).toISOString())
+  })
+
+  it('reads back an apex record only for the credit inquiry post, the one Apex call the read-back knows', async () => {
+    const store = kv()
+    const w = watch(store, new VirtualClock())
+    await w.recordNow({ ...INQUIRY, apex_path: '/services/apexrest/credit-trades' })
+    await w.settle('unknown')
+    expect(parseAtRiskEntry(store.store.get(atRiskKey('ex-1', 'patch_submission'))?.value ?? null)).toBeNull()
   })
 })

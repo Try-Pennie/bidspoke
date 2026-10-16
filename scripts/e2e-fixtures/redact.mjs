@@ -31,7 +31,7 @@ const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
 /** The buyer profile fields a fixture may keep (the document parseProfileDocument reads). */
 const PROFILE_FIELDS = new Set([
   'partner_id', 'version', 'sold_on', 'is_enabled', 'priority', 'allowed_states', 'debt_min', 'debt_max', 'loan_amount_min',
-  'hourly_lead_cap', 'daily_lead_cap', 'hourly_spend_cap_cents', 'daily_spend_cap_cents', 'windows', 'blackout_dates', 'tiers', 'click_delivery',
+  'hourly_lead_cap', 'daily_lead_cap', 'hourly_spend_cap_cents', 'daily_spend_cap_cents', 'display_time_zone', 'windows', 'blackout_dates', 'tiers', 'click_delivery',
 ])
 
 /** Editor A to Z, then A2 to Z2 and on, so an alias never repeats. */

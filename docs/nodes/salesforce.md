@@ -72,10 +72,19 @@ With `skip_when_empty: true`, an update or an Apex POST is skipped rather than s
 | Reason | Operation | When |
 |--------|-----------|------|
 | `nothing_to_write` | update | The body resolves to null or nothing, or is an object left with no keys after `omit_fields` and `rename_fields`. `injected_fields` do not count: they only stamp a write that is happening anyway. |
-| `nothing_to_write` | apex POST | The body resolves to null or nothing. The `credit-inquiries` endpoint answers 500 when its `inquiries` key is missing (#2181), so its body step returns null when there is nothing to send. An empty object is still sent. |
+| `nothing_to_write` | apex POST | The body resolves to null or nothing. An empty object is still sent to any other Apex endpoint. The credit inquiry post has its own rules, below: it is also skipped for an empty or missing `inquiries` list, flag or not. |
 | `no_record_id` | update | The record id resolves empty. |
 
-A skipped step makes no Salesforce call at all (not even a token request), completes rather than fails, and records `{ "skipped": true, "skip_reason": "<reason>" }` as its output, the same keys a skipped partner bid records. Without the flag both keep their old behaviour: an update with a missing record id fails the step and one with a null body sends `{}`, and an Apex POST with a null body sends `null`.
+A skipped step makes no Salesforce call at all (not even a token request), completes rather than fails, and records `{ "skipped": true, "skip_reason": "<reason>" }` as its output, the same keys a skipped partner bid records. Without the flag both keep their old behaviour: an update with a missing record id fails the step and one with a null body sends `{}`, and an Apex POST with a null body sends `null`, except the credit inquiry post, which fails the step before any call (below).
+
+### The credit inquiry post
+
+A POST to `/services/apexrest/credit-inquiries` attaches a new file to the Lead on every call that carries inquiries, so it is never sent twice blind (#2172). Whatever the step's config says:
+
+- the engine never retries it (`retries` is read as 0);
+- a body whose `inquiriesJson` holds an empty `inquiries` list, or none, is skipped with `nothing_to_write`, flag or not: the endpoint writes nothing for the first and answers 500 for the second;
+- a body the endpoint cannot read (no Submission id, or `inquiriesJson` that is not the JSON text of `{ inquiries: [...] }`) fails the step before any call, including a null body without `skip_when_empty`;
+- on a live run, the post is recorded in KV before it is sent and cleared on a confirmed answer; one whose outcome is unknown is read back by the Lead's `Inquiries_<leadId>` file and resent at most once (the repository's `docs/salesforce-post-answer-write-contract.md`, "The credit inquiry post's read-back").
 
 ### Expected errors
 

@@ -368,6 +368,8 @@ Response `201` (the only time the key is shown in full):
 | GET | `/api/partners/:id/buyer-profile/history` | One audit entry per save, each changed path old to new. |
 | GET | `/api/partners/:id/buyer-usage` | The buyer ledger's counts for the current Eastern hour and day with the breakdown by status, plus today's wins recorded for this buyer outside buyer selection. 503 `usage_unavailable` when the ledger does not answer; a count that could not be read is named in `unmeasured` rather than shown as zero. The body carries `sold_on: 'offer'`; a buyer sold on the click answers `{ sold_on: 'click', count, date, day_zone }` with today's distinct clicks on the Pacific day, the count buyer_click_check judges its cap against, or 503 `click_count_unavailable`. |
 
+A buyer profile document carries `display_time_zone` (#2143): one of `America/New_York`, `America/Chicago`, `America/Denver`, `America/Los_Angeles` (`DISPLAY_TIME_ZONES` in `packages/buyer-profile/src/clock.ts`), or null for never chosen, shown in Eastern. It only sets the zone the page shows the hours and the click count reset in; the hours are stored and judged in Eastern. A save whose document leaves the key out keeps the stored zone. Any other value is 400 `profile_malformed` on `display_time_zone`, and the database refuses it too (422 `display_time_zone_invalid`).
+
 ## Buyer sales
 
 `/api/buyer-sales`. Sales the [Buyer Select node](../nodes/buyer-select.md) recorded, from the `buyer_sales` mirror of the buyer ledger. Settling is a ledger operation first: the route settles the ledger with the caller as the actor, then mirrors the settled entry inline; a mirror that fails is reported and delivered by the drain, and never fails the settlement.

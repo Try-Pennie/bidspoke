@@ -31,6 +31,7 @@ import { containsHtmlDocument, summarizeHtmlErrorBody } from '../../lib/html-err
 import { attachBlockSighting, noteBlockSighting, sightingFromResponse } from '../block-sightings'
 import { salesforceConfigProblem } from '@bidspoke/workflow-definition'
 import { stampWriteMarker } from '../write-marker'
+import { CREDIT_INQUIRY_APEX_PATH, inquiryPostOf, isCreditInquiryPost, type InquiryPost } from '../inquiry-post'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
@@ -230,6 +231,8 @@ export async function executeSalesforceNode(
   let resolvedExternalIdValue: string | undefined
   let resolvedSoql: string | undefined
   let skipReason: SalesforceSkipReason | undefined
+  // The credit inquiry post as its body reads (#2172), set only for that post.
+  let inquiryPost: Extract<InquiryPost, { kind: 'inquiries' }> | undefined
   // Warnings from shaping the body (a rename that replaced a key the body held).
   const shapeLogs: StepLogEntry[] = []
 
@@ -281,6 +284,16 @@ export async function executeSalesforceNode(
       // A body that resolves to nothing is nothing to send (#2181): the inquiry
       // body node returns null when a lead has no inquiries to post.
       if (config.skip_when_empty && (resolvedBodyForInput === null || resolvedBodyForInput === undefined)) skipReason = 'nothing_to_write'
+      // A credit inquiry post that can write nothing is never sent (#2172, #2169):
+      // an empty list is answered 200 and writes nothing, and a missing one is
+      // answered 500 before any write. A body the endpoint cannot read at all
+      // fails here by name, before any call, rather than as Salesforce's 500.
+      if (!skipReason && isCreditInquiryPost(config as unknown as Record<string, unknown>)) {
+        const post = inquiryPostOf(resolvedBodyForInput)
+        if (post.kind === 'malformed') throw permanentError(`Salesforce credit inquiry post not sent: ${post.reason}. It needs { submissionId, inquiriesJson }, with inquiriesJson the JSON text of { inquiries: [...] }`)
+        if (post.kind === 'empty' || post.kind === 'missing_list') skipReason = 'nothing_to_write'
+        else inquiryPost = post
+      }
     }
   } else {
     throw new Error(`Unknown Salesforce operation: ${operation}`)
@@ -396,6 +409,18 @@ export async function executeSalesforceNode(
     }
   }
   noteUpdate(resolvedBodyForInput)
+  // A credit inquiry post is recorded BEFORE it goes out, and this waits for the
+  // record, so an isolate cancelled mid call still leaves it (#2172, D5). Its
+  // record names the Submission the body is for.
+  if (inquiryPost) {
+    await ctx.recordSalesforceRequest?.({
+      object: 'Submission__c',
+      record_id: inquiryPost.submissionId,
+      operation: 'apex',
+      apex_path: CREDIT_INQUIRY_APEX_PATH,
+      body: resolvedBodyForInput as Record<string, unknown>,
+    })
+  }
 
   let { res, responseText, parsedBody } = await performSalesforceCall(bodyStr, callOpts)
 

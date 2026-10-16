@@ -71,6 +71,15 @@ describe('mergeThreeWay', () => {
     expect(r.merged.partner.name).toBe('TPL')
   })
 
+  it('the display time zone (#2143) merges as a profile scalar: one side changed is taken, both changed asks', () => {
+    const one = mergeThreeWay(base, side({}, { daily_lead_cap: 600 }), theirsAt({}, { display_time_zone: 'America/Chicago' }), PARTNER_FIELD_REGISTRY)
+    expect(conflictKeys(one)).toEqual([])
+    expect(one.merged.profile).toMatchObject({ daily_lead_cap: 600, display_time_zone: 'America/Chicago' })
+    expect(one.autoTaken.map((k) => k.label)).toEqual(['Show times in'])
+    const both = mergeThreeWay(base, side({}, { display_time_zone: 'America/Denver' }), theirsAt({}, { display_time_zone: 'America/Chicago' }), PARTNER_FIELD_REGISTRY)
+    expect(both.conflicts.flatMap((sec) => sec.conflicts).map((c) => [c.key, c.label, c.mine, c.theirs])).toEqual([['profile.display_time_zone', 'Show times in', 'America/Denver', 'America/Chicago']])
+  })
+
   it('a whole JSON column is one field, compared regardless of key order', () => {
     const r = mergeThreeWay(base, side({ outbound_field_mapping: { first_name: 'fn', last_name: 'ln' } }), theirsAt({ outbound_field_mapping: { last_name: 'ln', first_name: 'fn' } }), PARTNER_FIELD_REGISTRY)
     expect(conflictKeys(r)).toEqual([])

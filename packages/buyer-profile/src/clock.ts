@@ -36,6 +36,37 @@ export type ClockZone = (typeof CLOCK_ZONES)[number]
 export const EASTERN: ClockZone = 'America/New_York'
 export const PACIFIC: ClockZone = 'America/Los_Angeles'
 
+/**
+ * The zones a buyer profile's hours and reset times may be SHOWN in (#2143,
+ * PM-10), each with the name the page shows it by. Only the partners page reads
+ * this list: the hours are stored and judged in Eastern whatever is chosen, and
+ * the click count still resets at midnight Pacific, so nothing that judges a
+ * lead (the engine, the evaluators in this package) may read it, and
+ * display-time-zone-is-display-only.test.ts fails if one does.
+ *
+ * The database holds the same values as a CHECK on
+ * buyer_profiles.display_time_zone and refuses anything else by name
+ * (display_time_zone_invalid); fixtures/display-time-zones.json carries this
+ * list to the SQL suite, which compares it with the CHECK (L41, L611).
+ */
+export const DISPLAY_TIME_ZONES = ['America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles'] as const
+export type DisplayTimeZone = (typeof DISPLAY_TIME_ZONES)[number]
+
+/** The name each zone is shown by, never the identifier (L611). */
+export const DISPLAY_TIME_ZONE_LABELS: Readonly<Record<DisplayTimeZone, string>> = {
+  'America/New_York': 'Eastern',
+  'America/Chicago': 'Central',
+  'America/Denver': 'Mountain',
+  'America/Los_Angeles': 'Pacific',
+}
+
+/** What an unset display zone shows in: the zone the hours are stored in. */
+export const DEFAULT_DISPLAY_TIME_ZONE: DisplayTimeZone = 'America/New_York'
+
+export function isDisplayTimeZone(value: unknown): value is DisplayTimeZone {
+  return typeof value === 'string' && (DISPLAY_TIME_ZONES as readonly string[]).includes(value)
+}
+
 const FORMATTERS = new Map<ClockZone, Intl.DateTimeFormat>()
 
 function formatterFor(zone: ClockZone): Intl.DateTimeFormat {

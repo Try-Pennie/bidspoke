@@ -87,6 +87,7 @@ describe('the redaction', () => {
 
   it('keeps only the profile fields it knows, and refuses any other', () => {
     const profile = fixtureProfile()
+    expect(createRedactor().profile({ ...profile, display_time_zone: 'America/Chicago' }).display_time_zone).toBe('America/Chicago')
     expect(() => createRedactor().profile({ ...profile, contact_email: 'someone@example.com' })).toThrow(/contact_email/)
   })
 

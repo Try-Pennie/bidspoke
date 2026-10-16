@@ -32,7 +32,7 @@ import type { CapCheckResult } from '../../durable-objects/daily-cap'
 import { dailyCapObjectName } from '../../lib/daily-cap-name'
 import { log } from '../../lib/logger'
 import { dropPartnerLastGoodIfPresent, readPartnerLastGood, rememberPartnerLastGood } from '../../lib/partner-last-good'
-import { classifyHttpErrorWithBody, shouldSuppressAlert } from '../error-classifier'
+import { classifyHttpErrorWithBody, NO_RESPONSE_DECISION, shouldSuppressAlert } from '../error-classifier'
 import { noteBlockSighting, sightingFromResponse } from '../block-sightings'
 import type { ResponseClassificationConfig, AlertConfig } from '../error-classifier'
 import type { BidResolverType, BidMode, BidComparisonSource, ExtraExtractionConfig } from '../bid-resolver'
@@ -574,7 +574,8 @@ export async function executePartnerBidNode(
         errorType = classifyHttpErrorWithBody(status, (err as { bodyText?: string }).bodyText)
         httpStatus = status
       } else {
-        errorType = 'transient'
+        // No answer at all: the no_response default the partners page lists (#2143).
+        errorType = NO_RESPONSE_DECISION
       }
     }
 
