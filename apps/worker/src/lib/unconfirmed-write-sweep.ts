@@ -614,10 +614,15 @@ async function noteAllSaved(deps: UnconfirmedSweepDeps, orgId: string, tally: Sl
 
 /**
  * The margin added before a slowdown's first timed out write and after its
- * last when counting the snapshots taken during it. A snapshot is started at
- * the same moment its write is recorded as timed out, so the margin is there
- * only for clock differences between isolates and the claim's wait (at most
- * 2 seconds).
+ * last when counting the snapshots taken during it: 60 seconds. A snapshot's
+ * key carries the time its capture began, which is the moment its write was
+ * recorded as timed out plus the claim's wait (up to 2 seconds), read on
+ * whichever isolate's clock took it. So the real gap is a few seconds, and the
+ * margin is set far wider than that on purpose: counting a snapshot from just
+ * outside the slowdown costs nothing, while missing one would make the alert
+ * say none was taken. It stays under the 120 second snapshot window
+ * (STALL_SNAPSHOT_WINDOW_SECONDS), so at most one snapshot taken outside the
+ * slowdown can fall inside it on each side.
  */
 const SNAPSHOT_WINDOW_MARGIN_MS = 60_000
 

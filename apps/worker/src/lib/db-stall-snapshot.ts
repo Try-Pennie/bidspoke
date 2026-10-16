@@ -37,8 +37,10 @@
  * the database, or the pool in front of it, could not answer a catalogue read.
  * Nothing here throws; a snapshot that could not be stored is logged as such.
  *
- * Read them back with GET /api/admin/db-stall-snapshots, which withholds the
- * query text, or in full with wrangler (docs/disaster-recovery.md, Scenario E).
+ * Read them back with GET /api/admin/db-stall-snapshots, which withholds what
+ * belongs to one organization (each query's text, and the run and workflow of
+ * the write that set the snapshot off), or in full with wrangler
+ * (docs/disaster-recovery.md, Scenario E).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { AlertClaims } from './alert-claim'
