@@ -11,7 +11,8 @@ export function joinNames(names: readonly string[]): string {
   return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
 }
 
-const workflowLabel = (s: { workflow_name: string; is_active: boolean }) => (s.is_active ? s.workflow_name : `${s.workflow_name} (switched off)`)
+/** A workflow by name, said as switched off when it is: the one wording every tab uses (#2142 reads it too). */
+export const workflowLabel = (s: { workflow_name: string; is_active: boolean }) => (s.is_active ? s.workflow_name : `${s.workflow_name} (switched off)`)
 
 function askedSentence(mode: PartnerUsage['bid_group'][number]['mode'], partners: readonly string[]): string {
   const who = joinNames(partners)

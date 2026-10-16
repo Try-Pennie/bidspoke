@@ -20,6 +20,7 @@ vi.mock('../../../lib/buyer-profile-loader')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
+import { partnerConstantsFromRows } from '../../../lib/partner-constants-loader'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
 
 // The fixtures the accessibility job is answered from (apps/web/e2e/fixtures/partners).
@@ -28,6 +29,8 @@ import buyerProfilesJson from '../../../../../web/e2e/fixtures/partners/buyer-pr
 import uuidsJson from '../../../../../web/e2e/fixtures/partners/partner-uuids.json'
 import staleJson from '../../../../../web/e2e/fixtures/partners/synthetic/page-save-409.tripoint.json'
 import usageJson from '../../../../../web/e2e/fixtures/partners/usage.json'
+import workflowValuesJson from '../../../../../web/e2e/fixtures/partners/workflow-values.json'
+import type { WorkflowValuesAnswer } from '../../../lib/workflow-values-shape'
 
 type Row = Record<string, unknown> & { id: string; slug: string; partner_type: string; accept_signals: unknown }
 const partners = partnersJson as unknown as Row[]
@@ -117,6 +120,77 @@ describe('the partners page fixtures are what their routes answer (#2134)', () =
 
   it('the usage fixture has an answer for every listed partner', () => {
     expect(Object.keys(usageJson).sort()).toEqual(partners.map((p) => p.id).sort())
+  })
+
+  // #2142: the Workflow values tab's read. The fixture was built through the
+  // route's own code from production's workflows (read only, 2026-10-16,
+  // scripts/measure-workflow-values-e2e-fixture.ts). Here the route is given the
+  // fixture's partner rows and sub-account ids, and workflows whose steps read
+  // exactly what the fixture says each place reads, and must answer the fixture.
+  describe('GET /partners/:id/workflow-values', () => {
+    const answers = workflowValuesJson as unknown as Record<string, WorkflowValuesAnswer>
+    const allIds = uuidsJson as Array<{ uuid: string; partner_slug: string }>
+
+    // The loader is mocked for the other routes; this route builds its values through the real one.
+    beforeEach(async () => {
+      const real = await vi.importActual<typeof import('../../../lib/partner-constants-loader')>('../../../lib/partner-constants-loader')
+      vi.mocked(partnerConstantsFromRows).mockImplementation(real.partnerConstantsFromRows)
+    })
+
+    /** One script line per read the fixture records, in the form the scanner matches. */
+    function readLine(v: WorkflowValuesAnswer['values'][number], slug: string, how: 'by_name' | 'every_partner'): string {
+      if (how === 'every_partner') return v.map ? `Object.keys(constants.${v.constant_name})` : 'constants[name]'
+      if (v.kind === 'activeBidding') return `constants.activeBidding.${slug}`
+      if (v.kind === 'subAccountIdsMap') return `constants.subAccountIdsMap['${allIds.find((u) => u.partner_slug === slug)!.uuid}']`
+      return `constants.${v.constant_name}`
+    }
+
+    function workflowsOf() {
+      type Node = { id: string; namespace: string; label: string | null; type: string; config: { script?: string[]; data?: Record<string, null> } }
+      const wfs = new Map<string, { id: string; name: string; is_active: boolean; organization_id: string; deleted_at: null; nodes: Node[] }>()
+      const wf = (id: string, name: string, isActive: boolean) => {
+        const w = wfs.get(id) ?? { id, name, is_active: isActive, organization_id: testUser.organization_id, deleted_at: null, nodes: [{ id: `${id}-constants`, namespace: 'constants', label: 'Constants', type: 'constants', config: { data: {} } }] }
+        wfs.set(id, w)
+        return w
+      }
+      for (const a of Object.values(answers)) {
+        for (const v of a.values) {
+          for (const r of v.readers) {
+            const w = wf(r.workflow_id, r.workflow_name, r.is_active)
+            for (const p of r.places) {
+              let n = w.nodes.find((x) => x.id === p.node_id)
+              if (!n) w.nodes.push((n = { id: p.node_id!, namespace: p.namespace!, label: p.label, type: p.node_type!, config: { script: [] } }))
+              const line = readLine(v, a.partner.slug, p.reads)
+              if (!n.config.script!.includes(line)) n.config.script!.push(line)
+            }
+          }
+          for (const s of v.shadowed_data_keys) wf(s.workflow_id, s.workflow_name, s.is_active).nodes[0].config.data![v.constant_name] = null
+        }
+      }
+      // The rest of what was searched: workflows with a Constants step that read nothing, then workflows without one.
+      const { workflows: total, with_constants_node: withConstants } = Object.values(answers)[0].searched
+      for (let i = wfs.size; i < withConstants; i++) wf(`ffff${i}`, `Reads nothing ${i}`, true)
+      const list = [...wfs.values()].map(({ nodes, ...w }) => ({ ...w, definition: { nodes: nodes.map((n) => ({ ...n, config: n.config.script ? { script: n.config.script.join('\n') } : n.config })), edges: [] } }))
+      for (let i = list.length; i < total; i++) list.push({ id: `fffff${i}`, name: `No Constants step ${i}`, is_active: true, organization_id: testUser.organization_id, deleted_at: null, definition: { nodes: [], edges: [] } })
+      return list.sort((x, y) => (x.id < y.id ? -1 : x.id > y.id ? 1 : 0))
+    }
+
+    it('the fixture has an answer for every listed partner, each over the same search', () => {
+      expect(Object.keys(answers).sort()).toEqual(partners.map((p) => p.id).sort())
+      expect(new Set(Object.values(answers).map((a) => JSON.stringify(a.searched))).size).toBe(1)
+    })
+
+    it.each(Object.keys(answers).map((id) => [partners.find((p) => p.id === id)!.slug, id]))('for %s', async (slug, id) => {
+      const row = partners.find((p) => p.id === id)!
+      supabaseWith({
+        partner_configs: { single: withoutWarning(row) },
+        partner_uuid_map: { list: allIds.filter((u) => u.partner_slug === slug) },
+        workflows: { list: workflowsOf() },
+      })
+      const res = await call('GET', `/partners/${id}/workflow-values`)
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual(answers[id])
+    })
   })
 
   it('GET /partner-uuids: the sub-account IDs', async () => {

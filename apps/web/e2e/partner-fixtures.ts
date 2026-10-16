@@ -31,6 +31,8 @@ export interface PartnerFixtures {
   panels: { history: unknown; buyer_sales: unknown; held_clicks: unknown; usage_offer: unknown; usage_click: unknown }
   /** GET /api/partners/:id/usage by partner id (#2137), measured read only from production on 2026-10-16. */
   usage: Record<string, unknown>
+  /** GET /api/partners/:id/workflow-values by partner id (#2142), built through the route's code from production's workflows (read only, 2026-10-16). */
+  workflowValues: Record<string, unknown>
 }
 
 export function loadPartnerFixtures(): PartnerFixtures {
@@ -43,6 +45,7 @@ export function loadPartnerFixtures(): PartnerFixtures {
     matrix: read('synthetic/matrix.tripoint.json'),
     panels: read('synthetic/panels.json'),
     usage: read('usage.json'),
+    workflowValues: read('workflow-values.json'),
   }
 }
 
@@ -55,6 +58,8 @@ export interface FixtureOptions {
   credentialWarningFor?: string
   /** Answer the usage read (#2137) with a 503, so the Bid Group tab's failed state is reached. */
   usageFails?: boolean
+  /** Answer the workflow values read (#2142) with a 503, so the Workflow values tab's failed state is reached. */
+  workflowValuesFails?: boolean
 }
 
 export interface Answer { status: number; body: unknown }
@@ -83,6 +88,10 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
   if ((m = /^\/api\/partners\/([^/]+)\/usage$/.exec(p))) {
     if (opts.usageFails) return { status: 503, body: { error: 'Service unavailable' } }
     return fx.usage[m[1]] ? ok(fx.usage[m[1]]) : null
+  }
+  if ((m = /^\/api\/partners\/([^/]+)\/workflow-values$/.exec(p))) {
+    if (opts.workflowValuesFails) return { status: 503, body: { error: 'Service unavailable' } }
+    return fx.workflowValues[m[1]] ? ok(fx.workflowValues[m[1]]) : null
   }
   if (p === '/api/partner-uuids') return ok(fx.uuids)
   if (p === '/api/partner-bid-configs') {

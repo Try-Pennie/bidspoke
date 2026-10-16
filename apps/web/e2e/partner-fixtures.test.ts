@@ -159,6 +159,26 @@ describe('answerFor', () => {
     expect(named.sort()).toEqual([['amone', ['Main Flow', 'Main Flow (v2) (off)']], ['tripoint', ['Main Flow', 'Main Flow (v2) (off)']]])
   })
 
+  // #2142: the Workflow values tab reads which workflows read each partner value.
+  it('answers the workflow values read for every listed partner, and fails it only when asked to', () => {
+    for (const p of fx.partners) expect(answerFor('GET', `${W}/api/partners/${p.id}/workflow-values`, fx), p.slug).toMatchObject({ status: 200 })
+    expect(answerFor('GET', `${W}/api/partners/not-a-partner/workflow-values`, fx)).toBeNull()
+    expect(answerFor('GET', `${W}/api/partners/${tripoint.id}/workflow-values`, fx, { workflowValuesFails: true })?.status).toBe(503)
+  })
+
+  it('the measured workflow values: Engine Bidding reads Tripoint\'s click URL and Sofi\'s sell-off offer by name, the minimum bids are read by the RML and LendSwift workflows', () => {
+    type A = { partner: { slug: string }; values: Array<{ constant_name: string; readers: Array<{ workflow_name: string; reads: string }> }> }
+    const byName = Object.values(fx.workflowValues as Record<string, A>).flatMap((a) => a.values.flatMap((v) => v.readers.filter((r) => r.reads === 'by_name').map((r) => `${v.constant_name} ${r.workflow_name}`)))
+    expect(byName.sort()).toEqual([
+      'GigfiSubAccountMinBids RML - Bidding Workflow (GigFi)',
+      'LendswiftSubAccountMinBids Bidding - LendSwift',
+      'LendswiftSubAccountMinBids RML - Bidding Workflow (LendSwift)',
+      'SofiSellOffOfferDetails Engine Bidding Workflow',
+      'SofiSellOffOfferTitle Engine Bidding Workflow',
+      'TripointClickUrl Engine Bidding Workflow',
+    ])
+  })
+
   it('answers a page save only when asked to, and only with the recorded 409', () => {
     expect(answerFor('PUT', `${W}/api/partners/${tripoint.id}/page`, fx)).toBeNull()
     expect(answerFor('PUT', `${W}/api/partners/${tripoint.id}/page`, fx, { staleSave: true })).toEqual({ status: 409, body: fx.stale })

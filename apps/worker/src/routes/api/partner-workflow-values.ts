@@ -31,7 +31,7 @@ import { fetchAllPaged } from '../../lib/paginate'
 import { readOrgWorkflows } from '../../lib/org-workflows'
 import { partnerConstantsFromRows, type PartnerConstantsPartnerRow, type PartnerConstantsUuidRow } from '../../lib/partner-constants-loader'
 import { partnerConstantOutput } from '../../engine/nodes/constants'
-import { CLICK_URL_READERS_OUTSIDE_WORKFLOWS, carriesConstantsNode, scanPartnerValueReaders } from '../../lib/partner-workflow-values'
+import { CLICK_URL_READERS_OUTSIDE_WORKFLOWS, carriesConstantsNode, scanPartnerValueReaders, type ScannableWorkflow } from '../../lib/partner-workflow-values'
 import type { WorkflowValue, WorkflowValuesAnswer } from '../../lib/workflow-values-shape'
 
 const workflowValues = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
@@ -74,6 +74,20 @@ workflowValues.get('/:id/workflow-values', async (c) => {
     return dbError(c, err)
   }
 
+  return c.json(workflowValuesAnswer(row, uuidRows, workflows))
+})
+
+/**
+ * The answer, from the rows the route read: the partner, its sub-account ids and
+ * the organization's workflows. Pure, so the e2e fixture's measurement
+ * (apps/worker/scripts/measure-workflow-values-e2e-fixture.ts) builds it from
+ * production's rows through exactly this code.
+ */
+export function workflowValuesAnswer(
+  row: PartnerConstantsPartnerRow,
+  uuidRows: readonly PartnerConstantsUuidRow[],
+  workflows: readonly ScannableWorkflow[]
+): WorkflowValuesAnswer {
   const emitted = partnerConstantOutput(partnerConstantsFromRows(uuidRows, [row]))
   const subAccountIds = uuidRows.map((u) => u.uuid)
   const scan = scanPartnerValueReaders(workflows, { slug: row.slug, subAccountIds })
@@ -106,12 +120,11 @@ workflowValues.get('/:id/workflow-values', async (c) => {
 
   const withConstants = workflows.filter(carriesConstantsNode).length
 
-  const answer: WorkflowValuesAnswer = {
+  return {
     partner: { id: row.id, slug: row.slug },
     values,
     searched: { workflows: workflows.length, with_constants_node: withConstants },
   }
-  return c.json(answer)
-})
+}
 
 export default workflowValues
