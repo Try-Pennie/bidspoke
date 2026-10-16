@@ -296,6 +296,20 @@ describe('a recovery run whose check cannot be answered sends nothing (fail clos
     })
   }
 
+  // A failed login is not Salesforce failing to answer, and is not said as one (L11).
+  it('a revoked token whose fresh login fails: nothing sent, and the step says the login failed, not that Salesforce did not answer', async () => {
+    salesforce({
+      [SUB_URL]: () => answer(401, [{ errorCode: 'INVALID_SESSION_ID' }]),
+      [`${INSTANCE}/services/oauth2/token`]: () => answer(400, { error: 'invalid_client' }),
+    })
+    cache.get.mockResolvedValueOnce('tok').mockResolvedValue(null)
+    const err = await walk(replay())
+    expect(err?.message).toMatch(/credit inquiry post not sent.*unknown \(the check could not be made: Salesforce token fetch failed \(400\)/)
+    expect(err?.message).not.toMatch(/no answer reading/)
+    expect(apexCalls()).toHaveLength(0)
+    expect(kv.put).not.toHaveBeenCalled()
+  })
+
   it('the lineage of the run it recovers cannot be read: no Salesforce call at all', async () => {
     salesforce({})
     const queue: StepLogEntry[] = []

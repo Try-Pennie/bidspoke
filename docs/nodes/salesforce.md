@@ -133,7 +133,7 @@ On success:
 
 For `update`, Salesforce returns `204 No Content`, so `body` is `null`. For `query`, `body` is the SOQL result envelope (`{ totalSize, done, records }`). Read downstream as `steps.<namespace>.output.body.id`, `steps.<namespace>.output.body.records`, etc.
 
-When a write is skipped (`skip_when_empty`), the output is `{ skipped: true, skip_reason }` and the run continues. A credit inquiry post skipped on a replay or a resume because its file already landed is `{ skipped: true, skip_reason: "already_landed", lead_id, recovered_from, marker_since }`.
+When a write is skipped (`skip_when_empty`), the output is `{ skipped: true, skip_reason }` and the run continues. A credit inquiry post skipped on a replay or a resume because its file already landed is `{ skipped: true, skip_reason: "already_landed", lead_id, recovered_from, marker_since }`; unlike the others, that skip has called Salesforce, to make the check.
 
 When an `expected_errors` entry matches, the output is `{ status, ok: false, errorCode, message, body }` and the run exits at this node.
 

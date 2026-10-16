@@ -13,7 +13,10 @@
  * Config: { operation, object, body?, record_id?, external_id_field?,
  *           external_id_value?, soql?, omit_fields?, rename_fields?,
  *           skip_when_empty? }
- * Output: { status, body }, or { skipped: true, skip_reason } for a skipped write
+ * Output: { status, body }, or { skipped: true, skip_reason } for a skipped write.
+ * A credit inquiry post skipped on a replay or a resume because its file already
+ * landed (#2176) also carries lead_id, recovered_from and marker_since, and is the
+ * one skip that calls Salesforce, for that check.
  */
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult, ResolvedStepInput, StepLogEntry } from '../../types'
@@ -31,7 +34,7 @@ import { containsHtmlDocument, summarizeHtmlErrorBody } from '../../lib/html-err
 import { attachBlockSighting, noteBlockSighting, sightingFromResponse } from '../block-sightings'
 import { salesforceConfigProblem } from '@bidspoke/workflow-definition'
 import { stampWriteMarker } from '../write-marker'
-import { CREDIT_INQUIRY_APEX_PATH, INQUIRY_MARKER_MARGIN_MS, inquiryPostOf, isCreditInquiryPost, lookupInquiryMarker, type InquiryPost, type SalesforceRead } from '../inquiry-post'
+import { CREDIT_INQUIRY_APEX_PATH, INQUIRY_MARKER_MARGIN_MS, inquiryPostOf, isCreditInquiryPost, lookupInquiryMarker, type InquiryMarkerLookup, type InquiryPost, type SalesforceRead } from '../inquiry-post'
 import type { RecoveryOrigin } from '../recovery-origin'
 import { formatErr } from '../../lib/format-error'
 
@@ -416,19 +419,23 @@ export async function executeSalesforceNode(
   if (inquiryPost && ctx.recovery) {
     const read = async (path: string): Promise<SalesforceRead> => {
       const get: SalesforceCallOptions = { ...callOpts, url: `${instanceUrl}/services/data/v60.0${path}`, method: 'GET', operation: 'query', targetLabel: path.split('?')[0] }
-      try {
-        let { res, responseText } = await performSalesforceCall(undefined, get)
-        // A revoked cached token (#1741): refused before anything ran, so read once
-        // more with a fresh login, which the post then goes out with too.
-        if (res.status === 401) {
-          await env.WORKFLOW_CACHE.delete(salesforceTokenCacheKey(ctx.trigger.org_id))
-          headers.Authorization = `Bearer ${await getSalesforceToken(env, ctx.trigger.org_id, instanceUrl, clientId, clientSecret, { signal })}`
-          ;({ res, responseText } = await performSalesforceCall(undefined, get))
+      const attempt = async (): Promise<SalesforceRead> => {
+        try {
+          const { res, responseText } = await performSalesforceCall(undefined, get)
+          return { kind: 'answer', status: res.status, text: responseText }
+        } catch (e) {
+          return { kind: 'no_answer', error: formatErr(e) }
         }
-        return { kind: 'answer', status: res.status, text: responseText }
-      } catch (e) {
-        return { kind: 'no_answer', error: formatErr(e) }
       }
+      const first = await attempt()
+      if (first.kind !== 'answer' || first.status !== 401) return first
+      // A revoked cached token (#1741): refused before anything ran, so read once
+      // more with a fresh login, which the post then goes out with too. A fresh
+      // login that fails throws, so the step says the login failed rather than
+      // that Salesforce did not answer the read.
+      await env.WORKFLOW_CACHE.delete(salesforceTokenCacheKey(ctx.trigger.org_id))
+      headers.Authorization = `Bearer ${await getSalesforceToken(env, ctx.trigger.org_id, instanceUrl, clientId, clientSecret, { signal })}`
+      return attempt()
     }
     const landed = await checkRecoveredInquiryPost(ctx, ctx.recovery, node.namespace, inquiryPost, read, resolvedInput, warnLogs)
     if (landed) return landed
@@ -1075,7 +1082,13 @@ async function checkRecoveredInquiryPost(
       throw unknown(`the original post is still being settled by the read-back (execution ${executionId}), which reads its file and resends it at most once; a replay after it settles checks again`)
     }
   }
-  const looked = await lookupInquiryMarker(read, post.submissionId, origin.startedAtMs)
+  let looked: InquiryMarkerLookup
+  try {
+    looked = await lookupInquiryMarker(read, post.submissionId, origin.startedAtMs)
+  } catch (e) {
+    // The reader answers every read it made; what throws is a fresh login that failed.
+    throw unknown(`the check could not be made: ${formatErr(e)}`)
+  }
   if (looked.kind === 'unread') {
     throw unknown(looked.read.kind === 'no_answer' ? `no answer reading the ${looked.what}: ${looked.read.error}` : `Salesforce answered ${looked.read.status} reading the ${looked.what}`)
   }

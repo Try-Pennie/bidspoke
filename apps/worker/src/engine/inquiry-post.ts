@@ -102,8 +102,11 @@ const soqlTime = (ms: number) => new Date(ms).toISOString().replace(/\.\d{3}Z$/,
 
 /**
  * The query for the post's marker: the `Inquiries_<leadId>` file linked to the
- * Lead and created since the post began. Proved on the org, read only, on
- * 2026-10-15: one row for a Lead's file from that day, none with a later window.
+ * Lead and created since `sinceMs`, less the margin. The read-back passes when
+ * the held post began; a recovery run passes when the root run of its lineage
+ * began, which is never later than that run's post (#2176). Proved on the org,
+ * read only, on 2026-10-15: one row for a Lead's file from that day, none with a
+ * later window.
  */
 export function inquiryMarkerQuery(leadId: string, sinceMs: number): string {
   if (!isSalesforceRecordId(leadId)) throw new Error('the Lead id is not a record id, so it is not put in a query')
@@ -137,7 +140,8 @@ export type InquiryMarkerLookup =
  * reading both its callers make, the read-back judging a held post and a
  * recovery run checking before it posts, so the two can never disagree about
  * what landed means. It judges nothing about a failed read: each caller decides
- * what one means for it.
+ * what one means for it. `sinceMs` is the caller's: when the held post began for
+ * the read-back, when the lineage's root run began for a recovery run.
  */
 export async function lookupInquiryMarker(
   read: (path: string) => Promise<SalesforceRead>,
