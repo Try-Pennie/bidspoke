@@ -291,6 +291,8 @@ export async function runVolumeCliffCheck(
   // always passes it, and without it two ticks that pass the cooldown together
   // both post.
   claims?: AlertClaims,
+  // The clock the saved Slack copy is dated by (#2060); a test sets it.
+  clock: () => number = Date.now,
 ): Promise<void> {
   const { data: slackOrgs, error: slackOrgsError } = await readSlackConnectionRowsForCopy(supabase)
   logReadFailure('volume-cliff', 'slack connections', slackOrgsError)
@@ -304,7 +306,10 @@ export async function runVolumeCliffCheck(
     const conn = parseSlackConnection((row as { config?: unknown }).config)
     if (conn) connections.set(row.organization_id as string, conn)
   }
-  if (connections.size > 0) await rememberSlackConnections(kv, secretEncryptionKey, connections)
+  // Every successful read rewrites the copy, an empty one included (#2060): the
+  // database has just said who has a connection, and an outage must not post to
+  // organizations that have since disconnected. A failed read returned above.
+  await rememberSlackConnections(kv, secretEncryptionKey, connections, clock())
 
   const slackOrgIds = (slackOrgs ?? []).map((c) => c.organization_id as string)
   if (slackOrgIds.length === 0) return

@@ -14,7 +14,7 @@ vi.mock('../slack', () => ({
 }))
 
 import { detectCliff, runVolumeCliffCheck, sendCliffAlert, BASELINE_WINDOW_MINUTES, RECENT_WINDOW_MINUTES, MIN_BASELINE_PER_MIN, DB_UNREACHABLE_PREFIX } from '../volume-cliff'
-import { SLACK_CONNS_LASTGOOD_KEY } from '../slack-copy'
+import { SLACK_CONNS_LASTGOOD_KEY, SLACK_COPY_SAVED_AT_KEY } from '../slack-copy'
 import { getSlackConnection, postMessage, sendRecoveryAlert, sendDatabaseUnreachableAlert } from '../slack'
 import { encryptSecret, decryptSecret } from '../secret-crypto'
 import { recoveryKey, RECOVERY_TTL_SECONDS } from '../alert-recovery'
@@ -412,13 +412,14 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
     } as unknown as Parameters<typeof runVolumeCliffCheck>[0]
   }
 
-  function healthySupabase() {
+  /** Every read answers; `slackRows` is what the Slack connections read returns (one connected org unless given). */
+  function healthySupabase(slackRows: unknown[] = [{ organization_id: ORG, config: { bot_token: CONN.bot_token, default_channel: CONN.default_channel } }]) {
     const base = Math.floor(Date.now() / 60000) * 60000 - 59 * 60000
     const minutes = Array.from({ length: 60 }, (_, i) => ({ minute: new Date(base + i * 60000).toISOString(), cnt: 50 }))
     const from = (table: string) => {
       const rows =
         table === 'service_connections'
-          ? [{ organization_id: ORG, config: { bot_token: CONN.bot_token, default_channel: CONN.default_channel } }]
+          ? slackRows
           : [{ id: WF, name: 'Main Flow', organization_id: ORG, slack_channel: null }]
       const builder: Record<string, unknown> = {
         select: () => builder, eq: () => builder, in: () => builder, is: () => builder, limit: () => builder, abortSignal: () => builder,
@@ -450,6 +451,32 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
     expect(raw).not.toContain('xoxb')
     const copy = JSON.parse(await decryptSecret(raw!, TEST_KEY)) as Record<string, { bot_token: string }>
     expect(copy[ORG].bot_token).toBe('xoxb-t')
+  })
+
+  // #2060: the copy is rewritten from every successful read, an empty one
+  // included, dated by the check's clock, and never from a failed read.
+  it('rewrites the copy as EMPTY when the read answers with no connected organization, replacing a stale one', async () => {
+    const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: await lastGood() })
+    const now = Date.parse('2026-10-15T03:04:00Z')
+    await runVolumeCliffCheck(healthySupabase([]), kv, 'https://app.example', 'https://self.example', TEST_KEY, undefined, () => now)
+    const copy = JSON.parse(await decryptSecret(kv.store.get(SLACK_CONNS_LASTGOOD_KEY)!, TEST_KEY)) as Record<string, unknown>
+    expect(copy).toEqual({ [SLACK_COPY_SAVED_AT_KEY]: '2026-10-15T03:04:00.000Z' })
+  })
+
+  it('dates the copy with the check clock on a healthy tick', async () => {
+    const kv = fakeKv()
+    const now = Date.parse('2026-10-15T03:05:00Z')
+    await runVolumeCliffCheck(healthySupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY, undefined, () => now)
+    const copy = JSON.parse(await decryptSecret(kv.store.get(SLACK_CONNS_LASTGOOD_KEY)!, TEST_KEY)) as Record<string, unknown>
+    expect(copy[SLACK_COPY_SAVED_AT_KEY]).toBe('2026-10-15T03:05:00.000Z')
+    expect(Object.keys(copy).sort()).toEqual([ORG, SLACK_COPY_SAVED_AT_KEY].sort())
+  })
+
+  it('leaves the copy exactly as it was when the Slack connections read fails', async () => {
+    const before = await lastGood()
+    const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: before })
+    await runVolumeCliffCheck(allDownSupabase(), kv, 'https://app.example', 'https://self.example', TEST_KEY, undefined, () => Date.parse('2026-10-15T03:06:00Z'))
+    expect(kv.store.get(SLACK_CONNS_LASTGOOD_KEY)).toBe(before)
   })
 
   it('posts a database unreachable alert from the last-good copy when every read fails', async () => {
