@@ -17,8 +17,6 @@ import {
   writeOutcome,
   writeObservability,
   recordOutcomeDeadLetter,
-  OUTCOME_DEAD_LETTER_THRESHOLD,
-  CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD,
   DEAD_LETTER_VOLUME_DEADLINE_MS,
 } from '../durability'
 import { PostResponseBudget, POST_RESPONSE_BUDGET_MS, DEAD_LETTER_RESERVE_MS } from '../../lib/post-response-budget'
@@ -246,37 +244,20 @@ describe('recordOutcomeDeadLetter', () => {
   })
 })
 
-// #1942: a continuation that did not finish in time is "unknown, probably fine",
-// not a confirmed loss, so its label pages only when SEVERAL land in the window
-// (a real upstream slowdown), while the confirmed-loss labels still page on the
-// first. Every occurrence is still recorded on the run regardless, so the higher
-// bar delays the page, it does not hide the evidence.
-describe('continuation_unfinished has a higher dead-letter threshold (#1942)', () => {
-  const lossCountOf = (callIndex: number) =>
-    (vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.at(callIndex)![1] as unknown as { window_loss_count: number })
-      .window_loss_count
-
-  it('is strictly higher than the confirmed-loss threshold', () => {
-    expect(CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD).toBeGreaterThan(OUTCOME_DEAD_LETTER_THRESHOLD)
-  })
-
-  it('stays silent below the threshold, then pages reporting the full window count', async () => {
+// #1942 raised continuation_unfinished to three in the window because one was
+// "unknown, probably fine": the example was a Salesforce write that landed 3 s
+// after the cut-off. Since #2024 the engine leaves every write the Salesforce
+// read-back holds to the read-back and records nothing for it, so what still
+// reaches this label is work nothing checks later (relay posts, Achieve, code),
+// and of the writes measured on 2026-10-13, 8 of 18 had not landed. It pages on
+// the first, like the other labels; the claim still caps a burst at one page.
+describe('continuation_unfinished pages on the first, like every other label (#2024)', () => {
+  it('pages on its first occurrence in the window', async () => {
     const kv = fakeKv()
-    // Every occurrence below the threshold is counted in the window but not paged.
-    for (let i = 0; i < CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD - 1; i++) {
-      const sent = await recordOutcomeDeadLetter('continuation_unfinished', new Error('slow'), deps(kv))
-      expect(sent).toBe(false)
-    }
-    expect(sendOutcomeDeadLetterAlert).not.toHaveBeenCalled()
-    expect(kv.store.get('outcome-deadletter-window:org-1:continuation_unfinished')).toBe(
-      String(CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD - 1),
-    )
-
-    // The occurrence that reaches the threshold pages, reporting the accumulated count.
     const sent = await recordOutcomeDeadLetter('continuation_unfinished', new Error('slow'), deps(kv))
     expect(sent).toBe(true)
     expect(sendOutcomeDeadLetterAlert).toHaveBeenCalledTimes(1)
-    expect(lossCountOf(0)).toBe(CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD)
+    expect(kv.store.get('outcome-deadletter-window:org-1:continuation_unfinished')).toBe('1')
   })
 
   it('does not change the confirmed-loss labels, which still page on the first loss', async () => {

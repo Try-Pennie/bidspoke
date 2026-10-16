@@ -1261,6 +1261,31 @@ above, extended rather than copied.
   the read-back sends nothing while the bulkhead is full, so this needs a slot
   to vanish between that check and the send.
 
+### The unfinished work alert (#2024)
+
+A run that answered early keeps walking, and finalize stops waiting 12 s after
+the answer. Work still out then used to count toward `continuation_unfinished`
+whatever it was. Now the run pages only when the read-back does not hold all of
+it (`apps/worker/src/engine/unfinished-work.ts`):
+
+- **Every step the walk was on is held by the read-back.** Asked of that step's
+  at-risk record through the read-back's own classifier (`readBackHoldsStep`):
+  a stamped update on an object with the marker field, or a credit inquiry post.
+  A write still inside its first 2 s has no record yet and pages.
+- **Nothing still to walk can send anything.** Every node reachable from those
+  steps (edges, a fallback node, a parallel node's children) must be one whose
+  node traits say it sends nothing. A write still to come has no record yet, so
+  Lead Economy's and Liberty1's chains of updates page when cut off early.
+- **Any doubt pages**: no running step named, a step or type the definition or
+  build does not know, a record that cannot be read, or one that does not answer
+  within 1 s.
+
+A held run is still recorded as degraded with its reason; only the page and the
+window count are left to the read-back. What still pages is work nothing checks
+later (relay posts, Achieve calls, code nodes, unstamped writes), so the label
+now pages on the first, like every other (it was three, #1942), and its copy
+says nothing confirmed the work rather than that it may have finished.
+
 ## Open questions (consolidated)
 
 All answered on 2026-10-15, read only; each answer is in its section. Two

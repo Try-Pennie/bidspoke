@@ -1318,7 +1318,8 @@ async function sendHeldWritebackAlert(
 
 /**
  * Work after the answer still running when finalize stopped waiting for it
- * (#1860). Its outcome is unknown, not failed, so the alert says that and asks
+ * (#1860), and not all of it held by the Salesforce read-back (#2024). Its
+ * outcome is unknown, not failed, so the alert says nothing confirmed it and asks
  * for a check rather than a repair. It names the step the run was still on
  * (#1882): it used to point at the Salesforce update, which on 2026-10-08 had
  * finished 87 ms after the answer while the slow step was the Achieve call.
@@ -1347,11 +1348,17 @@ async function sendUnfinishedWorkAlert(
   // do (L30). What this renderer drops is the singular alternate wording ("This
   // happened once", "View the run"): one vocabulary regardless of count (#1944).
   const period = deadLetterPeriod(n, payload.window_minutes)
+  // #2024: this fires only for work the Salesforce read-back does not hold, and
+  // on 2026-10-13, 8 of 18 such writes had not landed, so it never suggests the
+  // work probably finished. Work after the named step may not have run either.
+  const unconfirmed = named.length > 0
+    ? `Nothing confirmed whether ${one ? 'it' : 'they'} or the steps after ${one ? 'it' : 'them'} finished.`
+    : 'Nothing confirmed whether they finished.'
   const summary =
     `${who}, but ${steps} ${one ? 'was' : 'were'} still running when Bidspoke stopped waiting. ` +
-    `${one ? 'It' : 'They'} may have finished, but nothing confirmed it. This happened about ${n} ${n === 1 ? 'time' : 'times'} ${period}.`
+    `${unconfirmed} This happened about ${n} ${n === 1 ? 'time' : 'times'} ${period}.`
   const fix = named.length > 0
-    ? `Fix: open the run below and check what ${listSteps(named)} did. If this keeps happening, ${one ? 'that step is' : 'those steps are'} running slowly.`
+    ? `Fix: open the run below and check what ${listSteps(named)} did, and whether the steps after ${one ? 'it' : 'them'} ran. If this keeps happening, ${one ? 'that step is' : 'those steps are'} running slowly.`
     : run
       ? 'Fix: open the run below and check what its last steps did. If this keeps happening, those steps are running slowly.'
       : 'Fix: open the recent runs on the dashboard and check what their last steps did. If this keeps happening, those steps are running slowly.'

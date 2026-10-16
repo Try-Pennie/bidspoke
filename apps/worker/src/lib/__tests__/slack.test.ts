@@ -974,19 +974,21 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
     return [body.text, ...body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '')].join('\n')
   }
 
-  it('says the work may have finished and nothing was confirmed, never that a record was lost', async () => {
+  // #2024: the page now fires only for work the Salesforce read-back does not
+  // hold, and on 2026-10-13, 8 of 18 such writes had not landed. So it no longer
+  // suggests the work probably finished: it says nothing confirmed it.
+  it('says nothing confirmed the work finished, never that it may have finished or that a record was lost', async () => {
     await sendOutcomeDeadLetterAlert(conn, {
       label: 'continuation_unfinished',
-      // This renderer fires only at continuation_unfinished's threshold of 3, so
-      // every fixture here uses a count that can actually reach it (#1944).
-      window_loss_count: 3,
+      window_loss_count: 1,
       window_minutes: 30,
-      error_message: "The run's work after the answer did not finish within 12 s of the answer; it may still finish, but nothing confirmed it",
+      error_message: "The run's work after the answer did not finish within 12 s of the answer. Nothing confirmed whether it finished.",
       run: { workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-07T20:00:00Z' },
     }, 'https://app.test')
     const text = textOf()
     expect(text).toMatch(/did not finish/i)
-    expect(text).toMatch(/may (still )?have finished|may still finish/i)
+    expect(text).toContain('Nothing confirmed whether they finished.')
+    expect(text).not.toMatch(/may (still )?(have )?finish/i)
     expect(text).not.toMatch(/lost|must-not-lose|not auto-recovered/i)
     expect(text).toContain('https://app.test/workflows/wf-1?execution=ex-1')
   })
@@ -998,15 +1000,15 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
       label: 'continuation_unfinished',
       window_loss_count: 3,
       window_minutes: 30,
-      error_message: "The run's work after the answer did not finish within 12 s of the answer. Still running then: Achieve under 10k (achieve_under_10k). It may still finish, but nothing confirmed it.",
+      error_message: "The run's work after the answer did not finish within 12 s of the answer. Still running then: Achieve under 10k (achieve_under_10k). Nothing confirmed whether it finished.",
       run: {
         workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-08T03:20:17Z',
         still_running: ['Achieve under 10k (achieve_under_10k)'],
       },
     }, 'https://app.test')
     const text = textOf()
-    expect(text).toContain('Main Flow answered a lead at 11:20 PM ET, but the step Achieve under 10k (achieve_under_10k) was still running when Bidspoke stopped waiting.')
-    expect(text).toContain('Fix: open the run below and check what Achieve under 10k (achieve_under_10k) did. If this keeps happening, that step is running slowly.')
+    expect(text).toContain('Main Flow answered a lead at 11:20 PM ET, but the step Achieve under 10k (achieve_under_10k) was still running when Bidspoke stopped waiting. Nothing confirmed whether it or the steps after it finished.')
+    expect(text).toContain('Fix: open the run below and check what Achieve under 10k (achieve_under_10k) did, and whether the steps after it ran. If this keeps happening, that step is running slowly.')
     expect(text).not.toMatch(/salesforce/i)
   })
 

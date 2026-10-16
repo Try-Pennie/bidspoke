@@ -97,7 +97,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../env'
-import { AT_RISK_WRITE_PREFIX, AT_RISK_WRITE_TTL_SECONDS, parseAtRiskEntry, type AtRiskEntry } from '../engine/at-risk-writes'
+import { AT_RISK_WRITE_PREFIX, AT_RISK_WRITE_TTL_SECONDS, atRiskKey, parseAtRiskEntry, type AtRiskEntry } from '../engine/at-risk-writes'
 import { WRITE_MARKER_FIELD, parseWriteMarker, readBackOwns, stampsWrites, writeMarker } from '../engine/write-marker'
 import { salesforceRejectedTheWrite } from '../engine/nodes/salesforce'
 import { CREDIT_INQUIRY_APEX_PATH, inquiryMarkerQuery, inquiryPostOf, type InquiryPost } from '../engine/inquiry-post'
@@ -301,7 +301,7 @@ type HeldRead =
   | { kind: 'unopenable'; held: Held }
   | { kind: 'owned'; held: Held }
 
-async function readHeldWrite(kv: ReadBackKv, keys: SecretKeyInput, name: string): Promise<HeldRead> {
+async function readHeldWrite(kv: Pick<ReadBackKv, 'get'>, keys: SecretKeyInput, name: string): Promise<HeldRead> {
   const id = name.slice(AT_RISK_WRITE_PREFIX.length)
   const entry = parseAtRiskEntry(await kv.get(name))
   if (!entry) return { kind: 'gone' }
@@ -325,6 +325,20 @@ async function readHeldWrite(kv: ReadBackKv, keys: SecretKeyInput, name: string)
   if (inquiryPost) return { kind: 'owned', held: { ...base, body, inquiry: inquiryPostOf(body) } }
   if (!readBackOwns(entry.sf_object, body, entry.execution_id, entry.step_namespace)) return { kind: 'not_ours' }
   return { kind: 'owned', held: { ...base, body } }
+}
+
+/**
+ * Whether this job holds one step's write as its own: the step's at-risk record,
+ * read through the same classifier the tick uses, is owned and not yet settled.
+ * The engine's unfinished work alert stays quiet only on this answer (#2024), so
+ * a write is never both left to this job and paged there, and never neither.
+ * Anything else answers false: no record, a record without its own stamp, an
+ * object with no marker field, or one the keys cannot open. A KV failure throws,
+ * and the caller pages.
+ */
+export async function readBackHoldsStep(kv: Pick<ReadBackKv, 'get'>, keys: SecretKeyInput, executionId: string, stepNamespace: string): Promise<boolean> {
+  const read = await readHeldWrite(kv, keys, atRiskKey(executionId, stepNamespace))
+  return read.kind === 'owned'
 }
 
 /** Keys one list call asks KV for. */

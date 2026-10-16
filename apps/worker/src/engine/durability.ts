@@ -25,7 +25,6 @@ import { withinBudget, type RetryTiming } from '../lib/post-response-budget'
 import { formatErr } from '../lib/format-error'
 import { getSlackConnection, sendOutcomeDeadLetterAlert, type OutcomeDeadLetterAlert } from '../lib/slack'
 import { putUnconfirmedWrite, type ReadBack, type UnconfirmedRun } from './unconfirmed-writes'
-import { CONTINUATION_UNFINISHED_LABEL } from './dead-letter-labels'
 import type { AlertClaims } from '../lib/alert-claim'
 
 // How long the best-effort build-now volume tally may take before the dead letter
@@ -76,43 +75,25 @@ export interface OutcomeDeps {
 export type OutcomeAlertDeps = Omit<OutcomeDeps, 'supabase'>
 
 // Each writeOutcome failure already survived the full retry ladder, so a single
-// exhausted loss is a real must-not-lose miss — alert on the first one. A cooldown
-// then rate-aggregates a burst so one outage pages once, not once per lead.
-export const OUTCOME_DEAD_LETTER_THRESHOLD = 1
+// exhausted loss is a real must-not-lose miss: every label alerts on the first
+// one, so there is no threshold to reach. A cooldown then rate-aggregates a burst
+// so one outage pages once, not once per lead.
 export const OUTCOME_DEAD_LETTER_COOLDOWN_TTL_SECONDS = 30 * 60
 export const OUTCOME_DEAD_LETTER_WINDOW_MINUTES = OUTCOME_DEAD_LETTER_COOLDOWN_TTL_SECONDS / 60
 
-// A continuation that did not finish in time (#1860) is "unknown, probably fine",
-// NOT a confirmed loss like a returned error or a read-back miss: the post-response
-// walk simply did not confirm within its budget, and the write may well have landed
-// (the one measured on 2026-10-09, RML GigFi, confirmed in Salesforce 3 s after the
-// cut-off). A single isolated one is therefore noise, and an alert that cries wolf
-// gets ignored (L36), so it pages only when several land in the window, which is what
-// a real upstream slowdown looks like; the confirmed-loss labels keep the first-loss
-// threshold. Every occurrence is recorded on its run (status 'degraded' plus the
-// message) regardless, so this higher bar delays the page, it does not hide the
-// evidence (#1942).
-//
-// The window counter is a non-atomic KV read then write (see its comment below),
-// so concurrent increments can undercount, and a higher threshold is more exposed
-// to that than 1 was. It is tolerable here: the count is never ABOVE the truth, so
-// an undercount only ever delays the page; a genuine upstream slowdown produces far
-// more than three unfinished continuations in the window and still crosses it; and
-// every occurrence is on its run regardless. Only a marginal cluster of exactly
-// three, two of them racing, would be missed, which for a rare non-loss event is an
-// acceptable trade for the quiet. An atomic counter (a Durable Object) would be a
-// far larger change affecting every label, out of scope for this tuning.
-export const CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD = 3
-
-// The window count a label must reach before it pages. One per label, defaulting to
-// the confirmed-loss threshold; continuation_unfinished is the one unknown-not-lost
-// label, so it alone is raised. Keyed on the shared label constant, not a literal,
-// so the setter (engine/index.ts) and this threshold cannot silently diverge (#1942).
-export function deadLetterThreshold(label: string): number {
-  return label === CONTINUATION_UNFINISHED_LABEL
-    ? CONTINUATION_UNFINISHED_DEAD_LETTER_THRESHOLD
-    : OUTCOME_DEAD_LETTER_THRESHOLD
-}
+// continuation_unfinished pages on the first too (#2024). #1942 had raised it to
+// three in the window, reading a lone one as "unknown, probably fine" on the
+// strength of one RML GigFi write that landed 3 s after the cut-off. Since #2024
+// the engine records nothing under this label for work the Salesforce read-back
+// holds (that write's case: the read-back confirms, resends or pages it itself),
+// so what still arrives is work nothing checks later: relay posts, Achieve calls,
+// code nodes, unstamped writes. Of the writes measured on 2026-10-13, 8 of 18 had
+// not landed. In the 8 days to 2026-10-15, 49 of 61 unfinished runs were held
+// writes and go quiet; the 12 left (10 Main Flow relay posts, 1 Achieve call, 1
+// unnamed) would page about 6 times at one, against 2 at three, where the first
+// page of the 2026-10-13 slowdown came 43 minutes after its first unrecorded post
+// and the three lone relay posts on other days never paged at all. The AlertClaim
+// still caps a burst at one page per 30 minutes.
 
 // Count of losses in the current burst, NOT a consecutive streak (#599). It is a
 // KV read then write, so isolates writing at once can overwrite each other's
@@ -231,9 +212,8 @@ export async function recordUnconfirmedOutcome(
   }
 }
 
-// Shared dead-letter handler. Increments a per-(org,label) streak in KV and fires
-// a rate-aggregated Slack alert once the streak crosses the threshold, deduped by
-// a cooldown. Reuses the existing failure channel + config_alerts_enabled toggle.
+// Shared dead-letter handler. Increments a per-(org,label) window count in KV and
+// fires a rate-aggregated Slack alert, deduped by the alert claim or a cooldown. Reuses the existing failure channel + config_alerts_enabled toggle.
 // Callable directly (tier-3 SF writeback) as well as via writeOutcome.
 export async function recordOutcomeDeadLetter(
   label: string,
@@ -257,7 +237,7 @@ export async function recordOutcomeDeadLetter(
   })
 
   // Tally this loss into its UTC day for ADR 0002's build-now condition (#355),
-  // before the alert threshold so the count survives a suppressed alert. Bounded by
+  // before the alert claim so the count survives a suppressed alert. Bounded by
   // a short deadline so a hung KV cannot delay the alert or exhaust the reserve, and
   // on the run's own clock so the loss lands on the run's UTC day. If the deadline
   // abandons the tally it is LOGGED, not swallowed: under-counting the sustained half
@@ -269,8 +249,6 @@ export async function recordOutcomeDeadLetter(
   if (tally.timedOut) {
     console.error(`[durability] build-now volume tally abandoned after ${DEAD_LETTER_VOLUME_DEADLINE_MS}ms for ${label}; the daily count may under-report`)
   }
-
-  if (windowCount < deadLetterThreshold(label)) return false
 
   // Who posts (#1881). The KV cooldown below is a read then a later write, and KV
   // is eventually consistent across isolates, so every dead letter of one burst
