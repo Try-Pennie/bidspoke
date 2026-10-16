@@ -166,8 +166,36 @@ async function readFromDb(orgId: string, supabase: SupabaseClient): Promise<{ co
   const { data: uuidRows } = uuidRes // read-guard-ok: checked in the block above (#439)
   const { data: partnerRows } = partnerRes // read-guard-ok: checked in the block above (#439)
 
+  return { constants: partnerConstantsFromRows(uuidRows ?? [], partnerRows ?? []) }
+}
+
+export interface PartnerConstantsUuidRow {
+  uuid: string
+  partner_slug: string
+}
+
+export interface PartnerConstantsPartnerRow {
+  id: string
+  slug: string
+  sell_off_offer_title: string | null
+  sell_off_offer_details: string | null
+  click_url: string | null
+  is_active: boolean | null
+  sub_account_min_bids: unknown
+}
+
+/**
+ * The constants built from the rows (#2142): the one place a row becomes a
+ * partner value, used by the loader for the whole organization and by the
+ * partners page's workflow values route for one partner, so the page shows
+ * exactly what the Constants node would emit.
+ */
+export function partnerConstantsFromRows(
+  uuidRows: readonly PartnerConstantsUuidRow[],
+  partnerRows: readonly PartnerConstantsPartnerRow[]
+): PartnerConstants {
   const subAccountIdsMap: Record<string, string> = {}
-  for (const row of uuidRows ?? []) {
+  for (const row of uuidRows) {
     subAccountIdsMap[row.uuid] = row.partner_slug
   }
 
@@ -176,7 +204,7 @@ async function readFromDb(orgId: string, supabase: SupabaseClient): Promise<{ co
   const activeBidding: Record<string, boolean> = {}
   const subAccountMinBids: Record<string, Record<string, number>> = {}
   const slugsById: Record<string, string> = {}
-  for (const row of partnerRows ?? []) {
+  for (const row of partnerRows) {
     slugsById[row.id] = row.slug
     if (row.sell_off_offer_title || row.sell_off_offer_details) {
       sellOff[row.slug] = {
@@ -201,7 +229,7 @@ async function readFromDb(orgId: string, supabase: SupabaseClient): Promise<{ co
     }
   }
 
-  return { constants: { subAccountIdsMap, sellOff, clickUrls, activeBidding, subAccountMinBids, slugsById } }
+  return { subAccountIdsMap, sellOff, clickUrls, activeBidding, subAccountMinBids, slugsById }
 }
 
 /**

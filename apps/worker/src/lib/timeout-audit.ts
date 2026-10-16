@@ -19,6 +19,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
+import { readOrgWorkflows, type OrgWorkflow } from './org-workflows'
 import type { WorkflowDefinition } from '../types'
 import { suggestionFloorMs } from './timeout-floor'
 import { DEFAULT_RETRIES, SAMPLE_CONFIDENT, suggestedTimeoutMs, timeoutSeverity } from './timeout-suggestion'
@@ -171,6 +172,27 @@ export function warningsSignature(
     .join('|')
 }
 
+/**
+ * The organization's active workflows through the shared read (#2142), or none
+ * with the failure logged and named in the caller's failures list, so the daily
+ * alert judges nothing for an org it could not read (#1303) while the dashboard
+ * shows what it got.
+ */
+async function activeWorkflowsOrNone(
+  supabase: SupabaseClient,
+  orgId: string,
+  what: string,
+  failure: { failures?: string[]; label: string }
+): Promise<OrgWorkflow[]> {
+  try {
+    return await readOrgWorkflows(supabase, orgId, { activeOnly: true })
+  } catch (err) {
+    logReadFailure('timeout-audit', what, err)
+    failure.failures?.push(failure.label)
+    return []
+  }
+}
+
 /** Fetch active workflows (with live definitions) for an org and scan them. */
 export async function getOrgTimeoutWarnings(
   supabase: SupabaseClient,
@@ -180,18 +202,11 @@ export async function getOrgTimeoutWarnings(
   // clean bill of health. The dashboard leaves it out and shows what it got.
   opts: { failures?: string[] } = {},
 ): Promise<WorkflowTimeoutWarnings[]> {
-  const { data, error: dataError } = await supabase
-    .from('workflows')
-    .select('id, name, definition')
-    .eq('organization_id', orgId)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-  logReadFailure('timeout-audit', 'step durations', dataError)
-  if (dataError) opts.failures?.push('workflows (timeout settings)')
+  const data = await activeWorkflowsOrNone(supabase, orgId, 'step durations', { failures: opts.failures, label: 'workflows (timeout settings)' })
   return scanWorkflowDefinitions(
-    (data ?? []).map((w) => ({
-      id: w.id as string,
-      name: w.name as string,
+    data.map((w) => ({
+      id: w.id,
+      name: w.name,
       definition: w.definition as WorkflowDefinition | null,
     }))
   )
@@ -412,14 +427,7 @@ export async function getOrgHistoryWarnings(
   orgId: string,
   opts: { concurrency?: number; failures?: string[] } = {}
 ): Promise<OrgHistoryWarnings> {
-  const { data, error: dataError } = await supabase
-    .from('workflows')
-    .select('id, name, definition')
-    .eq('organization_id', orgId)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-  logReadFailure('timeout-audit', 'step timeouts', dataError)
-  if (dataError) opts.failures?.push('workflows (step history)')
+  const data = await activeWorkflowsOrNone(supabase, orgId, 'step timeouts', { failures: opts.failures, label: 'workflows (step history)' })
 
   // Adaptive grouped percentile queries per workflow, run in parallel so the
   // dashboard load doesn't serialize them; the daily cron passes a small
@@ -427,7 +435,7 @@ export async function getOrgHistoryWarnings(
   // and the config panel, so the audit never flags a node those surfaces call
   // fine (or vice versa).
   const results = await mapWithConcurrency(
-    data ?? [],
+    data,
     opts.concurrency ?? Number.POSITIVE_INFINITY,
     async (w) => {
       const definition = w.definition as WorkflowDefinition | null
@@ -435,14 +443,14 @@ export async function getOrgHistoryWarnings(
 
       const { stats } = await collectWorkflowDurationStats(
         supabase,
-        w.id as string,
+        w.id,
         definition.nodes.map((n) => n.namespace),
         opts.failures,
       )
 
       return {
-        workflow_id: w.id as string,
-        workflow_name: w.name as string,
+        workflow_id: w.id,
+        workflow_name: w.name,
         under: findUnderProvisionedNodes(definition, stats),
         over: findOverProvisionedNodes(definition, stats),
       }
