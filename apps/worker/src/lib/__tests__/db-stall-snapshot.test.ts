@@ -285,6 +285,16 @@ describe('countStallSnapshots (#2292)', () => {
     expect(kv.get).toHaveBeenCalledTimes(1)
   })
 
+  // A slowdown time that does not parse must read as "could not look", never
+  // as zero snapshots taken (L50, L11).
+  it('refuses a window bound that is not a time, rather than counting nothing', async () => {
+    const kv = makeKv()
+    await seedSnapshot(kv, T0, 'taken', 'a')
+    await expect(countStallSnapshots(kv, Number.NaN, T0 + 1000)).rejects.toThrow(/not a time/)
+    await expect(countStallSnapshots(kv, T0 - 1000, Number.NaN)).rejects.toThrow(/not a time/)
+    expect(kv.list).not.toHaveBeenCalled()
+  })
+
   it('answers zero attempts when none was taken', async () => {
     const counted = await countStallSnapshots(makeKv(), T0, T0 + 1000)
     expect(counted).toEqual({ attempts: 0, taken: 0, timed_out: 0, failed: 0, first_at: null })

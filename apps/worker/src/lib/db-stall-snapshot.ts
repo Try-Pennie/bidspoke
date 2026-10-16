@@ -331,6 +331,10 @@ function windowPrefix(fromMs: number, toMs: number): string {
  * could not look, rather than claiming none was taken (L11).
  */
 export async function countStallSnapshots(kv: StallSnapshotListKv, fromMs: number, toMs: number): Promise<StallSnapshotCount> {
+  // A bound that is not a time would list nothing and read as none taken.
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+    throw new Error(`snapshot window ${String(fromMs)} to ${String(toMs)} is not a time`)
+  }
   const out: StallSnapshotCount = { attempts: 0, taken: 0, timed_out: 0, failed: 0, first_at: null }
   const prefix = windowPrefix(fromMs, toMs)
   let cursor: string | undefined
