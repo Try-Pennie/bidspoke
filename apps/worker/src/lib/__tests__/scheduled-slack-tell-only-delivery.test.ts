@@ -39,12 +39,9 @@ type Tick = 'delivered' | 'slack_refuses' | 'org_not_found'
  * answers live, the org's own lookup fails, and the copy does not hold it.
  */
 async function tick(kind: Tick) {
+  // The org list: down for slack_refuses, live otherwise.
   const answers: Record<string, Answer> =
-    kind === 'slack_refuses'
-      ? { service_connections: 'throw' }
-      : kind === 'org_not_found'
-        ? { service_connections: { data: [{ organization_id: ORG }] } }
-        : { service_connections: { data: [{ organization_id: ORG }] } }
+    kind === 'slack_refuses' ? { service_connections: 'throw' } : { service_connections: { data: [{ organization_id: ORG }] } }
   const { client } = tableClient(answers)
   // The org's own lookup reads the same table with maybeSingle; give it the row
   // (delivered) or a failure (org_not_found) by answering per call.
