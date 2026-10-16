@@ -248,12 +248,15 @@ function cutQueries(data: unknown): unknown {
 }
 
 /**
- * A record with every `query` string removed from its lists, for a reader who
- * may see the platform's state but not what each organization was running.
+ * A record with everything belonging to one organization removed, for a reader
+ * who may see the platform's state but not any organization's work: every
+ * `query` string, and the run and workflow of the write that set it off (only
+ * the kind of write, its label, is kept).
  */
-export function withoutQueryText(record: StallSnapshotRecord): StallSnapshotRecord {
+export function withoutOrganizationData(record: StallSnapshotRecord): StallSnapshotRecord {
+  const platform: StallSnapshotRecord = { ...record, trigger: { label: record.trigger.label } }
   const snap = record.snapshot
-  if (!snap || typeof snap !== 'object' || Array.isArray(snap)) return record
+  if (!snap || typeof snap !== 'object' || Array.isArray(snap)) return platform
   const out: Record<string, unknown> = { ...(snap as Record<string, unknown>) }
   for (const list of ['backends', 'blocking']) {
     const rows = out[list]
@@ -264,7 +267,7 @@ export function withoutQueryText(record: StallSnapshotRecord): StallSnapshotReco
       return rest
     })
   }
-  return { ...record, snapshot: out }
+  return { ...platform, snapshot: out }
 }
 
 /** The stored JSON, within STALL_SNAPSHOT_MAX_BYTES: an oversized answer drops its backend list first. */

@@ -5,7 +5,7 @@
  * the database. A storage outage is a 503 carrying the error, never an empty
  * list that reads as "no stall was snapshotted" (L11).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import type { Env } from '../../../index'
 import { stallSnapshotKey, type StallSnapshotRecord } from '../../../lib/db-stall-snapshot'
 
@@ -63,6 +63,12 @@ async function request(env: Env, query = '', method = 'GET') {
   return api.fetch(new Request(`https://x/admin/db-stall-snapshots${query}`, { method, headers: { Authorization: 'Bearer t' } }), env, mockCtx)
 }
 
+// The API module is imported once, ahead of the tests, so its cold import is
+// not charged to the first test's 5 second limit on a loaded machine.
+beforeAll(async () => {
+  await import('../index')
+}, 30_000)
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(verifyJwt).mockResolvedValue(validPayload as never)
@@ -105,6 +111,18 @@ describe('GET /api/admin/db-stall-snapshots (#2292)', () => {
     expect(body.query_text).toBe('withheld')
     expect(body.latest[0].snapshot.backends[0]).toMatchObject({ pid: 7, usename: 'postgres', application_name: 'supabase/dashboard', wait_event_type: 'IO' })
     expect(body.latest[0].snapshot.blocking[0]).toMatchObject({ pid: 8, blocked_by: [7], relation: 'public.lead_sightings' })
+  })
+
+  // The run that set a snapshot off belongs to one organization too: only the
+  // kind of write is served, never which run or workflow it was.
+  it('serves only the kind of write that set a snapshot off, never its run or workflow', async () => {
+    const store = kv()
+    store.put(record(T0, 'a', 'taken'))
+    const text = await (await request(envWith(store))).text()
+    expect(text).not.toContain('ex-1')
+    expect(text).not.toContain('Main Flow')
+    const body = JSON.parse(text) as { latest: Array<{ trigger: Record<string, unknown> }> }
+    expect(body.latest[0].trigger).toEqual({ label: 'lead_sightings.finalize' })
   })
 
   it('returns five in full by default and never more than twenty', async () => {
