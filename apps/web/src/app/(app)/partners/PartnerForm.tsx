@@ -24,6 +24,7 @@ import { MergeDialog } from '@/components/partners/MergeDialog'
 import { mergeThreeWay, sameMergeValue, type MergeResult, type MergeSide, type PageHalves } from '@/lib/partner-page-merge'
 import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
 import { clickDeliveryConsequences } from '@/components/partners/buyer-profile/click-delivery-consequences'
+import { profileWithChangedZoneOnly } from '@/components/partners/buyer-profile/display-zone'
 import { Button, ChoiceGroup, Field, NumberInput, Outcome, TextArea, TextInput, describedBy, type OutcomeState } from '@/components/ui/form'
 import { Toggle } from '@/components/ui/Toggle'
 import { documentToProfile, soldOnSwitchBlocked, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal, type StoredKind } from '@bidspoke/buyer-profile'
@@ -813,7 +814,8 @@ export default function PartnerForm({
     setSaveOutcome({ kind: 'working', label: 'Saving', startedAt: Date.now(), now: Date.now(), stalledAfterMs: 30_000 })
     // One request for the whole page (#2133): both halves land or neither does,
     // so the button says Saved only when everything this press saves has saved.
-    const result = await savePage(patch, saveProfileToo ? profile : null)
+    // The display zone goes only when it changed (#2143): absent keeps the stored one.
+    const result = await savePage(patch, saveProfileToo ? profileWithChangedZoneOnly(profile, profileBefore) : null)
     if (result.kind !== 'saved') {
       setSaveState('idle')
       return
