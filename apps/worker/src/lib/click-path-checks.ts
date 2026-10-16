@@ -577,7 +577,10 @@ async function judgeQuiet(
   // the buyer has had since then. A profile switched on or edited a few minutes
   // ago has no rate yet and a window of minutes, so it is never judged on them.
   const changedAt = Date.parse(buyer.updated_at)
-  const since = (windowMs: number) => (Number.isFinite(changedAt) ? Math.max(now - windowMs, changedAt) : now - windowMs)
+  // An unreadable change time is never read as no change (L50): the window would
+  // then reach past it, so the check is not judged at all.
+  const changeKnown = Number.isFinite(changedAt)
+  const since = (windowMs: number) => (changeKnown ? Math.max(now - windowMs, changedAt) : now)
   const counts = (r: CheckRun, fromMs: number) =>
     r.reason !== null && r.reason !== 'profile_disabled' && inWindow(r.started_at, fromMs, now + 1) &&
     isOpen(buyer.profile.windows, buyer.profile.blackoutDates, Date.parse(r.started_at))
@@ -590,7 +593,9 @@ async function judgeQuiet(
   const atCap = counted.some((r) => r.reason === 'daily_click_cap')
   const seen = `${counted.length} leads in ${minutes} minutes of selling time`
   let notJudged: string | null = null
-  if (minutes === 0) {
+  if (!changeKnown) {
+    notJudged = `its profile's last change time cannot be read (${JSON.stringify(buyer.updated_at)}), so the leads since it cannot be told from those before`
+  } else if (minutes === 0) {
     notJudged = 'not_open'
   } else if (rateRuns.length < QUIET_RATE_MIN_RUNS) {
     notJudged = `${seen}; its eligible rate is not known yet: ${rateRuns.length} leads since the profile last changed, fewer than ${QUIET_RATE_MIN_RUNS}`
@@ -616,7 +621,7 @@ async function judgeQuiet(
 
   if (found.length > 0) return { verdict: 'quiet', lines: found }
   if (noClick.unread) return { verdict: 'unmeasured', reason: noClick.unread }
-  if (notJudged === 'not_open') return { verdict: 'not_open', detail: `no selling time in the last ${QUIET_WINDOW_MS / HOUR} hours, ${offers} offers` }
+  if (notJudged === 'not_open') return { verdict: 'not_open', detail: `no selling time in the ${Math.round((now - judgedFrom) / MIN)} minutes judged, ${offers} offers` }
   if (notJudged !== null) return { verdict: 'too_few', detail: notJudged }
   if (counted.length < needed) return { verdict: 'too_few', detail: `${seen}, ${needed} needed at ${rateWords(rate)} eligible` }
   return { verdict: 'normal', detail: `${seen}, ${eligible} eligible, ${offers} offers` }

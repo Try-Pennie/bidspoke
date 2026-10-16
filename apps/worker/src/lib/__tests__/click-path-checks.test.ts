@@ -7,9 +7,12 @@
  *   check errors   a SHARE of the runs that reached buyer_click_check in the
  *                  last hour that could not complete, with a minimum
  *                  denominator, and saturation below it (L139, L716).
- *   quiet          inside the buyer's selling hours for the whole three hours,
- *                  leads reached the check and none was eligible; and offers
- *                  were made with no click execution at all.
+ *   quiet          none of the leads that reached the check inside the
+ *                  buyer's selling hours, over up to six hours since its
+ *                  profile last changed, was eligible, and at its own eligible
+ *                  rate since that change so many with none is under one in
+ *                  1,000 (#2104); and offers were made with no click
+ *                  execution in three hours.
  *   refusals       a burst of buyer_click_send refusals for one buyer.
  *   reconcile      once per Pacific day: the counted prospects against the
  *                  Salesforce prospects the click wrote Completed.
@@ -294,6 +297,22 @@ describe('quiet: zero eligible, judged against the buyer\'s own eligible rate', 
     const s = await runClickPathChecks(d)
     expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
     expect((s.subjects[0].quiet as { detail?: string }).detail).toMatch(/^20 leads in 60 minutes/)
+  })
+
+  it('cannot judge a profile whose last change time cannot be read, rather than judging the whole window and losing the switch on guard', async () => {
+    const { d, pages } = deps({ checks: [...monday(), ...today()], buyer: buyer({}, 'not a time') })
+    const s = await runClickPathChecks(d)
+    expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
+    expect(s.subjects[0].quiet).toMatchObject({ verdict: 'too_few' })
+    expect((s.subjects[0].quiet as { detail?: string }).detail).toMatch(/last change.*cannot be read/)
+  })
+
+  it('says how long it looked when there was no selling time, never more than since the profile changed', async () => {
+    const now = Date.UTC(2027, 8, 19, 21, 0)
+    const { d } = deps({ checks: [], now, buyer: buyer({}, new Date(now - 20 * MIN).toISOString()) })
+    const s = await runClickPathChecks(d)
+    expect(s.subjects[0].quiet).toMatchObject({ verdict: 'not_open' })
+    expect((s.subjects[0].quiet as { detail?: string }).detail).toMatch(/^no selling time in the 20 minutes judged/)
   })
 
   it('is not open when none of the six hours were selling time', async () => {
