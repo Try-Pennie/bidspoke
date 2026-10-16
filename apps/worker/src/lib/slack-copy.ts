@@ -11,9 +11,17 @@
  * write a second per key.
  *
  * Its shape is a flat map of organization id to connection config. A reserved
- * top level string key, `__saved_at`, may carry when it was written (#2060
- * writes it); parseSlackConnection drops a value that is not an object, so a
- * reader that predates the key still reads every organization.
+ * top level string key, `__saved_at`, carries when it was written (#2060);
+ * parseSlackConnection drops a value that is not an object, so a reader that
+ * predates the key still reads every organization, and a copy written before
+ * the key reads with its age unknown. Both directions are tested
+ * (slack-copy.test.ts).
+ *
+ * Kept current (#2060): every successful read of every organization's
+ * connection rewrites it, an empty read included, and a failed read never does;
+ * the Slack settings routes edit an organization's entry in the same request
+ * that changes its connection (editSlackCopyEntry). It is used at ANY age, by
+ * decision, with the reason beside STORED_COPY_MAX_AGE_MS (stored-copy-age.ts).
  */
 import { decryptSecret, encryptSecret, type SecretKeyInput } from './secret-crypto'
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
@@ -84,16 +92,77 @@ export async function readLastGoodSlackConnections(kv: CopyKv, secretKeys: Secre
   }
 }
 
-/** Rewrite the copy. Never throws: the caller's check must not fail because the safety copy could not be written. */
+/**
+ * Rewrite the copy from a successful read of every organization's connection,
+ * dated `savedAtMs` (#2060). An EMPTY map is written too: the database said no
+ * organization has a connection, and keeping the previous copy would let an
+ * outage post to organizations that had all disconnected. A failed read never
+ * reaches here. Never throws: the caller's check must not fail because the
+ * safety copy could not be written.
+ */
 export async function rememberSlackConnections(
   kv: { put(key: string, value: string): Promise<void> },
   secretKeys: SecretKeyInput,
   connections: Map<string, SlackConnection>,
+  savedAtMs: number,
 ): Promise<void> {
   try {
-    const blob = await encryptSecret(JSON.stringify(Object.fromEntries(connections)), secretKeys)
-    await kv.put(SLACK_CONNS_LASTGOOD_KEY, blob)
+    const copy: Record<string, unknown> = Object.fromEntries(connections)
+    copy[SLACK_COPY_SAVED_AT_KEY] = new Date(savedAtMs).toISOString()
+    await kv.put(SLACK_CONNS_LASTGOOD_KEY, await encryptSecret(JSON.stringify(copy), secretKeys))
   } catch (e) {
     console.error(`[slack-copy] last-good Slack connections write failed: ${formatErr(e)}`)
   }
+}
+
+/** What editing one organization's entry did. Only a refused KV read or write is a failure, and that throws. */
+export type SlackCopyEdit = 'written' | 'unchanged' | 'no_copy' | 'unreadable'
+
+/**
+ * Set one organization's entry in the copy to `connection`, or remove it when
+ * `connection` is null (#2060): the Slack settings routes call this after their
+ * database write, so an org that disconnected or changed its settings is not
+ * posted to from the old entry during an outage. Every other entry and the save
+ * time are kept as they are.
+ *
+ * The save time's rule: it is when EVERY entry was last confirmed against the
+ * database together, so the age a stored answer reports is the most any entry
+ * can be out of date. The edited entry is as current as the write it follows,
+ * newer than the save time, which only overstates its age (the safe side). Moving
+ * the save time to the edit would make every OTHER entry read as confirmed just
+ * now when it was not, understating the age in exactly the outage that reads
+ * it. Only a full read (rememberSlackConnections) moves it.
+ *
+ * No copy, or the org already absent, writes nothing. A copy that cannot be
+ * decrypted is left alone: no reader can post from it either, and the next
+ * successful all-org read replaces it. Throws when KV refuses the read or the
+ * write, for the route to report (stored-copy.ts copyCleared).
+ *
+ * Not atomic with the writer: a writer whose read began before the route's
+ * database write can put the old entry back, until its next healthy minute.
+ */
+export async function editSlackCopyEntry(
+  kv: CopyKv & { put(key: string, value: string): Promise<void> },
+  secretKeys: SecretKeyInput,
+  orgId: string,
+  connection: SlackConnection | null,
+): Promise<SlackCopyEdit> {
+  if (orgId === SLACK_COPY_SAVED_AT_KEY) throw new Error(`${SLACK_COPY_SAVED_AT_KEY} is reserved and cannot name an organization`)
+  const blob = await kv.get(SLACK_CONNS_LASTGOOD_KEY)
+  if (!blob) return 'no_copy'
+  let copy: Record<string, unknown>
+  try {
+    copy = JSON.parse(await decryptSecret(blob, secretKeys)) as Record<string, unknown>
+  } catch (e) {
+    console.warn(`[slack-copy] saved Slack copy unreadable, so org ${orgId} was not edited in it (nobody can post from it): ${formatErr(e)}`)
+    return 'unreadable'
+  }
+  if (connection) {
+    copy[orgId] = connection
+  } else {
+    if (!(orgId in copy)) return 'unchanged'
+    delete copy[orgId]
+  }
+  await kv.put(SLACK_CONNS_LASTGOOD_KEY, await encryptSecret(JSON.stringify(copy), secretKeys))
+  return 'written'
 }

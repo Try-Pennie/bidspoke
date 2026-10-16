@@ -109,9 +109,11 @@ export async function runAndReportDispatch(
     console.error('[workflow-dispatch] cooldown unreadable, alerting anyway:', e)
   }
 
-  // slackOrgIds reads the lookup error (it is logged, not discarded), so a
-  // transient database error and a system with no Slack orgs are not confused
-  // for each other (L10, L11).
+  // A 'tell-only' list: this check's finding comes from GitHub, so a list read
+  // from the saved copy still names who to tell. An unreadable list (slackOrgIds
+  // logs why) deliberately folds to nobody to tell through orgIdsToTell, and that
+  // is safe because delivery is recorded only from a real send below: with no
+  // send, the cooldown is not armed and the next tick tries again.
   let delivered = false
   const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'workflow-dispatch', 'tell-only'))
   for (const orgId of orgIds) {
