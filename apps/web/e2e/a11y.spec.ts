@@ -210,7 +210,7 @@ function workerUrl(): string {
 async function openTripoint(page: Page) {
   await page.goto('/partners?selected=tripoint')
   await expect(page.getByRole('region', { name: 'Buyer profile' })).toBeVisible()
-  await expect(page.getByRole('heading', { name: 'Tripoint' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Tripoint', exact: true })).toBeVisible()
   await page.waitForLoadState('networkidle')
 }
 
