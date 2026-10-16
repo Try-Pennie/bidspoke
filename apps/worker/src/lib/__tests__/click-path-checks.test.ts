@@ -52,7 +52,7 @@ const PARTNER = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
 const ORG = '22222222-2222-4222-8222-222222222222'
 const MIN = 60_000
 const HOUR = 60 * MIN
-/** Tuesday 2027-09-21 21:00 UTC: 14:00 Pacific, 17:00 Eastern. The three hours before it are all inside 8am to 6pm Pacific. */
+/** Tuesday 2027-09-21 21:00 UTC: 14:00 Pacific, 17:00 Eastern. The six hours before it are all inside 8am to 6pm Pacific, starting at 8am exactly. */
 const NOW = Date.UTC(2027, 8, 21, 21, 0)
 /** Mon to Fri 8am to 6pm Pacific, as Eastern minutes (the profile's clock). */
 const WEEKDAYS = [1, 2, 3, 4, 5].map((d) => ({ dayOfWeek: d, opensMinute: 11 * 60, closesMinute: 21 * 60 }))
