@@ -271,7 +271,15 @@ export async function reportDatabaseUnreachable(deps: ReachabilityDeps, report: 
       const reason = formatErr(e)
       outcome.failed.push({ orgId, reason })
       console.error(`[database-reachability] database unreachable page for org=${orgId} failed, the other organizations are still paged: ${reason}`)
-      if (claimed) await deps.claims!.release(claimKey)
+      if (claimed) {
+        // Freeing the claim can fail in the same outage; it is logged here so it
+        // cannot end the loop. A claim left held lapses after its own TTL.
+        try {
+          await deps.claims!.release(claimKey)
+        } catch (releaseError) {
+          console.error(`[database-reachability] claim ${claimKey} not freed after the failed page, it lapses on its own: ${formatErr(releaseError)}`)
+        }
+      }
     }
   }
   return outcome

@@ -194,6 +194,24 @@ describe('each organization is its own failure boundary', () => {
     expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes(ORG) && String(c[0]).includes('Slack exploded'))).toBe(true)
   })
 
+  // Lessons review at a14c900: freeing the claim of the org whose page threw
+  // can throw too (a KV refusal in the same outage); it must not end the loop.
+  it('still pages the second organization when freeing the first one\'s claim also throws', async () => {
+    const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: await copyBlob({ [ORG]: CONN, [ORG2]: CONN2 }) })
+    vi.mocked(sendDatabaseUnreachableAlert).mockImplementation(async (slack) => {
+      if (slack.bot_token === 'xoxb-t') throw new Error('Slack exploded')
+      return 'ts-2'
+    })
+    const claims: AlertClaims = {
+      claim: async () => true,
+      release: async () => { throw new Error('release refused') },
+    }
+    const result = await reportDatabaseUnreachable(deps(kv, T0, claims), readFailure)
+    expect(result.told).toEqual([ORG2])
+    expect(result.failed.map((f) => f.orgId)).toEqual([ORG])
+    expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('release refused'))).toBe(true)
+  })
+
   it('sends the second organization its all-clear when settling the first one\'s throws', async () => {
     const open = (org: string) => ({
       [`db-unreachable-recovery:${org}`]: new Date(T0 - 90 * MIN).toISOString(),
