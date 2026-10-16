@@ -55,3 +55,15 @@ export const BIDDING_PICKUP_MINUTES = Math.max(BIDDING_PICKUP.partnerConstantsMi
 export function pickupSentence(): string {
   return `Bidding picks this up within about ${BIDDING_PICKUP_MINUTES} minutes while the database is reachable.`
 }
+
+/**
+ * The sentence for a change made outside the page (#2135): when it was made, in
+ * ET, and the bound for the half it touched, counted from that time. Partner
+ * columns are read through the partner constants copy, profile fields through
+ * the buyer profiles copy, so each says its own figure. It states the bound and
+ * the condition, never whether bidding uses the new values yet (L11).
+ */
+export function directChangeSentence(clockEt: string, half: 'partner' | 'profile'): string {
+  const minutes = half === 'partner' ? BIDDING_PICKUP.partnerConstantsMinutes : BIDDING_PICKUP.buyerProfilesMinutes
+  return `Changed directly in the database at ${clockEt} ET. Bidding picks this up within about ${minutes} minutes of that time while the database is reachable.`
+}
