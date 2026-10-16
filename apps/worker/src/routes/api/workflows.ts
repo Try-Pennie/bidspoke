@@ -29,6 +29,7 @@ import type { Database } from '../../types/database'
 import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
 import { loadBuyerProfiles, partnersPricedFor } from '../../lib/buyer-profile-loader'
 import { populationsInUse, workflowsUsingPartner as workflowsUsingPartnerShared } from '../../lib/partner-workflow-finder'
+import { readOrgWorkflows } from '../../lib/org-workflows'
 import { secretKeys } from '../../lib/secret-crypto'
 import { retirePartnerLastGood } from '../../lib/partner-last-good'
 
@@ -1217,13 +1218,12 @@ workflows.get('/:id/rename-impact', async (c) => {
   // reference this partner via a partner_bid or bid_group node. Those
   // workflows would be silently broken by a formula rewrite, so we surface
   // them to the user and (by default) skip the rewrite.
-  const { data: otherWorkflows, error: wfError } = await supabase
-    .from('workflows')
-    .select('id, name, definition')
-    .eq('organization_id', orgId)
-    .is('deleted_at', null)
-    .neq('id', id)
-  if (wfError) return dbError(c, wfError)
+  let otherWorkflows
+  try {
+    otherWorkflows = await readOrgWorkflows(supabase, orgId, { excludeId: id })
+  } catch (err) {
+    return dbError(c, err)
+  }
 
   // A buyer_select node names no partner in its config: the decision recorded on
   // the plan (#1411) is that a workflow containing one uses every partner holding
@@ -1231,7 +1231,7 @@ workflows.get('/:id/rename-impact', async (c) => {
   // once, only when some other workflow carries the node, and a read that fails
   // refuses the whole answer rather than reporting a partner as unshared (L98).
   // The finder itself is shared with the buyer profile route (#1412, L613).
-  const others = (otherWorkflows ?? []) as Array<{ id: string; name: string; definition: unknown }>
+  const others = otherWorkflows
   const populations = populationsInUse(others)
   const pricedPartnersByPopulation = new Map<string, Set<string>>()
   if (populations.size > 0) {
