@@ -123,8 +123,15 @@ export type SlackCopyEdit = 'written' | 'unchanged' | 'no_copy' | 'unreadable'
  * `connection` is null (#2060): the Slack settings routes call this after their
  * database write, so an org that disconnected or changed its settings is not
  * posted to from the old entry during an outage. Every other entry and the save
- * time are kept as they are: the save time dates the last read of EVERY
- * organization, which one org's edit is not.
+ * time are kept as they are.
+ *
+ * The save time's rule: it is when EVERY entry was last confirmed against the
+ * database together, so the age a stored answer reports is the most any entry
+ * can be out of date. The edited entry is as current as the write it follows,
+ * newer than the save time, which only overstates its age (the safe side). Moving
+ * the save time to the edit would make every OTHER entry read as confirmed just
+ * now when it was not, understating the age in exactly the outage that reads
+ * it. Only a full read (rememberSlackConnections) moves it.
  *
  * No copy, or the org already absent, writes nothing. A copy that cannot be
  * decrypted is left alone: no reader can post from it either, and the next
