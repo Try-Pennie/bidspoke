@@ -291,6 +291,11 @@ export async function runVolumeCliffCheck(
   // always passes it, and without it two ticks that pass the cooldown together
   // both post.
   claims?: AlertClaims,
+  // The clock that dates the saved Slack copy (#2060) and places the volume
+  // windows, so those two cannot disagree. The incident records (the database
+  // and cliff alerts' markers and cooldowns) still take their own wall clock
+  // reading, one per org or workflow, as before.
+  clock: () => number = Date.now,
 ): Promise<void> {
   const { data: slackOrgs, error: slackOrgsError } = await readSlackConnectionRowsForCopy(supabase)
   logReadFailure('volume-cliff', 'slack connections', slackOrgsError)
@@ -304,7 +309,10 @@ export async function runVolumeCliffCheck(
     const conn = parseSlackConnection((row as { config?: unknown }).config)
     if (conn) connections.set(row.organization_id as string, conn)
   }
-  if (connections.size > 0) await rememberSlackConnections(kv, secretEncryptionKey, connections)
+  // Every successful read rewrites the copy, an empty one included (#2060): the
+  // database has just said who has a connection, and an outage must not post to
+  // organizations that have since disconnected. A failed read returned above.
+  await rememberSlackConnections(kv, secretEncryptionKey, connections, clock())
 
   const slackOrgIds = (slackOrgs ?? []).map((c) => c.organization_id as string)
   if (slackOrgIds.length === 0) return
@@ -323,7 +331,7 @@ export async function runVolumeCliffCheck(
 
   if (!workflows?.length) return
 
-  const now = Date.now()
+  const now = clock()
   const workflowIds = workflows.map((w) => w.id as string)
 
   // 60 wall-clock-minute buckets ending with the current (partial) minute at
