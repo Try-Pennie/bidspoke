@@ -197,6 +197,20 @@ describe('saving, and a save whose answer was lost (L766)', () => {
     expect(bar()).toHaveTextContent(/^Partner saved\./)
   })
 
+  it('Try again after a further edit saves what is on screen now, under a new save id, never the earlier press alone', async () => {
+    const onSave = vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValueOnce({ partner: { ...partner, name: 'M1 again', version: 4 }, profile: null, copyWarning: null })
+    await renderRenamed(onSave)
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await settle()
+    expect(bar()).toHaveTextContent('Not confirmed yet, checking.')
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'M1 again' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await settle()
+    expect(onSave).toHaveBeenCalledTimes(2)
+    expect(onSave.mock.calls[1][0]).toEqual({ name: 'M1 again' })
+    expect(onSave.mock.calls[1][3].save_id).not.toBe(onSave.mock.calls[0][3].save_id)
+  })
+
   it('an Undo whose answer was lost and which the probe finds landed hands the page the row as the Undo left it', async () => {
     const onSave = vi.fn()
       .mockResolvedValueOnce({ partner: { ...partner, name: 'M1 renamed', version: 4 }, profile: null, copyWarning: null })

@@ -293,8 +293,11 @@ export function changedUnits(base: PageHalves, mine: PageHalves, registry: reado
   for (const k of PARTNER_BODY_KEYS) {
     if (sameMergeValue(base.partner[k] ?? null, mine.partner[k] ?? null)) continue
     const entries = registryEntriesFor(k, registry)
-    if (entries.length !== 1) throw new Error(`changedUnits: ${k} matches ${entries.length} registry entries`)
-    add(k, entries[0])
+    // This runs in the page's render, so a key the registry does not name once
+    // (which partner-field-registry.test.ts forbids) is named by its key, last,
+    // rather than taking the page down.
+    if (entries.length !== 1) out.push({ key: k, tab: 'partner', section: 'Partner', label: k, at: registry.length })
+    else add(k, entries[0])
   }
   if (base.profile && mine.profile) {
     let b: Map<string, Unit>

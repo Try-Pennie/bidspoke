@@ -1204,7 +1204,9 @@ export default function PartnerForm({
     savingRef.current = false
     if (result.kind === 'unconfirmed') {
       setSaveOutcome({
-        kind: 'unconfirmed', since: Date.now(), saveId: result.saveId, retry: submit,
+        // Try again saves what is on screen when it is pressed: unchanged, that is
+        // this press again under the same save id; edited since, a new press.
+        kind: 'unconfirmed', since: Date.now(), saveId: result.saveId, retry: () => latestSubmit.current(),
         // The probe found this press's save id: it landed, at the versions the probe read.
         confirm: (v) => {
           versionRef.current = v.partnerVersion
@@ -1218,6 +1220,14 @@ export default function PartnerForm({
     finish(result)
     return 'saved'
   }
+
+  /**
+   * This render's submit, for a retry stored with an unconfirmed outcome: a
+   * closure from the render that made the press would resend that press's
+   * values, so Save and open it could go on with a later edit left unsaved.
+   */
+  const latestSubmit = useRef(submit)
+  latestSubmit.current = submit
 
   /** The leave dialog's Save and open it: goes on only once this press is saved (PM-5). */
   async function saveThenLeave(request: LeaveRequest) {
