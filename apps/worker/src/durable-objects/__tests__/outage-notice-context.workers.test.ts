@@ -13,6 +13,7 @@
 import { describe, expect, it } from 'vitest'
 import { openOutageForPost, runInScheduledTick, runWithOutageNotice } from '../../lib/outage-notice'
 import { registerScheduledSlack } from '../../lib/scheduled-slack'
+import { postMessage } from '../../lib/slack'
 import { encryptSecret } from '../../lib/secret-crypto'
 import { SLACK_CONNS_LASTGOOD_KEY, SLACK_COPY_SAVED_AT_KEY } from '../../lib/slack-copy'
 
@@ -60,6 +61,30 @@ describe('the outage line context in workerd (#2061)', () => {
     const [a, b] = await Promise.all([inside, outside])
     expect(a).not.toBeNull()
     expect(b).toBeNull()
+  })
+
+  // The whole path in workerd: slack.ts loads with the import, and a post made
+  // after a timer inside the tick carries the line.
+  it('adds the line to a post made inside the tick, through slack.ts', async () => {
+    const s = await source()
+    const sent: string[] = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push(String(init?.body))
+      return new Response(JSON.stringify({ ok: true, ts: '1.2' }))
+    }) as typeof fetch
+    try {
+      await runWithOutageNotice(s, async () => {
+        await afterTimer()
+        await postMessage('xoxb-t', 'C1', [{ type: 'header', text: { type: 'plain_text', text: 'T' } }], 'T')
+      })
+      await postMessage('xoxb-t', 'C1', [{ type: 'header', text: { type: 'plain_text', text: 'T' } }], 'T')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+    expect(sent).toHaveLength(2)
+    expect(sent[0]).toContain('Sent during the database outage reported at')
+    expect(sent[1]).not.toContain('database outage')
   })
 
   it('keeps two ticks apart', async () => {
