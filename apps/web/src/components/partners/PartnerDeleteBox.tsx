@@ -36,11 +36,18 @@ function isRefusal(body: unknown): body is PartnerDeleteRefused {
   return typeof body === 'object' && body !== null && 'check' in body && (body as { error?: unknown }).error !== undefined
 }
 
-export function PartnerDeleteBox({ partner, refreshKey, onDeleted }: {
+export function PartnerDeleteBox({ partner, refreshKey, onDeleted, onRunningChange }: {
   partner: { id: string; name: string }
   /** Changes whenever what the delete would remove may have changed. */
   refreshKey: string
   onDeleted: (answer: PartnerDeleted) => void
+  /**
+   * True from the press until the delete is refused or fails; it stays true
+   * once the delete committed, when onDeleted takes over. The form keeps the box
+   * on screen while it is true, whatever tab is open, so the answer is never
+   * dropped, and knows the live channel's deleted notice is its own.
+   */
+  onRunningChange?: (running: boolean) => void
 }) {
   const [view, setView] = useState<View>({ kind: 'checking' })
   const [attempt, setAttempt] = useState(0)
@@ -74,6 +81,7 @@ export function PartnerDeleteBox({ partner, refreshKey, onDeleted }: {
     if (view.kind !== 'ready' || view.check.blockers.length > 0 || typed !== CONFIRM_WORD || deletingRef.current) return
     deletingRef.current = true
     refreshWaiting.current = false
+    onRunningChange?.(true)
     setDeleting(true)
     setDeleteError(null)
     let answer: PartnerDeleted
@@ -81,6 +89,7 @@ export function PartnerDeleteBox({ partner, refreshKey, onDeleted }: {
       answer = await api.partners.delete(partner.id, view.check.fingerprint)
     } catch (err) {
       const e = err as { status?: number; body?: unknown; message?: string }
+      onRunningChange?.(false)
       if (e.status === 409 && isRefusal(e.body)) {
         // Nothing was deleted. The box shows the partner as it is now.
         setTyped('')

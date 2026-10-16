@@ -743,6 +743,10 @@ export default function PartnerForm({
   const liveStatusRef = useRef(liveChannel.status)
   liveStatusRef.current = liveChannel.status
 
+  /** A delete pressed in the box at the foot and not yet refused or failed (#2140). */
+  const [deleteRunning, setDeleteRunning] = useState(false)
+  const deleteRunningRef = useRef(false)
+
   function handleNotice(n: PartnerPageNotice) {
     if (!partner) return
     const action = classifyNotice(n, { partnerId: partner.id, clientId: tabClientId(), ownSaveIds: ownSaveIds.current, unknownSaveId: pendingSaveRef.current?.saveId ?? null, known: heldVersions() })
@@ -751,6 +755,9 @@ export default function PartnerForm({
     if (action === 'echo' || action === 'already_held') return
     if (action === 'uuids') { setUuidsAttempt((a) => a + 1); return }
     if (action === 'deleted') {
+      // This page's own delete, heard back before its answer: the answer closes
+      // the partner; it is not someone else deleting it under the person.
+      if (deleteRunningRef.current) return
       setSaveOutcome({ kind: 'failed', message: `${partner.name} was deleted while you were editing, so these changes cannot be saved.` })
       return
     }
@@ -1598,11 +1605,17 @@ export default function PartnerForm({
         what a delete would remove whenever it opens and whenever the partner,
         its profile or its sub-account IDs change.
       */}
-      {!isNew && onDeleted && tab === 'partner' && (
+      {/*
+        A delete in flight keeps the box mounted on whatever tab is open, saying
+        it is running, so its answer always reaches the page: the server commits
+        it whether or not the person stayed on the Partner tab.
+      */}
+      {!isNew && onDeleted && (tab === 'partner' || deleteRunning) && (
         <PartnerDeleteBox
           partner={{ id: partner.id, name: partner.name }}
           refreshKey={JSON.stringify([partner.version ?? 0, profile?.version ?? null, uuids.map((u) => u.uuid).sort()])}
           onDeleted={(answer) => onDeleted(partner.id, answer)}
+          onRunningChange={(running) => { deleteRunningRef.current = running; setDeleteRunning(running) }}
         />
       )}
     </div>
