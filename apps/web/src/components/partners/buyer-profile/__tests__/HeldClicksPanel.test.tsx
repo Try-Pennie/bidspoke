@@ -78,7 +78,7 @@ describe('HeldClicksPanel states', () => {
     expect(card()).toHaveTextContent('http 503: Service Unavailable')
   })
 
-  it('a row without its execution names the prospect without a dead link', () => {
+  it('a card without its execution names the prospect without a dead link', () => {
     panel({ held: { entries: [row({ workflow_id: null })], total: 1 } })
     expect(screen.queryByRole('link')).toBeNull()
     expect(screen.getByText('a0B000000000001AAA')).toBeInTheDocument()
