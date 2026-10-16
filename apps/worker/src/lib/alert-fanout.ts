@@ -9,10 +9,12 @@
  * change to the cooldown semantics or the multi-org handling had to be made in
  * every one. This module is the single home for it.
  *
- * It deliberately does NOT cover the per-workflow / per-org cooldown alerts
- * (failure-rate, slow-execution-rate, database-reachability.ts): those
- * key their cooldown on a workflow or a single org and announce recovery, which
- * is a different shape. They still share `slackOrgIds` for the org lookup.
+ * Its once-per-incident fan-out (`rateLimitedOrgAlert`) does NOT cover the
+ * per-workflow / per-org cooldown alerts (failure-rate, slow-execution-rate,
+ * database-reachability.ts): those key their cooldown on a workflow or a single
+ * org and announce recovery, which is a different shape. They share
+ * `slackOrgIds` for the org lookup, and since #2062 they post through the
+ * minute alert claim below (`postMinutePage`, `minuteAllClearClaim`).
  *
  * Every read of `service_connections` outside the signed-in app's routes
  * (routes/api/) lives here or in slack.ts (#1303, guarded by

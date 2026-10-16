@@ -247,10 +247,16 @@ export async function reportDatabaseUnreachable(deps: ReachabilityDeps, report: 
       const posted = await postMinutePage({
         claims: deps.claims,
         key: `${DB_UNREACHABLE_PREFIX}:${orgId}`,
-        inCooldown: () => inCooldown(kv, backoff),
+        // The standing condition is read with the judgement, before the post, so
+        // nothing inside `send` is a read (a throw there is taken as a post that
+        // may have landed). readCondition never throws in any case.
+        inCooldown: async () => {
+          const cooling = await inCooldown(kv, backoff)
+          if (!cooling) standing = await readCondition(kv, backoff)
+          return cooling
+        },
         send: async () => {
           // Unchanged is false since the error text can move between reminders (#1337).
-          standing = await readCondition(kv, backoff)
           const repeat = describeRepeat(standing, nowMs, false, DB_UNREACHABLE_STEPS) ?? undefined
           return Boolean(await sendDatabaseUnreachableAlert(conn, conn.default_channel, { what: report.what, error: errorText, appUrl: deps.appUrl, repeat, copyAgeMs }))
         },
