@@ -28,7 +28,7 @@ vi.mock('../PartnerForm', () => ({
   default: () => <div />,
 }))
 vi.mock('@/lib/api', () => ({
-  api: { partners: { list: vi.fn(), delete: vi.fn() } },
+  api: { partners: { usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }), list: vi.fn(), delete: vi.fn() } },
 }))
 
 import PartnersPage from '../page'

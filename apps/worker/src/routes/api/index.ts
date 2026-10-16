@@ -29,6 +29,7 @@ import heldClicks from './held-clicks'
 import buyerSelectParity from './buyer-select-parity'
 import mutedAlertRoutes from './muted-alerts'
 import incidentRoutes from './incidents'
+import partnerUsageRoutes from './partner-usage'
 
 type Variables = AuthVariables
 
@@ -73,6 +74,9 @@ api.route('/held-clicks', heldClicks)
 // under the admin prefix. Mounted before /admin's own routes cannot matter: a
 // Hono sub app matches only its own paths.
 api.route('/admin/buyer-select/parity', buyerSelectParity)
+// Which workflow steps name a partner, per node kind (#2137): the partners page's
+// Bid Group tab and confirmation window apply only where one does.
+api.route('/partners', partnerUsageRoutes)
 api.get('/audit-log', async (c) => {
   const { orgId } = c.get('user')
   const supabase = (await import('../../lib/supabase')).createSupabaseClient(c.env)

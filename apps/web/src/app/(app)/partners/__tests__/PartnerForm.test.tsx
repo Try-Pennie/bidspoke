@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 
 vi.mock('@/lib/api', () => ({
   api: {
+    partners: { usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }) },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
     buyerProfiles: { get: vi.fn(), save: vi.fn(), history: vi.fn(), usage: vi.fn() },
@@ -99,53 +101,64 @@ describe('PartnerForm — sub-account UUID removal surfaces errors (#514)', () =
 describe('PartnerForm: a both partner exposes buyer and source config (#306)', () => {
   const bothPartner: Partner = { ...partner, partner_type: 'both' }
 
-  it('offers all three partner types on the type toggle', () => {
+  it('offers all three partner types on the type toggle, on the Partner tab', async () => {
     render(<PartnerForm partner={bothPartner} onSave={vi.fn()} onCancel={vi.fn()} />)
+    await userEvent.click(screen.getByRole('tab', { name: 'Partner' }))
 
     expect(screen.getByRole('radio', { name: 'Source' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Buyer' })).toBeInTheDocument()
     expect(screen.getByRole('radio', { name: 'Both' })).toBeInTheDocument()
   })
 
-  it('shows the buyer-only sections for a both partner', () => {
+  // #2137: a buyer's bidding settings are on the Bid Group tab, which shows
+  // when it applies, or after Set up for Bid Group, offered to every buyer.
+  it('gives a both partner the buyer tabs, and its bidding settings one press away', async () => {
     render(<PartnerForm partner={bothPartner} onSave={vi.fn()} onCancel={vi.fn()} />)
+    await screen.findByRole('tab', { name: 'Buyer profile' })
+    await userEvent.click(screen.getByRole('tab', { name: 'Partner' }))
+    await userEvent.click(await screen.findByRole('button', { name: 'Set up for Bid Group' }))
 
-    expect(screen.getByText('Bid resolution')).toBeInTheDocument()
-    expect(screen.getByText('Bidding limits')).toBeInTheDocument()
-    expect(screen.getByText('Circuit breaker')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Bid Group' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByText('Bid resolution')).toBeVisible()
+    expect(screen.getByText('Bidding limits')).toBeVisible()
+    expect(screen.getByText('Circuit breaker')).toBeVisible()
   })
 
-  it('shows the source-only sections for a both partner', () => {
+  it('shows the source-only sections for a both partner, on Workflow values', async () => {
     render(<PartnerForm partner={bothPartner} onSave={vi.fn()} onCancel={vi.fn()} />)
+    await userEvent.click(screen.getByRole('tab', { name: 'Workflow values' }))
 
-    expect(screen.getByText('Sell-off offer copy')).toBeInTheDocument()
-    expect(screen.getByText('Sub-account UUIDs')).toBeInTheDocument()
+    expect(screen.getByText('Sell-off offer copy')).toBeVisible()
+    expect(screen.getByText('Sub-account UUIDs')).toBeVisible()
   })
 
-  it('still hides the buyer sections for a source-only partner', () => {
+  it('still hides the buyer tabs for a source-only partner', async () => {
     // The positive case above passes just as well if the gates were removed
     // outright, so the exclusion has to be asserted in the same fixture.
     render(<PartnerForm partner={{ ...partner, partner_type: 'source' }} onSave={vi.fn()} onCancel={vi.fn()} />)
 
+    await waitFor(() => expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Partner', 'Workflow values', 'History']))
     expect(screen.queryByText('Bid resolution')).not.toBeInTheDocument()
-    expect(screen.getByText('Sell-off offer copy')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Set up for Bid Group' })).not.toBeInTheDocument()
+    expect(screen.getByText('Sell-off offer copy')).toBeVisible()
   })
 
-  it('still hides the source sections for a buyer-only partner', () => {
+  it('still hides the source sections for a buyer-only partner', async () => {
     render(<PartnerForm partner={{ ...partner, partner_type: 'buyer' }} onSave={vi.fn()} onCancel={vi.fn()} />)
 
+    await screen.findByRole('tab', { name: 'Buyer profile' })
     expect(screen.queryByText('Sell-off offer copy')).not.toBeInTheDocument()
-    expect(screen.getByText('Bid resolution')).toBeInTheDocument()
+    expect(screen.queryByText('Sub-account UUIDs')).not.toBeInTheDocument()
   })
 
-  it('saves the type the person picked, so switching to both persists', async () => {
-    const onSave = vi.fn()
-    render(<PartnerForm partner={{ ...partner, partner_type: 'buyer' }} onSave={onSave} onCancel={vi.fn()} />)
+  it('switching a buyer to both brings the source sections and keeps the tab the person is on', async () => {
+    render(<PartnerForm partner={{ ...partner, partner_type: 'buyer' }} onSave={vi.fn()} onCancel={vi.fn()} />)
+    await userEvent.click(await screen.findByRole('tab', { name: 'Partner' }))
 
     fireEvent.click(screen.getByRole('radio', { name: 'Both' }))
 
     await waitFor(() => expect(screen.getByText('Sell-off offer copy')).toBeInTheDocument())
-    expect(screen.getByText('Bid resolution')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: 'Partner' })).toHaveAttribute('aria-selected', 'true')
   })
 })
 
@@ -167,24 +180,25 @@ describe('PartnerForm: missing credential warning (#416)', () => {
   })
 
   it('shows nothing when the API reported no warning', async () => {
-    render(<PartnerForm partner={{ ...partner, credential_warning: null }} onSave={vi.fn()} onCancel={vi.fn()} />)
+    const { container } = render(<PartnerForm partner={{ ...partner, credential_warning: null }} onSave={vi.fn()} onCancel={vi.fn()} />)
 
-    expect(screen.queryByRole('status')).not.toBeInTheDocument()
+    await screen.findByRole('tab', { name: 'Workflow values' })
+    expect(container.querySelector('[data-problem-mark]')).toBeNull()
+    expect(screen.queryByRole('tab', { name: /Bid Group/ })).not.toBeInTheDocument()
   })
 
-  it('does not present the warning as a save error', async () => {
-    // The two are different: an error means the save did not happen, and this
-    // save did. Sharing the error banner would say the opposite of what occurred.
-    render(
-      <PartnerForm
-        partner={{ ...partner, credential_warning: "Credential 'SOFI_SECRET' is not set. Set it before activating this partner." }}
-        onSave={vi.fn()}
-        onCancel={vi.fn()}
-      />
-    )
+  // #2137 (settled design, "Missing credential"): red under the secret it is
+  // about, a mark on the tab holding it, and the partner opens on that tab. It
+  // is not the error banner, which says a save did not happen, and this one did.
+  it('opens on the tab holding the secret, marks the tab, and says it under the secret field', async () => {
+    const warning = "Credential 'SOFI_SECRET' is not set. Set it before activating this partner."
+    render(<PartnerForm partner={{ ...partner, partner_type: 'buyer', cf_secret_key: 'SOFI_SECRET', credential_warning: warning }} onSave={vi.fn()} onCancel={vi.fn()} />)
 
-    const warning = await screen.findByRole('status')
-    expect(warning).toHaveTextContent('SOFI_SECRET')
-    expect(warning.className).not.toContain('red')
+    const tab = await screen.findByRole('tab', { name: 'Bid Group, has a problem' })
+    expect(tab).toHaveAttribute('aria-selected', 'true')
+    const secret = screen.getByLabelText('Auth secret name')
+    expect(secret).toBeVisible()
+    expect(secret).toHaveAccessibleDescription(warning)
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

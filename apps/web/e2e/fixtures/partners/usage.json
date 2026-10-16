@@ -1,0 +1,93 @@
+{
+  "58d50fe7-3e86-4d71-85c7-4533ab08acb0": {
+    "bid_group": [
+      {
+        "workflow_id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+        "workflow_name": "Main Flow",
+        "is_active": true,
+        "node_id": "dc83824d-22da-4f1a-a8e5-4800e6732edd",
+        "mode": "highest_bid",
+        "partner_ids": [
+          "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+          "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+        ]
+      },
+      {
+        "workflow_id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+        "workflow_name": "Main Flow (v2)",
+        "is_active": false,
+        "node_id": "dc83824d-22da-4f1a-a8e5-4800e6732edd",
+        "mode": "highest_bid",
+        "partner_ids": [
+          "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+          "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+        ]
+      }
+    ],
+    "partner_bid": [],
+    "latency_gate": []
+  },
+  "84fa3d0a-c382-41c1-983b-70d75d97cf4c": {
+    "bid_group": [],
+    "partner_bid": [],
+    "latency_gate": []
+  },
+  "205785c3-09cf-4993-8765-4edd81c62af8": {
+    "bid_group": [],
+    "partner_bid": [],
+    "latency_gate": []
+  },
+  "e82b748a-3d32-4777-b3e3-b7d75d8580f1": {
+    "bid_group": [],
+    "partner_bid": [],
+    "latency_gate": []
+  },
+  "4ad955bd-744f-4c1f-acbb-19a22b9e5c64": {
+    "bid_group": [],
+    "partner_bid": [],
+    "latency_gate": []
+  },
+  "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3": {
+    "bid_group": [],
+    "partner_bid": [],
+    "latency_gate": []
+  },
+  "73bcc351-724d-4705-be3b-b27d0ffc17ad": {
+    "bid_group": [],
+    "partner_bid": [],
+    "latency_gate": []
+  },
+  "d84c1e84-a7fe-47c0-9688-2bb4e92b8c68": {
+    "bid_group": [],
+    "partner_bid": [],
+    "latency_gate": []
+  },
+  "1b9cbd8f-1d23-496c-b046-b11d64edae29": {
+    "bid_group": [
+      {
+        "workflow_id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+        "workflow_name": "Main Flow",
+        "is_active": true,
+        "node_id": "dc83824d-22da-4f1a-a8e5-4800e6732edd",
+        "mode": "highest_bid",
+        "partner_ids": [
+          "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+          "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+        ]
+      },
+      {
+        "workflow_id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
+        "workflow_name": "Main Flow (v2)",
+        "is_active": false,
+        "node_id": "dc83824d-22da-4f1a-a8e5-4800e6732edd",
+        "mode": "highest_bid",
+        "partner_ids": [
+          "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+          "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
+        ]
+      }
+    ],
+    "partner_bid": [],
+    "latency_gate": []
+  }
+}

@@ -83,6 +83,26 @@ export interface Partner {
  */
 export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email' | 'updated_by_name' | 'credential_warning' | 'version' | 'last_save_id' | 'bid_mode'>>
 
+/** One workflow step that names a partner (#2137), from GET /api/partners/:id/usage. */
+export interface PartnerUsageStep {
+  workflow_id: string
+  workflow_name: string
+  /** A switched off workflow still counts: switched on again, it calls the partner at once. */
+  is_active: boolean
+  node_id: string | null
+}
+
+/**
+ * Which of the organization's workflow steps name a partner, per node kind
+ * (#2137): a Bid Group or Partner Bid step makes the Bid Group tab apply, a
+ * Latency Gate the confirmation window.
+ */
+export interface PartnerUsage {
+  bid_group: Array<PartnerUsageStep & { mode: 'highest_bid' | 'cascade' | 'tiered'; partner_ids: string[] }>
+  partner_bid: PartnerUsageStep[]
+  latency_gate: PartnerUsageStep[]
+}
+
 /**
  * The page's one save beside its partner patch (#2133): the pair of versions it
  * was edited from, the profile document when it saves one, and this press's id.
@@ -1007,6 +1027,8 @@ export const api = {
     // A change the probe found that no notice announced (#2135). Recorded only.
     reportLiveMiss: (report: LiveMissReportBody) =>
       req<{ ok: true; id: string }>('/api/partners/live-miss', { method: 'POST', body: JSON.stringify(report) }),
+    // Which workflow steps name the partner, per node kind (#2137). A failure throws: never read as "none".
+    usage: (id: string) => req<PartnerUsage>(`/api/partners/${id}/usage`),
   },
 
   // The buyer profile read routes (#1412). The profile is saved with the

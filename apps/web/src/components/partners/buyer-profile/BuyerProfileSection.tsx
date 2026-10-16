@@ -6,7 +6,8 @@
  * The profile document and the accept rules are the partner form's state, so
  * one Save writes the partner record first (the rules live there) and the
  * profile second; this section renders the editors over that state and owns
- * the read surfaces beside them (usage, history, the unresolved queue) and the
+ * the read surfaces beside them (usage, the unresolved queue; its history is on
+ * the History tab since #2137) and the
  * actions that are its own: settling a sale, and for a click buyer releasing a
  * held click (#1552), which takes the unresolved queue's place because a click
  * buyer never reserves in the ledger.
@@ -27,7 +28,6 @@ import { Toggle } from '@/components/ui/Toggle'
 import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
 import { AcceptRulesEditor } from './AcceptRulesEditor'
 import { BlackoutDatesEditor } from './BlackoutDatesEditor'
-import { BuyerProfileHistory, type HistoryEntry } from './BuyerProfileHistory'
 import { BuyerUsagePanel, type BuyerUsage } from './BuyerUsagePanel'
 import { ClickUsagePanel, type ClickUsage } from './ClickUsagePanel'
 import { CapsGrid, type CapsErrors } from './CapsGrid'
@@ -165,8 +165,6 @@ export function BuyerProfileSection(props: Props) {
   const { partnerId, partnerName, profile, loadError, onProfileChange, errors, acceptSignals, onAcceptSignalsChange, duplicateSignals, onDuplicateSignalsChange, externalRoutingCode, onExternalRoutingCodeChange, signalRules, onSignalRulesChange, otherSellers, soldOnLock } = props
   const [usage, setUsage] = useState<BuyerUsage | ClickUsage | null>(null)
   const [usageError, setUsageError] = useState<string | null>(null)
-  const [history, setHistory] = useState<HistoryEntry[] | null>(null)
-  const [historyError, setHistoryError] = useState<string | null>(null)
   const [unresolved, setUnresolved] = useState<{ rows: UnresolvedSale[]; total: number; page: number } | null>(null)
   const [unresolvedError, setUnresolvedError] = useState<string | null>(null)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -180,7 +178,6 @@ export function BuyerProfileSection(props: Props) {
   useEffect(() => {
     if (!partnerId) return
     let cancelled = false
-    api.buyerProfiles.history(partnerId).then((h) => { if (!cancelled) setHistory(h.entries) }).catch((err: unknown) => { if (!cancelled) setHistoryError(errorSentence(err, 'The history could not be read.')) })
     // This buyer's queue only, with the API's own total for it (#1457, L16): the
     // filter and the count come from one query, so "Showing N of M" is about the
     // rows the button can reach.
@@ -312,7 +309,6 @@ export function BuyerProfileSection(props: Props) {
 
   return (
     <section aria-label="Buyer profile" className="space-y-6 rounded-lg border border-emerald-100 bg-emerald-50/30 p-4">
-      <h3 className="text-xs font-semibold text-emerald-800">Buyer profile</h3>
       {!partnerId ? (
         <p className="text-sm text-gray-600">Save the partner first. The buyer profile is kept against the saved partner.</p>
       ) : loadError ? (
@@ -468,17 +464,6 @@ export function BuyerProfileSection(props: Props) {
           <div className="space-y-3">
             <h4 className="text-sm font-medium text-gray-700">{SECTION_LABELS.blackout_dates}</h4>
             <BlackoutDatesEditor value={profile.blackout_dates} onChange={(blackout_dates) => patch({ blackout_dates })} errors={byPath} />
-          </div>
-
-          <div className="space-y-3">
-            <h4 className="text-sm font-medium text-gray-700">History</h4>
-            {historyError ? (
-              <p role="alert" className="text-xs text-red-700">{historyError}</p>
-            ) : history === null ? (
-              <p role="status" className="text-xs text-gray-500">Reading the history…</p>
-            ) : (
-              <BuyerProfileHistory entries={history} />
-            )}
           </div>
         </>
       )}

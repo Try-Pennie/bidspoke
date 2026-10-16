@@ -11,7 +11,13 @@ import { listToString, operatorOf, parseList, signalFrom, valueTextOf } from '@/
 
 // ── The field registry ──────────────────────────────────────────────────────
 
-/** The page's tabs, as the settled design names them (PRD 6.4.1, PM-1). */
+/**
+ * The page's tabs, as the settled design names them (PRD 6.4.1, PM-1). A
+ * field's tab is where the page draws its control (#2137): the settled design
+ * puts the circuit breaker, error rules and alerts with the bidding they govern
+ * on the Bid Group tab, and the per sub-account minimum bids with the other
+ * values workflows read by name on Workflow values.
+ */
 export type PartnerTab = 'partner' | 'buyer_profile' | 'bid_group' | 'workflow_values' | 'history'
 
 /**
@@ -71,16 +77,16 @@ export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
   partnerField('last_probe_response', 'Response handling', 'Sample response', 'bid_group'),
   partnerField('daily_cap', 'Bidding limits', 'Daily attempt cap (bidding workflows)', 'bid_group'),
   partnerField('min_bid', 'Bidding limits', 'Minimum bid ($)', 'bid_group'),
-  partnerField('sub_account_min_bids', 'Per-sub-account min bids', 'Per-sub-account min bids', 'bid_group'),
-  partnerField('circuit_enabled', 'Circuit breaker', 'Circuit breaker enabled'),
-  partnerField('circuit_error_threshold', 'Circuit breaker', 'Error threshold'),
-  partnerField('circuit_window_seconds', 'Circuit breaker', 'Window (seconds)'),
-  partnerField('circuit_cooldown_seconds', 'Circuit breaker', 'Pause duration (seconds)'),
-  partnerField('response_classification', 'Response classification', 'Response classification'),
+  partnerField('sub_account_min_bids', 'Per-sub-account min bids', 'Per-sub-account min bids', 'workflow_values'),
+  partnerField('circuit_enabled', 'Circuit breaker', 'Circuit breaker enabled', 'bid_group'),
+  partnerField('circuit_error_threshold', 'Circuit breaker', 'Error threshold', 'bid_group'),
+  partnerField('circuit_window_seconds', 'Circuit breaker', 'Window (seconds)', 'bid_group'),
+  partnerField('circuit_cooldown_seconds', 'Circuit breaker', 'Pause duration (seconds)', 'bid_group'),
+  partnerField('response_classification', 'Response classification', 'Response classification', 'bid_group'),
   partnerField('confirmation_window_ms', 'Bid confirmation latency', 'Confirmation window (ms)', 'bid_group'),
   partnerField('sell_off_offer_title', 'Sell-off offer copy', 'Sell-off offer title', 'workflow_values'),
   partnerField('sell_off_offer_details', 'Sell-off offer copy', 'Sell-off offer details', 'workflow_values'),
-  partnerField('alert_config', 'Alert configuration', 'Alerts'),
+  partnerField('alert_config', 'Alert configuration', 'Alerts', 'bid_group'),
   partnerField('accept_signals', 'Outcome rules', SECTION_LABELS.accept_signals, 'buyer_profile'),
   partnerField('duplicate_signals', 'Outcome rules', SECTION_LABELS.duplicate_signals, 'buyer_profile'),
   partnerField('external_routing_code', 'Outcome rules', FIELD_LABELS.external_routing_code, 'buyer_profile'),

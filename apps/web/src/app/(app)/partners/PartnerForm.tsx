@@ -28,6 +28,48 @@ import { Button, ChoiceGroup, Field, NumberInput, Outcome, TextArea, TextInput, 
 import { Toggle } from '@/components/ui/Toggle'
 import { documentToProfile, soldOnSwitchBlocked, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal, type StoredKind } from '@bidspoke/buyer-profile'
 import { UNSAVED_CHANGES_MESSAGE } from '@/lib/save-dirty-guard'
+import { Tabs, TabPanel } from '@/components/ui/Tabs'
+import { ProblemMark } from '@/components/ui/ProblemMark'
+import { PartnerHistoryPanel } from '@/components/partners/PartnerHistoryPanel'
+import type { PartnerUsage } from '@/lib/api'
+import type { PartnerTab } from './partner-draft'
+import {
+  bidGroupSettingsSet, bidGroupShown, confirmationWindowShown, openingTab, problemsOf, problemTabs, visibleTabs, TAB_LABELS,
+  type TabInputs, type UsageState,
+} from './partner-tabs'
+import { bidsInSentences } from './bid-group-usage-text'
+
+const NO_USAGE: PartnerUsage = { bid_group: [], partner_bid: [], latency_gate: [] }
+const NO_NAMES: ReadonlyMap<string, string> = new Map()
+
+/** Why the Bid Group tab shows when no workflow names the partner, said under the Bids in row. */
+function bidGroupReasonOf(i: TabInputs): string | null {
+  if (bidGroupSettingsSet(i.body)) return 'It shows because a Bid Group setting is filled in.'
+  if (i.isBuyer && i.soldOn === 'offer') return 'It shows because buyer selection calls a buyer sold on the offer with these settings.'
+  return null
+}
+
+/**
+ * The Bid Group tab's first row (#2137, the settled design's "Bids in"): which
+ * workflows ask this partner for a bid, in each of the usage read's three
+ * states, so a read still running or failed never reads as "no workflow".
+ */
+function BidsInRow({ usage, partnerName, partnerNames, reason, onRetry }: { usage: UsageState; partnerName: string; partnerNames: ReadonlyMap<string, string>; reason: string | null; onRetry: () => void }) {
+  if (usage.kind === 'loading') return <p role="status" className="text-sm text-gray-600">Checking which workflows use this partner…</p>
+  if (usage.kind === 'failed') {
+    return (
+      <div role="alert" className="flex items-center gap-3 text-sm text-red-700">
+        <span className="flex-1">Could not check which workflows use this partner. Try again.</span>
+        <Button variant="secondary" onClick={onRetry}>Try again</Button>
+      </div>
+    )
+  }
+  const sentences = bidsInSentences(usage.usage, partnerNames)
+  if (sentences.length === 0) {
+    return <p className="text-sm text-gray-700">{`No workflow's Bid Group names ${partnerName}, so nothing on this tab is used.${reason ? ` ${reason}` : ''}`}</p>
+  }
+  return <div className="space-y-1 text-sm text-gray-700">{sentences.map((t) => <p key={t}>{t}</p>)}</div>
+}
 
 // Re-exported for the parent page's partner-switch / New guards, so the prompt
 // copy stays identical until PR7 (#2138) replaces all three with a dialog.
@@ -89,6 +131,14 @@ interface Props {
   deleting?: boolean
   /** Reports whether the form has unsaved edits, so the parent can guard partner-switch / New. */
   onDirtyChange?: (dirty: boolean) => void
+  /** The tab the URL asks for (#2137); null opens where the partner's problem or settings are. */
+  requestedTab?: PartnerTab | null
+  /** The open tab changed (a press, or a fallback): the page mirrors it into the URL. */
+  onTabChange?: (tab: PartnerTab) => void
+  /** Every listed partner's name by id, for the Bid Group tab's Bids in row. */
+  partnerNames?: ReadonlyMap<string, string>
+  /** Whether the page holds a problem, for the mark on the partner's row in the list. */
+  onProblemChange?: (hasProblem: boolean) => void
 }
 
 /**
@@ -145,6 +195,10 @@ export default function PartnerForm({
   onCancelDelete,
   deleting,
   onDirtyChange,
+  requestedTab = null,
+  onTabChange,
+  partnerNames = NO_NAMES,
+  onProblemChange,
 }: Props) {
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [error, setError] = useState<string | null>(null)
@@ -350,6 +404,57 @@ export default function PartnerForm({
     return { soldOn: stored.sold_on, tierCount: stored.tiers.length, acceptRuleCount: baselineSnapshot.current?.acceptSignals.length ?? 0 }
   })()
   const soldOnLock = storedKind && soldOnSwitchBlocked(storedKind) ? soldOnLockReason(storedKind) : null
+
+  // ── Tabs (#2137, PM-1, PM-12) ───────────────────────────────────────────────
+  const isNew = !partner
+  const isBuyer = isBuyerPartner(partnerType)
+  const isSource = isSourcePartner(partnerType)
+  // Which workflow steps name the partner: loading, failed and found are three
+  // states the Bid Group tab draws differently; a failure is never "none" (L530).
+  const [usage, setUsage] = useState<UsageState>(() => (partner ? { kind: 'loading' } : { kind: 'found', usage: NO_USAGE }))
+  const [usageAttempt, setUsageAttempt] = useState(0)
+  useEffect(() => {
+    if (!partnerId) return
+    let cancelled = false
+    setUsage({ kind: 'loading' })
+    api.partners.usage(partnerId)
+      .then((u) => { if (!cancelled) setUsage({ kind: 'found', usage: u }) })
+      .catch((err: unknown) => { if (!cancelled) setUsage({ kind: 'failed', message: errorSentence(err, 'the read failed') }) })
+    return () => { cancelled = true }
+  }, [partnerId, usageAttempt])
+  const [bidGroupAdded, setBidGroupAdded] = useState(false)
+  const [confirmationAdded, setConfirmationAdded] = useState(false)
+  const problems = problemsOf({ credentialWarning: partner?.credential_warning, errors: profileErrors, routeNames: profile?.click_delivery?.routes.map((r) => r.name) ?? [] })
+  const tabsWithProblems = problemTabs(problems)
+  const pageProblems = problems.filter((p) => p.tab === null)
+  const credentialProblem = problems.find((p) => p.registryPath === 'cf_secret_key')?.message ?? null
+  const currentBody = buildPartnerBody(captureSnapshot(), bodyCtx)
+  const tabInputs: TabInputs = {
+    isBuyer, isNew, body: currentBody, soldOn: isBuyer ? profile?.sold_on ?? null : null, usage, bidGroupAdded,
+    // A problem on the tab, or a URL asking for it while the read runs, keeps it shown.
+    bidGroupNeeded: tabsWithProblems.includes('bid_group') || (requestedTab === 'bid_group' && usage.kind === 'loading'),
+  }
+  // Once shown for a reason of its own, the tab stays for this visit, so
+  // clearing its last setting never takes it from under the person.
+  const shownForItsOwnReason = bidGroupShown({ ...tabInputs, bidGroupNeeded: tabsWithProblems.includes('bid_group') })
+  useEffect(() => { if (shownForItsOwnReason && !bidGroupAdded) setBidGroupAdded(true) }, [shownForItsOwnReason, bidGroupAdded])
+  const visible = visibleTabs(tabInputs)
+  const bidGroupReason = bidGroupReasonOf(tabInputs)
+  const [tab, setTab] = useState<PartnerTab>(() => openingTab({ requested: requestedTab ?? null, visible, problems, isBuyer, isNew }))
+  function chooseTab(next: PartnerTab) {
+    setTab(next)
+    onTabChange?.(next)
+  }
+  // A tab the partner no longer shows (or a URL naming one it never did) falls
+  // back to the first tab, and the URL is corrected to say so.
+  useEffect(() => {
+    if (!visible.includes(tab)) chooseTab(visible[0])
+    else if (requestedTab && requestedTab !== tab && usage.kind !== 'loading') onTabChange?.(tab)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible.join(), tab, usage.kind])
+  useEffect(() => { onProblemChange?.(problems.length > 0) }, [problems.length, onProblemChange])
+  // A problem on a tab other than the one open: the outcome offers to show it.
+  const showMeTab = tabsWithProblems.includes(tab) ? null : tabsWithProblems.find((t) => visible.includes(t)) ?? null
 
   // Tell the parent so it can guard partner-switch / New (those are <button>s the
   // link interceptor below can't see).
@@ -729,8 +834,6 @@ export default function PartnerForm({
     setTimeout(() => setSaveState('idle'), 1500)
   }
 
-  const isNew = !partner
-
   return (
     <div className="mx-auto max-w-2xl">
       <div className="mb-6 flex items-center justify-between">
@@ -772,15 +875,21 @@ export default function PartnerForm({
       )}
 
       {/*
-        #416. Deliberately NOT the error banner above: an error means the save did
-        not happen, and a partner whose credential is unprovisioned saved fine.
-        Amber, and its own role="status", so it reads as a standing condition
-        rather than as a failed action.
+        A problem no tab holds (PM-12, #2137): a refusal naming a field the
+        registry does not know is said here with the red mark, never dropped.
+        The missing credential (#416) is no longer a banner: it is red under the
+        secret it is about, on the Bid Group tab, with marks on the tab and on
+        the partner's row in the list.
       */}
-      {partner?.credential_warning && (
-        <div role="status" className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          {partner.credential_warning}
-        </div>
+      {pageProblems.length > 0 && (
+        <ul className="mb-4 space-y-1">
+          {pageProblems.map((p, i) => (
+            <li key={i} className="flex items-center gap-2 text-sm text-red-700">
+              <ProblemMark label="Problem:" />
+              {p.message}
+            </li>
+          ))}
+        </ul>
       )}
 
       {mergeOpen && pendingMerge && mergeResult && (
@@ -794,382 +903,435 @@ export default function PartnerForm({
       )}
 
       <form onSubmit={handleSubmit} className="space-y-8">
-
-        <Section title="Identity">
-          <Field id="partner-name" label="Name" hint="Display name shown in the UI.">
-            <TextInput id="partner-name" value={name} onChange={handleNameChange} placeholder="Tripoint" describedBy={describedBy('partner-name', true, false)} />
-          </Field>
-          {isNew && (
-            <Field
-              id="partner-slug"
-              label="Slug"
-              hint="Lowercase identifier used in logs and workflow references. Cannot be changed after creation."
-            >
-              <TextInput
-                id="partner-slug"
-                value={slug}
-                onChange={(v) => { setSlug(v); setSlugManuallyEdited(true) }}
-                placeholder="tripoint"
-                mono
-                describedBy={describedBy('partner-slug', true, false)}
-              />
-            </Field>
-          )}
-          <div>
-            <ChoiceGroup
-              id="partner-type"
-              label="Type"
-              value={partnerType}
-              options={PARTNER_TYPES.map((t) => ({ value: t, label: partnerTypeLabel(t) }))}
-              onChange={setPartnerType}
-              describedBy="partner-type-hint"
-            />
-            <p id="partner-type-hint" className="mt-1 text-xs text-gray-500">Source partners send leads to Pennie. Buyer partners receive bids. Both does each, on one record.</p>
-          </div>
-          <div className="flex items-center gap-6">
-            {/* Relabelled from Priority (#1412, L118): the buyer profile's priority is
-                who is offered a lead first; this field only orders the partner list. */}
-            {isBuyerPartner(partnerType) && (
-              <Field id="partner-list-order" label="List order" hint="Orders the partner list. It does not affect who is offered a lead.">
-                <NumberInput id="partner-list-order" value={priority === '' ? null : Number(priority)} onChange={(v) => setPriority(v === null ? '' : String(v))} step={1} describedBy={describedBy('partner-list-order', true, false)} />
+        <Tabs<PartnerTab>
+          label={isNew ? 'New partner settings' : `${partner.name} settings`}
+          value={tab}
+          onValueChange={chooseTab}
+          items={visible.map((t) => ({ value: t, label: TAB_LABELS[t], problem: tabsWithProblems.includes(t) }))}
+        >
+          <TabPanel value="partner" className="space-y-8">
+            <Section title="Identity">
+              <Field id="partner-name" label="Name" hint="Display name shown in the UI.">
+                <TextInput id="partner-name" value={name} onChange={handleNameChange} placeholder="Tripoint" describedBy={describedBy('partner-name', true, false)} />
               </Field>
-            )}
-            <div>
-              <span className="mb-1 block text-xs font-medium text-gray-600">Status</span>
-              <div className="flex items-center gap-2.5 pt-1">
-                <Toggle id="partner-active" checked={isActive} onChange={setIsActive} label="Partner active" />
-                <span className="text-sm text-gray-700">{isActive ? 'Active' : 'Inactive'}</span>
+              {isNew && (
+                <Field
+                  id="partner-slug"
+                  label="Slug"
+                  hint="Lowercase identifier used in logs and workflow references. Cannot be changed after creation."
+                >
+                  <TextInput
+                    id="partner-slug"
+                    value={slug}
+                    onChange={(v) => { setSlug(v); setSlugManuallyEdited(true) }}
+                    placeholder="tripoint"
+                    mono
+                    describedBy={describedBy('partner-slug', true, false)}
+                  />
+                </Field>
+              )}
+              <div>
+                <ChoiceGroup
+                  id="partner-type"
+                  label="Type"
+                  value={partnerType}
+                  options={PARTNER_TYPES.map((t) => ({ value: t, label: partnerTypeLabel(t) }))}
+                  onChange={setPartnerType}
+                  describedBy="partner-type-hint"
+                />
+                <p id="partner-type-hint" className="mt-1 text-xs text-gray-500">Source partners send leads to Pennie. Buyer partners receive bids. Both does each, on one record.</p>
               </div>
-            </div>
-          </div>
-        </Section>
+              <div className="flex items-center gap-6">
+                <div>
+                  <span className="mb-1 block text-xs font-medium text-gray-600">Status</span>
+                  <div className="flex items-center gap-2.5 pt-1">
+                    <Toggle id="partner-active" checked={isActive} onChange={setIsActive} label="Partner active" />
+                    <span className="text-sm text-gray-700">{isActive ? 'Active' : 'Inactive'}</span>
+                  </div>
+                </div>
+              </div>
+            </Section>
 
-        {isBuyerPartner(partnerType) && (
-          <BuyerProfileSection
-            partnerId={partner?.id ?? null}
-            partnerName={name || partner?.name || 'this buyer'}
-            profile={profile}
-            loadError={profileLoadError}
-            onProfileChange={setProfile}
-            errors={profileErrors}
-            acceptSignals={acceptSignals}
-            onAcceptSignalsChange={setAcceptSignals}
-            duplicateSignals={duplicateSignals}
-            onDuplicateSignalsChange={setDuplicateSignals}
-            externalRoutingCode={externalRoutingCode}
-            onExternalRoutingCodeChange={setExternalRoutingCode}
-            signalRules={signalRules}
-            onSignalRulesChange={setSignalRules}
-            otherSellers={otherSellers}
-            soldOnLock={soldOnLock}
-          />
-        )}
-        {isBuyerPartner(partnerType) && <Section title="Bid resolution">
-          <BidResolverEditor
-            resolverType={resolverType}
-            resolverConfig={resolverConfig}
-            bidFormula={bidFormula}
-            apiEndpoint={apiEndpoint}
-            cfSecretKey={cfSecretKey}
-            bidComparisonSource={bidComparisonSource}
-            bidConfigOptions={bidConfigs.map((c) => ({ id: c.id, name: c.name, slug: c.slug }))}
-            onTypeChange={setResolverType}
-            onFormulaChange={setBidFormula}
-            onApiEndpointChange={setApiEndpoint}
-            onCfSecretKeyChange={setCfSecretKey}
-            onBidComparisonSourceChange={setBidComparisonSource}
-            onConfigChange={setResolverConfig}
-          />
-          {bidConfigsLoadError && (
-            <div role="alert" className="mt-4 flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-              <span className="flex-1">Could not load bid matrices. Try again.</span>
-              <Button variant="secondary" onClick={() => setBidConfigsAttempt((n) => n + 1)}>Try again</Button>
-            </div>
-          )}
-          {resolverType === 'matrix' && partner && !bidConfigsLoadError && (
-            <div className="mt-4 border-t border-gray-100 pt-4">
-              <h4 className="mb-2 text-sm font-medium text-graphite">Matrix</h4>
-              <BidMatrixViewer
-                partnerId={partner.id}
-                partnerSlug={partner.slug}
-                configs={bidConfigs}
-                onConfigsChange={setBidConfigs}
-                selectedConfigId={typeof resolverConfig.bid_config_id === 'string' ? resolverConfig.bid_config_id : undefined}
-                onSelectConfig={(id) => setResolverConfig({ ...resolverConfig, bid_config_id: id })}
+            {isBuyer && (
+              <Section title="Sold through">
+                <div className="divide-y divide-gray-100 rounded-lg border border-gray-200">
+                  <div className="flex items-center justify-between gap-4 px-4 py-2.5">
+                    <span className="text-sm text-graphite">Buyer profile</span>
+                    {profile !== null && (profile.version ?? 0) > 0
+                      ? <span className="text-sm text-gray-600">Set up</span>
+                      : <Button variant="secondary" onClick={() => chooseTab('buyer_profile')}>Set up a buyer profile</Button>}
+                  </div>
+                  <div className="flex items-center justify-between gap-4 px-4 py-2.5">
+                    <span className="text-sm text-graphite">Bid Group</span>
+                    {visible.includes('bid_group')
+                      ? <span className="text-sm text-gray-600">Set up</span>
+                      : <Button variant="secondary" onClick={() => { setBidGroupAdded(true); chooseTab('bid_group') }}>Set up for Bid Group</Button>}
+                  </div>
+                </div>
+              </Section>
+            )}
+          </TabPanel>
+          {isBuyer && (
+            <TabPanel value="buyer_profile" className="space-y-8">
+              <BuyerProfileSection
+                partnerId={partner?.id ?? null}
+                partnerName={name || partner?.name || 'this buyer'}
+                profile={profile}
+                loadError={profileLoadError}
+                onProfileChange={setProfile}
+                errors={profileErrors}
+                acceptSignals={acceptSignals}
+                onAcceptSignalsChange={setAcceptSignals}
+                duplicateSignals={duplicateSignals}
+                onDuplicateSignalsChange={setDuplicateSignals}
+                externalRoutingCode={externalRoutingCode}
+                onExternalRoutingCodeChange={setExternalRoutingCode}
+                signalRules={signalRules}
+                onSignalRulesChange={setSignalRules}
+                otherSellers={otherSellers}
+                soldOnLock={soldOnLock}
               />
-            </div>
+            </TabPanel>
           )}
-          {resolverType === 'matrix' && !partner && (
-            <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-gray-500">
-              Save the partner first to attach a bid matrix.
-            </p>
+          {visible.includes('bid_group') && (
+            <TabPanel value="bid_group" className="space-y-8">
+              <Section title="Bids in">
+                <BidsInRow usage={usage} partnerName={name || 'this partner'} partnerNames={partnerNames} reason={bidGroupReason} onRetry={() => setUsageAttempt((n) => n + 1)} />
+              </Section>
+
+              {credentialProblem && resolverType !== 'api' && (
+                <p className="text-sm text-red-700">{credentialProblem}</p>
+              )}
+              <Section title="Bid resolution">
+                <BidResolverEditor
+                  resolverType={resolverType}
+                  resolverConfig={resolverConfig}
+                  bidFormula={bidFormula}
+                  apiEndpoint={apiEndpoint}
+                  cfSecretKey={cfSecretKey}
+                  bidComparisonSource={bidComparisonSource}
+                  bidConfigOptions={bidConfigs.map((c) => ({ id: c.id, name: c.name, slug: c.slug }))}
+                  onTypeChange={setResolverType}
+                  onFormulaChange={setBidFormula}
+                  onApiEndpointChange={setApiEndpoint}
+                  onCfSecretKeyChange={setCfSecretKey}
+                  onBidComparisonSourceChange={setBidComparisonSource}
+                  onConfigChange={setResolverConfig}
+                  cfSecretKeyError={credentialProblem}
+                />
+                {bidConfigsLoadError && (
+                  <div role="alert" className="mt-4 flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    <span className="flex-1">Could not load bid matrices. Try again.</span>
+                    <Button variant="secondary" onClick={() => setBidConfigsAttempt((n) => n + 1)}>Try again</Button>
+                  </div>
+                )}
+                {resolverType === 'matrix' && partner && !bidConfigsLoadError && (
+                  <div className="mt-4 border-t border-gray-100 pt-4">
+                    <h4 className="mb-2 text-sm font-medium text-graphite">Matrix</h4>
+                    <BidMatrixViewer
+                      partnerId={partner.id}
+                      partnerSlug={partner.slug}
+                      configs={bidConfigs}
+                      onConfigsChange={setBidConfigs}
+                      selectedConfigId={typeof resolverConfig.bid_config_id === 'string' ? resolverConfig.bid_config_id : undefined}
+                      onSelectConfig={(id) => setResolverConfig({ ...resolverConfig, bid_config_id: id })}
+                    />
+                  </div>
+                )}
+                {resolverType === 'matrix' && !partner && (
+                  <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-gray-500">
+                    Save the partner first to attach a bid matrix.
+                  </p>
+                )}
+              </Section>
+
+              <Section title="Duplicate check">
+                <Field
+                  id="partner-dedup-endpoint"
+                  label="Dedup endpoint"
+                  hint="Optional. Called before each bid to check if this lead has already been sold to this partner."
+                >
+                  <TextInput id="partner-dedup-endpoint" value={dedupEndpoint} onChange={setDedupEndpoint} placeholder="https://api.partner.com/dedup" describedBy={describedBy('partner-dedup-endpoint', true, false)} />
+                </Field>
+              </Section>
+
+              <Section title="Outbound field mapping">
+                <OutboundMappingEditor value={outboundMapping} onChange={setOutboundMapping} />
+              </Section>
+
+              {resolverType === 'api' && <Section title="Response handling">
+                {/* Bid mode is no longer edited here (PM-9, #2136): nothing acts on it. */}
+                <div>
+                  <h4 className="mb-2 text-sm font-medium text-graphite">Sample response</h4>
+                  <PartnerProbePanel value={lastProbeResponse} onChange={setLastProbeResponse} />
+                </div>
+
+                <div className="border-t border-gray-100 pt-4">
+                  <h4 className="mb-2 text-sm font-medium text-graphite">Extra extraction</h4>
+                  <ExtraExtractionEditor
+                    value={extraExtraction}
+                    onChange={setExtraExtraction}
+                    sampleResponse={lastProbeResponse}
+                  />
+                </div>
+              </Section>}
+
+              <Section title="Bidding limits">
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Relabelled from Daily cap (#1412, L118): the buyer profile has its own
+                      daily lead cap for buyer selection; this one bounds Partner Bid attempts. */}
+                  <Field id="partner-daily-attempt-cap" label="Daily attempt cap (bidding workflows)" hint="Max bid attempts per day through Partner Bid and Bid Group. Leave blank for unlimited.">
+                    <NumberInput id="partner-daily-attempt-cap" value={dailyCap === '' ? null : Number(dailyCap)} onChange={(v) => setDailyCap(v === null ? '' : String(v))} min={0} step={1} describedBy={describedBy('partner-daily-attempt-cap', true, false)} />
+                  </Field>
+                  <Field id="partner-min-bid" label="Minimum bid ($)" hint="Reject bids below this amount. Leave blank to accept any bid down to $0. Set a positive amount (e.g. 0.01) to treat a $0 bid as a decline.">
+                    <NumberInput id="partner-min-bid" value={asNumber(minBid)} onChange={(v) => setMinBid(asText(v))} placeholder="0.00" describedBy={describedBy('partner-min-bid', true, false)} />
+                  </Field>
+                </div>
+              </Section>
+
+              <Section title="Circuit breaker">
+                <div className="flex items-center gap-2.5">
+                  <Toggle id="partner-circuit-enabled" checked={circuitEnabled} onChange={setCircuitEnabled} label="Circuit breaker enabled" />
+                  <span className="text-sm text-gray-700">{circuitEnabled ? 'Enabled' : 'Disabled'}</span>
+                  <span className="text-gray-300">·</span>
+                  <p className="text-xs text-gray-500">
+                    Pauses bids to this partner after repeated failures, then retries automatically.
+                  </p>
+                </div>
+                <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${circuitEnabled ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
+                  <div className="min-h-0 overflow-hidden">
+                    <div className="grid grid-cols-3 gap-4 pt-1">
+                      <Field id="partner-circuit-threshold" label="Error threshold" hint="Errors before pausing.">
+                        <NumberInput id="partner-circuit-threshold" value={asNumber(circuitThreshold)} onChange={(v) => setCircuitThreshold(asText(v))} step={1} placeholder="5" describedBy={describedBy('partner-circuit-threshold', true, false)} />
+                      </Field>
+                      <Field id="partner-circuit-window" label="Window (seconds)" hint="Time period to count errors in.">
+                        <NumberInput id="partner-circuit-window" value={asNumber(circuitWindow)} onChange={(v) => setCircuitWindow(asText(v))} step={1} placeholder="60" describedBy={describedBy('partner-circuit-window', true, false)} />
+                      </Field>
+                      <Field id="partner-circuit-cooldown" label="Pause duration (seconds)" hint="How long to wait before retrying.">
+                        <NumberInput id="partner-circuit-cooldown" value={asNumber(circuitCooldown)} onChange={(v) => setCircuitCooldown(asText(v))} step={1} placeholder="300" describedBy={describedBy('partner-circuit-cooldown', true, false)} />
+                      </Field>
+                    </div>
+                  </div>
+                </div>
+              </Section>
+
+              <Section title="Response classification">
+                <p className="text-xs text-gray-500">
+                  Override how this partner&apos;s responses are classified. Rules are evaluated before the defaults.
+                  Leave all sections empty to use default classification by HTTP status.
+                </p>
+                {/* The decline group (rejection) is edited in the Buyer profile section beside
+                    the accept rules, so it is not repeated here (#1412, L605). */}
+                <SignalRuleBuilder value={signalRules} onChange={setSignalRules} sections={SIGNAL_SECTIONS.filter((s) => s.cat !== 'rejection')} />
+              </Section>
+
+              <Section title="Confirmation window">
+                {confirmationWindowShown(usage, confirmationWindowMs, confirmationAdded) ? (
+                  <>
+                    <p className="text-xs text-gray-500">
+                      Used by the Latency Gate node. Maximum acceptable time between our bid and this partner&apos;s
+                      Bid Win Confirmation. Confirmations slower than this are rejected (reject due to latency). Leave
+                      blank to require a node-level override instead.
+                    </p>
+                    <Field id="partner-confirmation-window" label="Confirmation window (ms)" hint="e.g. 5000 = 5 seconds.">
+                      <NumberInput id="partner-confirmation-window" value={asNumber(confirmationWindowMs)} onChange={(v) => setConfirmationWindowMs(asText(v))} step={1} placeholder="(none)" describedBy={describedBy('partner-confirmation-window', true, false)} />
+                    </Field>
+                  </>
+                ) : (
+                  <div className="space-y-1">
+                    <Button variant="secondary" onClick={() => setConfirmationAdded(true)}>
+                      <Plus className="h-4 w-4" aria-hidden="true" /> Set up a confirmation window
+                    </Button>
+                    <p className="text-xs text-gray-500">Used only by a Latency Gate step. No workflow has one for {name || 'this partner'}.</p>
+                  </div>
+                )}
+              </Section>
+
+              <Section title="Alert configuration">
+                <p className="text-xs text-gray-500">
+                  Default: alert on all errors. Turn off alert types that produce noise for this partner.
+                  Business rejections never alert regardless.
+                </p>
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
+                    <div>
+                      <p className="text-sm font-medium text-gray-800">Transient error alerts</p>
+                      <p className="text-xs text-gray-500">Network failures, timeouts, 429, 502 to 504</p>
+                    </div>
+                    <Toggle id="partner-alert-transient" checked={alertTransient} onChange={setAlertTransient} label="Transient error alerts" />
+                  </div>
+                  <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
+                    <div>
+                      <p className="text-sm font-medium text-gray-800">Permanent error alerts</p>
+                      <p className="text-xs text-gray-500">4xx errors, auth failures, bad responses</p>
+                    </div>
+                    <Toggle id="partner-alert-permanent" checked={alertPermanent} onChange={setAlertPermanent} label="Permanent error alerts" />
+                  </div>
+                </div>
+              </Section>
+            </TabPanel>
           )}
-        </Section>}
+          <TabPanel value="workflow_values" className="space-y-8">
+            {isBuyer && <Section title="Click URL">
+              {/* The labelled field with its error beside it (#1546): the buyer profile's click URL refusals name this field. */}
+              <Field
+                id="partner-click-url"
+                label="Click URL"
+                hint="Where a lead sold to this buyer lands. Exposed as {Slug}ClickUrl in the Constants node, and carried on every buyer selection sale; a buyer profile cannot be enabled without one."
+                error={clickUrlError}
+              >
+                <TextInput id="partner-click-url" value={clickUrl} onChange={setClickUrl} placeholder="https://partner.com/apply" describedBy={describedBy('partner-click-url', true, Boolean(clickUrlError))} />
+              </Field>
+            </Section>}
 
-        {isBuyerPartner(partnerType) && <Section title="Endpoints">
-          {/* The labelled field with its error beside it (#1546): the buyer profile's click URL refusals name this field. */}
-          <Field
-            id="partner-click-url"
-            label="Click URL"
-            hint="Where a lead sold to this buyer lands. Exposed as {Slug}ClickUrl in the Constants node, and carried on every buyer selection sale; a buyer profile cannot be enabled without one."
-            error={clickUrlError}
-          >
-            <TextInput id="partner-click-url" value={clickUrl} onChange={setClickUrl} placeholder="https://partner.com/apply" describedBy={describedBy('partner-click-url', true, Boolean(clickUrlError))} />
-          </Field>
-          <Field
-            id="partner-dedup-endpoint"
-            label="Dedup endpoint"
-            hint="Optional. Called before each bid to check if this lead has already been sold to this partner."
-          >
-            <TextInput id="partner-dedup-endpoint" value={dedupEndpoint} onChange={setDedupEndpoint} placeholder="https://api.partner.com/dedup" describedBy={describedBy('partner-dedup-endpoint', true, false)} />
-          </Field>
-        </Section>}
-
-        {isBuyerPartner(partnerType) && <Section title="Outbound field mapping">
-          <OutboundMappingEditor value={outboundMapping} onChange={setOutboundMapping} />
-        </Section>}
-
-        {isBuyerPartner(partnerType) && resolverType === 'api' && <Section title="Response handling">
-          {/* Bid mode is no longer edited here (PM-9, #2136): nothing acts on it. */}
-          <div>
-            <h4 className="mb-2 text-sm font-medium text-graphite">Sample response</h4>
-            <PartnerProbePanel value={lastProbeResponse} onChange={setLastProbeResponse} />
-          </div>
-
-          <div className="border-t border-gray-100 pt-4">
-            <h4 className="mb-2 text-sm font-medium text-graphite">Extra extraction</h4>
-            <ExtraExtractionEditor
-              value={extraExtraction}
-              onChange={setExtraExtraction}
-              sampleResponse={lastProbeResponse}
-            />
-          </div>
-        </Section>}
-
-        {isBuyerPartner(partnerType) && <Section title="Bidding limits">
-          <div className="grid grid-cols-2 gap-4">
-            {/* Relabelled from Daily cap (#1412, L118): the buyer profile has its own
-                daily lead cap for buyer selection; this one bounds Partner Bid attempts. */}
-            <Field id="partner-daily-attempt-cap" label="Daily attempt cap (bidding workflows)" hint="Max bid attempts per day through Partner Bid and Bid Group. Leave blank for unlimited.">
-              <NumberInput id="partner-daily-attempt-cap" value={dailyCap === '' ? null : Number(dailyCap)} onChange={(v) => setDailyCap(v === null ? '' : String(v))} min={0} step={1} describedBy={describedBy('partner-daily-attempt-cap', true, false)} />
-            </Field>
-            <Field id="partner-min-bid" label="Minimum bid ($)" hint="Reject bids below this amount. Leave blank to accept any bid down to $0. Set a positive amount (e.g. 0.01) to treat a $0 bid as a decline.">
-              <NumberInput id="partner-min-bid" value={asNumber(minBid)} onChange={(v) => setMinBid(asText(v))} placeholder="0.00" describedBy={describedBy('partner-min-bid', true, false)} />
-            </Field>
-          </div>
-        </Section>}
-
-        {isBuyerPartner(partnerType) && <Section title="Per-sub-account min bids">
-          <p className="text-xs text-gray-500">
-            Optional per-sub-account floor. When a lead arrives with a matching sub-account UUID,
-            this floor overrides the partner-wide Minimum bid. Leave empty to use only the partner-wide floor.
-          </p>
-          <div className="space-y-1.5">
-            {subAccountFloors.map((f, i) => (
-              <div key={f.id} className="grid grid-cols-[1fr_120px_auto] items-center gap-2">
-                <TextInput
-                  id={`floor-${f.id}-uuid`}
-                  aria-label={`Sub-account UUID, floor ${i + 1}`}
-                  value={f.uuid}
-                  onChange={(v) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, uuid: v } : row))}
-                  placeholder="sub-account UUID"
-                  mono
-                  className="text-xs"
-                />
-                <NumberInput
-                  id={`floor-${f.id}-bid`}
-                  aria-label={`Minimum bid, floor ${i + 1}`}
-                  value={asNumber(f.bid)}
-                  onChange={(v) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, bid: asText(v) } : row))}
-                  step={0.01}
-                  placeholder="0.00"
-                />
-                <Button variant="ghost" onClick={() => setSubAccountFloors((prev) => prev.filter((_, j) => j !== i))} aria-label="Remove row">
-                  <X size={14} aria-hidden="true" />
+            {isBuyer && <Section title="Per-sub-account min bids">
+              <p className="text-xs text-gray-500">
+                Optional per-sub-account floor. When a lead arrives with a matching sub-account UUID,
+                this floor overrides the partner-wide Minimum bid. Leave empty to use only the partner-wide floor.
+              </p>
+              <div className="space-y-1.5">
+                {subAccountFloors.map((f, i) => (
+                  <div key={f.id} className="grid grid-cols-[1fr_120px_auto] items-center gap-2">
+                    <TextInput
+                      id={`floor-${f.id}-uuid`}
+                      aria-label={`Sub-account UUID, floor ${i + 1}`}
+                      value={f.uuid}
+                      onChange={(v) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, uuid: v } : row))}
+                      placeholder="sub-account UUID"
+                      mono
+                      className="text-xs"
+                    />
+                    <NumberInput
+                      id={`floor-${f.id}-bid`}
+                      aria-label={`Minimum bid, floor ${i + 1}`}
+                      value={asNumber(f.bid)}
+                      onChange={(v) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, bid: asText(v) } : row))}
+                      step={0.01}
+                      placeholder="0.00"
+                    />
+                    <Button variant="ghost" onClick={() => setSubAccountFloors((prev) => prev.filter((_, j) => j !== i))} aria-label="Remove row">
+                      <X size={14} aria-hidden="true" />
+                    </Button>
+                  </div>
+                ))}
+                <Button variant="secondary" onClick={() => setSubAccountFloors((prev) => [...prev, { id: uid(), uuid: '', bid: '' }])} className="text-xs">
+                  <Plus size={12} aria-hidden="true" /> Add row
                 </Button>
               </div>
-            ))}
-            <Button variant="secondary" onClick={() => setSubAccountFloors((prev) => [...prev, { id: uid(), uuid: '', bid: '' }])} className="text-xs">
-              <Plus size={12} aria-hidden="true" /> Add row
-            </Button>
-          </div>
-        </Section>}
+            </Section>}
 
-        {isBuyerPartner(partnerType) && <Section title="Circuit breaker">
-          <div className="flex items-center gap-2.5">
-            <Toggle id="partner-circuit-enabled" checked={circuitEnabled} onChange={setCircuitEnabled} label="Circuit breaker enabled" />
-            <span className="text-sm text-gray-700">{circuitEnabled ? 'Enabled' : 'Disabled'}</span>
-            <span className="text-gray-300">·</span>
-            <p className="text-xs text-gray-500">
-              Pauses bids to this partner after repeated failures, then retries automatically.
-            </p>
-          </div>
-          <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${circuitEnabled ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
-            <div className="min-h-0 overflow-hidden">
-              <div className="grid grid-cols-3 gap-4 pt-1">
-                <Field id="partner-circuit-threshold" label="Error threshold" hint="Errors before pausing.">
-                  <NumberInput id="partner-circuit-threshold" value={asNumber(circuitThreshold)} onChange={(v) => setCircuitThreshold(asText(v))} step={1} placeholder="5" describedBy={describedBy('partner-circuit-threshold', true, false)} />
-                </Field>
-                <Field id="partner-circuit-window" label="Window (seconds)" hint="Time period to count errors in.">
-                  <NumberInput id="partner-circuit-window" value={asNumber(circuitWindow)} onChange={(v) => setCircuitWindow(asText(v))} step={1} placeholder="60" describedBy={describedBy('partner-circuit-window', true, false)} />
-                </Field>
-                <Field id="partner-circuit-cooldown" label="Pause duration (seconds)" hint="How long to wait before retrying.">
-                  <NumberInput id="partner-circuit-cooldown" value={asNumber(circuitCooldown)} onChange={(v) => setCircuitCooldown(asText(v))} step={1} placeholder="300" describedBy={describedBy('partner-circuit-cooldown', true, false)} />
-                </Field>
+            {isSource && <Section title="Sell-off offer copy">
+              <p className="text-xs text-gray-500">
+                Used by the Constants node in bidding workflows to populate sell-off offer fields for this partner.
+              </p>
+              <Field id="partner-sell-off-title" label="Sell-off offer title">
+                <TextInput id="partner-sell-off-title" value={sellOffOfferTitle} onChange={setSellOffOfferTitle} placeholder="Get up to $50,000 in your account" />
+              </Field>
+              <Field id="partner-sell-off-details" label="Sell-off offer details">
+                <TextArea
+                  id="partner-sell-off-details"
+                  value={sellOffOfferDetails}
+                  onChange={setSellOffOfferDetails}
+                  placeholder="Personal loans from $5,000 to $100,000 with competitive rates."
+                  rows={3}
+                />
+              </Field>
+            </Section>}
+
+            {isSource && <Section title="Sub-account UUIDs">
+              <p className="text-xs text-gray-500">
+                External UUIDs that map to this partner. Used by the Constants node to resolve inbound sub-account IDs to partner slugs.
+              </p>
+              <div className="space-y-1.5">
+                {isNew ? (
+                  pendingUuids.map((uuid, i) => (
+                    <div key={i} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                      <span className="flex-1 truncate font-mono text-xs text-graphite">{uuid}</span>
+                      <Button variant="ghost" onClick={() => setPendingUuids((prev) => prev.filter((_, j) => j !== i))} aria-label="Remove UUID">
+                        <X className="h-3.5 w-3.5" aria-hidden="true" />
+                      </Button>
+                    </div>
+                  ))
+                ) : uuidsLoadError ? (
+                  <div role="alert" className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    <span className="flex-1">Could not load sub-account IDs. Try again.</span>
+                    <Button variant="secondary" onClick={() => setUuidsAttempt((n) => n + 1)}>Try again</Button>
+                  </div>
+                ) : (
+                  uuids.map((u) => (
+                    <div key={u.id} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
+                      <span className="flex-1 truncate font-mono text-xs text-graphite">{u.uuid}</span>
+                      <Button
+                        variant="ghost"
+                        aria-label="Remove UUID"
+                        disabled={removingUuidId === u.id}
+                        onClick={async () => {
+                          setRemovingUuidId(u.id)
+                          setUuidError(null)
+                          try {
+                            await api.partnerUuids.delete(u.id)
+                            setUuids((prev) => prev.filter((x) => x.id !== u.id))
+                          } catch (err) {
+                            setUuidError(err instanceof Error ? err.message : 'Failed to remove UUID')
+                          } finally {
+                            setRemovingUuidId(null)
+                          }
+                        }}
+                      >
+                        <X className="h-3.5 w-3.5" aria-hidden="true" />
+                      </Button>
+                    </div>
+                  ))
+                )}
               </div>
-            </div>
-          </div>
-        </Section>}
-
-        {isBuyerPartner(partnerType) && <Section title="Response classification">
-          <p className="text-xs text-gray-500">
-            Override how this partner&apos;s responses are classified. Rules are evaluated before the defaults.
-            Leave all sections empty to use default HTTP status–based classification.
-          </p>
-          {/* The decline group (rejection) is edited in the Buyer profile section beside
-              the accept rules, so it is not repeated here (#1412, L605). */}
-          <SignalRuleBuilder value={signalRules} onChange={setSignalRules} sections={SIGNAL_SECTIONS.filter((s) => s.cat !== 'rejection')} />
-        </Section>}
-
-        <Section title="Bid confirmation latency">
-          <p className="text-xs text-gray-500">
-            Used by the Latency Gate node. Maximum acceptable time between our bid and this partner&apos;s
-            Bid Win Confirmation. Confirmations slower than this are rejected (reject due to latency). Leave
-            blank to require a node-level override instead.
-          </p>
-          <Field id="partner-confirmation-window" label="Confirmation window (ms)" hint="e.g. 5000 = 5 seconds.">
-            <NumberInput id="partner-confirmation-window" value={asNumber(confirmationWindowMs)} onChange={(v) => setConfirmationWindowMs(asText(v))} step={1} placeholder="(none)" describedBy={describedBy('partner-confirmation-window', true, false)} />
-          </Field>
-        </Section>
-
-        {isSourcePartner(partnerType) && <Section title="Sell-off offer copy">
-          <p className="text-xs text-gray-500">
-            Used by the Constants node in bidding workflows to populate sell-off offer fields for this partner.
-          </p>
-          <Field id="partner-sell-off-title" label="Sell-off offer title">
-            <TextInput id="partner-sell-off-title" value={sellOffOfferTitle} onChange={setSellOffOfferTitle} placeholder="Get up to $50,000 in your account" />
-          </Field>
-          <Field id="partner-sell-off-details" label="Sell-off offer details">
-            <TextArea
-              id="partner-sell-off-details"
-              value={sellOffOfferDetails}
-              onChange={setSellOffOfferDetails}
-              placeholder="Personal loans from $5,000 to $100,000 with competitive rates."
-              rows={3}
-            />
-          </Field>
-        </Section>}
-
-        {isSourcePartner(partnerType) && <Section title="Sub-account UUIDs">
-          <p className="text-xs text-gray-500">
-            External UUIDs that map to this partner. Used by the Constants node to resolve inbound sub-account IDs to partner slugs.
-          </p>
-          <div className="space-y-1.5">
-            {isNew ? (
-              pendingUuids.map((uuid, i) => (
-                <div key={i} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-                  <span className="flex-1 truncate font-mono text-xs text-graphite">{uuid}</span>
-                  <Button variant="ghost" onClick={() => setPendingUuids((prev) => prev.filter((_, j) => j !== i))} aria-label="Remove UUID">
-                    <X className="h-3.5 w-3.5" aria-hidden="true" />
-                  </Button>
-                </div>
-              ))
-            ) : uuidsLoadError ? (
-              <div role="alert" className="flex items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                <span className="flex-1">Could not load sub-account IDs. Try again.</span>
-                <Button variant="secondary" onClick={() => setUuidsAttempt((n) => n + 1)}>Try again</Button>
+              <div className="flex gap-2">
+                <TextInput
+                  id="partner-new-uuid"
+                  aria-label="New sub-account UUID"
+                  value={newUuid}
+                  onChange={(v) => { setNewUuid(v); setUuidError(null) }}
+                  placeholder="Enter UUID"
+                  mono
+                  className="flex-1"
+                />
+                <Button
+                  variant="primary"
+                  disabled={!newUuid.trim()}
+                  busy={addingUuid}
+                  onClick={async () => {
+                    if (!newUuid.trim()) return
+                    if (isNew) {
+                      setPendingUuids((prev) => [...prev, newUuid.trim()])
+                      setNewUuid('')
+                      return
+                    }
+                    if (!partner) return
+                    setAddingUuid(true)
+                    setUuidError(null)
+                    try {
+                      const created = await api.partnerUuids.create({ partner_slug: partner.slug, uuid: newUuid.trim() })
+                      setUuids((prev) => [...prev, created])
+                      setNewUuid('')
+                    } catch (err) {
+                      setUuidError(err instanceof Error ? err.message : 'Failed to add UUID')
+                    } finally {
+                      setAddingUuid(false)
+                    }
+                  }}
+                >
+                  {!addingUuid && <Plus className="h-4 w-4" aria-hidden="true" />}
+                  Add
+                </Button>
               </div>
-            ) : (
-              uuids.map((u) => (
-                <div key={u.id} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-                  <span className="flex-1 truncate font-mono text-xs text-graphite">{u.uuid}</span>
-                  <Button
-                    variant="ghost"
-                    aria-label="Remove UUID"
-                    disabled={removingUuidId === u.id}
-                    onClick={async () => {
-                      setRemovingUuidId(u.id)
-                      setUuidError(null)
-                      try {
-                        await api.partnerUuids.delete(u.id)
-                        setUuids((prev) => prev.filter((x) => x.id !== u.id))
-                      } catch (err) {
-                        setUuidError(err instanceof Error ? err.message : 'Failed to remove UUID')
-                      } finally {
-                        setRemovingUuidId(null)
-                      }
-                    }}
-                  >
-                    <X className="h-3.5 w-3.5" aria-hidden="true" />
-                  </Button>
-                </div>
-              ))
-            )}
-          </div>
-          <div className="flex gap-2">
-            <TextInput
-              id="partner-new-uuid"
-              aria-label="New sub-account UUID"
-              value={newUuid}
-              onChange={(v) => { setNewUuid(v); setUuidError(null) }}
-              placeholder="Enter UUID"
-              mono
-              className="flex-1"
-            />
-            <Button
-              variant="primary"
-              disabled={!newUuid.trim()}
-              busy={addingUuid}
-              onClick={async () => {
-                if (!newUuid.trim()) return
-                if (isNew) {
-                  setPendingUuids((prev) => [...prev, newUuid.trim()])
-                  setNewUuid('')
-                  return
-                }
-                if (!partner) return
-                setAddingUuid(true)
-                setUuidError(null)
-                try {
-                  const created = await api.partnerUuids.create({ partner_slug: partner.slug, uuid: newUuid.trim() })
-                  setUuids((prev) => [...prev, created])
-                  setNewUuid('')
-                } catch (err) {
-                  setUuidError(err instanceof Error ? err.message : 'Failed to add UUID')
-                } finally {
-                  setAddingUuid(false)
-                }
-              }}
-            >
-              {!addingUuid && <Plus className="h-4 w-4" aria-hidden="true" />}
-              Add
-            </Button>
-          </div>
-          {uuidError && <p className="text-xs text-red-600">{uuidError}</p>}
-        </Section>}
-
-        {isBuyerPartner(partnerType) && <Section title="Alert configuration">
-          <p className="text-xs text-gray-500">
-            Default: alert on all errors. Turn off alert types that produce noise for this partner.
-            Business rejections never alert regardless.
-          </p>
-          <div className="space-y-3">
-            <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
-              <div>
-                <p className="text-sm font-medium text-gray-800">Transient error alerts</p>
-                <p className="text-xs text-gray-500">Network failures, timeouts, 429, 502–504</p>
-              </div>
-              <Toggle id="partner-alert-transient" checked={alertTransient} onChange={setAlertTransient} label="Transient error alerts" />
-            </div>
-            <div className="flex items-center justify-between rounded-lg border border-gray-200 px-4 py-3">
-              <div>
-                <p className="text-sm font-medium text-gray-800">Permanent error alerts</p>
-                <p className="text-xs text-gray-500">4xx errors, auth failures, bad responses</p>
-              </div>
-              <Toggle id="partner-alert-permanent" checked={alertPermanent} onChange={setAlertPermanent} label="Permanent error alerts" />
-            </div>
-          </div>
-        </Section>}
+              {uuidError && <p className="text-xs text-red-600">{uuidError}</p>}
+            </Section>}
+          </TabPanel>
+          {!isNew && (
+            <TabPanel value="history" className="space-y-8">
+              {partner && <PartnerHistoryPanel partner={partner} isBuyer={isBuyer} shown={tab === 'history'} />}
+            </TabPanel>
+          )}
+        </Tabs>
 
         {deliveryConfirm && (
           <div role="alertdialog" aria-labelledby="delivery-confirm-title" className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-4">
@@ -1196,6 +1358,9 @@ export default function PartnerForm({
             {saveState === 'idle'   && <><Save   className="h-4 w-4" aria-hidden="true" /> {isNew ? 'Create partner' : 'Save changes'}</>}
           </Button>
           <Outcome state={saveOutcome} />
+          {showMeTab && (
+            <Button variant="ghost" onClick={() => chooseTab(showMeTab)} aria-label={`Show me: the ${TAB_LABELS[showMeTab]} tab`}>Show me</Button>
+          )}
           {/*
             Saved, but a stored copy of the old version could not be refreshed
             (#1846). Beside Saved in the server's shared words, never as an error,
@@ -1214,11 +1379,6 @@ export default function PartnerForm({
               <span className="h-1.5 w-1.5 rounded-full bg-amber-500" />
               Unsaved changes
             </span>
-          )}
-          {!isNew && !undo && !dirty && (
-            <p className="text-xs text-gray-500">
-              {`Modified ${new Date(partner.updated_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} by ${partner.updated_by_name ?? partner.updated_by_email?.split('@')[0] ?? 'unknown'}`}
-            </p>
           )}
         </div>
 

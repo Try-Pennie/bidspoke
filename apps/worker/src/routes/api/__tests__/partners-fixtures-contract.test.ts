@@ -27,6 +27,7 @@ import partnersJson from '../../../../../web/e2e/fixtures/partners/partners.json
 import buyerProfilesJson from '../../../../../web/e2e/fixtures/partners/buyer-profiles.json'
 import uuidsJson from '../../../../../web/e2e/fixtures/partners/partner-uuids.json'
 import staleJson from '../../../../../web/e2e/fixtures/partners/synthetic/page-save-409.tripoint.json'
+import usageJson from '../../../../../web/e2e/fixtures/partners/usage.json'
 
 type Row = Record<string, unknown> & { id: string; slug: string; partner_type: string; accept_signals: unknown }
 const partners = partnersJson as unknown as Row[]
@@ -77,7 +78,7 @@ describe('the partners page fixtures are what their routes answer (#2134)', () =
     const fixture = buyerProfiles[id]
     // The live workflows that name a buyer, as the fixture's other sellers say: one
     // workflow whose Bid Group lists them, which is how Main Flow names them.
-    const workflows = fixture.other_sellers.map((w) => ({ ...w, is_active: true, definition: { nodes: [{ type: 'bid_group', config: { partner_ids: [id] } }] } }))
+    const workflows = fixture.other_sellers.map((w) => ({ ...w, is_active: true, organization_id: testUser.organization_id, deleted_at: null, definition: { nodes: [{ type: 'bid_group', config: { partner_ids: [id] } }] } }))
     supabaseWith(
       { partner_configs: { single: withoutWarning(row) }, workflows: { list: workflows } },
       async (name) => ({ data: name === 'buyer_profile_document' ? fixture.profile : null, error: null }),
@@ -85,6 +86,27 @@ describe('the partners page fixtures are what their routes answer (#2134)', () =
     const res = await call('GET', `/partners/${id}/buyer-profile`)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual(fixture)
+  })
+
+  // #2137: the usage read the Bid Group tab is shown from. The fixture was
+  // measured from production's workflows (read only, 2026-10-16); here the route
+  // is given workflows whose steps say exactly that, and must answer the fixture.
+  it.each(Object.keys(usageJson).map((id) => [partners.find((p) => p.id === id)!.slug, id]))('GET /partners/:id/usage for %s', async (_slug, id) => {
+    const usage = (usageJson as Record<string, { bid_group: Array<{ workflow_id: string; workflow_name: string; is_active: boolean; node_id: string; mode: string; partner_ids: string[] }> }>)
+    const steps = Object.values(usage).flatMap((u) => u.bid_group)
+    const byWorkflow = new Map(steps.map((s) => [s.workflow_id, s]))
+    const workflows = [...byWorkflow.values()].map((s) => ({
+      id: s.workflow_id, name: s.workflow_name, is_active: s.is_active, organization_id: testUser.organization_id, deleted_at: null,
+      definition: { nodes: [{ id: s.node_id, type: 'bid_group', config: { mode: s.mode, partner_ids: s.partner_ids } }] },
+    }))
+    supabaseWith({ partner_configs: { single: { id } }, workflows: { list: workflows } })
+    const res = await call('GET', `/partners/${id}/usage`)
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual(usage[id])
+  })
+
+  it('the usage fixture has an answer for every listed partner', () => {
+    expect(Object.keys(usageJson).sort()).toEqual(partners.map((p) => p.id).sort())
   })
 
   it('GET /partner-uuids: the sub-account IDs', async () => {
