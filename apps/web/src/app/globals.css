@@ -254,6 +254,97 @@ html {
   .dialog-actions {
     @apply mt-2 flex flex-wrap items-center justify-end gap-2;
   }
+  /* A whole list row that is one control (a partner in the list): left aligned,
+     full width, the row's own padding (#2137). */
+  .btn-row {
+    @apply w-full justify-start rounded-lg px-3 py-2.5 text-left font-normal;
+  }
+  /* The one dropdown (#2137), on Radix. The trigger is a button, so it carries
+     its own class rather than the native .select, which stays only for the
+     native selects #2198 has not moved yet. */
+  .select-trigger {
+    @apply inline-flex w-full items-center justify-between gap-2 rounded border border-gray-200 bg-white py-1.5 pl-2.5 pr-2 text-left text-sm text-graphite focus:border-p-blue-dark focus:outline-none focus:ring-2 focus:ring-p-blue-dark disabled:cursor-not-allowed disabled:bg-gray-50 disabled:text-gray-400;
+  }
+  .select-trigger[data-placeholder] {
+    @apply text-gray-500;
+  }
+  .select-trigger-text {
+    @apply min-w-0 truncate;
+  }
+  .select-trigger-icon {
+    @apply shrink-0 text-gray-500;
+  }
+  .select-content {
+    @apply z-50 min-w-[var(--radix-select-trigger-width)] overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg;
+    max-height: min(var(--radix-select-content-available-height), 20rem);
+  }
+  .select-viewport {
+    @apply p-1;
+  }
+  .select-item {
+    @apply relative flex cursor-default select-none items-center rounded py-1.5 pl-7 pr-3 text-sm text-graphite outline-none data-[disabled]:text-gray-500 data-[highlighted]:bg-p-blue-light data-[highlighted]:text-graphite;
+  }
+  .select-item-missing {
+    @apply italic text-gray-600;
+  }
+  .select-item-indicator {
+    @apply absolute left-2 inline-flex items-center text-p-blue-dark;
+  }
+  /* A choice whose options each need a sentence (#2137): one per line, a dot
+     that fills when chosen, the hint under the label. */
+  .choice-stack {
+    @apply flex flex-col gap-1;
+  }
+  .choice-row {
+    @apply flex items-start gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .choice-dot {
+    @apply mt-0.5 inline-block h-3.5 w-3.5 shrink-0 rounded-full border border-gray-500 bg-white;
+  }
+  .choice-row-on .choice-dot {
+    @apply border-[4px] border-p-blue-dark;
+  }
+  /* A typed date with its calendar button inside the box (design round 1 of #2137). */
+  .date-field {
+    @apply relative flex w-full items-center;
+  }
+  .date-field-input {
+    @apply pr-9;
+  }
+  .date-field-button {
+    @apply absolute right-1 inline-flex h-6 w-7 items-center justify-center rounded border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 hover:text-graphite focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .popover {
+    @apply z-50 rounded-lg border border-gray-200 bg-white p-3 shadow-lg focus:outline-none;
+  }
+  .calendar {
+    @apply flex flex-col gap-1.5;
+  }
+  .calendar-nav {
+    @apply flex items-center justify-between;
+  }
+  .calendar-title {
+    @apply text-sm font-semibold text-graphite;
+  }
+  .calendar-step {
+    @apply inline-flex h-7 w-7 items-center justify-center rounded text-gray-600 hover:bg-gray-100 hover:text-graphite focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark;
+  }
+  .calendar-grid {
+    @apply border-separate border-spacing-0.5;
+  }
+  .calendar-weekday {
+    @apply pb-0.5 text-center text-[11px] font-medium text-gray-600;
+  }
+  .calendar-day {
+    @apply h-8 w-8 rounded-md text-center text-xs text-graphite hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark;
+  }
+  .calendar-day[aria-current='date'] {
+    @apply font-semibold underline underline-offset-2;
+  }
+  .calendar-day-selected,
+  .calendar-day-selected:hover {
+    @apply bg-navy text-white;
+  }
   .outcome {
     @apply inline-flex items-center gap-1.5 text-xs;
   }
@@ -267,4 +358,21 @@ html {
   .outcome-stalled {
     @apply text-red-700;
   }
+}
+
+/* Radix hides the Select list's scrollbar with an unlayered style of its own,
+   which beats anything inside @layer whatever its specificity, so this lives
+   outside the layers. A list longer than its room must show, at rest, that it
+   continues (L76, #2137). */
+.select-viewport[data-radix-select-viewport] {
+  scrollbar-width: auto;
+}
+.select-viewport[data-radix-select-viewport]::-webkit-scrollbar {
+  display: block;
+  width: 10px;
+}
+.select-viewport[data-radix-select-viewport]::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background-color: #d1d5db;
+  border: 2px solid white;
 }
