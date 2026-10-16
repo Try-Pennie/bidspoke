@@ -23,7 +23,9 @@ const env = { SUPABASE_JWKS_URL: 'https://fake.jwks' } as unknown as Env
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
 
-const partner = { id: 'p-1', organization_id: ORG }
+const P1 = '00000000-0000-4000-8000-000000000001'
+const P9 = '00000000-0000-4000-8000-000000000009'
+const partner = { id: P1, organization_id: ORG }
 const wf = (id: string, nodes: Array<Record<string, unknown>>, over: Record<string, unknown> = {}) => ({
   id, name: `Workflow ${id}`, is_active: true, organization_id: ORG, deleted_at: null, definition: { nodes }, ...over,
 })
@@ -37,7 +39,7 @@ function supabaseWith(tables: Record<string, TableConfig | TableConfig[]>) {
   return sb
 }
 
-const get = (id = 'p-1') => api.request(`/partners/${id}/usage`, { headers: { Authorization: 'Bearer tok' } }, env, mockCtx)
+const get = (id = P1) => api.request(`/partners/${id}/usage`, { headers: { Authorization: 'Bearer tok' } }, env, mockCtx)
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -49,9 +51,9 @@ describe('GET /partners/:id/usage', () => {
     supabaseWith({
       partner_configs: { single: partner },
       workflows: { list: [
-        wf('main', [{ id: 'n1', type: 'bid_group', config: { mode: 'highest_bid', partner_ids: ['p-1', 'p-2'] } }]),
-        wf('draft', [{ id: 'n2', type: 'bid_group', config: { mode: 'cascade', partner_ids: ['p-3'], fallback_partner_id: 'p-1' } }], { is_active: false }),
-        wf('le', [{ id: 'n3', type: 'partner_bid', config: { partner_id: 'p-1' } }, { id: 'n4', type: 'latency_gate', config: { mode: 'check', partner_id: 'p-1' } }]),
+        wf('main', [{ id: 'n1', type: 'bid_group', config: { mode: 'highest_bid', partner_ids: [P1, 'p-2'] } }]),
+        wf('draft', [{ id: 'n2', type: 'bid_group', config: { mode: 'cascade', partner_ids: ['p-3'], fallback_partner_id: P1 } }], { is_active: false }),
+        wf('le', [{ id: 'n3', type: 'partner_bid', config: { partner_id: P1 } }, { id: 'n4', type: 'latency_gate', config: { mode: 'check', partner_id: P1 } }]),
         wf('other', [{ id: 'n5', type: 'bid_group', config: { partner_ids: ['p-2'] } }, { id: 'n6', type: 'latency_gate', config: { partner_id: 'p-2' } }]),
       ] },
     })
@@ -59,8 +61,8 @@ describe('GET /partners/:id/usage', () => {
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({
       bid_group: [
-        { workflow_id: 'main', workflow_name: 'Workflow main', is_active: true, node_id: 'n1', mode: 'highest_bid', partner_ids: ['p-1', 'p-2'] },
-        { workflow_id: 'draft', workflow_name: 'Workflow draft', is_active: false, node_id: 'n2', mode: 'cascade', partner_ids: ['p-3', 'p-1'] },
+        { workflow_id: 'main', workflow_name: 'Workflow main', is_active: true, node_id: 'n1', mode: 'highest_bid', partner_ids: [P1, 'p-2'], fallback_partner_id: null },
+        { workflow_id: 'draft', workflow_name: 'Workflow draft', is_active: false, node_id: 'n2', mode: 'cascade', partner_ids: ['p-3'], fallback_partner_id: P1 },
       ],
       partner_bid: [{ workflow_id: 'le', workflow_name: 'Workflow le', is_active: true, node_id: 'n3' }],
       latency_gate: [{ workflow_id: 'le', workflow_name: 'Workflow le', is_active: true, node_id: 'n4' }],
@@ -68,13 +70,13 @@ describe('GET /partners/:id/usage', () => {
   })
 
   it('a partner named only by a partner_bid node is in partner_bid alone', async () => {
-    supabaseWith({ partner_configs: { single: partner }, workflows: { list: [wf('le', [{ id: 'n', type: 'partner_bid', config: { partner_id: 'p-1' } }])] } })
+    supabaseWith({ partner_configs: { single: partner }, workflows: { list: [wf('le', [{ id: 'n', type: 'partner_bid', config: { partner_id: P1 } }])] } })
     const body = await (await get()).json() as Record<string, unknown[]>
     expect([body.bid_group.length, body.partner_bid.length, body.latency_gate.length]).toEqual([0, 1, 0])
   })
 
   it('a partner named only by a Latency Gate is in latency_gate alone', async () => {
-    supabaseWith({ partner_configs: { single: partner }, workflows: { list: [wf('gate', [{ id: 'n', type: 'latency_gate', config: { mode: 'check', partner_id: 'p-1' } }])] } })
+    supabaseWith({ partner_configs: { single: partner }, workflows: { list: [wf('gate', [{ id: 'n', type: 'latency_gate', config: { mode: 'check', partner_id: P1 } }])] } })
     const body = await (await get()).json() as Record<string, unknown[]>
     expect([body.bid_group.length, body.partner_bid.length, body.latency_gate.length]).toEqual([0, 0, 1])
   })
@@ -82,7 +84,7 @@ describe('GET /partners/:id/usage', () => {
   it('reads the workflows through the organization and deleted_at scoped read, and a soft deleted workflow is not counted', async () => {
     const sb = supabaseWith({
       partner_configs: { single: partner },
-      workflows: { list: [wf('gone', [{ id: 'n', type: 'bid_group', config: { partner_ids: ['p-1'] } }], { deleted_at: '2026-10-01T00:00:00Z' })] },
+      workflows: { list: [wf('gone', [{ id: 'n', type: 'bid_group', config: { partner_ids: [P1] } }], { deleted_at: '2026-10-01T00:00:00Z' })] },
     })
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const body = await (await get()).json() as Record<string, unknown[]>
@@ -94,15 +96,15 @@ describe('GET /partners/:id/usage', () => {
   it('another organization\'s workflows are not counted, even if the read let one through', async () => {
     supabaseWith({
       partner_configs: { single: partner },
-      workflows: { list: [wf('theirs', [{ id: 'n', type: 'bid_group', config: { partner_ids: ['p-1'] } }], { organization_id: 'org-other' })] },
+      workflows: { list: [wf('theirs', [{ id: 'n', type: 'bid_group', config: { partner_ids: [P1] } }], { organization_id: 'org-other' })] },
     })
     vi.spyOn(console, 'error').mockImplementation(() => {})
     expect(await (await get()).json()).toEqual({ bid_group: [], partner_bid: [], latency_gate: [] })
   })
 
   it('another organization\'s partner id is a 404, and no workflow is read', async () => {
-    const sb = supabaseWith({ partner_configs: { single: null }, workflows: { list: [wf('main', [{ id: 'n', type: 'bid_group', config: { partner_ids: ['p-9'] } }])] } })
-    const res = await get('p-9')
+    const sb = supabaseWith({ partner_configs: { single: null }, workflows: { list: [wf('main', [{ id: 'n', type: 'bid_group', config: { partner_ids: [P9] } }])] } })
+    const res = await get(P9)
     expect(res.status).toBe(404)
     expect(sb.calls.workflows ?? []).toEqual([])
   })
@@ -113,6 +115,13 @@ describe('GET /partners/:id/usage', () => {
     expect((await get()).status).toBeGreaterThanOrEqual(500)
     supabaseWith({ partner_configs: { singleError: { message: 'timeout', code: '57014' } } })
     expect((await get()).status).toBeGreaterThanOrEqual(500)
+  })
+
+  it('an id that is not a uuid is a 404, and nothing is read', async () => {
+    const sb = supabaseWith({ partner_configs: { single: partner } })
+    const res = await get('not-a-uuid')
+    expect(res.status).toBe(404)
+    expect(sb.calls.partner_configs ?? []).toEqual([])
   })
 
   it('is refused without a token', async () => {

@@ -4,7 +4,7 @@ import type { PartnerUsage } from '@/lib/api'
 import { bidsInSentences, joinNames } from '../bid-group-usage-text'
 
 const names = new Map([['t', 'Tripoint'], ['a', 'AmOne'], ['g', 'GigFi']])
-const bg = (name: string, is_active: boolean, mode: 'highest_bid' | 'cascade' | 'tiered', partner_ids: string[]) => ({ workflow_id: name, workflow_name: name, is_active, node_id: 'n', mode, partner_ids })
+const bg = (name: string, is_active: boolean, mode: 'highest_bid' | 'cascade' | 'tiered', partner_ids: string[], fallback_partner_id: string | null = null) => ({ workflow_id: name, workflow_name: name, is_active, node_id: 'n', mode, partner_ids, fallback_partner_id })
 const usage = (u: Partial<PartnerUsage>): PartnerUsage => ({ bid_group: [], partner_bid: [], latency_gate: [], ...u })
 
 describe('bidsInSentences', () => {
@@ -26,6 +26,11 @@ describe('bidsInSentences', () => {
       'W. On each lead, Tripoint and a partner not on this list are both asked for a bid, and the higher bid wins.',
       'Lead Economy, in a Partner Bid step.',
     ])
+  })
+
+  it('says a fallback is asked only once nobody wins, never as if it bid on every lead', () => {
+    expect(bidsInSentences(usage({ bid_group: [bg('W', true, 'highest_bid', ['t', 'a'], 'g')] }), names)).toEqual(['W. On each lead, Tripoint and AmOne are both asked for a bid, and the higher bid wins. If nobody wins, GigFi is asked last.'])
+    expect(bidsInSentences(usage({ bid_group: [bg('W', true, 'highest_bid', [], 'g')] }), names)).toEqual(['W. If nobody wins, GigFi is asked last.'])
   })
 
   it('says nothing for no steps', () => {

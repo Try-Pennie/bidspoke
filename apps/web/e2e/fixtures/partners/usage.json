@@ -10,7 +10,8 @@
         "partner_ids": [
           "1b9cbd8f-1d23-496c-b046-b11d64edae29",
           "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
-        ]
+        ],
+        "fallback_partner_id": null
       },
       {
         "workflow_id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
@@ -21,7 +22,8 @@
         "partner_ids": [
           "1b9cbd8f-1d23-496c-b046-b11d64edae29",
           "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
-        ]
+        ],
+        "fallback_partner_id": null
       }
     ],
     "partner_bid": [],
@@ -73,7 +75,8 @@
         "partner_ids": [
           "1b9cbd8f-1d23-496c-b046-b11d64edae29",
           "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
-        ]
+        ],
+        "fallback_partner_id": null
       },
       {
         "workflow_id": "0630d714-5917-4221-9bcc-ca1fb2d9eba2",
@@ -84,7 +87,8 @@
         "partner_ids": [
           "1b9cbd8f-1d23-496c-b046-b11d64edae29",
           "58d50fe7-3e86-4d71-85c7-4533ab08acb0"
-        ]
+        ],
+        "fallback_partner_id": null
       }
     ],
     "partner_bid": [],

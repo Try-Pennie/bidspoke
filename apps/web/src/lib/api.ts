@@ -98,7 +98,8 @@ export interface PartnerUsageStep {
  * Latency Gate the confirmation window.
  */
 export interface PartnerUsage {
-  bid_group: Array<PartnerUsageStep & { mode: 'highest_bid' | 'cascade' | 'tiered'; partner_ids: string[] }>
+  /** partner_ids are asked on every lead (a tiered group's from its tiers); the fallback only once nobody wins. */
+  bid_group: Array<PartnerUsageStep & { mode: 'highest_bid' | 'cascade' | 'tiered'; partner_ids: string[]; fallback_partner_id: string | null }>
   partner_bid: PartnerUsageStep[]
   latency_gate: PartnerUsageStep[]
 }

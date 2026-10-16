@@ -24,8 +24,10 @@ export interface UsageStep {
 export interface BidGroupUsage extends UsageStep {
   /** The group's mode as the engine reads it (absent means highest_bid). */
   mode: 'highest_bid' | 'cascade' | 'tiered'
-  /** Every partner the group can call, this one included, in the order it names them. */
+  /** The partners the group asks on every lead (a tiered group's from its tiers), in the order it names them. */
   partner_ids: string[]
+  /** The partner asked only once nobody wins, or null. */
+  fallback_partner_id: string | null
 }
 
 export interface PartnerUsage {
@@ -52,8 +54,10 @@ export function partnerUsage(workflows: readonly OrgWorkflow[], partnerId: strin
       if (!config) continue
       const step: UsageStep = { workflow_id: w.id, workflow_name: w.name, is_active: w.is_active, node_id: typeof n.id === 'string' ? n.id : null }
       if (n.type === 'bid_group') {
-        const ids = bidGroupPartnerIds(config)
-        if (ids.includes(partnerId)) out.bid_group.push({ ...step, mode: modeOf(config), partner_ids: ids })
+        if (bidGroupPartnerIds(config).includes(partnerId)) {
+          const fallback = typeof config.fallback_partner_id === 'string' && config.fallback_partner_id !== '' ? config.fallback_partner_id : null
+          out.bid_group.push({ ...step, mode: modeOf(config), partner_ids: bidGroupPartnerIds({ ...config, fallback_partner_id: null }), fallback_partner_id: fallback })
+        }
       } else if (n.type === 'partner_bid' && config.partner_id === partnerId) {
         out.partner_bid.push(step)
       } else if (n.type === 'latency_gate' && config.partner_id === partnerId) {

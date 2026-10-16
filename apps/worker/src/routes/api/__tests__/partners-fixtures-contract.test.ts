@@ -92,14 +92,23 @@ describe('the partners page fixtures are what their routes answer (#2134)', () =
   // measured from production's workflows (read only, 2026-10-16); here the route
   // is given workflows whose steps say exactly that, and must answer the fixture.
   it.each(Object.keys(usageJson).map((id) => [partners.find((p) => p.id === id)!.slug, id]))('GET /partners/:id/usage for %s', async (_slug, id) => {
-    const usage = (usageJson as Record<string, { bid_group: Array<{ workflow_id: string; workflow_name: string; is_active: boolean; node_id: string; mode: string; partner_ids: string[] }> }>)
-    const steps = Object.values(usage).flatMap((u) => u.bid_group)
-    const byWorkflow = new Map(steps.map((s) => [s.workflow_id, s]))
-    const workflows = [...byWorkflow.values()].map((s) => ({
-      id: s.workflow_id, name: s.workflow_name, is_active: s.is_active, organization_id: testUser.organization_id, deleted_at: null,
-      definition: { nodes: [{ id: s.node_id, type: 'bid_group', config: { mode: s.mode, partner_ids: s.partner_ids } }] },
-    }))
-    supabaseWith({ partner_configs: { single: { id } }, workflows: { list: workflows } })
+    type Step = { workflow_id: string; workflow_name: string; is_active: boolean; node_id: string }
+    type BidGroupStep = Step & { mode: string; partner_ids: string[]; fallback_partner_id: string | null }
+    const usage = usageJson as Record<string, { bid_group: BidGroupStep[]; partner_bid: Step[]; latency_gate: Step[] }>
+    // Every step of every kind the fixture records, rebuilt as the node that would
+    // answer it: each partner's own steps name it by partner_id.
+    const workflows = new Map<string, { id: string; name: string; is_active: boolean; organization_id: string; deleted_at: null; definition: { nodes: Array<Record<string, unknown>> } }>()
+    const add = (s: Step, node: Record<string, unknown>) => {
+      const w = workflows.get(s.workflow_id) ?? { id: s.workflow_id, name: s.workflow_name, is_active: s.is_active, organization_id: testUser.organization_id, deleted_at: null, definition: { nodes: [] } }
+      if (!w.definition.nodes.some((n) => n.id === node.id && n.type === node.type && JSON.stringify(n) === JSON.stringify(node))) w.definition.nodes.push(node)
+      workflows.set(s.workflow_id, w)
+    }
+    for (const [pid, u] of Object.entries(usage)) {
+      for (const s of u.bid_group) add(s, { id: s.node_id, type: 'bid_group', config: { mode: s.mode, partner_ids: s.partner_ids, fallback_partner_id: s.fallback_partner_id } })
+      for (const s of u.partner_bid) add(s, { id: s.node_id, type: 'partner_bid', config: { partner_id: pid } })
+      for (const s of u.latency_gate) add(s, { id: s.node_id, type: 'latency_gate', config: { partner_id: pid } })
+    }
+    supabaseWith({ partner_configs: { single: { id } }, workflows: { list: [...workflows.values()] } })
     const res = await call('GET', `/partners/${id}/usage`)
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual(usage[id])

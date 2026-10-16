@@ -31,15 +31,19 @@ function askedSentence(mode: PartnerUsage['bid_group'][number]['mode'], partners
  */
 export function bidsInSentences(usage: PartnerUsage, names: ReadonlyMap<string, string>): string[] {
   const nameOf = (id: string) => names.get(id) ?? 'a partner not on this list'
-  const groups = new Map<string, { mode: PartnerUsage['bid_group'][number]['mode']; partners: string[]; workflows: string[] }>()
+  const groups = new Map<string, { mode: PartnerUsage['bid_group'][number]['mode']; partners: string[]; fallback: string | null; workflows: string[] }>()
   for (const s of usage.bid_group) {
-    const key = `${s.mode}|${s.partner_ids.join(',')}`
-    const g = groups.get(key) ?? { mode: s.mode, partners: s.partner_ids.map(nameOf), workflows: [] }
+    const key = `${s.mode}|${s.partner_ids.join(',')}|${s.fallback_partner_id ?? ''}`
+    const g = groups.get(key) ?? { mode: s.mode, partners: s.partner_ids.map(nameOf), fallback: s.fallback_partner_id === null ? null : nameOf(s.fallback_partner_id), workflows: [] }
     const label = workflowLabel(s)
     if (!g.workflows.includes(label)) g.workflows.push(label)
     groups.set(key, g)
   }
-  const out = [...groups.values()].map((g) => `${joinNames(g.workflows)}. ${askedSentence(g.mode, g.partners)}`)
+  const out = [...groups.values()].map((g) => {
+    const asked = g.partners.length > 0 ? ` ${askedSentence(g.mode, g.partners)}` : ''
+    const fallback = g.fallback ? ` If nobody wins, ${g.fallback} is asked last.` : ''
+    return `${joinNames(g.workflows)}.${asked}${fallback}`
+  })
   const single = [...new Set(usage.partner_bid.map(workflowLabel))]
   if (single.length > 0) out.push(`${joinNames(single)}, in ${single.length === 1 ? 'a Partner Bid step' : 'their Partner Bid steps'}.`)
   return out

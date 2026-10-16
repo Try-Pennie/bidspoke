@@ -17,7 +17,7 @@ import { formatEtDayTime } from '@/lib/dates'
 import { Button } from '@/components/ui/form'
 import { BuyerProfileHistory, type HistoryEntry } from './buyer-profile/BuyerProfileHistory'
 
-/** "Last saved Oct 13, 2026, 2:05 PM ET by Brian Nelms.", the editor by name where the row carries one. */
+/** "Last saved Oct 13, 2:05 PM ET by Brian Nelms." (formatEtDayTime, no year), the editor by name where the row carries one. */
 export function lastSavedSentence(partner: Pick<Partner, 'updated_at' | 'updated_by_name' | 'updated_by_email'>): string {
   const who = partner.updated_by_name ?? partner.updated_by_email?.split('@')[0] ?? 'someone not on record'
   // A stamp that does not read as a time is said as unknown, never as a wrong date (L50).

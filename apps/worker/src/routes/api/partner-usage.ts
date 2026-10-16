@@ -21,12 +21,16 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
 import { readOrgWorkflows } from '../../lib/org-workflows'
 import { partnerUsage } from '../../lib/partner-usage'
+import { isUuid } from '../../lib/query-validators'
 
 const partnerUsageRoutes = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 
 partnerUsageRoutes.get('/:id/usage', async (c) => {
   const { orgId } = c.get('user')
   const id = c.req.param('id')
+  // An id that is not a uuid names no partner: a 404, never the database's
+  // malformed input error answered as a 500.
+  if (!isUuid(id)) return c.json({ error: 'Partner not found' }, 404)
   const supabase = createSupabaseClient(c.env)
 
   const { data: partner, error } = await supabase

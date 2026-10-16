@@ -50,7 +50,7 @@ const tabs = () => screen.getAllByRole('tab').map((t) => t.textContent)
 
 describe('the Bid Group tab and its usage read (#2137)', () => {
   it('a partner named only in a switched off workflow shows Bid Group, saying which workflow and who is asked', async () => {
-    vi.mocked(api.partners.usage).mockResolvedValue({ ...NONE, bid_group: [{ ...step(), mode: 'highest_bid', partner_ids: ['p2', 'p1'] }] })
+    vi.mocked(api.partners.usage).mockResolvedValue({ ...NONE, bid_group: [{ ...step(), mode: 'highest_bid', partner_ids: ['p2', 'p1'], fallback_partner_id: null }] })
     render(<PartnerForm partner={partner} onSave={vi.fn()} onCancel={vi.fn()} partnerNames={names} />)
     await userEvent.click(await screen.findByRole('tab', { name: 'Bid Group' }))
     expect(screen.getByText('Main Flow (v2) (switched off). On each lead, Tripoint and Acme are both asked for a bid, and the higher bid wins.')).toBeVisible()

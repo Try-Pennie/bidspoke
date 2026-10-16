@@ -61,7 +61,7 @@ describe('which tabs show', () => {
   })
 
   it('Bid Group shows when a Bid Group or Partner Bid step names the partner, a switched off workflow included', () => {
-    expect(bidGroupShown(inputs({ usage: found({ bid_group: [{ ...step({ is_active: false }), mode: 'highest_bid', partner_ids: ['p'] }] }) }))).toBe(true)
+    expect(bidGroupShown(inputs({ usage: found({ bid_group: [{ ...step({ is_active: false }), mode: 'highest_bid', partner_ids: ['p'], fallback_partner_id: null }] }) }))).toBe(true)
     expect(bidGroupShown(inputs({ usage: found({ partner_bid: [step()] }) }))).toBe(true)
     expect(bidGroupShown(inputs({ usage: found({ latency_gate: [step()] }) }))).toBe(false)
     expect(bidGroupShown(inputs())).toBe(false)

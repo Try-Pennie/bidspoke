@@ -94,10 +94,17 @@ async function main() {
     bidConfigs[p.id] = await getList(base, token, `/api/partner-bid-configs?partner_id=${p.id}`)
   }
   const usage = {}
-  for (const p of partners) usage[p.id] = await get(base, token, `/api/partners/${p.id}/usage`)
+  for (const p of partners) {
+    const answer = await get(base, token, `/api/partners/${p.id}/usage`)
+    // The usage read's own shape, refused at the read like the others (a 200 with an error body would be written as no usage).
+    if (!answer || typeof answer !== 'object' || !['bid_group', 'partner_bid', 'latency_gate'].every((k) => Array.isArray(answer[k]))) {
+      throw new Error(`GET /api/partners/${p.id}/usage did not answer bid_group, partner_bid and latency_gate lists, so nothing was written`)
+    }
+    usage[p.id] = answer
+  }
   const uuids = await getList(base, token, '/api/partner-uuids')
   writeFixtures({ partners, profiles, uuids, bidConfigs, usage })
-  console.log(`capture-partners: wrote ${partners.length} partners, ${buyers.length} buyers, ${uuids.length} sub-account IDs to ${FIXTURE_DIR}`)
+  console.log(`capture-partners: wrote ${partners.length} partners, ${buyers.length} buyers, ${uuids.length} sub-account IDs and ${Object.keys(usage).length} usage answers to ${FIXTURE_DIR}`)
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
