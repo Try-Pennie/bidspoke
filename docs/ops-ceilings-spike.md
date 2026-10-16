@@ -66,7 +66,15 @@ What it means for the run engine (#1698):
 - Database: plan B1 to B3 against an 8 s statement timeout on the ops project,
   or set service_role's own timeout deliberately, before relying on 30 s.
 
-### Arming a probe (to re-measure: redeploy the probes from #2266, merge commit f5c19ef8)
+### Arming a probe (how the removed probes worked)
+
+The probe code is REMOVED from the repository. To re-measure with it: on a
+branch, `git revert` the squash commit of the pull request that closed #1946
+(which restores `src/ops/spike/ceilings.ts`, `OpsInternal.probe`, the cron and the
+`OPS_SPIKE_ARM` allowlist entry), deploy that branch to `bidspoke-worker-ops`, wait
+about 16 minutes for the new cron to fire, then arm as below. The code it restores
+is the code #2266 merged as f5c19ef8. What follows describes that code.
+
 
 The arm is JSON: `{"probe": <name>, "nonce": <8 to 64 of a-z 0-9 ->, "until": <ISO time at most 3 hours ahead>}`.
 A malformed, expired or too distant arm is refused by name in the logs and runs
@@ -123,7 +131,7 @@ q() { # q <query file> <worker> <hours back>
   runs for minutes and overlaps the next minute's.
 - Measured on the ops Worker: `cron_wall` ended `canceled` at 899,707 ms and
   `cron_subrequests` at 899,751 ms (readings table). Re-measure: `q scheduled-ceilings.json bidspoke-worker 168`,
-  or redeploy the #2266 probes and arm `cron_wall`.
+  or restore the probes (Arming a probe, above) and arm `cron_wall`.
 
 ### P2. A minute cron's CPU ceiling is 30 seconds, an hourly one's 15 minutes
 
@@ -137,7 +145,7 @@ q() { # q <query file> <worker> <hours back>
 - Measured on the ops Worker's minute cron: `exceededCpu` at 32,000 ms (readings
   table, `cron_cpu`).
 - Re-measure: `q scheduled-ceilings.json bidspoke-worker 168` (the `max_cpu_ms`
-  rows), or redeploy the #2266 probes and arm `cron_cpu`. The ops Worker sets no
+  rows), or restore the probes (Arming a probe) and arm `cron_cpu`. The ops Worker sets no
   `[limits]`: `curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" https://api.cloudflare.com/client/v4/accounts/3e7f907a9c19e51417873e2cce4fbc5c/workers/scripts/bidspoke-worker-ops/settings | jq '.result | {compatibility_date, compatibility_flags, limits, usage_model}'`.
 
 ### P3. Subrequests: 10,000 per invocation by default
@@ -150,8 +158,9 @@ q() { # q <query file> <worker> <hours back>
   invocation, #617) predates that change and no longer describes the platform.
 - Not reached in Stage 2: sequential R2 HEADs from the ops cron ran at about 4.7 a
   second, so 15 minutes of wall time ended both subrequest probes at about 3,900
-  and 4,600. Reaching 10,000 needs concurrent subrequests. Re-measure: a probe
-  that issues them in parallel batches (the #2266 probe is sequential).
+  and 4,600. Reaching 10,000 needs concurrent subrequests, which the restored probe
+  does not issue (it is sequential); measuring the ceiling means changing it to
+  issue them in parallel batches first.
 
 ### P4. A dispatched sub-invocation lives only as long as its caller
 
@@ -217,10 +226,11 @@ curl -sS -o /dev/null -D - -X POST -H 'content-type: application/json' --data '{
   to `ops.trypennie.dev/*`, the first two start reaching the ops Worker's fetch
   handler, which still answers not found; that is what the tests hold.
 
-### P7. The ops Worker today
+### P7. The ops Worker before Stage 2
 
-- 33 fetch invocations in 7 days, max wall 3 ms, max CPU 2 ms, no scheduled
-  invocations. Compatibility date 2024-09-23, no flags, no `[limits]`, usage model
+- Before Stage 2: 33 fetch invocations in 7 days, max wall 3 ms, max CPU 2 ms, no
+  scheduled invocations (Stage 2 then ran a minute cron for about 80 minutes,
+  since removed). Compatibility date 2024-09-23, no flags, no `[limits]`, usage model
   standard. Bindings before Stage 2: `PORTING_TEE`, `CODE_NODES_OPS`, `LANE`, and one
   secret, `PORTING_CAPTURE_MASTER`; after it, also `SELF` (service, entrypoint
   `OpsInternal`), and no cron. `OPS_SUPABASE_URL` and `OPS_SUPABASE_SECRET_KEY` are
