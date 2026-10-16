@@ -50,6 +50,8 @@ export const ENV_SANDBOX_POLICY: Record<EnvStringKey, 'block' | 'expose'> = {
   GITHUB_TOKEN: 'block',
   GITHUB_ACTIONS_TOKEN: 'block',
   ANTHROPIC_API_KEY: 'block',
+  // A login of the partners page delivery monitor (#2135): never handed to a code node.
+  PARTNER_PAGE_MONITOR_PASSWORD: 'block',
   // Non-secret config — safe to expose.
   SUPABASE_URL: 'expose',
   SUPABASE_PUBLISHABLE_KEY: 'expose',

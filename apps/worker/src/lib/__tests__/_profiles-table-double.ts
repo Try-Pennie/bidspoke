@@ -4,21 +4,35 @@
  * back rather than which methods it happened to call (L63). Only `.from`,
  * `.select` and `.eq` are modelled; anything else throws, so a reader that
  * starts using another filter is noticed rather than silently unfiltered.
+ *
+ * A filter on an embedded column (`organizations.is_synthetic`, #2135) removes
+ * parent rows only when the select embeds that relation `!inner`, as PostgREST
+ * does: without it the filter only empties the embed and every row comes back.
+ * Rows carry the embed as a nested object (`organizations: { is_synthetic }`).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 export type ProfileTableRow = Record<string, unknown>
+
+function valueAt(row: ProfileTableRow, path: string): unknown {
+  return path.split('.').reduce<unknown>((v, key) => (v && typeof v === 'object' ? (v as Record<string, unknown>)[key] : undefined), row)
+}
 
 export function profilesTableDouble(rows: ProfileTableRow[]): SupabaseClient {
   return {
     from(table: string) {
       if (table !== 'buyer_profiles') throw new Error(`unexpected table ${table}`)
       const filters: Array<[string, unknown]> = []
+      let selected = ''
+      const applies = (column: string) => {
+        const dot = column.indexOf('.')
+        return dot < 0 || selected.replace(/\s/g, '').includes(`${column.slice(0, dot)}!inner(`)
+      }
       const builder = {
-        select: () => builder,
+        select: (columns: string) => { selected = columns; return builder },
         eq: (column: string, value: unknown) => { filters.push([column, value]); return builder },
         then: (resolve: (v: { data: ProfileTableRow[]; error: null }) => void) =>
-          resolve({ data: rows.filter((r) => filters.every(([c, v]) => r[c] === v)), error: null }),
+          resolve({ data: rows.filter((r) => filters.every(([c, v]) => !applies(c) || valueAt(r, c) === v)), error: null }),
       }
       return builder
     },

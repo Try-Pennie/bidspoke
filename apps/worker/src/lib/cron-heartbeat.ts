@@ -191,6 +191,18 @@ export const CRON_JOBS: CronJob[] = [
       'the database running short of memory goes unreported until it stalls, as it did on 2026-10-08 after a week of swapping nobody saw (#1928)',
   },
   {
+    id: 'partner-page-monitor',
+    label: 'Partners page delivery check',
+    triggerCron: '*/5 * * * *',
+    // 5 minute cadence, 10 minutes slack, matching the other checks on this cron.
+    staleMs: 15 * MIN,
+    // A sign in, up to three joins of at most 10 s with 3 s between them, one ping
+    // and a 10 s wait for the notice, then a job_runs row and at most one Slack post.
+    maxRunMs: 2 * MIN,
+    dependents:
+      'partners page live updates stopping goes unreported: a person editing a partner stops seeing another person\'s save appear, and nothing says so (#2135)',
+  },
+  {
     id: 'buyer-sale-drain',
     label: 'Buyer ledger outbox drain',
     triggerCron: '* * * * *',

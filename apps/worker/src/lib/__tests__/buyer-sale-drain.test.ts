@@ -314,11 +314,22 @@ describe('runBuyerSaleDrain', () => {
 describe('productionDrainDeps lists offer buyers only', () => {
   it('leaves a click sold buyer out of the drain, enabled or not', async () => {
     const supabase = profilesTableDouble([
-      { partner_id: 'p-offer', sold_on: 'offer', is_enabled: false, partner_configs: { organization_id: ORG, slug: 'tripoint' } },
-      { partner_id: 'p-click', sold_on: 'click', is_enabled: true, partner_configs: { organization_id: ORG, slug: 'liberty1' } },
+      { partner_id: 'p-offer', sold_on: 'offer', is_enabled: false, organizations: { is_synthetic: false }, partner_configs: { organization_id: ORG, slug: 'tripoint' } },
+      { partner_id: 'p-click', sold_on: 'click', is_enabled: true, organizations: { is_synthetic: false }, partner_configs: { organization_id: ORG, slug: 'liberty1' } },
     ])
     const buyers = await productionDrainDeps(supabase, {} as unknown as Env).listBuyers()
     expect(buyers).toEqual([{ partner_id: 'p-offer', organization_id: ORG, slug: 'tripoint' }])
+  })
+
+  // #2135: the partners page delivery monitor's organization is synthetic, and
+  // no job that lists buyers across organizations may list one of it.
+  it('never lists a buyer of a synthetic organization', async () => {
+    const supabase = profilesTableDouble([
+      { partner_id: 'p-real', sold_on: 'offer', organizations: { is_synthetic: false }, partner_configs: { organization_id: ORG, slug: 'tripoint' } },
+      { partner_id: 'p-monitor', sold_on: 'offer', organizations: { is_synthetic: true }, partner_configs: { organization_id: 'org-monitor', slug: 'monitor-buyer' } },
+    ])
+    const buyers = await productionDrainDeps(supabase, {} as unknown as Env).listBuyers()
+    expect(buyers.map((b) => b.partner_id)).toEqual(['p-real'])
   })
 })
 
