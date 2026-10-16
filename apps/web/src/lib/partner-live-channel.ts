@@ -141,6 +141,7 @@ export class PartnerLiveChannel {
   private fail(): void {
     // A join still out is let go: its answer, when it comes, is left (generation).
     this.generation++
+    this.leaveCurrent()
     this.cancelTimer?.()
     this.cancelTimer = null
     this.cancelDeadline?.()

@@ -57,7 +57,7 @@ export function classifyNotice(n: PartnerPageNotice, c: NoticeContext): NoticeAc
   if (n.kind === 'uuids') return 'uuids'
   // A version it cannot compare is read again: the fail safe side (L50).
   const partnerAhead = n.partnerVersion === null || n.partnerVersion > c.known.partnerVersion
-  const profileAhead = c.known.profileVersion !== null && n.profileVersion !== null && n.profileVersion > c.known.profileVersion
+  const profileAhead = c.known.profileVersion !== null && (n.profileVersion === null ? n.kind === 'profile' : n.profileVersion > c.known.profileVersion)
   return partnerAhead || profileAhead ? 'refetch' : 'already_held'
 }
 

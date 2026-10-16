@@ -62,6 +62,9 @@ describe('classifyNotice (#2135)', () => {
 
   it('a notice whose partner version it cannot compare is read again, never taken as already held (L50)', () => {
     expect(classifyNotice(notice({ kind: 'partner', partnerVersion: null, profileVersion: 3 }), ctx())).toBe('refetch')
+    // A profile notice with no profile version, for a page that read the profile.
+    expect(classifyNotice(notice({ kind: 'profile', partnerVersion: 7, profileVersion: null }), ctx())).toBe('refetch')
+    expect(classifyNotice(notice({ kind: 'profile', partnerVersion: 7, profileVersion: null }), ctx({ known: { partnerVersion: 7, profileVersion: null } }))).toBe('already_held')
   })
 })
 
