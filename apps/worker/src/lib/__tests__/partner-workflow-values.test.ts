@@ -91,6 +91,7 @@ describe('scanPartnerValueReaders: reads by name', () => {
     ['any local name for the output', 'const c = steps.constants.output ?? {}\nreturn c.TripointClickUrl'],
     ['a destructure from the output', 'const { TripointClickUrl: url, other } = steps.constants.output'],
     ['a destructure from the local name', 'const { TripointClickUrl } = constants'],
+    ['a destructure with a nested default beside it', 'const { states = {}, TripointClickUrl: url } = constants'],
   ])('%s', (_name, script) => {
     expect(readsOf(scanScript(script), 'TripointClickUrl')).toEqual(['by_name'])
   })
@@ -178,6 +179,7 @@ describe('scanPartnerValueReaders: the whole output read at once', () => {
     ['Object.keys', 'for (const k of Object.keys(steps.constants.output)) {}'],
     ['a spread', 'const all = { ...constants }'],
     ['a destructure with a rest', 'const { pennieClickUrl, ...rest } = constants'],
+    ['a destructure with a rest after a nested default', 'const { states = {}, ...rest } = constants'],
   ])('%s reads every value, for every partner', (_name, script) => {
     const scan = scanScript(script)
     expect(scan.map((v) => v.readers.map((r) => r.reads))).toEqual(scan.map(() => ['every_partner']))

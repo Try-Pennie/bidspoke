@@ -165,9 +165,69 @@ function readsWholeOutput(text: string, root: string): boolean {
   }
   const whole = new RegExp(String.raw`(?:Object${DOT}(?:keys|values|entries|assign)\s*\(\s*(?:\{\s*\}\s*,\s*)?|JSON${DOT}stringify\s*\(\s*|\.\.\.\s*)${root}(?!\s*(?:\??\.|\[))`)
   if (whole.test(text)) return true
-  const destructure = new RegExp(String.raw`(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*${root}(?!\s*(?:\??\.|\[))`, 'g')
-  for (const m of text.matchAll(destructure)) if (m[1].includes('...')) return true
-  return false
+  return destructuresFrom(text, root).some((names) => names.includes(REST))
+}
+
+/** A destructure's `...rest`, which takes every key not named before it. */
+const REST = '...'
+
+/**
+ * The top level property names of every object destructure whose source is the
+ * output (`const { a, b: x, c = {}, ...rest } = constants`), with REST for a
+ * rest element. The pattern is walked by bracket depth, not matched by a
+ * regex, so a nested default or pattern (`{ a = {}, b: { c } }`) is read whole.
+ */
+function destructuresFrom(text: string, root: string): string[][] {
+  const out: string[][] = []
+  const source = new RegExp(String.raw`^\s*=\s*${root}(?!\s*(?:\??\.|\[))`)
+  for (const m of text.matchAll(/(?:const|let|var)\s*\{/g)) {
+    const open = (m.index ?? 0) + m[0].length - 1
+    const close = matchingBrace(text, open)
+    if (close === null || !source.test(text.slice(close + 1))) continue
+    out.push(
+      topLevelParts(text.slice(open + 1, close)).map((part) => {
+        const trimmed = part.trim()
+        return trimmed.startsWith(REST) ? REST : trimmed.split(/[:=]/)[0].trim().replace(/^['"]|['"]$/g, '')
+      })
+    )
+  }
+  return out
+}
+
+/** The index of the brace closing the one at `open`, skipping string literals, or null if it never closes. */
+function matchingBrace(text: string, open: number): number | null {
+  let depth = 0
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === "'" || ch === '"' || ch === '`') {
+      const end = text.indexOf(ch, i + 1)
+      if (end < 0) return null
+      i = end
+    } else if (ch === '{' || ch === '[' || ch === '(') depth++
+    else if (ch === '}' || ch === ']' || ch === ')') {
+      depth--
+      if (depth === 0) return ch === '}' ? i : null
+    }
+  }
+  return null
+}
+
+/** The comma separated parts of a pattern, splitting only at its own level. */
+function topLevelParts(inner: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let start = 0
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i]
+    if (ch === '{' || ch === '[' || ch === '(') depth++
+    else if (ch === '}' || ch === ']' || ch === ')') depth--
+    else if (ch === ',' && depth === 0) {
+      parts.push(inner.slice(start, i))
+      start = i + 1
+    }
+  }
+  parts.push(inner.slice(start))
+  return parts.filter((p) => p.trim() !== '')
 }
 
 /** A literal element access at the start of `rest` (`['x']`, `["x"]`, `` [`x`] `` with no substitution), and its name. */
@@ -197,11 +257,7 @@ function readsOfKey(text: string, root: string, key: string): KeyRead[] {
   for (const p of patterns) {
     for (const m of text.matchAll(p)) out.push({ rest: text.slice((m.index ?? 0) + m[0].length, (m.index ?? 0) + m[0].length + 200) })
   }
-  const destructure = new RegExp(String.raw`(?:const|let|var)\s*\{([^{}]*)\}\s*=\s*${root}(?!\s*(?:\??\.|\[))`, 'g')
-  for (const m of text.matchAll(destructure)) {
-    const named = m[1].split(',').map((part) => part.split(/[:=]/)[0].trim().replace(/^['"]|['"]$/g, ''))
-    if (named.includes(key)) out.push({ rest: null })
-  }
+  for (const named of destructuresFrom(text, root)) if (named.includes(key)) out.push({ rest: null })
   return out
 }
 
