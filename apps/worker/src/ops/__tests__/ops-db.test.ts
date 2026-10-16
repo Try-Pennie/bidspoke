@@ -88,9 +88,15 @@ describe('createOpsSupabaseClient', () => {
       expect(() => db.from('ops_runs').select('*')).not.toThrow()
     })
 
-    it('refuses every rpc, because the ops database classifies none as read only yet', () => {
+    it('refuses a mutating rpc, and an unclassified one naming the ops list (#1948)', () => {
       const db = createOpsSupabaseClient(env)
-      expect(() => db.rpc('anything' as never, {} as never)).toThrow(/Blocked rpc\('anything'\).*ops-db\.ts/)
+      expect(() => db.rpc('claim_run_requests' as never, {} as never)).toThrow(/Blocked rpc\('claim_run_requests'\).*on the mutating list.*ALLOW_PROD_WRITES/)
+      expect(() => db.rpc('anything' as never, {} as never)).toThrow(/Blocked rpc\('anything'\).*ops-rpcs\.ts/)
+    })
+
+    it('allows the read only rpc', () => {
+      const db = createOpsSupabaseClient(env)
+      expect(() => db.rpc('run_queue_disagreements' as never, { p_limit: 1 } as never)).not.toThrow()
     })
   })
 
