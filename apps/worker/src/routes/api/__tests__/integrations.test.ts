@@ -12,7 +12,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { makeSupabase } from './_supabase-mock'
-import { readSlackCopy, rememberSlackConnections } from '../../../lib/slack-copy'
+import { readSlackCopy, rememberSlackConnections, SLACK_CONNS_LASTGOOD_KEY } from '../../../lib/slack-copy'
 import { parseSlackConnection } from '../../../lib/slack-connection'
 import { COPY_NOT_CLEARED_MESSAGE } from '../../../lib/stored-copy'
 
@@ -389,5 +389,64 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
     expect(await res.json()).toEqual({ ok: true, stored_copy_warning: COPY_NOT_CLEARED_MESSAGE })
     expect(errors.some((l) => l.includes('saved Slack copy') && l.includes('KV put failed'))).toBe(true)
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalled()
+  })
+
+  it('a missing encryption key cannot fail the request: the copy, which no reader with that key can open either, is left alone', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const key = env.SECRET_ENCRYPTION_KEY
+    const before = store.get(SLACK_CONNS_LASTGOOD_KEY)
+    delete env.SECRET_ENCRYPTION_KEY
+    try {
+      vi.mocked(createSupabaseClient).mockReturnValue(
+        makeSupabase({ users: { single: testUser }, service_connections: { writeRows: [{ id: 'sc-9' }] } }) as never
+      )
+      const res = await request(app, 'DELETE', '/integrations/slack')
+      expect(res.status).toBe(200)
+      expect(await res.json()).toEqual({ ok: true })
+      expect(vi.mocked(writeAuditLog)).toHaveBeenCalled()
+      expect(store.get(SLACK_CONNS_LASTGOOD_KEY)).toBe(before)
+    } finally {
+      env.SECRET_ENCRYPTION_KEY = key
+    }
+  })
+
+  it('a missing copy store cannot fail the request either: it answers 200 with the warning', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    delete env.IDEMPOTENCY
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, service_connections: { writeRows: [{ id: 'sc-9' }] } }) as never
+    )
+    const res = await request(app, 'DELETE', '/integrations/slack')
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ ok: true, stored_copy_warning: COPY_NOT_CLEARED_MESSAGE })
+  })
+
+  // The audit row records the change that happened in the database, so it is
+  // written before the copy is touched: a request cut off between the two then
+  // loses at worst the copy edit, which the next healthy minute repairs, never
+  // the record of who disconnected or changed Slack.
+  it.each<[string, string, string, unknown]>([
+    ['POST', '/integrations/slack', 'saving a connection', { bot_token: 'xoxb-new', default_channel: '#new' }],
+    ['PATCH', '/integrations/slack/settings', 'changing a setting', { volume_alerts_enabled: false }],
+    ['DELETE', '/integrations/slack', 'disconnecting', undefined],
+  ])('%s %s (%s) writes the audit row before editing the copy', async (method, path, _what, body) => {
+    const order: string[] = []
+    vi.mocked(writeAuditLog).mockImplementation(async () => { order.push('audit') })
+    const kv = env.IDEMPOTENCY as { put: (k: string, v: string) => Promise<void> }
+    const put = kv.put
+    kv.put = async (k: string, v: string) => { order.push('copy'); await put(k, v) }
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        service_connections: {
+          maybeSingle: { id: 'sc-1', config: { bot_token: 'xoxb-mine', default_channel: '#mine' } },
+          upsertResult: { id: 'sc-1', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-10-15T00:00:00Z' },
+          writeRows: [{ id: 'sc-1' }],
+        },
+      }) as never
+    )
+    const res = await request(app, method, path, { body })
+    expect(res.status).toBe(200)
+    expect(order).toEqual(['audit', 'copy'])
   })
 })
