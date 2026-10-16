@@ -9,12 +9,14 @@
 --    and every other table keyed to a partner is on the written exclusion list
 --    below, found by state (foreign key, column name, and the columns a
 --    production sample found holding a partner id or slug), not by one spelling
---    (L96, L247);
+--    (L96, L247); and (case 2b, #2140) each such table is one a partner delete
+--    removes or is refused by (partner_delete_dependents()), or is left by the
+--    delete with a written reason;
 --  - what a notice carries: ids, versions, column names, whether the change had
 --    no actor, and never a field value;
 --  - who sends: a hand write, save_partner_config, the legacy profile save, the
 --    page save (exactly one notice, with its save_id and client_id), a partner
---    delete (one, and the cascade is silent), change_partner_uuid (not direct),
+--    delete (one, and the cascade and its sub-account IDs are silent), change_partner_uuid (not direct),
 --    and nothing for a last_probe_response only change or a save that changed
 --    nothing;
 --  - a missing realtime.messages partition never fails the write;
@@ -49,7 +51,10 @@
 -- - a page save that moved nothing still notifying: case 12 red;
 -- - change_partner_uuid without its set_config of bidspoke.actor_id: case 14
 --   red; its add check not scoped to the organization: case 13 red;
--- - the is_synthetic check removed from monitor_partner_page_ping: case 16 red.
+-- - the is_synthetic check removed from monitor_partner_page_ping: case 16 red;
+-- - (#2140) _delete_partner_config deleting the sub-account IDs before the
+--   partner row: case 8 red (a second, direct uuids notice).
+-- Case 2b's own mutation (a scratch table keyed by partner_slug) runs inside it.
 -- The guard's own mutations (a scratch child table with a foreign key, a scratch
 -- table keyed by partner_slug with none, a scratch column named
 -- winner_partner_ref, a scratch partition of an excluded parent) are run by
@@ -199,8 +204,9 @@ INSERT INTO measured_partner_columns VALUES
   ('workflow_executions', 'source'),
   ('audit_log', 'entity_id');
 
-CREATE FUNCTION pg_temp.partner_page_unregistered() RETURNS TABLE (candidate text) LANGUAGE sql AS $$
-  WITH candidates AS (
+-- The candidates, once, for both guards: this one (the page's notices) and
+-- case 2b (the partner delete, #2140).
+CREATE FUNCTION pg_temp.partner_keyed_candidates() RETURNS TABLE (t text, col text) LANGUAGE sql AS $$
     SELECT c.relname::text AS t, NULL::text AS col
     FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public' AND k.contype = 'f' AND NOT c.relispartition
@@ -211,7 +217,35 @@ CREATE FUNCTION pg_temp.partner_page_unregistered() RETURNS TABLE (candidate tex
     JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
     WHERE c.relkind IN ('r', 'p') AND NOT c.relispartition AND a.attname ~ '(partner|slug|buyer)'
     UNION
-    SELECT t, col FROM measured_partner_columns
+    SELECT m.t, m.col FROM measured_partner_columns m
+$$;
+
+-- Columns that hold a partner's name or id as a VALUE rather than a key, with
+-- the reason, written once for both guards (case 2 and case 2b): neither the
+-- page's notices nor a partner delete has anything to do with them.
+CREATE TEMP TABLE partner_value_columns (t text NOT NULL, col text NOT NULL, reason text NOT NULL);
+INSERT INTO partner_value_columns VALUES
+  ('lead_sightings', 'winning_partner_slug', 'the sighting''s recorded outcome, history kept by design'),
+  ('lead_sightings', 'external_partner_name', 'the sighting''s recorded outcome, history kept by design'),
+  ('lead_sightings', 'partners_attempted', 'the sighting''s recorded outcome, history kept by design'),
+  ('lead_sightings', 'partners_responded', 'the sighting''s recorded outcome, history kept by design'),
+  ('organizations', 'slug', 'an organization, not a partner'),
+  ('service_presets', 'slug', 'a service preset, not a partner'),
+  ('sf_bid_matrix_audit', 'partner_flags', 'a snapshot of the Salesforce bid matrix, not a partner setting'),
+  ('api_sources', 'name', 'an API source''s own name, which a source partner''s slug can equal'),
+  ('source_workflow_assignments', 'source_name', 'an API source''s name, which a source partner''s slug can equal'),
+  ('webhook_endpoints', 'source_name', 'an API source''s name, which a source partner''s slug can equal'),
+  ('webhook_endpoints', 'subdomain', 'an endpoint''s host name, which a source partner''s slug can equal'),
+  ('workflow_executions', 'source', 'the run''s recorded source, history kept by design');
+-- A column excluded by its name on whatever table holds it, with its reason.
+CREATE TEMP TABLE partner_value_column_names (col text NOT NULL, reason text NOT NULL);
+INSERT INTO partner_value_column_names VALUES
+  ('buyer_reference', 'the buyer''s own lead id, a value rather than a key to a partner'),
+  ('partner_lead_id', 'the buyer''s own lead id, a value rather than a key to a partner');
+
+CREATE FUNCTION pg_temp.partner_page_unregistered() RETURNS TABLE (candidate text) LANGUAGE sql AS $$
+  WITH candidates AS (
+    SELECT k.t, k.col FROM pg_temp.partner_keyed_candidates() k
   ),
   excluded_tables(t, reason) AS (VALUES
     ('buyer_sales', 'sale records, not settings'),
@@ -221,32 +255,13 @@ CREATE FUNCTION pg_temp.partner_page_unregistered() RETURNS TABLE (candidate tex
     ('lead_sighting_bids', 'monthly partitioned bid attempt history keyed by partner_slug'),
     ('partner_page_live_misses', 'observations of this channel''s delivery, not settings'),
     ('audit_log', 'the history of changes, written by the triggers this page reads')
-  ),
-  excluded_columns(t, col, reason) AS (VALUES
-    ('lead_sightings', 'winning_partner_slug', 'the sighting''s recorded outcome, history kept by design'),
-    ('lead_sightings', 'external_partner_name', 'the sighting''s recorded outcome, history kept by design'),
-    ('lead_sightings', 'partners_attempted', 'the sighting''s recorded outcome, history kept by design'),
-    ('lead_sightings', 'partners_responded', 'the sighting''s recorded outcome, history kept by design'),
-    ('organizations', 'slug', 'an organization, not a partner'),
-    ('service_presets', 'slug', 'a service preset, not a partner'),
-    ('sf_bid_matrix_audit', 'partner_flags', 'a snapshot of the Salesforce bid matrix, not a page setting'),
-    ('api_sources', 'name', 'an API source''s own name, which a source partner''s slug can equal'),
-    ('source_workflow_assignments', 'source_name', 'an API source''s name, which a source partner''s slug can equal'),
-    ('webhook_endpoints', 'source_name', 'an API source''s name, which a source partner''s slug can equal'),
-    ('webhook_endpoints', 'subdomain', 'an endpoint''s host name, which a source partner''s slug can equal'),
-    ('workflow_executions', 'source', 'the run''s recorded source, history kept by design')
-  ),
-  -- A column excluded by its name on whatever table holds it, with its reason.
-  excluded_column_names(col, reason) AS (VALUES
-    ('buyer_reference', 'the buyer''s own lead id, a value rather than a key to a partner'),
-    ('partner_lead_id', 'the buyer''s own lead id, a value rather than a key to a partner')
   )
   SELECT c.t || coalesce('.' || c.col, ' (foreign key)')
   FROM candidates c
   WHERE c.t <> ALL (public.partner_page_notice_tables())
     AND NOT EXISTS (SELECT 1 FROM excluded_tables e WHERE e.t = c.t)
-    AND NOT EXISTS (SELECT 1 FROM excluded_columns e WHERE e.t = c.t AND e.col = c.col)
-    AND NOT EXISTS (SELECT 1 FROM excluded_column_names e WHERE e.col = c.col)
+    AND NOT EXISTS (SELECT 1 FROM partner_value_columns e WHERE e.t = c.t AND e.col = c.col)
+    AND NOT EXISTS (SELECT 1 FROM partner_value_column_names e WHERE e.col = c.col)
   ORDER BY 1;
 $$;
 
@@ -292,6 +307,48 @@ BEGIN
     IF v_found <> '' THEN RAISE EXCEPTION 'case 2: a partition of an excluded parent was reported: %', v_found; END IF;
   END;
   INSERT INTO suite_cases(name) VALUES ('every partner keyed table is a page table or excluded');
+END
+$do$;
+
+-- ── 2b. Every table keyed to a partner is a delete dependent or excluded ─────
+-- The partner delete (#2140) removes or is refused by exactly what
+-- partner_delete_dependents() names (supabase/tests/partner_delete.test.sql
+-- proves that). This holds every other table keyed to a partner, found by the
+-- same candidates as case 2, to a written reason why a delete leaves it.
+CREATE FUNCTION pg_temp.partner_delete_unregistered() RETURNS TABLE (candidate text) LANGUAGE sql AS $$
+  WITH excluded_tables(t, reason) AS (VALUES
+    ('lead_sighting_bids', 'bid attempt history, kept by design when a partner is deleted'),
+    ('partner_page_live_misses', 'observations of the live channel''s delivery, not the partner''s'),
+    ('audit_log', 'the history of changes, kept by design, the delete''s own row included')
+  )
+  SELECT DISTINCT k.t || coalesce('.' || k.col, ' (foreign key)')
+  FROM pg_temp.partner_keyed_candidates() k
+  WHERE NOT EXISTS (SELECT 1 FROM public.partner_delete_dependents() d WHERE d.table_name = k.t)
+    AND k.t <> 'partner_configs'
+    AND NOT EXISTS (SELECT 1 FROM excluded_tables e WHERE e.t = k.t)
+    AND NOT EXISTS (SELECT 1 FROM partner_value_columns e WHERE e.t = k.t AND e.col = k.col)
+    AND NOT EXISTS (SELECT 1 FROM partner_value_column_names e WHERE e.col = k.col)
+  ORDER BY 1;
+$$;
+
+DO $do$
+DECLARE
+  v_found text;
+BEGIN
+  SELECT string_agg(candidate, ', ') INTO v_found FROM pg_temp.partner_delete_unregistered();
+  IF v_found IS NOT NULL THEN
+    RAISE EXCEPTION 'case 2b: tables keyed to a partner that a delete neither removes, is refused by, nor leaves with a written reason: %', v_found;
+  END IF;
+  -- Its own mutation, on every run: a scratch table keyed by partner_slug is reported.
+  BEGIN
+    CREATE TABLE public.scratch_2140_keyed (id uuid PRIMARY KEY, partner_slug text);
+    SELECT string_agg(candidate, ', ') INTO v_found FROM pg_temp.partner_delete_unregistered();
+    RAISE EXCEPTION USING ERRCODE = 'P0001', MESSAGE = 'scratch_undo', DETAIL = coalesce(v_found, '');
+  EXCEPTION WHEN raise_exception THEN
+    GET STACKED DIAGNOSTICS v_found = PG_EXCEPTION_DETAIL;
+    IF v_found NOT LIKE '%scratch_2140_keyed.partner_slug%' THEN RAISE EXCEPTION 'case 2b: a scratch table keyed by partner_slug was not reported (%)', v_found; END IF;
+  END;
+  INSERT INTO suite_cases(name) VALUES ('every partner keyed table is a delete dependent or excluded');
 END
 $do$;
 
@@ -404,13 +461,18 @@ END
 $do$;
 
 -- ── 8. delete_partner_config: one notice, the profile cascade silent ─────────
+-- Since #2140 the delete also removes the partner's sub-account IDs, after the
+-- partner row, so their trigger finds no partner and adds no notice.
 DO $do$
 DECLARE
   v jsonb;
 BEGIN
+  INSERT INTO public.partner_uuid_map (org_id, partner_slug, uuid) VALUES
+    ('11111111-1111-1111-1111-000021350001', 'notice-buyer-2135-4', 'notice-sub-1'), ('11111111-1111-1111-1111-000021350001', 'notice-buyer-2135-4', 'notice-sub-2');
   PERFORM pg_temp.clear_notices();
   PERFORM public.delete_partner_config('11111111-1111-1111-1111-000021350001', '33333333-3333-3333-3333-000021350004', '22222222-2222-2222-2222-00002135000a', 'erin@example.test');
   v := pg_temp.one_notice('11111111-1111-1111-1111-000021350001', 'case 8');
+  IF EXISTS (SELECT 1 FROM public.partner_uuid_map WHERE partner_slug = 'notice-buyer-2135-4') THEN RAISE EXCEPTION 'case 8: the sub-account IDs survived'; END IF;
   IF v ->> 'kind' IS DISTINCT FROM 'deleted' OR (v ->> 'direct')::boolean IS DISTINCT FROM false OR v -> 'partner_version' IS DISTINCT FROM 'null'::jsonb THEN
     RAISE EXCEPTION 'case 8: unexpected notice %', v;
   END IF;
@@ -698,7 +760,7 @@ DO $do$
 DECLARE n integer;
 BEGIN
   SELECT count(*) INTO n FROM suite_cases;
-  IF n IS DISTINCT FROM 18 THEN RAISE EXCEPTION 'partner_page_notice.test.sql: expected 18 cases, % ran', n; END IF;
+  IF n IS DISTINCT FROM 19 THEN RAISE EXCEPTION 'partner_page_notice.test.sql: expected 19 cases, % ran', n; END IF;
   RAISE NOTICE 'partner_page_notice.test.sql: % cases passed', n;
 END
 $do$;

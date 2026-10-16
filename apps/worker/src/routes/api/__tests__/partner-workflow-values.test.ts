@@ -3,7 +3,7 @@
  * emits for the partner, with the workflows that read it. JWT and organization
  * scoped; the Worker is service_role, so the route filters the organization.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -49,8 +49,12 @@ function supabaseWith(tables: Record<string, TableConfig | TableConfig[]>) {
   return sb
 }
 
+// The route tree is imported once, before the tests, so its cold import (seconds
+// on a busy machine) is not charged to whichever test happens to run first.
+let api: Awaited<typeof import('../index')>['default']
+beforeAll(async () => { api = (await import('../index')).default }, 60_000)
+
 async function get(path: string) {
-  const { default: api } = await import('../index')
   return api.request(path, { method: 'GET', headers: { Authorization: 'Bearer tok' } }, testEnv, mockCtx)
 }
 
@@ -67,7 +71,6 @@ afterEach(() => vi.clearAllMocks())
 
 describe('GET /api/partners/:id/workflow-values', () => {
   it('requires a signed in caller', async () => {
-    const { default: api } = await import('../index')
     const res = await api.request('/partners/11111111-1111-4111-8111-111111111111/workflow-values', { method: 'GET' }, testEnv, mockCtx)
     expect(res.status).toBe(401)
   })

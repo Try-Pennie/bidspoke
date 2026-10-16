@@ -25,6 +25,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
+import { scheduledSlackFor } from './scheduled-slack'
 import { probeSlackConnectionsTable, readSlackConnectionRows } from './alert-fanout'
 import { formatErr } from './format-error'
 import { getSlackConnection, postMessage } from './slack'
@@ -227,7 +228,9 @@ export async function runVolumeCliffCheck(
 ): Promise<void> {
   // A failed read is reported to the owner, which pages at once for these reads
   // (#2061); a run whose reads all answered is reported too, for its all-clear.
-  const owner = { kv, secretKeys: secretEncryptionKey, appUrl, claims, now: clock }
+  // With the tick's scheduled Slack, so a failure with no saved copy pages
+  // Better Stack through the tick's one pager (#2061).
+  const owner = { kv, secretKeys: secretEncryptionKey, appUrl, claims, now: clock, scheduled: scheduledSlackFor(supabase) }
   const failed = (what: string, error: unknown) => reportDatabaseUnreachable(owner, { source: 'volume-cliff', what, error })
   const answered = () => reportDatabaseReadable(kv, 'volume-cliff', clock())
 

@@ -22,7 +22,9 @@ case "$SQL_SUITE_PROJECT" in
     SUITE_PORT_DEFAULT="54329"
     # Fixture folders a test reads with pg_read_file (#2132): copied into the
     # container at /sql-suite-fixtures/<the folder's package name>/.
-    SUITE_FIXTURES=("$ROOT/packages/buyer-profile/fixtures")
+    # The partner delete labels (#2140) are read by the Worker and by
+    # partner_delete.test.sql, at /sql-suite-fixtures/partner-delete/.
+    SUITE_FIXTURES=("$ROOT/packages/buyer-profile/fixtures" "$ROOT/apps/worker/src/partner-delete/labels")
     ;;
   ops)
     SUITE_MIGRATIONS="$ROOT/supabase-ops/supabase/migrations"

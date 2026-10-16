@@ -28,6 +28,8 @@ import { RECOVERY_REARM_MINUTES } from '../alert-recovery'
 import type { AlertClaims } from '../alert-claim'
 import { fakeTimers, tableClient, TEST_KEY } from './_scheduled-slack-doubles'
 import { outboxEvents, transitions } from './_incident-events'
+import { claimLedger, gate, overlap } from './_claims-double'
+import { MINUTE_ALERT_CLAIM_TTL_SECONDS } from '../alert-fanout'
 
 const ORG = '55555555-5555-4555-8555-555555555555'
 const CONN = { bot_token: 'xoxb-t', default_channel: 'C1', volume_alerts_enabled: true }
@@ -76,9 +78,9 @@ const answering = (rows: unknown[] = [{ organization_id: ORG, config: { bot_toke
   tableClient({ service_connections: { data: rows } }).client
 const failing = () => tableClient({ service_connections: { error: { message: 'connection refused', code: '08006' } } }).client
 
-function probeDeps(kv: ReturnType<typeof fakeKv>, at: number, supabase = answering()) {
+function probeDeps(kv: ReturnType<typeof fakeKv>, at: number, supabase = answering(), claims?: AlertClaims) {
   return {
-    ...deps(kv, at),
+    ...deps(kv, at, claims),
     supabase,
     sleep: fakeTimers('never').sleep,
     stamps: { started: vi.fn().mockResolvedValue(undefined), completed: vi.fn().mockResolvedValue(undefined) },
@@ -194,21 +196,22 @@ describe('each organization is its own failure boundary', () => {
     expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes(ORG) && String(c[0]).includes('Slack exploded'))).toBe(true)
   })
 
-  // Lessons review at a14c900: freeing the claim of the org whose page threw
-  // can throw too (a KV refusal in the same outage); it must not end the loop.
+  // Lessons review at a14c900: freeing the claim of an org whose page did not
+  // go out can throw too (a refusal from the claim object in the same outage);
+  // it must not end the loop. Since #2062 only a refused post frees a claim.
   it('still pages the second organization when freeing the first one\'s claim also throws', async () => {
     const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: await copyBlob({ [ORG]: CONN, [ORG2]: CONN2 }) })
-    vi.mocked(sendDatabaseUnreachableAlert).mockImplementation(async (slack) => {
-      if (slack.bot_token === 'xoxb-t') throw new Error('Slack exploded')
-      return 'ts-2'
-    })
+    // A refusal Slack answered is what frees a claim since #2062 (a post that
+    // throws keeps it, as it may have landed), so the first organization's post
+    // is refused here, and freeing its claim is what throws.
+    vi.mocked(sendDatabaseUnreachableAlert).mockImplementation(async (slack) => (slack.bot_token === 'xoxb-t' ? null : 'ts-2'))
     const claims: AlertClaims = {
       claim: async () => true,
       release: async () => { throw new Error('release refused') },
     }
     const result = await reportDatabaseUnreachable(deps(kv, T0, claims), readFailure)
     expect(result.told).toEqual([ORG2])
-    expect(result.failed.map((f) => f.orgId)).toEqual([ORG])
+    expect(vi.mocked(sendDatabaseUnreachableAlert).mock.calls.map((c) => c[1])).toEqual(['C1', 'C2'])
     expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('release refused'))).toBe(true)
   })
 
@@ -441,5 +444,98 @@ describe('the minute probe writes the copy and stamps its heartbeat', () => {
     const d = probeDeps(kv, T0, supabase)
     await expect(runDatabaseReachabilityProbe(d)).rejects.toThrow('client exploded')
     expect(d.stamps.completed).toHaveBeenCalledTimes(1)
+  })
+})
+
+// A stalled minute tick overlapping the next minute's (#2062). The page keeps
+// the claim key phase 3 gave it, now taken BEFORE the cooldown is read (L157)
+// and held for the minute alert TTL; the all-clear claims once it is owed.
+describe('the owner posts once across overlapping ticks (#2062)', () => {
+  const OPEN = { [RECOVERY]: new Date(T0 - 90 * MIN).toISOString(), [ACTIVE]: new Date(T0 - 60 * MIN).toISOString(), [COOLDOWN]: '1', [CONDITION]: '{"since":"2026-10-15T01:30:00.000Z","alerts":2}' }
+  async function owed() {
+    const kv = await kvWithCopy(OPEN)
+    for (let t = T0 - 40 * MIN; t <= T0 - MIN; t += MIN) for (const s of ['probe', 'volume-cliff'] as const) await reportDatabaseReadable(kv, s, t)
+    return kv
+  }
+
+  it('claims the page before the read that decides: a cooldown written while it claimed stops the page', async () => {
+    const kv = await kvWithCopy()
+    const log: string[] = []
+    const { claims } = claimLedger(log)
+    const racing: AlertClaims = {
+      claim: async (k, ttl) => {
+        const won = await claims.claim(k, ttl)
+        // The other tick posts and arms its cooldown just as this one claims.
+        kv.store.set(COOLDOWN, '1')
+        return won
+      },
+      release: claims.release,
+    }
+    await reportDatabaseUnreachable(deps(kv, T0, racing), readFailure)
+    expect(sendDatabaseUnreachableAlert).not.toHaveBeenCalled()
+    expect(log).toEqual([`claim db-unreachable:${ORG}`, `release db-unreachable:${ORG}`])
+  })
+
+  it('reuses its phase 3 claim key, held for the minute alert TTL', async () => {
+    const kv = await kvWithCopy()
+    const { claims, ttls } = claimLedger()
+    await reportDatabaseUnreachable(deps(kv, T0, claims), readFailure)
+    expect([...ttls.entries()]).toEqual([[`db-unreachable:${ORG}`, MINUTE_ALERT_CLAIM_TTL_SECONDS]])
+  })
+
+  it('pages once when a held tick overlaps the next one', async () => {
+    const kv = await kvWithCopy()
+    const held = gate<string>()
+    vi.mocked(sendDatabaseUnreachableAlert).mockImplementationOnce(() => held.promise)
+    const { claims, log } = claimLedger()
+    await overlap(() => reportDatabaseUnreachable(deps(kv, T0, claims), readFailure), () => held.open('ts-db'), () => log.length === 2)
+    expect(sendDatabaseUnreachableAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('control: with no claim the held ticks send the all-clear twice', async () => {
+    const kv = await owed()
+    const held = gate<boolean>()
+    vi.mocked(sendDatabaseRecoveredAlert).mockImplementationOnce(() => held.promise).mockImplementationOnce(() => held.promise)
+    await overlap(() => runDatabaseReachabilityProbe(probeDeps(kv, T0)), () => held.open(true), () => vi.mocked(sendDatabaseRecoveredAlert).mock.calls.length === 2)
+    expect(sendDatabaseRecoveredAlert).toHaveBeenCalledTimes(2)
+  })
+
+  it('sends the all-clear once, under the minute all-clear claim', async () => {
+    const kv = await owed()
+    const held = gate<boolean>()
+    vi.mocked(sendDatabaseRecoveredAlert).mockImplementationOnce(() => held.promise)
+    const { claims, log } = claimLedger()
+    await overlap(() => runDatabaseReachabilityProbe(probeDeps(kv, T0, answering(), claims)), () => held.open(true), () => log.length === 2)
+    expect(sendDatabaseRecoveredAlert).toHaveBeenCalledTimes(1)
+    expect(log).toEqual([`claim minute-alert:all-clear:db-unreachable:${ORG}`, `claim minute-alert:all-clear:db-unreachable:${ORG}`])
+  })
+
+  it('makes no claim call on a healthy probe with nothing owed', async () => {
+    const { claims, log } = claimLedger()
+    await runDatabaseReachabilityProbe(probeDeps(fakeKv(), T0, answering(), claims))
+    expect(log).toEqual([])
+  })
+})
+
+// A post that throws may have reached Slack, so its claim is kept for the TTL
+// while the other organizations are still paged (#2062 review, with the phase 3
+// per organization boundary).
+describe('a database page that throws keeps its claim, and the others are still paged (#2062)', () => {
+  const ORG2 = '66666666-6666-4666-8666-666666666666'
+  const CONN2 = { bot_token: 'xoxb-2', default_channel: 'C2', volume_alerts_enabled: true }
+
+  it('keeps the thrown organization\'s claim, pages the other, and does not page the first again on the next report', async () => {
+    const kv = fakeKv({ [SLACK_CONNS_LASTGOOD_KEY]: await copyBlob({ [ORG]: CONN, [ORG2]: CONN2 }) })
+    vi.mocked(sendDatabaseUnreachableAlert).mockImplementation(async (slack) => {
+      if (slack.bot_token === 'xoxb-t') throw new Error('Network connection lost.')
+      return 'ts-2'
+    })
+    const { claims, held } = claimLedger()
+    const result = await reportDatabaseUnreachable(deps(kv, T0, claims), readFailure)
+    expect(result.told).toEqual([ORG2])
+    expect(held.has(`db-unreachable:${ORG}`)).toBe(true)
+    vi.mocked(sendDatabaseUnreachableAlert).mockResolvedValue('ts-db')
+    await reportDatabaseUnreachable(deps(kv, T0 + MIN, claims), readFailure)
+    expect(vi.mocked(sendDatabaseUnreachableAlert).mock.calls.map((c) => c[1])).toEqual(['C1', 'C2'])
   })
 })

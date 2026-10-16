@@ -26,6 +26,7 @@ import fieldCoverage from './field-coverage'
 import buyerProfiles from './buyer-profiles'
 import partnerWorkflowValues from './partner-workflow-values'
 import partnerHistory from './partner-history'
+import partnerDelete from './partner-delete'
 import buyerSales from './buyer-sales'
 import heldClicks from './held-clicks'
 import buyerSelectParity from './buyer-select-parity'
@@ -73,6 +74,8 @@ api.route('/partners', buyerProfiles)
 api.route('/partners', partnerWorkflowValues)
 // The partners page History (#2141), on the same prefix the same way.
 api.route('/partners', partnerHistory)
+// The delete and its check (#2140): DELETE /partners/:id lives here, not in partners.ts.
+api.route('/partners', partnerDelete)
 api.route('/buyer-sales', buyerSales)
 // Held click claims a person releases from the partner page (#1552).
 api.route('/held-clicks', heldClicks)

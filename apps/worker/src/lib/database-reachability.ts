@@ -32,8 +32,8 @@
  * finally, so a probe that throws still reads as a run that finished.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { readSlackConnectionRows } from './alert-fanout'
-import { boundedRead, type BoundableQuery } from './scheduled-slack'
+import { minuteAllClearClaim, postMinutePage, readSlackConnectionRows } from './alert-fanout'
+import { boundedRead, type BoundableQuery, type ScheduledSlack } from './scheduled-slack'
 import { readSlackCopy, rememberSlackConnections } from './slack-copy'
 import { parseSlackConnection, type SlackConnection } from './slack-connection'
 import { sendDatabaseRecoveredAlert, sendDatabaseUnreachableAlert } from './slack'
@@ -75,8 +75,6 @@ const DB_UNREACHABLE_STEPS = [DB_UNREACHABLE_COOLDOWN_SECONDS, ...BACKOFF_STEPS_
 // The standing condition lives as long as the recovery marker, so it cannot
 // outlive a held all-clear and make a later outage read as a reminder (#1337).
 const CONDITION_TTL_SECONDS = RECOVERY_TTL_SECONDS
-// A claim only has to outlast ticks released together (#1298).
-const ALERT_CLAIM_TTL_SECONDS = 2 * 60
 
 const backoffKey = (orgId: string) => `${DB_UNREACHABLE_PREFIX}:${orgId}`
 const FAILED_MINUTES_KEY = 'db-reachability:failed-minutes'
@@ -105,6 +103,13 @@ export interface ReachabilityDeps {
   /** Decides which of several simultaneous reporters posts (#1298); production always passes it. */
   claims?: AlertClaims
   now?: () => number
+  /**
+   * The tick's scheduled Slack (scheduled-slack.ts), whose Better Stack pager
+   * the owner pages through when no saved copy can stand in (#2061, #2063): one
+   * pager per tick, shared with the lookups, so a lookup and the owner noticing
+   * the same outage page it once. The scheduled handler always passes it.
+   */
+  scheduled?: Pick<ScheduledSlack, 'nobodyCanBeTold'>
 }
 
 export interface UnreachableReport {
@@ -227,8 +232,22 @@ export async function reportDatabaseUnreachable(deps: ReachabilityDeps, report: 
   const copy = await readSlackCopy(kv, deps.secretKeys)
   if (copy.kind !== 'read' || copy.connections.size === 0) {
     const why = copy.kind === 'unreadable' ? `the saved Slack copy cannot be read (${copy.detail})` : 'there is no last-good Slack connection in KV'
-    // The exact words a log alert can match on (#1303 decision 2).
     console.error(`[database-reachability] ${report.what} read failed and ${why}, so nobody can be told: ${errorText}`)
+    // The page the Better Stack alert matches on, through the tick's pager. It
+    // is handed to waitUntil and never awaited, and handing it over can throw
+    // only if something is broken, so the bookkeeping above always stands.
+    // An empty copy is nobody to post to as surely as no copy is. It keeps the
+    // owner's rule: a fast read's first failed minute is held, as its Slack
+    // page would be (lessons review of #2250).
+    if (!pages) {
+      console.warn(`[database-reachability] ${REACHABILITY_SOURCES[report.source].words} pages only when the minute before also failed, so the Better Stack page is held`)
+      return outcome
+    }
+    try {
+      deps.scheduled?.nobodyCanBeTold(`database-reachability ${report.what}`, null, copy.kind === 'unreadable' ? 'copy_unreadable' : 'no_copy', copy.kind === 'unreadable' ? copy.detail : undefined)
+    } catch (e) {
+      console.error(`[database-reachability] the Better Stack page for nobody can be told could not be handed over: ${formatErr(e)}`)
+    }
     return outcome
   }
   const copyAgeMs = copy.savedAtMs === null ? null : Math.max(0, nowMs - copy.savedAtMs)
@@ -238,48 +257,49 @@ export async function reportDatabaseUnreachable(deps: ReachabilityDeps, report: 
 
   for (const [orgId, conn] of copy.connections) {
     if (!conn.volume_alerts_enabled) continue
-    const claimKey = `${DB_UNREACHABLE_PREFIX}:${orgId}`
-    let claimed = false
     try {
       await markSpikeSeen(kv, DB_UNREACHABLE_PREFIX, orgId, nowMs)
       if (!pages) continue
       const backoff = backoffKey(orgId)
-      if (await inCooldown(kv, backoff)) continue
-      if (deps.claims && !(await deps.claims.claim(claimKey, ALERT_CLAIM_TTL_SECONDS))) {
-        console.log(`[database-reachability] database unreachable alert claimed by another reporter org=${orgId}`)
-        continue
-      }
-      claimed = deps.claims !== undefined
-      // Unchanged is false since the error text can move between reminders (#1337).
-      const standing = await readCondition(kv, backoff)
-      const repeat = describeRepeat(standing, nowMs, false, DB_UNREACHABLE_STEPS) ?? undefined
-      const ts = await sendDatabaseUnreachableAlert(conn, conn.default_channel, { what: report.what, error: errorText, appUrl: deps.appUrl, repeat, copyAgeMs })
-      if (ts) {
+      // The claim key phase 3 gave this page, kept so a claim held across the
+      // deploy still counts; taken before the cooldown read that decides and held
+      // for the minute alert TTL (#2062, L157).
+      let standing: Awaited<ReturnType<typeof readCondition>> = null
+      const posted = await postMinutePage({
+        claims: deps.claims,
+        key: `${DB_UNREACHABLE_PREFIX}:${orgId}`,
+        // The standing condition is read with the judgement, before the post, so
+        // nothing inside `send` is a read (a throw there is taken as a post that
+        // may have landed). readCondition never throws in any case.
+        inCooldown: async () => {
+          const cooling = await inCooldown(kv, backoff)
+          if (!cooling) standing = await readCondition(kv, backoff)
+          return cooling
+        },
+        send: async () => {
+          // Unchanged is false since the error text can move between reminders (#1337).
+          const repeat = describeRepeat(standing, nowMs, false, DB_UNREACHABLE_STEPS) ?? undefined
+          return Boolean(await sendDatabaseUnreachableAlert(conn, conn.default_channel, { what: report.what, error: errorText, appUrl: deps.appUrl, repeat, copyAgeMs }))
+        },
+      })
+      if (posted === 'claimed_elsewhere') console.log(`[database-reachability] database unreachable alert claimed by another reporter org=${orgId}`)
+      if (posted === 'sent') {
         outcome.told.push(orgId)
         // The marker before the cooldown (#2058): a cut between them then costs at
         // worst a repeated page, never a lost all-clear.
         await markAlerted(kv, DB_UNREACHABLE_PREFIX, orgId, incident(orgId), nowMs)
         await recordPaged(kv, DB_UNREACHABLE_PREFIX, orgId, incident(orgId), nowMs)
         await recordAlert(kv, backoff, standing, nowMs, { stepsSeconds: DB_UNREACHABLE_STEPS, conditionTtlSeconds: CONDITION_TTL_SECONDS })
-      } else if (claimed) {
-        await deps.claims!.release(claimKey)
       }
     } catch (e) {
-      // This organization only: the others are still paged. Its claim is freed
-      // so the next report can try again; a page that did go out before the
-      // throw costs at worst a repeat, never a lost all-clear (#2058).
+      // This organization only: the others are still paged. The claim is not
+      // freed here: postMinutePage frees it when nothing was posted (a refusal,
+      // or a cooldown read that threw), and keeps it when the post threw or
+      // went out before the bookkeeping threw, since that page may have reached
+      // Slack (#2062). At worst the next page is late, never doubled.
       const reason = formatErr(e)
       outcome.failed.push({ orgId, reason })
       console.error(`[database-reachability] database unreachable page for org=${orgId} failed, the other organizations are still paged: ${reason}`)
-      if (claimed) {
-        // Freeing the claim can fail in the same outage; it is logged here so it
-        // cannot end the loop. A claim left held lapses after its own TTL.
-        try {
-          await deps.claims!.release(claimKey)
-        } catch (releaseError) {
-          console.error(`[database-reachability] claim ${claimKey} not freed after the failed page, it lapses on its own: ${formatErr(releaseError)}`)
-        }
-      }
     }
   }
   return outcome
@@ -346,6 +366,8 @@ async function announceDatabaseReadable(deps: ReachabilityDeps, connections: Map
           sentence = await measured
           return sentence !== null
         },
+        // Two overlapping probe ticks send it once (#2062).
+        claim: minuteAllClearClaim(deps.claims, DB_UNREACHABLE_PREFIX, orgId),
       },
     )
     // The next outage starts at the short first reminder gap (#1337).

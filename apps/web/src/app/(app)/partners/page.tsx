@@ -5,7 +5,8 @@ export const runtime = 'edge'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import { api } from '@/lib/api'
-import type { Partner, PartnerBody, PartnerPageSaveRequest, PartnerPageSaved, PartnerPageStale } from '@/lib/api'
+import type { Partner, PartnerBody, PartnerDeleted, PartnerPageSaveRequest, PartnerPageSaved, PartnerPageStale } from '@/lib/api'
+import { BIDDING_PICKUP } from '@/lib/bidding-pickup'
 import NavLayout from '@/components/NavLayout'
 import { Plus, CircleCheck, CircleOff, AlertTriangle } from 'lucide-react'
 import { Skeleton } from '@/components/ui/Skeleton'
@@ -39,15 +40,11 @@ export default function PartnersPage() {
   const [error, setError] = useState<string | null>(null)
   const [selected, setSelected] = useState<Partner | null>(null)
   const [creating, setCreating] = useState(false)
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
-  const deleteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [removingId, setRemovingId] = useState<string | null>(null)
   const removeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const [deletingId, setDeletingId] = useState<string | null>(null)
-  // Synchronous re-entry guard: a state flag alone can't block a same-tick
-  // double-click (no re-render between the two clicks), so the delete would
-  // fire twice against a money-path config (#495).
-  const deletingRef = useRef(false)
+  // What a committed delete left to say (#2140): never an error, because the
+  // delete happened. The delete box itself guards against a double press.
+  const [deletedNotice, setDeletedNotice] = useState<string[] | null>(null)
   const [formDirty, setFormDirty] = useState(false)
   /** The open partner holds a problem (a refused save's field), marked on its row beside a missing credential. */
   const [formProblem, setFormProblem] = useState(false)
@@ -84,6 +81,7 @@ export default function PartnersPage() {
   }, [slugParam, partners, selected?.slug])
 
   function selectPartner(p: Partner) {
+    setDeletedNotice(null)
     setCreating(false)
     setSelected(p)
     // A different partner opens on its own tab; the same one keeps the tab it is on.
@@ -98,36 +96,26 @@ export default function PartnersPage() {
     if (slugParam) writeUrl(null, null)
   }
 
-  function requestDelete(id: string) {
-    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
-    setConfirmDelete(id)
-    deleteTimerRef.current = setTimeout(() => setConfirmDelete(null), 4000)
-  }
-
-  async function handleDelete(id: string) {
-    if (deletingRef.current) return
-    deletingRef.current = true
-    if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current)
-    setDeletingId(id)
-    try {
-      // Wait for the server before removing the row, so the button shows a real
-      // in-flight state and a failure leaves the config in place (#495).
-      const r = await api.partners.delete(id)
-      // Deleted, but its stored outage copy could not be cleared yet: say so (#1846).
-      if (r.stored_copy_warning) setError(r.stored_copy_warning)
-      setConfirmDelete(null)
-      if (selected?.id === id) clearSelection()
-      setRemovingId(id)
-      removeTimerRef.current = setTimeout(() => {
-        setPartners((prev) => prev.filter((p) => p.id !== id))
-        setRemovingId(null)
-      }, 150)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to delete partner')
-    } finally {
-      deletingRef.current = false
-      setDeletingId(null)
+  /**
+   * The delete box committed a delete (#2140). The row fades out, and what the
+   * answer says is shown as a standing notice, not an error: a stored copy not
+   * yet cleared (with when bidding stops using it), or state kept under the
+   * slug that could not be reset.
+   */
+  function handleDeleted(id: string, answer: PartnerDeleted) {
+    const name = partners.find((p) => p.id === id)?.name ?? 'The partner'
+    const lines = [`${name} was deleted.`]
+    if (answer.stored_copy_warning) {
+      lines.push(answer.stored_copy_warning, `Bidding stops using ${name} within about ${BIDDING_PICKUP.partnerConstantsMinutes} minutes while the database is reachable.`)
     }
+    if (answer.state_reset_warning) lines.push(answer.state_reset_warning)
+    setDeletedNotice(lines)
+    if (selected?.id === id) clearSelection()
+    setRemovingId(id)
+    removeTimerRef.current = setTimeout(() => {
+      setPartners((prev) => prev.filter((p) => p.id !== id))
+      setRemovingId(null)
+    }, 150)
   }
 
   async function handleSave(body: PartnerBody, id?: string, pendingUuids?: string[], request?: PartnerPageSaveRequest): Promise<PartnerSaveResult | void> {
@@ -255,17 +243,19 @@ export default function PartnersPage() {
             </div>
           )}
 
+          {deletedNotice && (
+            <div role="status" className={`mb-6 space-y-1 rounded-lg border px-4 py-3 text-sm ${deletedNotice.length > 1 ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-gray-200 bg-white text-gray-700'}`}>
+              {deletedNotice.map((line) => <p key={line}>{line}</p>)}
+            </div>
+          )}
+
           {showForm ? (
             <PartnerForm
               key={selected?.id ?? 'new'}
               partner={selected ?? undefined}
               onSave={handleSave}
               onCancel={clearSelection}
-              onDelete={selected ? (id) => requestDelete(id) : undefined}
-              confirmingDelete={confirmDelete === selected?.id}
-              onConfirmDelete={selected ? () => handleDelete(selected.id) : undefined}
-              onCancelDelete={() => { if (deleteTimerRef.current) clearTimeout(deleteTimerRef.current); setConfirmDelete(null) }}
-              deleting={deletingId === selected?.id}
+              onDeleted={handleDeleted}
               onDirtyChange={setFormDirty}
               requestedTab={selected ? requestedTab : null}
               onTabChange={(tab) => { if (selected) writeUrl(selected.slug, tab) }}
