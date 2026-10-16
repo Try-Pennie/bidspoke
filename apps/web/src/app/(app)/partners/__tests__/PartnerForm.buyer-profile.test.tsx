@@ -26,7 +26,7 @@ vi.mock('@/lib/api', () => ({
     partnerBidConfigs: { list: vi.fn() },
     buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },
     buyerSales: { list: vi.fn(), settle: vi.fn() },
-    heldClicks: { list: vi.fn(), markSent: vi.fn(), free: vi.fn(), clear: vi.fn(), retrySalesforce: vi.fn() },
+    heldClicks: { list: vi.fn(), markSent: vi.fn(), free: vi.fn(), clear: vi.fn(), retrySalesforce: vi.fn(), setLeadId: vi.fn() },
   },
 }))
 
@@ -619,13 +619,13 @@ describe('how the buyer is sold', () => {
     vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
     vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: { added: true, count: 12, date: '2027-09-20' }, salesforce: allUpdated, audit_recorded: true, list_cleared: true })
     await renderWith(clickDoc, { name: 'Liberty1' })
-    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('tr') as HTMLElement
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
     fireEvent.click(within(row).getByRole('button', { name: 'Mark sent' }))
-    fireEvent.change(within(row).getByLabelText('Lead id in Liberty1'), { target: { value: 'a0B5f00000XyZ12AAB' } })
+    fireEvent.change(within(row).getByLabelText("Liberty1's lead id, if you have it"), { target: { value: 'a0B5f00000XyZ12AAB' } })
     fireEvent.click(within(row).getByRole('button', { name: 'Mark it sent' }))
     await waitFor(() => expect(api.heldClicks.markSent).toHaveBeenCalledWith('held-1', 2, 'a0B5f00000XyZ12AAB'))
     await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent("Marked sent as a0B5f00000XyZ12AAB. Counted in Liberty1's clicks for Sep 20 (Pacific). Salesforce updated: Prospect, Submission, Lead."))
-    expect(within(row).queryByRole('button', { name: 'Retry the Salesforce updates' })).toBeNull()
+    expect(within(row).queryByRole('button', { name: 'Retry Salesforce' })).toBeNull()
   })
 
   // #1766: an add that got no answer may still have landed, so only a refusal the counter
@@ -646,41 +646,41 @@ describe('how the buyer is sold', () => {
       vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
       vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: null, count_date: '2027-09-20', salesforce: allUpdated, audit_recorded: true, list_cleared: true, ...failure } as MarkSentResult)
       await renderWith(clickDoc, { name: 'Liberty1' })
-      const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('tr') as HTMLElement
+      const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
       fireEvent.click(within(row).getByRole('button', { name: 'Mark sent' }))
-      fireEvent.change(within(row).getByLabelText('Lead id in Liberty1'), { target: { value: 'L1F-778' } })
+      fireEvent.change(within(row).getByLabelText("Liberty1's lead id, if you have it"), { target: { value: 'L1F-778' } })
       fireEvent.click(within(row).getByRole('button', { name: 'Mark it sent' }))
       await waitFor(() => expect(within(row).getByRole('status'), name).toHaveTextContent(sentence))
     }
   })
 
-  it('a Salesforce update that fails after Mark sent is named on the row, the mark stands, and Retry writes again until every record lands', async () => {
+  it('a Salesforce update that fails after Mark sent is named on the card, the mark stands, and Retry writes again until every record lands', async () => {
     vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
     vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: { added: true, count: 12, date: '2027-09-20' }, salesforce: submissionFailed, audit_recorded: true, list_cleared: false })
     vi.mocked(api.heldClicks.retrySalesforce).mockResolvedValue({ outcome: 'written', salesforce: allUpdated, audit_recorded: true, list_cleared: true })
     await renderWith(clickDoc, { name: 'Liberty1' })
-    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('tr') as HTMLElement
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
     fireEvent.click(within(row).getByRole('button', { name: 'Mark sent' }))
-    fireEvent.change(within(row).getByLabelText('Lead id in Liberty1'), { target: { value: 'L1F-778' } })
+    fireEvent.change(within(row).getByLabelText("Liberty1's lead id, if you have it"), { target: { value: 'L1F-778' } })
     fireEvent.click(within(row).getByRole('button', { name: 'Mark it sent' }))
     await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('Marked sent as L1F-778.'))
     expect(within(row).getByRole('status')).toHaveTextContent('Salesforce was not fully updated; the records are listed below with a retry.')
     // No "not removed from this list" note: the entry is kept on purpose, for the retry.
     expect(within(row).getByRole('status')).not.toHaveTextContent('not removed')
     expect(within(row).getByRole('alert')).toHaveTextContent('Submission a0C000000000001AAA: not updated. Salesforce refused the Submission__c update (400)')
-    fireEvent.click(within(row).getByRole('button', { name: 'Retry the Salesforce updates' }))
+    fireEvent.click(within(row).getByRole('button', { name: 'Retry Salesforce' }))
     await waitFor(() => expect(api.heldClicks.retrySalesforce).toHaveBeenCalledWith('held-1'))
     await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('Retried. Salesforce updated: Prospect, Submission, Lead.'))
     expect(within(row).queryByRole('alert')).toBeNull()
   })
 
-  it('an audit entry that did not land is said on the row, since a reload will not know the Salesforce outcome', async () => {
+  it('an audit entry that did not land is said on the card, since a reload will not know the Salesforce outcome', async () => {
     vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
     vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: { added: true, count: 12, date: '2027-09-20' }, salesforce: allUpdated, audit_recorded: false, list_cleared: true })
     await renderWith(clickDoc, { name: 'Liberty1' })
-    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('tr') as HTMLElement
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
     fireEvent.click(within(row).getByRole('button', { name: 'Mark sent' }))
-    fireEvent.change(within(row).getByLabelText('Lead id in Liberty1'), { target: { value: 'L1F-778' } })
+    fireEvent.change(within(row).getByLabelText("Liberty1's lead id, if you have it"), { target: { value: 'L1F-778' } })
     fireEvent.click(within(row).getByRole('button', { name: 'Mark it sent' }))
     await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('The record of these Salesforce updates could not be saved, so after a reload this page will not know them.'))
   })
@@ -689,12 +689,94 @@ describe('how the buyer is sold', () => {
     vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
     vi.mocked(api.heldClicks.free).mockRejectedValue(Object.assign(new Error('claim_changed'), { status: 409, body: { error: 'claim_changed', message: 'This click changed since the page was read, so nothing was done. Reload to see where it stands.' } }))
     await renderWith(clickDoc, { name: 'Liberty1' })
-    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('tr') as HTMLElement
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
     fireEvent.click(within(row).getByRole('button', { name: 'Free' }))
     fireEvent.click(within(row).getByRole('button', { name: 'Free it' }))
     await waitFor(() => expect(api.heldClicks.free).toHaveBeenCalledWith('held-1', 2))
     await waitFor(() => expect(within(row).getByRole('alert')).toHaveTextContent('This click changed since the page was read'))
     expect(within(row).getByRole('button', { name: 'Free' })).toBeInTheDocument()
+  })
+
+  // #2139 (PM-7): Mark sent with no lead id, and the id added afterwards.
+  const noIdWritten: SaleWrites = { ...allUpdated, buyer_lead_id: null }
+  async function markSentWithNoId() {
+    vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
+    vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: { added: true, count: 12, date: '2027-09-20' }, salesforce: noIdWritten, audit_recorded: true, list_cleared: false })
+    await renderWith(clickDoc, { name: 'Liberty1' })
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: 'Mark sent' }))
+    fireEvent.click(within(row).getByRole('button', { name: 'Mark it sent' }))
+    await waitFor(() => expect(api.heldClicks.markSent).toHaveBeenCalledWith('held-1', 2, null))
+    return row
+  }
+
+  it('Mark sent with nothing typed sends no lead id, says so, keeps the sale listed without a "not removed" note, and offers to add the id', async () => {
+    const row = await markSentWithNoId()
+    await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent("Marked sent with no lead id from Liberty1. Counted in Liberty1's clicks for Sep 20 (Pacific). Salesforce updated: Prospect, Submission, Lead."))
+    expect(within(row).getByRole('status')).not.toHaveTextContent('not removed')
+    expect(within(row).getByText(/Liberty1's lead id: none given\. Completed in Salesforce\./)).toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: "Add Liberty1's lead id" })).toBeInTheDocument()
+    expect(screen.getByText('No clicks are held for Liberty1.')).toBeInTheDocument()
+  })
+
+  it('adding the lead id afterwards goes through the API at the sale\'s generation; once every update lands the entry leaves the list and only the outcome stays', async () => {
+    const row = await markSentWithNoId()
+    vi.mocked(api.heldClicks.setLeadId).mockResolvedValue({ outcome: 'amended', generation: 4, salesforce: { ...allUpdated, buyer_lead_id: 'L1F-778' }, audit_recorded: true, list_cleared: true })
+    fireEvent.click(await within(row).findByRole('button', { name: "Add Liberty1's lead id" }))
+    fireEvent.change(within(row).getByLabelText("Liberty1's lead id"), { target: { value: 'L1F-778' } })
+    fireEvent.click(within(row).getByRole('button', { name: 'Add the lead id' }))
+    await waitFor(() => expect(api.heldClicks.setLeadId).toHaveBeenCalledWith('held-1', 3, 'L1F-778'))
+    await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('Lead id L1F-778 added. Salesforce updated: Prospect, Submission, Lead.'))
+    expect(within(row).queryByRole('button')).toBeNull()
+  })
+
+  it('a lead id whose Salesforce update fails keeps the sale listed with Salesforce\'s own words and Retry Salesforce', async () => {
+    const row = await markSentWithNoId()
+    vi.mocked(api.heldClicks.setLeadId).mockResolvedValue({ outcome: 'amended', generation: 4, salesforce: { ...submissionFailed, buyer_lead_id: 'L1F-778' }, audit_recorded: true, list_cleared: false })
+    fireEvent.click(await within(row).findByRole('button', { name: "Add Liberty1's lead id" }))
+    fireEvent.change(within(row).getByLabelText("Liberty1's lead id"), { target: { value: 'L1F-778' } })
+    fireEvent.click(within(row).getByRole('button', { name: 'Add the lead id' }))
+    await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('Lead id L1F-778 added. Salesforce was not fully updated; the records are listed below with a retry.'))
+    expect(within(row).getByRole('alert')).toHaveTextContent('Submission a0C000000000001AAA: not updated. Salesforce refused the Submission__c update (400): FIELD_CUSTOM_VALIDATION_EXCEPTION')
+    expect(within(row).getByText(/Liberty1's lead id: L1F-778\./)).toBeInTheDocument()
+    expect(within(row).getByRole('button', { name: 'Retry Salesforce' })).toBeInTheDocument()
+  })
+
+  it('a refused lead id is told in the route\'s own words, and the sale keeps its controls', async () => {
+    const row = await markSentWithNoId()
+    const message = "The buyer confirmed this sale itself, so its lead id is the buyer's own and is not changed here. Nothing was changed."
+    vi.mocked(api.heldClicks.setLeadId).mockRejectedValue(Object.assign(new Error('not_marked_sent'), { status: 409, body: { error: 'not_marked_sent', message } }))
+    fireEvent.click(await within(row).findByRole('button', { name: "Add Liberty1's lead id" }))
+    fireEvent.change(within(row).getByLabelText("Liberty1's lead id"), { target: { value: 'L1F-778' } })
+    fireEvent.click(within(row).getByRole('button', { name: 'Add the lead id' }))
+    await waitFor(() => expect(within(row).getByRole('alert')).toHaveTextContent(message))
+    expect(within(row).getByRole('button', { name: "Add Liberty1's lead id" })).toBeInTheDocument()
+  })
+
+  it('correcting a lead id names the old and the new one', async () => {
+    const sold = { ...heldClick, claim: { status: 'sold' as const, generation: 5, partner_lead_id: 'L1F-77' }, salesforce: { status: 'recorded' as const, at: 'x', writes: { ...allUpdated, buyer_lead_id: 'L1F-77' } }, salesforce_standing: 'written' as const }
+    vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [sold], total: 1 })
+    vi.mocked(api.heldClicks.setLeadId).mockResolvedValue({ outcome: 'amended', generation: 6, salesforce: { ...allUpdated, buyer_lead_id: 'L1F-778' }, audit_recorded: true, list_cleared: true })
+    await renderWith(clickDoc, { name: 'Liberty1' })
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: "Correct Liberty1's lead id" }))
+    fireEvent.change(within(row).getByLabelText("Liberty1's lead id"), { target: { value: 'L1F-778' } })
+    fireEvent.click(within(row).getByRole('button', { name: 'Correct the lead id' }))
+    await waitFor(() => expect(api.heldClicks.setLeadId).toHaveBeenCalledWith('held-1', 5, 'L1F-778'))
+    await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('Lead id changed from L1F-77 to L1F-778. Salesforce updated: Prospect, Submission, Lead.'))
+  })
+
+  it('a retry on a sale with no lead id that lands leaves it listed on purpose, with no "not removed" note', async () => {
+    const sold = { ...heldClick, claim: { status: 'sold' as const, generation: 5, partner_lead_id: null }, salesforce: { status: 'recorded' as const, at: 'x', writes: { ...submissionFailed, buyer_lead_id: null } }, salesforce_standing: 'incomplete' as const }
+    vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [sold], total: 1 })
+    vi.mocked(api.heldClicks.retrySalesforce).mockResolvedValue({ outcome: 'written', salesforce: noIdWritten, audit_recorded: true, list_cleared: false })
+    await renderWith(clickDoc, { name: 'Liberty1' })
+    const row = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: 'Retry Salesforce' }))
+    await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('Retried. Salesforce updated: Prospect, Submission, Lead.'))
+    expect(within(row).getByRole('status')).not.toHaveTextContent('not removed')
+    expect(within(row).queryByRole('alert')).toBeNull()
+    expect(within(row).getByText(/Completed in Salesforce\./)).toBeInTheDocument()
   })
 
   it('a failed read of the held clicks is an alert, not an empty list', async () => {

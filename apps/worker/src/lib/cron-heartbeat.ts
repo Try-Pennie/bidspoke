@@ -51,10 +51,12 @@
  * external uptime monitor.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { orgIdsToTell, slackOrgIds } from './alert-fanout'
+import { MINUTE_ALERT_CLAIM_TTL_SECONDS, minuteAlertClaimKey, orgIdsToTell, postMinutePage, slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
+import { scheduledSlackFor } from './scheduled-slack'
 import { sendCronHeartbeatAlert, sendCronHeartbeatRecoveryAlert } from './slack'
-import { BACKOFF_STEPS_SECONDS, clearCondition, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf } from './alert-backoff'
+import { BACKOFF_STEPS_SECONDS, clearCondition, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf, type Recurrence, type StandingCondition } from './alert-backoff'
+import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
 import { reportRecordError, writeIncidentEvent, type IncidentContext } from './incident-outbox'
 import type { IncidentEndReason } from './incident-signals'
 import { formatErr } from './format-error'
@@ -556,16 +558,37 @@ async function renewAlertedStatusIfDue(kv: KVNamespace, id: string, record: Aler
  */
 export async function lastFinishedRun(supabase: SupabaseClient, jobId: string): Promise<string | null> {
   try {
-    const { data, error } = await supabase
+    const query = supabase
       .from('job_runs')
       .select('finished_at')
       .eq('job', jobId)
       .not('finished_at', 'is', null)
       .order('finished_at', { ascending: false })
       .limit(1)
-    if (error) {
-      logReadFailure('cron-heartbeat', `job_runs for ${jobId}`, error)
-      return null
+    // On the scheduled client (#2061): one read under the tick's bounded deadline,
+    // and none once the tick has seen the database fail. Unbounded, a stalled
+    // database held this read past the 50 s minute deadline (45 s and the
+    // library's retries), so the heartbeat page, which needs only KV, was cut
+    // off with its job. Found by the outage simulation.
+    const scheduled = scheduledSlackFor(supabase)
+    let data: unknown
+    if (scheduled) {
+      // Aside: a fault in job_runs alone is not a database outage (lessons review of #2250).
+      const read = await scheduled.readAside(query)
+      if (read.kind === 'failed') {
+        // A read skipped because the tick already saw the database fail was
+        // logged once, at that failure, by scheduled-slack.ts.
+        if (read.how !== 'skipped') console.error(`[cron-heartbeat] job_runs for ${jobId} not read (${read.how}: ${read.detail}), so the verdict stands without it`)
+        return null
+      }
+      data = read.data
+    } else {
+      const res = await query
+      if (res.error) {
+        logReadFailure('cron-heartbeat', `job_runs for ${jobId}`, res.error)
+        return null
+      }
+      data = res.data
     }
     const finished = (data as { finished_at?: unknown }[] | null | undefined)?.[0]?.finished_at
     return typeof finished === 'string' ? finished : null
@@ -582,6 +605,7 @@ async function checkJob(
   job: CronJob,
   nowMs: number,
   orgIds: string[],
+  claims: AlertClaims | undefined,
 ): Promise<HeartbeatCheckResult> {
   const recordErrors: string[] = []
   const incident: IncidentContext = {
@@ -630,7 +654,7 @@ async function checkJob(
       // A "never finished" page whose job has now finished gets one all-clear
       // (#2057): on 2026-10-14 the run had only finished late, and the channel
       // was left holding an accusation. Stood down only once it is delivered.
-      const reported = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
+      let reported = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
       // How the incident ends: a dark job that came back gets no all-clear, by
       // design (#2057 closes only a never finished page), and its record has no
       // end time, since nothing reported one (L11).
@@ -645,23 +669,42 @@ async function checkJob(
           await keepOpen(reported)
           return result('healthy', false, verdict.ageMs)
         }
+        // Owed and shown: claim it (#2062), then read the record again, so a
+        // tick that judged it owed before another tick's claim lapsed cannot
+        // send an all-clear that tick already stood down (L157).
+        const clearKey = minuteAlertClaimKey('all-clear', CRON_HEARTBEAT_SIGNAL, job.id)
+        if (claims) {
+          if (!(await claims.claim(clearKey, MINUTE_ALERT_CLAIM_TTL_SECONDS))) {
+            console.log(`[cron-heartbeat] ${job.id}: the never finished all-clear is claimed by another tick`)
+            return result('healthy', false, verdict.ageMs)
+          }
+          const fresh = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
+          if (fresh?.status !== 'vanished') {
+            await releaseClaimQuietly(claims, clearKey)
+            return result('healthy', false, verdict.ageMs)
+          }
+          reported = fresh
+        }
+        const owed = reported
         // The reported run finished only if no later run has started since.
-        const sameRun = reported.startedAt !== null && lastRan === reported.startedAt && !job.completionDroughtMs
-        const pending = orgIds.filter((o) => !reported.deliveredTo.includes(o))
+        const sameRun = owed.startedAt !== null && lastRan === owed.startedAt && !job.completionDroughtMs
+        const pending = orgIds.filter((o) => !owed.deliveredTo.includes(o))
         for (const orgId of pending) {
           const sent = await sendCronHeartbeatRecoveryAlert(
             supabase,
             orgId,
-            { label: job.label, status: 'vanished', alertedAt: reported.at, endedAt: lastCompleted, sameRun },
+            { label: job.label, status: 'vanished', alertedAt: owed.at, endedAt: lastCompleted, sameRun },
             nowMs,
           )
-          if (sent) reported.deliveredTo.push(orgId)
+          if (sent) owed.deliveredTo.push(orgId)
         }
-        reported.attempts += 1
-        const missed = orgIds.filter((o) => !reported.deliveredTo.includes(o))
+        owed.attempts += 1
+        const missed = orgIds.filter((o) => !owed.deliveredTo.includes(o))
         if (missed.length > 0) {
-          if (reported.attempts < ALL_CLEAR_MAX_ATTEMPTS) {
-            await writeAlertedStatus(kv, job.id, reported, nowMs)
+          if (owed.attempts < ALL_CLEAR_MAX_ATTEMPTS) {
+            await writeAlertedStatus(kv, job.id, owed, nowMs)
+            // Freed so the next tick can retry the organizations it missed.
+            await releaseClaimQuietly(claims, clearKey)
             return result('healthy', false, verdict.ageMs)
           }
           console.error(
@@ -708,21 +751,36 @@ async function checkJob(
   // while the condition stood is a new condition, posted at once, never "still".
   // Each status can do that once per stretch, so a status that flaps between two
   // values cannot post every minute.
-  const standing = await readCondition(kv, key)
   const print = await fingerprintAlert({ title: job.id, findings: [status] })
-  const recurrence = recurrenceOf(standing, print)
-  const different = recurrence.kind === 'new' && standing !== null
-  if (!different && (await inCooldown(kv, key))) {
+  // The judgement, read again after the claim (L157): the last reading is the one acted on.
+  let judged: { standing: StandingCondition | null; recurrence: Recurrence } = { standing: null, recurrence: recurrenceOf(null, print) }
+  const inThisCooldown = async (): Promise<boolean> => {
+    const standing = await readCondition(kv, key)
+    judged = { standing, recurrence: recurrenceOf(standing, print) }
+    const different = judged.recurrence.kind === 'new' && standing !== null
+    return !different && (await inCooldown(kv, key))
+  }
+  const reminder = () => (judged.recurrence.kind === 'reminder' ? judged.recurrence : null)
+  let alerted = false
+  // Claim, then read the cooldown, then post (#2062, L157).
+  const outcome = await postMinutePage({
+    claims,
+    key: minuteAlertClaimKey('page', CRON_HEARTBEAT_SIGNAL, job.id),
+    inCooldown: inThisCooldown,
+    send: async () => {
+      const r = reminder()
+      for (const orgId of orgIds) {
+        if (await sendCronHeartbeatAlert(supabase, orgId, job, status, verdict.ageMs, r?.standing ?? null, nowMs, r?.unchanged ?? false)) alerted = true
+      }
+      return alerted
+    },
+  })
+  if (outcome === 'in_cooldown' || outcome === 'claimed_elsewhere') {
     await keepOpen()
     return result(status, false, verdict.ageMs)
   }
-
-  const reminderOf = recurrence.kind === 'reminder' ? recurrence.standing : null
-  const unchanged = recurrence.kind === 'reminder' && recurrence.unchanged
-  let alerted = false
-  for (const orgId of orgIds) {
-    if (await sendCronHeartbeatAlert(supabase, orgId, job, status, verdict.ageMs, reminderOf, nowMs, unchanged)) alerted = true
-  }
+  const { standing } = judged
+  const reminderOf = reminder()?.standing ?? null
   // Only arm the next interval once something actually delivered, so a Slack
   // outage does not silence the condition for a day.
   if (alerted) {
@@ -776,17 +834,22 @@ async function checkJob(
  * alerts each Slack org (once per per-job cooldown) for any that are stale or
  * have never run. The org lookup is shared across jobs so a multi-job outage
  * costs one query, not one per job.
+ *
+ * `claims` makes a stalled tick overlapping the next minute's post each page
+ * and each never finished all-clear once (#2062, alert-fanout.ts); the
+ * scheduled handler always passes it.
  */
 export async function runHeartbeatChecks(
   supabase: SupabaseClient,
   kv: KVNamespace,
   nowMs: number = Date.now(),
+  claims?: AlertClaims,
 ): Promise<HeartbeatCheckResult[]> {
   const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'cron-heartbeat', 'tell-only'))
 
   const results: HeartbeatCheckResult[] = []
   for (const job of CRON_JOBS) {
-    results.push(await checkJob(supabase, kv, job, nowMs, orgIds))
+    results.push(await checkJob(supabase, kv, job, nowMs, orgIds, claims))
   }
   return results
 }

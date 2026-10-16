@@ -263,6 +263,91 @@ test.describe('Accessibility (axe-core)', () => {
     expect(unmatched).toEqual([])
   })
 
+  // #2141: History at the real count (Liberty1's 19 changes, read from
+  // production), Tripoint's with the synthetic matrix syncs, and the failed and
+  // incomplete answers, each asserted on screen before it is scanned.
+  test('partners page: History lists every change at the real count, a matrix sync included, with no serious a11y violations', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl(), { historyMatrix: true })
+    await page.goto('/partners?selected=liberty1&tab=history')
+    const panel = page.locator('[role="tabpanel"]:visible')
+    await expect(panel.getByRole('listitem')).toHaveCount(19)
+    // Twice: set up with them, then moved to open at 9:00 AM.
+    await expect(panel.getByText('Hours, Monday to Friday')).toHaveCount(2)
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await page.goto('/partners?selected=tripoint&tab=history')
+    await expect(panel.getByRole('listitem')).toHaveCount(22)
+    await expect(panel.getByText('Bidspoke, hourly Salesforce matrix sync')).toBeVisible()
+    await expect(panel.getByText('Editor B, Sync now from Salesforce')).toBeVisible()
+    await expect(panel.getByText('Changed directly in the database')).toBeVisible()
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    expect(unmatched).toEqual([])
+  })
+
+  test('partners page: a failed History read is the one error state, with no list, and no serious a11y violations', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl(), { historyFails: true })
+    await page.goto('/partners?selected=tripoint&tab=history')
+    const panel = page.locator('[role="tabpanel"]:visible')
+    await expect(panel.getByRole('alert').filter({ hasText: 'Could not load history. Try again.' })).toBeVisible()
+    await expect(panel.getByRole('listitem')).toHaveCount(0)
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    expect(unmatched).toEqual([])
+  })
+
+  test('partners page: an incomplete History says how far back it is complete, with no serious a11y violations', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl(), { historyIncomplete: true })
+    await page.goto('/partners?selected=tripoint&tab=history')
+    const panel = page.locator('[role="tabpanel"]:visible')
+    await expect(panel.getByRole('listitem')).toHaveCount(18)
+    await expect(panel.getByText(/^History is complete back to Apr 21, 3:46 PM ET; older changes are not listed\.$/)).toBeVisible()
+    await page.waitForLoadState('networkidle')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    expect(unmatched).toEqual([])
+  })
+
+  // #2139: the held clicks cards, open. Liberty1 is given three invented held
+  // clicks (production holds none): one still held, a sale with no lead id and a
+  // sale whose Submission update Salesforce refused. The Mark sent box and the
+  // Remove dialog are each scanned open; adding the lead id is answered by its
+  // fixture, so nothing reaches production.
+  test('partners page: held clicks, the lead id box and the Remove dialog have no serious a11y violations', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl(), { heldClicks: true })
+    await page.goto('/partners?selected=liberty1&tab=buyer-profile')
+    const cards = page.getByRole('list', { name: 'Held clicks for Liberty1' }).locator(':scope > li')
+    await expect(cards).toHaveCount(3)
+    await expect(page.getByText('1 click held. No later click on this prospect is sent until it is released.')).toBeVisible()
+    await page.waitForLoadState('networkidle')
+
+    // The Mark sent box, open, with its consequence for no lead id.
+    await cards.nth(0).getByRole('button', { name: 'Mark sent' }).click()
+    const box = page.getByLabel("Liberty1's lead id, if you have it")
+    await expect(box).toBeVisible()
+    await expect(box).toHaveAccessibleDescription(/Salesforce marks the sale Completed with no lead id/)
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    await cards.nth(0).getByRole('button', { name: 'Cancel' }).click()
+
+    // The Remove dialog of the sale Salesforce refused, naming the retry it takes.
+    await expect(cards.nth(2).getByRole('alert')).toContainText('UNABLE_TO_LOCK_ROW')
+    await cards.nth(2).getByRole('button', { name: 'Remove from the list' }).click()
+    const dialog = page.getByRole('alertdialog', { name: 'Remove a0B5f00000QzW4pEAF from the list?' })
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toHaveAccessibleDescription(/Its Salesforce retry goes with it/)
+    await expectDialogs(page)
+    await expectNoSeriousA11yViolations(page, [], '/partners', '[role="alertdialog"]')
+    await dialog.getByRole('button', { name: 'Cancel' }).click()
+    await expect(dialog).toBeHidden()
+
+    // Adding the lead id to the sale with none, answered by its fixture.
+    await cards.nth(1).getByRole('button', { name: "Add Liberty1's lead id" }).click()
+    await page.getByLabel("Liberty1's lead id", { exact: true }).fill('L1F-779')
+    await cards.nth(1).getByRole('button', { name: 'Add the lead id' }).click()
+    await expect(cards.nth(1).getByRole('status')).toHaveText('Lead id L1F-779 added. Salesforce updated: Prospect, Submission, Lead.')
+    await expectNoSeriousA11yViolations(page, [], '/partners', undefined, GREY_HINTS)
+    expect(unmatched).toEqual([])
+  })
+
   // #2137: jsdom has no layout, so clipping is measured here, in the real tabs,
   // the real scrolling form pane and the real Dialog shell.
   test('partners page: nothing is clipped, a dropdown at the foot of the scrolled form or the merge dialog, and the list stays in view', async ({ page }) => {

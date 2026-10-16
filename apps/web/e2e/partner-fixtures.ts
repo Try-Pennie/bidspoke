@@ -15,6 +15,7 @@
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import type { Page } from '@playwright/test'
+import { mergeHistory, type PartnerHistory } from '@bidspoke/partner-history'
 import { LIVE_MISS_ID, realtimeReplies, versionsFor } from './partner-live-fixtures'
 
 export { LIVE_MISS_ID, realtimeReplies, versionsFor }
@@ -34,6 +35,20 @@ export interface PartnerFixtures {
   panels: { history: unknown; buyer_sales: unknown; held_clicks: unknown; usage_offer: unknown; usage_click: unknown }
   /** GET /api/partners/:id/usage by partner id (#2137), measured read only from production on 2026-10-16. */
   usage: Record<string, unknown>
+  /**
+   * GET /api/partners/:id/history by partner id (#2141): production's 59 audit
+   * rows for the nine partners, read only on 2026-10-16, mapped as the route
+   * maps them and redacted as a capture is.
+   */
+  history: Record<string, PartnerHistory>
+  /** Tripoint's History with three synthetic matrix entries on top: production holds no matrix sync rows. */
+  historyMatrix: PartnerHistory
+  /**
+   * Liberty1's held clicks (#2139), invented because production holds none, and
+   * the answer to adding a lead id to its sale with none. held-clicks-fixtures-contract.test.ts
+   * in the Worker holds both to what the routes answer.
+   */
+  heldClicks: { list: { entries: Array<{ id: string }>; total: number }; lead_id: unknown }
 }
 
 export function loadPartnerFixtures(): PartnerFixtures {
@@ -46,6 +61,9 @@ export function loadPartnerFixtures(): PartnerFixtures {
     matrix: read('synthetic/matrix.tripoint.json'),
     panels: read('synthetic/panels.json'),
     usage: read('usage.json'),
+    history: read('history.json'),
+    historyMatrix: read('synthetic/history-matrix.tripoint.json'),
+    heldClicks: read('synthetic/held-clicks.liberty1.json'),
   }
 }
 
@@ -58,6 +76,14 @@ export interface FixtureOptions {
   credentialWarningFor?: string
   /** Answer the usage read (#2137) with a 503, so the Bid Group tab's failed state is reached. */
   usageFails?: boolean
+  /** Answer the History read (#2141) with the route's error for a failed users read. */
+  historyFails?: boolean
+  /** Give Tripoint the synthetic History holding matrix syncs and a matrix created. */
+  historyMatrix?: boolean
+  /** Answer Tripoint's History as the route does when a source was cut at its bound (mergeHistory with the source truncated). */
+  historyIncomplete?: boolean
+  /** Give Liberty1 its invented held clicks (#2139), and answer adding a lead id to one, so the cards, the lead id box and the Remove dialog are scanned. */
+  heldClicks?: boolean
 }
 
 export interface Answer { status: number; body: unknown }
@@ -73,6 +99,10 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
   }
   // #2135: a change the page's probe found that no live notice announced. Recorded only.
   if (method === 'POST' && p === '/api/partners/live-miss') return { status: 201, body: { ok: true, id: LIVE_MISS_ID } }
+  if (method === 'POST' && (m = /^\/api\/held-clicks\/([^/]+)\/lead-id$/.exec(p))) {
+    const id = m[1]
+    return opts.heldClicks && fx.heldClicks.list.entries.some((e) => e.id === id) ? ok(fx.heldClicks.lead_id) : null
+  }
   if (method !== 'GET') return null
   // #2135: the versions probe, read on open and while a draft is dirty. Nothing has changed since the capture.
   if ((m = /^\/api\/partners\/([^/]+)\/versions$/.exec(p))) {
@@ -101,6 +131,15 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
     if (opts.usageFails) return { status: 503, body: { error: 'Service unavailable' } }
     return fx.usage[m[1]] ? ok(fx.usage[m[1]]) : null
   }
+  if ((m = /^\/api\/partners\/([^/]+)\/history$/.exec(p))) {
+    if (opts.historyFails) return { status: 500, body: { error: 'history_unavailable', read: 'users', message: 'History could not be loaded: the users read failed.' } }
+    const tripointId = fx.historyMatrix.partnerId
+    if (opts.historyMatrix && m[1] === tripointId) return ok(fx.historyMatrix)
+    const history = fx.history[m[1]]
+    if (!history) return null
+    if (opts.historyIncomplete && m[1] === tripointId) return ok({ partnerId: m[1], ...mergeHistory([{ entries: history.entries, truncated: true }]) })
+    return ok(history)
+  }
   if (p === '/api/partner-uuids') return ok(fx.uuids)
   if (p === '/api/partner-bid-configs') {
     const id = u.searchParams.get('partner_id') ?? ''
@@ -109,7 +148,10 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
   }
   if ((m = /^\/api\/partner-bid-configs\/([^/]+)$/.exec(p))) return opts.matrix && m[1] === fx.matrix.list[0].id ? ok(fx.matrix.detail) : null
   if (p === '/api/buyer-sales') return ok(fx.panels.buyer_sales)
-  if (p === '/api/held-clicks') return ok(fx.panels.held_clicks)
+  if (p === '/api/held-clicks') {
+    const liberty1 = fx.partners.find((row) => row.slug === 'liberty1')
+    return ok(opts.heldClicks && liberty1 && u.searchParams.get('partner_id') === liberty1.id ? fx.heldClicks.list : fx.panels.held_clicks)
+  }
   return null
 }
 
