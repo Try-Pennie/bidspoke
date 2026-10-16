@@ -7,14 +7,17 @@
  * so a script, an event handler or a javascript link in them is never run:
  * - paragraphs, lists, list items, bold, italic and line breaks are kept as
  *   elements, with no attributes;
- * - a link is kept only when it goes to http or https, else it keeps its text;
+ * - a link is kept only when it goes to http or https, else it becomes a plain
+ *   span with its contents;
  * - script, style, iframe, object, embed, img, svg, math, template and
  *   noscript are removed together with everything inside them (DROP);
- * - any other element is dropped and keeps only its text.
+ * - any other element (a div, a span, a heading) becomes a plain span with no
+ *   attributes, its contents built by these same rules.
  */
 import type { ReactNode } from 'react'
 
-const KEEP = new Set(['p', 'ul', 'ol', 'li', 'b', 'strong', 'i', 'em', 'br', 'span'])
+/** The plain elements rebuilt as themselves; p, ul, ol, br and a have their own branches below. */
+const KEEP = new Set(['li', 'b', 'strong', 'i', 'em'])
 const DROP = new Set(['script', 'style', 'iframe', 'object', 'embed', 'img', 'svg', 'math', 'template', 'noscript'])
 
 function build(node: Node, key: string): ReactNode {
@@ -35,7 +38,7 @@ function build(node: Node, key: string): ReactNode {
   if (tag === 'ul') return <ul key={key} className="list-disc pl-5">{children}</ul>
   if (tag === 'ol') return <ol key={key} className="list-decimal pl-5">{children}</ol>
   if (KEEP.has(tag)) {
-    const Tag = tag as 'li' | 'b' | 'strong' | 'i' | 'em' | 'span'
+    const Tag = tag as 'li' | 'b' | 'strong' | 'i' | 'em'
     return <Tag key={key}>{children}</Tag>
   }
   return <span key={key}>{children}</span>
