@@ -299,6 +299,14 @@ describe('the minute probe writes the copy and stamps its heartbeat', () => {
     expect(copy).toEqual({ [SLACK_COPY_SAVED_AT_KEY]: new Date(T0).toISOString() })
   })
 
+  it('keeps the copy, and says so, when rows came back but none could be read as a connection', async () => {
+    const kv = await kvWithCopy()
+    const before = kv.store.get(SLACK_CONNS_LASTGOOD_KEY)
+    await runDatabaseReachabilityProbe(probeDeps(kv, T0, answering([{ organization_id: ORG, config: { renamed_token: 'x' } }])))
+    expect(kv.store.get(SLACK_CONNS_LASTGOOD_KEY)).toBe(before)
+    expect(errSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('none could be read as a Slack connection'))).toBe(true)
+  })
+
   it('leaves the copy as it was when its read fails, and reports the failure', async () => {
     const kv = await kvWithCopy()
     const before = kv.store.get(SLACK_CONNS_LASTGOOD_KEY)

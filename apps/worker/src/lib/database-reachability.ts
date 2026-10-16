@@ -308,12 +308,21 @@ export async function runDatabaseReachabilityProbe(deps: ProbeDeps): Promise<Pro
       await reportDatabaseUnreachable(deps, { source: 'probe', what: REACHABILITY_SOURCES.probe.words, error: detail })
       return { kind: 'failed', detail }
     }
+    const rows = read.data ?? []
     const connections = new Map<string, SlackConnection>()
-    for (const row of read.data ?? []) {
+    for (const row of rows) {
       const conn = parseSlackConnection(row.config)
       if (conn) connections.set(row.organization_id, conn)
     }
-    await rememberSlackConnections(deps.kv, deps.secretKeys, connections, nowMs)
+    if (rows.length > 0 && connections.size === 0) {
+      // The database answered, so the probe did measure it, but an empty copy
+      // written now would leave the next outage nobody to tell. Most likely the
+      // connection's shape changed under the parser; keep the last good copy.
+      console.error(`[database-reachability] ${rows.length} Slack connection rows came back and none could be read as a Slack connection, so the saved copy was left as it was`)
+    } else {
+      // An empty answer is written too (#2060): every organization disconnected.
+      await rememberSlackConnections(deps.kv, deps.secretKeys, connections, nowMs)
+    }
     await reportDatabaseReadable(deps.kv, 'probe', nowMs)
     await announceDatabaseReadable(deps, connections, nowMs)
     return { kind: 'answered', organizations: connections.size }
