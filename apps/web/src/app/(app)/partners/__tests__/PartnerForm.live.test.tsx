@@ -175,6 +175,22 @@ describe('another person\'s save, live (#2135)', () => {
     await waitFor(() => expect(api.partners.get).toHaveBeenCalledTimes(1))
   })
 
+  it('a save whose answer was lost, once the versions probe confirms it, is no longer unknown: its own late notice is an echo, not read again (#2138)', async () => {
+    const h = liveHarness()
+    vi.mocked(api.partners.get).mockResolvedValue({ ...partner, name: 'M1 renamed', version: 4 })
+    const onSave = renderLive(h.deps, vi.fn().mockRejectedValueOnce(new TypeError('Failed to fetch')))
+    await screen.findByText('Live')
+    fireEvent.change(nameBox(), { target: { value: 'M1 renamed' } })
+    // Its id, as the probe will find it recorded on the row.
+    vi.mocked(api.partners.versions).mockImplementation(async () => versions({ partnerVersion: 4, lastSaveId: onSave.mock.calls[0]?.[3]?.save_id ?? null }))
+    save()
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    const request = onSave.mock.calls[0][3]
+    expect(await screen.findByText(/^Partner saved\./)).toBeTruthy()
+    await h.send(notice({ kind: 'page', save_id: request.save_id, client_id: request.client_id }))
+    expect(api.partners.get).not.toHaveBeenCalled()
+  })
+
   it('the probe, while dirty, finds a change no notice announced: the header pauses, the miss is reported, and their save is merged', async () => {
     const h = liveHarness()
     vi.mocked(api.partners.get).mockResolvedValue({ ...partner, priority: 7, version: 4, updated_by_name: 'Brian Nelms' })

@@ -1078,6 +1078,8 @@ export default function PartnerForm({
         kind: 'unconfirmed', since: Date.now(), saveId: result.saveId, retry: () => runUndo(info),
         confirm: (v) => {
           versionRef.current = v.partnerVersion
+          // Known now, so its own late notice is an echo, not an unknown save resolving (#2135).
+          pendingSaveRef.current = null
           finish({ profile: profileBefore ? { ...profileBefore, version: v.profileVersion } : null, copyWarning: null })
           // The page's row is the partner as the Undo left it, as a save whose answer came back would set it.
           if (partner) onSaveConfirmed?.({ ...partner, ...patch, version: v.partnerVersion } as Partner)
@@ -1210,6 +1212,8 @@ export default function PartnerForm({
         // The probe found this press's save id: it landed, at the versions the probe read.
         confirm: (v) => {
           versionRef.current = v.partnerVersion
+          // Known now, so its own late notice is an echo, not an unknown save resolving (#2135).
+          pendingSaveRef.current = null
           finish({ profile: profileDoc ? { ...profileDoc, version: v.profileVersion } : null, copyWarning: null })
           if (partner) onSaveConfirmed?.({ ...partner, ...patch, version: v.partnerVersion } as Partner)
         },
