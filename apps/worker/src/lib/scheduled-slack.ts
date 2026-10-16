@@ -93,6 +93,15 @@ export interface BoundableQuery<T> extends PromiseLike<{ data: T | null; error: 
 export interface ScheduledSlack {
   /** Ask the database once under the deadline, or not at all once this tick has seen it fail. */
   read<T>(what: string, query: BoundableQuery<T>): Promise<LiveRead<T>>
+  /**
+   * One bounded read of a table whose failure is not evidence the database is
+   * down (job_runs for the heartbeat check, #2061): the same deadline, and not
+   * asked once this tick has seen the database fail, but its own failure never
+   * marks the tick or tells the database owner, so a fault in that one table (a
+   * missing table, a revoked grant) cannot page a database outage or send the
+   * tick's Slack lookups to the copy.
+   */
+  readAside<T>(query: BoundableQuery<T>): Promise<LiveRead<T>>
   /** The copy, read and decrypted at most once this tick. */
   copy(): Promise<TickCopy>
   /** The first read that failed this tick, or null while every read has answered. */
@@ -182,6 +191,10 @@ export function registerScheduledSlack(client: object, options: ScheduledSlackOp
         .then(() => options.pager?.page(orgId, reason))
         .catch((e: unknown) => console.error(`[scheduled-slack] the Better Stack page for ${subject} failed: ${formatErr(e)}`))
       options.waitUntil?.(paged)
+    },
+    async readAside<T>(query: BoundableQuery<T>): Promise<LiveRead<T>> {
+      if (unreachable) return { kind: 'failed', how: 'skipped', detail: `not asked: ${unreachable.what} failed earlier this tick (${unreachable.how})` }
+      return boundedRead(query, deadlineMs, sleep)
     },
     async read<T>(what: string, query: BoundableQuery<T>): Promise<LiveRead<T>> {
       if (unreachable) return { kind: 'failed', how: 'skipped', detail: `not asked: ${unreachable.what} failed earlier this tick (${unreachable.how})` }

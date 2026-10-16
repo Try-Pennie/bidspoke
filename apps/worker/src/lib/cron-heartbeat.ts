@@ -565,7 +565,7 @@ export async function lastFinishedRun(supabase: SupabaseClient, jobId: string): 
       .not('finished_at', 'is', null)
       .order('finished_at', { ascending: false })
       .limit(1)
-    // On the scheduled client (#2061): one read under the tick's bounded budget,
+    // On the scheduled client (#2061): one read under the tick's bounded deadline,
     // and none once the tick has seen the database fail. Unbounded, a stalled
     // database held this read past the 50 s minute deadline (45 s and the
     // library's retries), so the heartbeat page, which needs only KV, was cut
@@ -573,7 +573,8 @@ export async function lastFinishedRun(supabase: SupabaseClient, jobId: string): 
     const scheduled = scheduledSlackFor(supabase)
     let data: unknown
     if (scheduled) {
-      const read = await scheduled.read(`cron-heartbeat job_runs for ${jobId}`, query)
+      // Aside: a fault in job_runs alone is not a database outage (lessons review of #2250).
+      const read = await scheduled.readAside(query)
       if (read.kind === 'failed') {
         // A read skipped because the tick already saw the database fail was
         // logged once, at that failure, by scheduled-slack.ts.

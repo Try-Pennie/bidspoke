@@ -32,14 +32,36 @@ describe('lastFinishedRun on the scheduled client', () => {
   it('does not ask at all once this tick has seen the database fail', async () => {
     const { client, calls } = fakeClient(['stall', { data: [{ finished_at: '2026-10-15T00:00:00Z' }] }])
     const timers = fakeTimers('now')
-    registerScheduledSlack(client, { kv: kvWith(), secretKeys: TEST_KEY, sleep: timers.sleep })
+    const slack = registerScheduledSlack(client, { kv: kvWith(), secretKeys: TEST_KEY, sleep: timers.sleep })
     const errors = vi.mocked(console.error)
-    await lastFinishedRun(client, 'sightings-export')
+    // A Slack read of the tick fails first, which is what marks it.
+    await slack.read('slack organizations', client.from('service_connections') as unknown as Parameters<typeof slack.read>[1])
     errors.mockClear()
     await expect(lastFinishedRun(client, 'timeout-audit')).resolves.toBeNull()
     expect(calls).toHaveLength(1)
     // The failure was logged once, when it happened; a skipped read adds nothing per job.
     expect(errors).not.toHaveBeenCalled()
+  })
+
+  // Lessons review of #2250: a fault in this one table (a missing table, a
+  // revoked grant) is not the database being down, so it must not page the
+  // database owner or send the tick's Slack lookups to the saved copy.
+  it('does not mark the tick unreachable or tell the owner when job_runs answers with an error', async () => {
+    const { client } = fakeClient([{ error: { message: 'relation "job_runs" does not exist', code: '42P01' } }])
+    const onUnreachable = vi.fn()
+    const slack = registerScheduledSlack(client, { kv: kvWith(), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep, onUnreachable })
+    await expect(lastFinishedRun(client, 'sightings-export')).resolves.toBeNull()
+    expect(slack.unreachable).toBeNull()
+    expect(onUnreachable).not.toHaveBeenCalled()
+  })
+
+  it('does not mark the tick unreachable when job_runs alone stalls', async () => {
+    const { client } = fakeClient(['stall'])
+    const onUnreachable = vi.fn()
+    const slack = registerScheduledSlack(client, { kv: kvWith(), secretKeys: TEST_KEY, sleep: fakeTimers('now').sleep, onUnreachable })
+    await lastFinishedRun(client, 'sightings-export')
+    expect(slack.unreachable).toBeNull()
+    expect(onUnreachable).not.toHaveBeenCalled()
   })
 
   it('still reads the finish when the database answers', async () => {
