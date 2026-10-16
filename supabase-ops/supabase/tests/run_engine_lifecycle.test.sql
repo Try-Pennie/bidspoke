@@ -677,6 +677,11 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM public.run_queue_disagreements(100) WHERE kind = 'queue_row_without_waiting_run' AND run_request_id = v_stuck) THEN
     RAISE EXCEPTION 'a queue row of a finished run was not reported';
   END IF;
+  -- The limit holds over both kinds together: PostgREST would cut an answer past
+  -- its 1,000 rows silently (found by the lessons review).
+  IF (SELECT count(*) FROM public.run_queue_disagreements(1)) <> 1 THEN
+    RAISE EXCEPTION 'a limit of 1 returned % disagreements', (SELECT count(*) FROM public.run_queue_disagreements(1));
+  END IF;
   INSERT INTO re_cases VALUES ('agreement: a run and a queue row that disagree are both reported');
 END
 $do$;

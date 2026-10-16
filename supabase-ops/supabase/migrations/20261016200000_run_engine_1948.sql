@@ -1053,16 +1053,21 @@ BEGIN
   IF p_limit IS NULL OR p_limit NOT BETWEEN 1 AND 1000 THEN
     RAISE EXCEPTION 'run_queue_disagreements: limit must be 1 to 1000, not %', p_limit USING ERRCODE = 'invalid_parameter_value';
   END IF;
+  -- The limit holds over both kinds together, so an answer never passes
+  -- PostgREST's 1,000 rows, which it would cut silently (L24).
   RETURN QUERY
-  (SELECT 'queue_row_without_waiting_run'::text, q.run_request_id, q.organization_id
-   FROM public.run_queue q JOIN public.run_requests r ON r.id = q.run_request_id
-   WHERE r.status NOT IN ('queued', 'suspended') OR r.organization_id <> q.organization_id
-   LIMIT p_limit)
-  UNION ALL
-  (SELECT 'waiting_run_without_queue_row'::text, r.id, r.organization_id
-   FROM public.run_requests r
-   WHERE r.status IN ('queued', 'suspended') AND NOT EXISTS (SELECT 1 FROM public.run_queue q WHERE q.run_request_id = r.id)
-   LIMIT p_limit);
+  SELECT d.kind, d.run_request_id, d.organization_id FROM (
+    (SELECT 'queue_row_without_waiting_run'::text AS kind, q.run_request_id, q.organization_id
+     FROM public.run_queue q JOIN public.run_requests r ON r.id = q.run_request_id
+     WHERE r.status NOT IN ('queued', 'suspended') OR r.organization_id <> q.organization_id
+     LIMIT p_limit)
+    UNION ALL
+    (SELECT 'waiting_run_without_queue_row'::text, r.id, r.organization_id
+     FROM public.run_requests r
+     WHERE r.status IN ('queued', 'suspended') AND NOT EXISTS (SELECT 1 FROM public.run_queue q WHERE q.run_request_id = r.id)
+     LIMIT p_limit)
+  ) d
+  LIMIT p_limit;
 END
 $fn$;
 
