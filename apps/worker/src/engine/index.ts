@@ -2141,7 +2141,7 @@ export async function walkGraph(
       recordStepOutput(ctx, node.namespace, { output: checkOutput, status: checkStatus, error: checkFailure?.message, error_type: checkErrorType }, { chainStep: true })
       const checkConfig = node.config as Record<string, unknown>
       const checkInput: ResolvedStepInput = {
-        template: { partner_id: checkConfig.partner_id, population: checkConfig.population, state: checkConfig.state, debt: checkConfig.debt, loan_amount: checkConfig.loan_amount },
+        template: { partner_id: checkConfig.partner_id, population: checkConfig.population, state: checkConfig.state, debt: checkConfig.debt, loan_amount: checkConfig.loan_amount, collections: checkConfig.collections },
         resolved: { partner_id: checkOutput.partner_id, partner_slug: checkOutput.partner_slug, population: checkOutput.population },
       }
       logStep(stepLogQueue, executionId, executionStartedAt, node, checkStatus, checkInput, checkOutput, checkFailure?.message, checkErrorType, 0, checkStartedAt, stepOrder)

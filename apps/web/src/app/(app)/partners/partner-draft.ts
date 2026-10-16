@@ -91,6 +91,8 @@ export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
   profileField('debt_min', 'Eligibility', FIELD_LABELS.debt_min),
   profileField('debt_max', 'Eligibility', FIELD_LABELS.debt_max),
   profileField('loan_amount_min', 'Eligibility', FIELD_LABELS.loan_amount_min),
+  // #2111: stored by the server half; #2268 adds the control and moves this label into FIELD_LABELS.
+  profileField('collections_max_percent', 'Eligibility', 'Collections at most (% of debt)'),
   profileField('hourly_lead_cap', 'Caps', FIELD_LABELS.hourly_lead_cap),
   profileField('daily_lead_cap', 'Caps', FIELD_LABELS.daily_lead_cap),
   profileField('hourly_spend_cap_cents', 'Caps', FIELD_LABELS.hourly_spend_cap_cents),
