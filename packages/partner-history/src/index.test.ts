@@ -105,6 +105,21 @@ describe('readNewest (#2141)', () => {
     expect(bounded.truncated).toBe(true)
   })
 
+  it('is not truncated when a source holds exactly the bound: it asks for one row past it first', async () => {
+    const pages: Array<[number, number]> = []
+    const full = Array.from({ length: 1000 }, (_, i) => ({ i }))
+    const exact = await readNewest(async (from, to) => {
+      pages.push([from, to])
+      return { data: from < HISTORY_ROWS_PER_SOURCE ? full : [], error: null }
+    })
+    expect(exact.rows).toHaveLength(HISTORY_ROWS_PER_SOURCE)
+    expect(exact.truncated).toBe(false)
+    expect(pages[pages.length - 1]).toEqual([HISTORY_ROWS_PER_SOURCE, HISTORY_ROWS_PER_SOURCE])
+
+    // A failed probe is an error, never a guess either way.
+    await expect(readNewest(async (from) => (from < HISTORY_ROWS_PER_SOURCE ? { data: full, error: null } : { data: null, error: { message: 'probe timeout' } }))).rejects.toThrow('probe timeout')
+  })
+
   it('throws on a read error, never returns what it had', async () => {
     await expect(readNewest(async (from) => (from === 0 ? { data: [{ i: 1 }], error: null } : { data: null, error: { message: 'x' } }))).resolves.toBeDefined()
     const full = Array.from({ length: 1000 }, (_, i) => ({ i }))

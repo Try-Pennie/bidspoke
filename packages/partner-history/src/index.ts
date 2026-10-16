@@ -149,7 +149,11 @@ export async function readNewest<T>(
     rows.push(...page)
     if (page.length < PAGE) return { rows, truncated: false }
   }
-  return { rows, truncated: true }
+  // Every page came back full: ask for the one row past the bound, so a source
+  // holding exactly HISTORY_ROWS_PER_SOURCE rows is not reported as cut.
+  const { data, error } = await makeQuery(HISTORY_ROWS_PER_SOURCE, HISTORY_ROWS_PER_SOURCE)
+  if (error) throw new Error(error.message)
+  return { rows, truncated: (data ?? []).length > 0 }
 }
 
 /**

@@ -15,7 +15,7 @@
  * All or nothing (L530, L215, L11): the partner, the matrix configs, audit_log,
  * bid_config_history and users are read, and any one failing answers 500
  * naming that read. Never a partial merge, and never an editor with no name.
- * Each history read is bounded (lib/partner-history.ts readNewest), and a
+ * Each history read is bounded (readNewest in @bidspoke/partner-history), and a
  * source past its bound makes the answer say so (complete false), never
  * silently shorter.
  */
