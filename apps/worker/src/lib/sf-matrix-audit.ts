@@ -491,7 +491,7 @@ export async function notifyAllOrgsWithSlack(
   now: Date,
   matrixUrl: string | undefined,
 ): Promise<boolean> {
-  const perOrg = await forEachSlackOrg(supabase, 'sf-matrix-audit', async (orgId) => {
+  const perOrg = await forEachSlackOrg(supabase, 'sf-matrix-audit', 'tell-only', async (orgId) => {
     let delivered = true
     for (const alert of alerts) {
       try {
@@ -542,7 +542,7 @@ async function notifyBaseline(
     { type: 'section', text: { type: 'mrkdwn', text } },
   ]
   if (matrixUrl) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: `<${matrixUrl}|Open in Salesforce \u2192>` } })
-  for (const orgId of orgIdsToTell(await slackOrgIds(supabase, 'sf-matrix-audit'))) {
+  for (const orgId of orgIdsToTell(await slackOrgIds(supabase, 'sf-matrix-audit', 'tell-only'))) {
     try {
       if (!(await postToOrg(supabase, orgId, blocks, 'Bid matrix tracking updated'))) {
         console.error(`[sf-matrix-audit] baseline notice not delivered to org ${orgId}`)

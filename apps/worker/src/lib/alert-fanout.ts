@@ -21,6 +21,9 @@
  * not read" differ. A caller whose next step is the same either way folds it with
  * `orgIdsToTell`, `anyDelivered` or `everyDelivered`. On the scheduled handler's
  * client the read is bounded and falls back to the copy (scheduled-slack.ts).
+ * Every list helper requires a `SlackListUse`, so a check that measures its
+ * finding from the database cannot be handed the copy's list by forgetting to
+ * say so: it judges nothing on a tick the database did not answer.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
@@ -37,8 +40,30 @@ export interface CooldownKv {
   put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>
 }
 
-/** Why an org list could not be read. `read_failed` only on a client with no saved copy to fall back on. */
-export type SlackListUnreachableReason = Exclude<CopyUnreachableReason, 'org_not_in_copy'> | 'read_failed'
+/**
+ * Why an org list could not be used. `read_failed` only on a client with no
+ * saved copy to fall back on; `database_not_answering` when the caller measures
+ * its finding from the database and the list could come only from the copy.
+ */
+export type SlackListUnreachableReason = Exclude<CopyUnreachableReason, 'org_not_in_copy'> | 'read_failed' | 'database_not_answering'
+
+/**
+ * What the caller does with the org list, which every list helper requires so
+ * that no caller can leave it out (#1303 review, L621):
+ *
+ * - `'measure-from-database'`: the caller goes on to read the database for the
+ *   orgs to decide what it says (counts, workflows, durations, variables). A
+ *   list answered from the saved copy means the database did not answer this
+ *   tick, so the list is refused (`database_not_answering`) and the caller
+ *   judges nothing: no all-clear, no transition, no alert. Before the copy such
+ *   a tick had no orgs at all; a check whose own reads swallow their errors
+ *   (timeout-audit did) would otherwise record an all-clear in an outage and
+ *   re-alert an unchanged set when the database came back.
+ * - `'tell-only'`: the caller already holds its finding, or measures it without
+ *   the database (KV, env, Salesforce, GitHub, a probe), and only needs to know
+ *   who to tell. The copy's list tells them during an outage.
+ */
+export type SlackListUse = 'measure-from-database' | 'tell-only'
 
 /**
  * The orgs with a Slack connection (#1303): read from the database, read from the
@@ -61,8 +86,8 @@ export function orgIdsToTell(list: SlackOrgList): string[] {
 }
 
 /** Deduped org ids that have a Slack connection. Never throws. */
-export async function slackOrgIds(supabase: SupabaseClient, logLabel: string): Promise<SlackOrgList> {
-  const read = await readSlackRows<{ organization_id: string }>(supabase, logLabel, 'slack organizations', 'organization_id')
+export async function slackOrgIds(supabase: SupabaseClient, logLabel: string, use: SlackListUse): Promise<SlackOrgList> {
+  const read = await readSlackRows<{ organization_id: string }>(supabase, logLabel, 'slack organizations', 'organization_id', use)
   if (read.kind === 'unreachable') return read
   const orgIds = [...new Set(read.kind === 'live' ? read.rows.map((r) => r.organization_id) : [...read.copy.keys()])]
   return read.kind === 'live' ? { kind: 'live', orgIds } : { kind: 'stored', orgIds, ageMs: read.ageMs }
@@ -78,8 +103,8 @@ export type SlackConnectionsRead =
   | { kind: 'stored'; connections: Map<string, SlackConnection>; ageMs: number | null }
   | { kind: 'unreachable'; reason: SlackListUnreachableReason }
 
-export async function readEverySlackConnection(supabase: SupabaseClient, logLabel: string): Promise<SlackConnectionsRead> {
-  const read = await readSlackRows<{ organization_id: string; config: unknown }>(supabase, logLabel, 'slack connections', 'organization_id, config')
+export async function readEverySlackConnection(supabase: SupabaseClient, logLabel: string, use: SlackListUse): Promise<SlackConnectionsRead> {
+  const read = await readSlackRows<{ organization_id: string; config: unknown }>(supabase, logLabel, 'slack connections', 'organization_id, config', use)
   if (read.kind === 'unreachable') return read
   if (read.kind === 'stored') return { kind: 'stored', connections: read.copy, ageMs: read.ageMs }
   const connections = new Map<string, SlackConnection>()
@@ -96,7 +121,7 @@ type RowsRead<R> =
   | { kind: 'unreachable'; reason: SlackListUnreachableReason }
 
 /** The one all-org read of service_connections behind both lists above, bounded on the scheduled client. */
-async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what: string, columns: string): Promise<RowsRead<R>> {
+async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what: string, columns: string, use: SlackListUse): Promise<RowsRead<R>> {
   const query = supabase.from('service_connections').select(columns).eq('service_type', 'slack')
   const scheduled = scheduledSlackFor(supabase)
   if (!scheduled) {
@@ -112,6 +137,12 @@ async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what
     const rows = live.data ?? []
     console.log(`[scheduled-slack] ${subject}: read live (${rows.length} rows)`)
     return { kind: 'live', rows }
+  }
+  if (use === 'measure-from-database') {
+    // The database did not answer, so this caller could only judge reads that
+    // failed: it judges nothing this tick rather than post or clear on them.
+    console.error(`[scheduled-slack] ${subject}: the database did not answer (${live.how}) and this check measures its finding from the database, so it judges nothing this run`)
+    return { kind: 'unreachable', reason: 'database_not_answering' }
   }
   const copy = await scheduled.copy()
   if (copy.kind === 'read') {
@@ -160,9 +191,10 @@ export type SlackFanout =
 export async function forEachSlackOrg(
   supabase: SupabaseClient,
   logLabel: string,
+  use: SlackListUse,
   perOrg: (orgId: string) => Promise<boolean>,
 ): Promise<SlackFanout> {
-  const list = await slackOrgIds(supabase, logLabel)
+  const list = await slackOrgIds(supabase, logLabel, use)
   if (list.kind === 'unreachable') return list
   const results: boolean[] = []
   for (const orgId of list.orgIds) results.push(await perOrg(orgId))
@@ -193,10 +225,12 @@ export async function rateLimitedOrgAlert(opts: {
   ttlSeconds: number
   supabase: SupabaseClient
   logLabel: string
+  /** See SlackListUse; the finding is in hand before this is called, so almost always 'tell-only'. */
+  use: SlackListUse
   perOrg: (orgId: string) => Promise<boolean>
 }): Promise<boolean> {
   if (await opts.kv.get(opts.cooldownKey)) return false
-  const alerted = anyDelivered(await forEachSlackOrg(opts.supabase, opts.logLabel, opts.perOrg))
+  const alerted = anyDelivered(await forEachSlackOrg(opts.supabase, opts.logLabel, opts.use, opts.perOrg))
   if (alerted) await opts.kv.put(opts.cooldownKey, '1', { expirationTtl: opts.ttlSeconds })
   return alerted
 }

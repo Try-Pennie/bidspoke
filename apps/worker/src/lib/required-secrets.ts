@@ -57,7 +57,7 @@ export async function runRequiredSecretsCheck(
   const missing = findMissingRequiredSecrets(env)
   if (missing.length === 0) return { missing: [], alerted: false }
 
-  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'required-secrets'))
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'required-secrets', 'tell-only'))
 
   let alerted = false
   for (const orgId of orgIds) {

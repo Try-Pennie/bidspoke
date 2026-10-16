@@ -393,7 +393,7 @@ export async function runPgCronWatch(
     throw new Error(`could not read pg_cron health: ${error ? error.message : 'the response was not a list'}`)
   }
 
-  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'pg-cron-watch'))
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'pg-cron-watch', 'tell-only'))
 
   const results: PgCronCheckResult[] = []
   for (const row of data as PgCronJob[]) {

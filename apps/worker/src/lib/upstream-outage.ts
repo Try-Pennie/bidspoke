@@ -732,7 +732,7 @@ export async function runUpstreamOutageCheck(
   kv: KvLike,
   appUrl: string,
 ): Promise<void> {
-  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'upstream-outage'))
+  const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'upstream-outage', 'measure-from-database'))
   if (orgIds.length === 0) return
 
   const { data: workflows, error: workflowsError } = await supabase

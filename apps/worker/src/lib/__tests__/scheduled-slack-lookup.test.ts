@@ -197,7 +197,7 @@ describe('the scheduled handler\'s real client', () => {
       return new Response(JSON.stringify({ message: 'upstream connect error' }), { status: 503, headers: { 'content-type': 'application/json' } })
     }) as typeof fetch
     const client = createScheduledSupabaseClient(env(kv), { fetch: unavailable, sleep: fakeTimers('never').sleep })
-    expect(await slackOrgIds(client, 'test')).toEqual({ kind: 'stored', orgIds: [ORG], ageMs: null })
+    expect(await slackOrgIds(client, 'test', 'tell-only')).toEqual({ kind: 'stored', orgIds: [ORG], ageMs: null })
     expect(sent).toHaveLength(1)
   })
 })
