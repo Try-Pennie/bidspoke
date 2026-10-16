@@ -81,7 +81,15 @@ describe('the scheduled handler\'s client is the registered one (#1303)', () => 
 
   it('builds the tick\'s client with createScheduledSupabaseClient and no other client', () => {
     expect(start).toBeGreaterThan(-1)
-    expect(body).toMatch(/const supabase = createScheduledSupabaseClient\(env\)/)
+    // With or without options (the reachability report, #2061).
+    expect(body).toMatch(/const supabase = createScheduledSupabaseClient\(env[,)]/)
     expect(body).not.toMatch(/createSupabaseClient\(/)
+  })
+
+  // #2061: the per tick flag is one of the reads the database reachability
+  // owner is told by. Unwired, a stall only a Slack lookup noticed is reported
+  // to nobody, and no test of the owner would see it.
+  it('reports the first failed read of a tick to the database reachability owner', () => {
+    expect(body).toMatch(/createScheduledSupabaseClient\(env, \{\s*onUnreachable:[\s\S]{0,200}?reportDatabaseUnreachable\([^,]+, \{ source: 'scheduled-read'/)
   })
 })
