@@ -454,6 +454,13 @@ export type Database = {
         }
         Relationships: [
           {
+            foreignKeyName: "bid_config_history_changed_by_fkey"
+            columns: ["changed_by"]
+            isOneToOne: false
+            referencedRelation: "users"
+            referencedColumns: ["id"]
+          },
+          {
             foreignKeyName: "bid_config_history_config_id_fkey"
             columns: ["config_id"]
             isOneToOne: false
@@ -624,6 +631,7 @@ export type Database = {
         Row: {
           allowed_states: string[]
           click_delivery: Json | null
+          collections_max_percent: number | null
           created_at: string
           daily_lead_cap: number | null
           daily_spend_cap_cents: number | null
@@ -648,6 +656,7 @@ export type Database = {
         Insert: {
           allowed_states?: string[]
           click_delivery?: Json | null
+          collections_max_percent?: number | null
           created_at?: string
           daily_lead_cap?: number | null
           daily_spend_cap_cents?: number | null
@@ -672,6 +681,7 @@ export type Database = {
         Update: {
           allowed_states?: string[]
           click_delivery?: Json | null
+          collections_max_percent?: number | null
           created_at?: string
           daily_lead_cap?: number | null
           daily_spend_cap_cents?: number | null
@@ -3010,6 +3020,7 @@ export type Database = {
           partitions: number
         }[]
       }
+      audit_actor_stamp: { Args: { p_actor: string }; Returns: Json }
       auth_user_with_allowlist: {
         Args: { p_user_id: string }
         Returns: {

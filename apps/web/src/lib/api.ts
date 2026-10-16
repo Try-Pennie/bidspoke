@@ -2,11 +2,11 @@ import { createClient } from './supabase/client'
 import type { Workflow, WorkflowSummary, WorkflowDef, WorkflowVersion, EnvVar, Folder, EnvVarFolder } from '@/types/workflow'
 import type { PartnerType } from './partner-roles'
 import type { LiveMissReportBody, PartnerPageVersions } from '@bidspoke/partner-page-live'
+import type { PartnerHistory } from '@bidspoke/partner-history'
 
 export type { PartnerType }
 
 export type BidResolverType = 'formula' | 'matrix' | 'api'
-export type BidMode = 'commit' | 'ping_only'
 export type BidComparisonSource = 'auto' | 'api' | 'formula' | 'matrix'
 
 export type ExtraExtractionSpec =
@@ -30,8 +30,6 @@ export interface Partner {
   bid_resolver_type: BidResolverType
   bid_resolver_config: Record<string, unknown>
   outbound_field_mapping: Record<string, unknown> | null
-  /** Read only (PM-9, #2136): off the page, kept until its contract step drops the column. */
-  bid_mode: BidMode
   bid_comparison_source: BidComparisonSource
   extra_extraction: ExtraExtractionConfig | null
   last_probe_response: unknown
@@ -78,10 +76,31 @@ export interface Partner {
 
 /**
  * The fields a partner save may name: the row less its identity, its
- * bookkeeping, what the Worker derives, and bid_mode, which the page no longer
- * edits (PM-9, #2136), so no save the page makes can carry it.
+ * bookkeeping and what the Worker derives. bid_mode is not a Partner field
+ * at all since #2182: nothing reads it, and the Worker refuses a save naming it.
  */
-export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email' | 'updated_by_name' | 'credential_warning' | 'version' | 'last_save_id' | 'bid_mode'>>
+export type PartnerBody = Partial<Omit<Partner, 'id' | 'organization_id' | 'created_at' | 'updated_at' | 'updated_by_email' | 'updated_by_name' | 'credential_warning' | 'version' | 'last_save_id'>>
+
+/** One workflow step that names a partner (#2137), from GET /api/partners/:id/usage. */
+export interface PartnerUsageStep {
+  workflow_id: string
+  workflow_name: string
+  /** A switched off workflow still counts: switched on again, it calls the partner at once. */
+  is_active: boolean
+  node_id: string | null
+}
+
+/**
+ * Which of the organization's workflow steps name a partner, per node kind
+ * (#2137): a Bid Group or Partner Bid step makes the Bid Group tab apply, a
+ * Latency Gate the confirmation window.
+ */
+export interface PartnerUsage {
+  /** partner_ids are asked on every lead (a tiered group's from its tiers); the fallback only once nobody wins. */
+  bid_group: Array<PartnerUsageStep & { mode: 'highest_bid' | 'cascade' | 'tiered'; partner_ids: string[]; fallback_partner_id: string | null }>
+  partner_bid: PartnerUsageStep[]
+  latency_gate: PartnerUsageStep[]
+}
 
 /**
  * The page's one save beside its partner patch (#2133): the pair of versions it
@@ -102,6 +121,8 @@ export interface PartnerPageSaveRequest {
 }
 
 export type { PartnerPageVersions, PartnerPageChange, PartnerPageNotice, LiveMissCause, LiveMissReportBody } from '@bidspoke/partner-page-live'
+// The partners page History (#2141): entries newest first, each naming who made it.
+export type { PartnerHistory, HistoryEntry, HistoryEditor, HistoryEntityType } from '@bidspoke/partner-history'
 
 /** What a page save answers (#2133): both halves as stored after it, and the stored copy warning when there is one. */
 export interface PartnerPageSaved extends StoredCopyAnswer {
@@ -1127,6 +1148,12 @@ export const api = {
     // A change the probe found that no notice announced (#2135). Recorded only.
     reportLiveMiss: (report: LiveMissReportBody) =>
       req<{ ok: true; id: string }>('/api/partners/live-miss', { method: 'POST', body: JSON.stringify(report) }),
+    // Which workflow steps name the partner, per node kind (#2137). A failure throws: never read as "none".
+    usage: (id: string) => req<PartnerUsage>(`/api/partners/${id}/usage`),
+    // History (#2141): audit_log and the matrix syncs merged, newest first. Any
+    // read failing is an error naming it (`history_unavailable`), never a
+    // shorter list; the page groups by Eastern day through dates.ts.
+    history: (id: string) => req<PartnerHistory>(`/api/partners/${id}/history`),
   },
 
   // The buyer profile read routes (#1412). The profile is saved with the

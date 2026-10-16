@@ -102,6 +102,12 @@ describe('the committed lists (#1709)', () => {
     for (const name of OPS_REQUIRED_SECRETS) expect(OPS_ALLOWED_SECRETS).toContain(name)
   })
 
+  it('allow Spike 0\'s arm on the ops Worker without requiring it, since unset is its normal state (#1946)', () => {
+    expect(OPS_ALLOWED_SECRETS).toContain('OPS_SPIKE_ARM')
+    expect(OPS_REQUIRED_SECRETS).not.toContain('OPS_SPIKE_ARM')
+    expect((MONEY_ALL as readonly string[]).includes('OPS_SPIKE_ARM')).toBe(false)
+  })
+
   it('reads the account id from the money Worker\'s wrangler.toml', () => {
     expect(accountIdFrom('name = "x"\naccount_id = "3e7f907a9c19e51417873e2cce4fbc5c"\n')).toBe('3e7f907a9c19e51417873e2cce4fbc5c')
     expect(() => accountIdFrom('name = "x"\n')).toThrow(/account_id/)

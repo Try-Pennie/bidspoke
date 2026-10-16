@@ -1,14 +1,22 @@
 /**
  * An organization's workflows with their definitions (#2142, L613): the one
  * read every route and check asking "which of this organization's workflows
- * ..." makes, instead of a copy per caller. Its callers today (a guard,
+ * ..." makes, instead of a copy per caller. A guard,
  * `__guards__/worker/org-workflows-one-read.test.ts` in apps/web, fails on a
- * hand written copy): the workflow values route
- * (`routes/api/partner-workflow-values.ts`, which hands the rows to the pure
- * scanner), the buyer profile routes (other sellers, and the sold on switch
- * refusal), the step rename impact route (`excludeId`, the workflow being
- * renamed), the code worker migration and the timeout audit (both
- * `activeOnly`), and the partner delete check (#2140, routes/api/partner-delete.ts).
+ * hand written copy, and `__guards__/worker/org-workflows-callers.test.ts`
+ * holds this list to the files that call it. Its callers:
+ * - `routes/api/partner-workflow-values.ts`: the workflow values route, which
+ *   hands the rows to the pure scanner (#2142);
+ * - `routes/api/buyer-profiles.ts`: the other sellers of a buyer, and the
+ *   refusal to switch a click buyer still named by a live click node;
+ * - `routes/api/partner-usage.ts`: which workflow steps name a partner, for the
+ *   partners page's Bid Group tab and confirmation window (#2137);
+ * - `routes/api/workflows.ts`: the step rename impact route (`excludeId`, the
+ *   workflow being renamed);
+ * - `routes/api/admin.ts`: the code worker migration (`activeOnly`);
+ * - `lib/timeout-audit.ts`: the timeout audit (`activeOnly`);
+ * - `routes/api/partner-delete.ts`: the partner delete check (#2140), whose
+ *   fingerprint reads `updated_at`.
  *
  * The Worker connects as service_role, which bypasses row level security, so
  * this read is what scopes the answer to one organization: it filters

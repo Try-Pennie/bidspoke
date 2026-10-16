@@ -36,7 +36,7 @@ vi.mock('../PartnerForm', () => ({
 
 vi.mock('@/lib/api', () => ({
   api: {
-    partners: {
+    partners: { usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }),
       list: vi.fn(),
       delete: vi.fn(),
       savePage: vi.fn(),

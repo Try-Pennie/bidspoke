@@ -48,6 +48,23 @@ function nodesOf(w: WorkflowForFinder): DefNode[] {
   return Array.isArray(def?.nodes) ? (def.nodes as DefNode[]) : []
 }
 
+const idsOf = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : [])
+
+/**
+ * Every partner a bid_group node can call, as the engine calls them
+ * (engine/nodes/bid-group.ts, #2137): a tiered group calls the partners of its
+ * tiers and never its top level partner_ids, any other mode calls partner_ids,
+ * and every mode calls the fallback once nobody wins. Each id once, in order.
+ */
+export function bidGroupPartnerIds(config: Record<string, unknown> | null | undefined): string[] {
+  if (!config) return []
+  const members = config.mode === 'tiered'
+    ? (Array.isArray(config.tiers) ? config.tiers : []).flatMap((t) => idsOf((t as { partner_ids?: unknown } | null)?.partner_ids))
+    : idsOf(config.partner_ids)
+  const fallback = typeof config.fallback_partner_id === 'string' && config.fallback_partner_id !== '' ? [config.fallback_partner_id] : []
+  return [...new Set([...members, ...fallback])]
+}
+
 /** The populations buyer_select nodes across these workflows name, once each. */
 export function populationsInUse(workflows: readonly WorkflowForFinder[]): Set<string> {
   const out = new Set<string>()
@@ -74,11 +91,7 @@ export function workflowsUsingPartner(
         if (options.includeClickNodes && (n.type === 'buyer_click_send' || n.type === 'buyer_click_check') && n.config.partner_id === partnerId) return true
         if (options.clickNodesOnly) return false
         if (n.type === 'partner_bid' && n.config.partner_id === partnerId) return true
-        if (n.type === 'bid_group') {
-          const ids = n.config.partner_ids
-          if (Array.isArray(ids) && ids.includes(partnerId)) return true
-          if (n.config.fallback_partner_id === partnerId) return true
-        }
+        if (n.type === 'bid_group' && bidGroupPartnerIds(n.config).includes(partnerId)) return true
         if (options.includeBuyerSelect && n.type === 'buyer_select' && typeof n.config.population === 'string') {
           return pricedPartnersByPopulation.get(n.config.population)?.has(partnerId) ?? false
         }

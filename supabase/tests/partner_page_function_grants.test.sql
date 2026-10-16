@@ -14,6 +14,7 @@
 -- from service_role on it left out (case 3 red: the default privileges grant it);
 -- #2143 replaced _apply_buyer_profile and buyer_profile_document and lists the
 -- second here.
+-- #2141: the REVOKE from service_role on audit_actor_stamp left out (case 3 red).
 
 CREATE TEMP TABLE IF NOT EXISTS suite_cases (name text PRIMARY KEY, ran_at timestamptz NOT NULL DEFAULT now());
 DELETE FROM suite_cases;
@@ -51,6 +52,9 @@ BEGIN
     'public.monitor_partner_page_ping(uuid, uuid)',
     -- PR12 (#2143): _apply_buyer_profile is listed above
     'public.buyer_profile_document(uuid)',
+    -- PR10 (#2141)
+    'public.audit_actor_stamp(uuid)',
+    'public.partner_uuid_map_audit()',
     -- PR9 (#2140); change_partner_uuid is listed above
     'public.partner_delete_dependents()',
     'public.partner_delete_counts(uuid, uuid, boolean)',
@@ -117,6 +121,13 @@ BEGIN
     'public.buyer_profile_tables_page_notice()',
     'public.partner_uuid_map_page_notice()',
     'public.partner_uuid_map_page_notice_one_side()',
+    -- PR10 (#2141): the stamp and the audit triggers. A Worker calling the stamp
+    -- could not forge a row, but nothing calls it except a trigger, and two of
+    -- these trigger functions were granted to it by default until #2141.
+    'public.audit_actor_stamp(uuid)',
+    'public.partner_uuid_map_audit()',
+    'public.partner_configs_audit()',
+    'public.buyer_profile_tables_direct_sql_audit()',
     -- PR9 (#2140): the dependency walk, the counter, and the shared delete body,
     -- which skips the fingerprint when handed none.
     'public.partner_delete_dependents()',
