@@ -196,13 +196,16 @@ function makeDb(clock: VirtualClock, availability: (table: string, op: string) =
   return { client: { from } as unknown as SupabaseClient, calls, executions, sightings, steps, writebacks }
 }
 
-function makeKV(clock: VirtualClock, slowFirstJournalPut = false, refuseSecondJournalPutOnce = false, getFails?: (key: string) => boolean) {
+function makeKV(clock: VirtualClock, slowFirstJournalPut = false, refuseSecondJournalPutOnce = false, getFails?: (key: string) => boolean, getRealDelayMs = 0) {
   const store = new Map<string, string>()
   const puts: Array<{ at: number; key: string }> = []
   let journalPuts = 0
   const kv = {
     async get(k: string, t?: string) {
       if (getFails?.(k)) throw new Error('KV GET failed: 503 Service Unavailable')
+      // Real time, not virtual: a loaded runner, where real work outlasts the
+      // macrotask turns the virtual clock allows between its timers (#2024).
+      if (getRealDelayMs > 0 && k.startsWith('at-risk-write:')) await new Promise((r) => setTimeout(r, getRealDelayMs))
       const v = store.get(k)
       return v === undefined ? null : t === 'json' ? JSON.parse(v) : v
     },
@@ -248,11 +251,18 @@ async function run(
     walkDone?: (store: Map<string, string>) => boolean
     // A KV read of a key this matches fails, as a KV outage would (#2024).
     kvGetFails?: (key: string) => boolean
+    // Each read of an at-risk record takes this long in REAL time (#2024).
+    kvGetRealDelayMs?: number
+    // True once finalize has decided whether the work still out pages (#2024).
+    // That decision reads KV and decrypts with real WebCrypto, so virtual time is
+    // held at the cut-off, where it is made, until it has been, and only then runs
+    // out. Otherwise the clock reaches the read's own deadline first.
+    decided?: () => boolean
   } = {},
 ) {
   const clock = new VirtualClock()
   const db = makeDb(clock, (table, op) => availability(clock, table, op))
-  const idempotency = makeKV(clock, options.slowFirstJournalPut, options.refuseSecondJournalPutOnce, options.kvGetFails)
+  const idempotency = makeKV(clock, options.slowFirstJournalPut, options.refuseSecondJournalPutOnce, options.kvGetFails, options.kvGetRealDelayMs)
   const background: Promise<unknown>[] = []
   const env = {
     IDEMPOTENCY: idempotency.kv,
@@ -275,6 +285,13 @@ async function run(
       if (clock.now() >= CUTOFF) throw new Error('the walk after the answer did not settle before the cut-off')
       await clock.run(clock.now() + 10)
     }
+  }
+  if (options.decided) {
+    const decided = options.decided
+    await clock.run(CONTINUATION_WINDOW_MS)
+    await vi.waitFor(() => {
+      if (!decided()) throw new Error('finalize has not decided whether the unfinished work pages')
+    }, { timeout: 10_000, interval: 5 })
   }
   await clock.run()
   for (let i = 0; i < 6 && background.length; i++) await Promise.all(background.splice(0))
@@ -1087,12 +1104,25 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     // in small steps until the record is in KV, and only then runs out.
     const recorded = (store: Map<string, string>) => [...store.keys()].some((k) => k.startsWith('at-risk-write:'))
     const unfinishedDeadLetters = () => vi.mocked(recordOutcomeDeadLetter).mock.calls.filter((c) => c[0] === 'continuation_unfinished')
+    // Finalize has decided: it either left the work to the read-back (said in the
+    // log) or dead-lettered it.
+    let logSpy: ReturnType<typeof vi.spyOn>
+    const decided = () => logSpy.mock.calls.some((c: unknown[]) => String(c[0]).includes('left to the read-back')) || unfinishedDeadLetters().length > 0
 
-    afterEach(() => vi.unstubAllGlobals())
+    beforeEach(() => {
+      logSpy = vi.spyOn(console, 'log')
+    })
+    afterEach(() => {
+      logSpy.mockRestore()
+      vi.unstubAllGlobals()
+    })
 
     it('stays quiet when the only work still out is a write the read-back holds', async () => {
       workflow({ id: 'end', namespace: 'route_response_end', type: 'branch_end' })
-      const { db, result, deadLetters, idempotency } = await run(() => 'up', SF_ENV, { stepClock: true, walkDone: recorded })
+      // Each record read takes 50 ms of real time, as on a loaded CI runner, where
+      // this case first failed: the virtual clock reached the 1 s read deadline
+      // before the real read and decrypt had answered.
+      const { db, result, deadLetters, idempotency } = await run(() => 'up', SF_ENV, { stepClock: true, walkDone: recorded, kvGetRealDelayMs: 50, decided })
       expect([...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))).toHaveLength(1)
       expect(unfinishedDeadLetters()).toEqual([])
       expect(deadLetters('continuation_unfinished')).toEqual([])
@@ -1105,7 +1135,7 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
 
     it('still pages when a recorded write is followed by a step the read-back does not track', async () => {
       const walked = workflow({ id: 'a', namespace: 'achieve_after', type: 'achieve_offers' })
-      const { idempotency } = await run(() => 'up', SF_ENV, { stepClock: true, walkDone: recorded })
+      const { idempotency } = await run(() => 'up', SF_ENV, { stepClock: true, walkDone: recorded, decided })
       expect([...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))).toHaveLength(1)
       expect(walked).not.toContain('achieve_after')
       expect(unfinishedDeadLetters()).toHaveLength(1)
@@ -1114,7 +1144,7 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
 
     it('pages when the at-risk record cannot be read', async () => {
       workflow({ id: 'end', namespace: 'route_response_end', type: 'branch_end' })
-      const { idempotency } = await run(() => 'up', SF_ENV, { stepClock: true, walkDone: recorded, kvGetFails: (k) => k.startsWith('at-risk-write:') })
+      const { idempotency } = await run(() => 'up', SF_ENV, { stepClock: true, walkDone: recorded, decided, kvGetFails: (k) => k.startsWith('at-risk-write:') })
       expect([...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))).toHaveLength(1)
       expect(unfinishedDeadLetters()).toHaveLength(1)
     })
