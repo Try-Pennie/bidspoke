@@ -37,6 +37,14 @@ describe('schedulePeriodSeconds: the shortest gap between consecutive fires', ()
     expect(schedulePeriodSeconds({ interval_seconds: 2700 }, 'UTC')).toBe(2700)
   })
 
+  it('sees the shorter gap a spring change makes in a frequent cron whose first 800 fires end before it', () => {
+    // Every two hours is 12 fires a day, so 800 fires from 1 January end in early
+    // March. On 2027-03-14, 00:00 EST is 05:00Z and 02:00 is read as 03:00 EDT, 07:00Z:
+    // then 04:00 EDT is 08:00Z, one hour later.
+    expect(schedulePeriodSeconds({ cron: '0 */2 * * *' }, NY)).toBe(HOUR_S)
+    expect(schedulePeriodSeconds({ cron: '0 */2 * * *' }, 'UTC')).toBe(2 * HOUR_S)
+  })
+
   it('is five minutes for an every five minute cron', () => {
     expect(schedulePeriodSeconds({ cron: '*/5 8-20 * * SUN-SAT' }, NY)).toBe(300)
   })

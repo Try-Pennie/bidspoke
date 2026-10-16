@@ -52,10 +52,13 @@ export const MAX_JITTER_SECONDS = 300
 export const CATCH_UP_PERIOD_THRESHOLD_SECONDS = DAY_S
 
 /**
- * Where the period is sampled from: a fixed instant, never the clock, so a
+ * Where the period is sampled from: fixed instants, never the clock, so a
  * schedule's defaults and validation are the same whenever they are computed.
+ * 1 January, plus a few days before each of 2027's US daylight saving changes
+ * (14 March and 7 November), because a frequent cron's 800 fires from January
+ * end long before March and would never see the shorter gap a change makes.
  */
-const PERIOD_SAMPLE_FROM_MS = Date.UTC(2027, 0, 1)
+const PERIOD_SAMPLE_FROM_MS = [Date.UTC(2027, 0, 1), Date.UTC(2027, 2, 11), Date.UTC(2027, 10, 4)]
 const PERIOD_SAMPLE_FIRES = 800
 
 function timingOf(input: ScheduleTimingInput, zone: ScheduleZone): ScheduleTiming {
@@ -66,8 +69,10 @@ function timingOf(input: ScheduleTimingInput, zone: ScheduleZone): ScheduleTimin
  * The shortest gap between two consecutive fires, in seconds: how often the
  * schedule normally fires. A weekday cron's period is a day (its Friday to
  * Monday gap is three), a daily New York cron's is 23 hours (the spring change).
- * Sampled from a fixed instant over up to 800 fires, which covers more than a
- * day of an every minute cron and eight years of a monthly one.
+ * Sampled as up to 800 fires from each of three fixed instants: about 13 hours
+ * of an every minute cron, and up to the eight year search horizon of a monthly
+ * one. The two samples that start a few days before a change cross it whatever
+ * the cron's frequency, which a single 800 fire sample from January does not.
  */
 export function schedulePeriodSeconds(input: ScheduleTimingInput, zone: ScheduleZone): number {
   const timing = timingOf(input, zone)
@@ -77,10 +82,12 @@ export function schedulePeriodSeconds(input: ScheduleTimingInput, zone: Schedule
   const key = `${zone}\u0000${(input as { cron: string }).cron}`
   const known = PERIODS.get(key)
   if (known !== undefined) return known
-  const fires = nextFires(timing, PERIOD_SAMPLE_FROM_MS, PERIOD_SAMPLE_FIRES)
-  if (fires.length < 2) throw new ScheduleConfigError([problem('cron_never_fires', 'the cron fires fewer than twice in eight years')])
   let gap = Number.POSITIVE_INFINITY
-  for (let i = 1; i < fires.length; i++) gap = Math.min(gap, fires[i] - fires[i - 1])
+  for (const from of PERIOD_SAMPLE_FROM_MS) {
+    const fires = nextFires(timing, from, PERIOD_SAMPLE_FIRES)
+    for (let i = 1; i < fires.length; i++) gap = Math.min(gap, fires[i] - fires[i - 1])
+  }
+  if (!Number.isFinite(gap)) throw new ScheduleConfigError([problem('cron_never_fires', 'the cron fires fewer than twice in eight years')])
   if (PERIODS.size >= PERIOD_MEMO_LIMIT) PERIODS.clear()
   PERIODS.set(key, gap / 1000)
   return gap / 1000
