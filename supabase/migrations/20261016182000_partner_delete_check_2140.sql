@@ -29,7 +29,10 @@
 --    required.
 -- 6. delete_partner_config(p_org, p_id, p_actor, p_actor_email): replaced with
 --    its signature kept, so the release before keeps working. It also deletes
---    the sub-account IDs now (decision 4). Replaced from 20260921221007, which
+--    the sub-account IDs now (decision 4 of the #2114 build plan, Discussion
+--    #2130, which Dan answered on 2026-10-15 with its default: delete them in
+--    the same transaction and list them in the consequence, rather than refuse
+--    the delete while any exist). Replaced from 20260921221007, which
 --    is the body production runs (prosrc md5 5ef9428022fb3aaa610ca54fc95b8219 on
 --    production equals the replayed migration's, read 2026-10-16).
 -- 7. change_partner_uuid: the add takes FOR KEY SHARE on the partner row, so an
