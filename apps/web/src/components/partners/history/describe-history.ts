@@ -303,7 +303,8 @@ function describeHeldClick(e: HistoryEntry, c: Record<string, unknown>, out: Lin
     return out.text(`Cleared the held click for prospect ${prospect} from the list${state ? `; it was ${state}` : ''}.`)
   }
   for (const [key, v] of Object.entries(c)) {
-    if (key.startsWith('_') || key === 'subject' || key === 'claim_generation' || key === 'buyer_lead_id' || key === 'held_click') continue
+    // held_click is read above only as a clear's subject; on any other row it falls through and is shown.
+    if (key.startsWith('_') || key === 'subject' || key === 'claim_generation' || key === 'buyer_lead_id') continue
     if (key === 'salesforce_writes' && isPair(v)) {
       out.value(`Held click, prospect ${prospect}, Salesforce updates`, writesSide(v.old), writesSide(v.new), false, false)
       continue

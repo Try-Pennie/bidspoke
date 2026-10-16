@@ -231,6 +231,12 @@ describe('the History fixtures', () => {
     expect(out.entries[1]).toMatchObject({ editorLabel: 'Changed directly in the database', changes: { added: [{ range: '1' }] } })
   })
 
+  it('refuses a person editor with no name rather than scattering the alias through the label', () => {
+    expect(() => createRedactor().history({ partnerId: 'p', complete: true, completeSince: null, entries: [
+      { editor: { kind: 'person', userId: 'u1', name: '', via: null }, editorLabel: 'Ann', changes: {} },
+    ] })).toThrow(/no name/)
+  })
+
   it('redacts every held click shape the route ties to a partner: a cleared claim\'s held_click.old and the Salesforce writes, as well as the subject', () => {
     const subject = { partner_id: 'p', prospect_id: 'a06REALPROSPECT', reason: 'outcome_unknown', held_at: '2026-09-30T15:57:55Z' }
     const out = createRedactor().history({ partnerId: 'p', complete: true, completeSince: null, entries: [

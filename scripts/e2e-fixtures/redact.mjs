@@ -99,6 +99,7 @@ export function createRedactor() {
       const entries = answer.entries.map((e) => {
         const out = { ...e }
         if (e.editor && e.editor.kind === 'person') {
+          if (typeof e.editor.name !== 'string' || e.editor.name.trim() === '') throw new Error('redact: a person editor has no name, so its label cannot be aliased and nothing was written')
           const n = aliasOf([e.editor.userId, e.editor.name].filter((v) => v))
           const name = `Editor ${letterOf(n)}`
           out.editor = { ...e.editor, name, userId: e.editor.userId ? `00000000-0000-4000-8000-${String(n + 1).padStart(12, '0')}` : null }
