@@ -19,6 +19,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
+import { probeSlackConnectionsTable, readSlackConnectionRowsForCopy } from './alert-fanout'
 import { formatErr } from './format-error'
 import { getSlackConnection, postMessage, sendDatabaseUnreachableAlert } from './slack'
 import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, RECOVERY_TTL_SECONDS, type IncidentContext, type RecoveryKv } from './alert-recovery'
@@ -291,10 +292,7 @@ export async function runVolumeCliffCheck(
   // both post.
   claims?: AlertClaims,
 ): Promise<void> {
-  const { data: slackOrgs, error: slackOrgsError } = await supabase
-    .from('service_connections')
-    .select('organization_id, config')
-    .eq('service_type', 'slack')
+  const { data: slackOrgs, error: slackOrgsError } = await readSlackConnectionRowsForCopy(supabase)
   logReadFailure('volume-cliff', 'slack connections', slackOrgsError)
   if (slackOrgsError) {
     await reportDatabaseUnreachable(kv, secretEncryptionKey, 'slack connections', slackOrgsError, appUrl, claims)
@@ -528,11 +526,7 @@ async function probeDatabase(supabase: SupabaseClient): Promise<DatabaseProbeRes
   try {
     const ctrl = new AbortController()
     const timeout = setTimeout(() => ctrl.abort(), SELF_CHECK_TIMEOUT_MS)
-    const { error } = await supabase
-      .from('service_connections')
-      .select('organization_id')
-      .limit(1)
-      .abortSignal(ctrl.signal)
+    const { error } = await probeSlackConnectionsTable(supabase, ctrl.signal)
     clearTimeout(timeout)
     const latency = Date.now() - start
     if (error) {

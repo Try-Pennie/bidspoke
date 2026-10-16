@@ -72,12 +72,14 @@ export function fakeClient(answers: Answer[]): { client: SupabaseClient; calls: 
  */
 export function fakeTimers(mode: 'never' | 'now') {
   const asked: number[] = []
+  const signals: AbortSignal[] = []
   const sleep = (ms: number, signal: AbortSignal): Promise<void> => {
     asked.push(ms)
+    signals.push(signal)
     if (mode === 'now') return Promise.resolve()
     return new Promise<void>((resolve) => signal.addEventListener('abort', () => resolve(), { once: true }))
   }
-  return { sleep, asked }
+  return { sleep, asked, signals }
 }
 
 export interface CountingKv {

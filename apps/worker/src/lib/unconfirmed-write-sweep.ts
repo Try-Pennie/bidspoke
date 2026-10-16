@@ -44,8 +44,6 @@ import { formatErr } from './format-error'
 import { NO_ROW_MATCHED_CODE, READ_BACK_MISSING_CODE } from './db-retry'
 import { getSlackConnection, sendRepeatedSlowdownAlert, sendSlowdownSummaryAlert, sendUnconfirmedWritesAlert, type SlackConnection } from './slack'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
-import { readLastGoodSlackConnections } from './slack-copy'
-import { secretKeys } from './secret-crypto'
 import type { Env } from '../env'
 import { recordOutcomeDeadLetter } from '../engine/durability'
 import {
@@ -715,57 +713,12 @@ async function reportUnconfirmable(
   return items.length
 }
 
-/** How long the sweep waits for the live Slack connection before using the last-good copy. */
-export const SLACK_READ_DEADLINE_MS = 3_000
-
-type SweepSlack = Pick<SlackConnection, 'bot_token' | 'default_channel' | 'config_alerts_enabled'>
-
-/**
- * The org's Slack connection for the sweep's alerts, which go out exactly while
- * the database may not be answering. The live read retries on real timers with
- * no deadline of its own (L110), so it is raced against SLACK_READ_DEADLINE_MS,
- * and the volume check's last-good copy answers when it fails or runs out.
- */
-export function boundedSlackFor(
-  live: (orgId: string) => Promise<SweepSlack | null>,
-  lastGood: () => Promise<Map<string, SweepSlack>>,
-  // Resolves when the read has waited long enough; stopped through the signal
-  // once the read answers, so no timer outlives it.
-  deadline: (signal: AbortSignal) => Promise<void> = (signal) =>
-    new Promise<void>((resolve) => {
-      const handle = setTimeout(resolve, SLACK_READ_DEADLINE_MS)
-      signal.addEventListener('abort', () => {
-        clearTimeout(handle)
-        resolve()
-      }, { once: true })
-    }),
-): (orgId: string) => Promise<SweepSlack | null> {
-  return async (orgId) => {
-    try {
-      const stop = new AbortController()
-      const timedOut = deadline(stop.signal).then(() => 'timed_out' as const)
-      const answer = await Promise.race([live(orgId), timedOut]).finally(() => stop.abort())
-      if (answer === 'timed_out') {
-        console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] Slack connection read for org ${orgId} did not answer in ${SLACK_READ_DEADLINE_MS} ms, trying the last-good copy`)
-      } else if (answer) {
-        return answer
-      }
-    } catch (e) {
-      console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] Slack connection read failed for org ${orgId}, trying the last-good copy: ${formatErr(e)}`)
-    }
-    try {
-      return (await lastGood()).get(orgId) ?? null
-    } catch (e) {
-      console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] last-good Slack copy unreadable for org ${orgId}: ${formatErr(e)}`)
-      return null
-    }
-  }
-}
-
 /**
  * The production wiring. The Slack connection comes from the database when it
- * answers and from the volume check's last-good copy when it does not, because
- * the could-not-confirm alert is sent exactly while the database is down (L682).
+ * answers and from the last-good copy when it does not, because the
+ * could-not-confirm alert is sent exactly while the database is down (L682):
+ * `supabase` is the scheduled handler's client, on which getSlackConnection is
+ * bounded and falls back to the copy (#1303, scheduled-slack.ts).
  */
 export async function runUnconfirmedWriteSweepForEnv(supabase: SupabaseClient, env: Env): Promise<UnconfirmedSweepSummary> {
   return runUnconfirmedWriteSweep({
@@ -773,10 +726,7 @@ export async function runUnconfirmedWriteSweepForEnv(supabase: SupabaseClient, e
     supabase,
     appUrl: env.APP_URL,
     claims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
-    slackFor: boundedSlackFor(
-      (orgId) => getSlackConnection(supabase, orgId),
-      () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
-    ),
+    slackFor: (orgId) => getSlackConnection(supabase, orgId),
     recordRun: (startedAtMs, ending) => recordFinishedJobRun(supabase, UNCONFIRMED_WRITE_SWEEP_JOB, startedAtMs, ending),
   })
 }

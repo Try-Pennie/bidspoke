@@ -17,6 +17,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getSlackConnection, postMessage } from './slack'
 import { formatErr } from './format-error'
+import { slackOrgIds } from './alert-fanout'
 
 export interface SourceDropStats {
   source_name: string | null
@@ -130,18 +131,14 @@ interface KvLike {
 export async function runEmailDropRateCheck(supabase: SupabaseClient, kv: KvLike): Promise<void> {
   // Only orgs with Slack connected: there is nowhere to deliver the alert
   // otherwise, and the query is not free.
-  // paginate-ok: one row per organization with a Slack connection, single digits
-  const { data: conns, error: connErr } = await supabase
-    .from('service_connections')
-    .select('organization_id')
-    .eq('service_type', 'slack')
-
-  if (connErr) {
-    console.error(`[email-drop-rate] event=email_drop_orgs_query_failed error=${connErr.message}`)
+  // The counts below need the database, so an org list answered from the saved
+  // copy (the database did not answer) is a failed lookup here too (#1303).
+  const orgs = await slackOrgIds(supabase, 'email-drop-rate')
+  if (orgs.kind !== 'live') {
+    console.error(`[email-drop-rate] event=email_drop_orgs_query_failed reason=${orgs.kind === 'stored' ? 'database_not_answering' : orgs.reason}`)
     return
   }
-
-  const orgIds = [...new Set((conns ?? []).map((c) => c.organization_id as string))]
+  const orgIds = orgs.orgIds
   if (orgIds.length === 0) {
     // Distinct from "checked and found nothing wrong" (LESSONS L98).
     console.log('[email-drop-rate] event=email_drop_no_slack_orgs')

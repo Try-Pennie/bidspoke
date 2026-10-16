@@ -26,6 +26,7 @@ import { LEDGER_KEY_TTL_SECONDS, STORED_COPY_LEDGER_PREFIX } from '../stored-cop
 import { STORED_COPY_KINDS, STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS, STORED_COPY_REFUSALS, confirmedAt, type StoredCopyRefusal } from '../stored-copy-age'
 import { bidMatrixLastGoodKey } from '../bid-matrix-lookup'
 import { SLACK_CONNS_LASTGOOD_KEY } from '../slack-copy'
+import { registerScheduledSlack } from '../scheduled-slack'
 import { encryptSecret } from '../secret-crypto'
 import { endpointLastGoodKey } from '../endpoint-copies'
 import { partnerLastGoodKey } from '../partner-last-good'
@@ -84,7 +85,7 @@ function downDb() {
     asked.push(table)
     const result = { data: null, error: { message: 'upstream connect error', code: '' }, status: 503 }
     const chain: Record<string, unknown> = {}
-    for (const m of ['select', 'eq', 'in', 'order', 'range', 'limit', 'abortSignal']) chain[m] = () => chain
+    for (const m of ['select', 'eq', 'in', 'order', 'range', 'limit', 'abortSignal', 'retry']) chain[m] = () => chain
     chain.then = (resolve: (v: unknown) => unknown) => resolve(result)
     return chain
   }
@@ -98,7 +99,7 @@ function slackDb(config: Record<string, unknown>) {
     asked.push(table)
     const result = { data: [{ organization_id: ORG, config }], error: null, status: 200 }
     const chain: Record<string, unknown> = {}
-    for (const m of ['select', 'eq', 'in', 'order', 'range', 'limit', 'abortSignal']) chain[m] = () => chain
+    for (const m of ['select', 'eq', 'in', 'order', 'range', 'limit', 'abortSignal', 'retry']) chain[m] = () => chain
     chain.then = (resolve: (v: unknown) => unknown) => resolve(result)
     return chain
   }
@@ -131,6 +132,9 @@ function harness(opts: { db?: { client: SupabaseClient; asked: string[] }; sweep
   const kv = fakeKv(clock)
   const copies = fakeKv(clock)
   const db = opts.db ?? downDb()
+  // The scheduled handler's client, as in production (#1303): its Slack reads are
+  // bounded and fall back to the last-good copy in this KV.
+  registerScheduledSlack(db.client, { kv, secretKeys: KEY, sleep: (_ms, signal) => new Promise((resolve) => signal.addEventListener('abort', () => resolve(), { once: true })) })
   const posted: Posted[] = []
   const recoveries: { channel: string; subject: string }[] = []
   const notified: { job: string; errors: string[]; remedy: unknown; keys?: readonly string[] }[] = []
@@ -139,7 +143,6 @@ function harness(opts: { db?: { client: SupabaseClient; asked: string[] }; sweep
     kv: kv as unknown as StoredCopyCheckDeps['kv'],
     copies: copies as unknown as KVNamespace,
     supabase: db.client,
-    secretKeys: KEY,
     appUrl: 'https://app.test',
     sweep: opts.sweep ?? cleanSweep,
     now: () => clock.now,
@@ -200,7 +203,9 @@ describe('while leads are being served from stored copies', () => {
     const r = await runStoredCopyChecks(h.deps())
 
     expect(r.serving).toBe('posted')
-    expect(h.db.asked).toEqual([]) // the Slack token came from KV, not the database that is down
+    // The database was asked once, under the scheduled deadline, and the Slack
+    // token came from the last-good copy in KV when it refused (#1303).
+    expect(h.db.asked).toEqual(['service_connections'])
     expect(h.posted).toHaveLength(1)
     const [post] = h.posted
     expect(post.channel).toBe('C-ALERTS')
@@ -227,12 +232,21 @@ describe('while leads are being served from stored copies', () => {
     expect(text).not.toMatch(/there was no stored copy/)
   })
 
-  it('reads the live Slack connection only when there is no last-good copy', async () => {
-    const h = harness({ db: slackDb(SLACK_CONFIG) })
+  it('posts to the live Slack connection when the database answers, without reading the copy (#1303)', async () => {
+    const h = harness({ db: slackDb({ ...SLACK_CONFIG, default_channel: 'C-LIVE' }) })
+    await rememberSlack(h.kv)
     for (const ago of [0, 1, 2]) await ledgerMinute(h.kv, h.clock, ago, served(5))
     const r = await runStoredCopyChecks(h.deps())
     expect(r.serving).toBe('posted')
     expect(h.db.asked).toEqual(['service_connections'])
+    expect(h.posted.map((p) => p.channel)).toEqual(['C-LIVE'])
+  })
+
+  it('says no_slack when the database refuses and there is no last-good copy', async () => {
+    const h = harness()
+    for (const ago of [0, 1, 2]) await ledgerMinute(h.kv, h.clock, ago, served(5))
+    expect((await runStoredCopyChecks(h.deps())).serving).toBe('no_slack')
+    expect(h.posted).toEqual([])
   })
 
   it('says nothing for copies used in fewer minutes than the threshold, the shape of a healthy day', async () => {

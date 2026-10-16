@@ -11,7 +11,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getSlackConnection, lookupSlackConnection } from '../slack'
-import { registerScheduledSlack, SCHEDULED_SLACK_READ_DEADLINE_MS } from '../scheduled-slack'
+import { slackOrgIds } from '../alert-fanout'
+import { createScheduledSupabaseClient, registerScheduledSlack, scheduledSlackFor, SCHEDULED_SLACK_READ_DEADLINE_MS } from '../scheduled-slack'
+import type { Env } from '../../env'
 import { encryptSecret } from '../secret-crypto'
 import { SLACK_CONNS_LASTGOOD_KEY } from '../slack-copy'
 import { fakeClient, fakeTimers, kvWith, kvWithCopy, LIVE_CONN, OTHER_KEY, STORED_CONN, TEST_KEY, type Answer } from './_scheduled-slack-doubles'
@@ -39,9 +41,11 @@ async function scheduled(answers: Answer[], opts: { copy?: Record<string, unknow
 
 describe('the lookup on the scheduled client', () => {
   it('answers live from the database, without reading the copy', async () => {
-    const { client, calls, kv } = await scheduled([{ data: { config: LIVE_CONN } }], { copy: { [ORG]: STORED_CONN } })
+    const { client, calls, kv, timers } = await scheduled([{ data: { config: LIVE_CONN } }], { copy: { [ORG]: STORED_CONN } })
     const result = await lookupSlackConnection(client, ORG)
     expect(result.kind).toBe('live')
+    // The deadline timer is stopped once the read answers, so none outlives it.
+    expect(timers.signals.every((s) => s.aborted)).toBe(true)
     expect((await getSlackConnection(client, ORG))?.bot_token).toBe('xoxb-live')
     expect(kv.gets).toEqual([])
     expect(calls.every((c) => c.retry === false)).toBe(true)
@@ -134,6 +138,14 @@ describe('when nobody can be told', () => {
     expect(logs.filter((l) => l.includes('the saved copy could not be read'))).not.toHaveLength(0)
   })
 
+  it('answers unreachable copy_unreadable when KV itself cannot be read, rather than throwing', async () => {
+    const { client } = fakeClient([{ error: { message: 'boom' } }])
+    const kv = { get: async () => { throw new Error('KV GET failed: 500') } }
+    registerScheduledSlack(client, { kv, secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep })
+    expect(await lookupSlackConnection(client, ORG)).toEqual({ kind: 'unreachable', reason: 'copy_unreadable' })
+    expect(logs.some((l) => l.includes('KV GET failed: 500'))).toBe(true)
+  })
+
   it('writes a different log line for each of live, stored, none and unreachable', async () => {
     const lines = async (answers: Answer[], copy: Record<string, unknown> | null) => {
       logs.length = 0
@@ -148,6 +160,45 @@ describe('when nobody can be told', () => {
     for (const set of [live, none, stored, unreachable]) expect(set.length).toBeGreaterThan(0)
     const all = [live.join('|'), none.join('|'), stored.join('|'), unreachable.join('|')]
     expect(new Set(all).size).toBe(4)
+  })
+})
+
+describe('the scheduled handler\'s real client', () => {
+  const env = (kv: { get(key: string): Promise<string | null> }) => ({
+    SUPABASE_URL: 'https://example.supabase.co',
+    SUPABASE_SECRET_KEY: 'sb_secret_test',
+    SECRET_ENCRYPTION_KEY: TEST_KEY,
+    IDEMPOTENCY: kv,
+  }) as unknown as Env
+
+  it('is registered, so a real supabase-js read that never answers is aborted at the deadline and the copy answers', async () => {
+    const kv = await kvWithCopy({ [ORG]: STORED_CONN })
+    const sent: Array<{ url: string; aborted: () => boolean }> = []
+    // The network: a request that never answers until its signal fires, as on 2026-10-08.
+    const stalled = ((input: RequestInfo | URL, init?: RequestInit) => {
+      const signal = init?.signal
+      sent.push({ url: String(input), aborted: () => signal?.aborted ?? false })
+      return new Promise<Response>((_, reject) => signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true }))
+    }) as typeof fetch
+    const client = createScheduledSupabaseClient(env(kv), { fetch: stalled, sleep: fakeTimers('now').sleep })
+    expect(scheduledSlackFor(client)).toBeDefined()
+    const conn = await getSlackConnection(client, ORG)
+    expect(conn?.bot_token).toBe('xoxb-stored')
+    expect(sent).toHaveLength(1)
+    expect(sent[0].url).toContain('/rest/v1/service_connections')
+    expect(sent[0].aborted()).toBe(true)
+  })
+
+  it('asks once, with the library\'s own retries off, when a real org list read answers 503, and the copy answers', async () => {
+    const kv = await kvWithCopy({ [ORG]: STORED_CONN })
+    const sent: string[] = []
+    const unavailable = (async (input: RequestInfo | URL) => {
+      sent.push(String(input))
+      return new Response(JSON.stringify({ message: 'upstream connect error' }), { status: 503, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+    const client = createScheduledSupabaseClient(env(kv), { fetch: unavailable, sleep: fakeTimers('never').sleep })
+    expect(await slackOrgIds(client, 'test')).toEqual({ kind: 'stored', orgIds: [ORG], ageMs: null })
+    expect(sent).toHaveLength(1)
   })
 })
 

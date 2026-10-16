@@ -115,6 +115,27 @@ async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what
   return { kind: 'unreachable', reason }
 }
 
+/**
+ * The volume check's read of every connection, the one whose answer is written
+ * to the saved copy (volume-cliff.ts). Deliberately NOT the bounded read above
+ * and never answered from the copy: what it reads becomes the copy, and its
+ * failure is the volume check's own evidence that the database is down, judged
+ * with the client's full deadline as before. #2061 moves the copy's writer to
+ * the database probe.
+ */
+export function readSlackConnectionRowsForCopy(supabase: SupabaseClient) {
+  return supabase.from('service_connections').select('organization_id, config').eq('service_type', 'slack')
+}
+
+/**
+ * The volume check's cheapest proof that the database answers: one row of this
+ * tiny table, under the caller's signal (#1297). Here only so every read of
+ * service_connections lives in one module.
+ */
+export function probeSlackConnectionsTable(supabase: SupabaseClient, signal: AbortSignal) {
+  return supabase.from('service_connections').select('organization_id').limit(1).abortSignal(signal)
+}
+
 /** What forEachSlackOrg did: ran perOrg for each org (from the database or the copy), or could not read the list. */
 export type SlackFanout =
   | { kind: 'ran'; source: 'live' | 'stored'; results: boolean[] }

@@ -38,6 +38,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { getSlackConnection, postMessage } from './slack'
 import { formatErr } from './format-error'
+import { slackOrgIds } from './alert-fanout'
 import { BID_PURGE_HORIZON_MS } from './sightings-export'
 import {
   decideRatioCollapse,
@@ -195,18 +196,14 @@ export async function runBidRecordingCoverageCheck(
   kv: KvLike,
   appUrl?: string,
 ): Promise<void> {
-  // paginate-ok: one row per organization with a Slack connection, single digits
-  const { data: conns, error: connErr } = await supabase
-    .from('service_connections')
-    .select('organization_id')
-    .eq('service_type', 'slack')
-
-  if (connErr) {
-    console.error(`[bid-recording] event=bid_recording_orgs_query_failed error=${connErr.message}`)
+  // The coverage reads below need the database, so an org list answered from the
+  // saved copy (the database did not answer) is a failed lookup here too (#1303).
+  const orgs = await slackOrgIds(supabase, 'bid-recording')
+  if (orgs.kind !== 'live') {
+    console.error(`[bid-recording] event=bid_recording_orgs_query_failed reason=${orgs.kind === 'stored' ? 'database_not_answering' : orgs.reason}`)
     return
   }
-
-  const orgIds = [...new Set((conns ?? []).map((c) => c.organization_id as string))]
+  const orgIds = orgs.orgIds
   if (orgIds.length === 0) {
     console.log('[bid-recording] event=bid_recording_no_slack_orgs')
     return

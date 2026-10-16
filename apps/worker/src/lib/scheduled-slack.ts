@@ -24,7 +24,11 @@
  *
  * Writes never come through here: a write that timed out may still have landed.
  */
-import type { SecretKeyInput } from './secret-crypto'
+import type { SupabaseClient } from '@supabase/supabase-js'
+import type { Env } from '../env'
+import type { Database } from '../types/database'
+import { createSupabaseClient } from './supabase'
+import { secretKeys, type SecretKeyInput } from './secret-crypto'
 import { readSlackCopy, type SlackCopyRead } from './slack-copy'
 import { formatErr } from './format-error'
 
@@ -134,6 +138,20 @@ export function registerScheduledSlack(client: object, options: ScheduledSlackOp
   }
   registered.set(client, slack)
   return slack
+}
+
+/**
+ * The scheduled handler's ONE client for a tick, registered: every job the tick
+ * starts is handed this client, so every Slack lookup they make is bounded and
+ * can fall back to the saved copy without any of them passing anything new.
+ */
+export function createScheduledSupabaseClient(
+  env: Env,
+  options: { fetch?: typeof fetch } & Pick<ScheduledSlackOptions, 'sleep' | 'now' | 'deadlineMs'> = {},
+): SupabaseClient<Database> {
+  const client = createSupabaseClient(env, { fetch: options.fetch })
+  registerScheduledSlack(client, { kv: env.IDEMPOTENCY, secretKeys: secretKeys(env), sleep: options.sleep, now: options.now, deadlineMs: options.deadlineMs })
+  return client
 }
 
 /** This tick's ScheduledSlack when `client` is the scheduled handler's, otherwise undefined. */
