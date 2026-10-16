@@ -31,7 +31,7 @@ const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
 const NOW = new Date('2026-10-15T16:00:00Z')
-const PARTNER = { id: 'p-tp', name: 'Tripoint', slug: 'tripoint', partner_type: 'buyer', is_active: true }
+const PARTNER = { id: '1b9cbd8f-1d23-496c-b046-b11d64edae29', name: 'Tripoint', slug: 'tripoint', partner_type: 'buyer', is_active: true }
 
 /** The SQL check's answer, every labelled table, with these counts. */
 function rpcCheck(rows: Partial<Record<string, number>> = {}, blocking: Partial<Record<string, number>> = {}) {
@@ -141,29 +141,29 @@ afterEach(() => {
 describe('GET /partners/:id/delete-check', () => {
   it('asks the SQL check for this organization\'s partner and answers the consequence and the fingerprint', async () => {
     const w = setup({ check: rpcCheck({ partner_uuid_map: 2, buyer_profiles: 1 }), workflows: [workflowRow('w1', [])], uuids: [{ uuid: 'u1' }, { uuid: 'u2' }] })
-    const res = await call(w.env, 'GET', '/partners/p-tp/delete-check')
+    const res = await call(w.env, 'GET', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29/delete-check')
     expect(res.status).toBe(200)
     const body = await res.json() as PartnerDeleteCheck
-    expect(w.rpc).toHaveBeenCalledWith('partner_delete_check', { p_org: ORG, p_id: 'p-tp' })
+    expect(w.rpc).toHaveBeenCalledWith('partner_delete_check', { p_org: ORG, p_id: '1b9cbd8f-1d23-496c-b046-b11d64edae29' })
     expect(body.blockers).toEqual([])
     expect(body.removes.map((r) => [r.table, r.rows])).toEqual([['buyer_profiles', 1], ['partner_uuid_map', 2]])
     expect(body.fingerprint.workflows).toEqual([{ id: 'w1', updated_at: '2026-10-15T12:00:00.123456+00:00' }])
     expect(body.fingerprint.counts.partner_uuid_map).toBe(2)
     // The ledger asked is this partner's.
-    expect(w.ledger.names).toEqual(['buyer:p-tp'])
+    expect(w.ledger.names).toEqual(['buyer:1b9cbd8f-1d23-496c-b046-b11d64edae29'])
   })
 
   it('lists a workflow reading constants.<Slug>SellOffOfferTitle that names no partner id', async () => {
     const reader = workflowRow('w-read', [{ id: 'c', namespace: 'constants', type: 'constants', config: { data: {} } }, { id: 'r', namespace: 'r', type: 'code', config: { script: 'return constants.TripointSellOffOfferTitle' } }])
     const w = setup({ check: rpcCheck(), workflows: [reader] })
-    const body = await (await call(w.env, 'GET', '/partners/p-tp/delete-check')).json() as PartnerDeleteCheck
+    const body = await (await call(w.env, 'GET', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29/delete-check')).json() as PartnerDeleteCheck
     expect(body.workflows_naming_partner).toEqual([])
     expect(body.workflows_reading_values).toEqual([{ id: 'w-read', name: 'Flow w-read', is_active: true, reads: 'by_name', values: ['TripointSellOffOfferTitle'] }])
   })
 
   it('blocks a buyer with one unmirrored ledger entry and no buyer_sales row', async () => {
     const w = setup({ check: rpcCheck(), ledger: { unmirrored: 1, unresolved: 0 } })
-    const body = await (await call(w.env, 'GET', '/partners/p-tp/delete-check')).json() as PartnerDeleteCheck
+    const body = await (await call(w.env, 'GET', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29/delete-check')).json() as PartnerDeleteCheck
     expect(body.blockers).toEqual([{ kind: 'ledger_unmirrored', count: 1 }])
   })
 
@@ -176,15 +176,26 @@ describe('GET /partners/:id/delete-check', () => {
       { check: { partner: PARTNER } },
       { check: { ...rpcCheck(), dependents: [...rpcCheck().dependents, { table: 'unlabelled_child', kind: 'deleted', rows: 0, blocking_rows: 0 }] } },
     ]) {
-      const res = await call(setup(world).env, 'GET', '/partners/p-tp/delete-check')
+      const res = await call(setup(world).env, 'GET', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29/delete-check')
       expect(res.status, JSON.stringify(world).slice(0, 80)).toBe(503)
       expect(await res.json()).toEqual({ error: DELETE_CHECK_FAILED_MESSAGE })
     }
   })
 
+  // A path id that is no uuid names no partner: a 404, never the failed check
+  // (Postgres would refuse it as invalid uuid text, 22P02, which read as a 503).
+  it('a malformed partner id is a 404 for the check and the delete, and nothing is asked', async () => {
+    const w = setup({ check: rpcCheck() })
+    expect((await call(w.env, 'GET', '/partners/not-a-uuid/delete-check')).status).toBe(404)
+    expect((await call(w.env, 'DELETE', '/partners/not-a-uuid', { fingerprint: { counts: {}, workflows: [] } })).status).toBe(404)
+    expect(w.rpc).not.toHaveBeenCalledWith('partner_delete_check', expect.anything())
+    expect(w.rpc).not.toHaveBeenCalledWith('delete_partner_config', expect.anything())
+    expect(w.ledger.names).toEqual([])
+  })
+
   it('another organization\'s partner is a 404, and its ledger is never asked', async () => {
     const w = setup({ check: null, checkError: { code: 'P0002', message: 'partner_not_found' } })
-    const res = await call(w.env, 'GET', '/partners/p-theirs/delete-check')
+    const res = await call(w.env, 'GET', '/partners/2c9cbd8f-1d23-496c-b046-b11d64edae29/delete-check')
     expect(res.status).toBe(404)
     expect(w.ledger.names).toEqual([])
   })
@@ -195,17 +206,17 @@ describe('DELETE /partners/:id', () => {
 
   it('refuses a delete with no fingerprint (a page from before #2140), deleting nothing', async () => {
     const w = setup({ check: rpcCheck() })
-    const res = await call(w.env, 'DELETE', '/partners/p-tp')
+    const res = await call(w.env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29')
     expect(res.status).toBe(400)
     expect(w.rpc).not.toHaveBeenCalledWith('delete_partner_config', expect.anything())
   })
 
   it('sends the fingerprint, clears the stored copies inside copyCleared, and resets the slug\'s cap and breaker', async () => {
     const w = setup({ check: rpcCheck() })
-    const res = await call(w.env, 'DELETE', '/partners/p-tp', { fingerprint: FP })
+    const res = await call(w.env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true } satisfies PartnerDeleted)
-    expect(w.rpc).toHaveBeenCalledWith('delete_partner_config', { p_org: ORG, p_id: 'p-tp', p_actor: 'user-1', p_actor_email: 'dan@pennie.com', p_expected: FP })
+    expect(w.rpc).toHaveBeenCalledWith('delete_partner_config', { p_org: ORG, p_id: '1b9cbd8f-1d23-496c-b046-b11d64edae29', p_actor: 'user-1', p_actor_email: 'dan@pennie.com', p_expected: FP })
     expect(vi.mocked(invalidatePartnerConstantsCache)).toHaveBeenCalledWith(ORG, expect.anything())
     expect(vi.mocked(refreshBuyerProfilesCache).mock.calls.map((c) => c[0])).toEqual([ORG])
     expect(w.cap.names).toEqual([dailyCapObjectName('tripoint', NOW.getTime()).name])
@@ -217,7 +228,7 @@ describe('DELETE /partners/:id', () => {
     const capName = dailyCapObjectName('tripoint', NOW.getTime()).name
     w.cap.state.set(capName, 250)
     w.breaker.state.set('circuit-tripoint', 'open')
-    expect((await call(w.env, 'DELETE', '/partners/p-tp', { fingerprint: FP })).status).toBe(200)
+    expect((await call(w.env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })).status).toBe(200)
     // A partner created again as tripoint reads the same two objects by name.
     const count = await (await w.env.DAILY_CAP.get(w.env.DAILY_CAP.idFromName(capName)).fetch('http://do/get-count')).json() as { count: number }
     const breaker = await (await w.env.CIRCUIT_BREAKER.get(w.env.CIRCUIT_BREAKER.idFromName('circuit-tripoint')).fetch('http://do/status')).json() as { state: string }
@@ -227,12 +238,12 @@ describe('DELETE /partners/:id', () => {
 
   it('a reset that fails still answers success, with its own warning naming what was not reset', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    const capDown = await call(setup({ check: rpcCheck(), capFails: true }).env, 'DELETE', '/partners/p-tp', { fingerprint: FP })
+    const capDown = await call(setup({ check: rpcCheck(), capFails: true }).env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })
     expect(capDown.status).toBe(200)
     const body = await capDown.json() as PartnerDeleted
     expect(body.state_reset_warning).toBe("Tripoint was deleted, but today's lead count kept under the slug tripoint could not be reset. A partner created again with the slug tripoint today would start with it.")
     expect(body.stored_copy_warning).toBeUndefined()
-    const both = await (await call(setup({ check: rpcCheck(), capFails: true, breakerFails: true }).env, 'DELETE', '/partners/p-tp', { fingerprint: FP })).json() as PartnerDeleted
+    const both = await (await call(setup({ check: rpcCheck(), capFails: true, breakerFails: true }).env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })).json() as PartnerDeleted
     expect(both.state_reset_warning).toMatch(/today's lead count and the error breaker .* would start with them\.$/)
   })
 
@@ -240,7 +251,7 @@ describe('DELETE /partners/:id', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.mocked(invalidatePartnerConstantsCache).mockRejectedValueOnce(new Error('kv down'))
     const w = setup({ check: rpcCheck() })
-    const res = await call(w.env, 'DELETE', '/partners/p-tp', { fingerprint: FP })
+    const res = await call(w.env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ ok: true, stored_copy_warning: COPY_NOT_CLEARED_MESSAGE })
     // The profile copy is still rebuilt and the slug's state still reset.
@@ -252,7 +263,7 @@ describe('DELETE /partners/:id', () => {
     // The DELETE asks the ledger itself: a sale taken after the check is in the
     // ledger and not yet in buyer_sales, so the database alone would not refuse it.
     const w = setup({ check: rpcCheck(), ledger: { unmirrored: 1, unresolved: 0 } })
-    const res = await call(w.env, 'DELETE', '/partners/p-tp', { fingerprint: FP })
+    const res = await call(w.env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })
     expect(res.status).toBe(409)
     const body = await res.json() as PartnerDeleteRefused
     expect(body).toMatchObject({ error: 'blocked', message: BLOCKED_MESSAGE })
@@ -262,7 +273,7 @@ describe('DELETE /partners/:id', () => {
 
   it('a sale landing after the check (BP023) answers blocked with the check as it is now', async () => {
     const w = setup({ check: rpcCheck({}, { buyer_sales: 1 }), deleteError: { code: 'BP023', message: 'partner_has_dependents', details: '1 rows in buyer_sales' } })
-    const res = await call(w.env, 'DELETE', '/partners/p-tp', { fingerprint: FP })
+    const res = await call(w.env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })
     expect(res.status).toBe(409)
     const body = await res.json() as PartnerDeleteRefused
     expect(body).toMatchObject({ error: 'blocked', message: BLOCKED_MESSAGE })
@@ -272,7 +283,7 @@ describe('DELETE /partners/:id', () => {
 
   it('a consequence that moved (BP024) answers the new consequence, so the box re-renders with it', async () => {
     const w = setup({ check: rpcCheck({ partner_uuid_map: 3 }), deleteError: { code: 'BP024', message: 'partner_delete_consequence_changed', details: 'counts' } })
-    const res = await call(w.env, 'DELETE', '/partners/p-tp', { fingerprint: FP })
+    const res = await call(w.env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })
     expect(res.status).toBe(409)
     const body = await res.json() as PartnerDeleteRefused
     expect(body.error).toBe('consequence_changed')
@@ -283,16 +294,16 @@ describe('DELETE /partners/:id', () => {
   it('a refusal whose fresh check cannot be read carries a null check, which the page shows as a failed check', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const w = setup({ check: rpcCheck(), workflowsError: { message: 'down' }, deleteError: { code: 'BP024', message: 'partner_delete_consequence_changed', details: 'workflows' } })
-    const body = await (await call(w.env, 'DELETE', '/partners/p-tp', { fingerprint: FP })).json() as PartnerDeleteRefused
+    const body = await (await call(w.env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })).json() as PartnerDeleteRefused
     expect(body.check).toBeNull()
   })
 
   it('no such partner in this organization is 404; a real database error is 500, never a false 404', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    expect((await call(setup({ check: rpcCheck(), partnerRow: null }).env, 'DELETE', '/partners/p-x', { fingerprint: FP })).status).toBe(404)
-    expect((await call(setup({ check: rpcCheck(), deleteError: { code: 'P0002', message: 'partner_not_found' } }).env, 'DELETE', '/partners/p-tp', { fingerprint: FP })).status).toBe(404)
+    expect((await call(setup({ check: rpcCheck(), partnerRow: null }).env, 'DELETE', '/partners/3d9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })).status).toBe(404)
+    expect((await call(setup({ check: rpcCheck(), deleteError: { code: 'P0002', message: 'partner_not_found' } }).env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })).status).toBe(404)
     const failed = setup({ check: rpcCheck(), deleteError: { code: '42P01', message: 'relation missing' } })
-    expect((await call(failed.env, 'DELETE', '/partners/p-tp', { fingerprint: FP })).status).toBe(500)
+    expect((await call(failed.env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })).status).toBe(500)
     expect(failed.cap.names).toEqual([])
   })
 
@@ -301,22 +312,22 @@ describe('DELETE /partners/:id', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.mocked(refreshBuyerProfilesCache).mockRejectedValueOnce(new Error('kv down'))
     const w = setup({ check: rpcCheck() })
-    const res = await call(w.env, 'DELETE', '/partners/p-tp', { fingerprint: FP })
+    const res = await call(w.env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })
     expect(res.status).toBe(200)
     expect(((await res.json()) as PartnerDeleted).stored_copy_warning).toBe(COPY_NOT_CLEARED_MESSAGE)
-    expect((w.env.WORKFLOW_CACHE as unknown as { delete: ReturnType<typeof vi.fn> }).delete).toHaveBeenCalledWith('partner-lastgood:p-tp')
+    expect((w.env.WORKFLOW_CACHE as unknown as { delete: ReturnType<typeof vi.fn> }).delete).toHaveBeenCalledWith('partner-lastgood:1b9cbd8f-1d23-496c-b046-b11d64edae29')
   })
 
   it('a refused delete leaves the stored copy alone, because the partner is still there', async () => {
     const w = setup({ check: rpcCheck({}, { buyer_sales: 1 }), deleteError: { code: 'BP023', message: 'partner_has_dependents' } })
-    expect((await call(w.env, 'DELETE', '/partners/p-tp', { fingerprint: FP })).status).toBe(409)
+    expect((await call(w.env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })).status).toBe(409)
     expect((w.env.WORKFLOW_CACHE as unknown as { delete: ReturnType<typeof vi.fn> }).delete).not.toHaveBeenCalled()
     expect(w.cap.names).toEqual([])
   })
 
   it('the partner read is scoped to the caller\'s organization', async () => {
     const w = setup({ check: rpcCheck() })
-    await call(w.env, 'DELETE', '/partners/p-tp', { fingerprint: FP })
-    expect(w.sb.eqCalls.partner_configs).toEqual(expect.arrayContaining([['id', 'p-tp'], ['organization_id', ORG]]))
+    await call(w.env, 'DELETE', '/partners/1b9cbd8f-1d23-496c-b046-b11d64edae29', { fingerprint: FP })
+    expect(w.sb.eqCalls.partner_configs).toEqual(expect.arrayContaining([['id', '1b9cbd8f-1d23-496c-b046-b11d64edae29'], ['organization_id', ORG]]))
   })
 })

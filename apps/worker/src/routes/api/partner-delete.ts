@@ -32,6 +32,7 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
 import { fetchAllPaged } from '../../lib/paginate'
+import { isUuid } from '../../lib/query-validators'
 import { readOrgWorkflows } from '../../lib/org-workflows'
 import { loadBuyerProfiles } from '../../lib/buyer-profile-loader'
 import { pricedPartnersByPopulation } from '../../lib/priced-partners'
@@ -105,6 +106,9 @@ function logCheckFailure(id: string, err: unknown): void {
 
 partnerDelete.get('/:id/delete-check', async (c) => {
   const id = c.req.param('id')
+  // An id that is no uuid names no partner (Postgres would refuse it as invalid
+  // uuid text, which would read as a failed check).
+  if (!isUuid(id)) return c.json({ error: 'Partner not found' }, 404)
   let check: PartnerDeleteCheck | null
   try {
     check = await deleteCheck(c, id)
@@ -129,6 +133,7 @@ async function checkAgain(c: AppContext, id: string): Promise<PartnerDeleteCheck
 partnerDelete.delete('/:id', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const id = c.req.param('id')
+  if (!isUuid(id)) return c.json({ error: 'Partner not found' }, 404)
   const supabase = createSupabaseClient(c.env)
 
   let body: unknown
