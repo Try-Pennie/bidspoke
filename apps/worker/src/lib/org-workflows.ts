@@ -5,7 +5,8 @@
  * `__guards__/worker/org-workflows-one-read.test.ts` in apps/web, fails on a
  * hand written copy): the workflow values route
  * (`routes/api/partner-workflow-values.ts`, which hands the rows to the pure
- * scanner), the buyer profile routes (other sellers, and the sold on switch
+ * scanner), the partner usage route (`routes/api/partner-usage.ts`, the Bid
+ * Group tab, #2137), the buyer profile routes (other sellers, and the sold on switch
  * refusal), the step rename impact route (`excludeId`, the workflow being
  * renamed), the code worker migration and the timeout audit (both
  * `activeOnly`). The delete check (#2140) is to call it next.

@@ -29,6 +29,7 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
 import { fetchAllPaged } from '../../lib/paginate'
 import { readOrgWorkflows } from '../../lib/org-workflows'
+import { isUuid } from '../../lib/query-validators'
 import { partnerConstantsFromRows, type PartnerConstantsPartnerRow, type PartnerConstantsUuidRow } from '../../lib/partner-constants-loader'
 import { partnerConstantOutput } from '../../engine/nodes/constants'
 import { CLICK_URL_READERS_OUTSIDE_WORKFLOWS, carriesConstantsNode, scanPartnerValueReaders, type ScannableWorkflow } from '../../lib/partner-workflow-values'
@@ -39,6 +40,8 @@ const workflowValues = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 workflowValues.get('/:id/workflow-values', async (c) => {
   const { orgId } = c.get('user')
   const id = c.req.param('id')
+  // A malformed id names no partner: a 404 before any read, as the usage route answers it, never Postgres' 500.
+  if (!isUuid(id)) return c.json({ error: 'Partner not found' }, 404)
   const supabase = createSupabaseClient(c.env)
 
   const { data: partner, error } = await supabase

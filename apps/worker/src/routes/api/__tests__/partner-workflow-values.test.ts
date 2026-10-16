@@ -22,7 +22,7 @@ const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {} } a
 const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
 
 const tripoint = {
-  id: 'p-1',
+  id: '11111111-1111-4111-8111-111111111111',
   slug: 'tripoint',
   sell_off_offer_title: null,
   sell_off_offer_details: null,
@@ -68,15 +68,15 @@ afterEach(() => vi.clearAllMocks())
 describe('GET /api/partners/:id/workflow-values', () => {
   it('requires a signed in caller', async () => {
     const { default: api } = await import('../index')
-    const res = await api.request('/partners/p-1/workflow-values', { method: 'GET' }, testEnv, mockCtx)
+    const res = await api.request('/partners/11111111-1111-4111-8111-111111111111/workflow-values', { method: 'GET' }, testEnv, mockCtx)
     expect(res.status).toBe(401)
   })
 
   it("is a 404 for another organization's partner id, read by id and organization", async () => {
     const sb = supabaseWith({ partner_configs: { single: null } })
-    const res = await get('/partners/p-other/workflow-values')
+    const res = await get('/partners/22222222-2222-4222-8222-222222222222/workflow-values')
     expect(res.status).toBe(404)
-    expect(sb.eqCalls.partner_configs).toEqual(expect.arrayContaining([['id', 'p-other'], ['organization_id', ORG]]))
+    expect(sb.eqCalls.partner_configs).toEqual(expect.arrayContaining([['id', '22222222-2222-4222-8222-222222222222'], ['organization_id', ORG]]))
   })
 
   it('answers every value the Constants node can emit for the partner, with its value as emitted now', async () => {
@@ -85,10 +85,10 @@ describe('GET /api/partners/:id/workflow-values', () => {
       partner_uuid_map: { list: [{ uuid: 'uuid-1', partner_slug: 'tripoint' }] },
       workflows: { list: [] },
     })
-    const res = await get('/partners/p-1/workflow-values')
+    const res = await get('/partners/11111111-1111-4111-8111-111111111111/workflow-values')
     expect(res.status).toBe(200)
     const body = (await res.json()) as Answer
-    expect(body.partner).toEqual({ id: 'p-1', slug: 'tripoint' })
+    expect(body.partner).toEqual({ id: '11111111-1111-4111-8111-111111111111', slug: 'tripoint' })
     expect(body.values.map((v) => v.kind)).toEqual([...PARTNER_CONSTANT_KINDS, ...PARTNER_CONSTANT_MAPS])
     const byKey = Object.fromEntries(body.values.map((v) => [v.constant_name, v]))
     expect(byKey.TripointClickUrl).toMatchObject({ emitted: true, value: 'https://trypennie.com/portal/tpl' })
@@ -103,7 +103,7 @@ describe('GET /api/partners/:id/workflow-values', () => {
 
   it("reads the partner's sub-account ids by organization and slug", async () => {
     const sb = supabaseWith({ partner_configs: { single: tripoint }, partner_uuid_map: { list: [] }, workflows: { list: [] } })
-    await get('/partners/p-1/workflow-values')
+    await get('/partners/11111111-1111-4111-8111-111111111111/workflow-values')
     expect(sb.eqCalls.partner_uuid_map).toEqual([['org_id', ORG], ['partner_slug', 'tripoint']])
   })
 
@@ -119,7 +119,7 @@ describe('GET /api/partners/:id/workflow-values', () => {
         ],
       },
     })
-    const body = (await (await get('/partners/p-1/workflow-values')).json()) as Answer
+    const body = (await (await get('/partners/11111111-1111-4111-8111-111111111111/workflow-values')).json()) as Answer
     const click = body.values.find((v) => v.constant_name === 'TripointClickUrl')
     expect(click?.readers.map((r) => [r.workflow_id, r.is_active, r.reads])).toEqual([['live', true, 'by_name'], ['draft', false, 'by_name']])
     expect(body.searched).toEqual({ workflows: 3, with_constants_node: 2 })
@@ -137,7 +137,7 @@ describe('GET /api/partners/:id/workflow-values', () => {
         ],
       },
     })
-    const body = (await (await get('/partners/p-1/workflow-values')).json()) as Answer
+    const body = (await (await get('/partners/11111111-1111-4111-8111-111111111111/workflow-values')).json()) as Answer
     expect(body.values.flatMap((v) => v.readers)).toEqual([])
     expect(body.searched.workflows).toBe(0)
     expect(sb.calls.workflows).toEqual(expect.arrayContaining([['eq', ['organization_id', ORG]], ['is', ['deleted_at', null]]]))
@@ -150,7 +150,7 @@ describe('GET /api/partners/:id/workflow-values', () => {
       partner_uuid_map: { list: [] },
       workflows: [{ list: page1 }, { list: [wfRow('last', reads('constants.TripointClickUrl'))] }],
     })
-    const body = (await (await get('/partners/p-1/workflow-values')).json()) as Answer
+    const body = (await (await get('/partners/11111111-1111-4111-8111-111111111111/workflow-values')).json()) as Answer
     expect(body.searched.workflows).toBe(1001)
     expect(body.values.find((v) => v.constant_name === 'TripointClickUrl')?.readers.map((r) => r.workflow_id)).toEqual(['last'])
   })
@@ -158,21 +158,29 @@ describe('GET /api/partners/:id/workflow-values', () => {
   it('a failed workflows read is a failed answer, never an empty list', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     supabaseWith({ partner_configs: { single: tripoint }, partner_uuid_map: { list: [] }, workflows: { listError: { message: 'timeout' } } })
-    const res = await get('/partners/p-1/workflow-values')
+    const res = await get('/partners/11111111-1111-4111-8111-111111111111/workflow-values')
     expect(res.status).toBe(500)
   })
 
   it('a failed sub-account read is a failed answer', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     supabaseWith({ partner_configs: { single: tripoint }, partner_uuid_map: { listError: { message: 'timeout' } }, workflows: { list: [] } })
-    const res = await get('/partners/p-1/workflow-values')
+    const res = await get('/partners/11111111-1111-4111-8111-111111111111/workflow-values')
     expect(res.status).toBe(500)
+  })
+
+  it('an id that is not a uuid is a 404, and nothing is read (as the usage route answers it)', async () => {
+    const sb = supabaseWith({ partner_configs: { single: tripoint }, workflows: { list: [] } })
+    const res = await get('/partners/not-a-uuid/workflow-values')
+    expect(res.status).toBe(404)
+    expect(sb.calls.partner_configs ?? []).toEqual([])
+    expect(sb.calls.workflows ?? []).toEqual([])
   })
 
   it('a failed partner read is a 500, not a 404', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     supabaseWith({ partner_configs: { singleError: { message: 'connection reset' } } })
-    const res = await get('/partners/p-1/workflow-values')
+    const res = await get('/partners/11111111-1111-4111-8111-111111111111/workflow-values')
     expect(res.status).toBe(500)
   })
 })
