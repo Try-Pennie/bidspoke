@@ -2,6 +2,7 @@
 
 import { useId } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
+import { Button, NumberInput, TextInput } from '@/components/ui/form'
 
 interface Tier {
   above: number
@@ -32,6 +33,7 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
   const sourceFieldId = useId()
   const defaultMultiplierId = useId()
   const minimumId = useId()
+  const tierId = useId()
 
   function patch(next: Partial<Config>) {
     const merged: Config = { ...c, ...next }
@@ -65,13 +67,7 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
       <div>
         <label htmlFor={sourceFieldId} className="mb-1 block text-xs font-medium text-gray-600">Multiply this field</label>
         <p className="mb-1.5 text-xs text-gray-500">A reference to a value in the workflow. Common pattern: <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.&lt;field&gt;</code> for a step output, or a bare field name on the trigger payload.</p>
-        <input
-          id={sourceFieldId}
-          value={c.source_field}
-          onChange={(e) => patch({ source_field: e.target.value })}
-          placeholder={PLACEHOLDER_FIELD}
-          className="w-full rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
-        />
+        <TextInput id={sourceFieldId} value={c.source_field} onChange={(v) => patch({ source_field: v })} placeholder={PLACEHOLDER_FIELD} mono />
       </div>
 
       <div className="rounded-lg border border-gray-200 bg-white p-3">
@@ -82,76 +78,35 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
             {c.tiers.map((tier, i) => (
               <div key={i} className="flex items-center gap-1.5 text-xs">
                 <span className="text-gray-500">When &gt;</span>
-                <input
-                  type="number"
-                  value={tier.above}
-                  onChange={(e) => updateTier(i, { above: parseFloat(e.target.value) || 0 })}
-                  className="w-28 rounded-md border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-gray-400 focus:outline-none"
-                />
+                {/* An emptied box is 0, as it was before (#2137): a tier needs a number. */}
+                <NumberInput id={`${tierId}-${i}-above`} aria-label={`Threshold, tier ${i + 1}`} value={tier.above} onChange={(v) => updateTier(i, { above: v ?? 0 })} mono className="w-28" />
                 <span className="text-gray-500">multiply by</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  value={tier.multiplier}
-                  onChange={(e) => updateTier(i, { multiplier: parseFloat(e.target.value) || 0 })}
-                  className="w-24 rounded-md border border-gray-200 px-2 py-1.5 font-mono text-xs focus:border-gray-400 focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => removeTier(i)}
-                  className="ml-auto text-gray-300 hover:text-red-400"
-                  aria-label="Remove tier"
-                  title="Remove tier"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                <NumberInput id={`${tierId}-${i}-multiplier`} aria-label={`Multiplier, tier ${i + 1}`} value={tier.multiplier} onChange={(v) => updateTier(i, { multiplier: v ?? 0 })} step={0.01} mono className="w-24" />
+                <Button variant="ghost" onClick={() => removeTier(i)} aria-label={`Remove tier ${i + 1}`} title="Remove tier" className="ml-auto">
+                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+                </Button>
               </div>
             ))}
           </div>
         )}
-        <button
-          type="button"
-          onClick={addTier}
-          className="flex items-center gap-1 text-xs text-p-blue-dark hover:text-navy"
-        >
-          <Plus className="h-3.5 w-3.5" />
+        <Button variant="ghost" onClick={addTier}>
+          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
           Add tier
-        </button>
+        </Button>
       </div>
 
       <div>
         <label htmlFor={defaultMultiplierId} className="mb-1 block text-xs font-medium text-gray-600">Default multiplier</label>
         <p className="mb-1.5 text-xs text-gray-500">Used when no tier matches.</p>
-        <input
-          id={defaultMultiplierId}
-          type="number"
-          step="0.01"
-          value={c.default_multiplier ?? ''}
-          onChange={(e) => {
-            const v = e.target.value
-            patch({ default_multiplier: v === '' ? null : parseFloat(v) })
-          }}
-          placeholder="0.10"
-          className="w-32 rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
-        />
+        <NumberInput id={defaultMultiplierId} value={c.default_multiplier} onChange={(v) => patch({ default_multiplier: v })} step={0.01} placeholder="0.10" mono className="w-32" />
       </div>
 
       <div>
         <label htmlFor={minimumId} className="mb-1 block text-xs font-medium text-gray-600">Minimum value</label>
         <p className="mb-1.5 text-xs text-gray-500">Below this, no bid is made at all. Leave empty to bid at any value.</p>
-        <input
-          id={minimumId}
-          type="number"
-          value={c.min_source_value ?? ''}
-          onChange={(e) => {
-            const v = e.target.value
-            // Empty means no floor. Zero is a floor of zero, a different rule,
-            // so it must not collapse into the same value (#1199).
-            patch({ min_source_value: v === '' ? null : parseFloat(v) })
-          }}
-          placeholder="none"
-          className="w-32 rounded-lg border border-gray-200 px-3 py-2 font-mono text-sm text-graphite placeholder-gray-400 focus:border-gray-300 focus:outline-none focus:ring-2 focus:ring-p-blue-dark"
-        />
+        {/* Empty means no floor. Zero is a floor of zero, a different rule, so the
+            box keeps null and 0 apart (#1199). */}
+        <NumberInput id={minimumId} value={c.min_source_value} onChange={(v) => patch({ min_source_value: v })} placeholder="none" mono className="w-32" />
       </div>
     </div>
   )

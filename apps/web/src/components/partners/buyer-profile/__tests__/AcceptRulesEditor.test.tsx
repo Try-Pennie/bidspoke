@@ -7,7 +7,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
 import { render, screen, fireEvent, within } from '@testing-library/react'
-import { SIGNAL_OPERATORS, type Signal } from '@bidspoke/buyer-profile'
+import { SIGNAL_OPERATORS, SIGNAL_OPERATOR_LABELS, type Signal } from '@bidspoke/buyer-profile'
+import { chooseOption, readSelect } from '@/components/ui/__tests__/_select'
 import { AcceptRulesEditor } from '../AcceptRulesEditor'
 
 const rules: Signal[] = [
@@ -21,16 +22,18 @@ describe('AcceptRulesEditor', () => {
     const rows = screen.getAllByRole('group', { name: /accept rule/i })
     expect(rows).toHaveLength(2)
     expect(within(rows[0]).getByLabelText(/field/i)).toHaveValue('ok')
-    expect(within(rows[0]).getByLabelText(/operator/i)).toHaveValue('equals')
+    expect(readSelect(within(rows[0]).getByLabelText(/operator/i)).selected).toBe(SIGNAL_OPERATOR_LABELS.equals)
     expect(within(rows[0]).getByLabelText(/value/i)).toHaveValue('true')
-    expect(within(rows[1]).getByLabelText(/operator/i)).toHaveValue('in')
+    expect(readSelect(within(rows[1]).getByLabelText(/operator/i)).selected).toBe(SIGNAL_OPERATOR_LABELS.in)
     expect(within(rows[1]).getByLabelText(/value/i)).toHaveValue('1000,1001,1013')
   })
 
+  // Ported from reading the native select's option values (#2137): the shared
+  // Select lists labels, so the shared order is read through the shared labels.
   it('offers exactly the shared operators, in the shared order', () => {
     render(<AcceptRulesEditor value={rules} onChange={() => {}} />)
-    const select = within(screen.getAllByRole('group', { name: /accept rule/i })[0]).getByLabelText(/operator/i) as HTMLSelectElement
-    expect([...select.options].map((o) => o.value)).toEqual([...SIGNAL_OPERATORS])
+    const trigger = within(screen.getAllByRole('group', { name: /accept rule/i })[0]).getByLabelText(/operator/i)
+    expect(readSelect(trigger).options).toEqual(SIGNAL_OPERATORS.map((o) => SIGNAL_OPERATOR_LABELS[o]))
   })
 
   it('emits a shared Signal for each edit: a list operator splits on commas and keeps numbers numeric, present takes no value', () => {
@@ -42,11 +45,11 @@ describe('AcceptRulesEditor', () => {
     }
     render(<Owner />)
     const row = screen.getByRole('group', { name: /accept rule/i })
-    fireEvent.change(within(row).getByLabelText(/operator/i), { target: { value: 'in' } })
+    chooseOption(within(row).getByLabelText(/operator/i), SIGNAL_OPERATOR_LABELS.in)
     expect(onChange).toHaveBeenLastCalledWith([{ field: 'ok', in: ['true'] }])
     fireEvent.change(within(row).getByLabelText(/value/i), { target: { value: '1000, 1001' } })
     expect(onChange).toHaveBeenLastCalledWith([{ field: 'ok', in: [1000, 1001] }])
-    fireEvent.change(within(row).getByLabelText(/operator/i), { target: { value: 'present' } })
+    chooseOption(within(row).getByLabelText(/operator/i), SIGNAL_OPERATOR_LABELS.present)
     expect(onChange).toHaveBeenLastCalledWith([{ field: 'ok', present: true }])
     expect(within(row).queryByLabelText(/value/i)).toBeNull()
   })

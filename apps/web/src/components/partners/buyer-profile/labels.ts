@@ -6,6 +6,7 @@
  * `windows[day:opens]`, `blackout_dates[date]`, `tiers[population:from]`.
  */
 import { DAYS_OF_WEEK, POPULATIONS, type Population, type ProfileError, type SoldOn } from '@bidspoke/buyer-profile'
+import { formatTime } from '@/components/ui/date-time'
 
 export const FIELD_LABELS: Record<string, string> = {
   sold_on: 'Sold on',
@@ -121,12 +122,6 @@ export const formatCents = (cents: number): string => dollars.format(cents / 100
 export const formatDollars = (amount: number): string => dollars.format(amount)
 export const formatWhole = (n: number): string => whole.format(n)
 
-export function minutesToTime(minutes: number): string {
-  const h = Math.floor(minutes / 60)
-  const m = minutes % 60
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`
-}
-
 /**
  * The two spellings of a row path (#1672). flattenProfileDocument (diff.ts)
  * keys a row in brackets and values it by the whole row: `windows[1:660]`,
@@ -166,7 +161,7 @@ export function profileFieldLabel(path: string): string {
   const row = parseRowPath(path)
   if (row?.kind === 'window') {
     const day = DAYS_OF_WEEK.find((d) => d.index === row.day)?.label ?? `Day ${row.day}`
-    return `${day} hours from ${minutesToTime(row.opens)}`
+    return `${day} hours from ${formatTime(row.opens)}`
   }
   if (row?.kind === 'blackout') return row.dotted ? `Blackout ${row.date} note` : `Blackout ${row.date}`
   if (row?.kind === 'tier') {
@@ -180,7 +175,7 @@ export function profileFieldLabel(path: string): string {
 /** A history value at a dotted row path, which holds one field of the row (#1672). Null means the field was absent on that side. */
 function formatDottedRowValue(row: RowPath, value: unknown): string | null {
   if (!row.dotted) return null
-  if (row.kind === 'window' && typeof value === 'number') return `open until ${minutesToTime(value)}`
+  if (row.kind === 'window' && typeof value === 'number') return `open until ${formatTime(value)}`
   if (row.kind === 'blackout' && typeof value === 'string') return value
   if (row.kind === 'tier' && row.field === 'debt_to' && (typeof value === 'number' || typeof value === 'string')) return formatDollars(Number(value))
   if (row.kind === 'tier' && row.field === 'multiplier' && (typeof value === 'number' || typeof value === 'string')) return String(Number(value))
@@ -203,7 +198,7 @@ export function formatProfileValue(path: string, value: unknown): string {
   if (path === 'allowed_states' && Array.isArray(value)) return value.length ? [...value].map(String).sort().join(', ') : 'none'
   if (path.startsWith('windows[') && typeof value === 'object') {
     const w = value as { opens_minute?: number; closes_minute?: number }
-    return typeof w.opens_minute === 'number' && typeof w.closes_minute === 'number' ? `${minutesToTime(w.opens_minute)} to ${minutesToTime(w.closes_minute)}` : JSON.stringify(value)
+    return typeof w.opens_minute === 'number' && typeof w.closes_minute === 'number' ? `${formatTime(w.opens_minute)} to ${formatTime(w.closes_minute)}` : JSON.stringify(value)
   }
   if (path.startsWith('blackout_dates[') && typeof value === 'object') {
     const b = value as { note?: string | null }
