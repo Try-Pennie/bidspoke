@@ -143,7 +143,7 @@ beforeEach(() => {
       _route: checkRoute, reason: checkRoute === 'eligible' ? 'eligible' : 'daily_click_cap', population: 'engine',
       partner_id: PARTNER_ID, partner_slug: 'clickbuyer', partner_name: 'Click Buyer Inc', click_url: 'https://portal.example-click.test/offer/{prospect_id}', external_routing_code: 4,
       count: 3, daily_lead_cap: 50, count_date: '2026-09-29', count_source: 'copy', profile_served_from: 'cache',
-      judged: { lead: { state: null, debt: null, loan_amount: null }, limits: null }, duration_ms: 4,
+      judged: { lead: { state: null, debt: null, loan_amount: null, collections: null, collections_percent: null }, limits: null }, duration_ms: 4,
     }
     return { output }
   })

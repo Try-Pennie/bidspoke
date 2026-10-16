@@ -41,6 +41,7 @@ Every step below is safe to save on its own: until both scripts are pasted the o
    | State | `{{trigger.payload.personalInformation.state}}` |
    | Debt | `{{steps.prospect_trades.output.body.tradeCalculations.engineDebt}}` |
    | Loan amount | `{{trigger.payload.loanInformation.loanAmount}}` |
+   | Collections | `{{steps.prospect_trades.output.body.tradeCalculations.eligibleCollectionTotalBalance}}` (#2111: Liberty1's profile caps collections at 75 percent of `engineDebt`) |
 
    The three templates were checked against the live definition: buyer_select already reads the state and engineDebt at these paths, and `prospect_body` reads `loanInformation.loanAmount` from the same payload.
 4. **Rewire.** Remove these two live edges:
