@@ -2,11 +2,12 @@
 
 /**
  * The response classification rule builder, extracted from PartnerForm (#1412,
- * L613) so it renders once per group wherever a group belongs: the partner
- * form's Response classification section shows transient and permanent, the
- * Buyer profile section shows the decline rules (rejection) beside the accept
- * rules. `sections` says which groups this instance renders; the state is one
- * object owned by the form, so a rule is never held in two places.
+ * L613): the Bid Group tab's Errors section draws the Retry and Never retry
+ * lists (transient and permanent) through it. The decline rules (rejection)
+ * are drawn by the Buyer profile's DeclineRulesEditor in the outcome rules'
+ * rows since #2325, so `sections` is required: each caller names the groups it
+ * draws and none draws the decline group a second time by default. The state
+ * is one object owned by the form, so a rule is never held in two places.
  */
 import { useId, useRef, useState, type ReactNode } from 'react'
 import { Plus } from 'lucide-react'
@@ -22,7 +23,7 @@ import { RemoveButton } from '@/components/partners/RemoveButton'
 type RuleKind = 'body' | 'status'
 
 /** The conditions an HTTP status rule can carry, labelled with the same words as the body rules (L118). */
-const STATUS_CONDITIONS: readonly StatusCondition[] = ['contains', 'in', 'not_in', 'present']
+export const STATUS_CONDITIONS: readonly StatusCondition[] = ['contains', 'in', 'not_in', 'present']
 
 function uid() { return Math.random().toString(36).slice(2) }
 export function emptyBody(): BodyRule { return { id: uid(), kind: 'body', field: '', condition: 'equals', value: '' } }
@@ -34,7 +35,7 @@ export interface SignalSection {
   desc: string
 }
 
-/** The three legacy groups with their long standing copy. */
+/** The three groups with their long standing copy; callers pick the ones they draw (the Bid Group's Errors draws its own Retry and Never retry lists, and the decline group is drawn by DeclineRulesEditor). */
 export const SIGNAL_SECTIONS: readonly SignalSection[] = [
   { cat: 'rejection', label: 'Rejection',      desc: 'Partner declined the lead. Logged as a business rejection, never retried.' },
   { cat: 'transient', label: 'Transient error', desc: 'Temporary failure. Will be retried according to the workflow retry policy.' },
@@ -138,11 +139,11 @@ export interface SignalSectionExtras {
   after: ReactNode
 }
 
-export function SignalRuleBuilder({ value, onChange, sections = SIGNAL_SECTIONS, extras }: {
+export function SignalRuleBuilder({ value, onChange, sections, extras }: {
   value: SignalRules
   onChange: (v: SignalRules) => void
-  /** Which groups this instance renders. Defaults to all three. */
-  sections?: readonly SignalSection[]
+  /** Which groups this instance renders. */
+  sections: readonly SignalSection[]
   extras?: Partial<Record<SignalCategory, SignalSectionExtras>>
 }) {
   const [removingIds, setRemovingIds] = useState<Set<string>>(new Set())

@@ -1,9 +1,9 @@
 /**
- * The blackout dates editor (#1412): Eastern calendar days the buyer takes off,
- * each with an optional note, kept sorted, at the real count (60 dates render
- * as 60 rows with no truncation). It is a table: the Date and Note headers are
- * said once, not once per row (L579), so sixty dates are sixty short rows and
- * not sixty labelled forms.
+ * The blackout dates editor (#1412), drawn as the settled design draws it
+ * (#2325, PM-22): a list, one row per day off reading its weekday and date,
+ * sorted, with the grey remove mark, at the real count (60 dates render as 60
+ * rows with no truncation). Before #2325 it was a Date and Note table; a note
+ * already stored is still shown after its day, so it is never hidden (L1008).
  */
 import { describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
@@ -17,57 +17,60 @@ const dates: ProfileBlackoutDocument[] = [
 ]
 
 describe('BlackoutDatesEditor', () => {
-  it('renders one row per date, sorted by date, with the note, under headers said once', () => {
+  it('renders one row per day off, sorted, reading its weekday, with a stored note after its day and no table', () => {
     render(<BlackoutDatesEditor value={dates} onChange={() => {}} />)
-    const rows = screen.getAllByRole('row', { name: /blackout/i })
-    expect(rows).toHaveLength(2)
-    expect(within(rows[0]).getByRole('textbox', { name: /date/i })).toHaveValue('Nov 25, 2027')
-    expect(within(rows[1]).getByLabelText(/note/i)).toHaveValue('Christmas')
-    // The third header names the remove column for a screen reader only.
-    expect(screen.getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Date', 'Note', 'Remove'])
-    // The header carries the words; the rows carry no repeated label or placeholder text.
-    expect(screen.queryAllByText('Date')).toHaveLength(1)
-    expect(screen.queryByPlaceholderText(/./)).toBeNull()
+    expect(screen.queryByRole('table')).toBeNull()
+    expect(screen.getAllByRole('listitem').map((li) => li.textContent)).toEqual(['Thursday, Nov 25, 2027', 'Saturday, Dec 25, 2027 Christmas'])
+    expect(screen.queryByRole('textbox')).toBeNull()
   })
 
-  it('adds an empty row, edits a date and a note, and removes by date', () => {
+  it('Add date adds a date box to pick the day in, and a day is removed by its name', () => {
     const onChange = vi.fn()
-    render(<BlackoutDatesEditor value={[dates[0]]} onChange={onChange} />)
+    const { rerender } = render(<BlackoutDatesEditor value={[dates[0]]} onChange={onChange} />)
     fireEvent.click(screen.getByRole('button', { name: /add date/i }))
     expect(onChange).toHaveBeenLastCalledWith([dates[0], { date: '', note: null }])
-    const row = screen.getByRole('row', { name: /blackout/i })
-    fireEvent.change(within(row).getByLabelText(/note/i), { target: { value: 'Christmas Day' } })
-    expect(onChange).toHaveBeenLastCalledWith([{ date: '2027-12-25', note: 'Christmas Day' }])
-    fireEvent.click(within(row).getByRole('button', { name: 'Remove Dec 25, 2027' }))
-    expect(onChange).toHaveBeenLastCalledWith([])
+    rerender(<BlackoutDatesEditor value={[dates[0], { date: '', note: null }]} onChange={onChange} />)
+    // The new row sorts first, so the person sees the row they asked for.
+    const added = screen.getAllByRole('listitem')[0]
+    expect(within(added).getByRole('textbox', { name: 'Date, new date' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Saturday, Dec 25, 2027' }))
+    expect(onChange).toHaveBeenLastCalledWith([{ date: '', note: null }])
   })
 
-  it('a date typed into a middle row that re-sorts the list keeps the focus in that field (#2137)', () => {
-    function Owned() {
-      const [value, setValue] = useState<ProfileBlackoutDocument[]>([
-        { date: '2027-01-01', note: null }, { date: '2027-06-01', note: null }, { date: '2027-12-01', note: null },
-      ])
+  it('a day picked in the new row reads as a row of the list', () => {
+    const onChange = vi.fn()
+    render(<BlackoutDatesEditor value={[{ date: '', note: null }]} onChange={onChange} />)
+    const box = screen.getByRole('textbox', { name: 'Date, new date' })
+    fireEvent.change(box, { target: { value: 'Dec 31, 2027' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(onChange).toHaveBeenLastCalledWith([{ date: '2027-12-31', note: null }])
+  })
+
+  // Lessons review on #2325: committing the day turns the box into a row of the list,
+  // so the focus moves to Add date rather than dropping to the page.
+  it('after a day is picked in the new row, the focus is on Add date, ready for the next', () => {
+    function Owner() {
+      const [value, setValue] = useState<ProfileBlackoutDocument[]>([{ date: '', note: null }])
       return <BlackoutDatesEditor value={value} onChange={setValue} />
     }
-    render(<Owned />)
-    const middle = screen.getByRole('textbox', { name: 'Date, Jun 1, 2027' })
-    middle.focus()
-    fireEvent.change(middle, { target: { value: 'Dec 31, 2027' } })
-    fireEvent.keyDown(middle, { key: 'Enter' })
-    const boxes = screen.getAllByRole('row', { name: /blackout/i }).map((r) => within(r).getByRole('textbox', { name: /^date/i }))
-    expect(boxes.map((b) => (b as HTMLInputElement).value)).toEqual(['Jan 1, 2027', 'Dec 1, 2027', 'Dec 31, 2027'])
-    expect(boxes[2]).toBe(middle)
-    expect(document.activeElement).toBe(middle)
+    render(<Owner />)
+    const box = screen.getByRole('textbox', { name: 'Date, new date' })
+    box.focus()
+    fireEvent.change(box, { target: { value: 'Dec 31, 2027' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(screen.getByRole('listitem')).toHaveTextContent('Friday, Dec 31, 2027')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Add date' }))
   })
 
   it('renders sixty dates as sixty rows', () => {
     const many = Array.from({ length: 60 }, (_, i) => ({ date: `2027-${String(1 + (i % 12)).padStart(2, '0')}-${String(1 + Math.floor(i / 12)).padStart(2, '0')}`, note: null }))
     render(<BlackoutDatesEditor value={many} onChange={() => {}} />)
-    expect(screen.getAllByRole('row', { name: /blackout/i })).toHaveLength(60)
+    expect(screen.getAllByRole('listitem')).toHaveLength(60)
   })
 
-  it('a date that is not a calendar day is flagged beside its row', () => {
+  it('a date that is not a calendar day stays a box to correct, flagged beside its row', () => {
     render(<BlackoutDatesEditor value={[{ date: '2027-02-30', note: null }]} onChange={() => {}} errors={{ 'blackout_dates[2027-02-30]': '2027-02-30 is not a calendar date.' }} />)
     expect(screen.getByRole('alert')).toHaveTextContent('2027-02-30 is not a calendar date.')
+    expect(screen.getByRole('textbox', { name: 'Date, 2027-02-30' })).toBeInTheDocument()
   })
 })

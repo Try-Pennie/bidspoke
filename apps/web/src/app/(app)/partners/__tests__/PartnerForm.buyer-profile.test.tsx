@@ -444,7 +444,8 @@ describe('the Buyer profile section', () => {
     vi.mocked(api.buyerSales.settle).mockResolvedValue({ entry: { status: 'released' }, mirrored: true })
     await renderBuyer()
     expect(screen.getByText(/Main Flow also sells to Tripoint/)).toBeInTheDocument()
-    const row = (await screen.findByText('lead-1')).closest('tr') as HTMLElement
+    // #2325: each unresolved sale is a card (a list item), no longer a table row.
+    const row = (await screen.findByText('lead-1')).closest('li') as HTMLElement
     fireEvent.click(within(row).getByRole('button', { name: /free the slot/i }))
     fireEvent.click(within(row).getByRole('button', { name: /^confirm/i }))
     await waitFor(() => expect(api.buyerSales.settle).toHaveBeenCalledWith('sale-1', 'released'))
@@ -563,7 +564,7 @@ describe('how the buyer is sold', () => {
     const region = screen.getByRole('region', { name: 'Buyer profile' })
     expect(within(region).queryByLabelText('Priority')).toBeNull()
     expect(within(region).queryByRole('heading', { name: 'Pricing' })).toBeNull()
-    expect(within(region).queryByText('Accept when all of')).toBeNull()
+    expect(within(region).queryByText('Accept when every one of')).toBeNull()
     expect(screen.getByLabelText('Clicks per day')).toHaveValue(50)
     for (const label of ['Leads per hour', 'Leads per day', 'Spend per hour', 'Spend per day']) expect(screen.queryByLabelText(label)).toBeNull()
     expect(within(region).queryByText(/as the buyer ledger holds it/)).toBeNull()
@@ -773,6 +774,22 @@ describe('how the buyer is sold', () => {
     expect(screen.getByText('No clicks are held for Liberty1.')).toBeInTheDocument()
   })
 
+  // #2325: the card's header says Counted as the design words it, and only when the
+  // Mark sent answer said the click was counted (L11).
+  it('the marked sent card says Counted when the click was counted, and not when the count did not land', async () => {
+    const row = await markSentWithNoId()
+    expect(await within(row).findByText(/^Counted\. Liberty1's lead id: none given\./)).toBeInTheDocument()
+    cleanup()
+    vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [heldClick], total: 1 })
+    vi.mocked(api.heldClicks.markSent).mockResolvedValue({ outcome: 'sent', generation: 3, count: null, count_failure: 'unknown', count_error: 'no answer', count_date: '2027-09-20', salesforce: noIdWritten, audit_recorded: true, list_cleared: false })
+    await renderWith(clickDoc, { name: 'Liberty1' })
+    const second = (await screen.findByRole('link', { name: 'a0B000000000001AAA' })).closest('li') as HTMLElement
+    fireEvent.click(within(second).getByRole('button', { name: 'Mark sent' }))
+    fireEvent.click(within(second).getByRole('button', { name: 'Mark it sent' }))
+    expect(await within(second).findByText(/^Liberty1's lead id: none given\./)).toBeInTheDocument()
+    expect(within(second).queryByText(/^Counted\./)).toBeNull()
+  })
+
   it('adding the lead id afterwards goes through the API at the sale\'s generation; once every update lands the entry leaves the list and only the outcome stays', async () => {
     const row = await markSentWithNoId()
     vi.mocked(api.heldClicks.setLeadId).mockResolvedValue({ outcome: 'amended', generation: 4, salesforce: { ...allUpdated, buyer_lead_id: 'L1F-778' }, audit_recorded: true, list_cleared: true })
@@ -909,10 +926,12 @@ describe('click delivery', () => {
     expect(screen.getByText('This reply is not a valid pattern.')).toBeInTheDocument()
   })
 
-  it('removing a route is a destructive control', async () => {
+  // #2325: removing a route is staged like every edit (the bar names it and Discard
+  // puts it back), so it is the page's grey minus, no longer a red button.
+  it('removing a route is the grey remove mark, and takes the route off the page', async () => {
     await renderWith({ ...clickDoc, click_delivery: delivery })
     const remove = screen.getByRole('button', { name: 'Remove route DV1' })
-    expect(remove.className).toMatch(/btn-danger/)
+    expect(remove.className).not.toMatch(/btn-danger/)
     fireEvent.click(remove)
     expect(screen.queryByDisplayValue(`${LC}/dv1`)).toBeNull()
   })

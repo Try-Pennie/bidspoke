@@ -99,7 +99,8 @@ describe('the Time zone picker under Hours', () => {
     // In Eastern, Monday all day is the same hours every day: one chip and one range (#2324).
     expect(screen.getByRole('checkbox', { name: 'Monday' })).toHaveAttribute('aria-checked', 'true')
     expect([screen.getByLabelText('Opens'), screen.getByLabelText('Closes')].map((b) => (b as HTMLInputElement).value)).toEqual(['12:00 AM', '12:00 AM'])
-    expect(screen.getByText(/A day runs midnight to midnight Eastern time\./)).toBeInTheDocument()
+    // #2325: in Eastern the caps note says it as the design does, "Hours and days are Eastern."
+    expect(screen.getByText(/Hours and days are Eastern\./)).toBeInTheDocument()
   })
 
   it('choosing Pacific redraws the hours and the reset times in Pacific, and saves only the zone', async () => {
