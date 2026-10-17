@@ -13,10 +13,14 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { REPO_ROOT } from './_scan-utils'
 import {
+  ALL_OBSERVATION_REASONS,
   ALL_STATUS_REASONS,
   EXECUTION_STATUSES,
   LEASED_RUN_REQUEST_STATUSES,
   LEDGER_METHODS,
+  OBSERVATION_OUTCOMES,
+  OBSERVATION_REASONS,
+  OPS_SWEEPS,
   OVERLAP_RULES,
   RESUME_REASONS,
   RUN_REQUEST_STATUSES,
@@ -58,6 +62,10 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     ['workflow_executions_status_check', EXECUTION_STATUSES],
     ['send_ledger_status_check', SEND_LEDGER_STATUSES],
     ['send_ledger_method_check', LEDGER_METHODS],
+    // The minute cron's (#1949).
+    ['schedule_fire_observations_outcome_check', OBSERVATION_OUTCOMES],
+    ['schedule_fire_observations_reason_check', ALL_OBSERVATION_REASONS],
+    ['ops_lane_sweeps_sweep_check', OPS_SWEEPS],
   ] as const)('%s', (name, values) => {
     expect(sorted(constraintValues(SQL, name))).toEqual(sorted(values))
   })
@@ -66,6 +74,17 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     expect(sorted(constraintValues(SQL, 'run_requests_reason_required'))).toEqual(
       sorted(Object.keys(STATUS_REASONS).filter((s) => s !== 'failed')),
     )
+  })
+
+  it('an observation pairs each outcome with its own reasons, as the database does (#1949)', () => {
+    const at = SQL.indexOf('CONSTRAINT schedule_fire_observations_pair_check CHECK')
+    expect(at).toBeGreaterThan(-1)
+    const pair = SQL.slice(at, SQL.indexOf(');', at))
+    for (const [outcome, reasons] of Object.entries(OBSERVATION_REASONS)) {
+      const clause = new RegExp(`outcome = '${outcome}' AND reason IN \\(([^)]*)\\)`).exec(pair)
+      expect(clause, outcome).not.toBeNull()
+      expect(sorted([...clause![1].matchAll(/'([^']*)'/g)].map((m) => m[1]))).toEqual(sorted(reasons))
+    }
   })
 
   it('no reason belongs to two statuses, so a reason names its status', () => {

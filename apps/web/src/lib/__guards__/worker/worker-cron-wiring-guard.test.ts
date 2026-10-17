@@ -3,6 +3,7 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { REPO_ROOT } from '../../__tests__/_scan-utils'
 import { sanitizeSource } from '../../__tests__/_scan-utils'
+import { STAMPED_IN, jobWorkers } from './_cron-registry'
 
 /**
  * Every cron Cloudflare is told to fire must have a handler, and every handler
@@ -120,6 +121,19 @@ const constants = exportedStringConstants(
 )
 const stamped = stampedJobIds(indexSrc, constants)
 
+// Jobs of another Worker (#1949): the ops Worker's minute cron is scheduled in
+// wrangler.ops.toml and stamped through the OpsGateway entrypoint.
+const registrySrc = readFileSync(HEARTBEAT, 'utf8')
+const workers = jobWorkers(registrySrc)
+const OPS_WRANGLER = path.join(REPO_ROOT, 'apps/worker/wrangler.ops.toml')
+const opsCrons = scheduledCrons(readFileSync(OPS_WRANGLER, 'utf8'))
+const cronOf = (id: string): string | undefined => {
+  const at = registrySrc.indexOf(`id: '${id}',`)
+  return /triggerCron:\s*'([^']+)'/.exec(registrySrc.slice(at))?.[1]
+}
+const stampedElsewhere = [...new Set(workers.values())].flatMap((w) =>
+  stampedJobIds(readFileSync(path.join(REPO_ROOT, 'apps/worker/src', STAMPED_IN[w]), 'utf8'), constants))
+
 describe('worker cron wiring (#251)', () => {
   it('has a handler for every scheduled cron', () => {
     expect(crons.filter((c) => !handled.includes(c)), 'scheduled but nothing runs').toEqual([])
@@ -135,16 +149,25 @@ describe('worker cron wiring (#251)', () => {
     expect(heartbeats.filter((c) => !crons.includes(c)), 'heartbeat names a cron that is not scheduled').toEqual([])
   })
 
+  it('has a real schedule behind every job of another Worker, in that Worker\'s config (#1949)', () => {
+    const ops = [...workers].filter(([, w]) => w === 'bidspoke-worker-ops').map(([id]) => id)
+    expect(ops).toContain('ops-tick')
+    for (const id of ops) expect(opsCrons, `${id} is watched on ${cronOf(id)}, which wrangler.ops.toml does not schedule`).toContain(cronOf(id))
+  })
+
   it('stamps a heartbeat for every job it watches (#1332)', () => {
     // Watched but never stamped is permanently indistinguishable from broken,
     // and the remedy the alert gives names something that was never wrong.
-    expect(jobIds.filter((id) => !stamped.includes(id)), 'watched but nothing stamps it').toEqual([])
+    const ownJobs = jobIds.filter((id) => !workers.has(id))
+    expect(ownJobs.filter((id) => !stamped.includes(id)), 'watched but nothing stamps it').toEqual([])
+    const otherJobs = jobIds.filter((id) => workers.has(id))
+    expect(otherJobs.filter((id) => !stampedElsewhere.includes(id)), 'watched for another Worker but nothing stamps it').toEqual([])
   })
 
   it('does not stamp a job it never registered', () => {
     // The other direction: a stamp for an id the registry does not hold writes
     // to a key nothing reads, so the job looks watched and is not.
-    expect(stamped.filter((id) => !jobIds.includes(id)), 'stamped but not watched').toEqual([])
+    expect([...stamped, ...stampedElsewhere].filter((id) => !jobIds.includes(id)), 'stamped but not watched').toEqual([])
   })
 
   it('read all four files, so it cannot pass vacuously', () => {

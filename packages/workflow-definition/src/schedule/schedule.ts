@@ -211,3 +211,21 @@ export function reattemptAtMs(config: ScheduleConfig, scheduledForMs: number): n
   if (config.reattempt_after_seconds === undefined) return null
   return scheduledForMs + config.reattempt_after_seconds * 1000
 }
+
+/** What a stored trigger says about a schedule (#1949). */
+export type TriggerSchedule = { kind: 'none' } | { kind: 'schedule'; config: unknown }
+
+/**
+ * The schedule a stored trigger carries, read in one place: `{ type:
+ * 'schedule', config: <ScheduleConfig> }`, the `{ type, config }` shape every
+ * trigger already has (the http_webhook one in apps/worker/src/types.ts). The
+ * config is returned unvalidated, for the caller to judge with validateSchedule
+ * inside its own boundary, so an invalid one is reported rather than dropped.
+ * The ops database reads the same two fields to set a schedule's floor
+ * (supabase-ops migration 20261017090000, save_workflow_copies): a change to
+ * this shape when #1947's TriggerConfig union lands changes both.
+ */
+export function scheduleFromTrigger(trigger: unknown): TriggerSchedule {
+  if (!isRecord(trigger) || trigger.type !== 'schedule') return { kind: 'none' }
+  return { kind: 'schedule', config: trigger.config }
+}

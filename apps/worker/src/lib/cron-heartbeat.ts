@@ -93,6 +93,15 @@ export interface CronJob {
   completionDroughtMs?: number
   /** What stops working while this job is dark (for the alert body). */
   dependents: string
+  /**
+   * The Worker whose cron this is, when it is not this one (#1949). Absent means
+   * this Worker: its trigger is in wrangler.toml and index.ts stamps it. The ops
+   * Worker's tick stamps through the OpsGateway entrypoint instead
+   * (lib/ops-gateway.ts), and its trigger is in wrangler.ops.toml.
+   */
+  worker?: 'bidspoke-worker-ops'
+  /** The dark alert's fix, when this Worker's generic one names the wrong place. */
+  darkFixHint?: string
 }
 
 // The daily job keeps id 'daily-1300' so heartbeatKey()/firstSeenKey() reproduce
@@ -157,6 +166,20 @@ export const CRON_JOBS: CronJob[] = [
     maxRunMs: 30 * MIN,
     dependents:
       'archived executions are no longer being deleted once they pass 13 months, so unredacted SSNs, dates of birth, addresses and credit reports accumulate in Snowflake with no upper bound',
+  },
+  {
+    // The canary's daily read-back (#2173). Removed with it by the phase 6
+    // change (#2175): see docs/main-flow-relay-port.md.
+    id: 'invalid-state-canary-watch',
+    label: 'Main Flow invalid state write report',
+    triggerCron: '0 13 * * *',
+    // 24h cadence, 2h slack, matching the other daily jobs.
+    staleMs: 26 * H,
+    // About 19 runs a day, at most two Salesforce reads each, one at a time and
+    // each bounded at 12 s; the first unanswered read stops the rest.
+    maxRunMs: 30 * MIN,
+    dependents:
+      "nobody is told each morning whether Main Flow's direct invalid state writes to Salesforce landed, so a lost write shows only when somebody opens the record (#2173)",
   },
   {
     id: 'partner-reachability',
@@ -328,6 +351,31 @@ export const CRON_JOBS: CronJob[] = [
     maxRunMs: 20 * MIN,
     dependents:
       'the buyer_select_parity_days rows the Stage A exit criteria are read from stop being refreshed, so a day can pass out of the execution_steps retention window without being summarised (#1413)',
+  },
+  {
+    // The ops Worker's minute cron (#1949), watched from here because the
+    // watchdog must not depend on the Worker it watches (L71). Its stamps arrive
+    // through the OpsGateway entrypoint (lib/ops-gateway.ts); a tick that cannot
+    // reach the gateway stamps nothing and reads as dark, which it is to anyone
+    // relying on it.
+    id: 'ops-tick',
+    label: 'Ops minute cron',
+    triggerCron: '* * * * *',
+    worker: 'bidspoke-worker-ops',
+    // Not the 10 minutes of the other minute jobs: a newly added cron first fires
+    // about 16 minutes after the deploy that adds it (spike #1946, measured
+    // 2026-10-16), so 10 would page "never ran" on every deploy that adds it.
+    staleMs: 25 * MIN,
+    // One tick in observe mode is seconds. Judged by the drought below, as every
+    // minute job is (#2057), never by one run.
+    maxRunMs: 50 * 1000,
+    // Past the 15 minute wall a tick can legitimately run for (spike P1), so a
+    // long tick is never read as a killed one.
+    completionDroughtMs: 20 * MIN,
+    dependents:
+      'ported ops workflows are not scheduled: nothing works out which of their slots are due, records them or reports a missed one, and the run engine\'s lease and expiry sweeps stop (#1949)',
+    darkFixHint:
+      'confirm bidspoke-worker-ops deployed with its minute trigger (wrangler.ops.toml `[triggers]`, and the Deploy Ops Worker job checks the deploy listed it), that its logs show `ops_tick` lines, and that its OPS_GATEWAY binding reaches this Worker, since the tick stamps its heartbeat through it.',
   },
   {
     id: 'engine-script-drift',

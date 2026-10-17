@@ -34,6 +34,7 @@ import { describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnrea
 import { composeSalesforceReadBackAlert, type SalesforceReadBackAlert } from './salesforce-read-back-alert'
 import { openOutageForPost, type OpenOutage } from './outage-notice'
 import { STALL_SNAPSHOT_DEADLINE_MS, STALL_SNAPSHOT_TTL_SECONDS, type StallSnapshotCount } from './db-stall-snapshot'
+import { isIdleShutdownRefusal } from '@bidspoke/partner-page-live'
 export type { SlackConnection } from './slack-connection'
 
 export interface FailureAlertPayload {
@@ -2027,7 +2028,7 @@ export async function sendQueryTimeoutAlert(
 export async function sendCronHeartbeatAlert(
   supabase: SupabaseClient,
   orgId: string,
-  job: { label: string; triggerCron: string; dependents: string; completionDroughtMs?: number },
+  job: { label: string; triggerCron: string; dependents: string; completionDroughtMs?: number; darkFixHint?: string },
   status: 'stale' | 'never_ran' | 'vanished' | 'unstamped',
   ageMs: number | null,
   standing: StandingCondition | null = null,
@@ -2143,7 +2144,10 @@ export async function sendCronHeartbeatAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*How to fix:* confirm the worker deployed with its scheduled triggers (wrangler.toml \`[triggers]\` must list this job's schedule, below) and that the scheduled handler is not throwing before it starts the job. The worker's triggers and its logs for this job's runs are in the Cloudflare dashboard.`,
+        // A cron of another Worker names its own place (#1949).
+        text: job.darkFixHint
+          ? `*How to fix:* ${job.darkFixHint}`
+          : `*How to fix:* confirm the worker deployed with its scheduled triggers (wrangler.toml \`[triggers]\` must list this job's schedule, below) and that the scheduled handler is not throwing before it starts the job. The worker's triggers and its logs for this job's runs are in the Cloudflare dashboard.`,
       },
     },
     lastLine('Seen because the job has not stamped a run inside its expected cadence.'),
@@ -3541,6 +3545,8 @@ export interface PartnerPageLivePayload {
   problem: 'channel' | 'monitor'
   reason: string
   since: string
+  /** For `channel`: the runs that measured the channel since `since`, and how many missed (#2263). */
+  checks?: { runs: number; misses: number }
   repeat: string | null
   at: number
 }
@@ -3559,11 +3565,21 @@ export async function sendPartnerPageLiveAlert(
   const reason = `\`${stripUrlQueriesInText(truncateErrorForAlert(payload.reason))}\``
   const broken = payload.problem === 'channel'
   const header = broken ? 'Partners page live updates are not arriving' : 'Bidspoke cannot check partners page live updates'
+  const checks = payload.checks
+  // Says how often it failed, never "since" alone: an alert that stood 12 hours
+  // read as a total outage while two of every three runs received (#2263).
+  const missed = checks && checks.runs > 1
+    ? `The delivery check failed in ${checks.misses} of ${checks.runs} runs since ${etTime(Date.parse(payload.since))} on the partners page channel.`
+    : `The delivery check failed on the partners page channel at ${etTime(Date.parse(payload.since))}.`
   const lines = broken
     ? [
-        `Since ${etTime(Date.parse(payload.since))} the delivery check has not received its own test notice on the partners page channel. ` +
-          "Someone editing a partner will not see another person's save appear, and finds out about it only when they save. " +
-          `The last check found: ${reason}.`,
+        `${missed} ` +
+          "While it fails, someone editing a partner may not see another person's save appear, and finds out about it only when they save. " +
+          `The last check found: ${reason}.` +
+          (isIdleShutdownRefusal(payload.reason)
+            ? " Realtime words a join this way when it arrives while Realtime is closing this project's idle connection, so it is not a pool size setting in Bidspoke. " +
+              'The check retries that refusal, so here every retry was refused too: look in the Realtime logs for a shutdown or a connection error at this time.'
+            : ''),
       ]
     : [
         `Since ${etTime(Date.parse(payload.since))} the delivery check for partners page live updates has not been able to run, so live updates stopping would go unreported. ` +

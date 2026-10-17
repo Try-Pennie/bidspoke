@@ -30,6 +30,7 @@ import { runSecretDecryptHealthCheck } from './lib/secret-decrypt-health'
 import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, writeHeartbeatCompleted, runHeartbeatChecks } from './lib/cron-heartbeat'
+import { runOpsTickReportCheck } from './lib/ops-gateway'
 import { runPartnerReachabilityCheck, fetchProbe, liveSenders } from './lib/partner-reachability'
 import { resolveSlackForEveryOrg } from './lib/standing-alert'
 import { runIncidentDrain, INCIDENT_DRAIN_JOB } from './lib/incident-drain'
@@ -74,6 +75,8 @@ export { LatencyMarkObject } from './durable-objects/latency-mark'
 export { AlertClaimObject } from './durable-objects/alert-claim'
 export { BuyerLedgerObject } from './durable-objects/buyer-ledger'
 export { LeadSaleObject } from './durable-objects/lead-sale'
+// The ops Worker's way in (#1949): its OPS_GATEWAY binding names this entrypoint.
+export { OpsGateway } from './lib/ops-gateway-entrypoint'
 
 export type { Env } from './env'
 import type { Env } from './env'
@@ -553,6 +556,25 @@ const scheduledJobs = {
           const { runScheduledBuyerObjectsDrillForEnv } = await import('./lib/buyer-objects-health')
           await runScheduledBuyerObjectsDrillForEnv(supabase, env)
         })().catch((e) => console.error('[buyer-objects-drill] failed:', e)),
+      )
+      // The Main Flow invalid state canary's daily read-back from Salesforce
+      // (#2173): every run whose write went straight to Salesforce yesterday,
+      // read back and posted, landed or not. Its own heartbeat, so a missed day
+      // pages; removed with the canary by the phase 6 change (#2175).
+      track(
+        (async () => {
+          const { runInvalidStateWatchForEnv, INVALID_STATE_WATCH_JOB } = await import('./lib/invalid-state-canary-watch')
+          await writeHeartbeat(env.IDEMPOTENCY, INVALID_STATE_WATCH_JOB).catch((e) =>
+            console.error('[cron-heartbeat] invalid-state-canary-watch write failed:', e)
+          )
+          try {
+            await runInvalidStateWatchForEnv(supabase, env)
+          } finally {
+            await writeHeartbeatCompleted(env.IDEMPOTENCY, INVALID_STATE_WATCH_JOB).catch((e) =>
+              console.error('[cron-heartbeat] invalid-state-canary-watch completed write failed:', e)
+            )
+          }
+        })().catch((e) => console.error('[invalid-state-canary-watch] failed:', e))
       )
       // The deletion gate's measurements (#872, Phase A4). SHADOW: it writes
       // numbers to execution_archive_days and nothing reads them to authorise a
@@ -1180,6 +1202,15 @@ const scheduledJobs = {
       minuteJob('upstream-outage-check',
         runUpstreamOutageCheck(supabase, env.IDEMPOTENCY, env.APP_URL, reachability.claims)
           .catch((e) => console.error('[upstream-outage] check failed:', e))
+      )
+      // The ops minute cron's report (#1949): the tick runs in the ops Worker and
+      // stamps its heartbeat here through OpsGateway; this pages on a tick that
+      // ran but reported a problem or is not configured. A tick that stopped is
+      // the heartbeat check's, below (L71: the watchdog is not the Worker watched).
+      minuteJob('ops-tick-report',
+        runOpsTickReportCheck(supabase, env.IDEMPOTENCY, Date.now())
+          .then((v) => { if (v === 'alerted') console.error('[ops-tick] the ops minute cron reported a problem') })
+          .catch((e) => console.error('[ops-tick] report check failed:', e))
       )
       minuteJob('heartbeat-checks',
         runHeartbeatChecks(supabase, env.IDEMPOTENCY, Date.now(), reachability.claims)

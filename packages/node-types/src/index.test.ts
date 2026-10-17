@@ -78,12 +78,12 @@ describe('NODE_TRAITS', () => {
     expect(withTrait((t) => t.walkGraphOnly)).toEqual(['bid_group', 'buyer_click_check', 'buyer_click_send', 'buyer_select', 'parallel', 'parallel_end'])
   })
 
-  it('bid_group and buyer_select synthesize attempt rows; only partner_bid and bid_group name partners in config', () => {
+  it('bid_group and buyer_select synthesize attempt rows; bid_group, the two click nodes, latency_gate and partner_bid name partners in config', () => {
     // buyer_select names no partner: it sells to every buyer holding an enabled
     // profile priced for its population, which the partner routes resolve at
     // read time rather than from the node's config.
     expect(withTrait((t) => t.synthesizesAttempts)).toEqual(['bid_group', 'buyer_select'])
-    expect(withTrait((t) => t.referencesPartners)).toEqual(['bid_group', 'buyer_click_check', 'buyer_click_send', 'partner_bid'])
+    expect(withTrait((t) => t.referencesPartners)).toEqual(['bid_group', 'buyer_click_check', 'buyer_click_send', 'latency_gate', 'partner_bid'])
   })
 
   it('names the types that record their own bid-attempt rows during the walk (the #368 projection gap)', () => {

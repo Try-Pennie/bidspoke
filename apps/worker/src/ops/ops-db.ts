@@ -17,10 +17,11 @@
  *   `.schema(` against it, and on the client being handed to anything typed
  *   wider than OpsSupabaseClient, where that scan could no longer follow it.
  *
- * Nothing reads the ops database yet: the run engine's tables exist (#1948) but
- * nothing calls them until its tick (#1949). So OPS_SUPABASE_URL and
- * OPS_SUPABASE_SECRET_KEY are on the ops Worker's allowlist (lib/secret-lists.ts)
- * and not its required list, which would alert on two secrets no code needs.
+ * The minute cron (#1949, tick.ts) is the first reader: it calls the run engine's
+ * functions every minute. OPS_SUPABASE_URL and OPS_SUPABASE_SECRET_KEY are still
+ * on the ops Worker's allowlist (lib/secret-lists.ts), not its required list:
+ * while either is unset the tick reports not_configured by name and pages, and
+ * lib/secret-lists.ts says why they are not also required yet.
  *
  * Writes are not here: every ops write is a database function called through
  * callOpsRpc in ops-writes.ts, the one `.rpc(` on this client, which the same

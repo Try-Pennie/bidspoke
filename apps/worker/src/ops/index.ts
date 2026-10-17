@@ -36,6 +36,10 @@
  * nothing to it. Spike 0 measured the platform ceilings the run engine is sized
  * by: docs/ops-ceilings-spike.md.
  *
+ * And the minute cron (#1949): scheduled() runs one tick of the run engine in
+ * observe mode (tick.ts), which computes and records what it would run and runs
+ * nothing that sends anywhere.
+ *
  * Before any of that, the Worker checks its lane (#1709, plan 0.E): LANE must
  * be "ops", set in wrangler.ops.toml, or every request is refused by name. A
  * deploy that lost or swapped its config must not answer as the ops Worker.
@@ -43,9 +47,12 @@
  */
 import type { WorkflowLane } from '@bidspoke/node-types'
 import { SIGNATURE_HEADER, deriveHexKey, deriveWorkflowKey, redactCapture, verifyBodySignature } from '@bidspoke/porting-evidence'
+import type { OpsGatewayBinding } from '../lib/ops-gateway-contract'
 import type { OpsDbEnv } from './ops-db'
 import { PORTING_REGISTRY, type PortingRegistry } from './porting-registry'
 import type { OpsInternalBinding } from './internal'
+import { runOpsTick } from './tick'
+import { liveTickPorts } from './tick-live'
 
 export interface OpsEnv extends OpsDbEnv {
   /** The lane this Worker serves: "ops", from wrangler.ops.toml [vars]. */
@@ -60,6 +67,11 @@ export interface OpsEnv extends OpsDbEnv {
   CODE_NODES_OPS: DispatchNamespace
   /** This Worker's own OpsInternal entrypoint, through a service binding (#1946). */
   SELF?: OpsInternalBinding
+  /**
+   * The bidding Worker's OpsGateway entrypoint (#1949, decision 4): the ops
+   * workflows' state, and the minute cron's heartbeat and report.
+   */
+  OPS_GATEWAY?: OpsGatewayBinding
 }
 
 /** The one lane this Worker serves. */
@@ -269,8 +281,26 @@ const handler = createOpsHandler()
  */
 export { OpsInternal } from './internal'
 
+/**
+ * One tick of the minute cron (#1949). Refuses by name outside the ops lane, as
+ * every request does: a deploy that lost its config must not tick as the ops
+ * Worker. The tick is awaited whole, because every call it dispatches is
+ * cancelled the moment this invocation ends (spike P4).
+ */
+export async function scheduledTick(controller: { scheduledTime: number }, env: OpsEnv): Promise<void> {
+  if (env.LANE !== OPS_LANE) {
+    const reason = env.LANE ? 'lane_not_ops' : 'lane_unset'
+    console.error(JSON.stringify({ event: 'ops_tick', step: 'refused', reason }))
+    throw new Error(`the ops minute cron refused to tick: ${reason}`)
+  }
+  await runOpsTick(liveTickPorts(env, controller.scheduledTime))
+}
+
 export default {
   fetch(req: Request, env: OpsEnv): Promise<Response> {
     return handler(req, env)
+  },
+  scheduled(controller: ScheduledController, env: OpsEnv): Promise<void> {
+    return scheduledTick(controller, env)
   },
 } satisfies ExportedHandler<OpsEnv>

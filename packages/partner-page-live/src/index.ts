@@ -18,6 +18,19 @@ export function partnerPageTopic(organizationId: string): string {
 }
 
 /**
+ * A join refused because Realtime was closing this project's idle connection
+ * while the join's authorization query ran (#2263). Realtime shuts the
+ * connection down ten minutes after nobody stays connected, and words a join
+ * caught in that as a pool shortage (2026-10-16 04:45:14 UTC: "Tenant has no
+ * connected users", then `{:shutdown, {DBConnection.Holder, :checkout ...}}`,
+ * then IncreaseConnectionPool), which is not a pool size setting here. The
+ * next join wakes it, so it is worth trying again.
+ */
+export function isIdleShutdownRefusal(reason: string): boolean {
+  return /IncreaseConnectionPool|\{:shutdown,/.test(reason)
+}
+
+/**
  * What a notice is about:
  *  - partner: a partner_configs UPDATE that moved its version;
  *  - profile: the buyer profile or one of its child tables;
