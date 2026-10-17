@@ -1,7 +1,7 @@
 /**
  * How many refused rows each tail worker record holds in its isolate before it
  * drops the oldest (#2166, #2284). A leaf with no runtime types, so the web
- * guard apps/web/src/lib/__guards__/worker/tail-copier-caps.test.ts can hold
+ * guard apps/web/src/lib/__tests__/tail-copier-caps.test.ts can hold
  * these against the crons in apps/worker/wrangler.toml.
  *
  * Each record has its own cap, sized from its own daily volume, so a database

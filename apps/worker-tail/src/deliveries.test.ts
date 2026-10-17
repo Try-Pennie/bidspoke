@@ -121,7 +121,7 @@ describe('createDeliveryCopier', () => {
 // sized from the real crons, and an overflow says how many it dropped.
 describe('the delivery copier\'s own cap', () => {
   // The cap against the real crons is held in
-  // apps/web/src/lib/__guards__/worker/tail-copier-caps.test.ts, which can read
+  // apps/web/src/lib/__tests__/tail-copier-caps.test.ts, which can read
   // the bidding Worker's wrangler.toml; this app's tests run on Workers types only.
   it('is its own, larger than the fail-open copier\'s', () => {
     expect(DELIVERY_HELD_CAP).toBeGreaterThan(FAIL_OPEN_HELD_CAP)

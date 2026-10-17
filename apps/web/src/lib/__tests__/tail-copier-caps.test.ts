@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { REPO_ROOT } from '../../__tests__/_scan-utils'
-import { DELIVERY_HELD_CAP, FAIL_OPEN_HELD_CAP, SCHEDULED_DELIVERIES_PER_DAY } from '../../../../../worker-tail/src/copier-caps'
+import { REPO_ROOT } from './_scan-utils'
+import { DELIVERY_HELD_CAP, FAIL_OPEN_HELD_CAP, SCHEDULED_DELIVERIES_PER_DAY } from '../../../../worker-tail/src/copier-caps'
 
 /**
  * The tail worker's held-row caps cover a day long database outage (#2284).
