@@ -3759,8 +3759,12 @@ function postOutageOwnerMessage(botToken: string, channel: string, blocks: unkno
 }
 
 /**
- * The post itself, through the one Slack client (#2331 phase 1b). Its throw
- * rule is the hand written fetch's, kept exactly so no alert path changes
+ * The post itself, through createSlackClient (#2331 phase 1b). Its twin for a
+ * thread reply, sendThreadReply, still posts with a hand written fetch until
+ * the next pull request of that phase switches it, keeping its own rule (it
+ * catches everything and never throws, F123).
+ *
+ * This function's throw rule is its old hand written fetch's, kept exactly so no alert path changes
  * whether it throws (F123): Slack ANSWERING with a failure returns null (an
  * ok:false refusal, a 429, a 5xx, any status but 200), and NO answer (a network
  * failure) throws the error the fetch threw, as does a 200 whose body is not
