@@ -199,12 +199,10 @@ function makeSupabase(opts: {
   const rpcCalls: Array<{ fn: string; org: string; since: string; until?: string }> = []
   const client = {
     from: () => ({
-      select: () => ({
-        eq: async () => ({
+      select: () => alertRowListAnswer(Promise.resolve({
           data: opts.orgsError ? null : (opts.orgs ?? ['org-1']).map((organization_id) => ({ organization_id })),
           error: opts.orgsError ? { message: opts.orgsError } : null,
-        }),
-      }),
+        })),
     }),
     rpc: vi.fn(async (fn: string, args: { p_org_id: string; p_since: string; p_until?: string }) => {
       rpcCalls.push({ fn, org: args.p_org_id, since: args.p_since, until: args.p_until })
@@ -601,6 +599,7 @@ describe('ratio history that is not numbers (#1168)', () => {
  */
 import { BID_PURGE_HORIZON_MS } from '../sightings-export'
 import { RATIO_IN_FLIGHT_MARGIN_MS } from '../bid-recording-coverage'
+import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 const GIGFI = 'RML - Bidding Workflow (GigFi)'
 const ENGINE = { workflow_id: 'wf-engine', workflow_name: 'Engine', is_active: true, sightings: 9000, bid_rows: 5000, attempt_rows: 500, winners: 300 }

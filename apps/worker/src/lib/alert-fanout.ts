@@ -20,6 +20,8 @@
  * (routes/api/) lives here or in slack.ts (#1303, guarded by
  * service-connections-readers.test.ts); the routes that change a Slack
  * connection also edit the saved copy (#2060, last-good-copies-retired.test.ts).
+ * Every read here is of the Slack ALERT row only (onlySlackAlertRow, #2332), so
+ * an ops Slack connection never puts an org on a list or a bot in an alert.
  * The org lists answer a discriminated
  * result (`SlackOrgList`, `SlackFanout`, `SlackConnectionsRead`): from the
  * database, from the saved copy, or unreachable and why, so "no orgs" and "could
@@ -48,7 +50,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
 import type { AllClearClaim } from './alert-recovery'
 import { logReadFailure } from './scheduled-read'
-import { resolveSlackConnection, slackTokenProblemLine, type SlackConnection, type SlackConnectionRow } from './slack-connection'
+import { onlySlackAlertRow, resolveSlackConnection, slackAlertAmbiguityLine, slackAlertRowsByOrg, slackTokenProblemLine, type SlackConnection, type SlackConnectionRow } from './slack-connection'
 import { slackKeyRingFor } from './slack-key-ring'
 import { describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason } from './scheduled-slack'
 
@@ -131,7 +133,11 @@ export async function readEverySlackConnection(supabase: SupabaseClient, logLabe
   if (read.kind === 'stored') return { kind: 'stored', connections: read.copy, ageMs: read.ageMs }
   const connections = new Map<string, SlackConnection>()
   const keys = slackKeyRingFor(supabase)
-  for (const row of read.rows) {
+  // An org with more than one alert row (#2332) is left out of this live list
+  // by name, as an unreadable token is: no row of the several is the alert row.
+  const { rows, ambiguousOrgs } = slackAlertRowsByOrg(read.rows)
+  for (const orgId of ambiguousOrgs) console.error(slackAlertAmbiguityLine(`${logLabel} slack connection for org ${orgId}`, null))
+  for (const row of rows) {
     const resolved = await resolveSlackConnection(row, keys)
     const subject = `${logLabel} slack connection for org ${row.organization_id}`
     // Said by name either way (#2331). An org whose token nobody can read is
@@ -153,9 +159,9 @@ type RowsRead<R> =
   | { kind: 'stored'; copy: Map<string, SlackConnection>; ageMs: number | null }
   | { kind: 'unreachable'; reason: SlackListUnreachableReason }
 
-/** The one all-org read of service_connections behind both lists above, bounded on the scheduled client. */
+/** The one all-org read of service_connections behind both lists above, alert rows only, bounded on the scheduled client. */
 async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what: string, columns: string, use: SlackListUse): Promise<RowsRead<R>> {
-  const query = supabase.from('service_connections').select(columns).eq('service_type', 'slack')
+  const query = onlySlackAlertRow(supabase.from('service_connections').select(columns))
   const scheduled = scheduledSlackFor(supabase)
   if (!scheduled) {
     // Any other client: one read, as before, with the failure said rather than read as "no orgs".
@@ -205,7 +211,8 @@ async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what
  * writing the copy from the copy would re-date stale entries as fresh (#2060).
  */
 export function readSlackConnectionRows(supabase: SupabaseClient) {
-  return supabase.from('service_connections').select(SLACK_ROWS_WITH_ORG).eq('service_type', 'slack')
+  // The alert rows only (#2332): what the saved copy holds and the volume check tells.
+  return onlySlackAlertRow(supabase.from('service_connections').select(SLACK_ROWS_WITH_ORG))
 }
 
 /**

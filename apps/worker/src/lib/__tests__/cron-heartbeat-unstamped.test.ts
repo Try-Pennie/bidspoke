@@ -8,6 +8,7 @@ vi.mock('../slack', () => ({
 import { sendCronHeartbeatAlert } from '../slack'
 import { runHeartbeatChecks, heartbeatKey, completedKey, firstSeenKey, CRON_JOBS, cronJob } from '../cron-heartbeat'
 import { readCondition, BACKOFF_STEPS_SECONDS } from '../alert-backoff'
+import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 /**
  * A job that IS running but is not stamping its heartbeat (#1332).
@@ -68,7 +69,7 @@ function fakeSupabase(runs: Record<string, string | null>, opts: { runsError?: b
         }
         return chain
       }
-      return { select: () => ({ eq: () => Promise.resolve({ data: [{ organization_id: 'org-1' }], error: null }) }) }
+      return { select: () => alertRowListAnswer({ data: [{ organization_id: 'org-1' }], error: null }) }
     },
   } as unknown as SupabaseClient
 }
@@ -177,7 +178,7 @@ describe('a registered job with no heartbeat stamp', () => {
     const supabase = {
       from: (table: string) => {
         consulted.push(table)
-        return { select: () => ({ eq: () => Promise.resolve({ data: [{ organization_id: 'org-1' }], error: null }) }) }
+        return { select: () => alertRowListAnswer({ data: [{ organization_id: 'org-1' }], error: null }) }
       },
     } as unknown as SupabaseClient
     const kv = fakeKv(Object.fromEntries(CRON_JOBS.map((j) => [heartbeatKey(j.id), iso(NOW - 1)])))

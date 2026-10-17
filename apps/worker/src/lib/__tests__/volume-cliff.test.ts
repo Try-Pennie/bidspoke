@@ -140,6 +140,7 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
       const builder: Record<string, unknown> = {
         select: () => builder,
         eq: () => builder,
+        or: () => builder,
         in: () => builder,
         is: () => builder,
         limit: () => builder,
@@ -398,7 +399,7 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
           ? [{ organization_id: ORG, config: { bot_token: CONN.bot_token, default_channel: CONN.default_channel } }]
           : [{ id: WF, name: 'Main Flow', organization_id: ORG, slack_channel: null }]
       const builder: Record<string, unknown> = {
-        select: () => builder, eq: () => builder, in: () => builder, is: () => builder, limit: () => builder, abortSignal: () => builder,
+        select: () => builder, eq: () => builder, or: () => builder, in: () => builder, is: () => builder, limit: () => builder, abortSignal: () => builder,
         then: (res: (v: { data: unknown[]; error: null }) => unknown) => res({ data: rows, error: null }),
       }
       return builder
@@ -436,7 +437,7 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
           ? slackRows
           : [{ id: WF, name: 'Main Flow', organization_id: ORG, slack_channel: null }]
       const builder: Record<string, unknown> = {
-        select: () => builder, eq: () => builder, in: () => builder, is: () => builder, limit: () => builder, abortSignal: () => builder,
+        select: () => builder, eq: () => builder, or: () => builder, in: () => builder, is: () => builder, limit: () => builder, abortSignal: () => builder,
         then: (res: (v: { data: unknown[]; error: null }) => unknown) => res({ data: rows, error: null }),
       }
       return builder
@@ -680,7 +681,7 @@ describe('runVolumeCliffCheck posts once per claim (#1298)', () => {
           ? [{ organization_id: ORG, config: { bot_token: CONN.bot_token, default_channel: CONN.default_channel } }]
           : [{ id: WF, name: 'Main Flow', organization_id: ORG, slack_channel: null }]
       const builder: Record<string, unknown> = {
-        select: () => builder, eq: () => builder, in: () => builder, is: () => builder, limit: () => builder, abortSignal: () => builder,
+        select: () => builder, eq: () => builder, or: () => builder, in: () => builder, is: () => builder, limit: () => builder, abortSignal: () => builder,
         then: (res: (v: { data: unknown[]; error: null }) => unknown) => res({ data: rows, error: null }),
       }
       return builder
