@@ -1215,10 +1215,10 @@ workflows.get('/:id/rename-impact', async (c) => {
 
   if (affected.length === 0) return c.json({ partner_formulas: [] })
 
-  // For each affected partner, find OTHER workflows in the same org that
-  // reference this partner via a partner_bid or bid_group node. Those
-  // workflows would be silently broken by a formula rewrite, so we surface
-  // them to the user and (by default) skip the rewrite.
+  // For each affected partner, find OTHER workflows in the same org that name
+  // it (a partner_bid, bid_group, click node, or buyer_select priced for it). A
+  // formula rewrite made for this workflow could silently break any of them, so
+  // we surface them to the user and (by default) skip the rewrite.
   let otherWorkflows
   try {
     otherWorkflows = await readOrgWorkflows(supabase, orgId, { excludeId: id })
@@ -1240,7 +1240,8 @@ workflows.get('/:id/rename-impact', async (c) => {
     console.error(`[workflows] rename impact could not read buyer profiles for org ${orgId}: ${err instanceof Error ? err.message : 'non Error thrown'}`)
     return c.json({ error: 'Buyer profiles could not be read, so which workflows share these partners cannot be determined. Try again.' }, 503)
   }
-  const workflowsUsingPartner = workflowsUsingPartnerShared(others, pricedPartners, { includeBuyerSelect: true, includeClickNodes: true })
+  // A Latency Gate in another workflow never reads the formula rewritten here (#2251).
+  const workflowsUsingPartner = workflowsUsingPartnerShared(others, pricedPartners, { includeBuyerSelect: true, includeClickNodes: true, includeLatencyGates: false })
 
   const partner_formulas = affected.map((p) => {
     const resolverFormula =
