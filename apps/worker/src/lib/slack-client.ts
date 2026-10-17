@@ -62,9 +62,11 @@ export function slackCallFailure(e: unknown): SlackCallFailure | null {
 }
 
 /**
- * What a caller rethrows for a failure that was not a Slack answer: for a
- * network failure, the error the fetch itself threw (so the thrown value is the
- * one a hand written fetch threw before the switch), and anything else as is.
+ * What a caller rethrows or logs for a failure that was not a Slack answer: for
+ * a network failure, the error the fetch itself threw (so the value is the one
+ * a hand written fetch threw before the switch), and anything else as is.
+ * deliverMessage rethrows it; sendThreadReply, which never throws (F123), logs
+ * it.
  */
 export function slackNetworkCause(e: unknown): unknown {
   if (e instanceof SlackAPIConnectionError && e.status <= 0 && e.cause !== undefined) return e.cause
