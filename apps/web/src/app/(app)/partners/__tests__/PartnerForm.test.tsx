@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 vi.mock('@/lib/api', () => ({
@@ -199,4 +199,13 @@ describe('PartnerForm: missing credential warning (#416)', () => {
     expect(secret).toHaveAccessibleDescription(warning)
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
+  // #2317: with no secret field on screen (a formula partner), the warning is
+  // said inside the Bid resolution section, so it keeps the section row's spacing.
+  it('a partner with no secret field on screen hears it inside the Bid resolution section', async () => {
+    const warning = "Credential 'SOFI_SECRET' is not set. Set it before activating this partner."
+    render(<PartnerForm partner={{ ...partner, partner_type: 'buyer', bid_resolver_type: 'formula', cf_secret_key: 'SOFI_SECRET', credential_warning: warning }} onSave={vi.fn()} onCancel={vi.fn()} />)
+    await screen.findByRole('tab', { name: 'Bid Group, has a problem' })
+    expect(within(screen.getByRole('region', { name: 'Bid resolution' })).getByText(warning)).toBeVisible()
+  })
+
 })

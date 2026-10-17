@@ -13,7 +13,7 @@ import { formatElapsed, formatEtDayTime } from '@/lib/dates'
 import { pickupSentence } from '@/lib/bidding-pickup'
 import { api } from '@/lib/api'
 import { errorSentence } from '@/lib/error-sentence'
-import { Plus, X } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { BidResolverEditor } from '@/components/partners/BidResolverEditor'
 import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
 import { OutboundMappingEditor } from '@/components/partners/OutboundMappingEditor'
@@ -23,6 +23,8 @@ import { ErrorRuleLists } from '@/components/partners/ErrorRuleLists'
 import { BuyerProfileSection, EMPTY_PROFILE } from '@/components/partners/buyer-profile/BuyerProfileSection'
 import { MergeDialog } from '@/components/partners/MergeDialog'
 import { PartnerDeleteBox } from '@/components/partners/PartnerDeleteBox'
+import { RemoveButton } from '@/components/partners/RemoveButton'
+import { PartnerSection, PartnerSubsection } from '@/components/partners/PartnerSection'
 import { mergeThreeWay, sameMergeValue, type MergeResult, type MergeSide, type PageHalves } from '@/lib/partner-page-merge'
 import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
 import { clickDeliveryConsequences } from '@/components/partners/buyer-profile/click-delivery-consequences'
@@ -199,13 +201,10 @@ const asText = (n: number | null): string => (n === null ? '' : String(n))
  */
 function Section({ title, liveSections, children }: { title: string; liveSections?: readonly string[]; children: React.ReactNode }) {
   return (
-    <div>
-      <h3 className="mb-4 text-xs font-semibold text-graphite">{title}</h3>
-      <div className="space-y-4">
-        <LiveSectionNote sections={liveSections ?? [title]} />
-        {children}
-      </div>
-    </div>
+    <PartnerSection title={title}>
+      <LiveSectionNote sections={liveSections ?? [title]} />
+      {children}
+    </PartnerSection>
   )
 }
 
@@ -1313,14 +1312,6 @@ export default function PartnerForm({
           )}
           {!isNew && <LiveStatusLine status={liveChannel.status} clock={liveDeps?.clock ?? SYSTEM_CLOCK} onRetry={liveChannel.retry} />}
         </div>
-        <div className="flex items-center gap-2">
-          {/* A new partner's Cancel is in the save bar, beside Create partner. */}
-          {!isNew && (
-            <Button variant="secondary" onClick={() => leaveThen({ kind: 'close' }, onCancel)}>
-              Cancel
-            </Button>
-          )}
-        </div>
       </div>
 
       {/* A live note no section holds (#2135), such as a hand edit of the whole profile row. */}
@@ -1361,7 +1352,7 @@ export default function PartnerForm({
           onValueChange={chooseTab}
           items={visible.map((t) => ({ value: t, label: TAB_LABELS[t], problem: tabsWithProblems.includes(t) }))}
         >
-          <TabPanel value="partner" className="space-y-8">
+          <TabPanel value="partner">
             <Section title="Identity">
               <Field id="partner-name" label="Name" hint="Display name shown in the UI.">
                 <TextInput id="partner-name" value={name} onChange={handleNameChange} placeholder="Tripoint" describedBy={describedBy('partner-name', true, false)} />
@@ -1429,7 +1420,7 @@ export default function PartnerForm({
             )}
           </TabPanel>
           {isBuyer && (
-            <TabPanel value="buyer_profile" className="space-y-8">
+            <TabPanel value="buyer_profile">
               <BuyerProfileSection
                 partnerId={partner?.id ?? null}
                 partnerName={name || partner?.name || 'this buyer'}
@@ -1451,15 +1442,16 @@ export default function PartnerForm({
             </TabPanel>
           )}
           {visible.includes('bid_group') && (
-            <TabPanel value="bid_group" className="space-y-8">
+            <TabPanel value="bid_group">
               <Section title="Bids in">
                 <BidsInRow usage={usage} partnerName={name || 'this partner'} partnerNames={partnerNames} reason={bidGroupReason} onRetry={() => setUsageAttempt((n) => n + 1)} />
               </Section>
 
-              {credentialProblem && resolverType !== 'api' && (
-                <FieldError size="sm">{credentialProblem}</FieldError>
-              )}
               <Section title="Bid resolution">
+                {/* Inside the section it is about, so it keeps the row's spacing (#2317). */}
+                {credentialProblem && resolverType !== 'api' && (
+                  <FieldError size="sm">{credentialProblem}</FieldError>
+                )}
                 <BidResolverEditor
                   resolverType={resolverType}
                   resolverConfig={resolverConfig}
@@ -1483,8 +1475,7 @@ export default function PartnerForm({
                   </FieldError>
                 )}
                 {resolverType === 'matrix' && partner && !bidConfigsLoadError && (
-                  <div className="mt-4 border-t border-gray-100 pt-4">
-                    <h4 className="mb-2 text-sm font-medium text-graphite">Matrix</h4>
+                  <PartnerSubsection title="Matrix">
                     <BidMatrixViewer
                       partnerId={partner.id}
                       partnerSlug={partner.slug}
@@ -1493,7 +1484,7 @@ export default function PartnerForm({
                       selectedConfigId={typeof resolverConfig.bid_config_id === 'string' ? resolverConfig.bid_config_id : undefined}
                       onSelectConfig={(id) => setResolverConfig({ ...resolverConfig, bid_config_id: id })}
                     />
-                  </div>
+                  </PartnerSubsection>
                 )}
                 {resolverType === 'matrix' && !partner && (
                   <p className="rounded-lg border border-dashed border-gray-200 px-3 py-3 text-sm text-hint">
@@ -1518,19 +1509,17 @@ export default function PartnerForm({
 
               {resolverType === 'api' && <Section title="Response handling">
                 {/* Bid mode is no longer edited here (PM-9, #2136): nothing acts on it. */}
-                <div>
-                  <h4 className="mb-2 text-sm font-medium text-graphite">Sample response</h4>
+                <PartnerSubsection title="Sample response">
                   <PartnerProbePanel value={lastProbeResponse} onChange={setLastProbeResponse} />
-                </div>
+                </PartnerSubsection>
 
-                <div className="border-t border-gray-100 pt-4">
-                  <h4 className="mb-2 text-sm font-medium text-graphite">Extra extraction</h4>
+                <PartnerSubsection title="Extra extraction">
                   <ExtraExtractionEditor
                     value={extraExtraction}
                     onChange={setExtraExtraction}
                     sampleResponse={lastProbeResponse}
                   />
-                </div>
+                </PartnerSubsection>
               </Section>}
 
               <Section title="Bidding limits">
@@ -1610,7 +1599,7 @@ export default function PartnerForm({
 
             </TabPanel>
           )}
-          <TabPanel value="workflow_values" className="space-y-8">
+          <TabPanel value="workflow_values">
             {/* Each value with the name workflows read it by and who reads it (#2142); the controls are the form's own. */}
             <WorkflowValuesPanel
               partnerId={partner?.id ?? null}
@@ -1659,9 +1648,7 @@ export default function PartnerForm({
                       step={0.01}
                       placeholder="0.00"
                     />
-                    <Button variant="ghost" onClick={() => setSubAccountFloors((prev) => prev.filter((_, j) => j !== i))} aria-label="Remove row">
-                      <X size={14} aria-hidden="true" />
-                    </Button>
+                    <RemoveButton label={`Remove floor ${i + 1}`} onClick={() => setSubAccountFloors((prev) => prev.filter((_, j) => j !== i))} />
                   </div>
                 ))}
                 <Button variant="secondary" onClick={() => setSubAccountFloors((prev) => [...prev, { id: uid(), uuid: '', bid: '' }])} className="text-xs">
@@ -1705,9 +1692,7 @@ export default function PartnerForm({
                   pendingUuids.map((uuid, i) => (
                     <div key={i} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
                       <span className="flex-1 truncate font-mono text-xs text-graphite">{uuid}</span>
-                      <Button variant="ghost" onClick={() => setPendingUuids((prev) => prev.filter((_, j) => j !== i))} aria-label="Remove UUID">
-                        <X className="h-3.5 w-3.5" aria-hidden="true" />
-                      </Button>
+                      <RemoveButton label="Remove UUID" onClick={() => setPendingUuids((prev) => prev.filter((_, j) => j !== i))} />
                     </div>
                   ))
                 ) : uuidsLoadError ? (
@@ -1719,9 +1704,8 @@ export default function PartnerForm({
                   uuids.map((u) => (
                     <div key={u.id} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
                       <span className="flex-1 truncate font-mono text-xs text-graphite">{u.uuid}</span>
-                      <Button
-                        variant="ghost"
-                        aria-label="Remove UUID"
+                      <RemoveButton
+                        label="Remove UUID"
                         disabled={removingUuidId === u.id}
                         onClick={async () => {
                           setRemovingUuidId(u.id)
@@ -1735,9 +1719,7 @@ export default function PartnerForm({
                             setRemovingUuidId(null)
                           }
                         }}
-                      >
-                        <X className="h-3.5 w-3.5" aria-hidden="true" />
-                      </Button>
+                      />
                     </div>
                   ))
                 )}
@@ -1787,7 +1769,7 @@ export default function PartnerForm({
             />
           </TabPanel>
           {!isNew && (
-            <TabPanel value="history" className="space-y-8">
+            <TabPanel value="history">
               {partner && <PartnerHistoryPanel partner={partner} shown={tab === 'history'} />}
             </TabPanel>
           )}

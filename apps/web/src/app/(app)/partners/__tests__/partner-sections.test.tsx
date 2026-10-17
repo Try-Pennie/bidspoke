@@ -53,7 +53,7 @@ describe('registry sections are headings on their tab (#2137)', () => {
     const { container } = render(<PartnerForm partner={partner} onSave={vi.fn()} onCancel={vi.fn()} />)
     await waitFor(() => expect(api.partners.usage).toHaveBeenCalled())
     await screen.findByRole('tab', { name: 'Bid Group' })
-    await waitFor(() => expect(container.querySelector('[role="tabpanel"][id$="-content-buyer_profile"] h4')).not.toBeNull())
+    await waitFor(() => expect(container.querySelector('[role="tabpanel"][id$="-content-buyer_profile"] h3')).not.toBeNull())
     const headings = (tab: string) => [...container.querySelectorAll(`[role="tabpanel"][id$="-content-${tab}"] h3, [role="tabpanel"][id$="-content-${tab}"] h4`)].map((h) => h.textContent?.trim())
     const drawn = PARTNER_FIELD_REGISTRY.filter((e) => !e.pattern.startsWith(PROFILE_PREFIX) && !e.offPage)
     expect(drawn.length).toBeGreaterThan(25)

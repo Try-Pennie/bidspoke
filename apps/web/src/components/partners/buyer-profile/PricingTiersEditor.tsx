@@ -10,9 +10,10 @@
  */
 import { useId } from 'react'
 import { MULTIPLIER_CEILING, POPULATIONS, WIRED_POPULATIONS, type Population, type ProfileTierDocument } from '@bidspoke/buyer-profile'
-import { Trash2, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { Button, FieldError, NumberInput } from '@/components/ui/form'
 import { POPULATION_LABELS, formatWhole } from './labels'
+import { RemoveButton } from '@/components/partners/RemoveButton'
 
 const WIRED: ReadonlySet<string> = new Set(WIRED_POPULATIONS)
 
@@ -72,9 +73,7 @@ export function PricingTiersEditor({ value, onChange, errors = {} }: { value: re
                               <NumberInput id={`${rowId}-mult`} value={Number(tier.multiplier)} onChange={(v) => update({ multiplier: v ?? 0 })} min={0} max={MULTIPLIER_CEILING} step={0.0001} aria-label={`Multiplier, ${name}`} />
                             </td>
                             <td className="py-0.5">
-                              <Button variant="ghost" aria-label={`Remove ${name}`} onClick={() => replacePopulation(population, tiers.filter((_, j) => j !== i))}>
-                                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                              </Button>
+                              <RemoveButton label={`Remove ${name}`} onClick={() => replacePopulation(population, tiers.filter((_, j) => j !== i))} />
                             </td>
                           </tr>
                         )
@@ -83,7 +82,7 @@ export function PricingTiersEditor({ value, onChange, errors = {} }: { value: re
                   </table>
                 )}
                 <Button
-                  variant="ghost"
+                  variant="quiet"
                   aria-label={`Add tier for ${label}`}
                   onClick={() => {
                     const last = tiers[tiers.length - 1]

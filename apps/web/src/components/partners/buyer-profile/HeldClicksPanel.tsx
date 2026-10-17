@@ -269,7 +269,7 @@ export function HeldClicksPanel({ partnerName, zone, held, error, outcomes, onMa
         <Outcome state={outcome} />
         {mine ? leadIdBox(row, claim, mine, busy) : (
           <div>
-            <Button variant="ghost" className="-ml-2" disabled={busy} onClick={() => setPending({ id: row.id, action: 'lead', leadId: claim.partner_lead_id ?? '' })}>
+            <Button variant="quiet" className="-ml-2" disabled={busy} onClick={() => setPending({ id: row.id, action: 'lead', leadId: claim.partner_lead_id ?? '' })}>
               {claim.partner_lead_id ? null : <Plus className="h-3.5 w-3.5" aria-hidden="true" />}
               {claim.partner_lead_id ? 'Correct' : 'Add'} {partnerName}&apos;s lead id
             </Button>

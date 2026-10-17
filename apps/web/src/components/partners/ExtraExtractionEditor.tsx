@@ -1,10 +1,11 @@
 'use client'
 
 import { useId, useMemo, useState, useEffect } from 'react'
-import { ArrowRight, Plus, Trash2 } from 'lucide-react'
+import { ArrowRight, Plus } from 'lucide-react'
 import type { ExtraExtractionConfig, ExtraExtractionSpec } from '@/lib/api'
 import { Button, TextInput } from '@/components/ui/form'
 import { Select } from '@/components/ui/Select'
+import { RemoveButton } from '@/components/partners/RemoveButton'
 
 // Classifiers registered in apps/worker/src/engine/bid-resolver.ts CLASSIFIERS.
 // Keep this list in sync when new classifiers ship.
@@ -98,15 +99,13 @@ export function ExtraExtractionEditor({ value, onChange, sampleResponse }: Props
                   className="min-w-0 flex-1"
                 />
               )}
-              <Button variant="ghost" onClick={() => removeRow(i)} aria-label={`Remove extraction ${i + 1}`} title="Remove" className="shrink-0">
-                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-              </Button>
+              <RemoveButton label={`Remove extraction ${i + 1}`} onClick={() => removeRow(i)} />
             </div>
           ))}
         </div>
       )}
 
-      <Button variant="ghost" onClick={addRow}>
+      <Button variant="quiet" onClick={addRow}>
         <Plus className="h-3.5 w-3.5" aria-hidden="true" />
         Add extraction
       </Button>

@@ -158,14 +158,15 @@ export default function PartnersPage() {
     <PartnerLiveProvider>
     <NavLayout>
       {/* The page is the window's height, so the list stays in view while the form scrolls in its own pane (#2137). */}
-      <div className="flex h-screen min-h-0">
+      <div className="partner-page flex h-screen min-h-0">
 
         {/* List */}
-        <div className="flex w-72 flex-shrink-0 flex-col border-r border-gray-200 bg-white">
-          <div className="flex items-center justify-between border-b border-gray-200 px-4 py-4">
-            <h1 className="text-3xl font-bold text-graphite">Partners</h1>
+        {/* As the settled design draws it (#2317): a 198px list with compact rows. */}
+        <div className="flex w-[198px] flex-shrink-0 flex-col border-r border-line bg-white">
+          <div className="flex items-center justify-between border-b border-line px-3 py-3">
+            <h1 className="text-[22px] font-semibold text-graphite">Partners</h1>
             {/* Leaving a partner with something unsaved asks first, in the form's own dialog (#2138, PM-5). */}
-            <Button variant="primary" onClick={() => leaveThen({ kind: 'page', name: 'a new partner' }, () => { clearSelection(); setCreating(true) })} className="px-3 py-1.5 text-xs">
+            <Button variant="primary" onClick={() => leaveThen({ kind: 'page', name: 'a new partner' }, () => { clearSelection(); setCreating(true) })} className="px-2.5 py-1 text-xs">
               <Plus className="h-3.5 w-3.5" aria-hidden="true" />
               New
             </Button>
@@ -185,16 +186,16 @@ export default function PartnersPage() {
               <div className="p-6 text-center">
                 <p className="text-base font-semibold text-graphite">No partners yet</p>
                 <p className="mt-1 text-xs text-hint">Partners are the lenders or buyers your workflows route leads to.</p>
-                <Button variant="ghost" onClick={() => { clearSelection(); setCreating(true) }} className="mt-3">
+                <Button variant="quiet" onClick={() => { clearSelection(); setCreating(true) }} className="mt-3">
                   Add your first partner
                 </Button>
               </div>
             ) : (
-              <div className="p-2">
+              <div className="py-0.5">
                 {groupPartners(partners).map((group) => (
-                  <section key={group.title} aria-labelledby={`partners-group-${group.title}`} className="mb-2">
-                    <h2 id={`partners-group-${group.title}`} className="px-3 pb-1 pt-3 text-xs font-semibold text-gray-600">{group.title}</h2>
-                    <div className="space-y-0.5">
+                  <section key={group.title} aria-labelledby={`partners-group-${group.title}`}>
+                    <h2 id={`partners-group-${group.title}`} className="px-[15px] pb-1 pt-3.5 text-[11px] font-semibold text-gray-600">{group.title}</h2>
+                    <div className="space-y-[3px] px-1.5">
                       {group.members.map((partner) => {
                         // The missing credential (#1035, #416) and a refused save's field on the open partner (PM-12).
                         const problem = partner.credential_warning ?? (selected?.id === partner.id && formProblem ? 'This partner has a problem: see the form.' : null)
@@ -219,7 +220,7 @@ export default function PartnersPage() {
                               screen reader (its sr-only sentence) and a title on hover.
                             */}
                             <span className="flex min-w-0 items-center gap-2">
-                              <span className="truncate text-sm font-medium text-graphite">{partner.name}</span>
+                              <span className="truncate text-[13px] leading-4 text-graphite">{partner.name}</span>
                               {problem && <span title={problem} className="inline-flex"><ProblemMark label={problem} /></span>}
                             </span>
                           </Button>

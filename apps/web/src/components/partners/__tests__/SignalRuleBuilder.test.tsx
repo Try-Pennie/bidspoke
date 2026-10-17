@@ -51,6 +51,6 @@ describe('SignalRuleBuilder rows use the shared controls', () => {
     for (const trigger of screen.getAllByLabelText('Rule kind')) expect(trigger).toHaveClass('select-trigger')
     for (const box of [...screen.getAllByLabelText('Field'), ...screen.getAllByLabelText('Value'), screen.getByLabelText('Body field'), screen.getByLabelText('Status code')]) expect(box).toHaveClass('input')
     expect(screen.getByLabelText('Status code')).toHaveValue(503)
-    for (const b of screen.getAllByRole('button', { name: 'Remove rule' })) expect(b).toHaveClass('btn', 'btn-ghost')
+    for (const b of screen.getAllByRole('button', { name: 'Remove rule' })) expect(b).toHaveClass('btn', 'btn-remove')
   })
 })

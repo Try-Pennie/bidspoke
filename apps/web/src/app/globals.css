@@ -221,6 +221,15 @@ html {
   .btn-ghost {
     @apply px-2 py-1 text-xs text-p-blue-dark hover:bg-p-blue-light;
   }
+  /* A quiet action that is not a button (#2317): an add link, All and None. Dark,
+     because blue is kept for buttons (.impeccable.md). */
+  .btn-quiet {
+    @apply px-1.5 py-1 text-xs font-normal text-graphite hover:bg-beige-deep;
+  }
+  /* A remove mark (#2317): the grey minus RemoveButton draws. */
+  .btn-remove {
+    @apply h-6 w-6 shrink-0 rounded-md p-0 text-hint hover:bg-beige-deep hover:text-graphite;
+  }
   /* A row action inside a table: the row's height is set by the text, not the button. */
   .btn-sm {
     @apply px-2 py-1 text-xs;
@@ -279,7 +288,7 @@ html {
   /* A whole list row that is one control (a partner in the list): left aligned,
      full width, the row's own padding (#2137). */
   .btn-row {
-    @apply w-full justify-start rounded-lg px-3 py-2.5 text-left font-normal;
+    @apply w-full justify-start rounded-[7px] px-[9px] py-1.5 text-left font-normal;
   }
   /* The one dropdown (#2137), on Radix. The trigger is a button, so it carries
      its own class rather than the native .select, which stays only for the
@@ -396,17 +405,56 @@ html {
   }
   /* The one set of tabs (#2137, components/ui/Tabs.tsx), as the settled design
      draws them: plain words on a line, the open tab bold with a navy line under it. */
+  /* One line, as the settled design draws it (#2317): at a laptop window the
+     tabs fit, and a narrower pane scrolls them rather than wrapping one alone. */
+  /* The rule under the tabs is an inset shadow and the focus ring is inset, so
+     the scrolling strip clips neither the open tab's line nor the ring. */
   .tabs-list {
-    @apply mb-6 flex flex-wrap gap-x-6 border-b border-gray-200;
+    @apply mb-3.5 flex flex-nowrap gap-x-[22px] overflow-x-auto whitespace-nowrap shadow-[inset_0_-1px_0_theme(colors.gray.200)];
   }
   .tab {
-    @apply -mb-px inline-flex items-center border-b-2 border-transparent py-2 text-sm text-gray-600 hover:text-graphite focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark focus-visible:ring-offset-1;
+    @apply inline-flex items-center border-b-2 border-transparent py-2 text-sm text-gray-600 hover:text-graphite focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-p-blue-dark;
   }
   .tab[data-state='active'] {
     @apply border-navy font-semibold text-navy;
   }
   .tab-panel {
     @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark focus-visible:ring-offset-2;
+  }
+  /* The partners page as the settled design draws it (#2317, PM-17,
+     docs/design/partners-page.html, frames 1, 6, 18 and 19). Each section is a
+     row: its name in a 124px column, its settings 14px beside it starting on the
+     name's line, a thin rule between sections. Below the small breakpoint the
+     name sits above its settings. */
+  .partner-section {
+    @apply grid grid-cols-1 gap-y-2 border-t border-line-soft py-3.5 first:border-t-0 first:pt-0 sm:grid-cols-[124px_minmax(0,1fr)] sm:items-baseline sm:gap-x-3.5;
+  }
+  .partner-section-title {
+    @apply text-[13px] font-semibold text-graphite;
+  }
+  .partner-section-body {
+    @apply min-w-0 space-y-2;
+  }
+  .partner-subsection {
+    @apply space-y-1.5 pt-1;
+  }
+  .partner-subsection-title {
+    @apply text-[13px] font-normal text-graphite;
+  }
+  /* The page's controls are outlined white boxes with a thin beige line and
+     rounded corners, compact (#2317). The rest of the app keeps its own until
+     a design round settles it there. */
+  .partner-page :is(.input, .textarea, .select, .select-trigger, .choice-group) {
+    @apply border-line bg-white;
+  }
+  .partner-page :is(.input, .textarea, .select, .select-trigger) {
+    @apply rounded-md text-[13px];
+  }
+  .partner-page :is(.input, .select-trigger) {
+    @apply min-h-[30px] py-[5px];
+  }
+  .partner-page .choice {
+    @apply px-2.5 py-1 text-[12.5px];
   }
   /* The one red problem mark (#2137, components/ui/ProblemMark.tsx). */
   .problem-mark {
