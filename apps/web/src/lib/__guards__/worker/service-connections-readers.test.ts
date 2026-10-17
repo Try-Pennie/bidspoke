@@ -25,9 +25,21 @@ import { WORKER_SRC, listTsFiles, sanitizeSource } from '../../__tests__/_scan-u
  * Seen red on 2026-10-15 against the planted sources in the last tests here (kept
  * so the check stays proven) and against a real direct read put back into
  * lib/standing-alert.ts.
+ *
+ * Beyond the two homes, each allowed file carries its reason (#2331):
+ * - lib/secret-reencrypt.ts re-locks the sealed Slack token
+ *   (service_connections.credential_enc, sealed_for = 'bidding_ring') during a
+ *   SECRET_ENCRYPTION_KEY rotation, and reads nothing else of the table. It is
+ *   not an alert path, so the bounded lookup has nothing to give it.
  */
 
-const ALLOWED = ['lib/slack.ts', 'lib/alert-fanout.ts']
+/** Each allowed file outside routes/api, with why it may name the table. */
+const ALLOWED_WITH_REASON: Record<string, string> = {
+  'lib/slack.ts': 'the Slack connection lookups (getSlackConnection, readSlackConnectionForLead)',
+  'lib/alert-fanout.ts': 'the all-org Slack reads (slackOrgIds, forEachSlackOrg, readEverySlackConnection) and the probe read',
+  'lib/secret-reencrypt.ts': 're-locks bidding_ring sealed Slack tokens in a key rotation, and reads nothing else (#2331)',
+}
+const ALLOWED = Object.keys(ALLOWED_WITH_REASON)
 const ALLOWED_DIRS = ['routes/api/']
 
 /** A quoted string whose whole content is the table's name, in any quote style. */
@@ -50,7 +62,7 @@ const naming = files.filter((f) => namesTheTable(readFileSync(f.full, 'utf8'))).
 const allowed = (r: string) => ALLOWED.includes(r) || ALLOWED_DIRS.some((d) => r.startsWith(d))
 
 describe('service_connections is read only through its homes (#1303)', () => {
-  it('no worker source outside lib/slack.ts, lib/alert-fanout.ts and routes/api names the table', () => {
+  it('no worker source outside the allowed files and routes/api names the table', () => {
     expect(naming.filter((r) => !allowed(r))).toEqual([])
   })
 
