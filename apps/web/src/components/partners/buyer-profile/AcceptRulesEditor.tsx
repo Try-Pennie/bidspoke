@@ -22,6 +22,7 @@ import { Select } from '@/components/ui/Select'
 import { LIST_OPERATORS, operatorOf, signalFrom, valueTextOf } from '@/lib/signal-text'
 import { RemoveButton } from '@/components/partners/RemoveButton'
 import { SECTION_LABELS } from './labels'
+import { useRowIds } from './row-ids'
 
 /**
  * The same rows edit the duplicate rules (#1416): the decline answers that mean
@@ -69,7 +70,9 @@ export function RuleSet({ title, empty, count, children, after }: { title: strin
 
 export function AcceptRulesEditor({ value, onChange, refusal, kind = 'accept' }: { value: readonly Signal[]; onChange: (rules: Signal[]) => void; refusal?: string | null; kind?: RuleKind }) {
   const base = useId()
-  const update = (i: number, next: Signal) => onChange(value.map((r, j) => (j === i ? next : r)))
+  // Each row keeps its own id however the rules before it change, so removing one moves no other row's ids or focus.
+  const rows = useRowIds<Signal>()
+  const update = (i: number, next: Signal) => onChange(value.map((r, j) => (j === i ? rows.carry(r, next) : r)))
   const Kind = kind.charAt(0).toUpperCase() + kind.slice(1)
 
   return (
@@ -91,10 +94,11 @@ export function AcceptRulesEditor({ value, onChange, refusal, kind = 'accept' }:
       {value.map((rule, i) => {
         const op = operatorOf(rule)
         const text = valueTextOf(rule)
-        const rowId = `${base}-${i}`
+        const key = rows.idOf(rule)
+        const rowId = `${base}-${key}`
         const name = `${Kind} rule ${i + 1}`
         return (
-          <div key={i} role="group" aria-label={name} className={RULE_ROW}>
+          <div key={key} role="group" aria-label={name} className={RULE_ROW}>
             <TextInput id={`${rowId}-field`} value={rule.field} onChange={(v) => update(i, signalFrom(v, op, text))} placeholder="data.createLead.resultCode" mono aria-label={`${name} field`} />
             <Select id={`${rowId}-op`} aria-label={`${name} operator`} value={op} onChange={(v) => update(i, signalFrom(rule.field, v as SignalOperator, text))} options={SIGNAL_OPERATORS.map((o) => ({ value: o, label: SIGNAL_OPERATOR_LABELS[o] }))} />
             {op === 'present' ? (

@@ -93,4 +93,17 @@ describe('AcceptRulesEditor', () => {
     render(<AcceptRulesEditor kind="duplicate" value={rules} onChange={onChange} />)
     expect(screen.getAllByRole('group', { name: /duplicate rule/i })).toHaveLength(2)
   })
+
+  // Lessons review on #2325: each row keeps its own ids, so removing an earlier rule
+  // does not move the ids (and the focus) of the rules after it.
+  it('removing a rule leaves the ids of the rules after it where they were', () => {
+    function Owner() {
+      const [value, setValue] = useState<Signal[]>(rules)
+      return <AcceptRulesEditor value={value} onChange={setValue} />
+    }
+    render(<Owner />)
+    const before = screen.getByRole('textbox', { name: 'Accept rule 2 field' }).id
+    fireEvent.click(screen.getByRole('button', { name: 'Remove accept rule 1' }))
+    expect(screen.getByRole('textbox', { name: 'Accept rule 1 field' }).id).toBe(before)
+  })
 })

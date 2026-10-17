@@ -6,6 +6,7 @@
  * already stored is still shown after its day, so it is never hidden (L1008).
  */
 import { describe, expect, it, vi } from 'vitest'
+import { useState } from 'react'
 import { render, screen, fireEvent, within } from '@testing-library/react'
 import type { ProfileBlackoutDocument } from '@bidspoke/buyer-profile'
 import { BlackoutDatesEditor } from '../BlackoutDatesEditor'
@@ -43,6 +44,22 @@ describe('BlackoutDatesEditor', () => {
     fireEvent.change(box, { target: { value: 'Dec 31, 2027' } })
     fireEvent.keyDown(box, { key: 'Enter' })
     expect(onChange).toHaveBeenLastCalledWith([{ date: '2027-12-31', note: null }])
+  })
+
+  // Lessons review on #2325: committing the day turns the box into a row of the list,
+  // so the focus moves to Add date rather than dropping to the page.
+  it('after a day is picked in the new row, the focus is on Add date, ready for the next', () => {
+    function Owner() {
+      const [value, setValue] = useState<ProfileBlackoutDocument[]>([{ date: '', note: null }])
+      return <BlackoutDatesEditor value={value} onChange={setValue} />
+    }
+    render(<Owner />)
+    const box = screen.getByRole('textbox', { name: 'Date, new date' })
+    box.focus()
+    fireEvent.change(box, { target: { value: 'Dec 31, 2027' } })
+    fireEvent.keyDown(box, { key: 'Enter' })
+    expect(screen.getByRole('listitem')).toHaveTextContent('Friday, Dec 31, 2027')
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Add date' }))
   })
 
   it('renders sixty dates as sixty rows', () => {

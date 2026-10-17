@@ -12,7 +12,7 @@
  * The list carries no Note column: a note already stored is shown after its
  * date, so it is never hidden (L1008), and is removed with the day.
  */
-import { useId } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import type { ProfileBlackoutDocument } from '@bidspoke/buyer-profile'
 import { Button, FieldError } from '@/components/ui/form'
@@ -34,6 +34,15 @@ export function BlackoutDatesEditor({ value, onChange, errors = {} }: { value: r
   const sorted = [...value].sort((a, b) => a.date.localeCompare(b.date))
   const update = (target: ProfileBlackoutDocument, next: ProfileBlackoutDocument | null) =>
     onChange(sorted.flatMap((b) => (b === target ? (next ? [rows.carry(target, next)] : []) : [b])))
+  // A day picked in a date box turns the box into a row of the list, so the focus
+  // would drop to the page: it moves to Add date, ready for the next day off.
+  const addArea = useRef<HTMLDivElement>(null)
+  const [focusAdd, setFocusAdd] = useState(false)
+  useEffect(() => {
+    if (!focusAdd) return
+    setFocusAdd(false)
+    addArea.current?.querySelector('button')?.focus()
+  }, [focusAdd])
 
   return (
     <div className="space-y-1.5">
@@ -56,7 +65,7 @@ export function BlackoutDatesEditor({ value, onChange, errors = {} }: { value: r
                       {row.note ? <span className="text-hint"> {row.note}</span> : null}
                     </span>
                   ) : (
-                    <DateField id={`${rowId}-date`} value={row.date} onChange={(d) => update(row, { ...row, date: d })} label={`Date, ${name}`} />
+                    <DateField id={`${rowId}-date`} value={row.date} onChange={(d) => { update(row, { ...row, date: d }); if (isIsoDate(d)) setFocusAdd(true) }} label={`Date, ${name}`} />
                   )}
                   <RemoveButton label={`Remove ${name}`} onClick={() => update(row, null)} />
                 </div>
@@ -66,7 +75,7 @@ export function BlackoutDatesEditor({ value, onChange, errors = {} }: { value: r
           })}
         </ul>
       )}
-      <div>
+      <div ref={addArea}>
         <Button variant="quiet" aria-label="Add date" onClick={() => onChange([...sorted, { date: '', note: null }])}>
           <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add date
         </Button>
