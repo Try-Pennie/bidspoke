@@ -50,9 +50,9 @@ export interface PartnerDeleteReadingWorkflow extends PartnerDeleteWorkflow {
  * delete_partner_config refuses (BP024) when either part moved. counts holds
  * every dependent table, zeros included; workflows is every workflow of the
  * organization the scanner read, with updated_at as the database answered it.
+ * A type, not an interface: it is sent as the function's jsonb argument, and
+ * only a type alias is assignable to the generated Json type.
  */
-// A type, not an interface: it is sent as the function's jsonb argument, and only
-// a type alias is assignable to the generated Json type.
 export type PartnerDeleteFingerprint = {
   counts: Record<string, number>
   workflows: Array<{ id: string; updated_at: string }>
