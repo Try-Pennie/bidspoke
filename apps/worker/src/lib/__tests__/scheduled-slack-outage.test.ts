@@ -12,6 +12,7 @@ import type { Env } from '../../env'
 import { runRequiredSecretsCheck } from '../required-secrets'
 import { createScheduledSupabaseClient } from '../scheduled-slack'
 import { fakeTimers, kvWith, kvWithCopy, TEST_KEY, type CountingKv } from './_scheduled-slack-doubles'
+import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 
 const ORG = 'org-1'
 const CONN = { bot_token: 'xoxb-live', default_channel: '#ops', config_alerts_enabled: true }
@@ -45,9 +46,9 @@ let logs: string[]
 beforeEach(() => {
   posts = []
   logs = []
-  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
-    const body = JSON.parse(String(init?.body)) as { channel: string }
-    posts.push({ token: String((init?.headers as Record<string, string>).Authorization), channel: body.channel })
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (...call) => {
+    const post = await slackPostOf(call)
+    posts.push({ token: `Bearer ${post.token}`, channel: String(post.channel) })
     return new Response(JSON.stringify({ ok: true, ts: '1.1' }), { status: 200 })
   })
   for (const level of ['log', 'warn', 'error'] as const) {

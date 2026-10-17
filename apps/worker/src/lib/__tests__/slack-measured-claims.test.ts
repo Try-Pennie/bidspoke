@@ -16,6 +16,7 @@ import {
 } from '../slack'
 import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_HELD_LABEL } from '../../engine/writeback-deadletter'
 import type { SlackConnection } from '../slack-connection'
+import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 
 /**
  * Every sentence in the shared Slack alerts either follows from what the check
@@ -53,8 +54,8 @@ const slackConfig = {
 const conn = { bot_token: 'xoxb-test', default_channel: '#alerts', config_alerts_enabled: true } as unknown as SlackConnection
 
 /** Every word the last post put in front of a reader: the fallback text and each block. */
-function lastText(): string {
-  const body = JSON.parse((vi.mocked(fetch).mock.calls.at(-1)?.[1] as { body: string }).body)
+async function lastText(): Promise<string> {
+  const body = (await slackPostOf(vi.mocked(fetch).mock.calls.at(-1) ?? []))
   const blockText = (b: { text?: { text?: string }; fields?: { text: string }[] }) => [
     b.text?.text ?? '',
     ...(b.fields ?? []).map((f) => f.text),
@@ -87,7 +88,7 @@ describe('shared cause alert: says what was counted, not that a vendor is degrad
     // "Missing credentials/config appears degraded" was the old lead: the cause
     // is our own configuration, and the how to check line already says so.
     await sendUpstreamOutageAlert(makeSupabase(slackConfig), 'org-1', payload, 'https://app.test')
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/degraded/i)
     expect(text).toContain('14 leads')
     expect(text).toContain('Missing credentials/config')
@@ -106,7 +107,7 @@ describe('shared cause alert: says what was counted, not that a vendor is degrad
       },
       'https://app.test',
     )
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/degraded/i)
     expect(text).toContain('Salesforce')
   })
@@ -115,7 +116,7 @@ describe('shared cause alert: says what was counted, not that a vendor is degrad
 describe('secret drift: the saved value is what workflows read', () => {
   it('does not say a workflow resolves to nothing, because the decrypted saved value wins', async () => {
     await sendSecretDriftAlert(conn, [{ key: 'EQ_PASS', scope: 'global', workflow_id: null }], 'https://app.test')
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toContain('resolves to nothing')
     expect(text).toMatch(/fallback/i)
     expect(text).toMatch(/cannot be decrypted/)
@@ -132,7 +133,7 @@ describe('outcome dead letter: the Supabase health line only for a code known to
       { label: 'lead_sightings.insert', window_loss_count: 1, window_minutes: 30, error_message: 'permission denied for table lead_sightings', error_code: '42501' },
       'https://app.test',
     )
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/likely degraded|Check Supabase health/)
     expect(text).toMatch(/Inspect the error above/)
   })
@@ -143,7 +144,7 @@ describe('outcome dead letter: the Supabase health line only for a code known to
       { label: 'lead_sightings.insert', window_loss_count: 1, window_minutes: 30, error_message: 'could not extend file: No space left on device', error_code: '53100' },
       'https://app.test',
     )
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/overloaded or unreachable/)
     expect(text).toMatch(/Inspect the error above/)
   })
@@ -154,7 +155,7 @@ describe('outcome dead letter: the Supabase health line only for a code known to
       { label: 'lead_sightings.insert', window_loss_count: 1, window_minutes: 30, error_message: 'canceling statement due to statement timeout', error_code: '57014' },
       'https://app.test',
     )
-    const text = lastText()
+    const text = (await lastText())
     expect(text).toMatch(/database/i)
     expect(text).toMatch(/memory/)
   })
@@ -171,7 +172,7 @@ describe('outcome dead letter: the Supabase health line only for a code known to
       },
       'https://app.test',
     )
-    const text = lastText()
+    const text = (await lastText())
     expect(text).toContain('https://app.test/workflows/wf-9?execution=ex-9')
     expect(text).not.toContain('execution log below')
   })
@@ -194,7 +195,7 @@ describe('uncapturable writeback: its own wording', () => {
   it('does not say it was retried or that it feeds billing', async () => {
     // The capture never retries anything: it found nothing a replay could resend.
     await send()
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toContain('failed after all retries')
     expect(text).not.toMatch(/billing/)
     expect(text).not.toContain('Outcome Record Lost')
@@ -222,7 +223,7 @@ describe('replay store failure: the uncapturable wording, not the generic one', 
       },
       'https://app.test',
     )
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toContain('failed after all retries')
     expect(text).not.toMatch(/billing/)
     expect(text).toContain('Salesforce update cannot be replayed')
@@ -266,7 +267,7 @@ describe('held update: says it is unknown and held, and until when', () => {
 
   it('names the record, the fields and the ET expiry, and never says it cannot be replayed or was lost', async () => {
     await send()
-    const text = lastText()
+    const text = (await lastText())
     expect(text).toContain('Salesforce update not confirmed')
     expect(text).toContain('Prospect a06Ui00002sLkNuIAK')
     expect(text).toContain('BidStatus__c and RejectionReason__c')
@@ -281,7 +282,7 @@ describe('held update: says it is unknown and held, and until when', () => {
   // are; the alert names that place and keeps the values themselves out of Slack.
   it('points at the run for the values it was sending, after the field names, and shows no value', async () => {
     await send()
-    const text = lastText()
+    const text = (await lastText())
     expect(text).toContain('BidStatus__c and RejectionReason__c. The run below shows the values it was sending.')
     expect(text).not.toMatch(/Rejected|unqualified_lead/)
   })
@@ -300,7 +301,7 @@ describe('held update: says it is unknown and held, and until when', () => {
       },
       'https://app.test',
     )
-    const text = lastText()
+    const text = (await lastText())
     expect(text).toContain('Salesforce update not confirmed')
     expect(text).not.toMatch(/after all retries|feeds billing|cannot be replayed|lost/)
     expect(text).toMatch(/Fix:/)
@@ -325,7 +326,7 @@ describe('held update: says it is unknown and held, and until when', () => {
       },
       'https://app.test',
     )
-    const text = lastText()
+    const text = (await lastText())
     expect(text).toContain('Submission a04Ui00000NkhG1IAJ, setting External_Exchange_Status__c.')
     expect(text).toContain('until 10:00 AM ET on Oct 16')
     expectHouseStyle(text)
@@ -333,7 +334,7 @@ describe('held update: says it is unknown and held, and until when', () => {
 
   it('says it names the latest when the window holds more than one', async () => {
     await send(4)
-    const text = lastText()
+    const text = (await lastText())
     expect(text).toContain('about 4 times')
     expect(text).toContain('names the latest')
     expectHouseStyle(text)
@@ -347,7 +348,7 @@ describe('records could not be confirmed: points at our own database', () => {
       { count: 2, labels: ['lead_sightings.finalize'], oldest_at: '2026-10-08T12:20:32Z', minutes: 15, runs: [] },
       'https://app.test',
     )
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toContain('status page')
     expect(text).not.toContain('Outcome Record Lost')
     expect(text).toMatch(/memory/)
@@ -358,7 +359,7 @@ describe('records could not be confirmed: points at our own database', () => {
 describe('strand drain stall: the real schedule and the real consequence', () => {
   it('names the jobs that run today and says the rows are held back from the export', async () => {
     await sendDrainStallAlert(makeSupabase(slackConfig), 'org-1', 1234)
-    const text = lastText()
+    const text = (await lastText())
     // The old copy named 08:00 and 08:30 UTC daily drains and a 09:00 export
     // that "records them with a null winner". The export takes only finalized rows.
     expect(text).not.toContain('08:00')
@@ -390,7 +391,7 @@ describe('heartbeat unstamped: names a failed stamp write, and does not assert h
       'unstamped',
       null,
     )
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/nothing calls/)
     expect(text).not.toMatch(/is working/)
     expect(text).toContain('[cron-heartbeat]')
@@ -407,7 +408,7 @@ describe('pg_cron alert: remedies the check has not already ruled out', () => {
     // A job missing from cron.job is not in the health read at all, and a
     // disabled one is reported as inactive, so neither can be why this fired.
     await send('stalled', 'last succeeded 50h ago')
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/still present and active/)
     expect(text).toContain('job_run_details')
     expect(text).toMatch(/end_time/)
@@ -423,7 +424,7 @@ describe('pg_cron alert: remedies the check has not already ruled out', () => {
 
   it('an unreadable last success time has its own wording, not the schedule remedy', async () => {
     await send('unreadable_success', "the last success time 'x' could not be read, so staleness cannot be judged")
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/simplify the schedule/)
     expect(text).toContain('pg_cron_health')
   })
@@ -435,7 +436,7 @@ describe('bid matrix sync: the remedy follows the error', () => {
       failed: [{ config_slug: 'sofi', error: 'bid_matrix_rows upsert failed: canceling statement due to statement timeout' }],
       preserved: [],
     })
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/Salesforce availability/)
     expect(text).toMatch(/database/i)
   })
@@ -445,7 +446,7 @@ describe('bid matrix sync: the remedy follows the error', () => {
       failed: [{ config_slug: 'sofi', error: 'Salesforce credentials missing for the bid matrix sync: SALESFORCE_CLIENT_ID (checked the org env store and the Worker env)' }],
       preserved: [],
     })
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/Salesforce availability/)
     expect(text).toMatch(/Environment Variables/)
   })
@@ -455,12 +456,12 @@ describe('bid matrix sync: the remedy follows the error', () => {
       failed: [{ config_slug: 'sofi', error: 'Salesforce query failed (503): Service Unavailable' }],
       preserved: [],
     })
-    expect(lastText()).toMatch(/Salesforce/)
+    expect((await lastText())).toMatch(/Salesforce/)
   })
 
   it('a preserved matrix points at the partner flag filter', async () => {
     await sendMatrixSyncFailureAlert(makeSupabase(slackConfig), 'org-1', null, { failed: [], preserved: [{ config_slug: 'sofi' }] })
-    const text = lastText()
+    const text = (await lastText())
     expect(text).toContain('Is{Partner}__c')
     expect(text).not.toMatch(/Salesforce availability/)
   })
@@ -469,7 +470,7 @@ describe('bid matrix sync: the remedy follows the error', () => {
 describe('required secrets: no redeploy step', () => {
   it('does not ask for a redeploy, because putting a secret deploys it', async () => {
     await sendRequiredSecretsAlert(makeSupabase(slackConfig), 'org-1', ['EQ_PASS'])
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/redeploy/)
     expect(text).toContain('wrangler secret put EQ_PASS --name bidspoke-worker')
   })
@@ -481,14 +482,14 @@ describe('export failure: the consequence follows each error phase', () => {
 
   it('a sandbox purge failure does not claim rows were not exported', async () => {
     await send('Achieve export', ['sandbox purge: canceling statement due to statement timeout'])
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/not exported/)
     expect(text).toMatch(/never exported/)
   })
 
   it('an enrollment view backfill failure says the export was not held up', async () => {
     await send('Achieve export', ['enrollment view backfill: Salesforce query failed (503)'])
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/were not exported/)
     expect(text).toMatch(/enrollment view/)
   })
@@ -497,7 +498,7 @@ describe('export failure: the consequence follows each error phase', () => {
     await send('Lead sightings export', [
       'sightings export: lead_sightings.exported_at (500 rows; the batch would re-export forever): write matched zero rows (the target row does not exist)',
     ])
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/were not exported/)
     expect(text).toMatch(/already in Snowflake/)
   })
@@ -508,7 +509,7 @@ describe('export failure: the consequence follows each error phase', () => {
     // and its rows are already in Snowflake.
     for (const error of ['error code: 522', 'Supabase error: canceling statement due to statement timeout']) {
       await send('Sightings purge', [error])
-      const text = lastText()
+      const text = (await lastText())
       expect(text, error).not.toMatch(/were not exported/)
       expect(text, error).toMatch(/already exported to Snowflake/)
     }
@@ -516,12 +517,12 @@ describe('export failure: the consequence follows each error phase', () => {
 
   it('a real export failure keeps the not exported sentence', async () => {
     await send('Lead sightings export', ['bids export: Snowflake 401: JWT token is invalid'])
-    expect(lastText()).toMatch(/not exported/)
+    expect((await lastText())).toMatch(/not exported/)
   })
 
   it('says each consequence once when several errors share a phase', async () => {
     await send('Achieve export', ['sandbox purge: a', 'sandbox purge: b'])
-    const text = lastText()
+    const text = (await lastText())
     expect(text.match(/never exported/g)?.length).toBe(1)
   })
 })
@@ -529,7 +530,7 @@ describe('export failure: the consequence follows each error phase', () => {
 describe('database unreachable: no 503 claim, and a fix that matches the error', () => {
   it('does not say leads are refused with 503, which stored copies ended', async () => {
     await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'workflows', error: 'TypeError: fetch failed', appUrl: 'https://app.test', copyAgeMs: null })
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/503/)
     expect(text).toMatch(/recovers on its own/)
   })
@@ -540,7 +541,7 @@ describe('database unreachable: no 503 claim, and a fix that matches the error',
   // the database is down, so the page says that and quotes the code.
   it('a Cloudflare error page says the worker could not reach the database through Cloudflare, and quotes the code', async () => {
     await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'slack connections', error: 'error code: 1016', appUrl: 'https://app.test', copyAgeMs: null })
-    const text = lastText()
+    const text = (await lastText())
     expect(text).toMatch(/Bidspoke cannot reach its database through Cloudflare/)
     expect(text).toContain('`error code: 1016`')
     expect(text).toMatch(/cloudflarestatus\.com/)
@@ -550,12 +551,12 @@ describe('database unreachable: no 503 claim, and a fix that matches the error',
 
   it.each(['error code: 522', 'Supabase read failed: error code: 1101'])('reads %s as a Cloudflare page too', async (error) => {
     await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'workflows', error, appUrl: 'https://app.test', copyAgeMs: null })
-    expect(lastText()).toMatch(/through Cloudflare/)
+    expect((await lastText())).toMatch(/through Cloudflare/)
   })
 
   it('an ordinary database error keeps the database wording', async () => {
     await sendDatabaseUnreachableAlert(conn, '#alerts', { what: 'workflows', error: 'Supabase error: canceling statement due to statement timeout (57014)', appUrl: 'https://app.test', copyAgeMs: null })
-    const text = lastText()
+    const text = (await lastText())
     expect(text).toMatch(/Bidspoke cannot read its database/)
     expect(text).toMatch(/status\.supabase\.com/)
     expect(text).not.toMatch(/Cloudflare/)
@@ -569,7 +570,7 @@ describe('database unreachable: no 503 claim, and a fix that matches the error',
       appUrl: 'https://app.test',
       copyAgeMs: null,
     })
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/recovers on its own/)
     expect(text).toMatch(/migration/)
   })
@@ -583,7 +584,7 @@ describe('database unreachable: one owner, and the saved settings named by age',
 
   it.each([['database', base.error], ['Cloudflare', 'error code: 1016']])('the %s page names the copy age once and not the minute volume check', async (_, error) => {
     await sendDatabaseUnreachableAlert(conn, '#alerts', { ...base, error })
-    const text = lastText()
+    const text = (await lastText())
     expect(text).not.toMatch(/minute volume check/)
     expect(text.match(/alerts during this outage are posted using Slack settings saved 12 minutes ago/gi)?.length).toBe(1)
     expectHouseStyle(text)
@@ -591,18 +592,18 @@ describe('database unreachable: one owner, and the saved settings named by age',
 
   it('says the age is unknown, never a guess, for a copy written before it was dated', async () => {
     await sendDatabaseUnreachableAlert(conn, '#alerts', { ...base, copyAgeMs: null })
-    expect(lastText()).toMatch(/Slack settings saved at a time that was not recorded/)
+    expect((await lastText())).toMatch(/Slack settings saved at a time that was not recorded/)
   })
 
   it('says under a minute rather than 0 minutes', async () => {
     await sendDatabaseUnreachableAlert(conn, '#alerts', { ...base, copyAgeMs: 20_000 })
-    expect(lastText()).toMatch(/Slack settings saved less than a minute ago/)
+    expect((await lastText())).toMatch(/Slack settings saved less than a minute ago/)
   })
 
   it('the all-clear says what was measured', async () => {
     const measured = 'For the last 31 minutes the minute database probe and the volume check have answered, at least every 5 minutes, and no scheduled read has failed.'
     await sendDatabaseRecoveredAlert(conn, '#alerts', { alertedAt: '2026-10-15T02:00:00.000Z', endedAt: '2026-10-15T02:20:00.000Z', measured, appUrl: 'https://app.test' })
-    const text = lastText()
+    const text = (await lastText())
     expect(text).toContain(measured)
     expect(text).toMatch(/Bidspoke\* can read its database again/)
     expectHouseStyle(text)

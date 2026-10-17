@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { detectAnomaly, MIN_BASELINE_DAYS, runVolumeAnomalyCheck } from '../volume-anomaly'
 import { PAGE_SIZE } from '../paginate'
+import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 
 function buildCounts(days: string[], count: number): Record<string, number> {
   return Object.fromEntries(days.map((d) => [d, count]))
@@ -235,7 +236,7 @@ describe('runVolumeAnomalyCheck', () => {
   beforeEach(() => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-04-08T13:00:00Z')) // "yesterday" = 2026-04-07 (Tue)
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.2' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.2' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => {
@@ -268,7 +269,7 @@ describe('runVolumeAnomalyCheck', () => {
     // sees the real rows past index 1000 and correctly detects the drop.
     expect(fetchMock).toHaveBeenCalled()
     // #835: the check counts runs and nothing else, so it may not guess a cause.
-    const body = String(fetchMock.mock.calls[0][1]?.body)
+    const body = JSON.stringify(await slackPostOf(fetchMock.mock.calls[0]))
     expect(body).toContain('20')
     expect(body).not.toMatch(/may indicate|upstream source outage/)
   })

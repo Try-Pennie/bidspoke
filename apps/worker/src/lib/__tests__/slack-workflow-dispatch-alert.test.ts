@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { slackPostJsonOf } from '../../__tests__/helpers/slack-fetch'
 import { sendWorkflowDispatchAlert } from '../slack'
 import type { DispatchAttempt } from '../workflow-dispatch-driver'
 
@@ -32,7 +33,7 @@ function makeSupabase(connection: Record<string, string> | null) {
 
 const connection = { bot_token: 'xoxb-test', default_channel: '#alerts', workspace_name: 'Pennie' }
 
-const posts = () => vi.mocked(fetch).mock.calls.map((call) => String((call[1] as { body: string }).body))
+const posts = async () => Promise.all(vi.mocked(fetch).mock.calls.map((call) => slackPostJsonOf(call)))
 
 const attempt = (file: string, outcome: DispatchAttempt['outcome'], reason: string): DispatchAttempt => ({
   file,
@@ -57,14 +58,14 @@ describe('sendWorkflowDispatchAlert', () => {
       attempt('db-types-drift.yml', 'not_due', 'ran recently'),
     ])
     expect(sent).toBe(false)
-    expect(posts().length).toBe(0)
+    expect((await posts()).length).toBe(0)
   })
 
   it('names the workflow and carries the refusal reason verbatim', async () => {
     await sendWorkflowDispatchAlert(makeSupabase(connection), 'org-1', [
       attempt('deploy-drift.yml', 'failed', 'GitHub refused the dispatch of deploy-drift.yml with 403'),
     ])
-    const text = posts().join('')
+    const text = (await posts()).join('')
     expect(text).toContain('deploy-drift.yml')
     expect(text, 'the reason is the whole diagnosis and must not be summarised away').toContain('403')
   })
@@ -73,7 +74,7 @@ describe('sendWorkflowDispatchAlert', () => {
     await sendWorkflowDispatchAlert(makeSupabase(connection), 'org-1', [
       { ...attempt('deploy-drift.yml', 'failed', 'GitHub rate limit (403)'), rateLimited: true },
     ])
-    const text = posts()[0]
+    const text = (await posts())[0]
     expect(text).toContain('clears on its own')
     expect(text).not.toContain('needs Actions read')
   })
@@ -86,8 +87,8 @@ describe('sendWorkflowDispatchAlert', () => {
       attempt('deploy-drift.yml', 'failed', 'GitHub refused the dispatch with 403'),
       attempt('db-types-drift.yml', 'failed', 'GitHub refused the dispatch with 403'),
     ])
-    expect(posts().length).toBe(1)
-    const text = posts()[0]
+    expect((await posts()).length).toBe(1)
+    const text = (await posts())[0]
     expect(text).toContain('deploy-drift.yml')
     expect(text).toContain('db-types-drift.yml')
   })
@@ -99,7 +100,7 @@ describe('sendWorkflowDispatchAlert', () => {
     await sendWorkflowDispatchAlert(makeSupabase(connection), 'org-1', [
       attempt('deploy-drift.yml', 'failed', 'GitHub refused the dispatch with 403'),
     ])
-    expect(posts()[0].toLowerCase()).toContain('not running')
+    expect((await posts())[0].toLowerCase()).toContain('not running')
   })
 
   it('reports an unconfigured driver differently from a refused dispatch', async () => {
@@ -108,7 +109,7 @@ describe('sendWorkflowDispatchAlert', () => {
     await sendWorkflowDispatchAlert(makeSupabase(connection), 'org-1', [
       attempt('deploy-drift.yml', 'unconfigured', 'GITHUB_CODE_REPO is not set'),
     ])
-    expect(posts()[0]).toContain('GITHUB_CODE_REPO')
+    expect((await posts())[0]).toContain('GITHUB_CODE_REPO')
   })
 
   it('does not alert about a workflow whose last run merely could not be read', async () => {
@@ -126,7 +127,7 @@ describe('sendWorkflowDispatchAlert', () => {
       attempt('deploy-drift.yml', 'failed', 'GitHub refused the dispatch with 403'),
     ])
     expect(sent).toBe(false)
-    expect(posts().length).toBe(0)
+    expect((await posts()).length).toBe(0)
   })
 })
 
@@ -139,7 +140,7 @@ describe('sendWorkflowDispatchAlert: a repeated failure on GitHub\'s side (#1751
         failingSince: '2026-10-04T21:30:00.000Z',
       },
     ])
-    const body = posts()[0]
+    const body = (await posts())[0]
     expect(body).toContain('GitHub')
     // The same Eastern formatter the other alerts use, so every page reads alike.
     expect(body).toContain('Oct 4, 5:30 PM EDT')

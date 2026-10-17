@@ -17,6 +17,7 @@ import { productionClickAlert, type ClickAlert } from '../buyer-click-alert'
 import { createLeadSupabaseClient, noteLeadWriteUnanswered } from '../lead-read-budget'
 import { SLACK_CONNS_LASTGOOD_KEY } from '../slack-copy'
 import { encryptSecret } from '../secret-crypto'
+import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 
 const KEY = btoa('2'.repeat(32))
 const dbEnv = { SUPABASE_URL: 'https://db.example.test', SUPABASE_SECRET_KEY: 'k' } as unknown as Env
@@ -41,8 +42,9 @@ function hungDatabase() {
 let slackPosts: string[]
 beforeEach(() => {
   slackPosts = []
-  vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-    slackPosts.push(new Headers(init?.headers).get('Authorization') ?? '')
+  vi.stubGlobal('fetch', vi.fn(async (...call: unknown[]) => {
+    const { token } = await slackPostOf(call)
+    slackPosts.push(token === null ? '' : `Bearer ${token}`)
     return new Response(JSON.stringify({ ok: true, ts: '1.0' }), { status: 200 })
   }))
   vi.spyOn(console, 'error').mockImplementation(() => {})

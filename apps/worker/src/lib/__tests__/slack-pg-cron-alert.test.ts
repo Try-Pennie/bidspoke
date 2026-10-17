@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { sendPgCronAlert } from '../slack'
 import { ALERTING_STATUSES } from '../pg-cron-watch'
+import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 
 /**
  * The Slack message for a failing or stalled database job (#770).
@@ -33,7 +34,7 @@ function makeSupabase(connection: Record<string, string> | null) {
 const connection = { bot_token: 'xoxb-test', default_channel: '#alerts', workspace_name: 'Pennie' }
 
 /** The body posted to Slack by the last call. */
-const lastPost = () => JSON.parse((vi.mocked(fetch).mock.calls.at(-1)?.[1] as { body: string }).body)
+const lastPost = async () => (await slackPostOf(vi.mocked(fetch).mock.calls.at(-1) ?? []))
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -51,7 +52,7 @@ const send = (status: string, detail = 'something happened') =>
 describe('sendPgCronAlert: each status says a different thing', () => {
   it('says the job is failing, and carries the database error', async () => {
     await send('failing', 'ERROR: duplicate key value violates unique constraint')
-    const body = JSON.stringify(lastPost())
+    const body = JSON.stringify((await lastPost()))
     expect(body).toContain('is failing')
     expect(body).toContain('duplicate key')
   })
@@ -61,7 +62,7 @@ describe('sendPgCronAlert: each status says a different thing', () => {
     // is reported as inactive, so neither explains a stall (#835). What is left
     // is a stuck run or a scheduler not starting it, both read in job_run_details.
     await send('stalled', 'last succeeded 50h ago')
-    const body = JSON.stringify(lastPost())
+    const body = JSON.stringify((await lastPost()))
     expect(body).toContain('has stopped running')
     expect(body).toContain('cron.job_run_details')
   })
@@ -70,7 +71,7 @@ describe('sendPgCronAlert: each status says a different thing', () => {
     // An unreadable schedule is our problem, not the job's. Saying the job has
     // stopped would be a claim the check cannot support (L11, L119).
     await send('unknown_schedule', "the schedule '0 9-17 * * *' is not one this check can read")
-    const body = JSON.stringify(lastPost())
+    const body = JSON.stringify((await lastPost()))
     expect(body).toContain('Cannot tell whether')
     expect(body).not.toContain('has stopped running')
   })
@@ -79,7 +80,7 @@ describe('sendPgCronAlert: each status says a different thing', () => {
     // A status added later must not produce a blank header that reads as a bug in
     // the alerting rather than a condition in the database.
     await send('something-new')
-    const body = JSON.stringify(lastPost())
+    const body = JSON.stringify((await lastPost()))
     expect(body).toContain('needs attention')
     expect(body).toContain('How to fix')
   })
@@ -87,7 +88,7 @@ describe('sendPgCronAlert: each status says a different thing', () => {
   it('names the job and its schedule in every message', async () => {
     for (const status of ALERTING_STATUSES) {
       await send(status)
-      const body = JSON.stringify(lastPost())
+      const body = JSON.stringify((await lastPost()))
       expect(body, `${status} does not name the job`).toContain('refresh-stats')
       expect(body, `${status} does not name the schedule`).toContain('45 3 * * *')
     }
@@ -96,7 +97,7 @@ describe('sendPgCronAlert: each status says a different thing', () => {
   it('always includes a how-to-fix line', async () => {
     for (const status of ALERTING_STATUSES) {
       await send(status)
-      expect(JSON.stringify(lastPost()), `${status} has no fix hint`).toContain('How to fix')
+      expect(JSON.stringify((await lastPost())), `${status} has no fix hint`).toContain('How to fix')
     }
   })
 
@@ -112,7 +113,7 @@ describe('sendPgCronAlert: each status says a different thing', () => {
     expect(ALERTING_STATUSES.length, 'no statuses to check, so this would pass vacuously').toBeGreaterThan(4)
     for (const status of ALERTING_STATUSES) {
       await send(status)
-      const body = JSON.stringify(lastPost())
+      const body = JSON.stringify((await lastPost()))
       expect(body, `${status} falls back to the generic headline`).not.toContain('needs attention')
       expect(body, `${status} falls back to the generic remedy`).not.toContain('read this job in')
     }

@@ -16,6 +16,7 @@ import { registerScheduledSlack } from '../../lib/scheduled-slack'
 import { postMessage } from '../../lib/slack'
 import { encryptSecret } from '../../lib/secret-crypto'
 import { SLACK_CONNS_LASTGOOD_KEY, SLACK_COPY_SAVED_AT_KEY } from '../../lib/slack-copy'
+import { slackPostJsonOf } from '../../__tests__/helpers/slack-fetch'
 
 const KEY = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)))
 const ORG = '55555555-5555-4555-8555-555555555555'
@@ -63,14 +64,15 @@ describe('the outage line context in workerd (#2061)', () => {
     expect(b).toBeNull()
   })
 
-  // The whole path in workerd: slack.ts loads with the import, and a post made
-  // after a timer inside the tick carries the line.
+  // The whole path in workerd: slack.ts loads with the import (and with it the
+  // Slack client library, #2331), and a post made after a timer inside the tick
+  // carries the line.
   it('adds the line to a post made inside the tick, through slack.ts', async () => {
     const s = await source()
     const sent: string[] = []
     const realFetch = globalThis.fetch
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
-      sent.push(String(init?.body))
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      sent.push(await slackPostJsonOf([input, init]))
       return new Response(JSON.stringify({ ok: true, ts: '1.2' }))
     }) as typeof fetch
     try {

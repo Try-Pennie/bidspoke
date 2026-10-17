@@ -19,6 +19,7 @@ import { CIRCUIT_ALERT_DEADLINE_MS, alertIfTripped } from '../partner-bid'
 import { createLeadSupabaseClient, LEAD_READ_DEADLINE_MS } from '../../../lib/lead-read-budget'
 import { readLastGoodSlackConnections, SLACK_CONNS_LASTGOOD_KEY } from '../../../lib/slack-copy'
 import { encryptSecret } from '../../../lib/secret-crypto'
+import { slackPostOf } from '../../../__tests__/helpers/slack-fetch'
 
 const env = { SUPABASE_URL: 'https://db.example.test', SUPABASE_SECRET_KEY: 'k' } as unknown as Env
 const KEY = btoa('1'.repeat(32))
@@ -50,10 +51,10 @@ function database(mode: 'refuse' | 'hang' | 'up') {
 let slackPosts: Array<{ auth: string | null; channel: string }>
 beforeEach(() => {
   slackPosts = []
-  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-    expect(String(input)).toBe('https://slack.com/api/chat.postMessage')
-    const headers = new Headers(init?.headers)
-    slackPosts.push({ auth: headers.get('Authorization'), channel: (JSON.parse(String(init?.body)) as { channel: string }).channel })
+  vi.stubGlobal('fetch', vi.fn(async (...call: unknown[]) => {
+    const post = await slackPostOf(call)
+    expect(post.url).toBe('https://slack.com/api/chat.postMessage')
+    slackPosts.push({ auth: post.token === null ? null : `Bearer ${post.token}`, channel: String(post.channel) })
     return new Response(JSON.stringify({ ok: true, ts: '1.0' }), { status: 200 })
   }))
   vi.spyOn(console, 'error').mockImplementation(() => {})
