@@ -73,15 +73,18 @@ interface PartnerBody {
 // warning cannot contradict the runtime behaviour (LESSONS L144). The value never
 // enters the message; only the key name, which the person already typed.
 function credentialWarning(env: Env, row: unknown): string | null {
-  const partner = row as { cf_secret_key?: string | null; is_active?: boolean | null } | null
+  const partner = row as { cf_secret_key?: string | null; is_active?: boolean | null; name?: string | null } | null
   const key = partner?.cf_secret_key ?? null
   if (!partnerCredentialMissing(env, key)) return null
   // Distinct causes, distinct messages (LESSONS L11). An inactive partner is not
   // losing leads today, and saying it is would teach the reader to discount the
-  // warning on the partner that IS live.
+  // warning on the partner that IS live. The words are the settled design's
+  // (PM-23, #2326): where the secret lives and who adds it, since the reader on
+  // the partners page cannot set a Worker secret themselves.
+  const name = partner?.name?.trim() || 'this partner'
   return partner?.is_active
-    ? `Credential '${key}' is not set, so this partner will fail on the next live lead.`
-    : `Credential '${key}' is not set. Set it before activating this partner.`
+    ? `${key} is not set as a Worker secret, so ${name}'s next bid will fail. An engineer adds it in Cloudflare.`
+    : `${key} is not set as a Worker secret. An engineer adds it in Cloudflare before ${name} is turned on.`
 }
 
 function withCredentialWarning<T>(env: Env, row: T): T & { credential_warning: string | null } {

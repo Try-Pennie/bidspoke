@@ -14,12 +14,13 @@ import { pickupSentence } from '@/lib/bidding-pickup'
 import { api } from '@/lib/api'
 import { causeAsSentence, errorSentence, requestFailureCause } from '@/lib/error-sentence'
 import { Plus } from 'lucide-react'
-import { BidResolverEditor } from '@/components/partners/BidResolverEditor'
+import { BidAmountEditor, EndpointFields, ResolverChoice } from '@/components/partners/BidResolverEditor'
 import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
 import { OutboundMappingEditor } from '@/components/partners/OutboundMappingEditor'
 import { ExtraExtractionEditor } from '@/components/partners/ExtraExtractionEditor'
 import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
 import { ErrorRuleLists } from '@/components/partners/ErrorRuleLists'
+import { MinutesInput } from '@/components/partners/MinutesInput'
 import { BuyerProfileSection, EMPTY_PROFILE } from '@/components/partners/buyer-profile/BuyerProfileSection'
 import { MergeDialog } from '@/components/partners/MergeDialog'
 import { PartnerDeleteBox } from '@/components/partners/PartnerDeleteBox'
@@ -1472,26 +1473,37 @@ export default function PartnerForm({
                 <BidsInRow usage={usage} partnerName={name || 'this partner'} partnerNames={partnerNames} reason={bidGroupReason} onRetry={() => setUsageAttempt((n) => n + 1)} />
               </Section>
 
-              <Section title="Bid resolution">
-                {/* Inside the section it is about, so it keeps the row's spacing (#2317). */}
-                {credentialProblem && resolverType !== 'api' && (
-                  <FieldError size="sm">{credentialProblem}</FieldError>
-                )}
-                <BidResolverEditor
+              {/* The order and contents are the settled design's (PM-23, #2326, frame 18):
+                  Endpoint, Resolver and Bid amount as three rows, Request and Response as
+                  two, then Limits, Circuit breaker and Errors. */}
+              <Section title="Endpoint">
+                <EndpointFields
+                  resolverType={resolverType}
+                  apiEndpoint={apiEndpoint}
+                  cfSecretKey={cfSecretKey}
+                  dedupEndpoint={dedupEndpoint}
+                  onApiEndpointChange={setApiEndpoint}
+                  onCfSecretKeyChange={setCfSecretKey}
+                  onDedupEndpointChange={setDedupEndpoint}
+                  credentialProblem={credentialProblem}
+                />
+              </Section>
+
+              <Section title="Resolver" region={false}>
+                <ResolverChoice value={resolverType} onChange={setResolverType} />
+              </Section>
+
+              <Section title="Bid amount" region={false}>
+                <BidAmountEditor
                   resolverType={resolverType}
                   resolverConfig={resolverConfig}
                   bidFormula={bidFormula}
-                  apiEndpoint={apiEndpoint}
-                  cfSecretKey={cfSecretKey}
                   bidComparisonSource={bidComparisonSource}
                   bidConfigOptions={bidConfigs.map((c) => ({ id: c.id, name: c.name, slug: c.slug }))}
-                  onTypeChange={setResolverType}
+                  partnerName={name || 'this partner'}
                   onFormulaChange={setBidFormula}
-                  onApiEndpointChange={setApiEndpoint}
-                  onCfSecretKeyChange={setCfSecretKey}
                   onBidComparisonSourceChange={setBidComparisonSource}
                   onConfigChange={setResolverConfig}
-                  cfSecretKeyError={credentialProblem}
                 />
                 {bidConfigsLoadError && (
                   <FieldError as="div" alert boxed size="sm" className="mt-4 flex items-center gap-3">
@@ -1518,78 +1530,80 @@ export default function PartnerForm({
                 )}
               </Section>
 
-              <Section title="Duplicate check">
-                <Field
-                  id="partner-dedup-endpoint"
-                  label="Dedup endpoint"
-                  hint="Optional. Called before each bid to check if this lead has already been sold to this partner."
-                >
-                  <TextInput id="partner-dedup-endpoint" value={dedupEndpoint} onChange={setDedupEndpoint} placeholder="https://api.partner.com/dedup" describedBy={describedBy('partner-dedup-endpoint', true, false)} />
-                </Field>
-              </Section>
-
-              <Section title="Outbound field mapping">
-                <OutboundMappingEditor value={outboundMapping} onChange={setOutboundMapping} />
-              </Section>
-
-              {resolverType === 'api' && <Section title="Response handling">
-                {/* Bid mode is no longer edited here (PM-9, #2136): nothing acts on it. */}
-                <PartnerSubsection title="Sample response">
-                  <PartnerProbePanel value={lastProbeResponse} onChange={setLastProbeResponse} />
+              <Section title="Request">
+                <PartnerSubsection title="Field mapping">
+                  <OutboundMappingEditor value={outboundMapping} onChange={setOutboundMapping} partnerName={name || 'this partner'} />
                 </PartnerSubsection>
+              </Section>
 
-                <PartnerSubsection title="Extra extraction">
+              {resolverType === 'api' && <Section title="Response">
+                {/* Bid mode is no longer edited here (PM-9, #2136): nothing acts on it. */}
+                <PartnerSubsection title="Extract">
                   <ExtraExtractionEditor
                     value={extraExtraction}
                     onChange={setExtraExtraction}
                     sampleResponse={lastProbeResponse}
                   />
                 </PartnerSubsection>
+
+                <PartnerSubsection title="Sample answer">
+                  <PartnerProbePanel value={lastProbeResponse} onChange={setLastProbeResponse} partnerName={name || 'this partner'} />
+                </PartnerSubsection>
               </Section>}
 
-              <Section title="Bidding limits">
+              <Section title="Limits">
+                {/* Relabelled from Daily cap (#1412, L118): the buyer profile has its own
+                    daily lead cap for buyer selection; this one bounds Bid Group attempts.
+                    One line says what both mean (PM-23). */}
                 <div className="grid grid-cols-2 gap-4">
-                  {/* Relabelled from Daily cap (#1412, L118): the buyer profile has its own
-                      daily lead cap for buyer selection; this one bounds Partner Bid attempts. */}
-                  <Field id="partner-daily-attempt-cap" label="Daily attempt cap (bidding workflows)" hint="Max bid attempts per day through Partner Bid and Bid Group. Leave blank for unlimited.">
-                    <NumberInput id="partner-daily-attempt-cap" value={dailyCap === '' ? null : Number(dailyCap)} onChange={(v) => setDailyCap(v === null ? '' : String(v))} min={0} step={1} describedBy={describedBy('partner-daily-attempt-cap', true, false)} />
+                  <Field id="partner-daily-attempt-cap" label="Daily attempt cap">
+                    <NumberInput id="partner-daily-attempt-cap" value={dailyCap === '' ? null : Number(dailyCap)} onChange={(v) => setDailyCap(v === null ? '' : String(v))} min={0} step={1} placeholder="No limit" describedBy="partner-limits-hint" />
                   </Field>
-                  <Field id="partner-min-bid" label="Minimum bid ($)" hint="Reject bids below this amount. Leave blank to accept any bid down to $0. Set a positive amount (e.g. 0.01) to treat a $0 bid as a decline.">
-                    <NumberInput id="partner-min-bid" value={asNumber(minBid)} onChange={(v) => setMinBid(asText(v))} placeholder="0.00" describedBy={describedBy('partner-min-bid', true, false)} />
+                  <Field id="partner-min-bid" label="Minimum bid">
+                    {/* The dollar sign is a fixed word of the value, so it sits beside the box (Dan, 2026-10-17). */}
+                    <div className="flex items-center gap-1.5">
+                      <span aria-hidden="true" className="text-[13px] text-graphite">$</span>
+                      <NumberInput id="partner-min-bid" value={asNumber(minBid)} onChange={(v) => setMinBid(asText(v))} placeholder="None" describedBy="partner-limits-hint" />
+                    </div>
                   </Field>
                 </div>
+                <p id="partner-limits-hint" className="mt-1 text-xs text-hint">
+                  The cap counts every bid a Bid Group asks this partner for in a day. A bid under the minimum is treated as a decline.
+                </p>
               </Section>
 
               <Section title="Circuit breaker">
                 <div className="flex items-center gap-2.5">
-                  <Toggle id="partner-circuit-enabled" checked={circuitEnabled} onChange={setCircuitEnabled} label="Circuit breaker enabled" />
-                  <span className="text-sm text-gray-700">{circuitEnabled ? 'Enabled' : 'Disabled'}</span>
-                  <span className="text-gray-300">·</span>
-                  <p className="text-xs text-hint">
-                    Pauses bids to this partner after repeated failures, then retries automatically.
-                  </p>
+                  <Toggle id="partner-circuit-enabled" checked={circuitEnabled} onChange={setCircuitEnabled} label="Circuit breaker" />
+                  <span className="text-sm text-gray-700">{circuitEnabled ? 'On' : 'Off'}</span>
                 </div>
                 <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${circuitEnabled ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                   <div className="min-h-0 overflow-hidden">
+                    {/* Minutes on screen, seconds in the store (PM-23): MinutesInput holds the
+                        conversion, and a box nobody touched saves nothing. */}
                     <div className="grid grid-cols-3 gap-4 pt-1">
-                      <Field id="partner-circuit-threshold" label="Error threshold" hint="Errors before pausing.">
-                        <NumberInput id="partner-circuit-threshold" value={asNumber(circuitThreshold)} onChange={(v) => setCircuitThreshold(asText(v))} step={1} placeholder="5" describedBy={describedBy('partner-circuit-threshold', true, false)} />
+                      <Field id="partner-circuit-threshold" label="Errors">
+                        <NumberInput id="partner-circuit-threshold" value={asNumber(circuitThreshold)} onChange={(v) => setCircuitThreshold(asText(v))} step={1} placeholder="5" describedBy="partner-circuit-hint" />
                       </Field>
-                      <Field id="partner-circuit-window" label="Window (seconds)" hint="Time period to count errors in.">
-                        <NumberInput id="partner-circuit-window" value={asNumber(circuitWindow)} onChange={(v) => setCircuitWindow(asText(v))} step={1} placeholder="60" describedBy={describedBy('partner-circuit-window', true, false)} />
+                      <Field id="partner-circuit-window" label="Within">
+                        <MinutesInput id="partner-circuit-window" seconds={circuitWindow} onChange={setCircuitWindow} placeholder="1" describedBy="partner-circuit-hint" />
                       </Field>
-                      <Field id="partner-circuit-cooldown" label="Pause duration (seconds)" hint="How long to wait before retrying.">
-                        <NumberInput id="partner-circuit-cooldown" value={asNumber(circuitCooldown)} onChange={(v) => setCircuitCooldown(asText(v))} step={1} placeholder="300" describedBy={describedBy('partner-circuit-cooldown', true, false)} />
+                      <Field id="partner-circuit-cooldown" label="Pause for">
+                        <MinutesInput id="partner-circuit-cooldown" seconds={circuitCooldown} onChange={setCircuitCooldown} placeholder="5" describedBy="partner-circuit-hint" />
                       </Field>
                     </div>
+                    <p id="partner-circuit-hint" className="mt-1 text-xs text-hint">
+                      Too many failed calls in a short time stop bids to {name || 'this partner'} for a while, then it is tried again on its own.
+                    </p>
                   </div>
                 </div>
               </Section>
 
-              <Section title="Response classification">
+              <Section title="Errors">
                 {/* The decline group (rejection) is edited in the Buyer profile section beside
                     the accept rules, so it is not repeated here (#1412, L605). The defaults
-                    and each list's Alert switch are drawn with the lists (#2143, PM-11). */}
+                    and each list's Alert switch are drawn with the lists (#2143, PM-11).
+                    Headed Errors as designed (PM-23); was Response classification. */}
                 <ErrorRuleLists
                   value={signalRules}
                   onChange={setSignalRules}

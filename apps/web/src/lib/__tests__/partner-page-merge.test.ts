@@ -236,7 +236,7 @@ describe('changedUnits (#2138): what the save bar and the leave dialog name', ()
   it('never throws in render: a partner key the registry does not name once is named by its key', () => {
     const withoutName = PARTNER_FIELD_REGISTRY.filter((e) => e.pattern !== 'name')
     const units = changedUnits({ partner, profile: null }, { partner: { ...partner, name: 'X', min_bid: 5 }, profile: null }, withoutName)
-    expect(units.map((u) => u.label)).toEqual(['Minimum bid ($)', 'name'])
+    expect(units.map((u) => u.label)).toEqual(['Minimum bid', 'name'])
   })
 
   it('compares the partner alone when the page never read a profile', () => {

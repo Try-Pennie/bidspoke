@@ -336,6 +336,17 @@ html {
   .select-item-indicator {
     @apply absolute left-2 inline-flex items-center text-navy;
   }
+  /* SuggestInput's list (#2326): the select's list, as wide as the box it offers values for. */
+  .suggest-content {
+    @apply z-50 w-[var(--radix-popover-trigger-width)] overflow-y-auto rounded-lg border border-gray-200 bg-white p-1 shadow-lg;
+    max-height: min(var(--radix-popover-content-available-height), 16rem);
+  }
+  .suggest-item {
+    @apply cursor-default select-none truncate rounded px-2.5 py-1.5 text-[13px] text-graphite;
+  }
+  .suggest-item-active {
+    @apply bg-p-blue-light;
+  }
   /* A choice whose options each need a sentence (#2137): one per line, a dot
      that fills when chosen, the hint under the label. */
   .choice-stack {

@@ -1,21 +1,17 @@
 'use client'
 
 import { useId, useMemo, useState, useEffect } from 'react'
-import { ArrowRight, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import type { ExtraExtractionConfig, ExtraExtractionSpec } from '@/lib/api'
 import { Button, TextInput } from '@/components/ui/form'
 import { Select } from '@/components/ui/Select'
+import { SuggestInput } from '@/components/ui/SuggestInput'
 import { RemoveButton } from '@/components/partners/RemoveButton'
 
 // Classifiers registered in apps/worker/src/engine/bid-resolver.ts CLASSIFIERS.
 // Keep this list in sync when new classifiers ship.
 const CLASSIFIERS: { value: string; label: string }[] = [
   { value: 'tripoint_result', label: 'tripoint_result (Success / Duplicate / Fail)' },
-]
-
-const KIND_OPTIONS: ReadonlyArray<{ value: Row['kind']; label: string }> = [
-  { value: 'path', label: 'path' },
-  { value: 'classifier', label: 'classifier' },
 ]
 
 interface Row {
@@ -60,8 +56,8 @@ export function ExtraExtractionEditor({ value, onChange, sampleResponse }: Props
     onChange(Object.keys(out).length > 0 ? out : null)
   }
 
-  function addRow() {
-    update([...rows, { key: '', kind: 'path', path: '', classifier: CLASSIFIERS[0]?.value ?? '' }])
+  function addRow(kind: Row['kind'] = 'path') {
+    update([...rows, { key: '', kind, path: '', classifier: CLASSIFIERS[0]?.value ?? '' }])
   }
 
   function updateRow(i: number, patch: Partial<Row>) {
@@ -72,49 +68,69 @@ export function ExtraExtractionEditor({ value, onChange, sampleResponse }: Props
     update(rows.filter((_, idx) => idx !== i))
   }
 
+  // What a later step reads, in its own spelling (PM-23, the design's one line under Extract).
+  const named = rows.filter((r) => r.key).map((r) => `extra.${r.key}`)
+  const readAs = named.length === 0 ? null
+    : named.length === 1 ? `Later steps read it as ${named[0]}.`
+    : `Later steps read them as ${named.slice(0, -1).join(', ')} and ${named[named.length - 1]}.`
+
   return (
-    <div className="space-y-3">
-      <p className="text-xs text-hint">
-        Pull partner-specific values out of the API response into <code className="rounded bg-gray-100 px-1 font-mono">output.extra</code>. Use a dot-path (e.g. <code className="rounded bg-gray-100 px-1 font-mono">data.createLead.id</code>) or a registered classifier function. Downstream Transform nodes read these via <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;node&gt;.output.extra.&lt;key&gt;</code>.
-      </p>
-
-      {rows.length > 0 && (
-        <div className="space-y-2">
-          {rows.map((row, i) => (
-            <div key={i} className="flex items-center gap-1.5">
-              <TextInput id={`${base}-${i}-key`} aria-label={`Output key, extraction ${i + 1}`} value={row.key} onChange={(v) => updateRow(i, { key: v })} placeholder="leadId" mono className="w-32 shrink-0" />
-              <ArrowRight className="h-3 w-3 flex-shrink-0 text-gray-300" aria-hidden="true" />
-              <Select id={`${base}-${i}-kind`} aria-label={`Source, extraction ${i + 1}`} value={row.kind} options={KIND_OPTIONS} onChange={(v) => updateRow(i, { kind: v as Row['kind'] })} className="w-32 shrink-0" />
-              {row.kind === 'classifier' ? (
-                <Select id={`${base}-${i}-classifier`} aria-label={`Classifier, extraction ${i + 1}`} value={row.classifier} options={CLASSIFIERS} onChange={(v) => updateRow(i, { classifier: v })} className="min-w-0 flex-1" />
-              ) : (
-                <TextInput
-                  id={`${base}-${i}-path`}
-                  aria-label={`Path, extraction ${i + 1}`}
-                  value={row.path}
-                  onChange={(v) => updateRow(i, { path: v })}
-                  placeholder="data.createLead.id"
-                  mono
-                  suggestions={pathSuggestions}
-                  className="min-w-0 flex-1"
-                />
-              )}
-              <RemoveButton label={`Remove extraction ${i + 1}`} onClick={() => removeRow(i)} />
-            </div>
-          ))}
-        </div>
+    <div className="space-y-2">
+      {rows.length === 0 ? (
+        <p className="text-[13px] text-hint">Nothing extracted.</p>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs font-medium text-gray-600">
+              <th scope="col" className="w-36 pb-1 pr-2 font-medium">Name</th>
+              <th scope="col" className="pb-1 pr-2 font-medium">Where it is in the response</th>
+              <th scope="col" className="w-8 pb-1"><span className="sr-only">Remove</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => (
+              <tr key={i} className="align-middle">
+                <td className="py-0.5 pr-2">
+                  <TextInput id={`${base}-${i}-key`} aria-label={`Name, extraction ${i + 1}`} value={row.key} onChange={(v) => updateRow(i, { key: v })} placeholder="leadId" mono />
+                </td>
+                <td className="py-0.5 pr-2">
+                  {row.kind === 'classifier' ? (
+                    // A result worked out from the whole answer by a classifier the
+                    // Worker registers, rather than read at one path (Tripoint's result).
+                    <Select id={`${base}-${i}-classifier`} aria-label={`Classifier, extraction ${i + 1}`} value={row.classifier} options={CLASSIFIERS} onChange={(v) => updateRow(i, { classifier: v })} />
+                  ) : (
+                    <SuggestInput
+                      id={`${base}-${i}-path`}
+                      aria-label={`Where it is in the response, extraction ${i + 1}`}
+                      value={row.path}
+                      onChange={(v) => updateRow(i, { path: v })}
+                      placeholder="data.createLead.id"
+                      mono
+                      suggestions={pathSuggestions}
+                    />
+                  )}
+                </td>
+                <td className="py-0.5">
+                  <RemoveButton label={`Remove extraction ${i + 1}`} onClick={() => removeRow(i)} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
 
-      <Button variant="quiet" onClick={addRow}>
-        <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-        Add extraction
-      </Button>
+      <div className="flex flex-wrap gap-x-4">
+        <Button variant="quiet" onClick={() => addRow('path')}>
+          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+          Add extraction
+        </Button>
+        <Button variant="quiet" onClick={() => addRow('classifier')}>
+          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+          Add classifier
+        </Button>
+      </div>
 
-      {pathSuggestions.length === 0 && (
-        <p className="text-xs text-hint">
-          Paste a sample API response above to enable path autocomplete.
-        </p>
-      )}
+      {readAs && <p className="text-xs text-hint">{readAs}</p>}
     </div>
   )
 }

@@ -238,7 +238,7 @@ describe('History (#2137, #2141)', () => {
     await waitFor(() => expect(api.partners.history).toHaveBeenCalledWith('p1'))
     const item = await screen.findByRole('listitem')
     expect(item).toHaveTextContent('Editor A')
-    expect(item).toHaveTextContent(/Daily attempt cap \(bidding workflows\) from 40 → to 50/)
+    expect(item).toHaveTextContent(/Daily attempt cap from 40 → to 50/)
   })
 })
 
