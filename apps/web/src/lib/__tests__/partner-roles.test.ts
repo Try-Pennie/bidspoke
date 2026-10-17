@@ -60,3 +60,13 @@ describe('partner roles: vocabulary', () => {
     }
   })
 })
+
+describe('partnerTypeFromDoes (#2321, PM-18)', () => {
+  it('reads the two Does boxes as the stored type, and neither as no type at all', async () => {
+    const { partnerTypeFromDoes } = await import('../partner-roles')
+    expect(partnerTypeFromDoes({ sends: true, buys: false })).toBe('source')
+    expect(partnerTypeFromDoes({ sends: false, buys: true })).toBe('buyer')
+    expect(partnerTypeFromDoes({ sends: true, buys: true })).toBe('both')
+    expect(partnerTypeFromDoes({ sends: false, buys: false })).toBeNull()
+  })
+})

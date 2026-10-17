@@ -51,6 +51,8 @@ describe('req() request timeout (#492)', () => {
     await vi.advanceTimersByTimeAsync(31_000)
     const err = await p.catch((e) => e)
     expect(err.timedOut).toBe(true)
+    // The ceiling it waited, so the partners page can say how long (#2321).
+    expect(err.timeoutMs).toBe(30_000)
   })
 
   it('does not abort a request that completes before the ceiling', async () => {

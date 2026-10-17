@@ -439,9 +439,11 @@ describe('the Buyer profile section', () => {
     await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent(/Released\. The slot is free\./))
   })
 
-  it('a new partner has no profile to edit yet and says so', () => {
+  it('a new partner is asked nothing about a buyer profile until it exists, and none is read', () => {
     render(<PartnerForm onSave={vi.fn()} onCancel={vi.fn()} />)
-    expect(screen.getByRole('region', { name: 'Buyer profile', hidden: true })).toHaveTextContent(/save the partner first/i)
+    // The new partner page is name, slug and Does only (#2321, PM-18).
+    expect(screen.queryByRole('region', { name: 'Buyer profile', hidden: true })).toBeNull()
+    expect(screen.getByRole('checkbox', { name: 'Buys leads' })).toBeChecked()
     expect(api.buyerProfiles.get).not.toHaveBeenCalled()
   })
 })
