@@ -407,11 +407,13 @@ html {
      draws them: plain words on a line, the open tab bold with a navy line under it. */
   /* One line, as the settled design draws it (#2317): at a laptop window the
      tabs fit, and a narrower pane scrolls them rather than wrapping one alone. */
+  /* The rule under the tabs is an inset shadow and the focus ring is inset, so
+     the scrolling strip clips neither the open tab's line nor the ring. */
   .tabs-list {
-    @apply mb-3.5 flex flex-nowrap gap-x-[22px] overflow-x-auto whitespace-nowrap border-b border-gray-200;
+    @apply mb-3.5 flex flex-nowrap gap-x-[22px] overflow-x-auto whitespace-nowrap shadow-[inset_0_-1px_0_theme(colors.gray.200)];
   }
   .tab {
-    @apply -mb-px inline-flex items-center border-b-2 border-transparent py-2 text-sm text-gray-600 hover:text-graphite focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark focus-visible:ring-offset-1;
+    @apply inline-flex items-center border-b-2 border-transparent py-2 text-sm text-gray-600 hover:text-graphite focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-p-blue-dark;
   }
   .tab[data-state='active'] {
     @apply border-navy font-semibold text-navy;

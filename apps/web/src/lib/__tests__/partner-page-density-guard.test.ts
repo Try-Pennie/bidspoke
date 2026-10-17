@@ -78,6 +78,16 @@ describe('the partners page (#2317)', () => {
     expect(found).toEqual([])
   })
 
+  it('keeps the tab strip scrollable without clipping the open tab line or the focus ring', () => {
+    const css = read('app/globals.css')
+    const list = css.match(/\.tabs-list \{([^}]*)\}/)?.[1] ?? ''
+    const tab = css.match(/\n  \.tab \{([^}]*)\}/)?.[1] ?? ''
+    expect(list).toMatch(/overflow-x-auto/)
+    expect(list).not.toMatch(/\bborder-b\b/)
+    expect(tab).toMatch(/focus-visible:ring-inset/)
+    expect(tab).not.toMatch(/-mb-px|ring-offset/)
+  })
+
   it('makes the page controls white boxes with the beige line', () => {
     expect(controlRule(read('app/globals.css'))).toMatch(/@apply[^;]*\bborder-line\b[^;]*\bbg-white\b|@apply[^;]*\bbg-white\b[^;]*\bborder-line\b/)
     expect(read('app/(app)/partners/page.tsx')).toMatch(/className="partner-page /)

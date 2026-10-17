@@ -1447,10 +1447,11 @@ export default function PartnerForm({
                 <BidsInRow usage={usage} partnerName={name || 'this partner'} partnerNames={partnerNames} reason={bidGroupReason} onRetry={() => setUsageAttempt((n) => n + 1)} />
               </Section>
 
-              {credentialProblem && resolverType !== 'api' && (
-                <FieldError size="sm">{credentialProblem}</FieldError>
-              )}
               <Section title="Bid resolution">
+                {/* Inside the section it is about, so it keeps the row's spacing (#2317). */}
+                {credentialProblem && resolverType !== 'api' && (
+                  <FieldError size="sm">{credentialProblem}</FieldError>
+                )}
                 <BidResolverEditor
                   resolverType={resolverType}
                   resolverConfig={resolverConfig}
