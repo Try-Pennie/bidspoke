@@ -23,7 +23,8 @@
 --   F. delete_service_connection never deletes an ops_key row (F124): with
 --      exactly one ops_key row it deletes nothing, and the Slack Disconnect
 --      beside an ops slack row removes only the alert row.
---   G. auth_type accepts the new kinds and still the old three; anything else is
+--   G. auth_type accepts the six catalogue kinds (api_key among them) and still
+--      the legacy oauth and credentials; anything else is
 --      refused.
 --   H. The new columns default (person_bound false, credential_generation 1,
 --      target null), and cf_secret_key may be null.
@@ -288,7 +289,7 @@ BEGIN
   END;
   IF NOT refused THEN RAISE EXCEPTION 'an unknown auth_type was saved'; END IF;
   DELETE FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-11111112332b';
-  INSERT INTO sce_cases VALUES ('auth_type takes the six new kinds and the old three, and refuses anything else');
+  INSERT INTO sce_cases VALUES ('auth_type takes the six catalogue kinds and the legacy oauth and credentials, and refuses anything else');
 END
 $do$;
 
