@@ -1,7 +1,7 @@
 'use client'
 
 import { useId } from 'react'
-import { ArrowRight, Plus } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { Button, TextInput } from '@/components/ui/form'
 import { RemoveButton } from '@/components/partners/RemoveButton'
 
@@ -13,9 +13,16 @@ interface MappingRule {
 interface Props {
   value: Record<string, unknown> | null
   onChange: (next: Record<string, unknown> | null) => void
+  /** Named in the empty line, as the design says it (PM-23). */
+  partnerName: string
 }
 
-export function OutboundMappingEditor({ value, onChange }: Props) {
+/**
+ * The Request row's field mapping (PM-23, #2326): which lead fields are renamed
+ * before the request goes to the partner. Empty sends the lead unchanged, said
+ * in one plain line.
+ */
+export function OutboundMappingEditor({ value, onChange, partnerName }: Props) {
   const base = useId()
   const rules = readRules(value)
 
@@ -40,22 +47,34 @@ export function OutboundMappingEditor({ value, onChange }: Props) {
   }
 
   return (
-    <div className="space-y-3">
-      <p className="text-xs text-hint">
-        Reshape the lead payload before posting to this partner. Source is a payload field path (dot-notation supported, e.g. <code className="rounded bg-gray-100 px-1 font-mono">lead.debt_amount</code>). Target is the wire-format field name (e.g. <code className="rounded bg-gray-100 px-1 font-mono">DebtAmount__c</code>). Missing fields become null. Leave empty to send the payload unchanged.
-      </p>
-
-      {rules.length > 0 && (
-        <div className="space-y-2">
-          {rules.map((row, i) => (
-            <div key={i} className="flex items-center gap-1.5">
-              <TextInput id={`${base}-${i}-source`} aria-label={`Source field, mapping ${i + 1}`} value={row.source} onChange={(v) => updateRow(i, { source: v })} placeholder="debt_amount" mono className="min-w-0 flex-1" />
-              <ArrowRight className="h-3 w-3 flex-shrink-0 text-gray-300" aria-hidden="true" />
-              <TextInput id={`${base}-${i}-target`} aria-label={`Target field, mapping ${i + 1}`} value={row.target} onChange={(v) => updateRow(i, { target: v })} placeholder="DebtAmount" mono className="min-w-0 flex-1" />
-              <RemoveButton label={`Remove mapping ${i + 1}`} onClick={() => removeRow(i)} />
-            </div>
-          ))}
-        </div>
+    <div className="space-y-2">
+      {rules.length === 0 ? (
+        <p className="text-[13px] text-hint">No field is renamed before it is sent to {partnerName}.</p>
+      ) : (
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="text-left text-xs font-medium text-gray-600">
+              <th scope="col" className="pb-1 pr-2 font-medium">Field in the lead</th>
+              <th scope="col" className="pb-1 pr-2 font-medium">Sent as</th>
+              <th scope="col" className="w-8 pb-1"><span className="sr-only">Remove</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rules.map((row, i) => (
+              <tr key={i} className="align-middle">
+                <td className="py-0.5 pr-2">
+                  <TextInput id={`${base}-${i}-source`} aria-label={`Field in the lead, mapping ${i + 1}`} value={row.source} onChange={(v) => updateRow(i, { source: v })} placeholder="debt_amount" mono />
+                </td>
+                <td className="py-0.5 pr-2">
+                  <TextInput id={`${base}-${i}-target`} aria-label={`Sent as, mapping ${i + 1}`} value={row.target} onChange={(v) => updateRow(i, { target: v })} placeholder="DebtAmount" mono />
+                </td>
+                <td className="py-0.5">
+                  <RemoveButton label={`Remove mapping ${i + 1}`} onClick={() => removeRow(i)} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
 
       <Button variant="quiet" onClick={addRow}>

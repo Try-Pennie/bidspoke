@@ -1,5 +1,6 @@
 // Slack alert sender — Block Kit messages for workflow failures and circuit breaker events
-// Bot token is stored in service_connections.config.bot_token (fetched at runtime from Supabase)
+// The bot token is sealed in service_connections.credential_enc, with the plaintext copy in
+// config.bot_token until the contract release of #2331 (slack-connection.ts resolves both)
 
 import { scheduleInWords } from './schedule-words'
 import { DRAIN_STALL_SCHEDULES } from './strand-schedules'
@@ -28,7 +29,8 @@ import { GITHUB_RATE_LIMIT_FIX } from './github-refusal'
 import type { ScheduleStatus, ScheduleVerdict, WatchedWorkflow } from './workflow-schedule-watch'
 import { type DispatchAttempt, dispatchFailed } from './workflow-dispatch-driver'
 
-import { parseSlackConnection, type SlackConnection } from './slack-connection'
+import { resolveSlackConnection, slackTokenProblemLine, SLACK_ROW_COLUMNS, type SlackConnection, type SlackConnectionRow, type SlackTokenProblem } from './slack-connection'
+import { slackKeyRingFor } from './slack-key-ring'
 import { leadRead } from './lead-read-budget'
 import { describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason, type ScheduledSlack } from './scheduled-slack'
 import { composeSalesforceReadBackAlert, type SalesforceReadBackAlert } from './salesforce-read-back-alert'
@@ -84,7 +86,7 @@ export async function getSlackConnection(
 }
 
 /** Why a lookup could not say who to tell. `read_failed` only on a client with no saved copy to fall back on. */
-export type SlackUnreachableReason = CopyUnreachableReason | 'read_failed'
+export type SlackUnreachableReason = CopyUnreachableReason | 'read_failed' | SlackTokenProblem
 
 /**
  * What a Slack lookup found (#1303): the connection from the database, the
@@ -106,12 +108,12 @@ export async function lookupSlackConnection(
   const scheduled = scheduledSlackFor(supabase)
   if (scheduled) return scheduledLookup(scheduled, supabase, orgId)
 
-  let data: { config?: unknown } | null = null
+  let data: SlackConnectionRow | null = null
   for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
     if (attempt > 0) await sleep(delaysMs[attempt - 1])
     const res = await slackConnectionQuery(supabase, orgId)
     if (!res.error) {
-      data = res.data as { config?: unknown } | null
+      data = res.data as SlackConnectionRow | null
       break
     }
     const dbErr = toDbError(res.error)
@@ -129,8 +131,21 @@ export async function lookupSlackConnection(
     }
   }
 
-  const connection = parseSlackConnection(data?.config)
-  return connection ? { kind: 'live', connection } : { kind: 'none' }
+  const resolved = await resolveRow(supabase, data, `slack connection for org ${orgId}`)
+  if (resolved.kind === 'unreadable') return { kind: 'unreachable', reason: resolved.reason }
+  return resolved.kind === 'connection' ? { kind: 'live', connection: resolved.connection } : { kind: 'none' }
+}
+
+/**
+ * A row resolved with the client's key ring (#2331), its problem logged by name
+ * whichever way it went: a fallback to the plaintext is said, and a token
+ * nobody can read is never read as "no Slack".
+ */
+async function resolveRow(supabase: SupabaseClient, row: SlackConnectionRow | null | undefined, subject: string) {
+  const resolved = await resolveSlackConnection(row, slackKeyRingFor(supabase))
+  if (resolved.kind === 'unreadable') console.error(slackTokenProblemLine(subject, resolved, false))
+  else if (resolved.kind === 'connection' && resolved.problem) console.error(slackTokenProblemLine(subject, resolved.problem, true))
+  return resolved
 }
 
 /** The bounded lookup on the scheduled client: one read under the deadline, the saved copy on any non-answer. */
@@ -138,37 +153,45 @@ async function scheduledLookup(scheduled: ScheduledSlack, supabase: SupabaseClie
   const subject = `slack connection for org ${orgId}`
   // `.maybeSingle()` is typed as the base builder, which does not declare
   // abortSignal although the object carries it (as in lead-read-budget.ts).
-  const query = slackConnectionQuery(supabase, orgId) as unknown as BoundableQuery<{ config?: unknown }>
+  const query = slackConnectionQuery(supabase, orgId) as unknown as BoundableQuery<SlackConnectionRow>
   const live = await scheduled.read(subject, query)
+  // A sealed token nobody can read is not "no Slack": the saved copy, which
+  // the probe carries forward for such an org, answers instead (#2331).
+  let unreadable: SlackTokenProblem | null = null
   if (live.kind === 'answered') {
-    const connection = parseSlackConnection(live.data?.config)
-    if (connection) {
+    const resolved = await resolveRow(supabase, live.data, subject)
+    if (resolved.kind === 'connection') {
       console.log(`[scheduled-slack] ${subject}: read live`)
-      return { kind: 'live', connection }
+      return { kind: 'live', connection: resolved.connection }
     }
-    console.log(`[scheduled-slack] ${subject}: the database answered with no usable Slack connection`)
-    return { kind: 'none' }
+    if (resolved.kind === 'none') {
+      console.log(`[scheduled-slack] ${subject}: the database answered with no usable Slack connection`)
+      return { kind: 'none' }
+    }
+    unreadable = resolved.reason
   }
   const copy = await scheduled.copy()
+  const why = unreadable ? `the token in the database cannot be read (${unreadable})` : `the database did not answer (${live.kind === 'failed' ? live.how : 'answered'})`
   if (copy.kind === 'read') {
     const connection = copy.copy.connections.get(orgId)
     if (connection) {
-      console.warn(`[scheduled-slack] ${subject}: answered from the saved copy (${describeCopyAge(copy.ageMs)}) because the database did not answer (${live.how})`)
+      console.warn(`[scheduled-slack] ${subject}: answered from the saved copy (${describeCopyAge(copy.ageMs)}) because ${why}`)
       return { kind: 'stored', connection, ageMs: copy.ageMs }
     }
     scheduled.nobodyCanBeTold(subject, orgId, 'org_not_in_copy')
-    return { kind: 'unreachable', reason: 'org_not_in_copy' }
+    return { kind: 'unreachable', reason: unreadable ?? 'org_not_in_copy' }
   }
   const reason: CopyUnreachableReason = copy.kind === 'absent' ? 'no_copy' : 'copy_unreadable'
   scheduled.nobodyCanBeTold(subject, orgId, reason, copy.kind === 'unreadable' ? copy.detail : undefined)
-  return { kind: 'unreachable', reason }
+  // The token's own reason first: it is why the copy was asked at all.
+  return { kind: 'unreachable', reason: unreadable ?? reason }
 }
 
 /** The one read of an org's Slack connection row, for both readers below. */
 function slackConnectionQuery(supabase: SupabaseClient, orgId: string) {
   return supabase
     .from('service_connections')
-    .select('config')
+    .select(SLACK_ROW_COLUMNS)
     .eq('organization_id', orgId)
     .eq('service_type', 'slack')
     .maybeSingle()
@@ -184,7 +207,10 @@ function slackConnectionQuery(supabase: SupabaseClient, orgId: string) {
 export async function readSlackConnectionForLead(supabase: SupabaseClient, orgId: string): Promise<SlackConnection | null> {
   const res = await leadRead(supabase, slackConnectionQuery(supabase, orgId), 'slack connection')
   if (res.error) throw new Error(`service_connections: ${res.error.message}`)
-  return parseSlackConnection((res.data as { config?: unknown } | null)?.config)
+  const resolved = await resolveRow(supabase, res.data as SlackConnectionRow | null, `slack connection for org ${orgId}`)
+  // Thrown, so the caller's fallback (the saved copy) answers, as for a read that failed.
+  if (resolved.kind === 'unreadable') throw new Error(`service_connections: ${resolved.reason}: ${resolved.detail}`)
+  return resolved.kind === 'connection' ? resolved.connection : null
 }
 
 // ── Alert senders ─────────────────────────────────────────────────────────────
@@ -3198,6 +3224,59 @@ export async function sendDatabaseRecoveredAlert(
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/dashboard|Open dashboard>` } },
   ]
   return (await postOutageOwnerMessage(slack.bot_token, channel, blocks, 'Recovered: Bidspoke can read its database again')) !== null
+}
+
+/**
+ * The organization's sealed Slack token cannot be read (#2331). Posted through
+ * whichever connection can still post (the plaintext copy, or the saved copy's
+ * entry), so it names what is wrong and what still stands in, never the token.
+ * Returns whether it reached Slack.
+ */
+export async function sendSlackTokenUnreadableAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: { reason: 'slack_token_undecryptable' | 'slack_key_ring_missing'; fellBackToPlaintext: boolean; appUrl: string; repeat?: string },
+): Promise<boolean> {
+  const cause = payload.reason === 'slack_key_ring_missing'
+    ? 'The Worker read the sealed Slack token with no key ring, which is a defect in how its database client was built.'
+    : 'No key the Worker holds opens the sealed Slack token (service_connections.credential_enc). Most likely it was locked with a key since rotated away, or it was never re-locked during a key rotation.'
+  const standing = payload.fellBackToPlaintext
+    ? 'Alerts still post today from the plain text copy of the token, which the next release removes. Until this is fixed, removing it would leave this organization with no alerts.'
+    : 'Alerts for this organization are posting from the last saved copy of the connection, which is not updated while the token cannot be read.'
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: 'Slack token cannot be read', emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: `${cause} ${standing}` } },
+    ...(payload.repeat ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: payload.repeat }] }] : []),
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        // Each fix must change the state it reports (L111): re-saving re-seals an
+        // unreadable token, but cannot give a client its missing key ring.
+        text: payload.reason === 'slack_key_ring_missing'
+          ? '*How to fix:* this needs a code fix in the Worker, so that the database client reading the connection is built with its key ring (lib/supabase.ts). The stored token is fine, and saving the connection again does not change it.'
+          : `*How to fix:* save the Slack connection again on the Integrations page, which seals the token under the current key.\n<${payload.appUrl}/integrations|Open Integrations>`,
+      },
+    },
+  ]
+  return (await postMessage(slack.bot_token, channel, blocks, `Slack token cannot be read (${payload.reason})`)) !== null
+}
+
+/** The all-clear for sendSlackTokenUnreadableAlert: the sealed token reads again. Returns whether it reached Slack. */
+export async function sendSlackTokenReadableAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: { alertedAt: string; endedAt: string | null; appUrl: string },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const item: RecoveredSubject = { subject: 'The Slack token', alertedAt: payload.alertedAt, endedAt: payload.endedAt }
+  const wording: RecoveryWording = { signal: 'Slack token', recoveredPhrase: 'can be read again' }
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: recoverySentence(item, wording, now) } },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/integrations|Open Integrations>` } },
+  ]
+  return (await postMessage(slack.bot_token, channel, blocks, 'Recovered: the Slack token can be read again')) !== null
 }
 
 /**

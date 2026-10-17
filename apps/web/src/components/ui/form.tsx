@@ -80,11 +80,6 @@ interface TextInputProps {
   'aria-label'?: string
   className?: string
   /**
-   * Values the box offers as the person types (a path seen in a sample
-   * response, say). Typing anything else stays allowed.
-   */
-  suggestions?: readonly string[]
-  /**
    * Enter commits this field through its own action. The key is kept from the
    * form around it, so committing a field never also submits the form (#1552, L596).
    */
@@ -110,8 +105,11 @@ function tintParts(value: string, tint: string): ReactNode[] {
   return pieces.flatMap((piece, i) => (i === 0 ? [piece] : [<mark key={i} data-tint-mark className="input-tint-mark">{tint}</mark>, piece]))
 }
 
-export function TextInput({ id, value, onChange, placeholder, mono, disabled, describedBy: db, className, onEnter, onBlur, suggestions, tint, ...aria }: TextInputProps) {
-  const listId = suggestions && suggestions.length > 0 ? `${id}-suggestions` : undefined
+/**
+ * A plain text box. One that offers values as the person types is
+ * SuggestInput (SuggestInput.tsx), never a native datalist (#2326).
+ */
+export function TextInput({ id, value, onChange, placeholder, mono, disabled, describedBy: db, className, onEnter, onBlur, tint, ...aria }: TextInputProps) {
   const mirror = useRef<HTMLDivElement>(null)
   // The copy behind follows the box's own scroll, however it moved: typing, the caret keys, a drag or a click.
   const follow = tint ? (e: { currentTarget: HTMLInputElement }) => { if (mirror.current) mirror.current.scrollLeft = e.currentTarget.scrollLeft } : undefined
@@ -129,29 +127,19 @@ export function TextInput({ id, value, onChange, placeholder, mono, disabled, de
       onMouseUp={follow}
       placeholder={placeholder}
       disabled={disabled}
-      list={listId}
       aria-describedby={db}
       aria-label={aria['aria-label']}
       className={`input ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}
     />
   )
-  return (
-    <>
-      {tint ? (
-        <div className="input-tint">
-          <div ref={mirror} data-tint-mirror aria-hidden="true" className={`input input-tint-mirror ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}>
-            {tintParts(value, tint)}
-          </div>
-          {box}
-        </div>
-      ) : box}
-      {listId && (
-        <datalist id={listId}>
-          {suggestions!.map((s) => <option key={s} value={s} />)}
-        </datalist>
-      )}
-    </>
-  )
+  return tint ? (
+    <div className="input-tint">
+      <div ref={mirror} data-tint-mirror aria-hidden="true" className={`input input-tint-mirror ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}>
+        {tintParts(value, tint)}
+      </div>
+      {box}
+    </div>
+  ) : box
 }
 
 interface NumberInputProps {

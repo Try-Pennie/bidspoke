@@ -1,24 +1,43 @@
 'use client'
 
+/**
+ * The Bid Group tab's Endpoint, Resolver and Bid amount rows (PM-23, #2326),
+ * three sections in the settled design (docs/design/partners-page.html,
+ * resolverSections at RES2STYLE "two" and FNAME "nocall"): Endpoint first, then
+ * the Resolver, then how the bid amount is set. Resolver and Bid amount stay
+ * two separate choices. Was one "Bid resolution" section with the endpoint and
+ * secret stacked under the resolver and a boxed "Where does the bid value come
+ * from?" radio list.
+ */
 import { useId } from 'react'
 import type { BidResolverType, BidComparisonSource } from '@/lib/api'
 import { TieredMultiplierEditor } from './TieredMultiplierEditor'
-import { Checkbox, ChoiceGroup, FieldError, TextArea, TextInput } from '@/components/ui/form'
+import { Checkbox, ChoiceGroup, Field, FieldError, TextArea, TextInput, describedBy } from '@/components/ui/form'
 import { Select } from '@/components/ui/Select'
 
 type BidValueMode = 'response' | 'tiered' | 'formula'
 
+/** The resolver as the design names it: a resolver that makes no call reads No call (L118, Formula is a Bid amount). */
 const RESOLVER_OPTIONS: ReadonlyArray<{ value: BidResolverType; label: string }> = [
   { value: 'api', label: 'Partner API' },
   { value: 'matrix', label: 'Matrix lookup' },
+  { value: 'formula', label: 'No call' },
+]
+
+const BID_VALUE_OPTIONS: ReadonlyArray<{ value: BidValueMode; label: string }> = [
+  { value: 'response', label: 'Response' },
+  { value: 'tiered', label: 'Tier multiplier' },
   { value: 'formula', label: 'Formula' },
 ]
 
-const BID_VALUE_OPTIONS: ReadonlyArray<{ value: BidValueMode; label: string; hint: string }> = [
-  { value: 'response', label: 'The API response', hint: "Bidspoke reads the bid from the partner's response." },
-  { value: 'tiered', label: 'A tier-based multiplier', hint: 'The API call is for eligibility only. The bid for ranking is a field × a multiplier picked by tier.' },
-  { value: 'formula', label: 'A custom formula', hint: "The API call is for eligibility only. The bid is whatever your expression evaluates to. Use this only if the tier-based form doesn't fit." },
-]
+/** One line of meaning under the Bid amount choice, the design's SOURCE_WHY. */
+const BID_VALUE_MEANING: Record<BidValueMode, string> = {
+  response: "Bidspoke reads the bid from the partner's response.",
+  tiered: 'The call checks eligibility only. The bid is a field times a multiplier picked by tier.',
+  formula: 'The call checks eligibility only. The bid is whatever the expression works out to.',
+}
+
+export const DEDUP_MEANING = 'Before each bid, Bidspoke asks this address whether the lead was already sold to the partner, and skips the bid if it was.'
 
 function readBidValueMode(comparison: BidComparisonSource, cfg: Record<string, unknown>): BidValueMode {
   if (comparison !== 'formula') return 'response'
@@ -26,116 +45,124 @@ function readBidValueMode(comparison: BidComparisonSource, cfg: Record<string, u
   return 'formula'
 }
 
-interface Props {
+/**
+ * Endpoint: the address and the secret side by side, the missing credential red
+ * under them, then the duplicate check address with its one line of meaning. A
+ * resolver that makes no call has no address or secret to show, but keeps the
+ * duplicate check, and a missing credential is still said here.
+ */
+export function EndpointFields(p: {
   resolverType: BidResolverType
-  resolverConfig: Record<string, unknown>
-  bidFormula: string
   apiEndpoint: string
   cfSecretKey: string
-  bidComparisonSource: BidComparisonSource
-  bidConfigOptions: Array<{ id: string; name: string; slug: string }>
-  onTypeChange: (t: BidResolverType) => void
-  onFormulaChange: (v: string) => void
+  dedupEndpoint: string
   onApiEndpointChange: (v: string) => void
   onCfSecretKeyChange: (v: string) => void
-  onBidComparisonSourceChange: (v: BidComparisonSource) => void
-  onConfigChange: (cfg: Record<string, unknown>) => void
-  /** A problem with the secret, drawn red under its field (#2137): the missing credential. */
-  cfSecretKeyError?: string | null
-}
-
-export function BidResolverEditor(p: Props) {
-  const apiEndpointId = useId()
-  const cfSecretId = useId()
-  const formulaId = useId()
-  const resolverId = useId()
+  onDedupEndpointChange: (v: string) => void
+  /** The missing credential (#416, #2137), red under the secret it is about. */
+  credentialProblem: string | null
+}) {
+  const addressId = useId()
+  const secretId = useId()
+  const dedupId = useId()
+  const problemId = `${secretId}-problem`
   return (
-    <div className="space-y-4">
-      <div>
-        <ChoiceGroup
-          id={resolverId}
-          label="Resolver"
-          value={p.resolverType}
-          options={RESOLVER_OPTIONS}
-          onChange={p.onTypeChange}
-          describedBy={`${resolverId}-hint`}
-        />
-        <p id={`${resolverId}-hint`} className="mt-1 text-xs text-hint">How Bidspoke determines the bid amount for this partner.</p>
-      </div>
-
+    <div className="space-y-3">
       {p.resolverType === 'api' && (
-        <div className="space-y-3">
-          <div>
-            <label htmlFor={apiEndpointId} className="mb-1 block text-xs font-medium text-gray-600">API endpoint</label>
-            <p className="mb-1.5 text-xs text-hint">POSTed with the trigger payload on every bid.</p>
-            <TextInput id={apiEndpointId} value={p.apiEndpoint} onChange={p.onApiEndpointChange} placeholder="https://partner.example/bid" mono />
-          </div>
-          <div>
-            <label htmlFor={cfSecretId} className="mb-1 block text-xs font-medium text-gray-600">Auth secret name</label>
-            <p className="mb-1.5 text-xs text-hint">Cloudflare worker secret containing the bearer token. Optional.</p>
-            <TextInput id={cfSecretId} value={p.cfSecretKey} onChange={p.onCfSecretKeyChange} placeholder="PARTNER_TOKEN" mono describedBy={p.cfSecretKeyError ? `${cfSecretId}-problem` : undefined} />
-            {p.cfSecretKeyError && <FieldError id={`${cfSecretId}-problem`} size="xs" className="mt-1">{p.cfSecretKeyError}</FieldError>}
-          </div>
-
-          <BidValueSourceRadio
-            mode={readBidValueMode(p.bidComparisonSource, p.resolverConfig)}
-            resolverConfig={p.resolverConfig}
-            onSelectMode={(mode) => {
-              if (mode === 'response') {
-                p.onBidComparisonSourceChange('auto')
-                const next = { ...p.resolverConfig }
-                delete next.formula
-                delete next.pricing_mode
-                delete next.source_field
-                delete next.tiers
-                delete next.default_multiplier
-                p.onConfigChange(next)
-              } else if (mode === 'tiered') {
-                p.onBidComparisonSourceChange('formula')
-                const next = { ...p.resolverConfig }
-                delete next.bid_path
-                delete next.formula
-                next.pricing_mode = 'tiered_multiplier'
-                if (next.source_field === undefined) next.source_field = ''
-                if (next.tiers === undefined) next.tiers = []
-                if (next.default_multiplier === undefined) next.default_multiplier = null
-                p.onConfigChange(next)
-              } else {
-                p.onBidComparisonSourceChange('formula')
-                const next = { ...p.resolverConfig }
-                delete next.bid_path
-                delete next.pricing_mode
-                delete next.source_field
-                delete next.tiers
-                delete next.default_multiplier
-                p.onConfigChange(next)
-              }
-            }}
-            onConfigChange={p.onConfigChange}
-          />
+        <div className="endpoint-row grid grid-cols-[minmax(0,1fr)_200px] items-end gap-3">
+          <Field id={addressId} label="Address">
+            <TextInput id={addressId} value={p.apiEndpoint} onChange={p.onApiEndpointChange} placeholder="https://partner.example/bid" mono />
+          </Field>
+          <Field id={secretId} label="Secret">
+            <TextInput id={secretId} value={p.cfSecretKey} onChange={p.onCfSecretKeyChange} placeholder="PARTNER_TOKEN" mono describedBy={p.credentialProblem ? problemId : undefined} />
+          </Field>
         </div>
       )}
-
-      {p.resolverType === 'formula' && (
-        <div>
-          <label htmlFor={formulaId} className="mb-1 block text-xs font-medium text-gray-600">Formula</label>
-          <p className="mb-1.5 text-xs text-hint">Arithmetic expression. Use any numeric trigger.payload field by name. Supports +, -, *, /, ** and Math.floor / min / max / round / abs / sqrt.</p>
-          <TextArea id={formulaId} value={p.bidFormula} onChange={p.onFormulaChange} placeholder="debt_amount * 0.65" rows={2} mono />
-        </div>
+      {p.credentialProblem && (
+        <FieldError id={p.resolverType === 'api' ? problemId : undefined} size="xs" className="!mt-1">{p.credentialProblem}</FieldError>
       )}
-
-      {p.resolverType === 'matrix' && (
-        <MatrixResolverConfig
-          config={p.resolverConfig}
-          options={p.bidConfigOptions}
-          onChange={p.onConfigChange}
-        />
-      )}
+      <Field id={dedupId} label="Duplicate check address" hint={DEDUP_MEANING}>
+        <TextInput id={dedupId} value={p.dedupEndpoint} onChange={p.onDedupEndpointChange} placeholder="None. Every lead is bid on." mono describedBy={describedBy(dedupId, true, false)} />
+      </Field>
     </div>
   )
 }
 
-function BidValueSourceRadio({
+/** Resolver: the row's heading names the choice, so the group's label is for screen readers only (L605). */
+export function ResolverChoice({ value, onChange }: { value: BidResolverType; onChange: (t: BidResolverType) => void }) {
+  const id = useId()
+  return <ChoiceGroup id={id} label="Resolver" visibleLabel="" value={value} options={RESOLVER_OPTIONS} onChange={onChange} />
+}
+
+interface BidAmountProps {
+  resolverType: BidResolverType
+  resolverConfig: Record<string, unknown>
+  bidFormula: string
+  bidComparisonSource: BidComparisonSource
+  bidConfigOptions: Array<{ id: string; name: string; slug: string }>
+  partnerName: string
+  onFormulaChange: (v: string) => void
+  onBidComparisonSourceChange: (v: BidComparisonSource) => void
+  onConfigChange: (cfg: Record<string, unknown>) => void
+}
+
+/**
+ * Bid amount: for the Partner API, Response, Tier multiplier or Formula with
+ * one line of meaning; for a matrix, which matrix; for No call, the expression.
+ */
+export function BidAmountEditor(p: BidAmountProps) {
+  const formulaId = useId()
+  if (p.resolverType === 'matrix') {
+    return <MatrixResolverConfig config={p.resolverConfig} options={p.bidConfigOptions} onChange={p.onConfigChange} />
+  }
+  if (p.resolverType === 'formula') {
+    return (
+      <Field id={formulaId} label="Expression" hint={`The bid is whatever the expression works out to, without calling ${p.partnerName}.`}>
+        <TextArea id={formulaId} value={p.bidFormula} onChange={p.onFormulaChange} placeholder="debt_amount * 0.65" rows={2} mono describedBy={describedBy(formulaId, true, false)} />
+      </Field>
+    )
+  }
+  return (
+    <BidValueSource
+      mode={readBidValueMode(p.bidComparisonSource, p.resolverConfig)}
+      resolverConfig={p.resolverConfig}
+      onSelectMode={(mode) => {
+        if (mode === 'response') {
+          p.onBidComparisonSourceChange('auto')
+          const next = { ...p.resolverConfig }
+          delete next.formula
+          delete next.pricing_mode
+          delete next.source_field
+          delete next.tiers
+          delete next.default_multiplier
+          p.onConfigChange(next)
+        } else if (mode === 'tiered') {
+          p.onBidComparisonSourceChange('formula')
+          const next = { ...p.resolverConfig }
+          delete next.bid_path
+          delete next.formula
+          next.pricing_mode = 'tiered_multiplier'
+          if (next.source_field === undefined) next.source_field = ''
+          if (next.tiers === undefined) next.tiers = []
+          if (next.default_multiplier === undefined) next.default_multiplier = null
+          p.onConfigChange(next)
+        } else {
+          p.onBidComparisonSourceChange('formula')
+          const next = { ...p.resolverConfig }
+          delete next.bid_path
+          delete next.pricing_mode
+          delete next.source_field
+          delete next.tiers
+          delete next.default_multiplier
+          p.onConfigChange(next)
+        }
+      }}
+      onConfigChange={p.onConfigChange}
+    />
+  )
+}
+
+function BidValueSource({
   mode,
   resolverConfig,
   onSelectMode,
@@ -151,14 +178,13 @@ function BidValueSourceRadio({
   const bidFormulaId = useId()
   return (
     <div className="space-y-3">
-      <div className="rounded-lg border border-gray-200 bg-beige p-3">
-        <ChoiceGroup id={sourceId} label="Where does the bid value come from?" value={mode} options={BID_VALUE_OPTIONS} onChange={onSelectMode} stacked />
+      <div>
+        <ChoiceGroup id={sourceId} label="Bid amount" visibleLabel="" value={mode} options={BID_VALUE_OPTIONS} onChange={onSelectMode} describedBy={`${sourceId}-meaning`} />
+        <p id={`${sourceId}-meaning`} className="mt-1 text-xs text-hint">{BID_VALUE_MEANING[mode]}</p>
       </div>
 
       {mode === 'response' && (
-        <div>
-          <label htmlFor={bidPathId} className="mb-1 block text-xs font-medium text-gray-600">Bid response path (optional)</label>
-          <p className="mb-1.5 text-xs text-hint">Where the bid value lives in the response. Leave blank if it&apos;s at the top level under one of: <code className="rounded bg-gray-100 px-1 font-mono">bid</code>, <code className="rounded bg-gray-100 px-1 font-mono">bid_amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">amount</code>, <code className="rounded bg-gray-100 px-1 font-mono">price</code>, <code className="rounded bg-gray-100 px-1 font-mono">offer</code>.</p>
+        <Field id={bidPathId} label="Where the bid is in the response">
           <TextInput
             id={bidPathId}
             value={typeof resolverConfig.bid_path === 'string' ? resolverConfig.bid_path : ''}
@@ -168,10 +194,10 @@ function BidValueSourceRadio({
               else delete next.bid_path
               onConfigChange(next)
             }}
-            placeholder="data.bid"
+            placeholder="bid"
             mono
           />
-        </div>
+        </Field>
       )}
 
       {mode === 'tiered' && (
@@ -179,9 +205,7 @@ function BidValueSourceRadio({
       )}
 
       {mode === 'formula' && (
-        <div>
-          <label htmlFor={bidFormulaId} className="mb-1 block text-xs font-medium text-gray-600">Bid formula</label>
-          <p className="mb-1.5 text-xs text-hint">Arithmetic that produces a number. References: <code className="rounded bg-gray-100 px-1 font-mono">trigger.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.*</code>, <code className="rounded bg-gray-100 px-1 font-mono">env.*</code>, or a bare payload field name.</p>
+        <Field id={bidFormulaId} label="Expression">
           <TextArea
             id={bidFormulaId}
             value={typeof resolverConfig.formula === 'string' ? resolverConfig.formula : ''}
@@ -195,7 +219,7 @@ function BidValueSourceRadio({
             rows={3}
             mono
           />
-        </div>
+        </Field>
       )}
     </div>
   )

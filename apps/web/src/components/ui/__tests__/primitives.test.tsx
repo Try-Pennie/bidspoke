@@ -12,6 +12,7 @@ import userEvent from '@testing-library/user-event'
 import { Field, FieldError, TextInput, NumberInput, Checkbox, Button, Outcome, ChoiceGroup, type OutcomeState } from '../form'
 import { Toggle } from '../Toggle'
 import { Select } from '../Select'
+import { SuggestInput } from '../SuggestInput'
 import { chooseOption, readSelect } from './_select'
 
 describe('Field', () => {
@@ -102,10 +103,62 @@ describe('TextInput and Select carry their own classes', () => {
     expect(screen.getByRole('listbox')).toBeInTheDocument()
   })
 
-  it('a text input offers its suggestions without limiting what is typed', () => {
-    render(<TextInput id="path" value="" onChange={() => {}} aria-label="Path" suggestions={['data.id', 'data.code']} />)
-    expect(screen.getByLabelText('Path')).toHaveAttribute('list', 'path-suggestions')
-    expect([...document.querySelectorAll('#path-suggestions option')].map((o) => o.getAttribute('value'))).toEqual(['data.id', 'data.code'])
+})
+
+// A box that offers values as the person types (#2326, L607, L568). Was a native
+// <datalist> on TextInput, which draws the operating system's own list; now the
+// design system's list, as a combobox, so it is styled, reachable by keyboard
+// and screen reader, and drawn over anything that clips the box.
+describe('SuggestInput', () => {
+  function Typed({ onSubmit = () => {}, suggestions = ['data.bid', 'data.ClickThrough_url', 'ok'] }: { onSubmit?: () => void; suggestions?: string[] }) {
+    const [v, setV] = useState('')
+    return (
+      <form onSubmit={(e) => { e.preventDefault(); onSubmit() }}>
+        <SuggestInput id="path" value={v} onChange={setV} aria-label="Path" suggestions={suggestions} />
+        <output data-testid="value">{v}</output>
+      </form>
+    )
+  }
+
+  it('is a combobox with no native datalist', () => {
+    render(<Typed />)
+    expect(screen.getByRole('combobox', { name: 'Path' })).toHaveClass('input')
+    expect(document.querySelector('datalist')).toBeNull()
+    expect(screen.getByRole('combobox')).not.toHaveAttribute('list')
+  })
+
+  it('offers the suggestions that hold what is typed, and typing anything else stays allowed', async () => {
+    render(<Typed />)
+    await userEvent.type(screen.getByRole('combobox'), 'data')
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['data.bid', 'data.ClickThrough_url'])
+    await userEvent.type(screen.getByRole('combobox'), '.nothing')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(screen.getByTestId('value')).toHaveTextContent('data.nothing')
+  })
+
+  it('arrow keys move through the list and Enter takes the one marked, without submitting the form', async () => {
+    const onSubmit = vi.fn()
+    render(<Typed onSubmit={onSubmit} />)
+    await userEvent.type(screen.getByRole('combobox'), 'data')
+    await userEvent.keyboard('{ArrowDown}{ArrowDown}')
+    const marked = screen.getByRole('option', { name: 'data.ClickThrough_url' })
+    expect(marked).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-activedescendant', marked.id)
+    await userEvent.keyboard('{Enter}')
+    expect(screen.getByTestId('value')).toHaveTextContent('data.ClickThrough_url')
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+  })
+
+  it('a click takes a suggestion, and Escape closes the list', async () => {
+    render(<Typed />)
+    await userEvent.type(screen.getByRole('combobox'), 'd')
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    await userEvent.type(screen.getByRole('combobox'), 'a')
+    await userEvent.click(screen.getByRole('option', { name: 'data.bid' }))
+    expect(screen.getByTestId('value')).toHaveTextContent('data.bid')
   })
 })
 
