@@ -130,6 +130,11 @@ export function formatShortDate(date: string): string {
   return `${MONTHS[m - 1].slice(0, 3)} ${d}, ${y}`
 }
 
+/** "Thursday, Nov 26, 2026": a day off as the blackout list shows it, with its weekday (#2325). */
+export function formatWeekdayDate(date: string): string {
+  return `${WEEKDAYS[weekdayOf(date)]}, ${formatShortDate(date)}`
+}
+
 /** Today's date in Eastern, the zone every blackout day is kept in. */
 export function todayEastern(nowMs: number): string {
   return easternParts(nowMs).date

@@ -63,10 +63,20 @@ describe('AcceptRulesEditor', () => {
     expect(onChange).toHaveBeenLastCalledWith([rules[1]])
   })
 
-  it('renders the enable refusal beside the control, and an empty list says a 200 is never an accept', () => {
+  // #2325: an empty set is a grey sentence as the design draws it, never an amber warning;
+  // the refusal to enable without a rule is what speaks up.
+  it('renders the enable refusal beside the control, and an empty list says no answer counts as a sale, in grey', () => {
     render(<AcceptRulesEditor value={[]} onChange={() => {}} refusal="An enabled profile needs at least one accept rule." />)
     expect(screen.getByRole('alert')).toHaveTextContent('An enabled profile needs at least one accept rule.')
-    expect(screen.getByText(/without a rule, no answer is an accept/i)).toBeInTheDocument()
+    expect(screen.getByText('No rules. No answer counts as a sale.')).toHaveClass('text-hint')
+  })
+
+  // #2325: the set is titled by what a match does, and Field, Operator and Value are said once over its rows.
+  it('is a set titled Accept when every one of, naming its columns once however many rules it has', () => {
+    render(<AcceptRulesEditor value={rules} onChange={() => {}} />)
+    const set = screen.getByRole('group', { name: 'Accept when every one of' })
+    expect(within(set).getAllByText('Field')).toHaveLength(1)
+    expect(within(set).getAllByText('Value')).toHaveLength(1)
   })
 
   // #1416: the same editor edits the duplicate rules, named as such everywhere a
@@ -77,10 +87,23 @@ describe('AcceptRulesEditor', () => {
     render(<AcceptRulesEditor kind="duplicate" value={[]} onChange={onChange} />)
     expect(screen.queryByRole('group', { name: /accept rule/i })).toBeNull()
     expect(screen.getByText(/every decline is recorded as Fail/i)).toBeInTheDocument()
-    expect(screen.queryByText(/without a rule, no answer is an accept/i)).toBeNull()
+    expect(screen.queryByText(/no answer counts as a sale/i)).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /add duplicate rule/i }))
     expect(onChange).toHaveBeenLastCalledWith([{ field: '', equals: '' }])
     render(<AcceptRulesEditor kind="duplicate" value={rules} onChange={onChange} />)
     expect(screen.getAllByRole('group', { name: /duplicate rule/i })).toHaveLength(2)
+  })
+
+  // Lessons review on #2325: each row keeps its own ids, so removing an earlier rule
+  // does not move the ids (and the focus) of the rules after it.
+  it('removing a rule leaves the ids of the rules after it where they were', () => {
+    function Owner() {
+      const [value, setValue] = useState<Signal[]>(rules)
+      return <AcceptRulesEditor value={value} onChange={setValue} />
+    }
+    render(<Owner />)
+    const before = screen.getByRole('textbox', { name: 'Accept rule 2 field' }).id
+    fireEvent.click(screen.getByRole('button', { name: 'Remove accept rule 1' }))
+    expect(screen.getByRole('textbox', { name: 'Accept rule 1 field' }).id).toBe(before)
   })
 })

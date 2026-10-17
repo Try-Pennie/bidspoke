@@ -10,17 +10,21 @@ import { CapsGrid, type CapsValue } from '../CapsGrid'
 const none: CapsValue = { hourly_lead_cap: null, daily_lead_cap: null, hourly_spend_cap_cents: null, daily_spend_cap_cents: null }
 
 describe('CapsGrid', () => {
-  it('renders four labelled controls, empty when there is no cap', () => {
+  // #2325: an offer buyer's caps are a table, Leads and Spend by Per hour and Per
+  // day; spend is a money box ("$" beside it, grouped at rest), so it reads text.
+  it('renders four labelled controls in a table, empty when there is no cap, reading No cap', () => {
     render(<CapsGrid value={none} onChange={() => {}} />)
-    for (const label of ['Leads per hour', 'Leads per day', 'Spend per hour', 'Spend per day']) {
-      expect(screen.getByLabelText(label)).toHaveValue(null)
-    }
+    expect(screen.getAllByRole('rowheader').map((h) => h.textContent)).toEqual(['Leads', 'Spend'])
+    expect(screen.getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Per hour', 'Per day'])
+    for (const label of ['Leads per hour', 'Leads per day']) expect(screen.getByLabelText(label)).toHaveValue(null)
+    for (const label of ['Spend per hour', 'Spend per day']) expect(screen.getByLabelText(label)).toHaveValue('')
+    for (const label of ['Leads per hour', 'Leads per day', 'Spend per hour', 'Spend per day']) expect(screen.getByLabelText(label)).toHaveAttribute('placeholder', 'No cap')
   })
 
   it('shows spend caps in dollars and emits cents', () => {
     const onChange = vi.fn()
     render(<CapsGrid value={{ ...none, daily_spend_cap_cents: 1_000_000 }} onChange={onChange} />)
-    expect(screen.getByLabelText('Spend per day')).toHaveValue(10000)
+    expect(screen.getByLabelText('Spend per day')).toHaveValue('10,000')
     fireEvent.change(screen.getByLabelText('Spend per hour'), { target: { value: '1250.50' } })
     expect(onChange).toHaveBeenLastCalledWith({ ...none, daily_spend_cap_cents: 1_000_000, hourly_spend_cap_cents: 125_050 })
   })
@@ -32,11 +36,12 @@ describe('CapsGrid', () => {
     expect(onChange).toHaveBeenLastCalledWith(none)
   })
 
-  it('states the scope, the unit and the empty rule once each, not once per box (L605)', () => {
+  // #2325: the note is the design's: the "$" beside each spend box says the unit.
+  it('states the scope and the empty rule once each, not once per box (L605)', () => {
     render(<CapsGrid value={none} onChange={() => {}} />)
-    expect(screen.getAllByText(/counts sales made through buyer selection: engine/i)).toHaveLength(1)
+    expect(screen.getByText('An empty box is no cap. Counts Engine leads sold through buyer selection. Hours and days are Eastern.')).toBeInTheDocument()
     expect(screen.getAllByText(/empty/i)).toHaveLength(1)
-    expect(screen.getAllByText(/dollars/i)).toHaveLength(1)
+    expect(screen.getAllByText('$')).toHaveLength(2)
   })
 
   // #1541: a click buyer is capped by clicks per day and by nothing else.

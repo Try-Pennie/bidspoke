@@ -1,9 +1,11 @@
 /**
  * The pricing tiers editor (#1412): one ladder per WIRED population with
- * inputs, every other population named as not yet in use with no inputs (L46,
- * L703), the multiplier ceiling from the shared vocabulary, and Geoff's worked
- * example stated once as the domain explanation. Each ladder is a table whose
- * Debt from, Debt to and Multiplier headers are said once (L579).
+ * inputs, every other population named in one line with no inputs (L46,
+ * L703). Each ladder is a table whose Debt from, Debt to and Multiplier
+ * headers are said once (L579). Since #2325 (PM-22) it is drawn as the design
+ * draws it: "Engine leads" over one table, debt in money boxes, a short hint
+ * and one line naming the populations not priced here yet; the worked example
+ * and the Salesforce band arithmetic are gone.
  */
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen, fireEvent, within } from '@testing-library/react'
@@ -16,23 +18,23 @@ const tiers: ProfileTierDocument[] = [
 ]
 
 describe('PricingTiersEditor', () => {
-  it('offers inputs for the wired population only and names the others as not yet in use', () => {
+  it('offers inputs for the wired population only, headed by its leads, and names the others in one line', () => {
     render(<PricingTiersEditor value={tiers} onChange={() => {}} />)
-    const engine = screen.getByRole('group', { name: /engine/i })
+    const engine = screen.getByRole('group', { name: 'Engine leads' })
     expect(within(engine).getAllByLabelText(/multiplier/i)).toHaveLength(2)
     expect(within(engine).getAllByRole('columnheader').map((h) => h.textContent)).toEqual(['Debt from', 'Debt to', 'Multiplier', 'Remove'])
-    for (const other of ['Main Flow', 'Lead Economy']) {
-      const region = screen.getByText(new RegExp(other, 'i')).closest('[data-population]') as HTMLElement
-      expect(region).toHaveTextContent(/not yet in use/i)
-      expect(within(region).queryAllByRole('spinbutton')).toHaveLength(0)
-    }
+    expect(screen.getAllByRole('table')).toHaveLength(1)
+    expect(screen.getByText('Main Flow and Lead Economy are not priced here yet: no workflow sells those leads through buyer selection.')).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: /main flow|lead economy/i })).toBeNull()
   })
 
-  it('shows an open ended top tier as an empty upper bound and emits null for it', () => {
+  it('debt reads as dollars, and an open ended top tier is an empty box reading No upper bound that emits null', () => {
     const onChange = vi.fn()
     render(<PricingTiersEditor value={tiers} onChange={onChange} />)
+    expect(screen.getByLabelText('Debt from, tier 15,000 to 30,000')).toHaveValue('15,000')
     const uppers = screen.getAllByLabelText(/debt to/i)
-    expect(uppers[1]).toHaveValue(null)
+    expect(uppers[1]).toHaveValue('')
+    expect(uppers[1]).toHaveAttribute('placeholder', 'No upper bound')
     fireEvent.change(uppers[0], { target: { value: '' } })
     expect(onChange).toHaveBeenLastCalledWith([{ ...tiers[0], debt_to: null }, tiers[1]])
   })
@@ -46,18 +48,10 @@ describe('PricingTiersEditor', () => {
     expect(onChange).toHaveBeenLastCalledWith([])
   })
 
-  it('states the worked example once and the ceiling once', () => {
+  it('says the pricing rule once in a short hint, with no worked example', () => {
     render(<PricingTiersEditor value={tiers} onChange={() => {}} />)
-    expect(screen.getAllByText(/\$18,250 of debt at 0\.0012 pays \$21\.90/i)).toHaveLength(1)
-    expect(screen.getAllByText(/never above 1/i)).toHaveLength(1)
-  })
-
-  it('says once, on the pricing group, that the upper bound is not included, in the words of the Salesforce bands the numbers are copied from (#1483)', () => {
-    render(<PricingTiersEditor value={tiers} onChange={() => {}} />)
-    const hint = screen.getAllByText(/upper bound is not included/i)
-    expect(hint).toHaveLength(1)
-    expect(hint[0].textContent).toMatch(/10,000 to 12,499/)
-    expect(hint[0].textContent).toMatch(/12,500/)
+    expect(screen.getAllByText('A lead pays its debt times the multiplier. Debt to is not included, so the next tier starts there.')).toHaveLength(1)
+    expect(screen.queryByText(/18,250/)).toBeNull()
   })
 
   it('renders a tier error beside the tier it names', () => {

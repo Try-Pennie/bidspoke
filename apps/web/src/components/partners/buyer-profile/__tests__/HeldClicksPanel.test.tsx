@@ -256,8 +256,9 @@ describe('HeldClicksPanel claim states other than held', () => {
 
 describe('HeldClicksPanel a sale marked sent (#2139)', () => {
   it('with a lead id and every update landed: marked sent, its id, Completed, no retry, removed without a question', () => {
-    const h = panel({ held: { entries: [row({ claim: soldAs('a0B5f00000XyZ12AAB'), salesforce: { status: 'recorded', at: 'x', writes: allWritten('a0B5f00000XyZ12AAB') }, salesforce_standing: 'written' })], total: 1 } })
-    expect(card()).toHaveTextContent("Marked sent Liberty1's lead id: a0B5f00000XyZ12AAB. Completed in Salesforce.")
+    const h = panel({ held: { entries: [row({ claim: soldAs('a0B5f00000XyZ12AAB'), counted: true, salesforce: { status: 'recorded', at: 'x', writes: allWritten('a0B5f00000XyZ12AAB') }, salesforce_standing: 'written' })], total: 1 } })
+    // #2325: "Counted." as the design words the header of a marked sent card, once the page knows the count landed.
+    expect(card()).toHaveTextContent("Marked sent Counted. Liberty1's lead id: a0B5f00000XyZ12AAB. Completed in Salesforce.")
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Retry Salesforce' })).toBeNull()
     expect(screen.getByRole('button', { name: "Correct Liberty1's lead id" })).toBeInTheDocument()
@@ -267,11 +268,20 @@ describe('HeldClicksPanel a sale marked sent (#2139)', () => {
 
   // Before #2139 the panel wrote "already marked sent as <id>": with no id it must not say "as".
   it('with no lead id: says none was given, never "as", and offers to add one', () => {
-    panel({ held: { entries: [row({ claim: soldAs(null), salesforce: { status: 'recorded', at: 'x', writes: allWritten(null) }, salesforce_standing: 'written' })], total: 1 } })
-    expect(card()).toHaveTextContent("Marked sent Liberty1's lead id: none given. Completed in Salesforce.")
+    panel({ held: { entries: [row({ claim: soldAs(null), counted: true, salesforce: { status: 'recorded', at: 'x', writes: allWritten(null) }, salesforce_standing: 'written' })], total: 1 } })
+    expect(card()).toHaveTextContent("Marked sent Counted. Liberty1's lead id: none given. Completed in Salesforce.")
     expect(card()).not.toHaveTextContent(/ as /)
     expect(screen.getByRole('button', { name: "Add Liberty1's lead id" })).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Correct/ })).toBeNull()
+  })
+
+  // #2325: the card says Counted only when this page's Mark sent was told the count
+  // landed. A count that did not land, or a sale read after a reload, when the Worker
+  // keeps no record of the count, claims nothing (L11).
+  it.each([['told the count did not land', false], ['read after a reload', undefined]] as const)('a sale %s does not say Counted', (_, counted) => {
+    panel({ held: { entries: [row({ claim: soldAs(null), counted, salesforce: { status: 'recorded', at: 'x', writes: allWritten(null) }, salesforce_standing: 'written' })], total: 1 } })
+    expect(card()).toHaveTextContent("Marked sent Liberty1's lead id: none given.")
+    expect(card()).not.toHaveTextContent('Counted.')
   })
 
   it('Add lead id: the box needs an id, names the consequence, and adds it at the generation shown', () => {

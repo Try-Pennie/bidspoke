@@ -94,9 +94,9 @@ describe('MergeDialog', () => {
     const result = mergeThreeWay(start, { partner, profile: { ...profile, is_enabled: true } }, { partner: { ...partner, accept_signals: [] }, profile: { ...profile, is_enabled: false, version: 4 } }, PARTNER_FIELD_REGISTRY)
     render(<MergeDialog result={result} theirName={null} onChoose={vi.fn()} onSave={vi.fn()} onKeepEditing={vi.fn()} />)
     expect(screen.getByRole('dialog', { name: 'Someone else saved this partner while you were editing' })).toBeInTheDocument()
-    expect(question('Accept when all of')).toHaveTextContent(/cannot be saved together/i)
+    expect(question('Accept when every one of')).toHaveTextContent(/cannot be saved together/i)
     // A combination the save would refuse is never chosen for the person: Save both waits on it.
-    expect(within(question('Accept when all of')).getByRole('radio', { name: 'Keep yours' })).toHaveAttribute('aria-checked', 'false')
+    expect(within(question('Accept when every one of')).getByRole('radio', { name: 'Keep yours' })).toHaveAttribute('aria-checked', 'false')
     expect(screen.getByRole('button', { name: 'Save both' })).toBeDisabled()
     expect(screen.getByRole('status')).toHaveTextContent('Choose for 1 more field.')
   })

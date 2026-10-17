@@ -261,11 +261,14 @@ test.describe('Accessibility (axe-core)', () => {
     await page.keyboard.press('Escape')
     await expect(grid).toBeHidden()
     await expect(calendarButton).toBeFocused()
-    // A typed date commits on Enter and reads back in the box's one spelling.
+    // A typed date commits on Enter. Since #2325 a settled day is a row of the
+    // Days off list with its weekday, not a box, and the focus moves to Add date.
     const box = page.getByRole('textbox', { name: 'Date, new date' })
     await box.fill('1/1/2027')
     await box.press('Enter')
-    await expect(page.getByRole('textbox', { name: 'Date, Jan 1, 2027' })).toHaveValue('Jan 1, 2027')
+    await expect(page.getByRole('list', { name: 'Days off' }).getByText('Friday, Jan 1, 2027', { exact: true })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Remove Friday, Jan 1, 2027' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Add date' })).toBeFocused()
     expect(unmatched).toEqual([])
   })
 
