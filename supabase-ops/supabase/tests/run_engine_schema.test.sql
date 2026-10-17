@@ -134,6 +134,8 @@ BEGIN
   SELECT count(*) INTO v_count FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
   WHERE n.nspname = 'public' AND has_function_privilege('service_role', p.oid, 'EXECUTE') AND p.prokind = 'f'
     AND p.proname <> ALL (v_names)
+    -- The minute cron's own functions (#1949), each held to these same rules by ops_tick.test.sql.
+    AND p.proname <> ALL (ARRAY['ops_now', 'claim_ops_sweep', 'save_workflow_copies', 'workflow_copies', 'record_schedule_observation', 'due_queue_depth'])
     AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') IS FALSE
     AND p.proowner = 'postgres'::regrole;
   IF v_count <> 0 THEN RAISE EXCEPTION '% public function(s) executable by service_role are not on the run engine list', v_count; END IF;

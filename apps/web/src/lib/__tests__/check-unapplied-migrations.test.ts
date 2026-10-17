@@ -162,7 +162,7 @@ describe('deploy.yml runs the check against both databases (#1829)', () => {
     const check = job.indexOf('check-unapplied-migrations.sh "$SUPABASE_OPS_PROJECT_ID" supabase-ops')
     expect(check).toBeGreaterThan(-1)
     expect(check).toBeLessThan(job.indexOf('ensure-compare-namespace.sh'))
-    expect(check).toBeLessThan(job.indexOf('run: pnpm --filter=worker exec wrangler deploy --config wrangler.ops.toml'))
+    expect(check).toBeLessThan(job.indexOf('pnpm --filter=worker exec wrangler deploy --config wrangler.ops.toml'))
     expect(job).toMatch(/SUPABASE_OPS_PROJECT_ID:\s*\$\{\{\s*vars\.SUPABASE_OPS_PROJECT_ID\s*\}\}/)
     expect(job).toMatch(/SUPABASE_ACCESS_TOKEN:\s*\$\{\{\s*secrets\.SUPABASE_ACCESS_TOKEN\s*\}\}/)
   })

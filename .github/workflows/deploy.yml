@@ -456,7 +456,11 @@ jobs:
     # bounded wait (12 attempts, 10s apart), plus the CLI install and migration
     # check (14s measured in Verify), plus headroom. Bounds a HANG, not slowness (#1062).
     timeout-minutes: 10
-    needs: [verify, changes, deploy-ops-outbound]
+    # deploy-worker too (#1949): the ops Worker binds the bidding Worker's
+    # OpsGateway entrypoint, so the bidding Worker deploys first. Only the order:
+    # always() below means its result is not required, and a skipped or failed
+    # bidding deploy still lets this run (the tick reports a gateway it cannot reach).
+    needs: [verify, changes, deploy-ops-outbound, deploy-worker]
     if: |
       always()
       && needs.verify.result == 'success'
@@ -496,11 +500,20 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 
-      # `exec`, not `run deploy -- --var`, for the reason on Deploy Worker.
+      # `exec`, not `run deploy -- --var`, for the reason on Deploy Worker. Its
+      # output is kept, because it is the only record of the schedules it set.
       - name: Deploy Ops Worker
-        run: pnpm --filter=worker exec wrangler deploy --config wrangler.ops.toml
+        run: |
+          set -o pipefail
+          pnpm --filter=worker exec wrangler deploy --config wrangler.ops.toml 2>&1 | tee "$RUNNER_TEMP/ops-deploy.log"
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      # The minute cron (#1949) was set, read from the deploy's own output: the
+      # CI token cannot read schedules, and a config that names no cron leaves
+      # the old one firing (spike #1946).
+      - name: Prove the deploy set the minute cron
+        run: bash .github/scripts/assert-deployed-schedules.sh "$RUNNER_TEMP/ops-deploy.log" '* * * * *'
 
       - name: Prove ops.trypennie.dev is the ops Worker
         run: bash .github/scripts/prove-ops-host.sh https://ops.trypennie.dev/porting/capture/p_deployproof
