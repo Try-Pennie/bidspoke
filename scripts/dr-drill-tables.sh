@@ -58,6 +58,8 @@ DRILL_STRUCTURE_ONLY_TABLES=(
   partner_page_live_misses
   # The cron guard's fail-open record (#2166): seven days of monitor history
   cron_guard_fail_opens
+  # Every cron delivery and what the guard decided (#2284): seven days of monitor history
+  cron_tick_deliveries
   # The field presence rollup watermark (#1150): one timestamp. After a restore
   # the table is empty, the 15 minute incremental pass refuses loudly, and the
   # next reconcile (the hourly recent job, within the hour) upserts the row and

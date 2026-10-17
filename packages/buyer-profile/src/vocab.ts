@@ -255,8 +255,8 @@ export const MODE_EFFECTIVE_LABELS: Record<ModeEffective, string> = {
   report_only: 'Evaluated and reported only',
 }
 
-/** Stated once here and once on the form (L118). */
-export const PRIORITY_DIRECTION = '1 is offered the lead first. A lower number outranks a higher one.'
+/** Stated once here and once on the form (L118), in the settled design's words (#2324, PM-21). */
+export const PRIORITY_DIRECTION = 'When more than one buyer can take a lead, priority 1 is offered it first.'
 
 /** A multiplier is a share of the debt, so it can never exceed 1 (Dan, 2026-09-21). */
 export const MULTIPLIER_CEILING = 1

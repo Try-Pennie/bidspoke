@@ -28,7 +28,7 @@ type Row = Record<string, unknown> & { id: string; slug: string; partner_type: s
 
 export interface PartnerFixtures {
   partners: Row[]
-  buyerProfiles: Record<string, { profile: { sold_on?: string | null } | null; accept_signals: unknown[]; other_sellers: unknown[] }>
+  buyerProfiles: Record<string, { profile: { sold_on?: string | null } | null; accept_signals: unknown[]; other_sellers: unknown[]; offer_buyers: unknown[] }>
   uuids: unknown[]
   bidConfigs: Record<string, unknown[]>
   stale: Record<string, unknown> & { partner: { id: string } }

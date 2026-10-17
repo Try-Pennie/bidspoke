@@ -12,7 +12,7 @@
  * their own, so a route that uses only a button here does not load their Radix
  * code (#2137, measured on /dashboard and the canvas).
  */
-import { useRef, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react'
+import { useRef, useState, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Loader2 } from 'lucide-react'
 
 // ── Field ─────────────────────────────────────────────────────────────────────
@@ -187,6 +187,87 @@ export function NumberInput({ id, value, onChange, min, max, step = 'any', place
   )
 }
 
+/** Dollars with grouping and at most cents, the way a money box reads at rest. */
+const DOLLARS_AT_REST = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
+/** What a money box accepts: digits with optional grouping commas, and at most cents. */
+const TYPED_DOLLARS = /^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d{0,2})?$/
+
+/**
+ * An amount of dollars (#2324, PM-21). The box holds only the number, and "$"
+ * is fixed text beside it, since a box holds only what is typed (Dan,
+ * 2026-10-17). At rest it reads grouped (20,000); while it has the focus it
+ * holds exactly what the person types, so nothing rewrites their typing under
+ * them. Text that is not an amount is said while it is typed and never emitted;
+ * leaving the box puts it back to the stored amount and says so, so typed text
+ * never outlives a Discard, an Undo or a merge. An empty box is null, a
+ * different fact from 0.
+ */
+export function MoneyInput({ id, value, onChange, placeholder, disabled, describedBy: db, className, 'aria-label': ariaLabel }: {
+  id: string
+  value: number | null
+  onChange: (value: number | null) => void
+  placeholder?: string
+  disabled?: boolean
+  describedBy?: string
+  'aria-label'?: string
+  className?: string
+}) {
+  // The typed text while the box is being edited, or null when it shows the value at rest.
+  const [draft, setDraft] = useState<string | null>(null)
+  // Text that was not an amount when the person left the box: put back to the stored amount, and said.
+  const [rejected, setRejected] = useState<string | null>(null)
+  // A value changed from outside (Discard changes, Use theirs, an Undo) replaces
+  // whatever was typed; the value this box's own typing emitted does not.
+  const emitted = useRef<number | null | undefined>(undefined)
+  const [seen, setSeen] = useState(value)
+  if (value !== seen) {
+    setSeen(value)
+    if (value !== emitted.current) { setDraft(null); setRejected(null) }
+  }
+  const shown = draft ?? (value === null ? '' : DOLLARS_AT_REST.format(value))
+  const trimmed = shown.trim()
+  const invalid = trimmed !== '' && !TYPED_DOLLARS.test(trimmed)
+  const unitId = `${id}-unit`
+  // Its own id, apart from the `${id}-error` a Field around it gives a refusal from the save.
+  const errorId = `${id}-typed-error`
+  return (
+    <div className={className}>
+      <div className="flex items-center gap-1.5">
+        <span id={unitId} className="text-sm text-graphite">$</span>
+        <input
+          id={id}
+          type="text"
+          inputMode="decimal"
+          value={shown}
+          placeholder={placeholder}
+          disabled={disabled}
+          aria-label={ariaLabel}
+          aria-invalid={invalid ? true : undefined}
+          aria-describedby={[unitId, db, invalid ? errorId : null].filter(Boolean).join(' ')}
+          // Seeded as it reads at rest, so a stored amount is never flagged as mistyped by being focused.
+          onFocus={() => { setRejected(null); setDraft(value === null ? '' : DOLLARS_AT_REST.format(value)) }}
+          // Leaving the box always returns it to the stored amount, so typed text can never
+          // outlive a Discard, an Undo or a merge; text that was not an amount is said. What this
+          // visit emitted is forgotten, so a later outside change back to it still replaces typing.
+          onBlur={() => { if (invalid) setRejected(trimmed); setDraft(null); emitted.current = undefined }}
+          onChange={(e) => {
+            const raw = e.target.value
+            setDraft(raw)
+            const t = raw.trim()
+            if (t === '') { emitted.current = null; onChange(null); return }
+            if (TYPED_DOLLARS.test(t)) { const n = Number(t.replace(/,/g, '')); emitted.current = n; onChange(n) }
+          }}
+          className="input"
+        />
+      </div>
+      {invalid && <FieldError id={errorId} alert size="xs" className="mt-1">Type an amount of dollars, such as 20,000.</FieldError>}
+      {!invalid && rejected !== null && (
+        <p role="status" className="mt-1 text-xs text-hint">&quot;{rejected}&quot; is not an amount of dollars, so the box is back to {value === null ? 'empty' : DOLLARS_AT_REST.format(value)}.</p>
+      )}
+    </div>
+  )
+}
+
 export function TextArea({ id, value, onChange, rows = 3, placeholder, mono, className, describedBy: db, 'aria-label': ariaLabel }: {
   id: string
   value: string
@@ -301,6 +382,41 @@ export function Checkbox({ id, checked, onChange, label, disabled, describedBy: 
       <input id={id} type="checkbox" checked={checked} disabled={disabled} aria-describedby={db} onChange={(e) => onChange(e.target.checked)} className="checkbox" />
       <span>{label}</span>
     </label>
+  )
+}
+
+// ── Chip ──────────────────────────────────────────────────────────────────────
+
+/**
+ * A chip that is a checkbox (#2324, PM-21): a state in a grid of states, a day
+ * of the week. Navy when chosen, white with the beige line when not, so a set
+ * of many reads at a glance. A button with the checkbox role, so it is named
+ * and announced as checked or not, Space toggles it, and it never submits the
+ * form around it. `shortLabel` is what it shows when its name is longer (Mon
+ * for Monday); the name begins with it, so a spoken command finds it.
+ */
+export function ChipCheck({ id, checked, onChange, label, shortLabel, size = 'sm', disabled }: {
+  id?: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+  label: string
+  shortLabel?: string
+  size?: 'sm' | 'lg'
+  disabled?: boolean
+}) {
+  return (
+    <button
+      id={id}
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      aria-label={shortLabel ? label : undefined}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`chip ${size === 'lg' ? 'chip-lg' : ''} ${checked ? 'chip-on' : ''}`.replace(/\s+/g, ' ').trim()}
+    >
+      {shortLabel ?? label}
+    </button>
   )
 }
 

@@ -272,6 +272,13 @@ export type HeldClaim =
   | { status: 'sold'; generation: number; partner_lead_id: string | null }
   | { status: 'unreadable'; message: string }
 
+/** Another buyer sold on the offer (#2324, PM-21): what the Priority section says this buyer stands among. */
+export interface OfferBuyer {
+  id: string
+  name: string
+  priority: number | null
+}
+
 /** One click buyer_click_send left held for a person (#1552). */
 export interface HeldClick {
   id: string
@@ -1176,8 +1183,9 @@ export const api = {
   // The buyer profile read routes (#1412). The profile is saved with the
   // partner through partners.savePage (#2133).
   buyerProfiles: {
+    // offer_buyers (#2324): the org's other enabled offer buyers whose partner is on, by priority. Absent from a Worker deployed before it.
     get: (partnerId: string) =>
-      req<{ profile: BuyerProfileDocument | null; accept_signals: unknown[]; other_sellers: Array<{ id: string; name: string }> }>(`/api/partners/${partnerId}/buyer-profile`),
+      req<{ profile: BuyerProfileDocument | null; accept_signals: unknown[]; other_sellers: Array<{ id: string; name: string }>; offer_buyers?: OfferBuyer[] }>(`/api/partners/${partnerId}/buyer-profile`),
     // An offer buyer's ledger counts, or a click buyer's clicks today (#1543), told apart by sold_on.
     usage: (partnerId: string) =>
       req<

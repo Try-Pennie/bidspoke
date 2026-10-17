@@ -24,6 +24,7 @@ vi.mock('@/lib/api', () => ({
 import PartnerForm from '../PartnerForm'
 import { api } from '@/lib/api'
 import type { Partner } from '@/lib/api'
+import type { BuyerProfileDocument } from '@bidspoke/buyer-profile'
 import { PARTNER_FIELD_REGISTRY, PROFILE_PREFIX } from '../partner-draft'
 
 // A partner that does both, with a Bid Group setting and a confirmation window
@@ -38,12 +39,21 @@ const partner: Partner = {
   version: 3,
 }
 
+// A saved profile, so the Buyer profile tab draws its sections: since #2324 a buyer
+// with none shows only that it is not offered leads, until one is set up.
+const profile: BuyerProfileDocument = {
+  partner_id: 'p1', version: 1, sold_on: 'offer', is_enabled: false, priority: null, allowed_states: [],
+  debt_min: null, debt_max: null, loan_amount_min: null,
+  hourly_lead_cap: null, daily_lead_cap: null, hourly_spend_cap_cents: null, daily_spend_cap_cents: null,
+  windows: [], blackout_dates: [], tiers: [],
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(api.partners.usage).mockResolvedValue({ bid_group: [], partner_bid: [], latency_gate: [] })
   vi.mocked(api.partnerUuids.list).mockResolvedValue([])
   vi.mocked(api.partnerBidConfigs.list).mockResolvedValue([])
-  vi.mocked(api.buyerProfiles.get).mockResolvedValue({ profile: null, accept_signals: [], other_sellers: [] })
+  vi.mocked(api.buyerProfiles.get).mockResolvedValue({ profile, accept_signals: [], other_sellers: [] })
   vi.mocked(api.buyerProfiles.usage).mockRejectedValue(new Error('not read here'))
   vi.mocked(api.buyerSales.list).mockResolvedValue({ entries: [], total: 0, page: 1, limit: 100 })
 })

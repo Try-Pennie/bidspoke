@@ -46,7 +46,7 @@ import { WorkflowValuesPanel } from '@/components/partners/WorkflowValuesPanel'
 import { OfferPreview } from '@/components/partners/OfferPreview'
 import { OldIdNotRemoved, SubAccountIdList } from '@/components/partners/SubAccountIdList'
 import { CLICK_URL_PROSPECT_PLACEHOLDER } from '@bidspoke/buyer-profile'
-import type { PartnerUsage } from '@/lib/api'
+import type { OfferBuyer, PartnerUsage } from '@/lib/api'
 import type { PartnerTab } from './partner-draft'
 import {
   bidGroupSettingsSet, bidGroupShown, confirmationWindowShown, openingTab, problemsOf, problemTabs, visibleTabs, TAB_LABELS,
@@ -319,6 +319,10 @@ export default function PartnerForm({
   const [profile, setProfile] = useState<BuyerProfileDocument | null>(null)
   const [profileLoadError, setProfileLoadError] = useState<string | null>(null)
   const [otherSellers, setOtherSellers] = useState<Array<{ id: string; name: string }>>([])
+  // The other buyers sold on the offer (#2324): undefined until read, or from a Worker that does not say.
+  const [offerBuyers, setOfferBuyers] = useState<OfferBuyer[] | undefined>(undefined)
+  // A buyer with no saved profile shows the form once the person chooses to set one up (#2324, design frame 20).
+  const [profileSetUp, setProfileSetUp] = useState(false)
   const [profileErrors, setProfileErrors] = useState<ProfileError[]>([])
   /** A buyer profile refusal about the partner's click URL, shown on that field (#1546). */
   const clickUrlError = profileErrors.find((e) => e.path === 'clickUrl')?.message ?? null
@@ -396,6 +400,7 @@ export default function PartnerForm({
         profileBaseline.current = JSON.stringify(loaded)
         setProfile(loaded)
         setOtherSellers(r.other_sellers)
+        setOfferBuyers(r.offer_buyers)
       })
       .catch((err: unknown) => { if (!cancelled) setProfileLoadError(err instanceof Error ? err.message : 'unknown error') })
     return () => { cancelled = true }
@@ -1431,7 +1436,7 @@ export default function PartnerForm({
                         ? <span role="status" className="text-sm text-gray-600">Checking…</span>
                         : profile !== null && (profile.version ?? 0) > 0
                           ? <span className="text-sm text-gray-600">Set up</span>
-                          : <Button variant="secondary" onClick={() => chooseTab('buyer_profile')}>Set up a buyer profile</Button>}
+                          : <Button variant="secondary" onClick={() => { setProfileSetUp(true); chooseTab('buyer_profile') }}>Set up a buyer profile</Button>}
                   </div>
                   <div data-sold-row="" className="flex items-center gap-4">
                     <span className="w-[110px] shrink-0 text-sm text-graphite">Bid Group</span>
@@ -1461,6 +1466,9 @@ export default function PartnerForm({
                 signalRules={signalRules}
                 onSignalRulesChange={setSignalRules}
                 otherSellers={otherSellers}
+                offerBuyers={offerBuyers}
+                setUp={profileSetUp}
+                onSetUp={() => setProfileSetUp(true)}
                 soldOnLock={soldOnLock}
               />
             </TabPanel>

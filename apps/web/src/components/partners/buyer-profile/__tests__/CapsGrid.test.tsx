@@ -51,6 +51,17 @@ describe('CapsGrid', () => {
     expect(onChange).toHaveBeenLastCalledWith({ ...none, daily_lead_cap: 60 })
   })
 
+  // #2324, PM-21: the click buyer's cap as the settled design draws it, a narrow
+  // box with the count beside it and one hint naming the buyer. The old note
+  // ("Once the clicks in a day reach it...") is gone.
+  it('a click buyer\'s box is narrow, with the count beside it and one hint naming the buyer', () => {
+    render(<CapsGrid value={{ ...none, daily_lead_cap: 50 }} onChange={() => {}} soldOn="click" partnerName="Liberty1" meter={<span>11 of 50 clicks today</span>} zone="America/New_York" nowMs={Date.parse('2026-01-15T03:00:00.000Z')} />)
+    expect(screen.getByText('Empty means Liberty1 is not offered at all. The count resets at 3:00 AM Eastern time.')).toBeInTheDocument()
+    expect(screen.getByText('11 of 50 clicks today')).toBeInTheDocument()
+    expect(screen.getByLabelText('Clicks per day')).toHaveClass('w-[7.5rem]')
+    expect(screen.queryByText(/once the clicks in a day reach it/i)).toBeNull()
+  })
+
   // #2143, PM-10: the reset is said in the profile's display zone, at the hour it
   // falls on the night it happens. These nows are the evening before, Pacific.
   it.each([

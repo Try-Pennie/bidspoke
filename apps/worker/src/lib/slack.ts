@@ -10,7 +10,6 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 // sendPgCronAlert: the import is erased at compile time.
 import type { AlertingStatus } from './pg-cron-watch'
 import { coerceString } from './coerce'
-import { parseJson } from './json'
 import { stripUrlQueriesInText } from './url-redact'
 import { isPermanentDbError, isNoRowMatchedError, sleep, toDbError, READ_BACK_MISSING_CODE } from './db-retry'
 import { MIN_AGE_MINUTES as STRAND_DRAIN_MIN_AGE_MINUTES } from './stranded-executions'
@@ -664,30 +663,44 @@ export async function sendUpstreamOutageAlert(
   )
 }
 
+/**
+ * Posts `text` under the alert `handle` names, through createSlackClient (#2331
+ * phase 1b).
+ *
+ * Its rule is its own, and differs from deliverMessage's (F123): it catches
+ * every failure and NEVER throws, a network failure included, and returns
+ * nothing, so the log line is the only trace of a failure. Each line is the one
+ * the old hand written fetch logged: `thread reply API error: <code>` for
+ * ok:false, `thread reply HTTP error <status>` for any status but 200, and
+ * `thread reply failed:` with the error for anything else (a network failure,
+ * logged as the error the fetch threw, and a 200 whose body is not JSON).
+ * A 429 now also logs its Retry-After, and is never waited out: the client has
+ * no retry handler. One answer is logged differently: a 2xx other than 200,
+ * which the old fetch accepted as `res.ok` and parsed, and the library raises
+ * as an HTTP failure (it treats only 200 as an answer). Slack sends 200 for
+ * chat.postMessage, so this is an edge. lib/__tests__/slack-thread-reply.test.ts
+ * pins every case.
+ */
 export async function sendThreadReply(handle: SlackAlertHandle, text: string): Promise<void> {
   try {
-    const res = await fetch('https://slack.com/api/chat.postMessage', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${handle.bot_token}`,
-      },
-      body: JSON.stringify({
-        channel: handle.channel,
-        thread_ts: handle.ts,
-        text,
-        unfurl_links: false,
-      }),
+    const result = await createSlackClient(handle).chat.postMessage({
+      channel: handle.channel,
+      thread_ts: handle.ts,
+      text,
+      unfurl_links: false,
     })
-    if (!res.ok) {
-      console.error(`[slack] thread reply HTTP error ${res.status}`)
-      return
-    }
-    // Slack signals delivery failures with HTTP 200 + { ok: false }.
-    const data = await parseJson<{ ok: boolean; error?: string }>(res)
-    if (!data.ok) console.error(`[slack] thread reply API error: ${data.error}`)
+    // ok:false with no error code is returned, not thrown, by the library.
+    if (result.ok !== true) console.error(`[slack] thread reply API error: ${result.error}`)
   } catch (e) {
-    console.error('[slack] thread reply failed:', e)
+    const failure = slackCallFailure(e)
+    if (!failure) {
+      console.error('[slack] thread reply failed:', slackNetworkCause(e))
+    } else if (failure.kind === 'api') {
+      console.error(`[slack] thread reply API error: ${failure.error}`)
+    } else {
+      const wait = failure.retryAfter === null ? '' : `, Retry-After ${failure.retryAfter} s, not waited for`
+      console.error(`[slack] thread reply HTTP error ${failure.status}${wait}`)
+    }
   }
 }
 
@@ -3762,9 +3775,8 @@ function postOutageOwnerMessage(botToken: string, channel: string, blocks: unkno
 
 /**
  * The post itself, through createSlackClient (#2331 phase 1b). Its twin for a
- * thread reply, sendThreadReply, still posts with a hand written fetch until
- * the next pull request of that phase switches it, keeping its own rule (it
- * catches everything and never throws, F123).
+ * thread reply, sendThreadReply, posts through the same client but keeps its
+ * own rule (it catches everything and never throws, F123).
  *
  * Whether this function throws is unchanged from its old hand written fetch, so
  * no alert path starts or stops throwing (F123). It throws in the same two

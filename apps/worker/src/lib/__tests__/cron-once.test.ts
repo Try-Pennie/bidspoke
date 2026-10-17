@@ -10,9 +10,12 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { AlertClaimObject, TICK_LEASE_STALE_MS, TICK_LEASE_RENEW_MS } from '../../durable-objects/alert-claim'
-import { runCronTickOnce, cronTickKey, CRON_TICK_DEADLINE_MS } from '../cron-once'
-// The consumer of the FAILED OPEN line (#2166), a separate app, imported to prove the contract.
+import { runCronTickOnce, cronTickKey, CRON_TICK_DEADLINE_MS, DELIVERY_LINE_PREFIX } from '../cron-once'
+import { CLAIM_DEADLINE_MS } from '../alert-claim'
+// The consumers of the FAILED OPEN line (#2166) and the delivery line (#2284), a
+// separate app, imported to prove the contract.
 import { failOpensIn } from '../../../../worker-tail/src/fail-opens'
+import { deliveriesIn } from '../../../../worker-tail/src/deliveries'
 
 /** Storage with the surface the claim object uses, held in a Map. */
 function memoryState(): DurableObjectState {
@@ -266,7 +269,7 @@ describe('runCronTickOnce (#1899)', () => {
     expect(outcome).toBe('ran')
     expect(jobs).toHaveBeenCalledTimes(1)
     expect(waited[0]).toBe(CRON_TICK_DEADLINE_MS)
-    expect(errors.join('\n')).toMatch(/FAILED OPEN.*cron="15 8 \* \* \*".*did not answer inside 2000ms/)
+    expect(errors.join('\n')).toMatch(/FAILED OPEN.*cron="15 8 \* \* \*".*did not answer inside 5000ms/)
   })
 
   it('(e) runs anyway when the claim object throws, answers an error, or the binding is missing', async () => {
@@ -361,5 +364,151 @@ describe('runCronTickOnce (#1899)', () => {
       logs: [{ timestamp: MINUTE + 2_118, level: 'error', message: [line] }],
     } as unknown as TraceItem
     expect(failOpensIn(trace)).toEqual([{ event_id: id, occurred_at: new Date(MINUTE + 2_118).toISOString(), cron: '* * * * *', line }])
+  })
+})
+
+/**
+ * Timers on a virtual clock (L524): `sleep(ms)` resolves when the clock reaches
+ * it, and `run` fires every timer in time order, letting each one's work settle
+ * before the next, so a race between two timers is decided by their times alone.
+ */
+function virtualTimers() {
+  let now = 0
+  const queue: Array<{ at: number; seq: number; fire: () => void }> = []
+  let seq = 0
+  const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
+  return {
+    sleep: (ms: number) => new Promise<void>((resolve) => { queue.push({ at: now + ms, seq: seq++, fire: resolve }) }),
+    async run<T>(work: Promise<T>): Promise<T> {
+      let done = false
+      const result = work.finally(() => { done = true })
+      await settle()
+      while (!done && queue.length) {
+        queue.sort((a, b) => a.at - b.at || a.seq - b.seq)
+        const next = queue.shift()!
+        now = next.at
+        next.fire()
+        await settle()
+      }
+      return result
+    },
+  }
+}
+
+// #2284: the tick claim had the alert claim's 2 s deadline. Measured 2026-10-17
+// in Workers Logs, the claim object's own handler takes 26 ms at the median and
+// 151 ms at p99 (755 ms the slowest of 7 days), so the misses are the trip to
+// the object, not the object: the 15:15 UTC claim that failed open at 2 s
+// reached its object 4 to 6 s after it was sent. The tick claim now waits 5 s.
+describe('the tick claim has its own deadline (#2284)', () => {
+  it('is 5 seconds, and is not the alert claim deadline', () => {
+    expect(CRON_TICK_DEADLINE_MS).toBe(5_000)
+    expect(CLAIM_DEADLINE_MS).toBe(2_000)
+  })
+
+  function slowNamespace(answerAfterMs: number, timers: ReturnType<typeof virtualTimers>) {
+    const { ns } = claimNamespace()
+    return {
+      idFromName: (n: string) => n,
+      get: (name: string) => ({
+        fetch: async (url: string, init?: RequestInit) => {
+          await timers.sleep(answerAfterMs)
+          return ns.get(name as unknown as DurableObjectId).fetch(url, init)
+        },
+      }),
+    } as unknown as DurableObjectNamespace
+  }
+
+  it('runs guarded when the claim answers just inside the deadline', async () => {
+    const timers = virtualTimers()
+    const jobs = vi.fn(async () => {})
+    const outcome = await timers.run(runCronTickOnce(slowNamespace(CRON_TICK_DEADLINE_MS - 1, timers), { cron: '*/5 * * * *', scheduledTime: MINUTE }, jobs, {
+      now: () => MINUTE, holder: () => 'slow-but-in-time', delay: timers.sleep, every: () => () => {},
+    }))
+    expect(outcome).toBe('ran')
+    expect(errors.join('\n')).not.toMatch(/FAILED OPEN/)
+    expect(logs.join('\n')).toMatch(/\[cron-once\] running cron="\*\/5 \* \* \* \*".*holder=slow-but-in-time/)
+  })
+
+  it('fails open when the claim answers just past the deadline', async () => {
+    const timers = virtualTimers()
+    const jobs = vi.fn(async () => {})
+    const outcome = await timers.run(runCronTickOnce(slowNamespace(CRON_TICK_DEADLINE_MS + 1, timers), { cron: '*/5 * * * *', scheduledTime: MINUTE }, jobs, {
+      now: () => MINUTE, holder: () => 'too-late', delay: timers.sleep, every: () => () => {},
+    }))
+    expect(outcome).toBe('ran')
+    expect(errors.join('\n')).toMatch(/FAILED OPEN.*did not answer inside 5000ms/)
+  })
+
+  it('a claim answering in 3 s, which failed open at the old 2 s deadline, now runs guarded', async () => {
+    const timers = virtualTimers()
+    const outcome = await timers.run(runCronTickOnce(slowNamespace(3_000, timers), { cron: '*/5 * * * *', scheduledTime: MINUTE }, vi.fn(async () => {}), {
+      now: () => MINUTE, holder: () => 'h', delay: timers.sleep, every: () => () => {},
+    }))
+    expect(outcome).toBe('ran')
+    expect(errors.join('\n')).not.toMatch(/FAILED OPEN/)
+  })
+})
+
+// #2284: the hourly check pages on a tick that may really have run twice, which
+// needs a durable record of every delivery, not the count of skips (a second
+// delivery that ran leaves no skip). So the guard writes one line per delivery
+// saying what it decided, and the tail worker copies it into cron_tick_deliveries.
+describe('one delivery line per decision (#2284)', () => {
+  const deliveryLines = () => [...logs, ...warns, ...errors]
+    .filter((l) => l.startsWith(DELIVERY_LINE_PREFIX))
+    .map((l) => JSON.parse(l.slice(DELIVERY_LINE_PREFIX.length)) as Record<string, unknown>)
+
+  it('says ran, skipped, failed_open, and took_over, each with the delivery id, cron and scheduled time', async () => {
+    const { ns } = claimNamespace()
+    const jobs = vi.fn(async () => {})
+    await runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE + 1_000 }, jobs, { now: () => MINUTE + 1_000, holder: () => 'd-ran' })
+    await runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE + 37_000 }, jobs, { now: () => MINUTE + 37_000, holder: () => 'd-skip' })
+    await runCronTickOnce(undefined, { cron: '0 9 * * *', scheduledTime: MINUTE }, jobs, { now: () => MINUTE, holder: () => 'd-open' })
+    expect(deliveryLines()).toEqual([
+      { delivery: 'd-ran', outcome: 'ran', cron: '0 * * * *', scheduled: new Date(MINUTE + 1_000).toISOString() },
+      { delivery: 'd-skip', outcome: 'skipped', cron: '0 * * * *', scheduled: new Date(MINUTE + 37_000).toISOString() },
+      { delivery: 'd-open', outcome: 'failed_open', cron: '0 9 * * *', scheduled: new Date(MINUTE).toISOString() },
+    ])
+  })
+
+  it('says took_over for a delivery that takes a tick from a holder whose lease went stale', async () => {
+    const { ns } = claimNamespace()
+    const clock = { t: MINUTE }
+    void runCronTickOnce(ns, { cron: '23 * * * *', scheduledTime: MINUTE }, () => new Promise<void>(() => {}), { now: () => clock.t, holder: () => 'd-first', every: () => () => {} })
+    await vi.waitFor(() => expect(deliveryLines()).toHaveLength(1))
+    clock.t = MINUTE + TICK_LEASE_STALE_MS
+    await runCronTickOnce(ns, { cron: '23 * * * *', scheduledTime: MINUTE }, vi.fn(async () => {}), { now: () => clock.t, holder: () => 'd-second', every: () => () => {} })
+    expect(deliveryLines().map((d) => [d.delivery, d.outcome])).toEqual([['d-first', 'ran'], ['d-second', 'took_over']])
+  })
+
+  it('names a delivery even when it fails open before any holder could ask', async () => {
+    await runCronTickOnce(undefined, { cron: '0 9 * * *', scheduledTime: MINUTE }, vi.fn(async () => {}), { now: () => MINUTE })
+    const [d] = deliveryLines()
+    expect(d.outcome).toBe('failed_open')
+    expect(typeof d.delivery).toBe('string')
+    expect((d.delivery as string).length).toBeGreaterThan(0)
+  })
+
+  // A contract with another app: the real line is fed to the tail worker's real parser.
+  it('is read back by the tail worker as the same delivery', async () => {
+    const { ns } = claimNamespace()
+    await runCronTickOnce(ns, { cron: '* * * * *', scheduledTime: MINUTE + 1_000 }, vi.fn(async () => {}), { now: () => MINUTE + 1_000, holder: () => 'd-1' })
+    const line = logs.find((l) => l.startsWith(DELIVERY_LINE_PREFIX))!
+    const trace = {
+      scriptName: 'bidspoke-worker',
+      outcome: 'ok',
+      eventTimestamp: MINUTE + 1_000,
+      event: { cron: '* * * * *', scheduledTime: MINUTE + 1_000 },
+      logs: [{ timestamp: MINUTE + 1_050, level: 'log', message: [line] }],
+    } as unknown as TraceItem
+    expect(deliveriesIn(trace)).toEqual([{
+      delivery_id: 'd-1',
+      occurred_at: new Date(MINUTE + 1_050).toISOString(),
+      cron: '* * * * *',
+      scheduled_at: new Date(MINUTE + 1_000).toISOString(),
+      outcome: 'ran',
+      invocation_outcome: 'ok',
+    }])
   })
 })

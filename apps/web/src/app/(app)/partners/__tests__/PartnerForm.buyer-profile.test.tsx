@@ -103,7 +103,8 @@ async function renderBuyer(onSave: Mock = pageSaver()) {
 describe('the Buyer profile section', () => {
   it('renders for a buyer partner with the loaded document, and not for a source partner', async () => {
     await renderBuyer()
-    expect(screen.getByRole('switch', { name: 'Enabled' })).toHaveAttribute('aria-checked', 'true')
+    // #2324: Enabled is its own row, its switch reading Offered leads.
+    expect(screen.getByRole('switch', { name: 'Offered leads' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByRole('checkbox', { name: 'TX' })).toBeChecked()
     render(<PartnerForm partner={{ ...partner, partner_type: 'source' }} onSave={vi.fn()} onCancel={vi.fn()} />)
     expect(screen.getAllByRole('region', { name: 'Buyer profile' })).toHaveLength(1)
@@ -111,19 +112,27 @@ describe('the Buyer profile section', () => {
 
   // #2137: the list is alphabetical, so List order (the partner record's
   // priority) left the page and stays in the data (L118, PM-1).
-  it('the word priority appears once on the composed page, and List order has left it', async () => {
+  // #2324: the profile's Priority is now its own section, its rule in one line under
+  // the box ("priority 1 is offered it first"), so the word is its heading and that
+  // rule, and the label is for screen readers only.
+  it('the word priority is the profile section and its rule only, and List order has left it', async () => {
     await renderBuyer()
-    expect(screen.getAllByText(/priority/i)).toHaveLength(1)
+    expect(screen.getAllByText(/priority/i).filter((el) => !el.classList.contains('sr-only')).map((el) => el.textContent)).toEqual(['Priority', 'When more than one buyer can take a lead, priority 1 is offered it first.'])
     expect(screen.queryByLabelText('List order')).toBeNull()
     expect(screen.getByLabelText('Daily attempt cap')).toHaveValue(250)
   })
 
-  it('orders the section for the reader: enabled and priority, then pricing and caps, then rules, blackout dates last (L609)', async () => {
+  it('orders the section for the reader: Enabled, Sold on, Priority, Eligibility, Hours, Pricing, Caps, then rules, blackout dates last (L609, #2324)', async () => {
     await renderBuyer()
     const region = screen.getByRole('region', { name: 'Buyer profile' })
     const headings = within(region).getAllByRole('heading').map((h) => h.textContent)
     const index = (label: RegExp) => headings.findIndex((h) => label.test(h ?? ''))
-    expect(index(/enabled/i)).toBeLessThan(index(/pricing/i))
+    expect(index(/^enabled$/i)).toBeGreaterThanOrEqual(0)
+    expect(index(/^enabled$/i)).toBeLessThan(index(/^sold on$/i))
+    expect(index(/^sold on$/i)).toBeLessThan(index(/^priority$/i))
+    expect(index(/^priority$/i)).toBeLessThan(index(/^eligibility$/i))
+    expect(index(/^eligibility$/i)).toBeLessThan(index(/^hours$/i))
+    expect(index(/^hours$/i)).toBeLessThan(index(/pricing/i))
     expect(index(/pricing/i)).toBeLessThan(index(/caps/i))
     expect(index(/caps/i)).toBeLessThan(index(/outcome rules/i))
     expect(index(/outcome rules/i)).toBeLessThan(index(/blackout/i))
@@ -252,8 +261,10 @@ describe('the Buyer profile section', () => {
     vi.mocked(api.buyerProfiles.get).mockResolvedValue({ profile: null, accept_signals: [], other_sellers: [] })
     const onSave = pageSaver(1)
     render(<PartnerForm partner={partner} onSave={onSave} onCancel={vi.fn()} />)
+    // #2324: a buyer with no profile is set up first.
+    fireEvent.click(await screen.findByRole('button', { name: 'Set up a buyer profile' }))
     await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Sold on' })).toBeInTheDocument())
-    fireEvent.click(screen.getByRole('radio', { name: 'The click' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Click' }))
     fireEvent.change(screen.getByLabelText('Clicks per day'), { target: { value: '50' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await screen.findByText(/Buyer profile saved, version 1\./)
@@ -381,7 +392,8 @@ describe('the Buyer profile section', () => {
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     expect(await screen.findByText('Not saved yet. Brian Nelms also saved this partner; their changes to Loan amount minimum were kept. Press Save changes to save yours.')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).toBeNull()
-    expect(inputLabelled('Loan amount minimum')).toHaveValue(3000)
+    // #2324: a money box reads grouped at rest.
+    expect(inputLabelled('Loan amount minimum')).toHaveValue('3,000')
     expect(dailyCapInput()).toHaveValue(600)
     expect(onSave).toHaveBeenCalledTimes(1)
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
@@ -457,6 +469,8 @@ describe('how the buyer is sold', () => {
     vi.mocked(api.buyerProfiles.get).mockResolvedValue({ profile, accept_signals: [], other_sellers: [] })
     const onSave = pageSaver()
     render(<PartnerForm partner={{ ...partner, ...partnerOver }} onSave={onSave} onCancel={vi.fn()} />)
+    // #2324: a buyer with no saved profile says so, and is set up first.
+    if (profile === null) fireEvent.click(await screen.findByRole('button', { name: 'Set up a buyer profile' }))
     await waitFor(() => expect(screen.getByRole('radiogroup', { name: 'Sold on' })).toBeInTheDocument())
     return onSave
   }
@@ -477,7 +491,7 @@ describe('how the buyer is sold', () => {
     expect(await screen.findByText('Nothing saved: fix Sold on in Buyer profile.')).toBeInTheDocument()
     expect(screen.getAllByRole('alert').map((a) => a.textContent).join(' ')).toMatch('Choose whether this buyer is sold on the offer or on the click.')
     expect(onSave).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('radio', { name: 'The click' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Click' }))
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalledWith({}, 'p1', undefined, expect.objectContaining({ expected_profile_version: 0, profile: expect.objectContaining({ sold_on: 'click', daily_lead_cap: 50 }) })))
   })
@@ -545,7 +559,7 @@ describe('how the buyer is sold', () => {
   it('a click buyer shows no priority, pricing, accept rules or ledger counts, and its cap reads clicks per day', async () => {
     vi.mocked(api.buyerProfiles.usage).mockResolvedValue({ sold_on: 'click', count: 17, date: '2027-09-21', day_zone: 'America/Los_Angeles' })
     await renderWith(clickDoc)
-    expect(screen.getByRole('radio', { name: 'The click' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('radio', { name: 'Click' })).toHaveAttribute('aria-checked', 'true')
     const region = screen.getByRole('region', { name: 'Buyer profile' })
     expect(within(region).queryByLabelText('Priority')).toBeNull()
     expect(within(region).queryByRole('heading', { name: 'Pricing' })).toBeNull()
@@ -558,11 +572,14 @@ describe('how the buyer is sold', () => {
   // #1543: the click counter replaces the ledger counts for a click buyer, the
   // same count buyer_click_check stops offering at. The Pacific day is stated
   // once, in the caps note; the panel shows the date and the count (#1557, L605).
+  // #2324: drawn as a bar beside the box; a day that is not today is named by its
+  // date, and the green "Room under the cap." is gone.
   it('a click buyer shows the clicks against its cap for the date counted, and the Pacific day once on the page', async () => {
     vi.mocked(api.buyerProfiles.usage).mockResolvedValue({ sold_on: 'click', count: 17, date: '2027-09-21', day_zone: 'America/Los_Angeles' })
     await renderWith(clickDoc)
-    expect(await screen.findByText('17 of 50 clicks on 2027-09-21')).toBeInTheDocument()
-    expect(screen.getByText('Room under the cap.')).toBeInTheDocument()
+    expect(await screen.findByText('17 of 50 clicks on Sep 21')).toBeInTheDocument()
+    expect(screen.getByRole('meter')).toHaveAttribute('aria-valuenow', '17')
+    expect(screen.queryByText('Room under the cap.')).toBeNull()
     const region = screen.getByRole('region', { name: 'Buyer profile' })
     expect(within(region).getAllByText(/Pacific/)).toHaveLength(1)
     expect(within(region).getAllByText(/not offered/)).toHaveLength(1)
@@ -571,7 +588,7 @@ describe('how the buyer is sold', () => {
   it('a click buyer at its cap says the cap is reached', async () => {
     vi.mocked(api.buyerProfiles.usage).mockResolvedValue({ sold_on: 'click', count: 50, date: '2027-09-21', day_zone: 'America/Los_Angeles' })
     await renderWith(clickDoc)
-    expect(await screen.findByText('50 of 50 clicks on 2027-09-21')).toBeInTheDocument()
+    expect(await screen.findByText('50 of 50 clicks on Sep 21')).toBeInTheDocument()
     expect(screen.getByText('The cap is reached.')).toBeInTheDocument()
   })
 
@@ -596,7 +613,7 @@ describe('how the buyer is sold', () => {
     const bare: BuyerProfileDocument = { ...doc, is_enabled: false, tiers: [], hourly_lead_cap: null }
     await renderWith(bare, { accept_signals: [] })
     await waitFor(() => expect(api.buyerProfiles.usage).toHaveBeenCalledTimes(1))
-    fireEvent.click(screen.getByRole('radio', { name: 'The click' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Click' }))
     const note = await screen.findByText('The clicks show once the change to the click is saved.')
     expect(note).toHaveAttribute('role', 'status')
     expect(note.className).not.toMatch(/red/)
@@ -826,15 +843,15 @@ describe('how the buyer is sold', () => {
     await renderWith(doc)
     const group = screen.getByRole('radiogroup', { name: 'Sold on' })
     expect(group).toHaveAttribute('aria-disabled', 'true')
-    fireEvent.click(screen.getByRole('radio', { name: 'The click' }))
-    expect(screen.getByRole('radio', { name: 'The offer' })).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(screen.getByRole('radio', { name: 'Click' }))
+    expect(screen.getByRole('radio', { name: 'Offer' })).toHaveAttribute('aria-checked', 'true')
     expect(screen.getByText(/pricing and accept rules are stored/i)).toBeInTheDocument()
   })
 
   it('an offer buyer with nothing stored that the kind governs can become a click buyer, and the save carries it', async () => {
     const bare: BuyerProfileDocument = { ...doc, is_enabled: false, tiers: [], hourly_lead_cap: null }
     const onSave = await renderWith(bare, { accept_signals: [] })
-    fireEvent.click(screen.getByRole('radio', { name: 'The click' }))
+    fireEvent.click(screen.getByRole('radio', { name: 'Click' }))
     expect(screen.queryByRole('heading', { name: 'Pricing' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalledWith({}, 'p1', undefined, expect.objectContaining({ expected_profile_version: 3, profile: expect.objectContaining({ sold_on: 'click' }) })))

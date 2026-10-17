@@ -142,6 +142,38 @@ export function addDisplayWindow(windows: readonly ProfileWindowDocument[], shif
   return [...windows, ...toEastern([next], shift)]
 }
 
+/** The days the hours are open and the one range they share, as drawn in the display zone (#2324, PM-21). */
+export interface SharedHours {
+  days: number[]
+  /** Null when no day is open. */
+  range: Pick<ProfileWindowDocument, 'opens_minute' | 'closes_minute'> | null
+}
+
+/**
+ * The stored windows read as the same hours every day, or null when they are
+ * not: a day with more than one row, or two days with different rows, as drawn
+ * in the display zone. The shared view shows only what this returns, so hours
+ * that differ by day are never flattened into one range by being looked at;
+ * they open in the per day view. A range whose close is not after its open is
+ * still shared, so the editor flags it rather than switching view under the person.
+ */
+export function sharedHoursOf(windows: readonly ProfileWindowDocument[], shift: number): SharedHours | null {
+  const rows = displayWindows(windows, shift)
+  if (rows.length === 0) return { days: [], range: null }
+  const first = rows[0]
+  const days = new Set<number>()
+  for (const r of rows) {
+    if (days.has(r.day_of_week) || r.opens_minute !== first.opens_minute || r.closes_minute !== first.closes_minute) return null
+    days.add(r.day_of_week)
+  }
+  return { days: [...days].sort((a, b) => a - b), range: { opens_minute: first.opens_minute, closes_minute: first.closes_minute } }
+}
+
+/** The Eastern windows that store one range on each of `days`, as drawn in the display zone. */
+export function sharedWindows(days: readonly number[], range: Pick<ProfileWindowDocument, 'opens_minute' | 'closes_minute'>, shift: number): ProfileWindowDocument[] {
+  return toEastern(days.map((day_of_week) => ({ day_of_week, ...range })), shift)
+}
+
 const timeWord = (clock: string) => (clock === '12:00 AM' ? 'midnight' : clock)
 
 /**

@@ -34,7 +34,18 @@ const dollarsToCents = (dollars: number | null): number | null => (dollars === n
  * reset is read from (#2143, PM-10): the reset is said as the hour it falls on in
  * that zone, which moves on the nights the clocks change.
  */
-export function CapsGrid({ value, onChange, errors = {}, soldOn = null, zone = DEFAULT_DISPLAY_TIME_ZONE, nowMs }: { value: CapsValue; onChange: (next: CapsValue) => void; errors?: CapsErrors; soldOn?: SoldOn | null; zone?: DisplayTimeZone; nowMs?: number }) {
+export function CapsGrid({ value, onChange, errors = {}, soldOn = null, zone = DEFAULT_DISPLAY_TIME_ZONE, nowMs, partnerName = 'this buyer', meter }: {
+  value: CapsValue
+  onChange: (next: CapsValue) => void
+  errors?: CapsErrors
+  soldOn?: SoldOn | null
+  zone?: DisplayTimeZone
+  nowMs?: number
+  /** Named in a click buyer's hint: "Empty means Liberty1 is not offered at all." */
+  partnerName?: string
+  /** A click buyer's count against the cap, drawn beside the box (#2324). */
+  meter?: React.ReactNode
+}) {
   const base = useId()
   const patch = (next: Partial<CapsValue>) => onChange({ ...value, ...next })
   const scope = WIRED_POPULATIONS.map((p) => POPULATION_LABELS[p]).join(', ')
@@ -50,15 +61,17 @@ export function CapsGrid({ value, onChange, errors = {}, soldOn = null, zone = D
 
   // A click buyer (#1541) is capped by clicks per day and nothing else: the
   // validator refuses the other three, so they are not offered.
+  // Drawn as the settled design draws it (#2324, PM-21): a narrow box, the count beside it, one hint.
   if (soldOn === 'click') {
     return (
-      <div className="space-y-3">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div className="space-y-1.5">
+        <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
           {cell(`${base}-dl`, CLICK_FIELD_LABELS.daily_lead_cap, errors.dailyLeadCap, (db) => (
-            <NumberInput id={`${base}-dl`} value={value.daily_lead_cap} onChange={(v) => patch({ daily_lead_cap: v })} min={0} step={1} describedBy={db} />
+            <NumberInput id={`${base}-dl`} value={value.daily_lead_cap} onChange={(v) => patch({ daily_lead_cap: v })} min={0} step={1} describedBy={db} className="w-[7.5rem]" />
           ))}
+          {meter && <div className="pb-1.5">{meter}</div>}
         </div>
-        <p id={noteId} className="text-xs text-hint">Once the clicks in a day reach it, the buyer is no longer offered that day. With the box empty the buyer is not offered at all. {clickCountResetSentence(nowMs ?? Date.now(), zone)}</p>
+        <p id={noteId} className="text-xs text-hint">Empty means {partnerName} is not offered at all. {clickCountResetSentence(nowMs ?? Date.now(), zone)}</p>
       </div>
     )
   }

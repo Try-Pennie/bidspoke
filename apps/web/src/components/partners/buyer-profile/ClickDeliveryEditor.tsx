@@ -79,6 +79,7 @@ export function ClickDeliveryEditor({ value, onChange, errors = {} }: {
               <StatePicker
                 idPrefix={`${rowId}-state`}
                 legend={`States for ${shown}`}
+                legendShown
                 value={route.states}
                 onChange={(states) => setRoute(i, { ...route, states })}
                 emptyNote="Every state no other route lists."
