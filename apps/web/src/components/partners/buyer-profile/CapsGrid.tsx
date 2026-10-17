@@ -74,7 +74,7 @@ export function CapsGrid({ value, onChange, errors = {}, soldOn = null, zone = D
       <div className="space-y-1.5">
         <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
           <Field id={`${base}-dl`} label={CLICK_FIELD_LABELS.daily_lead_cap} error={errors.dailyLeadCap}>
-            <NumberInput id={`${base}-dl`} value={value.daily_lead_cap} onChange={(v) => patch({ daily_lead_cap: v })} min={0} step={1} describedBy={[noteId, describedBy(`${base}-dl`, false, Boolean(errors.dailyLeadCap))].filter(Boolean).join(' ')} className="w-[7.5rem]" />
+            <NumberInput id={`${base}-dl`} value={value.daily_lead_cap} onChange={(v) => patch({ daily_lead_cap: v })} min={0} describedBy={[noteId, describedBy(`${base}-dl`, false, Boolean(errors.dailyLeadCap))].filter(Boolean).join(' ')} className="w-[7.5rem]" />
           </Field>
           {meter && <div className="pb-1.5">{meter}</div>}
         </div>
@@ -109,8 +109,8 @@ export function CapsGrid({ value, onChange, errors = {}, soldOn = null, zone = D
         <tbody>
           <tr>
             <th scope="row" className="pr-3 text-left font-normal">Leads</th>
-            {box(hl.id, hl.error, (db) => <NumberInput id={hl.id} aria-label={hl.label} value={value.hourly_lead_cap} onChange={(v) => patch({ hourly_lead_cap: v })} min={0} step={1} placeholder="No cap" describedBy={db} />)}
-            {box(dl.id, dl.error, (db) => <NumberInput id={dl.id} aria-label={dl.label} value={value.daily_lead_cap} onChange={(v) => patch({ daily_lead_cap: v })} min={0} step={1} placeholder="No cap" describedBy={db} />)}
+            {box(hl.id, hl.error, (db) => <NumberInput id={hl.id} aria-label={hl.label} value={value.hourly_lead_cap} onChange={(v) => patch({ hourly_lead_cap: v })} min={0} placeholder="No cap" describedBy={db} />)}
+            {box(dl.id, dl.error, (db) => <NumberInput id={dl.id} aria-label={dl.label} value={value.daily_lead_cap} onChange={(v) => patch({ daily_lead_cap: v })} min={0} placeholder="No cap" describedBy={db} />)}
           </tr>
           <tr>
             <th scope="row" className="pr-3 text-left font-normal">Spend</th>

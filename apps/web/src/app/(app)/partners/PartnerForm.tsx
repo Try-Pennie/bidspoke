@@ -33,7 +33,7 @@ import { clickDeliveryConsequences } from '@/components/partners/buyer-profile/c
 import { profileWithChangedZoneOnly } from '@/components/partners/buyer-profile/display-zone'
 import { Button, Checkbox, ChoiceGroup, Field, FieldError, NumberInput, TextArea, TextInput, describedBy } from '@/components/ui/form'
 import { Toggle } from '@/components/ui/Toggle'
-import { documentToProfile, soldOnSwitchBlocked, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal, type StoredKind } from '@bidspoke/buyer-profile'
+import { documentToProfile, partnerNumberErrors, soldOnSwitchBlocked, validateProfile, type BuyerProfileDocument, type PartnerNumberError, type ProfileError, type Signal, type StoredKind } from '@bidspoke/buyer-profile'
 import { leaveThen, useLeaveGuard, type LeaveRequest } from '@/lib/leave-guard'
 import { changedUnits } from '@/lib/partner-page-merge'
 import { SaveBar, SaveBarDock, type SaveBarState } from '@/components/partners/SaveBar'
@@ -323,9 +323,11 @@ export default function PartnerForm({
   const [offerBuyers, setOfferBuyers] = useState<OfferBuyer[] | undefined>(undefined)
   // A buyer with no saved profile shows the form once the person chooses to set one up (#2324, design frame 20).
   const [profileSetUp, setProfileSetUp] = useState(false)
-  const [profileErrors, setProfileErrors] = useState<ProfileError[]>([])
+  const [profileErrors, setProfileErrors] = useState<(ProfileError | PartnerNumberError)[]>([])
   /** A buyer profile refusal about the partner's click URL, shown on that field (#1546). */
   const clickUrlError = profileErrors.find((e) => e.path === 'clickUrl')?.message ?? null
+  /** A partner number the save refused (#2328), said beside its field. */
+  const numberErrorOf = (field: string): string | null => profileErrors.find((e) => e.code === 'partner_number_invalid' && e.path === field)?.message ?? null
   /**
    * A save refused because someone else saved first (#2134, PM-3): the three
    * halves the merge is made from, who saved, the versions their save left,
@@ -1160,6 +1162,16 @@ export default function PartnerForm({
     // Capture the pre-edit baseline BEFORE we advance it: this is what Undo restores.
     const preEdit = baselineSnapshot.current
 
+    const built = buildPartnerBody(snapshot, bodyCtx)
+    // The partner's numbers are judged by the shared rule the Worker applies again,
+    // before any write and before the profile is judged, so nothing is half saved and each reason sits beside its field (#2328).
+    const numberErrors = partnerNumberErrors(built as unknown as Record<string, unknown>)
+    if (numberErrors.length > 0) {
+      setProfileErrors(numberErrors)
+      setSaveOutcome({ kind: 'failed', message: refusedSentence(problemsOf({ credentialWarning: null, errors: numberErrors }), profile?.sold_on) ?? `Nothing saved: ${numberErrors[0].message}`, retry: 'Save changes' })
+      return 'not_saved'
+    }
+
     // The buyer profile is validated with the shared package before ANY write, so
     // a refused profile leaves the partner record untouched too, and the errors
     // land beside the controls they name (L608).
@@ -1180,7 +1192,6 @@ export default function PartnerForm({
       }
     }
 
-    const built = buildPartnerBody(snapshot, bodyCtx)
     const saveProfileToo = buyer && !!partner && !!profile && profileDirty
     const profileDoc = saveProfileToo ? profile : null
     setCopyWarningText(null)
@@ -1369,7 +1380,9 @@ export default function PartnerForm({
         />
       )}
 
-      <form id={formId} onSubmit={handleSubmit} className="space-y-8">
+      {/* noValidate: every number is judged by the save's own rule (partnerNumberErrors and the
+          profile validator), said beside its field, never by the browser's popup (#2328). */}
+      <form id={formId} onSubmit={handleSubmit} noValidate className="space-y-8">
         {isNew ? (
           // Its own page (design frame 5): what a partner needs before it exists, and
           // nothing more. Everything else is set on its tabs once it is created.
@@ -1564,8 +1577,8 @@ export default function PartnerForm({
                     daily lead cap for buyer selection; this one bounds Bid Group attempts.
                     One line says what both mean (PM-23). */}
                 <div className="grid grid-cols-2 gap-4">
-                  <Field id="partner-daily-attempt-cap" label="Daily attempt cap">
-                    <NumberInput id="partner-daily-attempt-cap" value={dailyCap === '' ? null : Number(dailyCap)} onChange={(v) => setDailyCap(v === null ? '' : String(v))} min={0} step={1} placeholder="No limit" describedBy="partner-limits-hint" />
+                  <Field id="partner-daily-attempt-cap" label="Daily attempt cap" error={numberErrorOf('daily_cap')}>
+                    <NumberInput id="partner-daily-attempt-cap" value={dailyCap === '' ? null : Number(dailyCap)} onChange={(v) => setDailyCap(v === null ? '' : String(v))} min={0} placeholder="No limit" describedBy={['partner-limits-hint', describedBy('partner-daily-attempt-cap', false, Boolean(numberErrorOf('daily_cap')))].filter(Boolean).join(' ')} />
                   </Field>
                   <Field id="partner-min-bid" label="Minimum bid">
                     {/* The dollar sign is a fixed word of the value, so it sits beside the box (Dan, 2026-10-17). */}
@@ -1590,8 +1603,8 @@ export default function PartnerForm({
                     {/* Minutes on screen, seconds in the store (PM-23): MinutesInput holds the
                         conversion, and a box nobody touched saves nothing. */}
                     <div className="grid grid-cols-3 gap-4 pt-1">
-                      <Field id="partner-circuit-threshold" label="Errors">
-                        <NumberInput id="partner-circuit-threshold" value={asNumber(circuitThreshold)} onChange={(v) => setCircuitThreshold(asText(v))} step={1} placeholder="5" describedBy="partner-circuit-hint" />
+                      <Field id="partner-circuit-threshold" label="Errors" error={numberErrorOf('circuit_error_threshold')}>
+                        <NumberInput id="partner-circuit-threshold" value={asNumber(circuitThreshold)} onChange={(v) => setCircuitThreshold(asText(v))} min={0} placeholder="5" describedBy={['partner-circuit-hint', describedBy('partner-circuit-threshold', false, Boolean(numberErrorOf('circuit_error_threshold')))].filter(Boolean).join(' ')} />
                       </Field>
                       <Field id="partner-circuit-window" label="Within">
                         <MinutesInput id="partner-circuit-window" seconds={circuitWindow} onChange={setCircuitWindow} placeholder="1" describedBy="partner-circuit-hint" />
@@ -1620,6 +1633,7 @@ export default function PartnerForm({
                   alertNotRetried={alertPermanent}
                   onAlertNotRetried={setAlertPermanent}
                 />
+                {numberErrorOf('response_classification') && <FieldError alert size="xs" className="mt-1">{numberErrorOf('response_classification')}</FieldError>}
               </Section>
 
               <Section title="Confirmation window">
@@ -1630,8 +1644,8 @@ export default function PartnerForm({
                       Bid Win Confirmation. Confirmations slower than this are rejected (reject due to latency). Leave
                       blank to require a node-level override instead.
                     </p>
-                    <Field id="partner-confirmation-window" label="Confirmation window (ms)" hint="e.g. 5000 = 5 seconds.">
-                      <NumberInput id="partner-confirmation-window" value={asNumber(confirmationWindowMs)} onChange={(v) => { setConfirmationAdded(true); setConfirmationWindowMs(asText(v)) }} step={1} placeholder="(none)" describedBy={describedBy('partner-confirmation-window', true, false)} />
+                    <Field id="partner-confirmation-window" label="Confirmation window (ms)" hint="e.g. 5000 = 5 seconds." error={numberErrorOf('confirmation_window_ms')}>
+                      <NumberInput id="partner-confirmation-window" value={asNumber(confirmationWindowMs)} onChange={(v) => { setConfirmationAdded(true); setConfirmationWindowMs(asText(v)) }} min={0} placeholder="(none)" describedBy={describedBy('partner-confirmation-window', true, Boolean(numberErrorOf('confirmation_window_ms')))} />
                     </Field>
                   </>
                 ) : (
@@ -1702,7 +1716,6 @@ export default function PartnerForm({
                         aria-label={`Minimum bid, floor ${i + 1}`}
                         value={asNumber(f.bid)}
                         onChange={(v) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, bid: asText(v) } : row))}
-                        step={0.01}
                         placeholder="0.00"
                       />
                     </div>

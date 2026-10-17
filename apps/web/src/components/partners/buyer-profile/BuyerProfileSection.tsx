@@ -89,7 +89,8 @@ interface Props {
   profile: BuyerProfileDocument | null
   loadError: string | null
   onProfileChange: (next: BuyerProfileDocument) => void
-  errors: readonly ProfileError[]
+  /** The validator's refusals, and the partner numbers the save refused (#2328), by path. */
+  errors: readonly ShownError[]
   acceptSignals: Signal[]
   onAcceptSignalsChange: (next: Signal[]) => void
   /** The duplicate rules (#1416): decline answers that mean the buyer already holds the lead. On the partner record, beside the accept rules. */
@@ -119,11 +120,14 @@ const SOLD_ON_OPTIONS = SOLD_ON.map((value) => ({ value, label: SOLD_ON_LABELS[v
 /** The zones the hours and reset times can be shown in (#2143, PM-10), by name, never the identifier (L611). */
 const ZONE_OPTIONS = DISPLAY_TIME_ZONES.map((value) => ({ value, label: `${DISPLAY_TIME_ZONE_LABELS[value]} time` }))
 
-function errorFor(errors: readonly ProfileError[], path: string): string | undefined {
+/** A refusal as the section shows it: the profile validator's, or a partner number's (#2328), keyed by path. */
+type ShownError = Pick<ProfileError, 'path' | 'message'>
+
+function errorFor(errors: readonly ShownError[], path: string): string | undefined {
   return errors.find((e) => e.path === path)?.message
 }
 
-function errorsByPath(errors: readonly ProfileError[]): Record<string, string> {
+function errorsByPath(errors: readonly ShownError[]): Record<string, string> {
   const out: Record<string, string> = {}
   for (const e of errors) out[e.path] ??= e.message
   return out
@@ -362,7 +366,9 @@ export function BuyerProfileSection(props: Props) {
   const acceptRefusal = errorFor(errors, 'acceptSignals') ?? errorFor(errors, 'accept_signals') ?? null
   const click = profile?.sold_on === 'click'
   const soldOnError = errorFor(errors, 'soldOn')
-  const routingCodeRefusal = errorFor(errors, 'externalRoutingCode') ?? null
+  // The validator names the routing code by its rule key, the partner number rule by its column (#2328).
+  const routingCodeRefusal = errorFor(errors, 'external_routing_code') ?? errorFor(errors, 'externalRoutingCode') ?? null
+  const statusRefusal = errorFor(errors, 'response_classification') ?? null
   // Where the hours and reset times are shown; unset shows Eastern, the zone they are stored and judged in.
   const zone = profile?.display_time_zone ?? DEFAULT_DISPLAY_TIME_ZONE
   const blackoutNote = blackoutZoneNote(zone)
@@ -434,7 +440,7 @@ export function BuyerProfileSection(props: Props) {
             <PartnerSection title={FIELD_LABELS.priority} region={false}>
               <LiveSectionNote sections={['Priority']} />
               <Field id="bp-priority" label={FIELD_LABELS.priority} labelHidden hint={PRIORITY_DIRECTION} error={errorFor(errors, 'priority')}>
-                <NumberInput id="bp-priority" value={profile.priority} onChange={(v) => patch({ priority: v })} min={1} step={1} describedBy={[describedBy('bp-priority', true, Boolean(errorFor(errors, 'priority'))), offerStanding ? 'bp-priority-standing' : null].filter(Boolean).join(' ')} className="w-[7.5rem]" />
+                <NumberInput id="bp-priority" value={profile.priority} onChange={(v) => patch({ priority: v })} min={1} describedBy={[describedBy('bp-priority', true, Boolean(errorFor(errors, 'priority'))), offerStanding ? 'bp-priority-standing' : null].filter(Boolean).join(' ')} className="w-[7.5rem]" />
               </Field>
               {offerStanding && <p id="bp-priority-standing" className="text-xs text-hint">{offerStanding}</p>}
             </PartnerSection>
@@ -534,7 +540,7 @@ export function BuyerProfileSection(props: Props) {
           <PartnerSection title="Sale">
             <LiveSectionNote sections={['Sale']} />
             <Field id="bp-routing-code" label={FIELD_LABELS.external_routing_code} error={routingCodeRefusal}>
-              <NumberInput id="bp-routing-code" value={externalRoutingCode === '' ? null : Number(externalRoutingCode)} onChange={(v) => onExternalRoutingCodeChange(v === null ? '' : String(v))} min={0} step={1} describedBy={describedBy('bp-routing-code', false, Boolean(routingCodeRefusal))} className="w-[7.5rem]" />
+              <NumberInput id="bp-routing-code" value={externalRoutingCode === '' ? null : Number(externalRoutingCode)} onChange={(v) => onExternalRoutingCodeChange(v === null ? '' : String(v))} min={0} describedBy={describedBy('bp-routing-code', false, Boolean(routingCodeRefusal))} className="w-[7.5rem]" />
             </Field>
           </PartnerSection>
 
@@ -572,6 +578,7 @@ export function BuyerProfileSection(props: Props) {
               <div className="space-y-3">
                 {!click && <AcceptRulesEditor value={acceptSignals} onChange={onAcceptSignalsChange} refusal={acceptRefusal} />}
                 <DeclineRulesEditor value={signalRules} onChange={onSignalRulesChange} />
+                {statusRefusal && <FieldError alert size="xs">{statusRefusal}</FieldError>}
                 <AcceptRulesEditor kind="duplicate" value={duplicateSignals} onChange={onDuplicateSignalsChange} />
               </div>
             </PartnerSection>

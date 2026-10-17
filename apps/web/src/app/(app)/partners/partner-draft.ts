@@ -241,6 +241,17 @@ export interface FormSnapshot {
 }
 
 /** A routing code is a whole number Salesforce recognises or nothing at all: a fraction or a word is null, never a rounded guess (L50). */
+/**
+ * A number box's text as the number typed, or null when it is empty (#2328).
+ * Never rounded or defaulted here: 2.5 stays 2.5 and 0 stays 0, so the save's
+ * shared rule (partnerNumberErrors) refuses it with a reason instead of the
+ * page quietly storing something nobody typed.
+ */
+export function numberOrNull(text: string): number | null {
+  const t = text.trim()
+  return t === '' ? null : Number(t)
+}
+
 export function parseRoutingCode(text: string): number | null {
   const t = text.trim()
   return /^\d+$/.test(t) ? parseInt(t, 10) : null
@@ -378,7 +389,7 @@ export function serializeRules(rules: SignalRules): unknown {
         signals.push(signalFrom(r.field, r.condition, r.value))
       } else if (r.kind === 'status' && (r.code.trim() || r.bodyField.trim())) {
         const obj: Record<string, unknown> = {}
-        if (r.code.trim())      obj.status_code = parseInt(r.code)
+        if (r.code.trim())      obj.status_code = Number(r.code)
         if (r.bodyField.trim()) obj.body_field   = r.bodyField
         if (r.condition === 'present')        obj.present  = true
         else if (r.condition === 'in')        obj.in       = parseList(r.value)
@@ -404,7 +415,7 @@ export function buildPartnerBody(snap: FormSnapshot, ctx: { slug: string; isExis
     click_url: snap.clickUrl || null,
     is_active: snap.isActive,
     priority: parseInt(snap.priority) || 0,
-    daily_cap: snap.dailyCap ? parseInt(snap.dailyCap) : null,
+    daily_cap: numberOrNull(snap.dailyCap),
     min_bid: snap.minBid ? parseFloat(snap.minBid) : null,
     bid_formula: snap.bidFormula || null,
     bid_resolver_type: snap.resolverType,
@@ -415,13 +426,13 @@ export function buildPartnerBody(snap: FormSnapshot, ctx: { slug: string; isExis
     last_probe_response: snap.lastProbeResponse,
     dedup_endpoint: snap.dedupEndpoint || null,
     circuit_enabled: snap.circuitEnabled,
-    circuit_error_threshold: parseInt(snap.circuitThreshold) || 5,
+    circuit_error_threshold: numberOrNull(snap.circuitThreshold) ?? 5,
     circuit_window_seconds: parseInt(snap.circuitWindow) || 60,
     circuit_cooldown_seconds: parseInt(snap.circuitCooldown) || 300,
     response_classification: serializeRules(snap.signalRules),
     accept_signals: snap.acceptSignals,
     duplicate_signals: snap.duplicateSignals,
-    external_routing_code: parseRoutingCode(snap.externalRoutingCode),
+    external_routing_code: numberOrNull(snap.externalRoutingCode),
     alert_config: {
       transient_errors: { alert: snap.alertTransient },
       permanent_errors: { alert: snap.alertPermanent },
@@ -429,6 +440,6 @@ export function buildPartnerBody(snap: FormSnapshot, ctx: { slug: string; isExis
     sell_off_offer_title: snap.sellOffOfferTitle || null,
     sell_off_offer_details: snap.sellOffOfferDetails || null,
     sub_account_min_bids: floorsToMap(snap.subAccountFloors),
-    confirmation_window_ms: snap.confirmationWindowMs ? parseInt(snap.confirmationWindowMs) : null,
+    confirmation_window_ms: numberOrNull(snap.confirmationWindowMs),
   }
 }

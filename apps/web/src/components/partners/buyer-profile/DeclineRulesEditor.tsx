@@ -67,7 +67,7 @@ export function DeclineRulesEditor({ value, onChange }: { value: SignalRules; on
             ) : (
               <>
                 <div className="flex min-w-0 gap-1.5">
-                  <NumberInput id={`${rowId}-code`} value={rule.code === '' ? null : Number(rule.code)} onChange={(v) => update(rule.id, { ...rule, code: v === null ? '' : String(v) })} step={1} placeholder="Status" aria-label={`${name} HTTP status`} className="w-20 shrink-0" />
+                  <NumberInput id={`${rowId}-code`} value={rule.code === '' ? null : Number(rule.code)} onChange={(v) => update(rule.id, { ...rule, code: v === null ? '' : String(v) })} placeholder="Status" aria-label={`${name} HTTP status`} className="w-20 shrink-0" />
                   <TextInput id={`${rowId}-body-field`} value={rule.bodyField} onChange={(v) => update(rule.id, { ...rule, bodyField: v })} placeholder="body field" mono aria-label={`${name} body field`} className="min-w-0 flex-1" />
                 </div>
                 <Select id={`${rowId}-op`} aria-label={`${name} operator`} value={rule.condition} options={STATUS_OPTIONS} onChange={(c) => update(rule.id, { ...rule, condition: c as StatusCondition })} />

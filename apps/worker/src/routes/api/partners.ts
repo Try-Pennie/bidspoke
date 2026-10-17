@@ -17,7 +17,7 @@ import { PARTNER_TYPES, isPartnerType, type PartnerType } from '../../lib/partne
 import { partnerCredentialMissing } from '../../lib/partner-credential'
 import { dailyCapObjectName } from '../../lib/daily-cap-name'
 import { clickCountIfClickSold, refuseClickUrlWithoutProspectId, refuseSwitchAwayFromClick } from './buyer-profiles'
-import { documentToProfile, parseProfileDocument, registryPathOf, validateProfile, type Signal } from '@bidspoke/buyer-profile'
+import { documentToProfile, parseProfileDocument, partnerNumberErrors, registryPathOf, validateProfile, type PartnerNumberError, type Signal } from '@bidspoke/buyer-profile'
 import { parseLiveMissReport, type PartnerPageChange, type PartnerPageVersions } from '@bidspoke/partner-page-live'
 
 type Variables = AuthVariables
@@ -94,6 +94,15 @@ function withCredentialWarning<T>(env: Env, row: T): T & { credential_warning: s
 // #306. One refusal shared by POST and PUT, so the create and update paths cannot
 // disagree about which partner types exist. Returns the message rather than the
 // response so each caller keeps its own status shape.
+/**
+ * The 422 for numbers the partner record cannot hold (#2328), from the one rule
+ * the partners page applies before it sends (partnerNumberErrors), or null.
+ */
+function numberRefusal(body: Readonly<Record<string, unknown>>): { error: string; message: string; errors: PartnerNumberError[] } | null {
+  const errors = partnerNumberErrors(body)
+  return errors.length === 0 ? null : { error: errors[0].code, message: errors.map((e) => e.message).join(' '), errors }
+}
+
 function partnerTypeRefusal(body: PartnerBody): string | null {
   if (body.partner_type === undefined) return null
   if (isPartnerType(body.partner_type)) return null
@@ -215,6 +224,8 @@ partners.post('/', async (c) => {
   const createTypeRefusal = partnerTypeRefusal(body)
   if (createTypeRefusal) return c.json({ error: createTypeRefusal }, 400)
   if (namesRetiredField(body)) return c.json({ error: 'field_not_editable', field: RETIRED_FIELD, message: RETIRED_FIELD_MESSAGE }, 400)
+  const createNumbers = numberRefusal(body as unknown as Record<string, unknown>)
+  if (createNumbers) return c.json(createNumbers, 422)
 
   // slug must be lowercase URL-safe
   const slug = body.slug.toLowerCase().replace(/[^a-z0-9-]/g, '-')
@@ -300,6 +311,8 @@ partners.put('/:id', async (c) => {
   const updateTypeRefusal = partnerTypeRefusal(body)
   if (updateTypeRefusal) return c.json({ error: updateTypeRefusal }, 400)
   if (namesRetiredField(body)) return c.json({ error: 'field_not_editable', field: RETIRED_FIELD, message: RETIRED_FIELD_MESSAGE }, 400)
+  const updateNumbers = numberRefusal(body as unknown as Record<string, unknown>)
+  if (updateNumbers) return c.json(updateNumbers, 422)
 
   const { data: partner, error: fetchError } = await supabase
     .from('partner_configs')
@@ -461,6 +474,8 @@ partners.put('/:id/page', async (c) => {
     const refusal = { code: 'field_not_editable', path: RETIRED_FIELD, field: RETIRED_FIELD, message: RETIRED_FIELD_MESSAGE }
     return c.json({ error: refusal.code, message: RETIRED_FIELD_MESSAGE, errors: [refusal] }, 422)
   }
+  const pageNumbers = numberRefusal(patch)
+  if (pageNumbers) return c.json(pageNumbers, 422)
 
   const { data: stored, error: fetchError } = await supabase
     .from('partner_configs')

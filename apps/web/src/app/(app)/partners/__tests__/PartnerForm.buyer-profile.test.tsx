@@ -286,6 +286,16 @@ describe('the Buyer profile section', () => {
     expect(onSave.mock.calls[0][0]).toEqual({ external_routing_code: 4 })
   })
 
+  // #2328: a fractional routing code used to be cleared to none on save, silently.
+  it('a fractional routing code is refused beside its field rather than saved as none', async () => {
+    const onSave = await renderBuyer()
+    fireEvent.change(screen.getByLabelText('Salesforce routing code'), { target: { value: '2.5' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    expect(await screen.findByText('Nothing saved: fix Salesforce routing code in Buyer profile.')).toBeInTheDocument()
+    expect(fieldErrorOf('Salesforce routing code')).toHaveTextContent('The routing code is a whole number from 0 to 32,767.')
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
   it('an enabled profile whose partner has no routing code is refused by the field name, and nothing is saved', async () => {
     const onSave = await renderBuyer()
     fireEvent.change(screen.getByLabelText('Salesforce routing code'), { target: { value: '' } })
