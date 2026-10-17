@@ -99,7 +99,8 @@ export function ClickDeliveryEditor({ value, onChange, errors = {} }: {
                   legend={`States for ${shown}`}
                   legendShown
                   value={route.states}
-                  onChange={(states) => setRoute(i, { ...route, states })}
+                  // Chips on screen stay on screen while it is edited, even when the last state is unticked.
+                  onChange={(states) => { setOpened((o) => new Set(o).add(i)); setRoute(i, { ...route, states }) }}
                   emptyNote={CATCH_ALL}
                   emptyIsWarning={false}
                 />
