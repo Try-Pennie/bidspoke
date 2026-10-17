@@ -148,7 +148,6 @@ BEGIN
   END IF;
 
   IF v_changes = '{}'::jsonb THEN
-    PERFORM set_config('bidspoke.sc_updated_by_actor', '', true);
     RETURN NULL;
   END IF;
 
@@ -180,8 +179,6 @@ BEGIN
     RAISE EXCEPTION 'connection_audit_failed' USING ERRCODE = 'BP503', DETAIL = SQLSTATE || ': ' || SQLERRM;
   END;
 
-  -- The captured updated_by belongs to this statement only.
-  PERFORM set_config('bidspoke.sc_updated_by_actor', '', true);
   RETURN NULL;
 END
 $$;
@@ -189,6 +186,30 @@ $$;
 CREATE TRIGGER service_connections_audit
   AFTER INSERT OR UPDATE OR DELETE ON public.service_connections
   FOR EACH ROW EXECUTE FUNCTION public.service_connections_audit();
+
+-- The captured updated_by belongs to one statement. It is cleared by statement
+-- triggers, not by the row audit: every BEFORE row trigger of a statement runs
+-- before any AFTER row trigger, so a row audit that cleared it would leave the
+-- later rows of a multi row UPDATE labelled direct_sql. Cleared before each
+-- UPDATE statement (so nothing earlier in the transaction can leak in) and
+-- after it (row level AFTER triggers fire before statement level ones).
+CREATE OR REPLACE FUNCTION public.service_connections_clear_actor()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  PERFORM set_config('bidspoke.sc_updated_by_actor', '', true);
+  RETURN NULL;
+END
+$$;
+
+CREATE TRIGGER service_connections_clear_actor_before
+  BEFORE UPDATE ON public.service_connections
+  FOR EACH STATEMENT EXECUTE FUNCTION public.service_connections_clear_actor();
+
+CREATE TRIGGER service_connections_clear_actor_after
+  AFTER UPDATE ON public.service_connections
+  FOR EACH STATEMENT EXECUTE FUNCTION public.service_connections_clear_actor();
 
 -- ── 4. The audited delete ────────────────────────────────────────────────────
 

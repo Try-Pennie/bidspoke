@@ -210,6 +210,34 @@ BEGIN
 END
 $do$;
 
+-- ── F2. One statement updating several rows names its actor on every row ─────
+-- Every BEFORE row trigger of a statement runs before any AFTER row trigger, so
+-- an actor captured per row and cleared by the first audit row would leave the
+-- later rows of the same statement labelled direct_sql (lessons review of #2331).
+DO $do$
+DECLARE
+  n_named int;
+  n_all int;
+BEGIN
+  INSERT INTO public.service_connections (organization_id, service_type, auth_type, cf_secret_key, config, updated_by)
+  VALUES ('11111111-1111-1111-1111-11111112331a', 'salesforce', 'oauth', 'CONN_TEST_2331', '{}', '22222222-2222-2222-2222-22222222331a');
+  DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
+  UPDATE public.service_connections SET schema_synced_at = now(), updated_by = '22222222-2222-2222-2222-22222222331a'
+  WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
+  SELECT count(*), count(*) FILTER (WHERE changed_by = '22222222-2222-2222-2222-22222222331a' AND NOT changes ? '_source')
+  INTO n_all, n_named FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
+  IF n_all <> 2 OR n_named <> 2 THEN RAISE EXCEPTION 'a two row app UPDATE named its actor on % of % audit rows', n_named, n_all; END IF;
+  -- And a hand run statement after it in the same transaction names nobody.
+  DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
+  UPDATE public.service_connections SET schema_synced_at = now() WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
+  IF EXISTS (SELECT 1 FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a' AND changed_by IS NOT NULL) THEN
+    RAISE EXCEPTION 'a hand run statement inherited the actor of the statement before it in the same transaction';
+  END IF;
+  DELETE FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-11111112331a' AND service_type = 'salesforce';
+  INSERT INTO sca_cases VALUES ('one statement updating several rows names its actor on every row, and it does not leak');
+END
+$do$;
+
 -- ── G. No token or ciphertext anywhere ───────────────────────────────────────
 DO $do$
 DECLARE
@@ -269,7 +297,7 @@ DO $do$
 DECLARE
   n int := (SELECT count(*) FROM sca_cases);
 BEGIN
-  IF n <> 8 THEN RAISE EXCEPTION 'expected 8 cases, % ran', n; END IF;
+  IF n <> 9 THEN RAISE EXCEPTION 'expected 9 cases, % ran', n; END IF;
   RAISE NOTICE 'service_connections_audit.test.sql: % cases passed', n;
 END
 $do$;

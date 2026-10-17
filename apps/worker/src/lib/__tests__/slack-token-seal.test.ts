@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { encryptSecret, secretKeys } from '../secret-crypto'
 import { parseSlackConnection, resolveSlackConnection } from '../slack-connection'
 import { registerSlackKeyRing, slackKeyRingFor } from '../slack-key-ring'
-import { getSlackConnection, lookupSlackConnection, readSlackConnectionForLead, sendFailureAlert } from '../slack'
+import { getSlackConnection, lookupSlackConnection, readSlackConnectionForLead, sendFailureAlert, sendSlackTokenUnreadableAlert } from '../slack'
 import { readEverySlackConnection } from '../alert-fanout'
 import { createSupabaseClient } from '../supabase'
 import { registerScheduledSlack } from '../scheduled-slack'
@@ -163,6 +163,25 @@ describe('the request path reads a sealed row', () => {
     if (read.kind !== 'live') return
     expect(read.connections.get(ORG)?.bot_token).toBe(SEALED_TOKEN)
     expect(read.connections.get('org-plain')?.bot_token).toBe(PLAIN_TOKEN)
+  })
+})
+
+describe('the Slack token page names a fix that changes the state it reports (L111)', () => {
+  async function sentText(reason: 'slack_token_undecryptable' | 'slack_key_ring_missing'): Promise<string> {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, ts: '1.1' }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    await sendSlackTokenUnreadableAlert({ bot_token: 'copy-bot-token' }, '#a', { reason, fellBackToPlaintext: false, appUrl: 'https://app.example' })
+    return String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body)
+  }
+
+  it('an undecryptable token: save the connection again, which seals it under the current key', async () => {
+    expect(await sentText('slack_token_undecryptable')).toContain('save the Slack connection again')
+  })
+
+  it('a missing key ring: a code fix, and says that saving again does not help', async () => {
+    const text = await sentText('slack_key_ring_missing')
+    expect(text).not.toContain('save the Slack connection again')
+    expect(text).toContain('saving the connection again does not change it')
   })
 })
 

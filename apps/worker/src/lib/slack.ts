@@ -3249,7 +3249,14 @@ export async function sendSlackTokenUnreadableAlert(
     ...(payload.repeat ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: payload.repeat }] }] : []),
     {
       type: 'section',
-      text: { type: 'mrkdwn', text: `*How to fix:* save the Slack connection again on the Integrations page, which seals the token under the current key.\n<${payload.appUrl}/integrations|Open Integrations>` },
+      text: {
+        type: 'mrkdwn',
+        // Each fix must change the state it reports (L111): re-saving re-seals an
+        // unreadable token, but cannot give a client its missing key ring.
+        text: payload.reason === 'slack_key_ring_missing'
+          ? '*How to fix:* this needs a code fix in the Worker, so that the database client reading the connection is built with its key ring (lib/supabase.ts). The stored token is fine, and saving the connection again does not change it.'
+          : `*How to fix:* save the Slack connection again on the Integrations page, which seals the token under the current key.\n<${payload.appUrl}/integrations|Open Integrations>`,
+      },
     },
   ]
   return (await postMessage(slack.bot_token, channel, blocks, `Slack token cannot be read (${payload.reason})`)) !== null
