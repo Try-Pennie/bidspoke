@@ -345,8 +345,8 @@ Response `201` (the only time the key is shown in full):
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/connections` | List connections (no credentials returned). |
-| POST | `/api/connections` | Create or replace a connection. |
-| DELETE | `/api/connections/:service_type` | Remove a connection. |
+| POST | `/api/connections` | Refused: `410` with `error: "connections_moving"` (#2331). It stored credentials as a Worker secret, and every secret change deploys a new version of the bidding Worker. |
+| DELETE | `/api/connections/:service_type` | Remove a connection. It leaves the connection's Worker secret in place (#2331). |
 | POST | `/api/connections/:service_type/sync-schema` | Trigger a schema refresh. |
 
 `:service_type` is one of `salesforce`, `supabase`, `snowflake`.
