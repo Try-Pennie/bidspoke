@@ -85,13 +85,15 @@ function make(f = fakeJoin(), clock = fakeClock()) {
   const statuses: LiveStatus[] = []
   const notices: unknown[] = []
   const lives: boolean[] = []
+  const partitionRefusals: number[] = []
   const channel = new PartnerLiveChannel({
     join: f.join, clock, organizationId: ORG,
     onStatus: (s) => statuses.push(s),
     onNotice: (n) => notices.push(n),
     onLive: (reconnected) => lives.push(reconnected),
+    onPartitionRefused: () => partitionRefusals.push(clock.now()),
   })
-  return { channel, f, clock, statuses, notices, lives, last: () => statuses[statuses.length - 1] }
+  return { channel, f, clock, statuses, notices, lives, partitionRefusals, last: () => statuses[statuses.length - 1] }
 }
 
 const notice = { partner_id: PARTNER, partner_version: 8, profile_version: 3, save_id: null, client_id: null, kind: 'partner', changed_columns: ['daily_cap'], direct: false }
@@ -128,6 +130,38 @@ describe('PartnerLiveChannel (#2135)', () => {
     await flush()
     expect(t.last().kind).toBe('live')
     expect(t.channel.missingPartitionRefusals).toBe(1)
+  })
+
+  // #2288: the page reports it, once per outage however many retries it takes,
+  // so the miss data holds what the page saw without a report per second.
+  it('signals the first MissingPartition refusal of an outage once, and again in the next outage', async () => {
+    const t = make()
+    const partition = refused('MissingPartition: Realtime was unable to find the expected messages partition', true)
+    t.channel.start()
+    t.f.answer(partition)
+    await flush()
+    await t.clock.advance(MISSING_PARTITION_RETRY_MS)
+    t.f.answer(partition)
+    await flush()
+    expect(t.channel.missingPartitionRefusals).toBe(2)
+    expect(t.partitionRefusals).toHaveLength(1)
+    await t.clock.advance(MISSING_PARTITION_RETRY_MS)
+    t.f.answer(admitted(t.f))
+    await flush()
+    t.f.drop('CLOSED')
+    await flush()
+    await t.clock.advance(REJOIN_DELAYS_MS[0])
+    t.f.answer(partition)
+    await flush()
+    expect(t.partitionRefusals).toHaveLength(2)
+  })
+
+  it('control: a refusal for any other reason signals nothing', async () => {
+    const t = make()
+    t.channel.start()
+    t.f.answer(refused('Unauthorized'))
+    await flush()
+    expect(t.partitionRefusals).toEqual([])
   })
 
   it('after an admitted join drops, says paused from the moment it dropped, rejoins, and on rejoining asks for a refetch', async () => {

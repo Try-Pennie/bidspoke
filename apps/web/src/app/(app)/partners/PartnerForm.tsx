@@ -51,7 +51,7 @@ import { refreshKeyOf } from './workflow-values-text'
 import { LiveNotesContext, LivePageNotes, LiveSectionNote, LiveStatusLine, PartnerLiveContext, SYSTEM_CLOCK } from '@/components/partners/live/PartnerLive'
 import { usePartnerPageLive } from './use-partner-page-live'
 import {
-  askedOnly, classifyNotice, directChangeNotes, liveConflictSentence, liveMissReport, liveTakenSentence, probeFindsGap, savedByName, tabClientId, updatedByNotes,
+  askedOnly, classifyNotice, directChangeNotes, liveConflictSentence, liveMissReport, liveTakenSentence, partitionRefusalReport, probeFindsGap, savedByName, tabClientId, updatedByNotes,
   PROBE_EVERY_MS, type DirectNote, type HeldVersions, type SectionNote,
 } from '@/lib/partner-live-page'
 import type { PartnerPageNotice, PartnerPageVersions } from '@bidspoke/partner-page-live'
@@ -867,6 +867,12 @@ export default function PartnerForm({
   const liveChannel = usePartnerPageLive(isNew ? null : liveDeps, partner?.organization_id ?? null, {
     onNotice: handleNotice,
     onCatchUp: () => { void refetchTheirs(null) },
+    // The page could hear nothing while the day's partition was missing (#2288).
+    onPartitionRefused: () => {
+      if (!partner) return
+      api.partners.reportLiveMiss(partitionRefusalReport(partner.id, heldVersions(), lastNoticeAt.current, liveNow()))
+        .catch((err: unknown) => console.error(`[partners live] the missing partition report failed: ${errorSentence(err, 'unknown error')}`))
+    },
   })
   const liveStatusRef = useRef(liveChannel.status)
   liveStatusRef.current = liveChannel.status

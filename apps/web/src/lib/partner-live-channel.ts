@@ -56,6 +56,8 @@ export interface LiveChannelOptions {
   onNotice: (notice: PartnerPageNotice) => void
   /** The channel became Live; reconnected is false only for the first join. The page refetches then, since anything sent while it was not Live was missed. */
   onLive: (reconnected: boolean) => void
+  /** The first join refused for a missing partition in an outage (#2288), once however many retries follow, so the page can report it. */
+  onPartitionRefused?: () => void
 }
 
 export class PartnerLiveChannel {
@@ -77,6 +79,8 @@ export class PartnerLiveChannel {
   private outageSince = 0
   private lastReason = ''
   private everLive = false
+  /** Whether this outage's missing partition refusal was already signalled. */
+  private partitionSignalled = false
 
   constructor(private readonly opts: LiveChannelOptions) {}
 
@@ -94,6 +98,7 @@ export class PartnerLiveChannel {
     this.outageSince = this.opts.clock.now()
     this.failedAttempts = 0
     this.lastReason = ''
+    this.partitionSignalled = false
     this.setStatus({ kind: 'connecting', since: this.outageSince })
     this.armDeadline()
     void this.join()
@@ -192,8 +197,13 @@ export class PartnerLiveChannel {
       this.opts.onLive(reconnected)
       return
     }
-    if (answer.missingPartition) this.missingPartitionRefusals++
-    else this.otherRefusals++
+    if (answer.missingPartition) {
+      this.missingPartitionRefusals++
+      if (!this.partitionSignalled) {
+        this.partitionSignalled = true
+        this.opts.onPartitionRefused?.()
+      }
+    } else this.otherRefusals++
     const wait = answer.missingPartition
       ? MISSING_PARTITION_RETRY_MS
       : REJOIN_DELAYS_MS[Math.min(this.failedAttempts++, REJOIN_DELAYS_MS.length - 1)]
@@ -205,6 +215,7 @@ export class PartnerLiveChannel {
     this.leaveCurrent()
     this.outageSince = this.opts.clock.now()
     this.failedAttempts = 0
+    this.partitionSignalled = false
     this.setStatus({ kind: 'reconnecting', since: this.outageSince, reason })
     this.armDeadline()
     this.retryAfter(REJOIN_DELAYS_MS[0], reason)
