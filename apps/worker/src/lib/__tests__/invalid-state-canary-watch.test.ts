@@ -215,6 +215,17 @@ describe('the invalid state canary watch', () => {
     expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ['1 field holds a different value from the one the run sent: PDFlow_4__c.'] })
   })
 
+  it("a direct run that sent no stamp and whose Submission holds a later run's link did not land: only a relay post is ever left out as overwritten", async () => {
+    const { Bidspoke_Write__c: _stamp, ...unstamped } = sentBody(RUN_A)
+    const step = nativeStep(RUN_A, SUB_A, { input: { resolved: { operation: 'update', object: 'Submission__c', record_id: SUB_A, body: unstamped } } })
+    const { d } = deps({
+      steps: [step],
+      records: { [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_1__c: link(RUN_B) }), [LEAD_A]: ok(landedLead(RUN_A)) },
+    })
+    const report = await runInvalidStateWatch(d)
+    expect(report.native).toEqual([{ kind: 'not_landed', executionId: RUN_A, problems: ["The Submission's Bidspoke run link is not this run's."] }])
+  })
+
   it('a mismatched field is named by field, never by value', async () => {
     const { d, posted } = deps({
       steps: [nativeStep(RUN_A, SUB_A)],

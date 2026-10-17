@@ -277,6 +277,8 @@ async function readRecord(read: Read, what: string, path: string): Promise<Recor
 
 /** One Submission write to read back: the run, its step, the record and the PATCH body as Salesforce received it. */
 interface SubmissionWrite {
+  /** A direct write is the canary's subject and is never left out; only a relay post can be judged overwritten. */
+  via: 'direct' | 'relay'
   executionId: string
   stepNamespace: string
   recordId: string
@@ -291,7 +293,7 @@ function nativeWrite(step: WatchedStep): SubmissionWrite | { unchecked: string }
   if (!sent || typeof recordId !== 'string' || !isSalesforceRecordId(recordId)) {
     return { unchecked: 'The run did not record the Submission it wrote or what it sent.' }
   }
-  return { executionId: step.execution_id, stepNamespace: WATCHED_STEP, recordId, sent }
+  return { via: 'direct', executionId: step.execution_id, stepNamespace: WATCHED_STEP, recordId, sent }
 }
 
 /**
@@ -320,7 +322,7 @@ function relayWrite(step: RelayStep): SubmissionWrite | { unchecked: string } | 
   const renames: Readonly<Record<string, string>> = RELAY_RENAMES
   const sent: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(posted)) if (!omitted.has(k)) sent[Object.hasOwn(renames, k) ? renames[k] : k] = v
-  return { executionId: step.execution_id, stepNamespace: step.step_namespace, recordId, sent }
+  return { via: 'relay', executionId: step.execution_id, stepNamespace: step.step_namespace, recordId, sent }
 }
 
 /**
@@ -354,9 +356,10 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string): Promi
   const current = sub.body
   const link = current[RUN_LINK_FIELD]
 
-  // With no stamp to say whose write the record holds, a later run's link means
-  // this write was overwritten since, and what the record holds is that run's.
-  if (!stamped) {
+  // A relay post has no stamp to say whose write the record holds, so a later
+  // run's link means it was overwritten since, and what the record holds is that
+  // run's. A direct write is never left out: one without its stamp is judged below.
+  if (w.via === 'relay' && !stamped) {
     const later = laterRunInLink(link, expectedLink, executionId)
     if (later) return { verdict: { kind: 'superseded', executionId, byExecutionId: later }, stop: false }
   }
