@@ -139,13 +139,14 @@ describe('createFailOpenCopier', () => {
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 
-  it('caps what it holds, dropping the oldest loudly', async () => {
+  it('caps what it holds, dropping the oldest loudly, with how many', async () => {
     failures = Infinity
     const { c, errors } = copier(2)
     await c.copy(supabase(), [row('ev-1'), row('ev-2'), row('ev-3')])
     expect(c.held().map((r) => r.event_id)).toEqual(['ev-2', 'ev-3'])
-    expect(errors.join('\n')).toMatch(/dropped .*event=ev-1/)
+    expect(errors.join('\n')).toMatch(/dropped 1 held cron guard fail-open, the oldest event=ev-1 .*2 already held.*1 dropped by this isolate so far/)
   })
+
 })
 
 describe('the tail handler copies fail-opens', () => {

@@ -26,14 +26,51 @@
  * that tick, so the doubling stays measurable in Workers Logs. Both are also
  * handed to `onGuardEvent`, which counts them so the hourly check in
  * cron-guard-watch.ts can page (#1904).
+ *
+ * Every delivery also logs one `[cron-once] delivery` line saying what it
+ * decided (ran, took_over, failed_open, skipped). The tail worker copies it into
+ * cron_tick_deliveries, the record the hourly check reads to page on a tick that
+ * two deliveries both ran (#2284): a fail-open whose tick another delivery also
+ * ran, or a takeover of a run that was still alive. The second exists because a
+ * lease lapses whenever renewals stop reaching the object for TICK_LEASE_STALE_MS,
+ * alive or not: a delivery with the SAME scheduled time then takes the tick over
+ * while the first run carries on (2026-10-17 09:00 UTC, the daily tick's renewals
+ * failed six times in a row, 09:00:12 to 09:00:37). A delivery with a different
+ * scheduled time is always a duplicate, whatever the lease.
  */
 import type { TickClaimResult } from '../durable-objects/alert-claim'
 import { TICK_LEASE_RENEW_MS, TICK_LEASE_STALE_MS } from '../durable-objects/alert-claim'
-import { CLAIM_DEADLINE_MS, raceDeadline } from './alert-claim'
+import { raceDeadline } from './alert-claim'
 import { formatErr } from './format-error'
 
-/** The same short deadline the alert claim uses; well inside any job's allowance. */
-export const CRON_TICK_DEADLINE_MS = CLAIM_DEADLINE_MS
+/**
+ * How long a delivery waits for the tick claim object, its own deadline rather
+ * than the alert claim's 2 s (#2284).
+ *
+ * Measured 2026-10-17 in Workers Logs over 7 days: the object's own handler for
+ * /tick-claim takes 26 ms at the median and 151 ms at p99, 755 ms the slowest,
+ * so a claim that misses a deadline is lost on the way to or from the object,
+ * never inside it. Of the misses at 2 s, the 15:15 UTC claim on 2026-10-17
+ * reached its object 4 to 6 s after it was sent, the 09:00 UTC one inside 2 s
+ * (its answer came back late), and the 2026-10-16 15:22 UTC one more than 25 s
+ * later. Those misses ran about 4 a day, each running a tick unguarded. 5 s
+ * covers the slow trips that do arrive and stays far inside every tick's
+ * allowance: the minute jobs' own deadline is 50 s (MINUTE_JOB_DEADLINE_MS).
+ * The renewal and the close of a tick wait the same time, since each is the
+ * same trip to the same object.
+ */
+export const CRON_TICK_DEADLINE_MS = 5_000
+
+/**
+ * Each delivery's decision is logged once on a line starting with this, as JSON
+ * (#2284). The tail worker copies it into cron_tick_deliveries
+ * (apps/worker-tail/src/deliveries.ts), the durable record the hourly check
+ * reads to see a tick that two deliveries both ran.
+ */
+export const DELIVERY_LINE_PREFIX = '[cron-once] delivery '
+
+/** What a delivery did with its tick, as the delivery line says it. */
+export type DeliveryDecision = 'ran' | 'took_over' | 'failed_open' | 'skipped'
 
 export interface CronTickEvent {
   cron: string
@@ -109,6 +146,11 @@ async function decide(
 ): Promise<Decision> {
   const label = `cron="${event.cron}" scheduled=${iso(event.scheduledTime)}`
   const clock = options.now ?? Date.now
+  // Minted first, so a delivery that fails open before it can ask is named too.
+  const holder = (options.holder ?? (() => crypto.randomUUID()))()
+  const said = (outcome: DeliveryDecision) => {
+    console.log(`${DELIVERY_LINE_PREFIX}${JSON.stringify({ delivery: holder, outcome, cron: event.cron, scheduled: iso(event.scheduledTime) })}`)
+  }
   const newEvent = (): GuardEventInfo => ({ id: (options.eventId ?? (() => crypto.randomUUID()))(), atMs: clock() })
   const report = (kind: GuardEventKind, info: GuardEventInfo) => {
     try {
@@ -122,6 +164,7 @@ async function decide(
     // The tail worker parses this exact shape (apps/worker-tail, #2166), so
     // `event=<id>` stays straight after `FAILED OPEN`.
     console.error(`[cron-once] FAILED OPEN event=${info.id} ${label}: ${why}, running without the claim`)
+    said('failed_open')
     report('failed_open', info)
     return { run: true, holder: null }
   }
@@ -129,7 +172,6 @@ async function decide(
   if (!Number.isFinite(event.scheduledTime)) return failOpen('the event carries no scheduled time')
 
   const deadlineMs = options.deadlineMs ?? CRON_TICK_DEADLINE_MS
-  const holder = (options.holder ?? (() => crypto.randomUUID()))()
   const key = cronTickKey(event.cron, event.scheduledTime)
   const ask = (afterWait = false) => raceDeadline(async () => {
     const res = await ns.get(ns.idFromName(key)).fetch('https://do/tick-claim', {
@@ -173,13 +215,16 @@ async function decide(
       `[cron-once] skipped duplicate ${label} holder=${verdict.holder} holder_scheduled=${iso(verdict.holder_scheduled_time)}` +
         ` holder_status=${verdict.holder_status} holder_age_ms=${verdict.holder_age_ms} duplicates=${verdict.duplicates} event=${info.id}`,
     )
+    said('skipped')
     report('skipped_duplicate', info)
     return { run: false }
   }
   if (verdict.reason === 'retry') {
     console.warn(`[cron-once] took over a run that did not finish ${label} holder=${holder} previous_holder=${verdict.holder} previous_age_ms=${verdict.holder_age_ms}`)
+    said('took_over')
   } else {
     console.log(`[cron-once] running ${label} holder=${holder}`)
+    said('ran')
   }
   return { run: true, holder }
 }
