@@ -12,7 +12,7 @@
  * their own, so a route that uses only a button here does not load their Radix
  * code (#2137, measured on /dashboard and the canvas).
  */
-import { useRef, type KeyboardEvent, type ReactNode } from 'react'
+import { useRef, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Loader2 } from 'lucide-react'
 
 // ── Field ─────────────────────────────────────────────────────────────────────
@@ -89,8 +89,12 @@ interface TextInputProps {
    * form around it, so committing a field never also submits the form (#1552, L596).
    */
   onEnter?: () => void
-  /** Called when the box loses focus (a list that writes each row as it is left). */
-  onBlur?: () => void
+  /**
+   * Called when the box loses focus (a list that writes each row as it is
+   * left), with where focus went (`relatedTarget`), so a row's own remove mark
+   * can be told from leaving the row.
+   */
+  onBlur?: (e: FocusEvent<HTMLInputElement>) => void
   /**
    * Text to tint wherever it is typed, as a placeholder the value carries (the
    * click URL's `{prospect_id}`, #2327). The tint is drawn on a copy of the text

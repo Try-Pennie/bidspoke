@@ -75,6 +75,25 @@ describe('the sub-account IDs, as drawn', () => {
     expect(onAdd).toHaveBeenCalledTimes(1)
   })
 
+  // Lessons review on the PR: pressing a box's own minus moves focus out of the
+  // box first, which must not write what was typed (nor, on a saved row, a change).
+  it('the minus on a new box with text in it closes the box and writes nothing', async () => {
+    const { onAdd } = setup()
+    await userEvent.click(screen.getByRole('button', { name: 'Add sub-account ID' }))
+    await userEvent.type(screen.getByLabelText('New sub-account ID'), NEW)
+    await userEvent.click(screen.getByRole('button', { name: 'Remove new sub-account ID' }))
+    expect(screen.queryByLabelText('New sub-account ID')).toBeNull()
+    expect(onAdd).not.toHaveBeenCalled()
+  })
+
+  it('the minus on a saved ID being edited removes it, without first writing the edit', async () => {
+    const { onChange, onRemove } = setup()
+    await userEvent.type(screen.getByLabelText('Sub-account ID 2'), 'x')
+    await userEvent.click(screen.getByRole('button', { name: 'Remove sub-account ID 2' }))
+    expect(onChange).not.toHaveBeenCalled()
+    expect(onRemove).toHaveBeenCalledWith('k2')
+  })
+
   it('leaving a new box empty takes it away and writes nothing', async () => {
     const { onAdd } = setup()
     await userEvent.click(screen.getByRole('button', { name: 'Add sub-account ID' }))

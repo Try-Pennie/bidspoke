@@ -11,7 +11,7 @@
  * after a failure so Enter tries it again. A saved ID left emptied shows its
  * saved value again: an ID is taken away only by its minus.
  */
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type FocusEvent } from 'react'
 import { Plus } from 'lucide-react'
 import { Button, FieldError, TextInput } from '@/components/ui/form'
 import { RemoveButton } from './RemoveButton'
@@ -44,6 +44,13 @@ type Working = { row: string; doing: 'Adding' | 'Changing' | 'Removing' } | null
 
 let nextDraft = 0
 const draftId = () => `draft-${++nextDraft}`
+/**
+ * Whether focus left a box for that row's own minus: pressing the minus moves
+ * focus out of the box before the click lands, and that is the person taking
+ * the row away, never committing what is typed in it (lessons review, #2327).
+ */
+const toOwnMinus = (e: FocusEvent<HTMLInputElement>, minusLabel: string) =>
+  e.relatedTarget instanceof HTMLElement && e.relatedTarget.getAttribute('aria-label') === minusLabel
 const message = (err: unknown, fallback: string) => (err instanceof Error && err.message ? err.message : fallback)
 
 export function SubAccountIdList({ ids, onAdd, onRemove, onChange }: Props) {
@@ -99,7 +106,11 @@ export function SubAccountIdList({ ids, onAdd, onRemove, onChange }: Props) {
     if (await run(draft.id, 'Adding', () => onAdd(typed), 'Failed to add the sub-account ID') === 'done') drop()
   }
 
+  const draftMinus = (j: number) => (drafts.length > 1 ? `Remove new sub-account ID ${j + 1}` : 'Remove new sub-account ID')
+
   const remove = (id: SubAccountId) => {
+    // Removing a row drops anything typed into it.
+    setEdits((prev) => { const next = { ...prev }; delete next[id.key]; return next })
     void run(id.key, 'Removing', () => onRemove(id.key), 'Failed to remove the sub-account ID')
   }
 
@@ -113,7 +124,7 @@ export function SubAccountIdList({ ids, onAdd, onRemove, onChange }: Props) {
             value={edits[id.key] ?? id.uuid}
             onChange={(v) => { setEdits((prev) => ({ ...prev, [id.key]: v })); setError(null) }}
             onEnter={() => { void commitSaved(id) }}
-            onBlur={() => { void commitSaved(id) }}
+            onBlur={(e) => { if (!toOwnMinus(e, `Remove sub-account ID ${i + 1}`)) void commitSaved(id) }}
             disabled={working?.row === id.key}
             mono
             className="text-xs"
@@ -129,14 +140,14 @@ export function SubAccountIdList({ ids, onAdd, onRemove, onChange }: Props) {
             value={draft.text}
             onChange={(v) => { setDrafts((prev) => prev.map((d) => (d.id === draft.id ? { ...d, text: v } : d))); setError(null) }}
             onEnter={() => { void commitDraft(draft, false) }}
-            onBlur={() => { void commitDraft(draft, true) }}
+            onBlur={(e) => { if (!toOwnMinus(e, draftMinus(j))) void commitDraft(draft, true) }}
             disabled={working?.row === draft.id}
             mono
             className="text-xs"
           />
           {/* Nothing is written for a box not committed yet, so its minus only closes it. */}
           <RemoveButton
-            label={drafts.length > 1 ? `Remove new sub-account ID ${j + 1}` : 'Remove new sub-account ID'}
+            label={draftMinus(j)}
             disabled={working?.row === draft.id}
             onClick={() => setDrafts((prev) => prev.filter((d) => d.id !== draft.id))}
           />
