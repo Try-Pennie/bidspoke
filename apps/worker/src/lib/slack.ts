@@ -3563,15 +3563,15 @@ export async function sendPartnerPageLiveAlert(
   const broken = payload.problem === 'channel'
   const header = broken ? 'Partners page live updates are not arriving' : 'Bidspoke cannot check partners page live updates'
   const checks = payload.checks
-  // Says how often it missed, never "since" alone: an alert that stood 12 hours
+  // Says how often it failed, never "since" alone: an alert that stood 12 hours
   // read as a total outage while two of every three runs received (#2263).
   const missed = checks && checks.runs > 1
-    ? `The delivery check missed its own test notice in ${checks.misses} of ${checks.runs} runs since ${etTime(Date.parse(payload.since))} on the partners page channel.`
-    : `The delivery check missed its own test notice on the partners page channel at ${etTime(Date.parse(payload.since))}.`
+    ? `The delivery check failed in ${checks.misses} of ${checks.runs} runs since ${etTime(Date.parse(payload.since))} on the partners page channel.`
+    : `The delivery check failed on the partners page channel at ${etTime(Date.parse(payload.since))}.`
   const lines = broken
     ? [
         `${missed} ` +
-          "While it misses, someone editing a partner may not see another person's save appear, and finds out about it only when they save. " +
+          "While it fails, someone editing a partner may not see another person's save appear, and finds out about it only when they save. " +
           `The last check found: ${reason}.` +
           (isIdleShutdownRefusal(payload.reason)
             ? " Realtime words a join this way when it arrives while Realtime is closing this project's idle connection, so it is not a pool size setting in Bidspoke. " +

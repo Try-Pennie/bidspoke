@@ -36,7 +36,7 @@ describe('the partners page live alert', () => {
     await sendPartnerPageLiveAlert({ bot_token: 't' }, '#ops', {
       problem: 'channel', reason: 'no notice arrived within 10 seconds', since: '2026-10-16T01:45:00.000Z', checks: { runs: 12, misses: 4 }, repeat: null, at: Date.parse('2026-10-16T02:40:00Z'),
     })
-    expect(text()).toMatch(/missed its own test notice in 4 of 12 runs since Oct 15, 9:45 PM EDT/)
+    expect(text()).toMatch(/The delivery check failed in 4 of 12 runs since Oct 15, 9:45 PM EDT/)
     expect(text()).not.toMatch(/has not received/)
   })
 
