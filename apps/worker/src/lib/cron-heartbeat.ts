@@ -168,6 +168,20 @@ export const CRON_JOBS: CronJob[] = [
       'archived executions are no longer being deleted once they pass 13 months, so unredacted SSNs, dates of birth, addresses and credit reports accumulate in Snowflake with no upper bound',
   },
   {
+    // The canary's daily read-back (#2173). Removed with it by the phase 6
+    // change (#2175): see docs/main-flow-relay-port.md.
+    id: 'invalid-state-canary-watch',
+    label: 'Main Flow invalid state write report',
+    triggerCron: '0 13 * * *',
+    // 24h cadence, 2h slack, matching the other daily jobs.
+    staleMs: 26 * H,
+    // About 19 runs a day, at most two Salesforce reads each, one at a time and
+    // each bounded at 12 s; the first unanswered read stops the rest.
+    maxRunMs: 30 * MIN,
+    dependents:
+      "nobody is told each morning whether Main Flow's direct invalid state writes to Salesforce landed, so a lost write shows only when somebody opens the record (#2173)",
+  },
+  {
     id: 'partner-reachability',
     label: 'Partner reachability probe',
     triggerCron: '*/5 * * * *',
