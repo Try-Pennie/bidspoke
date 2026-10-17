@@ -37,10 +37,10 @@
  * new sweeps (Phases 5, 6 and 10 of #1689) are their callers.
  */
 import {
-  CONNECTION_COPY_STATES, LEDGER_METHODS, OBSERVATION_OUTCOMES, OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES, SF_BUDGET_SOURCES,
-  SF_LEASE_OUTCOMES, SF_LEASE_PURPOSES, TRIGGER_KINDS,
-  type ConnectionCopyState, type LedgerMethod, type ObservationOutcome, type OpsSweep, type OverlapRule, type SfBudgetSource,
-  type SfLeaseOutcome, type SfLeasePurpose, type TriggerKind,
+  CONNECTION_COPY_STATES, LEDGER_METHODS, OBSERVATION_OUTCOMES, OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES, RESOURCE_WAIT_CAUSES,
+  SF_BUDGET_SOURCES, SF_LEASE_OUTCOMES, SF_LEASE_PURPOSES, TRIGGER_KINDS,
+  type ConnectionCopyState, type HolderFailedReason, type LedgerMethod, type ObservationOutcome, type OpsSweep, type OverlapRule,
+  type ResourceWaitCause, type SfBudgetSource, type SfLeaseOutcome, type SfLeasePurpose, type TriggerKind,
 } from './run-vocabulary'
 import {
   OPS_LANE_READ_ONLY_RPCS, OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_READ_ONLY_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS,
@@ -319,11 +319,19 @@ export async function extendRunLease(
   return data
 }
 
+/**
+ * How a holder ends its claim. A resource_wait suspend (#2334) names what it
+ * waited on, sent as p_error; the database ends the run failed with
+ * resource_wait_exceeded instead once the wait is past 24 hours, so read
+ * runStatus rather than assuming suspended. A holder cannot fail a run for an
+ * engine only reason (ENGINE_FAILED_REASONS, finding F122).
+ */
 export type CompleteOutcome =
   | { outcome: 'done' }
-  | { outcome: 'failed'; reason?: 'max_compute_exceeded' | 'max_steps_exceeded' | 'max_state_exceeded'; error?: string }
+  | { outcome: 'failed'; reason?: HolderFailedReason; error?: string }
   | { outcome: 'retry'; error?: string; notBefore?: Date }
   | { outcome: 'suspend'; reason: 'continue' | 'wake'; notBefore: Date }
+  | { outcome: 'suspend'; reason: 'resource_wait'; cause: ResourceWaitCause; notBefore: Date }
   | { outcome: 'needs_human'; reason: 'lease_expired_after_send' | 'send_outcome_unknown'; error?: string }
   | { outcome: 'dead'; reason: 'workflow_inactive' | 'workflow_deleted' | 'halted_by_rule' }
 
@@ -341,13 +349,16 @@ export async function completeRunRequest(
   client: OpsSupabaseClient, organizationId: OrganizationId, runRequestId: string, claimToken: string, end: CompleteOutcome, options?: OpsRpcOptions,
 ): Promise<CompletedRun> {
   const name = 'complete_run_request'
+  if ('cause' in end && !(RESOURCE_WAIT_CAUSES as readonly string[]).includes(end.cause)) {
+    throw new OpsWriteError(`${name}: ${end.cause} is not a resource wait cause`)
+  }
   const row = oneRow(name, await callOpsRpc(client, name, withoutUndefined({
     p_organization_id: organizationId,
     p_run_request_id: runRequestId,
     p_claim_token: claimToken,
     p_outcome: end.outcome,
     p_reason: 'reason' in end ? end.reason : undefined,
-    p_error: 'error' in end ? end.error : undefined,
+    p_error: 'cause' in end ? end.cause : 'error' in end ? end.error : undefined,
     p_not_before: 'notBefore' in end ? iso(end.notBefore) : undefined,
   }), options))
   const outcome = field(name, row, 'outcome', oneOf(['completed', 'already_completed', 'claim_lost', 'not_found'] as const), 'a complete outcome')
@@ -364,6 +375,8 @@ export interface SweepResult {
   retried: number
   needsHuman: number
   dead: number
+  /** Ended failed: a fourth lapse with no send, lease_lapsed_repeatedly (#2334). */
+  failed: number
   /** A full page was taken: call again until false. */
   more: boolean
 }
@@ -376,6 +389,7 @@ export async function sweepExpiredLeases(client: OpsSupabaseClient, limit: numbe
     retried: field(name, row, 'retried', isInt, 'a count'),
     needsHuman: field(name, row, 'needs_human', isInt, 'a count'),
     dead: field(name, row, 'dead', isInt, 'a count'),
+    failed: field(name, row, 'failed', isInt, 'a count'),
     more: field(name, row, 'more', isBool, 'true or false'),
   }
 }

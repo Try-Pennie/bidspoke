@@ -15,7 +15,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { organizationIdFrom } from '../ops-db'
-import { OpsWriteTimeoutError, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type WorkflowCopy, type WorkflowCopyInput } from '../ops-writes'
+import { OpsWriteTimeoutError, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult, type WorkflowCopy, type WorkflowCopyInput } from '../ops-writes'
 import type { OpsSweep } from '../run-vocabulary'
 import { runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts } from '../tick'
 
@@ -74,6 +74,7 @@ function fake(opts: {
   copies?: WorkflowCopy[]
   fetch?: () => Promise<unknown>
   sweepOwned?: boolean
+  leases?: SweepResult
   failing?: Partial<Record<keyof OpsTickDb, Error>>
   observed?: (o: ScheduleObservation) => 'recorded' | 'already_recorded'
   dispatchFails?: (item: DispatchItem) => boolean
@@ -96,7 +97,7 @@ function fake(opts: {
     observations,
     async now() { fail('now'); return DB_NOW },
     async claimSweep(sweep: OpsSweep): Promise<SweepClaim> { fail('claimSweep'); calls.push(`claim:${sweep}`); return { owned: opts.sweepOwned ?? true, lastStartedAt: null, lastOwner: 'another-tick' } },
-    async sweepLeases() { fail('sweepLeases'); return { requeued: 0, retried: 0, needsHuman: 0, dead: 0, more: false } },
+    async sweepLeases() { fail('sweepLeases'); return opts.leases ?? { requeued: 0, retried: 0, needsHuman: 0, dead: 0, failed: 0, more: false } },
     async expireRuns() { fail('expireRuns'); return { expired: 0, more: false } },
     async queueDisagreements() {
       fail('queueDisagreements')
@@ -221,6 +222,12 @@ describe('failure boundaries', () => {
     expect(f.db.calls).not.toContain('queueDisagreements')
     expect(report.counts.sweeps_stood_down).toBe(3)
     expect(report.outcome).toBe('ok')
+  })
+
+  it('counts every run the lease sweep moved, the runs it ended failed included (#2334)', async () => {
+    const f = fake({ leases: { requeued: 1, retried: 2, needsHuman: 3, dead: 4, failed: 5, more: false } })
+    const report = await runOpsTick(f.ports)
+    expect(report.counts.leases_swept).toBe(15)
   })
 
   it('a statement past its deadline is reported as possibly committed, and every other job still runs', async () => {

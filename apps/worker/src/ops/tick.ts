@@ -184,7 +184,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
         }
         for (let page = 0; page < s.maxPages; page++) {
           const more = s.sweep === 'lease_expiry'
-            ? await db.sweepLeases(s.pageLimit).then((r) => { bump(counts, 'leases_swept', r.requeued + r.retried + r.needsHuman + r.dead); return r.more })
+            ? await db.sweepLeases(s.pageLimit).then((r) => { bump(counts, 'leases_swept', r.requeued + r.retried + r.needsHuman + r.dead + r.failed); return r.more })
             : await db.expireRuns(s.pageLimit).then((r) => { bump(counts, 'runs_expired', r.expired); return r.more })
           if (!more) break
         }
