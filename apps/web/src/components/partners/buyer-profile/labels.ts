@@ -16,6 +16,7 @@ export const FIELD_LABELS: Record<string, string> = {
   debt_min: 'Debt minimum',
   debt_max: 'Debt maximum',
   loan_amount_min: 'Loan amount minimum',
+  collections_max_percent: 'Collections at most',
   hourly_lead_cap: 'Leads per hour',
   daily_lead_cap: 'Leads per day',
   hourly_spend_cap_cents: 'Spend per hour',
@@ -203,6 +204,8 @@ export function formatProfileValue(path: string, value: unknown): string {
   if (value === null || value === undefined) return 'none'
   if (path === 'sold_on' && typeof value === 'string' && value in SOLD_ON_LABELS) return SOLD_ON_LABELS[value as SoldOn]
   if (path.endsWith('_cents') && typeof value === 'number') return formatCents(value)
+  // #2268: the cap is a whole percent of the lead's own debt.
+  if (path === 'collections_max_percent' && typeof value === 'number') return `${value}% of debt`
   const row = parseRowPath(path)
   const dotted = row ? formatDottedRowValue(row, value) : null
   if (dotted !== null) return dotted
