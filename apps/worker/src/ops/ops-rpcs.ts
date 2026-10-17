@@ -18,7 +18,7 @@
  * never mix, because a name is only meaningful against its own database.
  */
 
-/** Calls that act within one organization: each takes p_organization_id and matches it. */
+/** Writes that act within one organization: each takes p_organization_id and matches it. */
 export const OPS_ORGANIZATION_RPCS = [
   'enqueue_run_request',
   'start_run_execution',
@@ -30,6 +30,14 @@ export const OPS_ORGANIZATION_RPCS = [
   'set_run_request_kept',
   // The minute cron's (#1949).
   'record_schedule_observation',
+  // The ops connections' and Salesforce pool's (#2334).
+  'record_connection_tombstone',
+  'record_connection_check',
+  'record_connection_needs_reauth',
+  'record_connection_reauth_cleared',
+  'record_measured_identity',
+  'acquire_sf_lease',
+  'release_sf_lease',
 ] as const
 
 /**
@@ -46,10 +54,25 @@ export const OPS_LANE_RPCS = [
   // The minute cron's (#1949): a sweep's interval, and the saved workflow copies, which span organizations.
   'claim_ops_sweep',
   'save_workflow_copies',
+  // The ops connections' and Salesforce pool's (#2334): the served copies span
+  // organizations, and the purge, the lease sweep and a Salesforce org's budget
+  // reading belong to none.
+  'save_connection_copies',
+  'purge_expired_connection_tombstones',
+  'sweep_sf_leases',
+  'record_sf_budget_reading',
 ] as const
 
-/** Read only functions (STABLE in the database, checked by run_engine_schema.test.sql). */
-export const OPS_READ_ONLY_RPCS = ['run_queue_disagreements', 'ops_now', 'workflow_copies', 'due_queue_depth'] as const
+/**
+ * Read only functions (STABLE in the database, checked by run_engine_schema.test.sql
+ * and connection_storage.test.sql). Lane wide ones take no organization;
+ * organization scoped ones take p_organization_id and answer only that
+ * organization's rows (#2334: one connection's copy, and one organization's
+ * connection statuses).
+ */
+export const OPS_LANE_READ_ONLY_RPCS = ['run_queue_disagreements', 'ops_now', 'workflow_copies', 'due_queue_depth'] as const
+export const OPS_ORGANIZATION_READ_ONLY_RPCS = ['connection_copy', 'connection_status'] as const
+export const OPS_READ_ONLY_RPCS = [...OPS_LANE_READ_ONLY_RPCS, ...OPS_ORGANIZATION_READ_ONLY_RPCS] as const
 
 export const OPS_MUTATING_RPCS = [...OPS_ORGANIZATION_RPCS, ...OPS_LANE_RPCS] as const
 
