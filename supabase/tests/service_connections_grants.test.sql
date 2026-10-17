@@ -110,8 +110,10 @@ BEGIN
   INSERT INTO public.organizations (id, name, slug) VALUES ('11111111-1111-1111-1111-111111112331', 'SCG Org', 'scg-org-2331') ON CONFLICT (id) DO NOTHING;
   DELETE FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-111111112331';
 
-  INSERT INTO public.service_connections (organization_id, service_type, auth_type, cf_secret_key, config, credential_enc, sealed_for)
-  VALUES ('11111111-1111-1111-1111-111111112331', 'slack', 'oauth', '', '{"default_channel":"#a"}', 'placeholder-ciphertext', 'bidding_ring');
+  -- Named, not left to default to 'slack': the row is flipped to ops_key below,
+  -- and the alert name is reserved from ops rows (#2332).
+  INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for)
+  VALUES ('11111111-1111-1111-1111-111111112331', 'slack', 'scg-row', 'oauth', '', '{"default_channel":"#a"}', 'placeholder-ciphertext', 'bidding_ring');
 
   refused := false;
   BEGIN

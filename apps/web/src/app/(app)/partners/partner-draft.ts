@@ -100,7 +100,7 @@ export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
   partnerField('alert_config', 'Errors', 'Alerts', 'bid_group'),
   partnerField('accept_signals', 'Outcome rules', SECTION_LABELS.accept_signals, 'buyer_profile'),
   partnerField('duplicate_signals', 'Outcome rules', SECTION_LABELS.duplicate_signals, 'buyer_profile'),
-  partnerField('external_routing_code', 'Outcome rules', FIELD_LABELS.external_routing_code, 'buyer_profile'),
+  partnerField('external_routing_code', 'Sale', FIELD_LABELS.external_routing_code, 'buyer_profile'),
   profileField('sold_on', 'Sold on', FIELD_LABELS.sold_on),
   profileField('is_enabled', 'Enabled', FIELD_LABELS.is_enabled),
   profileField('priority', 'Priority', FIELD_LABELS.priority),

@@ -14,26 +14,54 @@ const rows: UnresolvedSale[] = [
 ]
 
 describe('UnresolvedSalesList', () => {
-  it('renders one row per sale with the lead, the payout, when it was reserved and what the buyer answered', () => {
+  // #2325, PM-22: cards like the held clicks, with a lead sentence, each button
+  // followed by what it does before it is pressed, Free the slot destructive at rest.
+  it('renders a card per sale under a lead sentence: the lead, when it was reserved, the payout and what the buyer answered', () => {
     render(<UnresolvedSalesList rows={rows} total={2} onSettle={vi.fn()} outcomes={{}} />)
-    const items = screen.getAllByRole('row').slice(1)
+    expect(screen.getByText('2 sales have no outcome. Each slot stays reserved until a person settles it.')).toBeInTheDocument()
+    expect(screen.queryByRole('table')).toBeNull()
+    const items = screen.getAllByRole('listitem')
     expect(items).toHaveLength(2)
     expect(items[0]).toHaveTextContent('lead-1')
     expect(items[0]).toHaveTextContent('$21.90')
-    expect(items[0]).toHaveTextContent('HTTP 200, no rule matched')
-    expect(items[1]).toHaveTextContent('HTTP 504')
+    expect(items[0]).toHaveTextContent('Tripoint answered HTTP 200, no rule matched.')
+    expect(items[1]).toHaveTextContent('Tripoint answered HTTP 504.')
   })
 
-  it('a confirmation names the consequence of the row it is on, then settles that row', async () => {
+  it('says when each slot was reserved in the profile\'s display zone, naming it', () => {
+    const { rerender } = render(<UnresolvedSalesList rows={[rows[0]]} total={1} onSettle={vi.fn()} outcomes={{}} />)
+    expect(screen.getByRole('listitem')).toHaveTextContent('Sep 20, 11:30 AM EDT')
+    rerender(<UnresolvedSalesList rows={[rows[0]]} total={1} onSettle={vi.fn()} outcomes={{}} zone="America/Los_Angeles" />)
+    expect(screen.getByRole('listitem')).toHaveTextContent('Sep 20, 8:30 AM PDT')
+    // An unreadable time is shown as given, never as a made up date (formatInZone's own guard).
+    rerender(<UnresolvedSalesList rows={[{ ...rows[0], reserved_at: 'undefined' }]} total={1} onSettle={vi.fn()} outcomes={{}} />)
+    expect(within(screen.getByRole('listitem')).getByText('undefined')).toBeInTheDocument()
+  })
+
+  it('says what each button does before it is pressed, and Free the slot looks destructive', () => {
+    render(<UnresolvedSalesList rows={[rows[0]]} total={1} onSettle={vi.fn()} outcomes={{}} />)
+    expect(screen.getByText('1 sale has no outcome. Its slot stays reserved until a person settles it.')).toBeInTheDocument()
+    expect(screen.getByText('Tripoint has it. Counts as sold for $21.90 today.')).toBeInTheDocument()
+    expect(screen.getByText('Tripoint does not have it. Frees one slot and counts nothing.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Free the slot' }).className).toMatch(/btn-danger/)
+    expect(screen.getByRole('button', { name: 'Count as sold' }).className).not.toMatch(/btn-danger/)
+  })
+
+  it('a sale no answer arrived for says so in a sentence of its own', () => {
+    render(<UnresolvedSalesList rows={[{ ...rows[0], http_status: null }]} total={1} onSettle={vi.fn()} outcomes={{}} />)
+    expect(screen.getByText('No answer arrived from Tripoint.')).toBeInTheDocument()
+  })
+
+  it('a confirmation names the consequence of the card it is on, then settles that sale', async () => {
     const onSettle = vi.fn().mockResolvedValue(undefined)
     render(<UnresolvedSalesList rows={rows} total={2} onSettle={onSettle} outcomes={{}} />)
-    const first = screen.getAllByRole('row')[1]
+    const first = screen.getAllByRole('listitem')[0]
     fireEvent.click(within(first).getByRole('button', { name: /count as sold/i }))
     expect(within(first).getByText('Counts as sold to Tripoint for $21.90 today.')).toBeInTheDocument()
     fireEvent.click(within(first).getByRole('button', { name: /^confirm/i }))
     expect(onSettle).toHaveBeenCalledWith('sale-1', 'accepted')
 
-    const second = screen.getAllByRole('row')[2]
+    const second = screen.getAllByRole('listitem')[1]
     fireEvent.click(within(second).getByRole('button', { name: /free the slot/i }))
     expect(within(second).getByText('Frees one slot and counts nothing.')).toBeInTheDocument()
     fireEvent.click(within(second).getByRole('button', { name: /^confirm/i }))
@@ -59,11 +87,11 @@ describe('UnresolvedSalesList', () => {
   it('cancelling a confirmation settles nothing', () => {
     const onSettle = vi.fn()
     render(<UnresolvedSalesList rows={rows} total={2} onSettle={onSettle} outcomes={{}} />)
-    const first = screen.getAllByRole('row')[1]
+    const first = screen.getAllByRole('listitem')[0]
     fireEvent.click(within(first).getByRole('button', { name: /count as sold/i }))
     fireEvent.click(within(first).getByRole('button', { name: /cancel/i }))
     expect(onSettle).not.toHaveBeenCalled()
-    expect(within(first).queryByText(/Counts as sold/)).toBeNull()
+    expect(within(first).queryByText(/^Counts as sold/)).toBeNull()
   })
 
   it('shows each row\'s own outcome: working, done with what happened, failed with why', () => {

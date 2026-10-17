@@ -12,9 +12,11 @@
  * held click (#1552), which takes the unresolved queue's place because a click
  * buyer never reserves in the ledger.
  *
- * Ordered for the reader (L609): Enabled, Sold on, Priority, Eligibility,
- * Hours, Pricing and Caps first, then the click and sale sections, outcome
- * rules, blackout dates last. Every fact once (L605): the scope
+ * Ordered as the settled design orders it (L609, #2325): a click buyer is
+ * Enabled, Sold on, Eligibility, Hours, Caps, Click delivery, Sale, Held
+ * clicks, Blackout dates; an offer buyer is Enabled, Sold on, Priority,
+ * Eligibility, Hours, Pricing, Caps, Sale, Unresolved sales, Outcome rules,
+ * Blackout dates. Every fact once (L605): the scope
  * of the caps is said in the grid, the other sellers in the usage panel, the
  * priority direction on the priority field.
  *
@@ -27,6 +29,12 @@
  * buyer's cap as a narrow box with its count as a bar. A buyer with no saved
  * profile says it is not offered leads through buyer selection, with Set up a
  * buyer profile, until the person sets one up.
+ *
+ * Click delivery to Blackout dates, Pricing, an offer buyer's caps and
+ * Unresolved sales are drawn as the design draws them (#2325, PM-22, frames 1,
+ * 13 and 19): flat click routes, Sale its own section, outcome rules as rows
+ * for an offer buyer, one Engine leads pricing table, the caps as a table,
+ * unresolved sales as cards, and blackout dates as a list with weekdays.
  */
 import { useEffect, useState } from 'react'
 import { DEFAULT_DISPLAY_TIME_ZONE, DISPLAY_TIME_ZONE_LABELS, DISPLAY_TIME_ZONES, isDisplayTimeZone, PRIORITY_DIRECTION, SALE_RECORD_LABELS, SOLD_ON, salesforceStandingOf, type BuyerProfileDocument, type ProfileError, type SaleWrites, type Signal } from '@bidspoke/buyer-profile'
@@ -37,9 +45,9 @@ import { errorSentence } from '@/lib/error-sentence'
 import { Button, ChoiceGroup, Field, FieldError, MoneyInput, NumberInput, describedBy, type OutcomeState } from '@/components/ui/form'
 import { Toggle } from '@/components/ui/Toggle'
 import { Select } from '@/components/ui/Select'
-import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
 import { AcceptRulesEditor } from './AcceptRulesEditor'
 import { BlackoutDatesEditor } from './BlackoutDatesEditor'
+import { DeclineRulesEditor } from './DeclineRulesEditor'
 import { BuyerUsagePanel, type BuyerUsage } from './BuyerUsagePanel'
 import { ClickUsagePanel, type ClickUsage } from './ClickUsagePanel'
 import { CapsGrid, type CapsErrors } from './CapsGrid'
@@ -110,12 +118,6 @@ const SOLD_ON_OPTIONS = SOLD_ON.map((value) => ({ value, label: SOLD_ON_LABELS[v
 
 /** The zones the hours and reset times can be shown in (#2143, PM-10), by name, never the identifier (L611). */
 const ZONE_OPTIONS = DISPLAY_TIME_ZONES.map((value) => ({ value, label: `${DISPLAY_TIME_ZONE_LABELS[value]} time` }))
-
-const DECLINE_SECTION = SIGNAL_SECTIONS.filter((s) => s.cat === 'rejection').map((s) => ({
-  ...s,
-  label: 'Decline when any of',
-  desc: 'The buyer said no. The sale moves on to the next buyer. Main Flow\'s Bid Group reads these rules too.',
-}))
 
 function errorFor(errors: readonly ProfileError[], path: string): string | undefined {
   return errors.find((e) => e.path === path)?.message
@@ -287,7 +289,7 @@ export function BuyerProfileSection(props: Props) {
   const markSent = (row: HeldClick, generation: number, leadId: string | null) =>
     release(row.id, 'Marking it sent', async () => {
       const r = await api.heldClicks.markSent(row.id, generation, leadId)
-      patchHeld(row.id, soldPatch(r.generation, leadId, r.salesforce, r.list_cleared))
+      patchHeld(row.id, { ...soldPatch(r.generation, leadId, r.salesforce, r.list_cleared), counted: r.count !== null })
       return markSentMessage(r, leadId, partnerName)
     })
   const retrySalesforce = (row: HeldClick) =>
@@ -366,6 +368,9 @@ export function BuyerProfileSection(props: Props) {
   const blackoutNote = blackoutZoneNote(zone)
 
   const offerStanding = priorityStanding(partnerName, offerBuyers, profile?.is_enabled ?? false)
+  const caps = { hourly_lead_cap: profile?.hourly_lead_cap ?? null, daily_lead_cap: profile?.daily_lead_cap ?? null, hourly_spend_cap_cents: profile?.hourly_spend_cap_cents ?? null, daily_spend_cap_cents: profile?.daily_spend_cap_cents ?? null }
+  const anyCap = Object.values(caps).some((v) => v !== null)
+  const storedRulesOnClick = signalRules.rejection.length > 0 || duplicateSignals.length > 0
   // A buyer with no saved profile is not offered leads through buyer selection, and says so until the person sets one up (#2324).
   const noProfile = profile !== null && (profile.version ?? 0) === 0 && !setUp
   const clickMeter = usage === null && usageError === null ? (
@@ -492,15 +497,16 @@ export function BuyerProfileSection(props: Props) {
           <PartnerSection title="Caps">
             <LiveSectionNote sections={['Caps']} />
             <CapsGrid
-              value={{ hourly_lead_cap: profile.hourly_lead_cap, daily_lead_cap: profile.daily_lead_cap, hourly_spend_cap_cents: profile.hourly_spend_cap_cents, daily_spend_cap_cents: profile.daily_spend_cap_cents }}
-              onChange={(caps) => patch(caps)}
+              value={caps}
+              onChange={(next) => patch(next)}
               errors={capErrors}
               soldOn={profile.sold_on}
               zone={zone}
               partnerName={partnerName}
               meter={click ? clickMeter : undefined}
             />
-            {click ? null : usage === null && usageError === null ? (
+            {/* An offer buyer's counts against its caps, shown only while a cap is set: with none there is nothing to count against (#2325). */}
+            {click || !anyCap ? null : usage === null && usageError === null ? (
               <p role="status" className="text-xs text-hint">Reading the usage counts…</p>
             ) : usageError === null && usage !== null && profile.sold_on !== null && usage.sold_on !== profile.sold_on ? (
               // An unsaved change of kind (#1557): nothing is wrong, the route answers the saved kind.
@@ -509,19 +515,12 @@ export function BuyerProfileSection(props: Props) {
               <BuyerUsagePanel
                 usage={usage?.sold_on === 'offer' ? usage : null}
                 error={usageError}
-                caps={{ hourly_lead_cap: profile.hourly_lead_cap, daily_lead_cap: profile.daily_lead_cap, hourly_spend_cap_cents: profile.hourly_spend_cap_cents, daily_spend_cap_cents: profile.daily_spend_cap_cents }}
+                caps={caps}
                 otherSellers={otherSellers}
                 partnerName={partnerName}
               />
             )}
           </PartnerSection>
-
-          {/* Beside the caps, where a click buyer's count shows (#1552). */}
-          {click && (
-            <PartnerSection title="Held clicks">
-              <HeldClicksPanel partnerName={partnerName} zone={zone} held={held} error={heldError} outcomes={heldOutcomes} onMarkSent={markSent} onFree={free} onClear={clear} onRetrySalesforce={retrySalesforce} onSetLeadId={setLeadId} />
-            </PartnerSection>
-          )}
 
           {/* Where a click buyer's clicks are posted and the reply that counts as sold (#1639). */}
           {click && (
@@ -531,28 +530,21 @@ export function BuyerProfileSection(props: Props) {
             </PartnerSection>
           )}
 
-          <PartnerSection title="Outcome rules">
-            <LiveSectionNote sections={['Outcome rules']} />
-            {/* A click buyer's sale is judged by the click workflow, never by accept rules (#1541). */}
-            {!click && (
-              <div>
-                <p className="mb-1 text-sm font-medium text-gray-700">{SECTION_LABELS.accept_signals}</p>
-                <p className="mb-2 text-xs text-hint">The buyer took the lead. A sale counts only when the answer is 2xx and every rule here matches.</p>
-                <AcceptRulesEditor value={acceptSignals} onChange={onAcceptSignalsChange} refusal={acceptRefusal} />
-              </div>
-            )}
-            <SignalRuleBuilder value={signalRules} onChange={onSignalRulesChange} sections={DECLINE_SECTION} />
-            <div>
-              <p className="mb-1 text-sm font-medium text-gray-700">{SECTION_LABELS.duplicate_signals}</p>
-              <p className="mb-2 text-xs text-hint">The buyer already holds this lead. A decline matching any rule here is recorded in Salesforce as Duplicate; any other decline as Fail.</p>
-              <AcceptRulesEditor kind="duplicate" value={duplicateSignals} onChange={onDuplicateSignalsChange} />
-            </div>
-            <Field id="bp-routing-code" label="Salesforce routing code" hint="Written to the prospect as ExternalRoutingCode__c on every sale to this buyer. Tripoint is 2." error={routingCodeRefusal}>
-              <NumberInput id="bp-routing-code" value={externalRoutingCode === '' ? null : Number(externalRoutingCode)} onChange={(v) => onExternalRoutingCodeChange(v === null ? '' : String(v))} min={0} step={1} describedBy={describedBy('bp-routing-code', true, Boolean(routingCodeRefusal))} className="w-32" />
+          {/* What every sale to this buyer carries to Salesforce (#2325: its own section, as designed). */}
+          <PartnerSection title="Sale">
+            <LiveSectionNote sections={['Sale']} />
+            <Field id="bp-routing-code" label={FIELD_LABELS.external_routing_code} error={routingCodeRefusal}>
+              <NumberInput id="bp-routing-code" value={externalRoutingCode === '' ? null : Number(externalRoutingCode)} onChange={(v) => onExternalRoutingCodeChange(v === null ? '' : String(v))} min={0} step={1} describedBy={describedBy('bp-routing-code', false, Boolean(routingCodeRefusal))} className="w-[7.5rem]" />
             </Field>
           </PartnerSection>
 
-          {/* A click buyer never reserves in the ledger, so its queue is the held clicks above. */}
+          {/* A click buyer never reserves in the ledger, so its queue is its held clicks (#1552). */}
+          {click && (
+            <PartnerSection title="Held clicks">
+              <HeldClicksPanel partnerName={partnerName} zone={zone} held={held} error={heldError} outcomes={heldOutcomes} onMarkSent={markSent} onFree={free} onClear={clear} onRetrySalesforce={retrySalesforce} onSetLeadId={setLeadId} />
+            </PartnerSection>
+          )}
+
           {!click && (
             <PartnerSection title="Unresolved sales">
               {unresolvedError ? (
@@ -561,17 +553,34 @@ export function BuyerProfileSection(props: Props) {
                 <p role="status" className="text-xs text-hint">Reading the unresolved sales…</p>
               ) : (
                 <>
-                  <UnresolvedSalesList rows={unresolved.rows} total={unresolved.total} onSettle={settle} outcomes={settleOutcomes} onMore={loadMoreUnresolved} loadingMore={loadingMore} />
+                  <UnresolvedSalesList rows={unresolved.rows} total={unresolved.total} onSettle={settle} outcomes={settleOutcomes} onMore={loadMoreUnresolved} loadingMore={loadingMore} zone={zone} />
                   {loadMoreError && <FieldError alert size="xs">{loadMoreError}</FieldError>}
                 </>
               )}
             </PartnerSection>
           )}
 
+          {/*
+            An offer buyer's sale is judged by these rules; a click buyer's by its
+            success reply, so the section is not shown for one (#1541, #2325),
+            unless it still holds a decline or duplicate rule, which stays on
+            screen so it can be seen and removed (L1008).
+          */}
+          {(!click || storedRulesOnClick) && (
+            <PartnerSection title="Outcome rules">
+              <LiveSectionNote sections={['Outcome rules']} />
+              <div className="space-y-3">
+                {!click && <AcceptRulesEditor value={acceptSignals} onChange={onAcceptSignalsChange} refusal={acceptRefusal} />}
+                <DeclineRulesEditor value={signalRules} onChange={onSignalRulesChange} />
+                <AcceptRulesEditor kind="duplicate" value={duplicateSignals} onChange={onDuplicateSignalsChange} />
+              </div>
+            </PartnerSection>
+          )}
+
           <PartnerSection title={SECTION_LABELS.blackout_dates}>
             <LiveSectionNote sections={[SECTION_LABELS.blackout_dates]} />
-            {blackoutNote && <p className="text-xs text-hint">{blackoutNote}</p>}
             <BlackoutDatesEditor value={profile.blackout_dates} onChange={(blackout_dates) => patch({ blackout_dates })} errors={byPath} />
+            <p className="text-xs text-hint">{blackoutNote ?? 'Whole days, Eastern.'}</p>
           </PartnerSection>
         </>
       )}

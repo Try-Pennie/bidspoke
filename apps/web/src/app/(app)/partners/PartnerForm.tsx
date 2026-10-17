@@ -625,6 +625,8 @@ export default function PartnerForm({
     setSlug(partner?.slug ?? '')
     setSlugManuallyEdited(false)
     if (storedProfile) setProfile(storedProfile)
+    // A profile set up but never saved goes back to the no profile note it was set up from (#2325).
+    setProfileSetUp(false)
     setProfileErrors([])
     setPendingMerge(null)
     setSaveOutcome({ kind: 'idle' })

@@ -303,6 +303,13 @@ export interface HeldClick {
   salesforce_standing?: SalesforceStanding | null
   /** Set on the page only, once the server confirmed the entry left the list; its Salesforce retry went with it. */
   cleared?: boolean
+  /**
+   * Set on the page only, true once this page's Mark sent was told the click
+   * was counted (#2325), and false when it was not or may not have been. The
+   * card says Counted only when true: the Worker keeps no record of the count's
+   * outcome on the entry, so after a reload it is unset and nothing is claimed (L11).
+   */
+  counted?: boolean
 }
 
 export type MarkSentResult =

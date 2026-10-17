@@ -8,8 +8,9 @@
  */
 import { useState } from 'react'
 import { Button, Outcome, type OutcomeState } from '@/components/ui/form'
-import { formatCents } from './labels'
-import { formatEtDayTime } from '@/lib/dates'
+import { formatCents, formatWhole } from './labels'
+import { DEFAULT_DISPLAY_TIME_ZONE, type DisplayTimeZone } from '@bidspoke/buyer-profile'
+import { formatInZone } from '@/lib/dates'
 
 export interface UnresolvedSale {
   id: string
@@ -24,17 +25,19 @@ export interface UnresolvedSale {
 
 export type SettleOutcome = 'accepted' | 'released'
 
-function answerOf(row: UnresolvedSale): string {
-  if (row.http_status === null) return 'No answer arrived'
-  if (row.http_status >= 200 && row.http_status < 300) return `HTTP ${row.http_status}, no rule matched`
-  return `HTTP ${row.http_status}`
+/** What the buyer answered, as one sentence on the card. */
+function answerSentence(row: UnresolvedSale): string {
+  if (row.http_status === null) return `No answer arrived from ${row.partner_name}.`
+  if (row.http_status >= 200 && row.http_status < 300) return `${row.partner_name} answered HTTP ${row.http_status}, no rule matched.`
+  return `${row.partner_name} answered HTTP ${row.http_status}.`
 }
 
-function reservedAt(iso: string): string {
-  return Number.isNaN(Date.parse(iso)) ? iso : formatEtDayTime(iso)
+/** When the slot was reserved, in the profile's display zone and naming it, as the held clicks say when a click was held (#2253). */
+function reservedAt(iso: string, zone: DisplayTimeZone): string {
+  return formatInZone(iso, zone, 'day-time')
 }
 
-export function UnresolvedSalesList({ rows, total, onSettle, outcomes, onMore, loadingMore = false }: {
+export function UnresolvedSalesList({ rows, total, onSettle, outcomes, onMore, loadingMore = false, zone = DEFAULT_DISPLAY_TIME_ZONE }: {
   rows: readonly UnresolvedSale[]
   total: number
   onSettle: (id: string, outcome: SettleOutcome) => void | Promise<void>
@@ -42,16 +45,24 @@ export function UnresolvedSalesList({ rows, total, onSettle, outcomes, onMore, l
   /** Asks for the next page of this buyer's queue; offered only while `total` is above the rows shown (#1457). */
   onMore?: () => void
   loadingMore?: boolean
+  /** The profile's display zone, the one its hours and held clicks are shown in. */
+  zone?: DisplayTimeZone
 }) {
   const [confirming, setConfirming] = useState<{ id: string; outcome: SettleOutcome } | null>(null)
 
   if (rows.length === 0) return <p className="text-xs text-green-700">Nothing waiting on a person: every sale has an outcome.</p>
 
+  // The queue's own total, so the sentence counts what is waiting, not only the rows read so far (#1457).
+  const lead = total === 1
+    ? '1 sale has no outcome. Its slot stays reserved until a person settles it.'
+    : `${formatWhole(total)} sales have no outcome. Each slot stays reserved until a person settles it.`
+
   return (
-    <div className="space-y-2">
+    <div className="space-y-2 text-xs">
+      <p className="text-[13px] text-graphite">{lead}</p>
       {total > rows.length && (
         <div className="flex items-center gap-3">
-          <p className="text-xs text-gray-600">Showing {rows.length} of {total} unresolved sales.</p>
+          <p className="text-gray-600">Showing {rows.length} of {total} unresolved sales.</p>
           {onMore && (
             <Button variant="secondary" className="btn-sm" busy={loadingMore} disabled={loadingMore} onClick={onMore}>
               Show {total - rows.length} more
@@ -59,61 +70,52 @@ export function UnresolvedSalesList({ rows, total, onSettle, outcomes, onMore, l
           )}
         </div>
       )}
-      <div className="overflow-x-auto">
-      <table className="w-full text-xs">
-        <thead>
-          <tr className="text-left text-gray-600">
-            <th scope="col" className="py-1 pr-3 font-medium">Lead</th>
-            <th scope="col" className="py-1 pr-3 text-right font-medium">Payout</th>
-            <th scope="col" className="py-1 pr-3 font-medium">Reserved</th>
-            <th scope="col" className="py-1 pr-3 font-medium">Buyer answered</th>
-            <th scope="col" className="py-1 font-medium">Settle</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => {
-            const pending = confirming?.id === row.id ? confirming : null
-            const outcome = outcomes[row.id] ?? { kind: 'idle' as const }
-            const busy = outcome.kind === 'working'
-            return (
-              <tr key={row.id} className="border-t border-gray-100 align-middle text-graphite">
-                <td className="py-1 pr-3 font-mono whitespace-nowrap">{row.lead_key}</td>
-                <td className="py-1 pr-3 text-right tabular-nums">{formatCents(row.payout_cents)}</td>
-                <td className="py-1 pr-3 whitespace-nowrap">{reservedAt(row.reserved_at)}</td>
-                <td className="py-1 pr-3">{answerOf(row)}</td>
-                <td className="py-1">
-                  {outcome.kind === 'done' ? (
-                    <Outcome state={outcome} />
-                  ) : pending ? (
-                    <div className="space-y-1">
-                      <p className="text-graphite">
-                        {pending.outcome === 'accepted'
-                          ? `Counts as sold to ${row.partner_name} for ${formatCents(row.payout_cents)} today.`
-                          : 'Frees one slot and counts nothing.'}
-                      </p>
-                      <div className="flex gap-1.5">
-                        <Button variant={pending.outcome === 'accepted' ? 'primary' : 'danger'} className="btn-sm" busy={busy} onClick={() => { setConfirming(null); void onSettle(row.id, pending.outcome) }}>
-                          Confirm
-                        </Button>
-                        <Button variant="secondary" className="btn-sm" onClick={() => setConfirming(null)}>Cancel</Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="space-y-1">
-                      <div className="flex gap-1.5 whitespace-nowrap">
-                        <Button variant="secondary" className="btn-sm" disabled={busy} onClick={() => setConfirming({ id: row.id, outcome: 'accepted' })}>Count as sold</Button>
-                        <Button variant="secondary" className="btn-sm" disabled={busy} onClick={() => setConfirming({ id: row.id, outcome: 'released' })}>Free the slot</Button>
-                      </div>
-                      <Outcome state={outcome} />
-                    </div>
-                  )}
-                </td>
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-      </div>
+      {/* A card per sale, like the held clicks: each button followed by what it does (#2325, PM-22). */}
+      <ul aria-label="Unresolved sales" className="space-y-2">
+        {rows.map((row) => {
+          const pending = confirming?.id === row.id ? confirming : null
+          const outcome = outcomes[row.id] ?? { kind: 'idle' as const }
+          const busy = outcome.kind === 'working'
+          const pay = formatCents(row.payout_cents)
+          return (
+            <li key={row.id} aria-label={row.lead_key} className="space-y-1.5 rounded-lg border border-line bg-white p-3 text-graphite">
+              <p className="flex flex-wrap items-baseline gap-x-2.5">
+                <span className="font-mono">{row.lead_key}</span>
+                <span className="text-gray-600">{reservedAt(row.reserved_at, zone)}</span>
+                <span className="tabular-nums">{pay}</span>
+              </p>
+              <p>{answerSentence(row)}</p>
+              {outcome.kind === 'done' ? (
+                <Outcome state={outcome} />
+              ) : pending ? (
+                <div className="space-y-1">
+                  <p>
+                    {pending.outcome === 'accepted'
+                      ? `Counts as sold to ${row.partner_name} for ${pay} today.`
+                      : 'Frees one slot and counts nothing.'}
+                  </p>
+                  <div className="flex gap-1.5">
+                    <Button variant={pending.outcome === 'accepted' ? 'primary' : 'danger'} className="btn-sm" busy={busy} onClick={() => { setConfirming(null); void onSettle(row.id, pending.outcome) }}>
+                      Confirm
+                    </Button>
+                    <Button variant="secondary" className="btn-sm" onClick={() => setConfirming(null)}>Cancel</Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  <div className="grid grid-cols-[auto_1fr] items-center gap-x-2.5 gap-y-1.5">
+                    <Button variant="secondary" className="btn-sm" disabled={busy} onClick={() => setConfirming({ id: row.id, outcome: 'accepted' })}>Count as sold</Button>
+                    <span className="text-gray-600">{row.partner_name} has it. Counts as sold for {pay} today.</span>
+                    <Button variant="danger" className="btn-sm" disabled={busy} onClick={() => setConfirming({ id: row.id, outcome: 'released' })}>Free the slot</Button>
+                    <span className="text-gray-600">{row.partner_name} does not have it. Frees one slot and counts nothing.</span>
+                  </div>
+                  <Outcome state={outcome} />
+                </div>
+              )}
+            </li>
+          )
+        })}
+      </ul>
     </div>
   )
 }
