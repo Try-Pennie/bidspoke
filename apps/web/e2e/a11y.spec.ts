@@ -166,8 +166,9 @@ test.describe('Accessibility (axe-core)', () => {
   // opened by the keyboard, scanned, and driven. An open Select is modal: Radix
   // hides the page behind it from assistive tech while the list holds the focus,
   // so axe would report every button behind it as hidden yet focusable; the
-  // scan is of the list, and the page keeps its own closed scan. Nothing here
-  // presses Save.
+  // scan is of the list, and the page keeps its own closed scan. Only the
+  // #2252 test presses Save, and its request is held with no answer, so
+  // nothing is ever saved.
   test('environment page: the Used by dropdown, open, has no serious a11y violations and the keyboard drives it', async ({ page }) => {
     await page.goto('/env')
     await page.waitForLoadState('networkidle')
