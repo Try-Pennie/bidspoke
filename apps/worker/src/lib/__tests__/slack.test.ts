@@ -8,6 +8,7 @@ import { sendFailureSaturationAlert, sendFailureAlert, sendDurationAlert, sendRe
 import type { QueryTimeoutOffender } from '../slack'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
+import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -15,10 +16,10 @@ function makeSupabase(connection: Record<string, string> | null) {
   const chain: unknown = new Proxy({}, {
     get(_, prop) {
       if (typeof prop === 'symbol') return undefined
-      if (prop === 'maybeSingle') return () =>
+      if (prop === 'limit') return alertRowsAnswer(() =>
         connection
           ? Promise.resolve({ data: { config: connection }, error: null })
-          : Promise.resolve({ data: null, error: null })
+          : Promise.resolve({ data: null, error: null }))
       return () => chain
     },
   })
@@ -408,17 +409,17 @@ describe('sendSecretDriftAlert (#199)', () => {
 })
 
 describe('getSlackConnection — distinguishes a DB error from not-configured (#409)', () => {
-  // maybeSingle returns each queued result in order, repeating the last.
+  // The alert row read returns each queued result in order, repeating the last.
   function makeSeqSupabase(results: Array<{ data?: unknown; error?: { code?: string; message: string } | null }>) {
     let i = 0
     const chain: unknown = new Proxy({}, {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
-        if (prop === 'maybeSingle') return () => {
+        if (prop === 'limit') return alertRowsAnswer(() => {
           const r = results[Math.min(i, results.length - 1)]
           i++
           return Promise.resolve({ data: r.data ?? null, error: r.error ?? null })
-        }
+        })
         return () => chain
       },
     })
@@ -482,7 +483,7 @@ describe('sendMatrixSyncFailureAlert (#408)', () => {
     const chain: unknown = new Proxy({}, {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
-        if (prop === 'maybeSingle') return () => Promise.resolve({ data: connection ? { config: connection } : null, error: null })
+        if (prop === 'limit') return alertRowsAnswer(() => Promise.resolve({ data: connection ? { config: connection } : null, error: null }))
         return () => chain
       },
     })
@@ -532,7 +533,7 @@ describe('sendExportFailureAlert (#412)', () => {
     const chain: unknown = new Proxy({}, {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
-        if (prop === 'maybeSingle') return () => Promise.resolve({ data: connection ? { config: connection } : null, error: null })
+        if (prop === 'limit') return alertRowsAnswer(() => Promise.resolve({ data: connection ? { config: connection } : null, error: null }))
         return () => chain
       },
     })
@@ -1669,7 +1670,7 @@ describe('the scheduled job all-clears (#851)', () => {
     const chain: unknown = new Proxy({}, {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
-        if (prop === 'maybeSingle') return () => Promise.resolve({ data: { config: { bot_token: 'xoxb-t', default_channel: '#alerts' } }, error: null })
+        if (prop === 'limit') return alertRowsAnswer(() => Promise.resolve({ data: { config: { bot_token: 'xoxb-t', default_channel: '#alerts' } }, error: null }))
         return () => chain
       },
     })

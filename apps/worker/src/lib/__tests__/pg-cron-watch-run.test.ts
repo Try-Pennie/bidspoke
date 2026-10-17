@@ -9,6 +9,7 @@ vi.mock('../slack', () => ({
 import { sendPgCronAlert, sendPgCronRecoveryAlert } from '../slack'
 import { runPgCronWatch, type PgCronJob } from '../pg-cron-watch'
 import { outboxEvents, transitions } from './_incident-events'
+import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 /**
  * The orchestration half of the database scheduled-job watch (#770): what
@@ -46,13 +47,10 @@ function fakeSupabase(rows: PgCronJob[] | null, opts: { rpcError?: string; orgs?
       opts.rpcError ? { data: null, error: { message: opts.rpcError } } : { data: rows, error: null },
     ),
     from: () => ({
-      select: () => ({
-        eq: () =>
-          Promise.resolve({
+      select: () => alertRowListAnswer(Promise.resolve({
             data: (opts.orgs ?? ['org-1']).map((organization_id) => ({ organization_id })),
             error: null,
-          }),
-      }),
+          })),
     }),
   } as unknown as SupabaseClient
 }

@@ -5,7 +5,7 @@
  * concrete bug: disable, save, Undo must re-enable).
  */
 import { describe, it, expect } from 'vitest'
-import { SIGNAL_OPERATORS, type Signal, type SignalOperator } from '@bidspoke/buyer-profile'
+import { SIGNAL_OPERATORS, partnerNumberErrors, type Signal, type SignalOperator } from '@bidspoke/buyer-profile'
 import { buildPartnerBody, changedPatch, draftReducer, initDraft, inversePatch, parseRules, serializeRules, floorsToMap, type FormSnapshot } from '../partner-draft'
 
 function snap(overrides: Partial<FormSnapshot> = {}): FormSnapshot {
@@ -71,9 +71,13 @@ describe('buildPartnerBody (#98)', () => {
     const set = buildPartnerBody(snap({ externalRoutingCode: '2', duplicateSignals: [{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }] }), { slug: 's', isExisting: true })
     expect(set.external_routing_code).toBe(2)
     expect(set.duplicate_signals).toEqual([{ field: 'data.createLead.resultCode', in: [1003, 1004, 1020] }])
-    // A routing code that is not a whole number is not a routing code (L50): null, never a rounded guess.
-    expect(buildPartnerBody(snap({ externalRoutingCode: '2.5' }), { slug: 's', isExisting: true }).external_routing_code).toBeNull()
-    expect(buildPartnerBody(snap({ externalRoutingCode: 'two' }), { slug: 's', isExisting: true }).external_routing_code).toBeNull()
+    // A routing code that is not a whole number is never a rounded guess (L50). Since #2328 it is
+    // not quietly saved as none either: it is carried as typed, and the save's shared rule refuses it.
+    const fractional = buildPartnerBody(snap({ externalRoutingCode: '2.5' }), { slug: 's', isExisting: true })
+    expect(fractional.external_routing_code).toBe(2.5)
+    expect(partnerNumberErrors(fractional as unknown as Record<string, unknown>).map((e) => e.field)).toEqual(['external_routing_code'])
+    const word = buildPartnerBody(snap({ externalRoutingCode: 'two' }), { slug: 's', isExisting: true })
+    expect(partnerNumberErrors(word as unknown as Record<string, unknown>).map((e) => e.field)).toEqual(['external_routing_code'])
   })
 
   it('serializes signal rules into response_classification', () => {

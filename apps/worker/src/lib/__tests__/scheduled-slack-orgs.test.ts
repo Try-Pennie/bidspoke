@@ -57,7 +57,7 @@ describe('slackOrgIds on the scheduled client', () => {
   })
 
   it('sets the tick\'s flag, so the lookups after a failed org list go to the copy without asking', async () => {
-    const { client, calls } = await scheduled([{ error: { message: 'boom' } }, { data: { config: LIVE_CONN } }], COPY)
+    const { client, calls } = await scheduled([{ error: { message: 'boom' } }, { data: [{ config: LIVE_CONN }] }], COPY)
     await slackOrgIds(client, 'test', 'tell-only')
     expect((await getSlackConnection(client, 'org-2'))?.bot_token).toBe('xoxb-stored-2')
     expect(calls).toHaveLength(1)

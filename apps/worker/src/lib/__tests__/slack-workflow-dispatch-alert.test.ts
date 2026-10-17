@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { slackPostJsonOf } from '../../__tests__/helpers/slack-fetch'
 import { sendWorkflowDispatchAlert } from '../slack'
 import type { DispatchAttempt } from '../workflow-dispatch-driver'
+import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 /**
  * The Slack message for the worker's workflow dispatch driver (#1058).
@@ -19,11 +20,11 @@ function makeSupabase(connection: Record<string, string> | null) {
     {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
-        if (prop === 'maybeSingle')
-          return () =>
+        if (prop === 'limit')
+          return alertRowsAnswer(() =>
             connection
               ? Promise.resolve({ data: { config: connection }, error: null })
-              : Promise.resolve({ data: null, error: null })
+              : Promise.resolve({ data: null, error: null }))
         return () => chain
       },
     },

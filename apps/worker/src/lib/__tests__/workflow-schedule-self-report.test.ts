@@ -14,6 +14,7 @@ import {
   runWorkflowScheduleWatch,
   type ScheduleLookup,
 } from '../workflow-schedule-watch'
+import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 /**
  * A Deploy Drift run that FOUND a stranded target and reported it to Slack is red
@@ -221,7 +222,7 @@ const kv = () =>
   }) as unknown as KVNamespace
 const supabase = () =>
   ({
-    from: () => ({ select: () => ({ eq: () => Promise.resolve({ data: [{ organization_id: 'org-1' }], error: null }) }) }),
+    from: () => ({ select: () => alertRowListAnswer({ data: [{ organization_id: 'org-1' }], error: null }) }),
   }) as unknown as SupabaseClient
 
 /** The whole GitHub surface the watch reads: the repo, each workflow's runs, and drift's jobs. */

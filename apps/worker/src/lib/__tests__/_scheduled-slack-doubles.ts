@@ -50,7 +50,7 @@ export function fakeClient(answers: Answer[]): { client: SupabaseClient; calls: 
         return Promise.resolve({ data: answer.data ?? null, error: answer.error ?? null, status: answer.error ? 500 : 200 })
       }
       const builder: Record<string, unknown> = {}
-      for (const m of ['select', 'eq', 'not', 'order', 'limit', 'maybeSingle']) builder[m] = () => builder
+      for (const m of ['select', 'eq', 'or', 'not', 'order', 'limit', 'maybeSingle']) builder[m] = () => builder
       builder.retry = (enabled: boolean) => {
         call.retry = enabled
         return builder

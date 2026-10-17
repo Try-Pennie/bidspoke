@@ -164,6 +164,7 @@ const getSlackConnection = vi.hoisted(() => vi.fn())
 vi.mock('../slack', () => ({ postMessage, getSlackConnection }))
 import { registerScheduledSlack } from '../scheduled-slack'
 import { fakeClient, fakeTimers, kvWithCopy, TEST_KEY } from './_scheduled-slack-doubles'
+import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 const { runEmailDropRateCheck } = await import('../email-drop-rate')
 
@@ -185,12 +186,10 @@ function makeSupabase(opts: {
   const rpcCalls: string[] = []
   const client = {
     from: () => ({
-      select: () => ({
-        eq: async () => ({
+      select: () => alertRowListAnswer(Promise.resolve({
           data: opts.orgsError ? null : (opts.orgs ?? ['org-1']).map((organization_id) => ({ organization_id })),
           error: opts.orgsError ? { message: opts.orgsError } : null,
-        }),
-      }),
+        })),
     }),
     rpc: vi.fn(async (_fn: string, args: { p_org_id: string }) => {
       rpcCalls.push(args.p_org_id)

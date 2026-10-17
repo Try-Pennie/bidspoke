@@ -43,7 +43,8 @@ function database(mode: 'refuse' | 'hang' | 'up') {
         signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')))
       })
     }
-    return new Response(JSON.stringify({ config: { bot_token: 'xoxb-live', default_channel: 'C-LIVE' } }), { status: 200, headers: { 'content-type': 'application/json' } })
+    // A read is answered with an array: the lookup asks for up to two alert rows (#2332).
+    return new Response(JSON.stringify([{ config: { bot_token: 'xoxb-live', default_channel: 'C-LIVE' } }]), { status: 200, headers: { 'content-type': 'application/json' } })
   }) as typeof globalThis.fetch
   return { state, fetch }
 }
