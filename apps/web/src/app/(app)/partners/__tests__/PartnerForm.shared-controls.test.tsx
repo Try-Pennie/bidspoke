@@ -7,7 +7,7 @@
  * switch as a boolean, and only the fields touched are sent.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 
 vi.mock('@/lib/api', () => ({
   api: {
@@ -54,9 +54,9 @@ const save = () => fireEvent.click(screen.getByRole('button', { name: /save chan
 describe('the partner form on the shared controls (#2137)', () => {
   it('number boxes save numbers, an emptied box saves null, and a switch saves a boolean', async () => {
     const onSave = renderForm()
-    expect(screen.getByLabelText('Minimum bid ($)')).toHaveValue(0.5)
-    fireEvent.change(screen.getByLabelText('Minimum bid ($)'), { target: { value: '' } })
-    fireEvent.change(screen.getByLabelText('Error threshold'), { target: { value: '7' } })
+    expect(screen.getByLabelText('Minimum bid')).toHaveValue(0.5)
+    fireEvent.change(screen.getByLabelText('Minimum bid'), { target: { value: '' } })
+    fireEvent.change(within(screen.getByRole('region', { name: 'Circuit breaker', hidden: true })).getByLabelText('Errors'), { target: { value: '7' } })
     fireEvent.change(screen.getByLabelText('Confirmation window (ms)'), { target: { value: '5000' } })
     fireEvent.click(screen.getByRole('switch', { name: 'Active', hidden: true }))
     fireEvent.click(screen.getByRole('switch', { name: 'Alert on errors that are retried', hidden: true }))
@@ -84,7 +84,7 @@ describe('the partner form on the shared controls (#2137)', () => {
 
   it('the switches are Radix switches with the shared class, and Does is two shared checkboxes', () => {
     renderForm()
-    for (const name of ['Active', 'Circuit breaker enabled', 'Alert on errors that are retried', 'Alert on errors that are not retried']) {
+    for (const name of ['Active', 'Circuit breaker', 'Alert on errors that are retried', 'Alert on errors that are not retried']) {
       expect(screen.getByRole('switch', { name, hidden: true })).toHaveClass('toggle')
     }
     // What a partner does is two boxes now (#2323), not a radio group.

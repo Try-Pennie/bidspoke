@@ -29,12 +29,38 @@ interface Props {
 
 const PLACEHOLDER_FIELD = 'steps.eligibility.output.final'
 
+/**
+ * One row of the From / To / Multiplier table (PM-23, #2326), drawn like the
+ * buyer profile's Pricing table. The stored config is a floor, a default
+ * multiplier and tiers that start ABOVE a number, and the resolver reads it
+ * unchanged. The first row is the floor and the default multiplier; each tier is
+ * a row whose From is its `above` plus one, the whole dollar reading the daily
+ * Tripoint pricing check also uses ("starts paying the higher rate at $above
+ * + 1", tripoint-pricing-drift.ts). Converting back subtracts the same one, so
+ * opening and saving changes no stored number. A debt with cents between
+ * `above` and `above + 1` takes the higher tier, as it always has.
+ */
+interface TableRow {
+  from: number | null
+  multiplier: number | null
+  /** The tier's index in the stored list, or null for the first row (the floor and the default). */
+  tier: number | null
+}
+
+function tableRows(c: Config): TableRow[] {
+  const tiers = c.tiers
+    .map((t, i) => ({ from: t.above + 1, multiplier: t.multiplier, tier: i }))
+    // Shown in order of where each starts; equal starts keep their stored order.
+    .sort((a, b) => a.from - b.from || a.tier - b.tier)
+  return [{ from: c.min_source_value, multiplier: c.default_multiplier, tier: null }, ...tiers]
+}
+
 export function TieredMultiplierEditor({ config, onChange }: Props) {
   const c = readConfig(config)
   const sourceFieldId = useId()
-  const defaultMultiplierId = useId()
-  const minimumId = useId()
-  const tierId = useId()
+  const tableId = useId()
+  const hintId = useId()
+  const rows = tableRows(c)
 
   function patch(next: Partial<Config>) {
     const merged: Config = { ...c, ...next }
@@ -51,61 +77,88 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
     })
   }
 
+  /** A row starts at `from`: the floor for the first row, a tier's `above` for the rest. */
+  function setFrom(row: TableRow, from: number | null) {
+    if (row.tier === null) return patch({ min_source_value: from })
+    // An emptied box is a start of 0, as an emptied threshold was (#2137): a tier needs a number.
+    const above = (from ?? 0) - 1
+    patch({ tiers: c.tiers.map((t, i) => (i === row.tier ? { ...t, above } : t)) })
+  }
+
+  function setMultiplier(row: TableRow, multiplier: number | null) {
+    if (row.tier === null) return patch({ default_multiplier: multiplier })
+    patch({ tiers: c.tiers.map((t, i) => (i === row.tier ? { ...t, multiplier: multiplier ?? 0 } : t)) })
+  }
+
+  function removeRow(index: number) {
+    const row = rows[index]
+    if (row.tier !== null) return patch({ tiers: c.tiers.filter((_, i) => i !== row.tier) })
+    // The first row goes: the next tier becomes the first, so its start is the
+    // floor and its multiplier the default, as the table then shows.
+    const next = rows[1]
+    if (!next || next.tier === null) return
+    patch({ min_source_value: next.from, default_multiplier: next.multiplier, tiers: c.tiers.filter((_, i) => i !== next.tier) })
+  }
+
   function addTier() {
-    patch({ tiers: [...c.tiers, { above: 0, multiplier: 0 }] })
+    // Starts where the last row starts, as the Pricing table's Add tier does.
+    const lastFrom = rows[rows.length - 1].from ?? 0
+    patch({ tiers: [...c.tiers, { above: lastFrom - 1, multiplier: 0 }] })
   }
 
-  function updateTier(i: number, change: Partial<Tier>) {
-    patch({ tiers: c.tiers.map((t, idx) => (idx === i ? { ...t, ...change } : t)) })
-  }
-
-  function removeTier(i: number) {
-    patch({ tiers: c.tiers.filter((_, idx) => idx !== i) })
-  }
-
+  const hasFloor = c.min_source_value !== null
   return (
     <div className="space-y-3">
       <div>
         <label htmlFor={sourceFieldId} className="mb-1 block text-xs font-medium text-gray-600">Multiply this field</label>
-        <p className="mb-1.5 text-xs text-hint">A reference to a value in the workflow. Common pattern: <code className="rounded bg-gray-100 px-1 font-mono">steps.&lt;name&gt;.output.&lt;field&gt;</code> for a step output, or a bare field name on the trigger payload.</p>
         <TextInput id={sourceFieldId} value={c.source_field} onChange={(v) => patch({ source_field: v })} placeholder={PLACEHOLDER_FIELD} mono />
       </div>
 
-      <div className="rounded-lg border border-gray-200 bg-white p-3">
-        <p className="mb-2 text-xs font-medium text-gray-600">Tiers</p>
-        <p className="mb-3 text-xs text-hint">Each tier picks a multiplier when the field is above the threshold. First matching tier wins (highest threshold first). If nothing matches, the default multiplier below is used.</p>
-        {c.tiers.length > 0 && (
-          <div className="mb-2 space-y-1.5">
-            {c.tiers.map((tier, i) => (
-              <div key={i} className="flex items-center gap-1.5 text-xs">
-                <span className="text-hint">When &gt;</span>
-                {/* An emptied box is 0, as it was before (#2137): a tier needs a number. */}
-                <NumberInput id={`${tierId}-${i}-above`} aria-label={`Threshold, tier ${i + 1}`} value={tier.above} onChange={(v) => updateTier(i, { above: v ?? 0 })} mono className="w-28" />
-                <span className="text-hint">multiply by</span>
-                <NumberInput id={`${tierId}-${i}-multiplier`} aria-label={`Multiplier, tier ${i + 1}`} value={tier.multiplier} onChange={(v) => updateTier(i, { multiplier: v ?? 0 })} step={0.01} mono className="w-24" />
-                <RemoveButton label={`Remove tier ${i + 1}`} onClick={() => removeTier(i)} className="ml-auto" />
-              </div>
-            ))}
-          </div>
-        )}
+      <div>
+        <table className="w-full text-sm" aria-describedby={hintId}>
+          <thead>
+            <tr className="text-left text-xs font-medium text-gray-600">
+              <th scope="col" className="pb-1 pr-2 font-medium">From</th>
+              <th scope="col" className="pb-1 pr-2 font-medium">To</th>
+              <th scope="col" className="w-28 pb-1 pr-2 font-medium">Multiplier</th>
+              <th scope="col" className="w-8 pb-1"><span className="sr-only">Remove</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((row, i) => {
+              const n = i + 1
+              const next = rows[i + 1]
+              return (
+                <tr key={row.tier ?? 'first'} className="align-middle">
+                  <td className="py-0.5 pr-2">
+                    <NumberInput id={`${tableId}-${n}-from`} aria-label={`From, tier ${n}`} value={row.from} onChange={(v) => setFrom(row, v)} step={1} placeholder={row.tier === null ? 'No lower bound' : undefined} />
+                  </td>
+                  <td className="py-0.5 pr-2">
+                    {next ? (
+                      <NumberInput id={`${tableId}-${n}-to`} aria-label={`To, tier ${n}`} value={next.from} onChange={(v) => setFrom(next, v)} step={1} />
+                    ) : (
+                      // The top tier has no upper bound in the stored rule, so there is nothing to type.
+                      <span className="px-1 text-[13px] text-hint">No upper bound</span>
+                    )}
+                  </td>
+                  <td className="py-0.5 pr-2">
+                    <NumberInput id={`${tableId}-${n}-multiplier`} aria-label={`Multiplier, tier ${n}`} value={row.multiplier} onChange={(v) => setMultiplier(row, v)} step={0.0001} mono />
+                  </td>
+                  <td className="py-0.5">
+                    {rows.length > 1 && <RemoveButton label={`Remove tier ${n}`} onClick={() => removeRow(i)} />}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
         <Button variant="quiet" onClick={addTier}>
           <Plus className="h-3.5 w-3.5" aria-hidden="true" />
           Add tier
         </Button>
-      </div>
-
-      <div>
-        <label htmlFor={defaultMultiplierId} className="mb-1 block text-xs font-medium text-gray-600">Default multiplier</label>
-        <p className="mb-1.5 text-xs text-hint">Used when no tier matches.</p>
-        <NumberInput id={defaultMultiplierId} value={c.default_multiplier} onChange={(v) => patch({ default_multiplier: v })} step={0.01} placeholder="0.10" mono className="w-32" />
-      </div>
-
-      <div>
-        <label htmlFor={minimumId} className="mb-1 block text-xs font-medium text-gray-600">Minimum value</label>
-        <p className="mb-1.5 text-xs text-hint">Below this, no bid is made at all. Leave empty to bid at any value.</p>
-        {/* Empty means no floor. Zero is a floor of zero, a different rule, so the
-            box keeps null and 0 apart (#1199). */}
-        <NumberInput id={minimumId} value={c.min_source_value} onChange={(v) => patch({ min_source_value: v })} placeholder="none" mono className="w-32" />
+        <p id={hintId} className="mt-1 text-xs text-hint">
+          {hasFloor ? 'No bid below the first tier. To is not included, so the next tier starts there.' : 'To is not included, so the next tier starts there.'}
+        </p>
       </div>
     </div>
   )

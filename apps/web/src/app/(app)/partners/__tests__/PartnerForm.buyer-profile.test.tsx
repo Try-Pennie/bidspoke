@@ -115,7 +115,7 @@ describe('the Buyer profile section', () => {
     await renderBuyer()
     expect(screen.getAllByText(/priority/i)).toHaveLength(1)
     expect(screen.queryByLabelText('List order')).toBeNull()
-    expect(screen.getByLabelText('Daily attempt cap (bidding workflows)')).toHaveValue(250)
+    expect(screen.getByLabelText('Daily attempt cap')).toHaveValue(250)
   })
 
   it('orders the section for the reader: enabled and priority, then pricing and caps, then rules, blackout dates last (L609)', async () => {
@@ -131,7 +131,7 @@ describe('the Buyer profile section', () => {
 
   it('saves the partner record and the profile in one request at the pair of versions, and says both landed (#2133)', async () => {
     const onSave = await renderBuyer()
-    fireEvent.change(screen.getByLabelText('Daily attempt cap (bidding workflows)'), { target: { value: '300' } })
+    fireEvent.change(screen.getByLabelText('Daily attempt cap'), { target: { value: '300' } })
     fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
@@ -181,7 +181,7 @@ describe('the Buyer profile section', () => {
   it('the bar says Saved only once the one save has landed, never while it is in flight, and a failure says nothing was saved', async () => {
     let fail!: (e: unknown) => void
     const onSave = await renderBuyer(vi.fn().mockImplementation(() => new Promise((_res, rej) => { fail = rej })))
-    fireEvent.change(screen.getByLabelText('Daily attempt cap (bidding workflows)'), { target: { value: '300' } })
+    fireEvent.change(screen.getByLabelText('Daily attempt cap'), { target: { value: '300' } })
     fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
@@ -226,7 +226,7 @@ describe('the Buyer profile section', () => {
       .mockImplementationOnce(pageSaver(5, 9))
     render(<PartnerForm partner={{ ...partner, version: 7 }} onSave={onSave} onCancel={vi.fn()} />)
     await waitFor(() => expect(screen.getByLabelText('Leads per day')).toHaveValue(500))
-    fireEvent.change(screen.getByLabelText('Daily attempt cap (bidding workflows)'), { target: { value: '300' } })
+    fireEvent.change(screen.getByLabelText('Daily attempt cap'), { target: { value: '300' } })
     const price = screen.getAllByRole('spinbutton').find((el) => (el as HTMLInputElement).value === '0.0012') as HTMLInputElement
     fireEvent.change(price, { target: { value: '0.002' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
@@ -243,7 +243,7 @@ describe('the Buyer profile section', () => {
     expect(request.profile).toMatchObject({ daily_lead_cap: 500, tiers: [{ population: 'engine', debt_from: 15000, debt_to: null, multiplier: 0.0012 }] })
     // Both halves are back on screen as they were, and nothing reads as unsaved.
     await waitFor(() => expect(screen.getAllByRole('spinbutton').some((el) => (el as HTMLInputElement).value === '0.0012')).toBe(true))
-    expect(screen.getByLabelText('Daily attempt cap (bidding workflows)')).toHaveValue(250)
+    expect(screen.getByLabelText('Daily attempt cap')).toHaveValue(250)
     expect(screen.queryByText('Unsaved changes')).not.toBeInTheDocument()
   })
 
@@ -463,7 +463,7 @@ describe('how the buyer is sold', () => {
   it('a partner with no profile yet has no answer chosen, and saving the partner alone does not ask for one', async () => {
     const onSave = await renderWith(null)
     expect(within(screen.getByRole('radiogroup', { name: 'Sold on' })).getAllByRole('radio').map((r) => r.getAttribute('aria-checked'))).toEqual(['false', 'false'])
-    fireEvent.change(screen.getByLabelText('Daily attempt cap (bidding workflows)'), { target: { value: '300' } })
+    fireEvent.change(screen.getByLabelText('Daily attempt cap'), { target: { value: '300' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
     expect(profileSent(onSave)).toEqual([null])

@@ -111,6 +111,12 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
   const u = new URL(url)
   const p = u.pathname
   const ok = (body: unknown): Answer => ({ status: 200, body })
+  // The missing credential, in the Worker's words (credentialWarning in routes/api/partners.ts),
+  // on the list AND on a single partner's read, as the Worker sends it on both (#2326): the
+  // refetch after opening a partner replaced its row with one that had lost the warning.
+  const withWarning = (row: Row): Row => (opts.credentialWarningFor && row.slug === opts.credentialWarningFor
+    ? { ...row, credential_warning: `${String(row.cf_secret_key ?? 'PARTNER_SECRET')} is not set as a Worker secret, so ${String(row.name)}'s next bid will fail. An engineer adds it in Cloudflare.` }
+    : row)
   let m: RegExpExecArray | null
   if (method === 'PUT' && (m = /^\/api\/partners\/([^/]+)\/page$/.exec(p))) {
     return opts.staleSave && m[1] === fx.stale.partner.id ? { status: 409, body: fx.stale } : null
@@ -132,13 +138,9 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
   if ((m = /^\/api\/partners\/([^/]+)$/.exec(p))) {
     const id = m[1]
     const row = fx.partners.find((r) => r.id === id)
-    return row ? ok(row) : null
+    return row ? ok(withWarning(row)) : null
   }
-  if (p === '/api/partners') {
-    return ok(fx.partners.map((row) => (opts.credentialWarningFor && row.slug === opts.credentialWarningFor
-      ? { ...row, credential_warning: `Credential '${String(row.cf_secret_key ?? 'PARTNER_SECRET')}' is not set, so this partner will fail on the next live lead.` }
-      : row)))
-  }
+  if (p === '/api/partners') return ok(fx.partners.map(withWarning))
   if ((m = /^\/api\/partners\/([^/]+)\/buyer-profile$/.exec(p))) {
     const answer = ownEntry(fx.buyerProfiles, m[1])
     return answer ? ok(answer) : null
