@@ -12,13 +12,14 @@ import { WORKER_SRC, sanitizeSource } from '../../__tests__/_scan-utils'
  * asks for service_type 'slack' alone then reads the ops row as the alert row
  * and posts an alert with the ops bot, or, with both present, fails as "more
  * than one row" and reads as "not connected". The alert row is defined once,
- * onlySlackAlertRow in lib/slack-connection.ts, and every alert reader must
- * call it: a behaviour each call site must opt into is held by a scan (L621).
+ * onlySlackAlertRow in lib/slack-connection.ts, and every alert reader calls
+ * it; this scan fails on a read that skips it (the component plus its guard,
+ * L613).
  *
  * This fails on any `.from('service_connections')` in the alert path's
  * modules (lib/slack.ts, lib/alert-fanout.ts, routes/api/integrations.ts) that
- * is not inside onlySlackAlertRow(...), except the two that are not alert row
- * reads, each with its reason:
+ * is not inside onlySlackAlertRow(...), except the three that are not
+ * unscoped alert row reads, each with its reason (NOT_ALERT_ROW_READS):
  * - the save's upsert in integrations.ts POST /slack, which writes the alert
  *   row by its conflict target (organization_id, service_type, name 'slack');
  * - the settings change's update in integrations.ts PATCH /slack/settings,
