@@ -50,7 +50,8 @@ export function DeclineRulesEditor({ value, onChange }: { value: SignalRules; on
       }
     >
       {rules.map((rule, i) => {
-        const rowId = `${base}-${i}`
+        // Each box's id follows its rule, so removing one leaves the others' ids where they were.
+        const rowId = `${base}-${rule.id}`
         const name = `Decline rule ${i + 1}`
         const valueBox = (placeholder: string) => rule.condition === 'present'
           ? <span className="text-xs text-hint">any value</span>

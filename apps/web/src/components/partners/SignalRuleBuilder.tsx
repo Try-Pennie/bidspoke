@@ -35,7 +35,7 @@ export interface SignalSection {
   desc: string
 }
 
-/** The three legacy groups with their long standing copy. */
+/** The three groups with their long standing copy; callers pick the ones they draw (the Bid Group's Errors draws its own Retry and Never retry lists, and the decline group is drawn by DeclineRulesEditor). */
 export const SIGNAL_SECTIONS: readonly SignalSection[] = [
   { cat: 'rejection', label: 'Rejection',      desc: 'Partner declined the lead. Logged as a business rejection, never retried.' },
   { cat: 'transient', label: 'Transient error', desc: 'Temporary failure. Will be retried according to the workflow retry policy.' },

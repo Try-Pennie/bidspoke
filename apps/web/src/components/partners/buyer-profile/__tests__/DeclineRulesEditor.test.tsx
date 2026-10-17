@@ -41,6 +41,15 @@ describe('DeclineRulesEditor', () => {
     expect(onChange).toHaveBeenLastCalledWith({ ...rules, rejection: [rules.rejection[1]] })
   })
 
+  // Lessons review on #2325: a box's id follows its rule, so removing an earlier rule
+  // does not move the ids (and what a label or a description points at) of the rest.
+  it('removing a rule leaves the ids of the rules after it where they were', () => {
+    const { rerender } = render(<DeclineRulesEditor value={rules} onChange={() => {}} />)
+    const before = screen.getByRole('textbox', { name: 'Decline rule 2 body field' }).id
+    rerender(<DeclineRulesEditor value={{ ...rules, rejection: [rules.rejection[1]] }} onChange={() => {}} />)
+    expect(screen.getByRole('textbox', { name: 'Decline rule 1 body field' }).id).toBe(before)
+  })
+
   it('with no rules says only No rules., in grey', () => {
     render(<DeclineRulesEditor value={{ ...rules, rejection: [] }} onChange={() => {}} />)
     expect(screen.getByText('No rules.')).toHaveClass('text-hint')
