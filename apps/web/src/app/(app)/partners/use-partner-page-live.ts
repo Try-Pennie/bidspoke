@@ -17,6 +17,8 @@ export interface PartnerPageLiveHandlers {
   onNotice: (notice: PartnerPageNotice) => void
   /** The channel came back, or the tab became visible: anything sent meanwhile was missed, so read again. */
   onCatchUp: () => void
+  /** A join was refused for a missing partition, once per outage (#2288): report it. */
+  onPartitionRefused?: () => void
 }
 
 export interface PartnerPageLive {
@@ -41,6 +43,7 @@ export function usePartnerPageLive(live: PartnerLiveDeps | null, organizationId:
       onStatus: setStatus,
       onNotice: (n) => handlersRef.current.onNotice(n),
       onLive: (reconnected) => { if (reconnected) handlersRef.current.onCatchUp() },
+      onPartitionRefused: () => handlersRef.current.onPartitionRefused?.(),
     })
     channelRef.current = channel
     channel.start()

@@ -213,6 +213,25 @@ describe('another person\'s save, live (#2135)', () => {
     expect(nameBox().value).toBe('M1 (mine)')
   })
 
+  it('a join refused for a missing partition is reported once, as its own cause, and the page still goes Live (#2288)', async () => {
+    const clock = fakeClock()
+    let joins = 0
+    const join: JoinFn = async () => {
+      joins += 1
+      return joins <= 2
+        ? { ok: false, reason: 'MissingPartition: Realtime was unable to find the expected messages partition', missingPartition: true }
+        : { ok: true, leave: async () => {} }
+    }
+    renderLive({ join, clock })
+    await waitFor(() => expect(api.partners.reportLiveMiss).toHaveBeenCalledTimes(1))
+    expect(api.partners.reportLiveMiss).toHaveBeenCalledWith(expect.objectContaining({
+      partner_id: ID, cause: 'missing_partition', observed: { partner_version: null, profile_version: null },
+    }))
+    await clock.advance(5_000)
+    expect(await screen.findByText('Live')).toBeTruthy()
+    expect(api.partners.reportLiveMiss).toHaveBeenCalledTimes(1)
+  })
+
   it('a change made directly in the database is noted on its section on open, and the note goes once the bound has passed', async () => {
     const h = liveHarness()
     vi.mocked(api.partners.versions).mockResolvedValue(versions({
