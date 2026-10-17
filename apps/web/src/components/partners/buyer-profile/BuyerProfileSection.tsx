@@ -52,6 +52,7 @@ export const EMPTY_PROFILE: BuyerProfileDocument = {
   debt_min: null,
   debt_max: null,
   loan_amount_min: null,
+  collections_max_percent: null,
   hourly_lead_cap: null,
   daily_lead_cap: null,
   hourly_spend_cap_cents: null,
@@ -390,7 +391,8 @@ export function BuyerProfileSection(props: Props) {
             )}
             <StatePicker value={profile.allowed_states} onChange={(states) => patch({ allowed_states: states })} />
             {errorFor(errors, 'allowedStates') && <FieldError alert size="xs">{errorFor(errors, 'allowedStates')}</FieldError>}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+            {/* Two rows of two (#2268, settled 2026-10-17): the debt range, then the loan minimum and the collections cap. */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field id="bp-debt-min" label="Debt minimum" hint="Dollars, inclusive." error={errorFor(errors, 'debtMin')}>
                 <NumberInput id="bp-debt-min" value={profile.debt_min} onChange={(v) => patch({ debt_min: v })} min={0} describedBy={describedBy('bp-debt-min', true, Boolean(errorFor(errors, 'debtMin')))} />
               </Field>
@@ -399,6 +401,13 @@ export function BuyerProfileSection(props: Props) {
               </Field>
               <Field id="bp-loan-min" label="Loan amount minimum" hint="Dollars. Empty means the loan amount is not read." error={errorFor(errors, 'loanAmountMin')}>
                 <NumberInput id="bp-loan-min" value={profile.loan_amount_min} onChange={(v) => patch({ loan_amount_min: v })} min={0} describedBy={describedBy('bp-loan-min', true, Boolean(errorFor(errors, 'loanAmountMin')))} />
+              </Field>
+              {/* Only the number is typed; "% of debt" is fixed text beside the box (Dan, 2026-10-17). */}
+              <Field id="bp-collections-max" label={FIELD_LABELS.collections_max_percent} hint="A lead whose collections are more than this share of its debt is skipped. Empty means no limit." error={errorFor(errors, 'collectionsMaxPercent')}>
+                <div className="flex items-center gap-2">
+                  <NumberInput id="bp-collections-max" value={profile.collections_max_percent ?? null} onChange={(v) => patch({ collections_max_percent: v })} min={1} max={100} step={1} describedBy={describedBy('bp-collections-max', true, Boolean(errorFor(errors, 'collectionsMaxPercent')))} className="w-24" />
+                  <span className="text-sm text-graphite">% of debt</span>
+                </div>
               </Field>
             </div>
             <div>

@@ -142,6 +142,29 @@ describe('the Buyer profile section', () => {
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/Partner saved\. Buyer profile saved, version 4\./))
   })
 
+  // #2268: the collections cap, set only in the database until now. Only the
+  // number is typed; "% of debt" is fixed text beside the box.
+  it('shows the collections cap with its fixed words beside the box, saves a change, and an empty box clears it', async () => {
+    vi.mocked(api.buyerProfiles.get).mockResolvedValue({ profile: { ...doc, collections_max_percent: 75 }, accept_signals: [], other_sellers: [] })
+    const onSave = await renderBuyer()
+    const box = screen.getByLabelText('Collections at most')
+    expect(box).toHaveValue(75)
+    expect(box.parentElement).toHaveTextContent('% of debt')
+    fireEvent.change(box, { target: { value: '80' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    expect(onSave.mock.calls[0][3]).toMatchObject({ profile: expect.objectContaining({ collections_max_percent: 80 }) })
+  })
+
+  it('an emptied collections cap is saved as no limit', async () => {
+    vi.mocked(api.buyerProfiles.get).mockResolvedValue({ profile: { ...doc, collections_max_percent: 75 }, accept_signals: [], other_sellers: [] })
+    const onSave = await renderBuyer()
+    fireEvent.change(screen.getByLabelText('Collections at most'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    expect(onSave.mock.calls[0][3]).toMatchObject({ profile: expect.objectContaining({ collections_max_percent: null }) })
+  })
+
   it('the bar says Saved only once the one save has landed, never while it is in flight, and a failure says nothing was saved', async () => {
     let fail!: (e: unknown) => void
     const onSave = await renderBuyer(vi.fn().mockImplementation(() => new Promise((_res, rej) => { fail = rej })))

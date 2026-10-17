@@ -697,6 +697,8 @@ body.doc { margin: 0; background: #f4f1ea; color: #1d212f; font-family: Mori, -a
 <li><b>Mark sent</b> pressing it opens an optional lead id box in the card; without an id the click is still counted and Completed in Salesforce.</li>
 <li><b>Salesforce not fully updated</b> every record listed with its result, the failure in Salesforce&#x27;s own words, then Retry Salesforce and Remove from the list (which asks first).</li>
 <li><b>Grey hint text</b> #697081, the lightest grey of the same hue that clears WCAG AA on both surfaces it sits on (4.60 to 1 on the beige page, 4.51 behind code on gray-100, 4.96 on white), so hints stay as quiet as they are and step back from the labels as far as AA allows. Today&#x27;s text-gray-500 fails (4.48 on beige); the darker 6 to 1 option sat too close to the labels. One token, text-hint, app wide through the shared Field. Settled in round 1 of #2144 (Dan, 2026-10-16), option &quot;Just passes&quot;. Section names stay dark, as drawn.</li>
+<li><b>Collections cap</b> in Eligibility, as two rows of two: Debt minimum and Debt maximum, then Loan amount minimum and Collections at most, so every field is the same width. Labelled Collections at most, with the box taking only the number and &quot;% of debt&quot; written beside it, and one line under it: a lead whose collections are more than this share of its debt is skipped; empty means no limit ("skipped" rather than "not offered", which the page already says of a buyer offered nothing). Settled in rounds 1 and 2 of #2268 (2026-10-17).</li>
+<li><b>A box holds only what is typed</b> any fixed words of a value (a unit such as &quot;% of debt&quot;) sit beside the box, never inside it as if typed. Dan, 2026-10-17, asked whether he would have to type &quot;of debt&quot; when it was drawn inside the box. A standing rule for the whole app.</li>
 </ol>
 
 <h2 class="part" id="requirements">Behaviour changes the design commits to</h2>
@@ -1419,7 +1421,10 @@ var GROUPS = [
     { title: "Sold on", body: function () { return [seg(["The offer", "The click"], "The click"), toggle(true, "Enabled")]; } },
     { title: "Eligibility", body: function () { return [
       states(ALL_STATES.filter(function (s) { return OFF_STATES.indexOf(s) < 0; }), "40 of 51 states"),
-      row(field("Debt minimum", input("$20,000")), field("Debt maximum", CONFLICT === "bar" ? h("div", "", [h("div", "inp edited", ["$55,000"]), h("p", "fld-h theirs", ["Brian saved $65,000. ", h("span", "lnk", ["Use theirs"])])]) : h("div", "inp edited", ["$55,000"])), field("Loan amount minimum", input("$10,000")))
+      row(field("Debt minimum", input("$20,000")), field("Debt maximum", CONFLICT === "bar" ? h("div", "", [h("div", "inp edited", ["$55,000"]), h("p", "fld-h theirs", ["Brian saved $65,000. ", h("span", "lnk", ["Use theirs"])])]) : h("div", "inp edited", ["$55,000"]))),
+      // #2268: two rows of two; only the number is typed, the words after it are fixed.
+      row(field("Loan amount minimum", input("$10,000")), field("Collections at most", h("div", "tierline", [input("75", { narrow: true }), h("span", "", ["% of debt"])]))),
+      h("p", "fld-h", ["A lead whose collections are more than this share of its debt is skipped. Empty means no limit."])
     ]; } },
     { title: "Hours", body: function () { return hoursEditor(); } },
     { title: "Caps", body: function () { return capsEditor(); } },

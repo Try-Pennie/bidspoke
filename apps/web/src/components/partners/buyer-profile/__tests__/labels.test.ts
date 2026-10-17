@@ -57,6 +57,9 @@ describe('the sold_on vocabulary on screen (#1541)', () => {
     for (const kind of SOLD_ON) expect(SOLD_ON_LABELS[kind].length).toBeGreaterThan(0)
     expect(profileFieldLabel('sold_on')).toBe('Sold on')
     expect(formatProfileValue('sold_on', 'click')).toBe(SOLD_ON_LABELS.click)
+    // #2268: the collections cap reads as the share of debt it is.
+    expect(profileFieldLabel('collections_max_percent')).toBe('Collections at most')
+    expect(formatProfileValue('collections_max_percent', 75)).toBe('75% of debt')
     expect(formatProfileValue('sold_on', 'offer')).toBe(SOLD_ON_LABELS.offer)
   })
 })
