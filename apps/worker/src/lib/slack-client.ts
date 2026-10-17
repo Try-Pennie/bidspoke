@@ -17,8 +17,9 @@
  *
  * lib/__tests__/slack-client.test.ts asserts both on what a built client does.
  *
- * Callers switched so far: deliverMessage in lib/slack.ts (every alert). The
- * rest follow one per pull request (#2331).
+ * Callers switched so far: deliverMessage in lib/slack.ts (every alert) and
+ * sendThreadReply beside it (the summary under an alert). The rest follow one
+ * per pull request (#2331).
  */
 import { SlackAPIClient, SlackAPIConnectionError, SlackAPIError } from 'slack-web-api-client'
 
@@ -61,9 +62,11 @@ export function slackCallFailure(e: unknown): SlackCallFailure | null {
 }
 
 /**
- * What a caller rethrows for a failure that was not a Slack answer: for a
- * network failure, the error the fetch itself threw (so the thrown value is the
- * one a hand written fetch threw before the switch), and anything else as is.
+ * What a caller rethrows or logs for a failure that was not a Slack answer: for
+ * a network failure, the error the fetch itself threw (so the value is the one
+ * a hand written fetch threw before the switch), and anything else as is.
+ * deliverMessage rethrows it; sendThreadReply, which never throws (F123), logs
+ * it.
  */
 export function slackNetworkCause(e: unknown): unknown {
   if (e instanceof SlackAPIConnectionError && e.status <= 0 && e.cause !== undefined) return e.cause
