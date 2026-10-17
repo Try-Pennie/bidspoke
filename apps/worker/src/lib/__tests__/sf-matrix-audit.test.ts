@@ -6,6 +6,7 @@ import { BID_RANGE_ROW_DESCRIBE } from './fixtures/bid-range-row-describe'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { registerScheduledSlack } from '../scheduled-slack'
 import { fakeClient, fakeTimers, kvWith, kvWithCopy, TEST_KEY } from './_scheduled-slack-doubles'
+import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 
 const FLAGS = partnerFlagsFromDescribe(BID_RANGE_ROW_DESCRIBE)
 // The 8 the audit hard coded until #1864.
@@ -219,7 +220,7 @@ describe('notifyAllOrgsWithSlack, delivery gates the snapshot', () => {
   it('posts one message per matrix and returns true when each delivers', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ ok: true, ts: '1.1' }), { status: 200 }))
     expect(await notifyAllOrgsWithSlack(makeSupabase(['org-1'], enabled), [alert, { ...alert, matrix: 'TLG' }], now, undefined)).toBe(true)
-    const bodies = fetchSpy.mock.calls.map((c) => JSON.parse(String((c[1] as RequestInit).body)) as { text: string })
+    const bodies = await Promise.all(fetchSpy.mock.calls.map((c) => slackPostOf(c)))
     expect(bodies.map((b) => b.text)).toEqual([
       'Bid matrix changed: SoFi, 1 bid, by Pat Example',
       'Bid matrix changed: TLG, 1 bid, by Pat Example',
@@ -269,6 +270,6 @@ describe('notifyAllOrgsWithSlack, delivery gates the snapshot', () => {
     registerScheduledSlack(client, { kv: await kvWithCopy({ 'org-1': { ...enabled, bot_token: 'xoxb-stored' } }), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep })
     expect(await notifyAllOrgsWithSlack(client, [alert], now, undefined)).toBe(true)
     expect(fetchSpy).toHaveBeenCalledTimes(1)
-    expect(String((fetchSpy.mock.calls[0][1] as RequestInit & { headers: Record<string, string> }).headers.Authorization)).toContain('xoxb-stored')
+    expect((await slackPostOf(fetchSpy.mock.calls[0])).token).toContain('xoxb-stored')
   })
 })

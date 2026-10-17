@@ -12,6 +12,7 @@
  * The rows below are built in the test; the token is a placeholder string.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { slackPostJsonOf, slackPostOf } from '../../__tests__/helpers/slack-fetch'
 import { encryptSecret, secretKeys } from '../secret-crypto'
 import { parseSlackConnection, resolveSlackConnection } from '../slack-connection'
 import { registerSlackKeyRing, slackKeyRingFor } from '../slack-key-ring'
@@ -113,9 +114,9 @@ describe('the request path reads a sealed row', () => {
       workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', error_message: 'boom', error_type: 'permanent', timestamp: '2026-10-17T00:00:00Z',
     }, 'https://app.example')
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
-    expect(url).toBe('https://slack.com/api/chat.postMessage')
-    expect((init.headers as Record<string, string>).Authorization).toBe(`Bearer ${SEALED_TOKEN}`)
+    const post = await slackPostOf(fetchMock.mock.calls[0])
+    expect(post.url).toBe('https://slack.com/api/chat.postMessage')
+    expect(post.token).toBe(SEALED_TOKEN)
   })
 
   it('a client with no ring that meets a sealed row fails loudly by name, never as no Slack', async () => {
@@ -171,7 +172,7 @@ describe('the Slack token page names a fix that changes the state it reports (L1
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, ts: '1.1' }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
     await sendSlackTokenUnreadableAlert({ bot_token: 'copy-bot-token' }, '#a', { reason, fellBackToPlaintext: false, appUrl: 'https://app.example' })
-    return String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body)
+    return slackPostJsonOf(fetchMock.mock.calls[0])
   }
 
   it('an undecryptable token: save the connection again, which seals it under the current key', async () => {
