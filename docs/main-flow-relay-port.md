@@ -166,14 +166,35 @@ posts one message to Main Flow's organization's alerts channel
 ([`apps/worker/src/lib/invalid-state-canary-watch.ts`](../apps/worker/src/lib/invalid-state-canary-watch.ts)).
 
 A run landed when its Submission holds this run's write stamp, holds this run's
-Bidspoke link in `PDFlow_4__c`, holds every other key the body sent with the
-value sent (`PDFlow_1__c` among them), and its Lead's `EngineUUID__c` and
+Bidspoke link in `PDFlow_1__c`, holds every other key the body sent with the
+value sent (`PDFlow_4__c` among them), and its Lead's `EngineUUID__c` and
 `EngineLeadUUID__c` equal the Submission's `Engine_UUID_SO__c` and
 `Engine_Lead_UUID_SO__c`. A read Salesforce did not answer is "could not be
 checked", never landed. Runs the step skipped are counted and said. The message
 gives the count, how many landed, each run that did not with what was wrong (by
-run, never a value), and the relay's figure over the same hours, which is what
-Pipedream accepted, not what reached Salesforce. A day with a run that did not
+run, never a value), and the relay's figure over the same hours.
+
+**The run link is `PDFlow_1__c`** (#2313). Every outcome post's body sends it as
+the run's Bidspoke link, on the relay and the direct write alike, and #2173 names
+it. `PDFlow_4__c` is the link the port adds (decision D4), but the inquiry relay,
+still on Pipedream, writes the same field with a Pipedream link on every run:
+on 2026-10-17 all six relay era invalid state Submissions held a pipedream.com
+link there, and the four direct ones held the Bidspoke link only because the
+direct write came after the inquiry relay's. So it cannot be read on the relay
+side at all, and on the direct side it is one more key sent. Every field name
+the check reads was confirmed against the live org that day with a read only
+describe and Tooling `FieldDefinition` (the list is in the file's header).
+
+**The relay's figure is what Salesforce saved** (#2313), not what Pipedream
+answered. Each morning a sample of 100 of the day's relay posts of the other
+outcome steps (about 3,400 a day), spread evenly over it, is read back the same
+way: the relay's own PATCH (the body with `executionId` and `submissionId`
+dropped and `UUID` and `leadUUID` renamed) against the Submission, with the
+link in `PDFlow_1__c`, and the Lead's Engine ids when the post sent them. A relay
+post has no write stamp, so a Submission holding a later Main Flow run's link
+was overwritten since and is left out, and a post with no Submission, which the
+relay's filter stops, is said apart. The relay reads share the direct reads'
+circuit and stop after five minutes. A day with a run that did not
 land or could not be checked is titled as an alert, and so is a day Main Flow
 spent off the direct write: an invalid state post that went through the relay
 after a direct one, or a day whose last post did (#2312). Relay posts from
