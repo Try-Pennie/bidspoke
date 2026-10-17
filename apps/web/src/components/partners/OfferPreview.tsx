@@ -44,15 +44,22 @@ function build(node: Node, key: string): ReactNode {
   return <span key={key}>{children}</span>
 }
 
-export function OfferPreview({ title, details }: { title: string; details: string }) {
-  if (title.trim() === '' && details.trim() === '') {
-    return <p className="text-sm text-gray-600">Nothing to show until a title or details are filled in.</p>
-  }
-  const body = new DOMParser().parseFromString(details, 'text/html').body
+/**
+ * The card is always drawn, as the settled design draws it (#2327, PM-24).
+ * With nothing filled in it holds `example`, the boxes' own placeholders, in
+ * the hint grey a placeholder is drawn in, so the card reads as an example and
+ * never as an offer someone wrote; a screen reader is told so first.
+ */
+export function OfferPreview({ title, details, example }: { title: string; details: string; example?: { title: string; details: string } }) {
+  const empty = title.trim() === '' && details.trim() === ''
+  const shown = empty && example ? example : { title, details }
+  const body = new DOMParser().parseFromString(shown.details, 'text/html').body
+  const tone = empty ? 'text-hint' : ''
   return (
-    <div className="rounded-lg border border-gray-200 bg-white px-3.5 py-3 text-sm text-graphite">
-      {title.trim() !== '' && <div className="mb-1.5 font-semibold">{title}</div>}
-      <div>{Array.from(body.childNodes).map((c, i) => build(c, String(i)))}</div>
+    <div data-offer-preview data-example={empty ? 'true' : 'false'} className="rounded-lg border border-line bg-white px-3.5 py-3 text-[13px] text-graphite">
+      {empty && <span className="sr-only">Nothing is filled in yet. An example: </span>}
+      {shown.title.trim() !== '' && <div className={`mb-1.5 font-semibold ${tone}`.trim()}>{shown.title}</div>}
+      <div className={tone || undefined}>{Array.from(body.childNodes).map((c, i) => build(c, String(i)))}</div>
     </div>
   )
 }
