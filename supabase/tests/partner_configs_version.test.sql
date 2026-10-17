@@ -40,8 +40,8 @@ INSERT INTO public.organizations (id, name, slug) VALUES ('11111111-1111-1111-11
 INSERT INTO public.users (id, organization_id, email, display_name) VALUES ('22222222-2222-2222-2222-22222222213a', '11111111-1111-1111-1111-111111112132', 'alice@example.test', 'Alice Suite');
 INSERT INTO public.users (id, organization_id, email, display_name) VALUES ('22222222-2222-2222-2222-22222222213b', '11111111-1111-1111-1111-111111112132', 'bob@example.test', 'Bob Suite');
 -- A partner last saved by Alice, through the app's insert shape.
-INSERT INTO public.partner_configs (id, organization_id, name, slug, partner_type, is_active, bid_mode, updated_by, updated_by_email, updated_by_name)
-VALUES ('33333333-3333-3333-3333-333333332132', '11111111-1111-1111-1111-111111112132', 'Version Buyer', 'version-buyer-2132', 'buyer', true, 'ping_only', '22222222-2222-2222-2222-22222222213a', 'alice@example.test', 'Alice Suite');
+INSERT INTO public.partner_configs (id, organization_id, name, slug, partner_type, is_active, bid_comparison_source, updated_by, updated_by_email, updated_by_name)
+VALUES ('33333333-3333-3333-3333-333333332132', '11111111-1111-1111-1111-111111112132', 'Version Buyer', 'version-buyer-2132', 'buyer', true, 'formula', '22222222-2222-2222-2222-22222222213a', 'alice@example.test', 'Alice Suite');
 -- A partner with no dependents, whose every column the catalogue case changes.
 INSERT INTO public.partner_configs (id, organization_id, name, slug, partner_type, is_active, updated_by, updated_by_email)
 VALUES ('33333333-3333-3333-3333-333333332133', '11111111-1111-1111-1111-111111112132', 'Column Buyer', 'column-buyer-2132', 'buyer', true, '22222222-2222-2222-2222-22222222213a', 'alice@example.test');
@@ -173,7 +173,7 @@ BEGIN
   SELECT * INTO v_row FROM public.partner_configs WHERE id = '33333333-3333-3333-3333-333333332132';
   IF v_row.name IS DISTINCT FROM 'Version Buyer Renamed' THEN RAISE EXCEPTION 'name not saved: %', v_row.name; END IF;
   IF v_row.daily_cap IS NOT NULL THEN RAISE EXCEPTION 'a JSON null should clear daily_cap, is %', v_row.daily_cap; END IF;
-  IF v_row.bid_mode IS DISTINCT FROM 'ping_only' THEN RAISE EXCEPTION 'a save that omits bid_mode changed it to %', v_row.bid_mode; END IF;
+  IF v_row.bid_comparison_source IS DISTINCT FROM 'formula' THEN RAISE EXCEPTION 'a save that omits bid_comparison_source changed it to %', v_row.bid_comparison_source; END IF;
   IF v_row.min_bid IS DISTINCT FROM 7 THEN RAISE EXCEPTION 'a save that omits min_bid changed it to %', v_row.min_bid; END IF;
   IF v_row.version IS DISTINCT FROM v0 + 1 THEN RAISE EXCEPTION 'the save should move the version to %, is %', v0 + 1, v_row.version; END IF;
   IF (v_out ->> 'version')::integer IS DISTINCT FROM v0 + 1 THEN RAISE EXCEPTION 'the save should return the new version, returned %', v_out ->> 'version'; END IF;
@@ -249,6 +249,30 @@ BEGIN
 END
 $do$;
 
+-- ── 14b. The dropped bid_mode is refused by name, not as a missing column (#2182) ──
+-- A stale client naming the column after its drop gets field_not_editable
+-- (BP422) rather than undefined_column (42703).
+DO $do$
+DECLARE v_state text; v_detail text; v integer; refused boolean := false;
+BEGIN
+  SELECT version INTO v FROM public.partner_configs WHERE id = '33333333-3333-3333-3333-333333332132';
+  BEGIN
+    PERFORM public.save_partner_config('11111111-1111-1111-1111-111111112132', '33333333-3333-3333-3333-333333332132', v,
+      '{"bid_mode":"commit"}'::jsonb, NULL, '22222222-2222-2222-2222-22222222213a', 'alice@example.test', 'Alice Suite');
+  EXCEPTION WHEN OTHERS THEN
+    GET STACKED DIAGNOSTICS v_state = RETURNED_SQLSTATE, v_detail = PG_EXCEPTION_DETAIL;
+    refused := true;
+  END;
+  IF NOT refused OR v_state IS DISTINCT FROM 'BP422' OR v_detail IS DISTINCT FROM 'bid_mode' THEN
+    RAISE EXCEPTION 'a bid_mode patch should be refused BP422 naming bid_mode, got % % (refused %)', v_state, v_detail, refused;
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = 'partner_configs' AND column_name = 'bid_mode') THEN
+    RAISE EXCEPTION 'partner_configs.bid_mode should be dropped (#2182)';
+  END IF;
+  INSERT INTO suite_cases(name) VALUES ('retired bid_mode refused');
+END
+$do$;
+
 -- ── 15. The Worker's role writes with every trigger firing as it ────────────
 -- POST inserts and the save function update as service_role; the trigger
 -- functions are revoked from PUBLIC and the helper they call is granted to it.
@@ -292,7 +316,6 @@ BEGIN
       WHEN c.column_name = 'organization_id' THEN quote_literal('11111111-1111-1111-1111-111111112133')
       WHEN c.column_name = 'updated_by' THEN quote_literal('22222222-2222-2222-2222-22222222213b')
       WHEN c.column_name = 'partner_type' THEN quote_literal('source')
-      WHEN c.column_name = 'bid_mode' THEN quote_literal('ping_only')
       WHEN c.column_name = 'bid_resolver_type' THEN quote_literal('formula')
       WHEN c.column_name = 'bid_comparison_source' THEN quote_literal('api')
       WHEN c.column_name = 'version' THEN 'version + 5'
@@ -350,7 +373,7 @@ DO $do$
 DECLARE n integer;
 BEGIN
   SELECT count(*) INTO n FROM suite_cases;
-  IF n IS DISTINCT FROM 17 THEN RAISE EXCEPTION 'partner_configs_version.test.sql: expected 17 cases, % ran', n; END IF;
+  IF n IS DISTINCT FROM 18 THEN RAISE EXCEPTION 'partner_configs_version.test.sql: expected 18 cases, % ran', n; END IF;
   RAISE NOTICE 'partner_configs_version.test.sql: % cases passed', n;
 END
 $do$;
