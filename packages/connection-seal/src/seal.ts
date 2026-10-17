@@ -75,12 +75,13 @@ function parseEnvelope(value: unknown): ParsedEnvelope {
     malformed(`the envelope has fields [${fields.join(', ')}], and must have exactly [${ENVELOPE_FIELDS.join(', ')}]`)
   }
   if (typeof record.kid !== 'string' || !KID_PATTERN.test(record.kid)) malformed('the envelope kid is not a kid')
-  const decoded: Record<'wrapped_key' | 'iv' | 'ct', Uint8Array<ArrayBuffer>> = {} as never
-  for (const field of ['wrapped_key', 'iv', 'ct'] as const) {
-    const bytes = typeof record[field] === 'string' ? fromBase64(record[field]) : null
+  const decodeField = (field: 'wrapped_key' | 'iv' | 'ct'): Uint8Array<ArrayBuffer> => {
+    const value = record[field]
+    const bytes = typeof value === 'string' ? fromBase64(value) : null
     if (!bytes) malformed(`the envelope ${field} is not base64`)
-    decoded[field] = bytes
+    return bytes
   }
+  const decoded = { wrapped_key: decodeField('wrapped_key'), iv: decodeField('iv'), ct: decodeField('ct') }
   if (decoded.iv.length !== IV_BYTES) malformed(`the envelope iv is ${decoded.iv.length} bytes, not ${IV_BYTES}`)
   if (decoded.ct.length < TAG_BYTES) malformed('the envelope ct is shorter than its tag')
   return { kid: record.kid, wrappedKey: decoded.wrapped_key, iv: decoded.iv, ct: decoded.ct }

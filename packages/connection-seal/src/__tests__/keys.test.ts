@@ -40,7 +40,7 @@ async function registryProblems(registry: Readonly<Record<string, string>>, curr
   }
   const bodies = Object.values(registry).map((pem) => pem.replace(/\s|-----[A-Z ]+-----/g, ''))
   if (new Set(bodies).size !== bodies.length) problems.push('one public key is registered under two kids')
-  if (currentKid !== null && !(currentKid in registry)) problems.push(`the current kid ${currentKid} is not registered`)
+  if (currentKid !== null && !Object.hasOwn(registry, currentKid)) problems.push(`the current kid ${currentKid} is not registered`)
   if (currentKid === null && Object.keys(registry).length > 0) problems.push('keys are registered but no kid is current')
   return problems
 }
@@ -80,6 +80,8 @@ describe('the public key registry', () => {
 
   it('flags a current kid that is not registered, and keys with no current kid', async () => {
     expect(await registryProblems({}, 'ops-2026-10')).toEqual(['the current kid ops-2026-10 is not registered'])
+    // A kid every object answers to through its prototype is still not registered.
+    expect(await registryProblems({}, 'constructor')).toEqual(['the current kid constructor is not registered'])
     expect(await registryProblems({ 'ops-2026-10': strong.publicPem }, null)).toEqual([
       'keys are registered but no kid is current',
     ])
