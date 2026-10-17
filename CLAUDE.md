@@ -17,7 +17,9 @@
 - `apps/worker` — Cloudflare Worker (API + execution engine)
 - `apps/worker-tail`: tail consumer that writes per-execution cost, and copies each
   cron guard `FAILED OPEN` log line into `cron_guard_fail_opens` (#2166), the second
-  record the hourly cron guard check counts alongside its own KV record
+  record the hourly cron guard check counts alongside its own KV record, and copies
+  each `[cron-once] delivery` line into `cron_tick_deliveries` (#2284), the record of
+  every tick delivery the check reads to page on a tick that may have run twice
 - `apps/compare-outbound`: the outbound Worker of the `bidspoke-code-nodes-compare`
   dispatch namespace (#1708). Shadow runs dispatch their code there, and it refuses
   every request a script makes, so a shadow run sends nothing. Its own deploy leg.
@@ -242,7 +244,7 @@ These are set via `wrangler secret put <NAME> --name bidspoke-worker` and never 
 | Supabase | `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `SUPABASE_PUBLISHABLE_KEY` |
 | Webhook auth | `API_KEY_MAP` (JSON map of webhook API keys to source names) |
 | Cloudflare (partner-secret sync) | `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID` |
-| Encryption / PII | `SECRET_ENCRYPTION_KEY` (decrypts every secret environment variable on every run, and reveal), `SSN_HASH_PEPPER` (the archive's erasure resolver, never rotate it) |
+| Encryption / PII | `SECRET_ENCRYPTION_KEY` (decrypts every secret environment variable on every run, and reveal, plus the `app_settings` encrypted values, the held Salesforce write-back deadletters and the sealed Slack bot token), `SSN_HASH_PEPPER` (the archive's erasure resolver, never rotate it) |
 | Snowflake export | `SNOWFLAKE_ACCOUNT`, `SNOWFLAKE_USER`, `SNOWFLAKE_PRIVATE_KEY`, `SNOWFLAKE_DATABASE`, `SNOWFLAKE_SCHEMA`, `SNOWFLAKE_WAREHOUSE`, `SNOWFLAKE_ROLE` |
 | Salesforce | `SALESFORCE_INSTANCE_URL`, `SALESFORCE_CLIENT_ID`, `SALESFORCE_CLIENT_SECRET` |
 | Partner APIs | `EQUIFAX_USERNAME`, `EQUIFAX_PASSWORD`, `TRIPOINT_PROXY_SECRET`, `ACHIEVE_USERNAME`, `ACHIEVE_PASSWORD`, `ACHIEVE_API_URL`, `SCOUT_KEY`, `ACHIEVE_PARTNER_KEY` (shared with Achieve, matched by their firewall Skip rule; see disaster-recovery.md), `LINK_TOKEN_SECRET` (signs the trypennie.com offer links, #2089, the RML reservemyloan.com links and the Forms submit link, #2092; shared with Salesforce, trypennie.com and the Pipedream RML workflows) |
@@ -251,13 +253,13 @@ These are set via `wrangler secret put <NAME> --name bidspoke-worker` and never 
 ### Cloudflare log access is partner API key access (#958)
 The `Workers trace events` stream carries request headers with values intact, `X-API-Key` included, so anyone who can `wrangler tail` this worker or read Workers Logs can read every partner webhook key. Measured 2026-09-09. Grant log access on that basis, and delete any tail capture you write to a file: it is a file full of live partner credentials. The Better Stack Logpush job did forward those header fields until 2026-09-09, when its field list was narrowed to drop `Logs` and `Event`; the history it already holds stays there by Dan's decision (#1007, closed). The daily check now reads the Logpush job list itself, with a token that carries Logs Write because Cloudflare offers no read only scope for that API (#1010, closed). Full note in [docs/disaster-recovery.md](./docs/disaster-recovery.md).
 
-Two secrets cannot be re-derived if lost, and are escrowed in the 1Password item `Bidspoke recovery keys` (#384): `SSN_HASH_PEPPER` (a new value leaves every archived record unfindable by SSN for an erasure request) and `SECRET_ENCRYPTION_KEY` (every stored secret environment variable is locked with it).
+Two secrets cannot be re-derived if lost, and are escrowed in the 1Password item `Bidspoke recovery keys` (#384): `SSN_HASH_PEPPER` (a new value leaves every archived record unfindable by SSN for an erasure request) and `SECRET_ENCRYPTION_KEY` (every stored secret environment variable, the `app_settings` encrypted values, the held Salesforce write-back deadletters and the sealed Slack bot token are locked with it).
 
 ### Rotating `SECRET_ENCRYPTION_KEY`
 The engine decrypts every secret environment variable with this key on every execution (`lib/env-loader.ts`), so it is never swapped in one step: a secret that no longer decrypts is skipped, and a node reading it through `{{env.X}}` gets nothing. Rotate it in four steps with no window where anything fails to decrypt (#384):
 
 1. Generate the new key and save it in the recovery 1Password item FIRST, then set it as `SECRET_ENCRYPTION_KEY_NEXT` (pipe the value in, never type it on a command line). While NEXT is set, new writes lock with it and reads accept either key (`secretKeys(env)` in `lib/secret-crypto.ts`).
-2. `POST /api/admin/reencrypt-secrets` with `{"dryRun": false}` re-locks every stored value (the secret environment variables, `app_settings.value_encrypted`, and the encrypted columns of `outcome_writeback_deadletters`, the failed Salesforce writes held for replay, #1993). It previews by default. Re-run until it reports `ok: true` and nothing left to re-lock.
+2. `POST /api/admin/reencrypt-secrets` with `{"dryRun": false}` re-locks every stored value (the secret environment variables, `app_settings.value_encrypted`, and the encrypted columns of `outcome_writeback_deadletters`, the failed Salesforce writes held for replay, #1993, and the sealed Slack bot token in `service_connections.credential_enc` where `sealed_for` is `bidding_ring`, #2331). It previews by default. Re-run until it reports `ok: true` and nothing left to re-lock.
 3. Wait at least 24 hours after step 1, then set `SECRET_ENCRYPTION_KEY` to the same value, from the 1Password copy, and delete `SECRET_ENCRYPTION_KEY_NEXT`. The wait is for the at-risk Salesforce write records in KV (`at-risk-write:`, #2022): the route does not re-lock them, so one written under the old key must expire (24 hours) before the old key stops opening it.
 4. Run the route once more as a preview: every row should count as already current under the primary alone.
 
