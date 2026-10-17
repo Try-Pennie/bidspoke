@@ -74,14 +74,14 @@ describe('bid mode is off the partners page (PM-9, #2136)', () => {
     expect('bid_mode' in onSave.mock.calls[0][0]).toBe(false)
   })
 
-  it('a new partner shows no control and its create body carries no bid_mode, so the Worker stores its default', async () => {
+  it('a new partner\'s create body carries no bid_mode, so the Worker stores its default', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined)
     render(<PartnerForm onSave={onSave} onCancel={vi.fn()} />)
-    // A new partner's bidding settings are one press away (#2137).
-    fireEvent.click(screen.getByRole('button', { name: 'Set up for Bid Group' }))
-    expectNoBidModeControl()
-    fireEvent.change(screen.getByPlaceholderText('Tripoint'), { target: { value: 'Acme' } })
-    save()
+    // The new partner page asks only the name, slug and what it does (#2321), so
+    // no bidding setting is on it at all; what matters is the body it sends.
+    expect(screen.queryByText('Bid mode')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'Acme' } })
+    fireEvent.submit(document.querySelector('form')!)
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
     const body = onSave.mock.calls[0][0] as Record<string, unknown>
     expect(body.name).toBe('Acme')

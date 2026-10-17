@@ -3,7 +3,7 @@
 import { useState, useEffect, useId, useMemo, useReducer, useRef, useContext } from 'react'
 import { createPortal } from 'react-dom'
 import type { Partner, PartnerBody, PartnerDeleted, PartnerUuid, PartnerBidConfig, BidResolverType, BidComparisonSource, ExtraExtractionConfig, PartnerPageSaveRequest, PartnerPageStale } from '@/lib/api'
-import { PARTNER_TYPES, isBuyerPartner, isSourcePartner, partnerTypeLabel, type PartnerType } from '@/lib/partner-roles'
+import { PARTNER_TYPES, isBuyerPartner, isSourcePartner, partnerTypeFromDoes, partnerTypeLabel, type PartnerType } from '@/lib/partner-roles'
 import {
   buildPartnerBody, changedPatch, draftReducer, initDraft, inversePatch, parseList, listToString, parseRoutingCode, snapshotOf, PARTNER_FIELD_REGISTRY,
   type FormSnapshot, type SignalRules, type SubAccountFloor,
@@ -12,7 +12,7 @@ import {
 import { formatElapsed, formatEtDayTime } from '@/lib/dates'
 import { pickupSentence } from '@/lib/bidding-pickup'
 import { api } from '@/lib/api'
-import { errorSentence } from '@/lib/error-sentence'
+import { causeAsSentence, errorSentence, requestFailureCause } from '@/lib/error-sentence'
 import { Plus } from 'lucide-react'
 import { BidResolverEditor } from '@/components/partners/BidResolverEditor'
 import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
@@ -29,12 +29,12 @@ import { mergeThreeWay, sameMergeValue, type MergeResult, type MergeSide, type P
 import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
 import { clickDeliveryConsequences } from '@/components/partners/buyer-profile/click-delivery-consequences'
 import { profileWithChangedZoneOnly } from '@/components/partners/buyer-profile/display-zone'
-import { Button, ChoiceGroup, Field, FieldError, NumberInput, TextArea, TextInput, describedBy } from '@/components/ui/form'
+import { Button, Checkbox, ChoiceGroup, Field, FieldError, NumberInput, TextArea, TextInput, describedBy } from '@/components/ui/form'
 import { Toggle } from '@/components/ui/Toggle'
 import { documentToProfile, soldOnSwitchBlocked, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal, type StoredKind } from '@bidspoke/buyer-profile'
 import { leaveThen, useLeaveGuard, type LeaveRequest } from '@/lib/leave-guard'
 import { changedUnits } from '@/lib/partner-page-merge'
-import { SaveBar, type SaveBarState } from '@/components/partners/SaveBar'
+import { SaveBar, SaveBarDock, type SaveBarState } from '@/components/partners/SaveBar'
 import { LeaveDialog } from '@/components/partners/LeaveDialog'
 import { ACCESS_REMOVED, SESSION_EXPIRED, namedAsShown, refusedSentence, unsavedSentence } from './save-bar-text'
 import { Tabs, TabPanel } from '@/components/ui/Tabs'
@@ -345,6 +345,15 @@ export default function PartnerForm({
   const [alertPermanent, setAlertPermanent] = useState(initial.alertPermanent)
 
   const [partnerType, setPartnerType] = useState<PartnerType>(initial.partnerType)
+  // A new partner's two Does boxes (#2321, PM-18). Neither ticked is no type at
+  // all, which Create partner waits on; otherwise the type follows the boxes.
+  const [newDoes, setNewDoes] = useState(() => ({ sends: isSourcePartner(initial.partnerType), buys: isBuyerPartner(initial.partnerType) }))
+  function changeDoes(next: { sends: boolean; buys: boolean }) {
+    setNewDoes(next)
+    const type = partnerTypeFromDoes(next)
+    if (type) setPartnerType(type)
+  }
+  const newDoesSomething = partnerTypeFromDoes(newDoes) !== null
 
   const [sellOffOfferTitle, setSellOffOfferTitle] = useState(initial.sellOffOfferTitle)
   const [sellOffOfferDetails, setSellOffOfferDetails] = useState(initial.sellOffOfferDetails)
@@ -712,7 +721,7 @@ export default function PartnerForm({
       // check names them (#1464).
       const message = refused ?? (!hasSentence && errors.length > 0
         ? `${lead}. Fix the buyer profile first: ${describeProfileErrors(errors, profileDoc?.sold_on ?? profile?.sold_on ?? null)}`
-        : `${lead}: ${errorSentence(err, 'the partner save failed')}`)
+        : `${lead}: ${causeAsSentence(requestFailureCause(err, 'the partner save failed'))}`)
       setSaveOutcome({ kind: 'failed', message, retry: refused ? 'Save changes' : undefined })
       return { kind: 'refused' }
     }
@@ -1130,6 +1139,12 @@ export default function PartnerForm({
    */
   async function submit(): Promise<SubmitResult> {
     if (savingRef.current) return 'not_saved'
+    // Every way a create is pressed (the bar, Enter in a box, Try again, Save and
+    // open it) comes through here, so the Create partner rule is kept here.
+    if (isNew && (!name || !newDoesSomething)) {
+      setSaveOutcome({ kind: 'failed', message: !name ? 'Not created: give the partner a name.' : 'Not created: tick what the partner does, Sends us leads or Buys leads.', retry: null })
+      return 'not_saved'
+    }
     setProfileErrors([])
     // Another person's live save changed a field being edited (#2135): asked first.
     // Asked, not saved: Save and open it stays on the page while the merge dialog is open.
@@ -1169,7 +1184,7 @@ export default function PartnerForm({
       try {
         await onSave(built, undefined, pendingUuids)
       } catch (err) {
-        const sentence = errorSentence(err, 'the partner save failed')
+        const sentence = causeAsSentence(requestFailureCause(err, 'the partner save failed'))
         setProfileErrors(fieldErrorsOf(err))
         setSaveOutcome({ kind: 'failed', message: `Nothing saved: ${sentence}` })
         return 'not_saved'
@@ -1277,7 +1292,7 @@ export default function PartnerForm({
           canDiscard: dirty && !isNew,
           showMe: refusedProblem?.tab ? { label: TAB_LABELS[refusedProblem.tab] } : null,
         }
-          : isNew ? { kind: 'new', canCreate: Boolean(name) }
+          : isNew ? { kind: 'new', canCreate: Boolean(name) && newDoesSomething }
             : saveOutcome.kind === 'done' && !dirty ? { kind: 'done', message: saveOutcome.message, undoSeconds: undo ? undoSecondsLeft : null, copyWarning: copyWarningText }
               // Another person's live save (#2135) is said under what is unsaved: fields both
               // changed are asked on Save, and what of theirs was taken is named.
@@ -1286,7 +1301,9 @@ export default function PartnerForm({
                 note: liveHeld ? liveConflictSentence(liveHeld.theirName, liveHeld.keys.length) : saveOutcome.kind === 'done' ? saveOutcome.message : null,
               }
                 : null
-  const bar = barState && (
+  // No bar behind the merge dialog (#2322, design frame 12): the dialog says it
+  // all, and the bar comes back, saying it is not saved, on Keep editing.
+  const bar = barState && !mergeOpen && (
     <SaveBar
       state={barState}
       formId={formId}
@@ -1304,7 +1321,7 @@ export default function PartnerForm({
       <div className="mb-6 flex items-center justify-between">
         <div>
           {isNew
-            ? <h2 className="text-lg font-medium text-hint">New partner</h2>
+            ? <h2 className="text-2xl font-semibold text-graphite">New partner</h2>
             : <h2 className="text-2xl font-bold text-graphite">{name || <span className="text-gray-300">Unnamed</span>}</h2>
           }
           {!isNew && (
@@ -1346,6 +1363,35 @@ export default function PartnerForm({
       )}
 
       <form id={formId} onSubmit={handleSubmit} className="space-y-8">
+        {isNew ? (
+          // Its own page (design frame 5): what a partner needs before it exists, and
+          // nothing more. Everything else is set on its tabs once it is created.
+          <div>
+            <PartnerSection title="Name" region={false}>
+              <Field id="partner-name" label="Name" labelHidden>
+                <TextInput id="partner-name" value={name} onChange={handleNameChange} placeholder="Acme Lending" />
+              </Field>
+            </PartnerSection>
+            <PartnerSection title="Slug" region={false}>
+              <Field id="partner-slug" label="Slug" labelHidden hint="Made from the name. Workflows and logs use it, and it cannot change after the partner is created.">
+                <TextInput
+                  id="partner-slug"
+                  value={slug}
+                  onChange={(v) => { setSlug(v); setSlugManuallyEdited(true) }}
+                  placeholder="acme-lending"
+                  mono
+                  describedBy={describedBy('partner-slug', true, false)}
+                />
+              </Field>
+            </PartnerSection>
+            <PartnerSection title="Does">
+              <div className="flex flex-col gap-1.5">
+                <Checkbox id="partner-does-sends" label="Sends us leads" checked={newDoes.sends} onChange={(v) => changeDoes({ ...newDoes, sends: v })} />
+                <Checkbox id="partner-does-buys" label="Buys leads" checked={newDoes.buys} onChange={(v) => changeDoes({ ...newDoes, buys: v })} />
+              </div>
+            </PartnerSection>
+          </div>
+        ) : (
         <Tabs<PartnerTab>
           label={isNew ? 'New partner settings' : `${partner.name} settings`}
           value={tab}
@@ -1357,22 +1403,6 @@ export default function PartnerForm({
               <Field id="partner-name" label="Name" hint="Display name shown in the UI.">
                 <TextInput id="partner-name" value={name} onChange={handleNameChange} placeholder="Tripoint" describedBy={describedBy('partner-name', true, false)} />
               </Field>
-              {isNew && (
-                <Field
-                  id="partner-slug"
-                  label="Slug"
-                  hint="Lowercase identifier used in logs and workflow references. Cannot be changed after creation."
-                >
-                  <TextInput
-                    id="partner-slug"
-                    value={slug}
-                    onChange={(v) => { setSlug(v); setSlugManuallyEdited(true) }}
-                    placeholder="tripoint"
-                    mono
-                    describedBy={describedBy('partner-slug', true, false)}
-                  />
-                </Field>
-              )}
               <div>
                 <ChoiceGroup
                   id="partner-type"
@@ -1774,6 +1804,7 @@ export default function PartnerForm({
             </TabPanel>
           )}
         </Tabs>
+        )}
 
       </form>
 
@@ -1803,7 +1834,7 @@ export default function PartnerForm({
         gives it one, otherwise after the form. Its Save and Create buttons
         submit this form by id, so Enter in a field still saves.
       */}
-      {barSlot && bar ? createPortal(bar, barSlot) : bar}
+      {barSlot ? createPortal(<SaveBarDock bar={bar || null} slideOut={barState?.kind === 'done'} />, barSlot) : <SaveBarDock bar={bar || null} slideOut={barState?.kind === 'done'} />}
 
       {leaveAsk && (
         <LeaveDialog

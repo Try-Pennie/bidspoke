@@ -249,6 +249,13 @@ html {
   .dialog-md {
     @apply max-w-lg;
   }
+  .dialog-wide {
+    @apply max-w-[600px];
+  }
+  /* The merge dialog's Keep yours / Use theirs strip, small as drawn (#2322). */
+  .merge-choice .choice {
+    @apply px-2 py-[3px] text-xs;
+  }
   .dialog-lg {
     @apply max-w-3xl;
   }
@@ -267,6 +274,14 @@ html {
   /* The partners page save bar (#2138, components/partners/SaveBar.tsx), as the
      settled design draws it: a navy bar across the foot of the form pane, white
      words, its secondary buttons outlined on the navy, a failure's words pink. */
+  /* The bar slides down and fades as it goes (#2322); SAVE_BAR_LEAVE_MS matches.
+     Where motion is reduced it simply goes. */
+  .save-bar-dock {
+    @apply transition-[transform,opacity] duration-[250ms] ease-in motion-reduce:transition-none;
+  }
+  .save-bar-leaving {
+    @apply pointer-events-none translate-y-full opacity-0;
+  }
   .save-bar {
     @apply flex flex-none flex-wrap items-center gap-3 border-t border-navy bg-navy px-8 py-3 text-[13px] text-white;
   }
@@ -453,6 +468,14 @@ html {
   .partner-page :is(.input, .select-trigger) {
     @apply min-h-[30px] py-[5px];
   }
+  /* A placeholder while the list loads (#2321, design frame 3): a beige bar
+     with a light band moving across it. Still where motion is reduced. */
+  .partner-skeleton {
+    @apply rounded bg-[#ECE6DB] bg-no-repeat motion-safe:animate-[partner-shimmer_1.4s_linear_infinite];
+    background-image: linear-gradient(90deg, transparent 0, rgba(255, 255, 255, 0.55) 50%, transparent 100%);
+    background-size: 40% 100%;
+    background-position: -40% 0;
+  }
   .partner-page .choice {
     @apply px-2.5 py-1 text-[12.5px];
   }
@@ -480,4 +503,9 @@ html {
   border-radius: 9999px;
   background-color: #d1d5db;
   border: 2px solid white;
+}
+
+@keyframes partner-shimmer {
+  from { background-position: -40% 0; }
+  to { background-position: 140% 0; }
 }

@@ -49,13 +49,23 @@ export interface MergeUnit {
   label: string
 }
 
+/** A change only one side made, with the value it had and the value it takes (#2322: the dialog shows both). */
+export interface MergeChange extends MergeUnit {
+  from: unknown
+  to: unknown
+}
+
 export interface MergeConflict extends MergeUnit {
   base: unknown
   mine: unknown
   theirs: unknown
   /** Why the merge was refused at this unit (the validator's sentence), or null for an edit both made. */
   reason: string | null
-  /** What a person chose, or null while undecided. */
+  /**
+   * What a person chose. A plain edit both made starts at mine, so Save both is
+   * ready (#2322, the settled design: Keep yours is chosen); one the save would
+   * refuse (a reason) starts at null and must be answered.
+   */
   choice: MergeSide | null
 }
 
@@ -68,10 +78,10 @@ export interface MergeSection {
 export interface MergeResult {
   /** Both halves with every one sided change applied and each conflict as chosen (mine while undecided). */
   merged: PageHalves
-  /** Their changes, taken with no question. */
-  autoTaken: MergeUnit[]
-  /** My changes, kept with no question. */
-  mineKept: MergeUnit[]
+  /** Their changes, taken with no question, from the value before to theirs. */
+  autoTaken: MergeChange[]
+  /** My changes, kept with no question, from the value before to mine. */
+  mineKept: MergeChange[]
   /** The questions, grouped by section in registry order. */
   conflicts: MergeSection[]
 }
@@ -192,7 +202,7 @@ export function mergeThreeWay(
     if (canon(m) === canon(t)) { decided.set(key, 'mine'); if (canon(m) !== canon(b)) mineKept.push(key); continue }
     if (canon(m) === canon(b)) { decided.set(key, 'theirs'); autoTaken.push(key); continue }
     if (canon(t) === canon(b)) { decided.set(key, 'mine'); mineKept.push(key); continue }
-    conflicts.set(key, { ...unitOf(key, u.entry), base: b, mine: m, theirs: t, reason: null, choice: choices[key] ?? null })
+    conflicts.set(key, { ...unitOf(key, u.entry), base: b, mine: m, theirs: t, reason: null, choice: choices[key] ?? 'mine' })
   }
 
   const build = (sideFor: (key: string) => MergeSide): PageHalves => {
@@ -236,7 +246,7 @@ export function mergeThreeWay(
         const targets = differing.length > 0 ? differing : [...autoTaken, ...mineKept]
         for (const key of targets) {
           const existing = conflicts.get(key)
-          if (existing) { existing.reason = existing.reason ? `${existing.reason} ${message}` : message; continue }
+          if (existing) { existing.reason = existing.reason ? `${existing.reason} ${message}` : message; existing.choice = choices[key] ?? null; continue }
           const { b, m, t } = three(key)
           conflicts.set(key, { ...unitOf(key, units.get(key)!.entry), base: b, mine: m, theirs: t, reason: message, choice: choices[key] ?? null })
         }
@@ -253,12 +263,15 @@ export function mergeThreeWay(
     if (last && last.section === c.section) last.conflicts.push(c)
     else sections.push({ section: c.section, tab: c.tab, conflicts: [c] })
   }
-  const named = (keys: string[]) => keys.filter((k) => !conflicts.has(k)).sort((a, b) => entryIndex(a) - entryIndex(b) || a.localeCompare(b)).map((k) => unitOf(k, units.get(k)!.entry))
+  const named = (keys: string[], to: 'm' | 't'): MergeChange[] => keys.filter((k) => !conflicts.has(k)).sort((a, b) => entryIndex(a) - entryIndex(b) || a.localeCompare(b)).map((k) => {
+    const v = three(k)
+    return { ...unitOf(k, units.get(k)!.entry), from: v.b, to: v[to] }
+  })
 
   return {
     merged: build(defaultSide),
-    autoTaken: named(autoTaken),
-    mineKept: named(mineKept),
+    autoTaken: named(autoTaken, 't'),
+    mineKept: named(mineKept, 'm'),
     conflicts: sections,
   }
 }
