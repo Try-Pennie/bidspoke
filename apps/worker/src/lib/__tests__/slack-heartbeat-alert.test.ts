@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { sendCronHeartbeatAlert } from '../slack'
+import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 
 /**
  * The Slack message for a watched cron that is not doing its job (#358, #985).
@@ -44,7 +45,7 @@ const job = {
 }
 
 /** The body posted to Slack by the last call. */
-const lastPost = () => JSON.parse((vi.mocked(fetch).mock.calls.at(-1)?.[1] as { body: string }).body)
+const lastPost = async () => (await slackPostOf(vi.mocked(fetch).mock.calls.at(-1) ?? []))
 const textOf = (post: { blocks: { text: { text: string } }[] }) => post.blocks.map((b) => b.text.text).join('\n')
 
 beforeEach(() => {
@@ -69,7 +70,7 @@ describe('sendCronHeartbeatAlert', () => {
     const sent = await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
 
     expect(sent).toBe(true)
-    const post = lastPost()
+    const post = (await lastPost())
     expect(post.blocks[0].text.text).toBe('Execution archive to Snowflake started and never finished')
     const text = textOf(post)
     expect(text).toContain('~90 minutes ago')
@@ -98,7 +99,7 @@ describe('sendCronHeartbeatAlert', () => {
   it('says how long nothing has finished for a minute job, not when a run started', async () => {
     const minuteJob = { ...job, triggerCron: '* * * * *', completionDroughtMs: 10 * 60_000 }
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', minuteJob, 'vanished', 11 * 60_000)
-    const text = textOf(lastPost())
+    const text = textOf((await lastPost()))
     expect(text).toContain('No run has finished in ~11 minutes')
     expect(text).not.toContain('A run started')
     expect(text).toContain('no run has stamped a completion for that long')
@@ -107,13 +108,13 @@ describe('sendCronHeartbeatAlert', () => {
 
   it('tells the reader what an ok outcome means: the run finished late', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
-    expect(textOf(lastPost())).toMatch(/outcome is ok.*finished after this check looked/i)
+    expect(textOf((await lastPost()))).toMatch(/outcome is ok.*finished after this check looked/i)
   })
 
   it('names no likely cause, and no resource outcome, for a vanished run', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
 
-    const text = textOf(lastPost())
+    const text = textOf((await lastPost()))
     for (const guess of ['exceededMemory', 'exceededCpu', 'out of memory', 'most likely']) {
       expect(text).not.toContain(guess)
     }
@@ -125,7 +126,7 @@ describe('sendCronHeartbeatAlert', () => {
   it('names the fact to look for, not a route through the Cloudflare console', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
 
-    const text = textOf(lastPost())
+    const text = textOf((await lastPost()))
     for (const route of ['Workers Logs', 'Settings >', 'Metrics', 'eventType', '$workers']) {
       expect(text).not.toContain(route)
     }
@@ -137,7 +138,7 @@ describe('sendCronHeartbeatAlert', () => {
   it('does not claim a vanished run accomplished nothing', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
 
-    const text = textOf(lastPost())
+    const text = textOf((await lastPost()))
     expect(text).not.toContain('nothing it was meant to do')
     expect(text).toContain('may have completed part of its work')
   })
@@ -147,7 +148,7 @@ describe('sendCronHeartbeatAlert', () => {
   for (const status of ['vanished', 'stale', 'never_ran', 'unstamped'] as const) {
     it(`a ${status} alert leads with what happened and keeps the schedule string to its last line`, async () => {
       await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, status, 90 * 60_000)
-      const sections = lastPost().blocks.slice(1).map((b: { text: { text: string } }) => b.text.text)
+      const sections = (await lastPost()).blocks.slice(1).map((b: { text: { text: string } }) => b.text.text)
       expect(sections.slice(0, -1).join('\n')).not.toContain(job.triggerCron)
       expect(sections.at(-1)).toContain(job.triggerCron)
       expect(sections[0]).not.toMatch(/^The .* cron/)
@@ -158,7 +159,7 @@ describe('sendCronHeartbeatAlert', () => {
     const now = Date.parse('2026-10-05T13:00:00Z')
     const standing = { since: new Date(now - 26 * 3_600_000).toISOString(), alerts: 2 }
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000, standing, now)
-    const sections = lastPost().blocks.slice(1).map((b: { text: { text: string } }) => b.text.text)
+    const sections = (await lastPost()).blocks.slice(1).map((b: { text: { text: string } }) => b.text.text)
     expect(sections.at(-1)).toContain(job.triggerCron)
     expect(sections.slice(0, -1).join('\n')).not.toContain(job.triggerCron)
   })
@@ -166,14 +167,14 @@ describe('sendCronHeartbeatAlert', () => {
   it('says when the next run retries in words, not as a schedule string', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 15 * 60_000)
     // The fix line itself, not the schedule line every alert ends with.
-    const fix = lastPost().blocks.map((b: { text: { text: string } }) => b.text.text).find((t: string) => t.startsWith('*How to fix:*'))
+    const fix = (await lastPost()).blocks.map((b: { text: { text: string } }) => b.text.text).find((t: string) => t.startsWith('*How to fix:*'))
     expect(fix).toContain('tries again on its own (every hour at :23)')
   })
 
   it('says a stale job is dark and points at the trigger configuration, not at termination reasons', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'stale', 3 * 3_600_000)
 
-    const post = lastPost()
+    const post = (await lastPost())
     expect(post.blocks[0].text.text).toBe('Execution archive to Snowflake is dark')
     const text = textOf(post)
     expect(text).toContain('has not run in ~3h')
@@ -185,7 +186,7 @@ describe('sendCronHeartbeatAlert', () => {
   it('points a cron of another Worker at that Worker, not at this one\'s wrangler.toml (#1949)', async () => {
     const { cronJob } = await import('../cron-heartbeat')
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', cronJob('ops-tick'), 'never_ran', 30 * 60_000)
-    const text = textOf(lastPost())
+    const text = textOf((await lastPost()))
     expect(text).toContain('wrangler.ops.toml')
     expect(text).toContain('OPS_GATEWAY')
     expect(text).not.toContain('wrangler.toml `[triggers]` must list')
@@ -194,7 +195,7 @@ describe('sendCronHeartbeatAlert', () => {
   it('says a never-ran job has not run since it was first observed', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'never_ran', 27 * 3_600_000)
 
-    const text = textOf(lastPost())
+    const text = textOf((await lastPost()))
     expect(text).toContain('has not run since it was first observed ~27h ago')
     expect(text).not.toContain('never finished')
   })
@@ -203,7 +204,7 @@ describe('sendCronHeartbeatAlert', () => {
     const headers = new Set<string>()
     for (const status of ['stale', 'never_ran', 'vanished'] as const) {
       await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, status, 2 * 3_600_000)
-      headers.add(lastPost().blocks[0].text.text)
+      headers.add((await lastPost()).blocks[0].text.text)
     }
     // stale and never_ran share the "is dark" header by design: both mean the
     // trigger is not firing and share one remedy. vanished must not join them.
@@ -216,10 +217,10 @@ describe('sendCronHeartbeatAlert', () => {
     const standing = { since: new Date(now - 26 * 3_600_000).toISOString(), alerts: 2 }
 
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'stale', 3 * 3_600_000, standing, now, true)
-    expect(textOf(lastPost())).toContain('nothing about it has changed: this is reminder 3')
+    expect(textOf((await lastPost()))).toContain('nothing about it has changed: this is reminder 3')
 
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'stale', 3 * 3_600_000, standing, now)
-    expect(textOf(lastPost())).not.toContain('nothing about it has changed')
-    expect(textOf(lastPost())).toContain('same problem as before')
+    expect(textOf((await lastPost()))).not.toContain('nothing about it has changed')
+    expect(textOf((await lastPost()))).toContain('same problem as before')
   })
 })

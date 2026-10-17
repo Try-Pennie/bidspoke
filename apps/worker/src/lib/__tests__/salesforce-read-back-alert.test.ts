@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { composeSalesforceReadBackAlert, NAMED_WRITES, type ReadBackAlertWrite, type SalesforceReadBackAlert } from '../salesforce-read-back-alert'
 import { sendSalesforceReadBackAlert } from '../slack'
+import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 
 const APP = 'https://app.test'
 // 00:29 UTC on Oct 15 is 8:29 PM ET on Oct 14.
@@ -189,7 +190,7 @@ describe('sendSalesforceReadBackAlert', () => {
     vi.stubGlobal('fetch', fetchMock)
     const ok = await sendSalesforceReadBackAlert({ bot_token: 'x', default_channel: '#alerts' }, { kind: 'resend_failed', writes: [write({ detail: 'x' })] }, APP)
     expect(ok).toBe(true)
-    const body = JSON.parse((fetchMock.mock.calls[0] as unknown as [string, { body: string }])[1].body) as { blocks: Array<{ type: string; text: { text: string } }>; text: string }
+    const body = (await slackPostOf(fetchMock.mock.calls[0] as unknown[])) as unknown as { blocks: Array<{ type: string; text: { text: string } }>; text: string }
     expect(body.blocks[0]).toMatchObject({ type: 'header', text: { text: 'Salesforce update could not be resent' } })
     expect(body.blocks.slice(1).every((b) => b.type === 'section')).toBe(true)
     expect(body.text).toBe('Salesforce update could not be resent: Prospect a06Ui00002sLkNuIAK')

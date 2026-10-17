@@ -35,6 +35,7 @@ import { encryptSecret } from '../lib/secret-crypto'
 import { SLACK_CONNS_LASTGOOD_KEY, SLACK_COPY_SAVED_AT_KEY } from '../lib/slack-copy'
 import { NOBODY_TOLD_LINE } from '../lib/nobody-told-page'
 import { TEST_KEY } from '../lib/__tests__/_scheduled-slack-doubles'
+import { slackPostOf } from './helpers/slack-fetch'
 
 const ORG = '55555555-5555-4555-8555-555555555555'
 const CONN = { bot_token: 'xoxb-t', default_channel: 'C-ALERTS', volume_alerts_enabled: true, config_alerts_enabled: true }
@@ -117,8 +118,12 @@ function stubNetwork() {
     const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
     if (cutOff()) {
       if (url === 'https://slack.com/api/chat.postMessage') {
-        cutPosts.push({ ...(JSON.parse(String(init?.body)) as Omit<Post, 'at'>), at: Date.now() })
-        if (process.env.SIM_DEBUG) process.stdout.write(`CUT ${new Date(Date.now()).toISOString()} ${cutPosts[cutPosts.length - 1].text}\n`)
+        const at = Date.now()
+        return slackPostOf([input, init]).then((post) => {
+          cutPosts.push({ ...(post as unknown as Omit<Post, 'at'>), at })
+          if (process.env.SIM_DEBUG) process.stdout.write(`CUT ${new Date(at).toISOString()} ${post.text}\n`)
+          return never()
+        })
       }
       return never()
     }
@@ -130,10 +135,13 @@ function stubNetwork() {
       })
     }
     if (url === 'https://slack.com/api/chat.postMessage') {
-      const body = JSON.parse(String(init?.body)) as Omit<Post, 'at'>
-      posts.push({ ...body, at: Date.now() })
-      if (process.env.SIM_DEBUG) process.stdout.write(`POST ${new Date(Date.now()).toISOString()} ${body.text} ${JSON.stringify(body.blocks).slice(0, 300)}\n`)
-      return Promise.resolve(new Response(JSON.stringify({ ok: true, ts: String(posts.length) }), { status: 200 }))
+      const at = Date.now()
+      return slackPostOf([input, init]).then((post) => {
+        const body = post as unknown as Omit<Post, 'at'>
+        posts.push({ ...body, at })
+        if (process.env.SIM_DEBUG) process.stdout.write(`POST ${new Date(at).toISOString()} ${body.text} ${JSON.stringify(body.blocks).slice(0, 300)}\n`)
+        return new Response(JSON.stringify({ ok: true, ts: String(posts.length) }), { status: 200 })
+      })
     }
     if (url === BETTER_STACK_URL) {
       betterStackPages.push(JSON.parse(String(init?.body)) as (typeof betterStackPages)[number])

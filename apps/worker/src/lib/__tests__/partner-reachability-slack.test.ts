@@ -5,16 +5,17 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { sendPartnerBlockAlert, sendPartnerUnreachableAlert, sendProbeControlAlert, sendProbeBrokenAlert } from '../slack'
 import { PROBE_SEEN_IN } from '../partner-block-alert'
+import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 
 let fetchMock: ReturnType<typeof vi.fn>
 beforeEach(() => {
-  fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.1' }) })
+  fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.1' }) })
   vi.stubGlobal('fetch', fetchMock)
 })
 afterEach(() => vi.unstubAllGlobals())
 
-const text = () =>
-  (JSON.parse(fetchMock.mock.calls[0][1].body).blocks as Array<{ text?: { text?: string } }>)
+const text = async () =>
+  ((await slackPostOf(fetchMock.mock.calls[0])).blocks as Array<{ text?: { text?: string } }>)
     .map((b) => b.text?.text ?? '')
     .join('\n')
 
@@ -25,9 +26,9 @@ describe('the block alert from the probe', () => {
       markers: ['Sorry, you have been blocked'], seenIn: PROBE_SEEN_IN, appUrl: 'https://app.test',
       repeat: null, alsoBlocked: [], ownProxy: false, at: Date.parse('2026-09-17T18:00:00Z'),
     })
-    expect(text()).toMatch(/scheduled reachability probe/)
-    expect(text()).not.toMatch(/Open the execution/)
-    expect(text()).not.toMatch(/undefined/)
+    expect((await text())).toMatch(/scheduled reachability probe/)
+    expect((await text())).not.toMatch(/Open the execution/)
+    expect((await text())).not.toMatch(/undefined/)
   })
 })
 
@@ -37,10 +38,10 @@ describe('the not answering alert', () => {
       host: 'api.freedomfinancialnet.com', reason: 'connect ECONNRESET', since: '2026-09-17T17:30:00.000Z',
       repeat: null, at: Date.parse('2026-09-17T18:00:00Z'),
     })
-    expect(text()).toMatch(/not answering/)
-    expect(text()).toMatch(/ECONNRESET/)
-    expect(text()).not.toMatch(/blocked/)
-    expect(text()).toMatch(/How to fix/)
+    expect((await text())).toMatch(/not answering/)
+    expect((await text())).toMatch(/ECONNRESET/)
+    expect((await text())).not.toMatch(/blocked/)
+    expect((await text())).toMatch(/How to fix/)
   })
 })
 
@@ -49,26 +50,26 @@ describe('the control alert', () => {
     await sendProbeControlAlert({ bot_token: 't' }, '#ops', {
       host: 'block-probe.trypennie.dev', everPassed: false, status: 403, bodyHead: 'error code: 1014', since: '2026-09-17T17:30:00.000Z', repeat: null, at: Date.parse('2026-09-17T18:00:00Z'),
     })
-    expect(text()).toMatch(/never/)
-    expect(text()).toMatch(/http\.host eq "block-probe\.trypennie\.dev"/)
-    expect(text()).toMatch(/1014/)
+    expect((await text())).toMatch(/never/)
+    expect((await text())).toMatch(/http\.host eq "block-probe\.trypennie\.dev"/)
+    expect((await text())).toMatch(/1014/)
   })
 
   it('when the control had passed, says when it stopped and names both causes', async () => {
     await sendProbeControlAlert({ bot_token: 't' }, '#ops', {
       host: 'block-probe.trypennie.dev', everPassed: true, status: 200, bodyHead: '<html>', since: '2026-09-17T17:30:00.000Z', repeat: null, at: Date.parse('2026-09-17T18:00:00Z'),
     })
-    expect(text()).toMatch(/stopped/)
-    expect(text()).toMatch(/rule/)
-    expect(text()).toMatch(/markers/)
+    expect((await text())).toMatch(/stopped/)
+    expect((await text())).toMatch(/rule/)
+    expect((await text())).toMatch(/markers/)
   })
 })
 
 describe('the probe cannot measure alert', () => {
   it('says the probe itself cannot fetch, so nothing about the partners is known', async () => {
     await sendProbeBrokenAlert({ bot_token: 't' }, '#ops', { reason: 'fetch failed', since: '2026-09-17T17:50:00.000Z', repeat: null, at: Date.parse('2026-09-17T18:00:00Z') })
-    expect(text()).toMatch(/cannot fetch/i)
-    expect(text()).toMatch(/fetch failed/)
+    expect((await text())).toMatch(/cannot fetch/i)
+    expect((await text())).toMatch(/fetch failed/)
   })
 })
 
@@ -79,21 +80,21 @@ describe('a failure text carrying an address (L741, #1740)', () => {
     await sendPartnerUnreachableAlert({ bot_token: 't' }, '#ops', {
       host: 'p.example', reason: leaky, since: '2026-09-17T17:30:00.000Z', repeat: null, at: Date.parse('2026-09-17T18:00:00Z'),
     })
-    expect(text()).not.toMatch(/%40|email=/)
-    expect(text()).toContain('https://p.example/x')
+    expect((await text())).not.toMatch(/%40|email=/)
+    expect((await text())).toContain('https://p.example/x')
   })
 
   it('the probe cannot measure alert cuts it at its query string', async () => {
     await sendProbeBrokenAlert({ bot_token: 't' }, '#ops', { reason: leaky, since: '2026-09-17T17:50:00.000Z', repeat: null, at: Date.parse('2026-09-17T18:00:00Z') })
-    expect(text()).not.toMatch(/%40|email=/)
-    expect(text()).toContain('https://p.example/x')
+    expect((await text())).not.toMatch(/%40|email=/)
+    expect((await text())).toContain('https://p.example/x')
   })
 
   it('the control alert cuts an address in the body it quotes', async () => {
     await sendProbeControlAlert({ bot_token: 't' }, '#ops', {
       host: 'block-probe.trypennie.dev', everPassed: true, status: 200, bodyHead: `<a href="${'https://p.example/x?email=jo%40example.com'}">`, since: '2026-09-17T17:30:00.000Z', repeat: null, at: Date.parse('2026-09-17T18:00:00Z'),
     })
-    expect(text()).not.toMatch(/%40|email=/)
-    expect(text()).toContain('https://p.example/x')
+    expect((await text())).not.toMatch(/%40|email=/)
+    expect((await text())).toContain('https://p.example/x')
   })
 })
