@@ -27,12 +27,13 @@ describe('partnerNumberErrors', () => {
     expect(partnerNumberErrors({ [field]: value })).toEqual([{ code: 'partner_number_invalid', path: field, field, message }])
   })
 
-  it('refuses a status rule whose status is not an HTTP status, naming the rules', () => {
-    const message = 'An HTTP status in a rule is a whole number from 100 to 599.'
+  it('refuses a status rule whose status is not an HTTP status, naming its group', () => {
     expect(partnerNumberErrors({ response_classification: { rejection_signals: [{ status_code: 4.5 }] } })).toEqual([
-      { code: 'partner_number_invalid', path: 'response_classification', field: 'response_classification', message },
+      { code: 'partner_number_invalid', path: 'response_classification.rejection_signals', field: null, message: 'An HTTP status in a decline rule is a whole number from 100 to 599.' },
     ])
-    expect(partnerNumberErrors({ response_classification: { transient_signals: [{ status_code: 99 }, { status_code: 700 }] } })).toHaveLength(1)
+    expect(partnerNumberErrors({ response_classification: { transient_signals: [{ status_code: 99 }, { status_code: 700 }] } })).toEqual([
+      { code: 'partner_number_invalid', path: 'response_classification.transient_signals', field: 'response_classification', message: 'An HTTP status in an error rule is a whole number from 100 to 599.' },
+    ])
     expect(partnerNumberErrors({ response_classification: { rejection_signals: [{ status_code: 422 }, { body_field: 'x', present: true }] } })).toEqual([])
     expect(partnerNumberErrors({ response_classification: null })).toEqual([])
   })

@@ -368,7 +368,8 @@ export function BuyerProfileSection(props: Props) {
   const soldOnError = errorFor(errors, 'soldOn')
   // The validator names the routing code by its rule key, the partner number rule by its column (#2328).
   const routingCodeRefusal = errorFor(errors, 'external_routing_code') ?? errorFor(errors, 'externalRoutingCode') ?? null
-  const statusRefusal = errorFor(errors, 'response_classification') ?? null
+  // A status in the decline group, which is drawn here; the other groups' refusals sit with the Bid Group's Errors (#2328).
+  const statusRefusal = errorFor(errors, 'response_classification.rejection_signals') ?? null
   // Where the hours and reset times are shown; unset shows Eastern, the zone they are stored and judged in.
   const zone = profile?.display_time_zone ?? DEFAULT_DISPLAY_TIME_ZONE
   const blackoutNote = blackoutZoneNote(zone)

@@ -328,6 +328,7 @@ export default function PartnerForm({
   const clickUrlError = profileErrors.find((e) => e.path === 'clickUrl')?.message ?? null
   /** A partner number the save refused (#2328), said beside its field. */
   const numberErrorOf = (field: string): string | null => profileErrors.find((e) => e.code === 'partner_number_invalid' && e.path === field)?.message ?? null
+  const errorRuleStatusRefusal = numberErrorOf('response_classification.transient_signals') ?? numberErrorOf('response_classification.permanent_signals')
   /**
    * A save refused because someone else saved first (#2134, PM-3): the three
    * halves the merge is made from, who saved, the versions their save left,
@@ -495,7 +496,11 @@ export default function PartnerForm({
   const [confirmationAdded, setConfirmationAdded] = useState(false)
   const problems = problemsOf({ credentialWarning: partner?.credential_warning, errors: profileErrors, routeNames: profile?.click_delivery?.routes.map((r) => r.name) ?? [] })
   const tabsWithProblems = problemTabs(problems)
-  const pageProblems = problems.filter((p) => p.tab === null)
+  // A decline rule's status is refused under the decline rules, which no registry
+  // field names (the column is shared with the Bid Group's error lists), so it is
+  // said there and not again in the list of refusals no tab holds (#2328, L605).
+  const drawnUnderDeclineRules = (e: { path: string }) => isBuyer && e.path === 'response_classification.rejection_signals'
+  const pageProblems = problemsOf({ credentialWarning: null, errors: profileErrors.filter((e) => !drawnUnderDeclineRules(e)), routeNames: profile?.click_delivery?.routes.map((r) => r.name) ?? [] }).filter((p) => p.tab === null)
   const credentialProblem = problems.find((p) => p.registryPath === 'cf_secret_key')?.message ?? null
   const currentBody = buildPartnerBody(captureSnapshot(), bodyCtx)
   const tabInputs: TabInputs = {
@@ -1633,7 +1638,8 @@ export default function PartnerForm({
                   alertNotRetried={alertPermanent}
                   onAlertNotRetried={setAlertPermanent}
                 />
-                {numberErrorOf('response_classification') && <FieldError alert size="xs" className="mt-1">{numberErrorOf('response_classification')}</FieldError>}
+                {/* A status in the retry or error lists drawn here; the decline group's sits under Decline rules (#2328). */}
+                {errorRuleStatusRefusal && <FieldError alert size="xs" className="mt-1">{errorRuleStatusRefusal}</FieldError>}
               </Section>
 
               <Section title="Confirmation window">

@@ -14,9 +14,14 @@
 
 export interface PartnerNumberError {
   code: 'partner_number_invalid'
-  /** The partner column the error is about, which is also its partners page registry field. */
+  /**
+   * The partner column the error is about; for a rule's status, the column and
+   * the rule group (`response_classification.rejection_signals`), since the
+   * decline group is drawn on the Buyer profile tab and the other two on Bid Group.
+   */
   path: string
-  field: string
+  /** The partners page registry field, or null where none names the place it is drawn (the decline rules). */
+  field: string | null
   message: string
 }
 
@@ -32,8 +37,12 @@ const RULES: readonly { field: string; min: number; max: number; message: string
   { field: 'external_routing_code', min: 0, max: 32767, message: 'The routing code is a whole number from 0 to 32,767.' },
 ]
 
-const STATUS_MESSAGE = 'An HTTP status in a rule is a whole number from 100 to 599.'
-const SIGNAL_GROUPS = ['rejection_signals', 'transient_signals', 'permanent_signals'] as const
+/** Each rule group, the sentence for a status in it that is not one, and the registry field that names where it is drawn. */
+const STATUS_GROUPS: readonly { group: string; message: string; field: string | null }[] = [
+  { group: 'rejection_signals', message: 'An HTTP status in a decline rule is a whole number from 100 to 599.', field: null },
+  { group: 'transient_signals', message: 'An HTTP status in an error rule is a whole number from 100 to 599.', field: 'response_classification' },
+  { group: 'permanent_signals', message: 'An HTTP status in an error rule is a whole number from 100 to 599.', field: 'response_classification' },
+]
 
 function wholeIn(value: unknown, min: number, max: number): boolean {
   return typeof value === 'number' && Number.isInteger(value) && value >= min && value <= max
@@ -42,19 +51,22 @@ function wholeIn(value: unknown, min: number, max: number): boolean {
 /** The refusals for a partner save body; empty when every number it names is acceptable. A field it leaves out or sets to null is not judged. */
 export function partnerNumberErrors(body: Readonly<Record<string, unknown>>): PartnerNumberError[] {
   const out: PartnerNumberError[] = []
-  const refuse = (field: string, message: string) => out.push({ code: 'partner_number_invalid', path: field, field, message })
+  const refuse = (path: string, field: string | null, message: string) => out.push({ code: 'partner_number_invalid', path, field, message })
   for (const rule of RULES) {
     const value = body[rule.field]
     if (value === undefined || value === null) continue
-    if (!wholeIn(value, rule.min, rule.max)) refuse(rule.field, rule.message)
+    if (!wholeIn(value, rule.min, rule.max)) refuse(rule.field, rule.field, rule.message)
   }
   const rc = body.response_classification
   if (rc !== null && typeof rc === 'object' && !Array.isArray(rc)) {
     const groups = rc as Record<string, unknown>
-    const statuses = SIGNAL_GROUPS.flatMap((g) => (Array.isArray(groups[g]) ? (groups[g] as unknown[]) : []))
-      .filter((s): s is Record<string, unknown> => s !== null && typeof s === 'object' && 'status_code' in s)
-      .map((s) => s.status_code)
-    if (statuses.some((code) => !wholeIn(code, 100, 599))) refuse('response_classification', STATUS_MESSAGE)
+    for (const { group, message, field } of STATUS_GROUPS) {
+      const signals = Array.isArray(groups[group]) ? (groups[group] as unknown[]) : []
+      const statuses = signals
+        .filter((s): s is Record<string, unknown> => s !== null && typeof s === 'object' && 'status_code' in s)
+        .map((s) => s.status_code)
+      if (statuses.some((code) => !wholeIn(code, 100, 599))) refuse(`response_classification.${group}`, field, message)
+    }
   }
   return out
 }

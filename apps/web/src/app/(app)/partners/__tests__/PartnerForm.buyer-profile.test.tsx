@@ -296,6 +296,18 @@ describe('the Buyer profile section', () => {
     expect(onSave).not.toHaveBeenCalled()
   })
 
+  // #2328: a decline rule's status used to be rounded on save; now it is refused, once, under the decline rules.
+  it('a decline rule status that is not an HTTP status is refused once, under the decline rules', async () => {
+    const onSave = await renderBuyer()
+    fireEvent.click(screen.getByRole('button', { name: 'Add decline rule on the HTTP status' }))
+    fireEvent.change(screen.getByRole('spinbutton', { name: /HTTP status/ }), { target: { value: '4.5' } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    const reason = 'An HTTP status in a decline rule is a whole number from 100 to 599.'
+    expect(await screen.findByText(`Nothing saved: ${reason}`)).toBeInTheDocument()
+    expect(screen.getAllByText(reason)).toHaveLength(1)
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
   it('an enabled profile whose partner has no routing code is refused by the field name, and nothing is saved', async () => {
     const onSave = await renderBuyer()
     fireEvent.change(screen.getByLabelText('Salesforce routing code'), { target: { value: '' } })
