@@ -46,7 +46,7 @@ export function ClickUsagePanel({ usage, error, cap, otherSellers, partnerName, 
     <div className="space-y-1.5 text-[13px] text-graphite">
       <div className="flex items-center gap-2.5">
         {cap !== null && (
-          <div role="meter" aria-label={`Clicks ${when}`} aria-valuenow={usage.count} aria-valuemin={0} aria-valuemax={cap} className="h-1.5 w-40 shrink-0 overflow-hidden rounded-full bg-line">
+          <div role="meter" aria-label={`Clicks ${when}`} aria-valuenow={Math.min(usage.count, cap)} aria-valuemin={0} aria-valuemax={cap} className="h-1.5 w-40 shrink-0 overflow-hidden rounded-full bg-line">
             <div className="h-full bg-navy" style={{ width: `${share * 100}%` }} />
           </div>
         )}

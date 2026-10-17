@@ -215,7 +215,8 @@ export function MoneyInput({ id, value, onChange, placeholder, disabled, describ
           aria-label={ariaLabel}
           aria-invalid={invalid ? true : undefined}
           aria-describedby={[unitId, db, invalid ? errorId : null].filter(Boolean).join(' ')}
-          onFocus={() => setDraft(value === null ? '' : String(value))}
+          // Seeded as it reads at rest, so a stored amount is never flagged as mistyped by being focused.
+          onFocus={() => setDraft(value === null ? '' : DOLLARS_AT_REST.format(value))}
           // An amount goes back to reading at rest; text that is not one stays as typed, with its reason.
           onBlur={() => { if (!invalid) setDraft(null) }}
           onChange={(e) => {

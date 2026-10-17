@@ -54,3 +54,11 @@ describe('ClickUsagePanel', () => {
     expect(screen.getByText('Main Flow also sells to Liberty1. Those sales are not clicks and are not counted here.')).toBeInTheDocument()
   })
 })
+
+describe('the meter past the cap (#2324 review)', () => {
+  it('reports at most the cap to a screen reader, while the sentence says the true count', () => {
+    render(<ClickUsagePanel usage={usage(60)} error={null} cap={50} otherSellers={[]} partnerName="Liberty1" nowMs={NOW} />)
+    expect(screen.getByRole('meter')).toHaveAttribute('aria-valuenow', '50')
+    expect(screen.getByText('60 of 50 clicks today')).toBeInTheDocument()
+  })
+})

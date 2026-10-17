@@ -43,3 +43,13 @@ describe('MoneyInput', () => {
     expect(box).toHaveValue('20,000.')
   })
 })
+
+describe('MoneyInput focus (#2324 review)', () => {
+  it('focusing a stored amount with more than cents shows no error nobody typed', () => {
+    render(<MoneyInput id="m" aria-label="Debt maximum" value={1234.567} onChange={vi.fn()} />)
+    const box = screen.getByRole('textbox', { name: 'Debt maximum' })
+    fireEvent.focus(box)
+    expect(box).not.toHaveAttribute('aria-invalid')
+    expect(screen.queryByText('Type an amount of dollars, such as 20,000.')).toBeNull()
+  })
+})

@@ -12,8 +12,9 @@
  * held click (#1552), which takes the unresolved queue's place because a click
  * buyer never reserves in the ledger.
  *
- * Ordered for the reader (L609): enabled and ranking first, pricing and caps
- * next, outcome rules, blackout dates last. Every fact once (L605): the scope
+ * Ordered for the reader (L609): Enabled, Sold on, Priority, Eligibility,
+ * Hours, Pricing and Caps first, then the click and sale sections, outcome
+ * rules, blackout dates last. Every fact once (L605): the scope
  * of the caps is said in the grid, the other sellers in the usage panel, the
  * priority direction on the priority field.
  *
