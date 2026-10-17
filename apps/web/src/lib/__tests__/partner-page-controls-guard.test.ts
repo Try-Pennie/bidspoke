@@ -134,6 +134,16 @@ describe('the shared controls live in one place (L613)', () => {
     expect(offenders).toEqual([])
   })
 
+  // #2326: a box offering values as the person types is SuggestInput, the design
+  // system's list, never the browser's <datalist>, which TextInput used to draw
+  // for the canvas, the rule builder and the partners page alike. The rule is the
+  // whole app, components/ui included, so the class cannot come back anywhere.
+  it('no native datalist anywhere in the app, components/ui included', () => {
+    const offenders = listFiles(WEB_SRC, { exts: ['.tsx'] }).flatMap((file) =>
+      rawControlsIn(readFileSync(file, 'utf8')).filter((h) => h.what === '<datalist>').map((h) => `${rel(file)}:${h.line}`))
+    expect(offenders).toEqual([])
+  })
+
   it('the primitives render the raw boxes and buttons, and no native select: the one Select is Radix (#2137)', () => {
     // Inverted deliberately in #2137: this asserted form.tsx rendered a raw
     // <select>; the shared Select is now on @radix-ui/react-select, in

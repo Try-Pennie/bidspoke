@@ -159,3 +159,13 @@ export function searchedSentence(searched: PartnerWorkflowValues['searched']): s
 export function shadowSentences(v: PartnerWorkflowValue): string[] {
   return v.shadowed_data_keys.map((s) => `${workflowLabel(s)} also sets ${v.constant_name} in its Constants step (${s.namespace}), and this value replaces it there.`)
 }
+
+/**
+ * The example the sell-off offer's boxes show while empty, and the preview card
+ * shows in the hint grey until something is filled in (#2327, PM-24): one copy,
+ * so the card's example is always the boxes' own.
+ */
+export const SELL_OFF_EXAMPLE = {
+  title: 'Get up to $50,000 in your account',
+  details: 'Personal loans from $5,000 to $100,000 with competitive rates.',
+} as const

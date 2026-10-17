@@ -12,6 +12,7 @@ import userEvent from '@testing-library/user-event'
 import { Field, FieldError, TextInput, NumberInput, Checkbox, Button, Outcome, ChoiceGroup, type OutcomeState } from '../form'
 import { Toggle } from '../Toggle'
 import { Select } from '../Select'
+import { SuggestInput } from '../SuggestInput'
 import { chooseOption, readSelect } from './_select'
 
 describe('Field', () => {
@@ -102,10 +103,62 @@ describe('TextInput and Select carry their own classes', () => {
     expect(screen.getByRole('listbox')).toBeInTheDocument()
   })
 
-  it('a text input offers its suggestions without limiting what is typed', () => {
-    render(<TextInput id="path" value="" onChange={() => {}} aria-label="Path" suggestions={['data.id', 'data.code']} />)
-    expect(screen.getByLabelText('Path')).toHaveAttribute('list', 'path-suggestions')
-    expect([...document.querySelectorAll('#path-suggestions option')].map((o) => o.getAttribute('value'))).toEqual(['data.id', 'data.code'])
+})
+
+// A box that offers values as the person types (#2326, L607, L568). Was a native
+// <datalist> on TextInput, which draws the operating system's own list; now the
+// design system's list, as a combobox, so it is styled, reachable by keyboard
+// and screen reader, and drawn over anything that clips the box.
+describe('SuggestInput', () => {
+  function Typed({ onSubmit = () => {}, suggestions = ['data.bid', 'data.ClickThrough_url', 'ok'] }: { onSubmit?: () => void; suggestions?: string[] }) {
+    const [v, setV] = useState('')
+    return (
+      <form onSubmit={(e) => { e.preventDefault(); onSubmit() }}>
+        <SuggestInput id="path" value={v} onChange={setV} aria-label="Path" suggestions={suggestions} />
+        <output data-testid="value">{v}</output>
+      </form>
+    )
+  }
+
+  it('is a combobox with no native datalist', () => {
+    render(<Typed />)
+    expect(screen.getByRole('combobox', { name: 'Path' })).toHaveClass('input')
+    expect(document.querySelector('datalist')).toBeNull()
+    expect(screen.getByRole('combobox')).not.toHaveAttribute('list')
+  })
+
+  it('offers the suggestions that hold what is typed, and typing anything else stays allowed', async () => {
+    render(<Typed />)
+    await userEvent.type(screen.getByRole('combobox'), 'data')
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['data.bid', 'data.ClickThrough_url'])
+    await userEvent.type(screen.getByRole('combobox'), '.nothing')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(screen.getByTestId('value')).toHaveTextContent('data.nothing')
+  })
+
+  it('arrow keys move through the list and Enter takes the one marked, without submitting the form', async () => {
+    const onSubmit = vi.fn()
+    render(<Typed onSubmit={onSubmit} />)
+    await userEvent.type(screen.getByRole('combobox'), 'data')
+    await userEvent.keyboard('{ArrowDown}{ArrowDown}')
+    const marked = screen.getByRole('option', { name: 'data.ClickThrough_url' })
+    expect(marked).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('combobox')).toHaveAttribute('aria-activedescendant', marked.id)
+    await userEvent.keyboard('{Enter}')
+    expect(screen.getByTestId('value')).toHaveTextContent('data.ClickThrough_url')
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+  })
+
+  it('a click takes a suggestion, and Escape closes the list', async () => {
+    render(<Typed />)
+    await userEvent.type(screen.getByRole('combobox'), 'd')
+    await userEvent.keyboard('{Escape}')
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    await userEvent.type(screen.getByRole('combobox'), 'a')
+    await userEvent.click(screen.getByRole('option', { name: 'data.bid' }))
+    expect(screen.getByTestId('value')).toHaveTextContent('data.bid')
   })
 })
 
@@ -375,5 +428,41 @@ describe('Enter never submits the form from a shared control', () => {
     screen.getByRole('switch', { name: 'Enabled' }).focus()
     await userEvent.keyboard('{Enter}')
     expect(onSubmit).not.toHaveBeenCalled()
+  })
+})
+
+describe('TextInput with a tinted placeholder (#2327, PM-24, design frame 22)', () => {
+  const URL = 'https://trypennie.com/portal/liberty/{prospect_id}?src=pennie'
+
+  it('tints each place the token is typed, behind the text, hidden from screen readers', () => {
+    const { container } = render(<TextInput id="u" value={URL} onChange={() => {}} mono tint="{prospect_id}" aria-label="Click URL" />)
+    const marks = container.querySelectorAll('[data-tint-mark]')
+    expect(Array.from(marks).map((m) => m.textContent)).toEqual(['{prospect_id}'])
+    const mirror = container.querySelector('[data-tint-mirror]')!
+    expect(mirror).toHaveAttribute('aria-hidden', 'true')
+    // The mirror holds the same text, so the tint lands under the typed token.
+    expect(mirror.textContent).toBe(URL)
+    // The box is still the one labelled input, holding exactly what is typed.
+    expect(screen.getByLabelText('Click URL')).toHaveValue(URL)
+    expect(screen.getByLabelText('Click URL')).toHaveClass('input', 'font-mono')
+  })
+
+  it('the tint scrolls with the address', () => {
+    const { container } = render(<TextInput id="u" value={URL} onChange={() => {}} tint="{prospect_id}" aria-label="Click URL" />)
+    const input = screen.getByLabelText('Click URL')
+    const mirror = container.querySelector('[data-tint-mirror]') as HTMLElement
+    input.scrollLeft = 120
+    fireEvent.scroll(input)
+    expect(mirror.scrollLeft).toBe(120)
+    input.scrollLeft = 35
+    fireEvent.keyUp(input, { key: 'ArrowLeft' })
+    expect(mirror.scrollLeft).toBe(35)
+  })
+
+  it('tints nothing when the token is not there, and draws no mirror without a tint', () => {
+    const { container, rerender } = render(<TextInput id="u" value="https://partner.com/apply" onChange={() => {}} tint="{prospect_id}" aria-label="Click URL" />)
+    expect(container.querySelectorAll('[data-tint-mark]')).toHaveLength(0)
+    rerender(<TextInput id="u" value={URL} onChange={() => {}} aria-label="Click URL" />)
+    expect(container.querySelector('[data-tint-mirror]')).toBeNull()
   })
 })

@@ -65,7 +65,7 @@ describe('deleting the matrix the partner uses (#2217)', () => {
     await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
 
     // The cleared matrix is an unsaved change, named in the save bar.
-    expect(await screen.findByText('1 unsaved change: Resolver settings')).toBeInTheDocument()
+    expect(await screen.findByText('1 unsaved change: Bid amount settings')).toBeInTheDocument()
     expect(screen.getByLabelText('Bid matrix')).toHaveTextContent('No matrix')
     expect(screen.queryByText(/no longer available/)).toBeNull()
 

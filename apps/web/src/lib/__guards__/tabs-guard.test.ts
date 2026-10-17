@@ -37,6 +37,7 @@ const SELECTED_ALLOWED: Readonly<Record<string, string>> = {
   'components/rule-builder/FieldAutocomplete.tsx': 'the highlighted option of its suggestion listbox',
   'components/canvas/TemplateTextarea.tsx': 'the highlighted option of its reference listbox',
   'components/ui/DateTimeFields.tsx': 'the chosen day, a gridcell of the calendar grid',
+  'components/ui/SuggestInput.tsx': 'the marked option of its suggestion listbox (#2326)',
 }
 
 export function tabMarkupIn(file: string, source: string): string[] {

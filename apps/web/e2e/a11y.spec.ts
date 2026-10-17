@@ -61,7 +61,7 @@ test.describe('Accessibility (axe-core)', () => {
     await page.goto('/partners')
     // The list at the real nine, with the missing credential marked on its row.
     await expect(page.getByRole('button', { name: /Tripoint/ })).toBeVisible()
-    await expect(page.getByText(/Credential 'AMONE_PROXY_SECRET' is not set/)).toBeAttached()
+    await expect(page.getByText(/AMONE_PROXY_SECRET is not set as a Worker secret/)).toBeAttached()
     await page.waitForLoadState('networkidle')
     await expectNoSeriousA11yViolations(page, [], '/partners')
     expect(unmatched).toEqual([])
@@ -307,7 +307,7 @@ test.describe('Accessibility (axe-core)', () => {
     // The mark is read after the label (a browser may put a space before its comma).
     const tab = page.getByRole('tab', { name: /^Bid Group ?, has a problem$/ })
     await expect(tab).toHaveAttribute('aria-selected', 'true')
-    await expect(page.getByLabel('Auth secret name')).toHaveAccessibleDescription(/AMONE_PROXY_SECRET is not set|Credential 'AMONE_PROXY_SECRET' is not set/)
+    await expect(page.getByLabel('Secret', { exact: true })).toHaveAccessibleDescription(/AMONE_PROXY_SECRET is not set as a Worker secret/)
     await expect(page.getByRole('button', { name: /^AmOne.*not set/ })).toBeVisible()
     // The URL is untouched: the problem tab is where it opens, not what it asks for.
     expect(new URL(page.url()).searchParams.get('tab')).toBeNull()

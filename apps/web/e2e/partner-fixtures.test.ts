@@ -135,6 +135,20 @@ describe('isWorkerApiRequest', () => {
 })
 
 describe('answerFor', () => {
+  // #2326: the Worker sends the missing credential on the list and on a single
+  // partner's read, so the fixtures do too. Before, only the list carried it, so
+  // the refetch after opening AmOne replaced its row with one that had lost the
+  // warning, and the list's red dot went out while it was the selected row.
+  it('carries the missing credential on the list and on the single read, in the Worker\'s words', () => {
+    const amone = fx.partners.find((r) => r.slug === 'amone')!
+    const words = "AMONE_PROXY_SECRET is not set as a Worker secret, so AmOne's next bid will fail. An engineer adds it in Cloudflare."
+    const list = answerFor('GET', `${W}/api/partners`, fx, { credentialWarningFor: 'amone' })!.body as Array<{ slug: string; credential_warning: string | null }>
+    expect(list.find((r) => r.slug === 'amone')!.credential_warning).toBe(words)
+    expect(list.filter((r) => r.credential_warning).map((r) => r.slug)).toEqual(['amone'])
+    const one = answerFor('GET', `${W}/api/partners/${amone.id}`, fx, { credentialWarningFor: 'amone' })!.body as { credential_warning: string | null }
+    expect(one.credential_warning).toBe(words)
+  })
+
   const tripoint = fx.partners.find((p) => p.slug === 'tripoint')!
 
   it('answers each read the page makes, and nothing it does not know', () => {

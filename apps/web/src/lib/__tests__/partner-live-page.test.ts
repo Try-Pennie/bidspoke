@@ -118,7 +118,7 @@ describe('directChangeNotes (#2135)', () => {
     expect(notes).toEqual([{
       // The sections the person sees the fields under: the sell-off offer is
       // "Sell-off offer" on the Workflow values tab (#2142).
-      sections: ['Bidding limits', 'Sell-off offer'],
+      sections: ['Limits', 'Sell-off offer'],
       text: `Changed directly in the database at 10:34 AM ET. Bidding picks this up within about ${BIDDING_PICKUP.partnerConstantsMinutes} minutes of that time while the database is reachable.`,
       expiresAt: atMs + BIDDING_PICKUP.partnerConstantsMinutes * 60_000,
     }])

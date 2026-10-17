@@ -1,6 +1,6 @@
 # Configure a partner
 
-How to add or edit a partner on the Partners page: choose whether it is a source or a buyer, set how its bid is resolved (API, matrix, or formula), wire daily caps and a circuit breaker, map outbound fields, and turn it on or off. Partners are configured here, not on the canvas. [Bid Group](../nodes/bid-group.md) and Partner Bid nodes reference them by their saved configuration.
+How to add or edit a partner on the Partners page: choose whether it is a source or a buyer, set how its bid is resolved (Partner API, Matrix lookup or No call), set its daily attempt cap and circuit breaker, rename fields in the request, and turn it on or off. Partners are configured here, not on the canvas. [Bid Group](../nodes/bid-group.md) and Partner Bid nodes reference them by their saved configuration.
 
 For the full list of fields and their database shape, see the [partners reference](../reference/partners.md).
 
@@ -8,8 +8,8 @@ For the full list of fields and their database shape, see the [partners referenc
 
 The first decision is the partner Type. It is a segmented toggle at the top of the form.
 
-- Source - this partner sends leads to Pennie. Source partners have sell-off offer copy and a list of sub-account UUIDs. They do not bid, so the API, bidding, circuit breaker, response classification, and alert sections are hidden.
-- Buyer - this partner receives bids. Buyer partners get the full set of sections below (bid resolution, endpoints, limits, circuit breaker, response classification, alerts).
+- Source - this partner sends leads to Pennie. Source partners have sell-off offer copy and a list of sub-account UUIDs. They do not bid, so they have no Bid Group tab, the tab that holds the endpoint, the bid amount, limits, the circuit breaker and the error rules with their alerts.
+- Buyer - this partner receives bids. Buyer partners get the Bid Group tab below (Bids in, Endpoint, Resolver, Bid amount, Request, Response, Limits, Circuit breaker, Errors and Confirmation window).
 
 Pick the type first; the rest of the form changes to match.
 
@@ -24,15 +24,26 @@ Pick the type first; the rest of the form changes to match.
 
 Remember to click Save. The form does not auto-save.
 
-## Bid resolution (buyer only)
+## The Bid Group tab (buyer only)
 
-The Bid resolution section sets how a buyer's bid amount is determined. Choose a resolver type:
+A buyer's bidding settings are on its Bid Group tab, in this order: Bids in, Endpoint, Resolver, Bid amount, Request, Response, Limits, Circuit breaker, Errors and Confirmation window (PRD PM-23).
 
-- Partner API (`api`) - call the partner's API and read the bid from the response. Configure the API endpoint and the worker secret key used for auth, plus a sample response and extra extraction so the editor knows the response shape.
-- Matrix lookup (`matrix`) - look up the bid in a bid matrix keyed on lead attributes (for example credit score band). See [Bid matrix sync](#bid-matrix-sync-matrix-resolver) below.
-- Formula (`formula`) - compute the bid from a formula over lead fields and Bid Group context values.
+### Endpoint
+
+- Address and Secret: the partner's API address and the name of the Worker secret holding its token. A secret that is not set as a Worker secret is said in red under them, and the partner's row and the Bid Group tab carry a red dot; an engineer adds the secret in Cloudflare.
+- Duplicate check address: optional. Called before each bid to check whether this lead was already sold to this partner. A match skips the bid (the execution shows "Skipped - Dedup match"). Empty means every lead is bid on.
+
+### Resolver
+
+- Partner API (`api`): call the partner's API.
+- Matrix lookup (`matrix`): look up the bid in a bid matrix keyed on lead attributes (for example credit score band). See [Bid matrix sync](#bid-matrix-sync-matrix-resolver) below.
+- No call (`formula`): work the bid out from an expression over lead fields and Bid Group context values, without calling the partner.
 
 The resolver type is stored on the partner as `bid_resolver_type`. There is no separate "Bid Lookup" node; the resolver lives on the partner.
+
+### Bid amount
+
+For the Partner API, the bid is the partner's Response (read at "Where the bid is in the response"), a Tier multiplier, or a Formula. A tier multiplier multiplies one field by the multiplier of the tier it falls in, drawn as a From / To / Multiplier table: no bid below the first tier's From, and a tier's To is not included, so the next tier starts there. Stored, the first row is `min_source_value` and `default_multiplier`, and each later row is a tier whose `above` is its From less one.
 
 ### Bid matrix sync (matrix resolver)
 
@@ -40,39 +51,34 @@ When the resolver is Matrix, a Matrix section appears (you must save the partner
 
 The matrix is read-only in the UI by design while Salesforce stays canonical. If a matrix sync changes rows, Bidspoke records the diff and can post a Slack alert (see [partners reference](../reference/partners.md)). To debug why a lead did not match a matrix row, see [Testing and debugging](./testing-and-debugging.md#why-did-this-lead-get-no-bid).
 
-## Endpoints (buyer only)
+### Request
 
-- Click URL - the landing page URL for leads routed to this partner. It is exposed to bidding workflows as `{Slug}ClickUrl` via the [Constants node](../nodes/constants.md).
-- Dedup endpoint - optional. Called before each bid to check whether this lead was already sold to this partner. A dedup match skips the bid (the execution shows "Skipped - Dedup match").
+The field mapping renames fields on the wire just before the bid request is sent. The dedup payload and formula inputs still see the original payload field names; the mapping only changes what goes out to the partner's API. Empty sends the lead unchanged.
 
-## Response handling (buyer, API resolver only)
+### Response (API resolver only)
 
-Use the Sample response and Extra extraction panels to capture the partner's response shape so the editor can map fields out of it.
+Extract names values to pull out of the partner's answer and where each is in it (or a registered classifier, such as Tripoint's result); later steps read each as `extra.<name>`. The Sample answer box under it holds a pasted answer whose paths are offered as you type an extraction. It is not used when bidding.
 
-## Outbound field mapping (buyer only)
+### Limits
 
-The Outbound field mapping section is a two-column editor that renames fields on the wire just before the bid request is sent. The dedup payload and formula inputs still see the original payload field names; the mapping only changes what goes out to the partner's API. Use it when a partner's API expects different field names than your payload uses.
-
-## Bidding limits (buyer only)
-
-- Daily cap - max leads per day for this partner. Leave blank for unlimited. Caps are enforced by a per-partner, per-day Durable Object (`cap-{slug}-{YYYY-MM-DD}`) and reset at midnight UTC. A capped partner is skipped (the execution shows "Skipped - Daily cap").
-- Minimum bid ($) - reject bids below this amount. A bid under the floor shows as "No bid - Below min".
+- Daily attempt cap: max bids a Bid Group asks this partner for in a day. Empty is no limit. Caps are enforced by a per-partner, per-day Durable Object (`cap-{slug}-{YYYY-MM-DD}`) and reset at midnight UTC. A capped partner is skipped (the execution shows "Skipped - Daily cap").
+- Minimum bid: a bid under this amount is treated as a decline. A bid under the floor shows as "No bid - Below min".
 
 ### Per-sub-account min bids
 
 Optional. Add rows of sub-account UUID plus a floor. When a lead arrives carrying a matching sub-account UUID, that floor overrides the partner-wide Minimum bid. A blank bid means "no override", not a $0 floor (a $0 floor would accept any bid). Leave the table empty to use only the partner-wide floor.
 
-## Circuit breaker (buyer only)
+### Circuit breaker
 
-Toggle Circuit breaker enabled to pause bids to a partner after repeated failures, then retry automatically. When enabled, set:
+Turn the circuit breaker On to pause bids to a partner after repeated failures, then retry automatically. When on, set:
 
-- Error threshold - errors before pausing (placeholder default shown as 5).
-- Window (seconds) - the period over which errors are counted (placeholder 60).
-- Pause duration (seconds) - how long to wait before retrying, that is the open-to-half-open cooldown (placeholder 300).
+- Errors: errors before pausing (5 by default).
+- Within: the minutes over which errors are counted (1 by default). Stored in seconds as `circuit_window_seconds`.
+- Pause for: the minutes to wait before trying again, that is the open-to-half-open cooldown (5 by default). Stored in seconds as `circuit_cooldown_seconds`.
 
 State (closed, open, half-open) is held in a Durable Object per partner. A partner with an open breaker is skipped (the execution shows "Skipped - Circuit breaker open").
 
-## Response classification (buyer only)
+### Errors
 
 Override how this partner's responses are classified into rejection, transient error, or permanent error. The rule builder lets you match on a Body field or an HTTP status, with conditions like equals, contains, in, not in, and present. Your rules are evaluated before the default HTTP-status-based classification. Leave all three sections empty to use only the defaults.
 
@@ -81,6 +87,10 @@ The three categories behave differently:
 - Rejection - the partner declined the lead. Logged as a business rejection, never retried.
 - Transient error - temporary failure. Retried per the workflow retry policy.
 - Permanent error - unrecoverable failure. No retry, triggers alerts.
+
+## Click URL (Workflow values tab)
+
+- Click URL: the landing page URL for leads routed to this partner. It is exposed to bidding workflows as `{Slug}ClickUrl` via the [Constants node](../nodes/constants.md).
 
 ## Bid confirmation latency
 

@@ -12,7 +12,7 @@
  * their own, so a route that uses only a button here does not load their Radix
  * code (#2137, measured on /dashboard and the canvas).
  */
-import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useRef, useState, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react'
 import { Loader2 } from 'lucide-react'
 
 // ── Field ─────────────────────────────────────────────────────────────────────
@@ -80,41 +80,66 @@ interface TextInputProps {
   'aria-label'?: string
   className?: string
   /**
-   * Values the box offers as the person types (a path seen in a sample
-   * response, say). Typing anything else stays allowed.
-   */
-  suggestions?: readonly string[]
-  /**
    * Enter commits this field through its own action. The key is kept from the
    * form around it, so committing a field never also submits the form (#1552, L596).
    */
   onEnter?: () => void
+  /**
+   * Called when the box loses focus (a list that writes each row as it is
+   * left), with where focus went (`relatedTarget`), so a row's own remove mark
+   * can be told from leaving the row.
+   */
+  onBlur?: (e: FocusEvent<HTMLInputElement>) => void
+  /**
+   * Text to tint wherever it is typed, as a placeholder the value carries (the
+   * click URL's `{prospect_id}`, #2327). The tint is drawn on a copy of the text
+   * behind the box, hidden from screen readers, and scrolls with the address;
+   * the box itself holds exactly what is typed.
+   */
+  tint?: string
 }
 
-export function TextInput({ id, value, onChange, placeholder, mono, disabled, describedBy: db, className, onEnter, suggestions, ...aria }: TextInputProps) {
-  const listId = suggestions && suggestions.length > 0 ? `${id}-suggestions` : undefined
-  return (
-    <>
-      <input
-        id={id}
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={onEnter ? (e) => holdEnter(e, onEnter) : undefined}
-        placeholder={placeholder}
-        disabled={disabled}
-        list={listId}
-        aria-describedby={db}
-        aria-label={aria['aria-label']}
-        className={`input ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}
-      />
-      {listId && (
-        <datalist id={listId}>
-          {suggestions!.map((s) => <option key={s} value={s} />)}
-        </datalist>
-      )}
-    </>
+/** The value split around each `tint`, the tinted parts marked. */
+function tintParts(value: string, tint: string): ReactNode[] {
+  const pieces = value.split(tint)
+  return pieces.flatMap((piece, i) => (i === 0 ? [piece] : [<mark key={i} data-tint-mark className="input-tint-mark">{tint}</mark>, piece]))
+}
+
+/**
+ * A plain text box. One that offers values as the person types is
+ * SuggestInput (SuggestInput.tsx), never a native datalist (#2326).
+ */
+export function TextInput({ id, value, onChange, placeholder, mono, disabled, describedBy: db, className, onEnter, onBlur, tint, ...aria }: TextInputProps) {
+  const mirror = useRef<HTMLDivElement>(null)
+  // The copy behind follows the box's own scroll, however it moved: typing, the caret keys, a drag or a click.
+  const follow = tint ? (e: { currentTarget: HTMLInputElement }) => { if (mirror.current) mirror.current.scrollLeft = e.currentTarget.scrollLeft } : undefined
+  const box = (
+    <input
+      id={id}
+      type="text"
+      value={value}
+      onChange={(e) => { onChange(e.target.value); follow?.(e) }}
+      onKeyDown={onEnter ? (e) => holdEnter(e, onEnter) : undefined}
+      onBlur={onBlur}
+      onScroll={follow}
+      onKeyUp={follow}
+      onSelect={follow}
+      onMouseUp={follow}
+      placeholder={placeholder}
+      disabled={disabled}
+      aria-describedby={db}
+      aria-label={aria['aria-label']}
+      className={`input ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}
+    />
   )
+  return tint ? (
+    <div className="input-tint">
+      <div ref={mirror} data-tint-mirror aria-hidden="true" className={`input input-tint-mirror ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}>
+        {tintParts(value, tint)}
+      </div>
+      {box}
+    </div>
+  ) : box
 }
 
 interface NumberInputProps {
@@ -399,7 +424,7 @@ export function ChipCheck({ id, checked, onChange, label, shortLabel, size = 'sm
  */
 export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'destructive' | 'ghost' | 'row' | 'quiet' | 'remove'
 
-export function Button({ variant, type = 'button', form, onClick, disabled, busy, children, 'aria-label': ariaLabel, describedBy: db, title, className }: {
+export function Button({ variant, type = 'button', form, onClick, disabled, busy, children, 'aria-label': ariaLabel, describedBy: db, title, className, keepFocus }: {
   variant: ButtonVariant
   type?: 'button' | 'submit'
   /** The form a submit button belongs to when it is drawn outside it (the partners save bar, #2138). */
@@ -413,11 +438,18 @@ export function Button({ variant, type = 'button', form, onClick, disabled, busy
   describedBy?: string
   title?: string
   className?: string
+  /**
+   * Pressing the button leaves focus where it was, so a text box beside it is
+   * not left (and does not commit) before the click lands. Keyboard focus
+   * still reaches the button as usual (#2327).
+   */
+  keepFocus?: boolean
 }) {
   return (
     <button
       type={type}
       form={form}
+      onMouseDown={keepFocus ? (e) => e.preventDefault() : undefined}
       aria-describedby={db}
       onClick={onClick}
       disabled={disabled || busy}

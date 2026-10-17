@@ -120,6 +120,7 @@ jobs:
         run: |
           pnpm --filter @bidspoke/references test
           pnpm --filter @bidspoke/uuidv7 test
+          pnpm --filter @bidspoke/connection-seal test
           pnpm --filter @bidspoke/script-hygiene test
           pnpm --filter @bidspoke/buyer-profile test
           pnpm --filter @bidspoke/node-types test
@@ -128,6 +129,7 @@ jobs:
           pnpm --filter @bidspoke/realtime-spike test
           pnpm --filter @bidspoke/partner-page-live test
           pnpm --filter @bidspoke/partner-history test
+          pnpm --filter @bidspoke/service-catalogue test
           pnpm --filter compare-outbound test
           pnpm --filter ops-outbound test
           pnpm --filter worker-tail test
