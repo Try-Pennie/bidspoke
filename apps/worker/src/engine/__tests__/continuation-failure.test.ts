@@ -13,6 +13,7 @@
  *     failure dead-letters via a rate-aggregated alert instead).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { WorkflowDefinition, NodeDefinition } from '../../types'
@@ -64,20 +65,17 @@ function makeKV() {
 }
 
 function makeHarness() {
-  const background: Promise<unknown>[] = []
   const env = {
     IDEMPOTENCY: makeKV(),
     WORKFLOW_CACHE: makeKV(),
     APP_URL: 'https://app.test',
     PII_REDACTION_FIELDS: '',
   } as unknown as Env
-  const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
+  const executionCtx = recordingContext()
   // Drain across iterations — the finalize closure schedules the alert in a
   // nested waitUntil, so newly-added promises must be awaited too.
   const flush = async () => {
-    for (let i = 0; i < 6 && background.length; i++) {
-      await Promise.all(background.splice(0))
-    }
+    await executionCtx.settle()
   }
   return { env, executionCtx, flush }
 }

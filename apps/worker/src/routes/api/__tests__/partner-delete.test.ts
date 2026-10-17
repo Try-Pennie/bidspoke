@@ -4,6 +4,7 @@
  * keep their state, so a reset can be seen to start a re-created slug fresh.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -28,8 +29,7 @@ import { makeSupabase } from './_supabase-mock'
 const ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: ORG, email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 const NOW = new Date('2026-10-15T16:00:00Z')
 const PARTNER = { id: '1b9cbd8f-1d23-496c-b046-b11d64edae29', name: 'Tripoint', slug: 'tripoint', partner_type: 'buyer', is_active: true }
 

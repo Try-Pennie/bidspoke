@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../test-setup/wait-until'
 import type { Env } from '../index'
 import { AlertClaimObject } from '../durable-objects/alert-claim'
 
@@ -92,11 +93,10 @@ function envWith(ns: DurableObjectNamespace, idempotency?: ReturnType<typeof ide
 
 /** Fires one delivery and returns how the handler itself settled. */
 async function fire(env: Env, cron: string, scheduledTime: number): Promise<PromiseSettledResult<unknown>> {
-  const waited: Promise<unknown>[] = []
-  const ctx = { waitUntil: (p: Promise<unknown>) => waited.push(p), passThroughOnException: () => undefined } as unknown as ExecutionContext
+  const ctx = recordingContext()
   const handled = Promise.resolve().then(() => worker.scheduled({ cron, scheduledTime } as ScheduledEvent, env, ctx))
   const [settled] = await Promise.allSettled([handled])
-  await Promise.allSettled(waited)
+  await ctx.settle()
   return settled
 }
 

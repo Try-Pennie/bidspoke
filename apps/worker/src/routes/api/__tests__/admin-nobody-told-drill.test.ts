@@ -10,6 +10,7 @@
  * page for the next hour as already sent.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -28,8 +29,7 @@ const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 const URL_ = 'https://s9.us-east-9.betterstackdata.com'
 const TOKEN = 'outage-source-token-for-tests'
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 /** A KV binding that records every call made on it, whatever the method. */
 function recordingKv() {

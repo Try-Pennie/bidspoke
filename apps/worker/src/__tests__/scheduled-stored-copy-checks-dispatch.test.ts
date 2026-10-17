@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { recordingContext } from '../test-setup/wait-until'
 import type { Env } from '../index'
 import { STORED_COPY_LEDGER_PREFIX, forgetStoredCopyLedger, noteStoredCopy } from '../lib/stored-copy-ledger'
 
@@ -55,20 +56,8 @@ function makeEnv() {
 }
 
 function makeCtx() {
-  const waited: Promise<unknown>[] = []
-  const ctx = {
-    waitUntil: (p: Promise<unknown>) => waited.push(p),
-    passThroughOnException: () => undefined,
-  } as unknown as ExecutionContext
-  // Settles everything handed to waitUntil, including what is handed to it while settling.
-  const settle = async () => {
-    for (let seen = 0; seen < waited.length;) {
-      const batch = waited.slice(seen)
-      seen = waited.length
-      await Promise.allSettled(batch)
-    }
-  }
-  return { ctx, settle }
+  const ctx = recordingContext()
+  return { ctx, settle: () => ctx.settle() }
 }
 
 async function fire(cron: string, env: Env) {

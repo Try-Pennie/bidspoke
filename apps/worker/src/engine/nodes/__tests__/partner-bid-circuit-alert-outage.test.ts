@@ -101,7 +101,8 @@ describe('the circuit breaker page while the database is down (#1849)', () => {
   })
 
   it('a Slack post that never answers is ended by the page deadline, so the lead is not held', async () => {
-    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)))
+    const slackNeverAnswers = vi.fn(() => new Promise<Response>(() => undefined))
+    vi.stubGlobal('fetch', slackNeverAnswers)
     const pending: Array<{ fn: () => void; ms: number }> = []
     const timers: Timers = { setTimeout: (fn, ms) => { pending.push({ fn, ms }); return pending.length }, clearTimeout: () => undefined }
     const db = database('up')
@@ -109,5 +110,11 @@ describe('the circuit breaker page while the database is down (#1849)', () => {
     expect(pending.map((t) => t.ms)).toEqual([CIRCUIT_ALERT_DEADLINE_MS])
     pending[0].fn()
     await expect(p).resolves.toBe(true)
+    // The deadline ends the page before its lookup has answered, and the page
+    // goes on to post once it does. Seen to post here, to the stub that never
+    // answers: left to run past the test, it posted through the REAL fetch once
+    // afterEach unstubbed it, reached slack.com and logged invalid_auth into a
+    // closed worker (#2120).
+    await vi.waitFor(() => expect(slackNeverAnswers).toHaveBeenCalledTimes(1))
   })
 })

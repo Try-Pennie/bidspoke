@@ -7,6 +7,7 @@
  * leaving the gate replaying a run the product no longer makes (L41).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../src/test-setup/wait-until'
 import { uuidv7 } from '@bidspoke/uuidv7'
 import type { Env } from '../../../src/index'
 import { makeSupabase } from '../../../src/routes/api/__tests__/_supabase-mock'
@@ -36,8 +37,7 @@ import { loadWorkflowDefinition } from '../../../src/engine/definition-loader'
 import shadow from '../../../src/routes/shadow'
 import { RUN_KINDS, fixtureId, runOptions } from '../run-kinds'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const ctx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const ctx = recordingContext()
 const ORG = 'org-abc'
 const payload = { lead: 1, state: 'TX' }
 

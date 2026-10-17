@@ -16,6 +16,7 @@
  * real ordering, not the helpers'.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { ExecutionContext as EngineContext, WorkflowDefinition } from '../../types'
@@ -74,19 +75,16 @@ function makeKV() {
 }
 
 function makeHarness() {
-  const background: Promise<unknown>[] = []
   const env = {
     IDEMPOTENCY: makeKV(),
     WORKFLOW_CACHE: makeKV(),
     APP_URL: 'https://app.test',
     PII_REDACTION_FIELDS: '',
   } as unknown as Env
-  const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
+  const executionCtx = recordingContext()
   // Drain waitUntil repeatedly: the finalize chain registers further work.
   const flush = async () => {
-    for (let i = 0; i < 6 && background.length; i++) {
-      await Promise.all(background.splice(0))
-    }
+    await executionCtx.settle()
   }
   return { env, executionCtx, flush }
 }

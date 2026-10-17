@@ -15,6 +15,7 @@
  * insert costs the caller nothing and removes the race outright.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { WorkflowDefinition } from '../../types'
@@ -65,9 +66,8 @@ function makeKV() {
 }
 
 function makeHarness() {
-  const background: Promise<unknown>[] = []
   const env = { IDEMPOTENCY: makeKV(), WORKFLOW_CACHE: makeKV(), APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
-  const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
+  const executionCtx = recordingContext()
   // Advance the microtask/macrotask queue WITHOUT awaiting the background
   // promises: one of them is deliberately left pending to model an insert that
   // has not landed. Awaiting it would just hang the test.
@@ -75,7 +75,7 @@ function makeHarness() {
     for (let i = 0; i < ticks; i++) await new Promise((r) => setTimeout(r, 0))
   }
   const drain = async () => {
-    for (let i = 0; i < 8 && background.length; i++) await Promise.all(background.splice(0))
+    await executionCtx.settle()
   }
   return { env, executionCtx, settle, drain }
 }

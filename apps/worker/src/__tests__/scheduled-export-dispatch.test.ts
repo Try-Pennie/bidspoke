@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../test-setup/wait-until'
 
 // Mock the export entry points + their alert/supabase deps so we can assert which
 // cron triggers dispatch the sightings export, without running real export work.
@@ -33,20 +34,13 @@ import { recordExportRun } from '../lib/export-run-record'
 
 const env = {} as unknown as Env
 
-function fakeCtx() {
-  return { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as unknown as ExecutionContext
-}
-
 // The export runs are handed to waitUntil, so a plain fire() returns before the
-// catch block has reported anything. Collect and drain them.
+// catch block has reported anything. Settle them, and anything they hand on.
 async function fireAndFlush(cron: string) {
-  const pending: Promise<unknown>[] = []
-  const ctx = {
-    waitUntil: (p: Promise<unknown>) => pending.push(p),
-    passThroughOnException: vi.fn(),
-  } as unknown as ExecutionContext
+  const ctx = recordingContext()
   void worker.scheduled?.({ cron, scheduledTime: 0, type: 'scheduled' } as unknown as ScheduledEvent, env, ctx)
-  await Promise.all(pending)
+  await ctx.settle()
+  await Promise.all(ctx.handed)
 }
 
 describe('scheduled export dispatch', () => {
@@ -151,10 +145,9 @@ describe('the Worker no longer runs the sightings purge (#541)', () => {
       // the record of that fail-open (#1904), after the write of any guard
       // record an earlier tick could not make (#2166). Once all three settle, no
       // job has handed over any work of its own.
-      const ctx = fakeCtx()
+      const ctx = recordingContext()
       void worker.scheduled?.({ cron, scheduledTime: 0, type: 'scheduled' } as unknown as ScheduledEvent, env, ctx)
-      const handed = vi.mocked(ctx.waitUntil).mock.calls.map((c) => c[0] as Promise<unknown>)
-      await Promise.allSettled(handed)
+      await ctx.settle()
       expect(ctx.waitUntil).toHaveBeenCalledTimes(3)
       expect(runSightingsExport).not.toHaveBeenCalled()
       expect(runAchieveExport).not.toHaveBeenCalled()

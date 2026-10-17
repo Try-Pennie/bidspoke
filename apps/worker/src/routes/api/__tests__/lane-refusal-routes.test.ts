@@ -17,6 +17,7 @@
  * before that work.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -56,8 +57,7 @@ const USER_ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {}, APP_URL: 'https://app.test' } as unknown as Env
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 const WRONG_LANE_MESSAGE = 'This workflow is stored as an ops workflow, and this server runs only money workflows. Nothing was run and no execution was recorded.'
 const REFUSED_STEP_MESSAGE = 'This workflow has a step of type partner_bid, which ops workflows cannot run. Nothing was run and no execution was recorded.'

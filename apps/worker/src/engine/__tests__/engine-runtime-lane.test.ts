@@ -10,6 +10,7 @@
  *   cannot run.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { LoadedWorkflow, WorkflowDefinition } from '../../types'
@@ -68,13 +69,12 @@ const client = (name: string) =>
   ({ name, from: () => ({ select: () => ({ in: () => Promise.resolve({ data: [] }) }) }) }) as unknown as SupabaseClient
 
 async function run(runtime: Parameters<typeof executeWorkflow>[2], extra: Partial<Parameters<typeof executeWorkflow>[0]> = {}) {
-  const background: Promise<unknown>[] = []
   const env = { IDEMPOTENCY: makeKV(), WORKFLOW_CACHE: makeKV(), APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
-  const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
+  const executionCtx = recordingContext()
   try {
     return await executeWorkflow({ workflowId: 'wf-1707', payload: { lead: 1 }, source: 'engine', ...extra }, env, runtime, executionCtx)
   } finally {
-    await Promise.all(background.splice(0))
+    await executionCtx.settle()
   }
 }
 

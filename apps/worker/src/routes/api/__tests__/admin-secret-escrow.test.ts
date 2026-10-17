@@ -6,6 +6,7 @@
  * what is written down, plus the handover route staying gone.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -20,8 +21,7 @@ import { reencryptSecrets } from '../../../lib/secret-reencrypt'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@trypennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@trypennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 function kv() {
   const store = new Map<string, string>()

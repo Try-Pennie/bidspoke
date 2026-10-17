@@ -3,6 +3,7 @@
  * return generic messages to external callers instead of echoing raw err.message.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import { Hono } from 'hono'
 import type { Env } from '../../index'
 
@@ -45,12 +46,12 @@ function makeSupabaseReturning(result: { data: unknown; error: unknown }) {
 }
 
 function postUncached() {
-  const executionCtx = { waitUntil: () => {}, passThroughOnException: () => {} }
+  const executionCtx = recordingContext()
   return makeApp().request(
     'http://hook.trypennie.dev/tripoint/bidding',
     { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } },
     makeUncachedEnv(),
-    executionCtx as unknown as ExecutionContext
+    executionCtx
   )
 }
 
@@ -75,12 +76,12 @@ function makeApp() {
 }
 
 function post() {
-  const executionCtx = { waitUntil: () => {}, passThroughOnException: () => {} }
+  const executionCtx = recordingContext()
   return makeApp().request(
     'http://hook.trypennie.dev/tripoint/bidding',
     { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } },
     makeEnv(),
-    executionCtx as unknown as ExecutionContext
+    executionCtx
   )
 }
 
@@ -185,12 +186,12 @@ describe('custom endpoint cache + gate handling (#316)', () => {
     } as unknown as Env
   }
   function postTo(env: Env, headers: Record<string, string> = {}) {
-    const executionCtx = { waitUntil: () => {}, passThroughOnException: () => {} }
+    const executionCtx = recordingContext()
     return makeApp().request(
       'http://hook.trypennie.dev/tripoint/bidding',
       { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json', ...headers } },
       env,
-      executionCtx as unknown as ExecutionContext
+      executionCtx
     )
   }
   const activeEndpoint = {
@@ -296,12 +297,12 @@ describe('custom endpoint serves the last-good record during a DB outage (#1296)
   /** The copy as a healthy lookup `ageMs` ago left it. */
   const confirmedCopy = (ageMs = 0): Seed => ({ value: lastGood, metadata: { confirmed_at: new Date(Date.now() - ageMs).toISOString() } })
   function postWith(kv: unknown) {
-    const executionCtx = { waitUntil: () => {}, passThroughOnException: () => {} }
+    const executionCtx = recordingContext()
     return makeApp().request(
       'http://hook.trypennie.dev/tripoint/bidding',
       { method: 'POST', body: '{}', headers: { 'Content-Type': 'application/json' } },
       { WORKFLOW_CACHE: kv, API_KEY_MAP: '{}' } as unknown as Env,
-      executionCtx as unknown as ExecutionContext
+      executionCtx
     )
   }
   const lastGood = JSON.stringify({ id: 'e1', workflow_id: 'wf-1', source_name: 'tripoint', is_active: true, auth_method: 'none' })

@@ -5,6 +5,7 @@
  * having fired an alert, and a duration alert is never throttled.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 
 const h = vi.hoisted(() => ({
   sendFailureAlert: vi.fn<(...a: unknown[]) => Promise<unknown>>(async () => ({ ts: '1.23' })),
@@ -52,7 +53,7 @@ const baseArgs = (over: Partial<ExecutionAlertArgs>): ExecutionAlertArgs => ({
   alertType: 'failure',
   supabase,
   env: { IDEMPOTENCY: kv, APP_URL: 'https://app.test' } as never,
-  executionCtx: { waitUntil: vi.fn() },
+  executionCtx: recordingContext(),
   orgId: 'org-1',
   slackChannel: null,
   workflowId: 'wf-1',

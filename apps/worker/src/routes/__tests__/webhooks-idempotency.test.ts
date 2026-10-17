@@ -11,6 +11,7 @@
  * (double partner bids) and not answered 200 (source believes it was accepted).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { WorkflowDefinition } from '../../types'
@@ -85,11 +86,7 @@ function post(idempotencyKV: KVNamespace) {
     PII_REDACTION_FIELDS: '',
   } as unknown as Env
 
-  const background: Promise<unknown>[] = []
-  const executionCtx = {
-    waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})),
-    passThroughOnException: () => {},
-  } as unknown as ExecutionContext
+  const executionCtx = recordingContext()
 
   const res = webhooks.request(
     `/${WF_ID}`,
@@ -105,7 +102,7 @@ function post(idempotencyKV: KVNamespace) {
     env,
     executionCtx
   )
-  return { res, flush: () => Promise.all(background) }
+  return { res, flush: () => executionCtx.settle() }
 }
 
 const markerKey = `idempotent-${WF_ID}-${SOURCE}-${IDEM_KEY}`

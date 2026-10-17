@@ -4,6 +4,7 @@
  * auth, JSON parsing, engine delegation, response headers.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { Env } from '../../index'
 
 // ── Mocks (hoisted before imports) ───────────────────────────────────────────
@@ -47,8 +48,7 @@ function request(
     ? opts.rawBody
     : JSON.stringify(opts.body ?? { test: true })
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+  const mockCtx = recordingContext()
   return webhooks.request(
     `/${workflowId}`,
     { method: 'POST', headers, body },

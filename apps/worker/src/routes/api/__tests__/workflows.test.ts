@@ -5,6 +5,7 @@
  * Auth rejection is covered in workflows-auth.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import { makeSupabase as makeSupabaseMock, type TableConfig } from './_supabase-mock'
 import type { Env } from '../../../index'
 
@@ -80,8 +81,7 @@ async function makeApp() {
  */
 const routeClient = () => vi.mocked(createSupabaseClient).mock.results[0]?.value
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 function request(app: { request: Function }, method: string, path: string, opts: { body?: unknown } = {}) {
   return app.request(path, {
