@@ -74,8 +74,9 @@
     `{ key, name, version, arguments[], sideEffect, idempotent, run }` and is never
     edited once released (D1): `src/fingerprints.json` holds a sha256 per
     `key@version` over its arguments, traits and the source of its run file
-    `src/runtime/actions/<key>.v<version>.ts` plus every file that imports
-    relatively, and a changed one fails, asking for a new version. A new version's
+    `src/runtime/actions/<key>.v<version>.ts` plus every file that run file
+    reaches through relative value imports (type only imports are left out), and
+    a changed one fails, asking for a new version. A new version's
     fingerprint line is printed by the failing test for you to add. Every action
     decides `sideEffect` and `idempotent` itself, with `idempotentBecause` saying
     why, never from a Pipedream annotation (R11). Steps resolve an action by
