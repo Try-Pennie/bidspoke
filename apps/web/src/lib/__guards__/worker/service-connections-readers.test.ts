@@ -17,7 +17,8 @@ import { WORKER_SRC, listTsFiles, sanitizeSource } from '../../__tests__/_scan-u
  * silent in an outage while every other alert spoke.
  *
  * So this fails on the table's name as a string anywhere in worker source
- * outside those two modules and the API routes, which edit connections for the
+ * outside those two modules, the files ALLOWED_WITH_REASON lists below with
+ * their reasons, and the API routes, which edit connections for the
  * signed-in app (routes/api/). The name as a string catches `.from('...')`, the
  * other quote styles, and a constant holding it, all of which are the same read.
  * The generated database types name the table as a bare key, not a string.
