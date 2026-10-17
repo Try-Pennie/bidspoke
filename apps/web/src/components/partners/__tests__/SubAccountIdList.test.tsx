@@ -94,6 +94,23 @@ describe('the sub-account IDs, as drawn', () => {
     expect(onRemove).toHaveBeenCalledWith('k2')
   })
 
+  it('a pointer press on a minus keeps focus in the box, so a browser that never focuses a clicked button (Safari) does not commit either', async () => {
+    setup()
+    await userEvent.click(screen.getByRole('button', { name: 'Add sub-account ID' }))
+    // fireEvent returns false when the press's default (moving focus) was prevented.
+    expect(fireEvent.mouseDown(screen.getByRole('button', { name: 'Remove new sub-account ID' }))).toBe(false)
+    expect(fireEvent.mouseDown(screen.getByRole('button', { name: 'Remove sub-account ID 1' }))).toBe(false)
+  })
+
+  it('Tab from a new box to its own minus writes nothing either', async () => {
+    const { onAdd } = setup()
+    await userEvent.click(screen.getByRole('button', { name: 'Add sub-account ID' }))
+    await userEvent.type(screen.getByLabelText('New sub-account ID'), NEW)
+    await userEvent.tab()
+    expect(screen.getByRole('button', { name: 'Remove new sub-account ID' })).toHaveFocus()
+    expect(onAdd).not.toHaveBeenCalled()
+  })
+
   it('leaving a new box empty takes it away and writes nothing', async () => {
     const { onAdd } = setup()
     await userEvent.click(screen.getByRole('button', { name: 'Add sub-account ID' }))

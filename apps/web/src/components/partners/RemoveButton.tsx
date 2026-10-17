@@ -9,9 +9,9 @@ import { Button } from '@/components/ui/form'
  * reader and on hover. partner-page-density-guard.test.ts refuses any other
  * remove mark on the page.
  */
-export function RemoveButton({ label, onClick, disabled, className }: { label: string; onClick: () => void; disabled?: boolean; className?: string }) {
+export function RemoveButton({ label, onClick, disabled, className, keepFocus }: { label: string; onClick: () => void; disabled?: boolean; className?: string; keepFocus?: boolean }) {
   return (
-    <Button variant="remove" onClick={onClick} disabled={disabled} aria-label={label} title={label} className={className}>
+    <Button variant="remove" onClick={onClick} disabled={disabled} aria-label={label} title={label} className={className} keepFocus={keepFocus}>
       <Minus className="h-3.5 w-3.5" aria-hidden="true" />
     </Button>
   )

@@ -329,7 +329,7 @@ export function Checkbox({ id, checked, onChange, label, disabled, describedBy: 
  */
 export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'destructive' | 'ghost' | 'row' | 'quiet' | 'remove'
 
-export function Button({ variant, type = 'button', form, onClick, disabled, busy, children, 'aria-label': ariaLabel, describedBy: db, title, className }: {
+export function Button({ variant, type = 'button', form, onClick, disabled, busy, children, 'aria-label': ariaLabel, describedBy: db, title, className, keepFocus }: {
   variant: ButtonVariant
   type?: 'button' | 'submit'
   /** The form a submit button belongs to when it is drawn outside it (the partners save bar, #2138). */
@@ -343,11 +343,18 @@ export function Button({ variant, type = 'button', form, onClick, disabled, busy
   describedBy?: string
   title?: string
   className?: string
+  /**
+   * Pressing the button leaves focus where it was, so a text box beside it is
+   * not left (and does not commit) before the click lands. Keyboard focus
+   * still reaches the button as usual (#2327).
+   */
+  keepFocus?: boolean
 }) {
   return (
     <button
       type={type}
       form={form}
+      onMouseDown={keepFocus ? (e) => e.preventDefault() : undefined}
       aria-describedby={db}
       onClick={onClick}
       disabled={disabled || busy}

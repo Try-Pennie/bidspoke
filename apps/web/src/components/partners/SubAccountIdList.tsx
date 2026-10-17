@@ -45,9 +45,11 @@ type Working = { row: string; doing: 'Adding' | 'Changing' | 'Removing' } | null
 let nextDraft = 0
 const draftId = () => `draft-${++nextDraft}`
 /**
- * Whether focus left a box for that row's own minus: pressing the minus moves
- * focus out of the box before the click lands, and that is the person taking
- * the row away, never committing what is typed in it (lessons review, #2327).
+ * Taking a row away must never first commit what is typed in its box (lessons
+ * review, #2327). Two routes reach the minus from the box: a pointer press,
+ * which the minus answers by keeping focus in the box (keepFocus: Safari and
+ * Firefox on macOS never focus a clicked button, so focus moving cannot be
+ * relied on), and the Tab key, which moves focus to the minus, told apart here.
  */
 const toOwnMinus = (e: FocusEvent<HTMLInputElement>, minusLabel: string) =>
   e.relatedTarget instanceof HTMLElement && e.relatedTarget.getAttribute('aria-label') === minusLabel
@@ -129,7 +131,7 @@ export function SubAccountIdList({ ids, onAdd, onRemove, onChange }: Props) {
             mono
             className="text-xs"
           />
-          <RemoveButton label={`Remove sub-account ID ${i + 1}`} disabled={working !== null} onClick={() => remove(id)} />
+          <RemoveButton label={`Remove sub-account ID ${i + 1}`} disabled={working !== null} onClick={() => remove(id)} keepFocus />
         </div>
       ))}
       {drafts.map((draft, j) => (
@@ -148,6 +150,7 @@ export function SubAccountIdList({ ids, onAdd, onRemove, onChange }: Props) {
           {/* Nothing is written for a box not committed yet, so its minus only closes it. */}
           <RemoveButton
             label={draftMinus(j)}
+            keepFocus
             disabled={working?.row === draft.id}
             onClick={() => setDrafts((prev) => prev.filter((d) => d.id !== draft.id))}
           />
