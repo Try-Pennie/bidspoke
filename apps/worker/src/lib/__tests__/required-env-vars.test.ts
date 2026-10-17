@@ -12,6 +12,7 @@ import {
   findMissingEnvVars,
   REQUIRED_ENV_VARS,
 } from '../required-env-vars'
+import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 /** A full, valid set of the required non-secret config values. */
 function fullVars(overrides: Record<string, string | undefined> = {}): Record<string, string> {
@@ -37,7 +38,7 @@ function fakeSupabase(
   return {
     from: (table: string) => {
       if (table === 'service_connections') {
-        return { select: () => ({ eq: () => Promise.resolve({ data: orgRows, error: null }) }) }
+        return { select: () => alertRowListAnswer({ data: orgRows, error: null }) }
       }
       // environment_variables: select().eq(org).eq(scope).is(is_secret)
       let orgId = ''

@@ -56,7 +56,7 @@ async function setup(answers: Answer[], kvKind: 'empty' | 'copy' | 'unreadable',
 
 describe('a lookup that someone can be told from never pages', () => {
   it.each<[string, Answer[], 'empty' | 'copy']>([
-    ['a live answer', [{ data: { config: { bot_token: 'xoxb-live', default_channel: '#live' } } }], 'empty'],
+    ['a live answer', [{ data: [{ config: { bot_token: 'xoxb-live', default_channel: '#live' } }] }], 'empty'],
     ['no connection, the database answering', [{ data: null }], 'empty'],
     ['an answer from the saved copy', [{ error: { message: 'boom' } }], 'copy'],
   ])('%s', async (_label, answers, kvKind) => {

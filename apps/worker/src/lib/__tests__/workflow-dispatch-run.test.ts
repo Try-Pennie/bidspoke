@@ -24,7 +24,8 @@ function makeSupabase(result: { data: unknown; error: unknown }) {
     {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
-        if (prop === 'eq') return () => Promise.resolve(result)
+        // Settles when awaited, after whatever filters the read chained (#2332).
+        if (prop === 'then') return (resolve: (v: unknown) => unknown, reject: (e: unknown) => unknown) => Promise.resolve(result).then(resolve, reject)
         return () => chain
       },
     },

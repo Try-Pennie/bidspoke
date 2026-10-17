@@ -106,7 +106,7 @@ describe('the key ring reaches every client createSupabaseClient builds', () => 
 
 describe('the request path reads a sealed row', () => {
   it('sendFailureAlert on a request client posts from a row holding only credential_enc', async () => {
-    const { client } = fakeClient([{ data: { config: { default_channel: '#alerts' }, credential_enc: await sealed(SEALED_TOKEN) } }])
+    const { client } = fakeClient([{ data: [{ config: { default_channel: '#alerts' }, credential_enc: await sealed(SEALED_TOKEN) }] }])
     registerSlackKeyRing(client, RING)
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, ts: '1.1' }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
@@ -120,14 +120,14 @@ describe('the request path reads a sealed row', () => {
   })
 
   it('a client with no ring that meets a sealed row fails loudly by name, never as no Slack', async () => {
-    const { client } = fakeClient([{ data: { config: { default_channel: '#alerts' }, credential_enc: await sealed(SEALED_TOKEN) } }])
+    const { client } = fakeClient([{ data: [{ config: { default_channel: '#alerts' }, credential_enc: await sealed(SEALED_TOKEN) }] }])
     const found = await lookupSlackConnection(client, ORG, [])
     expect(found).toEqual({ kind: 'unreachable', reason: 'slack_key_ring_missing' })
     expect(logs.some((l) => l.includes('slack_key_ring_missing') && l.includes(ORG))).toBe(true)
   })
 
   it('an undecryptable row with no plaintext fails loudly by name and posts nothing', async () => {
-    const { client } = fakeClient([{ data: { config: { default_channel: '#alerts' }, credential_enc: await sealed(SEALED_TOKEN, OTHER_KEY) } }])
+    const { client } = fakeClient([{ data: [{ config: { default_channel: '#alerts' }, credential_enc: await sealed(SEALED_TOKEN, OTHER_KEY) }] }])
     registerSlackKeyRing(client, RING)
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
@@ -138,17 +138,17 @@ describe('the request path reads a sealed row', () => {
   })
 
   it('an undecryptable row with the plaintext beside it still alerts, and the fallback is logged by name', async () => {
-    const { client } = fakeClient([{ data: { config: { bot_token: PLAIN_TOKEN, default_channel: '#alerts' }, credential_enc: await sealed(SEALED_TOKEN, OTHER_KEY) } }])
+    const { client } = fakeClient([{ data: [{ config: { bot_token: PLAIN_TOKEN, default_channel: '#alerts' }, credential_enc: await sealed(SEALED_TOKEN, OTHER_KEY) }] }])
     registerSlackKeyRing(client, RING)
     expect((await getSlackConnection(client, ORG, []))?.bot_token).toBe(PLAIN_TOKEN)
     expect(logs.some((l) => l.includes('slack_token_undecryptable') && l.includes('plaintext'))).toBe(true)
   })
 
   it('readSlackConnectionForLead reads a sealed row, and throws by name on one it cannot open', async () => {
-    const good = fakeClient([{ data: { config: { default_channel: '#a' }, credential_enc: await sealed(SEALED_TOKEN) } }]).client
+    const good = fakeClient([{ data: [{ config: { default_channel: '#a' }, credential_enc: await sealed(SEALED_TOKEN) }] }]).client
     registerSlackKeyRing(good, RING)
     expect((await readSlackConnectionForLead(good, ORG))?.bot_token).toBe(SEALED_TOKEN)
-    const bad = fakeClient([{ data: { config: { default_channel: '#a' }, credential_enc: await sealed(SEALED_TOKEN, OTHER_KEY) } }]).client
+    const bad = fakeClient([{ data: [{ config: { default_channel: '#a' }, credential_enc: await sealed(SEALED_TOKEN, OTHER_KEY) }] }]).client
     registerSlackKeyRing(bad, RING)
     await expect(readSlackConnectionForLead(bad, ORG)).rejects.toThrow(/slack_token_undecryptable/)
   })
@@ -188,7 +188,7 @@ describe('the Slack token page names a fix that changes the state it reports (L1
 
 describe('the scheduled lookup and a sealed row it cannot open', () => {
   it('falls back to the saved copy where it does today, with the named reason in the log', async () => {
-    const { client } = fakeClient([{ data: { config: { default_channel: '#a' }, credential_enc: await sealed(SEALED_TOKEN, OTHER_KEY) } }])
+    const { client } = fakeClient([{ data: [{ config: { default_channel: '#a' }, credential_enc: await sealed(SEALED_TOKEN, OTHER_KEY) }] }])
     registerSlackKeyRing(client, RING)
     const kv = await kvWithCopy({ [ORG]: { bot_token: 'copy-bot-token', default_channel: '#copy' } })
     registerScheduledSlack(client, { kv, secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep })
@@ -198,7 +198,7 @@ describe('the scheduled lookup and a sealed row it cannot open', () => {
   })
 
   it('reads a sealed row live on the scheduled client', async () => {
-    const { client } = fakeClient([{ data: { config: { default_channel: '#a' }, credential_enc: await sealed(SEALED_TOKEN) } }])
+    const { client } = fakeClient([{ data: [{ config: { default_channel: '#a' }, credential_enc: await sealed(SEALED_TOKEN) }] }])
     registerSlackKeyRing(client, RING)
     registerScheduledSlack(client, { kv: await kvWithCopy({}), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep })
     expect(await lookupSlackConnection(client, ORG)).toMatchObject({ kind: 'live', connection: { bot_token: SEALED_TOKEN } })

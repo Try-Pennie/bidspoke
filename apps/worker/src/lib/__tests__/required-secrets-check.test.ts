@@ -8,6 +8,7 @@ vi.mock('../slack', () => ({
 
 import { sendRequiredSecretsAlert } from '../slack'
 import { runRequiredSecretsCheck, REQUIRED_SECRETS, REQUIRED_PARTNER_SECRETS } from '../required-secrets'
+import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 function fullSecretEnv(overrides: Record<string, string | undefined> = {}): Env {
   const e: Record<string, string | undefined> = { APP_URL: 'https://app.example' }
@@ -19,9 +20,7 @@ function fullSecretEnv(overrides: Record<string, string | undefined> = {}): Env 
 function fakeSupabase(orgRows: { organization_id: string }[]): SupabaseClient {
   return {
     from: () => ({
-      select: () => ({
-        eq: () => Promise.resolve({ data: orgRows, error: null }),
-      }),
+      select: () => alertRowListAnswer(Promise.resolve({ data: orgRows, error: null })),
     }),
   } as unknown as SupabaseClient
 }

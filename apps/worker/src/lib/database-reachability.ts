@@ -35,7 +35,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { minuteAllClearClaim, postMinutePage, readSlackConnectionRows } from './alert-fanout'
 import { boundedRead, type BoundableQuery, type ScheduledSlack } from './scheduled-slack'
 import { readSlackCopy, rememberSlackConnections } from './slack-copy'
-import { resolveSlackConnection, slackTokenProblemLine, type SlackConnection, type SlackConnectionRow } from './slack-connection'
+import { resolveSlackConnection, slackAlertAmbiguityLine, slackAlertRowsByOrg, slackTokenProblemLine, type SlackConnection, type SlackConnectionRow } from './slack-connection'
 import { judgeSlackTokens, type SlackTokenSighting } from './slack-token-health'
 import { sendDatabaseRecoveredAlert, sendDatabaseUnreachableAlert } from './slack'
 import {
@@ -416,7 +416,17 @@ export async function runDatabaseReachabilityProbe(deps: ProbeDeps): Promise<Pro
     const readable = new Map<string, SlackConnection>()
     const sightings: SlackTokenSighting[] = []
     let current: Map<string, SlackConnection> | null = null
-    for (const row of rows) {
+    // An org with more than one alert row (#2332) is not absent either: no row
+    // of the several is the alert row, so its existing entry is carried
+    // forward, said by name. Not a token sighting: no token failed to open.
+    const { rows: alertRows, ambiguousOrgs } = slackAlertRowsByOrg(rows)
+    for (const orgId of ambiguousOrgs) {
+      console.error(slackAlertAmbiguityLine(`database-reachability slack connection for org ${orgId}`, null))
+      current ??= await currentCopy(deps)
+      const kept = current.get(orgId)
+      if (kept) connections.set(orgId, kept)
+    }
+    for (const row of alertRows) {
       const resolved = await resolveSlackConnection(row, deps.secretKeys)
       const subject = `database-reachability slack connection for org ${row.organization_id}`
       if (resolved.kind === 'connection') {

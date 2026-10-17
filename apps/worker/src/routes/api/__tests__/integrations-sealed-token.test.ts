@@ -49,7 +49,8 @@ function recordingSupabase(opts: { row?: Record<string, unknown> | null; rpcResu
     {
       users: { single: testUser },
       service_connections: {
-        maybeSingle: opts.row ?? null,
+        // The alert row read ends in .limit(2), awaited as a list (#2332).
+        list: opts.row ? [opts.row] : [],
         upsertResult: { id: 'sc-1', created_at: '2026-10-17T00:00:00Z', updated_at: '2026-10-17T00:00:01Z' },
         writeRows: [{ id: 'sc-1' }],
       },
@@ -196,7 +197,7 @@ describe('GET /integrations/slack/channels', () => {
 
 describe('DELETE /integrations/slack', () => {
   it('deletes through delete_service_connection with the caller as actor, and writes no route audit row', async () => {
-    const { client, rec } = recordingSupabase()
+    const { client, rec } = recordingSupabase({ row: { id: 'sc-1' } })
     vi.mocked(createSupabaseClient).mockReturnValue(client as never)
     const res = await call('DELETE', '/integrations/slack')
     expect(res.status).toBe(200)
@@ -207,7 +208,7 @@ describe('DELETE /integrations/slack', () => {
 
   it('answers 500 and leaves the copy when the delete function fails', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    const { client } = recordingSupabase({ rpcResult: { data: null, error: { code: 'BP503', message: 'connection_audit_failed' } } })
+    const { client } = recordingSupabase({ row: { id: 'sc-1' }, rpcResult: { data: null, error: { code: 'BP503', message: 'connection_audit_failed' } } })
     vi.mocked(createSupabaseClient).mockReturnValue(client as never)
     const res = await call('DELETE', '/integrations/slack')
     expect(res.status).toBe(500)

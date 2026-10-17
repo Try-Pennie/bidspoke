@@ -21,6 +21,9 @@
  * a bad seal cannot hide behind the plaintext until the contract release
  * strips it (F128). parseSlackConnection stays for what is not a row: the
  * saved copy's entries, which hold the token inside the encrypted copy.
+ *
+ * Which row is the alert row (#2332) is defined here too, once
+ * (onlySlackAlertRow), for every reader in lib and in routes/api.
  */
 import { decryptSecret, type SecretKeyInput } from './secret-crypto'
 import { formatErr } from './format-error'
@@ -61,6 +64,97 @@ export function parseSlackConnection(config: unknown): SlackConnection | null {
 
 /** The columns a Slack connection row is resolved from; every reader selects both. */
 export const SLACK_ROW_COLUMNS = 'config, credential_enc'
+
+// ── The alert row (#2332, phase 2 of #1689) ─────────────────────────────────
+//
+// An organization can hold more than one Slack row once release 2 drops the
+// old UNIQUE (organization_id, service_type): an ops connection (sealed_for
+// 'ops_key', its own name and bot, #1689 Phase 8) beside the alert bot's row.
+// Every alert reader and writer reads only the ALERT row, through the one
+// filter below, so an ops row can never be read as the alert row and post an
+// alert with the ops bot.
+//
+// The alert row is service_type 'slack', name 'slack' (what migration
+// 20261017150000 backfilled; no ops_key slack row may take it,
+// service_connections_alert_name_reserved), and sealed_for 'bidding_ring' or
+// null. Null is the legacy unsealed form: the production row has it until
+// POST /api/admin/seal-slack-token seals it (measured 2026-10-17: the one row
+// has sealed_for null and no credential_enc). The contract release of #2331,
+// once every row is sealed, is where the null disjunct can go.
+//
+// More than one candidate is its own named refusal (SLACK_ALERT_AMBIGUOUS),
+// never "no Slack" and never one of them picked (L55, L1005). UNIQUE
+// (organization_id, service_type, name) makes it impossible today, and the
+// partial unique index service_connections_one_alert_row makes two sealed
+// alert rows impossible after release 2, but a reader that picked one would
+// hide the day a constraint changes. Each reader asks for
+// SLACK_ALERT_READ_LIMIT rows, enough to tell one from several, rather than
+// `.maybeSingle()`: its more than one row error reads, on the scheduled
+// client, as the database failing, which would send every lookup in the tick
+// to the saved copy and report an outage that is not one.
+
+/** The alert row's name: what migration 20261017150000 backfilled, and reserved from ops rows. */
+export const SLACK_ALERT_CONNECTION_NAME = 'slack'
+
+/** The named refusal for more than one alert row candidate. */
+export const SLACK_ALERT_AMBIGUOUS = 'slack_alert_connection_ambiguous'
+
+/** Rows a one organization read asks for: enough to tell one alert row from several. */
+export const SLACK_ALERT_READ_LIMIT = 2
+
+/** The PostgREST filter for an alert row, in the shape the client sends (sealed_for bidding_ring, or legacy unsealed). */
+export const SLACK_ALERT_SEAL_FILTER = 'sealed_for.eq.bidding_ring,sealed_for.is.null'
+
+/** The filter methods onlySlackAlertRow calls, which every supabase-js filter builder has, each returning the builder. */
+interface AlertRowFilterable {
+  eq(column: 'service_type' | 'name', value: string): AlertRowFilterable
+  or(filters: string): AlertRowFilterable
+}
+
+/**
+ * Narrow a service_connections read to the alert row: the one place the alert
+ * row is defined. The builder comes back as the same type it went in as (each
+ * filter returns the builder itself); the constraint is kept shallow because
+ * matching supabase-js's generic filter signatures recursively is more than
+ * the compiler will instantiate (TS2589).
+ */
+export function onlySlackAlertRow<Q extends { eq: unknown; or: unknown }>(query: Q): Q {
+  const filterable = query as unknown as AlertRowFilterable
+  return filterable.eq('service_type', 'slack').eq('name', SLACK_ALERT_CONNECTION_NAME).or(SLACK_ALERT_SEAL_FILTER) as unknown as Q
+}
+
+/** What a one organization read of the alert row found. */
+export type SlackAlertRowPick<R> = { kind: 'row'; row: R | null } | { kind: 'ambiguous'; count: number }
+
+/** The one alert row of a one organization read, null for none, or ambiguous for more than one. */
+export function pickSlackAlertRow<R>(rows: readonly R[] | null | undefined): SlackAlertRowPick<R> {
+  const found = rows ?? []
+  if (found.length > 1) return { kind: 'ambiguous', count: found.length }
+  return { kind: 'row', row: found[0] ?? null }
+}
+
+/** An all organization read split into the organizations with exactly one alert row, and those with several. */
+export function slackAlertRowsByOrg<R extends { organization_id: string }>(rows: readonly R[]): { rows: R[]; ambiguousOrgs: string[] } {
+  const byOrg = new Map<string, R[]>()
+  for (const row of rows) {
+    const list = byOrg.get(row.organization_id)
+    if (list) list.push(row)
+    else byOrg.set(row.organization_id, [row])
+  }
+  const single: R[] = []
+  const ambiguousOrgs: string[] = []
+  for (const [orgId, list] of byOrg) {
+    if (list.length === 1) single.push(list[0])
+    else ambiguousOrgs.push(orgId)
+  }
+  return { rows: single, ambiguousOrgs }
+}
+
+/** The one log line for an organization with more than one alert row candidate, so every reader says it the same way. */
+export function slackAlertAmbiguityLine(subject: string, count: number | null): string {
+  const how = count === null ? 'more than one' : String(count)
+  return `[slack] ${subject}: ${SLACK_ALERT_AMBIGUOUS}: ${how} rows match the Slack alert connection (service_type slack, name slack, sealed for bidding_ring or unsealed), so none of them was used`
+}
 
 /** A Slack connection row as read: its config, and its sealed token when it has one. */
 export interface SlackConnectionRow {

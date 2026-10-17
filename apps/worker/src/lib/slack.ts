@@ -28,7 +28,7 @@ import { GITHUB_RATE_LIMIT_FIX } from './github-refusal'
 import type { ScheduleStatus, ScheduleVerdict, WatchedWorkflow } from './workflow-schedule-watch'
 import { type DispatchAttempt, dispatchFailed } from './workflow-dispatch-driver'
 
-import { resolveSlackConnection, slackTokenProblemLine, SLACK_ROW_COLUMNS, type SlackConnection, type SlackConnectionRow, type SlackTokenProblem } from './slack-connection'
+import { onlySlackAlertRow, pickSlackAlertRow, resolveSlackConnection, slackAlertAmbiguityLine, slackTokenProblemLine, SLACK_ALERT_AMBIGUOUS, SLACK_ALERT_READ_LIMIT, SLACK_ROW_COLUMNS, type SlackConnection, type SlackConnectionRow, type SlackTokenProblem } from './slack-connection'
 import { slackKeyRingFor } from './slack-key-ring'
 import { leadRead } from './lead-read-budget'
 import { describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason, type ScheduledSlack } from './scheduled-slack'
@@ -86,8 +86,12 @@ export async function getSlackConnection(
   return found.kind === 'live' || found.kind === 'stored' ? found.connection : null
 }
 
-/** Why a lookup could not say who to tell. `read_failed` only on a client with no saved copy to fall back on. */
-export type SlackUnreachableReason = CopyUnreachableReason | 'read_failed' | SlackTokenProblem
+/**
+ * Why a lookup could not say who to tell. `read_failed` only on a client with
+ * no saved copy to fall back on. `slack_alert_connection_ambiguous`: more than
+ * one row matched the alert row (#2332), so none was used.
+ */
+export type SlackUnreachableReason = CopyUnreachableReason | 'read_failed' | SlackTokenProblem | typeof SLACK_ALERT_AMBIGUOUS
 
 /**
  * What a Slack lookup found (#1303): the connection from the database, the
@@ -109,12 +113,12 @@ export async function lookupSlackConnection(
   const scheduled = scheduledSlackFor(supabase)
   if (scheduled) return scheduledLookup(scheduled, supabase, orgId)
 
-  let data: SlackConnectionRow | null = null
+  let data: SlackConnectionRow[] | null = null
   for (let attempt = 0; attempt <= delaysMs.length; attempt++) {
     if (attempt > 0) await sleep(delaysMs[attempt - 1])
     const res = await slackConnectionQuery(supabase, orgId)
     if (!res.error) {
-      data = res.data as SlackConnectionRow | null
+      data = res.data
       break
     }
     const dbErr = toDbError(res.error)
@@ -132,7 +136,13 @@ export async function lookupSlackConnection(
     }
   }
 
-  const resolved = await resolveRow(supabase, data, `slack connection for org ${orgId}`)
+  const subject = `slack connection for org ${orgId}`
+  const picked = pickSlackAlertRow(data)
+  if (picked.kind === 'ambiguous') {
+    console.error(slackAlertAmbiguityLine(subject, picked.count))
+    return { kind: 'unreachable', reason: SLACK_ALERT_AMBIGUOUS }
+  }
+  const resolved = await resolveRow(supabase, picked.row, subject)
   if (resolved.kind === 'unreadable') return { kind: 'unreachable', reason: resolved.reason }
   return resolved.kind === 'connection' ? { kind: 'live', connection: resolved.connection } : { kind: 'none' }
 }
@@ -152,15 +162,21 @@ async function resolveRow(supabase: SupabaseClient, row: SlackConnectionRow | nu
 /** The bounded lookup on the scheduled client: one read under the deadline, the saved copy on any non-answer. */
 async function scheduledLookup(scheduled: ScheduledSlack, supabase: SupabaseClient, orgId: string): Promise<SlackLookup> {
   const subject = `slack connection for org ${orgId}`
-  // `.maybeSingle()` is typed as the base builder, which does not declare
-  // abortSignal although the object carries it (as in lead-read-budget.ts).
-  const query = slackConnectionQuery(supabase, orgId) as unknown as BoundableQuery<SlackConnectionRow>
+  // Cast to the shape scheduled.read takes, which every supabase-js filter
+  // builder has (as in lead-read-budget.ts).
+  const query = slackConnectionQuery(supabase, orgId) as unknown as BoundableQuery<SlackConnectionRow[]>
   const live = await scheduled.read(subject, query)
   // A sealed token nobody can read is not "no Slack": the saved copy, which
-  // the probe carries forward for such an org, answers instead (#2331).
-  let unreadable: SlackTokenProblem | null = null
-  if (live.kind === 'answered') {
-    const resolved = await resolveRow(supabase, live.data, subject)
+  // the probe carries forward for such an org, answers instead (#2331). Nor
+  // is more than one alert row (#2332): the database answered, so this is no
+  // outage, but no row of the several can be the alert row.
+  let unreadable: SlackTokenProblem | typeof SLACK_ALERT_AMBIGUOUS | null = null
+  const picked = live.kind === 'answered' ? pickSlackAlertRow(live.data) : null
+  if (picked?.kind === 'ambiguous') {
+    console.error(slackAlertAmbiguityLine(subject, picked.count))
+    unreadable = SLACK_ALERT_AMBIGUOUS
+  } else if (picked?.kind === 'row') {
+    const resolved = await resolveRow(supabase, picked.row, subject)
     if (resolved.kind === 'connection') {
       console.log(`[scheduled-slack] ${subject}: read live`)
       return { kind: 'live', connection: resolved.connection }
@@ -172,7 +188,9 @@ async function scheduledLookup(scheduled: ScheduledSlack, supabase: SupabaseClie
     unreadable = resolved.reason
   }
   const copy = await scheduled.copy()
-  const why = unreadable ? `the token in the database cannot be read (${unreadable})` : `the database did not answer (${live.kind === 'failed' ? live.how : 'answered'})`
+  const why = unreadable === SLACK_ALERT_AMBIGUOUS
+    ? `more than one row in the database matches the Slack alert connection (${unreadable})`
+    : unreadable ? `the token in the database cannot be read (${unreadable})` : `the database did not answer (${live.kind === 'failed' ? live.how : 'answered'})`
   if (copy.kind === 'read') {
     const connection = copy.copy.connections.get(orgId)
     if (connection) {
@@ -188,14 +206,18 @@ async function scheduledLookup(scheduled: ScheduledSlack, supabase: SupabaseClie
   return { kind: 'unreachable', reason: unreadable ?? reason }
 }
 
-/** The one read of an org's Slack connection row, for both readers below. */
+/**
+ * The one read of an org's Slack ALERT row (#2332), for both readers below:
+ * never an ops Slack row, and up to SLACK_ALERT_READ_LIMIT rows, so more than
+ * one candidate is seen and refused by name rather than read as an error.
+ */
 function slackConnectionQuery(supabase: SupabaseClient, orgId: string) {
-  return supabase
-    .from('service_connections')
-    .select(SLACK_ROW_COLUMNS)
-    .eq('organization_id', orgId)
-    .eq('service_type', 'slack')
-    .maybeSingle()
+  return onlySlackAlertRow(
+    supabase
+      .from('service_connections')
+      .select(SLACK_ROW_COLUMNS)
+      .eq('organization_id', orgId),
+  ).limit(SLACK_ALERT_READ_LIMIT)
 }
 
 /**
@@ -208,7 +230,14 @@ function slackConnectionQuery(supabase: SupabaseClient, orgId: string) {
 export async function readSlackConnectionForLead(supabase: SupabaseClient, orgId: string): Promise<SlackConnection | null> {
   const res = await leadRead(supabase, slackConnectionQuery(supabase, orgId), 'slack connection')
   if (res.error) throw new Error(`service_connections: ${res.error.message}`)
-  const resolved = await resolveRow(supabase, res.data as SlackConnectionRow | null, `slack connection for org ${orgId}`)
+  const subject = `slack connection for org ${orgId}`
+  const picked = pickSlackAlertRow(res.data as SlackConnectionRow[] | null)
+  // Thrown, so the caller's fallback (the saved copy) answers, as for a read that failed.
+  if (picked.kind === 'ambiguous') {
+    console.error(slackAlertAmbiguityLine(subject, picked.count))
+    throw new Error(`service_connections: ${SLACK_ALERT_AMBIGUOUS}: ${picked.count} alert rows for org ${orgId}`)
+  }
+  const resolved = await resolveRow(supabase, picked.row, subject)
   // Thrown, so the caller's fallback (the saved copy) answers, as for a read that failed.
   if (resolved.kind === 'unreadable') throw new Error(`service_connections: ${resolved.reason}: ${resolved.detail}`)
   return resolved.kind === 'connection' ? resolved.connection : null

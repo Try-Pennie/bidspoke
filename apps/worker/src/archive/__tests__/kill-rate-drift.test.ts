@@ -8,6 +8,7 @@ vi.mock('../../lib/slack', () => ({
   postMessage: vi.fn().mockResolvedValue('ts-1'),
 }))
 import { getSlackConnection, postMessage } from '../../lib/slack'
+import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 const DAY = 24 * 60 * 60 * 1000
 const WEEK = 7 * DAY
@@ -25,7 +26,7 @@ function supaWith(killStartedAt: string[], orgs: string[] = ['org-1']) {
         return chain
       }
       if (table === 'service_connections') {
-        return { select: () => ({ eq: () => Promise.resolve({ data: orgs.map((o) => ({ organization_id: o })), error: null }) }) }
+        return { select: () => alertRowListAnswer({ data: orgs.map((o) => ({ organization_id: o })), error: null }) }
       }
       throw new Error(`unexpected table ${table}`)
     },
@@ -161,7 +162,7 @@ describe('runKillRateDriftCheck (#1355)', () => {
           chain.limit = () => Promise.resolve({ data: null, error: { message: 'connection refused' } })
           return chain
         }
-        return { select: () => ({ eq: () => Promise.resolve({ data: [{ organization_id: 'org-1' }], error: null }) }) }
+        return { select: () => alertRowListAnswer({ data: [{ organization_id: 'org-1' }], error: null }) }
       },
     } as never
     expect(await runKillRateDriftCheck(supaErr, fakeKv(), 'https://app.test', NOW)).toBe(false)

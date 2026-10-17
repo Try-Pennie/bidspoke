@@ -36,6 +36,7 @@ import {
 import { INCIDENT_OUTBOX_PREFIX } from '../incident-outbox'
 import { incidentMarkerStart } from '../incident-signals'
 import { outboxEvents, transitions } from './_incident-events'
+import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 const NOW = Date.parse('2026-06-26T13:00:00.000Z')
 const MIN = 60_000
@@ -72,7 +73,7 @@ function fakeSupabase(orgIds: string[]): SupabaseClient {
     from: (table: string) =>
       table === 'job_runs'
         ? runs
-        : { select: () => ({ eq: () => Promise.resolve({ data: orgIds.map((organization_id) => ({ organization_id })), error: null }) }) },
+        : { select: () => alertRowListAnswer({ data: orgIds.map((organization_id) => ({ organization_id })), error: null }) },
   } as unknown as SupabaseClient
 }
 

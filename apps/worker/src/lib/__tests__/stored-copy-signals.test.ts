@@ -85,7 +85,7 @@ function downDb() {
     asked.push(table)
     const result = { data: null, error: { message: 'upstream connect error', code: '' }, status: 503 }
     const chain: Record<string, unknown> = {}
-    for (const m of ['select', 'eq', 'in', 'order', 'range', 'limit', 'abortSignal', 'retry']) chain[m] = () => chain
+    for (const m of ['select', 'eq', 'or', 'in', 'order', 'range', 'limit', 'abortSignal', 'retry']) chain[m] = () => chain
     chain.then = (resolve: (v: unknown) => unknown) => resolve(result)
     return chain
   }
@@ -99,7 +99,7 @@ function slackDb(config: Record<string, unknown>) {
     asked.push(table)
     const result = { data: [{ organization_id: ORG, config }], error: null, status: 200 }
     const chain: Record<string, unknown> = {}
-    for (const m of ['select', 'eq', 'in', 'order', 'range', 'limit', 'abortSignal', 'retry']) chain[m] = () => chain
+    for (const m of ['select', 'eq', 'or', 'in', 'order', 'range', 'limit', 'abortSignal', 'retry']) chain[m] = () => chain
     chain.then = (resolve: (v: unknown) => unknown) => resolve(result)
     return chain
   }

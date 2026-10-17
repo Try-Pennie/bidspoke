@@ -7,6 +7,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { registerScheduledSlack } from '../scheduled-slack'
 import { fakeClient, fakeTimers, kvWith, kvWithCopy, TEST_KEY } from './_scheduled-slack-doubles'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
+import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 const FLAGS = partnerFlagsFromDescribe(BID_RANGE_ROW_DESCRIBE)
 // The 8 the audit hard coded until #1864.
@@ -202,7 +203,7 @@ describe('notifyAllOrgsWithSlack, delivery gates the snapshot', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const proxy: any = new Proxy({}, {
       get(_, prop) {
-        if (prop === 'maybeSingle') return async () => config ? { data: { config }, error: null } : { data: null, error: null }
+        if (prop === 'limit') return alertRowsAnswer(async () => config ? { data: { config }, error: null } : { data: null, error: null })
         if (prop === 'then') return (res: (v: unknown) => unknown) => Promise.resolve({ data: orgIds.map((id) => ({ organization_id: id })), error: null }).then(res)
         return () => proxy
       },

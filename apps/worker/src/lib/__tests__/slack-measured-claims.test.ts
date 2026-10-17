@@ -17,6 +17,7 @@ import {
 import { WRITEBACK_UNCAPTURABLE_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_HELD_LABEL } from '../../engine/writeback-deadletter'
 import type { SlackConnection } from '../slack-connection'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
+import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 /**
  * Every sentence in the shared Slack alerts either follows from what the check
@@ -33,11 +34,11 @@ function makeSupabase(connection: Record<string, unknown> | null) {
     {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
-        if (prop === 'maybeSingle')
-          return () =>
+        if (prop === 'limit')
+          return alertRowsAnswer(() =>
             connection
               ? Promise.resolve({ data: { config: connection }, error: null })
-              : Promise.resolve({ data: null, error: null })
+              : Promise.resolve({ data: null, error: null }))
         return () => chain
       },
     },

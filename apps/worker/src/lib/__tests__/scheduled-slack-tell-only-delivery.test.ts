@@ -51,7 +51,7 @@ async function tick(kind: Tick) {
     if (table !== 'service_connections') return from(table)
     calls++
     if (calls === 1) return from(table)
-    const lookup: Answer = kind === 'delivered' ? { data: { config: CONN } } : { error: { message: 'connection terminated' } }
+    const lookup: Answer = kind === 'delivered' ? { data: [{ config: CONN }] } : { error: { message: 'connection terminated' } }
     return tableClient({ service_connections: lookup }).client.from(table)
   }
   const copy = kind === 'slack_refuses' ? await kvWithCopy({ [ORG]: CONN }) : kind === 'org_not_found' ? await kvWithCopy({ 'org-2': CONN }) : kvWith()
