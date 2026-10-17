@@ -14,7 +14,7 @@ vi.mock('@/lib/api', () => ({
     partners: { usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }) },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn(), get: vi.fn(), delete: vi.fn(), sync: vi.fn(), create: vi.fn() },
-    buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },
+    buyerProfiles: { get: vi.fn(), usage: vi.fn() },
     buyerSales: { list: vi.fn(), settle: vi.fn() },
     heldClicks: { list: vi.fn(), markSent: vi.fn(), free: vi.fn(), clear: vi.fn(), retrySalesforce: vi.fn() },
   },
@@ -46,7 +46,6 @@ beforeEach(() => {
   vi.mocked(api.partnerBidConfigs.get).mockImplementation(async (id: string) => ({ config: matrix(id, id), rows: [] }) as never)
   vi.mocked(api.partnerBidConfigs.delete).mockResolvedValue({ ok: true })
   vi.mocked(api.buyerProfiles.get).mockResolvedValue({ profile: null, accept_signals: [], other_sellers: [] })
-  vi.mocked(api.buyerProfiles.history).mockResolvedValue({ entries: [] })
   vi.mocked(api.buyerProfiles.usage).mockRejectedValue(Object.assign(new Error('usage_unavailable'), { status: 503 }))
   vi.mocked(api.buyerSales.list).mockResolvedValue({ entries: [], total: 0, page: 1, limit: 100 })
   vi.mocked(api.heldClicks.list).mockResolvedValue({ entries: [], total: 0 })

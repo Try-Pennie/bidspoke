@@ -20,7 +20,7 @@ vi.mock('@/lib/api', () => ({
     },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
-    buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },
+    buyerProfiles: { get: vi.fn(), usage: vi.fn() },
     buyerSales: { list: vi.fn(), settle: vi.fn() },
   },
 }))
