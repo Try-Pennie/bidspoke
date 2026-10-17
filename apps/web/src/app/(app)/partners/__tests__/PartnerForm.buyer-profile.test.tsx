@@ -150,6 +150,8 @@ describe('the Buyer profile section', () => {
     const box = screen.getByLabelText('Collections at most')
     expect(box).toHaveValue(75)
     expect(box.parentElement).toHaveTextContent('% of debt')
+    // A screen reader hears the fixed words with the box, not only by sight.
+    expect(box).toHaveAccessibleDescription(expect.stringContaining('% of debt'))
     fireEvent.change(box, { target: { value: '80' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
