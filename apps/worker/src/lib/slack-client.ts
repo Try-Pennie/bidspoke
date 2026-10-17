@@ -17,8 +17,9 @@
  *
  * lib/__tests__/slack-client.test.ts asserts both on what a built client does.
  *
- * Callers switched so far: deliverMessage in lib/slack.ts (every alert). The
- * rest follow one per pull request (#2331).
+ * Callers switched so far: deliverMessage in lib/slack.ts (every alert) and
+ * sendThreadReply beside it (the summary under an alert). The rest follow one
+ * per pull request (#2331).
  */
 import { SlackAPIClient, SlackAPIConnectionError, SlackAPIError } from 'slack-web-api-client'
 
