@@ -28,15 +28,15 @@
  * job_runs (job PARTNER_PAGE_MONITOR_JOB), so pass and fail counts exist. A day
  * can start with no partition (ADR 0012): a join refused as MissingPartition is
  * retried, and a send made while today's partition was absent is recorded as
- * `partition_missing_at_send`, never as a failure.
+ * `partition_missing_at_send`, never as a failure. The live misses pages post
+ * are in partner_page_live_misses. No miss threshold ships: the issue that sets
+ * one from a measured week is filed with #2135 (L65).
  *
  * Realtime shuts this project's connection down ten minutes after nobody stays
  * connected, so with no page open a run lands on the shutdown now and then
  * (#2263). A join refused by it is retried like a missing partition, and a
  * round whose notice never arrives is tried once more on a fresh connection
- * before the run counts as a miss; `rounds` in job_runs counts them. The live misses pages post
- * are in partner_page_live_misses. No miss threshold ships: the issue that sets
- * one from a measured week is filed with #2135 (L65).
+ * before the run counts as a miss; `rounds` in job_runs counts them.
  */
 import { isIdleShutdownRefusal, parsePartnerPageNotice, partnerPageTopic } from '@bidspoke/partner-page-live'
 import type { AlertClaims } from './alert-claim'
