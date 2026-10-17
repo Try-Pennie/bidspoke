@@ -451,6 +451,14 @@ describe('runPartnerPageMonitor', () => {
     expect(await window()).toBeUndefined()
   })
 
+  it('a window left behind by an incident that lapsed is not carried into the next miss', async () => {
+    const h = monitorHarness()
+    await h.kv.put(PARTNER_PAGE_MONITOR_STATE_KEY, JSON.stringify({ channelWindow: { since: '2026-10-14T09:00:00.000Z', runs: 40, misses: 9 } }))
+    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 4, rounds: 2 })
+    await h.run()
+    expect(h.sent[0].payload).toMatchObject({ since: '2026-10-15T17:00:00.000Z', checks: { runs: 1, misses: 1 } })
+  })
+
   it('a join refused pages as a broken channel too, naming the refusal', async () => {
     const h = monitorHarness()
     h.set({ kind: 'join_refused', reason: 'Unauthorized: You do not have permissions', joinAttempts: 1, rounds: 1 })

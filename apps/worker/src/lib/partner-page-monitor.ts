@@ -407,10 +407,11 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
   // lapsed) is dropped rather than carried into the next miss.
   const missed = outcome.kind === 'not_received' || outcome.kind === 'join_refused'
   let window = state.channelWindow
+  if (window && (await deps.kv.get(recoveryKey(RECOVERY_PREFIX, CHANNEL_ID))) === null) window = undefined
   if (missed) {
     window = { since: window?.since ?? iso(nowMs), runs: (window?.runs ?? 0) + 1, misses: (window?.misses ?? 0) + 1 }
   } else if (window) {
-    window = (await deps.kv.get(recoveryKey(RECOVERY_PREFIX, CHANNEL_ID))) !== null ? { ...window, runs: window.runs + 1 } : undefined
+    window = { ...window, runs: window.runs + 1 }
   }
   const next: MonitorState = { channelWindow: window }
   if (JSON.stringify(next) !== JSON.stringify(state)) await saveState(next)
