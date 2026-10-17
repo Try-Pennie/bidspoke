@@ -14,10 +14,10 @@
  * What pages (the only thing that pages at launch, L36):
  *  - `channel`: the monitor's own notice did not arrive within
  *    RECEIPT_DEADLINE_MS of its first ping (re-sent every PING_RETRY_MS, since
- *    Realtime starting up can lose the first, ADR 0012), or the join was
- *    refused. That is a broken channel for
- *    every organization, not a threshold judgement, so it pages on the run that
- *    sees it.
+ *    Realtime starting up can lose the first, ADR 0012) in any of
+ *    MEASURE_ROUNDS rounds, or the join was refused on every attempt it
+ *    retries. That is a broken channel for every organization, not a threshold
+ *    judgement, so it pages on the run that sees it.
  *  - `monitor`: the check could not run (no secret, no monitor organization,
  *    sign in or the ping failing) for UNMEASURED_ALERT_AFTER_MS on the clock, so
  *    a dead check is never silence (L557, L98). It never counts as a working
