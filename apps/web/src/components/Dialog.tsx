@@ -31,8 +31,11 @@ interface DialogBase {
   onDismiss: () => void
   /** The buttons, safe one first, so it is the one that has focus when the dialog opens. */
   actions: ReactNode
-  /** sm for a question, md for a short list, lg for a comparison such as the merge dialog. */
-  /** wide: 600px, the partners page merge and leave dialogs (#2322), whose rows and three buttons sit on one line. */
+  /**
+   * sm for a question, md for a short list, wide (600px) for the partners page
+   * merge and leave dialogs, whose rows and three buttons sit on one line
+   * (#2322), lg for a wider comparison.
+   */
   size?: 'sm' | 'md' | 'wide' | 'lg'
   children?: ReactNode
 }

@@ -134,17 +134,18 @@ export const SAVE_BAR_LEAVE_MS = 250
  */
 export function SaveBarDock({ bar, slideOut }: { bar: React.ReactNode | null; slideOut: boolean }) {
   const present = bar !== null && bar !== false && bar !== undefined
+  // The bar shown last, kept while it slides away. Decided in render, so the
+  // first frame after the bar goes already draws it leaving (no blank frame).
   const last = useRef<{ bar: React.ReactNode; slide: boolean } | null>(null)
+  const [, setGone] = useState(0)
   if (present) last.current = { bar, slide: slideOut }
-  const [leaving, setLeaving] = useState(false)
+  else if (last.current !== null && !last.current.slide) last.current = null
   useEffect(() => {
-    if (present) { setLeaving(false); return }
-    if (last.current === null || !last.current.slide) { last.current = null; return }
-    setLeaving(true)
-    const t = setTimeout(() => { last.current = null; setLeaving(false) }, SAVE_BAR_LEAVE_MS)
+    if (present || last.current === null) return
+    const t = setTimeout(() => { last.current = null; setGone((n) => n + 1) }, SAVE_BAR_LEAVE_MS)
     return () => clearTimeout(t)
   }, [present])
   if (present) return <div className="save-bar-dock">{bar}</div>
-  if (leaving && last.current !== null) return <div className="save-bar-dock save-bar-leaving" aria-hidden="true" inert>{last.current.bar}</div>
+  if (last.current !== null) return <div className="save-bar-dock save-bar-leaving" aria-hidden="true" inert>{last.current.bar}</div>
   return null
 }
