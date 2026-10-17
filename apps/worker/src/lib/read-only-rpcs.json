@@ -41,6 +41,7 @@
     "save_partner_config",
     "save_partner_page",
     "change_partner_uuid",
-    "monitor_partner_page_ping"
+    "monitor_partner_page_ping",
+    "delete_service_connection"
   ]
 }

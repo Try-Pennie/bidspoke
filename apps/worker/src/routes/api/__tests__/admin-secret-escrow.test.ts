@@ -84,7 +84,7 @@ describe('admin secret escrow routes', () => {
     it('previews unless told otherwise, and writes no audit row for a preview', async () => {
       const res = await post(app, '/admin/reencrypt-secrets', {}, env({ SECRET_ENCRYPTION_KEY_NEXT: 'next-key' }))
       expect(res.status).toBe(200)
-      expect(vi.mocked(reencryptSecrets).mock.calls[0][2]).toEqual({ dryRun: true })
+      expect(vi.mocked(reencryptSecrets).mock.calls[0][2]).toEqual({ dryRun: true, actorId: 'user-1' })
       expect(((await res.json()) as { rotating: boolean }).rotating).toBe(true)
       expect(writeAuditLog).not.toHaveBeenCalled()
     })
@@ -94,7 +94,7 @@ describe('admin secret escrow routes', () => {
       expect(res.status).toBe(200)
       const [, keys, opts] = vi.mocked(reencryptSecrets).mock.calls[0]
       expect(keys).toEqual({ encryptWith: 'next-key', decryptWith: ['next-key', 'primary-key'] })
-      expect(opts).toEqual({ dryRun: false })
+      expect(opts).toEqual({ dryRun: false, actorId: 'user-1' })
       const audit = vi.mocked(writeAuditLog).mock.calls[0]
       expect(audit[4]).toBe('secrets_reencrypted')
       expect(JSON.stringify(audit)).not.toContain('next-key')

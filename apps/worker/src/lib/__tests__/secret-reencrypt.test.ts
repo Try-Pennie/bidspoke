@@ -9,6 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import { decryptSecret, encryptSecret, secretKeys } from '../secret-crypto'
 import { reencryptSecrets } from '../secret-reencrypt'
+import { resolveSlackConnection } from '../slack-connection'
 
 function newKey(): string {
   return btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
@@ -89,6 +90,14 @@ async function setup() {
         last_error_encrypted: null,
       },
     ],
+    // The sealed Slack bot token (#2331): one bidding_ring row is re-locked; a
+    // row never sealed has nothing to re-lock; an ops_key row is locked for the
+    // ops public key, not this ring, and is never read or written here.
+    service_connections: [
+      { id: 'sc1', organization_id: 'o1', service_type: 'slack', sealed_for: 'bidding_ring', credential_enc: await encryptSecret('slack-bot-token', primary), config: { default_channel: '#a' } },
+      { id: 'sc2', organization_id: 'o2', service_type: 'slack', sealed_for: null, credential_enc: null, config: { default_channel: '#b' } },
+      { id: 'sc3', organization_id: 'o1', service_type: 'salesforce', sealed_for: 'ops_key', credential_enc: 'ops-envelope-placeholder', config: null },
+    ],
   }
   return { primary, next, tables, keys: secretKeys({ SECRET_ENCRYPTION_KEY: primary, SECRET_ENCRYPTION_KEY_NEXT: next }) }
 }
@@ -108,7 +117,35 @@ describe('reencryptSecrets', () => {
       ['environment_variables', 2],
       ['app_settings', 1],
       ['outcome_writeback_deadletters', 2],
+      ['service_connections', 1],
     ])
+  })
+
+  it('re-locks a bidding_ring sealed Slack token under NEXT, naming the actor, and leaves an ops_key row alone (#2331)', async () => {
+    const { next, tables, keys } = await setup()
+    const result = await reencryptSecrets(fakeSupabase(tables) as never, keys, { dryRun: false, actorId: 'user-7' })
+    const [slack, plain, ops] = tables.service_connections
+    expect(await decryptSecret(slack.credential_enc as string, next)).toBe('slack-bot-token')
+    // The trigger's audit row names whoever ran the rotation (F119).
+    expect(slack.updated_by).toBe('user-7')
+    expect(plain.credential_enc).toBeNull()
+    expect(ops.credential_enc).toBe('ops-envelope-placeholder')
+    expect(ops.updated_by).toBeUndefined()
+    expect(result.tables.find((t) => t.table === 'service_connections')).toMatchObject({ checked: 1, relocked: 1 })
+  })
+
+  // The saved Slack copy is not edited by the re-lock, which changes the
+  // token's ciphertext and not the token: the next healthy probe rewrites the
+  // copy from the rows, opening them with the ring in force (last-good-copies
+  // guard exemption). So the row must still resolve to the same token then.
+  it('a re-locked Slack row still resolves to the same token under the ring, before and after the primary swap', async () => {
+    const { next, tables, keys } = await setup()
+    await reencryptSecrets(fakeSupabase(tables) as never, keys, { dryRun: false })
+    const row = tables.service_connections[0]
+    const during = await resolveSlackConnection(row, keys)
+    const after = await resolveSlackConnection(row, secretKeys({ SECRET_ENCRYPTION_KEY: next }))
+    expect(during.kind === 'connection' && during.connection.bot_token).toBe('slack-bot-token')
+    expect(after.kind === 'connection' && after.connection.bot_token).toBe('slack-bot-token')
   })
 
   // The store has no ceiling: an outage can leave thousands of failed writes in
@@ -151,6 +188,7 @@ describe('reencryptSecrets', () => {
       [0, 2],
       [0, 1],
       [0, 2],
+      [0, 1],
     ])
   })
 
