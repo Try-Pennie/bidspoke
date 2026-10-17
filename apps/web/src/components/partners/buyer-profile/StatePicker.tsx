@@ -1,13 +1,18 @@
 'use client'
 
 /**
- * The state picker (#1412, L611): one checkbox per state from the shared
+ * The state picker (#1412, L611): one chip per state from the shared
  * vocabulary, all and none, and the count. An empty list accepts nothing (L72),
  * and the picker says so once. A click delivery route (#1639) reuses it with its
- * own legend and its own meaning for an empty list: every state no other route lists.
+ * own name and its own meaning for an empty list: every state no other route lists.
+ *
+ * Drawn as the settled design draws it (#2324, PM-21): a white box headed by the
+ * count with All and None beside it, and a grid of chips, navy when chosen. The
+ * section heading above says what the states are for, so the group's name is
+ * read by a screen reader and not shown again (L605).
  */
 import { US_STATES } from '@bidspoke/buyer-profile'
-import { Button, Checkbox } from '@/components/ui/form'
+import { Button, ChipCheck } from '@/components/ui/form'
 
 export function StatePicker({ value, onChange, idPrefix = 'state', legend = 'States', emptyNote = 'This buyer accepts no lead until a state is chosen.', emptyIsWarning = true }: {
   value: readonly string[]
@@ -22,18 +27,18 @@ export function StatePicker({ value, onChange, idPrefix = 'state', legend = 'Sta
   const selected = new Set(value)
   const emit = (next: Set<string>) => onChange([...next].sort())
   return (
-    <fieldset className="rounded-lg border border-line bg-white p-3">
-      <legend className="px-1 text-xs font-medium text-gray-600">{legend}</legend>
-      <div className="mb-2 flex items-center gap-3">
-        <span className="text-xs text-gray-600">{selected.size} of {US_STATES.length} states</span>
+    <fieldset className="rounded-lg border border-line bg-white p-2.5">
+      <legend className="sr-only">{legend}</legend>
+      <div className="mb-2 flex items-center gap-2">
+        <span className="text-xs text-graphite">{selected.size} of {US_STATES.length} states</span>
         <Button variant="quiet" onClick={() => emit(new Set(US_STATES))}>All</Button>
         <Button variant="quiet" onClick={() => emit(new Set())}>None</Button>
       </div>
       {selected.size === 0 && <p className={`mb-2 text-xs ${emptyIsWarning ? 'text-amber-800' : 'text-gray-600'}`}>{emptyNote}</p>}
-      {/* As many columns as the settings column holds (#2317), never fewer than fit a code beside its box. */}
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(3.5rem,1fr))] gap-x-3 gap-y-1.5">
+      {/* As many columns as the settings column holds (#2317), each wide enough for a code. */}
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(2.25rem,1fr))] gap-1">
         {US_STATES.map((code) => (
-          <Checkbox
+          <ChipCheck
             key={code}
             id={`${idPrefix}-${code}`}
             label={code}

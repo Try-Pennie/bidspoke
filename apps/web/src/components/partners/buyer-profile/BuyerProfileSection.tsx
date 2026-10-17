@@ -16,14 +16,24 @@
  * next, outcome rules, blackout dates last. Every fact once (L605): the scope
  * of the caps is said in the grid, the other sellers in the usage panel, the
  * priority direction on the priority field.
+ *
+ * Enabled to Caps are drawn as the settled design draws them (#2324, PM-21,
+ * docs/design/partners-page.html frames 1, 19 and 20): Enabled on its own row
+ * ("Offered leads"), Sold on as Offer or Click with one sentence for the one
+ * chosen, Priority with where the buyer stands today among the other offer
+ * buyers, Eligibility as state chips and money boxes reading None when empty,
+ * Hours as the same hours every day with the time zone under them, and a click
+ * buyer's cap as a narrow box with its count as a bar. A buyer with no saved
+ * profile says it is not offered leads through buyer selection, with Set up a
+ * buyer profile, until the person sets one up.
  */
 import { useEffect, useState } from 'react'
 import { DEFAULT_DISPLAY_TIME_ZONE, DISPLAY_TIME_ZONE_LABELS, DISPLAY_TIME_ZONES, isDisplayTimeZone, PRIORITY_DIRECTION, SALE_RECORD_LABELS, SOLD_ON, salesforceStandingOf, type BuyerProfileDocument, type ProfileError, type SaleWrites, type Signal } from '@bidspoke/buyer-profile'
 import { soldOnPatch } from './sold-on-switch'
 import type { SignalRules } from '@/app/(app)/partners/partner-draft'
-import { api, type HeldClick, type MarkSentResult } from '@/lib/api'
+import { api, type HeldClick, type MarkSentResult, type OfferBuyer } from '@/lib/api'
 import { errorSentence } from '@/lib/error-sentence'
-import { ChoiceGroup, Field, FieldError, NumberInput, describedBy, type OutcomeState } from '@/components/ui/form'
+import { Button, ChoiceGroup, Field, FieldError, MoneyInput, NumberInput, describedBy, type OutcomeState } from '@/components/ui/form'
 import { Toggle } from '@/components/ui/Toggle'
 import { Select } from '@/components/ui/Select'
 import { SignalRuleBuilder, SIGNAL_SECTIONS } from '@/components/partners/SignalRuleBuilder'
@@ -39,7 +49,7 @@ import { StatePicker } from './StatePicker'
 import { UnresolvedSalesList, type SettleOutcome, type UnresolvedSale } from './UnresolvedSalesList'
 import { WeeklyHoursEditor } from './WeeklyHoursEditor'
 import { blackoutZoneNote } from './display-zone'
-import { FIELD_LABELS, SECTION_LABELS, SOLD_ON_LABELS } from './labels'
+import { FIELD_LABELS, SECTION_LABELS, SOLD_ON_LABELS, SOLD_ON_WHY, priorityStanding } from './labels'
 import { LiveSectionNote } from '../live/PartnerLive'
 import { PartnerSection } from '../PartnerSection'
 import { formatCalendarDay } from '@/lib/dates'
@@ -82,6 +92,11 @@ interface Props {
   signalRules: SignalRules
   onSignalRulesChange: (next: SignalRules) => void
   otherSellers: Array<{ id: string; name: string }>
+  /** The org's other buyers sold on the offer (#2324); undefined when the Worker did not say. */
+  offerBuyers?: OfferBuyer[]
+  /** The person chose to set up a profile for a buyer with none saved (#2324): the form shows in place of the no profile note. */
+  setUp?: boolean
+  onSetUp?: () => void
   /**
    * Why the kind cannot be switched now, or null when it can (#1541): a stored
    * profile with pricing or accept rules stored keeps its kind until they are
@@ -93,7 +108,7 @@ interface Props {
 const SOLD_ON_OPTIONS = SOLD_ON.map((value) => ({ value, label: SOLD_ON_LABELS[value] }))
 
 /** The zones the hours and reset times can be shown in (#2143, PM-10), by name, never the identifier (L611). */
-const ZONE_OPTIONS = DISPLAY_TIME_ZONES.map((value) => ({ value, label: DISPLAY_TIME_ZONE_LABELS[value] }))
+const ZONE_OPTIONS = DISPLAY_TIME_ZONES.map((value) => ({ value, label: `${DISPLAY_TIME_ZONE_LABELS[value]} time` }))
 
 const DECLINE_SECTION = SIGNAL_SECTIONS.filter((s) => s.cat === 'rejection').map((s) => ({
   ...s,
@@ -177,7 +192,7 @@ function markSentMessage(result: MarkSentResult, leadId: string | null, partnerN
 }
 
 export function BuyerProfileSection(props: Props) {
-  const { partnerId, partnerName, profile, loadError, onProfileChange, errors, acceptSignals, onAcceptSignalsChange, duplicateSignals, onDuplicateSignalsChange, externalRoutingCode, onExternalRoutingCodeChange, signalRules, onSignalRulesChange, otherSellers, soldOnLock } = props
+  const { partnerId, partnerName, profile, loadError, onProfileChange, errors, acceptSignals, onAcceptSignalsChange, duplicateSignals, onDuplicateSignalsChange, externalRoutingCode, onExternalRoutingCodeChange, signalRules, onSignalRulesChange, otherSellers, soldOnLock, offerBuyers, setUp = false, onSetUp } = props
   const [usage, setUsage] = useState<BuyerUsage | ClickUsage | null>(null)
   const [usageError, setUsageError] = useState<string | null>(null)
   const [unresolved, setUnresolved] = useState<{ rows: UnresolvedSale[]; total: number; page: number } | null>(null)
@@ -349,6 +364,18 @@ export function BuyerProfileSection(props: Props) {
   const zone = profile?.display_time_zone ?? DEFAULT_DISPLAY_TIME_ZONE
   const blackoutNote = blackoutZoneNote(zone)
 
+  const offerStanding = priorityStanding(partnerName, offerBuyers, profile?.is_enabled ?? false)
+  // A buyer with no saved profile is not offered leads through buyer selection, and says so until the person sets one up (#2324).
+  const noProfile = profile !== null && (profile.version ?? 0) === 0 && !setUp
+  const clickMeter = usage === null && usageError === null ? (
+    <p role="status" className="text-xs text-hint">Reading the usage counts…</p>
+  ) : usageError === null && usage !== null && usage.sold_on !== 'click' ? (
+    // An unsaved change of kind (#1557): nothing is wrong, the route answers the saved kind.
+    <p role="status" className="text-xs text-gray-600">The clicks show once the change to the click is saved.</p>
+  ) : (
+    <ClickUsagePanel usage={usage?.sold_on === 'click' ? usage : null} error={usageError} cap={profile?.daily_lead_cap ?? null} otherSellers={otherSellers} partnerName={partnerName} />
+  )
+
   return (
     <section aria-label="Buyer profile">
       {!partnerId ? (
@@ -357,10 +384,27 @@ export function BuyerProfileSection(props: Props) {
         <FieldError alert size="sm">The buyer profile could not be read: {loadError}</FieldError>
       ) : !profile ? (
         <p role="status" className="text-sm text-gray-600">Reading the buyer profile…</p>
+      ) : noProfile ? (
+        <PartnerSection title="No buyer profile">
+          <p className="text-[13px] text-hint">{partnerName} is not offered leads through buyer selection.</p>
+          <div>
+            <Button variant="primary" onClick={onSetUp}>Set up a buyer profile</Button>
+          </div>
+        </PartnerSection>
       ) : (
         <>
-          {/* First, because the answer decides which of the rules below apply (#1541, L609). */}
+          <PartnerSection title={FIELD_LABELS.is_enabled}>
+            <LiveSectionNote sections={['Enabled']} />
+            <div className="flex items-center gap-2.5">
+              <Toggle id="bp-enabled" checked={profile.is_enabled} onChange={(v) => patch({ is_enabled: v })} label="Offered leads" />
+              <label htmlFor="bp-enabled" className="text-[13.5px] text-graphite">Offered leads</label>
+            </div>
+            {errorFor(errors, 'isEnabled') && <FieldError alert size="xs">{errorFor(errors, 'isEnabled')}</FieldError>}
+          </PartnerSection>
+
+          {/* The answer decides which of the rules below apply (#1541, L609). */}
           <PartnerSection title={FIELD_LABELS.sold_on}>
+            <LiveSectionNote sections={['Sold on']} />
             <ChoiceGroup
               id="bp-sold-on"
               label={FIELD_LABELS.sold_on}
@@ -371,65 +415,68 @@ export function BuyerProfileSection(props: Props) {
               disabled={soldOnLock !== null}
               describedBy={['bp-sold-on-hint', soldOnLock ? 'bp-sold-on-lock' : null, soldOnError ? 'bp-sold-on-error' : null].filter(Boolean).join(' ')}
             />
-            <p id="bp-sold-on-hint" className="text-xs text-hint">The offer: sold through buyer selection at a priced rate. The click: quoted at the Engine bid and sent to the buyer only when the person clicks.</p>
+            {/* One sentence for the kind chosen; before either is chosen, one for each, so the choice can be made. */}
+            <p id="bp-sold-on-hint" className="text-xs text-hint">
+              {profile.sold_on ? SOLD_ON_WHY[profile.sold_on] : SOLD_ON.map((k) => `${SOLD_ON_LABELS[k]}: ${SOLD_ON_WHY[k].charAt(0).toLowerCase()}${SOLD_ON_WHY[k].slice(1)}`).join(' ')}
+            </p>
             {soldOnLock && <p id="bp-sold-on-lock" className="text-xs text-gray-600">{soldOnLock}</p>}
             {soldOnError && <FieldError id="bp-sold-on-error" alert size="xs">{soldOnError}</FieldError>}
-            <LiveSectionNote sections={['Sold on']} />
           </PartnerSection>
 
-          <PartnerSection title={click ? 'Enabled and eligibility' : 'Enabled and ranking'}>
-            <LiveSectionNote sections={['Enabled and ranking', 'Eligibility']} />
-            <div className="flex items-center gap-3">
-              <Toggle id="bp-enabled" checked={profile.is_enabled} onChange={(v) => patch({ is_enabled: v })} label="Enabled" />
-              <label htmlFor="bp-enabled" className="text-sm text-graphite">Enabled</label>
-              {errorFor(errors, 'isEnabled') && <FieldError alert size="xs">{errorFor(errors, 'isEnabled')}</FieldError>}
-            </div>
-            {/* A click buyer is never ranked: buyer selection does not offer it a lead (#1541). */}
-            {!click && (
-              <Field id="bp-priority" label="Priority" hint={PRIORITY_DIRECTION} error={errorFor(errors, 'priority')}>
-                <NumberInput id="bp-priority" value={profile.priority} onChange={(v) => patch({ priority: v })} min={1} step={1} describedBy={describedBy('bp-priority', true, Boolean(errorFor(errors, 'priority')))} className="w-32" />
+          {/* A click buyer is never ranked: buyer selection does not offer it a lead (#1541). */}
+          {!click && (
+            <PartnerSection title={FIELD_LABELS.priority} region={false}>
+              <LiveSectionNote sections={['Priority']} />
+              <Field id="bp-priority" label={FIELD_LABELS.priority} labelHidden hint={PRIORITY_DIRECTION} error={errorFor(errors, 'priority')}>
+                <NumberInput id="bp-priority" value={profile.priority} onChange={(v) => patch({ priority: v })} min={1} step={1} describedBy={[describedBy('bp-priority', true, Boolean(errorFor(errors, 'priority'))), offerStanding ? 'bp-priority-standing' : null].filter(Boolean).join(' ')} className="w-[7.5rem]" />
               </Field>
-            )}
+              {offerStanding && <p id="bp-priority-standing" className="text-xs text-hint">{offerStanding}</p>}
+            </PartnerSection>
+          )}
+
+          <PartnerSection title="Eligibility">
+            <LiveSectionNote sections={['Eligibility']} />
             <StatePicker value={profile.allowed_states} onChange={(states) => patch({ allowed_states: states })} />
             {errorFor(errors, 'allowedStates') && <FieldError alert size="xs">{errorFor(errors, 'allowedStates')}</FieldError>}
-            {/* Two rows of two (#2268, settled 2026-10-17): the debt range, then the loan minimum and the collections cap. */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field id="bp-debt-min" label="Debt minimum" hint="Dollars, inclusive." error={errorFor(errors, 'debtMin')}>
-                <NumberInput id="bp-debt-min" value={profile.debt_min} onChange={(v) => patch({ debt_min: v })} min={0} describedBy={describedBy('bp-debt-min', true, Boolean(errorFor(errors, 'debtMin')))} />
+            {/* Two rows of two (#2268, settled 2026-10-17): the debt range, then the loan minimum and the collections cap. An empty box reads None (#2324). */}
+            <div className="grid grid-cols-1 gap-x-3 gap-y-2.5 sm:grid-cols-2">
+              <Field id="bp-debt-min" label={FIELD_LABELS.debt_min} error={errorFor(errors, 'debtMin')}>
+                <MoneyInput id="bp-debt-min" value={profile.debt_min} onChange={(v) => patch({ debt_min: v })} placeholder="None" describedBy={describedBy('bp-debt-min', false, Boolean(errorFor(errors, 'debtMin')))} />
               </Field>
-              <Field id="bp-debt-max" label="Debt maximum" hint="Dollars, inclusive. Empty means no maximum." error={errorFor(errors, 'debtMax')}>
-                <NumberInput id="bp-debt-max" value={profile.debt_max} onChange={(v) => patch({ debt_max: v })} min={0} describedBy={describedBy('bp-debt-max', true, Boolean(errorFor(errors, 'debtMax')))} />
+              <Field id="bp-debt-max" label={FIELD_LABELS.debt_max} error={errorFor(errors, 'debtMax')}>
+                <MoneyInput id="bp-debt-max" value={profile.debt_max} onChange={(v) => patch({ debt_max: v })} placeholder="None" describedBy={describedBy('bp-debt-max', false, Boolean(errorFor(errors, 'debtMax')))} />
               </Field>
-              <Field id="bp-loan-min" label="Loan amount minimum" hint="Dollars. Empty means the loan amount is not read." error={errorFor(errors, 'loanAmountMin')}>
-                <NumberInput id="bp-loan-min" value={profile.loan_amount_min} onChange={(v) => patch({ loan_amount_min: v })} min={0} describedBy={describedBy('bp-loan-min', true, Boolean(errorFor(errors, 'loanAmountMin')))} />
+              <Field id="bp-loan-min" label={FIELD_LABELS.loan_amount_min} error={errorFor(errors, 'loanAmountMin')}>
+                <MoneyInput id="bp-loan-min" value={profile.loan_amount_min} onChange={(v) => patch({ loan_amount_min: v })} placeholder="None" describedBy={describedBy('bp-loan-min', false, Boolean(errorFor(errors, 'loanAmountMin')))} />
               </Field>
               {/* Only the number is typed; "% of debt" is fixed text beside the box (Dan, 2026-10-17). */}
-              <Field id="bp-collections-max" label={FIELD_LABELS.collections_max_percent} hint="A lead whose collections are more than this share of its debt is skipped. Empty means no limit." error={errorFor(errors, 'collectionsMaxPercent')}>
+              <Field id="bp-collections-max" label={FIELD_LABELS.collections_max_percent} error={errorFor(errors, 'collectionsMaxPercent')}>
                 <div className="flex items-center gap-2">
-                  <NumberInput id="bp-collections-max" value={profile.collections_max_percent ?? null} onChange={(v) => patch({ collections_max_percent: v })} min={0} describedBy={`bp-collections-max-unit ${describedBy('bp-collections-max', true, Boolean(errorFor(errors, 'collectionsMaxPercent')))}`} className="w-24" />
+                  <NumberInput id="bp-collections-max" value={profile.collections_max_percent ?? null} onChange={(v) => patch({ collections_max_percent: v })} min={0} placeholder="None" describedBy={['bp-collections-max-unit', 'bp-eligibility-hint', describedBy('bp-collections-max', false, Boolean(errorFor(errors, 'collectionsMaxPercent')))].filter(Boolean).join(' ')} className="w-24" />
                   <span id="bp-collections-max-unit" className="text-sm text-graphite">% of debt</span>
                 </div>
               </Field>
             </div>
-            <div>
-              <h5 className="mb-2 text-xs font-medium text-gray-600">{SECTION_LABELS.windows}</h5>
-              <LiveSectionNote sections={[SECTION_LABELS.windows]} />
-              <WeeklyHoursEditor value={profile.windows} onChange={(windows) => patch({ windows })} zone={zone} />
-              {errorFor(errors, 'windows') && <FieldError alert size="xs">{errorFor(errors, 'windows')}</FieldError>}
-              {/* Changes only how times are shown: the hours stay stored and judged in Eastern (#2143, PM-10). */}
-              <div className="mt-3 flex items-center gap-2.5">
-                <label htmlFor="bp-display-time-zone" className="text-xs font-medium text-gray-600">{FIELD_LABELS.display_time_zone}</label>
-                <Select
-                  id="bp-display-time-zone"
-                  value={zone}
-                  options={ZONE_OPTIONS}
-                  onChange={(z) => { if (isDisplayTimeZone(z)) patch({ display_time_zone: z }) }}
-                  describedBy={errorFor(errors, 'displayTimeZone') ? 'bp-display-time-zone-error' : undefined}
-                  className="w-36"
-                />
-              </div>
-              {errorFor(errors, 'displayTimeZone') && <FieldError id="bp-display-time-zone-error" alert size="xs" className="mt-1">{errorFor(errors, 'displayTimeZone')}</FieldError>}
+            <p id="bp-eligibility-hint" className="text-xs text-hint">A lead whose collections are more than this share of its debt is skipped. Empty means no limit.</p>
+          </PartnerSection>
+
+          <PartnerSection title={SECTION_LABELS.windows}>
+            <LiveSectionNote sections={[SECTION_LABELS.windows]} />
+            <WeeklyHoursEditor value={profile.windows} onChange={(windows) => patch({ windows })} zone={zone} />
+            {errorFor(errors, 'windows') && <FieldError alert size="xs">{errorFor(errors, 'windows')}</FieldError>}
+            {/* Changes only how times are shown: the hours stay stored and judged in Eastern (#2143, PM-10). */}
+            <div className="flex items-center gap-2.5">
+              <label htmlFor="bp-display-time-zone" className="text-xs text-gray-600">{FIELD_LABELS.display_time_zone}</label>
+              <Select
+                id="bp-display-time-zone"
+                value={zone}
+                options={ZONE_OPTIONS}
+                onChange={(z) => { if (isDisplayTimeZone(z)) patch({ display_time_zone: z }) }}
+                describedBy={errorFor(errors, 'displayTimeZone') ? 'bp-display-time-zone-error' : undefined}
+                className="w-40"
+              />
             </div>
+            {errorFor(errors, 'displayTimeZone') && <FieldError id="bp-display-time-zone-error" alert size="xs">{errorFor(errors, 'displayTimeZone')}</FieldError>}
           </PartnerSection>
 
           {/* A click buyer is quoted at the Engine bid, so it has no pricing (#1541). */}
@@ -449,20 +496,14 @@ export function BuyerProfileSection(props: Props) {
               errors={capErrors}
               soldOn={profile.sold_on}
               zone={zone}
+              partnerName={partnerName}
+              meter={click ? clickMeter : undefined}
             />
-            {usage === null && usageError === null ? (
+            {click ? null : usage === null && usageError === null ? (
               <p role="status" className="text-xs text-hint">Reading the usage counts…</p>
             ) : usageError === null && usage !== null && profile.sold_on !== null && usage.sold_on !== profile.sold_on ? (
               // An unsaved change of kind (#1557): nothing is wrong, the route answers the saved kind.
-              <p role="status" className="text-xs text-gray-600">{click ? 'The clicks show once the change to the click is saved.' : 'The ledger counts show once the change to the offer is saved.'}</p>
-            ) : click ? (
-              <ClickUsagePanel
-                usage={usage?.sold_on === 'click' ? usage : null}
-                error={usageError}
-                cap={profile.daily_lead_cap}
-                otherSellers={otherSellers}
-                partnerName={partnerName}
-              />
+              <p role="status" className="text-xs text-gray-600">The ledger counts show once the change to the offer is saved.</p>
             ) : (
               <BuyerUsagePanel
                 usage={usage?.sold_on === 'offer' ? usage : null}

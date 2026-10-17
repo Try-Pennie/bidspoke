@@ -146,6 +146,15 @@ describe('answerFor', () => {
     expect(answerFor('DELETE', `${W}/api/partners/${tripoint.id}`, fx)).toBeNull()
   })
 
+  // #2324: the profile read names the other buyers sold on the offer, recorded as
+  // the route derives them from the captured profiles (the Worker's contract test holds it).
+  it('answers each profile read with the other enabled offer buyers: none beside Tripoint, and Tripoint beside Liberty1', () => {
+    const liberty1 = fx.partners.find((p) => p.slug === 'liberty1')!
+    const offerBuyersOf = (id: string) => (answerFor('GET', `${W}/api/partners/${id}/buyer-profile`, fx)?.body as { offer_buyers: unknown }).offer_buyers
+    expect(offerBuyersOf(tripoint.id)).toEqual([])
+    expect(offerBuyersOf(liberty1.id)).toEqual([{ id: tripoint.id, name: 'Tripoint', priority: 1 }])
+  })
+
   // #2140: every partner the page can open carries the delete box on its
   // Partner tab, so every listed partner has a recorded check, derived from the
   // partner list rather than a hand list, and nothing else does.

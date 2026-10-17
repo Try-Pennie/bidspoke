@@ -12,7 +12,7 @@
  * their own, so a route that uses only a button here does not load their Radix
  * code (#2137, measured on /dashboard and the canvas).
  */
-import type { KeyboardEvent, ReactNode } from 'react'
+import { useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Loader2 } from 'lucide-react'
 
 // ── Field ─────────────────────────────────────────────────────────────────────
@@ -162,6 +162,69 @@ export function NumberInput({ id, value, onChange, min, max, step = 'any', place
   )
 }
 
+/** Dollars with grouping and at most cents, the way a money box reads at rest. */
+const DOLLARS_AT_REST = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 })
+/** What a money box accepts: digits with optional grouping commas, and at most cents. */
+const TYPED_DOLLARS = /^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d{0,2})?$/
+
+/**
+ * An amount of dollars (#2324, PM-21). The box holds only the number, and "$"
+ * is fixed text beside it, since a box holds only what is typed (Dan,
+ * 2026-10-17). At rest it reads grouped (20,000); while it has the focus it
+ * holds exactly what the person types, so nothing rewrites their typing under
+ * them. Text that is not an amount is kept on screen with the reason and never
+ * emitted, and an empty box is null, a different fact from 0.
+ */
+export function MoneyInput({ id, value, onChange, placeholder, disabled, describedBy: db, className, 'aria-label': ariaLabel }: {
+  id: string
+  value: number | null
+  onChange: (value: number | null) => void
+  placeholder?: string
+  disabled?: boolean
+  describedBy?: string
+  'aria-label'?: string
+  className?: string
+}) {
+  // The typed text while the box is being edited, or null when it shows the value at rest.
+  const [draft, setDraft] = useState<string | null>(null)
+  const shown = draft ?? (value === null ? '' : DOLLARS_AT_REST.format(value))
+  const trimmed = shown.trim()
+  const invalid = trimmed !== '' && !TYPED_DOLLARS.test(trimmed)
+  const unitId = `${id}-unit`
+  // Its own id, apart from the `${id}-error` a Field around it gives a refusal from the save.
+  const errorId = `${id}-typed-error`
+  return (
+    <div className={className}>
+      <div className="flex items-center gap-1.5">
+        <span id={unitId} className="text-sm text-graphite">$</span>
+        <input
+          id={id}
+          type="text"
+          inputMode="decimal"
+          value={shown}
+          placeholder={placeholder}
+          disabled={disabled}
+          aria-label={ariaLabel}
+          aria-invalid={invalid ? true : undefined}
+          aria-describedby={[unitId, db, invalid ? errorId : null].filter(Boolean).join(' ')}
+          onFocus={() => setDraft(value === null ? '' : String(value))}
+          // An amount goes back to reading at rest; text that is not one stays as typed, with its reason.
+          onBlur={() => { if (!invalid) setDraft(null) }}
+          onChange={(e) => {
+            const raw = e.target.value
+            setDraft(raw)
+            const t = raw.trim()
+            if (t === '') { onChange(null); return }
+            if (TYPED_DOLLARS.test(t)) onChange(Number(t.replace(/,/g, '')))
+          }}
+          className="input"
+        />
+      </div>
+      {invalid && <FieldError id={errorId} alert size="xs" className="mt-1">Type an amount of dollars, such as 20,000.</FieldError>}
+    </div>
+  )
+}
+
 export function TextArea({ id, value, onChange, rows = 3, placeholder, mono, className, describedBy: db, 'aria-label': ariaLabel }: {
   id: string
   value: string
@@ -276,6 +339,41 @@ export function Checkbox({ id, checked, onChange, label, disabled, describedBy: 
       <input id={id} type="checkbox" checked={checked} disabled={disabled} aria-describedby={db} onChange={(e) => onChange(e.target.checked)} className="checkbox" />
       <span>{label}</span>
     </label>
+  )
+}
+
+// ── Chip ──────────────────────────────────────────────────────────────────────
+
+/**
+ * A chip that is a checkbox (#2324, PM-21): a state in a grid of states, a day
+ * of the week. Navy when chosen, white with the beige line when not, so a set
+ * of many reads at a glance. A button with the checkbox role, so it is named
+ * and announced as checked or not, Space toggles it, and it never submits the
+ * form around it. `shortLabel` is what it shows when its name is longer (Mon
+ * for Monday); the name begins with it, so a spoken command finds it.
+ */
+export function ChipCheck({ id, checked, onChange, label, shortLabel, size = 'sm', disabled }: {
+  id?: string
+  checked: boolean
+  onChange: (checked: boolean) => void
+  label: string
+  shortLabel?: string
+  size?: 'sm' | 'lg'
+  disabled?: boolean
+}) {
+  return (
+    <button
+      id={id}
+      type="button"
+      role="checkbox"
+      aria-checked={checked}
+      aria-label={shortLabel ? label : undefined}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`chip ${size === 'lg' ? 'chip-lg' : ''} ${checked ? 'chip-on' : ''}`.replace(/\s+/g, ' ').trim()}
+    >
+      {shortLabel ?? label}
+    </button>
   )
 }
 

@@ -191,6 +191,18 @@ html {
   .choice-on {
     @apply bg-navy text-white hover:bg-navy hover:text-white;
   }
+  /* A chip that is a checkbox (#2324, components/ui/form.tsx ChipCheck): a state
+     in the grid of states, a day of the week. White with the beige line at rest,
+     so it reads as a control (L49), and navy when chosen, as every selection is. */
+  .chip {
+    @apply rounded border border-line bg-white py-[3px] text-center text-[11px] text-hint transition-colors duration-100 hover:border-graphite hover:text-graphite focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark disabled:cursor-not-allowed disabled:opacity-60;
+  }
+  .chip-lg {
+    @apply rounded-md px-2.5 py-[5px] text-[12.5px];
+  }
+  .chip-on {
+    @apply border-navy bg-navy text-white hover:border-navy hover:text-white;
+  }
   .toggle {
     @apply relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent bg-gray-300 transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-p-blue-dark focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50;
   }

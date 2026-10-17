@@ -104,6 +104,43 @@ describe('GET /partners/:id/buyer-profile', () => {
     expect(await res.json()).toMatchObject({ profile: null, accept_signals: ACCEPT, other_sellers: [] })
   })
 
+  describe('the other buyers sold on the offer (#2324, PM-21)', () => {
+    // Rows as the embedded select returns them: the profile's priority and its partner's name and switch.
+    const offerRow = (partner_id: string, name: string, priority: number | null, is_active = true) => ({ partner_id, priority, partner_configs: { name, is_active } })
+
+    it('names every OTHER enabled offer buyer of the org whose partner is on, by priority then name, so the Priority section can say where this buyer stands', async () => {
+      const sb = supabaseWith({
+        partner_configs: { single: partnerRow },
+        workflows: { list: [] },
+        buyer_profiles: { list: [offerRow('p-9', 'Zeta', 2), offerRow('p-1', 'Tripoint', 1), offerRow('p-5', 'Acme', 2), offerRow('p-7', 'Beta', 1), offerRow('p-8', 'Off', 1, false)] },
+      }, { rpc: rpcAnswering({ buyer_profile_document: doc }) })
+      const res = await request(app, 'GET', '/partners/p-1/buyer-profile')
+      expect(res.status).toBe(200)
+      const body = await res.json() as { offer_buyers: unknown }
+      // Tripoint itself is left out, and so is a buyer whose partner is switched off (buyer_select skips it as inactive).
+      expect(body.offer_buyers).toEqual([
+        { id: 'p-7', name: 'Beta', priority: 1 },
+        { id: 'p-5', name: 'Acme', priority: 2 },
+        { id: 'p-9', name: 'Zeta', priority: 2 },
+      ])
+      // Scoped to the caller's org (the Worker is service_role), and to enabled offer profiles.
+      expect(sb.eqCalls.buyer_profiles).toEqual(expect.arrayContaining([['organization_id', 'org-abc'], ['sold_on', 'offer'], ['is_enabled', true]]))
+    })
+
+    it('answers an empty list when no other buyer is sold on the offer', async () => {
+      supabaseWith({ partner_configs: { single: partnerRow }, workflows: { list: [] }, buyer_profiles: { list: [offerRow('p-1', 'Tripoint', 1)] } }, { rpc: rpcAnswering({ buyer_profile_document: doc }) })
+      const res = await request(app, 'GET', '/partners/p-1/buyer-profile')
+      expect(await res.json()).toMatchObject({ offer_buyers: [] })
+    })
+
+    it('a failed read of the other buyers is a 5xx, never an empty list that would say this buyer is the only one', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      supabaseWith({ partner_configs: { single: partnerRow }, workflows: { list: [] }, buyer_profiles: { listError: { code: '57014', message: 'timeout' } } }, { rpc: rpcAnswering({ buyer_profile_document: doc }) })
+      const res = await request(app, 'GET', '/partners/p-1/buyer-profile')
+      expect(res.status).toBe(500)
+    })
+  })
+
   it('a partner outside the org is 404 and a database error is 5xx, never a 404 (#320)', async () => {
     supabaseWith({ partner_configs: { single: null } })
     expect((await request(app, 'GET', '/partners/p-1/buyer-profile')).status).toBe(404)

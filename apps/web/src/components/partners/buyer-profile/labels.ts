@@ -7,6 +7,7 @@
  */
 import { DAYS_OF_WEEK, DEFAULT_DISPLAY_TIME_ZONE, DISPLAY_TIME_ZONE_LABELS, EASTERN, isDisplayTimeZone, POPULATIONS, type Population, type ProfileError, type SoldOn } from '@bidspoke/buyer-profile'
 import { formatTime } from '@/components/ui/date-time'
+import type { OfferBuyer } from '@/lib/api'
 
 export const FIELD_LABELS: Record<string, string> = {
   sold_on: 'Sold on',
@@ -50,10 +51,38 @@ export const SECTION_LABELS = {
 const STORED_HOURS_ZONE = DISPLAY_TIME_ZONE_LABELS[EASTERN]
 export const STORED_HOURS_LABEL = `${SECTION_LABELS.windows} (${STORED_HOURS_ZONE})`
 
-/** The two answers to Sold on (#1541), in the order the choice offers them. The Record type makes a new kind without a label a compile error (L113). */
+/**
+ * The two answers to Sold on (#1541), in the order the choice offers them, worded
+ * as the settled design words them (#2324, PM-21). The Record type makes a new
+ * kind without a label a compile error (L113).
+ */
 export const SOLD_ON_LABELS: Record<SoldOn, string> = {
-  offer: 'The offer',
-  click: 'The click',
+  offer: 'Offer',
+  click: 'Click',
+}
+
+/** The one sentence under Sold on, for the kind chosen (#2324, the design's SOLD_WHY). */
+export const SOLD_ON_WHY: Record<SoldOn, string> = {
+  offer: 'Sold through buyer selection at a priced rate.',
+  click: 'Quoted at the Engine bid, and sent to the buyer only when the person clicks.',
+}
+
+const listOf = (items: readonly string[]): string => (items.length <= 1 ? items.join('') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`)
+
+/**
+ * Where an offer buyer stands today, under the priority rule (#2324, PM-21):
+ * alone on the offer, or beside the other buyers the Worker named with their
+ * priorities. A buyer switched off is never told it is offered every lead.
+ * Null when the Worker did not say (one deployed before it could), so the
+ * page never claims a buyer is alone on the strength of a missing list.
+ */
+export function priorityStanding(partnerName: string, others: readonly OfferBuyer[] | undefined, enabled: boolean): string | null {
+  if (others === undefined) return null
+  if (others.length === 0) {
+    return enabled ? `Today ${partnerName} is the only buyer sold on the offer, so it is offered every lead it qualifies for.` : 'Today no other buyer is sold on the offer.'
+  }
+  const named = others.map((o) => `${o.name} (${o.priority === null ? 'no priority' : `priority ${o.priority}`})`)
+  return `Today ${listOf(named)} ${others.length === 1 ? 'is' : 'are'} also sold on the offer.`
 }
 
 /** A click buyer's one cap counts clicks, so its field is named for them wherever the form names it (#1541, L118). */

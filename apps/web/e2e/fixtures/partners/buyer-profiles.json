@@ -7,17 +7,38 @@
         "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
         "name": "Main Flow"
       }
+    ],
+    "offer_buyers": [
+      {
+        "id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "name": "Tripoint",
+        "priority": 1
+      }
     ]
   },
   "e82b748a-3d32-4777-b3e3-b7d75d8580f1": {
     "profile": null,
     "accept_signals": [],
-    "other_sellers": []
+    "other_sellers": [],
+    "offer_buyers": [
+      {
+        "id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "name": "Tripoint",
+        "priority": 1
+      }
+    ]
   },
   "4ad955bd-744f-4c1f-acbb-19a22b9e5c64": {
     "profile": null,
     "accept_signals": [],
-    "other_sellers": []
+    "other_sellers": [],
+    "offer_buyers": [
+      {
+        "id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "name": "Tripoint",
+        "priority": 1
+      }
+    ]
   },
   "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3": {
     "profile": {
@@ -132,7 +153,14 @@
       "hourly_spend_cap_cents": null
     },
     "accept_signals": [],
-    "other_sellers": []
+    "other_sellers": [],
+    "offer_buyers": [
+      {
+        "id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
+        "name": "Tripoint",
+        "priority": 1
+      }
+    ]
   },
   "1b9cbd8f-1d23-496c-b046-b11d64edae29": {
     "profile": {
@@ -278,6 +306,7 @@
         "id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
         "name": "Main Flow"
       }
-    ]
+    ],
+    "offer_buyers": []
   }
 }
