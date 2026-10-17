@@ -129,15 +129,18 @@ describe('a versioned save of only what changed (#2132)', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
-  it('a 409 from someone else keeps the draft and names who saved and when, in ET', async () => {
+  it('a 409 from someone else keeps the draft and, on Keep editing, names who saved and when, in ET', async () => {
     const onSave = vi.fn().mockRejectedValue(stale({}))
     renderForm(onSave)
     rename()
     save()
+    const dialog = await screen.findByRole('dialog')
+    // No bar behind the merge dialog (#2322): the design draws none.
+    expect(document.querySelector('[data-save-bar]')).toBeNull()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep editing' }))
     expect(await screen.findByText('Not saved. Brian Nelms saved this partner at Oct 15, 2:02 PM ET. Your changes are still here.')).toBeInTheDocument()
     expect(screen.getByDisplayValue('M1 renamed')).toBeInTheDocument()
-    // Still unsaved: the bar, behind the merge dialog, offers to discard it.
-    expect(screen.getByRole('button', { name: 'Discard changes', hidden: true })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Discard changes' })).toBeInTheDocument()
   })
 
   it('a 409 from someone else asks about a field both changed, in the merge dialog', async () => {
@@ -145,8 +148,7 @@ describe('a versioned save of only what changed (#2132)', () => {
     rename()
     save()
     const dialog = await screen.findByRole('dialog', { name: 'Brian Nelms saved this partner while you were editing' })
-    expect(dialog).toHaveTextContent('Theirs M1 (theirs)')
-    expect(dialog).toHaveTextContent('Yours M1 renamed')
+    expect(dialog).toHaveTextContent("yours M1 renamed, Brian's M1 (theirs)")
   })
 
   it('a 409 whose changes do not touch yours puts theirs on screen, names them, and saves yours only on the next press, at their version', async () => {
@@ -216,14 +218,15 @@ describe('a versioned save of only what changed (#2132)', () => {
       rename()
       save()
       const dialog = await screen.findByRole('dialog')
-      fireEvent.click(within(dialog).getByRole('radio', { name: 'Keep yours' }))
+      fireEvent.click(within(dialog).getByRole('radio', { name: /^Use / }))
       fireEvent.keyDown(dialog, { key: 'Escape' })
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
       rename('M1 renamed again')
       save()
       const again = await screen.findByRole('dialog')
-      expect(within(again).getByRole('radio', { name: 'Keep yours' })).toHaveAttribute('aria-checked', 'false')
-      expect(within(again).getByRole('button', { name: 'Save both' })).toBeDisabled()
+      // Use theirs was an answer to the old value, so the new one starts at Keep yours (#2322).
+      expect(within(again).getByRole('radio', { name: 'Keep yours' })).toHaveAttribute('aria-checked', 'true')
+      expect(within(again).getByRole('radio', { name: /^Use / })).toHaveAttribute('aria-checked', 'false')
     })
   })
 
@@ -232,6 +235,8 @@ describe('a versioned save of only what changed (#2132)', () => {
     renderForm(onSave)
     rename()
     save()
+    // The bar says it once the merge dialog is closed (#2322: no bar behind the dialog).
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Keep editing' }))
     expect(await screen.findByText('Not saved. This partner was changed at Oct 15, 2:02 PM ET, outside the partners page. Your changes are still here.')).toBeInTheDocument()
   })
 
