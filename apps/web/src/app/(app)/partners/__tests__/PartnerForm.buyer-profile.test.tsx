@@ -144,7 +144,7 @@ describe('the Buyer profile section', () => {
 
   // #2268: the collections cap, set only in the database until now. Only the
   // number is typed; "% of debt" is fixed text beside the box.
-  it('shows the collections cap with its fixed words beside the box, saves a change, and an empty box clears it', async () => {
+  it('shows the collections cap with its fixed words beside the box, and saves a change', async () => {
     vi.mocked(api.buyerProfiles.get).mockResolvedValue({ profile: { ...doc, collections_max_percent: 75 }, accept_signals: [], other_sellers: [] })
     const onSave = await renderBuyer()
     const box = screen.getByLabelText('Collections at most')
