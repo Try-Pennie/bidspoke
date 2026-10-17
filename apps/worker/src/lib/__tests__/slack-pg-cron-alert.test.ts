@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { sendPgCronAlert } from '../slack'
 import { ALERTING_STATUSES } from '../pg-cron-watch'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
+import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 /**
  * The Slack message for a failing or stalled database job (#770).
@@ -19,11 +20,11 @@ function makeSupabase(connection: Record<string, string> | null) {
     {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
-        if (prop === 'maybeSingle')
-          return () =>
+        if (prop === 'limit')
+          return alertRowsAnswer(() =>
             connection
               ? Promise.resolve({ data: { config: connection }, error: null })
-              : Promise.resolve({ data: null, error: null })
+              : Promise.resolve({ data: null, error: null }))
         return () => chain
       },
     },

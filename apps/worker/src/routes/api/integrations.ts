@@ -7,8 +7,17 @@
 // DELETE /api/integrations/slack           disconnect
 //
 // Who may call these: any signed in user of the organization (jwtAuth). Whose
-// data: only the caller's organization's Slack row, every read and write scoped
-// by organization_id from the verified token, never from the request.
+// data: only the caller's organization's Slack ALERT row, every read and write
+// scoped by organization_id from the verified token, never from the request.
+//
+// The alert row (#2332, phase 2 of #1689). Once release 2 lets an organization
+// hold an ops Slack connection beside the alert bot's row, every read here goes
+// through onlySlackAlertRow (lib/slack-connection.ts): service_type 'slack',
+// name 'slack', sealed_for 'bidding_ring' or the legacy unsealed form. So
+// Settings never shows, edits, searches with or disconnects an ops connection.
+// More than one candidate answers 409 with the named refusal
+// slack_alert_connection_ambiguous and touches nothing, rather than reading as
+// "not connected" (which is what PostgREST's more than one row error did).
 //
 // The token (#2331, phase 1 of #1689). POST seals the bot token into
 // service_connections.credential_enc with the Worker's key ring and, in this
@@ -45,7 +54,7 @@
 // so a reader in another location can still see the old entry for up to about
 // a minute.
 
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { dbError, dbErrorUnlessNotFound, requireRowOr404, rowsTouched } from '../../lib/api-error'
 import { fetchJson } from '../../lib/json'
 import type { Env } from '../../index'
@@ -53,7 +62,19 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { copyCleared, copyWarning } from '../../lib/stored-copy'
 import { editSlackCopyEntry } from '../../lib/slack-copy'
-import { resolveSlackConnection, slackTokenProblemLine, SLACK_ROW_COLUMNS, type SlackConnection, type SlackConnectionRow } from '../../lib/slack-connection'
+import {
+  onlySlackAlertRow,
+  pickSlackAlertRow,
+  resolveSlackConnection,
+  slackAlertAmbiguityLine,
+  slackTokenProblemLine,
+  SLACK_ALERT_AMBIGUOUS,
+  SLACK_ALERT_CONNECTION_NAME,
+  SLACK_ALERT_READ_LIMIT,
+  SLACK_ROW_COLUMNS,
+  type SlackConnection,
+  type SlackConnectionRow,
+} from '../../lib/slack-connection'
 import { encryptSecret, secretKeys, type SecretKeys } from '../../lib/secret-crypto'
 import { formatErr } from '../../lib/format-error'
 
@@ -61,8 +82,16 @@ type Variables = AuthVariables
 
 const integrations = new Hono<{ Bindings: Env; Variables: Variables }>()
 
-/** The alert row's name: what migration 20261017150000 backfilled, and reserved from ops rows. */
-const SLACK_ALERT_CONNECTION_NAME = 'slack'
+/** The read of the caller's organization's Slack alert row (#2332): never an ops row, and enough rows to see two. */
+function alertRowQuery(supabase: ReturnType<typeof createSupabaseClient>, orgId: string, columns: string) {
+  return onlySlackAlertRow(supabase.from('service_connections').select(columns).eq('organization_id', orgId)).limit(SLACK_ALERT_READ_LIMIT)
+}
+
+/** More than one alert row: refused by name, logged, and nothing is read from or written to either. */
+function ambiguousAlertRow(c: Context<{ Bindings: Env; Variables: Variables }>, orgId: string, what: string, count: number) {
+  console.error(slackAlertAmbiguityLine(`integrations ${what} for org ${orgId}`, count))
+  return c.json({ error: SLACK_ALERT_AMBIGUOUS }, 409)
+}
 
 integrations.post('/slack/resolve', async (c) => {
   const body = await c.req.json<{ bot_token: string }>()
@@ -177,12 +206,10 @@ integrations.get('/slack', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
 
-  const { data } = await supabase
-    .from('service_connections')
-    .select('config, updated_at, updated_by_email')
-    .eq('organization_id', orgId)
-    .eq('service_type', 'slack')
-    .maybeSingle()
+  const { data: rows } = await alertRowQuery(supabase, orgId, 'config, updated_at, updated_by_email')
+  const picked = pickSlackAlertRow(rows as unknown as { config: unknown; updated_at: string; updated_by_email: string | null }[] | null)
+  if (picked.kind === 'ambiguous') return ambiguousAlertRow(c, orgId, 'read', picked.count)
+  const data = picked.row
 
   if (!data) return c.json({ connected: false })
 
@@ -214,16 +241,13 @@ integrations.get('/slack/channels', async (c) => {
   const q = (c.req.query('q') ?? '').trim().toLowerCase()
   if (q.length < 3) return c.json({ channels: [] })
 
-  const { data, error: readError } = await supabase
-    .from('service_connections')
-    .select(SLACK_ROW_COLUMNS)
-    .eq('organization_id', orgId)
-    .eq('service_type', 'slack')
-    .maybeSingle()
+  const { data: rows, error: readError } = await alertRowQuery(supabase, orgId, SLACK_ROW_COLUMNS)
   const readBlocked = dbErrorUnlessNotFound(c, readError)
   if (readBlocked) return readBlocked
+  const picked = pickSlackAlertRow(rows as unknown as SlackConnectionRow[] | null)
+  if (picked.kind === 'ambiguous') return ambiguousAlertRow(c, orgId, 'channel search', picked.count)
 
-  const resolved = await resolveSlackConnection(data, secretKeys(c.env))
+  const resolved = await resolveSlackConnection(picked.row, secretKeys(c.env))
   const subject = `integrations channel search for org ${orgId}`
   if (resolved.kind === 'unreadable') {
     console.error(slackTokenProblemLine(subject, resolved, false))
@@ -277,15 +301,13 @@ integrations.patch('/slack/settings', async (c) => {
   const supabase = createSupabaseClient(c.env)
   const body = await c.req.json<{ volume_alerts_enabled?: boolean; default_channel?: string; matrix_alerts_enabled?: boolean; matrix_alerts_channel?: string | null; config_alerts_enabled?: boolean; backup_alerts_enabled?: boolean }>()
 
-  const { data: existing, error: existingErr } = await supabase
-    .from('service_connections')
-    .select(`id, ${SLACK_ROW_COLUMNS}`)
-    .eq('organization_id', orgId)
-    .eq('service_type', 'slack')
-    .maybeSingle()
+  const { data: rows, error: existingErr } = await alertRowQuery(supabase, orgId, `id, ${SLACK_ROW_COLUMNS}`)
 
   const existingBlocked = dbErrorUnlessNotFound(c, existingErr)
   if (existingBlocked) return existingBlocked
+  const picked = pickSlackAlertRow(rows as unknown as ({ id: string } & SlackConnectionRow)[] | null)
+  if (picked.kind === 'ambiguous') return ambiguousAlertRow(c, orgId, 'settings change', picked.count)
+  const existing = picked.row
   if (!existing) return c.json({ error: 'Slack is not connected' }, 404)
 
   const nextConfig = {
@@ -314,7 +336,7 @@ integrations.patch('/slack/settings', async (c) => {
     async () => {
       // The ring is read in here, so a missing key can fail only the copy edit.
       const keys = secretKeys(c.env)
-      const entry = await copyEntryFor(keys, orgId, { config: nextConfig, credential_enc: (existing as SlackConnectionRow).credential_enc })
+      const entry = await copyEntryFor(keys, orgId, { config: nextConfig, credential_enc: existing.credential_enc })
       if (entry !== KEEP_ENTRY) await editSlackCopyEntry(c.env.IDEMPOTENCY, keys, orgId, entry)
     },
     `the saved Slack copy for org ${orgId}`,
@@ -327,14 +349,34 @@ integrations.delete('/slack', async (c) => {
   const { orgId, userId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
 
+  // The alert row first (#2332): more than one candidate is refused before
+  // anything is deleted, and the saved copy is left as it is.
+  const { data: rows, error: readError } = await alertRowQuery(supabase, orgId, 'id')
+  if (readError) return dbError(c, readError)
+  const picked = pickSlackAlertRow(rows as unknown as { id: string }[] | null)
+  if (picked.kind === 'ambiguous') return ambiguousAlertRow(c, orgId, 'disconnect', picked.count)
+
   // Disconnecting a Slack that was never connected is a no-op, not an error, so
   // this stays 200. delete_service_connection deletes with the caller named as
   // the actor, so the table's trigger audits the removed row under this user
   // (#2331); a delete that matched nothing is audited by nobody (#588).
-  const { blocked } = await rowsTouched<{ id: string }>(c, 'service_connections.slack_disconnect', () =>
-    supabase.rpc('delete_service_connection', { p_organization_id: orgId, p_service_type: 'slack', p_actor: userId })
-  )
-  if (blocked) return blocked
+  //
+  // It deletes the organization's Slack rows that are not ops_key rows
+  // (migration 20261017150000, F124), so it can never remove an ops
+  // connection. It does not take the alert row's name, so when it removes any
+  // row other than the alert row just read (none can exist: no writer creates
+  // a non ops Slack row under another name), that is said by name.
+  if (picked.row) {
+    const alertRowId = picked.row.id
+    const { blocked, rows: deleted } = await rowsTouched<{ id: string }>(c, 'service_connections.slack_disconnect', () =>
+      supabase.rpc('delete_service_connection', { p_organization_id: orgId, p_service_type: 'slack', p_actor: userId })
+    )
+    if (blocked) return blocked
+    const others = deleted.map((r) => r.id).filter((id) => id !== alertRowId)
+    if (others.length > 0) {
+      console.error(`[integrations] slack_disconnect_removed_other_rows: Disconnect for org ${orgId} removed ${others.length} Slack row(s) besides the alert row ${alertRowId}: ${others.join(', ')}`)
+    }
+  }
 
   // Removed from the copy even when the delete matched no row: the database now
   // holds no connection for this org, so neither should the copy.

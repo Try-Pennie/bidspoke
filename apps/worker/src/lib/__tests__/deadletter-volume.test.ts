@@ -15,6 +15,7 @@ import {
   utcDay,
 } from '../deadletter-volume'
 import { getSlackConnection, postMessage } from '../slack'
+import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 const NOW = Date.parse('2026-10-11T13:00:00.000Z')
 const DAY = 24 * 60 * 60 * 1000
@@ -36,7 +37,7 @@ function fakeKv(initial: Record<string, string> = {}) {
 
 // A supabase double that reports one Slack org.
 const fakeSupabase = {
-  from: () => ({ select: () => ({ eq: () => Promise.resolve({ data: [{ organization_id: 'org-1' }], error: null }) }) }),
+  from: () => ({ select: () => alertRowListAnswer({ data: [{ organization_id: 'org-1' }], error: null }) }),
 } as never
 
 const slackOn = { bot_token: 't', default_channel: '#alerts', config_alerts_enabled: true }

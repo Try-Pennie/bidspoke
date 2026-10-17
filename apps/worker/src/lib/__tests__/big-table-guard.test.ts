@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { filterUnhandledBigTables, runBigTableGuard } from '../big-table-guard'
+import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 describe('filterUnhandledBigTables', () => {
   it('drops known/handled tables (including sf_bid_matrix_audit) and keeps unexpected growers', () => {
@@ -17,13 +18,13 @@ describe('filterUnhandledBigTables', () => {
 })
 
 // Supabase mock: rpc -> table estimates; from('service_connections') list; and
-// getSlackConnection's maybeSingle (slack config).
+// getSlackConnection's alert row read, ending in limit (slack config).
 function makeSupabase(rpcRows: { table_name: string; est_rows: number }[]) {
   const chain: unknown = new Proxy({}, {
     get(_t, prop) {
       if (prop === 'select') return () => chain
       if (prop === 'eq') return () => chain
-      if (prop === 'maybeSingle') return async () => ({ data: { config: { bot_token: 'xoxb', default_channel: '#a' } }, error: null })
+      if (prop === 'limit') return alertRowsAnswer(async () => ({ data: { config: { bot_token: 'xoxb', default_channel: '#a' } }, error: null }))
       if (prop === 'then') return (resolve: (v: unknown) => void) => resolve({ data: [{ organization_id: 'org-1' }], error: null })
       return () => chain
     },

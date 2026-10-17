@@ -8,6 +8,7 @@ vi.mock('../slack', () => ({
 import { sendExportFailureAlert } from '../slack'
 import { notifyExportFailure, type AlertRemedy } from '../export-alerts'
 import { BACKOFF_STEPS_SECONDS, readCondition } from '../alert-backoff'
+import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 /**
  * The export family repeated a standing failure every eight hours for ever,
@@ -42,7 +43,7 @@ function fakeKv() {
 }
 
 const supabase = {
-  from: () => ({ select: () => ({ eq: () => Promise.resolve({ data: [{ organization_id: 'org-1' }], error: null }) }) }),
+  from: () => ({ select: () => alertRowListAnswer({ data: [{ organization_id: 'org-1' }], error: null }) }),
 } as unknown as SupabaseClient
 
 const KEY = `export-alert:${JOB}`

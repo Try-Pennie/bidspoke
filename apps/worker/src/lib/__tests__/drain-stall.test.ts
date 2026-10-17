@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { isDrainStalled, runDrainStallCheck, DRAIN_STALL_THRESHOLD } from '../drain-stall'
+import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 describe('isDrainStalled', () => {
   it('is false below the threshold and true at/above it', () => {
@@ -12,7 +13,7 @@ describe('isDrainStalled', () => {
 
 // Table-aware Supabase mock: the lead_sightings count query resolves { count },
 // service_connections resolves the org list (then) and the per-org slack config
-// (maybeSingle for getSlackConnection).
+// (the alert row read's limit, for getSlackConnection).
 function makeSupabase(
   strandedCount: number,
   /**
@@ -26,8 +27,8 @@ function makeSupabase(
   function chainFor(table: string): unknown {
     return new Proxy({}, {
       get(_t, prop) {
-        if (prop === 'maybeSingle') {
-          return async () => ({ data: { config: { bot_token: 'xoxb', default_channel: '#alerts' } }, error: null })
+        if (prop === 'limit') {
+          return alertRowsAnswer(async () => ({ data: { config: { bot_token: 'xoxb', default_channel: '#alerts' } }, error: null }))
         }
         if (prop === 'then') {
           return (resolve: (v: unknown) => void) =>

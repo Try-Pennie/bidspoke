@@ -4,6 +4,7 @@ import type { SyncResult } from '../bid-matrix-sync'
 import { sendMatrixChangeAlert, sendMatrixValidationAlert } from '../slack'
 import type { MatrixConfigChange, MatrixConfigProblems } from '../slack'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
+import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 const config = { slug: 'sofi', name: 'SoFi default' }
 
@@ -202,10 +203,10 @@ describe('sendMatrixChangeAlert', () => {
     const chain: unknown = new Proxy({}, {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
-        if (prop === 'maybeSingle') return () =>
+        if (prop === 'limit') return alertRowsAnswer(() =>
           connection
             ? Promise.resolve({ data: { config: connection }, error: null })
-            : Promise.resolve({ data: null, error: null })
+            : Promise.resolve({ data: null, error: null }))
         return () => chain
       },
     })
@@ -319,10 +320,10 @@ describe('sendMatrixValidationAlert (#182)', () => {
     const chain: unknown = new Proxy({}, {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
-        if (prop === 'maybeSingle') return () =>
+        if (prop === 'limit') return alertRowsAnswer(() =>
           connection
             ? Promise.resolve({ data: { config: connection }, error: null })
-            : Promise.resolve({ data: null, error: null })
+            : Promise.resolve({ data: null, error: null }))
         return () => chain
       },
     })

@@ -209,16 +209,16 @@ function makeSupabase(statsRows: { workflow_id: string; day: string; run_count: 
   return {
     from(table: string) {
       if (table === 'service_connections') {
-        return {
-          select: () => ({
-            eq: (col: string) => {
-              if (col === 'organization_id') {
-                return { eq: () => ({ maybeSingle: async () => ({ data: { config: { bot_token: 'xoxb', default_channel: '#alerts' } }, error: null }) }) }
-              }
-              return Promise.resolve({ data: [{ organization_id: 'org-1' }], error: null })
-            },
-          }),
+        // The alert row reads (#2332): the org list is awaited as it is; one
+        // org's connection ends in .limit(2).
+        const chain: Record<string, unknown> = {
+          select: () => chain,
+          eq: () => chain,
+          or: () => chain,
+          limit: () => Promise.resolve({ data: [{ config: { bot_token: 'xoxb', default_channel: '#alerts' } }], error: null }),
+          then: (resolve: (v: unknown) => void) => resolve({ data: [{ organization_id: 'org-1' }], error: null }),
         }
+        return chain
       }
       if (table === 'workflows') {
         return { select: () => ({ in: () => ({ eq: () => ({ is: async () => ({ data: [{ id: 'wf-1', organization_id: 'org-1' }], error: null }) }) }) }) }

@@ -166,7 +166,7 @@ describe('GET /integrations/slack', () => {
 
   it('returns { connected: false } when no Slack connection exists', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { maybeSingle: null } }) as never
+      makeSupabase({ users: { single: testUser }, service_connections: { list: [] } }) as never
     )
     const res = await request(app, 'GET', '/integrations/slack')
     expect(res.status).toBe(200)
@@ -181,7 +181,7 @@ describe('GET /integrations/slack', () => {
       updated_by_email: 'dan@pennie.com',
     }
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { maybeSingle: connection } }) as never
+      makeSupabase({ users: { single: testUser }, service_connections: { list: [connection] } }) as never
     )
     const res = await request(app, 'GET', '/integrations/slack')
     expect(res.status).toBe(200)
@@ -210,7 +210,7 @@ describe('DELETE /integrations/slack', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },
-        service_connections: { maybeSingle: { id: 'sc-1' } },
+        service_connections: { list: [{ id: 'sc-1' }] },
       }) as never
     )
     const res = await request(app, 'DELETE', '/integrations/slack')
@@ -223,7 +223,7 @@ describe('DELETE /integrations/slack', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },
-        service_connections: { maybeSingle: null },
+        service_connections: { list: [] },
       }) as never
     )
     const res = await request(app, 'DELETE', '/integrations/slack')
@@ -235,7 +235,7 @@ describe('DELETE /integrations/slack', () => {
     // this stays 200. Nothing was deleted, so the table's trigger audits
     // nothing; the route writes no audit row of its own (#2331, F119).
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser } }, { rpcs: { delete_service_connection: [] } }) as never
+      makeSupabase({ users: { single: testUser }, service_connections: { list: [{ id: 'sc-1' }] } }, { rpcs: { delete_service_connection: [] } }) as never
     )
     const res = await request(app, 'DELETE', '/integrations/slack')
     expect(res.status).toBe(200)
@@ -249,7 +249,7 @@ describe('DELETE /integrations/slack', () => {
     // swallowed into the no-op 200 path (#588).
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser } }, {
+      makeSupabase({ users: { single: testUser }, service_connections: { list: [{ id: 'sc-1' }] } }, {
         rpc: async () => ({ data: null, error: { code: '42P01', message: 'relation missing' } }),
       }) as never
     )
@@ -308,7 +308,7 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
 
   it('disconnecting removes the org from the copy in the same request, keeping the others and the save time', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { writeRows: [{ id: 'sc-9' }] } }) as never
+      makeSupabase({ users: { single: testUser }, service_connections: { list: [{ id: 'sc-9' }], writeRows: [{ id: 'sc-9' }] } }) as never
     )
     const res = await request(app, 'DELETE', '/integrations/slack')
     expect(res.status).toBe(200)
@@ -321,7 +321,7 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
   it('a disconnect the database refused leaves the copy as it was', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser } }, {
+      makeSupabase({ users: { single: testUser }, service_connections: { list: [{ id: 'sc-9' }] } }, {
         rpc: async () => ({ data: null, error: { code: '08006', message: 'connection refused' } }),
       }) as never
     )
@@ -335,7 +335,7 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
       makeSupabase({
         users: { single: testUser },
         service_connections: {
-          maybeSingle: { id: 'sc-1', config: { bot_token: 'xoxb-mine', default_channel: '#mine' } },
+          list: [{ id: 'sc-1', config: { bot_token: 'xoxb-mine', default_channel: '#mine' } }],
           writeRows: [{ id: 'sc-1' }],
         },
       }) as never
@@ -365,7 +365,7 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
     vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => { errors.push(a.map(String).join(' ')) })
     putFails = true
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { writeRows: [{ id: 'sc-9' }] } }) as never
+      makeSupabase({ users: { single: testUser }, service_connections: { list: [{ id: 'sc-9' }], writeRows: [{ id: 'sc-9' }] } }) as never
     )
     const res = await request(app, 'DELETE', '/integrations/slack')
     expect(res.status).toBe(200)
@@ -380,7 +380,7 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
     delete env.SECRET_ENCRYPTION_KEY
     try {
       vi.mocked(createSupabaseClient).mockReturnValue(
-        makeSupabase({ users: { single: testUser }, service_connections: { writeRows: [{ id: 'sc-9' }] } }) as never
+        makeSupabase({ users: { single: testUser }, service_connections: { list: [{ id: 'sc-9' }], writeRows: [{ id: 'sc-9' }] } }) as never
       )
       const res = await request(app, 'DELETE', '/integrations/slack')
       expect(res.status).toBe(200)
@@ -395,7 +395,7 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
     vi.spyOn(console, 'error').mockImplementation(() => {})
     delete env.IDEMPOTENCY
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { writeRows: [{ id: 'sc-9' }] } }) as never
+      makeSupabase({ users: { single: testUser }, service_connections: { list: [{ id: 'sc-9' }], writeRows: [{ id: 'sc-9' }] } }) as never
     )
     const res = await request(app, 'DELETE', '/integrations/slack')
     expect(res.status).toBe(200)
@@ -416,7 +416,7 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
       makeSupabase({
         users: { single: testUser },
         service_connections: {
-          maybeSingle: { id: 'sc-1', config: { bot_token: 'xoxb-mine', default_channel: '#mine' } },
+          list: [{ id: 'sc-1', config: { bot_token: 'xoxb-mine', default_channel: '#mine' } }],
           upsertResult: { id: 'sc-1', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-10-15T00:00:00Z' },
           writeRows: [{ id: 'sc-1' }],
         },

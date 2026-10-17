@@ -13,6 +13,7 @@ vi.mock('../slack', () => ({
   postMessage: vi.fn().mockResolvedValue('ts-1'),
 }))
 import { getSlackConnection, postMessage } from '../slack'
+import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 const counts = (over: Partial<Record<StrandBranch, number>>): Record<StrandBranch, number> => ({ ...emptyBranchCounts(), ...over })
 
@@ -59,7 +60,7 @@ function fakeKv(initial: Record<string, string> = {}) {
 }
 
 const supa = {
-  from: () => ({ select: () => ({ eq: () => Promise.resolve({ data: [{ organization_id: 'org-1' }], error: null }) }) }),
+  from: () => ({ select: () => alertRowListAnswer({ data: [{ organization_id: 'org-1' }], error: null }) }),
 } as never
 
 const slackOn = { bot_token: 't', default_channel: '#alerts', config_alerts_enabled: true }

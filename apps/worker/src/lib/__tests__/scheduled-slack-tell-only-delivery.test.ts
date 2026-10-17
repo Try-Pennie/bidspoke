@@ -43,7 +43,8 @@ async function tick(kind: Tick) {
   const answers: Record<string, Answer> =
     kind === 'slack_refuses' ? { service_connections: 'throw' } : { service_connections: { data: [{ organization_id: ORG }] } }
   const { client } = tableClient(answers)
-  // The org's own lookup reads the same table with maybeSingle; give it the row
+  // The org's own lookup reads the same table, its alert row only, ending in
+  // .limit(2) and answered as a one row list (#2332); give it the row
   // (delivered) or a failure (org_not_found) by answering per call.
   let calls = 0
   const from = (client as unknown as { from: (t: string) => unknown }).from
@@ -51,7 +52,7 @@ async function tick(kind: Tick) {
     if (table !== 'service_connections') return from(table)
     calls++
     if (calls === 1) return from(table)
-    const lookup: Answer = kind === 'delivered' ? { data: { config: CONN } } : { error: { message: 'connection terminated' } }
+    const lookup: Answer = kind === 'delivered' ? { data: [{ config: CONN }] } : { error: { message: 'connection terminated' } }
     return tableClient({ service_connections: lookup }).client.from(table)
   }
   const copy = kind === 'slack_refuses' ? await kvWithCopy({ [ORG]: CONN }) : kind === 'org_not_found' ? await kvWithCopy({ 'org-2': CONN }) : kvWith()

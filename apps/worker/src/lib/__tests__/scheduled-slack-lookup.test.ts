@@ -41,7 +41,7 @@ async function scheduled(answers: Answer[], opts: { copy?: Record<string, unknow
 
 describe('the lookup on the scheduled client', () => {
   it('answers live from the database, without reading the copy', async () => {
-    const { client, calls, kv, timers } = await scheduled([{ data: { config: LIVE_CONN } }], { copy: { [ORG]: STORED_CONN } })
+    const { client, calls, kv, timers } = await scheduled([{ data: [{ config: LIVE_CONN }] }], { copy: { [ORG]: STORED_CONN } })
     const result = await lookupSlackConnection(client, ORG)
     expect(result.kind).toBe('live')
     // The deadline timer is stopped once the read answers, so none outlives it.
@@ -80,7 +80,7 @@ describe('the lookup on the scheduled client', () => {
   })
 
   it('after the first failed read in the tick, sends the next lookup straight to the copy without asking', async () => {
-    const { client, calls } = await scheduled([{ error: { message: 'boom' } }, { data: { config: LIVE_CONN } }], {
+    const { client, calls } = await scheduled([{ error: { message: 'boom' } }, { data: [{ config: LIVE_CONN }] }], {
       copy: { [ORG]: STORED_CONN, 'org-2': { ...STORED_CONN, bot_token: 'xoxb-stored-2' } },
     })
     await lookupSlackConnection(client, ORG)
@@ -153,7 +153,7 @@ describe('when nobody can be told', () => {
       await lookupSlackConnection(client, ORG)
       return logs.filter((l) => l.includes('[scheduled-slack]'))
     }
-    const live = await lines([{ data: { config: LIVE_CONN } }], null)
+    const live = await lines([{ data: [{ config: LIVE_CONN }] }], null)
     const none = await lines([{ data: null }], null)
     const stored = await lines([{ error: { message: 'boom' } }], { [ORG]: STORED_CONN })
     const unreachable = await lines([{ error: { message: 'boom' } }], null)
@@ -231,7 +231,7 @@ describe('the first failed read of a tick is told to the reachability owner', ()
   })
 
   it('tells nothing on a tick whose reads all answer', async () => {
-    const { client } = fakeClient([{ data: { config: LIVE_CONN } }, { data: [{ organization_id: ORG }] }])
+    const { client } = fakeClient([{ data: [{ config: LIVE_CONN }] }, { data: [{ organization_id: ORG }] }])
     const told: unknown[] = []
     registerScheduledSlack(client, { kv: kvWith(), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep, onUnreachable: (f) => told.push(f) })
     await lookupSlackConnection(client, ORG)

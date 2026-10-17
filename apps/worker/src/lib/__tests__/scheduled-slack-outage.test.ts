@@ -35,7 +35,8 @@ function database(mode: 'up' | 'stalled') {
     if (mode === 'stalled') {
       return new Promise<Response>((_, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true }))
     }
-    const body = url.includes('select=config') ? { config: CONN } : [{ organization_id: ORG }]
+    // PostgREST answers a read with an array (the connection read asks for up to two alert rows, #2332).
+    const body = url.includes('select=config') ? [{ config: CONN }] : [{ organization_id: ORG }]
     return Promise.resolve(new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } }))
   }) as typeof globalThis.fetch
   return { fetch: network, requests }

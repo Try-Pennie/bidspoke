@@ -20,6 +20,7 @@ import {
   cronJob,
   ALL_CLEAR_MAX_ATTEMPTS,
 } from '../cron-heartbeat'
+import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 const NOW = Date.parse('2026-06-26T13:00:00.000Z')
 const H = 3_600_000
@@ -53,7 +54,7 @@ function fakeSupabase(orgRows: { organization_id: string }[]): SupabaseClient {
     from: (table: string) =>
       table === 'job_runs'
         ? runs
-        : { select: () => ({ eq: () => Promise.resolve({ data: orgRows, error: null }) }) },
+        : { select: () => alertRowListAnswer({ data: orgRows, error: null }) },
   } as unknown as SupabaseClient
 }
 

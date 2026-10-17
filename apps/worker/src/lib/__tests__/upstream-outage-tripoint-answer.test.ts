@@ -39,7 +39,7 @@ function recordingSupabase(tables: Record<string, unknown[]>, errors: Record<str
       ;(reads[table] ??= []).push(filters)
       let range: [number, number] | null = null
       const chain: Record<string, unknown> = {}
-      for (const op of ['select', 'eq', 'in', 'gte', 'lt', 'is', 'not', 'order', 'filter', 'limit']) {
+      for (const op of ['select', 'eq', 'or', 'in', 'gte', 'lt', 'is', 'not', 'order', 'filter', 'limit']) {
         chain[op] = (...args: unknown[]) => { filters.push([op, String(args[0]), args.slice(1)]); return chain }
       }
       chain.range = (from: number, to: number) => { range = [from, to]; return chain }

@@ -8,6 +8,7 @@ vi.mock('../slack', () => ({
 
 import { sendWorkflowScheduleAlert, sendWorkflowScheduleRecoveryAlert } from '../slack'
 import { runWorkflowScheduleWatch, WATCHED_WORKFLOWS } from '../workflow-schedule-watch'
+import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 /**
  * The orchestration half of the scheduled-workflow dead-man's-switch (#805):
@@ -53,7 +54,7 @@ function fakeKv(initial: Record<string, string> = {}) {
 
 function fakeSupabase(orgRows: { organization_id: string }[]): SupabaseClient {
   return {
-    from: () => ({ select: () => ({ eq: () => Promise.resolve({ data: orgRows, error: null }) }) }),
+    from: () => ({ select: () => alertRowListAnswer({ data: orgRows, error: null }) }),
   } as unknown as SupabaseClient
 }
 
