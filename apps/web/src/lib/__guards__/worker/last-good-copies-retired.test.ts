@@ -85,9 +85,11 @@ const KINDS: Kind[] = [
     writeMethods: ['insert', 'upsert', 'update', 'delete'],
     sqlWrites: /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:public\.)?service_connections\b/i,
     // This guard cannot read a reason, so each is held true by a route test in
-    // connections.test.ts: POST with a type outside SERVICE_TYPES, DELETE
-    // /connections/slack and POST /connections/slack/sync-schema are each
-    // refused before the table is touched (#2060).
+    // connections.test.ts: DELETE /connections/slack and POST
+    // /connections/slack/sync-schema are each refused before the table is
+    // touched (#2060). POST /connections writes nothing since #2331 phase 1a (it
+    // refuses as connections_moving), so it has no exemption: were it to write
+    // again it would have to edit the copy or come back here with a reason.
     //
     // #2331: the backfill and the key rotation re-lock change the token's
     // ciphertext, never the token or any setting the copy holds, and the next
@@ -96,7 +98,6 @@ const KINDS: Kind[] = [
     // the same connection (routes/api/__tests__/slack-token-seal.test.ts and
     // lib/__tests__/secret-reencrypt.test.ts).
     exempt: {
-      'apps/worker/src/routes/api/connections.ts POST /': 'upserts only salesforce, supabase or snowflake (SERVICE_TYPES), never a Slack row',
       'apps/worker/src/routes/api/slack-token-seal.ts sealSlackTokens': 'seals the token already in config.bot_token into credential_enc: the connection the copy holds is unchanged, and the next probe rewrites the copy from the rows',
       'apps/worker/src/lib/secret-reencrypt.ts reencryptSecrets': 're-locks credential_enc under the next key: the token the copy holds is unchanged, and the next probe rewrites the copy under the ring in force',
       'apps/worker/src/routes/api/connections.ts DELETE /:service_type': 'refuses any type outside SERVICE_TYPES before its read, so it can never delete the Slack row',
