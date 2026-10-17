@@ -43,7 +43,8 @@ export interface FinderOptions {
    * Count ONLY the two click nodes (#1557), for the profile save route, which
    * refuses switching a click buyer to the offer while a live click node names
    * it. A bid_group or partner_bid sells the partner whichever way its profile
-   * is sold, so they never block that switch. Requires includeClickNodes.
+   * is sold, and a latency_gate never sells, so none of them block that switch.
+   * Requires includeClickNodes.
    */
   clickNodesOnly?: boolean
 }
