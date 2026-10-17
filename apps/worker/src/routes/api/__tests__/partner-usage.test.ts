@@ -7,6 +7,7 @@
  * route's own filters are the scoping.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -20,8 +21,7 @@ const ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: ORG, email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 const env = { SUPABASE_JWKS_URL: 'https://fake.jwks' } as unknown as Env
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 const P1 = '00000000-0000-4000-8000-000000000001'
 const P9 = '00000000-0000-4000-8000-000000000009'

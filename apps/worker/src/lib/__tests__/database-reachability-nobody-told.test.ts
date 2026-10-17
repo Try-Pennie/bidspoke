@@ -11,6 +11,7 @@
  * Every timer is injected; nothing here waits for real (L524).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 
 vi.mock('../slack', () => ({
   sendDatabaseUnreachableAlert: vi.fn().mockResolvedValue('ts-db'),
@@ -44,7 +45,7 @@ function fakeKv(seed: Record<string, string> = {}, refuse: (k: string) => boolea
 /** The tick's scheduled Slack with the real pager, its Better Stack requests recorded, its pages kept for the test to await. */
 function tick(kv: Kv, betterStack: (init: RequestInit) => Promise<Response> = async () => new Response(null, { status: 202 })) {
   const sent: { message: string; organization_id: string | null; reason: string }[] = []
-  const handed: Promise<unknown>[] = []
+  const ctx = recordingContext()
   const pager = createNobodyToldPager({
     token: 'bs-token',
     url: 'https://in.example.betterstack',
@@ -56,8 +57,8 @@ function tick(kv: Kv, betterStack: (init: RequestInit) => Promise<Response> = as
       return betterStack(init ?? {})
     }) as typeof fetch,
   })
-  const scheduled = registerScheduledSlack({}, { kv, secretKeys: TEST_KEY, pager, waitUntil: (p) => handed.push(p), sleep: fakeTimers('never').sleep, now: () => T0 })
-  const settled = async () => { await Promise.all(handed) }
+  const scheduled = registerScheduledSlack({}, { kv, secretKeys: TEST_KEY, pager, waitUntil: ctx.waitUntil, sleep: fakeTimers('never').sleep, now: () => T0 })
+  const settled = async () => { await ctx.settle(); await Promise.all(ctx.handed) }
   return { scheduled, sent, settled }
 }
 

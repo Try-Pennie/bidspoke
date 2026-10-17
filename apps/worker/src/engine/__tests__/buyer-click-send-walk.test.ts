@@ -8,6 +8,7 @@
  * resumed or replayed run on the context, which is what the node refuses on.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { EdgeDefinition, ExecutionContext, NodeDefinition } from '../../types'
@@ -116,11 +117,13 @@ describe('executeWorkflow marks a recovery run on the context', () => {
     const kv = { get: async () => null, put: async () => undefined, delete: async () => undefined } as unknown as KVNamespace
     const e = { IDEMPOTENCY: kv, WORKFLOW_CACHE: kv, APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
     const sb = { from: () => ({ select: () => ({ eq: () => ({ eq: () => Promise.resolve({ data: [], error: null }) }) }) }) } as unknown as SupabaseClient
-    const ec = { waitUntil: (p: Promise<unknown>) => void p.catch(() => undefined) }
+    const ec = recordingContext()
     const base = { workflowId: 'wf-1', payload: { prospect: 'p-1' }, source: 's' }
     await executeWorkflow(base, e, moneyRuntime(sb), ec)
     await executeWorkflow({ ...base, resumeFromExecutionId: 'orig-1' }, e, moneyRuntime(sb), ec)
     await executeWorkflow({ ...base, parentExecutionId: 'orig-1' }, e, moneyRuntime(sb), ec)
     expect(seen).toEqual([undefined, 'resume', 'replay'])
+    // The finalize each run hands off is let finish before the test ends (#2120).
+    await ec.settle()
   })
 })

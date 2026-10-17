@@ -8,6 +8,7 @@
  * Every other collaborator is the same double the lane test uses.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { ExecutionContext, LoadedWorkflow, WorkflowDefinition } from '../../types'
@@ -94,12 +95,11 @@ const env = {
 
 async function envHandedToTheNode(workflowId: string): Promise<Record<string, string>> {
   vi.mocked(executeNode).mockClear()
-  const background: Promise<unknown>[] = []
-  const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
+  const executionCtx = recordingContext()
   try {
     await executeWorkflow({ workflowId, payload: { lead: 1 }, source: 'engine' }, env, moneyRuntime(client), executionCtx)
   } finally {
-    await Promise.all(background.splice(0))
+    await executionCtx.settle()
   }
   expect(executeNode).toHaveBeenCalledTimes(1)
   return (vi.mocked(executeNode).mock.calls[0][1] as ExecutionContext).env

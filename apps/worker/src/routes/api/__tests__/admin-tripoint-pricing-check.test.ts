@@ -9,6 +9,7 @@
  * would be evidence about the probe.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -25,8 +26,7 @@ import { checkTripointPricing } from '../../../lib/tripoint-pricing-check'
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks' } as unknown as Env
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 const rule = { floor: 10000, lowBand: { upTo: 12499, multiplier: 0.0009 }, highBand: { from: 12500, multiplier: 0.0012 } }
 const note = { code: 'floor-not-modelled', message: 'Salesforce books no Tripoint revenue below $10,000 of debt' }

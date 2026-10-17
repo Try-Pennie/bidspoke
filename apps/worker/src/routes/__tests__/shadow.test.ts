@@ -4,6 +4,7 @@
  * shadow test (isTest + shadowMode + __shadow source, no source enforcement).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { Env } from '../../index'
 
 vi.mock('../../engine/index', async () => {
@@ -50,8 +51,7 @@ const testEnv = {
   COMPARE_CODE_LOADER: compareLoader,
 } as unknown as Env
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 function request(workflowId: string, apiKey: string | undefined, body: unknown, extra: { query?: string; mode?: string } = {}) {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }

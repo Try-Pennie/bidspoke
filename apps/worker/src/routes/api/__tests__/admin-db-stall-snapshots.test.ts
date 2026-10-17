@@ -6,6 +6,7 @@
  * list that reads as "no stall was snapshotted" (L11).
  */
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 import { stallSnapshotKey, type StallSnapshotRecord } from '../../../lib/db-stall-snapshot'
 
@@ -18,8 +19,7 @@ import { makeSupabase } from './_supabase-mock'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 const T0 = Date.parse('2026-10-16T18:30:58.000Z')
 

@@ -7,6 +7,7 @@
  * report must page as the probe's and the lookups' do.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import { runVolumeCliffCheck } from '../volume-cliff'
 import { createNobodyToldPager, NOBODY_TOLD_LINE } from '../nobody-told-page'
 import { registerScheduledSlack } from '../scheduled-slack'
@@ -31,7 +32,7 @@ describe('the volume check reports to the owner with the tick pager (#2061)', ()
       delete: async (k: string) => { store.delete(k) },
     }
     const sent: { message: string; reason: string }[] = []
-    const handed: Promise<unknown>[] = []
+    const ctx = recordingContext()
     const pager = createNobodyToldPager({
       token: 'bs-token',
       url: 'https://in.example.betterstack',
@@ -44,10 +45,11 @@ describe('the volume check reports to the owner with the tick pager (#2061)', ()
       }) as typeof fetch,
     })
     const { client } = tableClient({ service_connections: { error: { message: 'connection refused', code: '08006' } } })
-    registerScheduledSlack(client, { kv, secretKeys: TEST_KEY, pager, waitUntil: (p) => handed.push(p), sleep: fakeTimers('never').sleep })
+    registerScheduledSlack(client, { kv, secretKeys: TEST_KEY, pager, waitUntil: ctx.waitUntil, sleep: fakeTimers('never').sleep })
 
     await runVolumeCliffCheck(client, kv as unknown as KVNamespace, 'https://app.example', 'https://self.example', TEST_KEY, undefined, () => T0)
-    await Promise.all(handed)
+    await ctx.settle()
+    await Promise.all(ctx.handed)
 
     expect(sent.map((s) => [s.message, s.reason])).toEqual([[NOBODY_TOLD_LINE, 'no_copy']])
   })

@@ -21,9 +21,9 @@ import type { Env } from '../index'
 import { TICK_CHECKPOINT_MS } from '../lib/tick-timing'
 import { SUPABASE_REQUEST_DEADLINE_MS } from '../lib/supabase'
 import { prewarmKvCaches } from '../lib/cache-prewarm'
+import { recordingContext } from '../test-setup/wait-until'
 
 const env = {} as unknown as Env
-const ctx = () => ({ waitUntil: vi.fn(), passThroughOnException: vi.fn() }) as unknown as ExecutionContext
 
 let warns: string[]
 beforeEach(() => {
@@ -35,23 +35,11 @@ beforeEach(() => {
 })
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
-const fire = (cron: string) => void worker.scheduled?.({ cron, scheduledTime: Date.now(), type: 'scheduled' } as unknown as ScheduledEvent, env, ctx())
-
-/**
- * Fires a tick and keeps every promise the handler hands to waitUntil, and the
- * one it returns, each with a flag saying whether it has settled. A handler is
- * attached at once (L749), so an abandoned job cannot surface as unhandled.
- */
-function fireWatched(cron: string, tickEnv: Env = env) {
-  const handed: { settled: boolean }[] = []
-  const watch = (p: Promise<unknown>) => {
-    const w = { settled: false }
-    handed.push(w)
-    p.then(() => { w.settled = true }, () => { w.settled = true })
-  }
-  const c = { waitUntil: (p: Promise<unknown>) => watch(p), passThroughOnException: vi.fn() } as unknown as ExecutionContext
-  watch(worker.scheduled({ cron, scheduledTime: Date.now(), type: 'scheduled' } as unknown as ScheduledEvent, tickEnv, c))
-  return handed
+/** Fires a tick. Every promise the handler hands to waitUntil, and the one it returns, is kept on the context returned. */
+function fire(cron: string, tickEnv: Env = env) {
+  const c = recordingContext()
+  c.waitUntil(worker.scheduled({ cron, scheduledTime: Date.now(), type: 'scheduled' } as unknown as ScheduledEvent, tickEnv, c))
+  return c
 }
 
 describe('minute tick timing (#2058)', () => {
@@ -73,21 +61,21 @@ describe('minute tick timing (#2058)', () => {
   // The deadline frees the invocation only if nothing else still waits on the
   // hung job: every promise handed to waitUntil, and the one returned, settles.
   it('lets every promise the invocation waits on settle at the deadline while the job still hangs', async () => {
-    const handed = fireWatched('* * * * *')
+    const tick = fire('* * * * *')
     await vi.advanceTimersByTimeAsync(MINUTE_JOB_DEADLINE_MS - 1)
-    expect(handed.some((h) => !h.settled), 'the hung job must still be waited on before its deadline').toBe(true)
+    expect(tick.pending(), 'the hung job must still be waited on before its deadline').toBeGreaterThan(0)
     await vi.advanceTimersByTimeAsync(1)
-    expect(handed.length).toBeGreaterThan(10)
-    expect(handed.filter((h) => !h.settled)).toEqual([])
+    expect(tick.handed.length).toBeGreaterThan(10)
+    expect(tick.pending()).toBe(0)
   })
 
   // The 2026-10-14 shape: a KV call that never answers, inside the sweep.
   it('ends the minute at the deadline when a KV call inside the sweep never answers', async () => {
     vi.mocked(prewarmKvCaches).mockImplementationOnce(async () => ({ workflowsReadError: null, reconfirms: {} }))
     const hungKv = { list: () => new Promise(() => {}), get: () => new Promise(() => {}) }
-    const handed = fireWatched('* * * * *', { WORKFLOW_CACHE: hungKv } as unknown as Env)
+    const tick = fire('* * * * *', { WORKFLOW_CACHE: hungKv } as unknown as Env)
     await vi.advanceTimersByTimeAsync(MINUTE_JOB_DEADLINE_MS)
-    expect(handed.filter((h) => !h.settled)).toEqual([])
+    expect(tick.pending()).toBe(0)
     expect(warns).toContain(`[minute-job] stored-copy-sweep passed its ${MINUTE_JOB_DEADLINE_MS} ms deadline, so the minute stopped waiting for it`)
     expect(warns.find((w) => w.startsWith('[tick-timing]'))).toMatch(/jobs=stored-copy-sweep:\d+ timed out/)
   })
@@ -100,8 +88,13 @@ describe('minute tick timing (#2058)', () => {
   })
 
   it('logs nothing for an hourly tick, which runs long by design', async () => {
-    fire('0 * * * *')
+    const tick = fire('0 * * * *')
     await vi.advanceTimersByTimeAsync(TICK_CHECKPOINT_MS)
+    // Several hourly jobs load their module with a dynamic import, which moves
+    // in real time whatever the faked clock says, so they are still running
+    // here; left running, they logged after the file closed (#2120). Settled,
+    // the assertion also covers the whole tick rather than its first part.
+    await tick.settle()
     expect(warns.filter((w) => w.startsWith('[tick-timing]'))).toEqual([])
   })
 })

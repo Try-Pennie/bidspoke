@@ -9,6 +9,7 @@
  * exists for. Production never sets the hook.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { WorkflowDefinition } from '../../types'
@@ -55,15 +56,15 @@ function makeKV() {
 const supabase = { from: () => ({ select: () => ({ in: () => Promise.resolve({ data: [] }) }) }) } as unknown as SupabaseClient
 
 async function run(observeStep?: (entry: StepLogEntry) => void) {
-  const background: Promise<unknown>[] = []
   const env = { IDEMPOTENCY: makeKV(), WORKFLOW_CACHE: makeKV(), APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
+  const executionCtx = recordingContext()
   await executeWorkflow(
     { workflowId: 'wf-obs', payload: { lead: 1 }, source: 'engine' },
     env,
     { ...moneyRuntime(supabase), ...(observeStep ? { observeStep } : {}) },
-    { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) },
+    executionCtx,
   )
-  await Promise.all(background.splice(0))
+  await executionCtx.settle()
 }
 
 beforeEach(() => {

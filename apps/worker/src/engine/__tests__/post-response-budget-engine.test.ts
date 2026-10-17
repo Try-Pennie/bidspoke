@@ -13,6 +13,7 @@
  * dead letter is stamped with the virtual time it happened at.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { WorkflowDefinition } from '../../types'
@@ -290,7 +291,6 @@ async function run(
   const clock = new VirtualClock()
   const db = makeDb(clock, (table, op) => availability(clock, table, op))
   const idempotency = makeKV(clock, options.slowFirstJournalPut, options.refuseSecondJournalPutOnce, options.kvGetFails, options.kvGetRealDelayMs)
-  const background: Promise<unknown>[] = []
   const env = {
     IDEMPOTENCY: idempotency.kv,
     WORKFLOW_CACHE: makeKV(clock).kv,
@@ -298,7 +298,7 @@ async function run(
     PII_REDACTION_FIELDS: '',
     ...envExtra,
   } as unknown as Env
-  const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
+  const executionCtx = recordingContext()
 
   const result = await executeWorkflow(
     { workflowId: WF_ID, payload: { lead: 1 }, source: 'engine', ...options.input },
@@ -321,7 +321,7 @@ async function run(
     }, { timeout: 10_000, interval: 5 })
   }
   await clock.run()
-  for (let i = 0; i < 6 && background.length; i++) await Promise.all(background.splice(0))
+  await executionCtx.settle()
 
   const deadLetters = (label: string) =>
     idempotency.puts.filter((p) => p.key.startsWith('outcome-deadletter-window:') && p.key.endsWith(`:${label}`))

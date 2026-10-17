@@ -22,6 +22,7 @@
  * archive cannot place.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { utcDayFromUuidV7, uuidv7 } from '@bidspoke/uuidv7'
 import type { Env } from '../../index'
@@ -70,9 +71,8 @@ const supabase = { from: () => ({ select: () => ({ in: () => Promise.resolve({ d
  * row and the archive itself sees.
  */
 async function run(options: Record<string, unknown> = {}): Promise<string> {
-  const background: Promise<unknown>[] = []
   const env = { IDEMPOTENCY: makeKV(), WORKFLOW_CACHE: makeKV(), APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
-  const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
+  const executionCtx = recordingContext()
 
   await executeWorkflow(
     { workflowId: 'wf-869', payload: { lead: 1 }, source: 'engine', ...options },
@@ -80,7 +80,7 @@ async function run(options: Record<string, unknown> = {}): Promise<string> {
     moneyRuntime(supabase),
     executionCtx,
   )
-  await Promise.all(background.splice(0))
+  await executionCtx.settle()
 
   const call = vi.mocked(executeNode).mock.calls[0]
   expect(call, 'the workflow did not execute a node').toBeDefined()

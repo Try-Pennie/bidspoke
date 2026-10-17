@@ -11,6 +11,7 @@
  * test fails (the mutation check: drop the organization filter).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -198,8 +199,7 @@ function install(rows: Row[], opts: FakeOpts = {}, runs: Row[] = []) {
 }
 
 const env = { SUPABASE_JWKS_URL: 'https://fake.jwks' } as unknown as Env
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 async function get(path: string, headers: Record<string, string> = { Authorization: 'Bearer tok' }) {
   const { default: api } = await import('../index')

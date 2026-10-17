@@ -3,6 +3,7 @@
  * Covers: empty org, execution aggregation (summary, by_day, by_workflow), recent failures.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import { makeSupabase as makeSupabaseMock, type TableConfig } from './_supabase-mock'
 import type { Env } from '../../../index'
 
@@ -70,8 +71,7 @@ const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.c
 
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks' } as unknown as Env
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 const today = new Date().toISOString().slice(0, 10)
 

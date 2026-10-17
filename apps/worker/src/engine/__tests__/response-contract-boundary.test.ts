@@ -10,6 +10,7 @@
  * covers every branch that assigns a response, including the engine-error body.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { WorkflowDefinition, NodeDefinition } from '../../types'
@@ -53,18 +54,17 @@ function makeKV() {
 }
 
 function run(workflowId: string) {
-  const background: Promise<unknown>[] = []
   const env = {
     IDEMPOTENCY: makeKV(),
     WORKFLOW_CACHE: makeKV(),
     APP_URL: 'https://app.test',
     PII_REDACTION_FIELDS: '',
   } as unknown as Env
-  const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
+  const executionCtx = recordingContext()
   return {
     result: executeWorkflow({ workflowId, payload: { lead: 1 }, source: 'engine' }, env, moneyRuntime({} as SupabaseClient), executionCtx),
     flush: async () => {
-      for (let i = 0; i < 6 && background.length; i++) await Promise.all(background.splice(0))
+      await executionCtx.settle()
     },
   }
 }

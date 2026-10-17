@@ -9,6 +9,7 @@
  * each sale's salesforce_standing) and the answer to adding a lead id.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 import type { SaleState } from '../../../durable-objects/lead-sale'
 
@@ -47,8 +48,7 @@ const liberty1 = (partnersJson as unknown as Array<{ id: string; slug: string; o
 const testUser = { id: 'user-1', organization_id: liberty1.organization_id, email: 'editor-a@example.com' }
 const validPayload = { sub: 'user-1', email: 'editor-a@example.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {}, LEAD_SALE: {}, DAILY_CAP: {} } as unknown as Env
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 /** The held_click_claims row an entry was listed from. */
 const rowOf = (e: Entry) => ({

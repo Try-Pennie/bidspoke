@@ -7,6 +7,7 @@
  * drill (L206). Both sit behind jwtAuth like every /api route.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -22,8 +23,7 @@ const USER_ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks' } as unknown as Env
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 const HEALTH = { ok: true, probed_at: '2027-09-20T15:30:00.000Z', ledger: { ok: true, ms: 12 }, sale: { ok: true, ms: 9 } }
 const DRILL = {

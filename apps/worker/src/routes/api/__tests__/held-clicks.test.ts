@@ -14,6 +14,7 @@
  * release is audited with the claim's old and new state.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 import type { SaleState } from '../../../durable-objects/lead-sale'
 
@@ -48,8 +49,7 @@ import { makeSupabase, type TableConfig } from './_supabase-mock'
 const testUser = { id: '22222222-2222-4222-8222-222222222222', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: testUser.id, email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {}, LEAD_SALE: {}, DAILY_CAP: {} } as unknown as Env
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 const PARTNER = '3f1c2a9e-5b7d-4c8e-9a01-2b3c4d5e6f70'
 const ROW_ID = '55555555-5555-4555-8555-555555555501'

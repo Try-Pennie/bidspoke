@@ -4,6 +4,7 @@
  * scoped; the Worker is service_role, so the route filters the organization.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -18,8 +19,7 @@ const ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: ORG, email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {} } as unknown as Env
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 const tripoint = {
   id: '11111111-1111-4111-8111-111111111111',

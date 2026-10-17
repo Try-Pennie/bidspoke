@@ -2,6 +2,7 @@
  * Env var routes — CRUD, secret masking on read, CF secret sync.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -46,8 +47,7 @@ async function makeApp() {
   return api
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 function request(app: { request: Function }, method: string, path: string, opts: { body?: unknown } = {}) {
   return app.request(path, {

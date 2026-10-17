@@ -26,6 +26,7 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { recordingContext } from '../test-setup/wait-until'
 import worker from '../index'
 import type { Env } from '../index'
 import { AlertClaimObject } from '../durable-objects/alert-claim'
@@ -178,14 +179,14 @@ function env(): Env {
 function fireMinute(tickEnv: Env, scheduledTime: number = Date.now()) {
   const tick = { startedAt: Date.now(), ended: false }
   tickOf.run(tick, () => {
-    const handed: Promise<unknown>[] = []
-    const ctx = { waitUntil: (p: Promise<unknown>) => { handed.push(p.catch(() => undefined)) }, passThroughOnException: () => undefined } as unknown as ExecutionContext
+    const ctx = recordingContext()
     const run = worker.scheduled({ cron: '* * * * *', scheduledTime, type: 'scheduled' } as unknown as ScheduledEvent, tickEnv, ctx).catch(() => undefined)
     void run.then(async () => {
-      // A promise handed over while others settle is waited for too.
-      for (let seen = -1; seen !== handed.length;) {
-        seen = handed.length
-        await Promise.all(handed)
+      // A promise handed over while others settle is waited for too. Not
+      // ctx.settle(): this waits in the test's faked time, as the clock moves.
+      for (let seen = -1; seen !== ctx.handed.length;) {
+        seen = ctx.handed.length
+        await Promise.allSettled(ctx.handed)
       }
       tick.ended = true
     })

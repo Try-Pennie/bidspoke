@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { Env } from '../../index'
 
 /**
@@ -27,7 +28,7 @@ beforeEach(() => {
 })
 afterEach(() => vi.unstubAllGlobals())
 
-const ctx = () => ({ waitUntil: vi.fn(), passThroughOnException: vi.fn() }) as unknown as ExecutionContext
+const ctx = () => recordingContext()
 
 // Each seeded entry is held as a healthy read just left it, confirmed now (#1847).
 function kv(entries: Record<string, string> = {}) {
