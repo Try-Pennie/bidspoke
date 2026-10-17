@@ -62,7 +62,8 @@ function recordingSupabase(opts: { row?: Record<string, unknown> | null; rpcResu
     },
   )
   const written = (method: string) => (client.calls.service_connections ?? []).filter(([m]) => m === method).map(([, args]) => args[0] as Record<string, unknown>)
-  return { client, rec: { get upserts() { return written('upsert') }, get updates() { return written('update') }, rpcs } }
+  const upsertOptions = () => (client.calls.service_connections ?? []).filter(([m]) => m === 'upsert').map(([, args]) => args[1])
+  return { client, rec: { get upserts() { return written('upsert') }, get upsertOptions() { return upsertOptions() }, get updates() { return written('update') }, rpcs } }
 }
 
 let store: Map<string, string>
@@ -119,9 +120,24 @@ describe('POST /integrations/slack seals the token', () => {
     expect(await decryptSecret(saved.credential_enc as string, KEY)).toBe(TOKEN)
     // The rollback target reads only this, so it must still read the saved row.
     expect(parseSlackConnection(saved.config)?.bot_token).toBe(TOKEN)
-    // cf_secret_key stays NOT NULL until Phase 2.
-    expect(saved.cf_secret_key).toBe('')
+    // #2332: the credential is in credential_enc, so no Cloudflare secret name.
+    expect(saved.cf_secret_key).toBeNull()
     expect((await copyEntry(ORG))?.bot_token).toBe(TOKEN)
+  })
+
+  // #2332 (phase 2 of #1689): the alert row is named 'slack', the name
+  // migration 20261017150000 backfilled onto it and reserves from ops rows, and
+  // the upsert names the new UNIQUE (organization_id, service_type, name). The
+  // old UNIQUE still holds until release 2, so the name must be the backfilled
+  // one or the save would error instead of updating. Proven against Postgres in
+  // supabase/tests/service_connections_expand.test.sql case B.
+  it('names the alert row slack and upserts on (organization_id, service_type, name)', async () => {
+    const { client, rec } = recordingSupabase()
+    vi.mocked(createSupabaseClient).mockReturnValue(client as never)
+    const res = await call('POST', '/integrations/slack', { bot_token: TOKEN, default_channel: '#alerts' })
+    expect(res.status).toBe(200)
+    expect(rec.upserts[0].name).toBe('slack')
+    expect(rec.upsertOptions).toEqual([{ onConflict: 'organization_id,service_type,name' }])
   })
 
   it('writes no route audit row: the table trigger records the change once', async () => {

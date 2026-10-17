@@ -953,6 +953,35 @@ export type Database = {
           },
         ]
       }
+      connection_tombstones: {
+        Row: {
+          connection_id: string
+          generation: number
+          organization_id: string
+          removed_at: string
+        }
+        Insert: {
+          connection_id: string
+          generation: number
+          organization_id: string
+          removed_at?: string
+        }
+        Update: {
+          connection_id?: string
+          generation?: number
+          organization_id?: string
+          removed_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "connection_tombstones_organization_id_fkey"
+            columns: ["organization_id"]
+            isOneToOne: false
+            referencedRelation: "organizations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       cron_guard_fail_opens: {
         Row: {
           cron: string | null
@@ -2372,16 +2401,20 @@ export type Database = {
       service_connections: {
         Row: {
           auth_type: string
-          cf_secret_key: string
+          cf_secret_key: string | null
           config: Json | null
           created_at: string
           credential_enc: string | null
+          credential_generation: number
           id: string
+          name: string
           organization_id: string
+          person_bound: boolean
           schema_cache: Json | null
           schema_synced_at: string | null
           sealed_for: string | null
           service_type: string
+          target: Json | null
           updated_at: string
           updated_by: string | null
           updated_by_email: string | null
@@ -2389,16 +2422,20 @@ export type Database = {
         }
         Insert: {
           auth_type: string
-          cf_secret_key: string
+          cf_secret_key?: string | null
           config?: Json | null
           created_at?: string
           credential_enc?: string | null
+          credential_generation?: number
           id?: string
+          name: string
           organization_id: string
+          person_bound?: boolean
           schema_cache?: Json | null
           schema_synced_at?: string | null
           sealed_for?: string | null
           service_type: string
+          target?: Json | null
           updated_at?: string
           updated_by?: string | null
           updated_by_email?: string | null
@@ -2406,16 +2443,20 @@ export type Database = {
         }
         Update: {
           auth_type?: string
-          cf_secret_key?: string
+          cf_secret_key?: string | null
           config?: Json | null
           created_at?: string
           credential_enc?: string | null
+          credential_generation?: number
           id?: string
+          name?: string
           organization_id?: string
+          person_bound?: boolean
           schema_cache?: Json | null
           schema_synced_at?: string | null
           sealed_for?: string | null
           service_type?: string
+          target?: Json | null
           updated_at?: string
           updated_by?: string | null
           updated_by_email?: string | null
