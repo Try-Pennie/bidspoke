@@ -137,6 +137,12 @@ Refresh them with `npx tsx scripts/export-money-fixture-shapes.ts` from
 `apps/worker`, which needs `SUPABASE_URL` and `SUPABASE_SECRET_KEY` in the
 environment or `.dev.vars`, and the `gh` CLI for the definitions backup.
 
+A refresh changes no verdict by itself, and needs no `expected-changes.json`
+entry. The fixtures, harness and stub rules come from the head on both sides,
+so a definition changed in production (a canvas save, a Main Flow port stage) is
+replayed through the merge base's engine and the head's alike. An entry for it
+would match nothing and fail the gate.
+
 ## The base on a dispatched Deploy
 
 A Deploy that was DISPATCHED rather than pushed (the Dependabot auto-merge starts
@@ -293,6 +299,9 @@ unhandled error still fails the run.
 * Arms no fixture reaches are listed by name in the coverage report rather than
   hidden. Some are unreachable by construction, such as Main Flow's
   `debt_screening` else, behind a screen that already required what it lacks.
-* Workflows with no live runs when the shapes were exported (Main Flow (v2),
+* Workflows that have never had live runs at an export (Main Flow (v2),
   Bidding - LendSwift, Offer Wall by Submission ID, Forms <> Engine <> Data Store)
-  have no fixtures.
+  have no fixtures. A workflow that already has a fixture and is merely quiet at an
+  export keeps it (#2173): its definition and config are exported as usual and its
+  shape is carried over, marked `carried_over` with when it was really sampled.
+  The stale shapes warning counts from the oldest such sample.

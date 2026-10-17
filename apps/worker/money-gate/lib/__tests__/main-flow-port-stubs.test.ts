@@ -5,7 +5,7 @@
  * names it, with a success and a failing answer, so a fixture replayed through
  * the port after a PUT is answered rather than falling to the 599 catch all. The
  * requests are built from the ported definition itself (the transform over the
- * production fixture), not written out here. And the inquiry failure variant
+ * production Main Flow from before the port), not written out here. And the inquiry failure variant
  * must fail the inquiry post both before the port (the Pipedream relay) and after
  * it (the credit-inquiries Apex call).
  */
@@ -18,8 +18,16 @@ import { resolveVariant, type VariantFile } from '../../harness/replay-env'
 import { MAIN_FLOW_WORKFLOW_ID, PORT_STAGES, portMainFlow, type Definition } from '../../../src/lib/main-flow-port/transform'
 import { runCanvasScript } from '../../../src/engine/scripts/__tests__/canvas-script'
 
-const fixtures = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'fixtures')
-const production = (JSON.parse(readFileSync(join(fixtures, 'definitions', `${MAIN_FLOW_WORKFLOW_ID}.json`), 'utf8')) as { definition: Definition }).definition
+const here = dirname(fileURLToPath(import.meta.url))
+const fixtures = join(here, '..', '..', 'fixtures')
+// The definition before any stage, the port tests' own copy of version 169 (#2173):
+// the gate's Main Flow fixture is part ported once a stage is live, and these
+// requests are those of the whole port, nine updates and nine Apex calls. The
+// gate's fixture is held to the transform of this copy by gate-fixture.test.ts.
+const prePortFile = join(here, '..', '..', '..', 'src', 'lib', 'main-flow-port', '__tests__', 'fixtures', 'main-flow-v169.json')
+const prePort = JSON.parse(readFileSync(prePortFile, 'utf8')) as { id: string; definition: Definition }
+if (prePort.id !== MAIN_FLOW_WORKFLOW_ID) throw new Error(`the pre-port Main Flow copy names workflow ${prePort.id}`)
+const production = prePort.definition
 const ported = portMainFlow(structuredClone(production), PORT_STAGES.inquiry)
 const variants = JSON.parse(readFileSync(join(fixtures, 'variants', 'main-flow.json'), 'utf8')) as VariantFile
 
