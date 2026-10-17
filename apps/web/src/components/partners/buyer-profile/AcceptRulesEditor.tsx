@@ -3,9 +3,10 @@
 /**
  * The accept rules editor (#1412): the buyer_select accept signals on the
  * partner record. A sale is accepted only when the answer is 2xx and EVERY
- * rule here matches, so with no rule no answer is ever an accept (L72). The
- * operator is a picker over the shared vocabulary (L611) and the enable
- * refusal renders beside this control (L111).
+ * rule here matches, so with no rule no answer counts as a sale (L72), which
+ * the empty set says in grey; the refusal to enable a profile without one
+ * renders beside this control (L111). The operator is a picker over the shared
+ * vocabulary (L611).
  *
  * Drawn as the settled design draws the outcome rules (#2325, PM-22, frame
  * 19): a set titled by what a match does, the column names Field, Operator and

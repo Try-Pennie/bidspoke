@@ -263,8 +263,8 @@ export function HeldClicksPanel({ partnerName, zone, held, error, outcomes, onMa
         <p>
           <span className="font-medium text-graphite">Marked sent</span>{' '}
           <span className="text-gray-600">
-            {/* Counted unless this page was told the count did not land (#2325, the design's "Counted."). */}
-            {row.counted === false ? '' : 'Counted. '}{partnerName}&apos;s lead id: {claim.partner_lead_id ?? 'none given'}.{standing === 'written' ? ' Completed in Salesforce.' : ''}
+            {/* The design's "Counted." (#2325), said only when this page's Mark sent was told the count landed (L11). */}
+            {row.counted === true ? 'Counted. ' : ''}{partnerName}&apos;s lead id: {claim.partner_lead_id ?? 'none given'}.{standing === 'written' ? ' Completed in Salesforce.' : ''}
           </span>
         </p>
         <Outcome state={outcome} />

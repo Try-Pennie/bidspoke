@@ -2,11 +2,12 @@
 
 /**
  * The response classification rule builder, extracted from PartnerForm (#1412,
- * L613) so it renders once per group wherever a group belongs: the partner
- * form's Response classification section shows transient and permanent, the
- * Buyer profile section shows the decline rules (rejection) beside the accept
- * rules. `sections` says which groups this instance renders; the state is one
- * object owned by the form, so a rule is never held in two places.
+ * L613): the Bid Group tab's Errors section draws the Retry and Never retry
+ * lists (transient and permanent) through it. The decline rules (rejection)
+ * are drawn by the Buyer profile's DeclineRulesEditor in the outcome rules'
+ * rows since #2325, so `sections` is required: each caller names the groups it
+ * draws and none draws the decline group a second time by default. The state
+ * is one object owned by the form, so a rule is never held in two places.
  */
 import { useId, useRef, useState, type ReactNode } from 'react'
 import { Plus } from 'lucide-react'
@@ -138,11 +139,11 @@ export interface SignalSectionExtras {
   after: ReactNode
 }
 
-export function SignalRuleBuilder({ value, onChange, sections = SIGNAL_SECTIONS, extras }: {
+export function SignalRuleBuilder({ value, onChange, sections, extras }: {
   value: SignalRules
   onChange: (v: SignalRules) => void
-  /** Which groups this instance renders. Defaults to all three. */
-  sections?: readonly SignalSection[]
+  /** Which groups this instance renders. */
+  sections: readonly SignalSection[]
   extras?: Partial<Record<SignalCategory, SignalSectionExtras>>
 }) {
   const [removingIds, setRemovingIds] = useState<Set<string>>(new Set())
