@@ -40,6 +40,11 @@ export function handMadeHeadings(source: string): number[] {
 export function ghostButtons(source: string): number[] {
   return source.split('\n').flatMap((t, i) => (/variant="ghost"/.test(t) ? [i + 1] : []))
 }
+/** The body of the partners page rule that draws every text box, select and choice strip, or null. */
+export function controlRule(css: string): string | null {
+  const m = css.match(/\.partner-page :is\(\.input, \.textarea, \.select, \.select-trigger, \.choice-group\) \{([^}]*)\}/)
+  return m ? m[1] : null
+}
 export function removeIcons(source: string): string[] {
   const m = source.match(/import\s*\{([^}]*)\}\s*from\s*'lucide-react'/)
   if (!m) return []
@@ -53,6 +58,8 @@ describe('the scans themselves (positive controls)', () => {
     expect(ghostButtons('<Button variant="ghost" onClick={f}>All</Button>')).toEqual([1])
     expect(removeIcons("import { Plus, Trash2, X } from 'lucide-react'")).toEqual(['Trash2', 'X'])
     expect(removeIcons("import { Plus, Minus } from 'lucide-react'")).toEqual([])
+    expect(controlRule('.partner-page :is(.input, .textarea, .select, .select-trigger, .choice-group) {\n  @apply border-line bg-white;\n}')).toContain('bg-white')
+    expect(controlRule('.partner-page .choice { @apply bg-white border-line; }')).toBeNull()
   })
 })
 
@@ -72,11 +79,7 @@ describe('the partners page (#2317)', () => {
   })
 
   it('makes the page controls white boxes with the beige line', () => {
-    const css = read('app/globals.css')
-    const block = css.slice(css.indexOf('.partner-page'))
-    expect(css).toContain('.partner-page')
-    expect(block).toMatch(/bg-white/)
-    expect(block).toMatch(/border-line/)
+    expect(controlRule(read('app/globals.css'))).toMatch(/@apply[^;]*\bborder-line\b[^;]*\bbg-white\b|@apply[^;]*\bbg-white\b[^;]*\bborder-line\b/)
     expect(read('app/(app)/partners/page.tsx')).toMatch(/className="partner-page /)
   })
 })
