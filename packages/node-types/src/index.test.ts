@@ -78,7 +78,7 @@ describe('NODE_TRAITS', () => {
     expect(withTrait((t) => t.walkGraphOnly)).toEqual(['bid_group', 'buyer_click_check', 'buyer_click_send', 'buyer_select', 'parallel', 'parallel_end'])
   })
 
-  it('bid_group and buyer_select synthesize attempt rows; and which name partners in config', () => {
+  it('bid_group and buyer_select synthesize attempt rows; bid_group, the two click nodes, latency_gate and partner_bid name partners in config', () => {
     // buyer_select names no partner: it sells to every buyer holding an enabled
     // profile priced for its population, which the partner routes resolve at
     // read time rather than from the node's config.

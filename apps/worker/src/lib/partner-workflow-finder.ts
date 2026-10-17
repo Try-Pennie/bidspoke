@@ -98,8 +98,9 @@ export function workflowsUsingPartner(
         if (options.includeClickNodes && (n.type === 'buyer_click_send' || n.type === 'buyer_click_check') && n.config.partner_id === partnerId) return true
         if (options.clickNodesOnly) return false
         if (n.type === 'partner_bid' && n.config.partner_id === partnerId) return true
-        if (options.includeLatencyGates && n.type === 'latency_gate' && n.config.partner_id === partnerId) return true
         if (n.type === 'bid_group' && bidGroupPartnerIds(n.config).includes(partnerId)) return true
+        // A gate reads the partner's confirmation window, never sells (#2251).
+        if (options.includeLatencyGates && n.type === 'latency_gate' && n.config.partner_id === partnerId) return true
         if (options.includeBuyerSelect && n.type === 'buyer_select' && typeof n.config.population === 'string') {
           return pricedPartnersByPopulation.get(n.config.population)?.has(partnerId) ?? false
         }
