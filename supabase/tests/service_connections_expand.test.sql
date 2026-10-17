@@ -6,11 +6,12 @@
 -- ciphertexts below are planted placeholders, not credentials.
 --
 -- WHAT IT PROVES:
---   A. The exact row integrations.ts POST /slack upserts today (no name,
---      cf_secret_key '', ON CONFLICT (organization_id, service_type)) still
---      inserts, gets name = service_type from the trigger, and a second save
---      updates that row (the running code keeps working, L640).
---   B. The release 1 upsert PR (b) will send (name 'slack', cf_secret_key null,
+--   A. The exact row integrations.ts POST /slack upserted BEFORE this release
+--      (no name, cf_secret_key '', ON CONFLICT (organization_id, service_type)),
+--      which keeps running between the migration's Apply and this release's
+--      deploy and stays the rollback target, still inserts, gets name =
+--      service_type from the trigger, and a second save updates that row (L640).
+--   B. The upsert this release's integrations.ts sends (name 'slack', cf_secret_key null,
 --      ON CONFLICT (organization_id, service_type, name)) lands on the alert row
 --      the backfill named and updates it rather than erroring (L168).
 --   C. An ops_key row with no name is refused by NOT NULL, never defaulted.
@@ -56,7 +57,8 @@ DECLARE
   second_id uuid;
   r record;
 BEGIN
-  -- Exactly what routes/api/integrations.ts POST /slack sends on main.
+  -- Exactly what routes/api/integrations.ts POST /slack sent before this
+  -- release (the code running until it deploys, and its rollback target).
   INSERT INTO public.service_connections
     (organization_id, service_type, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
   VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'oauth', '',
@@ -93,7 +95,7 @@ BEGIN
   IF (SELECT name FROM public.service_connections WHERE id = first_id) <> 'slack' THEN
     RAISE EXCEPTION 'the second save changed the name';
   END IF;
-  INSERT INTO sce_cases VALUES ('today''s upsert inserts with name = service_type and a second save updates the same row');
+  INSERT INTO sce_cases VALUES ('the previous release''s upsert inserts with name = service_type and a second save updates the same row');
 END
 $do$;
 
@@ -106,7 +108,7 @@ BEGIN
   SELECT id INTO alert_id FROM public.service_connections
   WHERE organization_id = '11111111-1111-1111-1111-11111112332a' AND service_type = 'slack';
 
-  -- What PR (b) sends: name 'slack' explicitly, cf_secret_key null, and the new
+  -- What this release's integrations.ts sends: name 'slack' explicitly, cf_secret_key null, and the new
   -- conflict target.
   INSERT INTO public.service_connections
     (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)

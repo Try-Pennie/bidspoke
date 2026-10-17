@@ -30,13 +30,14 @@
 --    checked after BEFORE ROW triggers, so an old writer mid deploy can never
 --    insert a NULL that ON CONFLICT cannot match (L168), while an ops row with no
 --    name fails instead of being defaulted (Phase 8 requires an explicit name).
---    The live Slack row therefore gets the name 'slack', which is what PR (b)
---    sends.
+--    The live Slack row therefore gets the name 'slack', which is what this
+--    release's integrations.ts sends.
 -- 2. UNIQUE (organization_id, service_type, name), beside the old
 --    UNIQUE (organization_id, service_type), which stays until release 2.
 -- 3. cf_secret_key: '' normalised to NULL and the column made nullable. The live
 --    Slack row holds '' because the column was NOT NULL and its token is not a
---    Cloudflare secret. A Slack save before PR (b) writes '' again; the later
+--    Cloudflare secret. A Slack save by the code running between this
+--    migration's Apply and this release's deploy writes '' again; the later
 --    CHECK migration re-normalises it before adding its CHECK.
 -- 4. One alert row per organization: a partial unique index on
 --    (organization_id) WHERE service_type = 'slack' AND sealed_for =
