@@ -4,7 +4,6 @@
  *
  *   GET  /partners/:id/buyer-profile          the document, the partner's accept rules, other sellers
  *   PUT  /partners/:id/buyer-profile          validate, save_buyer_profile, invalidate the cache
- *   GET  /partners/:id/buyer-profile/history  the audit rows for this profile
  *   GET  /partners/:id/buyer-usage            the ledger's counts for the current Eastern hour and day,
  *                                             or a click sold buyer's clicks today on the Pacific day
  *
@@ -248,28 +247,6 @@ export async function refuseSwitchAwayFromClick(
     workflows: using,
   }, 409)
 }
-
-// ── History ───────────────────────────────────────────────────────────────────
-
-buyerProfiles.get('/:id/buyer-profile/history', async (c) => {
-  const { orgId } = c.get('user')
-  const id = c.req.param('id')
-  const supabase = createSupabaseClient(c.env)
-
-  const loaded = await loadPartner(c, supabase, id, orgId)
-  if ('response' in loaded) return loaded.response
-
-  const { data, error } = await supabase
-    .from('audit_log')
-    .select('changed_at, changed_by, action, changes')
-    .eq('organization_id', orgId)
-    .eq('entity_type', 'buyer_profile')
-    .eq('entity_id', id)
-    .order('changed_at', { ascending: false })
-    .limit(200)
-  if (error) return dbError(c, error)
-  return c.json({ entries: data ?? [] })
-})
 
 // ── Usage ─────────────────────────────────────────────────────────────────────
 

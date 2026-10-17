@@ -19,7 +19,7 @@ vi.mock('@/lib/api', () => ({
     partners: { usage: () => Promise.resolve({ bid_group: [], partner_bid: [], latency_gate: [] }), get: vi.fn(), versions: vi.fn(), reportLiveMiss: vi.fn() },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
-    buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },
+    buyerProfiles: { get: vi.fn(), usage: vi.fn() },
     buyerSales: { list: vi.fn(), settle: vi.fn() },
   },
 }))
@@ -211,6 +211,25 @@ describe('another person\'s save, live (#2135)', () => {
     // List order is off the page (#2137), so it is never said to be on screen.
     await screen.findByText('Brian Nelms saved this partner. They changed List order (not shown on this page).')
     expect(nameBox().value).toBe('M1 (mine)')
+  })
+
+  it('a join refused for a missing partition is reported once, as its own cause, and the page still goes Live (#2288)', async () => {
+    const clock = fakeClock()
+    let joins = 0
+    const join: JoinFn = async () => {
+      joins += 1
+      return joins <= 2
+        ? { ok: false, reason: 'MissingPartition: Realtime was unable to find the expected messages partition', missingPartition: true }
+        : { ok: true, leave: async () => {} }
+    }
+    renderLive({ join, clock })
+    await waitFor(() => expect(api.partners.reportLiveMiss).toHaveBeenCalledTimes(1))
+    expect(api.partners.reportLiveMiss).toHaveBeenCalledWith(expect.objectContaining({
+      partner_id: ID, cause: 'missing_partition', observed: { partner_version: null, profile_version: null },
+    }))
+    await clock.advance(5_000)
+    expect(await screen.findByText('Live')).toBeTruthy()
+    expect(api.partners.reportLiveMiss).toHaveBeenCalledTimes(1)
   })
 
   it('a change made directly in the database is noted on its section on open, and the note goes once the bound has passed', async () => {

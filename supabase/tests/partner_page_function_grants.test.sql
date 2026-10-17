@@ -60,8 +60,7 @@ BEGIN
     'public.partner_delete_counts(uuid, uuid, boolean)',
     'public.partner_delete_check(uuid, uuid)',
     'public._delete_partner_config(uuid, uuid, uuid, text, jsonb)',
-    'public.delete_partner_config(uuid, uuid, uuid, text, jsonb)',
-    'public.delete_partner_config(uuid, uuid, uuid, text)'
+    'public.delete_partner_config(uuid, uuid, uuid, text, jsonb)'
   ] LOOP
     IF has_function_privilege('anon', fn, 'EXECUTE') THEN bad := array_append(bad, 'anon can execute ' || fn); END IF;
     IF has_function_privilege('authenticated', fn, 'EXECUTE') THEN bad := array_append(bad, 'authenticated can execute ' || fn); END IF;

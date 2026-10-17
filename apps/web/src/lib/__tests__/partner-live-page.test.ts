@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest'
 import type { PartnerPageNotice, PartnerPageVersions } from '@bidspoke/partner-page-live'
 import { BIDDING_PICKUP } from '../bidding-pickup'
 import {
-  classifyNotice, directChangeNotes, liveConflictSentence, liveMissReport, liveTakenSentence, probeFindsGap, savedByName, tabClientId,
+  classifyNotice, directChangeNotes, liveConflictSentence, liveMissReport, liveTakenSentence, partitionRefusalReport, probeFindsGap, savedByName, tabClientId,
   updatedByNotes, askedOnly,
 } from '../partner-live-page'
 import type { MergeResult } from '../partner-page-merge'
@@ -94,6 +94,17 @@ describe('the versions probe (#2135)', () => {
     expect(r.since_last_notice_ms).toBeNull()
     // A page open longer than a day reports the longest gap the route accepts, not a value it refuses.
     expect(liveMissReport(direct, { partnerVersion: 7, profileVersion: 3 }, 0, 3 * 86_400_000).since_last_notice_ms).toBe(86_400_000)
+  })
+})
+
+describe('partitionRefusalReport (#2288)', () => {
+  it('reports a join refused for a missing partition, with what the page last heard and nothing observed', () => {
+    expect(partitionRefusalReport(PARTNER, { partnerVersion: 7, profileVersion: 3 }, 1_000, 61_000)).toEqual({
+      partner_id: PARTNER, cause: 'missing_partition',
+      noticed: { partner_version: 7, profile_version: 3 }, observed: { partner_version: null, profile_version: null },
+      since_last_notice_ms: 60_000,
+    })
+    expect(partitionRefusalReport(PARTNER, { partnerVersion: 7, profileVersion: null }, null, 61_000).since_last_notice_ms).toBeNull()
   })
 })
 

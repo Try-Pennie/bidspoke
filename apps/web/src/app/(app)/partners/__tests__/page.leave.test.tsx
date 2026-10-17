@@ -32,7 +32,7 @@ vi.mock('@/lib/api', () => ({
     partners: { list: vi.fn(), savePage: vi.fn(), create: vi.fn(), delete: vi.fn(), usage: vi.fn(), versions: vi.fn() },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
-    buyerProfiles: { get: vi.fn(), history: vi.fn() },
+    buyerProfiles: { get: vi.fn() },
   },
 }))
 

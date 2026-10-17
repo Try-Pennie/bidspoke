@@ -470,7 +470,8 @@ BEGIN
   INSERT INTO public.partner_uuid_map (org_id, partner_slug, uuid) VALUES
     ('11111111-1111-1111-1111-000021350001', 'notice-buyer-2135-4', 'notice-sub-1'), ('11111111-1111-1111-1111-000021350001', 'notice-buyer-2135-4', 'notice-sub-2');
   PERFORM pg_temp.clear_notices();
-  PERFORM public.delete_partner_config('11111111-1111-1111-1111-000021350001', '33333333-3333-3333-3333-000021350004', '22222222-2222-2222-2222-00002135000a', 'erin@example.test');
+  -- The shared delete body (#2254): this case is about the notice a delete sends.
+  PERFORM public._delete_partner_config('11111111-1111-1111-1111-000021350001', '33333333-3333-3333-3333-000021350004', '22222222-2222-2222-2222-00002135000a', 'erin@example.test', NULL);
   v := pg_temp.one_notice('11111111-1111-1111-1111-000021350001', 'case 8');
   IF EXISTS (SELECT 1 FROM public.partner_uuid_map WHERE partner_slug = 'notice-buyer-2135-4') THEN RAISE EXCEPTION 'case 8: the sub-account IDs survived'; END IF;
   IF v ->> 'kind' IS DISTINCT FROM 'deleted' OR (v ->> 'direct')::boolean IS DISTINCT FROM false OR v -> 'partner_version' IS DISTINCT FROM 'null'::jsonb THEN
@@ -756,11 +757,29 @@ BEGIN
 END
 $do$;
 
+-- ── 18. Every cause a page reports is one the table accepts (#2288) ─────────
+DO $do$
+DECLARE c text; refused boolean := false;
+BEGIN
+  FOREACH c IN ARRAY ARRAY['delivery', 'direct_sql', 'missing_partition'] LOOP
+    INSERT INTO public.partner_page_live_misses (organization_id, partner_id, cause)
+    VALUES ('11111111-1111-1111-1111-000021350001', '33333333-3333-3333-3333-000021350001', c);
+  END LOOP;
+  BEGIN
+    INSERT INTO public.partner_page_live_misses (organization_id, partner_id, cause)
+    VALUES ('11111111-1111-1111-1111-000021350001', '33333333-3333-3333-3333-000021350001', 'guessed');
+  EXCEPTION WHEN check_violation THEN refused := true;
+  END;
+  IF NOT refused THEN RAISE EXCEPTION 'case 18: a cause outside the list was stored'; END IF;
+  INSERT INTO suite_cases(name) VALUES ('every reported cause is accepted, and only those');
+END
+$do$;
+
 DO $do$
 DECLARE n integer;
 BEGIN
   SELECT count(*) INTO n FROM suite_cases;
-  IF n IS DISTINCT FROM 19 THEN RAISE EXCEPTION 'partner_page_notice.test.sql: expected 19 cases, % ran', n; END IF;
+  IF n IS DISTINCT FROM 20 THEN RAISE EXCEPTION 'partner_page_notice.test.sql: expected 20 cases, % ran', n; END IF;
   RAISE NOTICE 'partner_page_notice.test.sql: % cases passed', n;
 END
 $do$;
