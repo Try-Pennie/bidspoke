@@ -161,7 +161,7 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
   constants: inMemory({ lane: 'money', shadowRun: SENDS_NOTHING, dispatchOrDb: true, executorFile: 'constants' }),
   salesforce: inMemory({ lane: 'money', shadowRun: STUBBED, network: true, executorFile: 'salesforce' }),
   data_store: inMemory({ lane: 'money', shadowRun: STUBBED, dispatchOrDb: true, executorFile: 'data-store' }),
-  latency_gate: inMemory({ lane: 'money', shadowRun: STUBBED, dispatchOrDb: true, executorFile: 'latency-gate' }),
+  latency_gate: inMemory({ lane: 'money', shadowRun: STUBBED, dispatchOrDb: true, referencesPartners: true, executorFile: 'latency-gate' }),
   achieve_offers: inMemory({
     lane: 'money',
     shadowRun: STUBBED,

@@ -91,7 +91,8 @@ buyerProfiles.get('/:id/buyer-profile', async (c) => {
   // are left out; the caps panel names these because their wins are not counted (L582).
   // The click nodes are left out too (#1543): a click buyer's clicks through
   // buyer_click_send are exactly what its cap counts, and buyer_click_check only
-  // offers, so neither is a seller whose wins the cap leaves uncounted.
+  // offers, so neither is a seller whose wins the cap leaves uncounted. A
+  // latency_gate is left out as well (#2251): it times a confirmation and sells nothing.
   let workflows
   try {
     workflows = await readOrgWorkflows(supabase, orgId)
@@ -101,7 +102,7 @@ buyerProfiles.get('/:id/buyer-profile', async (c) => {
   const finder = workflowsUsingPartner(
     workflows,
     new Map(),
-    { includeBuyerSelect: false, includeClickNodes: false, liveOnly: true }
+    { includeBuyerSelect: false, includeClickNodes: false, includeLatencyGates: false, liveOnly: true }
   )
 
   return c.json({
@@ -237,7 +238,7 @@ export async function refuseSwitchAwayFromClick(
   const using = workflowsUsingPartner(
     workflows,
     new Map(),
-    { includeBuyerSelect: false, includeClickNodes: true, clickNodesOnly: true, liveOnly: true }
+    { includeBuyerSelect: false, includeClickNodes: true, includeLatencyGates: false, clickNodesOnly: true, liveOnly: true }
   )(partnerId)
   if (using.length === 0) return null
   const names = using.map((w) => w.name).join(', ')
