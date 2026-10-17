@@ -153,7 +153,7 @@ describe('another person\'s save, live (#2135)', () => {
     await h.send(notice({ changed_columns: ['name', 'is_active'] }))
     await screen.findByText('Brian Nelms changed 1 field you are editing. You choose when you save.')
     expect(nameBox().value).toBe('M1 (mine)')
-    expect(screen.getByText('Updated by Brian Nelms: Status.')).toBeTruthy()
+    expect(screen.getByText('Updated by Brian Nelms: Active.')).toBeTruthy()
 
     save()
     expect(await screen.findByRole('dialog')).toBeTruthy()

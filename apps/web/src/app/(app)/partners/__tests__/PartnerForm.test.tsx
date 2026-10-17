@@ -99,13 +99,14 @@ describe('PartnerForm — sub-account UUID removal surfaces errors (#514)', () =
 describe('PartnerForm: a both partner exposes buyer and source config (#306)', () => {
   const bothPartner: Partner = { ...partner, partner_type: 'both' }
 
-  it('offers all three partner types on the type toggle, on the Partner tab', async () => {
+  it('a partner that does both has both Does boxes ticked, either one free to untick, on the Partner tab', async () => {
     render(<PartnerForm partner={bothPartner} onSave={vi.fn()} onCancel={vi.fn()} />)
     await userEvent.click(screen.getByRole('tab', { name: 'Partner' }))
 
-    expect(screen.getByRole('radio', { name: 'Source' })).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'Buyer' })).toBeInTheDocument()
-    expect(screen.getByRole('radio', { name: 'Both' })).toBeInTheDocument()
+    for (const name of ['Sends us leads', 'Buys leads']) {
+      expect(screen.getByRole('checkbox', { name })).toBeChecked()
+      expect(screen.getByRole('checkbox', { name })).toBeEnabled()
+    }
   })
 
   // #2137: a buyer's bidding settings are on the Bid Group tab, which shows
@@ -153,7 +154,7 @@ describe('PartnerForm: a both partner exposes buyer and source config (#306)', (
     render(<PartnerForm partner={{ ...partner, partner_type: 'buyer' }} onSave={vi.fn()} onCancel={vi.fn()} />)
     await userEvent.click(await screen.findByRole('tab', { name: 'Partner' }))
 
-    fireEvent.click(screen.getByRole('radio', { name: 'Both' }))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Sends us leads' }))
 
     await waitFor(() => expect(screen.getByText('Sell-off offer')).toBeInTheDocument())
     expect(screen.getByRole('tab', { name: 'Partner' })).toHaveAttribute('aria-selected', 'true')

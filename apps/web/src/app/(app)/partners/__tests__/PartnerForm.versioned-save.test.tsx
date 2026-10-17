@@ -156,9 +156,10 @@ describe('a versioned save of only what changed (#2132)', () => {
     renderForm(onSave)
     rename()
     save()
-    expect(await screen.findByText('Not saved yet. Brian Nelms also saved this partner; their changes to Status were kept. Press Save changes to save yours.')).toBeInTheDocument()
+    expect(await screen.findByText('Not saved yet. Brian Nelms also saved this partner; their changes to Active were kept. Press Save changes to save yours.')).toBeInTheDocument()
     expect(screen.queryByRole('dialog')).toBeNull()
-    expect(screen.getByText('Inactive')).toBeInTheDocument()
+    // Active reads On or Off (#2323).
+    expect(screen.getByRole('switch', { name: 'Active', hidden: true })).toHaveAttribute('aria-checked', 'false')
     expect(onSave).toHaveBeenCalledTimes(1)
     save()
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
