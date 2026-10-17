@@ -37,6 +37,12 @@
   - `packages/uuidv7`: UUIDv7 execution ids, minted identically by the Worker for
     live runs and by the browser for canvas test runs, plus the UTC day the
     execution archive derives from them.
+  - `packages/connection-seal` (#2333): `seal` and `open` for ops connection
+    logins. Bidding seals to an ops PUBLIC key (RSA-OAEP-256 wrapping a fresh
+    AES-256-GCM key), bound by the canonical JSON of `{organization_id,
+    connection_id, service, generation, kid}`; only ops, holding the private
+    key, opens. Public keys are the code constant `src/keys.ts` (empty until the
+    ops key is generated); a test fails on any private key material in the package.
   - `packages/script-hygiene`: trailing whitespace stripping for code node scripts
     (#1117), applied by the canvas serialiser and by every worker route that writes
     a definition, so a pasted script cannot carry column padding into storage. It
