@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest'
 import {
   NOTICE_KINDS,
   PARTNER_PAGE_NOTICE_EVENT,
+  isIdleShutdownRefusal,
   parseLiveMissReport,
   parsePartnerPageNotice,
   partnerPageTopic,
@@ -128,3 +129,23 @@ function readMigration(): string {
   if (!file) throw new Error('the #2135 migration is not in supabase/migrations')
   return readFileSync(path.join(dir, file), 'utf8')
 }
+
+// #2263: Realtime refuses a join that arrives while it closes this project's
+// idle connection, and words it as a pool shortage. Measured on production
+// 2026-10-16 04:45:14 UTC.
+describe('isIdleShutdownRefusal', () => {
+  it.each([
+    'IncreaseConnectionPool: Please increase your connection pool size',
+    'ErrorExecutingQuery: {:shutdown, {DBConnection.Holder, :checkout, [realtime_authorize]}}',
+  ])('reads %s as the idle shutdown', (reason) => {
+    expect(isIdleShutdownRefusal(reason)).toBe(true)
+  })
+
+  it.each([
+    'MissingPartition: Realtime was unable to find the expected messages partition',
+    'Unauthorized: You do not have permissions to read from this Channel topic',
+    'Realtime gave no answer to the join within 10 seconds',
+  ])('does not read %s as it', (reason) => {
+    expect(isIdleShutdownRefusal(reason)).toBe(false)
+  })
+})

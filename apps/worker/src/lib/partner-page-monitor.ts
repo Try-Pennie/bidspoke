@@ -14,10 +14,10 @@
  * What pages (the only thing that pages at launch, L36):
  *  - `channel`: the monitor's own notice did not arrive within
  *    RECEIPT_DEADLINE_MS of its first ping (re-sent every PING_RETRY_MS, since
- *    Realtime starting up can lose the first, ADR 0012), or the join was
- *    refused. That is a broken channel for
- *    every organization, not a threshold judgement, so it pages on the run that
- *    sees it.
+ *    Realtime starting up can lose the first, ADR 0012) in each of the
+ *    MEASURE_ROUNDS rounds, or the join was refused on every attempt it
+ *    retries. That is a broken channel for every organization, not a threshold
+ *    judgement, so it pages on the run that sees it.
  *  - `monitor`: the check could not run (no secret, no monitor organization,
  *    sign in or the ping failing) for UNMEASURED_ALERT_AFTER_MS on the clock, so
  *    a dead check is never silence (L557, L98). It never counts as a working
@@ -31,8 +31,14 @@
  * `partition_missing_at_send`, never as a failure. The live misses pages post
  * are in partner_page_live_misses. No miss threshold ships: the issue that sets
  * one from a measured week is filed with #2135 (L65).
+ *
+ * Realtime shuts this project's connection down ten minutes after nobody stays
+ * connected, so with no page open a run lands on the shutdown now and then
+ * (#2263). A join refused by it is retried like a missing partition, and a
+ * round whose notice never arrives is tried once more on a fresh connection
+ * before the run counts as a miss; `rounds` in job_runs counts them.
  */
-import { parsePartnerPageNotice, partnerPageTopic } from '@bidspoke/partner-page-live'
+import { isIdleShutdownRefusal, parsePartnerPageNotice, partnerPageTopic } from '@bidspoke/partner-page-live'
 import type { AlertClaims } from './alert-claim'
 import { ALERT_CLAIM_TTL_SECONDS } from './volume-cliff'
 import { backoffCooldownKey, clearCondition, type BackoffKv } from './alert-backoff'
@@ -64,8 +70,15 @@ export const RECEIPT_DEADLINE_MS = 10_000
  * (2026-10-16 01:45 UTC, ADR 0012); the next ping is not.
  */
 export const PING_RETRY_MS = 2_500
-/** Joins tried when Realtime refuses one for a missing partition. */
+/** Joins tried when Realtime refuses one for a missing partition or during an idle shutdown. */
 export const JOIN_ATTEMPTS = 3
+/**
+ * Rounds a run tries, each a fresh join with its own save id, before a notice
+ * that never arrives counts as a miss. A run that joined just before Realtime
+ * shut the idle tenant down streams nothing (2026-10-16 20:35:35 UTC); the next
+ * connection wakes it again.
+ */
+export const MEASURE_ROUNDS = 2
 /** The wait between those joins: the live run saw the partition 0 ms after the first refusal. */
 export const JOIN_RETRY_MS = 3_000
 /** A check that cannot run for this long, on the clock, pages. */
@@ -80,9 +93,9 @@ export type IdentityAnswer =
 export type JoinAnswer = { ok: true; leave: () => Promise<void> } | { ok: false; reason: string; missingPartition: boolean }
 
 export type Outcome =
-  | { kind: 'received'; latencyMs: number; partitionToday: boolean; partitionTomorrow: boolean; joinAttempts: number; pings: number }
-  | { kind: 'not_received'; partitionToday: boolean; partitionTomorrow: boolean; joinAttempts: number; pings: number }
-  | { kind: 'join_refused'; reason: string; joinAttempts: number }
+  | { kind: 'received'; latencyMs: number; partitionToday: boolean; partitionTomorrow: boolean; joinAttempts: number; pings: number; rounds: number }
+  | { kind: 'not_received'; partitionToday: boolean; partitionTomorrow: boolean; joinAttempts: number; pings: number; rounds: number }
+  | { kind: 'join_refused'; reason: string; joinAttempts: number; rounds: number }
   | { kind: 'partition_missing_at_send'; partitionTomorrow: boolean; joinAttempts: number }
   | { kind: 'unmeasured'; reason: string }
 
@@ -99,7 +112,11 @@ export interface MeasureDeps {
   log: (line: string) => void
 }
 
-/** One end to end measurement. Never throws for a remote failure: each is an outcome. */
+/**
+ * One end to end measurement: one sign in, then up to MEASURE_ROUNDS rounds.
+ * Never throws for a remote failure: each is an outcome. The figures are the
+ * last round's, and `rounds` says how many ran.
+ */
 export async function measurePartnerPageDelivery(deps: MeasureDeps): Promise<Outcome> {
   if (!deps.password) return { kind: 'unmeasured', reason: 'PARTNER_PAGE_MONITOR_PASSWORD is not set on the worker' }
   const identity = await deps.findIdentity()
@@ -108,6 +125,29 @@ export async function measurePartnerPageDelivery(deps: MeasureDeps): Promise<Out
   const session = await deps.signIn(identity.email, deps.password)
   if (!session.ok) return { kind: 'unmeasured', reason: `the monitor user could not sign in: ${session.reason}` }
 
+  try {
+    let missed: Extract<Outcome, { kind: 'not_received' }> | null = null
+    for (let round = 1; ; round++) {
+      const outcome = await measureRound(deps, session.jwt, identity.organizationId, round)
+      if (outcome.kind === 'not_received' && round < MEASURE_ROUNDS) {
+        deps.log(`[partner-page-monitor] round ${round} received no notice, trying again on a fresh connection`)
+        missed = outcome
+        continue
+      }
+      // A second round that cannot measure does not undo the first round's miss.
+      if (missed && (outcome.kind === 'unmeasured' || outcome.kind === 'partition_missing_at_send')) {
+        deps.log(`[partner-page-monitor] round ${round} could not run: ${outcome.kind === 'unmeasured' ? outcome.reason : 'today\'s partition was missing at the send'}`)
+        return { ...missed, rounds: round }
+      }
+      return outcome
+    }
+  } finally {
+    await session.signOut().catch((e: unknown) => deps.log(`[partner-page-monitor] signing out failed: ${formatErr(e)}`))
+  }
+}
+
+/** One round: a fresh join, a ping with its own save id, and the wait for its notice. */
+async function measureRound(deps: MeasureDeps, jwt: string, organizationId: string, round: number): Promise<Outcome> {
   const saveId = deps.newSaveId()
   let receivedAt: number | null = null
   let resolveReceipt: () => void = () => {}
@@ -125,24 +165,26 @@ export async function measurePartnerPageDelivery(deps: MeasureDeps): Promise<Out
     let attempts = 0
     for (;;) {
       attempts += 1
-      const joined = await deps.join(session.jwt, partnerPageTopic(identity.organizationId), onPayload)
+      const joined = await deps.join(jwt, partnerPageTopic(organizationId), onPayload)
       if (joined.ok) {
         leave = joined.leave
         break
       }
-      // The day's partition can be made by the first refused join (ADR 0012), so a
-      // refusal for it is tried again. Every attempt refused means no page can
+      // The day's partition can be made by the first refused join (ADR 0012), and
+      // a join refused during an idle shutdown wakes Realtime for the next one
+      // (#2263), so both are tried again. Every attempt refused means no page can
       // join either: the channel is broken.
-      if (joined.missingPartition && attempts < JOIN_ATTEMPTS) {
-        deps.log(`[partner-page-monitor] join refused for a missing partition, attempt ${attempts} of ${JOIN_ATTEMPTS}`)
+      const why = joined.missingPartition ? 'for a missing partition' : isIdleShutdownRefusal(joined.reason) ? 'during an idle shutdown' : null
+      if (why && attempts < JOIN_ATTEMPTS) {
+        deps.log(`[partner-page-monitor] join refused ${why}, attempt ${attempts} of ${JOIN_ATTEMPTS}`)
         await deps.sleep(JOIN_RETRY_MS)
         continue
       }
-      return { kind: 'join_refused', reason: joined.reason, joinAttempts: attempts }
+      return { kind: 'join_refused', reason: joined.reason, joinAttempts: attempts, rounds: round }
     }
 
     const sentAt = deps.now()
-    const ping = await deps.ping(identity.organizationId, saveId)
+    const ping = await deps.ping(organizationId, saveId)
     if (!ping.ok) return { kind: 'unmeasured', reason: `the ping could not be sent: ${ping.reason}` }
     if (!ping.partitionToday) {
       // realtime.send stores nothing into a day with no partition and raises only a
@@ -162,19 +204,18 @@ export async function measurePartnerPageDelivery(deps: MeasureDeps): Promise<Out
       if (remaining <= 0) break
       await Promise.race([receipt, deps.sleep(Math.min(PING_RETRY_MS, remaining))])
       if (receivedAt !== null || deps.now() >= deadline) break
-      const again = await deps.ping(identity.organizationId, saveId)
+      const again = await deps.ping(organizationId, saveId)
       if (again.ok) pings += 1
       else deps.log(`[partner-page-monitor] re-ping could not be sent: ${again.reason}`)
     }
     if (receivedAt !== null) {
-      return { kind: 'received', latencyMs: receivedAt - sentAt, partitionToday: true, partitionTomorrow: ping.partitionTomorrow, joinAttempts: attempts, pings }
+      return { kind: 'received', latencyMs: receivedAt - sentAt, partitionToday: true, partitionTomorrow: ping.partitionTomorrow, joinAttempts: attempts, pings, rounds: round }
     }
-    return { kind: 'not_received', partitionToday: true, partitionTomorrow: ping.partitionTomorrow, joinAttempts: attempts, pings }
+    return { kind: 'not_received', partitionToday: true, partitionTomorrow: ping.partitionTomorrow, joinAttempts: attempts, pings, rounds: round }
   } finally {
     // Closed whatever happened, and a failure to close is logged, never thrown
     // over the outcome.
     if (leave) await leave().catch((e: unknown) => deps.log(`[partner-page-monitor] leaving the channel failed: ${formatErr(e)}`))
-    await session.signOut().catch((e: unknown) => deps.log(`[partner-page-monitor] signing out failed: ${formatErr(e)}`))
   }
 }
 
@@ -183,6 +224,38 @@ export async function measurePartnerPageDelivery(deps: MeasureDeps): Promise<Out
 interface MonitorState {
   /** ISO time the check began failing to run; present only while it is. */
   unmeasuredSince?: string
+  /**
+   * The runs that measured the channel since its first miss, and how many of
+   * them missed, so the alert says how often rather than "since" (#2263).
+   * Present from a miss until the channel's all-clear, or until
+   * CHANNEL_WINDOW_LAPSE_MS after its last miss. It is kept apart from the
+   * alert's own records, so a muted or undelivered alert does not reset it.
+   */
+  channelWindow?: ChannelWindow
+}
+
+interface ChannelWindow {
+  since: string
+  lastMissAt: string
+  runs: number
+  misses: number
+}
+
+/** A window with no miss for this long has lapsed, the same span a standing record outlives its last run. */
+const CHANNEL_WINDOW_LAPSE_MS = CONDITION_TTL_SECONDS * 1000
+
+const count = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0
+
+/** A stored state, with any field that does not read as its type dropped rather than trusted. */
+function readState(raw: string): MonitorState {
+  const parsed = JSON.parse(raw) as Record<string, unknown>
+  const state: MonitorState = {}
+  if (typeof parsed.unmeasuredSince === 'string' && Number.isFinite(Date.parse(parsed.unmeasuredSince))) state.unmeasuredSince = parsed.unmeasuredSince
+  const w = parsed.channelWindow as Record<string, unknown> | undefined
+  if (w && typeof w.since === 'string' && Number.isFinite(Date.parse(w.since)) && typeof w.lastMissAt === 'string' && Number.isFinite(Date.parse(w.lastMissAt)) && count(w.runs) && count(w.misses)) {
+    state.channelWindow = { since: w.since, lastMissAt: w.lastMissAt, runs: w.runs, misses: w.misses }
+  }
+  return state
 }
 
 export interface MonitorDeps {
@@ -215,11 +288,11 @@ const iso = (ms: number) => new Date(ms).toISOString()
 function summaryOf(o: Outcome): Record<string, unknown> {
   switch (o.kind) {
     case 'received':
-      return { latency_ms: o.latencyMs, partition_today: o.partitionToday, partition_tomorrow: o.partitionTomorrow, join_attempts: o.joinAttempts, pings: o.pings }
+      return { latency_ms: o.latencyMs, partition_today: o.partitionToday, partition_tomorrow: o.partitionTomorrow, join_attempts: o.joinAttempts, pings: o.pings, rounds: o.rounds }
     case 'not_received':
-      return { partition_today: o.partitionToday, partition_tomorrow: o.partitionTomorrow, join_attempts: o.joinAttempts, pings: o.pings, deadline_ms: RECEIPT_DEADLINE_MS }
+      return { partition_today: o.partitionToday, partition_tomorrow: o.partitionTomorrow, join_attempts: o.joinAttempts, pings: o.pings, deadline_ms: RECEIPT_DEADLINE_MS, rounds: o.rounds }
     case 'join_refused':
-      return { reason: o.reason, join_attempts: o.joinAttempts }
+      return { reason: o.reason, join_attempts: o.joinAttempts, rounds: o.rounds }
     case 'partition_missing_at_send':
       return { partition_today: false, partition_tomorrow: o.partitionTomorrow, join_attempts: o.joinAttempts }
     case 'unmeasured':
@@ -251,14 +324,17 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
 
   const nowMs = deps.now()
   let state: MonitorState = {}
+  let storedState: string | null = null
   try {
-    const raw = await deps.kv.get(PARTNER_PAGE_MONITOR_STATE_KEY)
-    if (raw) {
-      const parsed = JSON.parse(raw) as MonitorState
-      if (parsed.unmeasuredSince === undefined || Number.isFinite(Date.parse(parsed.unmeasuredSince))) state = parsed
-    }
+    storedState = await deps.kv.get(PARTNER_PAGE_MONITOR_STATE_KEY)
+    if (storedState) state = readState(storedState)
   } catch (e) {
     summary.errors.push(`state unreadable: ${formatErr(e)}`)
+  }
+  // A window whose last miss has lapsed is not carried into this run, on any branch.
+  if (state.channelWindow && nowMs - Date.parse(state.channelWindow.lastMissAt) > CHANNEL_WINDOW_LAPSE_MS) {
+    const { channelWindow: _lapsed, ...rest } = state
+    state = rest
   }
 
   let resolved: SlackTarget[] | null = null
@@ -284,11 +360,12 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
     if (posted || (await deps.kv.get(recoveryKey(RECOVERY_PREFIX, id))) !== null) await keepAlerted(deps.kv, RECOVERY_PREFIX, id, since, incident(id), nowMs)
     if (posted) await recordPaged(deps.kv, RECOVERY_PREFIX, id, incident(id), nowMs)
   }
-  const allClear = async (id: string, key: string, subject: string, signal: string, recoveredPhrase: string) => {
+  /** True once this run delivered the all-clear and settled the incident. */
+  const allClear = async (id: string, key: string, subject: string, signal: string, recoveredPhrase: string): Promise<boolean> => {
     const due = await recoveryDue(deps.kv, RECOVERY_PREFIX, id, { now: nowMs })
-    if (!due) return
+    if (!due) return false
     const claimKey = `${RECOVERY_PREFIX}-recovery-${id}`
-    if (!(await claim(claimKey))) return
+    if (!(await claim(claimKey))) return false
     const delivered = await deliverAll(await targets(), (s) => deps.senders.recovery(s, s.default_channel, {
       signal,
       recoveredPhrase,
@@ -297,11 +374,12 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
     if (!delivered) {
       await release(claimKey)
       summary.errors.push(`the ${signal} all-clear was not delivered`)
-      return
+      return false
     }
     await settleRecovery(deps.kv, RECOVERY_PREFIX, id, backoffCooldownKey(key), { ...incident(id), reason: 'all_clear' }, nowMs)
     await clearCondition(deps.kv, key)
     summary.allClears.push(id)
+    return true
   }
   const saveState = async (next: MonitorState) => {
     try {
@@ -318,7 +396,7 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
 
   if (outcome.kind === 'unmeasured') {
     const since = state.unmeasuredSince ?? iso(nowMs)
-    await saveState({ unmeasuredSince: since })
+    await saveState({ ...state, unmeasuredSince: since })
     // Unmeasured is not clear: both incidents' running ends move, so a run of
     // failed checks never counts toward either all-clear.
     await markSpikeSeen(deps.kv, RECOVERY_PREFIX, MONITOR_ID, nowMs)
@@ -336,29 +414,42 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
     return summary
   }
 
-  // The check ran: it stands down its own incident.
-  if (state.unmeasuredSince !== undefined) await saveState({})
+  // The check ran: it stands down its own incident, and the run counts in the
+  // channel's window.
+  const missed = outcome.kind === 'not_received' || outcome.kind === 'join_refused'
+  let window = state.channelWindow
+  if (missed) {
+    window = { since: window?.since ?? iso(nowMs), lastMissAt: iso(nowMs), runs: (window?.runs ?? 0) + 1, misses: (window?.misses ?? 0) + 1 }
+  } else if (window) {
+    window = { ...window, runs: window.runs + 1 }
+  }
+  const next: MonitorState = { channelWindow: window }
+  // Compared with what is stored, so a window that lapsed above is written away too.
+  if (JSON.stringify(next) !== (storedState ?? '{}')) await saveState(next)
   await allClear(MONITOR_ID, PARTNER_PAGE_MONITOR_UNMEASURED_KEY, 'The partners page delivery check', 'partners page delivery check',
     `has run for ${RECOVERY_REARM_MINUTES} minutes`)
 
   if (outcome.kind === 'not_received' || outcome.kind === 'join_refused') {
+    const checks = { runs: window?.runs ?? 1, misses: window?.misses ?? 1 }
     const reason = outcome.kind === 'join_refused'
       ? `the monitor could not join the channel: ${outcome.reason}`
-      : `no notice arrived within ${RECEIPT_DEADLINE_MS / 1000} seconds of the first ping, after ${outcome.pings} ${outcome.pings === 1 ? 'ping' : 'pings'}`
+      : `no notice arrived within ${RECEIPT_DEADLINE_MS / 1000} seconds of the first ping, after ${outcome.pings} ${outcome.pings === 1 ? 'ping' : 'pings'}` +
+        (outcome.rounds > 1 ? ', on a fresh connection as on the first' : '')
     await markSpikeSeen(deps.kv, RECOVERY_PREFIX, CHANNEL_ID, nowMs)
     const since = (await deps.kv.get(recoveryKey(RECOVERY_PREFIX, CHANNEL_ID))) ?? iso(nowMs)
     const posted = await postStanding({
       kv: deps.kv, key: PARTNER_PAGE_LIVE_KEY, claim, release, targets, nowMs,
       alert: { problem: `channel-${outcome.kind}`, details: [reason] },
       conditionTtlSeconds: CONDITION_TTL_SECONDS, logPrefix: '[partner-page-monitor]', log: deps.log,
-      send: (s, repeat) => deps.senders.live(s, s.default_channel, { problem: 'channel', reason, since, repeat, at: nowMs }),
+      send: (s, repeat) => deps.senders.live(s, s.default_channel, { problem: 'channel', reason, since: window?.since ?? since, checks, repeat, at: nowMs }),
     })
     if (posted) summary.alerts.push(CHANNEL_ID)
     await keepIfAlerted(CHANNEL_ID, posted, since)
     return summary
   }
 
-  await allClear(CHANNEL_ID, PARTNER_PAGE_LIVE_KEY, 'The partners page channel', 'partners page live updates',
+  const cleared = await allClear(CHANNEL_ID, PARTNER_PAGE_LIVE_KEY, 'The partners page channel', 'partners page live updates',
     `has delivered the delivery check's notice for ${RECOVERY_REARM_MINUTES} minutes`)
+  if (cleared && window) await saveState({})
   return summary
 }
