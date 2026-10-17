@@ -28,6 +28,8 @@ export const OPS_ORGANIZATION_RPCS = [
   'record_send_result',
   'record_schedule_fire',
   'set_run_request_kept',
+  // The minute cron's (#1949).
+  'record_schedule_observation',
 ] as const
 
 /**
@@ -41,10 +43,13 @@ export const OPS_LANE_RPCS = [
   'expire_overdue_run_requests',
   'purge_terminal_run_requests',
   'purge_expired_dedup_tombstones',
+  // The minute cron's (#1949): a sweep's interval, and the saved workflow copies, which span organizations.
+  'claim_ops_sweep',
+  'save_workflow_copies',
 ] as const
 
 /** Read only functions (STABLE in the database, checked by run_engine_schema.test.sql). */
-export const OPS_READ_ONLY_RPCS = ['run_queue_disagreements'] as const
+export const OPS_READ_ONLY_RPCS = ['run_queue_disagreements', 'ops_now', 'workflow_copies', 'due_queue_depth'] as const
 
 export const OPS_MUTATING_RPCS = [...OPS_ORGANIZATION_RPCS, ...OPS_LANE_RPCS] as const
 

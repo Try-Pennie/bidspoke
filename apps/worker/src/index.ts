@@ -30,6 +30,7 @@ import { runSecretDecryptHealthCheck } from './lib/secret-decrypt-health'
 import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, writeHeartbeatCompleted, runHeartbeatChecks } from './lib/cron-heartbeat'
+import { runOpsTickReportCheck } from './lib/ops-gateway'
 import { runPartnerReachabilityCheck, fetchProbe, liveSenders } from './lib/partner-reachability'
 import { resolveSlackForEveryOrg } from './lib/standing-alert'
 import { runIncidentDrain, INCIDENT_DRAIN_JOB } from './lib/incident-drain'
@@ -74,6 +75,8 @@ export { LatencyMarkObject } from './durable-objects/latency-mark'
 export { AlertClaimObject } from './durable-objects/alert-claim'
 export { BuyerLedgerObject } from './durable-objects/buyer-ledger'
 export { LeadSaleObject } from './durable-objects/lead-sale'
+// The ops Worker's way in (#1949): its OPS_GATEWAY binding names this entrypoint.
+export { OpsGateway } from './lib/ops-gateway-entrypoint'
 
 export type { Env } from './env'
 import type { Env } from './env'
@@ -1199,6 +1202,15 @@ const scheduledJobs = {
       minuteJob('upstream-outage-check',
         runUpstreamOutageCheck(supabase, env.IDEMPOTENCY, env.APP_URL, reachability.claims)
           .catch((e) => console.error('[upstream-outage] check failed:', e))
+      )
+      // The ops minute cron's report (#1949): the tick runs in the ops Worker and
+      // stamps its heartbeat here through OpsGateway; this pages on a tick that
+      // ran but reported a problem or is not configured. A tick that stopped is
+      // the heartbeat check's, below (L71: the watchdog is not the Worker watched).
+      minuteJob('ops-tick-report',
+        runOpsTickReportCheck(supabase, env.IDEMPOTENCY, Date.now())
+          .then((v) => { if (v === 'alerted') console.error('[ops-tick] the ops minute cron reported a problem') })
+          .catch((e) => console.error('[ops-tick] report check failed:', e))
       )
       minuteJob('heartbeat-checks',
         runHeartbeatChecks(supabase, env.IDEMPOTENCY, Date.now(), reachability.claims)
