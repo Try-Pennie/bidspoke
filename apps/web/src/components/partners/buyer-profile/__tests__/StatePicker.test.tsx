@@ -53,4 +53,12 @@ describe('StatePicker', () => {
     render(<StatePicker value={[]} onChange={() => {}} />)
     expect(screen.getByRole('group', { name: 'States' })).toBeInTheDocument()
   })
+
+  it('hides its name under a section heading and shows it where it has none', () => {
+    const { unmount } = render(<StatePicker value={[]} onChange={() => {}} />)
+    expect(screen.getByText('States')).toHaveClass('sr-only')
+    unmount()
+    render(<StatePicker value={[]} onChange={() => {}} legend="States for Texas" legendShown />)
+    expect(screen.getByText('States for Texas')).not.toHaveClass('sr-only')
+  })
 })

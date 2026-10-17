@@ -9,12 +9,13 @@
  * Drawn as the settled design draws it (#2324, PM-21): a white box headed by the
  * count with All and None beside it, and a grid of chips, navy when chosen. The
  * section heading above says what the states are for, so the group's name is
- * read by a screen reader and not shown again (L605).
+ * read by a screen reader and not shown again (L605). A click delivery route
+ * has no heading of its own, so it shows the name (`legendShown`).
  */
 import { US_STATES } from '@bidspoke/buyer-profile'
 import { Button, ChipCheck } from '@/components/ui/form'
 
-export function StatePicker({ value, onChange, idPrefix = 'state', legend = 'States', emptyNote = 'This buyer accepts no lead until a state is chosen.', emptyIsWarning = true }: {
+export function StatePicker({ value, onChange, idPrefix = 'state', legend = 'States', emptyNote = 'This buyer accepts no lead until a state is chosen.', emptyIsWarning = true, legendShown = false }: {
   value: readonly string[]
   onChange: (states: string[]) => void
   idPrefix?: string
@@ -23,12 +24,14 @@ export function StatePicker({ value, onChange, idPrefix = 'state', legend = 'Sta
   emptyNote?: string
   /** False where an empty list is a meaningful choice rather than a gap. */
   emptyIsWarning?: boolean
+  /** True where no heading above names the picker, so its name is shown. */
+  legendShown?: boolean
 }) {
   const selected = new Set(value)
   const emit = (next: Set<string>) => onChange([...next].sort())
   return (
     <fieldset className="rounded-lg border border-line bg-white p-2.5">
-      <legend className="sr-only">{legend}</legend>
+      <legend className={legendShown ? 'mb-1 text-xs font-medium text-gray-600' : 'sr-only'}>{legend}</legend>
       <div className="mb-2 flex items-center gap-2">
         <span className="text-xs text-graphite">{selected.size} of {US_STATES.length} states</span>
         <Button variant="quiet" onClick={() => emit(new Set(US_STATES))}>All</Button>
