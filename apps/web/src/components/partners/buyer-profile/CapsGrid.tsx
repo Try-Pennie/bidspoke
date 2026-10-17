@@ -62,14 +62,9 @@ export function CapsGrid({ value, onChange, errors = {}, soldOn = null, zone = D
   const patch = (next: Partial<CapsValue>) => onChange({ ...value, ...next })
   const scope = joinAnd(WIRED_POPULATIONS.map((p) => POPULATION_LABELS[p]))
 
-  // The unit and the empty rule are said once for the four boxes, in the
-  // sentence every box is described by (L605), not as a hint under each.
+  // The empty rule is said once for the boxes, in the sentence every box is
+  // described by (L605), not as a hint under each.
   const noteId = `${base}-note`
-  const cell = (id: string, label: string, error: string | undefined, input: (db: string | undefined) => React.ReactNode) => (
-    <Field id={id} label={label} error={error}>
-      {input([noteId, describedBy(id, false, Boolean(error))].filter(Boolean).join(' '))}
-    </Field>
-  )
 
   // A click buyer (#1541) is capped by clicks per day and nothing else: the
   // validator refuses the other three, so they are not offered.
@@ -78,9 +73,9 @@ export function CapsGrid({ value, onChange, errors = {}, soldOn = null, zone = D
     return (
       <div className="space-y-1.5">
         <div className="flex flex-wrap items-end gap-x-6 gap-y-2">
-          {cell(`${base}-dl`, CLICK_FIELD_LABELS.daily_lead_cap, errors.dailyLeadCap, (db) => (
-            <NumberInput id={`${base}-dl`} value={value.daily_lead_cap} onChange={(v) => patch({ daily_lead_cap: v })} min={0} step={1} describedBy={db} className="w-[7.5rem]" />
-          ))}
+          <Field id={`${base}-dl`} label={CLICK_FIELD_LABELS.daily_lead_cap} error={errors.dailyLeadCap}>
+            <NumberInput id={`${base}-dl`} value={value.daily_lead_cap} onChange={(v) => patch({ daily_lead_cap: v })} min={0} step={1} describedBy={[noteId, describedBy(`${base}-dl`, false, Boolean(errors.dailyLeadCap))].filter(Boolean).join(' ')} className="w-[7.5rem]" />
+          </Field>
           {meter && <div className="pb-1.5">{meter}</div>}
         </div>
         <p id={noteId} className="text-xs text-hint">Empty means {partnerName} is not offered at all. {clickCountResetSentence(nowMs ?? Date.now(), zone)}</p>
