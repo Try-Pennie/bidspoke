@@ -104,6 +104,15 @@ describe('buildDeleteCheck', () => {
     ])
   })
 
+  // #2251: a Latency Gate's check step reads its partner's confirmation window,
+  // and throws "partner config not found" once the partner is gone.
+  it('a workflow whose only use of the partner is a Latency Gate is listed as naming it', () => {
+    const gate = wf('w-gate', [{ type: 'latency_gate', config: { operation: 'check', correlation_key: '{{trigger.id}}', partner_id: 'p-tp' } }])
+    const otherGate = wf('w-gate-x', [{ type: 'latency_gate', config: { operation: 'check', correlation_key: '{{trigger.id}}', partner_id: 'p-other' } }])
+    const got = buildDeleteCheck(check(), [gate, otherGate], [], NONE, ZERO)
+    expect(got.workflows_naming_partner).toEqual([{ id: 'w-gate', name: 'Workflow w-gate', is_active: true }])
+  })
+
   it('the fingerprint is every dependent count, zeros included, and every workflow scanned with its updated_at as read', () => {
     const w = [wf('a', []), wf('bb', [])]
     const got = buildDeleteCheck(check(dependents({ partner_uuid_map: 2 })), w, [], NONE, ZERO)

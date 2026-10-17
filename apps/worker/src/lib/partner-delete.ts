@@ -143,7 +143,7 @@ export function buildDeleteCheck(
   if (ledger.unmirrored > 0) blockers.push({ kind: 'ledger_unmirrored', count: ledger.unmirrored })
   if (ledger.unresolved > 0) blockers.push({ kind: 'ledger_unresolved', count: ledger.unresolved })
 
-  const naming = workflowsUsingPartner(workflows, pricedPartners, { includeBuyerSelect: true, includeClickNodes: true })(check.partner.id)
+  const naming = workflowsUsingPartner(workflows, pricedPartners, { includeBuyerSelect: true, includeClickNodes: true, includeLatencyGates: true })(check.partner.id)
   const activeById = new Map(workflows.map((w) => [w.id, w.is_active]))
   const workflows_naming_partner = naming.map((w) => ({ id: w.id, name: w.name, is_active: activeById.get(w.id) === true }))
 
