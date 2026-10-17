@@ -13,15 +13,11 @@
  * database), and does not depend on the failing isolate or on KV (L561). The
  * hourly check counts the union of the two records by event id.
  *
- * The copy is an upsert that ignores a row already there, so a batch written
- * twice counts each fail-open once. A refused write is retried with a short
- * backoff, then HELD in this isolate and written with the next batch this
- * consumer is handed, which comes with every invocation of the bidding Worker,
- * so once the database answers the held rows land within seconds. Every
- * failure says why.
+ * The copy is an upsert that ignores a row already there, retried and held
+ * until the database takes it (row-copier.ts).
  */
-import type { SupabaseClient } from '@supabase/supabase-js'
 import { OPS_WORKER_SCRIPT } from './scripts'
+import { COPY_BACKOFF_MS, MAX_HELD, createRowCopier, type RowCopier, type RowCopierDeps } from './row-copier'
 
 export interface FailOpenRow {
   event_id: string
@@ -63,80 +59,16 @@ export function failOpensIn(trace: TraceItem): FailOpenRow[] {
   return rows
 }
 
-/** The waits before the second and third attempts. */
-export const COPY_BACKOFF_MS = [250, 1_000] as const
+export { COPY_BACKOFF_MS, MAX_HELD }
 
-/** A day of the minute tick failing open is 1,440; past this the oldest is dropped, loudly. */
-export const MAX_HELD = 2_000
-
-export interface FailOpenCopierDeps {
-  sleep?: (ms: number) => Promise<void>
-  log?: (line: string) => void
-  error?: (line: string) => void
-  maxHeld?: number
-}
-
-export interface FailOpenCopier {
-  /** Writes `rows` and anything held. Never throws: what it cannot write it holds. */
-  copy(supabase: SupabaseClient, rows: FailOpenRow[]): Promise<void>
-  held(): FailOpenRow[]
-}
-
-const describe = (error: { message?: string; code?: string } | null): string =>
-  error ? `${error.code ? `${error.code} ` : ''}${error.message ?? 'no message'}` : 'no error given'
+export type FailOpenCopierDeps = RowCopierDeps
+export type FailOpenCopier = RowCopier<FailOpenRow>
 
 export function createFailOpenCopier(deps: FailOpenCopierDeps = {}): FailOpenCopier {
-  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
-  const log = deps.log ?? ((l: string) => console.log(l))
-  const error = deps.error ?? ((l: string) => console.error(l))
-  const maxHeld = deps.maxHeld ?? MAX_HELD
-  const held = new Map<string, FailOpenRow>()
-
-  return {
-    async copy(supabase, rows) {
-      for (const r of rows) {
-        held.delete(r.event_id)
-        held.set(r.event_id, r)
-      }
-      while (held.size > maxHeld) {
-        const oldest = held.values().next().value as FailOpenRow
-        held.delete(oldest.event_id)
-        error(`[worker-tail] dropped a held cron guard fail-open event=${oldest.event_id} from ${oldest.occurred_at}: already holding ${maxHeld}`)
-      }
-      if (held.size === 0) return
-      const batch = [...held.values()]
-      // Only new rows earn the backoff. Held rows alone get one try per batch,
-      // and a refusal of them alone is not logged again: batches arrive with
-      // every request the bidding Worker serves, so anything more would multiply
-      // a database outage by the request rate. Their first refusal was logged.
-      const retries = rows.length > 0 ? COPY_BACKOFF_MS.length : 0
-      let why = ''
-      for (let attempt = 0; attempt <= retries; attempt++) {
-        if (attempt > 0) await sleep(COPY_BACKOFF_MS[attempt - 1])
-        try {
-          const { error: e } = await supabase
-            .from('cron_guard_fail_opens')
-            .upsert(batch, { onConflict: 'event_id', ignoreDuplicates: true })
-          if (!e) {
-            for (const r of batch) held.delete(r.event_id)
-            if (batch.length > rows.length) log(`[worker-tail] copied ${batch.length} cron guard fail-opens, ${batch.length - rows.length} of them held from an earlier batch`)
-            return
-          }
-          why = describe(e)
-        } catch (e) {
-          // This app cannot import the worker's formatErr; a thrown non-Error is
-          // JSON, never "[object Object]".
-          why = e instanceof Error ? e.message : JSON.stringify(e)
-        }
-      }
-      if (rows.length === 0) return
-      error(
-        `[worker-tail] could not copy ${batch.length} cron guard fail-open${batch.length === 1 ? '' : 's'} after ${retries + 1} attempts: ${why}.` +
-          ` They are held in this isolate and written with the next batch, the oldest from ${batch[0].occurred_at}`,
-      )
-    },
-    held: () => [...held.values()],
-  }
+  return createRowCopier<'event_id', FailOpenRow>(
+    { table: 'cron_guard_fail_opens', key: 'event_id', one: 'cron guard fail-open', many: 'cron guard fail-opens', label: 'event' },
+    deps,
+  )
 }
 
 /** The one copier per isolate, so a row held by one invocation is written by the next. */

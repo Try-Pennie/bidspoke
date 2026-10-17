@@ -22,24 +22,56 @@
  * the line carries. Fail-opens are counted as the union of the two by id. When
  * the two disagree, or one cannot be read, the page says what it counted from
  * where, and a count from one record alone is a floor (L11).
+ *
+ * A fail-open does no harm by itself (#2284): harm needs its tick to be run by a
+ * second delivery as well. Measured 2026-10-15 to 17, fail-opens came at about
+ * 4 a day from ordinary platform delays, every tick ran once, and the page fired
+ * most days with nothing to do. So fail-opens page only on a rate well above
+ * that, and a tick that may really have run twice pages at once, read from the
+ * durable record of every delivery (cron_tick_deliveries, which the tail worker
+ * writes from the guard's delivery lines). A skip count cannot show it, since a
+ * second delivery that ran leaves no skip, and a Workers Logs search missed
+ * known lines. A record of deliveries that cannot be read, or is not whole, is
+ * paged as a check that could not be made, never read as no tick ran twice.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
 import { anyDelivered, forEachSlackOrg } from './alert-fanout'
-import { sendExportFailureAlert } from './slack'
+import { etTime, sendExportFailureAlert } from './slack'
+import { cronTickKey } from './cron-once'
+import { scheduleInWords } from './schedule-words'
 
 export type CronGuardKind = 'failed_open' | 'skipped_duplicate'
 
 const KINDS: CronGuardKind[] = ['failed_open', 'skipped_duplicate']
 
+/** What the check can page: a kind of guard event, or a tick that may have run twice. */
+export type CronGuardPage = CronGuardKind | 'double_run'
+
 /**
- * Agreed with Dan on 2026-10-14. A fail-open is rare and each one risks a job
- * running twice, so three in a day is a guard that has stopped working. A
- * duplicate is absorbed, so only a sustained stretch is worth a page: 30 is
- * about half an hour of the minute cron doubling, and the 2026-10-08 doubling
- * produced well over a thousand a day.
+ * Fail-opens in a normal day, measured (#2284, L172). The guard's KV record and
+ * the tail copy held 6 in about 33 hours on 2026-10-15 to 16, 3 on 2026-10-16
+ * and 2 by 15:30 UTC on 2026-10-17; the highest any 24 hours reached was 5.
+ * Every one was a claim timeout on a tick that ran once. Named in the page, so
+ * the reader can weigh the count.
  */
-export const CRON_GUARD_THRESHOLDS: Record<CronGuardKind, number> = { failed_open: 3, skipped_duplicate: 30 }
+export const FAIL_OPENS_PER_DAY_MEASURED = 4
+
+/**
+ * Fail-opens: 20 in 24 hours (#2284). Four times the highest normal day (5) and
+ * five times the usual 4, so an ordinary day never reaches it, while a claim
+ * store that is really failing reaches it fast: down outright, the minute tick
+ * alone fails open 60 times an hour. A fail-open below this is recorded and
+ * logged, and pages only when its tick was also run by another delivery
+ * (double_run below). It replaces the 3 agreed on 2026-10-14, which paged on
+ * most ordinary days. The 2026-10-14 blip, 9 fail-opens, would not page on its
+ * rate; a tick it doubled would page on its own.
+ *
+ * Duplicates (agreed 2026-10-14): a duplicate is absorbed, so only a sustained
+ * stretch is worth a page: 30 is about half an hour of the minute cron
+ * doubling, and the 2026-10-08 doubling produced well over a thousand a day.
+ */
+export const CRON_GUARD_THRESHOLDS: Record<CronGuardKind, number> = { failed_open: 20, skipped_duplicate: 30 }
 
 const DAY_SECONDS = 24 * 60 * 60
 const WINDOW_MS = DAY_SECONDS * 1000
@@ -49,7 +81,7 @@ const RECORD_TTL_SECONDS = 2 * DAY_SECONDS
 const MAX_LIST_PAGES = 10
 
 const eventPrefix = (kind: CronGuardKind) => `cron-guard:event:${kind}:`
-export const cronGuardPagedKey = (kind: CronGuardKind) => `cron-guard:paged:${kind}`
+export const cronGuardPagedKey = (page: CronGuardPage) => `cron-guard:paged:${page}`
 
 export interface RecordKv {
   put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>
@@ -223,19 +255,23 @@ function sourceLines(s: CronGuardSources | undefined): string[] {
   return lines
 }
 
-/** The page for one kind, in the titled alert shape. */
+/**
+ * The page for one kind of guard event, in the titled alert shape. A fail-open
+ * page points at the durable record of fail-opens, never at a Workers Logs
+ * search, which on 2026-10-17 missed two known FAILED OPEN lines (#2284).
+ */
 export function cronGuardMessage(kind: CronGuardKind, count: number, capped: boolean, sources?: CronGuardSources): CronGuardMessage {
   const n = `${capped ? 'at least ' : ''}${count.toLocaleString('en-US')}`
   if (kind === 'failed_open') {
     const times = count === 1 && !capped ? 'once' : `${n} times`
     return {
-      title: 'Cron guard ran ticks unguarded',
+      title: 'Cron guard keeps failing open',
       errors: [
-        `The cron guard could not reach its claim store ${times} in the last 24 hours, so those ticks ran without it.`,
+        `The cron guard could not reach its claim store ${times} in the last 24 hours, so those ticks ran without it. About ${FAIL_OPENS_PER_DAY_MEASURED} a day is normal.`,
         ...sourceLines(sources),
       ],
-      context: 'A tick Cloudflare delivered twice in that time may have run its jobs twice.',
-      fixHint: 'Search Workers Logs for "[cron-once] FAILED OPEN". Each line says why the claim did not answer.',
+      context: 'A count this high means the claim store itself is failing, not a passing delay. A tick that ran twice is paged on its own.',
+      fixHint: 'Each one is a row in the cron_guard_fail_opens table, with its tick and why the claim did not answer.',
     }
   }
   return {
@@ -245,13 +281,214 @@ export function cronGuardMessage(kind: CronGuardKind, count: number, capped: boo
   }
 }
 
+// ── A tick that may have run twice (#2284) ────────────────────────────────────
+
+/** What the guard decided for one delivery, as cron_tick_deliveries holds it. */
+export type DeliveryOutcome = 'ran' | 'took_over' | 'failed_open' | 'skipped' | 'no_decision'
+
+const OUTCOMES: ReadonlySet<string> = new Set<DeliveryOutcome>(['ran', 'took_over', 'failed_open', 'skipped', 'no_decision'])
+
+/** The decisions under which a delivery ran the tick's jobs. */
+const RAN: ReadonlySet<DeliveryOutcome> = new Set<DeliveryOutcome>(['ran', 'took_over', 'failed_open'])
+
+/**
+ * How Cloudflare says an invocation ended when it was cut short: killed, or the
+ * jobs threw before they could run (the tick is then released). A later delivery
+ * running such a tick is the retry working, not a second run of finished work.
+ * Anything else, `ok` and no outcome at all included, may have finished.
+ */
+const CUT_SHORT: ReadonlySet<string> = new Set(['canceled', 'exceededCpu', 'exceededMemory', 'exception'])
+
+/** One delivery of a cron tick, read from the record of deliveries. */
+export interface TickDelivery {
+  id: string
+  cron: string
+  scheduledAtMs: number
+  outcome: DeliveryOutcome
+  invocationOutcome: string | null
+  /** When the guard decided, by the delivery's own log line. */
+  atMs: number
+}
+
+/** A row of cron_tick_deliveries, the shape the tail worker writes (apps/worker-tail/src/deliveries.ts). */
+export interface DeliveryRecordRow {
+  delivery_id: string
+  cron: string
+  scheduled_at: string
+  outcome: string
+  invocation_outcome: string | null
+  occurred_at: string
+}
+
+/** One row as a delivery. An outcome or a time it cannot read THROWS, never counted as something else (L50). */
+export function deliveryFromRow(row: DeliveryRecordRow): TickDelivery {
+  if (!OUTCOMES.has(row.outcome)) throw new Error(`cron_tick_deliveries row ${row.delivery_id} has outcome "${row.outcome}", which this check does not know`)
+  const scheduledAtMs = Date.parse(row.scheduled_at)
+  const atMs = Date.parse(row.occurred_at)
+  if (!Number.isFinite(scheduledAtMs) || !Number.isFinite(atMs)) throw new Error(`cron_tick_deliveries row ${row.delivery_id} has a time that does not parse`)
+  return { id: row.delivery_id, cron: row.cron, scheduledAtMs, outcome: row.outcome as DeliveryOutcome, invocationOutcome: row.invocation_outcome, atMs }
+}
+
+/** Reads the deliveries in the window (sinceMs, nowMs]. A failed read THROWS (L98). */
+export type DeliveryReader = (sinceMs: number, nowMs: number) => Promise<{ deliveries: TickDelivery[]; capped: boolean }>
+
+/** The live reader: newest first, 1,000 rows a page, so PostgREST's row cap cannot shorten it silently. */
+export function supabaseDeliveryReader(supabase: SupabaseClient, opts: { maxPages?: number } = {}): DeliveryReader {
+  const maxPages = opts.maxPages ?? MAX_LIST_PAGES
+  return async (sinceMs, nowMs) => {
+    const deliveries: TickDelivery[] = []
+    for (let page = 0; page < maxPages; page++) {
+      const { data, error } = await supabase
+        .from('cron_tick_deliveries')
+        .select('delivery_id, cron, scheduled_at, outcome, invocation_outcome, occurred_at')
+        .gt('occurred_at', new Date(sinceMs).toISOString())
+        .lte('occurred_at', new Date(nowMs).toISOString())
+        .order('occurred_at', { ascending: false })
+        .order('delivery_id', { ascending: true })
+        .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1)
+      if (error) throw new Error(`cron_tick_deliveries read failed: ${error.message}`)
+      const rows = (data ?? []) as DeliveryRecordRow[]
+      for (const row of rows) deliveries.push(deliveryFromRow(row))
+      if (rows.length < PAGE_SIZE) return { deliveries, capped: false }
+    }
+    return { deliveries, capped: true }
+  }
+}
+
+/** A tick two or more deliveries ran, and how. */
+export interface DoubledTick {
+  /** The guard's claim key: the cron and the scheduled minute. */
+  tick: string
+  cron: string
+  scheduledAtMs: number
+  how: 'failed_open' | 'took_over' | 'ran_twice'
+  /** Every delivery that ran it, oldest first. */
+  runs: TickDelivery[]
+}
+
+/**
+ * Ticks that may have run twice: two or more deliveries ran the same tick (the
+ * guard's own key, cron and scheduled minute), and one that was followed by
+ * another had not been cut short. That covers a fail-open whose tick another
+ * delivery also ran, and a takeover of a run that was still alive because its
+ * lease lapsed (its renewals failed, as the daily tick's did six times in a row
+ * at 09:00 UTC on 2026-10-17). The retry of a run Cloudflare killed is excluded:
+ * running it again is the point.
+ */
+export function findDoubledTicks(deliveries: TickDelivery[]): DoubledTick[] {
+  const byTick = new Map<string, TickDelivery[]>()
+  for (const d of deliveries) {
+    if (!RAN.has(d.outcome)) continue
+    const tick = cronTickKey(d.cron, d.scheduledAtMs)
+    const runs = byTick.get(tick) ?? []
+    runs.push(d)
+    byTick.set(tick, runs)
+  }
+  const doubled: DoubledTick[] = []
+  for (const [tick, runs] of byTick) {
+    if (runs.length < 2) continue
+    runs.sort((a, b) => a.atMs - b.atMs)
+    const finishedThenRanAgain = runs.slice(0, -1).some((r) => r.invocationOutcome === null || !CUT_SHORT.has(r.invocationOutcome))
+    if (!finishedThenRanAgain) continue
+    const how = runs.some((r) => r.outcome === 'failed_open') ? 'failed_open' : runs.some((r) => r.outcome === 'took_over') ? 'took_over' : 'ran_twice'
+    doubled.push({ tick, cron: runs[0].cron, scheduledAtMs: runs[0].scheduledAtMs, how, runs })
+  }
+  return doubled.sort((a, b) => a.scheduledAtMs - b.scheduledAtMs)
+}
+
+/** The cron every minute tick is delivered on: the measure of whether the record is whole. */
+const MINUTE_CRON = '* * * * *'
+const MINUTE_MS = 60_000
+
+/**
+ * Below this share of the minute tick's minutes, the record is not whole enough
+ * to say no tick ran twice. Cloudflare delivers that tick every minute, so a
+ * record holding fewer than 9 in 10 of them is missing deliveries, not quiet.
+ */
+export const DELIVERY_COVERAGE_FLOOR = 0.9
+
+/** Less than this span of record is too new to judge: right after the table starts filling. */
+const MIN_JUDGED_MINUTES = 60
+
+/**
+ * How much of the minute tick the record holds, from the first minute it holds
+ * (or the window's start) to the tail copy's lag before now. Measured from the
+ * first minute held, so a record that has only just started filling is judged on
+ * what it could hold; a record that stopped part way is judged on the gap.
+ */
+function minuteCoverage(deliveries: TickDelivery[], sinceMs: number, nowMs: number): { present: number; expected: number } {
+  const endMinute = Math.floor((nowMs - TAIL_COPY_LAG_MS) / MINUTE_MS)
+  const minutes = new Set<number>()
+  let first = Infinity
+  for (const d of deliveries) {
+    if (d.cron !== MINUTE_CRON) continue
+    const m = Math.floor(d.scheduledAtMs / MINUTE_MS)
+    if (m > endMinute) continue
+    minutes.add(m)
+    if (m < first) first = m
+  }
+  const windowStart = Math.floor(sinceMs / MINUTE_MS) + 1
+  const startMinute = Number.isFinite(first) ? Math.max(first, windowStart) : windowStart
+  const expected = Math.max(0, endMinute - startMinute + 1)
+  let present = 0
+  for (const m of minutes) if (m >= startMinute && m <= endMinute) present++
+  return { present, expected }
+}
+
+/** What the double run check found, for the page. */
+export type DoubleRunFinding =
+  | { kind: 'doubled'; ticks: DoubledTick[] }
+  | { kind: 'unreadable'; why: string }
+  | { kind: 'incomplete'; present: number; expected: number }
+
+const MAX_TICKS_NAMED = 5
+
+const timesWord = (n: number) => (n === 2 ? 'twice' : `${n.toLocaleString('en-US')} times`)
+
+function tickLine(t: DoubledTick): string {
+  const words = scheduleInWords(t.cron, new Date(t.scheduledAtMs))
+  const which = `The ${etTime(t.scheduledAtMs)} run of the cron that runs ${words ?? `on \`${t.cron}\``} happened ${timesWord(t.runs.length)}`
+  if (t.how === 'failed_open') return `${which}: the claim store could not be reached for one delivery, which ran it without the claim, and another delivery ran it too.`
+  if (t.how === 'took_over') return `${which}: a second delivery took it over while the first was still running, because the first had stopped renewing its claim.`
+  return `${which}.`
+}
+
+const DELIVERY_RECORD = 'The record of cron deliveries'
+
+/** The page for a tick that may have run twice, or for a check that could not be made. */
+export function doubleRunMessage(f: DoubleRunFinding): CronGuardMessage {
+  if (f.kind === 'doubled') {
+    const named = f.ticks.slice(0, MAX_TICKS_NAMED).map(tickLine)
+    const rest = f.ticks.length - named.length
+    return {
+      title: f.ticks.length === 1 ? 'A cron tick may have run twice' : `${f.ticks.length.toLocaleString('en-US')} cron ticks may have run twice`,
+      errors: rest > 0 ? [...named, `And ${rest.toLocaleString('en-US')} more.`] : named,
+      context: 'The jobs on those ticks may have done their work twice, such as an export, a purge or an alert.',
+      fixHint: 'Each delivery is a row in the cron_tick_deliveries table. Check what those jobs wrote at those times.',
+    }
+  }
+  const errors = f.kind === 'unreadable'
+    ? [`${DELIVERY_RECORD} could not be read (${f.why}), so a tick that ran twice in the last 24 hours would not be seen.`]
+    : f.expected === 0
+      ? [`${DELIVERY_RECORD} holds no deliveries for the last 24 hours, so a tick that ran twice would not be seen.`]
+      : [`${DELIVERY_RECORD} holds ${f.present.toLocaleString('en-US')} of the last ${f.expected.toLocaleString('en-US')} minutes of the every minute cron, so a tick that ran twice could be missed.`]
+  return {
+    title: 'Cron guard could not check for a tick run twice',
+    errors,
+    context: 'The tail worker writes this record. Until it is whole again, a tick that runs twice is not paged.',
+    fixHint: 'Check that bidspoke-worker-tail is deployed and is writing rows to the cron_tick_deliveries table.',
+  }
+}
+
 export interface CronGuardWatchDeps {
   kv: CronGuardKv
   now: () => number
   /** The fail-opens' second record, the tail worker's copy of their log lines (#2166). */
   tailFailOpens: TailCopyReader
-  /** Delivers one page; true when anyone was told. `sources` is set for fail-opens. */
-  send: (kind: CronGuardKind, count: number, capped: boolean, sources?: CronGuardSources) => Promise<boolean>
+  /** Every cron delivery and what the guard decided (#2284), the record a doubled tick is read from. */
+  deliveries: DeliveryReader
+  /** Delivers one page; true when anyone was told. */
+  send: (page: CronGuardPage, message: CronGuardMessage) => Promise<boolean>
   log: (line: string) => void
   error: (line: string) => void
 }
@@ -259,6 +496,7 @@ export interface CronGuardWatchDeps {
 export type CronGuardResult =
   | { kind: CronGuardKind; status: 'unreadable' }
   | { kind: CronGuardKind; status: 'under' | 'over'; count: number; capped: boolean; alerted: boolean }
+  | { kind: 'double_run'; status: 'none' | 'doubled' | 'unreadable' | 'incomplete'; doubled: number; alerted: boolean }
 
 interface Counted {
   count: number
@@ -317,10 +555,104 @@ function sourcesForLog(s: CronGuardSources | undefined): string {
     (s.unread ? '' : ` only_in_tail_copy=${s.onlyInTailCopy ?? 0} missing_from_tail_copy=${s.missingFromTailCopy ?? 0}`)
 }
 
+/** Posts `message` unless the quiet says it was posted in the last day; the quiet is armed only on delivery. */
+async function pageOncePerDay(deps: CronGuardWatchDeps, page: CronGuardKind, message: CronGuardMessage, nowMs: number): Promise<boolean> {
+  try {
+    // A quiet we could not read lets the page through: a duplicate page beats a missed one.
+    const quiet = await deps.kv.get(cronGuardPagedKey(page)).catch(() => null)
+    if (quiet !== null) return false
+    const alerted = await deps.send(page, message)
+    // Armed only on delivery, so a Slack outage does not buy a day of silence.
+    if (alerted) await deps.kv.put(cronGuardPagedKey(page), new Date(nowMs).toISOString(), { expirationTtl: DAY_SECONDS })
+    return alerted
+  } catch (e) {
+    deps.error(`[cron-guard-watch] could not page ${page}: ${formatErr(e)}`)
+    return false
+  }
+}
+
+/** The double run quiet: the ticks already paged, and whether the could-not-check page went out, in the last day. */
+interface DoubleRunQuiet {
+  ticks: string[]
+  unchecked: boolean
+}
+
+async function readDoubleRunQuiet(kv: CronGuardKv): Promise<DoubleRunQuiet> {
+  // Unreadable or of another shape: nothing counts as paged, so a page goes out (a duplicate beats a miss).
+  const raw = await kv.get(cronGuardPagedKey('double_run')).catch(() => null)
+  if (raw === null) return { ticks: [], unchecked: false }
+  try {
+    const v = JSON.parse(raw) as Partial<DoubleRunQuiet>
+    return { ticks: Array.isArray(v.ticks) ? v.ticks.filter((t): t is string => typeof t === 'string') : [], unchecked: v.unchecked === true }
+  } catch {
+    return { ticks: [], unchecked: false }
+  }
+}
+
+async function judgeDoubleRuns(deps: CronGuardWatchDeps, nowMs: number): Promise<CronGuardResult> {
+  const sinceMs = nowMs - WINDOW_MS
+  let read: { deliveries: TickDelivery[]; capped: boolean } | null = null
+  let finding: DoubleRunFinding | null = null
+  let doubled: DoubledTick[] = []
+  let status: 'none' | 'doubled' | 'unreadable' | 'incomplete' = 'none'
+  try {
+    read = await deps.deliveries(sinceMs, nowMs)
+  } catch (e) {
+    deps.error(`[cron-guard-watch] could not read the record of cron deliveries: ${formatErr(e)}`)
+    deps.log('[cron-guard-watch] kind=double_run deliveries=unreadable')
+    finding = { kind: 'unreadable', why: shortWhy(e) }
+    status = 'unreadable'
+  }
+  if (read) {
+    doubled = findDoubledTicks(read.deliveries)
+    const coverage = minuteCoverage(read.deliveries, sinceMs, nowMs)
+    const ran = read.deliveries.filter((d) => RAN.has(d.outcome)).length
+    // Logged on every run, a quiet one included, so a record that stops keeping up shows on a quiet day too.
+    deps.log(
+      `[cron-guard-watch] kind=double_run deliveries=${read.deliveries.length}${read.capped ? '+' : ''} ran=${ran} doubled=${doubled.length}` +
+        ` minute_coverage=${coverage.present}/${coverage.expected}` +
+        (doubled.length ? ` ticks=${doubled.map((d) => `${d.tick}:${d.how}`).join(',')}` : ''),
+    )
+    if (read.deliveries.length === 0) {
+      finding = { kind: 'incomplete', present: 0, expected: 0 }
+      status = 'incomplete'
+    } else if (coverage.expected >= MIN_JUDGED_MINUTES && coverage.present < coverage.expected * DELIVERY_COVERAGE_FLOOR) {
+      finding = { kind: 'incomplete', present: coverage.present, expected: coverage.expected }
+      status = 'incomplete'
+    }
+    if (doubled.length) status = 'doubled'
+  }
+
+  let alerted = false
+  try {
+    const quiet = await readDoubleRunQuiet(deps.kv)
+    const next: DoubleRunQuiet = { ticks: [...quiet.ticks], unchecked: quiet.unchecked }
+    let changed = false
+    // A tick is paged once; a tick it has not paged pages at once, whatever else was paged today.
+    const fresh = doubled.filter((d) => !quiet.ticks.includes(d.tick))
+    if (fresh.length && (await deps.send('double_run', doubleRunMessage({ kind: 'doubled', ticks: fresh })))) {
+      alerted = true
+      next.ticks.push(...fresh.map((d) => d.tick))
+      changed = true
+    }
+    // A check that could not be made is said once a day, never read as "nothing ran twice" (L98).
+    if (finding && !quiet.unchecked && (await deps.send('double_run', doubleRunMessage(finding)))) {
+      alerted = true
+      next.unchecked = true
+      changed = true
+    }
+    // Armed only on delivery, so a Slack outage does not buy a day of silence.
+    if (changed) await deps.kv.put(cronGuardPagedKey('double_run'), JSON.stringify(next), { expirationTtl: DAY_SECONDS })
+  } catch (e) {
+    deps.error(`[cron-guard-watch] could not page double_run: ${formatErr(e)}`)
+  }
+  return { kind: 'double_run', status, doubled: doubled.length, alerted }
+}
+
 export async function runCronGuardWatch(deps: CronGuardWatchDeps): Promise<CronGuardResult[]> {
   const nowMs = deps.now()
   const results: CronGuardResult[] = []
-  // Each kind is judged on its own, so a failure on one never silences the other (L71).
+  // Each kind is judged on its own, so a failure on one never silences the others (L71).
   for (const kind of KINDS) {
     const threshold = CRON_GUARD_THRESHOLDS[kind]
     let counted: Counted
@@ -349,20 +681,10 @@ export async function runCronGuardWatch(deps: CronGuardWatchDeps): Promise<CronG
       results.push({ kind, status: 'under', count, capped, alerted: false })
       continue
     }
-    let alerted = false
-    try {
-      // A quiet we could not read lets the page through: a duplicate page beats a missed one.
-      const quiet = await deps.kv.get(cronGuardPagedKey(kind)).catch(() => null)
-      if (quiet === null) {
-        alerted = await deps.send(kind, count, capped, sources)
-        // Armed only on delivery, so a Slack outage does not buy a day of silence.
-        if (alerted) await deps.kv.put(cronGuardPagedKey(kind), new Date(nowMs).toISOString(), { expirationTtl: DAY_SECONDS })
-      }
-    } catch (e) {
-      deps.error(`[cron-guard-watch] could not page ${kind}: ${formatErr(e)}`)
-    }
+    const alerted = await pageOncePerDay(deps, kind, cronGuardMessage(kind, count, capped, sources), nowMs)
     results.push({ kind, status: 'over', count, capped, alerted })
   }
+  results.push(await judgeDoubleRuns(deps, nowMs))
   return results
 }
 
@@ -372,9 +694,10 @@ export async function runCronGuardWatchLive(supabase: SupabaseClient, kv: KVName
     kv,
     now: () => Date.now(),
     tailFailOpens: supabaseTailCopyReader(supabase),
-    send: (kind, count, capped, sources) =>
+    deliveries: supabaseDeliveryReader(supabase),
+    send: (_page, message) =>
       forEachSlackOrg(supabase, 'cron-guard-watch', 'tell-only', (orgId) =>
-        sendExportFailureAlert(supabase, orgId, null, { jobName: 'cron-guard-watch', ...cronGuardMessage(kind, count, capped, sources) }),
+        sendExportFailureAlert(supabase, orgId, null, { jobName: 'cron-guard-watch', ...message }),
       ).then(anyDelivered),
     log: (line) => console.log(line),
     error: (line) => console.error(line),

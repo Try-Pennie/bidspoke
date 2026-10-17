@@ -769,8 +769,9 @@ const scheduledJobs = {
           .catch((e) => console.error('[pg-cron-watch] check failed:', e))
       )
       // Pages when the cron tick guard keeps failing open, or Cloudflare keeps
-      // delivering ticks twice (#1904). The guard records each event as it
-      // happens (the scheduled handler below); this counts the last 24 hours.
+      // delivering ticks twice (#1904), or a tick may really have run twice
+      // (#2284, read from cron_tick_deliveries). The guard records each event as
+      // it happens (the scheduled handler below); this counts the last 24 hours.
       ctx.waitUntil(
         runCronGuardWatchLive(supabase, env.IDEMPOTENCY)
           .catch((e) => console.error('[cron-guard-watch] check failed:', e))

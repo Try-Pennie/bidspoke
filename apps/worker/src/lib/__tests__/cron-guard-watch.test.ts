@@ -5,10 +5,16 @@
  * (the jobs then run unguarded) and `skipped duplicate` for every second copy of
  * a tick it drops. Both lived only in Workers Logs. Each is now recorded in KV,
  * one key per event so two at once cannot overwrite each other's count, and an
- * hourly check pages once a day per kind: 3 fail-opens, or 30 duplicates, in
- * the last 24 hours. A count it cannot read is reported as unreadable, never
- * as zero (L98). KV is the record because a fail-open is the claim object
- * being unreachable, so the object cannot count its own outage (L345).
+ * hourly check pages once a day per kind: 20 fail-opens (#2284, well above the
+ * measured 4 a day), or 30 duplicates, in the last 24 hours. A count it cannot
+ * read is reported as unreadable, never as zero (L98). KV is the record because
+ * a fail-open is the claim object being unreachable, so the object cannot count
+ * its own outage (L345).
+ *
+ * A fail-open does no harm by itself (#2284): harm needs its tick run by a
+ * second delivery too. So the check also reads the durable record of every
+ * delivery (cron_tick_deliveries) and pages at once for a tick two deliveries
+ * both ran, and says so when that record cannot be read or is not whole.
  */
 import { describe, it, expect, vi } from 'vitest'
 import {
@@ -16,12 +22,19 @@ import {
   countCronGuardEvents,
   runCronGuardWatch,
   CRON_GUARD_THRESHOLDS,
+  FAIL_OPENS_PER_DAY_MEASURED,
   cronGuardPagedKey,
   cronGuardMessage,
+  doubleRunMessage,
+  findDoubledTicks,
   TAIL_COPY_LAG_MS,
   supabaseTailCopyReader,
+  supabaseDeliveryReader,
   type CronGuardKind,
-  type CronGuardSources,
+  type CronGuardPage,
+  type CronGuardMessage,
+  type CronGuardResult,
+  type TickDelivery,
 } from '../cron-guard-watch'
 
 const NOW = Date.parse('2026-10-14T15:00:00.000Z')
@@ -111,6 +124,7 @@ describe('countCronGuardEvents', () => {
   })
 })
 
+
 /** The tail worker's copy of the FAILED OPEN lines (#2166), as the live reader returns it. */
 function tailCopy(events: Array<{ id: string; atMs: number }> = []) {
   return vi.fn(async (sinceMs: number, nowMs: number) => ({
@@ -119,24 +133,41 @@ function tailCopy(events: Array<{ id: string; atMs: number }> = []) {
   }))
 }
 
-function deps(kv: ReturnType<typeof memoryKv>, delivered = true, tail = tailCopy()) {
-  const sent: Array<{ kind: CronGuardKind; count: number; capped: boolean }> = []
-  const sources: Array<CronGuardSources | undefined> = []
+const MIN = 60_000
+
+/** One delivery of a tick, as the record of deliveries holds it. */
+function delivery(o: Partial<TickDelivery> & { scheduledAtMs: number }): TickDelivery {
+  return { id: `d-${o.scheduledAtMs}-${Math.random()}`, cron: '* * * * *', outcome: 'ran', invocationOutcome: 'ok', atMs: o.scheduledAtMs + 500, ...o }
+}
+
+/** A whole day of the minute tick, each delivered and run once: the healthy record. */
+function wholeDay(): TickDelivery[] {
+  const out: TickDelivery[] = []
+  for (let t = NOW - 24 * H + MIN; t <= NOW - MIN; t += MIN) out.push(delivery({ scheduledAtMs: t, id: `day-${t}` }))
+  return out
+}
+
+function deliveryRecord(extra: TickDelivery[] = [], base: TickDelivery[] = wholeDay()) {
+  return vi.fn(async (_sinceMs: number, _nowMs: number) => ({ deliveries: [...base, ...extra], capped: false }))
+}
+
+function deps(kv: ReturnType<typeof memoryKv>, opts: { delivered?: boolean; tail?: ReturnType<typeof tailCopy>; deliveries?: ReturnType<typeof deliveryRecord> } = {}) {
+  const sent: Array<{ page: CronGuardPage; message: CronGuardMessage }> = []
   const lines: string[] = []
   const errs: string[] = []
   return {
     sent,
-    sources,
+    pages: () => sent.map((s) => s.page),
     lines,
     errs,
     d: {
       kv,
       now: () => NOW,
-      tailFailOpens: tail,
-      send: vi.fn(async (kind: CronGuardKind, count: number, capped: boolean, s?: CronGuardSources) => {
-        sent.push({ kind, count, capped })
-        sources.push(s)
-        return delivered
+      tailFailOpens: opts.tail ?? tailCopy(),
+      deliveries: opts.deliveries ?? deliveryRecord(),
+      send: vi.fn(async (page: CronGuardPage, message: CronGuardMessage) => {
+        sent.push({ page, message })
+        return opts.delivered ?? true
       }),
       log: (l: string) => { lines.push(l) },
       error: (l: string) => { errs.push(l) },
@@ -144,62 +175,82 @@ function deps(kv: ReturnType<typeof memoryKv>, delivered = true, tail = tailCopy
   }
 }
 
-describe('runCronGuardWatch', () => {
+const hoursAgo = (n: number) => Array.from({ length: n }, (_, i) => NOW - (i + 1) * 60 * MIN + 7_000)
 
-  it('holds the thresholds Dan approved: 3 fail-opens, 30 duplicates', () => {
-    expect(CRON_GUARD_THRESHOLDS).toEqual({ failed_open: 3, skipped_duplicate: 30 })
+describe('runCronGuardWatch: fail-opens page on their rate alone (#2284)', () => {
+  // Measured: about 4 fail-opens a day (6 in 33 hours on 2026-10-15 to 16; 3
+  // on 2026-10-16; 2 by 15:30 UTC on 2026-10-17), the highest 24 hours 5, all
+  // claim timeouts on ticks that ran once. A claim store that is really down
+  // fails the minute tick 60 times an hour.
+  it('holds the thresholds: 20 fail-opens, 30 duplicates', () => {
+    expect(CRON_GUARD_THRESHOLDS).toEqual({ failed_open: 20, skipped_duplicate: 30 })
+    expect(FAIL_OPENS_PER_DAY_MEASURED).toBe(4)
   })
 
-  it('pages at 3 fail-opens and not at 2', async () => {
+  it('posts nothing for an ordinary day of 5 fail-opens on ticks that ran once, and logs the count', async () => {
     const kv = memoryKv()
-    await record(kv, 'failed_open', [NOW - H, NOW - 2 * H])
+    const times = hoursAgo(5)
+    await record(kv, 'failed_open', times)
+    // Each of those ticks was delivered once, and that delivery failed open.
+    const day = wholeDay().map((d) => (times.some((t) => Math.abs(t - d.atMs) < MIN) ? { ...d, outcome: 'failed_open' as const } : d))
+    const t = deps(kv, { deliveries: deliveryRecord([], day) })
+    const r = await runCronGuardWatch(t.d)
+    expect(t.sent).toEqual([])
+    expect(r.find((x) => x.kind === 'failed_open')).toMatchObject({ status: 'under', count: 5, alerted: false })
+    expect(t.lines.join('\n')).toMatch(/kind=failed_open count=5 threshold=20/)
+  })
+
+  it('pages at 20 fail-opens in 24 hours and not at 19', async () => {
+    const kv = memoryKv()
+    await record(kv, 'failed_open', hoursAgo(19))
     const below = deps(kv)
     await runCronGuardWatch(below.d)
     expect(below.sent).toEqual([])
 
-    await record(kv, 'failed_open', [NOW - 3 * H])
+    await record(kv, 'failed_open', [NOW - 30 * MIN])
     const at = deps(kv)
     const r = await runCronGuardWatch(at.d)
-    expect(at.sent).toEqual([{ kind: 'failed_open', count: 3, capped: false }])
-    expect(r.find((x) => x.kind === 'failed_open')).toMatchObject({ status: 'over', count: 3, alerted: true })
+    expect(at.pages()).toEqual(['failed_open'])
+    expect(at.sent[0].message.title).toBe('Cron guard keeps failing open')
+    expect(r.find((x) => x.kind === 'failed_open')).toMatchObject({ status: 'over', count: 20, alerted: true })
   })
 
   it('pages at 30 duplicates and not at 29', async () => {
     const kv = memoryKv()
-    await record(kv, 'skipped_duplicate', Array.from({ length: 29 }, (_, i) => NOW - (i + 1) * 60_000))
+    await record(kv, 'skipped_duplicate', Array.from({ length: 29 }, (_, i) => NOW - (i + 1) * MIN))
     const below = deps(kv)
     await runCronGuardWatch(below.d)
     expect(below.sent).toEqual([])
 
-    await record(kv, 'skipped_duplicate', [NOW - 40 * 60_000])
+    await record(kv, 'skipped_duplicate', [NOW - 40 * MIN])
     const at = deps(kv)
     await runCronGuardWatch(at.d)
-    expect(at.sent).toEqual([{ kind: 'skipped_duplicate', count: 30, capped: false }])
+    expect(at.pages()).toEqual(['skipped_duplicate'])
   })
 
   it('pages once a day per kind: a second run inside the day is quiet, the other kind still pages', async () => {
     const kv = memoryKv()
-    await record(kv, 'failed_open', [NOW - H, NOW - H, NOW - H])
+    await record(kv, 'failed_open', Array.from({ length: 20 }, () => NOW - H))
     await runCronGuardWatch(deps(kv).d)
     expect(kv.ttls.get(cronGuardPagedKey('failed_open'))).toBe(24 * 60 * 60)
 
     await record(kv, 'skipped_duplicate', Array.from({ length: 30 }, () => NOW - H))
     const second = deps(kv)
     await runCronGuardWatch(second.d)
-    expect(second.sent).toEqual([{ kind: 'skipped_duplicate', count: 30, capped: false }])
+    expect(second.pages()).toEqual(['skipped_duplicate'])
   })
 
   it('arms the daily quiet only on delivery, so a Slack outage does not buy a day of silence', async () => {
     const kv = memoryKv()
-    await record(kv, 'failed_open', [NOW - H, NOW - H, NOW - H])
-    await runCronGuardWatch(deps(kv, false).d)
+    await record(kv, 'failed_open', Array.from({ length: 20 }, () => NOW - H))
+    await runCronGuardWatch(deps(kv, { delivered: false }).d)
     expect(kv.store.has(cronGuardPagedKey('failed_open'))).toBe(false)
     const retry = deps(kv)
     await runCronGuardWatch(retry.d)
-    expect(retry.sent).toHaveLength(1)
+    expect(retry.pages()).toEqual(['failed_open'])
   })
 
-  it('reports an unreadable count as unreadable, logs it at error level, and still judges the other kind', async () => {
+  it('reports an unreadable count as unreadable, logs it at error level, and still judges the other kinds', async () => {
     const kv = memoryKv()
     await record(kv, 'skipped_duplicate', Array.from({ length: 30 }, () => NOW - H))
     const realList = kv.list.getMockImplementation()!
@@ -207,30 +258,20 @@ describe('runCronGuardWatch', () => {
       if (o.prefix.includes('failed_open')) throw new Error('KV list 503')
       return realList(o)
     })
-    // Both records of a fail-open unreadable: nothing to count from.
     const tail = tailCopy()
     tail.mockRejectedValue(new Error('PGRST 503'))
-    const t = deps(kv, true, tail)
+    const t = deps(kv, { tail })
     const r = await runCronGuardWatch(t.d)
     expect(r.find((x) => x.kind === 'failed_open')).toMatchObject({ status: 'unreadable' })
     expect(r.find((x) => x.kind === 'failed_open')).not.toHaveProperty('count')
     expect(t.errs.join('\n')).toMatch(/could not count failed_open.*KV list 503/)
     expect(t.errs.join('\n')).toMatch(/could not read the tail worker's copy.*PGRST 503/)
-    expect(t.sent).toEqual([{ kind: 'skipped_duplicate', count: 30, capped: false }])
+    expect(t.pages()).toEqual(['skipped_duplicate'])
   })
 
-  it('logs both counts on every run, a quiet one included, so the thresholds can be checked against real days', async () => {
+  it('a send that throws is logged and leaves the quiet unarmed, never aborting the other kinds', async () => {
     const kv = memoryKv()
-    await record(kv, 'skipped_duplicate', [NOW - H])
-    const t = deps(kv)
-    await runCronGuardWatch(t.d)
-    expect(t.lines.join('\n')).toMatch(/kind=failed_open count=0 threshold=3/)
-    expect(t.lines.join('\n')).toMatch(/kind=skipped_duplicate count=1 threshold=30/)
-  })
-
-  it('a send that throws is logged and leaves the quiet unarmed, never aborting the other kind', async () => {
-    const kv = memoryKv()
-    await record(kv, 'failed_open', [NOW - H, NOW - H, NOW - H])
+    await record(kv, 'failed_open', Array.from({ length: 20 }, () => NOW - H))
     await record(kv, 'skipped_duplicate', Array.from({ length: 30 }, () => NOW - H))
     const t = deps(kv)
     t.d.send.mockImplementationOnce(async () => { throw new Error('slack down') })
@@ -238,6 +279,149 @@ describe('runCronGuardWatch', () => {
     expect(kv.store.has(cronGuardPagedKey('failed_open'))).toBe(false)
     expect(t.errs.join('\n')).toMatch(/failed_open.*slack down/)
     expect(r.find((x) => x.kind === 'skipped_duplicate')).toMatchObject({ alerted: true })
+  })
+})
+
+// #2284: a fail-open does no harm by itself; harm needs the same tick run by a
+// second delivery too. So the check pages on that, read from the durable record
+// of every delivery (cron_tick_deliveries), never on a skip count or a log search.
+describe('runCronGuardWatch: a tick that may have run twice pages at once (#2284)', () => {
+  const tick = NOW - 3 * H + 12_000
+
+  it('pages for a fail-open whose tick a second delivery also ran', async () => {
+    const t = deps(memoryKv(), { deliveries: deliveryRecord([
+      delivery({ scheduledAtMs: tick, cron: '0 9 * * *', outcome: 'failed_open', atMs: tick + 2_100 }),
+      delivery({ scheduledAtMs: tick + 36_000, cron: '0 9 * * *', outcome: 'ran', atMs: tick + 36_050 }),
+    ]) })
+    const r = await runCronGuardWatch(t.d)
+    expect(t.pages()).toEqual(['double_run'])
+    expect(t.sent[0].message.title).toBe('A cron tick may have run twice')
+    expect(r.find((x) => x.kind === 'double_run')).toMatchObject({ status: 'doubled', doubled: 1, alerted: true })
+  })
+
+  it('pages for a takeover of a run that was still alive, its lease lapsed (2026-10-17 09:00 UTC renewals)', async () => {
+    const t = deps(memoryKv(), { deliveries: deliveryRecord([
+      delivery({ scheduledAtMs: tick, cron: '0 9 * * *', outcome: 'ran', invocationOutcome: 'ok', atMs: tick + 100 }),
+      delivery({ scheduledAtMs: tick, cron: '0 9 * * *', outcome: 'took_over', atMs: tick + 30_000 }),
+    ]) })
+    await runCronGuardWatch(t.d)
+    expect(t.pages()).toEqual(['double_run'])
+    expect(t.sent[0].message.errors[0]).toMatch(/took it over while the first was still running/)
+  })
+
+  it('does not page for the retry of a run Cloudflare killed, nor for a second delivery the guard skipped', async () => {
+    const t = deps(memoryKv(), { deliveries: deliveryRecord([
+      delivery({ scheduledAtMs: tick, cron: '0 9 * * *', outcome: 'ran', invocationOutcome: 'canceled', atMs: tick + 100 }),
+      delivery({ scheduledAtMs: tick, cron: '0 9 * * *', outcome: 'took_over', atMs: tick + 40_000 }),
+      delivery({ scheduledAtMs: tick + 2 * H, cron: '0 * * * *', outcome: 'ran', atMs: tick + 2 * H + 100 }),
+      delivery({ scheduledAtMs: tick + 2 * H + 36_000, cron: '0 * * * *', outcome: 'skipped', atMs: tick + 2 * H + 36_100 }),
+    ]) })
+    const r = await runCronGuardWatch(t.d)
+    expect(t.sent).toEqual([])
+    expect(r.find((x) => x.kind === 'double_run')).toMatchObject({ status: 'none', alerted: false })
+  })
+
+  it('pages a doubled tick once, and again only for a tick it has not paged', async () => {
+    const kv = memoryKv()
+    const first = [
+      delivery({ id: 'a1', scheduledAtMs: tick, cron: '0 9 * * *', outcome: 'failed_open' }),
+      delivery({ id: 'a2', scheduledAtMs: tick + 36_000, cron: '0 9 * * *', outcome: 'ran' }),
+    ]
+    await runCronGuardWatch(deps(kv, { deliveries: deliveryRecord(first) }).d)
+    const again = deps(kv, { deliveries: deliveryRecord(first) })
+    await runCronGuardWatch(again.d)
+    expect(again.sent).toEqual([])
+
+    const second = [
+      delivery({ id: 'b1', scheduledAtMs: tick + H, cron: '23 * * * *', outcome: 'failed_open' }),
+      delivery({ id: 'b2', scheduledAtMs: tick + H + 36_000, cron: '23 * * * *', outcome: 'ran' }),
+    ]
+    const later = deps(kv, { deliveries: deliveryRecord([...first, ...second]) })
+    await runCronGuardWatch(later.d)
+    expect(later.pages()).toEqual(['double_run'])
+    expect(later.sent[0].message.errors).toHaveLength(1)
+    expect(later.sent[0].message.errors[0]).toMatch(/every hour at :23/)
+  })
+
+  // L90, L98: a record that cannot be read, or holds nothing, must never read as "no tick ran twice".
+  it('pages that it could not check when the record of deliveries cannot be read, and says why', async () => {
+    const deliveries = deliveryRecord()
+    deliveries.mockRejectedValue(new Error('relation "cron_tick_deliveries" does not exist'))
+    const t = deps(memoryKv(), { deliveries })
+    const r = await runCronGuardWatch(t.d)
+    expect(r.find((x) => x.kind === 'double_run')).toMatchObject({ status: 'unreadable' })
+    expect(t.pages()).toEqual(['double_run'])
+    expect(t.sent[0].message.title).toBe('Cron guard could not check for a tick run twice')
+    expect(t.sent[0].message.errors[0]).toMatch(/could not be read \(relation "cron_tick_deliveries" does not exist\)/)
+    expect(t.errs.join('\n')).toMatch(/could not read the record of cron deliveries/)
+  })
+
+  it('pages that it could not check when the record holds no deliveries at all', async () => {
+    const t = deps(memoryKv(), { deliveries: deliveryRecord([], []) })
+    const r = await runCronGuardWatch(t.d)
+    expect(r.find((x) => x.kind === 'double_run')).toMatchObject({ status: 'incomplete' })
+    expect(t.sent[0].message.errors[0]).toMatch(/holds no deliveries/)
+  })
+
+  it('pages that it could not check when the record is missing more than a tenth of the minute tick, and not at 90 percent', async () => {
+    const day = wholeDay()
+    // The span judged is from the first minute held to 10 minutes ago (the tail copy's lag).
+    const judged = day.filter((d) => d.scheduledAtMs <= NOW - TAIL_COPY_LAG_MS)
+    const expected = judged.length
+    const keepEvery = (n: number) => day.filter((_, i) => i === 0 || i % n !== 0)
+    // Dropping every 10th minute keeps 90 percent: whole enough.
+    const ninety = deps(memoryKv(), { deliveries: deliveryRecord([], keepEvery(10)) })
+    await runCronGuardWatch(ninety.d)
+    expect(ninety.sent).toEqual([])
+    // Dropping every 5th keeps 80 percent.
+    const eighty = deps(memoryKv(), { deliveries: deliveryRecord([], keepEvery(5)) })
+    const r = await runCronGuardWatch(eighty.d)
+    expect(r.find((x) => x.kind === 'double_run')).toMatchObject({ status: 'incomplete' })
+    expect(eighty.sent[0].message.errors[0]).toMatch(/holds 1,1\d\d of the last 1,4\d\d minutes/)
+    expect(expected).toBeGreaterThan(1_400)
+  })
+
+  it('pages that it could not check once a day, not every hour', async () => {
+    const kv = memoryKv()
+    const deliveries = deliveryRecord()
+    deliveries.mockRejectedValue(new Error('PGRST 503'))
+    await runCronGuardWatch(deps(kv, { deliveries }).d)
+    const again = deps(kv, { deliveries })
+    await runCronGuardWatch(again.d)
+    expect(again.sent).toEqual([])
+  })
+
+  it('logs the record on every run, a quiet one included', async () => {
+    const t = deps(memoryKv())
+    await runCronGuardWatch(t.d)
+    expect(t.lines.join('\n')).toMatch(/kind=double_run deliveries=1439 ran=1439 doubled=0 minute_coverage=\d+\/\d+/)
+  })
+
+  it('asks the record for the same 24 hour window the counts use', async () => {
+    const deliveries = deliveryRecord()
+    await runCronGuardWatch(deps(memoryKv(), { deliveries }).d)
+    expect(deliveries).toHaveBeenCalledWith(NOW - 24 * H, NOW)
+  })
+})
+
+describe('findDoubledTicks', () => {
+  it('keys a tick by its cron and scheduled minute, the same key the guard claims', () => {
+    const at = Date.parse('2026-10-17T15:15:32.618Z')
+    const doubled = findDoubledTicks([
+      delivery({ scheduledAtMs: at, cron: '*/5 * * * *', outcome: 'failed_open' }),
+      delivery({ scheduledAtMs: at + 20_000, cron: '*/5 * * * *', outcome: 'ran' }),
+      // the same minute of a different cron is a different tick
+      delivery({ scheduledAtMs: at, cron: '*/15 * * * *', outcome: 'ran' }),
+    ])
+    expect(doubled.map((d) => [d.tick, d.how, d.runs.length])).toEqual([['cron-tick:*/5 * * * *@2026-10-17T15:15Z', 'failed_open', 2]])
+  })
+
+  it('counts a run with no outcome from Cloudflare as one that may have finished', () => {
+    const doubled = findDoubledTicks([
+      delivery({ scheduledAtMs: NOW - H, outcome: 'ran', invocationOutcome: null, atMs: NOW - H + 1 }),
+      delivery({ scheduledAtMs: NOW - H, outcome: 'took_over', atMs: NOW - H + 20_000 }),
+    ])
+    expect(doubled).toHaveLength(1)
   })
 })
 
@@ -249,70 +433,59 @@ describe('runCronGuardWatch counts a fail-open from either record (#2166)', () =
   const recordWithIds = async (kv: ReturnType<typeof memoryKv>, events: Array<{ id: string; atMs: number }>) => {
     for (const e of events) await recordCronGuardEvent(kv, 'failed_open', e.atMs, e.id)
   }
-  const nine = Array.from({ length: 9 }, (_, i) => ({ id: `ev-${i}`, atMs: NOW - (i + 1) * H }))
+  const many = Array.from({ length: 24 }, (_, i) => ({ id: `ev-${i}`, atMs: NOW - (i + 1) * 50 * MIN }))
+  const failOpen = (r: CronGuardResult[]) => r.find((x) => x.kind === 'failed_open')
 
-  it('the measured day: 9 fail-opens logged, only 3 recorded in KV, counts 9 and pages', async () => {
+  it('a day of 24 fail-opens, only 3 recorded in KV, counts 24 and pages', async () => {
     const kv = memoryKv()
-    await recordWithIds(kv, nine.slice(6))
-    const t = deps(kv, true, tailCopy(nine))
+    await recordWithIds(kv, many.slice(21))
+    const t = deps(kv, { tail: tailCopy(many) })
     const r = await runCronGuardWatch(t.d)
-    expect(t.sent).toEqual([{ kind: 'failed_open', count: 9, capped: false }])
-    expect(t.sources[0]).toEqual({ guardRecord: 3, tailCopy: 9, onlyInTailCopy: 6, missingFromTailCopy: 0 })
-    expect(r.find((x) => x.kind === 'failed_open')).toMatchObject({ status: 'over', count: 9, alerted: true })
-  })
-
-  it('pages when every KV record failed and only the tail copy holds them', async () => {
-    const kv = memoryKv()
-    const t = deps(kv, true, tailCopy(nine.slice(0, 3)))
-    await runCronGuardWatch(t.d)
-    expect(t.sent).toEqual([{ kind: 'failed_open', count: 3, capped: false }])
+    expect(t.pages()).toEqual(['failed_open'])
+    expect(failOpen(r)).toMatchObject({ status: 'over', count: 24, alerted: true })
+    expect(t.sent[0].message.errors[1]).toMatch(/could not write its own record of 21 of them/)
   })
 
   it('a fail-open in both records counts once', async () => {
     const kv = memoryKv()
-    await recordWithIds(kv, nine.slice(0, 2))
-    const t = deps(kv, true, tailCopy(nine.slice(0, 2)))
+    await recordWithIds(kv, many.slice(0, 2))
+    const t = deps(kv, { tail: tailCopy(many.slice(0, 2)) })
     const r = await runCronGuardWatch(t.d)
-    expect(r.find((x) => x.kind === 'failed_open')).toMatchObject({ status: 'under', count: 2 })
-    expect(t.sent).toEqual([])
+    expect(failOpen(r)).toMatchObject({ status: 'under', count: 2 })
   })
 
   it('asks the tail copy for the same 24 hour window the KV count uses', async () => {
-    const kv = memoryKv()
     const tail = tailCopy()
-    await runCronGuardWatch(deps(kv, true, tail).d)
+    await runCronGuardWatch(deps(memoryKv(), { tail }).d)
     expect(tail).toHaveBeenCalledWith(NOW - 24 * H, NOW)
   })
 
   it('logs both records on every run, so a copy that stops keeping up is visible on a quiet day', async () => {
     const kv = memoryKv()
-    await recordWithIds(kv, nine.slice(0, 1))
-    const t = deps(kv, true, tailCopy(nine.slice(1, 2)))
+    await recordWithIds(kv, many.slice(0, 1))
+    const t = deps(kv, { tail: tailCopy(many.slice(1, 2)) })
     await runCronGuardWatch(t.d)
-    expect(t.lines.join('\n')).toMatch(/kind=failed_open count=2 threshold=3 guard_record=1 tail_copy=1 only_in_tail_copy=1 missing_from_tail_copy=1/)
+    expect(t.lines.join('\n')).toMatch(/kind=failed_open count=2 threshold=20 guard_record=1 tail_copy=1 only_in_tail_copy=1 missing_from_tail_copy=1/)
   })
 
-  it('a tail copy it cannot read leaves the KV count standing, says so, and the page calls it a floor', async () => {
+  it('a tail copy it cannot read leaves the KV count standing, says so, and calls it a floor', async () => {
     const kv = memoryKv()
-    await recordWithIds(kv, nine.slice(0, 3))
+    await recordWithIds(kv, many.slice(0, 3))
     const tail = tailCopy()
     tail.mockRejectedValue(new Error('PGRST 503'))
-    const t = deps(kv, true, tail)
+    const t = deps(kv, { tail })
     const r = await runCronGuardWatch(t.d)
     expect(t.errs.join('\n')).toMatch(/could not read the tail worker's copy of failed_open.*PGRST 503/)
-    expect(t.sent).toEqual([{ kind: 'failed_open', count: 3, capped: true }])
-    expect(t.sources[0]).toMatchObject({ guardRecord: 3, unread: { record: 'tail_copy', why: expect.stringMatching(/PGRST 503/) } })
-    expect(r.find((x) => x.kind === 'failed_open')).toMatchObject({ status: 'over', count: 3, capped: true })
+    expect(failOpen(r)).toMatchObject({ status: 'under', count: 3, capped: true })
     expect(t.lines.join('\n')).toMatch(/tail_copy=unreadable/)
   })
 
   it('a KV record it cannot read leaves the tail copy count standing, rather than the whole count going unreadable', async () => {
     const kv = memoryKv()
     kv.list.mockRejectedValue(new Error('KV list 503'))
-    const t = deps(kv, true, tailCopy(nine.slice(0, 4)))
+    const t = deps(kv, { tail: tailCopy(many.slice(0, 4)) })
     const r = await runCronGuardWatch(t.d)
-    expect(r.find((x) => x.kind === 'failed_open')).toMatchObject({ status: 'over', count: 4, capped: true })
-    expect(t.sources[0]).toMatchObject({ tailCopy: 4, unread: { record: 'guard_record', why: expect.stringMatching(/KV list 503/) } })
+    expect(failOpen(r)).toMatchObject({ status: 'under', count: 4, capped: true })
     expect(t.errs.join('\n')).toMatch(/could not count failed_open.*KV list 503/)
   })
 
@@ -328,12 +501,11 @@ describe('runCronGuardWatch counts a fail-open from either record (#2166)', () =
     const kv = memoryKv()
     await record(kv, 'skipped_duplicate', Array.from({ length: 30 }, () => NOW - H))
     const tail = tailCopy()
-    const t = deps(kv, true, tail)
-    await runCronGuardWatch(t.d)
+    await runCronGuardWatch(deps(kv, { tail }).d)
     expect(tail).toHaveBeenCalledTimes(1)
-    expect(t.sources[0]).toBeUndefined()
   })
 })
+
 
 describe('supabaseTailCopyReader (#2166)', () => {
   /** A query builder double that serves `rows` by range, the way PostgREST pages. */
@@ -384,12 +556,16 @@ describe('supabaseTailCopyReader (#2166)', () => {
 })
 
 describe('cronGuardMessage', () => {
-  it('a fail-open page says the ticks ran unguarded, what that risks, and where to look', () => {
-    const m = cronGuardMessage('failed_open', 4, false)
-    expect(m.title).toBe('Cron guard ran ticks unguarded')
-    expect(m.errors).toEqual(['The cron guard could not reach its claim store 4 times in the last 24 hours, so those ticks ran without it.'])
-    expect(m.context).toMatch(/delivered twice in that time may have run its jobs twice/)
-    expect(m.fixHint).toMatch(/\[cron-once\] FAILED OPEN/)
+  // #2284: the page fires only on a rate well above the measured 4 a day, and
+  // points at the durable record, never at a Workers Logs search, which missed
+  // two known FAILED OPEN lines (15:15 and 16:59 UTC) when it was followed.
+  it('a fail-open rate page says how many, what is normal, and where each one is recorded', () => {
+    const m = cronGuardMessage('failed_open', 23, false)
+    expect(m.title).toBe('Cron guard keeps failing open')
+    expect(m.errors).toEqual(['The cron guard could not reach its claim store 23 times in the last 24 hours, so those ticks ran without it. About 4 a day is normal.'])
+    expect(m.context).toBe('A count this high means the claim store itself is failing, not a passing delay. A tick that ran twice is paged on its own.')
+    expect(m.fixHint).toBe('Each one is a row in the cron_guard_fail_opens table, with its tick and why the claim did not answer.')
+    expect(m.fixHint).not.toMatch(/Workers Logs/)
   })
 
   it('a duplicates page says it is Cloudflare doing it and the guard is absorbing it, so nobody hunts for a fix', () => {
@@ -403,41 +579,107 @@ describe('cronGuardMessage', () => {
 
   // #2166, L11: the page says what it counted and from where when the records disagree.
   it('names the fail-opens whose own record failed, and that they were counted from the tail copy', () => {
-    const m = cronGuardMessage('failed_open', 9, false, { guardRecord: 3, tailCopy: 9, onlyInTailCopy: 6, missingFromTailCopy: 0 })
-    expect(m.errors).toEqual([
-      'The cron guard could not reach its claim store 9 times in the last 24 hours, so those ticks ran without it.',
-      'The guard could not write its own record of 6 of them, because its store failed too. They were counted from the copy the tail worker keeps of the guard\'s log lines.',
-    ])
+    const m = cronGuardMessage('failed_open', 24, false, { guardRecord: 3, tailCopy: 24, onlyInTailCopy: 21, missingFromTailCopy: 0 })
+    expect(m.errors[1]).toBe('The guard could not write its own record of 21 of them, because its store failed too. They were counted from the copy the tail worker keeps of the guard\'s log lines.')
   })
 
   it('says the count is the guard record alone, and a floor, when the tail copy could not be read', () => {
-    const m = cronGuardMessage('failed_open', 3, true, { guardRecord: 3, unread: { record: 'tail_copy', why: 'PGRST 503' } })
-    expect(m.errors).toEqual([
-      'The cron guard could not reach its claim store at least 3 times in the last 24 hours, so those ticks ran without it.',
-      'This counts the guard\'s own record alone: the tail worker\'s copy of its log lines could not be read (PGRST 503), so a fail-open whose own record also failed is not in this count.',
-    ])
-  })
-
-  it('says the count is the tail copy alone when the guard record could not be read', () => {
-    const m = cronGuardMessage('failed_open', 4, true, { tailCopy: 4, unread: { record: 'guard_record', why: 'KV list 503' } })
-    expect(m.errors[1]).toBe('This counts the tail worker\'s copy of the guard\'s log lines alone: the guard\'s own record could not be read (KV list 503).')
+    const m = cronGuardMessage('failed_open', 20, true, { guardRecord: 20, unread: { record: 'tail_copy', why: 'PGRST 503' } })
+    expect(m.errors[0]).toMatch(/at least 20 times/)
+    expect(m.errors[1]).toBe('This counts the guard\'s own record alone: the tail worker\'s copy of its log lines could not be read (PGRST 503), so a fail-open whose own record also failed is not in this count.')
   })
 
   it('says when the tail copy is missing fail-opens the guard recorded, in the singular for one', () => {
-    const m = cronGuardMessage('failed_open', 3, false, { guardRecord: 3, tailCopy: 2, onlyInTailCopy: 0, missingFromTailCopy: 1 })
+    const m = cronGuardMessage('failed_open', 20, false, { guardRecord: 20, tailCopy: 19, onlyInTailCopy: 0, missingFromTailCopy: 1 })
+    expect(m.errors[1]).toBe('1 of them is not in the tail worker\'s copy of the guard\'s log lines.')
+  })
+
+  it('says "at least" when the count stopped at its page limit', () => {
+    expect(cronGuardMessage('skipped_duplicate', 10_000, true).errors[0]).toMatch(/at least 10,000 cron ticks/)
+  })
+})
+
+describe('doubleRunMessage (#2284)', () => {
+  const at = Date.parse('2026-10-17T13:00:12.000Z')
+  const run = (o: Partial<TickDelivery>): TickDelivery => ({ id: 'x', cron: '0 13 * * *', scheduledAtMs: at, outcome: 'ran', invocationOutcome: 'ok', atMs: at, ...o })
+
+  it('names each tick in Eastern time, in words, and how it came to run twice', () => {
+    const m = doubleRunMessage({ kind: 'doubled', ticks: [
+      { tick: 't1', cron: '* * * * *', scheduledAtMs: at, how: 'failed_open', runs: [run({ cron: '* * * * *', outcome: 'failed_open' }), run({ cron: '* * * * *' })] },
+      { tick: 't2', cron: '0 * * * *', scheduledAtMs: at, how: 'took_over', runs: [run({ cron: '0 * * * *' }), run({ cron: '0 * * * *', outcome: 'took_over' })] },
+    ] })
+    expect(m.title).toBe('2 cron ticks may have run twice')
     expect(m.errors).toEqual([
-      'The cron guard could not reach its claim store 3 times in the last 24 hours, so those ticks ran without it.',
-      '1 of them is not in the tail worker\'s copy of the guard\'s log lines.',
+      'The Oct 17, 9:00 AM EDT run of the cron that runs every minute happened twice: the claim store could not be reached for one delivery, which ran it without the claim, and another delivery ran it too.',
+      'The Oct 17, 9:00 AM EDT run of the cron that runs every hour on the hour happened twice: a second delivery took it over while the first was still running, because the first had stopped renewing its claim.',
+    ])
+    expect(m.context).toBe('The jobs on those ticks may have done their work twice, such as an export, a purge or an alert.')
+    expect(m.fixHint).toBe('Each delivery is a row in the cron_tick_deliveries table. Check what those jobs wrote at those times.')
+  })
+
+  it('names at most five ticks and counts the rest', () => {
+    const ticks = Array.from({ length: 7 }, (_, i) => ({ tick: `t${i}`, cron: '* * * * *', scheduledAtMs: at + i * 60_000, how: 'ran_twice' as const, runs: [run({}), run({}), run({})] }))
+    const m = doubleRunMessage({ kind: 'doubled', ticks })
+    expect(m.title).toBe('7 cron ticks may have run twice')
+    expect(m.errors).toHaveLength(6)
+    expect(m.errors[0]).toMatch(/happened 3 times\.$/)
+    expect(m.errors[5]).toBe('And 2 more.')
+  })
+
+  it('says it could not check, and why, when the record could not be read or is not whole', () => {
+    const unread = doubleRunMessage({ kind: 'unreadable', why: 'PGRST 503' })
+    expect(unread.title).toBe('Cron guard could not check for a tick run twice')
+    expect(unread.errors).toEqual(['The record of cron deliveries could not be read (PGRST 503), so a tick that ran twice in the last 24 hours would not be seen.'])
+    expect(unread.fixHint).toBe('Check that bidspoke-worker-tail is deployed and is writing rows to the cron_tick_deliveries table.')
+    expect(doubleRunMessage({ kind: 'incomplete', present: 1_100, expected: 1_429 }).errors).toEqual([
+      'The record of cron deliveries holds 1,100 of the last 1,429 minutes of the every minute cron, so a tick that ran twice could be missed.',
+    ])
+    expect(doubleRunMessage({ kind: 'incomplete', present: 0, expected: 0 }).errors).toEqual([
+      'The record of cron deliveries holds no deliveries for the last 24 hours, so a tick that ran twice would not be seen.',
     ])
   })
+})
 
-  it('adds nothing when both records agree', () => {
-    const m = cronGuardMessage('failed_open', 3, false, { guardRecord: 3, tailCopy: 3, onlyInTailCopy: 0, missingFromTailCopy: 0 })
-    expect(m.errors).toHaveLength(1)
+describe('supabaseDeliveryReader (#2284)', () => {
+  function fakeSupabase(rows: Array<Record<string, unknown>>, error: { message: string } | null = null) {
+    const calls: Array<{ method: string; args: unknown[] }> = []
+    const builder: Record<string, unknown> = {}
+    for (const m of ['select', 'gt', 'lte', 'order']) {
+      builder[m] = (...args: unknown[]) => { calls.push({ method: m, args }); return builder }
+    }
+    builder.range = async (from: number, to: number) => {
+      calls.push({ method: 'range', args: [from, to] })
+      return error ? { data: null, error } : { data: rows.slice(from, to + 1), error: null }
+    }
+    const from = vi.fn(() => builder)
+    return { client: { from } as unknown as Parameters<typeof supabaseDeliveryReader>[0], from, calls }
+  }
+  const row = (i: number) => ({
+    delivery_id: `d-${i}`,
+    cron: '* * * * *',
+    scheduled_at: new Date(NOW - i * 60_000).toISOString(),
+    outcome: 'ran',
+    invocation_outcome: 'ok',
+    occurred_at: new Date(NOW - i * 60_000 + 500).toISOString(),
   })
 
-  it('says "at least" when the count stopped at its page limit, and reads one in the singular', () => {
-    expect(cronGuardMessage('skipped_duplicate', 10_000, true).errors[0]).toMatch(/at least 10,000 cron ticks/)
-    expect(cronGuardMessage('failed_open', 1, false).errors[0]).toMatch(/claim store once in the last/)
+  it('reads the window from cron_tick_deliveries, newest first, past the 1,000 row cap', async () => {
+    const f = fakeSupabase(Array.from({ length: 1500 }, (_, i) => row(i)))
+    const r = await supabaseDeliveryReader(f.client)(NOW - 24 * H, NOW)
+    expect(f.from).toHaveBeenCalledWith('cron_tick_deliveries')
+    expect(r.deliveries).toHaveLength(1500)
+    expect(r.deliveries[1]).toEqual({ id: 'd-1', cron: '* * * * *', scheduledAtMs: NOW - 60_000, outcome: 'ran', invocationOutcome: 'ok', atMs: NOW - 60_000 + 500 })
+    expect(f.calls).toContainEqual({ method: 'gt', args: ['occurred_at', new Date(NOW - 24 * H).toISOString()] })
+    expect(f.calls.filter((c) => c.method === 'range').map((c) => c.args)).toEqual([[0, 999], [1000, 1999]])
+  })
+
+  it('throws on a failed read, so it is reported unreadable and never as zero', async () => {
+    const f = fakeSupabase([], { message: 'relation "cron_tick_deliveries" does not exist' })
+    await expect(supabaseDeliveryReader(f.client)(NOW - 24 * H, NOW)).rejects.toThrow(/cron_tick_deliveries.*does not exist/)
+  })
+
+  it('throws on a row whose outcome it does not know, rather than counting it as some other outcome (L50)', async () => {
+    const f = fakeSupabase([{ ...row(1), outcome: 'exploded' }])
+    await expect(supabaseDeliveryReader(f.client)(NOW - 24 * H, NOW)).rejects.toThrow(/outcome "exploded"/)
   })
 })

@@ -492,6 +492,12 @@
     "note": "The cron guard fail-open record's retention (#2166): run daily by the purge-cron-guard-fail-opens pg_cron job, deleting cron_guard_fail_opens rows over 7 days old. A DELETE, revoked from anon and authenticated, so anon must be denied. It takes no arguments, so an empty body names it."
   },
   {
+    "name": "purge_cron_tick_deliveries",
+    "args": {},
+    "anon": "denied",
+    "note": "The cron delivery record's retention (#2284): run daily by the purge-cron-tick-deliveries pg_cron job, deleting cron_tick_deliveries rows over 7 days old. A DELETE, revoked from anon and authenticated, so anon must be denied. It takes no arguments, so an empty body names it."
+  },
+  {
     "name": "db_stall_snapshot",
     "args": {},
     "anon": "denied",
