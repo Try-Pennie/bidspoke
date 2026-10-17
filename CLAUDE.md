@@ -63,6 +63,25 @@
     every switch and record that must handle it (`executeNode`, save validation,
     colours, cards, heights); the coverage tests name the palette, preview, config
     panel, shadow exemption, changelog glossary and similar fallback placements.
+  - `packages/service-catalogue`: the ops service catalogue (#2337, #1689 Phase 7).
+    Two entry points and no root one: `@bidspoke/service-catalogue/schema` is
+    declarative (services, actions, arguments, traits, the `(key, version)` lookup)
+    for web, the validator and the MCP tool; `/runtime` holds each action's `run`
+    and the services' auth function slots, for the Workers only. Web never imports
+    `runtime` (`apps/web/src/lib/__tests__/service-catalogue-runtime-stays-out-of-web.test.ts`,
+    which also scans every package web depends on), and `schema` never reaches it
+    (the package's own `catalogue.test.ts`). An action is
+    `{ key, name, version, arguments[], sideEffect, idempotent, run }` and is never
+    edited once released (D1): `src/fingerprints.json` holds a sha256 per
+    `key@version` over its arguments, traits and the source of its run file
+    `src/runtime/actions/<key>.v<version>.ts` plus every file that imports
+    relatively, and a changed one fails, asking for a new version. A new version's
+    fingerprint line is printed by the failing test for you to add. Every action
+    decides `sideEffect` and `idempotent` itself, with `idempotentBecause` saying
+    why, never from a Pipedream annotation (R11). Steps resolve an action by
+    `(key, version)` and a missing version is refused as `action_version_missing`,
+    never run on the newest. The catalogue is empty until the first service PR;
+    `src/__fixtures__/catalogue` is a test only service that proves the machinery.
 
 ## Key conventions
 - All Worker routes are in `apps/worker/src/index.ts`, handlers in `src/routes/`
