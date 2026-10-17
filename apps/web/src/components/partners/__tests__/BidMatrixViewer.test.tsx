@@ -304,6 +304,20 @@ describe('BidMatrixViewer: deleting the matrix the partner uses (#2217)', () => 
     expect(screen.getByRole('button', { name: 'Delete this matrix' })).toBeDisabled()
   })
 
+  // #2258: with no matrix chosen, the matrix in view is shown for looking at only,
+  // and says so, rather than reading as the one the partner's bids come from.
+  it('a matrix shown while the partner names none says it is not in use', async () => {
+    render(<Host initial={null} onDraft={vi.fn()} />)
+    await screen.findByText(/No rows yet/)
+    expect(screen.getByText('Not in use: no bid matrix is chosen above, so no bid is looked up in this one.')).toBeInTheDocument()
+  })
+
+  it('control: the matrix the partner uses carries no such line', async () => {
+    render(<Host initial="cfg-1" onDraft={vi.fn()} />)
+    await screen.findByText(/No rows yet/)
+    expect(screen.queryByText(/Not in use/)).toBeNull()
+  })
+
   it('deleting a matrix the partner does not use leaves the draft alone', async () => {
     vi.mocked(api.partnerBidConfigs.delete).mockResolvedValue({ ok: true })
     const onDraft = vi.fn()
