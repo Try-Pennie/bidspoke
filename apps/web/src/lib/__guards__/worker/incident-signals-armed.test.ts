@@ -47,7 +47,7 @@ function armedIn(src: string, signal: string): boolean {
 
 describe('incident registry entries are armed', () => {
   it('reads the registry', () => {
-    expect(registered.length).toBe(16)
+    expect(registered.length).toBe(17)
   })
 
   it.each(registered)('%s is armed by a marker call outside the registry', (signal) => {

@@ -65,13 +65,16 @@ const profileField = (path: string, section: string, label: string, mergeGroup?:
  * Profile labels come from the section's own label list (L118).
  */
 export const PARTNER_FIELD_REGISTRY: readonly FieldEntry[] = [
-  partnerField('name', 'Identity', 'Name'),
-  partnerField('slug', 'Identity', 'Slug'),
-  partnerField('partner_type', 'Identity', 'Type'),
+  // The Partner tab's rows (#2323, PM-20): Name, Does, Active. The slug is asked
+  // only on the new partner page, under its own Slug row, and cannot change once
+  // the partner exists, so no tab of a saved partner draws it.
+  partnerField('name', 'Name', 'Name'),
+  { ...partnerField('slug', 'Slug', 'Slug'), offPage: true },
+  partnerField('partner_type', 'Does', 'Does'),
   // List order left the page with the alphabetical list (#2137, PM-1); the column
   // stays in the data, so the merge and the history still name it.
-  { ...partnerField('priority', 'Identity', 'List order (not shown on this page)'), offPage: true },
-  partnerField('is_active', 'Identity', 'Status'),
+  { ...partnerField('priority', 'Name', 'List order (not shown on this page)'), offPage: true },
+  partnerField('is_active', 'Active', 'Active'),
   partnerField('bid_resolver_type', 'Bid resolution', 'Resolver', 'bid_group'),
   partnerField('bid_resolver_config', 'Bid resolution', 'Resolver settings', 'bid_group'),
   partnerField('bid_formula', 'Bid resolution', 'Bid formula', 'bid_group'),

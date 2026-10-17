@@ -1,0 +1,193 @@
+import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { describe, expect, it } from 'vitest'
+import { checkCatalogue, scanForIdempotentHints, type CatalogueUnderCheck } from './catalogue-checks'
+import { FIXTURE_CATALOGUE } from '../__fixtures__/catalogue'
+import type { ActionSchema, ServiceSchema } from '../schema/types'
+import type { RuntimeAction } from '../runtime/types'
+
+/**
+ * The checks every catalogue is held to, proven against the test only fixture
+ * catalogue: it is clean as committed, and each way of breaking it is reported
+ * by its own named problem. The shipped catalogue is held to the same function
+ * in ../catalogue.test.ts, so these red cases are the proof that test can fail.
+ */
+
+const codes = async (catalogue: CatalogueUnderCheck) => (await checkCatalogue(catalogue)).map((p) => p.code)
+
+/** The fixture with one of its schema actions rewritten. */
+function withSchemaAction(key: string, version: number, edit: (a: ActionSchema) => ActionSchema): CatalogueUnderCheck {
+  const services: ServiceSchema[] = FIXTURE_CATALOGUE.services.map((s) => ({
+    ...s,
+    actions: s.actions.map((a) => (a.key === key && a.version === version ? edit(a) : a)),
+  }))
+  const runtime: RuntimeAction[] = FIXTURE_CATALOGUE.runtime.map((r) => {
+    if (r.key !== key || r.version !== version) return r
+    return { ...edit(r), run: r.run }
+  })
+  return { ...FIXTURE_CATALOGUE, services, runtime }
+}
+
+describe('the fixture catalogue is clean as committed', () => {
+  it('has no problems', async () => {
+    expect(await checkCatalogue(FIXTURE_CATALOGUE)).toEqual([])
+  })
+
+  it('has actions to check, so a clean result cannot be vacuous', () => {
+    expect(FIXTURE_CATALOGUE.runtime.length).toBeGreaterThanOrEqual(2)
+    expect(Object.keys(FIXTURE_CATALOGUE.fingerprints).length).toBeGreaterThanOrEqual(2)
+  })
+})
+
+describe('versioning is enforced by committed fingerprints (#1689 D1)', () => {
+  it('fails when a released version no longer matches its fingerprint, and asks for a new version', async () => {
+    const problems = await checkCatalogue({
+      ...FIXTURE_CATALOGUE,
+      fingerprints: { ...FIXTURE_CATALOGUE.fingerprints, 'fixture.echo@1': '0'.repeat(64) },
+    })
+    expect(problems.map((p) => p.code)).toEqual(['fingerprint_changed'])
+    expect(problems[0].subject).toBe('fixture.echo@1')
+    expect(problems[0].message).toContain('version 3')
+  })
+
+  it('treats a change to the argument schema as a change to the version', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({
+      ...a,
+      arguments: a.arguments.map((arg) => ({ ...arg, required: !arg.required })),
+    }))
+    expect(await codes(edited)).toEqual(['fingerprint_changed'])
+  })
+
+  it('treats a change to a trait as a change to the version', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, sideEffect: true, idempotent: true }))
+    expect(await codes(edited)).toEqual(['fingerprint_changed'])
+  })
+
+  it('lets a display only field change without a new version', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({
+      ...a,
+      name: 'Echo, renamed',
+      idempotentBecause: `${a.idempotentBecause} Reworded.`,
+    }))
+    expect(await codes(edited)).toEqual([])
+  })
+
+  it('names a version with no committed fingerprint, giving the line to add', async () => {
+    const fingerprints = { ...FIXTURE_CATALOGUE.fingerprints }
+    const expected = fingerprints['fixture.echo@2']
+    delete fingerprints['fixture.echo@2']
+    const problems = await checkCatalogue({ ...FIXTURE_CATALOGUE, fingerprints })
+    expect(problems.map((p) => p.code)).toEqual(['fingerprint_missing'])
+    expect(problems[0].message).toContain(`"fixture.echo@2": "${expected}"`)
+  })
+
+  it('names a committed fingerprint whose action version is gone', async () => {
+    const problems = await checkCatalogue({
+      ...FIXTURE_CATALOGUE,
+      fingerprints: { ...FIXTURE_CATALOGUE.fingerprints, 'fixture.gone@1': '0'.repeat(64) },
+    })
+    expect(problems.map((p) => p.code)).toEqual(['fingerprint_orphaned'])
+    expect(problems[0].subject).toBe('fixture.gone@1')
+  })
+})
+
+describe('every action decides its own traits (R11)', () => {
+  it('refuses a trait that is not a decided boolean', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, idempotent: undefined as unknown as boolean }))
+    expect(await codes(edited)).toContain('trait_not_decided')
+  })
+
+  it('refuses an idempotent decision with no recorded reason', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, idempotentBecause: '  ' }))
+    expect(await codes(edited)).toEqual(['idempotent_reason_missing'])
+  })
+
+  it('refuses a read that claims it is unsafe to repeat', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, sideEffect: false, idempotent: false }))
+    expect(await codes(edited)).toContain('read_not_idempotent')
+  })
+})
+
+describe('catalogue structure', () => {
+  it('refuses two registrations of one (key, version)', async () => {
+    const [service] = FIXTURE_CATALOGUE.services
+    const services = [{ ...service, actions: [...service.actions, service.actions[0]] }]
+    expect(await codes({ ...FIXTURE_CATALOGUE, services })).toContain('duplicate_action_version')
+  })
+
+  it('refuses an action key that does not start with its service key', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, key: 'other.echo' }))
+    expect(await codes(edited)).toContain('action_key_outside_service')
+  })
+
+  it('refuses a version that is not a positive whole number', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, version: 1.5 }))
+    expect(await codes(edited)).toContain('version_not_positive_integer')
+  })
+
+  it('refuses two arguments with one key', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, arguments: [...a.arguments, a.arguments[0]] }))
+    expect(await codes(edited)).toContain('argument_duplicate_key')
+  })
+
+  it('refuses an argument that depends on one the action does not have', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({
+      ...a,
+      arguments: a.arguments.map((arg) => ({ ...arg, dependsOn: ['missing'] })),
+    }))
+    expect(await codes(edited)).toContain('argument_depends_on_unknown')
+  })
+
+  it('refuses a dropdown with no lookup to fill it', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({
+      ...a,
+      arguments: a.arguments.map((arg) => ({ ...arg, type: 'dropdown' as const })),
+    }))
+    expect(await codes(edited)).toContain('dropdown_without_source')
+  })
+})
+
+describe('schema and runtime pair one to one, and each run comes from its own file', () => {
+  it('names a schema action with no run', async () => {
+    const runtime = FIXTURE_CATALOGUE.runtime.filter((r) => r.version !== 2)
+    expect(await codes({ ...FIXTURE_CATALOGUE, runtime })).toEqual(['schema_without_run'])
+  })
+
+  it('names a run with no schema action', async () => {
+    const services = FIXTURE_CATALOGUE.services.map((s) => ({ ...s, actions: s.actions.filter((a) => a.version !== 2) }))
+    const problems = await codes({ ...FIXTURE_CATALOGUE, services })
+    expect(problems).toContain('run_without_schema')
+  })
+
+  it('names a registered run that is not the one exported by its action file', async () => {
+    const runtime = FIXTURE_CATALOGUE.runtime.map((r) =>
+      r.version === 1 ? { ...r, run: () => Promise.resolve({ echo: 'inline' }) } : r,
+    )
+    expect(await codes({ ...FIXTURE_CATALOGUE, runtime })).toEqual(['run_not_from_its_file'])
+  })
+
+  it('names an action whose run file is missing', async () => {
+    const empty = mkdtempSync(path.join(tmpdir(), 'catalogue-empty-'))
+    expect(await codes({ ...FIXTURE_CATALOGUE, actionsDir: empty })).toContain('run_file_missing')
+  })
+
+  it('names an action file that nothing registers', async () => {
+    const services = FIXTURE_CATALOGUE.services.map((s) => ({ ...s, actions: s.actions.filter((a) => a.version !== 2) }))
+    const runtime = FIXTURE_CATALOGUE.runtime.filter((r) => r.version !== 2)
+    const fingerprints = { ...FIXTURE_CATALOGUE.fingerprints }
+    delete fingerprints['fixture.echo@2']
+    expect(await codes({ ...FIXTURE_CATALOGUE, services, runtime, fingerprints })).toEqual(['run_file_unregistered'])
+  })
+})
+
+describe('idempotent is never taken from a Pipedream annotation', () => {
+  it('finds the annotation wherever it is written', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'catalogue-hint-'))
+    mkdirSync(path.join(dir, 'nested'))
+    const hint = 'idempotent' + 'Hint'
+    writeFileSync(path.join(dir, 'nested', 'copied.ts'), `export const annotations = { ${hint}: true }\n`)
+    writeFileSync(path.join(dir, 'clean.ts'), 'export const x = 1\n')
+    expect(scanForIdempotentHints(dir)).toEqual([path.join(dir, 'nested', 'copied.ts')])
+  })
+})

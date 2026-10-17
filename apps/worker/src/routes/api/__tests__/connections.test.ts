@@ -165,6 +165,18 @@ describe('POST /connections', () => {
     )
   })
 
+  it('writes no route audit row: the upsert sets updated_by, which the table trigger names (#2331, F119)', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, service_connections: { single: null, upsertResult: upsertedConn } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    const res = await request(app, 'POST', '/connections', {
+      body: { service_type: 'salesforce', credentials: { access_token: 'tok', instance_url: 'https://sf.test' } },
+    })
+    expect(res.status).toBe(201)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    const upsert = (sb.calls.service_connections ?? []).find(([m]) => m === 'upsert')
+    expect((upsert?.[1][0] as Record<string, unknown>).updated_by).toBe(testUser.id)
+  })
+
   it('reuses existing cf_secret_key when updating an existing connection', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
@@ -205,15 +217,28 @@ describe('DELETE /connections/:service_type', () => {
 
   it('returns 200 and deletes the CF secret', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        // Lookup, then the DELETE, whose .select('id') reports the touched row.
-        service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }],
-      }) as never
+      makeSupabase(
+        { users: { single: testUser }, service_connections: { single: existingConn } },
+        // The delete function reports the row it removed.
+        { rpcs: { delete_service_connection: [{ id: 'conn-1' }] } },
+      ) as never
     )
     const res = await request(app, 'DELETE', '/connections/salesforce')
     expect(res.status).toBe(200)
     expect(vi.mocked(deleteCfSecret)).toHaveBeenCalledWith('CONN_EXISTING', 'acct-123', 'tok-abc')
+  })
+
+  // #2331, F119: the table's trigger audits every change once, naming the user
+  // through delete_service_connection's actor, so the route writes none.
+  it('deletes through delete_service_connection with the caller as actor, and writes no route audit row', async () => {
+    const rpc = vi.fn(async () => ({ data: [{ id: 'conn-1' }], error: null }))
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn } }, { rpc }) as never
+    )
+    const res = await request(app, 'DELETE', '/connections/salesforce')
+    expect(res.status).toBe(200)
+    expect(rpc).toHaveBeenCalledWith('delete_service_connection', { p_organization_id: testUser.organization_id, p_service_type: 'salesforce', p_actor: testUser.id })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 
   it('refuses a service type it does not manage, so the Slack connection is removed only by its own route (#2060)', async () => {
@@ -287,6 +312,19 @@ describe('POST /connections/:service_type/sync-schema', () => {
     )
   })
 
+  // #2331, F119: the schema write names its user through updated_by, so the
+  // table trigger's one audit row names them and is not labelled direct SQL.
+  it('sets updated_by on the schema write and writes no route audit row', async () => {
+    vi.mocked(fetchSalesforceSchema).mockResolvedValue({ objects: [{ name: 'Lead', label: 'Lead', fields: [] }] })
+    const sb = makeSupabase({ users: { single: testUser }, service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }] })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
+    expect(res.status).toBe(200)
+    const update = (sb.calls.service_connections ?? []).find(([m]) => m === 'update')
+    expect((update?.[1][0] as Record<string, unknown>).updated_by).toBe(testUser.id)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
   it('calls fetchSupabaseSchema for supabase connections', async () => {
     const supabaseConn = { ...existingConn, service_type: 'supabase', cf_secret_key: 'CONN_EXISTING' }
     const mockSchema = { objects: [{ name: 'leads', label: 'leads', fields: [] }] }
@@ -349,10 +387,10 @@ describe('DELETE /connections/:service_type: zero-row + DB error (#588)', () => 
     // #588: the connection existed at the read but the DELETE removed nothing, so
     // it must surface as a 404 rather than a success that audits a phantom delete.
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        service_connections: [{ single: existingConn }, { writeRows: [] }],
-      }) as never
+      makeSupabase(
+        { users: { single: testUser }, service_connections: { single: existingConn } },
+        { rpcs: { delete_service_connection: [] } },
+      ) as never
     )
     const res = await request(app, 'DELETE', '/connections/salesforce')
     expect(res.status).toBe(404)
@@ -363,10 +401,10 @@ describe('DELETE /connections/:service_type: zero-row + DB error (#588)', () => 
   it('returns 500 (not a false 404) when the delete hits a real DB error', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        service_connections: [{ single: existingConn }, { deleteError: { code: '42P01', message: 'relation missing' } }],
-      }) as never
+      makeSupabase(
+        { users: { single: testUser }, service_connections: { single: existingConn } },
+        { rpc: async () => ({ data: null, error: { code: '42P01', message: 'relation missing' } }) },
+      ) as never
     )
     const res = await request(app, 'DELETE', '/connections/salesforce')
     expect(res.status).toBe(500)

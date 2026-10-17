@@ -61,7 +61,7 @@ describe('partner settings', () => {
     expect(lines(entry({ action: 'created', changes: { id: { old: null, new: PARTNER }, organization_id: { old: null, new: 'org' }, created_at: { old: null, new: '2026-09-25T14:14:11Z' }, name: { old: null, new: 'Liberty1' }, is_active: { old: null, new: true } } }))).toEqual([
       { kind: 'text', text: 'Created the partner.' },
       { kind: 'set', label: 'Name', value: 'Liberty1' },
-      { kind: 'set', label: 'Status', value: 'yes' },
+      { kind: 'set', label: 'Active', value: 'yes' },
     ])
   })
 
