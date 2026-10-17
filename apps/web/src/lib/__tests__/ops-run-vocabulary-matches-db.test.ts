@@ -14,6 +14,8 @@ import { describe, expect, it } from 'vitest'
 import { REPO_ROOT } from './_scan-utils'
 import {
   ALL_OBSERVATION_REASONS,
+  CONNECTION_COPY_STATES,
+  CONNECTION_STATUSES,
   ALL_STATUS_REASONS,
   EXECUTION_STATUSES,
   LEASED_RUN_REQUEST_STATUSES,
@@ -25,6 +27,9 @@ import {
   RESUME_REASONS,
   RUN_REQUEST_STATUSES,
   SEND_LEDGER_STATUSES,
+  SF_BUDGET_SOURCES,
+  SF_LEASE_OUTCOMES,
+  SF_LEASE_PURPOSES,
   STATUS_REASONS,
   TERMINAL_RUN_REQUEST_STATUSES,
   TRIGGER_KINDS,
@@ -37,13 +42,28 @@ const SQL = readdirSync(MIGRATIONS)
   .map((f) => readFileSync(path.join(MIGRATIONS, f), 'utf8'))
   .join('\n')
 
-/** The quoted values of the first IN (...) list inside the named constraint. */
+/**
+ * The quoted values of the first IN (...) list inside the named constraint, as
+ * its LAST definition states it: the migrations are read in order, and a later
+ * one that drops and adds a constraint (#2334 widened the sweeps) is what the
+ * database holds.
+ */
 export function constraintValues(sql: string, name: string): string[] {
-  const at = sql.indexOf(`CONSTRAINT ${name} CHECK`)
+  const at = sql.lastIndexOf(`CONSTRAINT ${name} CHECK`)
   if (at < 0) throw new Error(`no constraint ${name} in the ops migrations`)
   const list = /IN\s*\(([^)]*)\)/.exec(sql.slice(at))
   if (!list) throw new Error(`constraint ${name} has no IN list`)
   return [...list[1].matchAll(/'([^']*)'/g)].map((m) => m[1])
+}
+
+/** The body of the named function as the LAST migration to create or replace it states it, up to its closing $fn$. */
+export function functionBody(sql: string, name: string): string {
+  const starts = [...sql.matchAll(new RegExp(`CREATE\\s+(?:OR\\s+REPLACE\\s+)?FUNCTION\\s+public\\.${name}\\s*\\(`, 'g'))]
+  if (starts.length === 0) throw new Error(`no function ${name} in the ops migrations`)
+  const at = starts[starts.length - 1].index!
+  const end = sql.indexOf('$fn$;', at)
+  if (end < 0) throw new Error(`function ${name} has no closing $fn$`)
+  return sql.slice(at, end)
 }
 
 const sorted = (values: readonly string[]) => [...values].sort()
@@ -66,6 +86,9 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     ['schedule_fire_observations_outcome_check', OBSERVATION_OUTCOMES],
     ['schedule_fire_observations_reason_check', ALL_OBSERVATION_REASONS],
     ['ops_lane_sweeps_sweep_check', OPS_SWEEPS],
+    // The ops connections' and Salesforce pool's (#2334).
+    ['sf_leases_purpose_check', SF_LEASE_PURPOSES],
+    ['sf_budget_readings_source_check', SF_BUDGET_SOURCES],
   ] as const)('%s', (name, values) => {
     expect(sorted(constraintValues(SQL, name))).toEqual(sorted(values))
   })
@@ -89,6 +112,40 @@ describe('the run engine vocabularies match the ops database constraints', () =>
 
   it('no reason belongs to two statuses, so a reason names its status', () => {
     expect(new Set(ALL_STATUS_REASONS).size).toBe(ALL_STATUS_REASONS.length)
+  })
+
+  /**
+   * Three vocabularies are answers of a function rather than a CHECK (#2334), so
+   * they are read out of the function's LAST definition: the values its CASE
+   * gives, and the outcomes it selects.
+   */
+  it.each([
+    ['connection_status', /(?:THEN|ELSE) '([a-z_]+)'/g, CONNECTION_STATUSES],
+    ['connection_copy', /(?:THEN|ELSE) '([a-z_]+)'/g, CONNECTION_COPY_STATES],
+    ['acquire_sf_lease', /SELECT '([a-z_]+)'::text/g, SF_LEASE_OUTCOMES],
+  ] as const)('%s answers exactly its vocabulary', (name, pattern, values) => {
+    expect(sorted([...new Set([...functionBody(SQL, name).matchAll(pattern)].map((m) => m[1]))])).toEqual(sorted(values))
+  })
+
+  it('acquire_sf_lease guards the same purposes its table allows', () => {
+    const guard = /p_purpose NOT IN \(([^)]*)\)/.exec(functionBody(SQL, 'acquire_sf_lease'))
+    expect(guard).not.toBeNull()
+    expect(sorted([...guard![1].matchAll(/'([^']*)'/g)].map((m) => m[1]))).toEqual(sorted(SF_LEASE_PURPOSES))
+  })
+
+  it('claim_ops_sweep, as last replaced, guards the same sweeps its table allows', () => {
+    const guard = /p_sweep NOT IN \(([^)]*)\)/.exec(functionBody(SQL, 'claim_ops_sweep'))
+    expect(guard).not.toBeNull()
+    expect(sorted([...guard![1].matchAll(/'([^']*)'/g)].map((m) => m[1]))).toEqual(sorted(OPS_SWEEPS))
+  })
+
+  it('reads the last definition of a constraint and of a function (seen red)', () => {
+    const twice = "CONSTRAINT c CHECK (x IN ('a'))\nCONSTRAINT c CHECK (x IN ('a', 'b'))"
+    expect(constraintValues(twice, 'c')).toEqual(['a', 'b'])
+    const fns = "CREATE FUNCTION public.f(p int) AS $fn$ old $fn$;\nCREATE OR REPLACE FUNCTION public.f(p int) AS $fn$ new $fn$;"
+    expect(functionBody(fns, 'f')).toContain('new')
+    expect(functionBody(fns, 'f')).not.toContain('old')
+    expect(() => functionBody(fns, 'g')).toThrow(/no function g/)
   })
 
   it('fails on a list that differs from its constraint (seen red)', () => {

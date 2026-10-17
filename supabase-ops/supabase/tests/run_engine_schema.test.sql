@@ -136,6 +136,10 @@ BEGIN
     AND p.proname <> ALL (v_names)
     -- The minute cron's own functions (#1949), each held to these same rules by ops_tick.test.sql.
     AND p.proname <> ALL (ARRAY['ops_now', 'claim_ops_sweep', 'save_workflow_copies', 'workflow_copies', 'record_schedule_observation', 'due_queue_depth'])
+    -- The ops connections' and Salesforce pool's (#2334), held to the same rules by connection_storage.test.sql.
+    AND p.proname <> ALL (ARRAY['save_connection_copies', 'connection_copy', 'record_connection_tombstone', 'purge_expired_connection_tombstones',
+      'record_connection_check', 'record_connection_needs_reauth', 'record_connection_reauth_cleared', 'connection_status',
+      'record_measured_identity', 'acquire_sf_lease', 'release_sf_lease', 'sweep_sf_leases', 'record_sf_budget_reading'])
     AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') IS FALSE
     AND p.proowner = 'postgres'::regrole;
   IF v_count <> 0 THEN RAISE EXCEPTION '% public function(s) executable by service_role are not on the run engine list', v_count; END IF;

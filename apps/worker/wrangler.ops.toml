@@ -5,8 +5,9 @@
 # OpsInternal entrypoint (#1946, below), the minute cron (#1949) and its binding
 # to the bidding Worker's OpsGateway entrypoint. It shares this package's source and dependencies but
 # is a SEPARATE Worker: its own name, its own bindings, its own secrets, and
-# none of the money Worker's (no Supabase key, no partner credentials, no KV, no
-# Durable Objects). The full ops Worker grows from this in plan 0.E.
+# none of the money Worker's (no Supabase key, no partner credentials, no KV, and
+# none of its Durable Objects: ops binds only its own class, below, #2334). The
+# full ops Worker grows from this in plan 0.E.
 #
 # Deployed by the Deploy Ops Worker job in .github/workflows/deploy.yml (#1709
 # part 4), whenever the worker sources change, after Deploy Ops Outbound and the
@@ -81,6 +82,26 @@ entrypoint = "OpsInternal"
 binding = "OPS_GATEWAY"
 service = "bidspoke-worker"
 entrypoint = "OpsGateway"
+
+# The first ops Durable Object (#2334, phase 4 of #1689): ConnectionTokenObject,
+# one per person bound connection, which will hold its OAuth refresh single
+# flight (Phase 5). It is this Worker's OWN class, exported from src/ops/index.ts:
+# never a script_name, so ops never reaches the bidding Worker's objects (Hard
+# Rule 1). apps/web/src/lib/__tests__/ops-worker-config.test.ts allows a binding
+# only to a class ops exports and one of the migrations below creates. Inert in
+# the deploy that adds it: nothing calls it.
+[[durable_objects.bindings]]
+name = "CONNECTION_TOKENS"
+class_name = "ConnectionTokenObject"
+
+# The ops Worker's own Durable Object migrations, separate from wrangler.toml's
+# (the bidding Worker's, at v5). One way (ADR 0011): once v1 is deployed, no
+# rollback may cross it, so the first deploy carrying v1 is the ops Worker's
+# rollback floor, recorded in docs/disaster-recovery.md. A class is never renamed
+# or deleted in the release that stops using it.
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ConnectionTokenObject"]
 
 # The run engine's minute cron (#1949, B2): scheduled() in src/ops/index.ts runs
 # one tick of src/ops/tick.ts, in observe mode. Always stated, never left out

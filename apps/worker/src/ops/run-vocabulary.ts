@@ -93,6 +93,48 @@ export const OBSERVATION_REASONS = {
 } as const satisfies Record<ObservationOutcome, readonly string[]>
 export const ALL_OBSERVATION_REASONS: readonly string[] = Object.values(OBSERVATION_REASONS).flat()
 
-/** The maintenance sweeps the tick runs, each with one owner per interval (#1698 1.4). */
-export const OPS_SWEEPS = ['lease_expiry', 'run_expiry', 'queue_agreement'] as const
+/**
+ * The maintenance sweeps the tick may claim, each with one owner per interval
+ * (#1698 1.4). tombstone_expiry, connection_check and sf_limits were added by
+ * #2334 (supabase-ops migration 20261017220000) for the ops connections; the
+ * tick runs only those in TICK_SWEEPS (tick.ts), and none of the three yet.
+ */
+export const OPS_SWEEPS = ['lease_expiry', 'run_expiry', 'queue_agreement', 'tombstone_expiry', 'connection_check', 'sf_limits'] as const
 export type OpsSweep = (typeof OPS_SWEEPS)[number]
+
+// ── ops connections and the ops Salesforce pool (#2334, supabase-ops migration 20261017220000) ──
+
+/**
+ * Whether a connection's copy may be used now, in connectionFetch's order: a
+ * tombstone, then withdrawal, then serve_until. connection_copy answers one.
+ */
+export const CONNECTION_COPY_STATES = ['usable', 'connection_removed', 'connection_withdrawn', 'connection_copy_expired', 'not_found'] as const
+export type ConnectionCopyState = (typeof CONNECTION_COPY_STATES)[number]
+
+/**
+ * The shown status of a connection, derived by connection_status and nowhere
+ * else: needs_reauth while a refresh failure is newer than the last Reconnect,
+ * whatever the check says (L53).
+ */
+export const CONNECTION_STATUSES = ['needs_reauth', 'check_failing', 'healthy', 'unchecked'] as const
+export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number]
+
+/** Why a Salesforce lease is taken. A step's share is its workflow's; every other purpose has a share of its own. */
+export const SF_LEASE_PURPOSES = ['step', 'lookup', 'verify', 'reconnect', 'connection_check', 'sf_limits'] as const
+export type SfLeasePurpose = (typeof SF_LEASE_PURPOSES)[number]
+
+/** What acquire_sf_lease answers. Every refusal is named; none is read as no limit. */
+export const SF_LEASE_OUTCOMES = [
+  'granted',
+  'pool_full',
+  'workflow_share_full',
+  'sf_budget_floor',
+  'sf_budget_unmeasured',
+  'sf_org_unmeasured',
+  'sf_cap_unset',
+] as const
+export type SfLeaseOutcome = (typeof SF_LEASE_OUTCOMES)[number]
+
+/** Where a budget reading came from: the sf_limits sweep's /limits read, or a response's Sforce-Limit-Info header. */
+export const SF_BUDGET_SOURCES = ['limits', 'sforce_limit_info'] as const
+export type SfBudgetSource = (typeof SF_BUDGET_SOURCES)[number]
