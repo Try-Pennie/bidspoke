@@ -129,7 +129,8 @@ DECLARE
   detail text;
 BEGIN
   BEGIN
-    PERFORM public.delete_partner_config('11111111-1111-1111-1111-111111115520', '33333333-3333-3333-3333-333333335520', '22222222-2222-2222-2222-222222225520', 'held@example.test');
+    -- The shared delete body (#2254): this case is about what a delete does.
+    PERFORM public._delete_partner_config('11111111-1111-1111-1111-111111115520', '33333333-3333-3333-3333-333333335520', '22222222-2222-2222-2222-222222225520', 'held@example.test', NULL);
     RAISE EXCEPTION 'a partner with a held click was deleted';
   EXCEPTION WHEN SQLSTATE 'BP023' THEN
     GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, detail = PG_EXCEPTION_DETAIL;
