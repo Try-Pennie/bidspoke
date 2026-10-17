@@ -124,10 +124,14 @@ export const OPS_REQUIRED_SECRETS = [
 ] as const
 
 /**
- * Secrets the ops Worker may hold but does not need yet (#1709 part 3). The ops
- * database's URL and service key (src/ops/ops-db.ts): nothing reads the ops
- * database until Phase 1, so requiring them now would alert on two secrets no
- * code uses. They move to OPS_REQUIRED_SECRETS in the change that first reads them.
+ * Secrets the ops Worker may hold and does not yet require (#1709 part 3). The
+ * ops database's URL and named secret key (src/ops/ops-db.ts). The minute cron
+ * (#1949) is the first code that reads them, and it did NOT move them to
+ * OPS_REQUIRED_SECRETS, deliberately: it ships before Dan has created the key,
+ * and while either is unset it reports not_configured, naming it, every minute,
+ * which the bidding Worker pages on (lib/ops-gateway.ts). Requiring them here as
+ * well would turn main's secret parity step red and add a second daily alert for
+ * the same unset key. They move to OPS_REQUIRED_SECRETS once both are set.
  */
 export const OPS_OPTIONAL_SECRETS = [
   'OPS_SUPABASE_URL',

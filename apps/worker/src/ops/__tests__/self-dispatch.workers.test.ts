@@ -12,6 +12,7 @@
  */
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
+import { dispatchKey, signDispatch } from '../dispatch-auth'
 import worker, { OPS_IDENTITY_HEADER, type OpsEnv } from '../index'
 
 const opsEnv = env as unknown as OpsEnv
@@ -29,5 +30,26 @@ describe('the public edge (workerd)', () => {
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({ error: 'not_found' })
     expect(res.headers.get(OPS_IDENTITY_HEADER)).toBe('ops')
+  })
+})
+
+/**
+ * The minute cron's dispatch through the real binding (#1949): a signed observe
+ * call reaches OpsInternal and is verified there, and a tampered one is refused
+ * across the binding, so the refusal is the receiver's, not a caller's check.
+ */
+describe('observe through the SELF binding (workerd)', () => {
+  const master = 'workerd-test-master'
+  const item = { kind: 'probe' as const }
+
+  it('verifies a signed dispatch and answers what it observed', async () => {
+    if (!opsEnv.PORTING_CAPTURE_MASTER) return expect.unreachable('the test config sets PORTING_CAPTURE_MASTER')
+    const signed = await signDispatch(await dispatchKey(opsEnv.PORTING_CAPTURE_MASTER), { v: 1, tick_id: 'workerd', signed_at: new Date().toISOString(), item })
+    expect(await opsEnv.SELF?.observe(signed)).toEqual({ observed: true, tick_id: 'workerd', kind: 'probe' })
+  })
+
+  it('refuses one signed with another key, on the far side of the binding', async () => {
+    const signed = await signDispatch(await dispatchKey(`${master}-other`), { v: 1, tick_id: 'workerd', signed_at: new Date().toISOString(), item })
+    expect(await opsEnv.SELF!.observe(signed)).toEqual({ observed: false, refused: 'bad_signature' })
   })
 })

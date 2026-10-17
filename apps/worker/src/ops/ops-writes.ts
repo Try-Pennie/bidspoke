@@ -28,9 +28,13 @@
  * intent repeat returns the same ledger row, and the claim's only cost when its
  * answer is lost is a lease that lapses and is swept.
  *
- * Nothing calls these yet: the tick (#1949) and run invocation (#1950) do.
+ * The minute cron (#1949, tick.ts) calls the sweeps, the copies, the observation
+ * and the clock; run invocation (#1950) calls the rest.
  */
-import { LEDGER_METHODS, OVERLAP_RULES, TRIGGER_KINDS, type LedgerMethod, type OverlapRule, type TriggerKind } from './run-vocabulary'
+import {
+  LEDGER_METHODS, OBSERVATION_OUTCOMES, OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES, TRIGGER_KINDS,
+  type LedgerMethod, type ObservationOutcome, type OpsSweep, type OverlapRule, type TriggerKind,
+} from './run-vocabulary'
 import { OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS, type OpsRpcName } from './ops-rpcs'
 import { organizationIdFrom, type OpsSupabaseClient, type OrganizationId } from './ops-db'
 
@@ -529,4 +533,194 @@ export async function runQueueDisagreements(client: OpsSupabaseClient, limit: nu
     runRequestId: field(name, row, 'run_request_id', isString, 'an id'),
     organizationId: field(name, row, 'organization_id', isString, 'an id'),
   }))
+}
+
+// ── the minute cron (#1949) ─────────────────────────────────────────────────
+
+const isTime = (v: unknown): v is string => typeof v === 'string' && Number.isFinite(Date.parse(v))
+const isTimeOrNull = (v: unknown): v is string | null => v === null || isTime(v)
+const isCount = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 0
+const isIntOrNull = (v: unknown): v is number | null => v === null || isInt(v)
+
+/** The database's clock: every fire is computed against it, never the Worker's (#1698 D8, L736). */
+export async function opsNow(client: OpsSupabaseClient, options?: OpsRpcOptions): Promise<string> {
+  const name = 'ops_now'
+  const data = await callOpsRpc(client, name, {}, options)
+  if (!isTime(data)) throw new OpsWriteError(`${name} returned something other than a time`)
+  return data
+}
+
+export interface SweepClaim {
+  /** False is a stand down: another tick holds this sweep's interval. */
+  owned: boolean
+  lastStartedAt: string | null
+  lastOwner: string | null
+}
+
+/** One owner per sweep interval (#1698 1.4): a try advisory lock, then a timestamp compare and set. */
+export async function claimOpsSweep(
+  client: OpsSupabaseClient, sweep: OpsSweep, owner: string, everySeconds: number, options?: OpsRpcOptions,
+): Promise<SweepClaim> {
+  if (!(OPS_SWEEPS as readonly string[]).includes(sweep)) throw new OpsWriteError(`claim_ops_sweep: ${sweep} is not a sweep`)
+  const name = 'claim_ops_sweep'
+  const row = oneRow(name, await callOpsRpc(client, name, { p_sweep: sweep, p_owner: owner, p_every_seconds: everySeconds }, options))
+  return {
+    owned: field(name, row, 'owned', isBool, 'true or false'),
+    lastStartedAt: field(name, row, 'last_started_at', isTimeOrNull, 'a time or null'),
+    lastOwner: field(name, row, 'last_owner', isStringOrNull, 'text or null'),
+  }
+}
+
+/** One ops workflow's state as the bidding Worker served it (decision 4 on #1949). */
+export interface WorkflowCopyInput {
+  workflowId: string
+  organizationId: string
+  isActive: boolean
+  deletedAt: string | null
+  /** The bidding row's updated_at: the order no save may go back on. */
+  rowUpdatedAt: string
+  versionNumber: number | null
+  trigger: unknown
+}
+
+export interface SaveCopiesResult {
+  inserted: number
+  updated: number
+  confirmed: number
+  /** Copies older than the one stored, refused: the fetch was the older of two. */
+  refusedOlder: number
+  withdrawn: number
+}
+
+/** The most copies one save carries; the database refuses more rather than truncating. */
+export const MAX_COPIES_PER_SAVE = 1000
+
+export async function saveWorkflowCopies(
+  client: OpsSupabaseClient, servedAt: string, complete: boolean, copies: readonly WorkflowCopyInput[], options?: OpsRpcOptions,
+): Promise<SaveCopiesResult> {
+  if (copies.length > MAX_COPIES_PER_SAVE) throw new OpsWriteError(`save_workflow_copies: ${copies.length} copies is more than one save carries (${MAX_COPIES_PER_SAVE})`)
+  const name = 'save_workflow_copies'
+  const row = oneRow(name, await callOpsRpc(client, name, {
+    p_served_at: servedAt,
+    p_complete: complete,
+    p_copies: copies.map((c) => ({
+      workflow_id: c.workflowId,
+      organization_id: c.organizationId,
+      is_active: c.isActive,
+      deleted_at: c.deletedAt,
+      row_updated_at: c.rowUpdatedAt,
+      version_number: c.versionNumber,
+      trigger: c.trigger ?? null,
+    })),
+  }, options))
+  return {
+    inserted: field(name, row, 'inserted', isCount, 'a count'),
+    updated: field(name, row, 'updated', isCount, 'a count'),
+    confirmed: field(name, row, 'confirmed', isCount, 'a count'),
+    refusedOlder: field(name, row, 'refused_older', isCount, 'a count'),
+    withdrawn: field(name, row, 'withdrawn', isCount, 'a count'),
+  }
+}
+
+/** A saved copy, with what a tick plans from. */
+export interface WorkflowCopy {
+  workflowId: string
+  organizationId: OrganizationId
+  isActive: boolean
+  deletedAt: string | null
+  withdrawnAt: string | null
+  rowUpdatedAt: string
+  versionNumber: number | null
+  trigger: unknown
+  scheduleKnownSince: string | null
+  switchedOffAt: string | null
+  /** When this database first held this copy, which is how old a copy used in an outage is. */
+  receivedAt: string
+  /** When a served list last named it. */
+  confirmedAt: string
+  /** On, not deleted, not withdrawn, and newer than the last known switch off: the one rule a run starts by. */
+  mayStart: boolean
+  lastServed: string | null
+  lastObserved: string | null
+  dbNow: string
+}
+
+export async function readWorkflowCopies(
+  client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions,
+): Promise<{ copies: WorkflowCopy[]; reachedLimit: boolean }> {
+  const name = 'workflow_copies'
+  const all = rows(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  const copies = all.map((row): WorkflowCopy => {
+    let organizationId: OrganizationId
+    try {
+      organizationId = organizationIdFrom(row.organization_id)
+    } catch {
+      throw new OpsWriteError(`${name} returned a copy whose organization is not a uuid`)
+    }
+    return {
+      workflowId: field(name, row, 'workflow_id', isString, 'an id'),
+      organizationId,
+      isActive: field(name, row, 'is_active', isBool, 'true or false'),
+      deletedAt: field(name, row, 'deleted_at', isTimeOrNull, 'a time or null'),
+      withdrawnAt: field(name, row, 'withdrawn_at', isTimeOrNull, 'a time or null'),
+      rowUpdatedAt: field(name, row, 'row_updated_at', isTime, 'a time'),
+      versionNumber: field(name, row, 'version_number', isIntOrNull, 'a whole number or null'),
+      trigger: row.trigger ?? null,
+      scheduleKnownSince: field(name, row, 'schedule_known_since', isTimeOrNull, 'a time or null'),
+      switchedOffAt: field(name, row, 'switched_off_at', isTimeOrNull, 'a time or null'),
+      receivedAt: field(name, row, 'received_at', isTime, 'a time'),
+      confirmedAt: field(name, row, 'confirmed_at', isTime, 'a time'),
+      mayStart: field(name, row, 'may_start', isBool, 'true or false'),
+      lastServed: field(name, row, 'last_served', isTimeOrNull, 'a time or null'),
+      lastObserved: field(name, row, 'last_observed', isTimeOrNull, 'a time or null'),
+      dbNow: field(name, row, 'db_now', isTime, 'a time'),
+    }
+  })
+  return { copies, reachedLimit: copies.length === limit }
+}
+
+export interface ScheduleObservation {
+  workflowId: string
+  workflowVersion: number
+  scheduledFor: Date
+  outcome: ObservationOutcome
+  reason: string
+  /** A fire's slot plus its jitter; null for a miss. */
+  dispatchAt: Date | null
+  previousScheduledFor: Date | null
+  tickId: string
+}
+
+/** already_recorded: an overlapping or doubled tick got there first, so this one does not dispatch it. */
+export async function recordScheduleObservation(
+  client: OpsSupabaseClient, organizationId: OrganizationId, obs: ScheduleObservation, options?: OpsRpcOptions,
+): Promise<'recorded' | 'already_recorded'> {
+  if (!(OBSERVATION_OUTCOMES as readonly string[]).includes(obs.outcome)) throw new OpsWriteError(`record_schedule_observation: ${obs.outcome} is not an observation outcome`)
+  if (!(OBSERVATION_REASONS[obs.outcome] as readonly string[]).includes(obs.reason)) {
+    throw new OpsWriteError(`record_schedule_observation: ${obs.reason} is not a reason for ${obs.outcome}`)
+  }
+  const name = 'record_schedule_observation'
+  const row = oneRow(name, await callOpsRpc(client, name, {
+    p_organization_id: organizationId,
+    p_workflow_id: obs.workflowId,
+    p_workflow_version: obs.workflowVersion,
+    p_scheduled_for: obs.scheduledFor.toISOString(),
+    p_outcome: obs.outcome,
+    p_reason: obs.reason,
+    p_dispatch_at: obs.dispatchAt === null ? null : obs.dispatchAt.toISOString(),
+    p_previous_scheduled_for: obs.previousScheduledFor === null ? null : obs.previousScheduledFor.toISOString(),
+    p_tick_id: obs.tickId,
+  }, options))
+  return field(name, row, 'outcome', oneOf(['recorded', 'already_recorded'] as const), 'an observation outcome')
+}
+
+/** What a claim would find now: observe mode records this in place of claiming. */
+export async function dueQueueDepth(client: OpsSupabaseClient, options?: OpsRpcOptions): Promise<{ dueRuns: number; dueWorkflows: number; oldestDue: string | null }> {
+  const name = 'due_queue_depth'
+  const row = oneRow(name, await callOpsRpc(client, name, {}, options))
+  return {
+    dueRuns: field(name, row, 'due_runs', isCount, 'a count'),
+    dueWorkflows: field(name, row, 'due_workflows', isCount, 'a count'),
+    oldestDue: field(name, row, 'oldest_due', isTimeOrNull, 'a time or null'),
+  }
 }

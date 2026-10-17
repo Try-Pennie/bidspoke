@@ -14,7 +14,9 @@ deployed it to the ops Worker, ran each probe once, and recorded the readings
 below. #2286 then removed the probes and the `OPS_SPIKE_ARM` allowlist entry,
 and a following change set `crons = []` to remove the cron (dropping the
 `[triggers]` block alone left it registered), keeping the `SELF` binding and `OpsInternal.ping`
-for the run engine's tick (B2).
+for the run engine's tick (B2). That tick (#1949) now declares the one minute cron
+`* * * * *` with its own scheduled() handler, and Deploy Ops Worker proves each
+deploy set it (`.github/scripts/assert-deployed-schedules.sh`).
 
 ## Measured in production (Stage 2)
 
@@ -328,6 +330,6 @@ What it says for B1 to B3:
    cron threw "Handler does not export a scheduled() function" every minute until a
    deploy with `crons = []` removed it. Re-measure:
    `curl -s -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" https://api.cloudflare.com/client/v4/accounts/3e7f907a9c19e51417873e2cce4fbc5c/workers/scripts/bidspoke-worker-ops/schedules | jq .result`
-   should list no schedules.
+   listed no schedules then; since the minute cron (#1949) it lists `* * * * *` alone.
 5. Not run: P9 against the real Micro once B1's tables exist (#1948). That puts load
    on the production ops database and needs its own approval.

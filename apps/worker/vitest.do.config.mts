@@ -28,7 +28,18 @@ export default defineConfig({
         // it on. Production needs no flag for a binding to a named entrypoint
         // (RPC is default from 2024-04-03, and the ops Worker is on 2024-09-23);
         // whether Cloudflare accepts the self binding is a Stage 2 measurement.
-        plugins: [cloudflareTest({ wrangler: { configPath: './wrangler.ops.toml' }, miniflare: { compatibilityFlags: ['enable_ctx_exports'] } })],
+        // PORTING_CAPTURE_MASTER is a test value: the dispatch key derives from it
+        // (#1949). OPS_GATEWAY names the bidding Worker, which this project does
+        // not run, so it is stood in for by a stub that answers nothing (the
+        // tick's use of it is proven in Node, tick-live.test.ts).
+        plugins: [cloudflareTest({
+          wrangler: { configPath: './wrangler.ops.toml' },
+          miniflare: {
+            compatibilityFlags: ['enable_ctx_exports'],
+            bindings: { PORTING_CAPTURE_MASTER: 'workerd-test-master' },
+            serviceBindings: { OPS_GATEWAY: () => new Response('the bidding Worker is not run in this project', { status: 503 }) },
+          },
+        })],
         test: { name: 'ops', include: ['src/ops/__tests__/*.workers.test.ts'] },
       },
     ],

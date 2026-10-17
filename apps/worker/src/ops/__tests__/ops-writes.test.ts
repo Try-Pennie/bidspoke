@@ -16,11 +16,17 @@ import {
   OpsWriteError,
   OpsWriteTimeoutError,
   callOpsRpc,
+  claimOpsSweep,
   claimRunRequests,
   completeRunRequest,
+  dueQueueDepth,
   enqueueRunRequest,
   extendRunLease,
+  opsNow,
+  readWorkflowCopies,
+  recordScheduleObservation,
   recordSendIntent,
+  saveWorkflowCopies,
   startRunExecution,
   sweepExpiredLeases,
 } from '../ops-writes'
@@ -194,5 +200,54 @@ describe('the typed wrappers', () => {
       runRequestId: RUN, claimToken: TOKEN, stateVersion: 3, nodeId: 'n', seq: 1, method: 'GET' as never, host: 'h', idempotent: false,
     })).rejects.toThrow(OpsWriteError)
     expect(calls).toEqual([])
+  })
+})
+
+describe('the minute cron wrappers (#1949)', () => {
+  it('ops_now refuses an answer that is not a time', async () => {
+    const { client } = rpcFetch('soon')
+    await expect(opsNow(client)).rejects.toThrow(/ops_now returned something other than a time/)
+  })
+
+  it('claim_ops_sweep refuses an unknown sweep before sending, and reads a stand down', async () => {
+    const empty = rpcFetch([])
+    await expect(claimOpsSweep(empty.client, 'purge_everything' as never, 'tick', 50)).rejects.toThrow(/not a sweep/)
+    expect(empty.calls).toEqual([])
+    const { client, calls } = rpcFetch([{ owned: false, db_now: '2026-10-17T10:00:00+00:00', last_started_at: '2026-10-17T09:59:40+00:00', last_owner: 'tick-a' }])
+    expect(await claimOpsSweep(client, 'lease_expiry', 'tick-b', 50)).toEqual({ owned: false, lastStartedAt: '2026-10-17T09:59:40+00:00', lastOwner: 'tick-a' })
+    expect(calls[0]).toEqual({ path: '/rest/v1/rpc/claim_ops_sweep', body: { p_sweep: 'lease_expiry', p_owner: 'tick-b', p_every_seconds: 50 } })
+  })
+
+  it('save_workflow_copies refuses more than one save carries, sending nothing', async () => {
+    const { client, calls } = rpcFetch([])
+    const one = { workflowId: WF, organizationId: ORG, isActive: true, deletedAt: null, rowUpdatedAt: '2026-10-17T09:00:00Z', versionNumber: 1, trigger: null }
+    await expect(saveWorkflowCopies(client, '2026-10-17T10:00:00Z', true, Array.from({ length: 1001 }, () => one))).rejects.toThrow(/more than one save carries/)
+    expect(calls).toEqual([])
+  })
+
+  it('workflow_copies refuses a copy whose organization is not a uuid, and says when a page was full', async () => {
+    const row = {
+      workflow_id: WF, organization_id: ORG, is_active: true, deleted_at: null, withdrawn_at: null, row_updated_at: '2026-10-17T09:00:00+00:00',
+      version_number: 1, trigger: null, schedule_known_since: null, switched_off_at: null, served_at: '2026-10-17T10:00:00+00:00',
+      received_at: '2026-10-17T10:00:00+00:00', confirmed_at: '2026-10-17T10:00:00+00:00', may_start: true, last_served: null, last_observed: null,
+      db_now: '2026-10-17T10:00:00+00:00',
+    }
+    expect((await readWorkflowCopies(rpcFetch([row]).client, 1)).reachedLimit).toBe(true)
+    await expect(readWorkflowCopies(rpcFetch([{ ...row, organization_id: 'org-1' }]).client, 10)).rejects.toThrow(/organization is not a uuid/)
+    await expect(readWorkflowCopies(rpcFetch([{ ...row, may_start: 'yes' }]).client, 10)).rejects.toThrow(/may_start that is not true or false/)
+  })
+
+  it('record_schedule_observation refuses a reason that is not its outcome\'s, sending nothing', async () => {
+    const { client, calls } = rpcFetch([])
+    await expect(recordScheduleObservation(client, ORG, {
+      workflowId: WF, workflowVersion: 1, scheduledFor: new Date('2026-10-17T10:00:00Z'), outcome: 'would_fire', reason: 'catch_up_none',
+      dispatchAt: new Date('2026-10-17T10:00:00Z'), previousScheduledFor: null, tickId: 'tick',
+    })).rejects.toThrow(/catch_up_none is not a reason for would_fire/)
+    expect(calls).toEqual([])
+  })
+
+  it('due_queue_depth reads its counts', async () => {
+    const { client } = rpcFetch([{ due_runs: 7, due_workflows: 2, oldest_due: '2026-10-17T09:00:00+00:00' }])
+    expect(await dueQueueDepth(client)).toEqual({ dueRuns: 7, dueWorkflows: 2, oldestDue: '2026-10-17T09:00:00+00:00' })
   })
 })
