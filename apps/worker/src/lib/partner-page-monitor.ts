@@ -14,7 +14,7 @@
  * What pages (the only thing that pages at launch, L36):
  *  - `channel`: the monitor's own notice did not arrive within
  *    RECEIPT_DEADLINE_MS of its first ping (re-sent every PING_RETRY_MS, since
- *    Realtime starting up can lose the first, ADR 0012) in any of
+ *    Realtime starting up can lose the first, ADR 0012) in each of the
  *    MEASURE_ROUNDS rounds, or the join was refused on every attempt it
  *    retries. That is a broken channel for every organization, not a threshold
  *    judgement, so it pages on the run that sees it.
