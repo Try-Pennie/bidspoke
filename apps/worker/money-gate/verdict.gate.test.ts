@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url'
 import { it, expect } from 'vitest'
 import type { Transcript } from './lib/compare'
 import { gateVerdict } from './lib/verdict'
+import { oldestSample, type ShapesFile } from './lib/shape'
 import { resolveExpectedBase, resolveExpectedLive } from './lib/expected-changes'
 
 const readIfPresent = (p: string | undefined): string | null => (p && existsSync(p) ? readFileSync(p, 'utf8') : null)
@@ -32,13 +33,14 @@ it('the head does what the merge base does with every fixture', () => {
   }
   const read = (p: string) => JSON.parse(readFileSync(resolve(p), 'utf8')) as Transcript
   const here = dirname(fileURLToPath(import.meta.url))
-  const shapes = JSON.parse(readFileSync(join(here, 'fixtures', 'shapes.json'), 'utf8')) as { exported_at: string }
+  const shapes = JSON.parse(readFileSync(join(here, 'fixtures', 'shapes.json'), 'utf8')) as ShapesFile
   const committedDefinitionIds = readdirSync(join(here, 'fixtures', 'definitions')).filter((f) => f.endsWith('.json')).map((f) => f.replace(/\.json$/, ''))
 
   const verdict = gateVerdict({
     base: read(basePath!),
     head: read(headPath!),
-    shapesExportedAt: shapes.exported_at,
+    // A carried over shape (#2173) is as old as its samples, not the export that kept it.
+    shapesExportedAt: oldestSample(shapes),
     now: new Date(),
     committedDefinitionIds,
     expectedHead: readIfPresent(join(here, 'expected-changes.json')),
