@@ -1,8 +1,9 @@
 'use client'
 
 import { useId } from 'react'
-import { ArrowRight, Plus, Trash2 } from 'lucide-react'
+import { ArrowRight, Plus } from 'lucide-react'
 import { Button, TextInput } from '@/components/ui/form'
+import { RemoveButton } from '@/components/partners/RemoveButton'
 
 interface MappingRule {
   source: string
@@ -51,15 +52,13 @@ export function OutboundMappingEditor({ value, onChange }: Props) {
               <TextInput id={`${base}-${i}-source`} aria-label={`Source field, mapping ${i + 1}`} value={row.source} onChange={(v) => updateRow(i, { source: v })} placeholder="debt_amount" mono className="min-w-0 flex-1" />
               <ArrowRight className="h-3 w-3 flex-shrink-0 text-gray-300" aria-hidden="true" />
               <TextInput id={`${base}-${i}-target`} aria-label={`Target field, mapping ${i + 1}`} value={row.target} onChange={(v) => updateRow(i, { target: v })} placeholder="DebtAmount" mono className="min-w-0 flex-1" />
-              <Button variant="ghost" onClick={() => removeRow(i)} aria-label={`Remove mapping ${i + 1}`} title="Remove" className="shrink-0">
-                <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-              </Button>
+              <RemoveButton label={`Remove mapping ${i + 1}`} onClick={() => removeRow(i)} />
             </div>
           ))}
         </div>
       )}
 
-      <Button variant="ghost" onClick={addRow}>
+      <Button variant="quiet" onClick={addRow}>
         <Plus className="h-3.5 w-3.5" aria-hidden="true" />
         Add field
       </Button>

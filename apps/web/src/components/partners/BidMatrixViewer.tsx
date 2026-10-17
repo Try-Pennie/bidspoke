@@ -223,7 +223,7 @@ export function BidMatrixViewer(p: Props) {
               onChange={(id) => { setActiveId(id); p.onSelectConfig?.(id) }}
               className="w-auto min-w-[12rem]"
             />
-            <Button variant="ghost" onClick={handleCreate} disabled={creating} aria-label="Add another matrix" title="Add another matrix">
+            <Button variant="quiet" onClick={handleCreate} disabled={creating} aria-label="Add another matrix" title="Add another matrix">
               <Plus className="h-4 w-4" aria-hidden="true" />
             </Button>
             <div className="flex-1" />

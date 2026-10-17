@@ -11,12 +11,13 @@
  * date that re-sorts the list keeps the focus in the field.
  */
 import { useId } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import type { ProfileBlackoutDocument } from '@bidspoke/buyer-profile'
 import { Button, FieldError, TextInput } from '@/components/ui/form'
 import { DateField } from '@/components/ui/DateTimeFields'
 import { formatShortDate, isIsoDate } from '@/components/ui/date-time'
 import { useRowIds } from './row-ids'
+import { RemoveButton } from '@/components/partners/RemoveButton'
 
 /** How a row is named to a screen reader: the date as the page shows it. */
 export function blackoutRowName(date: string): string {
@@ -61,9 +62,7 @@ export function BlackoutDatesEditor({ value, onChange, errors = {} }: { value: r
                     <TextInput id={`${rowId}-note`} value={row.note ?? ''} onChange={(n) => update(row, { ...row, note: n === '' ? null : n })} aria-label={`Note, ${name}`} />
                   </td>
                   <td className="py-0.5">
-                    <Button variant="ghost" aria-label={`Remove ${name}`} onClick={() => update(row, null)}>
-                      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    </Button>
+                    <RemoveButton label={`Remove ${name}`} onClick={() => update(row, null)} />
                   </td>
                 </tr>
               )
@@ -71,7 +70,7 @@ export function BlackoutDatesEditor({ value, onChange, errors = {} }: { value: r
           </tbody>
         </table>
       )}
-      <Button variant="ghost" aria-label="Add date" onClick={() => onChange([...sorted, { date: '', note: null }])}>
+      <Button variant="quiet" aria-label="Add date" onClick={() => onChange([...sorted, { date: '', note: null }])}>
         <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add date
       </Button>
     </div>

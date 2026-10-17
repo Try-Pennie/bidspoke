@@ -41,6 +41,7 @@ import { WeeklyHoursEditor } from './WeeklyHoursEditor'
 import { blackoutZoneNote } from './display-zone'
 import { FIELD_LABELS, SECTION_LABELS, SOLD_ON_LABELS } from './labels'
 import { LiveSectionNote } from '../live/PartnerLive'
+import { PartnerSection } from '../PartnerSection'
 import { formatCalendarDay } from '@/lib/dates'
 
 export const EMPTY_PROFILE: BuyerProfileDocument = {
@@ -349,7 +350,7 @@ export function BuyerProfileSection(props: Props) {
   const blackoutNote = blackoutZoneNote(zone)
 
   return (
-    <section aria-label="Buyer profile" className="space-y-6">
+    <section aria-label="Buyer profile">
       {!partnerId ? (
         <p className="text-sm text-gray-600">Save the partner first. The buyer profile is kept against the saved partner.</p>
       ) : loadError ? (
@@ -359,10 +360,11 @@ export function BuyerProfileSection(props: Props) {
       ) : (
         <>
           {/* First, because the answer decides which of the rules below apply (#1541, L609). */}
-          <div className="space-y-1">
+          <PartnerSection title={FIELD_LABELS.sold_on}>
             <ChoiceGroup
               id="bp-sold-on"
               label={FIELD_LABELS.sold_on}
+              visibleLabel=""
               value={profile.sold_on}
               options={SOLD_ON_OPTIONS}
               onChange={(sold_on) => patch(soldOnPatch(sold_on))}
@@ -373,10 +375,9 @@ export function BuyerProfileSection(props: Props) {
             {soldOnLock && <p id="bp-sold-on-lock" className="text-xs text-gray-600">{soldOnLock}</p>}
             {soldOnError && <FieldError id="bp-sold-on-error" alert size="xs">{soldOnError}</FieldError>}
             <LiveSectionNote sections={['Sold on']} />
-          </div>
+          </PartnerSection>
 
-          <div className="space-y-4">
-            <h4 className="text-sm font-medium text-gray-700">{click ? 'Enabled and eligibility' : 'Enabled and ranking'}</h4>
+          <PartnerSection title={click ? 'Enabled and eligibility' : 'Enabled and ranking'}>
             <LiveSectionNote sections={['Enabled and ranking', 'Eligibility']} />
             <div className="flex items-center gap-3">
               <Toggle id="bp-enabled" checked={profile.is_enabled} onChange={(v) => patch({ is_enabled: v })} label="Enabled" />
@@ -429,20 +430,18 @@ export function BuyerProfileSection(props: Props) {
               </div>
               {errorFor(errors, 'displayTimeZone') && <FieldError id="bp-display-time-zone-error" alert size="xs" className="mt-1">{errorFor(errors, 'displayTimeZone')}</FieldError>}
             </div>
-          </div>
+          </PartnerSection>
 
           {/* A click buyer is quoted at the Engine bid, so it has no pricing (#1541). */}
           {!click && (
-            <div className="space-y-3">
-              <h4 className="text-sm font-medium text-gray-700">{SECTION_LABELS.tiers}</h4>
+            <PartnerSection title={SECTION_LABELS.tiers}>
               <LiveSectionNote sections={[SECTION_LABELS.tiers]} />
               <PricingTiersEditor value={profile.tiers} onChange={(tiers) => patch({ tiers })} errors={byPath} />
               {errorFor(errors, 'tiers') && <FieldError alert size="xs">{errorFor(errors, 'tiers')}</FieldError>}
-            </div>
+            </PartnerSection>
           )}
 
-          <div className="space-y-3">
-            <h4 className="text-sm font-medium text-gray-700">Caps</h4>
+          <PartnerSection title="Caps">
             <LiveSectionNote sections={['Caps']} />
             <CapsGrid
               value={{ hourly_lead_cap: profile.hourly_lead_cap, daily_lead_cap: profile.daily_lead_cap, hourly_spend_cap_cents: profile.hourly_spend_cap_cents, daily_spend_cap_cents: profile.daily_spend_cap_cents }}
@@ -473,27 +472,24 @@ export function BuyerProfileSection(props: Props) {
                 partnerName={partnerName}
               />
             )}
-          </div>
+          </PartnerSection>
 
           {/* Beside the caps, where a click buyer's count shows (#1552). */}
           {click && (
-            <div className="space-y-3">
-              <h4 className="text-sm font-medium text-gray-700">Held clicks</h4>
+            <PartnerSection title="Held clicks">
               <HeldClicksPanel partnerName={partnerName} zone={zone} held={held} error={heldError} outcomes={heldOutcomes} onMarkSent={markSent} onFree={free} onClear={clear} onRetrySalesforce={retrySalesforce} onSetLeadId={setLeadId} />
-            </div>
+            </PartnerSection>
           )}
 
           {/* Where a click buyer's clicks are posted and the reply that counts as sold (#1639). */}
           {click && (
-            <div className="space-y-3">
-              <h4 className="text-sm font-medium text-gray-700">Click delivery</h4>
+            <PartnerSection title="Click delivery">
               <LiveSectionNote sections={['Click delivery']} />
               <ClickDeliveryEditor value={profile.click_delivery} onChange={(click_delivery) => patch({ click_delivery })} errors={byPath} />
-            </div>
+            </PartnerSection>
           )}
 
-          <div className="space-y-3">
-            <h4 className="text-sm font-medium text-gray-700">Outcome rules</h4>
+          <PartnerSection title="Outcome rules">
             <LiveSectionNote sections={['Outcome rules']} />
             {/* A click buyer's sale is judged by the click workflow, never by accept rules (#1541). */}
             {!click && (
@@ -512,12 +508,11 @@ export function BuyerProfileSection(props: Props) {
             <Field id="bp-routing-code" label="Salesforce routing code" hint="Written to the prospect as ExternalRoutingCode__c on every sale to this buyer. Tripoint is 2." error={routingCodeRefusal}>
               <NumberInput id="bp-routing-code" value={externalRoutingCode === '' ? null : Number(externalRoutingCode)} onChange={(v) => onExternalRoutingCodeChange(v === null ? '' : String(v))} min={0} step={1} describedBy={describedBy('bp-routing-code', true, Boolean(routingCodeRefusal))} className="w-32" />
             </Field>
-          </div>
+          </PartnerSection>
 
           {/* A click buyer never reserves in the ledger, so its queue is the held clicks above. */}
           {!click && (
-            <div className="space-y-3">
-              <h4 className="text-sm font-medium text-gray-700">Unresolved sales</h4>
+            <PartnerSection title="Unresolved sales">
               {unresolvedError ? (
                 <FieldError alert size="xs">{unresolvedError}</FieldError>
               ) : unresolved === null ? (
@@ -528,15 +523,14 @@ export function BuyerProfileSection(props: Props) {
                   {loadMoreError && <FieldError alert size="xs">{loadMoreError}</FieldError>}
                 </>
               )}
-            </div>
+            </PartnerSection>
           )}
 
-          <div className="space-y-3">
-            <h4 className="text-sm font-medium text-gray-700">{SECTION_LABELS.blackout_dates}</h4>
+          <PartnerSection title={SECTION_LABELS.blackout_dates}>
             <LiveSectionNote sections={[SECTION_LABELS.blackout_dates]} />
             {blackoutNote && <p className="text-xs text-hint">{blackoutNote}</p>}
             <BlackoutDatesEditor value={profile.blackout_dates} onChange={(blackout_dates) => patch({ blackout_dates })} errors={byPath} />
-          </div>
+          </PartnerSection>
         </>
       )}
     </section>

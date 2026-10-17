@@ -285,9 +285,12 @@ export function Checkbox({ id, checked, onChange, label, disabled }: { id: strin
  * destructive: the solid red button that answers a dialog with a deletion;
  * danger is the quieter outlined one beside a row. `row` is a whole list row
  * that is one control (a partner in the list): left aligned and full width,
- * its own class because its geometry is not a button's.
+ * its own class because its geometry is not a button's. `quiet` is a dark
+ * action that is not a button, an add link or All and None on the partners
+ * page (#2317), where blue is kept for buttons; `remove` is the grey minus of
+ * RemoveButton.
  */
-export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'destructive' | 'ghost' | 'row'
+export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'destructive' | 'ghost' | 'row' | 'quiet' | 'remove'
 
 export function Button({ variant, type = 'button', form, onClick, disabled, busy, children, 'aria-label': ariaLabel, describedBy: db, title, className }: {
   variant: ButtonVariant

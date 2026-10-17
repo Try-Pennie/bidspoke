@@ -25,6 +25,10 @@ const config: Config = {
         // 4.60 to 1 on beige, 4.51 on gray-100 and 4.96 on white. text-gray-500
         // fails on beige (4.48). partner-page-colour-guard.test.ts measures it.
         hint: '#697081',
+        // The partners page's thin beige lines (#2317, the settled design): `line`
+        // around a control box, `line-soft` between sections.
+        line: '#DDD6CA',
+        'line-soft': '#EBE5DA',
         'p-blue': {
           light: '#ECF8FF',
           DEFAULT: '#82D0FF',

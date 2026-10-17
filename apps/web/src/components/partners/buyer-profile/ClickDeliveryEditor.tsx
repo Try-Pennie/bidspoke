@@ -8,7 +8,7 @@
  * rule the save and buyer_click_send apply (successPatternOf).
  */
 import { useId } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { successPatternOf, type ClickDeliveryDocument, type ClickRoute } from '@bidspoke/buyer-profile'
 import { Button, Field, FieldError, TextInput, describedBy } from '@/components/ui/form'
 import { StatePicker } from './StatePicker'
@@ -73,7 +73,7 @@ export function ClickDeliveryEditor({ value, onChange, errors = {} }: {
                   <TextInput id={`${rowId}-url`} mono value={route.url} onChange={(url) => setRoute(i, { ...route, url })} placeholder="https://" aria-label={`Route ${n} address`} describedBy={describedBy(`${rowId}-url`, false, Boolean(urlError))} />
                 </Field>
                 <Button variant="danger" aria-label={`Remove route ${shown}`} onClick={() => setRoute(i, null)}>
-                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> Remove
+                  Remove
                 </Button>
               </div>
               <StatePicker
@@ -90,7 +90,7 @@ export function ClickDeliveryEditor({ value, onChange, errors = {} }: {
         })}
       </ol>
       {routesError && <FieldError alert size="xs">{routesError}</FieldError>}
-      <Button variant="ghost" onClick={() => onChange({ ...value, routes: [...value.routes, { ...EMPTY_ROUTE }] })}>
+      <Button variant="quiet" onClick={() => onChange({ ...value, routes: [...value.routes, { ...EMPTY_ROUTE }] })}>
         <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add route
       </Button>
 
@@ -99,7 +99,7 @@ export function ClickDeliveryEditor({ value, onChange, errors = {} }: {
       </Field>
 
       <Button variant="danger" onClick={() => onChange(null)}>
-        <Trash2 className="h-3.5 w-3.5" aria-hidden="true" /> Remove click delivery
+        Remove click delivery
       </Button>
     </div>
   )

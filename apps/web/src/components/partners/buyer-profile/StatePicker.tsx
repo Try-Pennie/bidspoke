@@ -22,15 +22,16 @@ export function StatePicker({ value, onChange, idPrefix = 'state', legend = 'Sta
   const selected = new Set(value)
   const emit = (next: Set<string>) => onChange([...next].sort())
   return (
-    <fieldset className="rounded-lg border border-gray-200 p-3">
+    <fieldset className="rounded-lg border border-line bg-white p-3">
       <legend className="px-1 text-xs font-medium text-gray-600">{legend}</legend>
       <div className="mb-2 flex items-center gap-3">
         <span className="text-xs text-gray-600">{selected.size} of {US_STATES.length} states</span>
-        <Button variant="ghost" onClick={() => emit(new Set(US_STATES))}>All</Button>
-        <Button variant="ghost" onClick={() => emit(new Set())}>None</Button>
+        <Button variant="quiet" onClick={() => emit(new Set(US_STATES))}>All</Button>
+        <Button variant="quiet" onClick={() => emit(new Set())}>None</Button>
       </div>
       {selected.size === 0 && <p className={`mb-2 text-xs ${emptyIsWarning ? 'text-amber-800' : 'text-gray-600'}`}>{emptyNote}</p>}
-      <div className="grid grid-cols-6 gap-x-3 gap-y-1.5 sm:grid-cols-9 lg:grid-cols-12">
+      {/* As many columns as the settings column holds (#2317), never fewer than fit a code beside its box. */}
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(3.5rem,1fr))] gap-x-3 gap-y-1.5">
         {US_STATES.map((code) => (
           <Checkbox
             key={code}

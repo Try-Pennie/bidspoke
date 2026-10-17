@@ -1,8 +1,9 @@
 'use client'
 
 import { useId } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { Button, NumberInput, TextInput } from '@/components/ui/form'
+import { RemoveButton } from '@/components/partners/RemoveButton'
 
 interface Tier {
   above: number
@@ -82,14 +83,12 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
                 <NumberInput id={`${tierId}-${i}-above`} aria-label={`Threshold, tier ${i + 1}`} value={tier.above} onChange={(v) => updateTier(i, { above: v ?? 0 })} mono className="w-28" />
                 <span className="text-hint">multiply by</span>
                 <NumberInput id={`${tierId}-${i}-multiplier`} aria-label={`Multiplier, tier ${i + 1}`} value={tier.multiplier} onChange={(v) => updateTier(i, { multiplier: v ?? 0 })} step={0.01} mono className="w-24" />
-                <Button variant="ghost" onClick={() => removeTier(i)} aria-label={`Remove tier ${i + 1}`} title="Remove tier" className="ml-auto">
-                  <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                </Button>
+                <RemoveButton label={`Remove tier ${i + 1}`} onClick={() => removeTier(i)} className="ml-auto" />
               </div>
             ))}
           </div>
         )}
-        <Button variant="ghost" onClick={addTier}>
+        <Button variant="quiet" onClick={addTier}>
           <Plus className="h-3.5 w-3.5" aria-hidden="true" />
           Add tier
         </Button>

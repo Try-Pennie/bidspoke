@@ -241,3 +241,13 @@ describe('History (#2137, #2141)', () => {
     expect(item).toHaveTextContent(/Daily attempt cap \(bidding workflows\) from 40 → to 50/)
   })
 })
+
+describe('the header (#2317, PM-17)', () => {
+  it('is the name and slug only: no Cancel button stands in it, and nothing is discarded from it', async () => {
+    render(<PartnerForm partner={partner} onSave={vi.fn()} onCancel={vi.fn()} partnerNames={names} />)
+    expect(await screen.findByRole('heading', { level: 2, name: 'Acme' })).toBeInTheDocument()
+    expect(screen.getByText('acme')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Discard changes' })).toBeNull()
+  })
+})

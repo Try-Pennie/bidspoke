@@ -15,6 +15,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { api, type PartnerWorkflowValue, type PartnerWorkflowValues } from '@/lib/api'
 import { Button, FieldError } from '@/components/ui/form'
 import { LiveSectionNote } from './live/PartnerLive'
+import { PartnerSection } from './PartnerSection'
 import {
   accessLines, editsSection, readerSentences, searchedSentence, sectionsOf, shadowSentences, type SectionKey, type ValueSection,
 } from '@/app/(app)/partners/workflow-values-text'
@@ -126,9 +127,7 @@ function ValueSectionView({ section, read, slug, isActive, partnerName, control,
   // A plain section, not a named region: the heading names the value, and the
   // control under it (the Click URL box) carries the same name for screen readers.
   return (
-    <section data-value-section={section.key}>
-      <h3 className="mb-4 text-xs font-semibold text-graphite">{section.title}</h3>
-      <div className="space-y-3">
+    <PartnerSection title={section.title} region={false}>
         {LIVE_NOTES[section.key]}
         {control}
         {section.key === 'active' && <p className="text-sm text-gray-700">{activeSentence(section.values[0], isActive, partnerName)}</p>}
@@ -149,8 +148,7 @@ function ValueSectionView({ section, read, slug, isActive, partnerName, control,
         )}
         {answer && section.values.flatMap(shadowSentences).map((s) => <p key={s} className="text-sm text-amber-800">{s}</p>)}
         {answer && <ReadersBlock values={section.values} searched={answer.searched} />}
-      </div>
-    </section>
+    </PartnerSection>
   )
 }
 

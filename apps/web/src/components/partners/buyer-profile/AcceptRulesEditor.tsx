@@ -8,11 +8,12 @@
  * refusal renders beside this control (L111).
  */
 import { useId } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { SIGNAL_OPERATORS, SIGNAL_OPERATOR_LABELS, type Signal, type SignalOperator } from '@bidspoke/buyer-profile'
 import { Button, FieldError, TextInput } from '@/components/ui/form'
 import { Select } from '@/components/ui/Select'
 import { LIST_OPERATORS, operatorOf, signalFrom, valueTextOf } from '@/lib/signal-text'
+import { RemoveButton } from '@/components/partners/RemoveButton'
 
 /**
  * The same rows edit the duplicate rules (#1416): the decline answers that mean
@@ -58,14 +59,12 @@ export function AcceptRulesEditor({ value, onChange, refusal, kind = 'accept' }:
                 <TextInput id={`${rowId}-value`} value={text} onChange={(v) => update(i, signalFrom(rule.field, op, v))} placeholder={LIST_OPERATORS.has(op) ? '1000,1001' : 'true'} mono />
               </div>
             )}
-            <Button variant="ghost" aria-label={`Remove ${kind} rule ${i + 1}`} onClick={() => onChange(value.filter((_, j) => j !== i))}>
-              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-            </Button>
+            <RemoveButton label={`Remove ${kind} rule ${i + 1}`} onClick={() => onChange(value.filter((_, j) => j !== i))} />
           </fieldset>
         )
       })}
       {refusal && <FieldError alert size="xs">{refusal}</FieldError>}
-      <Button variant="ghost" aria-label={`Add ${kind} rule`} onClick={() => onChange([...value, { field: '', equals: '' }])}>
+      <Button variant="quiet" aria-label={`Add ${kind} rule`} onClick={() => onChange([...value, { field: '', equals: '' }])}>
         <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add rule
       </Button>
     </div>

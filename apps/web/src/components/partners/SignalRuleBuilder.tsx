@@ -9,7 +9,7 @@
  * object owned by the form, so a rule is never held in two places.
  */
 import { useId, useRef, useState, type ReactNode } from 'react'
-import { Plus, X } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { SIGNAL_OPERATORS, SIGNAL_OPERATOR_LABELS } from '@bidspoke/buyer-profile'
 import {
   type Rule, type BodyRule, type StatusRule, type BodyCondition, type StatusCondition, type SignalCategory, type SignalRules,
@@ -17,6 +17,7 @@ import {
 import { LIST_OPERATORS } from '@/lib/signal-text'
 import { Button, NumberInput, TextInput } from '@/components/ui/form'
 import { Select } from '@/components/ui/Select'
+import { RemoveButton } from '@/components/partners/RemoveButton'
 
 type RuleKind = 'body' | 'status'
 
@@ -120,9 +121,7 @@ function RuleRow({ rule, onChange, onRemove, removing }: {
           )}
         </>
       )}
-      <Button variant="ghost" onClick={onRemove} aria-label="Remove rule" className="ml-auto shrink-0">
-        <X className="h-3.5 w-3.5" aria-hidden="true" />
-      </Button>
+      <RemoveButton label="Remove rule" onClick={onRemove} className="ml-auto" />
     </div>
   )
 }
@@ -179,7 +178,7 @@ export function SignalRuleBuilder({ value, onChange, sections = SIGNAL_SECTIONS,
     </div>
   )
   const addButton = (cat: SignalCategory) => (
-    <Button variant="ghost" onClick={() => add(cat)} className="shrink-0">
+    <Button variant="quiet" onClick={() => add(cat)} className="shrink-0">
       <Plus className="h-3 w-3" aria-hidden="true" />
       Add rule
     </Button>

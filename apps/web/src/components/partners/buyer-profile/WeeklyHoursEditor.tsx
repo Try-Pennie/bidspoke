@@ -15,7 +15,7 @@
  * In Eastern every row is exactly one stored window.
  */
 import { useId } from 'react'
-import { Plus, Trash2 } from 'lucide-react'
+import { Plus } from 'lucide-react'
 import { DAYS_OF_WEEK, DEFAULT_DISPLAY_TIME_ZONE, type DisplayTimeZone, type ProfileWindowDocument } from '@bidspoke/buyer-profile'
 import { Button, FieldError } from '@/components/ui/form'
 import { TimeField } from '@/components/ui/DateTimeFields'
@@ -23,6 +23,7 @@ import { formatTime } from '@/components/ui/date-time'
 import { zoneShiftFromEastern } from '@/lib/dates'
 import { addDisplayWindow, displayWindows, replaceDisplayWindow, type DisplayWindow } from './display-zone'
 import { useRowIds } from './row-ids'
+import { RemoveButton } from '@/components/partners/RemoveButton'
 
 const DEFAULT_WINDOW = { opens_minute: 540, closes_minute: 1020 }
 
@@ -47,7 +48,7 @@ export function WeeklyHoursEditor({ value, onChange, zone = DEFAULT_DISPLAY_TIME
     <div className="space-y-2">
       <div className="flex items-center justify-between">
         <p className="text-xs text-hint">{value.length === 0 ? 'With no hours the buyer is never offered a lead.' : ''}</p>
-        <Button variant="ghost" onClick={() => onChange(DAYS_OF_WEEK.map((d) => ({ day_of_week: d.index, opens_minute: 0, closes_minute: 1440 })))}>Always open</Button>
+        <Button variant="quiet" onClick={() => onChange(DAYS_OF_WEEK.map((d) => ({ day_of_week: d.index, opens_minute: 0, closes_minute: 1440 })))}>Always open</Button>
       </div>
       <div className="grid grid-cols-[7rem_9rem_9rem_1fr] items-center gap-x-2 text-xs font-medium text-gray-600" aria-hidden="true">
         <span>Day</span>
@@ -65,7 +66,7 @@ export function WeeklyHoursEditor({ value, onChange, zone = DEFAULT_DISPLAY_TIME
                 <span className="text-xs font-medium text-gray-600" aria-hidden="true">{day.label}</span>
                 <div className="flex items-center gap-2">
                   <span className="text-xs text-hint">Closed</span>
-                  <Button variant="ghost" aria-label={`Add hours on ${day.label}`} onClick={() => addWindow(day.index)}>
+                  <Button variant="quiet" aria-label={`Add hours on ${day.label}`} onClick={() => addWindow(day.index)}>
                     <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add hours
                   </Button>
                 </div>
@@ -84,11 +85,9 @@ export function WeeklyHoursEditor({ value, onChange, zone = DEFAULT_DISPLAY_TIME
                         <TimeField id={`${rowId}-open`} edge="start" value={w.opens_minute} label={`Opens, ${day.label}`} onChange={(m) => replaceWindow(w, { ...w, opens_minute: m })} className="w-[8.5rem]" />
                         <TimeField id={`${rowId}-close`} edge="end" value={w.closes_minute} label={`Closes, ${day.label}`} onChange={(m) => replaceWindow(w, { ...w, closes_minute: m })} className="w-[8.5rem]" />
                         <div className="flex items-center gap-1">
-                          <Button variant="ghost" aria-label={`Remove ${day.label} hours from ${opens}`} onClick={() => replaceWindow(w, null)}>
-                            <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
-                          </Button>
+                          <RemoveButton label={`Remove ${day.label} hours from ${opens}`} onClick={() => replaceWindow(w, null)} />
                           {i === windows.length - 1 && (
-                            <Button variant="ghost" aria-label={`Add hours on ${day.label}`} onClick={() => addWindow(day.index)}>
+                            <Button variant="quiet" aria-label={`Add hours on ${day.label}`} onClick={() => addWindow(day.index)}>
                               <Plus className="h-3.5 w-3.5" aria-hidden="true" />
                             </Button>
                           )}
