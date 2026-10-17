@@ -199,11 +199,46 @@ test.describe('Accessibility (axe-core)', () => {
     await expect(list).toBeVisible()
     await expectNoSeriousA11yViolations(page, [], '/partners', '[role="listbox"]')
     // The list opens on the chosen operator; ArrowDown and Enter choose the next one.
+    // Radix moves focus to the next option a moment after the key (#2252), so the
+    // test waits for it as a person's second key press always does.
     await page.keyboard.press('ArrowDown')
+    await expect(list.getByRole('option', { name: 'contains', exact: true })).toBeFocused()
     await page.keyboard.press('Enter')
     await expect(list).toBeHidden()
     await expect(operator).toHaveText('contains')
     await expect(operator).toBeFocused()
+    expect(unmatched).toEqual([])
+  })
+
+  // #2252: a dropdown opened while a save runs (the save bar spinning and
+  // counting its seconds) still takes the arrow keys. Measured 2026-10-16: the
+  // key always reached the list, which moves focus a moment later; Enter pressed
+  // back to back with ArrowDown beat that move only while the page was busy
+  // saving, which no person's typing does. So the keys wait on the focus move.
+  test('partners page: a dropdown opened while a save runs still takes the arrow keys', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl())
+    await openTripoint(page)
+    // The save is held with no answer, so the save bar stays on Saving.
+    await page.route((url) => url.pathname.endsWith('/page') && url.pathname.includes('/api/partners/'), () => {})
+    await page.getByRole('spinbutton', { name: 'Loan amount minimum' }).fill('2500')
+    await page.getByRole('button', { name: 'Save changes' }).click()
+    // Found by the save bar's own marker: an open list hides the rest of the page from role queries.
+    const saving = page.locator('[data-save-bar] [role="status"]').filter({ hasText: /^Saving, / })
+    await expect(saving).toBeVisible()
+    const operator = page.getByRole('combobox', { name: 'Operator' }).first()
+    await expect(operator).toHaveText('equals')
+    await operator.focus()
+    await page.keyboard.press('Enter')
+    const list = page.getByRole('listbox')
+    await expect(list).toBeVisible()
+    // The save bar ticks at least once while the list is open.
+    const before = await saving.textContent()
+    await expect(saving).not.toHaveText(before ?? '')
+    await page.keyboard.press('ArrowDown')
+    await expect(list.getByRole('option', { name: 'contains', exact: true })).toBeFocused()
+    await page.keyboard.press('Enter')
+    await expect(list).toBeHidden()
+    await expect(operator).toHaveText('contains')
     expect(unmatched).toEqual([])
   })
 
