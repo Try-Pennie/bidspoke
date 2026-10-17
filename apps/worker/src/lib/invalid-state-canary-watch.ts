@@ -49,7 +49,8 @@
  *
  * ONE MESSAGE A DAY to Main Flow's organization's alerts channel. A day with any
  * run that did not land, or could not be checked, or a check that could not run,
- * is titled as an alert with a Fix line; otherwise it is a report. It arms no
+ * or a day Main Flow spent off the direct write (#2312), is titled as an alert
+ * with a Fix line; otherwise it is a report. It arms no
  * all-clear marker, because the next day's message is the stand down, so it has
  * no INCIDENT_SIGNALS entry.
  *
@@ -147,7 +148,7 @@ export interface CanaryWatchMessage {
   title: string
   lines: string[]
   fixHint?: string
-  /** A run did not land, could not be checked, or the check could not run. */
+  /** A run did not land, could not be checked, the check could not run, or Main Flow was off the direct write. */
   alert: boolean
 }
 
@@ -347,11 +348,11 @@ const SKIP_WORDS: Record<string, string> = {
   no_record_id: 'there was no Submission to write to',
 }
 
-/** The day's message, separate from the send so the words can be tested. */
 /** The Fix line for a day Main Flow spent off the direct write (#2312). */
 const ROLLBACK_FIX =
   "If Main Flow was rolled back on purpose, nothing else is needed. If not, open Main Flow's version history and see which version is live. Either way, the time on the relay is a gap in the week of direct writes being measured."
 
+/** The day's message, separate from the send so the words can be tested. */
 export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): CanaryWatchMessage {
   const span = `from ${etTime(report.from)} to ${etTime(report.to)}`
   if (report.readError) {
@@ -385,7 +386,8 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): C
   const posts = (k: number) => `${fmt(k)} invalid state post${k === 1 ? '' : 's'}`
   const offDirect = report.lastWasRelay || report.relayAfterSwitch > 0
   // Every direct post is either read back (native) or skipped, so neither means none went direct.
-  if (r > 0 && report.native.length === 0 && report.skipped.length === 0) {
+  const neverDirect = r > 0 && report.native.length === 0 && report.skipped.length === 0
+  if (neverDirect) {
     lines.push(`${r === 1 ? 'The 1 invalid state post' : `All ${posts(r)}`} went through the relay, so Main Flow is not on the direct write.`)
   } else if (report.lastWasRelay) {
     lines.push(`${posts(r)} went through the relay, the last of them after every direct write, so Main Flow is back on the relay.`)
@@ -423,6 +425,8 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): C
   if (notLanded > 0 && unchecked > 0) title = `${fmt(notLanded)} of ${fmt(n)} invalid state writes did not land in Salesforce, and ${fmt(unchecked)} could not be checked`
   else if (notLanded > 0) title = `${fmt(notLanded)} of ${fmt(n)} invalid state writes did not land in Salesforce`
   else if (unchecked > 0) title = `${fmt(unchecked)} of ${fmt(n)} invalid state writes could not be checked in Salesforce`
+  // Not "back on" when nothing in the window went direct: the window cannot show it ever left.
+  else if (neverDirect) title = 'Main Flow is not on the direct write for invalid state posts'
   else if (report.lastWasRelay) title = 'Main Flow is back on the relay for invalid state posts'
   else if (offDirect) title = 'Main Flow left the direct write for invalid state posts for a while'
   else if (n === 0) title = 'No invalid state writes to check yesterday'

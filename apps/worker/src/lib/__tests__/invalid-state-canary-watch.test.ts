@@ -348,6 +348,8 @@ describe('the invalid state canary watch', () => {
     expect(report.native).toEqual([])
     expect(posted[0].alert).toBe(true)
     expect(posted[0].lines.join('\n')).toContain('The 1 invalid state post went through the relay, so Main Flow is not on the direct write.')
+    // Not "back on": nothing in the window shows it was ever on the direct write.
+    expect(posted[0].title).toBe('Main Flow is not on the direct write for invalid state posts')
   })
 
   it('relay posts between direct writes are said as a spell off the direct write, as an alert', async () => {
