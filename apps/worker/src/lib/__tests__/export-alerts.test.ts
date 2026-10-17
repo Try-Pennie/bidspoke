@@ -527,3 +527,35 @@ describe('notifyExportRecovery (a healthy run reports itself) (#1441)', () => {
     expect(stored?.since).not.toBe('2026-09-21T16:26:00.000Z')
   })
 })
+
+// #2311: on 2026-10-17 at 09:00 UTC the hourly matrix audit's Salesforce token
+// fetch took longer than its 10 s deadline once, the next runs were clean, and
+// the first failure paged anyway: the classifier knew no Salesforce wording, so
+// the timeout was 'unknown', which pages at once. The message below is the one
+// that paged, word for word.
+describe('a lone Salesforce token timeout waits for the next run (#2311)', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  const PAGED = 'the bid matrix audit failed: Salesforce token fetch timed out after 10000 ms'
+  const remedy = { consequence: 'the audit did not complete:', fixHint: 'read the line above.' }
+
+  it('holds the first one and pages on the second in a row', async () => {
+    const kv = makeKv()
+    await notifyExportFailure(makeSupabase(['org-1']), 'sf-matrix-audit', [PAGED], kv, remedy)
+    expect(sendExportFailureAlert).not.toHaveBeenCalled()
+
+    await notifyExportFailure(makeSupabase(['org-1']), 'sf-matrix-audit', [PAGED], kv, remedy)
+    expect(sendExportFailureAlert).toHaveBeenCalledTimes(1)
+  })
+
+  it('still pages at once when Salesforce refuses the login, which no retry fixes', async () => {
+    await notifyExportFailure(
+      makeSupabase(['org-1']),
+      'sf-matrix-audit',
+      ['the bid matrix audit failed: Salesforce token fetch failed (400): {"error":"invalid_client","error_description":"invalid client credentials"}'],
+      makeKv(),
+      remedy,
+    )
+    expect(sendExportFailureAlert).toHaveBeenCalledTimes(1)
+  })
+})

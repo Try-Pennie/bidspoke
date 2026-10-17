@@ -16,6 +16,7 @@ export type ExportErrorClass =
   | 'db_congestion'
   | 'transient_snowflake'
   | 'transient_connectivity'
+  | 'salesforce_token_timeout'
   | 'missing_credential'
   | 'snowflake_auth'
   | 'snowflake_permission'
@@ -84,6 +85,8 @@ const FIX_HINTS: Record<Exclude<ExportErrorClass, 'unknown'>, string> = {
     'A transient Snowflake connection failure. There is no action to take: these are retried automatically, and any rows left behind export on the next run. If it repeats across several runs, check the Snowflake status page.',
   transient_connectivity:
     'A brief connection timeout at the network edge (a Cloudflare error page, most often on the way to Supabase). There is no action to take: the rows are picked up automatically on the next run. If it repeats across consecutive runs, check the Supabase status page.',
+  salesforce_token_timeout:
+    'Salesforce took longer than its deadline to hand over a login token. There is no action to take: the next run asks for a fresh one. If it repeats across consecutive runs, check status.salesforce.com, and that the Salesforce values in Settings, Environment still log in.',
   snowflake_auth:
     'Check the Snowflake credentials. The key pair JWT for the service user has most likely expired or been rotated.',
   snowflake_permission:
@@ -159,6 +162,10 @@ const RULES: Array<{ cls: Exclude<ExportErrorClass, 'unknown'>; test: RegExp }> 
   // Cloudflare's edge and the Supabase origin). Snowflake statuses are matched
   // above, so anything left in this shape is edge connectivity, not a service.
   { cls: 'transient_connectivity', test: /\berror code: 5\d\d\b/i },
+  // getSalesforceToken's own deadline wording (engine/nodes/salesforce.ts), which
+  // the engine already retries as transient (#2311). Only the TIMEOUT: a refusal
+  // reads "token fetch failed (<status>)" and stays unknown, so it pages at once.
+  { cls: 'salesforce_token_timeout', test: /Salesforce token fetch timed out after \d+ ?ms/ },
   { cls: 'snowflake_auth', test: /Snowflake (?:401|403)\b|\b390144\b|JWT token is invalid/i },
   { cls: 'snowflake_permission', test: /\b003001\b|SQL access control error|insufficient privileges/i },
   { cls: 'snowflake_schema', test: /\b100072\b|non-nullable column|invalid identifier/i },
@@ -179,6 +186,7 @@ const TRANSIENT_CLASSES: ReadonlySet<ExportErrorClass> = new Set([
   'db_congestion',
   'transient_snowflake',
   'transient_connectivity',
+  'salesforce_token_timeout',
   'platform_limit',
   // Held once and paged on the second consecutive run, which is the runaway:
   // one catch-up run that does not finish is normal after a failure (#749).

@@ -66,8 +66,24 @@ describe('committed money gate fixtures', () => {
     }
   })
 
+  // A workflow with no live runs at the last export (Delegate Gmail Access for
+  // Offboarded Agents was quiet for the two days before 2026-10-16) still has a
+  // definition to replay, so the export carries its shape over from the export
+  // that last sampled it, marked `carried_over`, rather than dropping its fixture
+  // (#2173). This test only pairs shapes with definitions; the next one holds a
+  // carried over shape to its mark. A shape with no mark is the export's own
+  // sample: the file records no per shape sample time, so a hand edited stale
+  // shape without the mark is not something either test can see.
   it('every live workflow in the shapes has a committed definition, and every definition a shape', () => {
     expect(shapes.workflows.map((w) => w.workflow_id).sort()).toEqual([...definitionIds].sort())
+  })
+
+  it('a carried over shape says when it was really sampled, no later than this export, and why it was kept', () => {
+    for (const w of shapes.workflows.filter((x) => x.carried_over)) {
+      const { sampled_at, reason } = w.carried_over!
+      expect({ workflow: w.workflow_name, sampledBeforeExport: new Date(sampled_at).getTime() < new Date(shapes.exported_at).getTime(), reason: reason.length > 0 })
+        .toEqual({ workflow: w.workflow_name, sampledBeforeExport: true, reason: true })
+    }
   })
 
   it('every workflow is replayed as a test run and as a dry_run shadow run, not only live (#1730)', () => {
