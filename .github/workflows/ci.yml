@@ -77,6 +77,26 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      # pnpm 9 writes the circular peer between eslint-plugin-import and
+      # eslint-import-resolver-typescript in three forms depending on which
+      # command last resolved it, and --frozen-lockfile accepts all three, so
+      # those keys flipped 18 times on main from 2026-07 to 2026-10 and every
+      # pull request adding a package carried the churn (#2363). Re-resolving
+      # with --resolution-only lands on one form from every starting point
+      # (plain --lockfile-only writes nothing when the manifests are satisfied,
+      # so it cannot see the drift). Any difference means the committed file
+      # was written by another command. A failure of the pnpm line itself is
+      # the registry, not the lockfile, and pnpm prints its own error.
+      # Guarded by apps/web/src/lib/__tests__/lockfile-reproduces.test.ts.
+      - name: Lockfile is what the documented command writes
+        run: |
+          pnpm install --lockfile-only --resolution-only
+          if ! git diff --quiet -- pnpm-lock.yaml; then
+            git diff --stat -- pnpm-lock.yaml
+            echo "::error file=pnpm-lock.yaml::pnpm-lock.yaml is not what the documented command writes. Run CI=true npx -y pnpm@9.15.9 install --lockfile-only --resolution-only and commit the result (#2363)."
+            exit 1
+          fi
+
   # Every workspace package with a `test` script must be invoked by one of the
   # test jobs. The list is named rather than recursive, so a new package's suite
   # would otherwise be green locally and unrun in CI, silently. Guarded by
