@@ -221,7 +221,8 @@ test.describe('Accessibility (axe-core)', () => {
     await openTripoint(page)
     // The save is held with no answer, so the save bar stays on Saving.
     await page.route((url) => url.pathname.endsWith('/page') && url.pathname.includes('/api/partners/'), () => {})
-    await page.getByRole('spinbutton', { name: 'Loan amount minimum' }).fill('2500')
+    // A money box is a text box since #2324 (a "$" beside it, the amount as typed).
+    await page.getByRole('textbox', { name: 'Loan amount minimum' }).fill('2500')
     await page.getByRole('button', { name: 'Save changes' }).click()
     // Found by the save bar's own marker: an open list hides the rest of the page from role queries.
     const saving = page.locator('[data-save-bar] [role="status"]').filter({ hasText: /^Saving, / })
