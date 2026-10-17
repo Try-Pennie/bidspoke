@@ -13,7 +13,9 @@ import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { REPO_ROOT, WORKER_SRC } from '../../__tests__/_scan-utils'
-import { OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS } from '../../../../../worker/src/ops/ops-rpcs'
+import {
+  OPS_LANE_READ_ONLY_RPCS, OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_READ_ONLY_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS,
+} from '../../../../../worker/src/ops/ops-rpcs'
 
 const MIGRATIONS = path.join(REPO_ROOT, 'supabase-ops/supabase/migrations')
 
@@ -37,9 +39,11 @@ describe('ops rpc classification', () => {
     expect([...new Set(created)].sort()).toEqual([...listed].sort())
   })
 
-  it('splits the mutating list into organization scoped and lane wide calls, with no name in both', () => {
-    const both = OPS_ORGANIZATION_RPCS.filter((n) => (OPS_LANE_RPCS as readonly string[]).includes(n))
-    expect(both).toEqual([])
+  it('splits each list into organization scoped and lane wide calls, with no name in both', () => {
+    const organization: readonly string[] = [...OPS_ORGANIZATION_RPCS, ...OPS_ORGANIZATION_READ_ONLY_RPCS]
+    const lane: readonly string[] = [...OPS_LANE_RPCS, ...OPS_LANE_READ_ONLY_RPCS]
+    expect(organization.filter((n) => lane.includes(n))).toEqual([])
+    expect([...organization, ...lane].sort()).toEqual([...OPS_MUTATING_RPCS, ...OPS_READ_ONLY_RPCS].sort())
   })
 
   it('an organization scoped function takes p_organization_id, and a lane wide one does not', () => {
@@ -49,8 +53,8 @@ describe('ops rpc classification', () => {
       if (!m) throw new Error(`no signature for ${name}`)
       return m[1]
     }
-    for (const name of OPS_ORGANIZATION_RPCS) expect(signature(name), name).toMatch(/^\s*p_organization_id\s+uuid/)
-    for (const name of [...OPS_LANE_RPCS, ...OPS_READ_ONLY_RPCS]) expect(signature(name), name).not.toMatch(/p_organization_id/)
+    for (const name of [...OPS_ORGANIZATION_RPCS, ...OPS_ORGANIZATION_READ_ONLY_RPCS]) expect(signature(name), name).toMatch(/^\s*p_organization_id\s+uuid/)
+    for (const name of [...OPS_LANE_RPCS, ...OPS_LANE_READ_ONLY_RPCS]) expect(signature(name), name).not.toMatch(/p_organization_id/)
   })
 
   it('every classified function has exactly one typed wrapper in ops-writes.ts, so none is reachable only by a raw name', () => {

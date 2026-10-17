@@ -30,8 +30,39 @@ function tables(toml: string, name: string): string[] {
   return out
 }
 
+/**
+ * What is wrong with the config's Durable Object bindings, as sentences: each
+ * binding must name a class the ops entry module exports, created by one of
+ * the config's own migrations, and never a script_name (another Worker's
+ * objects). Exported so its own red case can be planted.
+ */
+export function durableObjectProblems(toml: string, opsIndexSource: string): string[] {
+  const created = new Set(
+    tables(toml, 'migrations').flatMap((t) => {
+      const list = /^new_(?:sqlite_)?classes = \[([^\]]*)\]$/m.exec(t)
+      return list ? [...list[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]) : []
+    }),
+  )
+  const problems: string[] = []
+  for (const binding of tables(toml, 'durable_objects.bindings')) {
+    const name = /^name = "([^"]+)"$/m.exec(binding)?.[1] ?? '(unnamed)'
+    const className = /^class_name = "([^"]+)"$/m.exec(binding)?.[1]
+    const script = /^script_name = "([^"]+)"$/m.exec(binding)?.[1]
+    if (script !== undefined) problems.push(`${name} names script_name ${script}, another Worker's object`)
+    if (className === undefined) {
+      problems.push(`${name} names no class_name`)
+      continue
+    }
+    const exported = new RegExp(`^export \\{ ${className} \\} from '\\./[a-z-]+'$`, 'm').test(opsIndexSource)
+    if (!exported) problems.push(`${name} names ${className}, which src/ops/index.ts does not export`)
+    if (!created.has(className)) problems.push(`${name} names ${className}, which no migration in this config creates`)
+  }
+  return problems
+}
+
 describe('wrangler.ops.toml (#1709)', () => {
   const toml = read('apps/worker/wrangler.ops.toml')
+  const opsIndex = read('apps/worker/src/ops/index.ts')
 
   it('reads the tables it asserts on, so a renamed header fails rather than passing on nothing', () => {
     expect(tables(toml, 'r2_buckets')).toHaveLength(1)
@@ -63,10 +94,49 @@ describe('wrangler.ops.toml (#1709)', () => {
     expect(read('apps/worker-tail/wrangler.toml')).toMatch(/^name = "bidspoke-worker-tail"$/m)
   })
 
-  it('still holds no binding of the bidding Worker: no KV, no Durable Object, no database', () => {
-    for (const name of ['kv_namespaces', 'durable_objects.bindings', 'd1_databases', 'hyperdrive']) {
+  it('still holds no binding of the bidding Worker: no KV, no database', () => {
+    for (const name of ['kv_namespaces', 'd1_databases', 'hyperdrive']) {
       expect(tables(toml, name), name).toEqual([])
     }
+  })
+
+  /**
+   * Durable Objects only of classes ops itself exports (#2334, phase 4 of
+   * #1689). A binding with a script_name reaches another Worker's objects (the
+   * bidding Worker's BulkheadObject, its buyer ledgers), which ops must never
+   * hold (Hard Rule 1), so a binding names a class_name only, and every class
+   * it names is exported from src/ops/index.ts and created by one of this
+   * config's own migrations.
+   */
+  it('binds Durable Objects only of classes ops itself exports, never through a script_name', () => {
+    expect(durableObjectProblems(toml, opsIndex)).toEqual([])
+    expect(tables(toml, 'durable_objects.bindings').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('sees a binding to another Worker\'s object, a class ops does not export, and one no migration creates (seen red)', () => {
+    const planted = `${toml}\n[[durable_objects.bindings]]\nname = "BULKHEAD"\nclass_name = "BulkheadObject"\nscript_name = "bidspoke-worker"\n`
+    const problems = durableObjectProblems(planted, opsIndex)
+    expect(problems).toContain('BULKHEAD names script_name bidspoke-worker, another Worker\'s object')
+    expect(problems).toContain('BULKHEAD names BulkheadObject, which src/ops/index.ts does not export')
+    expect(problems).toContain('BULKHEAD names BulkheadObject, which no migration in this config creates')
+  })
+
+  /**
+   * The first ops object (#2334): ConnectionTokenObject, SQLite backed, under
+   * the ops Worker's own migration v1. Durable Object migrations are one way
+   * (ADR 0011): v1 is the ops Worker's rollback floor, recorded in
+   * docs/disaster-recovery.md.
+   */
+  it('creates ConnectionTokenObject under its own migration v1, and records it as the ops rollback floor', () => {
+    const migrations = tables(toml, 'migrations')
+    expect(migrations).toHaveLength(1)
+    expect(migrations[0]).toMatch(/^tag = "v1"$/m)
+    expect(migrations[0]).toMatch(/^new_sqlite_classes = \["ConnectionTokenObject"\]$/m)
+    const bindings = tables(toml, 'durable_objects.bindings')
+    expect(bindings).toHaveLength(1)
+    expect(bindings[0]).toMatch(/^name = "CONNECTION_TOKENS"$/m)
+    expect(bindings[0]).toMatch(/^class_name = "ConnectionTokenObject"$/m)
+    expect(read('docs/disaster-recovery.md')).toContain('`bidspoke-worker-ops` Durable Object migrations: `v1`')
   })
 
   /**

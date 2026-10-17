@@ -30,12 +30,22 @@
  *
  * The minute cron (#1949, tick.ts) calls the sweeps, the copies, the observation
  * and the clock; run invocation (#1950) calls the rest.
+ *
+ * The ops connections' and Salesforce pool's wrappers (#2334, supabase-ops
+ * migration 20261017220000) are at the end. Nothing calls them in the deploy
+ * that adds them: the OpsConnections entrypoint, connectionFetch and the tick's
+ * new sweeps (Phases 5, 6 and 10 of #1689) are their callers.
  */
 import {
-  LEDGER_METHODS, OBSERVATION_OUTCOMES, OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES, TRIGGER_KINDS,
-  type LedgerMethod, type ObservationOutcome, type OpsSweep, type OverlapRule, type TriggerKind,
+  CONNECTION_COPY_STATES, LEDGER_METHODS, OBSERVATION_OUTCOMES, OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES, SF_BUDGET_SOURCES,
+  SF_LEASE_OUTCOMES, SF_LEASE_PURPOSES, TRIGGER_KINDS,
+  type ConnectionCopyState, type LedgerMethod, type ObservationOutcome, type OpsSweep, type OverlapRule, type SfBudgetSource,
+  type SfLeaseOutcome, type SfLeasePurpose, type TriggerKind,
 } from './run-vocabulary'
-import { OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS, type OpsRpcName } from './ops-rpcs'
+import {
+  OPS_LANE_READ_ONLY_RPCS, OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_READ_ONLY_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS,
+  type OpsRpcName,
+} from './ops-rpcs'
 import { organizationIdFrom, type OpsSupabaseClient, type OrganizationId } from './ops-db'
 
 /** Past the ops project's 8 s statement timeout, so the database gives up first. */
@@ -66,8 +76,8 @@ export class OpsClaimLostError extends OpsWriteError {
 }
 
 const KNOWN: ReadonlySet<string> = new Set<string>([...OPS_MUTATING_RPCS, ...OPS_READ_ONLY_RPCS])
-const ORGANIZATION_SCOPED: ReadonlySet<string> = new Set<string>(OPS_ORGANIZATION_RPCS)
-const LANE_WIDE: ReadonlySet<string> = new Set<string>([...OPS_LANE_RPCS, ...OPS_READ_ONLY_RPCS])
+const ORGANIZATION_SCOPED: ReadonlySet<string> = new Set<string>([...OPS_ORGANIZATION_RPCS, ...OPS_ORGANIZATION_READ_ONLY_RPCS])
+const LANE_WIDE: ReadonlySet<string> = new Set<string>([...OPS_LANE_RPCS, ...OPS_LANE_READ_ONLY_RPCS])
 
 export interface OpsRpcOptions {
   /** Defaults to OPS_RPC_DEADLINE_MS. */
@@ -723,4 +733,311 @@ export async function dueQueueDepth(client: OpsSupabaseClient, options?: OpsRpcO
     dueWorkflows: field(name, row, 'due_workflows', isCount, 'a count'),
     oldestDue: field(name, row, 'oldest_due', isTimeOrNull, 'a time or null'),
   }
+}
+
+// ── ops connections (#2334) ─────────────────────────────────────────────────
+
+/**
+ * How long a served copy may be used: Dan's decision 3 (2026-10-17, discussion
+ * #2329). The database refuses a longer one too (connection_copies_serve_window);
+ * this refuses it before sending, so the error names the rule.
+ */
+export const CONNECTION_SERVE_WINDOW_MS = 6 * 60 * 60 * 1000
+
+/** One ops connection as the bidding Worker serves it: ciphertext and public config only, never a plaintext login. */
+export interface ConnectionCopyInput {
+  connectionId: string
+  organizationId: string
+  service: string
+  /** credential_generation on the bidding row. A lower one than stored is refused. */
+  generation: number
+  /** The seal's envelope, {v, kid, wrapped_key, iv, ct}, as stored in service_connections.credential_enc. */
+  envelope: unknown
+  publicConfig: unknown
+  target: unknown
+  /** At most CONNECTION_SERVE_WINDOW_MS after the list's served_at. */
+  serveUntil: string
+}
+
+export interface SaveConnectionCopiesResult {
+  inserted: number
+  updated: number
+  confirmed: number
+  /** A lower generation than the one stored. */
+  refusedOlder: number
+  /** Already past serve_until when it arrived. */
+  refusedExpired: number
+  /** A tombstone covers its generation: a late list cannot restore a removed connection (L625). */
+  refusedRemoved: number
+  withdrawn: number
+}
+
+export async function saveConnectionCopies(
+  client: OpsSupabaseClient, servedAt: string, complete: boolean, copies: readonly ConnectionCopyInput[], options?: OpsRpcOptions,
+): Promise<SaveConnectionCopiesResult> {
+  if (copies.length > MAX_COPIES_PER_SAVE) throw new OpsWriteError(`save_connection_copies: ${copies.length} copies is more than one save carries (${MAX_COPIES_PER_SAVE})`)
+  const served = Date.parse(servedAt)
+  if (!Number.isFinite(served)) throw new OpsWriteError('save_connection_copies: served_at is not a time')
+  for (const c of copies) {
+    const until = Date.parse(c.serveUntil)
+    if (!Number.isFinite(until) || until <= served || until - served > CONNECTION_SERVE_WINDOW_MS) {
+      throw new OpsWriteError(`save_connection_copies: connection ${c.connectionId} has a serve_until more than 6 hours after it was served, or not after it`)
+    }
+  }
+  const name = 'save_connection_copies'
+  const row = oneRow(name, await callOpsRpc(client, name, {
+    p_served_at: servedAt,
+    p_complete: complete,
+    p_copies: copies.map((c) => ({
+      connection_id: c.connectionId,
+      organization_id: c.organizationId,
+      service: c.service,
+      generation: c.generation,
+      envelope: c.envelope,
+      public_config: c.publicConfig,
+      target: c.target ?? null,
+      serve_until: c.serveUntil,
+    })),
+  }, options))
+  return {
+    inserted: field(name, row, 'inserted', isCount, 'a count'),
+    updated: field(name, row, 'updated', isCount, 'a count'),
+    confirmed: field(name, row, 'confirmed', isCount, 'a count'),
+    refusedOlder: field(name, row, 'refused_older', isCount, 'a count'),
+    refusedExpired: field(name, row, 'refused_expired', isCount, 'a count'),
+    refusedRemoved: field(name, row, 'refused_removed', isCount, 'a count'),
+    withdrawn: field(name, row, 'withdrawn', isCount, 'a count'),
+  }
+}
+
+export interface ConnectionCopy {
+  /** usable is the one state the envelope comes back in. */
+  state: ConnectionCopyState
+  connectionId: string
+  service: string | null
+  generation: number | null
+  envelope: unknown
+  publicConfig: unknown
+  target: unknown
+  servedAt: string | null
+  serveUntil: string | null
+  dbNow: string
+}
+
+/**
+ * One connection's copy and whether it may be used now. Fails closed: a state
+ * this Worker does not know, or an envelope returned with any state but
+ * usable, is an error, never a usable copy.
+ */
+export async function readConnectionCopy(
+  client: OpsSupabaseClient, organizationId: OrganizationId, connectionId: string, options?: OpsRpcOptions,
+): Promise<ConnectionCopy> {
+  const name = 'connection_copy'
+  const row = oneRow(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_connection_id: connectionId }, options))
+  const state = field(name, row, 'state', oneOf(CONNECTION_COPY_STATES), 'a copy state')
+  const envelope = row.envelope ?? null
+  if ((state === 'usable') !== (envelope !== null)) throw new OpsWriteError(`${name} returned ${envelope === null ? 'no envelope' : 'an envelope'} with the state ${state}`)
+  return {
+    state,
+    connectionId: field(name, row, 'connection_id', isString, 'an id'),
+    service: field(name, row, 'service', isStringOrNull, 'text or null'),
+    generation: field(name, row, 'generation', isIntOrNull, 'a whole number or null'),
+    envelope,
+    publicConfig: row.public_config ?? null,
+    target: row.target ?? null,
+    servedAt: field(name, row, 'served_at', isTimeOrNull, 'a time or null'),
+    serveUntil: field(name, row, 'serve_until', isTimeOrNull, 'a time or null'),
+    dbNow: field(name, row, 'db_now', isTime, 'a time'),
+  }
+}
+
+/** A removal: deletes the copies, measured identities and health it covers on ops at once. */
+export async function recordConnectionTombstone(
+  client: OpsSupabaseClient, organizationId: OrganizationId, connectionId: string, generation: number, removedAt: Date, options?: OpsRpcOptions,
+): Promise<{ outcome: 'recorded' | 'already_recorded'; copiesRemoved: number }> {
+  const name = 'record_connection_tombstone'
+  const row = oneRow(name, await callOpsRpc(client, name, {
+    p_organization_id: organizationId, p_connection_id: connectionId, p_generation: generation, p_removed_at: removedAt.toISOString(),
+  }, options))
+  return {
+    outcome: field(name, row, 'outcome', oneOf(['recorded', 'already_recorded'] as const), 'a tombstone outcome'),
+    copiesRemoved: field(name, row, 'copies_removed', isCount, 'a count'),
+  }
+}
+
+/** The tombstone_expiry sweep: deletes only tombstones past their expiry. */
+export async function purgeExpiredConnectionTombstones(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
+  const name = 'purge_expired_connection_tombstones'
+  const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  return { purged: field(name, row, 'purged', isCount, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
+}
+
+const HEALTH_OUTCOMES = ['recorded', 'connection_removed'] as const
+type HealthOutcome = (typeof HEALTH_OUTCOMES)[number]
+
+function healthOutcome(name: string, data: unknown): HealthOutcome {
+  if (!oneOf(HEALTH_OUTCOMES)(data)) throw new OpsWriteError(`${name} returned something that is not a health outcome`)
+  return data
+}
+
+/** The still valid cron's writer: a passing check, or a failed one with its cause. */
+export async function recordConnectionCheck(
+  client: OpsSupabaseClient, organizationId: OrganizationId, connectionId: string, result: { ok: true } | { ok: false; cause: string }, options?: OpsRpcOptions,
+): Promise<HealthOutcome> {
+  const name = 'record_connection_check'
+  return healthOutcome(name, await callOpsRpc(client, name, {
+    p_organization_id: organizationId, p_connection_id: connectionId, p_ok: result.ok, p_cause: result.ok ? null : result.cause,
+  }, options))
+}
+
+/** A mint or refresh failure's writer. Only Reconnect clears what it writes. */
+export async function recordConnectionNeedsReauth(
+  client: OpsSupabaseClient, organizationId: OrganizationId, connectionId: string, cause: string, options?: OpsRpcOptions,
+): Promise<HealthOutcome> {
+  const name = 'record_connection_needs_reauth'
+  return healthOutcome(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_connection_id: connectionId, p_cause: cause }, options))
+}
+
+/** Reconnect's writer, the only one that clears needs_reauth. */
+export async function recordConnectionReauthCleared(
+  client: OpsSupabaseClient, organizationId: OrganizationId, connectionId: string, options?: OpsRpcOptions,
+): Promise<HealthOutcome> {
+  const name = 'record_connection_reauth_cleared'
+  return healthOutcome(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_connection_id: connectionId }, options))
+}
+
+export interface ConnectionHealthStatus {
+  connectionId: string
+  service: string
+  generation: number
+  /** One of CONNECTION_STATUSES; a status this Worker does not know is kept as text, shown rather than thrown (#1698 R3). */
+  status: string
+  lastCheckOkAt: string | null
+  lastCheckFailedAt: string | null
+  lastCheckCause: string | null
+  needsReauthAt: string | null
+  needsReauthCause: string | null
+  reauthClearedAt: string | null
+}
+
+/** One organization's connections with their derived status, at most limit of them. */
+export async function readConnectionStatus(
+  client: OpsSupabaseClient, organizationId: OrganizationId, limit: number, options?: OpsRpcOptions,
+): Promise<{ connections: ConnectionHealthStatus[]; reachedLimit: boolean }> {
+  const name = 'connection_status'
+  const connections = rows(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_limit: limit }, options)).map((row) => ({
+    connectionId: field(name, row, 'connection_id', isString, 'an id'),
+    service: field(name, row, 'service', isString, 'text'),
+    generation: field(name, row, 'generation', isInt, 'a whole number'),
+    status: field(name, row, 'status', isString, 'text'),
+    lastCheckOkAt: field(name, row, 'last_check_ok_at', isTimeOrNull, 'a time or null'),
+    lastCheckFailedAt: field(name, row, 'last_check_failed_at', isTimeOrNull, 'a time or null'),
+    lastCheckCause: field(name, row, 'last_check_cause', isStringOrNull, 'text or null'),
+    needsReauthAt: field(name, row, 'needs_reauth_at', isTimeOrNull, 'a time or null'),
+    needsReauthCause: field(name, row, 'needs_reauth_cause', isStringOrNull, 'text or null'),
+    reauthClearedAt: field(name, row, 'reauth_cleared_at', isTimeOrNull, 'a time or null'),
+  }))
+  return { connections, reachedLimit: connections.length === limit }
+}
+
+// ── the ops Salesforce pool (#2334) ─────────────────────────────────────────
+
+/** The 18 character org id userinfo answers; the 15 character form of the same org would key a second pool. */
+const SF_ORG_ID = /^00D[A-Za-z0-9]{15}$/
+
+/**
+ * Written only by verify, from /services/oauth2/userinfo, never from the
+ * declared target (L83). identity_changed writes nothing: the same generation
+ * measured another org.
+ */
+export async function recordMeasuredIdentity(
+  client: OpsSupabaseClient, organizationId: OrganizationId, connectionId: string, generation: number,
+  identity: { sfOrgId: string; username: string }, options?: OpsRpcOptions,
+): Promise<'recorded' | 'confirmed' | 'identity_changed' | 'connection_removed'> {
+  if (!SF_ORG_ID.test(identity.sfOrgId)) throw new OpsWriteError('record_measured_identity: the measured org id is not an 18 character Salesforce org id')
+  const name = 'record_measured_identity'
+  const data = await callOpsRpc(client, name, {
+    p_organization_id: organizationId, p_connection_id: connectionId, p_generation: generation, p_sf_org_id: identity.sfOrgId, p_username: identity.username,
+  }, options)
+  const outcomes = ['recorded', 'confirmed', 'identity_changed', 'connection_removed'] as const
+  if (!oneOf(outcomes)(data)) throw new OpsWriteError(`${name} returned something that is not an identity outcome`)
+  return data
+}
+
+export interface AcquireSfLease {
+  connectionId: string
+  generation: number
+  purpose: SfLeasePurpose
+  /** A step's workflow; no other purpose names one. */
+  workflowId?: string
+  /** One holder holds one lease; asking again returns it. Released by holder. */
+  holder: string
+  /** 5 to 300 seconds. */
+  ttlSeconds: number
+  /** The declared instance_url host, given only by verify: the bootstrap slot before the connection is measured. */
+  bootstrapHost?: string
+}
+
+export type SfLeaseAnswer =
+  | { outcome: 'granted'; leaseId: string; expiresAt: string; pool: 'org' | 'bootstrap' }
+  | { outcome: Exclude<SfLeaseOutcome, 'granted'>; retryAt: string | null }
+
+/**
+ * One Salesforce call's slot. Fails closed: an answer this Worker does not
+ * know, or a grant with no lease, is an error and never a grant.
+ */
+export async function acquireSfLease(client: OpsSupabaseClient, organizationId: OrganizationId, ask: AcquireSfLease, options?: OpsRpcOptions): Promise<SfLeaseAnswer> {
+  if (!(SF_LEASE_PURPOSES as readonly string[]).includes(ask.purpose)) throw new OpsWriteError(`acquire_sf_lease: ${String(ask.purpose)} is not a purpose`)
+  if ((ask.purpose === 'step') !== (ask.workflowId !== undefined)) throw new OpsWriteError('acquire_sf_lease: a step names its workflow, and no other purpose does')
+  if (ask.bootstrapHost !== undefined && ask.purpose !== 'verify') throw new OpsWriteError('acquire_sf_lease: only verify takes the bootstrap slot')
+  const name = 'acquire_sf_lease'
+  const row = oneRow(name, await callOpsRpc(client, name, {
+    p_organization_id: organizationId,
+    p_connection_id: ask.connectionId,
+    p_generation: ask.generation,
+    p_purpose: ask.purpose,
+    p_workflow_id: ask.workflowId ?? null,
+    p_holder: ask.holder,
+    p_ttl_seconds: ask.ttlSeconds,
+    p_bootstrap_host: ask.bootstrapHost ?? null,
+  }, options))
+  const outcome = field(name, row, 'outcome', oneOf(SF_LEASE_OUTCOMES), 'a lease outcome')
+  if (outcome === 'granted') {
+    return {
+      outcome,
+      leaseId: field(name, row, 'lease_id', isString, 'an id'),
+      expiresAt: field(name, row, 'expires_at', isTime, 'a time'),
+      pool: field(name, row, 'pool', oneOf(['org', 'bootstrap'] as const), 'a pool'),
+    }
+  }
+  return { outcome, retryAt: field(name, row, 'retry_at', isTimeOrNull, 'a time or null') }
+}
+
+/** Idempotent by holder: run it in a finally after every call. */
+export async function releaseSfLease(client: OpsSupabaseClient, organizationId: OrganizationId, holder: string, options?: OpsRpcOptions): Promise<'released' | 'not_held'> {
+  const name = 'release_sf_lease'
+  const data = await callOpsRpc(client, name, { p_organization_id: organizationId, p_holder: holder }, options)
+  if (!oneOf(['released', 'not_held'] as const)(data)) throw new OpsWriteError(`${name} returned something that is not a release outcome`)
+  return data
+}
+
+/** Deletes leases whose holder died. They stopped counting when they lapsed (L409). */
+export async function sweepSfLeases(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ swept: number; more: boolean }> {
+  const name = 'sweep_sf_leases'
+  const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  return { swept: field(name, row, 'swept', isCount, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
+}
+
+/** A Salesforce org's daily API allocation and what is left of it. Remaining may be below zero. */
+export async function recordSfBudgetReading(
+  client: OpsSupabaseClient, sfOrgId: string, reading: { dailyApiMax: number; dailyApiRemaining: number; source: SfBudgetSource }, options?: OpsRpcOptions,
+): Promise<'recorded'> {
+  if (!(SF_BUDGET_SOURCES as readonly string[]).includes(reading.source)) throw new OpsWriteError(`record_sf_budget_reading: ${String(reading.source)} is not a reading source`)
+  if (!SF_ORG_ID.test(sfOrgId)) throw new OpsWriteError('record_sf_budget_reading: the org id is not an 18 character Salesforce org id')
+  const name = 'record_sf_budget_reading'
+  const data = await callOpsRpc(client, name, {
+    p_sf_org_id: sfOrgId, p_daily_api_max: reading.dailyApiMax, p_daily_api_remaining: reading.dailyApiRemaining, p_source: reading.source,
+  }, options)
+  if (data !== 'recorded') throw new OpsWriteError(`${name} returned something other than recorded`)
+  return data
 }
