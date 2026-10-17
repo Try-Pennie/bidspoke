@@ -217,3 +217,19 @@ describe('a value the workflows cannot see as it is', () => {
     expect(within(section('Active')).queryByText('Until a value is saved, workflows find nothing under this name.')).toBeNull()
   })
 })
+
+describe('the sections as rows (#2317)', () => {
+  it('holds the sections apart from the read state, so the first section is first among them and draws no rule', async () => {
+    // A partner not saved yet: the read's sentence stands above the sections.
+    render(<WorkflowValuesPanel {...props} partnerId={null} />)
+    expect(screen.getByText(/shows once the partner is saved/)).toBeInTheDocument()
+    const sections = await waitFor(() => {
+      const found = [...document.querySelectorAll('section.partner-section')]
+      expect(found.length).toBeGreaterThan(1)
+      return found
+    })
+    const parent = sections[0].parentElement as HTMLElement
+    expect(parent.firstElementChild).toBe(sections[0])
+    expect([...parent.children].every((c) => c.classList.contains('partner-section'))).toBe(true)
+  })
+})
