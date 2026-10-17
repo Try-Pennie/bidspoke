@@ -128,35 +128,68 @@ function sourceFiles(): string[] {
   return sourceRoots().flatMap((root) => listTsFiles(root))
 }
 
-/** Database functions whose latest definition writes the table, from the migrations in order. */
+/**
+ * How many arguments the list opening at `open` (the index of its "(") holds,
+ * counting commas outside nested parentheses, or null when it never closes.
+ */
+function argCount(text: string, open: number): number | null {
+  let depth = 0
+  let commas = 0
+  let any = false
+  for (let i = open; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === '(') depth++
+    else if (ch === ')') {
+      depth--
+      if (depth === 0) return any ? commas + 1 : 0
+    } else if (depth === 1 && ch === ',') commas++
+    else if (depth >= 1 && !/\s/.test(ch)) any = true
+  }
+  return null
+}
+
+const nameOf = (key: string) => key.slice(0, key.indexOf('/'))
+
+/**
+ * Database functions whose latest definition writes the table, from the
+ * migrations in order. An overload is its name and argument count, so dropping
+ * one overload forgets only that one (#2254); a drop with no argument list
+ * forgets every overload of the name.
+ */
 export function sqlFunctionsWriting(kind: Kind, migrations: Array<{ name: string; text: string }>): Set<string> {
   const bodies = new Map<string, string>()
-  const re = /CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(?:public\.)?"?(\w+)"?\s*\(|DROP\s+FUNCTION\s+(?:IF\s+EXISTS\s+)?(?:public\.)?"?(\w+)"?/gi
+  const re = /CREATE\s+(?:OR\s+REPLACE\s+)?FUNCTION\s+(?:public\.)?"?(\w+)"?\s*\(|DROP\s+FUNCTION\s+(?:IF\s+EXISTS\s+)?(?:public\.)?"?(\w+)"?(\s*\()?/gi
   for (const { text } of migrations) {
     let m: RegExpExecArray | null
     re.lastIndex = 0
     while ((m = re.exec(text))) {
       if (m[2]) {
-        bodies.delete(m[2])
+        const arity = m[3] ? argCount(text, m.index + m[0].length - 1) : null
+        for (const key of [...bodies.keys()]) {
+          if (nameOf(key) === m[2] && (arity === null || key === `${m[2]}/${arity}`)) bodies.delete(key)
+        }
         continue
       }
+      const arity = argCount(text, m.index + m[0].length - 1)
+      if (arity === null) continue
       const after = text.slice(m.index)
       const tag = /\bAS\s+(\$\w*\$)/i.exec(after)
       if (!tag) continue
       const start = tag.index + tag[0].length
       const end = after.indexOf(tag[1], start)
       if (end < 0) continue
-      bodies.set(m[1], after.slice(start, end))
+      bodies.set(`${m[1]}/${arity}`, after.slice(start, end))
     }
   }
   const out = new Set<string>()
-  for (const [name, body] of bodies) if (kind.sqlWrites.test(body)) out.add(name)
-  // A function that calls a writer writes too (#2140: both delete_partner_config
-  // overloads reach the table through _delete_partner_config), followed until
+  for (const [key, body] of bodies) if (kind.sqlWrites.test(body)) out.add(nameOf(key))
+  // A function that calls a writer writes too (#2140: delete_partner_config
+  // reaches the table through _delete_partner_config), followed until
   // nothing new is found.
   for (let grew = true; grew; ) {
     grew = false
-    for (const [name, body] of bodies) {
+    for (const [key, body] of bodies) {
+      const name = nameOf(key)
       if (out.has(name)) continue
       if ([...out].some((w) => new RegExp(`\\b(?:public\\.)?${w}\\s*\\(`, 'i').test(body))) {
         out.add(name)
@@ -376,10 +409,24 @@ describe('the detector', () => {
   it('reads which functions write a table from their latest definition, and forgets a dropped one', () => {
     const mig = [
       { name: '1.sql', text: 'CREATE FUNCTION public.a() RETURNS void AS $$ BEGIN UPDATE partner_configs SET x = 1; END $$ LANGUAGE plpgsql;\nCREATE OR REPLACE FUNCTION b() RETURNS void AS $fn$ DELETE FROM public.partner_configs; $fn$;' },
-      { name: '2.sql', text: 'CREATE OR REPLACE FUNCTION public.a() RETURNS void AS $$ SELECT 1 FROM partner_configs $$;\nDROP FUNCTION IF EXISTS public.b(uuid);' },
+      { name: '2.sql', text: 'CREATE OR REPLACE FUNCTION public.a() RETURNS void AS $$ SELECT 1 FROM partner_configs $$;\nDROP FUNCTION IF EXISTS public.b();' },
     ]
     expect([...sqlFunctionsWriting(PARTNERS, mig)]).toEqual([])
     expect([...sqlFunctionsWriting(PARTNERS, mig.slice(0, 1))].sort()).toEqual(['a', 'b'])
+  })
+
+  it('dropping one overload forgets only that one: a name with another writing overload still writes (#2254)', () => {
+    const mig = [
+      { name: '1.sql', text: [
+        'CREATE FUNCTION public._body(p uuid, e jsonb) RETURNS void AS $$ BEGIN DELETE FROM partner_configs WHERE id = p; END $$ LANGUAGE plpgsql;',
+        'CREATE FUNCTION public.drop_it(p uuid, e jsonb) RETURNS void AS $$ BEGIN PERFORM public._body(p, e); END $$ LANGUAGE plpgsql;',
+        'CREATE FUNCTION public.drop_it(p uuid) RETURNS void AS $$ BEGIN PERFORM public._body(p, NULL); END $$ LANGUAGE plpgsql;',
+      ].join('\n') },
+      { name: '2.sql', text: 'DROP FUNCTION IF EXISTS public.drop_it(uuid);' },
+    ]
+    expect([...sqlFunctionsWriting(PARTNERS, mig)].sort()).toEqual(['_body', 'drop_it'])
+    // A drop naming no argument list drops every overload.
+    expect([...sqlFunctionsWriting(PARTNERS, [...mig, { name: '3.sql', text: 'DROP FUNCTION public.drop_it;' }])]).toEqual(['_body'])
   })
 
   it('counts a function that reaches the table through another function, however deep (#2140)', () => {
