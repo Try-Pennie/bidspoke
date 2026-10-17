@@ -30,7 +30,7 @@ import {
 } from '@bidspoke/buyer-profile'
 import type { PartnerBody } from '@/lib/api'
 import { PARTNER_BODY_KEYS, PROFILE_PREFIX, registryEntriesFor, type FieldEntry, type PartnerTab } from '@/app/(app)/partners/partner-draft'
-import { POPULATION_LABELS } from '@/components/partners/buyer-profile/labels'
+import { POPULATION_LABELS, STORED_HOURS_LABEL } from '@/components/partners/buyer-profile/labels'
 
 /** The two halves a page save writes. A profile the page never read is null. */
 export interface PageHalves {
@@ -127,7 +127,8 @@ function unitLabel(key: string, entry: FieldEntry): string {
   const at = key.indexOf('@')
   if (at < 0) return entry.label
   const part = key.slice(at + 1)
-  if (entry.mergeGroup?.by === 'day_of_week') return `${entry.label}, ${DAYS_OF_WEEK.find((d) => String(d.index) === part)?.label ?? `day ${part}`}`
+  // The windows are stored hours, so the label names their zone (#2253).
+  if (entry.mergeGroup?.by === 'day_of_week') return `${STORED_HOURS_LABEL}, ${DAYS_OF_WEEK.find((d) => String(d.index) === part)?.label ?? `day ${part}`}`
   if (entry.mergeGroup?.by === 'population') return `${entry.label}, ${(POPULATIONS as readonly string[]).includes(part) ? POPULATION_LABELS[part as Population] : part}`
   return `${entry.label}, ${part}`
 }

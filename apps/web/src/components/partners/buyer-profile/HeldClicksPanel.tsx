@@ -27,7 +27,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { Plus } from 'lucide-react'
-import { BUYER_LEAD_ID_MAX, HELD_CLICK_REASON_LABELS, SALE_RECORD_LABELS, buyerLeadIdOf, salesforceStandingOf, type HeldClickReason, type SaleWrite, type SalesforceStanding } from '@bidspoke/buyer-profile'
+import { BUYER_LEAD_ID_MAX, HELD_CLICK_REASON_LABELS, SALE_RECORD_LABELS, buyerLeadIdOf, salesforceStandingOf, type DisplayTimeZone, type HeldClickReason, type SaleWrite, type SalesforceStanding } from '@bidspoke/buyer-profile'
 import type { HeldClick } from '@/lib/api'
 import { Dialog } from '@/components/Dialog'
 import { Button, FieldError, Outcome, TextInput, describedBy, type OutcomeState } from '@/components/ui/form'
@@ -35,9 +35,11 @@ import { formatInZone } from '@/lib/dates'
 
 const PACIFIC = 'America/Los_Angeles'
 
-const heldSince = (iso: string) => formatInZone(iso, PACIFIC, 'day-time')
+// When a click was held and when it can be released are shown in the profile's
+// display zone, as its hours are, each naming the zone (#2253).
+const heldSince = (iso: string, zone: DisplayTimeZone) => formatInZone(iso, zone, 'day-time')
 
-const pacificTime = (iso: string) => formatInZone(iso, PACIFIC, 'clock')
+const releaseTime = (iso: string, zone: DisplayTimeZone) => formatInZone(iso, zone, 'clock')
 
 /** The Pacific day the click was held: the day its count lands on. */
 const pacificDay = (iso: string) => formatInZone(iso, PACIFIC, 'day')
@@ -140,6 +142,8 @@ type Pending =
 
 interface Props {
   partnerName: string
+  /** The profile's display zone, the one its hours are shown in. */
+  zone: DisplayTimeZone
   /** null while loading. */
   held: { entries: readonly HeldClick[]; total: number } | null
   error: string | null
@@ -163,7 +167,7 @@ function leadSentence(partnerName: string, entries: readonly HeldClick[], trunca
     : `${count} No later click on these prospects is sent until each is released.`
 }
 
-export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent, onFree, onClear, onRetrySalesforce, onSetLeadId }: Props) {
+export function HeldClicksPanel({ partnerName, zone, held, error, outcomes, onMarkSent, onFree, onClear, onRetrySalesforce, onSetLeadId }: Props) {
   const [pending, setPending] = useState<Pending | null>(null)
 
   if (error) return <FieldError alert size="xs">The held clicks could not be read: {error}</FieldError>
@@ -294,7 +298,7 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
     if (claim.status === 'sold') return soldBody(row, claim, outcome, busy)
     if (outcome.kind === 'done') return <Outcome state={outcome} />
     if (claim.status === 'unreadable') return <FieldError alert>{claim.message}</FieldError>
-    if (claim.status === 'sending') return <p className="text-gray-600">Still sending. It can be released after {pacificTime(claim.releasable_at)}.</p>
+    if (claim.status === 'sending') return <p className="text-gray-600">Still sending. It can be released after {releaseTime(claim.releasable_at, zone)}.</p>
     if (claim.status === 'free') {
       return (
         <div className="space-y-1.5">
@@ -348,7 +352,7 @@ export function HeldClicksPanel({ partnerName, held, error, outcomes, onMarkSent
               ) : (
                 <span className="font-mono">{row.prospect_id}</span>
               )}
-              <span className="text-gray-600">{heldSince(row.held_at)}</span>
+              <span className="text-gray-600">{heldSince(row.held_at, zone)}</span>
             </p>
             <p>
               {reasonLabel(row.reason)}
