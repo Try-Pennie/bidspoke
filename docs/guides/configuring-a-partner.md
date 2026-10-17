@@ -1,6 +1,6 @@
 # Configure a partner
 
-How to add or edit a partner on the Partners page: choose whether it is a source or a buyer, set how its bid is resolved (API, matrix, or formula), wire daily caps and a circuit breaker, map outbound fields, and turn it on or off. Partners are configured here, not on the canvas. [Bid Group](../nodes/bid-group.md) and Partner Bid nodes reference them by their saved configuration.
+How to add or edit a partner on the Partners page: choose whether it is a source or a buyer, set how its bid is resolved (Partner API, Matrix lookup or No call), set its daily attempt cap and circuit breaker, rename fields in the request, and turn it on or off. Partners are configured here, not on the canvas. [Bid Group](../nodes/bid-group.md) and Partner Bid nodes reference them by their saved configuration.
 
 For the full list of fields and their database shape, see the [partners reference](../reference/partners.md).
 
@@ -8,8 +8,8 @@ For the full list of fields and their database shape, see the [partners referenc
 
 The first decision is the partner Type. It is a segmented toggle at the top of the form.
 
-- Source - this partner sends leads to Pennie. Source partners have sell-off offer copy and a list of sub-account UUIDs. They do not bid, so the API, bidding, circuit breaker, response classification, and alert sections are hidden.
-- Buyer - this partner receives bids. Buyer partners get the full set of sections below (bid resolution, endpoints, limits, circuit breaker, response classification, alerts).
+- Source - this partner sends leads to Pennie. Source partners have sell-off offer copy and a list of sub-account UUIDs. They do not bid, so they have no Bid Group tab, the tab that holds the endpoint, the bid amount, limits, the circuit breaker and the error rules with their alerts.
+- Buyer - this partner receives bids. Buyer partners get the Bid Group tab below (Bids in, Endpoint, Resolver, Bid amount, Request, Response, Limits, Circuit breaker, Errors and Confirmation window).
 
 Pick the type first; the rest of the form changes to match.
 

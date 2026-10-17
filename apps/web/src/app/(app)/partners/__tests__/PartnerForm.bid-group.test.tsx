@@ -152,6 +152,22 @@ describe('the Bid Group tab as designed (PM-23, #2326)', () => {
     expect(onSave.mock.calls[0][0]).toEqual({ circuit_window_seconds: 120, circuit_cooldown_seconds: 30 })
   })
 
+  // Lessons review on the PR: a box that redrew the stored value read back would
+  // turn a typed 0.01 into 0.0167 under the cursor. It keeps what was typed until
+  // the box is left, then says what will be saved.
+  it('a typed fraction of a minute stays as typed while the box has focus, then shows the whole seconds stored', async () => {
+    const { panel, onSave } = await openBidGroup()
+    const within_ = within(sectionOf(panel, 'Circuit breaker')).getByLabelText('Within')
+    within_.focus()
+    fireEvent.change(within_, { target: { value: '0.01' } })
+    expect(within_).toHaveValue(0.01)
+    fireEvent.blur(within_)
+    expect(within_).toHaveValue(0.0167)
+    save()
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    expect(onSave.mock.calls[0][0]).toEqual({ circuit_window_seconds: 1 })
+  })
+
   it('the error rules are headed Errors', async () => {
     const { panel } = await openBidGroup()
     expect(within(sectionOf(panel, 'Errors')).getByText('Retry when any of')).toBeVisible()

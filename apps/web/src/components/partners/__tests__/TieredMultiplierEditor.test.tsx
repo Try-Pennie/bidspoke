@@ -66,6 +66,14 @@ describe('the tier table (PM-23)', () => {
     expect(last(onChange).tiers).toEqual([{ above: 19999, multiplier: 0.0013 }])
   })
 
+  // Lessons review on the PR: a tier needs a number, so an emptied From stores the
+  // threshold 0, the value an emptied threshold box stored before (#2137).
+  it('an emptied tier From stores the threshold 0, as an emptied threshold did', () => {
+    const onChange = renderEditor()
+    fireEvent.change(box('From, tier 2'), { target: { value: '' } })
+    expect(last(onChange).tiers).toEqual([{ above: 0, multiplier: 0.0013 }])
+  })
+
   it('the first row is the floor and the default multiplier', () => {
     const onChange = renderEditor()
     fireEvent.change(box('Multiplier, tier 1'), { target: { value: '0.001' } })

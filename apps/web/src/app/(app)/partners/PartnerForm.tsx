@@ -20,6 +20,7 @@ import { OutboundMappingEditor } from '@/components/partners/OutboundMappingEdit
 import { ExtraExtractionEditor } from '@/components/partners/ExtraExtractionEditor'
 import { PartnerProbePanel } from '@/components/partners/PartnerProbePanel'
 import { ErrorRuleLists } from '@/components/partners/ErrorRuleLists'
+import { MinutesInput } from '@/components/partners/MinutesInput'
 import { BuyerProfileSection, EMPTY_PROFILE } from '@/components/partners/buyer-profile/BuyerProfileSection'
 import { MergeDialog } from '@/components/partners/MergeDialog'
 import { PartnerDeleteBox } from '@/components/partners/PartnerDeleteBox'
@@ -195,11 +196,6 @@ function fieldErrorsOf(err: unknown): ProfileError[] {
  */
 const asNumber = (text: string): number | null => (text.trim() === '' ? null : Number(text))
 const asText = (n: number | null): string => (n === null ? '' : String(n))
-// The circuit breaker's window and pause are minutes on screen and seconds in the
-// store (PM-23). Shown to four places so 50 seconds does not read as 0.8333333;
-// a typed number of minutes is stored as whole seconds.
-const secondsAsMinutes = (text: string): number | null => { const s = asNumber(text); return s === null || !Number.isFinite(s) ? null : Number((s / 60).toFixed(4)) }
-const minutesAsSeconds = (m: number | null): string => (m === null ? '' : String(Math.round(m * 60)))
 
 /**
  * liveSections: the registry sections (partner-draft.ts) this block shows, when
@@ -1583,23 +1579,17 @@ export default function PartnerForm({
                 </div>
                 <div className={`grid transition-[grid-template-rows] duration-200 ease-out ${circuitEnabled ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'}`}>
                   <div className="min-h-0 overflow-hidden">
-                    {/* Minutes on screen, seconds in the store (PM-23): the conversion is
-                        here and nowhere else, and a box nobody touched saves nothing. */}
+                    {/* Minutes on screen, seconds in the store (PM-23): MinutesInput holds the
+                        conversion, and a box nobody touched saves nothing. */}
                     <div className="grid grid-cols-3 gap-4 pt-1">
                       <Field id="partner-circuit-threshold" label="Errors">
                         <NumberInput id="partner-circuit-threshold" value={asNumber(circuitThreshold)} onChange={(v) => setCircuitThreshold(asText(v))} step={1} placeholder="5" describedBy="partner-circuit-hint" />
                       </Field>
                       <Field id="partner-circuit-window" label="Within">
-                        <div className="flex items-center gap-1.5">
-                          <NumberInput id="partner-circuit-window" value={secondsAsMinutes(circuitWindow)} onChange={(v) => setCircuitWindow(minutesAsSeconds(v))} placeholder="1" describedBy="partner-circuit-hint" />
-                          <span className="text-[13px] text-graphite">minutes</span>
-                        </div>
+                        <MinutesInput id="partner-circuit-window" seconds={circuitWindow} onChange={setCircuitWindow} placeholder="1" describedBy="partner-circuit-hint" />
                       </Field>
                       <Field id="partner-circuit-cooldown" label="Pause for">
-                        <div className="flex items-center gap-1.5">
-                          <NumberInput id="partner-circuit-cooldown" value={secondsAsMinutes(circuitCooldown)} onChange={(v) => setCircuitCooldown(minutesAsSeconds(v))} placeholder="5" describedBy="partner-circuit-hint" />
-                          <span className="text-[13px] text-graphite">minutes</span>
-                        </div>
+                        <MinutesInput id="partner-circuit-cooldown" seconds={circuitCooldown} onChange={setCircuitCooldown} placeholder="5" describedBy="partner-circuit-hint" />
                       </Field>
                     </div>
                     <p id="partner-circuit-hint" className="mt-1 text-xs text-hint">

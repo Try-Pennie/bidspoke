@@ -80,8 +80,9 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
   /** A row starts at `from`: the floor for the first row, a tier's `above` for the rest. */
   function setFrom(row: TableRow, from: number | null) {
     if (row.tier === null) return patch({ min_source_value: from })
-    // An emptied box is a start of 0, as an emptied threshold was (#2137): a tier needs a number.
-    const above = (from ?? 0) - 1
+    // A tier needs a number, so an emptied From stores the threshold 0, the value an
+    // emptied threshold box stored before (#2137); it then reads as a From of 1.
+    const above = from === null ? 0 : from - 1
     patch({ tiers: c.tiers.map((t, i) => (i === row.tier ? { ...t, above } : t)) })
   }
 
