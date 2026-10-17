@@ -101,14 +101,12 @@ function partnerTypeRefusal(body: PartnerBody): string | null {
 }
 
 // #2182: bid_mode is retired. Nothing acts on it since PM-9 (#2136), and its
-// column is dropped in a later migration (docs/adr/0007), so no route writes it.
-// A body naming it is refused by name before anything is read, the same answer
-// save_partner_config gives a field it may not write: without this, a save
-// naming it would reach that function, whose editable list still holds it, and
-// be stored, and once the column is gone the same save would fail as a server
-// error instead.
+// column is dropped (20261016220000_drop_partner_bid_mode_2182.sql). A body
+// naming it is refused by name before anything is read, the same answer
+// save_partner_config gives a field it may not write, so a stale client is told
+// which field to leave out before any database call.
 const RETIRED_FIELD = 'bid_mode'
-const RETIRED_FIELD_MESSAGE = 'bid_mode is retired: nothing reads it, and its column is being removed (#2182). Send the save without it.'
+const RETIRED_FIELD_MESSAGE = 'bid_mode is retired: nothing reads it, and its column was removed (#2182). Send the save without it.'
 function namesRetiredField(body: object): boolean {
   return Object.prototype.hasOwnProperty.call(body, RETIRED_FIELD)
 }

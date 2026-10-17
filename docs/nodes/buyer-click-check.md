@@ -33,7 +33,7 @@ The out reasons are the package vocabulary Buyer Select also uses, shown in plai
 
 ## What watches it
 
-The click path checks (`apps/worker/src/lib/click-path-checks.ts`, every 15 minutes, #1546) page when a fifth or more of the last hour's runs (at least 20 of them) end in `cap_check_error` or `profile_copy_stale`, when three hours inside the buyer's selling hours pass with leads reaching this node and none eligible, when offers are made and no click reaches Bidspoke for three hours, when most of the clicks the buyer answered in an hour were refused, and once a Pacific day when the counted clicks disagree with Salesforce. Every threshold is written down beside its constant and is to be re-measured in launch week.
+The click path checks (`apps/worker/src/lib/click-path-checks.ts`, every 15 minutes, #1546) page when a fifth or more of the last hour's runs (at least 20 of them) end in `cap_check_error` or `profile_copy_stale`, when none of the leads reaching this node inside the buyer's selling hours, over up to six hours and never before its profile last changed, is eligible and that many with none would happen less than once in 1,000 at the eligible rate the buyer has had since the change (#2104), when offers are made and no click reaches Bidspoke for three hours, when most of the clicks the buyer answered in an hour were refused, and once a Pacific day when the counted clicks disagree with Salesforce. Every threshold is written down beside its constant and is to be re-measured in launch week.
 
 Both handles must be wired before a live workflow saves, because the node can take either and an unwired handle is a named step failure (`buyer_click_check_handle_unwired`).
 

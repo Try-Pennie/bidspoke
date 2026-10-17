@@ -2008,7 +2008,6 @@ export type Database = {
           api_endpoint: string | null
           bid_comparison_source: string
           bid_formula: string | null
-          bid_mode: string
           bid_resolver_config: Json
           bid_resolver_type: string
           cf_secret_key: string | null
@@ -2051,7 +2050,6 @@ export type Database = {
           api_endpoint?: string | null
           bid_comparison_source?: string
           bid_formula?: string | null
-          bid_mode?: string
           bid_resolver_config?: Json
           bid_resolver_type?: string
           cf_secret_key?: string | null
@@ -2094,7 +2092,6 @@ export type Database = {
           api_endpoint?: string | null
           bid_comparison_source?: string
           bid_formula?: string | null
-          bid_mode?: string
           bid_resolver_config?: Json
           bid_resolver_type?: string
           cf_secret_key?: string | null

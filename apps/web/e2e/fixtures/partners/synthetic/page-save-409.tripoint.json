@@ -6,7 +6,6 @@
     "slug": "tripoint",
     "min_bid": null,
     "version": 1,
-    "bid_mode": "commit",
     "priority": 0,
     "click_url": "https://trypennie.com/portal/tpl",
     "daily_cap": null,
