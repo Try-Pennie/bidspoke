@@ -91,9 +91,6 @@ function withCredentialWarning<T>(env: Env, row: T): T & { credential_warning: s
   return { ...(row as object), credential_warning: credentialWarning(env, row) } as T & { credential_warning: string | null }
 }
 
-// #306. One refusal shared by POST and PUT, so the create and update paths cannot
-// disagree about which partner types exist. Returns the message rather than the
-// response so each caller keeps its own status shape.
 /**
  * The 422 for numbers the partner record cannot hold (#2328), from the one rule
  * the partners page applies before it sends (partnerNumberErrors), or null.
@@ -103,6 +100,9 @@ function numberRefusal(body: Readonly<Record<string, unknown>>): { error: string
   return errors.length === 0 ? null : { error: errors[0].code, message: errors.map((e) => e.message).join(' '), errors }
 }
 
+// #306. One refusal shared by POST and PUT, so the create and update paths cannot
+// disagree about which partner types exist. Returns the message rather than the
+// response so each caller keeps its own status shape.
 function partnerTypeRefusal(body: PartnerBody): string | null {
   if (body.partner_type === undefined) return null
   if (isPartnerType(body.partner_type)) return null
