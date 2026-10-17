@@ -421,3 +421,64 @@ describe('POST /connections/:service_type/sync-schema: zero-row update (#588)', 
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })
+
+// #2332, F124. DELETE and sync-schema act on a row found by service type alone,
+// so each reads only a LEGACY row (sealed_for null, cf_secret_key set). An ops
+// connection (sealed_for ops_key, cf_secret_key null) is removed only by Phase
+// 8's delete, which refuses a referenced connection, writes the tombstone and
+// revokes. With two rows of a type, `.single()` answers PGRST116, which these
+// routes read as not found: a 404, never a 500. The store refuses the same way
+// (delete_service_connection spares ops_key rows), proven against Postgres in
+// supabase/tests/service_connections_expand.test.sql case F.
+describe('legacy routes never reach an ops connection (#2332, F124)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const opsRow = { id: 'conn-ops', service_type: 'salesforce', cf_secret_key: null, sealed_for: 'ops_key' }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    app = await makeApp()
+  })
+
+  const legacyFilters = (sb: ReturnType<typeof makeSupabase>) =>
+    (sb.calls.service_connections ?? []).filter(([m]) => m === 'is' || m === 'not').map(([m, args]) => [m, ...args])
+
+  it('DELETE reads only a legacy row of the type', async () => {
+    const rpc = vi.fn(async () => ({ data: [{ id: 'conn-1' }], error: null }))
+    const sb = makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn } }, { rpc })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    const res = await request(app, 'DELETE', '/connections/salesforce')
+    expect(res.status).toBe(200)
+    expect(legacyFilters(sb)).toEqual([['is', 'sealed_for', null], ['not', 'cf_secret_key', 'is', null]])
+  })
+
+  it('DELETE with exactly one ops_key row of the type (none legacy) answers 404 and calls no delete', async () => {
+    // The read is scoped to legacy rows, so with only an ops row it finds none.
+    const rpc = vi.fn(async () => ({ data: [{ id: 'conn-ops' }], error: null }))
+    const sb = makeSupabase({ users: { single: testUser }, service_connections: { single: null } }, { rpc })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    const res = await request(app, 'DELETE', '/connections/salesforce')
+    expect(res.status).toBe(404)
+    expect(rpc).not.toHaveBeenCalledWith('delete_service_connection', expect.anything())
+  })
+
+  it('sync-schema reads only a legacy row of the type', async () => {
+    vi.mocked(fetchSalesforceSchema).mockResolvedValue({ objects: [] })
+    const sb = makeSupabase({ users: { single: testUser }, service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }] })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
+    expect(res.status).toBe(200)
+    expect(legacyFilters(sb)).toEqual([['is', 'sealed_for', null], ['not', 'cf_secret_key', 'is', null]])
+  })
+
+  it('sync-schema answers 404, not the missing credentials message, for a row with no cf_secret_key', async () => {
+    // Defence beside the filter: a row with no Cloudflare secret name is not a
+    // legacy connection, so it is not found here.
+    const sb = makeSupabase({ users: { single: testUser }, service_connections: { single: opsRow } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'Connection not found' })
+    expect(vi.mocked(fetchSalesforceSchema)).not.toHaveBeenCalled()
+  })
+})

@@ -28,8 +28,10 @@ DRILL_COPY_TABLES=(
   # are counted from and that stops a lead being sold twice
   buyer_profiles buyer_pricing_tiers buyer_operating_windows buyer_blackout_dates
   buyer_sales held_click_claims buyer_select_parity_days
-  # Settings, secrets, connections
-  environment_variables env_var_folders service_connections service_presets
+  # Settings, secrets, connections. connection_tombstones goes with
+  # service_connections: a restore without it could let a removed connection's
+  # last good copy on ops be served again (#2332).
+  environment_variables env_var_folders service_connections connection_tombstones service_presets
   app_config app_settings field_presence_silences
   # History small enough to keep
   audit_log workflow_stats_daily
