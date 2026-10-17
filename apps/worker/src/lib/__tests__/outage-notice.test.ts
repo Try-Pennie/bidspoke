@@ -8,6 +8,7 @@
  * Every timer is injected; nothing here waits for real (L524).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 import { postMessage, sendDatabaseUnreachableAlert, sendDatabaseRecoveredAlert, sendTitledAlert } from '../slack'
 import { runWithOutageNotice, OUTAGE_NOTICE_SIGNAL, OUTAGE_NOTICE_READ_DEADLINE_MS } from '../outage-notice'
 import { DB_UNREACHABLE_PREFIX } from '../database-reachability'
@@ -68,8 +69,8 @@ let errors: string[]
 beforeEach(() => {
   posted = []
   errors = []
-  vi.spyOn(globalThis, 'fetch').mockImplementation(async (_url, init) => {
-    posted.push(JSON.parse(String((init as RequestInit).body)))
+  vi.spyOn(globalThis, 'fetch').mockImplementation(async (...call) => {
+    posted.push((await slackPostOf(call)) as unknown as (typeof posted)[number])
     return new Response(JSON.stringify({ ok: true, ts: '1.2' }), { status: 200 })
   })
   vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => { errors.push(a.join(' ')) })

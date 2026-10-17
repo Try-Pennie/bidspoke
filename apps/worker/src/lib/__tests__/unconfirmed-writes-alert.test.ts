@@ -6,18 +6,19 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { sendUnconfirmedWritesAlert, sendOutcomeDeadLetterAlert, sendSlowdownSummaryAlert, sendRepeatedSlowdownAlert, type SlackConnection } from '../slack'
 import { READ_BACK_MISSING_CODE } from '../db-retry'
+import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 
 let fetchMock: ReturnType<typeof vi.fn>
 beforeEach(() => {
-  fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+  fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
   vi.stubGlobal('fetch', fetchMock)
 })
 afterEach(() => vi.unstubAllGlobals())
 
 const conn = { bot_token: 'xoxb-test', default_channel: '#alerts' } as unknown as SlackConnection
 
-function textOf(): string {
-  const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+async function textOf(): Promise<string> {
+  const body = (await slackPostOf(fetchMock.mock.calls[0]))
   return [body.text, ...body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '')].join('\n')
 }
 
@@ -35,7 +36,7 @@ describe('could not confirm alert', () => {
       runs: [{ workflow_id: 'wf-1', workflow_name: 'Engine Bidding Workflow', execution_id: 'ex-1' }],
     }, 'https://app.test')
     expect(sent).toBe(true)
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('Records could not be confirmed')
     expect(text).toContain('3 records')
     expect(text).toContain('8:20 AM ET')
@@ -55,7 +56,7 @@ describe('could not confirm alert', () => {
       minutes: 15,
       runs: [{ workflow_id: 'wf-1', workflow_name: 'A|B <!here> & co', execution_id: 'ex-1' }],
     }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('|A/B &lt;!here&gt; &amp; co run>')
     expect(text).not.toContain('<!here>')
   })
@@ -63,7 +64,7 @@ describe('could not confirm alert', () => {
   it('names at most ten runs and counts the rest', async () => {
     const runs = Array.from({ length: 13 }, (_, i) => ({ workflow_id: 'wf', workflow_name: 'Main Flow', execution_id: `ex-${i}` }))
     await sendUnconfirmedWritesAlert(conn, { count: 13, labels: ['execution_finalize'], oldest_at: '2026-10-08T12:20:32Z', minutes: 15, runs }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text.match(/Main Flow run/g)).toHaveLength(10)
     expect(text).toContain('and 3 more')
   })
@@ -80,14 +81,14 @@ describe('slowdown summary (#1881)', () => {
 
   it('escapes workflow names, so a name cannot ping the channel or inject markup', async () => {
     await sendSlowdownSummaryAlert(conn, { ...base, workflows: [{ name: '<!channel> & <x>', runs: 20 }], landed: 62, lost: 0, steps_missing: 0 }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('&lt;!channel&gt; &amp; &lt;x&gt; (20)')
     expect(text).not.toContain('<!channel>')
   })
 
   it('says when and how many runs on which workflows', async () => {
     await sendSlowdownSummaryAlert(conn, { ...base, landed: 61, lost: 0, steps_missing: 1 }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('Between 8:20 AM and 8:21 AM ET')
     expect(text).toContain('20 runs')
     expect(text).toContain('Engine Bidding Workflow (12), RML LendSwift (5), Lead Economy (3)')
@@ -96,7 +97,7 @@ describe('slowdown summary (#1881)', () => {
 
   it('does not say every record was saved while some are still unconfirmed', async () => {
     await sendSlowdownSummaryAlert(conn, { ...base, records: 61, landed: 61, lost: 0, steps_missing: 0, unconfirmed: 1 }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).not.toContain('every record saved')
     expect(text).toContain('1 record still could not be read back')
     expect(text).toContain('Records could not be confirmed')
@@ -110,7 +111,7 @@ describe('slowdown summary (#1881)', () => {
       steps_missing: 1,
       lost_runs: [{ workflow_id: 'wf-1', workflow_name: 'Lead Economy', execution_id: 'ex-1', labels: ['execution_finalize', 'lead_sightings.insert'] }],
     }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('some records not saved')
     expect(text).toContain('59 of 62 landed')
     expect(text).toContain('2 outcome records never did')
@@ -127,7 +128,7 @@ describe('slowdown summary (#1881)', () => {
 
     it('says a snapshot was taken and how to read it', async () => {
       await sendSlowdownSummaryAlert(conn, { ...lost, snapshots: { attempts: 1, taken: 1, timed_out: 0, failed: 0, first_at: '2026-10-08T12:20:40Z' } }, 'https://app.test')
-      const text = textOf()
+      const text = (await textOf())
       expect(text).toContain('A database snapshot was taken during it at 8:20 AM ET.')
       expect(text).toContain('GET /api/admin/db-stall-snapshots')
       expect(text).toContain('kept for 3 days')
@@ -136,22 +137,22 @@ describe('slowdown summary (#1881)', () => {
 
     it('counts several, and says what a timed out one means', async () => {
       await sendSlowdownSummaryAlert(conn, { ...lost, snapshots: { attempts: 3, taken: 1, timed_out: 2, failed: 0, first_at: '2026-10-08T12:20:40Z' } }, 'https://app.test')
-      const text = textOf()
+      const text = (await textOf())
       expect(text).toContain('Bidspoke took 3 database snapshots during it, the first at 8:20 AM ET: 1 answered, 2 timed out.')
       expect(text).toContain('A snapshot that timed out means the database, or the connection pool in front of it, did not answer a 3 second read either')
     })
 
     it('says plainly when none was taken, and when it could not look', async () => {
       await sendSlowdownSummaryAlert(conn, { ...lost, snapshots: { attempts: 0, taken: 0, timed_out: 0, failed: 0, first_at: null } }, 'https://app.test')
-      expect(textOf()).toContain('No database snapshot was taken during it.')
+      expect((await textOf())).toContain('No database snapshot was taken during it.')
       fetchMock.mockClear()
       await sendSlowdownSummaryAlert(conn, { ...lost, snapshots: null }, 'https://app.test')
-      expect(textOf()).toContain('Bidspoke could not look up its database snapshots')
+      expect((await textOf())).toContain('Bidspoke could not look up its database snapshots')
     })
 
     it('carries no query text, whatever the snapshot held', async () => {
       await sendSlowdownSummaryAlert(conn, { ...lost, snapshots: { attempts: 1, taken: 1, timed_out: 0, failed: 0, first_at: '2026-10-08T12:20:40Z' } }, 'https://app.test')
-      expect(textOf()).not.toMatch(/select|insert|update /i)
+      expect((await textOf())).not.toMatch(/select|insert|update /i)
     })
   })
 })
@@ -166,7 +167,7 @@ describe('repeated slowdowns that saved every record (#2165)', () => {
   it('says how many, when each was in ET, which workflows, that nothing was lost, and where to look', async () => {
     const sent = await sendRepeatedSlowdownAlert(conn, { slowdowns, window_hours: 24 }, 'https://app.test')
     expect(sent).toBe(true)
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('Database slowdowns are repeating')
     expect(text).toContain('3 times in the last 24 hours')
     expect(text).toContain('Oct 15 at 9:31 AM ET: 1 run, RML LendSwift (1)')
@@ -182,19 +183,19 @@ describe('repeated slowdowns that saved every record (#2165)', () => {
   it('names at most ten slowdowns and counts the rest', async () => {
     const many = Array.from({ length: 12 }, (_, i) => ({ ...slowdowns[0], from: `2026-10-15T1${i % 10}:00:00Z`, to: `2026-10-15T1${i % 10}:00:00Z` }))
     await sendRepeatedSlowdownAlert(conn, { slowdowns: many, window_hours: 24 }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text.match(/RML LendSwift \(1\)/g)).toHaveLength(10)
     expect(text).toContain('and 2 more')
   })
 
   it('reports a Slack refusal as not delivered', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'channel_not_found' }) })
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: false, error: 'channel_not_found' }) })
     expect(await sendRepeatedSlowdownAlert(conn, { slowdowns, window_hours: 24 }, 'https://app.test')).toBe(false)
   })
 
   it('says how many database snapshots were taken across them and how to read them (#2292)', async () => {
     await sendRepeatedSlowdownAlert(conn, { slowdowns, window_hours: 24, snapshots: { attempts: 4, taken: 4, timed_out: 0, failed: 0, first_at: '2026-10-15T13:31:12Z' } }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('Bidspoke took 4 database snapshots during them, the first on Oct 15 at 9:31 AM ET: 4 answered.')
     expect(text).toContain('GET /api/admin/db-stall-snapshots')
   })
@@ -208,14 +209,14 @@ describe('the dead letter count is approximate (#1881)', () => {
       window_minutes: 30,
       error_message: "The run's work after the answer did not finish within 12 s of the answer",
     }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('This happened about 12 times')
     expect(text).not.toMatch(/This happened 12 times/)
   })
 
   it('says about above one, since KV increments can overwrite each other', async () => {
     await sendOutcomeDeadLetterAlert(conn, { label: 'lead_sightings.insert', window_loss_count: 13, window_minutes: 30, error_message: 'x', error_code: '23502' }, 'https://app.test')
-    expect(textOf()).toContain('About *13* writes were lost')
+    expect((await textOf())).toContain('About *13* writes were lost')
   })
 })
 
@@ -230,7 +231,7 @@ describe('lost alert for a record a read back found missing', () => {
       error_message: 'lead_sightings.insert: the write timed out at 2026-10-08T12:20:32Z and a read back 3 minutes later found the lead sighting row is not there',
       error_code: READ_BACK_MISSING_CODE,
     }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('Outcome Record Lost')
     expect(text).toMatch(/timed out, and reading it back afterwards found it never landed/)
     expect(text).not.toMatch(/failed after all retries|exhausted its full retry ladder/)
@@ -244,7 +245,7 @@ describe('lost alert for a record a read back found missing', () => {
       error_message: "execution_finalize: the write timed out and a read back found the execution row is still at status 'running'",
       error_code: READ_BACK_MISSING_CODE,
     }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('Execution Finalize Delayed')
     expect(text).toMatch(/timed out, and reading it back afterwards found it never landed/)
     expect(text).not.toMatch(/failed after all retries/)

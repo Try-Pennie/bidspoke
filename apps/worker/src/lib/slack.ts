@@ -35,6 +35,8 @@ import { leadRead } from './lead-read-budget'
 import { describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason, type ScheduledSlack } from './scheduled-slack'
 import { composeSalesforceReadBackAlert, type SalesforceReadBackAlert } from './salesforce-read-back-alert'
 import { openOutageForPost, type OpenOutage } from './outage-notice'
+import { createSlackClient, slackCallFailure, slackNetworkCause } from './slack-client'
+import type { AnyMessageBlock } from 'slack-web-api-client'
 import { STALL_SNAPSHOT_DEADLINE_MS, STALL_SNAPSHOT_TTL_SECONDS, type StallSnapshotCount } from './db-stall-snapshot'
 import { isIdleShutdownRefusal } from '@bidspoke/partner-page-live'
 export type { SlackConnection } from './slack-connection'
@@ -3727,10 +3729,14 @@ function withOutageLine(blocks: unknown[], outage: OpenOutage): unknown[] {
   return [...blocks.slice(0, at), line, ...blocks.slice(at)]
 }
 
-// Post a Slack message. Returns the message ts on success, or null on any
-// failure — an HTTP error OR an API-level error (Slack returns HTTP 200 with
-// { ok: false, error } for channel_not_found / not_in_channel / invalid_auth).
-// Callers that gate a cooldown must treat null as "not delivered".
+// Post a Slack message. Returns the message ts on a 200 that says ok:true, or
+// null on any other answer: any status but 200 (a 429 and a 5xx included, and
+// since #2331 also a 2xx other than 200, which the old fetch parsed) or an
+// API-level error (Slack returns HTTP 200 with { ok: false, error } for
+// channel_not_found, not_in_channel, invalid_auth). It throws when Slack gave
+// no answer (a network failure) and when a 200's body is not JSON, both as
+// before (deliverMessage, #2331). Callers that gate a cooldown must treat null
+// as "not delivered".
 //
 // Every alert goes through here, so this is where a scheduled tick's alert
 // gets the outage line while the database outage is open (#2061). Reading the
@@ -3754,32 +3760,57 @@ function postOutageOwnerMessage(botToken: string, channel: string, blocks: unkno
   return deliverMessage(botToken, channel, blocks, text)
 }
 
+/**
+ * The post itself, through createSlackClient (#2331 phase 1b). Its twin for a
+ * thread reply, sendThreadReply, still posts with a hand written fetch until
+ * the next pull request of that phase switches it, keeping its own rule (it
+ * catches everything and never throws, F123).
+ *
+ * Whether this function throws is unchanged from its old hand written fetch, so
+ * no alert path starts or stops throwing (F123). It throws in the same two
+ * cases as before: NO answer (a network failure, rethrown as the error the
+ * fetch threw) and a 200 whose body is not JSON (SyntaxError). Every other
+ * answer returns null without throwing: an ok:false refusal, a 429, a 5xx, and
+ * any status but 200. One answer changed from a ts to null: a 2xx other than
+ * 200, which the old fetch accepted as `res.ok` and parsed, and the library
+ * raises as an HTTP failure (it treats only 200 as an answer). Slack sends 200
+ * for chat.postMessage, so this is an edge, pinned by a test. The error classes
+ * the pinned library throws for an answer are listed on slackCallFailure. A 429
+ * is logged with its Retry-After and never waited out here: the client has no
+ * retry handler.
+ */
 async function deliverMessage(
   botToken: string,
   channel: string,
   blocks: unknown[],
   text: string
 ): Promise<string | null> {
-  const res = await fetch('https://slack.com/api/chat.postMessage', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${botToken}`,
-    },
-    body: JSON.stringify({ channel, blocks, text, unfurl_links: false }),
-  })
-
-  if (!res.ok) {
-    console.error(`[slack] HTTP error ${res.status}`)
+  let ts: string | undefined
+  try {
+    const result = await createSlackClient({ bot_token: botToken }).chat.postMessage({
+      channel,
+      // Block Kit built here as plain objects; the library types them, Slack checks them.
+      blocks: blocks as AnyMessageBlock[],
+      text,
+      unfurl_links: false,
+    })
+    if (result.ok !== true) {
+      console.error(`[slack] API error: ${result.error}`)
+      return null
+    }
+    ts = result.ts
+  } catch (e) {
+    const failure = slackCallFailure(e)
+    if (!failure) throw slackNetworkCause(e)
+    if (failure.kind === 'api') {
+      console.error(`[slack] API error: ${failure.error}`)
+    } else {
+      const wait = failure.retryAfter === null ? '' : `, Retry-After ${failure.retryAfter} s, not waited for`
+      console.error(`[slack] HTTP error ${failure.status}${wait}`)
+    }
     return null
   }
-
-  const data = await parseJson<{ ok: boolean; error?: string; ts?: string }>(res)
-  if (!data.ok) {
-    console.error(`[slack] API error: ${data.error}`)
-    return null
-  }
-  return data.ts ?? null
+  return ts ?? null
 }
 
 // ── Click sold buyer pages and the over cap notice (#1542) ───────────────────

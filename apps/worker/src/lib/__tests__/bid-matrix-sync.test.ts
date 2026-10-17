@@ -3,6 +3,7 @@ import { computeDiff, validateSyncedRows, shouldSkipStaleDelete, groupMatrixSync
 import type { SyncResult } from '../bid-matrix-sync'
 import { sendMatrixChangeAlert, sendMatrixValidationAlert } from '../slack'
 import type { MatrixConfigChange, MatrixConfigProblems } from '../slack'
+import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 
 const config = { slug: 'sofi', name: 'SoFi default' }
 
@@ -189,7 +190,7 @@ describe('sendMatrixChangeAlert', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) })
     vi.stubGlobal('fetch', fetchMock)
   })
 
@@ -254,7 +255,7 @@ describe('sendMatrixChangeAlert', () => {
       changes: [change],
     })
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.unfurl_links).toBe(false)
     expect(body.channel).toBe('#alerts')
 
@@ -277,7 +278,7 @@ describe('sendMatrixChangeAlert', () => {
       changed_at: '2024-01-15T18:00:00.000Z',
       changes: [change],
     })
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.channel).toBe('#bid-changes')
   })
 })
@@ -309,7 +310,7 @@ describe('validateSyncedRows (#182)', () => {
 describe('sendMatrixValidationAlert (#182)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -360,7 +361,7 @@ describe('sendMatrixValidationAlert (#182)', () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendMatrixValidationAlert(makeSupabase(slackConnection) as any, 'org-1', null, { checked_at: '2024-01-15T18:00:00.000Z', configs })
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.unfurl_links).toBe(false)
     expect(body.channel).toBe('#alerts')
     const text = body.blocks.flatMap((b: { fields?: { text: string }[]; text?: { text: string } }) => [
@@ -377,7 +378,7 @@ describe('sendMatrixValidationAlert (#182)', () => {
   it('respects the channel override', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendMatrixValidationAlert(makeSupabase(slackConnection) as any, 'org-1', '#bid-health', { checked_at: '2024-01-15T18:00:00.000Z', configs })
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.channel).toBe('#bid-health')
   })
 })
