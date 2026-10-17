@@ -3081,26 +3081,16 @@ export type Database = {
         Returns: number
       }
       db_stall_snapshot: { Args: never; Returns: Json }
-      delete_partner_config:
-        | {
-            Args: {
-              p_actor: string
-              p_actor_email: string
-              p_id: string
-              p_org: string
-            }
-            Returns: undefined
-          }
-        | {
-            Args: {
-              p_actor: string
-              p_actor_email: string
-              p_expected: Json
-              p_id: string
-              p_org: string
-            }
-            Returns: undefined
-          }
+      delete_partner_config: {
+        Args: {
+          p_actor: string
+          p_actor_email: string
+          p_expected: Json
+          p_id: string
+          p_org: string
+        }
+        Returns: undefined
+      }
       drain_lead_sightings_purge: { Args: never; Returns: undefined }
       drop_exported_sighting_partitions: {
         Args: { p_grace?: string }
