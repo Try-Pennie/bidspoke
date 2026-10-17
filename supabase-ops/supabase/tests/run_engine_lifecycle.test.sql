@@ -15,8 +15,9 @@
 --   lease: start, extend and complete are fenced by the claim token and refuse
 --     another organization; complete applied twice changes nothing;
 --   sweep: an unstarted run whose lease lapsed is requeued without spending an
---     attempt, up to a cap; a run killed mid flight spends an attempt and ends
---     dead at max_attempts; one with a non idempotent send goes to needs_human;
+--     attempt, up to a cap; a run killed mid flight after a send spends an
+--     attempt and ends dead at max_attempts; one with a non idempotent send
+--     goes to needs_human;
 --   ledger: an intent is fenced by claim token AND state version, so a stalled
 --     holder whose run was re-claimed records nothing; a repeat intent is the
 --     same row; the first result wins;
@@ -345,12 +346,15 @@ BEGIN
     RAISE EXCEPTION 'an unstarted run whose lease lapsed 4 times is %', (SELECT row_to_json(x) FROM public.run_requests x WHERE id = v_unstarted);
   END IF;
 
-  -- Killed mid run three times (max_attempts 3): dead with three attempts.
+  -- Killed mid run three times (max_attempts 3), each attempt after an
+  -- idempotent send: dead with three attempts. (An attempt that lapses with no
+  -- send at all is refunded instead, #2334: run_engine_resource_wait.test.sql.)
   v_killed := pg_temp.re_enqueue('00000000-0000-4000-8000-0000000000a5', 'killed');
   FOR v_i IN 1..3 LOOP
     SELECT * INTO r FROM public.claim_run_requests('tick-' || v_i, 1, 1, 60);
     IF r.run_request_id IS DISTINCT FROM v_killed THEN RAISE EXCEPTION 'kill %: the run was not claimable', v_i; END IF;
-    PERFORM public.start_run_execution(v_org, v_killed, r.claim_token, gen_random_uuid());
+    SELECT * INTO s FROM public.start_run_execution(v_org, v_killed, r.claim_token, gen_random_uuid());
+    PERFORM public.record_send_intent(v_org, v_killed, r.claim_token, s.state_version, 'upsert', 1, 'PUT', 'partner.example', true, 'killed-' || v_i);
     UPDATE public.run_requests SET claim_expires_at = now() - interval '1 second' WHERE id = v_killed;
     PERFORM public.sweep_expired_leases(100);
   END LOOP;

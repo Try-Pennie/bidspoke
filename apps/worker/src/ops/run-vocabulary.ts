@@ -3,7 +3,8 @@
  * the #1945 plan).
  *
  * Each list here is also a CHECK constraint in the ops database
- * (supabase-ops/supabase/migrations/20261016200000_run_engine_1948.sql), which is
+ * (supabase-ops/supabase/migrations/20261016200000_run_engine_1948.sql, widened
+ * by 20261017230000_run_engine_resource_wait_2334.sql), which is
  * what actually refuses a wrong value. The two cannot derive from each other
  * across SQL and TypeScript, so
  * apps/web/src/lib/__tests__/ops-run-vocabulary-matches-db.test.ts reads every
@@ -51,14 +52,47 @@ export const STATUS_REASONS = {
   needs_human: ['lease_expired_after_send', 'send_outcome_unknown'],
   skipped: ['paused', 'rate_limited', 'overlap'],
   expired: ['not_started_in_time'],
-  failed: ['max_compute_exceeded', 'max_steps_exceeded', 'max_state_exceeded'],
+  failed: ['max_compute_exceeded', 'max_steps_exceeded', 'max_state_exceeded', 'resource_wait_exceeded', 'lease_lapsed_repeatedly'],
 } as const satisfies Partial<Record<RunRequestStatus, readonly string[]>>
 export type StatusReason = (typeof STATUS_REASONS)[keyof typeof STATUS_REASONS][number]
 export const ALL_STATUS_REASONS: readonly StatusReason[] = Object.values(STATUS_REASONS).flat()
 
-/** Why a run went back to the queue. */
-export const RESUME_REASONS = ['continue', 'wake', 'retry'] as const
+/**
+ * The reasons a run's holder may fail it for (complete_run_request's guard).
+ * The others in STATUS_REASONS.failed are written by the engine alone (#2334,
+ * finding F122): resource_wait_exceeded by complete_run_request itself when a
+ * resource wait passes 24 hours, lease_lapsed_repeatedly by the lease sweep on
+ * a fourth lapse with no send. The vocabulary test holds both lists to the
+ * database.
+ */
+export const HOLDER_FAILED_REASONS = ['max_compute_exceeded', 'max_steps_exceeded', 'max_state_exceeded'] as const satisfies readonly StatusReason[]
+export type HolderFailedReason = (typeof HOLDER_FAILED_REASONS)[number]
+export const ENGINE_FAILED_REASONS = ['resource_wait_exceeded', 'lease_lapsed_repeatedly'] as const satisfies readonly StatusReason[]
+
+/**
+ * Why a run went back to the queue. resource_wait (#2334): it was refused a
+ * resource (today a Salesforce lease) and tries again; a start resumed from one
+ * is not charged against max_attempts.
+ */
+export const RESUME_REASONS = ['continue', 'wake', 'retry', 'resource_wait'] as const
 export type ResumeReason = (typeof RESUME_REASONS)[number]
+
+/**
+ * What a resource_wait suspend waited on, sent as its p_error and kept on the
+ * run as resource_wait_cause: acquire_sf_lease's refusals, or acquire_error
+ * when the acquire call itself failed. A wait past 24 hours ends the run
+ * failed with resource_wait_exceeded, naming the last of these.
+ */
+export const RESOURCE_WAIT_CAUSES = [
+  'pool_full',
+  'workflow_share_full',
+  'sf_budget_floor',
+  'sf_budget_unmeasured',
+  'sf_org_unmeasured',
+  'sf_cap_unset',
+  'acquire_error',
+] as const
+export type ResourceWaitCause = (typeof RESOURCE_WAIT_CAUSES)[number]
 
 /** The state of one attempt of a run. */
 export const EXECUTION_STATUSES = ['running', 'success', 'failed', 'suspended', 'needs_human'] as const

@@ -17,13 +17,16 @@ import {
   CONNECTION_COPY_STATES,
   CONNECTION_STATUSES,
   ALL_STATUS_REASONS,
+  ENGINE_FAILED_REASONS,
   EXECUTION_STATUSES,
+  HOLDER_FAILED_REASONS,
   LEASED_RUN_REQUEST_STATUSES,
   LEDGER_METHODS,
   OBSERVATION_OUTCOMES,
   OBSERVATION_REASONS,
   OPS_SWEEPS,
   OVERLAP_RULES,
+  RESOURCE_WAIT_CAUSES,
   RESUME_REASONS,
   RUN_REQUEST_STATUSES,
   SEND_LEDGER_STATUSES,
@@ -137,6 +140,39 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     const guard = /p_sweep NOT IN \(([^)]*)\)/.exec(functionBody(SQL, 'claim_ops_sweep'))
     expect(guard).not.toBeNull()
     expect(sorted([...guard![1].matchAll(/'([^']*)'/g)].map((m) => m[1]))).toEqual(sorted(OPS_SWEEPS))
+  })
+
+  /**
+   * complete_run_request's guards are vocabularies too (#2334 deploy 2). A
+   * holder may fail a run only for HOLDER_FAILED_REASONS: the engine alone ends
+   * one for resource_wait_exceeded or lease_lapsed_repeatedly (F122), so those
+   * are in the status reason CHECK and STATUS_REASONS.failed and never in this
+   * guard.
+   */
+  function guardIn(body: string, branch: string, param: string): string[] {
+    const at = body.indexOf(`WHEN '${branch}' THEN`)
+    expect(at, `complete_run_request has no ${branch} branch`).toBeGreaterThan(-1)
+    const guard = new RegExp(`${param} NOT IN \\(([^)]*)\\)`).exec(body.slice(at))
+    expect(guard, `the ${branch} branch has no ${param} guard`).not.toBeNull()
+    return [...guard![1].matchAll(/'([^']*)'/g)].map((m) => m[1])
+  }
+
+  it('complete_run_request lets a holder fail a run only for the holder reasons, never an engine only one (F122)', () => {
+    const failed = guardIn(functionBody(SQL, 'complete_run_request'), 'failed', 'p_reason')
+    expect(sorted(failed)).toEqual(sorted(HOLDER_FAILED_REASONS))
+    expect(sorted([...HOLDER_FAILED_REASONS, ...ENGINE_FAILED_REASONS])).toEqual(sorted(STATUS_REASONS.failed))
+    for (const reason of ENGINE_FAILED_REASONS) expect(failed).not.toContain(reason)
+  })
+
+  it('complete_run_request suspends for every resume reason but retry, and a resource wait names one of its causes', () => {
+    const body = functionBody(SQL, 'complete_run_request')
+    expect(sorted(guardIn(body, 'suspend', 'p_reason'))).toEqual(sorted(RESUME_REASONS.filter((r) => r !== 'retry')))
+    expect(sorted(guardIn(body, 'suspend', 'p_error'))).toEqual(sorted(RESOURCE_WAIT_CAUSES))
+    expect(sorted(constraintValues(SQL, 'run_requests_resource_wait_cause_check'))).toEqual(sorted(RESOURCE_WAIT_CAUSES))
+  })
+
+  it('a resource wait\'s causes are acquire_sf_lease\'s refusals and an acquire error', () => {
+    expect(sorted(RESOURCE_WAIT_CAUSES)).toEqual(sorted([...SF_LEASE_OUTCOMES.filter((o) => o !== 'granted'), 'acquire_error']))
   })
 
   it('reads the last definition of a constraint and of a function (seen red)', () => {
