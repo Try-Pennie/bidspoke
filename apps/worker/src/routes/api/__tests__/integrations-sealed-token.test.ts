@@ -92,9 +92,15 @@ async function copyEntry(orgId: string) {
   return read.kind === 'read' ? read.connections.get(orgId) : undefined
 }
 
+/** Slack accepting every token: POST /slack checks the token with auth.test before saving it (#2331). */
+function slackAcceptsToken() {
+  return vi.fn(async () => new Response(JSON.stringify({ ok: true, team: 'Pennie HQ' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+}
+
 beforeEach(async () => {
   vi.clearAllMocks()
   vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+  vi.stubGlobal('fetch', slackAcceptsToken())
   store = new Map()
   await rememberSlackConnections(env.IDEMPOTENCY as never, KEY, new Map([
     [ORG, parseSlackConnection({ bot_token: 'copy-bot-token', default_channel: '#copy' })!],

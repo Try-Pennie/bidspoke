@@ -30,6 +30,11 @@ function jsonFetchResponse(data: unknown, status = 200) {
   }
 }
 
+/** Slack accepting every token: POST /slack checks the token with auth.test before saving it (#2331). */
+function slackAcceptsToken() {
+  return vi.fn(async () => new Response(JSON.stringify({ ok: true, team: 'Pennie HQ' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+}
+
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
 const USER_ORG = 'org-abc'
@@ -122,7 +127,12 @@ describe('POST /integrations/slack', () => {
     vi.clearAllMocks()
     vi.mocked(verifyJwt).mockResolvedValue(validPayload)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.stubGlobal('fetch', slackAcceptsToken())
     app = await makeApp()
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
   })
 
   it('returns 400 when bot_token is missing', async () => {
@@ -293,11 +303,13 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
       [USER_ORG, parseSlackConnection({ bot_token: 'xoxb-mine', default_channel: '#mine' })!],
       [OTHER_ORG, parseSlackConnection({ bot_token: 'xoxb-other', default_channel: '#other' })!],
     ]), SAVED_AT)
+    vi.stubGlobal('fetch', slackAcceptsToken())
     app = await makeApp()
   })
   afterEach(() => {
     env.IDEMPOTENCY = NO_COPY_KV
     vi.restoreAllMocks()
+    vi.unstubAllGlobals()
   })
 
   async function copy() {
