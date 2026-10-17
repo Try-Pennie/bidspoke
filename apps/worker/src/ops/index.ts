@@ -72,6 +72,11 @@ export interface OpsEnv extends OpsDbEnv {
    * workflows' state, and the minute cron's heartbeat and report.
    */
   OPS_GATEWAY?: OpsGatewayBinding
+  /**
+   * ConnectionTokenObject, one per person bound connection (#2334). Optional,
+   * as SELF is, because nothing calls it yet and a test env may not bind it.
+   */
+  CONNECTION_TOKENS?: DurableObjectNamespace
 }
 
 /** The one lane this Worker serves. */
@@ -280,6 +285,14 @@ const handler = createOpsHandler()
  * public edge, which reaches only the default export, can never call it.
  */
 export { OpsInternal } from './internal'
+
+/**
+ * The first ops Durable Object (#2334), bound as CONNECTION_TOKENS and created by
+ * the ops Worker's migration v1 in wrangler.ops.toml. Inert in the deploy that
+ * adds it: nothing calls it (ADR 0011). Exported from the main module because
+ * the runtime finds a Durable Object class only there.
+ */
+export { ConnectionTokenObject } from './connection-token-object'
 
 /**
  * One tick of the minute cron (#1949). Refuses by name outside the ops lane, as
