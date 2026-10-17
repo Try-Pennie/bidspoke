@@ -64,7 +64,7 @@ BEGIN
   FOREACH fn IN ARRAY ARRAY[
     'public.save_buyer_profile(uuid, uuid, integer, jsonb, uuid, text)',
     'public.record_buyer_sale(jsonb)',
-    'public.delete_partner_config(uuid, uuid, uuid, text)',
+    'public.delete_partner_config(uuid, uuid, uuid, text, jsonb)',
     'public.rename_partner_step_namespace(uuid, uuid, jsonb, uuid, text, jsonb)',
     'public.upsert_buyer_select_parity_day(jsonb)',
     'public.sign_off_buyer_select_parity_day(uuid, date, uuid, uuid, text, text)'
@@ -432,6 +432,9 @@ END
 $do$;
 
 -- ── 17. delete_partner_config: a partner with sales is refused by name; a clean partner is deleted and audited once with the actor ──
+-- The shared delete body, without a reviewed consequence: this case is about
+-- what a delete does, which partner_delete.test.sql proves through the reviewed
+-- delete_partner_config (#2254).
 DO $do$
 DECLARE
   msg text;
@@ -440,7 +443,7 @@ DECLARE
   before int;
 BEGIN
   BEGIN
-    PERFORM public.delete_partner_config('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330001', '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+    PERFORM public._delete_partner_config('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330001', '22222222-2222-2222-2222-222222222222', 'suite@example.test', NULL);
     RAISE EXCEPTION 'a partner with sales was deleted';
   EXCEPTION WHEN SQLSTATE 'BP023' THEN
     GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, detail = PG_EXCEPTION_DETAIL;
@@ -450,14 +453,14 @@ BEGIN
   -- Partner two has one rehearsal sale row; remove it, then the delete goes through.
   DELETE FROM public.buyer_sales WHERE partner_id = '33333333-3333-3333-3333-333333330002';
   SELECT count(*) INTO before FROM public.audit_log WHERE entity_type = 'partner_config' AND entity_id = '33333333-3333-3333-3333-333333330002';
-  PERFORM public.delete_partner_config('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330002', '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+  PERFORM public._delete_partner_config('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330002', '22222222-2222-2222-2222-222222222222', 'suite@example.test', NULL);
   IF EXISTS (SELECT 1 FROM public.partner_configs WHERE id = '33333333-3333-3333-3333-333333330002') THEN RAISE EXCEPTION 'delete did not delete'; END IF;
   IF (SELECT count(*) FROM public.audit_log WHERE entity_type = 'partner_config' AND entity_id = '33333333-3333-3333-3333-333333330002') IS DISTINCT FROM before + 1 THEN RAISE EXCEPTION 'delete did not write exactly one audit row'; END IF;
   SELECT * INTO r FROM public.audit_log WHERE entity_type = 'partner_config' AND entity_id = '33333333-3333-3333-3333-333333330002' ORDER BY changed_at DESC LIMIT 1;
   IF r.action IS DISTINCT FROM 'deleted' OR r.changed_by IS DISTINCT FROM '22222222-2222-2222-2222-222222222222'::uuid THEN RAISE EXCEPTION 'delete audit wrong: % %', r.action, r.changed_by; END IF;
   IF r.changes ? '_source' THEN RAISE EXCEPTION 'app delete labelled direct_sql'; END IF;
   BEGIN
-    PERFORM public.delete_partner_config('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330002', '22222222-2222-2222-2222-222222222222', 'suite@example.test');
+    PERFORM public._delete_partner_config('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330002', '22222222-2222-2222-2222-222222222222', 'suite@example.test', NULL);
     RAISE EXCEPTION 'deleting a missing partner did not refuse';
   EXCEPTION WHEN no_data_found THEN NULL;
   END;

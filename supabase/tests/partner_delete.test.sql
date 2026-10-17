@@ -7,7 +7,7 @@
 --     delete box unlabelled, and a label cannot outlive its table;
 --  2. partner_delete_check and partner_delete_dependents are STABLE, and the
 --     grants are exact: anon and authenticated execute none of the new or
---     replaced functions, and service_role only the check, the two deletes and
+--     replaced functions, and service_role only the check, the delete and
 --     change_partner_uuid, never the dependency walk, the counter or the
 --     shared delete body;
 --  3. the same rule as the delete: for each fixture partner the check reports a
@@ -18,8 +18,8 @@
 --  5. the reviewed consequence is the one that runs: a sub-account ID added
 --     after the check, a workflow changed, added or soft deleted after it, each
 --     refuse BP024 and delete nothing; a malformed fingerprint refuses BP422;
---  6. the four argument delete of the release before deletes the sub-account
---     IDs too;
+--  6. only the reviewed (five argument) delete exists since #2254, it deletes
+--     the sub-account IDs, and it refuses a partner already gone;
 --  7. change_partner_uuid's add waits on a delete in flight and then refuses
 --     partner_not_found, rather than leaving a mapping to a gone slug (a second
 --     session through dblink).
@@ -180,7 +180,7 @@ BEGIN
   FOREACH fn IN ARRAY ARRAY[
     'public.partner_delete_dependents()', 'public.partner_delete_counts(uuid, uuid, boolean)', 'public.partner_delete_check(uuid, uuid)',
     'public._delete_partner_config(uuid, uuid, uuid, text, jsonb)', 'public.delete_partner_config(uuid, uuid, uuid, text, jsonb)',
-    'public.delete_partner_config(uuid, uuid, uuid, text)', 'public.change_partner_uuid(uuid, text, text, text, uuid, text, text)'
+    'public.change_partner_uuid(uuid, text, text, text, uuid, text, text)'
   ] LOOP
     IF has_function_privilege('anon', fn, 'EXECUTE') THEN bad := array_append(bad, 'anon executes ' || fn); END IF;
     IF has_function_privilege('authenticated', fn, 'EXECUTE') THEN bad := array_append(bad, 'authenticated executes ' || fn); END IF;
@@ -368,15 +368,22 @@ BEGIN
 END
 $do$;
 
--- ── 6. The release before's four argument delete removes the IDs too ────────
+-- ── 6. Only the reviewed delete exists, and it refuses a partner already gone ──
+-- The release before's four argument form, which deleted without a reviewed
+-- consequence, is dropped (#2254).
 DO $do$
 BEGIN
-  PERFORM public.delete_partner_config('11111111-1111-1111-1111-000021400001', '33333333-3333-3333-3333-000021400005', '22222222-2222-2222-2222-000021400001', 'dana@example.test');
+  IF to_regprocedure('public.delete_partner_config(uuid, uuid, uuid, text)') IS NOT NULL THEN
+    RAISE EXCEPTION 'case 6: the four argument delete_partner_config still exists';
+  END IF;
+  PERFORM public.delete_partner_config('11111111-1111-1111-1111-000021400001', '33333333-3333-3333-3333-000021400005', '22222222-2222-2222-2222-000021400001', 'dana@example.test',
+    pg_temp.fingerprint('11111111-1111-1111-1111-000021400001', '33333333-3333-3333-3333-000021400005'));
   IF EXISTS (SELECT 1 FROM public.partner_uuid_map WHERE org_id = '11111111-1111-1111-1111-000021400001' AND partner_slug = 'delete-legacy') THEN
-    RAISE EXCEPTION 'case 6: the four argument delete left the sub-account IDs';
+    RAISE EXCEPTION 'case 6: the delete left the sub-account IDs';
   END IF;
   BEGIN
-    PERFORM public.delete_partner_config('11111111-1111-1111-1111-000021400001', '33333333-3333-3333-3333-000021400005', '22222222-2222-2222-2222-000021400001', 'dana@example.test');
+    PERFORM public.delete_partner_config('11111111-1111-1111-1111-000021400001', '33333333-3333-3333-3333-000021400005', '22222222-2222-2222-2222-000021400001', 'dana@example.test',
+      '{"counts": {}, "workflows": []}'::jsonb);
     RAISE EXCEPTION 'case 6: deleting a deleted partner did not refuse';
   EXCEPTION WHEN no_data_found THEN NULL;
   END;
@@ -392,7 +399,7 @@ BEGIN
     RAISE EXCEPTION 'case 6: another organization read the check';
   EXCEPTION WHEN no_data_found THEN NULL;
   END;
-  INSERT INTO suite_cases(name) VALUES ('legacy delete and organization scope');
+  INSERT INTO suite_cases(name) VALUES ('only the reviewed delete, and organization scope');
 END
 $do$;
 
