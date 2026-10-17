@@ -68,9 +68,12 @@ describe('committed money gate fixtures', () => {
 
   // A workflow with no live runs at the last export (Delegate Gmail Access for
   // Offboarded Agents was quiet for the two days before 2026-10-16) still has a
-  // definition to replay, so its shape is carried over from the export that last
-  // sampled it rather than its fixture being dropped (#2173). It counts here only
-  // when it is marked as such.
+  // definition to replay, so the export carries its shape over from the export
+  // that last sampled it, marked `carried_over`, rather than dropping its fixture
+  // (#2173). This test only pairs shapes with definitions; the next one holds a
+  // carried over shape to its mark. A shape with no mark is the export's own
+  // sample: the file records no per shape sample time, so a hand edited stale
+  // shape without the mark is not something either test can see.
   it('every live workflow in the shapes has a committed definition, and every definition a shape', () => {
     expect(shapes.workflows.map((w) => w.workflow_id).sort()).toEqual([...definitionIds].sort())
   })
