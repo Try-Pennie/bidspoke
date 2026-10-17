@@ -1,8 +1,9 @@
 /**
  * Connections routes — PRD Section 3.1
- * Covers: list returns connections without credentials, create upserts + stores CF secret,
- * delete removes connection + CF secret, sync-schema calls correct fetcher + updates cache,
- * sync-schema returns 500 when credentials not in env.
+ * Covers: list returns connections without credentials, create refuses as
+ * connections_moving with no Cloudflare call (#2331), delete removes the row with
+ * no Cloudflare call (#2331), sync-schema calls the correct fetcher and updates
+ * the cache, sync-schema returns 500 when credentials are not in env.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { recordingContext } from '../../../test-setup/wait-until'
@@ -116,7 +117,10 @@ describe('GET /connections', () => {
   })
 })
 
-describe('POST /connections', () => {
+// #2331 phase 1a: no salesforce, supabase or snowflake connection exists, and
+// each CONN_ secret this route put created and deployed a new version of the
+// bidding Worker. So it refuses by name, before reading the body or the table.
+describe('POST /connections refuses: connections are moving (#2331)', () => {
   let app: Awaited<ReturnType<typeof makeApp>>
 
   beforeEach(async () => {
@@ -127,72 +131,44 @@ describe('POST /connections', () => {
     app = await makeApp()
   })
 
-  it('returns 400 for invalid service_type', async () => {
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser } }) as never
-    )
-    const res = await request(app, 'POST', '/connections', {
-      body: { service_type: 'github', credentials: { token: 'x' } },
-    })
-    expect(res.status).toBe(400)
-  })
-
-  it('returns 400 when credentials are missing', async () => {
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser } }) as never
-    )
-    const res = await request(app, 'POST', '/connections', { body: { service_type: 'salesforce' } })
-    expect(res.status).toBe(400)
-  })
-
-  it('creates a new connection and calls setCfSecret', async () => {
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        // single: null means no existing connection
-        service_connections: { single: null, upsertResult: upsertedConn },
-      }) as never
-    )
-    const res = await request(app, 'POST', '/connections', {
-      body: { service_type: 'salesforce', credentials: { access_token: 'tok', instance_url: 'https://sf.test' } },
-    })
-    expect(res.status).toBe(201)
-    expect(vi.mocked(setCfSecret)).toHaveBeenCalledWith(
-      expect.stringMatching(/^CONN_/),
-      expect.stringContaining('access_token'),
-      'acct-123',
-      'tok-abc'
-    )
-  })
-
-  it('writes no route audit row: the upsert sets updated_by, which the table trigger names (#2331, F119)', async () => {
+  it('answers 410 connections_moving, puts no Cloudflare secret and writes no row', async () => {
     const sb = makeSupabase({ users: { single: testUser }, service_connections: { single: null, upsertResult: upsertedConn } })
+    const from = vi.spyOn(sb, 'from')
     vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
     const res = await request(app, 'POST', '/connections', {
       body: { service_type: 'salesforce', credentials: { access_token: 'tok', instance_url: 'https://sf.test' } },
     })
-    expect(res.status).toBe(201)
+    expect(res.status).toBe(410)
+    const body = await res.json() as { error: string; message: string }
+    expect(body.error).toBe('connections_moving')
+    expect(body.message).toEqual(expect.any(String))
+    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+    expect(from.mock.calls.filter(([t]) => t === 'service_connections')).toEqual([])
+    expect(sb.calls.service_connections ?? []).toEqual([])
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
-    const upsert = (sb.calls.service_connections ?? []).find(([m]) => m === 'upsert')
-    expect((upsert?.[1][0] as Record<string, unknown>).updated_by).toBe(testUser.id)
   })
 
-  it('reuses existing cf_secret_key when updating an existing connection', async () => {
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        service_connections: { single: existingConn, upsertResult: upsertedConn },
-      }) as never
-    )
-    await request(app, 'POST', '/connections', {
+  it('refuses the same way when the organization already has a connection of that type', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn, upsertResult: upsertedConn } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    const res = await request(app, 'POST', '/connections', {
       body: { service_type: 'salesforce', credentials: { access_token: 'new-tok', instance_url: 'https://sf.test' } },
     })
-    expect(vi.mocked(setCfSecret)).toHaveBeenCalledWith(
-      'CONN_EXISTING',
-      expect.any(String),
-      expect.any(String),
-      expect.any(String)
-    )
+    expect(res.status).toBe(410)
+    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+    expect(sb.calls.service_connections ?? []).toEqual([])
+  })
+
+  it('refuses before reading the body, so a malformed or Slack body is refused the same way', async () => {
+    const sb = makeSupabase({ users: { single: testUser } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    for (const body of [{ service_type: 'slack', credentials: { bot_token: 'x' } }, { service_type: 'salesforce' }]) {
+      const res = await request(app, 'POST', '/connections', { body })
+      expect(res.status).toBe(410)
+      expect((await res.json() as { error: string }).error).toBe('connections_moving')
+    }
+    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
+    expect(sb.calls.service_connections ?? []).toEqual([])
   })
 })
 
@@ -215,17 +191,19 @@ describe('DELETE /connections/:service_type', () => {
     expect(res.status).toBe(404)
   })
 
-  it('returns 200 and deletes the CF secret', async () => {
+  // #2331 phase 1a: a secret delete is a secret change on the bidding Worker,
+  // like a put, so the row goes and any CONN_ secret is left for the Phase 9
+  // sign off path that removes orphans.
+  it('returns 200, deletes the row, and makes no Cloudflare secret call', async () => {
+    const rpc = vi.fn(async () => ({ data: [{ id: 'conn-1' }], error: null }))
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase(
-        { users: { single: testUser }, service_connections: { single: existingConn } },
-        // The delete function reports the row it removed.
-        { rpcs: { delete_service_connection: [{ id: 'conn-1' }] } },
-      ) as never
+      makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn } }, { rpc }) as never
     )
     const res = await request(app, 'DELETE', '/connections/salesforce')
     expect(res.status).toBe(200)
-    expect(vi.mocked(deleteCfSecret)).toHaveBeenCalledWith('CONN_EXISTING', 'acct-123', 'tok-abc')
+    expect(rpc).toHaveBeenCalledWith('delete_service_connection', expect.objectContaining({ p_service_type: 'salesforce' }))
+    expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
+    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
   })
 
   // #2331, F119: the table's trigger audits every change once, naming the user
@@ -290,6 +268,11 @@ describe('POST /connections/:service_type/sync-schema', () => {
     // baseEnv does not have CONN_EXISTING
     const res = await request(app, 'POST', '/connections/salesforce/sync-schema')
     expect(res.status).toBe(500)
+    // #2331 phase 1a: POST refuses, so the message must not send anyone to
+    // re-save the connection (L111).
+    const body = await res.json() as { error: string }
+    expect(body.error).not.toMatch(/re-?save/i)
+    expect(body.error).toMatch(/credentials/i)
   })
 
   it('calls fetchSalesforceSchema and updates schema_cache', async () => {

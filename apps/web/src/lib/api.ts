@@ -1332,11 +1332,8 @@ export const api = {
 
   connections: {
     list: () => req<ServiceConnection[]>('/api/connections'),
-    save: (service_type: string, credentials: Record<string, unknown>) =>
-      req<ServiceConnection>('/api/connections', {
-        method: 'POST',
-        body: JSON.stringify({ service_type, credentials }),
-      }),
+    // No save: POST /api/connections refuses as connections_moving (410) since
+    // #2331 phase 1a, and no screen ever called it.
     delete: (service_type: string) =>
       req<{ ok: boolean }>(`/api/connections/${service_type}`, { method: 'DELETE' }),
     syncSchema: (service_type: string) =>
