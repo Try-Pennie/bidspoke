@@ -173,11 +173,23 @@ export type RunVerdict =
   /** A relay post's Submission holds a LATER Main Flow run's link: overwritten since, so not judged. */
   | { kind: 'superseded'; executionId: string; byExecutionId: string }
 
+/** A direct write's verdict: it is the canary's subject, so it is never set aside as overwritten. */
+export type DirectVerdict = Exclude<RunVerdict, { kind: 'superseded' }>
+
+/**
+ * checkWrite leaves out only relay posts, so a direct write never comes back
+ * superseded. Should one ever, it is a run whose link is another's, which is
+ * what the read found, never a verdict that drops the run from the count.
+ */
+function asDirect(v: RunVerdict): DirectVerdict {
+  return v.kind === 'superseded' ? { kind: 'not_landed', executionId: v.executionId, problems: ["The Submission's Bidspoke run link is not this run's."] } : v
+}
+
 export interface CanaryWatchReport {
   from: string
   to: string
-  /** The runs whose step ran natively and sent a write, in the order read. */
-  native: RunVerdict[]
+  /** The runs whose step ran natively and sent a write, in the order read. Never left out as overwritten. */
+  native: DirectVerdict[]
   /** Native steps that skipped the write, with the reason the step recorded. */
   skipped: Array<{ executionId: string; reason: string }>
   /** Steps of the watched post that went through the relay, in all. */
@@ -473,7 +485,7 @@ async function measure(deps: CanaryWatchDeps, from: string, to: string): Promise
   }
   for (const s of toRead) {
     const w = nativeWrite(s)
-    report.native.push('unchecked' in w ? { kind: 'unchecked', executionId: s.execution_id, reason: w.unchecked } : await judge(w))
+    report.native.push('unchecked' in w ? { kind: 'unchecked', executionId: s.execution_id, reason: w.unchecked } : asDirect(await judge(w)))
   }
 
   if ('error' in relay) {
@@ -584,7 +596,7 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): C
 
   const bad = report.native.filter((v) => v.kind !== 'landed')
   for (const v of bad.slice(0, MAX_LISTED_RUNS)) {
-    lines.push(v.kind === 'not_landed' ? `${runLabel(appUrl, v.executionId)}: ${v.problems.join(' ')}` : `${runLabel(appUrl, v.executionId)} could not be checked: ${v.kind === 'unchecked' ? v.reason : ''}`)
+    lines.push(v.kind === 'not_landed' ? `${runLabel(appUrl, v.executionId)}: ${v.problems.join(' ')}` : `${runLabel(appUrl, v.executionId)} could not be checked: ${v.reason}`)
   }
   if (bad.length > MAX_LISTED_RUNS) {
     lines.push(`${fmt(bad.length - MAX_LISTED_RUNS)} more runs did not land fully or could not be checked; the job run record lists them all.`)
