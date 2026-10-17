@@ -240,7 +240,6 @@ export interface FormSnapshot {
   duplicateSignals: unknown[]
 }
 
-/** A routing code is a whole number Salesforce recognises or nothing at all: a fraction or a word is null, never a rounded guess (L50). */
 /**
  * A number box's text as the number typed, or null when it is empty (#2328).
  * Never rounded or defaulted here: 2.5 stays 2.5 and 0 stays 0, so the save's
@@ -252,6 +251,11 @@ export function numberOrNull(text: string): number | null {
   return t === '' ? null : Number(t)
 }
 
+/**
+ * Whether the routing code is set, for the profile validator's "set before enabling"
+ * rule: a whole number or nothing, never a rounded guess (L50). A fraction or a word
+ * reads as not set here, and the save's number rule refuses it first (#2328).
+ */
 export function parseRoutingCode(text: string): number | null {
   const t = text.trim()
   return /^\d+$/.test(t) ? parseInt(t, 10) : null
