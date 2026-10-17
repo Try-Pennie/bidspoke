@@ -81,7 +81,7 @@ const RECORD_TTL_SECONDS = 2 * DAY_SECONDS
 const MAX_LIST_PAGES = 10
 
 const eventPrefix = (kind: CronGuardKind) => `cron-guard:event:${kind}:`
-export const cronGuardPagedKey = (page: CronGuardPage) => `cron-guard:paged:${page}`
+export const cronGuardPagedKey = (kind: CronGuardKind) => `cron-guard:paged:${kind}`
 
 export interface RecordKv {
   put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void>
@@ -571,23 +571,21 @@ async function pageOncePerDay(deps: CronGuardWatchDeps, page: CronGuardKind, mes
   }
 }
 
-/** The double run quiet: the ticks already paged, and whether the could-not-check page went out, in the last day. */
-interface DoubleRunQuiet {
-  ticks: string[]
-  unchecked: boolean
-}
+/**
+ * Each double run signal keeps its OWN quiet key, so paging one never moves
+ * another's (#2284 lessons review: one shared key, rewritten with a fresh day on
+ * every newly paged tick, pushed the could-not-check page back a day each time).
+ *
+ * A doubled tick is paged once, under a key named for the tick, kept two days so
+ * it outlives the 24 hour window the tick is judged in. The could-not-check page
+ * goes out at most once a day, under its own key, written only when it is sent.
+ */
+export const doubleRunTickPagedKey = (tick: string) => `cron-guard:paged:double_run:${tick}`
+export const DOUBLE_RUN_UNCHECKED_PAGED_KEY = 'cron-guard:paged:double_run_unchecked'
+const TICK_QUIET_SECONDS = 2 * DAY_SECONDS
 
-async function readDoubleRunQuiet(kv: CronGuardKv): Promise<DoubleRunQuiet> {
-  // Unreadable or of another shape: nothing counts as paged, so a page goes out (a duplicate beats a miss).
-  const raw = await kv.get(cronGuardPagedKey('double_run')).catch(() => null)
-  if (raw === null) return { ticks: [], unchecked: false }
-  try {
-    const v = JSON.parse(raw) as Partial<DoubleRunQuiet>
-    return { ticks: Array.isArray(v.ticks) ? v.ticks.filter((t): t is string => typeof t === 'string') : [], unchecked: v.unchecked === true }
-  } catch {
-    return { ticks: [], unchecked: false }
-  }
-}
+/** Whether a quiet key is set. One it cannot read counts as unset: a duplicate page beats a missed one. */
+const quietSet = (kv: CronGuardKv, key: string) => kv.get(key).then((v) => v !== null, () => false)
 
 async function judgeDoubleRuns(deps: CronGuardWatchDeps, nowMs: number): Promise<CronGuardResult> {
   const sinceMs = nowMs - WINDOW_MS
@@ -624,27 +622,27 @@ async function judgeDoubleRuns(deps: CronGuardWatchDeps, nowMs: number): Promise
   }
 
   let alerted = false
+  // Each signal is paged on its own, so a failure paging one never stops the other (L71).
   try {
-    const quiet = await readDoubleRunQuiet(deps.kv)
-    const next: DoubleRunQuiet = { ticks: [...quiet.ticks], unchecked: quiet.unchecked }
-    let changed = false
     // A tick is paged once; a tick it has not paged pages at once, whatever else was paged today.
-    const fresh = doubled.filter((d) => !quiet.ticks.includes(d.tick))
+    const paged = await Promise.all(doubled.map((d) => quietSet(deps.kv, doubleRunTickPagedKey(d.tick))))
+    const fresh = doubled.filter((_, i) => !paged[i])
     if (fresh.length && (await deps.send('double_run', doubleRunMessage({ kind: 'doubled', ticks: fresh })))) {
       alerted = true
-      next.ticks.push(...fresh.map((d) => d.tick))
-      changed = true
+      // Armed only on delivery, so a Slack outage does not buy a day of silence.
+      await Promise.all(fresh.map((d) => deps.kv.put(doubleRunTickPagedKey(d.tick), new Date(nowMs).toISOString(), { expirationTtl: TICK_QUIET_SECONDS })))
     }
-    // A check that could not be made is said once a day, never read as "nothing ran twice" (L98).
-    if (finding && !quiet.unchecked && (await deps.send('double_run', doubleRunMessage(finding)))) {
-      alerted = true
-      next.unchecked = true
-      changed = true
-    }
-    // Armed only on delivery, so a Slack outage does not buy a day of silence.
-    if (changed) await deps.kv.put(cronGuardPagedKey('double_run'), JSON.stringify(next), { expirationTtl: DAY_SECONDS })
   } catch (e) {
     deps.error(`[cron-guard-watch] could not page double_run: ${formatErr(e)}`)
+  }
+  try {
+    // A check that could not be made is said once a day, never read as "nothing ran twice" (L98).
+    if (finding && !(await quietSet(deps.kv, DOUBLE_RUN_UNCHECKED_PAGED_KEY)) && (await deps.send('double_run', doubleRunMessage(finding)))) {
+      alerted = true
+      await deps.kv.put(DOUBLE_RUN_UNCHECKED_PAGED_KEY, new Date(nowMs).toISOString(), { expirationTtl: DAY_SECONDS })
+    }
+  } catch (e) {
+    deps.error(`[cron-guard-watch] could not page the double_run check that could not be made: ${formatErr(e)}`)
   }
   return { kind: 'double_run', status, doubled: doubled.length, alerted }
 }

@@ -391,6 +391,43 @@ describe('runCronGuardWatch: a tick that may have run twice pages at once (#2284
     expect(again.sent).toEqual([])
   })
 
+  // Lessons review on #2284: both signals once shared one quiet key, rewritten
+  // with a fresh day on every newly paged tick, so a double run page pushed the
+  // "could not check" page back a day each time it fired.
+  it('a double run page never delays the could-not-check page: each has its own quiet', async () => {
+    // KV that expires keys on the watch's own clock, as the real namespace does.
+    const clock = { t: NOW }
+    const store = new Map<string, { v: string; until: number }>()
+    const kv = {
+      get: vi.fn(async (k: string) => { const e = store.get(k); return e && e.until > clock.t ? e.v : null }),
+      put: vi.fn(async (k: string, v: string, o?: { expirationTtl?: number }) => { store.set(k, { v, until: clock.t + (o?.expirationTtl ?? 1e9) * 1000 }) }),
+      list: vi.fn(async () => ({ keys: [], list_complete: true })),
+    }
+    const unreadable = deliveryRecord()
+    unreadable.mockRejectedValue(new Error('PGRST 503'))
+    const run = async (deliveries: ReturnType<typeof deliveryRecord>) => {
+      const sent: string[] = []
+      await runCronGuardWatch({
+        kv, now: () => clock.t, tailFailOpens: tailCopy(), deliveries,
+        send: async (_p, m) => { sent.push(m.title); return true },
+        log: () => {}, error: () => {},
+      })
+      return sent
+    }
+    const doubledAt = (at: number, id: string) => deliveryRecord([
+      delivery({ id: `${id}-1`, scheduledAtMs: at, cron: '23 * * * *', outcome: 'failed_open', atMs: at + 100 }),
+      delivery({ id: `${id}-2`, scheduledAtMs: at + 36_000, cron: '23 * * * *', outcome: 'ran', atMs: at + 36_100 }),
+    ], [])
+
+    expect(await run(unreadable)).toEqual(['Cron guard could not check for a tick run twice'])
+    // 23 hours on, a tick runs twice and pages. The record is fine for that run.
+    clock.t = NOW + 23 * H
+    expect(await run(doubledAt(clock.t - 10 * MIN, 'a'))).toEqual(['A cron tick may have run twice'])
+    // 24 hours after the first could-not-check page, the record fails again: it pages again.
+    clock.t = NOW + 24 * H + MIN
+    expect(await run(unreadable)).toEqual(['Cron guard could not check for a tick run twice'])
+  })
+
   it('logs the record on every run, a quiet one included', async () => {
     const t = deps(memoryKv())
     await runCronGuardWatch(t.d)

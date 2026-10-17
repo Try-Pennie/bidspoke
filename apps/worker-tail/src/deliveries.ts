@@ -16,6 +16,9 @@
  */
 import { OPS_WORKER_SCRIPT } from './scripts'
 import { createRowCopier, type RowCopier, type RowCopierDeps } from './row-copier'
+import { DELIVERY_HELD_CAP } from './copier-caps'
+
+export { DELIVERY_HELD_CAP }
 
 /** What the guard decided for one delivery; `no_decision` when it said nothing. */
 export type DeliveryOutcome = 'ran' | 'took_over' | 'failed_open' | 'skipped' | 'no_decision'
@@ -95,7 +98,7 @@ export type DeliveryCopier = RowCopier<DeliveryRow>
 
 export function createDeliveryCopier(deps: RowCopierDeps = {}): DeliveryCopier {
   return createRowCopier<'delivery_id', DeliveryRow>(
-    { table: 'cron_tick_deliveries', key: 'delivery_id', one: 'cron tick delivery', many: 'cron tick deliveries', label: 'delivery' },
+    { table: 'cron_tick_deliveries', key: 'delivery_id', one: 'cron tick delivery', many: 'cron tick deliveries', label: 'delivery', maxHeld: DELIVERY_HELD_CAP },
     deps,
   )
 }

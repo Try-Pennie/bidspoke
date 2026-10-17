@@ -11,6 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createClient } from '@supabase/supabase-js'
 import { createDeliveryCopier, deliveriesIn } from './deliveries'
+import { DELIVERY_HELD_CAP, FAIL_OPEN_HELD_CAP } from './copier-caps'
 import worker, { OPS_WORKER_SCRIPT } from './index'
 
 const SCHEDULED = Date.parse('2026-10-17T15:15:32.618Z')
@@ -111,6 +112,34 @@ describe('createDeliveryCopier', () => {
     expect(posted[0].url).toContain('on_conflict=delivery_id')
     expect(posted[0].prefer).toContain('resolution=ignore-duplicates')
     expect(c.held()).toEqual([])
+  })
+})
+
+// Lessons review on #2284: the delivery copier shared the fail-open copier's
+// 2,000 row cap, which a day long database outage overruns (about 1,900
+// deliveries a day, twice that while Cloudflare doubles ticks). Its cap is
+// sized from the real crons, and an overflow says how many it dropped.
+describe('the delivery copier\'s own cap', () => {
+  // The cap against the real crons is held in
+  // apps/web/src/lib/__guards__/worker/tail-copier-caps.test.ts, which can read
+  // the bidding Worker's wrangler.toml; this app's tests run on Workers types only.
+  it('is its own, larger than the fail-open copier\'s', () => {
+    expect(DELIVERY_HELD_CAP).toBeGreaterThan(FAIL_OPEN_HELD_CAP)
+  })
+
+  it('past its cap drops the oldest, and says how many and since when, never silently', async () => {
+    failures = Infinity
+    const errors: string[] = []
+    const c = createDeliveryCopier({ sleep: () => Promise.resolve(), error: (l) => { errors.push(l) }, log: () => {}, maxHeld: 3 })
+    const rows = Array.from({ length: 5 }, (_, i) => deliveriesIn(trace({ messages: [[line(`d-${i}`, 'ran')]] }))[0])
+    await c.copy(supabase(), rows)
+    expect(c.held().map((r) => r.delivery_id)).toEqual(['d-2', 'd-3', 'd-4'])
+    const dropped = errors.find((e) => e.includes('dropped'))!
+    expect(dropped).toMatch(/dropped 2 held cron tick deliveries, the oldest delivery=d-0 /)
+    expect(dropped).toMatch(/3 already held/)
+    expect(dropped).toMatch(/2 dropped by this isolate so far/)
+    await c.copy(supabase(), [deliveriesIn(trace({ messages: [[line('d-5', 'ran')]] }))[0]])
+    expect(errors.filter((e) => e.includes('dropped')).at(-1)).toMatch(/dropped 1 held cron tick delivery, .*3 dropped by this isolate so far/)
   })
 })
 

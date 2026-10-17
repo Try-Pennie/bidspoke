@@ -17,7 +17,8 @@
  * until the database takes it (row-copier.ts).
  */
 import { OPS_WORKER_SCRIPT } from './scripts'
-import { COPY_BACKOFF_MS, MAX_HELD, createRowCopier, type RowCopier, type RowCopierDeps } from './row-copier'
+import { COPY_BACKOFF_MS, createRowCopier, type RowCopier, type RowCopierDeps } from './row-copier'
+import { FAIL_OPEN_HELD_CAP } from './copier-caps'
 
 export interface FailOpenRow {
   event_id: string
@@ -59,14 +60,14 @@ export function failOpensIn(trace: TraceItem): FailOpenRow[] {
   return rows
 }
 
-export { COPY_BACKOFF_MS, MAX_HELD }
+export { COPY_BACKOFF_MS, FAIL_OPEN_HELD_CAP }
 
 export type FailOpenCopierDeps = RowCopierDeps
 export type FailOpenCopier = RowCopier<FailOpenRow>
 
 export function createFailOpenCopier(deps: FailOpenCopierDeps = {}): FailOpenCopier {
   return createRowCopier<'event_id', FailOpenRow>(
-    { table: 'cron_guard_fail_opens', key: 'event_id', one: 'cron guard fail-open', many: 'cron guard fail-opens', label: 'event' },
+    { table: 'cron_guard_fail_opens', key: 'event_id', one: 'cron guard fail-open', many: 'cron guard fail-opens', label: 'event', maxHeld: FAIL_OPEN_HELD_CAP },
     deps,
   )
 }

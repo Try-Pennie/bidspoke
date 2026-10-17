@@ -13,13 +13,11 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 /** The waits before the second and third attempts. */
 export const COPY_BACKOFF_MS = [250, 1_000] as const
 
-/** A day of the minute tick is 1,440 rows; past this the oldest is dropped, loudly. */
-export const MAX_HELD = 2_000
-
 export interface RowCopierDeps {
   sleep?: (ms: number) => Promise<void>
   log?: (line: string) => void
   error?: (line: string) => void
+  /** Overrides the record's own cap; for tests. */
   maxHeld?: number
 }
 
@@ -38,6 +36,12 @@ export interface RowCopierSpec<K extends string> {
   many: string
   /** How a dropped row is named in its log line: `event`, `delivery`. */
   label: string
+  /**
+   * How many refused rows this record holds before it drops the oldest, sized
+   * from its own daily volume (copier-caps.ts), so one record's volume never
+   * sets another's limit.
+   */
+  maxHeld: number
 }
 
 const describe = (error: { message?: string; code?: string } | null): string =>
@@ -50,8 +54,10 @@ export function createRowCopier<K extends string, R extends { occurred_at: strin
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
   const log = deps.log ?? ((l: string) => console.log(l))
   const error = deps.error ?? ((l: string) => console.error(l))
-  const maxHeld = deps.maxHeld ?? MAX_HELD
+  const maxHeld = deps.maxHeld ?? spec.maxHeld
   const held = new Map<string, R>()
+  /** Every row this isolate has dropped, so each drop line also says the running loss. */
+  let droppedSoFar = 0
   const n = (count: number) => `${count} ${count === 1 ? spec.one : spec.many}`
 
   return {
@@ -60,10 +66,23 @@ export function createRowCopier<K extends string, R extends { occurred_at: strin
         held.delete(r[spec.key])
         held.set(r[spec.key], r)
       }
+      // Past the cap the oldest go, and one line says how many, which, and the
+      // running loss: a drop is a record lost for good, so it is never silent.
+      const dropped: R[] = []
       while (held.size > maxHeld) {
         const oldest = held.values().next().value as R
         held.delete(oldest[spec.key])
-        error(`[worker-tail] dropped a held ${spec.one} ${spec.label}=${oldest[spec.key]} from ${oldest.occurred_at}: already holding ${maxHeld}`)
+        dropped.push(oldest)
+      }
+      if (dropped.length > 0) {
+        droppedSoFar += dropped.length
+        const first = dropped[0]
+        const last = dropped[dropped.length - 1]
+        error(
+          `[worker-tail] dropped ${dropped.length} held ${dropped.length === 1 ? spec.one : spec.many}, the oldest ${spec.label}=${first[spec.key]} from ${first.occurred_at}` +
+            ` to ${last.occurred_at}: ${maxHeld} already held while the database refuses them.` +
+            ` ${droppedSoFar} dropped by this isolate so far`,
+        )
       }
       if (held.size === 0) return
       const batch = [...held.values()]
