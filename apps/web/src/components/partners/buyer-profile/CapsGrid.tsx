@@ -5,12 +5,24 @@
  * is no cap, which is a different fact from a cap of zero, and the two stay
  * distinct through to the stored document. Spend is typed in dollars and stored
  * in cents. The scope is stated once from the wired populations (L582, L287).
+ * An offer buyer's caps are a table of Leads and Spend by Per hour and Per day
+ * (#2325, PM-22); spend is a money box, "$" beside it.
  */
 import { useId } from 'react'
 import { DEFAULT_DISPLAY_TIME_ZONE, WIRED_POPULATIONS, type DisplayTimeZone, type SoldOn } from '@bidspoke/buyer-profile'
-import { Field, NumberInput, describedBy } from '@/components/ui/form'
+import { Field, FieldError, MoneyInput, NumberInput, describedBy } from '@/components/ui/form'
 import { clickCountResetSentence, easternDayResetSentence } from './display-zone'
-import { CLICK_FIELD_LABELS, POPULATION_LABELS } from './labels'
+import { zoneShiftFromEastern } from '@/lib/dates'
+import { CLICK_FIELD_LABELS, FIELD_LABELS, POPULATION_LABELS } from './labels'
+import { joinAnd } from '../delete-copy'
+
+/** Each box's name, said by a screen reader with the row and column it sits in. */
+const CAP_LABELS = {
+  hourly_lead_cap: FIELD_LABELS.hourly_lead_cap,
+  daily_lead_cap: FIELD_LABELS.daily_lead_cap,
+  hourly_spend_cap_cents: FIELD_LABELS.hourly_spend_cap_cents,
+  daily_spend_cap_cents: FIELD_LABELS.daily_spend_cap_cents,
+} as const
 
 export interface CapsValue {
   hourly_lead_cap: number | null
@@ -48,7 +60,7 @@ export function CapsGrid({ value, onChange, errors = {}, soldOn = null, zone = D
 }) {
   const base = useId()
   const patch = (next: Partial<CapsValue>) => onChange({ ...value, ...next })
-  const scope = WIRED_POPULATIONS.map((p) => POPULATION_LABELS[p]).join(', ')
+  const scope = joinAnd(WIRED_POPULATIONS.map((p) => POPULATION_LABELS[p]))
 
   // The unit and the empty rule are said once for the four boxes, in the
   // sentence every box is described by (L605), not as a hint under each.
@@ -76,23 +88,44 @@ export function CapsGrid({ value, onChange, errors = {}, soldOn = null, zone = D
     )
   }
 
+  // An offer buyer's four caps as the settled design draws them (#2325, PM-22,
+  // frame 19): a table, Leads and Spend by Per hour and Per day, each empty box
+  // reading No cap. Each box is named for a screen reader by its row and column.
+  const box = (id: string, error: string | undefined, control: (db: string) => React.ReactNode) => (
+    <td className="py-0.5 pr-3 last:pr-0">{control([noteId, error ? `${id}-error` : null].filter(Boolean).join(' '))}</td>
+  )
+  const cells: Array<{ id: string; label: string; error: string | undefined }> = [
+    { id: `${base}-hl`, label: CAP_LABELS.hourly_lead_cap, error: errors.hourlyLeadCap },
+    { id: `${base}-dl`, label: CAP_LABELS.daily_lead_cap, error: errors.dailyLeadCap },
+    { id: `${base}-hs`, label: CAP_LABELS.hourly_spend_cap_cents, error: errors.hourlySpendCapCents },
+    { id: `${base}-ds`, label: CAP_LABELS.daily_spend_cap_cents, error: errors.dailySpendCapCents },
+  ]
+  const [hl, dl, hs, ds] = cells
   return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        {cell(`${base}-hl`, 'Leads per hour', errors.hourlyLeadCap, (db) => (
-          <NumberInput id={`${base}-hl`} value={value.hourly_lead_cap} onChange={(v) => patch({ hourly_lead_cap: v })} min={0} step={1} describedBy={db} />
-        ))}
-        {cell(`${base}-dl`, 'Leads per day', errors.dailyLeadCap, (db) => (
-          <NumberInput id={`${base}-dl`} value={value.daily_lead_cap} onChange={(v) => patch({ daily_lead_cap: v })} min={0} step={1} describedBy={db} />
-        ))}
-        {cell(`${base}-hs`, 'Spend per hour', errors.hourlySpendCapCents, (db) => (
-          <NumberInput id={`${base}-hs`} value={centsToDollars(value.hourly_spend_cap_cents)} onChange={(v) => patch({ hourly_spend_cap_cents: dollarsToCents(v) })} min={0} step={0.01} describedBy={db} />
-        ))}
-        {cell(`${base}-ds`, 'Spend per day', errors.dailySpendCapCents, (db) => (
-          <NumberInput id={`${base}-ds`} value={centsToDollars(value.daily_spend_cap_cents)} onChange={(v) => patch({ daily_spend_cap_cents: dollarsToCents(v) })} min={0} step={0.01} describedBy={db} />
-        ))}
-      </div>
-      <p id={noteId} className="text-xs text-hint">Spend is in dollars. An empty box is no cap. Counts sales made through buyer selection: {scope}. {easternDayResetSentence(zone)}</p>
+    <div className="space-y-1.5">
+      <table className="w-full max-w-[30rem] text-[13px] text-graphite">
+        <thead>
+          <tr className="text-left text-[11.5px] text-hint">
+            <td className="w-[4.5rem]" />
+            <th scope="col" className="pb-1 pr-3 font-normal">Per hour</th>
+            <th scope="col" className="pb-1 font-normal">Per day</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row" className="pr-3 text-left font-normal">Leads</th>
+            {box(hl.id, hl.error, (db) => <NumberInput id={hl.id} aria-label={hl.label} value={value.hourly_lead_cap} onChange={(v) => patch({ hourly_lead_cap: v })} min={0} step={1} placeholder="No cap" describedBy={db} />)}
+            {box(dl.id, dl.error, (db) => <NumberInput id={dl.id} aria-label={dl.label} value={value.daily_lead_cap} onChange={(v) => patch({ daily_lead_cap: v })} min={0} step={1} placeholder="No cap" describedBy={db} />)}
+          </tr>
+          <tr>
+            <th scope="row" className="pr-3 text-left font-normal">Spend</th>
+            {box(hs.id, hs.error, (db) => <MoneyInput id={hs.id} aria-label={hs.label} value={centsToDollars(value.hourly_spend_cap_cents)} onChange={(v) => patch({ hourly_spend_cap_cents: dollarsToCents(v) })} placeholder="No cap" describedBy={db} />)}
+            {box(ds.id, ds.error, (db) => <MoneyInput id={ds.id} aria-label={ds.label} value={centsToDollars(value.daily_spend_cap_cents)} onChange={(v) => patch({ daily_spend_cap_cents: dollarsToCents(v) })} placeholder="No cap" describedBy={db} />)}
+          </tr>
+        </tbody>
+      </table>
+      {cells.filter((c) => c.error).map((c) => <FieldError key={c.id} id={`${c.id}-error`} alert size="xs">{c.error}</FieldError>)}
+      <p id={noteId} className="text-xs text-hint">An empty box is no cap. Counts {scope} leads sold through buyer selection. {zoneShiftFromEastern(zone) === 0 ? 'Hours and days are Eastern.' : easternDayResetSentence(zone)}</p>
     </div>
   )
 }

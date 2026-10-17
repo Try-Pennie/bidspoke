@@ -38,7 +38,7 @@ export const SECTION_LABELS = {
   windows: 'Hours',
   tiers: 'Pricing',
   blackout_dates: 'Blackout dates',
-  accept_signals: 'Accept when all of',
+  accept_signals: 'Accept when every one of',
   duplicate_signals: 'Duplicate when any of',
 } as const
 

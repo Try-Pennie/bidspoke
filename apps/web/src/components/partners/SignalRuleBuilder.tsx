@@ -22,7 +22,7 @@ import { RemoveButton } from '@/components/partners/RemoveButton'
 type RuleKind = 'body' | 'status'
 
 /** The conditions an HTTP status rule can carry, labelled with the same words as the body rules (L118). */
-const STATUS_CONDITIONS: readonly StatusCondition[] = ['contains', 'in', 'not_in', 'present']
+export const STATUS_CONDITIONS: readonly StatusCondition[] = ['contains', 'in', 'not_in', 'present']
 
 function uid() { return Math.random().toString(36).slice(2) }
 export function emptyBody(): BodyRule { return { id: uid(), kind: 'body', field: '', condition: 'equals', value: '' } }
