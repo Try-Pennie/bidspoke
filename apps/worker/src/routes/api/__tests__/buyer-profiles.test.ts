@@ -1,5 +1,5 @@
 /**
- * Buyer profile routes (#1412, Phase 5): read, save, history and usage for one
+ * Buyer profile routes (#1412, Phase 5): read, save and usage for one
  * partner. Every query filters organization_id because the Worker is
  * service_role. The save validates with the shared package first, then calls
  * save_buyer_profile, and turns each named refusal into its own status: a stale
@@ -418,6 +418,8 @@ describe('PUT /partners/:id/buyer-profile', () => {
   })
 })
 
+// #2260: the History tab reads GET /api/partners/:id/history since #2257, so the
+// profile only history route had no caller and is gone.
 describe('GET /partners/:id/buyer-profile/history', () => {
   let app: Awaited<ReturnType<typeof makeApp>>
   beforeEach(async () => {
@@ -426,19 +428,10 @@ describe('GET /partners/:id/buyer-profile/history', () => {
     app = await makeApp()
   })
 
-  it('reads the audit rows for this profile in this org, newest first', async () => {
-    const rows = [{ changed_at: '2027-01-02T00:00:00Z', changed_by: 'user-1', action: 'updated', changes: { daily_lead_cap: { old: 250, new: 500 } } }]
-    const sb = supabaseWith({ partner_configs: { single: partnerRow }, audit_log: { list: rows } })
-    const res = await request(app, 'GET', '/partners/p-1/buyer-profile/history')
-    expect(res.status).toBe(200)
-    expect(await res.json()).toEqual({ entries: rows })
-    expect(sb.calls.audit_log).toEqual(expect.arrayContaining([['eq', ['organization_id', 'org-abc']], ['eq', ['entity_type', 'buyer_profile']], ['eq', ['entity_id', 'p-1']]]))
-  })
-
-  it('a failed read is 500, not an empty history (L98)', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-    supabaseWith({ partner_configs: { single: partnerRow }, audit_log: { listError: { code: '57014', message: 'timeout' } } })
-    expect((await request(app, 'GET', '/partners/p-1/buyer-profile/history')).status).toBe(500)
+  it('is no longer served, and reads nothing', async () => {
+    const sb = supabaseWith({ partner_configs: { single: partnerRow }, audit_log: { list: [] } })
+    expect((await request(app, 'GET', '/partners/p-1/buyer-profile/history')).status).toBe(404)
+    expect(sb.calls.audit_log ?? []).toEqual([])
   })
 })
 

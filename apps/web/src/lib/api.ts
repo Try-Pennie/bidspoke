@@ -1175,8 +1175,6 @@ export const api = {
   buyerProfiles: {
     get: (partnerId: string) =>
       req<{ profile: BuyerProfileDocument | null; accept_signals: unknown[]; other_sellers: Array<{ id: string; name: string }> }>(`/api/partners/${partnerId}/buyer-profile`),
-    history: (partnerId: string) =>
-      req<{ entries: Array<{ changed_at: string; changed_by: string | null; action: string; changes: Record<string, { old: unknown; new: unknown }> | null }> }>(`/api/partners/${partnerId}/buyer-profile/history`),
     // An offer buyer's ledger counts, or a click buyer's clicks today (#1543), told apart by sold_on.
     usage: (partnerId: string) =>
       req<

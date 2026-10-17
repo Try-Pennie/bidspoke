@@ -23,7 +23,7 @@ const row = (over: Partial<HeldClick> = {}): HeldClick => ({
 
 function panel(props: Partial<Parameters<typeof HeldClicksPanel>[0]> = {}) {
   const handlers = { onMarkSent: vi.fn(), onFree: vi.fn(), onClear: vi.fn(), onRetrySalesforce: vi.fn(), onSetLeadId: vi.fn() }
-  render(<HeldClicksPanel partnerName="Liberty1" held={{ entries: [row()], total: 1 }} error={null} outcomes={{}} {...handlers} {...props} />)
+  render(<HeldClicksPanel partnerName="Liberty1" zone="America/Los_Angeles" held={{ entries: [row()], total: 1 }} error={null} outcomes={{}} {...handlers} {...props} />)
   return handlers
 }
 
@@ -66,6 +66,14 @@ describe('HeldClicksPanel states', () => {
     panel({ held: { entries: [], total: 0 } })
     expect(screen.getByText('No clicks are held for Liberty1: every click sent has an outcome.')).toBeInTheDocument()
     expect(screen.queryByRole('list')).toBeNull()
+  })
+
+  // #2253: held since and releasable after are shown in the profile's display
+  // zone, as the hours are; the day a click counts on stays Pacific.
+  it('shows when a click was held in the profile\'s display zone, naming it, and keeps its count day Pacific', () => {
+    panel({ zone: 'America/New_York' })
+    expect(card()).toHaveTextContent('Sep 20, 2:00 PM EDT')
+    expect(card()).not.toHaveTextContent('PDT')
   })
 
   it('one held click is a card: the prospect links to its execution, since when in Pacific time, and why', () => {
@@ -190,7 +198,7 @@ describe('HeldClicksPanel releases', () => {
     const onMarkSent = vi.fn()
     render(
       <form onSubmit={onSubmit}>
-        <HeldClicksPanel partnerName="Liberty1" held={{ entries: [row()], total: 1 }} error={null} outcomes={{}} onMarkSent={onMarkSent} onFree={vi.fn()} onClear={vi.fn()} onRetrySalesforce={vi.fn()} onSetLeadId={vi.fn()} />
+        <HeldClicksPanel partnerName="Liberty1" zone="America/Los_Angeles" held={{ entries: [row()], total: 1 }} error={null} outcomes={{}} onMarkSent={onMarkSent} onFree={vi.fn()} onClear={vi.fn()} onRetrySalesforce={vi.fn()} onSetLeadId={vi.fn()} />
       </form>,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Mark sent' }))

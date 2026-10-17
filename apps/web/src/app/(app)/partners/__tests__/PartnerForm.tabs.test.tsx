@@ -13,7 +13,7 @@ vi.mock('@/lib/api', () => ({
     partners: { usage: vi.fn(), history: vi.fn(), workflowValues: () => Promise.resolve({ partner: { id: 'p', slug: 'p' }, values: [], searched: { workflows: 0, with_constants_node: 0 } }) },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
-    buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },
+    buyerProfiles: { get: vi.fn(), usage: vi.fn() },
     buyerSales: { list: vi.fn(), settle: vi.fn() },
   },
 }))
@@ -42,7 +42,6 @@ beforeEach(() => {
   vi.mocked(api.partnerUuids.list).mockResolvedValue([])
   vi.mocked(api.partnerBidConfigs.list).mockResolvedValue([])
   vi.mocked(api.buyerProfiles.get).mockResolvedValue({ profile: null, accept_signals: [], other_sellers: [] })
-  vi.mocked(api.buyerProfiles.history).mockResolvedValue({ entries: [] })
   vi.mocked(api.buyerProfiles.usage).mockRejectedValue(new Error('not read here'))
   vi.mocked(api.buyerSales.list).mockResolvedValue({ entries: [], total: 0, page: 1, limit: 100 })
 })
@@ -240,7 +239,5 @@ describe('History (#2137, #2141)', () => {
     const item = await screen.findByRole('listitem')
     expect(item).toHaveTextContent('Editor A')
     expect(item).toHaveTextContent(/Daily attempt cap \(bidding workflows\) from 40 → to 50/)
-    // The profile's own history route is no longer read: History holds every source.
-    expect(api.buyerProfiles.history).not.toHaveBeenCalled()
   })
 })

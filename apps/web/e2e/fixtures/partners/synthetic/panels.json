@@ -1,5 +1,4 @@
 {
-  "history": { "entries": [] },
   "buyer_sales": { "entries": [], "total": 0, "page": 1, "limit": 100 },
   "held_clicks": { "entries": [], "total": 0 },
   "usage_offer": {

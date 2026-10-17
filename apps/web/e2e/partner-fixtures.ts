@@ -33,7 +33,7 @@ export interface PartnerFixtures {
   bidConfigs: Record<string, unknown[]>
   stale: Record<string, unknown> & { partner: { id: string } }
   matrix: { list: Array<{ id: string; partner_id: string }>; detail: unknown }
-  panels: { history: unknown; buyer_sales: unknown; held_clicks: unknown; usage_offer: unknown; usage_click: unknown }
+  panels: { buyer_sales: unknown; held_clicks: unknown; usage_offer: unknown; usage_click: unknown }
   /** The delete box's check for every listed partner, by id (#2140): Tripoint blocked by its sales, the others deletable. */
   deleteChecks: Record<string, { answer: unknown }>
   /** GET /api/partners/:id/usage by partner id (#2137), measured read only from production on 2026-10-16. */
@@ -143,7 +143,6 @@ export function answerFor(method: string, url: string, fx: PartnerFixtures, opts
     const answer = ownEntry(fx.buyerProfiles, m[1])
     return answer ? ok(answer) : null
   }
-  if (/^\/api\/partners\/[^/]+\/buyer-profile\/history$/.test(p)) return ok(fx.panels.history)
   if ((m = /^\/api\/partners\/([^/]+)\/buyer-usage$/.exec(p))) {
     const soldOn = ownEntry(fx.buyerProfiles, m[1])?.profile?.sold_on
     return ok(soldOn === 'click' ? fx.panels.usage_click : fx.panels.usage_offer)

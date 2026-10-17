@@ -16,7 +16,7 @@ vi.mock('@/lib/api', () => ({
     partners: { usage: vi.fn() },
     partnerUuids: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
     partnerBidConfigs: { list: vi.fn() },
-    buyerProfiles: { get: vi.fn(), history: vi.fn(), usage: vi.fn() },
+    buyerProfiles: { get: vi.fn(), usage: vi.fn() },
     buyerSales: { list: vi.fn(), settle: vi.fn() },
   },
 }))
@@ -44,7 +44,6 @@ beforeEach(() => {
   vi.mocked(api.partnerUuids.list).mockResolvedValue([])
   vi.mocked(api.partnerBidConfigs.list).mockResolvedValue([])
   vi.mocked(api.buyerProfiles.get).mockResolvedValue({ profile: null, accept_signals: [], other_sellers: [] })
-  vi.mocked(api.buyerProfiles.history).mockResolvedValue({ entries: [] })
   vi.mocked(api.buyerProfiles.usage).mockRejectedValue(new Error('not read here'))
   vi.mocked(api.buyerSales.list).mockResolvedValue({ entries: [], total: 0, page: 1, limit: 100 })
 })
