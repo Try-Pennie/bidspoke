@@ -198,7 +198,8 @@ describe('the Buyer profile section', () => {
 
   it('a profile only save with a partner edit that stores nothing (a blank floor row) leaves nothing reading as unsaved', async () => {
     const onSave = await renderBuyer()
-    fireEvent.click(screen.getByRole('button', { name: /Add row/, hidden: true }))
+    // #2327: the floors' add link is named for what it adds, as the design draws it.
+    fireEvent.click(screen.getByRole('button', { name: 'Add sub-account', hidden: true }))
     fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(/^Buyer profile saved, version 4\./))

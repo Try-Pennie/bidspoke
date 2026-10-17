@@ -31,8 +31,23 @@ describe('OfferPreview', () => {
     expect(screen.getByText('Rates from 8%.')).toBeVisible()
   })
 
-  it('says when there is nothing to show yet', () => {
-    render(<OfferPreview title="" details="" />)
-    expect(screen.getByText('Nothing to show until a title or details are filled in.')).toBeVisible()
+  // #2327, PM-24: with nothing filled in, the card is still drawn (the design
+  // always shows one), holding the boxes' own example in the hint grey, where
+  // it used to be a sentence with no card.
+  it('with nothing filled in, draws the card with the example in grey, never a sentence instead', () => {
+    const { container } = render(<OfferPreview title="" details="" example={{ title: 'Get up to $50,000', details: 'Personal loans from $5,000.' }} />)
+    const card = container.querySelector('[data-offer-preview]')!
+    expect(card).not.toBeNull()
+    expect(card).toHaveAttribute('data-example', 'true')
+    expect(screen.getByText('Get up to $50,000')).toHaveClass('text-hint')
+    expect(screen.getByText('Personal loans from $5,000.')).toHaveClass('text-hint')
+    expect(screen.queryByText(/Nothing to show/)).toBeNull()
+  })
+
+  it('a filled in offer is drawn in the card as itself, not as the example', () => {
+    const { container } = render(<OfferPreview title="Denied?" details="" example={{ title: 'Get up to $50,000', details: 'Personal loans from $5,000.' }} />)
+    expect(container.querySelector('[data-offer-preview]')).toHaveAttribute('data-example', 'false')
+    expect(screen.getByText('Denied?')).not.toHaveClass('text-hint')
+    expect(screen.queryByText('Get up to $50,000')).toBeNull()
   })
 })

@@ -272,7 +272,8 @@ describe('a versioned save of only what changed (#2132)', () => {
   it('an edit that changes nothing stored (a blank floor row) saves nothing and no longer reads as unsaved', async () => {
     const onSave = vi.fn()
     render(<PartnerForm partner={{ ...partner, partner_type: 'buyer' }} onSave={onSave} onCancel={vi.fn()} />)
-    fireEvent.click(screen.getByRole('button', { name: /Add row/, hidden: true }))
+    // #2327: the floors' add link is named for what it adds, as the design draws it.
+    fireEvent.click(screen.getByRole('button', { name: 'Add sub-account', hidden: true }))
     expect(await screen.findByText('Unsaved changes')).toBeInTheDocument()
     save()
     await screen.findByText('Nothing to save.')
@@ -321,9 +322,10 @@ describe('a failed read is its own state (L10)', () => {
     vi.mocked(api.partnerUuids.list).mockRejectedValueOnce(new Error('503'))
     renderForm()
     expect(await screen.findByText('Could not load sub-account IDs. Try again.')).toBeInTheDocument()
-    expect(screen.queryByText(uuid.uuid)).not.toBeInTheDocument()
+    // #2327: each ID sits in its own box, so it is found by the value it holds.
+    expect(screen.queryByDisplayValue(uuid.uuid)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
-    expect(await screen.findByText(uuid.uuid)).toBeInTheDocument()
+    expect(await screen.findByDisplayValue(uuid.uuid)).toBeInTheDocument()
     expect(screen.queryByText('Could not load sub-account IDs. Try again.')).not.toBeInTheDocument()
   })
 
