@@ -405,7 +405,7 @@ export function BuyerProfileSection(props: Props) {
               {/* Only the number is typed; "% of debt" is fixed text beside the box (Dan, 2026-10-17). */}
               <Field id="bp-collections-max" label={FIELD_LABELS.collections_max_percent} hint="A lead whose collections are more than this share of its debt is skipped. Empty means no limit." error={errorFor(errors, 'collectionsMaxPercent')}>
                 <div className="flex items-center gap-2">
-                  <NumberInput id="bp-collections-max" value={profile.collections_max_percent ?? null} onChange={(v) => patch({ collections_max_percent: v })} min={1} max={100} step={1} describedBy={describedBy('bp-collections-max', true, Boolean(errorFor(errors, 'collectionsMaxPercent')))} className="w-24" />
+                  <NumberInput id="bp-collections-max" value={profile.collections_max_percent ?? null} onChange={(v) => patch({ collections_max_percent: v })} min={0} describedBy={describedBy('bp-collections-max', true, Boolean(errorFor(errors, 'collectionsMaxPercent')))} className="w-24" />
                   <span className="text-sm text-graphite">% of debt</span>
                 </div>
               </Field>

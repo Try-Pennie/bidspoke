@@ -165,6 +165,19 @@ describe('the Buyer profile section', () => {
     expect(onSave.mock.calls[0][3]).toMatchObject({ profile: expect.objectContaining({ collections_max_percent: null }) })
   })
 
+  // Refused by the shared validator, with its own sentence beside the field: the
+  // box carries no browser limits, which would block the save with a native tooltip.
+  it('a collections cap outside 1 to 100 is refused beside its field and named in the save bar, and nothing is saved', async () => {
+    const onSave = await renderBuyer()
+    for (const typed of ['0', '101', '7.5']) {
+      fireEvent.change(screen.getByLabelText('Collections at most'), { target: { value: typed } })
+      fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+      await screen.findByText('Nothing saved: fix Collections at most in Buyer profile.')
+      expect(screen.getAllByRole('alert').map((a) => a.textContent).join(' ')).toMatch(/Collections at most is a whole percent of debt, from 1 to 100\./)
+    }
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
   it('the bar says Saved only once the one save has landed, never while it is in flight, and a failure says nothing was saved', async () => {
     let fail!: (e: unknown) => void
     const onSave = await renderBuyer(vi.fn().mockImplementation(() => new Promise((_res, rej) => { fail = rej })))
