@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import { DISPLAY_TIME_ZONES, SOLD_ON } from '@bidspoke/buyer-profile'
-import { alsoSellTo, describeProfileErrors, formatProfileValue, profileErrorLabel, profileFieldLabel, SECTION_LABELS, FIELD_LABELS, SOLD_ON_LABELS } from '../labels'
+import { alsoSellTo, describeProfileErrors, formatProfileValue, priorityStanding, profileErrorLabel, profileFieldLabel, SECTION_LABELS, FIELD_LABELS, SOLD_ON_LABELS, SOLD_ON_WHY } from '../labels'
 
 describe('profileErrorLabel', () => {
   it('maps every path the shared validator can emit to the words on the form', () => {
@@ -58,6 +58,36 @@ describe('the sold_on vocabulary on screen (#1541)', () => {
     expect(profileFieldLabel('sold_on')).toBe('Sold on')
     expect(formatProfileValue('sold_on', 'click')).toBe(SOLD_ON_LABELS.click)
     expect(formatProfileValue('sold_on', 'offer')).toBe(SOLD_ON_LABELS.offer)
+  })
+})
+
+describe('the sold_on words as the settled design says them (#2324, PM-21)', () => {
+  it('names the two kinds Offer and Click, each with the one sentence shown when it is chosen', () => {
+    expect(SOLD_ON_LABELS).toEqual({ offer: 'Offer', click: 'Click' })
+    expect(SOLD_ON_WHY).toEqual({
+      offer: 'Sold through buyer selection at a priced rate.',
+      click: 'Quoted at the Engine bid, and sent to the buyer only when the person clicks.',
+    })
+  })
+})
+
+describe('priorityStanding (#2324, PM-21): where an offer buyer stands today', () => {
+  it('says a buyer alone on the offer is offered every lead it qualifies for', () => {
+    expect(priorityStanding('Tripoint', [], true)).toBe('Today Tripoint is the only buyer sold on the offer, so it is offered every lead it qualifies for.')
+  })
+
+  it('does not promise leads to a buyer that is switched off', () => {
+    expect(priorityStanding('Tripoint', [], false)).toBe('Today no other buyer is sold on the offer.')
+  })
+
+  it('names the other buyers sold on the offer with their priority, grammatical for one or many', () => {
+    expect(priorityStanding('Tripoint', [{ id: 'a', name: 'Acme', priority: 1 }], true)).toBe('Today Acme (priority 1) is also sold on the offer.')
+    expect(priorityStanding('Tripoint', [{ id: 'a', name: 'Acme', priority: 1 }, { id: 'b', name: 'Beta', priority: 2 }, { id: 'c', name: 'Cove', priority: null }], true))
+      .toBe('Today Acme (priority 1), Beta (priority 2) and Cove (no priority) are also sold on the offer.')
+  })
+
+  it('says nothing when the Worker did not say, rather than claiming the buyer is alone', () => {
+    expect(priorityStanding('Tripoint', undefined, true)).toBeNull()
   })
 })
 

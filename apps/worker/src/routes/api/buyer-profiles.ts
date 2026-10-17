@@ -2,7 +2,8 @@
  * Buyer profile routes (#1412, Phase 5), mounted under /partners beside the
  * partner routes:
  *
- *   GET  /partners/:id/buyer-profile          the document, the partner's accept rules, other sellers
+ *   GET  /partners/:id/buyer-profile          the document, the partner's accept rules, other sellers,
+ *                                             and the other buyers sold on the offer (#2324)
  *   PUT  /partners/:id/buyer-profile          validate, save_buyer_profile, invalidate the cache
  *   GET  /partners/:id/buyer-usage            the ledger's counts for the current Eastern hour and day,
  *                                             or a click sold buyer's clicks today on the Pacific day
@@ -74,6 +75,35 @@ const acceptSignalsOf = (partner: PartnerForProfile): Signal[] => (Array.isArray
 
 // ── Read ──────────────────────────────────────────────────────────────────────
 
+/** Another buyer sold on the offer, as the Priority section names it (#2324, PM-21). */
+interface OfferBuyer {
+  id: string
+  name: string
+  priority: number | null
+}
+
+/**
+ * The org's OTHER buyers that buyer selection can offer a lead to today: an
+ * enabled profile sold on the offer whose partner is switched on (buyer_select
+ * skips an inactive partner). The Priority section says where this buyer stands
+ * among them ("Today Tripoint is the only buyer sold on the offer"), so a failed
+ * read throws rather than answering an empty list, which would say exactly that.
+ */
+async function readOtherOfferBuyers(supabase: ReturnType<typeof createSupabaseClient>, orgId: string, partnerId: string): Promise<OfferBuyer[]> {
+  const { data, error } = await supabase
+    .from('buyer_profiles')
+    .select('partner_id, priority, partner_configs!inner(name, is_active)')
+    .eq('organization_id', orgId)
+    .eq('sold_on', 'offer')
+    .eq('is_enabled', true)
+  if (error) throw error
+  const rows = (data ?? []) as unknown as Array<{ partner_id: string; priority: number | null; partner_configs: { name: string; is_active: boolean } | null }>
+  return rows
+    .filter((r) => r.partner_id !== partnerId && r.partner_configs?.is_active === true)
+    .map((r) => ({ id: r.partner_id, name: r.partner_configs?.name ?? r.partner_id, priority: r.priority }))
+    .sort((a, b) => (a.priority ?? Infinity) - (b.priority ?? Infinity) || a.name.localeCompare(b.name))
+}
+
 buyerProfiles.get('/:id/buyer-profile', async (c) => {
   const { orgId } = c.get('user')
   const id = c.req.param('id')
@@ -104,10 +134,18 @@ buyerProfiles.get('/:id/buyer-profile', async (c) => {
     { includeBuyerSelect: false, includeClickNodes: false, includeLatencyGates: false, liveOnly: true }
   )
 
+  let offerBuyers: OfferBuyer[]
+  try {
+    offerBuyers = await readOtherOfferBuyers(supabase, orgId, id)
+  } catch (err) {
+    return dbError(c, err)
+  }
+
   return c.json({
     profile: document ?? null,
     accept_signals: acceptSignalsOf(loaded.partner),
     other_sellers: finder(id),
+    offer_buyers: offerBuyers,
   })
 })
 
