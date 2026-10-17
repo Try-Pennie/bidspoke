@@ -162,7 +162,7 @@ describe('history paths in the dotted form buyer_profile_flatten writes (#1672)'
   })
 
   it('labels every scalar key the flatten passes through from buyer_profile_document', () => {
-    const documentScalars = ['sold_on', 'is_enabled', 'priority', 'allowed_states', 'debt_min', 'debt_max', 'loan_amount_min', 'hourly_lead_cap', 'daily_lead_cap', 'hourly_spend_cap_cents', 'daily_spend_cap_cents', 'display_time_zone']
+    const documentScalars = ['sold_on', 'is_enabled', 'priority', 'allowed_states', 'debt_min', 'debt_max', 'loan_amount_min', 'hourly_lead_cap', 'daily_lead_cap', 'hourly_spend_cap_cents', 'daily_spend_cap_cents', 'display_time_zone', 'collections_max_percent']
     for (const key of documentScalars) expect(profileFieldLabel(key), key).not.toBe(key)
   })
 
