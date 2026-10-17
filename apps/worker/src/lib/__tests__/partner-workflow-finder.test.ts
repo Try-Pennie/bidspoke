@@ -1,10 +1,11 @@
 /**
- * Which workflows sell to a partner (#1412): the rename impact route and the
- * buyer profile route both ask, so the answer lives once here (L613). The two
- * differ in one thing the caller states: whether a buyer_select node counts.
- * Rename impact wants every workflow that would be broken by a formula rewrite,
- * buyer_select included; the profile page's `other_sellers` wants the sellers
- * OUTSIDE buyer selection, whose wins the caps do not count (L582, L287).
+ * Which workflows name a partner (#1412): the rename impact route, the buyer
+ * profile route and the partner delete check all ask, so the answer lives once
+ * here (L613). Each caller states which node kinds count: buyer_select, the
+ * click nodes and latency gates. Rename impact wants every workflow a formula
+ * rewrite would break, buyer_select included; the profile page's
+ * `other_sellers` wants the sellers OUTSIDE buyer selection, whose wins the caps
+ * do not count (L582, L287); the delete check alone counts latency gates (#2251).
  */
 import { describe, expect, it } from 'vitest'
 import { NODE_TRAITS, NODE_TYPES } from '@bidspoke/node-types'
