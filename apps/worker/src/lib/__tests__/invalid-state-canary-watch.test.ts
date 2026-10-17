@@ -10,17 +10,26 @@
  * from the 51 relay era bodies of `invalid_state_sf_post` (16 keys, the same set
  * on every one), after the port's omit, rename and inject: `executionId` and
  * `submissionId` dropped, `UUID` and `leadUUID` renamed, `PDFlow_4__c` and the
- * write stamp added. Every value is invented.
+ * write stamp added. `PDFlow_1__c` and `PDFlow_4__c` both hold the run's
+ * Bidspoke link, as on all four direct posts read on 2026-10-17 (#2313). Every
+ * other value is invented.
  */
 import { describe, it, expect } from 'vitest'
+import type { SupabaseClient } from '@supabase/supabase-js'
 import {
   runInvalidStateWatch,
   canaryWatchMessage,
   canaryWatchWindow,
   INVALID_STATE_WATCH_JOB,
   WATCHED_STEP,
+  RELAY_READ_BUDGET_MS,
+  RELAY_SAMPLE_SIZE,
+  RELAY_COMPARISON_POSTS,
+  pickEvenly,
+  readRelayPosts,
   type CanaryWatchDeps,
   type CanaryWatchReport,
+  type RelayStep,
   type WatchedStep,
 } from '../invalid-state-canary-watch'
 import { CRON_JOBS, evaluateHeartbeat } from '../cron-heartbeat'
@@ -52,7 +61,7 @@ function sentBody(run: string): Record<string, unknown> {
     LeadSaleType__c: 'Offer Wall',
     Engine_Lead_UUID_SO__c: `lead-uuid-${run.slice(-1)}`,
     PD_Completed_Timestamp__c: '2026-10-17T15:04:05.000Z',
-    PDFlow_1__c: 'https://pipedream.example/run/1',
+    PDFlow_1__c: link(run),
     Engine_UUID_SO__c: `uuid-${run.slice(-1)}`,
     VantageScore__c: 640,
     XBC_SO__c: '3',
@@ -117,7 +126,7 @@ function deps(over: Partial<CanaryWatchDeps> & { steps?: WatchedStep[]; records?
       windows.push([from, to])
       return over.steps ?? []
     },
-    countRelay: async () => ({ total: 3360, accepted: 3360 }),
+    readRelay: async () => ({ total: 0, sample: [] }),
     salesforce: async () => sf.read,
     post: async (m) => {
       posted.push(m)
@@ -165,11 +174,14 @@ describe('the invalid state canary watch', () => {
     expect(report.nativeCompleted).toBe(0)
   })
 
-  it('a missing PDFlow_4__c is a run that did not land fully, and the message reads as an alert naming the run', async () => {
+  // #2313: PDFlow_1__c is the run link to judge by. Every outcome post writes it
+  // (the relay's and the direct one alike), while PDFlow_4__c is also written by
+  // the inquiry relay, with a Pipedream link, on every run that still has it.
+  it('a missing PDFlow_1__c is a run that did not land fully, and the message reads as an alert naming the run', async () => {
     const { d, posted } = deps({
       steps: [nativeStep(RUN_A, SUB_A), nativeStep(RUN_B, SUB_B)],
       records: {
-        [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_4__c: null }),
+        [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_1__c: null }),
         [LEAD_A]: ok(landedLead(RUN_A)),
         [SUB_B]: ok(landedSubmission(RUN_B, LEAD_B)),
         [LEAD_B]: ok(landedLead(RUN_B)),
@@ -185,13 +197,33 @@ describe('the invalid state canary watch', () => {
     expect(m.fixHint).toBeTruthy()
   })
 
-  it("another run's link in PDFlow_4__c is named as such", async () => {
+  it("another run's link in PDFlow_1__c is named as such", async () => {
     const { d } = deps({
       steps: [nativeStep(RUN_A, SUB_A)],
-      records: { [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_4__c: link(RUN_B) }), [LEAD_A]: ok(landedLead(RUN_A)) },
+      records: { [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_1__c: link(RUN_B) }), [LEAD_A]: ok(landedLead(RUN_A)) },
     })
     const report = await runInvalidStateWatch(d)
     expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ["The Submission's Bidspoke run link is not this run's."] })
+  })
+
+  it("PDFlow_4__c overwritten by the inquiry relay's Pipedream link is a field that holds a different value, not a missing run link", async () => {
+    const { d } = deps({
+      steps: [nativeStep(RUN_A, SUB_A)],
+      records: { [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_4__c: 'https://pipedream.example/@pennie/p_abc/inspect/1' }), [LEAD_A]: ok(landedLead(RUN_A)) },
+    })
+    const report = await runInvalidStateWatch(d)
+    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ['1 field holds a different value from the one the run sent: PDFlow_4__c.'] })
+  })
+
+  it("a direct run that sent no stamp and whose Submission holds a later run's link did not land: only a relay post is ever left out as overwritten", async () => {
+    const { Bidspoke_Write__c: _stamp, ...unstamped } = sentBody(RUN_A)
+    const step = nativeStep(RUN_A, SUB_A, { input: { resolved: { operation: 'update', object: 'Submission__c', record_id: SUB_A, body: unstamped } } })
+    const { d } = deps({
+      steps: [step],
+      records: { [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_1__c: link(RUN_B) }), [LEAD_A]: ok(landedLead(RUN_A)) },
+    })
+    const report = await runInvalidStateWatch(d)
+    expect(report.native).toEqual([{ kind: 'not_landed', executionId: RUN_A, problems: ["The Submission's Bidspoke run link is not this run's."] }])
   })
 
   it('a mismatched field is named by field, never by value', async () => {
@@ -360,7 +392,7 @@ describe('the invalid state canary watch', () => {
   })
 
   it('a write that did not land keeps its own title when a rollback came too, and the Fix line covers both', async () => {
-    const missing = { ...landedA, [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_4__c: null }) }
+    const missing = { ...landedA, [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_1__c: null }) }
     const { d, posted } = deps({ steps: [nativeStep(RUN_A, SUB_A), relayStep('r1')], records: missing })
     await runInvalidStateWatch(d)
     expect(posted[0].title).toBe('1 of 1 invalid state writes did not land in Salesforce')
@@ -368,24 +400,193 @@ describe('the invalid state canary watch', () => {
     expect(posted[0].fixHint).toMatch(/version history/)
   })
 
-  it('compares with the relay, saying what each number counts', async () => {
+  // #2313: the relay side is judged by what Salesforce saved, through the same
+  // read-back, never by what Pipedream answered. The bodies below have the
+  // shapes measured on 2026-10-17: a code node's object (under_10000_sf_post,
+  // with the Engine ids) and a JSON text body (send_salesforce, without them),
+  // each carrying `submissionId`, `executionId` and the run link in PDFlow_1__c.
+  const RELAY_1 = '01a14500-0000-7000-8000-000000000001'
+  const RELAY_2 = '01a14500-0000-7000-8000-000000000002'
+  const RELAY_3 = '01a14500-0000-7000-8000-000000000003'
+  const RSUB_1 = 'a04Ui00000RRRR1IAA'
+  const RSUB_2 = 'a04Ui00000RRRR2IAA'
+  const RLEAD_1 = '00QUi00000RRRR1MAA'
+  const RLEAD_2 = '00QUi00000RRRR2MAA'
+
+  function relayBody(run: string, sub: string | null): Record<string, unknown> {
+    return {
+      submissionId: sub,
+      executionId: run,
+      UUID: `uuid-${run.slice(-1)}`,
+      leadUUID: `lead-uuid-${run.slice(-1)}`,
+      PDFlow_1__c: link(run),
+      External_Exchange_Status__c: 'Pending',
+      External_Routing_Code__c: 3,
+      VantageScore__c: 'null',
+    }
+  }
+
+  function relayPost(run: string, body: unknown, over: Partial<RelayStep> = {}): RelayStep {
+    return {
+      execution_id: run,
+      step_namespace: 'under_10000_sf_post',
+      step_type: 'webhook',
+      status: 'completed',
+      input: { resolved: { method: 'POST', url: 'https://relay.example/update-submission', headers: {}, body } },
+      output: { status: 200, body: { success: true } },
+      ...over,
+    }
+  }
+
+  /** What Salesforce holds when the relay's PATCH landed: the two ids dropped, the Engine ids renamed. */
+  function relaySaved(run: string, lead: string): Record<string, unknown> {
+    return {
+      Engine_UUID_SO__c: `uuid-${run.slice(-1)}`,
+      Engine_Lead_UUID_SO__c: `lead-uuid-${run.slice(-1)}`,
+      PDFlow_1__c: link(run),
+      PDFlow_4__c: 'https://pipedream.example/@pennie/p_abc/inspect/1',
+      External_Exchange_Status__c: 'Pending',
+      External_Routing_Code__c: '3',
+      VantageScore__c: 'null',
+      Lead__c: lead,
+      Bidspoke_Write__c: null,
+    }
+  }
+
+  it('a relay post Pipedream answered 2xx that did not land in Salesforce is counted as not landed, and the rate says what Salesforce saved', async () => {
     const { d, posted } = deps({
       steps: [nativeStep(RUN_A, SUB_A)],
-      records: { [SUB_A]: ok(landedSubmission(RUN_A, LEAD_A)), [LEAD_A]: ok(landedLead(RUN_A)) },
-      countRelay: async () => ({ total: 3360, accepted: 3354 }),
+      readRelay: async () => ({ total: 3360, sample: [relayPost(RELAY_1, relayBody(RELAY_1, RSUB_1)), relayPost(RELAY_2, relayBody(RELAY_2, RSUB_2))] }),
+      records: {
+        [SUB_A]: ok(landedSubmission(RUN_A, LEAD_A)),
+        [LEAD_A]: ok(landedLead(RUN_A)),
+        [RSUB_1]: ok(relaySaved(RELAY_1, RLEAD_1)),
+        [RLEAD_1]: ok(landedLead(RELAY_1)),
+        // Pipedream answered 200, and Salesforce holds none of what was sent.
+        [RSUB_2]: ok({ Lead__c: RLEAD_2, PDFlow_1__c: null, External_Exchange_Status__c: null, External_Routing_Code__c: null, VantageScore__c: null, Engine_UUID_SO__c: null, Engine_Lead_UUID_SO__c: null }),
+        [RLEAD_2]: ok({ EngineUUID__c: null, EngineLeadUUID__c: null }),
+      },
     })
-    await runInvalidStateWatch(d)
+    const report = await runInvalidStateWatch(d)
+    if ('error' in report.relay) throw new Error('relay read failed')
+    expect(report.relay.total).toBe(3360)
+    expect(report.relay.sample.map((v) => v.kind)).toEqual(['landed', 'not_landed'])
     const text = posted[0].lines.join('\n')
-    expect(text).toContain("Over the same hours the relay took 3,354 of Main Flow's 3,360 other outcome posts (99.8%).")
-    expect(text).toContain('That counts posts Pipedream answered with a success, not what reached Salesforce.')
-    expect(text).toContain("Bidspoke's own record of the direct writes, the same measure, is 1 of 1 completed (100.0%).")
+    expect(text).toContain(
+      "Over the same hours 3,360 of Main Flow's other outcome posts went through the relay. 2 of them, spread over the day, were read back from Salesforce the same way: 1 landed fully (50.0%) and 1 did not.",
+    )
+    expect(text).toContain('The direct writes on the same measure: 1 of 1 landed fully (100.0%).')
+    expect(text).not.toMatch(/Pipedream answered/)
+    // The comparison does not page: the relay is not what the canary watches.
+    expect(posted[0].alert).toBe(false)
   })
 
-  it('a relay count that cannot be read is said, not shown as zero', async () => {
-    const { d, posted } = deps({ countRelay: async () => { throw new Error('canceling statement due to statement timeout') } })
+  it("reads a relay post back by the relay's own PATCH: ids dropped, Engine ids renamed, a JSON text body parsed", async () => {
+    const textBody = JSON.stringify(relayBody(RELAY_1, RSUB_1))
+    const { d, asked } = deps({
+      readRelay: async () => ({ total: 1, sample: [relayPost(RELAY_1, textBody, { step_namespace: 'send_salesforce' })] }),
+      records: { [RSUB_1]: ok(relaySaved(RELAY_1, RLEAD_1)), [RLEAD_1]: ok(landedLead(RELAY_1)) },
+    })
+    const report = await runInvalidStateWatch(d)
+    if ('error' in report.relay) throw new Error('relay read failed')
+    expect(report.relay.sample).toEqual([{ kind: 'landed', executionId: RELAY_1 }])
+    const fields = new URL(`https://x${asked[0]}`).searchParams.get('fields')!.split(',')
+    expect(asked[0].startsWith(`/sobjects/Submission__c/${RSUB_1}?`)).toBe(true)
+    expect(fields).toEqual(expect.arrayContaining(['PDFlow_1__c', 'Engine_UUID_SO__c', 'Engine_Lead_UUID_SO__c', 'External_Routing_Code__c', 'VantageScore__c', 'Lead__c']))
+    for (const f of ['UUID', 'leadUUID', 'submissionId', 'executionId']) expect(fields).not.toContain(f)
+  })
+
+  it("a relay post that did not send the Engine ids is not judged by its Lead's (the tripoint and amone bodies)", async () => {
+    const { submissionId, executionId, PDFlow_1__c, External_Exchange_Status__c } = relayBody(RELAY_1, RSUB_1)
+    const { d, asked } = deps({
+      readRelay: async () => ({ total: 1, sample: [relayPost(RELAY_1, { submissionId, executionId, PDFlow_1__c, External_Exchange_Status__c }, { step_namespace: 'tripoint_sf_post' })] }),
+      records: { [RSUB_1]: ok({ PDFlow_1__c: link(RELAY_1), External_Exchange_Status__c: 'Pending', Lead__c: RLEAD_1 }) },
+    })
+    const report = await runInvalidStateWatch(d)
+    if ('error' in report.relay) throw new Error('relay read failed')
+    expect(report.relay.sample).toEqual([{ kind: 'landed', executionId: RELAY_1 }])
+    expect(asked).toHaveLength(1)
+  })
+
+  it("a relay post the relay's filter stopped (no Submission) is counted apart and read for nothing", async () => {
+    const { d, posted, asked } = deps({ readRelay: async () => ({ total: 1, sample: [relayPost(RELAY_1, relayBody(RELAY_1, null))] }) })
+    const report = await runInvalidStateWatch(d)
+    if ('error' in report.relay) throw new Error('relay read failed')
+    expect(report.relay.sample).toEqual([])
+    expect(report.relay.noSubmission).toBe(1)
+    expect(asked).toHaveLength(0)
+    expect(posted[0].lines.join('\n')).toContain("Over the same hours 1 of Main Flow's other outcome posts went through the relay. 1 of them had no Submission, so the relay wrote nothing.")
+  })
+
+  it('a relay post a LATER run overwrote is left out of the rate, while an EARLIER run\'s link means this one did not land', async () => {
+    const { d, posted } = deps({
+      readRelay: async () => ({ total: 2, sample: [relayPost(RELAY_2, relayBody(RELAY_2, RSUB_1)), relayPost(RELAY_1, relayBody(RELAY_1, RSUB_2))] }),
+      records: {
+        // RELAY_2's Submission holds RELAY_3's link: a later run wrote it since.
+        [RSUB_1]: ok({ ...relaySaved(RELAY_3, RLEAD_1) }),
+        // RELAY_1's Submission still holds an earlier run's link: its write never landed.
+        [RSUB_2]: ok({ ...relaySaved(RELAY_1, RLEAD_2), PDFlow_1__c: link('01a14400-0000-7000-8000-000000000009') }),
+        [RLEAD_2]: ok(landedLead(RELAY_1)),
+      },
+    })
+    const report = await runInvalidStateWatch(d)
+    if ('error' in report.relay) throw new Error('relay read failed')
+    expect(report.relay.sample).toEqual([
+      { kind: 'superseded', executionId: RELAY_2, byExecutionId: RELAY_3 },
+      { kind: 'not_landed', executionId: RELAY_1, problems: ["The Submission's Bidspoke run link is not this run's."] },
+    ])
+    const text = posted[0].lines.join('\n')
+    expect(text).toContain('1 of them, spread over the day, was read back from Salesforce the same way: 0 landed fully (0.0%) and 1 did not.')
+    expect(text).toContain('1 more was read back and left out because a later run wrote the same Submission.')
+  })
+
+  it('a relay read that Salesforce does not answer is "could not be checked", and stops the relay reads too', async () => {
+    const { d, asked, posted } = deps({
+      readRelay: async () => ({ total: 2, sample: [relayPost(RELAY_1, relayBody(RELAY_1, RSUB_1)), relayPost(RELAY_2, relayBody(RELAY_2, RSUB_2))] }),
+      records: { [RSUB_1]: { kind: 'no_answer', error: 'no answer within 12 s' } },
+    })
+    const report = await runInvalidStateWatch(d)
+    if ('error' in report.relay) throw new Error('relay read failed')
+    expect(report.relay.sample.map((v) => v.kind)).toEqual(['unchecked', 'unchecked'])
+    expect(asked).toHaveLength(1)
+    expect(posted[0].lines.join('\n')).toContain('0 landed fully (0.0%) and 2 could not be checked.')
+  })
+
+  it('the relay reads stop at their time budget, and what was not read is said as not checked', async () => {
+    let t = NOW_MS
+    const sample = [relayPost(RELAY_1, relayBody(RELAY_1, RSUB_1)), relayPost(RELAY_2, relayBody(RELAY_2, RSUB_2))]
+    const sf = fakeSalesforce({ [RSUB_1]: ok(relaySaved(RELAY_1, RLEAD_1)), [RLEAD_1]: ok(landedLead(RELAY_1)), [RSUB_2]: ok(relaySaved(RELAY_2, RLEAD_2)), [RLEAD_2]: ok(landedLead(RELAY_2)) })
+    const { d } = deps({
+      now: () => t,
+      readRelay: async () => ({ total: 2, sample }),
+      // Each Salesforce read takes half the budget, so the first relay post uses all of it.
+      salesforce: async () => async (p: string) => {
+        t += RELAY_READ_BUDGET_MS / 2
+        return sf.read(p)
+      },
+    })
+    const report = await runInvalidStateWatch(d)
+    if ('error' in report.relay) throw new Error('relay read failed')
+    expect(report.relay.sample).toEqual([
+      { kind: 'landed', executionId: RELAY_1 },
+      { kind: 'unchecked', executionId: RELAY_2, reason: 'The relay reads ran out of time before this post.' },
+    ])
+    expect(sf.asked.some((p) => p.includes(RSUB_2))).toBe(false)
+  })
+
+  it('a relay read that cannot be read is said, not shown as zero', async () => {
+    const { d, posted } = deps({ readRelay: async () => { throw new Error('canceling statement due to statement timeout') } })
     const report = await runInvalidStateWatch(d)
     expect(report.relay).toEqual({ error: 'canceling statement due to statement timeout' })
-    expect(posted[0].lines.join('\n')).toContain("The relay's numbers could not be read from the database (canceling statement due to statement timeout).")
+    expect(posted[0].lines.join('\n')).toContain("The relay's posts could not be read from the database (canceling statement due to statement timeout).")
+  })
+
+  it('picks the relay sample evenly over the day, in order, and takes every post when there are fewer', () => {
+    const ids = Array.from({ length: 10 }, (_, i) => `id-${i}`)
+    expect(pickEvenly(ids, 5)).toEqual(['id-0', 'id-2', 'id-4', 'id-6', 'id-8'])
+    expect(pickEvenly(ids, 3)).toEqual(['id-0', 'id-3', 'id-6'])
+    expect(pickEvenly(ids, 20)).toEqual(ids)
+    expect(pickEvenly([], 5)).toEqual([])
   })
 
   it('a database read failure names itself and reads as an alert', async () => {
@@ -413,11 +614,85 @@ describe('the invalid state canary watch', () => {
     const native = Array.from({ length: 18 }, (_, i) => ({ kind: 'not_landed' as const, executionId: `run-${i}`, problems: ['The Submission has no Bidspoke run link.'] }))
     const report: CanaryWatchReport = {
       from: '2026-10-17T12:50:00.000Z', to: '2026-10-18T12:50:00.000Z', native, skipped: [], relayInvalidState: 0, relayAfterSwitch: 0, lastWasRelay: false, nativeCompleted: 18,
-      relay: { total: 10, accepted: 10 },
+      relay: { total: 10, sample: [], noSubmission: 0 },
     }
     const m = canaryWatchMessage(report, APP)
     expect(m.lines.filter((l) => l.startsWith('<'))).toHaveLength(15)
     expect(m.lines).toContain('3 more runs did not land fully or could not be checked; the job run record lists them all.')
+  })
+})
+
+/**
+ * A database that holds `n` relay post rows, in time order, and records every
+ * query: enough of PostgREST's builder for readRelayPosts' two reads (the paged
+ * id list, then the sample by id).
+ */
+function relayDatabase(n: number, opts: { dropFromSample?: number; listError?: string } = {}) {
+  const ids = Array.from({ length: n }, (_, i) => `step-${String(i).padStart(5, '0')}`)
+  const queries: Array<Array<[string, unknown[]]>> = []
+  const from = () => {
+    const calls: Array<[string, unknown[]]> = []
+    queries.push(calls)
+    const builder: Record<string, unknown> = {}
+    for (const m of ['select', 'eq', 'in', 'gte', 'lt', 'not', 'order', 'range', 'limit']) {
+      builder[m] = (...args: unknown[]) => {
+        calls.push([m, args])
+        return builder
+      }
+    }
+    builder.then = (resolve: (v: unknown) => void) => {
+      const columns = calls.find(([m]) => m === 'select')![1][0]
+      if (columns === 'id') {
+        if (opts.listError) return resolve({ data: null, error: { message: opts.listError } })
+        const [lo, hi] = calls.find(([m]) => m === 'range')![1] as [number, number]
+        return resolve({ data: ids.slice(lo, hi + 1).map((id) => ({ id })), error: null })
+      }
+      const wanted = calls.find(([m, a]) => m === 'in' && a[0] === 'id')![1][1] as string[]
+      // Answered out of order, as a database may.
+      const rows = [...wanted].reverse().filter((_, i) => i !== opts.dropFromSample).map((id) => ({ id, execution_id: `run-${id}`, step_namespace: 'send_salesforce', step_type: 'webhook', status: 'completed', input: {}, output: {} }))
+      return resolve({ data: rows, error: null })
+    }
+    return builder
+  }
+  return { supabase: { from } as unknown as SupabaseClient, queries }
+}
+
+describe('reading the relay sample from the database', () => {
+  it('lists every relay post of the eight other outcome posts in the window, then reads back an even sample of them in time order', async () => {
+    const { supabase, queries } = relayDatabase(2500)
+    const { total, sample } = await readRelayPosts(supabase, '2026-10-17T12:50:00.000Z', '2026-10-18T12:50:00.000Z')
+    expect(total).toBe(2500)
+    expect(sample).toHaveLength(RELAY_SAMPLE_SIZE)
+    expect(sample[0].execution_id).toBe('run-step-00000')
+    expect(sample[1].execution_id).toBe('run-step-00025')
+    expect(sample[99].execution_id).toBe('run-step-02475')
+    // Three pages of ids, then one read of the sample.
+    expect(queries).toHaveLength(4)
+    for (const q of queries) {
+      expect(q).toContainEqual(['in', ['step_namespace', RELAY_COMPARISON_POSTS]])
+      expect(q).toContainEqual(['eq', ['step_type', 'webhook']])
+      expect(q).toContainEqual(['gte', ['execution_started_at', '2026-10-17T12:50:00.000Z']])
+      expect(q).toContainEqual(['lt', ['execution_started_at', '2026-10-18T12:50:00.000Z']])
+      expect(q).toContainEqual(['not', ['is_test', 'is', true]])
+    }
+    expect(RELAY_COMPARISON_POSTS).not.toContain(WATCHED_STEP)
+    expect(RELAY_COMPARISON_POSTS).toHaveLength(8)
+  })
+
+  it('a sample read that comes back short throws, rather than comparing against fewer posts than it says', async () => {
+    const { supabase } = relayDatabase(300, { dropFromSample: 3 })
+    await expect(readRelayPosts(supabase, 'a', 'b')).rejects.toThrow('the relay sample read returned 99 of 100 posts')
+  })
+
+  it('a failed list read throws, so the message says the relay could not be read', async () => {
+    const { supabase } = relayDatabase(10, { listError: 'canceling statement due to statement timeout' })
+    await expect(readRelayPosts(supabase, 'a', 'b')).rejects.toThrow('relay post list failed: canceling statement due to statement timeout')
+  })
+
+  it('no relay posts is a total of zero and nothing read', async () => {
+    const { supabase, queries } = relayDatabase(0)
+    expect(await readRelayPosts(supabase, 'a', 'b')).toEqual({ total: 0, sample: [] })
+    expect(queries).toHaveLength(1)
   })
 })
 
