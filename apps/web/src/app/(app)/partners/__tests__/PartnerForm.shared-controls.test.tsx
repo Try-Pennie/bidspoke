@@ -74,7 +74,8 @@ describe('the partner form on the shared controls (#2137)', () => {
 
   it('a sub-account floor typed into the shared boxes saves as a number keyed by its UUID', async () => {
     const onSave = renderForm()
-    fireEvent.click(screen.getByRole('button', { name: /Add row/, hidden: true }))
+    // #2327: the floors' add link is named for what it adds, as the design draws it.
+    fireEvent.click(screen.getByRole('button', { name: 'Add sub-account', hidden: true }))
     fireEvent.change(screen.getByLabelText('Sub-account UUID, floor 1'), { target: { value: '22222222-2222-2222-2222-222222222222' } })
     fireEvent.change(screen.getByLabelText('Minimum bid, floor 1'), { target: { value: '1.25' } })
     save()
