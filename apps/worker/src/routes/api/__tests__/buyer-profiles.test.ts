@@ -1,5 +1,5 @@
 /**
- * Buyer profile routes (#1412, Phase 5): read, save, history and usage for one
+ * Buyer profile routes (#1412, Phase 5): read, save and usage for one
  * partner. Every query filters organization_id because the Worker is
  * service_role. The save validates with the shared package first, then calls
  * save_buyer_profile, and turns each named refusal into its own status: a stale
