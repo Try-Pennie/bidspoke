@@ -33,6 +33,9 @@ describe('UnresolvedSalesList', () => {
     expect(screen.getByRole('listitem')).toHaveTextContent('Sep 20, 11:30 AM EDT')
     rerender(<UnresolvedSalesList rows={[rows[0]]} total={1} onSettle={vi.fn()} outcomes={{}} zone="America/Los_Angeles" />)
     expect(screen.getByRole('listitem')).toHaveTextContent('Sep 20, 8:30 AM PDT')
+    // An unreadable time is shown as given, never as a made up date (formatInZone's own guard).
+    rerender(<UnresolvedSalesList rows={[{ ...rows[0], reserved_at: 'undefined' }]} total={1} onSettle={vi.fn()} outcomes={{}} />)
+    expect(within(screen.getByRole('listitem')).getByText('undefined')).toBeInTheDocument()
   })
 
   it('says what each button does before it is pressed, and Free the slot looks destructive', () => {
