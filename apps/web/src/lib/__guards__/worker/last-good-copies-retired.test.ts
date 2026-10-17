@@ -114,6 +114,7 @@ const DYNAMIC_FROM_REASONS: Record<string, string> = {
   'apps/worker/src/lib/sightings-export.ts': 'tableName ranges over the sightings tables being exported to Snowflake',
   'apps/worker/src/engine/step-logger.ts': 'table is one of the execution step tables the step logger flushes',
   'apps/worker/src/ops/ops-db.ts': 'read.table is a declared read of the ops project, which holds neither table',
+  'apps/worker-tail/src/row-copier.ts': 'spec.table is cron_guard_fail_opens or cron_tick_deliveries, the two records the tail worker copies from the bidding Worker\'s log lines (#2166, #2284)',
 }
 
 const BUILDER_METHODS = new Set(['select', 'insert', 'upsert', 'update', 'delete'])

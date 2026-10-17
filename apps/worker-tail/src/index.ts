@@ -15,7 +15,9 @@
  *
  * It also copies each cron guard `FAILED OPEN` line into cron_guard_fail_opens
  * (fail-opens.ts, #2166), the second record of a fail-open, which the bidding
- * Worker's own KV record loses in the outages that cause them.
+ * Worker's own KV record loses in the outages that cause them, and each cron
+ * delivery with the guard's decision into cron_tick_deliveries (deliveries.ts,
+ * #2284), so the hourly check can see a tick that ran twice.
  *
  * The ops Worker (bidspoke-worker-ops) sends its traces here too, and they are
  * skipped (#1709): its executions live in the ops database, so their ids name
@@ -26,6 +28,7 @@
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 import { OPS_WORKER_SCRIPT } from './scripts'
 import { failOpensIn, isolateFailOpenCopier } from './fail-opens'
+import { deliveriesIn, isolateDeliveryCopier } from './deliveries'
 
 export { OPS_WORKER_SCRIPT }
 
@@ -138,6 +141,9 @@ export default {
     // fail-opens are the second record the hourly check counts (#2166). Called
     // even with none new, so rows held from an earlier batch are retried.
     await isolateFailOpenCopier.copy(supabase, events.flatMap(failOpensIn))
+    // One row per cron delivery and what the guard decided for it (#2284), the
+    // record the hourly check reads to see a tick two deliveries both ran.
+    await isolateDeliveryCopier.copy(supabase, events.flatMap(deliveriesIn))
 
     for (const trace of events) {
       if (trace.scriptName === OPS_WORKER_SCRIPT) continue
