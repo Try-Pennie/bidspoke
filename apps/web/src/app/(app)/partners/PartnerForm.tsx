@@ -43,6 +43,8 @@ import { ProblemMark } from '@/components/ui/ProblemMark'
 import { PartnerHistoryPanel } from '@/components/partners/PartnerHistoryPanel'
 import { WorkflowValuesPanel } from '@/components/partners/WorkflowValuesPanel'
 import { OfferPreview } from '@/components/partners/OfferPreview'
+import { OldIdNotRemoved, SubAccountIdList } from '@/components/partners/SubAccountIdList'
+import { CLICK_URL_PROSPECT_PLACEHOLDER } from '@bidspoke/buyer-profile'
 import type { PartnerUsage } from '@/lib/api'
 import type { PartnerTab } from './partner-draft'
 import {
@@ -50,7 +52,7 @@ import {
   type TabInputs, type UsageState,
 } from './partner-tabs'
 import { bidsInSentences } from './bid-group-usage-text'
-import { refreshKeyOf } from './workflow-values-text'
+import { SELL_OFF_EXAMPLE, refreshKeyOf } from './workflow-values-text'
 import { LiveNotesContext, LivePageNotes, LiveSectionNote, LiveStatusLine, PartnerLiveContext, SYSTEM_CLOCK } from '@/components/partners/live/PartnerLive'
 import { usePartnerPageLive } from './use-partner-page-live'
 import {
@@ -362,10 +364,6 @@ export default function PartnerForm({
 
   const [uuids, setUuids] = useState<PartnerUuid[]>([])
   const [pendingUuids, setPendingUuids] = useState<string[]>([])
-  const [newUuid, setNewUuid] = useState('')
-  const [addingUuid, setAddingUuid] = useState(false)
-  const [uuidError, setUuidError] = useState<string | null>(null)
-  const [removingUuidId, setRemovingUuidId] = useState<string | null>(null)
 
   // Each read that fails is its own state with a retry, never an empty list
   // (L10, #2132): an empty sub-account list reads as "this source has none".
@@ -1644,7 +1642,8 @@ export default function PartnerForm({
                 hint="Where a lead sold to this buyer lands. A buyer profile cannot be enabled without one."
                 error={clickUrlError}
               >
-                <TextInput id="partner-click-url" value={clickUrl} onChange={setClickUrl} placeholder="https://partner.com/apply" describedBy={describedBy('partner-click-url', true, Boolean(clickUrlError))} />
+                {/* Mono, with the {prospect_id} placeholder tinted where it is typed (#2327, design frame 22). */}
+                <TextInput id="partner-click-url" value={clickUrl} onChange={setClickUrl} placeholder="https://partner.com/apply" mono tint={CLICK_URL_PROSPECT_PLACEHOLDER} describedBy={describedBy('partner-click-url', true, Boolean(clickUrlError))} />
               </Field>
             </> : undefined,
 
@@ -1653,9 +1652,15 @@ export default function PartnerForm({
                 Optional per-sub-account floor. When a lead arrives with a matching sub-account UUID,
                 this floor overrides the partner-wide Minimum bid. Leave empty to use only the partner-wide floor.
               </p>
+              {/* A table with headed columns and a dark add link, as the design draws it (#2327). */}
               <div className="space-y-1.5">
+                {subAccountFloors.length > 0 && (
+                  <div aria-hidden="true" className="grid grid-cols-[1fr_110px_24px] gap-2 text-[11.5px] text-hint">
+                    <span>Sub-account</span><span>Minimum bid</span><span />
+                  </div>
+                )}
                 {subAccountFloors.map((f, i) => (
-                  <div key={f.id} className="grid grid-cols-[1fr_120px_auto] items-center gap-2">
+                  <div key={f.id} className="grid grid-cols-[1fr_110px_24px] items-center gap-2">
                     <TextInput
                       id={`floor-${f.id}-uuid`}
                       aria-label={`Sub-account UUID, floor ${i + 1}`}
@@ -1665,36 +1670,42 @@ export default function PartnerForm({
                       mono
                       className="text-xs"
                     />
-                    <NumberInput
-                      id={`floor-${f.id}-bid`}
-                      aria-label={`Minimum bid, floor ${i + 1}`}
-                      value={asNumber(f.bid)}
-                      onChange={(v) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, bid: asText(v) } : row))}
-                      step={0.01}
-                      placeholder="0.00"
-                    />
+                    {/* "$" is a fixed word of the value, beside the box, never typed in it (Dan, 2026-10-17). */}
+                    <div className="flex items-center gap-1">
+                      <span className="text-xs text-hint">$</span>
+                      <NumberInput
+                        id={`floor-${f.id}-bid`}
+                        aria-label={`Minimum bid, floor ${i + 1}`}
+                        value={asNumber(f.bid)}
+                        onChange={(v) => setSubAccountFloors((prev) => prev.map((row, j) => j === i ? { ...row, bid: asText(v) } : row))}
+                        step={0.01}
+                        placeholder="0.00"
+                      />
+                    </div>
                     <RemoveButton label={`Remove floor ${i + 1}`} onClick={() => setSubAccountFloors((prev) => prev.filter((_, j) => j !== i))} />
                   </div>
                 ))}
-                <Button variant="secondary" onClick={() => setSubAccountFloors((prev) => [...prev, { id: uid(), uuid: '', bid: '' }])} className="text-xs">
-                  <Plus size={12} aria-hidden="true" /> Add row
+                <Button variant="quiet" onClick={() => setSubAccountFloors((prev) => [...prev, { id: uid(), uuid: '', bid: '' }])}>
+                  <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+                  Add sub-account
                 </Button>
               </div>
             </> : undefined,
 
-            // Edited beside a preview of how it is shown (the settled design's sell-off offer).
+            // Edited beside a preview of how it is shown (the settled design's sell-off offer),
+            // side by side at every width, the design's own 1020 included (#2327).
             sell_off: isSource ? (
-              <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+              <div data-sell-off className="grid grid-cols-2 gap-3">
                 <div className="min-w-0 space-y-3">
                   <Field id="partner-sell-off-title" label="Title">
-                    <TextInput id="partner-sell-off-title" value={sellOffOfferTitle} onChange={setSellOffOfferTitle} placeholder="Get up to $50,000 in your account" />
+                    <TextInput id="partner-sell-off-title" value={sellOffOfferTitle} onChange={setSellOffOfferTitle} placeholder={SELL_OFF_EXAMPLE.title} />
                   </Field>
                   <Field id="partner-sell-off-details" label="Details">
                     <TextArea
                       id="partner-sell-off-details"
                       value={sellOffOfferDetails}
                       onChange={setSellOffOfferDetails}
-                      placeholder="Personal loans from $5,000 to $100,000 with competitive rates."
+                      placeholder={SELL_OFF_EXAMPLE.details}
                       rows={5}
                       mono
                       className="text-xs"
@@ -1703,7 +1714,7 @@ export default function PartnerForm({
                 </div>
                 <div className="min-w-0">
                   <p className="mb-1 block text-xs font-medium text-gray-600">As shown</p>
-                  <OfferPreview title={sellOffOfferTitle} details={sellOffOfferDetails} />
+                  <OfferPreview title={sellOffOfferTitle} details={sellOffOfferDetails} example={SELL_OFF_EXAMPLE} />
                 </div>
               </div>
             ) : undefined,
@@ -1712,83 +1723,46 @@ export default function PartnerForm({
               <p className="text-xs text-hint">
                 Sub-account IDs a lead can arrive with, each meaning this partner.
               </p>
-              <div className="space-y-1.5">
-                {isNew ? (
-                  pendingUuids.map((uuid, i) => (
-                    <div key={i} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-                      <span className="flex-1 truncate font-mono text-xs text-graphite">{uuid}</span>
-                      <RemoveButton label="Remove UUID" onClick={() => setPendingUuids((prev) => prev.filter((_, j) => j !== i))} />
-                    </div>
-                  ))
-                ) : uuidsLoadError ? (
-                  <FieldError as="div" alert boxed size="sm" className="flex items-center gap-3">
-                    <span className="flex-1">Could not load sub-account IDs. Try again.</span>
-                    <Button variant="secondary" onClick={() => setUuidsAttempt((n) => n + 1)}>Try again</Button>
-                  </FieldError>
-                ) : (
-                  uuids.map((u) => (
-                    <div key={u.id} className="flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2">
-                      <span className="flex-1 truncate font-mono text-xs text-graphite">{u.uuid}</span>
-                      <RemoveButton
-                        label="Remove UUID"
-                        disabled={removingUuidId === u.id}
-                        onClick={async () => {
-                          setRemovingUuidId(u.id)
-                          setUuidError(null)
-                          try {
-                            await api.partnerUuids.delete(u.id)
-                            setUuids((prev) => prev.filter((x) => x.id !== u.id))
-                          } catch (err) {
-                            setUuidError(err instanceof Error ? err.message : 'Failed to remove UUID')
-                          } finally {
-                            setRemovingUuidId(null)
-                          }
-                        }}
-                      />
-                    </div>
-                  ))
-                )}
-              </div>
-              <div className="flex gap-2">
-                <TextInput
-                  id="partner-new-uuid"
-                  aria-label="New sub-account UUID"
-                  value={newUuid}
-                  onChange={(v) => { setNewUuid(v); setUuidError(null) }}
-                  placeholder="Enter UUID"
-                  mono
-                  className="flex-1"
+              {/* One mono box per ID with a minus, then the add link (#2327, design frame 21). A saved
+                  partner's IDs are written at once, outside the versioned save; a new partner's wait for its creation. */}
+              {!isNew && uuidsLoadError ? (
+                <FieldError as="div" alert boxed size="sm" className="flex items-center gap-3">
+                  <span className="flex-1">Could not load sub-account IDs. Try again.</span>
+                  <Button variant="secondary" onClick={() => setUuidsAttempt((n) => n + 1)}>Try again</Button>
+                </FieldError>
+              ) : isNew ? (
+                <SubAccountIdList
+                  ids={pendingUuids.map((uuid, i) => ({ key: `pending-${i}`, uuid }))}
+                  onAdd={async (uuid) => { setPendingUuids((prev) => [...prev, uuid]) }}
+                  onRemove={async (key) => { setPendingUuids((prev) => prev.filter((_, j) => `pending-${j}` !== key)) }}
+                  onChange={async (key, uuid) => { setPendingUuids((prev) => prev.map((u, j) => (`pending-${j}` === key ? uuid : u))) }}
                 />
-                <Button
-                  variant="primary"
-                  disabled={!newUuid.trim()}
-                  busy={addingUuid}
-                  onClick={async () => {
-                    if (!newUuid.trim()) return
-                    if (isNew) {
-                      setPendingUuids((prev) => [...prev, newUuid.trim()])
-                      setNewUuid('')
-                      return
-                    }
+              ) : (
+                <SubAccountIdList
+                  ids={uuids.map((u) => ({ key: u.id, uuid: u.uuid }))}
+                  onAdd={async (uuid) => {
                     if (!partner) return
-                    setAddingUuid(true)
-                    setUuidError(null)
-                    try {
-                      const created = await api.partnerUuids.create({ partner_slug: partner.slug, uuid: newUuid.trim() })
-                      setUuids((prev) => [...prev, created])
-                      setNewUuid('')
-                    } catch (err) {
-                      setUuidError(err instanceof Error ? err.message : 'Failed to add UUID')
-                    } finally {
-                      setAddingUuid(false)
-                    }
+                    const created = await api.partnerUuids.create({ partner_slug: partner.slug, uuid })
+                    setUuids((prev) => [...prev, created])
                   }}
-                >
-                  {!addingUuid && <Plus className="h-4 w-4" aria-hidden="true" />}
-                  Add
-                </Button>
-              </div>
-              {uuidError && <FieldError size="xs">{uuidError}</FieldError>}
+                  onRemove={async (key) => {
+                    await api.partnerUuids.delete(key)
+                    setUuids((prev) => prev.filter((x) => x.id !== key))
+                  }}
+                  onChange={async (key, uuid) => {
+                    if (!partner) return
+                    // The new ID first, so a failure part way never leaves the partner with neither (L5).
+                    const created = await api.partnerUuids.create({ partner_slug: partner.slug, uuid })
+                    setUuids((prev) => [...prev, created])
+                    try {
+                      await api.partnerUuids.delete(key)
+                    } catch (err) {
+                      throw new OldIdNotRemoved(`${uuid} was added, but the old ID could not be removed: ${err instanceof Error ? err.message : 'no reason given'}. Remove it with its minus.`, { cause: err })
+                    }
+                    setUuids((prev) => prev.filter((x) => x.id !== key))
+                  }}
+                />
+              )}
             </> : undefined,
               }}
             />

@@ -377,3 +377,39 @@ describe('Enter never submits the form from a shared control', () => {
     expect(onSubmit).not.toHaveBeenCalled()
   })
 })
+
+describe('TextInput with a tinted placeholder (#2327, PM-24, design frame 22)', () => {
+  const URL = 'https://trypennie.com/portal/liberty/{prospect_id}?src=pennie'
+
+  it('tints each place the token is typed, behind the text, hidden from screen readers', () => {
+    const { container } = render(<TextInput id="u" value={URL} onChange={() => {}} mono tint="{prospect_id}" aria-label="Click URL" />)
+    const marks = container.querySelectorAll('[data-tint-mark]')
+    expect(Array.from(marks).map((m) => m.textContent)).toEqual(['{prospect_id}'])
+    const mirror = container.querySelector('[data-tint-mirror]')!
+    expect(mirror).toHaveAttribute('aria-hidden', 'true')
+    // The mirror holds the same text, so the tint lands under the typed token.
+    expect(mirror.textContent).toBe(URL)
+    // The box is still the one labelled input, holding exactly what is typed.
+    expect(screen.getByLabelText('Click URL')).toHaveValue(URL)
+    expect(screen.getByLabelText('Click URL')).toHaveClass('input', 'font-mono')
+  })
+
+  it('the tint scrolls with the address', () => {
+    const { container } = render(<TextInput id="u" value={URL} onChange={() => {}} tint="{prospect_id}" aria-label="Click URL" />)
+    const input = screen.getByLabelText('Click URL')
+    const mirror = container.querySelector('[data-tint-mirror]') as HTMLElement
+    input.scrollLeft = 120
+    fireEvent.scroll(input)
+    expect(mirror.scrollLeft).toBe(120)
+    input.scrollLeft = 35
+    fireEvent.keyUp(input, { key: 'ArrowLeft' })
+    expect(mirror.scrollLeft).toBe(35)
+  })
+
+  it('tints nothing when the token is not there, and draws no mirror without a tint', () => {
+    const { container, rerender } = render(<TextInput id="u" value="https://partner.com/apply" onChange={() => {}} tint="{prospect_id}" aria-label="Click URL" />)
+    expect(container.querySelectorAll('[data-tint-mark]')).toHaveLength(0)
+    rerender(<TextInput id="u" value={URL} onChange={() => {}} aria-label="Click URL" />)
+    expect(container.querySelector('[data-tint-mirror]')).toBeNull()
+  })
+})

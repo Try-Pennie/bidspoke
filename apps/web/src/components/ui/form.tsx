@@ -12,7 +12,7 @@
  * their own, so a route that uses only a button here does not load their Radix
  * code (#2137, measured on /dashboard and the canvas).
  */
-import type { KeyboardEvent, ReactNode } from 'react'
+import { useRef, type KeyboardEvent, type ReactNode } from 'react'
 import { Loader2 } from 'lucide-react'
 
 // ── Field ─────────────────────────────────────────────────────────────────────
@@ -89,25 +89,58 @@ interface TextInputProps {
    * form around it, so committing a field never also submits the form (#1552, L596).
    */
   onEnter?: () => void
+  /** Called when the box loses focus (a list that writes each row as it is left). */
+  onBlur?: () => void
+  /**
+   * Text to tint wherever it is typed, as a placeholder the value carries (the
+   * click URL's `{prospect_id}`, #2327). The tint is drawn on a copy of the text
+   * behind the box, hidden from screen readers, and scrolls with the address;
+   * the box itself holds exactly what is typed.
+   */
+  tint?: string
 }
 
-export function TextInput({ id, value, onChange, placeholder, mono, disabled, describedBy: db, className, onEnter, suggestions, ...aria }: TextInputProps) {
+/** The value split around each `tint`, the tinted parts marked. */
+function tintParts(value: string, tint: string): ReactNode[] {
+  const pieces = value.split(tint)
+  return pieces.flatMap((piece, i) => (i === 0 ? [piece] : [<mark key={i} data-tint-mark className="input-tint-mark">{tint}</mark>, piece]))
+}
+
+export function TextInput({ id, value, onChange, placeholder, mono, disabled, describedBy: db, className, onEnter, onBlur, suggestions, tint, ...aria }: TextInputProps) {
   const listId = suggestions && suggestions.length > 0 ? `${id}-suggestions` : undefined
+  const mirror = useRef<HTMLDivElement>(null)
+  // The copy behind follows the box's own scroll, however it moved: typing, the caret keys, a drag or a click.
+  const follow = tint ? (e: { currentTarget: HTMLInputElement }) => { if (mirror.current) mirror.current.scrollLeft = e.currentTarget.scrollLeft } : undefined
+  const box = (
+    <input
+      id={id}
+      type="text"
+      value={value}
+      onChange={(e) => { onChange(e.target.value); follow?.(e) }}
+      onKeyDown={onEnter ? (e) => holdEnter(e, onEnter) : undefined}
+      onBlur={onBlur}
+      onScroll={follow}
+      onKeyUp={follow}
+      onSelect={follow}
+      onMouseUp={follow}
+      placeholder={placeholder}
+      disabled={disabled}
+      list={listId}
+      aria-describedby={db}
+      aria-label={aria['aria-label']}
+      className={`input ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}
+    />
+  )
   return (
     <>
-      <input
-        id={id}
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={onEnter ? (e) => holdEnter(e, onEnter) : undefined}
-        placeholder={placeholder}
-        disabled={disabled}
-        list={listId}
-        aria-describedby={db}
-        aria-label={aria['aria-label']}
-        className={`input ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}
-      />
+      {tint ? (
+        <div className="input-tint">
+          <div ref={mirror} data-tint-mirror aria-hidden="true" className={`input input-tint-mirror ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}>
+            {tintParts(value, tint)}
+          </div>
+          {box}
+        </div>
+      ) : box}
       {listId && (
         <datalist id={listId}>
           {suggestions!.map((s) => <option key={s} value={s} />)}

@@ -486,6 +486,24 @@ html {
   .problem-mark-dot {
     @apply inline-block h-[7px] w-[7px] rounded-full bg-red-700;
   }
+  /* A text box with a tinted placeholder (TextInput's tint, #2327): a copy of
+     the text behind the box draws the box and the tint, its own text clear,
+     and the box on top is see-through, so the tint sits under the typed
+     token and scrolls with it. The selector outranks the partners page's
+     white box rule, which would otherwise hide the copy. */
+  .input-tint {
+    @apply relative;
+  }
+  .input-tint-mirror {
+    @apply pointer-events-none absolute inset-0 overflow-hidden whitespace-pre text-transparent;
+  }
+  .input-tint > input.input {
+    @apply relative bg-transparent;
+  }
+  .input-tint-mark {
+    @apply rounded-sm bg-line-soft text-transparent;
+    box-shadow: 0 0 0 2px theme('colors.line-soft');
+  }
 }
 
 /* Radix hides the Select list's scrollbar with an unlayered style of its own,

@@ -72,10 +72,11 @@ describe('PartnerForm — sub-account UUID removal surfaces errors (#514)', () =
       <PartnerForm partner={partner} onSave={vi.fn()} onCancel={vi.fn()} />
     )
 
-    fireEvent.click(await screen.findByLabelText('Remove UUID'))
+    // #2327: the minus is named for the row it removes; the ID sits in its own box.
+    fireEvent.click(await screen.findByLabelText('Remove sub-account ID 1'))
 
     expect(await screen.findByText('Failed to remove UUID')).toBeInTheDocument()
-    expect(screen.getByText(uuid.uuid)).toBeInTheDocument()
+    expect(screen.getByDisplayValue(uuid.uuid)).toBeInTheDocument()
   })
 
   it('removes the row and shows no error when the delete call succeeds', async () => {
@@ -84,9 +85,9 @@ describe('PartnerForm — sub-account UUID removal surfaces errors (#514)', () =
       <PartnerForm partner={partner} onSave={vi.fn()} onCancel={vi.fn()} />
     )
 
-    fireEvent.click(await screen.findByLabelText('Remove UUID'))
+    fireEvent.click(await screen.findByLabelText('Remove sub-account ID 1'))
 
-    await waitFor(() => expect(screen.queryByText(uuid.uuid)).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByDisplayValue(uuid.uuid)).not.toBeInTheDocument())
   })
 })
 
