@@ -117,8 +117,8 @@ export interface PartnerPageVersions {
 // ── A live miss ──────────────────────────────────────────────────────────────
 
 /**
- * Why a page heard nothing of a change its probe found: `direct_sql` when the
- * change had no actor, `delivery` otherwise. The database sender does notify a
+ * Why a page missed live notices. For a change its probe found: `direct_sql`
+ * when the change had no actor, `delivery` otherwise. The database sender does notify a
  * hand run SQL write, so under it both are misses of the channel.
  * `missing_partition` (#2288): the page's join was refused because the day's
  * realtime.messages partition did not exist yet, so it could hear nothing at
@@ -145,9 +145,9 @@ export interface LiveMissReportBody {
 export interface LiveMissReport {
   partnerId: string
   cause: LiveMissCause
-  /** The last versions the page heard of while its header said Live. */
+  /** The last versions the page heard of while its header said Live, or held when its join was refused. */
   noticed: VersionPair
-  /** The versions the probe found. */
+  /** The versions the probe found; both null for a refused join, when no probe ran. */
   observed: VersionPair
   /** How long the page had heard no notice; null when it never heard one. */
   sinceLastNoticeMs: number | null

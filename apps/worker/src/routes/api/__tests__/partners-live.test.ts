@@ -6,7 +6,8 @@
  * saved, and whether the newest change had no actor, and on open and every
  * refetch it reads the newest change of each half for the "Changed directly in
  * the database" notice. POST /partners/live-miss records a change the probe
- * found that no notice announced, the data the miss threshold will be set from.
+ * found that no notice announced, or a join refused for a missing partition
+ * (#2288), the data the miss threshold will be set from.
  * Both: any allowlisted member of the organization, that organization's rows.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'

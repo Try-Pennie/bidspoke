@@ -1,6 +1,6 @@
 /**
  * The partners page's rules for the live channel (#2135, PR4 of #2114), apart
- * from React: which notice the page acts on, what its versions probe reports,
+ * from React: which notice the page acts on, the live misses it reports,
  * the "Changed directly in the database" notes, and the sentences said about
  * another person's save.
  */
@@ -75,10 +75,20 @@ export function liveMissReport(v: PartnerPageVersions, known: HeldVersions, last
   return {
     partner_id: v.partnerId,
     cause: v.latestChange?.direct ? 'direct_sql' : 'delivery',
-    noticed: { partner_version: known.partnerVersion, profile_version: known.profileVersion },
+    noticed: heardOf(known),
     observed: { partner_version: v.partnerVersion, profile_version: v.profileVersion },
-    since_last_notice_ms: lastNoticeAt === null ? null : Math.min(Math.max(0, now - lastNoticeAt), MAX_REPORTED_GAP_MS),
+    since_last_notice_ms: gapSinceLastNotice(lastNoticeAt, now),
   }
+}
+
+/** The versions the page held, as both miss reports send them. */
+function heardOf(known: HeldVersions): LiveMissReportBody['noticed'] {
+  return { partner_version: known.partnerVersion, profile_version: known.profileVersion }
+}
+
+/** How long the page has heard no notice, as both miss reports send it; null when it never heard one. */
+function gapSinceLastNotice(lastNoticeAt: number | null, now: number): number | null {
+  return lastNoticeAt === null ? null : Math.min(Math.max(0, now - lastNoticeAt), MAX_REPORTED_GAP_MS)
 }
 
 /**
@@ -89,9 +99,9 @@ export function partitionRefusalReport(partnerId: string, known: HeldVersions, l
   return {
     partner_id: partnerId,
     cause: 'missing_partition',
-    noticed: { partner_version: known.partnerVersion, profile_version: known.profileVersion },
+    noticed: heardOf(known),
     observed: { partner_version: null, profile_version: null },
-    since_last_notice_ms: lastNoticeAt === null ? null : Math.min(Math.max(0, now - lastNoticeAt), MAX_REPORTED_GAP_MS),
+    since_last_notice_ms: gapSinceLastNotice(lastNoticeAt, now),
   }
 }
 
