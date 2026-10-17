@@ -50,7 +50,7 @@ describe('mergeThreeWay', () => {
     expect(conflictKeys(r)).toEqual([])
     expect(r.merged.partner).toMatchObject({ name: 'Tripoint 2', is_active: false })
     expect(r.merged.profile).toMatchObject({ daily_lead_cap: 600, debt_min: 20000, version: 4 })
-    expect(r.autoTaken.map((k) => k.label)).toEqual(['Status', 'Debt minimum'])
+    expect(r.autoTaken.map((k) => k.label)).toEqual(['Active', 'Debt minimum'])
     expect(r.mineKept.map((k) => k.label)).toEqual(['Name', 'Leads per day'])
   })
 
@@ -202,7 +202,7 @@ describe('mergeThreeWay', () => {
 
   it('groups conflicts by section in the order the registry lists them', () => {
     const r = mergeThreeWay(base, side({ name: 'A' }, { daily_lead_cap: 1, debt_min: 1 }), theirsAt({ name: 'B' }, { daily_lead_cap: 2, debt_min: 2 }), PARTNER_FIELD_REGISTRY)
-    expect(r.conflicts.map((s) => s.section)).toEqual(['Identity', 'Eligibility', 'Caps'])
+    expect(r.conflicts.map((s) => s.section)).toEqual(['Name', 'Eligibility', 'Caps'])
   })
 
   it('leaves a profile alone when the page never read one', () => {
@@ -214,7 +214,7 @@ describe('mergeThreeWay', () => {
 describe('changedUnits (#2138): what the save bar and the leave dialog name', () => {
   it('names every unit changed from base, by the page\'s labels, in registry order, a row group by its day', () => {
     const mine = side({ name: 'Tripoint 2', is_active: false }, { daily_lead_cap: 600, windows: [{ day_of_week: 1, opens_minute: 600, closes_minute: 1020 }] })
-    expect(changedUnits(base, mine, PARTNER_FIELD_REGISTRY).map((u) => u.label)).toEqual(['Name', 'Status', 'Leads per day', 'Hours (Eastern), Monday'])
+    expect(changedUnits(base, mine, PARTNER_FIELD_REGISTRY).map((u) => u.label)).toEqual(['Name', 'Active', 'Leads per day', 'Hours (Eastern), Monday'])
   })
 
   it('names nothing for a page equal to base, whatever order the database left an object\'s keys in', () => {
