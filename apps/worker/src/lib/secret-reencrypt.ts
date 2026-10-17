@@ -7,11 +7,18 @@
  * the primary can be set to the NEXT value with nothing left that only the old
  * key could read.
  *
- * Three tables hold values locked with this key: the secret environment
- * variables, app_settings.value_encrypted, and the failed Salesforce writes held
- * for replay (#1993: body, error and last error of outcome_writeback_deadletters). The other things it locks (the env and Slack
- * caches in KV) are rebuilt from these tables when they cannot be read, so they
- * need no pass here.
+ * Four tables hold values locked with this key: the secret environment
+ * variables, app_settings.value_encrypted, the failed Salesforce writes held
+ * for replay (#1993: body, error and last error of outcome_writeback_deadletters),
+ * and the sealed Slack bot token (#2331: service_connections.credential_enc
+ * where sealed_for is bidding_ring; an ops_key row is locked for the ops key
+ * and is neither read nor written here). The other things it locks (the env and
+ * Slack caches in KV) are rebuilt from these tables when they cannot be read,
+ * so they need no pass here.
+ *
+ * service_connections is audited by its own trigger (#2331, F119), which names
+ * the actor from updated_by, so a re-lock there sets updated_by to the caller
+ * when one is given; without one the trigger labels it direct_sql.
  *
  * Run twice or concurrently, it is safe: a row already locked with NEXT is left
  * alone, and each write is conditional on the value it read, so a secret somebody
@@ -27,7 +34,7 @@ import { fetchAllPaged } from './paginate'
 const ROW_CAP = 1000
 
 export interface ReencryptTableResult {
-  table: 'environment_variables' | 'app_settings' | 'outcome_writeback_deadletters'
+  table: 'environment_variables' | 'app_settings' | 'outcome_writeback_deadletters' | 'service_connections'
   checked: number
   alreadyCurrent: number
   /** Rows re-locked, or on a preview, rows that would be. */
@@ -125,7 +132,8 @@ function rowsChanged(target: string, result: Awaited<ReturnType<typeof requireRo
 export async function reencryptSecrets(
   supabase: SupabaseClient,
   keys: SecretKeys,
-  opts: { dryRun: boolean },
+  /** `actorId`: the signed in user running it, named on the service_connections audit row. */
+  opts: { dryRun: boolean; actorId?: string },
 ): Promise<ReencryptResult> {
   const envRows = checkRead(
     'environment_variables',
@@ -227,10 +235,43 @@ export async function reencryptSecrets(
     })),
   )
 
+  // The sealed Slack bot token (#2331). Only bidding_ring rows, stated in the
+  // read and again in the write's WHERE, so an ops_key row is never touched.
+  const connectionRows = checkRead(
+    'service_connections',
+    (await supabase.from('service_connections').select('id, credential_enc').eq('sealed_for', 'bidding_ring')) as {
+      data: { id: string; credential_enc: string | null }[] | null
+      error: { message: string } | null
+    },
+  )
+  const connectionStored: StoredValue[] = connectionRows
+    .filter((r) => r.credential_enc)
+    .map((r) => ({
+      name: r.id,
+      value: r.credential_enc as string,
+      write: async (next) =>
+        rowsChanged(
+          'service_connections.credential_enc',
+          await requireRowsAffected(
+            'service_connections.credential_enc',
+            () =>
+              supabase
+                .from('service_connections')
+                .update({ credential_enc: next, ...(opts.actorId ? { updated_by: opts.actorId } : {}) })
+                .eq('id', r.id)
+                .eq('sealed_for', 'bidding_ring')
+                .eq('credential_enc', r.credential_enc as string)
+                .select('id'),
+            { onMiss: 'silent' },
+          ),
+        ),
+    }))
+
   const tables = [
     await relockAll('environment_variables', envStored, keys, opts.dryRun),
     await relockAll('app_settings', settingStored, keys, opts.dryRun),
     await relockAll('outcome_writeback_deadletters', writebackStored, keys, opts.dryRun),
+    await relockAll('service_connections', connectionStored, keys, opts.dryRun),
   ]
   const ok = tables.every((t) => t.undecryptable.length === 0 && t.changedMeanwhile.length === 0)
   return { dryRun: opts.dryRun, ok, tables }
