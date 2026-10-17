@@ -227,16 +227,22 @@ interface MonitorState {
   /**
    * The runs that measured the channel since its first miss, and how many of
    * them missed, so the alert says how often rather than "since" (#2263).
-   * Present from a miss until the channel's all-clear.
+   * Present from a miss until the channel's all-clear, or until
+   * CHANNEL_WINDOW_LAPSE_MS after its last miss. It is kept apart from the
+   * alert's own records, so a muted or undelivered alert does not reset it.
    */
   channelWindow?: ChannelWindow
 }
 
 interface ChannelWindow {
   since: string
+  lastMissAt: string
   runs: number
   misses: number
 }
+
+/** A window with no miss for this long has lapsed, the same span a standing record outlives its last run. */
+const CHANNEL_WINDOW_LAPSE_MS = CONDITION_TTL_SECONDS * 1000
 
 const count = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0
 
@@ -246,8 +252,8 @@ function readState(raw: string): MonitorState {
   const state: MonitorState = {}
   if (typeof parsed.unmeasuredSince === 'string' && Number.isFinite(Date.parse(parsed.unmeasuredSince))) state.unmeasuredSince = parsed.unmeasuredSince
   const w = parsed.channelWindow as Record<string, unknown> | undefined
-  if (w && typeof w.since === 'string' && Number.isFinite(Date.parse(w.since)) && count(w.runs) && count(w.misses)) {
-    state.channelWindow = { since: w.since, runs: w.runs, misses: w.misses }
+  if (w && typeof w.since === 'string' && Number.isFinite(Date.parse(w.since)) && typeof w.lastMissAt === 'string' && Number.isFinite(Date.parse(w.lastMissAt)) && count(w.runs) && count(w.misses)) {
+    state.channelWindow = { since: w.since, lastMissAt: w.lastMissAt, runs: w.runs, misses: w.misses }
   }
   return state
 }
@@ -318,11 +324,17 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
 
   const nowMs = deps.now()
   let state: MonitorState = {}
+  let storedState: string | null = null
   try {
-    const raw = await deps.kv.get(PARTNER_PAGE_MONITOR_STATE_KEY)
-    if (raw) state = readState(raw)
+    storedState = await deps.kv.get(PARTNER_PAGE_MONITOR_STATE_KEY)
+    if (storedState) state = readState(storedState)
   } catch (e) {
     summary.errors.push(`state unreadable: ${formatErr(e)}`)
+  }
+  // A window whose last miss has lapsed is not carried into this run, on any branch.
+  if (state.channelWindow && nowMs - Date.parse(state.channelWindow.lastMissAt) > CHANNEL_WINDOW_LAPSE_MS) {
+    const { channelWindow: _lapsed, ...rest } = state
+    state = rest
   }
 
   let resolved: SlackTarget[] | null = null
@@ -403,18 +415,17 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
   }
 
   // The check ran: it stands down its own incident, and the run counts in the
-  // channel's window. A window left with no channel incident open (one that
-  // lapsed) is dropped rather than carried into the next miss.
+  // channel's window.
   const missed = outcome.kind === 'not_received' || outcome.kind === 'join_refused'
   let window = state.channelWindow
-  if (window && (await deps.kv.get(recoveryKey(RECOVERY_PREFIX, CHANNEL_ID))) === null) window = undefined
   if (missed) {
-    window = { since: window?.since ?? iso(nowMs), runs: (window?.runs ?? 0) + 1, misses: (window?.misses ?? 0) + 1 }
+    window = { since: window?.since ?? iso(nowMs), lastMissAt: iso(nowMs), runs: (window?.runs ?? 0) + 1, misses: (window?.misses ?? 0) + 1 }
   } else if (window) {
     window = { ...window, runs: window.runs + 1 }
   }
   const next: MonitorState = { channelWindow: window }
-  if (JSON.stringify(next) !== JSON.stringify(state)) await saveState(next)
+  // Compared with what is stored, so a window that lapsed above is written away too.
+  if (JSON.stringify(next) !== (storedState ?? '{}')) await saveState(next)
   await allClear(MONITOR_ID, PARTNER_PAGE_MONITOR_UNMEASURED_KEY, 'The partners page delivery check', 'partners page delivery check',
     `has run for ${RECOVERY_REARM_MINUTES} minutes`)
 

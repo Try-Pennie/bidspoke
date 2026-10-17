@@ -439,21 +439,34 @@ describe('runPartnerPageMonitor', () => {
       h.set(o)
       await h.run()
     }
-    expect(await window()).toEqual({ since: '2026-10-15T17:00:00.000Z', runs: 4, misses: 2 })
+    expect(await window()).toEqual({ since: '2026-10-15T17:00:00.000Z', lastMissAt: '2026-10-15T17:15:00.000Z', runs: 4, misses: 2 })
     // A run that could not measure is neither a run nor a miss.
     h.clock.now += 5 * MIN
     h.set({ kind: 'unmeasured', reason: 'the ping could not be sent: timeout' })
     await h.run()
-    expect(await window()).toEqual({ since: '2026-10-15T17:00:00.000Z', runs: 4, misses: 2 })
+    expect(await window()).toEqual({ since: '2026-10-15T17:00:00.000Z', lastMissAt: '2026-10-15T17:15:00.000Z', runs: 4, misses: 2 })
     h.set(hit)
     await h.every5(RECOVERY_REARM_MINUTES + 10)
     expect(h.sent.filter((s) => s.kind === 'recovery')).toHaveLength(1)
     expect(await window()).toBeUndefined()
   })
 
+  it('a miss while the alert is muted still counts, so the alert after the mute says how many there were', async () => {
+    const h = monitorHarness()
+    await h.kv.put('partner-page-live:cooldown', '1', { expirationTtl: 3600 })
+    const miss: Outcome = { kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 4, rounds: 2 }
+    h.set(miss)
+    await h.run()
+    h.clock.now += 5 * MIN
+    await h.run()
+    const state = JSON.parse((await h.kv.get(PARTNER_PAGE_MONITOR_STATE_KEY)) ?? '{}') as { channelWindow?: unknown }
+    expect(state.channelWindow).toEqual({ since: '2026-10-15T17:00:00.000Z', lastMissAt: '2026-10-15T17:05:00.000Z', runs: 2, misses: 2 })
+  })
+
   it('a window left behind by an incident that lapsed is not carried into the next miss', async () => {
     const h = monitorHarness()
-    await h.kv.put(PARTNER_PAGE_MONITOR_STATE_KEY, JSON.stringify({ channelWindow: { since: '2026-10-14T09:00:00.000Z', runs: 40, misses: 9 } }))
+    // Its last miss is more than 25 hours before this run.
+    await h.kv.put(PARTNER_PAGE_MONITOR_STATE_KEY, JSON.stringify({ channelWindow: { since: '2026-10-14T09:00:00.000Z', lastMissAt: '2026-10-14T15:59:00.000Z', runs: 40, misses: 9 } }))
     h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 4, rounds: 2 })
     await h.run()
     expect(h.sent[0].payload).toMatchObject({ since: '2026-10-15T17:00:00.000Z', checks: { runs: 1, misses: 1 } })
