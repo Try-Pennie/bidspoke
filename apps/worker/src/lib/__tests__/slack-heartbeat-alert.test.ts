@@ -182,6 +182,15 @@ describe('sendCronHeartbeatAlert', () => {
     expect(text).not.toContain("this run's own outcome")
   })
 
+  it('points a cron of another Worker at that Worker, not at this one\'s wrangler.toml (#1949)', async () => {
+    const { cronJob } = await import('../cron-heartbeat')
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', cronJob('ops-tick'), 'never_ran', 30 * 60_000)
+    const text = textOf(lastPost())
+    expect(text).toContain('wrangler.ops.toml')
+    expect(text).toContain('OPS_GATEWAY')
+    expect(text).not.toContain('wrangler.toml `[triggers]` must list')
+  })
+
   it('says a never-ran job has not run since it was first observed', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'never_ran', 27 * 3_600_000)
 
