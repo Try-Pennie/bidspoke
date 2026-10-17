@@ -32,7 +32,7 @@ export function LeaveDialog({ who, units, unconfirmed, destination, onKeepEditin
     <Dialog
       warning
       // Wide enough for its three answers on one line, as the settled design draws it (540px there).
-      size="md"
+      size="wide"
       title={leaveTitle(who, units, unconfirmed !== null)}
       description={leaveDescription(units, unconfirmed)}
       onDismiss={onKeepEditing}

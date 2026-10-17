@@ -32,7 +32,8 @@ interface DialogBase {
   /** The buttons, safe one first, so it is the one that has focus when the dialog opens. */
   actions: ReactNode
   /** sm for a question, md for a short list, lg for a comparison such as the merge dialog. */
-  size?: 'sm' | 'md' | 'lg'
+  /** wide: 600px, the partners page merge and leave dialogs (#2322), whose rows and three buttons sit on one line. */
+  size?: 'sm' | 'md' | 'wide' | 'lg'
   children?: ReactNode
 }
 

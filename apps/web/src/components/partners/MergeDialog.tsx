@@ -5,24 +5,21 @@
  * surface (a guard fails on any other). It replaces the 409 side by side, whose
  * Take theirs discarded every edit.
  *
- * Only a field or row group both people changed asks a question, grouped by
- * section, with Keep yours or Use theirs and the value as it was, yours and
- * theirs. Everything only one of them changed is named, kept with no question.
- * Save both waits for every answer; closing (Keep editing, Escape, a click
- * outside, a back gesture) saves nothing and keeps every answer given.
+ * As the settled design draws it (#2322, PM-19): what only you changed and what
+ * only they changed, each with its value before and after and what happens to
+ * it (kept, added), then what you both changed, one line each, yours then
+ * theirs, with Keep yours chosen to start so Save both is ready. A combination
+ * the save would refuse is never chosen for the person, and Save both waits on
+ * it. Closing (Keep editing, Escape, a click outside, a back gesture) saves
+ * nothing and keeps every answer given.
  */
 import { useId } from 'react'
 import { Dialog } from '@/components/Dialog'
 import { Button, ChoiceGroup, FieldError } from '@/components/ui/form'
 import { PROFILE_PREFIX } from '@/app/(app)/partners/partner-draft'
-import { unansweredCount, type MergeConflict, type MergeResult, type MergeSide, type MergeUnit } from '@/lib/partner-page-merge'
+import { unansweredCount, type MergeChange, type MergeConflict, type MergeResult, type MergeSide } from '@/lib/partner-page-merge'
 import { formatDollars, formatProfileValue } from './buyer-profile/labels'
 import { formatTime } from '@/components/ui/date-time'
-
-const CHOICES: ReadonlyArray<{ value: MergeSide; label: string }> = [
-  { value: 'mine', label: 'Keep yours' },
-  { value: 'theirs', label: 'Use theirs' },
-]
 
 type Rows = Array<Record<string, unknown>>
 
@@ -58,33 +55,52 @@ export function describeMergeValue(key: string, value: unknown): string {
   return JSON.stringify(value)
 }
 
-const list = (units: MergeUnit[]): string => {
-  const names = units.map((u) => u.label)
-  return names.length <= 1 ? names.join('') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+/** The other editor's first name, as the design says it ("Brian's"), or null when no editor is on record. */
+function firstName(theirName: string | null): string | null {
+  const first = theirName?.trim().split(/\s+/)[0]
+  return first ? first : null
 }
 
-/** The label under its section heading, without saying the heading again (L605): Hours, Monday under Hours is Monday. */
-function visibleLabel(c: MergeConflict): string {
-  if (c.label === c.section) return ''
-  return c.label.startsWith(`${c.section}, `) ? c.label.slice(c.section.length + 2) : c.label
+/** A change only one side made: the field, its value before and after, and what happens to it. */
+function ChangeRow({ change, outcome }: { change: MergeChange; outcome: 'kept' | 'added' }) {
+  return (
+    <div data-merge-change={change.key} className="grid grid-cols-[150px_minmax(0,1fr)_auto] items-baseline gap-2.5 text-[13px]">
+      <span className="text-graphite">{change.label}</span>
+      <span className="break-words text-graphite">{describeMergeValue(change.key, change.from)} {'\u2192'} {describeMergeValue(change.key, change.to)}</span>
+      <span className="text-xs text-hint">{outcome}</span>
+    </div>
+  )
 }
 
-function ConflictRow({ conflict, onChoose }: { conflict: MergeConflict; onChoose: (key: string, side: MergeSide) => void }) {
+function ConflictRow({ conflict, theirs, onChoose }: { conflict: MergeConflict; theirs: string; onChoose: (key: string, side: MergeSide) => void }) {
   const id = useId()
-  const lines: Array<[string, unknown]> = [['Was', conflict.base], ['Yours', conflict.mine], ['Theirs', conflict.theirs]]
+  const options: ReadonlyArray<{ value: MergeSide; label: string }> = [
+    { value: 'mine', label: 'Keep yours' },
+    { value: 'theirs', label: `Use ${theirs}` },
+  ]
   return (
     // One question per row: the radio group is its named control (ChoiceGroup),
-    // described by the values beside it and any reason, so a screen reader hears
-    // them with the choice and no second group repeats its name.
-    <div data-merge-key={conflict.key} className="space-y-1.5 border-t border-gray-100 py-3 first:border-t-0">
-      <ChoiceGroup id={id} label={conflict.label} visibleLabel={visibleLabel(conflict)} value={conflict.choice} options={CHOICES} onChange={(side) => onChoose(conflict.key, side)} describedBy={[`${id}-values`, conflict.reason ? `${id}-reason` : null].filter(Boolean).join(' ')} />
-      <div id={`${id}-values`} className="grid gap-0.5 text-sm">
-        {lines.map(([word, value]) => (
-          <p key={word} className="grid grid-cols-[3.5rem_1fr] items-baseline"><span className="text-xs font-medium text-gray-600">{word}</span> <span className="break-words">{describeMergeValue(conflict.key, value)}</span></p>
-        ))}
+    // described by the two values beside it and any reason.
+    <div data-merge-key={conflict.key} className="space-y-1">
+      <div className="grid grid-cols-[150px_minmax(0,1fr)_auto] items-center gap-2.5 text-[13px]">
+        <span className="text-graphite">{conflict.label}</span>
+        <span id={`${id}-values`} className="break-words text-graphite">yours {describeMergeValue(conflict.key, conflict.mine)}, {theirs} {describeMergeValue(conflict.key, conflict.theirs)}</span>
+        <span className="merge-choice">
+          <ChoiceGroup id={id} label={conflict.label} visibleLabel="" value={conflict.choice} options={options} onChange={(side) => onChoose(conflict.key, side)} describedBy={[`${id}-values`, conflict.reason ? `${id}-reason` : null].filter(Boolean).join(' ')} />
+        </span>
       </div>
       {conflict.reason && <FieldError id={`${id}-reason`} size="xs">These cannot be saved together: {conflict.reason}</FieldError>}
     </div>
+  )
+}
+
+/** One of the dialog's three groups, with the rule above it the design draws. */
+function Group({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="flex flex-col gap-1 border-t border-line-soft py-2">
+      <h3 className="text-xs font-semibold text-gray-600">{title}</h3>
+      {children}
+    </section>
   )
 }
 
@@ -99,11 +115,14 @@ export function MergeDialog({ result, theirName, onChoose, onSave, onKeepEditing
 }) {
   const left = unansweredCount(result)
   const who = theirName ?? 'Someone else'
+  const first = firstName(theirName)
+  const theirs = first ? `${first}'s` : 'theirs'
+  const conflicts = result.conflicts.flatMap((section) => section.conflicts)
   return (
     <Dialog
-      size="lg"
+      size="wide"
       title={`${who} saved this partner while you were editing`}
-      description="Nothing is saved yet. Saving keeps your changes and adds theirs. Only where you both changed the same field do you choose."
+      description={`Nothing is lost. Saving keeps your changes and adds ${theirs}. Only where you both changed the same field do you choose.`}
       onDismiss={onKeepEditing}
       actions={
         <>
@@ -112,22 +131,17 @@ export function MergeDialog({ result, theirName, onChoose, onSave, onKeepEditing
         </>
       }
     >
-      <div className="space-y-4">
-        {result.conflicts.map((section) => (
-          <section key={section.section} aria-label={section.section}>
-            <h3 className="text-xs font-semibold text-gray-600">{section.section}</h3>
-            {section.conflicts.map((c) => <ConflictRow key={c.key} conflict={c} onChoose={onChoose} />)}
-          </section>
-        ))}
-        {(result.mineKept.length > 0 || result.autoTaken.length > 0) && (
-          <div className="space-y-0.5 border-t border-gray-100 pt-3 text-sm text-gray-700">
-            {result.mineKept.length > 0 && <p>Your {result.mineKept.length === 1 ? 'change' : 'changes'} to {list(result.mineKept)} {result.mineKept.length === 1 ? 'is' : 'are'} kept.</p>}
-            {result.autoTaken.length > 0 && <p>Their {result.autoTaken.length === 1 ? 'change' : 'changes'} to {list(result.autoTaken)} {result.autoTaken.length === 1 ? 'is' : 'are'} added.</p>}
-          </div>
+      <div>
+        {result.mineKept.length > 0 && (
+          <Group title="Only you changed">{result.mineKept.map((c) => <ChangeRow key={c.key} change={c} outcome="kept" />)}</Group>
         )}
-        <p role="status" className="text-xs text-gray-600">
-          {left > 0 ? `Choose for ${left} more ${left === 1 ? 'field' : 'fields'}.` : 'Every field is chosen.'}
-        </p>
+        {result.autoTaken.length > 0 && (
+          <Group title={`Only ${first ?? 'they'} changed`}>{result.autoTaken.map((c) => <ChangeRow key={c.key} change={c} outcome="added" />)}</Group>
+        )}
+        {conflicts.length > 0 && (
+          <Group title="You both changed">{conflicts.map((c) => <ConflictRow key={c.key} conflict={c} theirs={theirs} onChoose={onChoose} />)}</Group>
+        )}
+        {left > 0 && <p role="status" className="pt-2 text-xs text-gray-600">Choose for {left} more {left === 1 ? 'field' : 'fields'}.</p>}
       </div>
     </Dialog>
   )
