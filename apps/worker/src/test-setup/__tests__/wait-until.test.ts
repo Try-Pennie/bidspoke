@@ -90,7 +90,7 @@ describe('recordingContext', () => {
   it('fails naming how much is still running once its bound passes, rather than hanging', async () => {
     const ctx = recordingContext()
     ctx.waitUntil(new Promise(() => {}))
-    await expect(ctx.settle({ timeoutMs: 30 })).rejects.toThrow(/1 promise handed to waitUntil was still running after 30 ms/)
+    await expect(ctx.settle({ timeoutMs: 30 })).rejects.toThrow(/1 promise handed to waitUntil was still running after \d+ ms of real time \(the bound is 30 ms\)/)
     ctx.forget()
   })
 })
@@ -125,6 +125,6 @@ describe('settleAfterTest', () => {
     ctx.waitUntil(new Promise(() => {}))
     const report = await settleAfterTest({ timeoutMs: 30 })
     expect(report).toMatch(/still running when the test ended/)
-    expect(report).toMatch(/still running after 30 ms/)
+    expect(report).toMatch(/still running after \d+ ms of real time \(the bound is 30 ms\)/)
   })
 })

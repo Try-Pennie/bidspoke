@@ -26,6 +26,9 @@ import { formatErr } from '../lib/format-error'
 // call) moves on the real event loop, not on a faked clock.
 const realSetTimeout = globalThis.setTimeout
 const realSetImmediate = globalThis.setImmediate
+// The clock this measures by, taken the same way: a faked performance.now
+// would stand still while the work it waits for moves.
+const realNow = performance.now.bind(performance)
 
 /** How long settling waits for work in real time before it fails instead of hanging. */
 export const SETTLE_TIMEOUT_MS = 5_000
@@ -59,19 +62,20 @@ const realSleep = (ms: number) => new Promise<void>((resolve) => realSetTimeout(
 const open = (entries: Entry[]) => entries.filter((e) => !e.settled)
 
 async function settleEntries(entries: Entry[], timeoutMs: number): Promise<void> {
-  for (let round = 0; round * ROUND_MS < timeoutMs; round++) {
+  const start = realNow()
+  for (;;) {
     const running = open(entries)
     if (running.length === 0) return
-    await Promise.race([Promise.allSettled(running.map((e) => e.promise)), realSleep(ROUND_MS)])
+    const waited = realNow() - start
+    if (waited >= timeoutMs) break
+    await Promise.race([Promise.allSettled(running.map((e) => e.promise)), realSleep(Math.min(ROUND_MS, timeoutMs - waited))])
     // The settled flags are set by handlers attached before allSettled's own,
     // so they are current here; one more turn covers a promise that settled
     // in the same tick the race did.
     await realTurn()
   }
   const left = open(entries).length
-  if (left > 0) {
-    throw new Error(`${plural(left)} still running after ${timeoutMs} ms. Work waiting on a faked timer moves only when the test advances the clock (vi.advanceTimersByTimeAsync) before it settles.`)
-  }
+  throw new Error(`${plural(left)} still running after ${Math.round(realNow() - start)} ms of real time (the bound is ${timeoutMs} ms). Work waiting on a faked timer moves only when the test advances the clock (vi.advanceTimersByTimeAsync) before it settles.`)
 }
 
 export function recordingContext(): RecordingContext {
