@@ -13,6 +13,10 @@
  *  - a day can start with no realtime.messages partition (ADR 0012): a join
  *    refused as MissingPartition is retried, and a send made while today's
  *    partition is absent is recorded as not judged, never as a failure;
+ *  - Realtime shuts this project's connection down ten minutes after nobody
+ *    stays connected, so a run can land on the shutdown (#2263): a join refused
+ *    by it is retried, and a round whose notice never arrives is tried once more
+ *    on a fresh connection before it counts as a miss;
  *  - a check that cannot run (no secret, no monitor organization, sign in or the
  *    database failing) is its own problem, paged after 30 minutes on the clock,
  *    and never reads as a healthy channel (L557, L98);
@@ -23,6 +27,8 @@ import {
   measurePartnerPageDelivery,
   runPartnerPageMonitor,
   JOIN_ATTEMPTS,
+  MEASURE_ROUNDS,
+  PARTNER_PAGE_MONITOR_STATE_KEY,
   RECEIPT_DEADLINE_MS,
   PING_RETRY_MS,
   UNMEASURED_ALERT_AFTER_MS,
@@ -140,7 +146,7 @@ describe('measurePartnerPageDelivery', () => {
     const w = world()
     const { deps, calls } = measureDeps(w)
     const outcome = await measurePartnerPageDelivery(deps)
-    expect(outcome).toEqual({ kind: 'received', latencyMs: 120, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
+    expect(outcome).toEqual({ kind: 'received', latencyMs: 120, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
     expect(calls.signIns).toEqual(['monitor@partner-page-monitor.trypennie.dev'])
     expect(calls.topics).toEqual([`partners:${ORG}`])
     // Everything it opened is closed.
@@ -148,19 +154,37 @@ describe('measurePartnerPageDelivery', () => {
     expect(calls.signedOut).toBe(1)
   })
 
-  it('a notice that never arrives is re-pinged every PING_RETRY_MS with the same save id, then is not received at the deadline', async () => {
+  it('a notice that never arrives is re-pinged every PING_RETRY_MS with the same save id, tried once more on a fresh connection, then is not received', async () => {
     const w = world({ delivers: null })
     const { deps, calls } = measureDeps(w)
     const pings = RECEIPT_DEADLINE_MS / PING_RETRY_MS
-    expect(await measurePartnerPageDelivery(deps)).toEqual({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings })
-    expect(calls.pings).toBe(pings)
+    expect(await measurePartnerPageDelivery(deps)).toEqual({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings, rounds: MEASURE_ROUNDS })
+    expect(calls.pings).toBe(pings * MEASURE_ROUNDS)
     expect(new Set(calls.pingSaveIds)).toEqual(new Set([SAVE]))
     // Every wait is the injected sleep, none longer than the re-ping interval,
-    // and together they spend exactly the deadline: no fixed wait after the join.
+    // and together they spend exactly the deadline per round: no fixed wait.
     expect(calls.sleeps.every((ms) => ms <= PING_RETRY_MS)).toBe(true)
-    expect(calls.sleeps.reduce((a, b) => a + b, 0)).toBe(RECEIPT_DEADLINE_MS)
-    expect(calls.pingTimes.map((t) => t - calls.pingTimes[0])).toEqual(Array.from({ length: pings }, (_, i) => i * PING_RETRY_MS))
-    expect(calls.left).toBe(1)
+    expect(calls.sleeps.reduce((a, b) => a + b, 0)).toBe(RECEIPT_DEADLINE_MS * MEASURE_ROUNDS)
+    expect(calls.pingTimes.slice(0, pings).map((t) => t - calls.pingTimes[0])).toEqual(Array.from({ length: pings }, (_, i) => i * PING_RETRY_MS))
+    // Each round joined and left its own channel; one sign in for the run.
+    expect(calls.joins).toBe(MEASURE_ROUNDS)
+    expect(calls.left).toBe(MEASURE_ROUNDS)
+    expect(calls.signIns).toHaveLength(1)
+    expect(calls.signedOut).toBe(1)
+  })
+
+  it('a round lost to an idle shutdown is received on the fresh connection, and says it took a second round', async () => {
+    // 2026-10-16 20:35:35 UTC: the run joined a second before Realtime shut the
+    // idle tenant down, so none of its pings were streamed; the 20:40 run, on a
+    // fresh connection, received. The whole first round is lost here.
+    const pings = RECEIPT_DEADLINE_MS / PING_RETRY_MS
+    const w = world({ lostPings: pings, delivers: { payload: pingNotice(), afterMs: 120 } })
+    const { deps, calls } = measureDeps(w)
+    expect(await measurePartnerPageDelivery(deps)).toEqual({
+      kind: 'received', latencyMs: 120, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 2,
+    })
+    expect(calls.joins).toBe(2)
+    expect(calls.left).toBe(2)
   })
 
   it('a cold start that loses the first notice is received on the re-ping, timed from the first send', async () => {
@@ -171,18 +195,22 @@ describe('measurePartnerPageDelivery', () => {
     const w = world({ lostPings: 1, delivers: { payload: pingNotice(), afterMs: 120 } })
     const { deps, calls } = measureDeps(w)
     expect(await measurePartnerPageDelivery(deps)).toEqual({
-      kind: 'received', latencyMs: PING_RETRY_MS + 120, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 2,
+      kind: 'received', latencyMs: PING_RETRY_MS + 120, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 2, rounds: 1,
     })
     expect(calls.pings).toBe(2)
   })
 
   it('a re-ping the database refuses is logged and the run waits out the deadline for the pings already sent', async () => {
     const log: string[] = []
+    const pings = RECEIPT_DEADLINE_MS / PING_RETRY_MS
     const w = world({ delivers: null, reping: { ok: false, reason: 'statement timeout' } })
     const { deps, calls } = measureDeps(w, log)
-    expect(await measurePartnerPageDelivery(deps)).toEqual({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
-    expect(calls.pings).toBe(RECEIPT_DEADLINE_MS / PING_RETRY_MS)
-    expect(log.filter((l) => l.includes('re-ping could not be sent: statement timeout'))).toHaveLength(RECEIPT_DEADLINE_MS / PING_RETRY_MS - 1)
+    // The second round's first ping is refused too, so that round cannot run:
+    // the first round's miss stands rather than turning into unmeasured.
+    expect(await measurePartnerPageDelivery(deps)).toEqual({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 2 })
+    expect(calls.pings).toBe(pings + 1)
+    expect(log.filter((l) => l.includes('re-ping could not be sent: statement timeout'))).toHaveLength(pings - 1)
+    expect(log.filter((l) => l.includes('round 2 could not run: the ping could not be sent: statement timeout'))).toHaveLength(1)
   })
 
   it('takes its partition figures from the first ping only', async () => {
@@ -217,7 +245,28 @@ describe('measurePartnerPageDelivery', () => {
   it('a join still refused for the partition after every attempt is a broken channel, since no page can join either', async () => {
     const w = world({ joins: [{ ok: false, reason: 'MissingPartition: no partition', missingPartition: true }] })
     const { deps, calls } = measureDeps(w)
-    expect(await measurePartnerPageDelivery(deps)).toEqual({ kind: 'join_refused', reason: 'MissingPartition: no partition', joinAttempts: JOIN_ATTEMPTS })
+    expect(await measurePartnerPageDelivery(deps)).toEqual({ kind: 'join_refused', reason: 'MissingPartition: no partition', joinAttempts: JOIN_ATTEMPTS, rounds: 1 })
+    expect(calls.joins).toBe(JOIN_ATTEMPTS)
+    expect(calls.pings).toBe(0)
+  })
+
+  it('retries a join refused while Realtime shuts the idle tenant down, which it words as a pool shortage, then measures', async () => {
+    // 2026-10-16 04:45:14 UTC: the join's authorization query lost its
+    // connection to the idle shutdown, and Realtime answered IncreaseConnectionPool.
+    const log: string[] = []
+    const w = world({ joins: [{ ok: false, reason: 'IncreaseConnectionPool: Please increase your connection pool size', missingPartition: false }, { ok: true }] })
+    const { deps, calls } = measureDeps(w, log)
+    expect(await measurePartnerPageDelivery(deps)).toMatchObject({ kind: 'received', joinAttempts: 2, rounds: 1 })
+    expect(calls.joins).toBe(2)
+    expect(log.some((l) => l.includes('join refused during an idle shutdown, attempt 1 of'))).toBe(true)
+  })
+
+  it('control: a join refused that way on every attempt is a broken channel', async () => {
+    const w = world({ joins: [{ ok: false, reason: 'IncreaseConnectionPool: Please increase your connection pool size', missingPartition: false }] })
+    const { deps, calls } = measureDeps(w)
+    expect(await measurePartnerPageDelivery(deps)).toEqual({
+      kind: 'join_refused', reason: 'IncreaseConnectionPool: Please increase your connection pool size', joinAttempts: JOIN_ATTEMPTS, rounds: 1,
+    })
     expect(calls.joins).toBe(JOIN_ATTEMPTS)
     expect(calls.pings).toBe(0)
   })
@@ -287,7 +336,7 @@ function monitorHarness(opts: { env?: Record<string, string | undefined>; measur
   const kv = fakeKv(clock)
   const sent: Array<{ kind: string; payload: Record<string, unknown> }> = []
   const records: Array<{ outcome: string; summary: Record<string, unknown> }> = []
-  let next: Outcome = { kind: 'received', latencyMs: 90, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 }
+  let next: Outcome = { kind: 'received', latencyMs: 90, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 }
   const answer = (kind: string) => (_s: unknown, _c: string, payload: Record<string, unknown>) => {
     sent.push({ kind, payload })
     return Promise.resolve(kind === 'recovery' ? true : 'ts')
@@ -330,14 +379,14 @@ describe('runPartnerPageMonitor', () => {
 
   it('pages at once when its notice does not arrive, keeps the incident, then sends one all-clear once it has arrived for the rearm window', async () => {
     const h = monitorHarness()
-    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
+    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
     const first = await h.run()
     expect(first.alerts).toEqual(['channel'])
     expect(h.sent.map((s) => s.kind)).toEqual(['live'])
     expect(h.sent[0].payload).toMatchObject({ problem: 'channel' })
     expect((await readCondition(h.kv, PARTNER_PAGE_LIVE_KEY))?.alerts).toBe(1)
 
-    h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
+    h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
     await h.every5(RECOVERY_REARM_MINUTES + 5)
     expect(h.sent.filter((s) => s.kind === 'recovery')).toHaveLength(1)
     expect(await readCondition(h.kv, PARTNER_PAGE_LIVE_KEY)).toBeNull()
@@ -358,21 +407,60 @@ describe('runPartnerPageMonitor', () => {
     const h = monitorHarness({ measure: () => measurePartnerPageDelivery(measureDeps(world({ delivers: null })).deps) })
     const summary = await h.run()
     expect(summary.alerts).toEqual(['channel'])
-    expect(h.records).toEqual([{ outcome: 'not_received', summary: expect.objectContaining({ pings: RECEIPT_DEADLINE_MS / PING_RETRY_MS, deadline_ms: RECEIPT_DEADLINE_MS }) }])
+    expect(h.records).toEqual([{ outcome: 'not_received', summary: expect.objectContaining({ pings: RECEIPT_DEADLINE_MS / PING_RETRY_MS, deadline_ms: RECEIPT_DEADLINE_MS, rounds: MEASURE_ROUNDS }) }])
     expect(h.sent.map((s) => s.kind)).toEqual(['live'])
-    expect(h.sent[0].payload).toMatchObject({ problem: 'channel', reason: 'no notice arrived within 10 seconds of the first ping, after 4 pings' })
+    expect(h.sent[0].payload).toMatchObject({ problem: 'channel', reason: 'no notice arrived within 10 seconds of the first ping, after 4 pings, on a fresh connection as on the first' })
+  })
+
+  it('a run that needed the fresh connection records received with rounds 2, and pages nothing', async () => {
+    const h = monitorHarness({ measure: () => measurePartnerPageDelivery(measureDeps(world({ lostPings: RECEIPT_DEADLINE_MS / PING_RETRY_MS })).deps) })
+    expect((await h.run()).alerts).toEqual([])
+    expect(h.records).toEqual([{ outcome: 'received', summary: expect.objectContaining({ rounds: 2, pings: 1 }) }])
+    expect(h.sent).toEqual([])
+  })
+
+  it('control: a join refused during an idle shutdown on every attempt still pages', async () => {
+    const reason = 'IncreaseConnectionPool: Please increase your connection pool size'
+    const h = monitorHarness({ measure: () => measurePartnerPageDelivery(measureDeps(world({ joins: [{ ok: false, reason, missingPartition: false }] })).deps) })
+    expect((await h.run()).alerts).toEqual(['channel'])
+    expect(h.records).toEqual([{ outcome: 'join_refused', summary: { reason, join_attempts: JOIN_ATTEMPTS, rounds: 1 } }])
+  })
+
+  it('the alert counts the runs that missed out of the runs since the first miss, and the count ends with the all-clear', async () => {
+    const h = monitorHarness()
+    const miss: Outcome = { kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 4, rounds: 2 }
+    const hit: Outcome = { kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 }
+    const window = async () => (JSON.parse((await h.kv.get(PARTNER_PAGE_MONITOR_STATE_KEY)) ?? '{}') as { channelWindow?: unknown }).channelWindow
+    h.set(miss)
+    await h.run()
+    expect(h.sent[0].payload).toMatchObject({ problem: 'channel', since: '2026-10-15T17:00:00.000Z', checks: { runs: 1, misses: 1 } })
+    for (const o of [hit, hit, miss]) {
+      h.clock.now += 5 * MIN
+      h.set(o)
+      await h.run()
+    }
+    expect(await window()).toEqual({ since: '2026-10-15T17:00:00.000Z', runs: 4, misses: 2 })
+    // A run that could not measure is neither a run nor a miss.
+    h.clock.now += 5 * MIN
+    h.set({ kind: 'unmeasured', reason: 'the ping could not be sent: timeout' })
+    await h.run()
+    expect(await window()).toEqual({ since: '2026-10-15T17:00:00.000Z', runs: 4, misses: 2 })
+    h.set(hit)
+    await h.every5(RECOVERY_REARM_MINUTES + 10)
+    expect(h.sent.filter((s) => s.kind === 'recovery')).toHaveLength(1)
+    expect(await window()).toBeUndefined()
   })
 
   it('a join refused pages as a broken channel too, naming the refusal', async () => {
     const h = monitorHarness()
-    h.set({ kind: 'join_refused', reason: 'Unauthorized: You do not have permissions', joinAttempts: 1 })
+    h.set({ kind: 'join_refused', reason: 'Unauthorized: You do not have permissions', joinAttempts: 1, rounds: 1 })
     expect((await h.run()).alerts).toEqual(['channel'])
     expect(h.sent[0].payload).toMatchObject({ problem: 'channel', reason: 'the monitor could not join the channel: Unauthorized: You do not have permissions' })
   })
 
   it('a send while the partition is absent neither pages nor counts toward an all-clear', async () => {
     const h = monitorHarness()
-    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
+    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
     await h.run()
     h.set({ kind: 'partition_missing_at_send', partitionTomorrow: true, joinAttempts: 1 })
     await h.every5(RECOVERY_REARM_MINUTES + 10)
@@ -390,7 +478,7 @@ describe('runPartnerPageMonitor', () => {
     expect(h.sent.at(-1)?.payload).toMatchObject({ problem: 'monitor', reason: 'PARTNER_PAGE_MONITOR_PASSWORD is not set on the worker' })
     expect(h.records.every((r) => r.outcome === 'unmeasured')).toBe(true)
 
-    h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
+    h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
     await h.every5(RECOVERY_REARM_MINUTES + 5)
     expect(h.sent.filter((s) => s.kind === 'recovery')).toHaveLength(1)
     expect(await readCondition(h.kv, PARTNER_PAGE_MONITOR_UNMEASURED_KEY)).toBeNull()
@@ -398,7 +486,7 @@ describe('runPartnerPageMonitor', () => {
 
   it('a check that cannot run is never read as a working channel: a standing channel incident gets no all-clear from it', async () => {
     const h = monitorHarness()
-    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
+    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
     await h.run()
     h.set({ kind: 'unmeasured', reason: 'the ping could not be sent: timeout' })
     await h.every5(RECOVERY_REARM_MINUTES + 10)
@@ -406,7 +494,7 @@ describe('runPartnerPageMonitor', () => {
     // The first run that measures again starts the quiet window; it does not
     // close an incident whose last sighting was only the start of the gap.
     h.clock.now += 5 * MIN
-    h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 })
+    h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
     await h.run()
     expect(h.sent.filter((s) => s.kind === 'recovery' && (s.payload as { signal?: string }).signal === 'partners page live updates')).toHaveLength(0)
   })
@@ -433,7 +521,7 @@ function harnessDeps(h: ReturnType<typeof monitorHarness>): MonitorDeps {
     kv: h.kv,
     claims: fakeClaims(h.clock),
     env: {},
-    measure: async () => ({ kind: 'received', latencyMs: 1, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1 }),
+    measure: async () => ({ kind: 'received', latencyMs: 1, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 }),
     record: async (outcome, summary) => { h.records.push({ outcome, summary }) },
     resolveSlack: async () => [],
     senders: { live: (async () => 'ts') as unknown as MonitorDeps['senders']['live'], recovery: (async () => true) as unknown as MonitorDeps['senders']['recovery'] },
