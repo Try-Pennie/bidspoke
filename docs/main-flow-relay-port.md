@@ -154,7 +154,12 @@ checked", never landed. Runs the step skipped are counted and said. The message
 gives the count, how many landed, each run that did not with what was wrong (by
 run, never a value), and the relay's figure over the same hours, which is what
 Pipedream accepted, not what reached Salesforce. A day with a run that did not
-land or could not be checked is titled as an alert. It has its own heartbeat
+land or could not be checked is titled as an alert, and so is a day Main Flow
+spent off the direct write: an invalid state post that went through the relay
+after a direct one, or a day whose last post did (#2312). Relay posts from
+before the first direct post are said as coming before the switch and alert on
+nothing, as on the first report (2026-10-17), whose window began ten hours
+before version 172. It has its own heartbeat
 entry (`invalid-state-canary-watch`), so a missed morning pages, and its own
 `job_runs` row with every run that did not land.
 

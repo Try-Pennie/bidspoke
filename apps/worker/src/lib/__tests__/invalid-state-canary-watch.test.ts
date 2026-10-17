@@ -313,13 +313,57 @@ describe('the invalid state canary watch', () => {
     expect(posted[0].lines[0]).toBe('Zero Main Flow runs wrote an invalid state outcome straight to Salesforce from Oct 17, 8:50 AM EDT to Oct 18, 8:50 AM EDT.')
   })
 
-  it('an invalid state post that went through the relay is counted apart and said, since it means Main Flow is off the direct write', async () => {
-    const relayStep: WatchedStep = { execution_id: RUN_A, step_type: 'webhook', status: 'completed', input: {}, output: { status: 200 } }
-    const { d, posted } = deps({ steps: [relayStep] })
+  // #2312: the first report (2026-10-17) said Main Flow had left the direct write
+  // because five relay posts sat in its window, when all five came before version
+  // 172 went live and both posts after it went direct. Whether Main Flow is on the
+  // relay is a question about the LAST post, never about any post.
+  const relayStep = (run: string): WatchedStep => ({ execution_id: run, step_type: 'webhook', status: 'completed', input: {}, output: { status: 200 } })
+  const landedA = { [SUB_A]: ok(landedSubmission(RUN_A, LEAD_A)), [LEAD_A]: ok(landedLead(RUN_A)), [SUB_B]: ok(landedSubmission(RUN_B, LEAD_B)), [LEAD_B]: ok(landedLead(RUN_B)) }
+
+  it('relay posts from before the switch are said as such, and the day stays a report (the 2026-10-17 shape)', async () => {
+    const before = ['r1', 'r2', 'r3', 'r4', 'r5'].map(relayStep)
+    const { d, posted } = deps({ steps: [...before, nativeStep(RUN_A, SUB_A), nativeStep(RUN_B, SUB_B)], records: landedA })
+    const report = await runInvalidStateWatch(d)
+    expect(report.relayInvalidState).toBe(5)
+    const text = posted[0].lines.join('\n')
+    expect(text).toContain('5 invalid state posts went through the relay before Main Flow moved to the direct write.')
+    expect(text).not.toMatch(/no longer on the direct write|back on the relay/)
+    expect(posted[0].alert).toBe(false)
+    expect(posted[0].title).toBe('All 2 invalid state writes landed in Salesforce')
+  })
+
+  it('a relay post after the last direct write is a rollback, and reads as an alert', async () => {
+    const { d, posted } = deps({ steps: [nativeStep(RUN_A, SUB_A), nativeStep(RUN_B, SUB_B), relayStep('r1')], records: landedA })
+    await runInvalidStateWatch(d)
+    expect(posted[0].alert).toBe(true)
+    expect(posted[0].title).toBe('Main Flow is back on the relay for invalid state posts')
+    expect(posted[0].lines.join('\n')).toContain('the last of them after every direct write, so Main Flow is back on the relay.')
+    expect(posted[0].fixHint).toMatch(/version history/)
+  })
+
+  it('a day with only relay posts says Main Flow is not on the direct write, as an alert', async () => {
+    const { d, posted } = deps({ steps: [relayStep('r1')] })
     const report = await runInvalidStateWatch(d)
     expect(report.relayInvalidState).toBe(1)
     expect(report.native).toEqual([])
-    expect(posted[0].lines.join('\n')).toContain('1 invalid state post went through the relay instead, so Main Flow is no longer on the direct write.')
+    expect(posted[0].alert).toBe(true)
+    expect(posted[0].lines.join('\n')).toContain('The 1 invalid state post went through the relay, so Main Flow is not on the direct write.')
+  })
+
+  it('relay posts between direct writes are said as a spell off the direct write, as an alert', async () => {
+    const { d, posted } = deps({ steps: [nativeStep(RUN_A, SUB_A), relayStep('r1'), relayStep('r2'), nativeStep(RUN_B, SUB_B)], records: landedA })
+    await runInvalidStateWatch(d)
+    expect(posted[0].alert).toBe(true)
+    expect(posted[0].lines.join('\n')).toContain('2 invalid state posts went through the relay between direct writes, so Main Flow left the direct write for a while and came back.')
+  })
+
+  it('a write that did not land keeps its own title when a rollback came too, and the Fix line covers both', async () => {
+    const missing = { ...landedA, [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_4__c: null }) }
+    const { d, posted } = deps({ steps: [nativeStep(RUN_A, SUB_A), relayStep('r1')], records: missing })
+    await runInvalidStateWatch(d)
+    expect(posted[0].title).toBe('1 of 1 invalid state writes did not land in Salesforce')
+    expect(posted[0].fixHint).toMatch(/Open each run above/)
+    expect(posted[0].fixHint).toMatch(/version history/)
   })
 
   it('compares with the relay, saying what each number counts', async () => {
@@ -366,7 +410,7 @@ describe('the invalid state canary watch', () => {
   it('lists at most 15 runs and says how many more, so a bad day is not cut off silently', () => {
     const native = Array.from({ length: 18 }, (_, i) => ({ kind: 'not_landed' as const, executionId: `run-${i}`, problems: ['The Submission has no Bidspoke run link.'] }))
     const report: CanaryWatchReport = {
-      from: '2026-10-17T12:50:00.000Z', to: '2026-10-18T12:50:00.000Z', native, skipped: [], relayInvalidState: 0, nativeCompleted: 18,
+      from: '2026-10-17T12:50:00.000Z', to: '2026-10-18T12:50:00.000Z', native, skipped: [], relayInvalidState: 0, relayAfterSwitch: 0, lastWasRelay: false, nativeCompleted: 18,
       relay: { total: 10, accepted: 10 },
     }
     const m = canaryWatchMessage(report, APP)
