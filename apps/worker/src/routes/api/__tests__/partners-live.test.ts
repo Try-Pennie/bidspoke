@@ -11,6 +11,7 @@
  * Both: any allowlisted member of the organization, that organization's rows.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -26,8 +27,7 @@ const SAVE = '0b9f6c1e-3c2a-4d7e-8f10-2a3b4c5d6e7f'
 const testUser = { id: 'user-1', organization_id: ORG, email: 'dan@pennie.com', display_name: 'Dan Wright' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {} } as unknown as Env
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 async function makeApp() {
   const { default: api } = await import('../index')

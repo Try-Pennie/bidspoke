@@ -20,6 +20,7 @@
  * typechecks against @cloudflare/workers-types and cannot read a file.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -49,8 +50,7 @@ const testEnv = {
   CLOUDFLARE_API_TOKEN: 'tok-abc',
 } as unknown as Env
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 async function makeApp() {
   const { default: api } = await import('../index')

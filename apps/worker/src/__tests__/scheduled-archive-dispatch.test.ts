@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../test-setup/wait-until'
 import type { Env } from '../index'
 
 /**
@@ -77,15 +78,6 @@ const env = {
   SUPABASE_SECRET_KEY: 'k',
 } as unknown as Env
 
-function ctxWith(waited: Promise<unknown>[]): ExecutionContext {
-  return {
-    waitUntil: (p: Promise<unknown>) => {
-      waited.push(p)
-    },
-    passThroughOnException: () => undefined,
-  } as unknown as ExecutionContext
-}
-
 beforeEach(() => {
   runExecutionArchive.mockClear()
   runExecutionArchive.mockResolvedValue({
@@ -100,19 +92,21 @@ beforeEach(() => {
 
 describe('the scheduled handler', () => {
   it('runs the execution archive on its own cron', async () => {
-    const waited: Promise<unknown>[] = []
+    const ctx = recordingContext()
 
-    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
-    await Promise.all(waited)
+    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctx)
+    await ctx.settle()
+    await Promise.all(ctx.handed)
 
     expect(runExecutionArchive).toHaveBeenCalledTimes(1)
   })
 
   it('writes the archive heartbeat under the id the registry declares', async () => {
-    const waited: Promise<unknown>[] = []
+    const ctx = recordingContext()
 
-    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
-    await Promise.all(waited)
+    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctx)
+    await ctx.settle()
+    await Promise.all(ctx.handed)
 
     expect(writeHeartbeat).toHaveBeenCalledWith(expect.anything(), 'execution-archive')
   })
@@ -123,10 +117,10 @@ describe('the scheduled handler', () => {
   it('does not run the archive from any other cron', async () => {
     for (const cron of ['0 * * * *', '0 13 * * *', '37 */2 * * *', '* * * * *']) {
       runExecutionArchive.mockClear()
-      const waited: Promise<unknown>[] = []
+      const ctx = recordingContext()
 
-      void worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
-      await Promise.allSettled(waited)
+      void worker.scheduled({ cron } as ScheduledEvent, env, ctx)
+      await ctx.settle()
 
       expect(runExecutionArchive, `${cron} ran the archive`).not.toHaveBeenCalled()
     }
@@ -137,10 +131,10 @@ describe('the scheduled handler', () => {
     // source and cannot tell a branch that dispatches from one that dispatches
     // the wrong thing. Daily, because it re-measures every day still inside the
     // 7 day retention window and its staleness limit is one cadence plus slack.
-    const waited: Promise<unknown>[] = []
+    const ctx = recordingContext()
 
-    void worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
-    await Promise.allSettled(waited)
+    void worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctx)
+    await ctx.settle()
 
     expect(runArchiveGate).toHaveBeenCalledTimes(1)
   })
@@ -150,10 +144,10 @@ describe('the scheduled handler', () => {
     // against production volume, and the wiring guard would still pass.
     for (const cron of ['23 * * * *', '0 * * * *', '37 */2 * * *', '* * * * *']) {
       runArchiveGate.mockClear()
-      const waited: Promise<unknown>[] = []
+      const ctx = recordingContext()
 
-      void worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
-      await Promise.allSettled(waited)
+      void worker.scheduled({ cron } as ScheduledEvent, env, ctx)
+      await ctx.settle()
 
       expect(runArchiveGate, `${cron} ran the gate measurement`).not.toHaveBeenCalled()
     }
@@ -163,10 +157,10 @@ describe('the scheduled handler', () => {
     // The guarantee rests on settings applied by hand in Snowflake, and the
     // undo window has already been wrong for days once in this milestone with
     // nothing saying so.
-    const waited: Promise<unknown>[] = []
+    const ctx = recordingContext()
 
-    void worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
-    await Promise.allSettled(waited)
+    void worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctx)
+    await ctx.settle()
 
     expect(checkArchiveSettings).toHaveBeenCalledTimes(1)
   })
@@ -174,10 +168,10 @@ describe('the scheduled handler', () => {
   it('does not read the settings from any other cron', async () => {
     for (const cron of ['23 * * * *', '0 * * * *', '37 */2 * * *', '* * * * *']) {
       checkArchiveSettings.mockClear()
-      const waited: Promise<unknown>[] = []
+      const ctx = recordingContext()
 
-      void worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
-      await Promise.allSettled(waited)
+      void worker.scheduled({ cron } as ScheduledEvent, env, ctx)
+      await ctx.settle()
 
       expect(checkArchiveSettings, `${cron} read the settings`).not.toHaveBeenCalled()
     }
@@ -187,10 +181,10 @@ describe('the scheduled handler', () => {
     // The least-privilege split is what keeps a bug or a leaked credential on
     // the ingest path from destroying archived rows, and an excessive grant
     // never surfaces on its own because nothing ever attempts it.
-    const waited: Promise<unknown>[] = []
+    const ctx = recordingContext()
 
-    void worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
-    await Promise.allSettled(waited)
+    void worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctx)
+    await ctx.settle()
 
     expect(checkArchiveIdentities).toHaveBeenCalledTimes(1)
   })
@@ -200,20 +194,21 @@ describe('the scheduled handler', () => {
     // belongs on one schedule, not wherever a branch happens to reach it.
     for (const cron of ['23 * * * *', '0 * * * *', '37 */2 * * *', '* * * * *']) {
       checkArchiveIdentities.mockClear()
-      const waited: Promise<unknown>[] = []
+      const ctx = recordingContext()
 
-      void worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
-      await Promise.allSettled(waited)
+      void worker.scheduled({ cron } as ScheduledEvent, env, ctx)
+      await ctx.settle()
 
       expect(checkArchiveIdentities, `${cron} verified the identities`).not.toHaveBeenCalled()
     }
   })
 
   it('hands the archive a send function rather than letting it invent one', async () => {
-    const waited: Promise<unknown>[] = []
+    const ctx = recordingContext()
 
-    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
-    await Promise.all(waited)
+    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctx)
+    await ctx.settle()
+    await Promise.all(ctx.handed)
 
     const deps = runExecutionArchive.mock.calls[0]?.[2] as { sendBatch?: unknown }
     expect(typeof deps?.sendBatch).toBe('function')
@@ -221,10 +216,11 @@ describe('the scheduled handler', () => {
 
   it('hands the archive the shared sender, which forwards the run\'s meter (#1443)', async () => {
     archiveSender.mockClear()
-    const waited: Promise<unknown>[] = []
+    const ctx = recordingContext()
 
-    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
-    await Promise.all(waited)
+    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctx)
+    await ctx.settle()
+    await Promise.all(ctx.handed)
 
     const deps = runExecutionArchive.mock.calls[runExecutionArchive.mock.calls.length - 1]?.[2] as { sendBatch?: unknown }
     expect(archiveSender).toHaveBeenCalledWith(env)
@@ -237,11 +233,12 @@ describe('the archive cron passes its scheduled time through (#1181)', () => {
   // retry rule keys on that value, so the wiring has to hand it over, or the
   // rule is present in the code and absent from production (L3).
   it('hands the event\'s scheduled time to the archive run', async () => {
-    const waited: Promise<unknown>[] = []
+    const ctx = recordingContext()
     const scheduledTime = Date.parse('2026-09-05T00:23:00.000Z')
 
-    void worker.scheduled({ cron: '23 * * * *', scheduledTime } as ScheduledEvent, env, ctxWith(waited))
-    await Promise.all(waited)
+    void worker.scheduled({ cron: '23 * * * *', scheduledTime } as ScheduledEvent, env, ctx)
+    await ctx.settle()
+    await Promise.all(ctx.handed)
 
     const deps = runExecutionArchive.mock.calls[0][2] as { scheduledFor?: Date }
     expect(deps.scheduledFor).toBeInstanceOf(Date)
@@ -262,20 +259,20 @@ describe('the completed heartbeat stamp (#985)', () => {
     writeHeartbeat.mockImplementation(async (_kv: unknown, id: string) => { order.push(`started:${id}`) })
     writeHeartbeatCompleted.mockImplementation(async (_kv: unknown, id: string) => { order.push(`completed:${id}`) })
     runExecutionArchive.mockImplementation(async () => { order.push('archive'); return { stop: 'caught-up', failed: false, hoursArchived: 0, hoursEmpty: 0, executionsArchived: 0, executionsRefused: 0, hoursBehind: 0, detail: 'test' } })
-    const waited: Promise<unknown>[] = []
+    const ctx = recordingContext()
 
-    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
-    await Promise.allSettled(waited)
+    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctx)
+    await ctx.settle()
 
     expect(order).toEqual(['started:execution-archive', 'archive', 'completed:execution-archive'])
   })
 
   it('still stamps the archive completed when its work rejects: a handled failure is a finished run', async () => {
     runExecutionArchive.mockRejectedValue(new Error('snowflake down'))
-    const waited: Promise<unknown>[] = []
+    const ctx = recordingContext()
 
-    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctxWith(waited))
-    await Promise.allSettled(waited)
+    void worker.scheduled({ cron: '23 * * * *' } as ScheduledEvent, env, ctx)
+    await ctx.settle()
 
     expect(writeHeartbeatCompleted).toHaveBeenCalledWith(expect.anything(), 'execution-archive')
   })
@@ -285,16 +282,16 @@ describe('the completed heartbeat stamp (#985)', () => {
     // assertion is about ordering, not about how fast this machine is (L290).
     let finishGate!: (summary: unknown) => void
     runArchiveGate.mockImplementation(() => new Promise((resolve) => { finishGate = resolve }))
-    const waited: Promise<unknown>[] = []
+    const ctx = recordingContext()
 
-    void worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctxWith(waited))
+    void worker.scheduled({ cron: '0 13 * * *' } as ScheduledEvent, env, ctx)
     // One turn of the event loop, so every check that CAN settle has done so
     // while the gate is still running.
     await new Promise((r) => setTimeout(r, 0))
     expect(writeHeartbeatCompleted, 'completed was stamped while the gate was still running').not.toHaveBeenCalledWith(expect.anything(), 'daily-1300')
 
     finishGate({ daysConsidered: 0, daysStamped: 0, daysMeasured: 0, daysDeletable: 0, results: [], failed: false, detail: 't' })
-    await Promise.allSettled(waited)
+    await ctx.settle()
 
     expect(writeHeartbeatCompleted).toHaveBeenCalledWith(expect.anything(), 'daily-1300')
   })
@@ -305,10 +302,10 @@ describe('the completed heartbeat stamp (#985)', () => {
       ['37 */2 * * *', 'sightings-export'],
     ] as const) {
       writeHeartbeatCompleted.mockClear()
-      const waited: Promise<unknown>[] = []
+      const ctx = recordingContext()
 
-      void worker.scheduled({ cron } as ScheduledEvent, env, ctxWith(waited))
-      await Promise.allSettled(waited)
+      void worker.scheduled({ cron } as ScheduledEvent, env, ctx)
+      await ctx.settle()
 
       expect(writeHeartbeatCompleted, `${cron} did not complete ${id}`).toHaveBeenCalledWith(expect.anything(), id)
     }

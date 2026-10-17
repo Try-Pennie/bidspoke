@@ -12,6 +12,7 @@
  * list and never an unnamed editor (L530, L215, L11).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -28,8 +29,7 @@ const CONFIG = '44444444-4444-4444-4444-444444442141'
 const testUser = { id: 'user-1', organization_id: ORG, email: 'dan@pennie.com', display_name: 'Dan Wright' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks' } as unknown as Env
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 async function makeApp() {
   const { default: api } = await import('../index')

@@ -7,6 +7,7 @@
  * reads as "nothing recorded yet" (L11).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 import { DATABASE_MEMORY_READINGS_KEY, type StoredMemoryReading } from '../../../lib/database-memory-readings'
 
@@ -19,8 +20,7 @@ import { makeSupabase } from './_supabase-mock'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 const reading = (at: number): StoredMemoryReading => ({ at, freePct: 60, availableMb: 2400, totalMb: 4010, swapUsedMb: 260, swapHigh: false })
 

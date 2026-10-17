@@ -6,6 +6,7 @@
  * version is a 409 carrying the current document (L717), never a silent overwrite.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 import type { BuyerProfileDocument } from '@bidspoke/buyer-profile'
 
@@ -39,8 +40,7 @@ import { makeSupabase, type TableConfig } from './_supabase-mock'
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {}, BUYER_LEDGER: {} } as unknown as Env
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 const ACCEPT = [{ field: 'ok', equals: true }]
 const partnerRow = { id: 'p-1', slug: 'tripoint', is_active: true, accept_signals: ACCEPT, click_url: 'https://trypennie.com/portal/tpl', external_routing_code: 2, organization_id: 'org-abc' }

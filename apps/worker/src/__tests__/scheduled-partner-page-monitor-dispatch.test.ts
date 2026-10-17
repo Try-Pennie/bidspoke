@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../test-setup/wait-until'
 import type { Env } from '../index'
 
 /**
@@ -42,16 +43,12 @@ const env = {
 } as unknown as Env
 
 async function fire(cron: string) {
-  const waited: Promise<unknown>[] = []
-  const ctx = {
-    waitUntil: (p: Promise<unknown>) => waited.push(p),
-    passThroughOnException: () => undefined,
-  } as unknown as ExecutionContext
+  const ctx = recordingContext()
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.spyOn(console, 'log').mockImplementation(() => {})
   void worker.scheduled({ cron } as ScheduledEvent, env, ctx)
-  await Promise.allSettled(waited)
+  await ctx.settle()
 }
 
 beforeEach(() => {

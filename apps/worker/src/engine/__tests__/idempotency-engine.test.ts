@@ -11,6 +11,7 @@
  *     recovery action returned the cached entry without executing anything.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { IdempotencyState, WorkflowDefinition } from '../../types'
@@ -100,11 +101,8 @@ function makeHarness() {
     APP_URL: 'https://app.test',
     PII_REDACTION_FIELDS: '',
   } as unknown as Env
-  const background: Promise<unknown>[] = []
-  const executionCtx = {
-    waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})),
-  }
-  const flush = () => Promise.all(background)
+  const executionCtx = recordingContext()
+  const flush = () => executionCtx.settle()
   return { env, store, executionCtx, flush }
 }
 
@@ -245,6 +243,7 @@ describe('resume and replay (recovery runs)', () => {
     const r = await run({ parentExecutionId: 'orig-1' }, harness).result
     expect(r.idempotentReplay).toBeUndefined()
     expect(vi.mocked(executeNode)).toHaveBeenCalled()
+    await harness.flush()
   })
 
   it('resume executes even when a processing entry is cached', async () => {
@@ -256,6 +255,7 @@ describe('resume and replay (recovery runs)', () => {
     const r = await run({ resumeFromExecutionId: 'orig-1' }, harness).result
     expect(r.status).toBe(200)
     expect(vi.mocked(executeNode)).toHaveBeenCalled()
+    await harness.flush()
   })
 
   it('a successful replay writes its result back to the cache', async () => {
@@ -309,14 +309,13 @@ describe('processing marker ordering (#67)', () => {
       async delete(k: string) { store.delete(k) },
     } as unknown as KVNamespace
 
-    const background: Promise<unknown>[] = []
     const env = {
       IDEMPOTENCY: kv,
       WORKFLOW_CACHE: makeKV().kv,
       APP_URL: 'https://app.test',
       PII_REDACTION_FIELDS: '',
     } as unknown as Env
-    const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
+    const executionCtx = recordingContext()
 
     const result = executeWorkflow(
       { workflowId: WF_ID, payload: PAYLOAD, source: 'test-source' },
@@ -339,7 +338,7 @@ describe('processing marker ordering (#67)', () => {
     // Release the marker write — only now may the walk proceed.
     releaseProcessing()
     await result
-    await Promise.all(background)
+    await executionCtx.settle()
     expect(vi.mocked(executeNode)).toHaveBeenCalled()
   })
 })

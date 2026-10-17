@@ -10,6 +10,7 @@
  * code and the alert would keep firing, silently.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { ExecutionContext, WorkflowDefinition } from '../../types'
@@ -51,9 +52,8 @@ function makeKV() {
 const supabase = { from: () => ({ select: () => ({ in: () => Promise.resolve({ data: [] }) }) }) } as unknown as SupabaseClient
 
 async function runWith(isTest?: boolean): Promise<ExecutionContext> {
-  const background: Promise<unknown>[] = []
   const env = { IDEMPOTENCY: makeKV(), WORKFLOW_CACHE: makeKV(), APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
-  const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
+  const executionCtx = recordingContext()
 
   await executeWorkflow(
     { workflowId: 'wf-547', payload: { lead: 1 }, source: 'engine', ...(isTest === undefined ? {} : { isTest }) },
@@ -61,7 +61,7 @@ async function runWith(isTest?: boolean): Promise<ExecutionContext> {
     moneyRuntime(supabase),
     executionCtx,
   )
-  await Promise.all(background.splice(0))
+  await executionCtx.settle()
 
   // executeNode(node, ctx, env, supabase, signal): the context is the 2nd argument.
   const call = vi.mocked(executeNode).mock.calls[0]

@@ -3,6 +3,7 @@
  * to the caller's org, and the reset audit row uses the partner's real id.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -33,8 +34,7 @@ async function makeApp() {
   const { default: api } = await import('../index')
   return api
 }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 function request(app: { request: Function }, method: string, path: string) {
   return app.request(path, { method, headers: { Authorization: 'Bearer tok' } }, testEnv, mockCtx)

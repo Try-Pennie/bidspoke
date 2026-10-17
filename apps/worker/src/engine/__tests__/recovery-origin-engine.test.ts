@@ -6,6 +6,7 @@
  * has none, so nothing in it can read a lineage.
  */
 import { describe, expect, it, vi } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
@@ -75,7 +76,7 @@ describe('executeWorkflow and the recovery lineage', () => {
       delete: async () => undefined,
     } as unknown as KVNamespace
     const e = { IDEMPOTENCY: kv, WORKFLOW_CACHE: kv, APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
-    const ec = { waitUntil: (p: Promise<unknown>) => void p.catch(() => undefined) }
+    const ec = recordingContext()
     const base = { workflowId: 'wf-1', payload: { prospect: 'p-1' }, source: 's' }
 
     await executeWorkflow(base, e, moneyRuntime(sb), ec)
@@ -93,6 +94,8 @@ describe('executeWorkflow and the recovery lineage', () => {
       { recovery: 'resume', origins: [fromReplay, fromReplay], holds: { held: false, keys: ['at-risk-write:replay1:a'] } },
       { recovery: 'replay', origins: [fromRoot, fromRoot], holds: { held: false, keys: ['at-risk-write:replay1:a', 'at-risk-write:root:a'] } },
     ])
+    // The finalize each run hands off is let finish before the test ends (#2120).
+    await ec.settle()
   })
 
   // The hold is the read-back's own answer, not a second predicate: a credit
@@ -120,9 +123,11 @@ describe('executeWorkflow and the recovery lineage', () => {
       },
     } as unknown as SupabaseClient
     const e = { IDEMPOTENCY: kv, WORKFLOW_CACHE: kv, APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '', SECRET_ENCRYPTION_KEY: KEY } as unknown as Env
-    const ec = { waitUntil: (p: Promise<unknown>) => void p.catch(() => undefined) }
+    const ec = recordingContext()
     const before = seen.length
     await executeWorkflow({ workflowId: 'wf-1', payload: { prospect: 'p-1' }, source: 's', resumeFromExecutionId: 'replay1' }, e, moneyRuntime(sb), ec)
     expect(seen[before]?.holds?.held).toBe(true)
+    // The finalize each run hands off is let finish before the test ends (#2120).
+    await ec.settle()
   })
 })

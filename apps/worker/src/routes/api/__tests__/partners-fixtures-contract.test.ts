@@ -9,6 +9,7 @@
  * sub-account IDs, and the stale save's 409 the merge dialog opens from.
  */
 import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -48,8 +49,7 @@ const deleteChecks = Object.entries(deleteChecksJson).filter(([k]) => !k.startsW
 
 const testUser = { id: 'user-1', organization_id: String(partners[0].organization_id), email: 'editor-a@example.com' }
 const validPayload = { sub: 'user-1', email: 'editor-a@example.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 /** Both secrets the captured partners name are set on the production Worker (wrangler secret list, 2026-10-15). */
 const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: { get: async () => null, put: async () => {}, delete: async () => {} }, AMONE_PROXY_SECRET: 's', TRIPOINT_PROXY_SECRET: 's' } as unknown as Env
 

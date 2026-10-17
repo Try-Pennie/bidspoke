@@ -8,6 +8,7 @@
  * fails cannot delay or fail the job whose lookup raised it.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import { lookupSlackConnection } from '../slack'
 import { slackOrgIds } from '../alert-fanout'
 import { createScheduledSupabaseClient, registerScheduledSlack } from '../scheduled-slack'
@@ -48,9 +49,9 @@ async function setup(answers: Answer[], kvKind: 'empty' | 'copy' | 'unreadable',
       ? await kvWithCopy({ [ORG]: STORED_CONN })
       : kvWith({ [SLACK_CONNS_LASTGOOD_KEY]: await encryptSecret(JSON.stringify({ [ORG]: STORED_CONN }), OTHER_KEY) })
   const { pager, pages } = recordingPager(settle)
-  const handed: Promise<unknown>[] = []
-  registerScheduledSlack(client, { kv, secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep, pager, waitUntil: (p) => handed.push(p) })
-  return { client, pages, handed }
+  const ctx = recordingContext()
+  registerScheduledSlack(client, { kv, secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep, pager, waitUntil: ctx.waitUntil })
+  return { client, pages, handed: ctx.handed, ctx }
 }
 
 describe('a lookup that someone can be told from never pages', () => {
@@ -90,7 +91,8 @@ describe('a lookup nobody can be told from pages, once, through waitUntil', () =
     // every entry unparseable), so the check tells nobody: the same case.
     const { client } = fakeClient([{ error: { message: 'boom' } }])
     const { pager, pages } = recordingPager()
-    registerScheduledSlack(client, { kv: await kvWithCopy({}), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep, pager, waitUntil: () => {} })
+    const ctx = recordingContext()
+    registerScheduledSlack(client, { kv: await kvWithCopy({}), secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep, pager, waitUntil: ctx.waitUntil })
     expect(await slackOrgIds(client, 'test', 'tell-only')).toEqual({ kind: 'stored', orgIds: [], ageMs: null })
     expect(pages).toEqual([{ orgId: null, reason: 'org_not_in_copy' }])
   })
@@ -110,10 +112,12 @@ describe('a lookup nobody can be told from pages, once, through waitUntil', () =
 
 describe('the page never holds up or fails the tick', () => {
   it('the lookup answers while the page has not settled', async () => {
-    const { client, pages } = await setup([{ error: { message: 'boom' } }], 'empty', 'never')
+    const { client, pages, ctx } = await setup([{ error: { message: 'boom' } }], 'empty', 'never')
     // Would hang the test (and its timeout would fail it) if the lookup awaited the page.
     expect(await lookupSlackConnection(client, ORG)).toEqual({ kind: 'unreachable', reason: 'no_copy' })
     expect(pages).toHaveLength(1)
+    // The page hangs on purpose and never settles, so it can never log either.
+    ctx.forget()
   })
 
   it('a page that rejects does not reject the lookup, and its rejection is handled', async () => {
@@ -139,23 +143,25 @@ describe('the scheduled handler client wires the real pager from the worker secr
       posted.push({ url, body: JSON.parse(String(init.body)) })
       return new Response(null, { status: 202 })
     }) as unknown as typeof fetch
-    const handed: Promise<unknown>[] = []
+    const ctx = recordingContext()
     const client = createScheduledSupabaseClient(
       env({ BETTERSTACK_OUTAGE_TOKEN: 'tok', BETTERSTACK_OUTAGE_URL: 'https://s1.betterstackdata.com' }),
-      (p) => handed.push(p),
+      ctx.waitUntil,
       { fetch: unavailable, pageFetch, sleep: fakeTimers('never').sleep },
     )
     expect(await lookupSlackConnection(client, ORG)).toEqual({ kind: 'unreachable', reason: 'no_copy' })
-    await Promise.all(handed)
+    await ctx.settle()
+    await Promise.all(ctx.handed)
     expect(posted).toEqual([{ url: 'https://s1.betterstackdata.com', body: expect.objectContaining({ message: NOBODY_TOLD_LINE, organization_id: ORG, reason: 'no_copy' }) }])
   })
 
   it('posts nothing while the secrets are unset', async () => {
     const pageFetch = vi.fn() as unknown as typeof fetch
-    const handed: Promise<unknown>[] = []
-    const client = createScheduledSupabaseClient(env({}), (p) => handed.push(p), { fetch: unavailable, pageFetch, sleep: fakeTimers('never').sleep })
+    const ctx = recordingContext()
+    const client = createScheduledSupabaseClient(env({}), ctx.waitUntil, { fetch: unavailable, pageFetch, sleep: fakeTimers('never').sleep })
     await lookupSlackConnection(client, ORG)
-    await Promise.all(handed)
+    await ctx.settle()
+    await Promise.all(ctx.handed)
     expect(pageFetch).not.toHaveBeenCalled()
   })
 })

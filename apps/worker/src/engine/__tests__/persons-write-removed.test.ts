@@ -19,6 +19,7 @@
  * touches rather than which functions it calls.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../test-setup/wait-until'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
 import type { WorkflowDefinition } from '../../types'
@@ -122,7 +123,6 @@ function makeRecordingSupabase(opts: { failOn?: string } = {}) {
 }
 
 function makeHarness() {
-  const background: Promise<unknown>[] = []
   const env = {
     IDEMPOTENCY: makeKV(),
     WORKFLOW_CACHE: makeKV(),
@@ -133,9 +133,9 @@ function makeHarness() {
     SECRET_ENCRYPTION_KEY: btoa(String.fromCharCode(...new Uint8Array(32).fill(7))),
     SSN_HASH_PEPPER: 'test-pepper',
   } as unknown as Env
-  const executionCtx = { waitUntil: (p: Promise<unknown>) => background.push(p.catch(() => {})) }
+  const executionCtx = recordingContext()
   const drain = async () => {
-    for (let i = 0; i < 8 && background.length; i++) await Promise.all(background.splice(0))
+    await executionCtx.settle()
   }
   return { env, executionCtx, drain }
 }

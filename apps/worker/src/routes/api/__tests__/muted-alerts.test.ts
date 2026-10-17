@@ -6,6 +6,7 @@
  * that would read as "nothing is muted" (L98).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
 vi.mock('../../../lib/jwt')
@@ -53,8 +54,7 @@ async function makeApp() {
   return api
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const mockCtx = { waitUntil: vi.fn(), passThroughOnException: vi.fn() } as any
+const mockCtx = recordingContext()
 
 function request(app: { request: Function }, env: Env, headers: Record<string, string> = { Authorization: 'Bearer tok' }) {
   return app.request('/muted-alerts', { method: 'GET', headers }, env, mockCtx)
