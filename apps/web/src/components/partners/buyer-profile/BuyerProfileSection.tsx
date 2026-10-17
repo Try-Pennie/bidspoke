@@ -470,7 +470,7 @@ export function BuyerProfileSection(props: Props) {
           {click && (
             <div className="space-y-3">
               <h4 className="text-sm font-medium text-gray-700">Held clicks</h4>
-              <HeldClicksPanel partnerName={partnerName} held={held} error={heldError} outcomes={heldOutcomes} onMarkSent={markSent} onFree={free} onClear={clear} onRetrySalesforce={retrySalesforce} onSetLeadId={setLeadId} />
+              <HeldClicksPanel partnerName={partnerName} zone={zone} held={held} error={heldError} outcomes={heldOutcomes} onMarkSent={markSent} onFree={free} onClear={clear} onRetrySalesforce={retrySalesforce} onSetLeadId={setLeadId} />
             </div>
           )}
 

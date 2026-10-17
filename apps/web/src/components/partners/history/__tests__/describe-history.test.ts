@@ -109,14 +109,14 @@ describe('the buyer profile', () => {
       changes[`windows.${d}.540`] = { new: 1260, old: null }
       changes[`windows.${d}.660`] = { new: null, old: 1260 }
     }
-    expect(lines(profile(changes))).toEqual([{ kind: 'change', label: 'Hours, Monday to Friday', from: '11:00 AM to 9:00 PM', to: '9:00 AM to 9:00 PM' }])
+    expect(lines(profile(changes))).toEqual([{ kind: 'change', label: 'Hours (Eastern), Monday to Friday', from: '11:00 AM to 9:00 PM', to: '9:00 AM to 9:00 PM' }])
   })
 
   it('hours that differ by day are a line each, and a whole day open reads as all day', () => {
     expect(lines(profile({ 'windows.0.0': { new: 1440, old: null }, 'windows.2.660': { new: 1320, old: 1260 } }, 'created'))).toEqual([
       { kind: 'text', text: 'Set up the buyer profile.' },
-      { kind: 'set', label: 'Hours, Sunday', value: 'all day' },
-      { kind: 'change', label: 'Hours, Tuesday', from: '11:00 AM to 9:00 PM', to: '11:00 AM to 10:00 PM' },
+      { kind: 'set', label: 'Hours (Eastern), Sunday', value: 'all day' },
+      { kind: 'change', label: 'Hours (Eastern), Tuesday', from: '11:00 AM to 9:00 PM', to: '11:00 AM to 10:00 PM' },
     ])
   })
 
