@@ -553,7 +553,9 @@ describe('partner credential warning (#416)', () => {
     )
     const res = await get('/partners/p-1', envWith({}))
     const row = await res.json() as { credential_warning: string }
-    expect(row.credential_warning).toMatch(/live lead/i)
+    // The settled design's words (PM-23, #2326, frame 18): what is missing, where
+    // it is set, what happens next to this partner, and who adds it.
+    expect(row.credential_warning).toBe("SOFI_SECRET is not set as a Worker secret, so SoFi's next bid will fail. An engineer adds it in Cloudflare.")
   })
 
   it('says an INACTIVE partner must have it set before activation', async () => {
@@ -568,8 +570,8 @@ describe('partner credential warning (#416)', () => {
     )
     const res = await get('/partners/p-1', envWith({}))
     const row = await res.json() as { credential_warning: string }
-    expect(row.credential_warning).toMatch(/before/i)
-    expect(row.credential_warning).not.toMatch(/live lead/i)
+    expect(row.credential_warning).toBe('SOFI_SECRET is not set as a Worker secret. An engineer adds it in Cloudflare before SoFi is turned on.')
+    expect(row.credential_warning).not.toMatch(/will fail/i)
   })
 
   it('warns in the PUT response, computed from the row as saved', async () => {

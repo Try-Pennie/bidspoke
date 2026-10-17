@@ -40,13 +40,13 @@ describe('partner settings', () => {
   it('an older save that recorded only which settings it sent says so, never that each one changed', () => {
     const all = ['name', 'api_endpoint', 'cf_secret_key', 'daily_cap', 'min_bid', 'bid_formula', 'bid_resolver_type', 'bid_mode']
     expect(lines(entry({ changes: { changed_fields: all } }))).toEqual([{ kind: 'text', text: 'Saved 8 settings at once; the values were not recorded.' }])
-    expect(lines(entry({ changes: { changed_fields: ['bid_resolver_config'] } }))).toEqual([{ kind: 'text', text: 'Saved Resolver settings; the values were not recorded.' }])
+    expect(lines(entry({ changes: { changed_fields: ['bid_resolver_config'] } }))).toEqual([{ kind: 'text', text: 'Saved Bid amount settings; the values were not recorded.' }])
   })
 
   it('a hand written note with its before and after reads as the change and the note', () => {
     const e = entry({ changes: { note: 'Tripoint high tier 0.0012 to 0.0013 to match Salesforce', after: 0.0013, before: 0.0012, changed_fields: ['bid_resolver_config'] } })
     expect(lines(e)).toEqual([
-      { kind: 'change', label: 'Resolver settings', from: '0.0012', to: '0.0013' },
+      { kind: 'change', label: 'Bid amount settings', from: '0.0012', to: '0.0013' },
       { kind: 'text', text: 'Note: Tripoint high tier 0.0012 to 0.0013 to match Salesforce' },
     ])
     expect(describeEntry(e).unregistered).toEqual([])
@@ -76,7 +76,7 @@ describe('partner settings', () => {
 
   it('bookkeeping a trigger adds is never a line: the actor, the source, the route', () => {
     expect(lines(entry({ editor: { kind: 'direct' }, changes: { _source: 'direct_sql', _actor: { name: 'x' }, extra_extraction: { old: { a: 1 }, new: { a: 2 } } } }))).toEqual([
-      { kind: 'change', label: 'Extra extraction', from: '{"a":1}', to: '{"a":2}' },
+      { kind: 'change', label: 'Extract', from: '{"a":1}', to: '{"a":2}' },
     ])
   })
 
