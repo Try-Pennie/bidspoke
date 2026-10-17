@@ -554,6 +554,25 @@ const scheduledJobs = {
           await runScheduledBuyerObjectsDrillForEnv(supabase, env)
         })().catch((e) => console.error('[buyer-objects-drill] failed:', e)),
       )
+      // The Main Flow invalid state canary's daily read-back from Salesforce
+      // (#2173): every run whose write went straight to Salesforce yesterday,
+      // read back and posted, landed or not. Its own heartbeat, so a missed day
+      // pages; removed with the canary by the phase 6 change (#2175).
+      track(
+        (async () => {
+          const { runInvalidStateWatchForEnv, INVALID_STATE_WATCH_JOB } = await import('./lib/invalid-state-canary-watch')
+          await writeHeartbeat(env.IDEMPOTENCY, INVALID_STATE_WATCH_JOB).catch((e) =>
+            console.error('[cron-heartbeat] invalid-state-canary-watch write failed:', e)
+          )
+          try {
+            await runInvalidStateWatchForEnv(supabase, env)
+          } finally {
+            await writeHeartbeatCompleted(env.IDEMPOTENCY, INVALID_STATE_WATCH_JOB).catch((e) =>
+              console.error('[cron-heartbeat] invalid-state-canary-watch completed write failed:', e)
+            )
+          }
+        })().catch((e) => console.error('[invalid-state-canary-watch] failed:', e))
+      )
       // The deletion gate's measurements (#872, Phase A4). SHADOW: it writes
       // numbers to execution_archive_days and nothing reads them to authorise a
       // deletion until A5 (#873). Daily, because it re-measures every day still
