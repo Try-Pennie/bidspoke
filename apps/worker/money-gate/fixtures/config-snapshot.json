@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "exported_at": "2026-10-01T20:59:50.385Z",
+  "exported_at": "2026-10-17T00:09:24.312Z",
   "tables": {
     "workflows": [
       {
@@ -76,14 +76,19 @@
     ],
     "workflow_versions": [
       {
-        "id": "2795896e-e4f5-4821-85bc-6e4bcc8dfb6a",
-        "workflow_id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
-        "version_number": 23
+        "id": "04be8c47-08c2-4330-b75c-e4aeacc91352",
+        "workflow_id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
+        "version_number": 38
       },
       {
-        "id": "75613e67-1ca0-48e2-be23-15ee1316da16",
+        "id": "313d28da-eef0-4c0e-969f-1c23180b1439",
         "workflow_id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
-        "version_number": 21
+        "version_number": 22
+      },
+      {
+        "id": "426604bc-a24d-4398-aa00-8cdbd5cbb28d",
+        "workflow_id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
+        "version_number": 16
       },
       {
         "id": "75cae1be-86c7-4ebb-afb0-0391fdb6d2cc",
@@ -91,24 +96,19 @@
         "version_number": 17
       },
       {
-        "id": "a64f8163-a6b2-4a2d-b67d-c1b9397e40e6",
-        "workflow_id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
-        "version_number": 15
+        "id": "e7d4d50f-83fb-4edd-9f81-38434592fe01",
+        "workflow_id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+        "version_number": 24
       },
       {
-        "id": "a9d6cd88-7dae-4169-bc55-a4712b7966dd",
-        "workflow_id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
-        "version_number": 36
-      },
-      {
-        "id": "af7c371c-6717-40ab-b69c-35bd62fb1750",
-        "workflow_id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
-        "version_number": 168
-      },
-      {
-        "id": "f5cf3729-5fab-4f7e-aaaa-a95f5e8e3136",
+        "id": "f1f9ceb5-d563-441c-85a1-ba8c1ed674d0",
         "workflow_id": "da82a183-1a4a-417e-b0b8-5f3fe5e14840",
-        "version_number": 105
+        "version_number": 111
+      },
+      {
+        "id": "f7627c7b-e059-4b5f-8439-d7d54c9c1788",
+        "workflow_id": "60e2e0bc-5aa2-47db-b333-3a8fe1c62e09",
+        "version_number": 172
       }
     ],
     "partner_configs": [
@@ -402,7 +402,7 @@
         "circuit_cooldown_seconds": 100,
         "priority": 0,
         "sell_off_offer_title": "Denied a personal loan? Need an income-based financing solution?",
-        "sell_off_offer_details": "<p>Access up to $100,000 with rates tailored to your income</p><ul><li>Terms and rates based on your income</li><li>Approval in minutes, not weeks</li><li>Funding as soon as the next business day</li></ul>\"",
+        "sell_off_offer_details": "<p>Access up to $100,000 with rates tailored to your income</p><ul><li>Terms and rates based on your income</li><li>Approval in minutes, not weeks</li><li>Funding as soon as the next business day</li></ul>",
         "click_url": null,
         "outbound_field_mapping": null,
         "extra_extraction": null,
@@ -534,7 +534,9 @@
           "leadId": "data.createLead.id",
           "result": {
             "classifier": "tripoint_result"
-          }
+          },
+          "result_code": "data.createLead.resultCode",
+          "buyer_reference": "data.createLead.id"
         },
         "confirmation_window_ms": null,
         "sub_account_min_bids": null,
@@ -632,15 +634,15 @@
         ],
         "debt_min": null,
         "debt_max": null,
-        "loan_amount_min": null,
+        "loan_amount_min": 1000,
         "hourly_lead_cap": null,
         "daily_lead_cap": null,
         "hourly_spend_cap_cents": null,
         "daily_spend_cap_cents": null,
-        "version": 4,
+        "version": 5,
         "sold_on": "offer",
         "click_delivery": null,
-        "updated_at": "2026-09-23T15:47:10.49461+00:00"
+        "updated_at": "2026-10-13T15:30:06.087961+00:00"
       },
       {
         "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
@@ -691,12 +693,12 @@
         ],
         "debt_min": 10000,
         "debt_max": 10000,
-        "loan_amount_min": 1000,
+        "loan_amount_min": 10000,
         "hourly_lead_cap": null,
         "daily_lead_cap": 10,
         "hourly_spend_cap_cents": null,
         "daily_spend_cap_cents": null,
-        "version": 10,
+        "version": 15,
         "sold_on": "click",
         "click_delivery": {
           "routes": [
@@ -724,7 +726,7 @@
           ],
           "success_pattern": "^\\s*\\{(?=[\\s\\S]*\"status\"\\s*:\\s*\"Success)[\\s\\S]*?\"id\"\\s*:\\s*\"(?<id>[A-Za-z0-9]{15,20})\"[\\s\\S]*\\}\\s*$"
         },
-        "updated_at": "2026-09-30T19:00:35.694025+00:00"
+        "updated_at": "2026-10-16T16:16:18.146668+00:00"
       }
     ],
     "partner_uuid_map": [
@@ -942,7 +944,7 @@
       },
       {
         "key": "BUYER_SELECT_ENGINE_PERCENT",
-        "value": "0",
+        "value": "1",
         "is_secret": false,
         "scope": "global",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
@@ -991,6 +993,14 @@
       {
         "key": "ENGINE_1L_PLUS_2L_TLG_5K_BEST2LOFFER",
         "value": "placeholder-ENGINE_1L_PLUS_2L_TLG_5K_BEST2LOFFER",
+        "is_secret": false,
+        "scope": "global",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "workflow_id": null
+      },
+      {
+        "key": "ENGINE_2L_ALL_TOKEN",
+        "value": "placeholder-ENGINE_2L_ALL_TOKEN",
         "is_secret": false,
         "scope": "global",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
@@ -1205,6 +1215,22 @@
         "workflow_id": null
       },
       {
+        "key": "LINK_TOKEN_SECRET",
+        "value": "placeholder-LINK_TOKEN_SECRET",
+        "is_secret": false,
+        "scope": "global",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "workflow_id": null
+      },
+      {
+        "key": "MARCIA_SLATE_KEY",
+        "value": "placeholder-MARCIA_SLATE_KEY",
+        "is_secret": false,
+        "scope": "global",
+        "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
+        "workflow_id": null
+      },
+      {
         "key": "OFFBOARDING_API_KEY",
         "value": "placeholder-OFFBOARDING_API_KEY",
         "is_secret": false,
@@ -1247,7 +1273,7 @@
     ],
     "buyer_pricing_tiers": [
       {
-        "id": "304089aa-797f-4a5a-926b-48e050eab013",
+        "id": "92484fc6-8ff4-4e9b-9b11-56b17b7c439a",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "population": "engine",
@@ -1256,7 +1282,7 @@
         "multiplier": 0.0001
       },
       {
-        "id": "a022bdd8-248f-4f23-b667-14db1ae03371",
+        "id": "e61079e0-bd5b-4f1c-8de3-c068d5259bb3",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "population": "engine",
@@ -1267,47 +1293,47 @@
     ],
     "buyer_operating_windows": [
       {
-        "id": "b74ef426-a053-4d89-b632-dcb75d9264f7",
+        "id": "65e0b221-5a6e-4b18-9215-c3f196d89857",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "day_of_week": 1,
-        "opens_minute": 660,
+        "opens_minute": 540,
         "closes_minute": 1260
       },
       {
-        "id": "2bf9696f-84e7-4c72-b62d-a0fca9f4b0e4",
+        "id": "bb034ff8-6338-40e2-aea9-848bc0182ca8",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "day_of_week": 2,
-        "opens_minute": 660,
+        "opens_minute": 540,
         "closes_minute": 1260
       },
       {
-        "id": "e014fba4-1d45-4ddf-a2f6-b213d1cfeae1",
+        "id": "e75f82f9-8d5f-4f50-8eaa-ce4fc0963854",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "day_of_week": 3,
-        "opens_minute": 660,
+        "opens_minute": 540,
         "closes_minute": 1260
       },
       {
-        "id": "30e2bcdf-6199-41a9-a8ef-9c306756a170",
+        "id": "67949f32-a9b1-40ed-8cc7-5ae250be5928",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "day_of_week": 4,
-        "opens_minute": 660,
+        "opens_minute": 540,
         "closes_minute": 1260
       },
       {
-        "id": "d4d4dcee-5df3-4a82-998f-d7958784d472",
+        "id": "b6c2a95d-de96-44c0-a1f3-401acf319259",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_id": "4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3",
         "day_of_week": 5,
-        "opens_minute": 660,
+        "opens_minute": 540,
         "closes_minute": 1260
       },
       {
-        "id": "33122b99-6331-4353-872b-a0e10ecc2efe",
+        "id": "87fc13a3-de7c-4f5f-b8ce-bb222c8b4776",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "day_of_week": 0,
@@ -1315,7 +1341,7 @@
         "closes_minute": 1440
       },
       {
-        "id": "3e62cf9f-98bd-4f63-927c-fb296720d968",
+        "id": "c9653615-173a-4430-8ac0-0d6349cb6d28",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "day_of_week": 1,
@@ -1323,7 +1349,7 @@
         "closes_minute": 1440
       },
       {
-        "id": "4fd5f914-ab47-495f-a03e-c0585c43a831",
+        "id": "fe03cbb0-4dbc-4b22-96c8-8b004a89ba75",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "day_of_week": 2,
@@ -1331,7 +1357,7 @@
         "closes_minute": 1440
       },
       {
-        "id": "4be5984a-fea2-4009-b2e4-aa4d38500065",
+        "id": "1c0d3b17-0e95-4348-a666-93eb089eba98",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "day_of_week": 3,
@@ -1339,7 +1365,7 @@
         "closes_minute": 1440
       },
       {
-        "id": "ae29445d-304f-45b5-a103-b87cdad891fb",
+        "id": "897a61b9-eee1-4e48-8947-72fb076effb4",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "day_of_week": 4,
@@ -1347,7 +1373,7 @@
         "closes_minute": 1440
       },
       {
-        "id": "350712d3-36ed-4847-bd62-2413b28a0ec9",
+        "id": "952f3c41-3893-40ae-93eb-1b6fd69f505d",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "day_of_week": 5,
@@ -1355,7 +1381,7 @@
         "closes_minute": 1440
       },
       {
-        "id": "84e7b386-ce16-4c81-aabf-a286285fcac8",
+        "id": "9576f2a6-0a07-4bb8-bcfc-e740176cf48f",
         "organization_id": "9d9d0d3a-1959-41d5-95ca-c1399fa54590",
         "partner_id": "1b9cbd8f-1d23-496c-b046-b11d64edae29",
         "day_of_week": 6,

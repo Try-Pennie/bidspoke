@@ -1,20 +1,30 @@
 /**
- * The production Main Flow definition the port's tests run over (#2171).
+ * The production Main Flow definition the port's tests run over (#2171, #2173).
  *
- * It is the money gate's fixture, which the export script refreshes from the
- * `Try-Pennie/bidspoke-workflows` backup and the gate refuses unless it equals
- * production (money-gate/README.md). The port is a transform over whatever the
- * canvas holds, so no hand kept copy of Main Flow exists; these tests read the
- * same file the gate replays.
+ * It is Main Flow version 169, the last version saved before any stage was
+ * applied, read from `workflow_versions` and committed beside these tests as
+ * their own fixed input (`fixtures/main-flow-v169.json`). Until the first canary
+ * they read the money gate's fixture directly, but once a stage is live that
+ * fixture is part ported, and the transform's tests need the definition the port
+ * starts from: nine relay posts, none of them native yet.
+ *
+ * The gate's fixture is held to this copy instead: `gate-fixture.test.ts`
+ * requires it to equal the transform of version 169 at the stage last applied,
+ * so a canvas save on Main Flow that the port did not make fails there by name
+ * on the next fixture refresh.
  */
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
-import MAIN_FLOW_FIXTURE_RAW from '../../../../money-gate/fixtures/definitions/60e2e0bc-5aa2-47db-b333-3a8fe1c62e09.json?raw'
+import MAIN_FLOW_V169_RAW from './fixtures/main-flow-v169.json?raw'
 import { MAIN_FLOW_WORKFLOW_ID, type Definition } from '../transform'
+
+/** The Main Flow version the copy is, as `workflow_versions` numbers it. */
+export const PRE_PORT_VERSION = 169
 
 /** A fresh copy on every call, so no test can change another's input. */
 export function productionMainFlow(): Definition {
-  const file = JSON.parse(MAIN_FLOW_FIXTURE_RAW as string) as { id: string; definition: Definition }
+  const file = JSON.parse(MAIN_FLOW_V169_RAW as string) as { id: string; version_number: number; definition: Definition }
   if (file.id !== MAIN_FLOW_WORKFLOW_ID) throw new Error(`the Main Flow fixture names workflow ${file.id}`)
+  if (file.version_number !== PRE_PORT_VERSION) throw new Error(`the Main Flow fixture is version ${file.version_number}, not ${PRE_PORT_VERSION}`)
   return file.definition
 }
 

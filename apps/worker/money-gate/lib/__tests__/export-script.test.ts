@@ -206,3 +206,56 @@ describe('makeExportClient', () => {
     expect(() => c.rpc('anything')).toThrow(/read only/)
   })
 })
+
+// #2173: a money workflow with no live runs in the sample window is quiet, not
+// gone. It keeps its committed shape, marked with when it was really sampled, and
+// its definition and config are exported as usual, so the gate goes on replaying it.
+describe('export-money-fixture-shapes carries a quiet workflow over', () => {
+  const QUIET = 'ffffffff-0000-4000-8000-000000000004'
+  const previousShape = { workflow_id: QUIET, workflow_name: 'Quiet tool', sample_count: 3, fields: {} }
+
+  async function exportWith(previousShapes: ExportDeps['previousShapes']) {
+    const tables = fakeTables()
+    tables.workflows.push({ id: QUIET, name: 'Quiet tool', organization_id: ORG, is_active: true, deleted_at: null, lane: 'money', slack_channel: null, definition: DEFINITION })
+    tables.workflow_versions.push({ id: 'v2', workflow_id: QUIET, version_number: 4 })
+    const files = new Map<string, string>()
+    const lines: string[] = []
+    const { client } = fakeClient(tables)
+    await runExport({
+      client: client as never,
+      fetchBackupDefinition: async () => DEFINITION,
+      write: (path, text) => files.set(path, text),
+      log: (line) => lines.push(line),
+      now: () => new Date('2026-10-16T00:00:00Z'),
+      previousShapes,
+    })
+    const shapes = JSON.parse(files.get('money-gate/fixtures/shapes.json')!) as { workflows: Array<{ workflow_id: string; carried_over?: { sampled_at: string; reason: string } }> }
+    const snapshot = JSON.parse(files.get('money-gate/fixtures/config-snapshot.json')!) as { tables: { workflows: { id: string }[]; workflow_versions: { workflow_id: string }[] } }
+    return { files, lines, shapes, snapshot }
+  }
+
+  it('keeps its committed shape, marked with the export that sampled it, and exports its definition and config', async () => {
+    const { files, lines, shapes, snapshot } = await exportWith({ version: 1, exported_at: '2026-10-01T20:59:50.385Z', workflows: [previousShape] })
+    const quiet = shapes.workflows.find((w) => w.workflow_id === QUIET)
+    expect(quiet).toMatchObject({ ...previousShape, carried_over: { sampled_at: '2026-10-01T20:59:50.385Z' } })
+    expect(quiet!.carried_over!.reason).toMatch(/no live runs/)
+    expect(files.has(`money-gate/fixtures/definitions/${QUIET}.json`)).toBe(true)
+    expect(snapshot.tables.workflows.map((w) => w.id)).toContain(QUIET)
+    expect(snapshot.tables.workflow_versions.map((v) => v.workflow_id)).toContain(QUIET)
+    expect(lines.join('\n')).toMatch(/Quiet tool: no live runs in 2 days, shape carried over from 2026-10-01T20:59:50.385Z/)
+  })
+
+  it('carried over again, it keeps the time it was really sampled, not the export that last kept it', async () => {
+    const carried = { ...previousShape, carried_over: { sampled_at: '2026-09-20T00:00:00.000Z', reason: 'earlier' } }
+    const { shapes } = await exportWith({ version: 1, exported_at: '2026-10-01T20:59:50.385Z', workflows: [carried] })
+    expect(shapes.workflows.find((w) => w.workflow_id === QUIET)!.carried_over!.sampled_at).toBe('2026-09-20T00:00:00.000Z')
+  })
+
+  it('with no committed shape to keep, it is left out as before, definition and all', async () => {
+    const { files, lines, shapes, snapshot } = await exportWith(null)
+    expect(shapes.workflows.map((w) => w.workflow_id)).toEqual([WF])
+    expect(files.has(`money-gate/fixtures/definitions/${QUIET}.json`)).toBe(false)
+    expect(snapshot.tables.workflows.map((w) => w.id)).toEqual([WF])
+    expect(lines.join('\n')).toMatch(/Quiet tool: no live runs in 2 days and no committed shape, not exported/)
+  })
+})
