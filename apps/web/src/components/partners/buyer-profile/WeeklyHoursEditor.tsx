@@ -44,7 +44,11 @@ export function WeeklyHoursEditor({ value, onChange, zone = DEFAULT_DISPLAY_TIME
   const sorted = [...value].sort((a, b) => a.day_of_week - b.day_of_week || a.opens_minute - b.opens_minute)
   const shown = displayWindows(sorted, shift)
   const shared = sharedHoursOf(sorted, shift)
-  const [perDayChosen, setPerDayChosen] = useState(false)
+  // Once hours that differ have opened the per day view, it stays while the
+  // person edits, even when their edits make every day match; only "Same hours
+  // every day" goes back.
+  const [perDayChosen, setPerDayChosen] = useState(() => shared === null)
+  if (shared === null && !perDayChosen) setPerDayChosen(true)
   // The range the chips open a day for while no day is open, so a range typed first is kept.
   const [idleRange, setIdleRange] = useState(DEFAULT_RANGE)
   const perDay = perDayChosen || shared === null

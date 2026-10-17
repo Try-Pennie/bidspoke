@@ -194,3 +194,18 @@ describe('one row per day', () => {
     expect(sortWindows(onChange.mock.lastCall![0]).filter((x) => x.day_of_week === 2)).toEqual([w(2, 600, 1080)])
   })
 })
+
+describe('the per day view stays while the person edits (#2324 review)', () => {
+  it('hours that differ open per day, and editing them until they match keeps the per day rows', () => {
+    function Host() {
+      const [value, setValue] = useState<ProfileWindowDocument[]>([...weekdays.slice(0, 4), w(5, 540, 1020)])
+      return <WeeklyHoursEditor value={value} onChange={setValue} />
+    }
+    render(<Host />)
+    const friday = screen.getByRole('group', { name: 'Friday' })
+    commit(within(friday).getByLabelText('Closes, Friday'), '9:00 PM')
+    // Every open day now has the same hours, and the view the person is working in stays.
+    expect(screen.getByRole('group', { name: 'Friday' })).toBeInTheDocument()
+    expect(screen.queryByRole('group', { name: 'Days open' })).toBeNull()
+  })
+})

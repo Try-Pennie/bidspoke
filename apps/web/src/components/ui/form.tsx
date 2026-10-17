@@ -12,7 +12,7 @@
  * their own, so a route that uses only a button here does not load their Radix
  * code (#2137, measured on /dashboard and the canvas).
  */
-import { useState, type KeyboardEvent, type ReactNode } from 'react'
+import { useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { Loader2 } from 'lucide-react'
 
 // ── Field ─────────────────────────────────────────────────────────────────────
@@ -187,6 +187,14 @@ export function MoneyInput({ id, value, onChange, placeholder, disabled, describ
 }) {
   // The typed text while the box is being edited, or null when it shows the value at rest.
   const [draft, setDraft] = useState<string | null>(null)
+  // A value changed from outside (Discard changes, Use theirs, an Undo) replaces
+  // whatever was typed; the value this box's own typing emitted does not.
+  const emitted = useRef<number | null | undefined>(undefined)
+  const [seen, setSeen] = useState(value)
+  if (value !== seen) {
+    setSeen(value)
+    if (value !== emitted.current) setDraft(null)
+  }
   const shown = draft ?? (value === null ? '' : DOLLARS_AT_REST.format(value))
   const trimmed = shown.trim()
   const invalid = trimmed !== '' && !TYPED_DOLLARS.test(trimmed)
@@ -214,8 +222,8 @@ export function MoneyInput({ id, value, onChange, placeholder, disabled, describ
             const raw = e.target.value
             setDraft(raw)
             const t = raw.trim()
-            if (t === '') { onChange(null); return }
-            if (TYPED_DOLLARS.test(t)) onChange(Number(t.replace(/,/g, '')))
+            if (t === '') { emitted.current = null; onChange(null); return }
+            if (TYPED_DOLLARS.test(t)) { const n = Number(t.replace(/,/g, '')); emitted.current = n; onChange(n) }
           }}
           className="input"
         />
