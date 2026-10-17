@@ -3729,12 +3729,14 @@ function withOutageLine(blocks: unknown[], outage: OpenOutage): unknown[] {
   return [...blocks.slice(0, at), line, ...blocks.slice(at)]
 }
 
-// Post a Slack message. Returns the message ts on success, or null on any
-// failure Slack answers with: an HTTP error (a 429 and a 5xx included) or an
+// Post a Slack message. Returns the message ts on a 200 that says ok:true, or
+// null on any other answer: any status but 200 (a 429 and a 5xx included, and
+// since #2331 also a 2xx other than 200, which the old fetch parsed) or an
 // API-level error (Slack returns HTTP 200 with { ok: false, error } for
-// channel_not_found, not_in_channel, invalid_auth). A network failure, where
-// Slack gave no answer, throws, as it always has (deliverMessage, #2331).
-// Callers that gate a cooldown must treat null as "not delivered".
+// channel_not_found, not_in_channel, invalid_auth). It throws when Slack gave
+// no answer (a network failure) and when a 200's body is not JSON, both as
+// before (deliverMessage, #2331). Callers that gate a cooldown must treat null
+// as "not delivered".
 //
 // Every alert goes through here, so this is where a scheduled tick's alert
 // gets the outage line while the database outage is open (#2061). Reading the
@@ -3764,13 +3766,18 @@ function postOutageOwnerMessage(botToken: string, channel: string, blocks: unkno
  * the next pull request of that phase switches it, keeping its own rule (it
  * catches everything and never throws, F123).
  *
- * This function's throw rule is its old hand written fetch's, kept exactly so no alert path changes
- * whether it throws (F123): Slack ANSWERING with a failure returns null (an
- * ok:false refusal, a 429, a 5xx, any status but 200), and NO answer (a network
- * failure) throws the error the fetch threw, as does a 200 whose body is not
- * JSON. The error classes the pinned library throws for an answer are listed
- * on slackCallFailure. A 429 is logged with its Retry-After and never waited
- * out here: the client has no retry handler.
+ * Whether this function throws is unchanged from its old hand written fetch, so
+ * no alert path starts or stops throwing (F123). It throws in the same two
+ * cases as before: NO answer (a network failure, rethrown as the error the
+ * fetch threw) and a 200 whose body is not JSON (SyntaxError). Every other
+ * answer returns null without throwing: an ok:false refusal, a 429, a 5xx, and
+ * any status but 200. One answer changed from a ts to null: a 2xx other than
+ * 200, which the old fetch accepted as `res.ok` and parsed, and the library
+ * raises as an HTTP failure (it treats only 200 as an answer). Slack sends 200
+ * for chat.postMessage, so this is an edge, pinned by a test. The error classes
+ * the pinned library throws for an answer are listed on slackCallFailure. A 429
+ * is logged with its Retry-After and never waited out here: the client has no
+ * retry handler.
  */
 async function deliverMessage(
   botToken: string,

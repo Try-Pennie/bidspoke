@@ -83,6 +83,17 @@ describe('postMessage through the Slack client (#2331)', () => {
     expect(errors.join('\n')).toContain('HTTP error 500')
   })
 
+  // The one answer whose result changed in #2331: the old fetch took any 2xx as
+  // res.ok and parsed it, so a 201 saying ok:true returned its ts. The library
+  // treats only 200 as an answer, so it is now null (not delivered), and still
+  // never a throw.
+  it('returns null, not a ts and not a throw, for a 2xx other than 200 even when its body says ok:true', async () => {
+    fetchMock.mockImplementation(async () => slackResponse({ ok: true, ts: '171.99' }, 201))
+    expect(await postMessage(TOKEN, '#c', [], 'hi')).toBeNull()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(errors.join('\n')).toContain('HTTP error 201')
+  })
+
   it('throws the same error the fetch threw when there is no answer at all (a network failure), as before', async () => {
     const down = new TypeError('fetch failed')
     fetchMock.mockImplementation(() => Promise.reject(down))
