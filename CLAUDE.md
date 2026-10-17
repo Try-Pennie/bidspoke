@@ -17,7 +17,9 @@
 - `apps/worker` — Cloudflare Worker (API + execution engine)
 - `apps/worker-tail`: tail consumer that writes per-execution cost, and copies each
   cron guard `FAILED OPEN` log line into `cron_guard_fail_opens` (#2166), the second
-  record the hourly cron guard check counts alongside its own KV record
+  record the hourly cron guard check counts alongside its own KV record, and copies
+  each `[cron-once] delivery` line into `cron_tick_deliveries` (#2284), the record of
+  every tick delivery the check reads to page on a tick that may have run twice
 - `apps/compare-outbound`: the outbound Worker of the `bidspoke-code-nodes-compare`
   dispatch namespace (#1708). Shadow runs dispatch their code there, and it refuses
   every request a script makes, so a shadow run sends nothing. Its own deploy leg.
@@ -257,7 +259,7 @@ Two secrets cannot be re-derived if lost, and are escrowed in the 1Password item
 The engine decrypts every secret environment variable with this key on every execution (`lib/env-loader.ts`), so it is never swapped in one step: a secret that no longer decrypts is skipped, and a node reading it through `{{env.X}}` gets nothing. Rotate it in four steps with no window where anything fails to decrypt (#384):
 
 1. Generate the new key and save it in the recovery 1Password item FIRST, then set it as `SECRET_ENCRYPTION_KEY_NEXT` (pipe the value in, never type it on a command line). While NEXT is set, new writes lock with it and reads accept either key (`secretKeys(env)` in `lib/secret-crypto.ts`).
-2. `POST /api/admin/reencrypt-secrets` with `{"dryRun": false}` re-locks every stored value (the secret environment variables, `app_settings.value_encrypted`, and the encrypted columns of `outcome_writeback_deadletters`, the failed Salesforce writes held for replay, #1993). It previews by default. Re-run until it reports `ok: true` and nothing left to re-lock.
+2. `POST /api/admin/reencrypt-secrets` with `{"dryRun": false}` re-locks every stored value (the secret environment variables, `app_settings.value_encrypted`, and the encrypted columns of `outcome_writeback_deadletters`, the failed Salesforce writes held for replay, #1993, and the sealed Slack bot token in `service_connections.credential_enc` where `sealed_for` is `bidding_ring`, #2331). It previews by default. Re-run until it reports `ok: true` and nothing left to re-lock.
 3. Wait at least 24 hours after step 1, then set `SECRET_ENCRYPTION_KEY` to the same value, from the 1Password copy, and delete `SECRET_ENCRYPTION_KEY_NEXT`. The wait is for the at-risk Salesforce write records in KV (`at-risk-write:`, #2022): the route does not re-lock them, so one written under the old key must expire (24 hours) before the old key stops opening it.
 4. Run the route once more as a preview: every row should count as already current under the primary alone.
 
