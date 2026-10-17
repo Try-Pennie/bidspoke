@@ -51,7 +51,9 @@ export interface PartnerDeleteReadingWorkflow extends PartnerDeleteWorkflow {
  * every dependent table, zeros included; workflows is every workflow of the
  * organization the scanner read, with updated_at as the database answered it.
  */
-export interface PartnerDeleteFingerprint {
+// A type, not an interface: it is sent as the function's jsonb argument, and only
+// a type alias is assignable to the generated Json type.
+export type PartnerDeleteFingerprint = {
   counts: Record<string, number>
   workflows: Array<{ id: string; updated_at: string }>
 }
