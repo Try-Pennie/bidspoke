@@ -117,3 +117,34 @@ describe('Partners page: a change whose stored copy was not cleared says so', ()
     expect(notice).toHaveTextContent(`Bidding stops using SoFi within about ${BIDDING_PICKUP.partnerConstantsMinutes} minutes while the database is reachable.`)
   })
 })
+
+describe('the page states (#2321, PM-18)', () => {
+  it('nothing selected: the bold prompt and how to create one, with no icons', async () => {
+    const { container } = render(<PartnersPage />)
+    const prompt = await screen.findByText('Select a partner to configure')
+    expect(prompt).toHaveClass('font-semibold')
+    expect(screen.getByText('Or create a new one with the button above.')).toBeInTheDocument()
+    expect(container.querySelector('[data-form-pane] svg')).toBeNull()
+  })
+
+  it('loading: placeholder rows in the list and nothing on the right', () => {
+    vi.mocked(api.partners.list).mockReturnValue(new Promise(() => {}) as never)
+    const { container } = render(<PartnersPage />)
+    expect(screen.getByRole('status', { name: 'Loading partners' })).toBeInTheDocument()
+    expect(container.querySelectorAll('.partner-skeleton-row')).toHaveLength(5)
+    expect(container.querySelector('[data-form-pane]')).toBeEmptyDOMElement()
+  })
+
+  it('could not be loaded: says so on the right with why and Try again, never as an empty list', async () => {
+    vi.mocked(api.partners.list).mockRejectedValueOnce(Object.assign(new Error('Internal error'), { status: 500 }))
+    render(<PartnersPage />)
+    expect(await screen.findByText('Partners could not be loaded')).toBeInTheDocument()
+    expect(screen.getByText('The server answered with an error (HTTP 500). Nothing has changed.')).toBeInTheDocument()
+    expect(screen.queryByText('No partners yet')).toBeNull()
+    expect(screen.queryByText(/Internal error/)).toBeNull()
+    vi.mocked(api.partners.list).mockResolvedValueOnce([partnerA] as never)
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByRole('button', { name: 'SoFi' })).toBeInTheDocument()
+    expect(screen.queryByText('Partners could not be loaded')).toBeNull()
+  })
+})

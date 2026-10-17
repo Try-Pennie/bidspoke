@@ -453,6 +453,14 @@ html {
   .partner-page :is(.input, .select-trigger) {
     @apply min-h-[30px] py-[5px];
   }
+  /* A placeholder while the list loads (#2321, design frame 3): a beige bar
+     with a light band moving across it. Still where motion is reduced. */
+  .partner-skeleton {
+    @apply rounded bg-[#ECE6DB] bg-no-repeat motion-safe:animate-[partner-shimmer_1.4s_linear_infinite];
+    background-image: linear-gradient(90deg, transparent 0, rgba(255, 255, 255, 0.55) 50%, transparent 100%);
+    background-size: 40% 100%;
+    background-position: -40% 0;
+  }
   .partner-page .choice {
     @apply px-2.5 py-1 text-[12.5px];
   }
@@ -480,4 +488,9 @@ html {
   border-radius: 9999px;
   background-color: #d1d5db;
   border: 2px solid white;
+}
+
+@keyframes partner-shimmer {
+  from { background-position: -40% 0; }
+  to { background-position: 140% 0; }
 }
