@@ -11,6 +11,7 @@ import { recoveryKey } from '../alert-recovery'
 import { alertedStatusKey, CRON_HEARTBEAT_SIGNAL } from '../cron-heartbeat'
 import { EXPORT_ALERT_SIGNAL } from '../export-alerts'
 import { CRON_HEARTBEAT_RECOVERY_WORDS } from '../slack'
+import { SLACK_TOKEN_SIGNAL } from '../slack-token-health'
 
 /**
  * The incident registry (#2099, #818): one entry per recovery prefix an alert
@@ -21,7 +22,7 @@ import { CRON_HEARTBEAT_RECOVERY_WORDS } from '../slack'
  * from without either noticing.
  */
 describe('INCIDENT_SIGNALS', () => {
-  it('names the sixteen signals in use, each once', () => {
+  it('names the seventeen signals in use, each once', () => {
     const names = INCIDENT_SIGNALS.map((s) => s.signal)
     expect(new Set(names).size).toBe(names.length)
     expect([...names].sort()).toEqual([
@@ -35,6 +36,7 @@ describe('INCIDENT_SIGNALS', () => {
       'partner-page-live',
       'partner-reachability',
       'pg-cron-watch',
+      'slack-token-undecryptable',
       'slow-spike',
       'stored-copy-serving',
       'supabase-memory',
@@ -103,6 +105,13 @@ describe('INCIDENT_SIGNALS', () => {
     expect(incidentSignal(DB_UNREACHABLE_PREFIX).signal).toBe('db-unreachable')
     expect(incidentSignal(CRON_HEARTBEAT_SIGNAL).signal).toBe('cron-heartbeat')
     expect(incidentSignal(EXPORT_ALERT_SIGNAL).signal).toBe('export-alert')
+  })
+
+  // #2331: one organization's sealed Slack token, a state with no window.
+  it('scopes the Slack token signal to its organization, keyed on the organization id', () => {
+    expect(incidentSignal(SLACK_TOKEN_SIGNAL).signal).toBe('slack-token-undecryptable')
+    expect(incidentSignal('slack-token-undecryptable')).toMatchObject({ scope: 'org', subject: 'organization', windowMinutes: null, label: 'Slack token' })
+    expect(incidentSignal('slack-token-undecryptable').kinds).toEqual(['slack_token_undecryptable', 'slack_key_ring_missing'])
   })
 
   it('lists the partner kinds and the two database memory subjects', () => {

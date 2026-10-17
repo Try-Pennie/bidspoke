@@ -4,13 +4,21 @@
 // DELETE /api/connections/:service_type         — remove a connection
 // POST   /api/connections/:service_type/sync-schema — trigger schema refresh
 
+// Who may call these: any signed in user of the organization (jwtAuth). Whose
+// data: only the caller's organization's rows, scoped by organization_id from
+// the verified token.
+//
+// The audit record (#2331, F119): the table's own trigger writes one audit_log
+// row per change, naming the user from updated_by (every write here sets it) or,
+// for a delete, from delete_service_connection's actor, as for partner_configs
+// (#1409). So these routes write no audit row of their own.
+
 import { Hono } from 'hono'
 import { dbError, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { setCfSecret, deleteCfSecret } from '../../lib/cf-secrets'
-import { writeAuditLog } from '../../lib/audit'
 import { fetchSalesforceSchema } from '../../lib/schema-sync/salesforce'
 import { fetchSupabaseSchema } from '../../lib/schema-sync/supabase-schema'
 import { fetchSnowflakeSchema } from '../../lib/schema-sync/snowflake'
@@ -90,10 +98,6 @@ connections.post('/', async (c) => {
 
   if (error) return dbError(c, error)
 
-  await writeAuditLog(supabase, orgId, 'service_connection', data.id, existing ? 'updated' : 'created', userId, {
-    service_type: serviceType,
-  })
-
   return c.json(data, existing ? 200 : 201)
 })
 
@@ -128,19 +132,11 @@ connections.delete('/:service_type', async (c) => {
     c.env.CLOUDFLARE_API_TOKEN
   ).catch(() => {}) // best-effort — secret may already be gone
 
+  // Through delete_service_connection, so the table's trigger names this user.
   const deleteBlocked = await requireRowOr404(c, 'Connection not found', () =>
-    supabase
-      .from('service_connections')
-      .delete()
-      .eq('id', existing.id)
-      .eq('organization_id', orgId)
-      .select('id')
+    supabase.rpc('delete_service_connection', { p_organization_id: orgId, p_service_type: serviceType, p_actor: userId })
   )
   if (deleteBlocked) return deleteBlocked
-
-  await writeAuditLog(supabase, orgId, 'service_connection', existing.id, 'deleted', userId, {
-    service_type: serviceType,
-  })
 
   return c.json({ ok: true })
 })
@@ -184,17 +180,12 @@ connections.post('/:service_type/sync-schema', async (c) => {
   const syncBlocked = await requireRowOr404(c, 'Connection not found', () =>
     supabase
       .from('service_connections')
-      .update({ schema_cache: asJson(schema), schema_synced_at: new Date().toISOString() })
+      .update({ schema_cache: asJson(schema), schema_synced_at: new Date().toISOString(), updated_by: userId })
       .eq('id', conn.id)
       .eq('organization_id', orgId)
       .select('id')
   )
   if (syncBlocked) return syncBlocked
-
-  await writeAuditLog(supabase, orgId, 'service_connection', conn.id, 'schema_synced', userId, {
-    service_type: serviceType,
-    object_count: schema.objects.length,
-  })
 
   return c.json({ ok: true, object_count: schema.objects.length })
 })

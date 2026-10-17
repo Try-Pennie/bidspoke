@@ -3,6 +3,8 @@ import type { Env } from '../env'
 import type { Database } from '../types/database'
 import rpcLists from './read-only-rpcs.json'
 import { guardLocalDevWrites, type RpcClassification } from './local-dev-write-guard'
+import { secretKeys } from './secret-crypto'
+import { registerSlackKeyRing } from './slack-key-ring'
 
 // Local `wrangler dev` shares the real production Supabase project (there is no
 // separate local backend), and the Worker connects as service_role, which
@@ -148,5 +150,10 @@ export function createSupabaseClient(env: Env, options: { fetch?: typeof fetch; 
     ...(options.retry === false ? { db: { retry: false } } : {}),
     global: { fetch: withRequestDeadline(baseFetch, deadlineMs) },
   })
-  return guardLocalDevWrites(client, env, env.SUPABASE_URL, BIDDING_RPCS)
+  const guarded = guardLocalDevWrites(client, env, env.SUPABASE_URL, BIDDING_RPCS)
+  // The Slack readers open the sealed bot token with this client's ring (#2331).
+  // Read here, once, from the env the client was built with; a missing key is
+  // left for the reader to report by name rather than failing every client.
+  if (env.SECRET_ENCRYPTION_KEY) registerSlackKeyRing(guarded, secretKeys(env))
+  return guarded
 }

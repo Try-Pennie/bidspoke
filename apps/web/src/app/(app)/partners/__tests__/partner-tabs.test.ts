@@ -125,7 +125,8 @@ describe('problems (PM-12)', () => {
   it('a field no tab draws (List order) is a page level problem, labelled as off the page', () => {
     expect(registryEntriesFor('priority')[0]).toMatchObject({ offPage: true, label: 'List order (not shown on this page)' })
     expect(problemsOf({ credentialWarning: null, errors: [{ path: 'priority', field: 'priority', message: 'm' }] })[0]).toEqual({ registryPath: null, tab: null, message: 'm' })
-    expect(PARTNER_FIELD_REGISTRY.filter((e) => e.offPage).map((e) => e.pattern)).toEqual(['priority'])
+    // The slug too (#2323): asked only on the new partner page, and fixed once the partner exists.
+    expect(PARTNER_FIELD_REGISTRY.filter((e) => e.offPage).map((e) => e.pattern)).toEqual(['slug', 'priority'])
   })
 
   it('names each tab with a problem once, in the page order', () => {

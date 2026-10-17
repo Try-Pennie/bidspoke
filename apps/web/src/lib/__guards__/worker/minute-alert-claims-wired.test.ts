@@ -28,6 +28,9 @@ const MINUTE_CLAIMANTS: Record<string, string[]> = {
   'upstream-outage.ts': ['runUpstreamOutageCheck'],
   'cron-heartbeat.ts': ['runHeartbeatChecks'],
   'database-reachability.ts': ['runDatabaseReachabilityProbe', 'reportDatabaseUnreachable'],
+  // #2331: the sealed Slack token page, judged by the minute probe from the rows
+  // it reads, with the probe's claims.
+  'slack-token-health.ts': ['runDatabaseReachabilityProbe'],
 }
 
 /**
