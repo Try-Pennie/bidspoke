@@ -268,6 +268,11 @@ describe('POST /connections/:service_type/sync-schema', () => {
     // baseEnv does not have CONN_EXISTING
     const res = await request(app, 'POST', '/connections/salesforce/sync-schema')
     expect(res.status).toBe(500)
+    // #2331 phase 1a: POST refuses, so the message must not send anyone to
+    // re-save the connection (L111).
+    const body = await res.json() as { error: string }
+    expect(body.error).not.toMatch(/re-?save/i)
+    expect(body.error).toMatch(/credentials/i)
   })
 
   it('calls fetchSalesforceSchema and updates schema_cache', async () => {

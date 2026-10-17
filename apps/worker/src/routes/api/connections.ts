@@ -119,7 +119,9 @@ connections.post('/:service_type/sync-schema', async (c) => {
 
   const credsJson = (c.env as unknown as Record<string, string>)[conn.cf_secret_key]
   if (!credsJson) {
-    return c.json({ error: 'Credentials not available — re-save the connection to refresh' }, 500)
+    // Not "re-save it": POST refuses since #2331 phase 1a, so that would name
+    // an action nobody can take (L111).
+    return c.json({ error: 'The credentials for this connection are missing, and it cannot be saved again while connections move to sealed connections.' }, 500)
   }
 
   let schema
