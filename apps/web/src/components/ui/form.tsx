@@ -270,10 +270,10 @@ export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, 
 
 // ── Checkbox ──────────────────────────────────────────────────────────────────
 
-export function Checkbox({ id, checked, onChange, label, disabled }: { id: string; checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean }) {
+export function Checkbox({ id, checked, onChange, label, disabled, describedBy: db }: { id: string; checked: boolean; onChange: (v: boolean) => void; label: string; disabled?: boolean; describedBy?: string }) {
   return (
     <label htmlFor={id} className="inline-flex items-center gap-1.5 text-sm text-graphite">
-      <input id={id} type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} className="checkbox" />
+      <input id={id} type="checkbox" checked={checked} disabled={disabled} aria-describedby={db} onChange={(e) => onChange(e.target.checked)} className="checkbox" />
       <span>{label}</span>
     </label>
   )

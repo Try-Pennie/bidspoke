@@ -66,8 +66,8 @@ describe('MergeDialog', () => {
 
   it('a change only one of you made shows its value before and after, and what happens to it', () => {
     renderDialog()
-    const row = screen.getByText('Status').closest('[data-merge-change]') as HTMLElement
-    expect(row).toHaveTextContent('StatusActive \u2192 Inactiveadded')
+    const row = screen.getByText('Active', { selector: 'span' }).closest('[data-merge-change]') as HTMLElement
+    expect(row).toHaveTextContent('ActiveOn \u2192 Offadded')
   })
 
   it('Keep yours is chosen to start, so Save both is ready at once', () => {

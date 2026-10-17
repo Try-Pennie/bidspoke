@@ -49,7 +49,8 @@ export function describeMergeValue(key: string, value: unknown): string {
   }
   if (key.startsWith(PROFILE_PREFIX)) return formatProfileValue(key.slice(PROFILE_PREFIX.length), value)
   if (value === null || value === undefined || value === '') return 'none'
-  if (typeof value === 'boolean') return key === 'is_active' ? (value ? 'Active' : 'Inactive') : value ? 'on' : 'off'
+  // Active is said in the Active row's own words, On and Off (#2323).
+  if (typeof value === 'boolean') return key === 'is_active' ? (value ? 'On' : 'Off') : value ? 'on' : 'off'
   if (typeof value === 'number') return String(value)
   if (typeof value === 'string') return value
   return JSON.stringify(value)
