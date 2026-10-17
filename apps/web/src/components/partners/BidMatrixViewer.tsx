@@ -267,7 +267,7 @@ export function BidMatrixViewer(p: Props) {
           {p.onSelectConfig && activeConfig.id !== p.selectedConfigId && (
             <p className="text-xs text-hint">
               {p.selectedConfigId
-                ? `Not in use: bids are looked up in ${p.configs.find((c) => c.id === p.selectedConfigId)?.name ?? 'the matrix chosen above'}, chosen above.`
+                ? `Not in use: bids are looked up in ${p.configs.find((c) => c.id === p.selectedConfigId)?.name ?? 'another matrix'}, the one chosen above.`
                 : 'Not in use: no bid matrix is chosen above, so no bid is looked up in this one.'}
             </p>
           )}
