@@ -14,8 +14,9 @@
  * ctx.settle() before it ends; the setup file wait-until-guard.ts runs
  * settleAfterTest() after every test, which fails the test when something was
  * still running at its end and lets that work finish either way, so it can
- * never log into a closed worker. wait-until-sinks.test.ts refuses a test file
- * that writes its own waitUntil instead of using this one.
+ * never log into a closed worker. The web guard
+ * apps/web/src/lib/__guards__/worker/test-contexts-record-wait-until.test.ts
+ * refuses a test file that writes its own waitUntil instead of using this one.
  */
 import { vi, type Mock } from 'vitest'
 import { formatErr } from '../lib/format-error'
