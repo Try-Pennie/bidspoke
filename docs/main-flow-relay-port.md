@@ -110,8 +110,11 @@ request if the edit should stand.
 ## Previewing, applying and rolling back
 
 Only a member of the production organization can save Main Flow, so this runs in
-Dan's logged in Bidspoke tab, as the Liberty1 workflow was created. Nothing has
-been applied yet; each stage is applied by its own phase issue.
+Dan's logged in Bidspoke tab, as the Liberty1 workflow was created. Each stage is
+applied by its own phase issue. The stage live now is the one `LIVE_STAGE` names
+in `gate-fixture.test.ts`: `canary_invalid_state`, applied on 2026-10-16 as
+version 172 (#2173), after an earlier apply (version 170) and its rollback
+(version 171).
 
 1. Before any apply, the engine pull request that the stage needs is merged and
    deployed, and the live commit confirmed (plan point 12).
