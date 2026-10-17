@@ -2027,7 +2027,7 @@ export async function sendQueryTimeoutAlert(
 export async function sendCronHeartbeatAlert(
   supabase: SupabaseClient,
   orgId: string,
-  job: { label: string; triggerCron: string; dependents: string; completionDroughtMs?: number },
+  job: { label: string; triggerCron: string; dependents: string; completionDroughtMs?: number; darkFixHint?: string },
   status: 'stale' | 'never_ran' | 'vanished' | 'unstamped',
   ageMs: number | null,
   standing: StandingCondition | null = null,
@@ -2143,7 +2143,10 @@ export async function sendCronHeartbeatAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*How to fix:* confirm the worker deployed with its scheduled triggers (wrangler.toml \`[triggers]\` must list this job's schedule, below) and that the scheduled handler is not throwing before it starts the job. The worker's triggers and its logs for this job's runs are in the Cloudflare dashboard.`,
+        // A cron of another Worker names its own place (#1949).
+        text: job.darkFixHint
+          ? `*How to fix:* ${job.darkFixHint}`
+          : `*How to fix:* confirm the worker deployed with its scheduled triggers (wrangler.toml \`[triggers]\` must list this job's schedule, below) and that the scheduled handler is not throwing before it starts the job. The worker's triggers and its logs for this job's runs are in the Cloudflare dashboard.`,
       },
     },
     lastLine('Seen because the job has not stamped a run inside its expected cadence.'),
