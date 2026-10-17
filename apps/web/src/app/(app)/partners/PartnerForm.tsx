@@ -1128,8 +1128,6 @@ export default function PartnerForm({
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    // Enter in a box submits too, so the Create partner rule is kept here as well.
-    if (isNew && (!name || !newDoesSomething)) return
     void submit()
   }
 
@@ -1141,6 +1139,12 @@ export default function PartnerForm({
    */
   async function submit(): Promise<SubmitResult> {
     if (savingRef.current) return 'not_saved'
+    // Every way a create is pressed (the bar, Enter in a box, Try again, Save and
+    // open it) comes through here, so the Create partner rule is kept here.
+    if (isNew && (!name || !newDoesSomething)) {
+      setSaveOutcome({ kind: 'failed', message: !name ? 'Not created: give the partner a name.' : 'Not created: tick what the partner does, Sends us leads or Buys leads.', retry: null })
+      return 'not_saved'
+    }
     setProfileErrors([])
     // Another person's live save changed a field being edited (#2135): asked first.
     // Asked, not saved: Save and open it stays on the page while the merge dialog is open.

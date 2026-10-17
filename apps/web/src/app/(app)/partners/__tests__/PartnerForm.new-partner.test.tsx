@@ -65,3 +65,17 @@ describe('the new partner page (#2321)', () => {
     expect(within(bar).getByRole('button', { name: 'Create partner' })).toBeEnabled()
   })
 })
+
+describe('the Create partner rule on every path (#2321)', () => {
+  it('Try again after a failed create sends nothing once neither box is ticked, and says what to tick', async () => {
+    const onSave = vi.fn().mockRejectedValueOnce(new Error('the server did not answer'))
+    const { bar } = renderNew(onSave)
+    await userEvent.type(screen.getByLabelText('Name'), 'Acme')
+    await userEvent.click(within(bar).getByRole('button', { name: 'Create partner' }))
+    expect(await within(bar).findByRole('button', { name: 'Try again' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('checkbox', { name: 'Buys leads' }))
+    await userEvent.click(within(bar).getByRole('button', { name: 'Try again' }))
+    expect(onSave).toHaveBeenCalledTimes(1)
+    expect(within(bar).getByText('Not created: tick what the partner does, Sends us leads or Buys leads.')).toBeInTheDocument()
+  })
+})
