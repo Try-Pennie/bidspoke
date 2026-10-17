@@ -118,8 +118,9 @@ describe('PartnerForm: a both partner exposes buyer and source config (#306)', (
     await userEvent.click(await screen.findByRole('button', { name: 'Set up for Bid Group' }))
 
     expect(screen.getByRole('tab', { name: 'Bid Group' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByText('Bid resolution')).toBeVisible()
-    expect(screen.getByText('Bidding limits')).toBeVisible()
+    // Section names as designed (PM-23, #2326); were Bid resolution and Bidding limits.
+    expect(screen.getByText('Endpoint')).toBeVisible()
+    expect(screen.getByText('Limits')).toBeVisible()
     expect(screen.getByText('Circuit breaker')).toBeVisible()
   })
 
@@ -137,7 +138,7 @@ describe('PartnerForm: a both partner exposes buyer and source config (#306)', (
     render(<PartnerForm partner={{ ...partner, partner_type: 'source' }} onSave={vi.fn()} onCancel={vi.fn()} />)
 
     await waitFor(() => expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual(['Partner', 'Workflow values', 'History']))
-    expect(screen.queryByText('Bid resolution')).not.toBeInTheDocument()
+    expect(screen.queryByText('Endpoint')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Set up for Bid Group' })).not.toBeInTheDocument()
     expect(screen.getByText('Sell-off offer')).toBeVisible()
   })
@@ -195,18 +196,18 @@ describe('PartnerForm: missing credential warning (#416)', () => {
 
     const tab = await screen.findByRole('tab', { name: 'Bid Group, has a problem' })
     expect(tab).toHaveAttribute('aria-selected', 'true')
-    const secret = screen.getByLabelText('Auth secret name')
+    const secret = screen.getByLabelText('Secret')
     expect(secret).toBeVisible()
     expect(secret).toHaveAccessibleDescription(warning)
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
   // #2317: with no secret field on screen (a formula partner), the warning is
-  // said inside the Bid resolution section, so it keeps the section row's spacing.
-  it('a partner with no secret field on screen hears it inside the Bid resolution section', async () => {
+  // said inside the Endpoint section (was Bid resolution, PM-23), so it keeps the section row's spacing.
+  it('a partner with no secret field on screen hears it inside the Endpoint section', async () => {
     const warning = "Credential 'SOFI_SECRET' is not set. Set it before activating this partner."
     render(<PartnerForm partner={{ ...partner, partner_type: 'buyer', bid_resolver_type: 'formula', cf_secret_key: 'SOFI_SECRET', credential_warning: warning }} onSave={vi.fn()} onCancel={vi.fn()} />)
     await screen.findByRole('tab', { name: 'Bid Group, has a problem' })
-    expect(within(screen.getByRole('region', { name: 'Bid resolution' })).getByText(warning)).toBeVisible()
+    expect(within(screen.getByRole('region', { name: 'Endpoint' })).getByText(warning)).toBeVisible()
   })
 
 })

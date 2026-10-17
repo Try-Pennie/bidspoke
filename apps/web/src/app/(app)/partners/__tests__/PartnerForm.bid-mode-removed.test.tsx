@@ -52,7 +52,7 @@ const save = () => fireEvent.click(document.querySelector('button[type="submit"]
 
 function expectNoBidModeControl() {
   // The section the control lived in still renders, so its absence is measured.
-  expect(screen.getByText('Sample response')).toBeInTheDocument()
+  expect(screen.getByText('Sample answer')).toBeInTheDocument()
   expect(screen.queryByText('Bid mode')).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Ping only' })).not.toBeInTheDocument()
   expect(screen.queryByRole('button', { name: 'Commit' })).not.toBeInTheDocument()

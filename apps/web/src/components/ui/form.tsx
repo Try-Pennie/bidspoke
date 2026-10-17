@@ -80,40 +80,30 @@ interface TextInputProps {
   'aria-label'?: string
   className?: string
   /**
-   * Values the box offers as the person types (a path seen in a sample
-   * response, say). Typing anything else stays allowed.
-   */
-  suggestions?: readonly string[]
-  /**
    * Enter commits this field through its own action. The key is kept from the
    * form around it, so committing a field never also submits the form (#1552, L596).
    */
   onEnter?: () => void
 }
 
-export function TextInput({ id, value, onChange, placeholder, mono, disabled, describedBy: db, className, onEnter, suggestions, ...aria }: TextInputProps) {
-  const listId = suggestions && suggestions.length > 0 ? `${id}-suggestions` : undefined
+/**
+ * A plain text box. One that offers values as the person types is
+ * SuggestInput (SuggestInput.tsx), never a native datalist (#2326).
+ */
+export function TextInput({ id, value, onChange, placeholder, mono, disabled, describedBy: db, className, onEnter, ...aria }: TextInputProps) {
   return (
-    <>
-      <input
-        id={id}
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={onEnter ? (e) => holdEnter(e, onEnter) : undefined}
-        placeholder={placeholder}
-        disabled={disabled}
-        list={listId}
-        aria-describedby={db}
-        aria-label={aria['aria-label']}
-        className={`input ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}
-      />
-      {listId && (
-        <datalist id={listId}>
-          {suggestions!.map((s) => <option key={s} value={s} />)}
-        </datalist>
-      )}
-    </>
+    <input
+      id={id}
+      type="text"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={onEnter ? (e) => holdEnter(e, onEnter) : undefined}
+      placeholder={placeholder}
+      disabled={disabled}
+      aria-describedby={db}
+      aria-label={aria['aria-label']}
+      className={`input ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}
+    />
   )
 }
 
