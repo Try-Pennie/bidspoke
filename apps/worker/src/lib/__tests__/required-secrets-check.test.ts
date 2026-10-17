@@ -16,7 +16,7 @@ function fullSecretEnv(overrides: Record<string, string | undefined> = {}): Env 
   return { ...e, ...overrides } as unknown as Env
 }
 
-/** Minimal supabase double: from().select().eq() resolves to the given slack-connection rows. */
+/** Minimal supabase double: the org list read (select, then the alert row filters, #2332) resolves to the given slack-connection rows. */
 function fakeSupabase(orgRows: { organization_id: string }[]): SupabaseClient {
   return {
     from: () => ({
