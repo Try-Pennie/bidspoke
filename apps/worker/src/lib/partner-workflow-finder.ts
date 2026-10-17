@@ -1,8 +1,9 @@
 /**
- * Which workflows sell to a partner (#1412, L613): asked by the step id rename
- * impact route (a formula rewrite would break every one of them) and by the
+ * Which workflows name a partner (#1412, L613): asked by the step id rename
+ * impact route (a formula rewrite would break every one of them), by the
  * buyer profile route (`other_sellers`, the sellers OUTSIDE buyer selection
- * whose wins the buyer's caps do not count, L582).
+ * whose wins the buyer's caps do not count, L582), and by the partner delete
+ * check (#2140), which alone also asks for latency gates (#2251).
  *
  * A bid_group, partner_bid, buyer_click_send, buyer_click_check or latency_gate
  * node names its partner by id in its config; the node types whose trait says so
