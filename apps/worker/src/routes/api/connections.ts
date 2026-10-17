@@ -30,6 +30,33 @@ const SERVICE_TYPES = new Set<string>(['salesforce', 'supabase', 'snowflake'])
 
 const connections = new Hono<{ Bindings: Env; Variables: Variables }>()
 
+/**
+ * The org's LEGACY row of a type (#2332, F124): one whose credential is a
+ * Cloudflare secret (cf_secret_key set) and was never sealed (sealed_for null).
+ * DELETE and sync-schema find their row by service type alone, so without this
+ * they would reach an ops connection (sealed_for ops_key, cf_secret_key null)
+ * and remove it while skipping what Phase 8's own delete does: refuse a
+ * referenced connection, write the tombstone, revoke. With two rows of a type,
+ * `.single()` answers PGRST116, which both routes read as not found (404).
+ * delete_service_connection refuses an ops_key row too (migration
+ * 20261017150000), so the store holds the line if a caller forgets this.
+ * No legacy row exists (measured 2026-10-17); Phase 8 retires both routes.
+ */
+function legacyConnectionOf<Columns extends string>(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  orgId: string,
+  serviceType: string,
+  columns: Columns,
+) {
+  return supabase
+    .from('service_connections')
+    .select(columns)
+    .eq('organization_id', orgId)
+    .eq('service_type', serviceType)
+    .is('sealed_for', null)
+    .not('cf_secret_key', 'is', null)
+}
+
 // GET /api/connections
 connections.get('/', async (c) => {
   const { orgId } = c.get('user')
@@ -69,12 +96,7 @@ connections.delete('/:service_type', async (c) => {
   }
 
   const supabase = createSupabaseClient(c.env)
-  const { data: existing, error: existingError } = await supabase
-    .from('service_connections')
-    .select('id')
-    .eq('organization_id', orgId)
-    .eq('service_type', serviceType)
-    .single()
+  const { data: existing, error: existingError } = await legacyConnectionOf(supabase, orgId, serviceType, 'id').single()
 
   // PGRST116 = no connection for this org (→ 404); a real error must not look
   // like a 404, which would block a legitimate delete (#303).
@@ -107,15 +129,11 @@ connections.post('/:service_type/sync-schema', async (c) => {
   }
 
   const supabase = createSupabaseClient(c.env)
-  const { data: conn, error: connError } = await supabase
-    .from('service_connections')
-    .select('id, cf_secret_key, service_type')
-    .eq('organization_id', orgId)
-    .eq('service_type', serviceType)
-    .single()
+  const { data: conn, error: connError } = await legacyConnectionOf(supabase, orgId, serviceType, 'id, cf_secret_key, service_type').single()
 
   if (connError && !isNotFoundError(connError)) return dbError(c, connError)
-  if (!conn) return c.json({ error: 'Connection not found' }, 404)
+  // A row with no Cloudflare secret name is not a legacy connection (#2332).
+  if (!conn || !conn.cf_secret_key) return c.json({ error: 'Connection not found' }, 404)
 
   const credsJson = (c.env as unknown as Record<string, string>)[conn.cf_secret_key]
   if (!credsJson) {

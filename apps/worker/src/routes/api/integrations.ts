@@ -61,6 +61,9 @@ type Variables = AuthVariables
 
 const integrations = new Hono<{ Bindings: Env; Variables: Variables }>()
 
+/** The alert row's name: what migration 20261017150000 backfilled, and reserved from ops rows. */
+const SLACK_ALERT_CONNECTION_NAME = 'slack'
+
 integrations.post('/slack/resolve', async (c) => {
   const body = await c.req.json<{ bot_token: string }>()
   if (!body.bot_token) return c.json({ error: 'bot_token is required' }, 400)
@@ -124,24 +127,35 @@ integrations.post('/slack', async (c) => {
     return c.json({ error: 'slack_token_seal_failed: the token could not be sealed, so nothing was saved' }, 500)
   }
 
-  // Upsert: one Slack connection per org. The table's trigger audits it,
-  // naming updated_by.
+  // Upsert: the org's one alert row. The table's trigger audits it, naming
+  // updated_by.
+  //
+  // #2332 (phase 2 of #1689): the row is named 'slack' and the conflict target
+  // is UNIQUE (organization_id, service_type, name), from migration
+  // 20261017150000, which backfilled that name onto every existing row. The old
+  // UNIQUE (organization_id, service_type) still holds until release 2, so any
+  // other name here would hit it and error instead of updating. No ops_key row
+  // may be named 'slack' (service_connections_alert_name_reserved), so this
+  // upsert can only ever land on an alert row, never on an ops connection's
+  // credential_enc. This code deploys only once that migration is applied: the
+  // deploy refuses while a merged migration is unapplied (#1829).
   const { error } = await supabase
     .from('service_connections')
     .upsert(
       {
         organization_id: orgId,
         service_type: 'slack',
+        name: SLACK_ALERT_CONNECTION_NAME,
         auth_type: 'oauth',
-        // NOT NULL until Phase 2 of #1689; the token is not a Cloudflare secret.
-        cf_secret_key: '',
+        // The token is in credential_enc, not a Cloudflare secret (#2332).
+        cf_secret_key: null,
         config,
         credential_enc: credentialEnc,
         sealed_for: 'bidding_ring',
         updated_by: userId,
         updated_by_email: email,
       },
-      { onConflict: 'organization_id,service_type' }
+      { onConflict: 'organization_id,service_type,name' }
     )
     .select('id')
     .single()
