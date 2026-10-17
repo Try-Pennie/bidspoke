@@ -122,12 +122,17 @@ describe('the Buyer profile section', () => {
     expect(screen.getByLabelText('Daily attempt cap (bidding workflows)')).toHaveValue(250)
   })
 
-  it('orders the section for the reader: enabled and priority, then pricing and caps, then rules, blackout dates last (L609)', async () => {
+  it('orders the section for the reader: Enabled, Sold on, Priority, Eligibility, Hours, Pricing, Caps, then rules, blackout dates last (L609, #2324)', async () => {
     await renderBuyer()
     const region = screen.getByRole('region', { name: 'Buyer profile' })
     const headings = within(region).getAllByRole('heading').map((h) => h.textContent)
     const index = (label: RegExp) => headings.findIndex((h) => label.test(h ?? ''))
-    expect(index(/enabled/i)).toBeLessThan(index(/pricing/i))
+    expect(index(/^enabled$/i)).toBeGreaterThanOrEqual(0)
+    expect(index(/^enabled$/i)).toBeLessThan(index(/^sold on$/i))
+    expect(index(/^sold on$/i)).toBeLessThan(index(/^priority$/i))
+    expect(index(/^priority$/i)).toBeLessThan(index(/^eligibility$/i))
+    expect(index(/^eligibility$/i)).toBeLessThan(index(/^hours$/i))
+    expect(index(/^hours$/i)).toBeLessThan(index(/pricing/i))
     expect(index(/pricing/i)).toBeLessThan(index(/caps/i))
     expect(index(/caps/i)).toBeLessThan(index(/outcome rules/i))
     expect(index(/outcome rules/i)).toBeLessThan(index(/blackout/i))
