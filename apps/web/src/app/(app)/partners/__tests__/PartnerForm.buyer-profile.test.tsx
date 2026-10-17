@@ -167,14 +167,12 @@ describe('the Buyer profile section', () => {
 
   // Refused by the shared validator, with its own sentence beside the field: the
   // box carries no browser limits, which would block the save with a native tooltip.
-  it('a collections cap outside 1 to 100 is refused beside its field and named in the save bar, and nothing is saved', async () => {
+  it.each(['0', '101', '7.5'])('a collections cap of %s is refused beside its field and named in the save bar, and nothing is saved', async (typed) => {
     const onSave = await renderBuyer()
-    for (const typed of ['0', '101', '7.5']) {
-      fireEvent.change(screen.getByLabelText('Collections at most'), { target: { value: typed } })
-      fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
-      await screen.findByText('Nothing saved: fix Collections at most in Buyer profile.')
-      expect(screen.getAllByRole('alert').map((a) => a.textContent).join(' ')).toMatch(/Collections at most is a whole percent of debt, from 1 to 100\./)
-    }
+    fireEvent.change(screen.getByLabelText('Collections at most'), { target: { value: typed } })
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+    await screen.findByText('Nothing saved: fix Collections at most in Buyer profile.')
+    expect(screen.getAllByRole('alert').map((a) => a.textContent).join(' ')).toMatch(/Collections at most is a whole percent of debt, from 1 to 100\./)
     expect(onSave).not.toHaveBeenCalled()
   })
 
