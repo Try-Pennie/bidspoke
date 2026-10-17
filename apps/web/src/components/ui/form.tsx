@@ -197,8 +197,10 @@ const TYPED_DOLLARS = /^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d{0,2})?$/
  * is fixed text beside it, since a box holds only what is typed (Dan,
  * 2026-10-17). At rest it reads grouped (20,000); while it has the focus it
  * holds exactly what the person types, so nothing rewrites their typing under
- * them. Text that is not an amount is kept on screen with the reason and never
- * emitted, and an empty box is null, a different fact from 0.
+ * them. Text that is not an amount is said while it is typed and never emitted;
+ * leaving the box puts it back to the stored amount and says so, so typed text
+ * never outlives a Discard, an Undo or a merge. An empty box is null, a
+ * different fact from 0.
  */
 export function MoneyInput({ id, value, onChange, placeholder, disabled, describedBy: db, className, 'aria-label': ariaLabel }: {
   id: string
@@ -212,13 +214,15 @@ export function MoneyInput({ id, value, onChange, placeholder, disabled, describ
 }) {
   // The typed text while the box is being edited, or null when it shows the value at rest.
   const [draft, setDraft] = useState<string | null>(null)
+  // Text that was not an amount when the person left the box: put back to the stored amount, and said.
+  const [rejected, setRejected] = useState<string | null>(null)
   // A value changed from outside (Discard changes, Use theirs, an Undo) replaces
   // whatever was typed; the value this box's own typing emitted does not.
   const emitted = useRef<number | null | undefined>(undefined)
   const [seen, setSeen] = useState(value)
   if (value !== seen) {
     setSeen(value)
-    if (value !== emitted.current) setDraft(null)
+    if (value !== emitted.current) { setDraft(null); setRejected(null) }
   }
   const shown = draft ?? (value === null ? '' : DOLLARS_AT_REST.format(value))
   const trimmed = shown.trim()
@@ -241,9 +245,10 @@ export function MoneyInput({ id, value, onChange, placeholder, disabled, describ
           aria-invalid={invalid ? true : undefined}
           aria-describedby={[unitId, db, invalid ? errorId : null].filter(Boolean).join(' ')}
           // Seeded as it reads at rest, so a stored amount is never flagged as mistyped by being focused.
-          onFocus={() => setDraft(value === null ? '' : DOLLARS_AT_REST.format(value))}
-          // An amount goes back to reading at rest; text that is not one stays as typed, with its reason.
-          onBlur={() => { if (!invalid) setDraft(null) }}
+          onFocus={() => { setRejected(null); setDraft(value === null ? '' : DOLLARS_AT_REST.format(value)) }}
+          // Leaving the box always returns it to the stored amount, so typed text can never
+          // outlive a Discard, an Undo or a merge; text that was not an amount is said.
+          onBlur={() => { if (invalid) setRejected(trimmed); setDraft(null) }}
           onChange={(e) => {
             const raw = e.target.value
             setDraft(raw)
@@ -255,6 +260,9 @@ export function MoneyInput({ id, value, onChange, placeholder, disabled, describ
         />
       </div>
       {invalid && <FieldError id={errorId} alert size="xs" className="mt-1">Type an amount of dollars, such as 20,000.</FieldError>}
+      {!invalid && rejected !== null && (
+        <p role="status" className="mt-1 text-xs text-hint">&quot;{rejected}&quot; is not an amount of dollars, so the box is back to {value === null ? 'empty' : DOLLARS_AT_REST.format(value)}.</p>
+      )}
     </div>
   )
 }

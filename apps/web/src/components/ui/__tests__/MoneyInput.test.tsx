@@ -9,14 +9,30 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { MoneyInput } from '../form'
 
 describe('MoneyInput', () => {
-  it('keeps text that is not an amount after blur, with its reason', () => {
+  it('says text that is not an amount while it is being typed', () => {
     render(<MoneyInput id="m" aria-label="Debt maximum" value={55000} onChange={vi.fn()} />)
     const box = screen.getByRole('textbox', { name: 'Debt maximum' })
     fireEvent.focus(box)
     fireEvent.change(box, { target: { value: '55k' } })
-    fireEvent.blur(box)
     expect(box).toHaveValue('55k')
     expect(screen.getByText('Type an amount of dollars, such as 20,000.')).toBeInTheDocument()
+  })
+
+  it('on leaving the box, text that is not an amount goes back to the stored amount and says so, so nothing stale outlives a Discard', () => {
+    const onChange = vi.fn()
+    const { rerender } = render(<MoneyInput id="m" aria-label="Debt maximum" value={55000} onChange={onChange} />)
+    const box = screen.getByRole('textbox', { name: 'Debt maximum' })
+    fireEvent.focus(box)
+    fireEvent.change(box, { target: { value: '55k' } })
+    fireEvent.blur(box)
+    expect(box).toHaveValue('55,000')
+    expect(screen.getByText('"55k" is not an amount of dollars, so the box is back to 55,000.')).toBeInTheDocument()
+    expect(onChange).not.toHaveBeenCalled()
+    // A Discard that puts back the same stored value leaves nothing typed behind.
+    rerender(<MoneyInput id="m" aria-label="Debt maximum" value={55000} onChange={onChange} />)
+    expect(box).toHaveValue('55,000')
+    fireEvent.focus(box)
+    expect(screen.queryByText(/is not an amount of dollars/)).toBeNull()
   })
 
   it('a value changed from outside replaces a stale entry', () => {
@@ -24,7 +40,6 @@ describe('MoneyInput', () => {
     const box = screen.getByRole('textbox', { name: 'Debt maximum' })
     fireEvent.focus(box)
     fireEvent.change(box, { target: { value: '55k' } })
-    fireEvent.blur(box)
     rerender(<MoneyInput id="m" aria-label="Debt maximum" value={65000} onChange={vi.fn()} />)
     expect(box).toHaveValue('65,000')
     expect(screen.queryByText('Type an amount of dollars, such as 20,000.')).toBeNull()
