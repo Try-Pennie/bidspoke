@@ -36,3 +36,15 @@ const LABELS: Record<PartnerType, string> = {
 export function partnerTypeLabel(partnerType: PartnerType): string {
   return LABELS[partnerType]
 }
+
+/**
+ * The stored type a new partner's two Does boxes mean (#2321, PM-18, the settled
+ * design's new partner page): Sends us leads, Buys leads, or both. Neither box
+ * is no type at all, which Create partner refuses.
+ */
+export function partnerTypeFromDoes(does: { sends: boolean; buys: boolean }): PartnerType | null {
+  if (does.sends && does.buys) return 'both'
+  if (does.sends) return 'source'
+  if (does.buys) return 'buyer'
+  return null
+}

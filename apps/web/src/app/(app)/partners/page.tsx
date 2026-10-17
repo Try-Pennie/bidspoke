@@ -8,15 +8,14 @@ import { api } from '@/lib/api'
 import type { Partner, PartnerBody, PartnerDeleted, PartnerPageSaveRequest, PartnerPageSaved, PartnerPageStale } from '@/lib/api'
 import { BIDDING_PICKUP } from '@/lib/bidding-pickup'
 import NavLayout from '@/components/NavLayout'
-import { Plus, CircleCheck, CircleOff, AlertTriangle } from 'lucide-react'
-import { Skeleton } from '@/components/ui/Skeleton'
-import { Button, FieldError } from '@/components/ui/form'
+import { Plus } from 'lucide-react'
+import { Button } from '@/components/ui/form'
 import { ProblemMark } from '@/components/ui/ProblemMark'
 import PartnerForm, { type PartnerSaveResult } from './PartnerForm'
 import { leaveThen } from '@/lib/leave-guard'
 import { PartnerLiveProvider } from '@/components/partners/live/PartnerLive'
 import { partnersUrl, tabFromParam } from './partner-tabs'
-import { groupPartners } from './partner-list'
+import { groupPartners, loadFailureSentence } from './partner-list'
 import type { PartnerTab } from './partner-draft'
 
 /**
@@ -52,12 +51,16 @@ export default function PartnersPage() {
   /** The foot of the form pane, where the form draws its save bar (#2138). */
   const [barSlot, setBarSlot] = useState<HTMLDivElement | null>(null)
 
+  // A failed read is said on the right with why and Try again (#2321, PM-18),
+  // never as an empty list (L10). The client gives up after 30 seconds.
   async function load() {
+    setLoading(true)
+    setError(null)
     try {
       const data = await api.partners.list()
       setPartners(data)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load partners')
+      setError(loadFailureSentence(e))
     } finally {
       setLoading(false)
     }
@@ -174,15 +177,15 @@ export default function PartnersPage() {
 
           <div className="flex-1 overflow-y-auto">
             {loading ? (
-              <div className="space-y-1 p-3">
-                {[...Array(3)].map((_, i) => (
-                  <div key={i} className="rounded-lg p-3">
-                    <Skeleton className="mb-1.5 h-4 w-24" />
-                    <Skeleton className="h-3 w-16" />
+              // Beige bars with a moving shimmer where the rows will be (design frame 3).
+              <div role="status" aria-label="Loading partners" className="space-y-[3px] px-1.5 pt-3.5">
+                {[70, 55, 70, 55, 70].map((w, i) => (
+                  <div key={i} className="partner-skeleton-row px-[9px] py-1.5">
+                    <div className="partner-skeleton h-[13px]" style={{ width: `${w}%` }} />
                   </div>
                 ))}
               </div>
-            ) : partners.length === 0 ? (
+            ) : error !== null ? null : partners.length === 0 ? (
               <div className="p-6 text-center">
                 <p className="text-base font-semibold text-graphite">No partners yet</p>
                 <p className="mt-1 text-xs text-hint">Partners are the lenders or buyers your workflows route leads to.</p>
@@ -237,20 +240,21 @@ export default function PartnersPage() {
         {/* Detail / form, with the save bar across its foot under the scrolling form (#2138). */}
         <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex-1 overflow-y-auto p-8" data-form-pane="">
-          {error && (
-            <FieldError as="div" boxed size="sm" className="mb-6 flex items-center gap-2 px-4 py-3">
-              <AlertTriangle className="h-4 w-4 flex-shrink-0" />
-              {error}
-            </FieldError>
-          )}
-
           {deletedNotice && (
             <div role="status" className={`mb-6 space-y-1 rounded-lg border px-4 py-3 text-sm ${deletedNotice.length > 1 ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-gray-200 bg-white text-gray-700'}`}>
               {deletedNotice.map((line) => <p key={line}>{line}</p>)}
             </div>
           )}
 
-          {showForm ? (
+          {loading ? null : error !== null ? (
+            <div className="flex h-full items-center justify-center">
+              <div className="flex flex-col items-center gap-1 text-center">
+                <p className="text-sm font-semibold text-gray-700">Partners could not be loaded</p>
+                <p className="text-xs text-hint">{error}</p>
+                <Button variant="primary" onClick={() => { void load() }} className="mt-2">Try again</Button>
+              </div>
+            </div>
+          ) : showForm ? (
             <PartnerForm
               key={selected?.id ?? 'new'}
               partner={selected ?? undefined}
@@ -265,30 +269,11 @@ export default function PartnersPage() {
               onProblemChange={setFormProblem}
               onLiveUpdate={(p) => setPartners((prev) => prev.map((x) => (x.id === p.id ? p : x)))}
             />
-          ) : pendingSelection ? (
-            <div className="max-w-3xl space-y-6">
-              <div className="space-y-2">
-                <Skeleton className="h-7 w-48" />
-                <Skeleton className="h-4 w-72" />
-              </div>
-              <div className="space-y-4">
-                {[...Array(4)].map((_, i) => (
-                  <div key={i} className="space-y-2">
-                    <Skeleton className="h-3 w-24" />
-                    <Skeleton className="h-9 w-full" />
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : (
+          ) : pendingSelection ? null : (
             <div className="flex h-full items-center justify-center">
-              <div className="text-center">
-                <div className="mb-3 flex justify-center gap-2">
-                  <CircleCheck className="h-5 w-5 text-green-400" />
-                  <CircleOff className="h-5 w-5 text-gray-300" />
-                </div>
-                <p className="text-sm font-medium text-gray-700">Select a partner to configure</p>
-                <p className="mt-1 text-xs text-gray-600">Or create a new one with the button above.</p>
+              <div className="flex flex-col gap-1 text-center">
+                <p className="text-sm font-semibold text-gray-700">Select a partner to configure</p>
+                <p className="text-xs text-hint">Or create a new one with the button above.</p>
               </div>
             </div>
           )}

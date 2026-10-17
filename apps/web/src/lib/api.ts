@@ -725,12 +725,15 @@ type ReqInit = RequestInit & { timeoutMs?: number }
 // reached the server, so a blind retry could double-fire (#492).
 export class TimeoutError extends Error {
   readonly timedOut = true
+  /** The ceiling that was passed, so a caller can say how long it waited (#2321). */
+  readonly timeoutMs: number
   constructor(timeoutMs: number) {
     super(
       `Timed out after ${Math.round(timeoutMs / 1000)}s. It may still be processing. ` +
         `Check execution history before retrying.`,
     )
     this.name = 'TimeoutError'
+    this.timeoutMs = timeoutMs
   }
 }
 

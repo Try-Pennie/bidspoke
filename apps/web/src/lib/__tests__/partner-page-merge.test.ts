@@ -243,3 +243,20 @@ describe('changedUnits (#2138): what the save bar and the leave dialog name', ()
     expect(changedUnits({ partner, profile: null }, { partner: { ...partner, min_bid: 5 }, profile: null }, PARTNER_FIELD_REGISTRY).map((u) => u.key)).toEqual(['min_bid'])
   })
 })
+
+describe('what the merge dialog shows (#2322)', () => {
+  it('a change only one side made carries its value before and after', () => {
+    const r = mergeThreeWay(base, side({ name: 'Mine' }), theirsAt({ is_active: false }), PARTNER_FIELD_REGISTRY)
+    expect(r.mineKept.map((c) => [c.key, c.from, c.to])).toEqual([['name', partner.name, 'Mine']])
+    expect(r.autoTaken.map((c) => [c.key, c.from, c.to])).toEqual([['is_active', true, false]])
+  })
+
+  it('an edit both made starts at Keep yours, and a chosen answer stands', () => {
+    const r = mergeThreeWay(base, side({ name: 'Mine' }), theirsAt({ name: 'Theirs' }), PARTNER_FIELD_REGISTRY)
+    expect(r.conflicts[0].conflicts[0].choice).toBe('mine')
+    expect(r.merged.partner.name).toBe('Mine')
+    const chosen = mergeThreeWay(base, side({ name: 'Mine' }), theirsAt({ name: 'Theirs' }), PARTNER_FIELD_REGISTRY, { name: 'theirs' })
+    expect(chosen.conflicts[0].conflicts[0].choice).toBe('theirs')
+    expect(chosen.merged.partner.name).toBe('Theirs')
+  })
+})

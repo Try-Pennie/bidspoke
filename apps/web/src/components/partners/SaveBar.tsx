@@ -12,6 +12,7 @@
  * is still being checked, and is open again once checking stops after two
  * minutes (L665). A failure stays until the person acts on it.
  */
+import { useEffect, useRef, useState } from 'react'
 import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/form'
 import { UNCONFIRMED, UNCONFIRMED_DISCARD_GAVE_UP, UNCONFIRMED_DISCARD_REASON, UNCONFIRMED_GAVE_UP } from '@/app/(app)/partners/save-bar-text'
@@ -119,4 +120,32 @@ export function SaveBar({ state, formId, onDiscard, onCancel, onTryAgain, onUndo
       {state.retry && <Button variant="primary" onClick={onTryAgain}>{state.retry}</Button>}
     </div>
   )
+}
+
+/** How long the bar takes to slide away when it goes (#2322); the CSS transition matches it. */
+export const SAVE_BAR_LEAVE_MS = 250
+
+/**
+ * Holds the save bar and slides the Saved bar away when it goes (#2322, PM-19,
+ * design frame 8: Saved slides away after Undo), rather than removing it in one
+ * frame. Any other bar goes at once (Discard changes, a merge opening). While it
+ * leaves it shows the last bar it had, hidden from a screen reader, and takes no
+ * clicks. A bar that comes back while leaving simply stays.
+ */
+export function SaveBarDock({ bar, slideOut }: { bar: React.ReactNode | null; slideOut: boolean }) {
+  const present = bar !== null && bar !== false && bar !== undefined
+  // The bar shown last, kept while it slides away. Decided in render, so the
+  // first frame after the bar goes already draws it leaving (no blank frame).
+  const last = useRef<{ bar: React.ReactNode; slide: boolean } | null>(null)
+  const [, setGone] = useState(0)
+  if (present) last.current = { bar, slide: slideOut }
+  else if (last.current !== null && !last.current.slide) last.current = null
+  useEffect(() => {
+    if (present || last.current === null) return
+    const t = setTimeout(() => { last.current = null; setGone((n) => n + 1) }, SAVE_BAR_LEAVE_MS)
+    return () => clearTimeout(t)
+  }, [present])
+  if (present) return <div className="save-bar-dock">{bar}</div>
+  if (last.current !== null) return <div className="save-bar-dock save-bar-leaving" aria-hidden="true" inert>{last.current.bar}</div>
+  return null
 }
