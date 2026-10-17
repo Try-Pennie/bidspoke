@@ -156,6 +156,40 @@ in the tab. It re-PUTs the version read before the change under the same check,
 and refuses when the canvas has been saved since the port, because re-PUTting
 then would discard that save too. Rehearse one rollback before the first canary.
 
+## The canary's daily read-back (#2173)
+
+From version 172 (2026-10-16), `invalid_state_sf_post` is the one native outcome
+write. Every morning at 9 AM ET (the `0 13 * * *` daily batch, so 8 AM ET once
+clocks go back) the worker reads back from Salesforce every Main Flow run of the
+24 hours ending ten minutes before the run (12:50 UTC) whose invalid state step ran as a Salesforce step, and
+posts one message to Main Flow's organization's alerts channel
+([`apps/worker/src/lib/invalid-state-canary-watch.ts`](../apps/worker/src/lib/invalid-state-canary-watch.ts)).
+
+A run landed when its Submission holds this run's write stamp, holds this run's
+Bidspoke link in `PDFlow_4__c`, holds every other key the body sent with the
+value sent (`PDFlow_1__c` among them), and its Lead's `EngineUUID__c` and
+`EngineLeadUUID__c` equal the Submission's `Engine_UUID_SO__c` and
+`Engine_Lead_UUID_SO__c`. A read Salesforce did not answer is "could not be
+checked", never landed. Runs the step skipped are counted and said. The message
+gives the count, how many landed, each run that did not with what was wrong (by
+run, never a value), and the relay's figure over the same hours, which is what
+Pipedream accepted, not what reached Salesforce. A day with a run that did not
+land or could not be checked is titled as an alert. It has its own heartbeat
+entry (`invalid-state-canary-watch`), so a missed morning pages, and its own
+`job_runs` row with every run that did not land.
+
+Two parts of #2173's acceptance are not in it and are read by hand: that fields
+the body did not send are unchanged (which needs a snapshot from before the
+write), and Regal's Lead fields.
+
+**Removing it.** It ends with the canary, and the phase 6 pull request (#2175)
+removes it, since once the other seven posts move there is no relay to compare
+against. Delete `apps/worker/src/lib/invalid-state-canary-watch.ts` and its test
+in `apps/worker/src/lib/__tests__/`, the `invalid-state-canary-watch` entry in
+`CRON_JOBS` (`apps/worker/src/lib/cron-heartbeat.ts`), the block that runs it in
+the `0 13 * * *` batch of `apps/worker/src/index.ts`, and this section. The
+heartbeat's KV keys expire on their own and need nothing.
+
 ## Tests
 
 In `apps/worker/src/lib/main-flow-port/__tests__/`:
