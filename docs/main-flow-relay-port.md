@@ -141,7 +141,7 @@ then would discard that save too. Rehearse one rollback before the first canary.
 From version 172 (2026-10-16), `invalid_state_sf_post` is the one native outcome
 write. Every morning at 9 AM ET (the `0 13 * * *` daily batch, so 8 AM ET once
 clocks go back) the worker reads back from Salesforce every Main Flow run of the
-24 hours ending 8:50 AM ET whose invalid state step ran as a Salesforce step, and
+24 hours ending ten minutes before the run (12:50 UTC) whose invalid state step ran as a Salesforce step, and
 posts one message to Main Flow's organization's alerts channel
 ([`apps/worker/src/lib/invalid-state-canary-watch.ts`](../apps/worker/src/lib/invalid-state-canary-watch.ts)).
 

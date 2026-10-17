@@ -338,7 +338,7 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): C
     return {
       title: 'Invalid state write check could not run',
       lines: [`The check could not read yesterday's Main Flow runs from the database (${report.readError}).`],
-      fixHint: 'Check the database is answering. The check runs again tomorrow at 9 AM ET.',
+      fixHint: 'Check the database is answering. The check runs again tomorrow morning.',
       alert: true,
     }
   }
@@ -403,7 +403,7 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): C
           fixHint:
             notLanded > 0
               ? 'Open each run above and its Submission in Salesforce. If writes are being lost, roll Main Flow back to the relay with the saved rollback record.'
-              : 'Check Salesforce is answering and its login works. The check runs again tomorrow at 9 AM ET; check these runs by hand meanwhile.',
+              : 'Check Salesforce is answering and its login works. The check runs again tomorrow morning; check these runs by hand meanwhile.',
         }
       : {}),
     alert,
