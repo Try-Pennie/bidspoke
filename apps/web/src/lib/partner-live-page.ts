@@ -81,6 +81,20 @@ export function liveMissReport(v: PartnerPageVersions, known: HeldVersions, last
   }
 }
 
+/**
+ * A join refused because the day's partition did not exist yet (#2288): what
+ * the page last heard, and nothing observed, since no probe ran.
+ */
+export function partitionRefusalReport(partnerId: string, known: HeldVersions, lastNoticeAt: number | null, now: number): LiveMissReportBody {
+  return {
+    partner_id: partnerId,
+    cause: 'missing_partition',
+    noticed: { partner_version: known.partnerVersion, profile_version: known.profileVersion },
+    observed: { partner_version: null, profile_version: null },
+    since_last_notice_ms: lastNoticeAt === null ? null : Math.min(Math.max(0, now - lastNoticeAt), MAX_REPORTED_GAP_MS),
+  }
+}
+
 /** A line shown on the page's sections; no section means the top of the page. */
 export interface SectionNote {
   sections: string[]

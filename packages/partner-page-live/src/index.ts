@@ -120,8 +120,11 @@ export interface PartnerPageVersions {
  * Why a page heard nothing of a change its probe found: `direct_sql` when the
  * change had no actor, `delivery` otherwise. The database sender does notify a
  * hand run SQL write, so under it both are misses of the channel.
+ * `missing_partition` (#2288): the page's join was refused because the day's
+ * realtime.messages partition did not exist yet, so it could hear nothing at
+ * all; reported once per outage, with nothing observed.
  */
-export const LIVE_MISS_CAUSES = ['delivery', 'direct_sql'] as const
+export const LIVE_MISS_CAUSES = ['delivery', 'direct_sql', 'missing_partition'] as const
 export type LiveMissCause = (typeof LIVE_MISS_CAUSES)[number]
 
 export interface VersionPair {

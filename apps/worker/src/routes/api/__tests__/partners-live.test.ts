@@ -140,6 +140,14 @@ describe('POST /partners/live-miss (#2135)', () => {
     since_last_notice_ms: 61_000,
   }
 
+  it('records a page\'s join refused for a missing partition as a miss of its own cause (#2288)', async () => {
+    const supabase = wire({ partner_configs: { single: { id: PARTNER } }, partner_page_live_misses: { insertResult: { id: 'miss-2' } } })
+    const res = await post({ ...report, cause: 'missing_partition', observed: { partner_version: null, profile_version: null }, since_last_notice_ms: null })
+    expect(res.status).toBe(201)
+    const insert = (supabase.calls['partner_page_live_misses'] ?? []).find(([m]) => m === 'insert')
+    expect(insert?.[1][0]).toMatchObject({ cause: 'missing_partition', observed_partner_version: null, observed_profile_version: null })
+  })
+
   it('records the miss against this organization and the person who saw it', async () => {
     const supabase = wire({ partner_configs: { single: { id: PARTNER } }, partner_page_live_misses: { insertResult: { id: 'miss-1' } } })
     const res = await post(report)

@@ -82,6 +82,17 @@ describe('parsePartnerPageNotice', () => {
   })
 })
 
+describe('a refused join for a missing partition is a live miss (#2288)', () => {
+  it('parses with no versions observed, since nothing was probed', () => {
+    const parsed = parseLiveMissReport({
+      partner_id: PARTNER, cause: 'missing_partition',
+      noticed: { partner_version: 7, profile_version: null }, observed: { partner_version: null, profile_version: null },
+      since_last_notice_ms: null,
+    })
+    expect(parsed).toMatchObject({ ok: true, report: { cause: 'missing_partition', observed: { partnerVersion: null, profileVersion: null } } })
+  })
+})
+
 describe('parseLiveMissReport', () => {
   const report = (over: Record<string, unknown> = {}) => ({
     partner_id: PARTNER,
