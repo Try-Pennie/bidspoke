@@ -263,6 +263,14 @@ export function BidMatrixViewer(p: Props) {
       {activeConfig && (
         <div className="space-y-2">
           <ConfigBadge config={activeConfig} />
+          {/* #2258: a matrix in view that the partner does not use says so, rather than reading as the one bids come from. */}
+          {p.onSelectConfig && activeConfig.id !== p.selectedConfigId && (
+            <p className="text-xs text-hint">
+              {p.selectedConfigId
+                ? `Not in use: bids are looked up in ${p.configs.find((c) => c.id === p.selectedConfigId)?.name ?? 'the matrix chosen above'}, chosen above.`
+                : 'Not in use: no bid matrix is chosen above, so no bid is looked up in this one.'}
+            </p>
+          )}
           {syncError && (
             <FieldError as="div" boxed size="xs">
               {syncError}
