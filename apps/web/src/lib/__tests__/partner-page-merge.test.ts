@@ -106,12 +106,12 @@ describe('mergeThreeWay', () => {
     const r = mergeThreeWay(base, mine, theirs, PARTNER_FIELD_REGISTRY)
     expect(conflictKeys(r)).toEqual([])
     expect(r.merged.profile?.windows).toEqual([{ day_of_week: 1, opens_minute: 600, closes_minute: 1020 }, { day_of_week: 2, opens_minute: 540, closes_minute: 1020 }])
-    expect(r.autoTaken.map((k) => k.label)).toEqual(['Hours, Tuesday'])
+    expect(r.autoTaken.map((k) => k.label)).toEqual(['Hours (Eastern), Tuesday'])
   })
 
   it('one person moving a window\'s opening time while the other deletes it is one conflict', () => {
     const r = mergeThreeWay(base, side({}, { windows: [{ day_of_week: 1, opens_minute: 600, closes_minute: 1020 }] }), theirsAt({}, { windows: [] }), PARTNER_FIELD_REGISTRY)
-    expect(r.conflicts).toEqual([{ section: 'Hours', tab: 'buyer_profile', conflicts: [expect.objectContaining({ key: 'profile.windows@1', label: 'Hours, Monday', mine: [{ day_of_week: 1, opens_minute: 600, closes_minute: 1020 }], theirs: [] })] }])
+    expect(r.conflicts).toEqual([{ section: 'Hours', tab: 'buyer_profile', conflicts: [expect.objectContaining({ key: 'profile.windows@1', label: 'Hours (Eastern), Monday', mine: [{ day_of_week: 1, opens_minute: 600, closes_minute: 1020 }], theirs: [] })] }])
   })
 
   it('a merge the validator refuses becomes a conflict, judged against the partner rules as the merge leaves them', () => {
@@ -214,7 +214,7 @@ describe('mergeThreeWay', () => {
 describe('changedUnits (#2138): what the save bar and the leave dialog name', () => {
   it('names every unit changed from base, by the page\'s labels, in registry order, a row group by its day', () => {
     const mine = side({ name: 'Tripoint 2', is_active: false }, { daily_lead_cap: 600, windows: [{ day_of_week: 1, opens_minute: 600, closes_minute: 1020 }] })
-    expect(changedUnits(base, mine, PARTNER_FIELD_REGISTRY).map((u) => u.label)).toEqual(['Name', 'Status', 'Leads per day', 'Hours, Monday'])
+    expect(changedUnits(base, mine, PARTNER_FIELD_REGISTRY).map((u) => u.label)).toEqual(['Name', 'Status', 'Leads per day', 'Hours (Eastern), Monday'])
   })
 
   it('names nothing for a page equal to base, whatever order the database left an object\'s keys in', () => {

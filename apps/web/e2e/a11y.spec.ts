@@ -301,7 +301,7 @@ test.describe('Accessibility (axe-core)', () => {
     const panel = page.locator('[role="tabpanel"]:visible')
     await expect(panel.getByRole('listitem')).toHaveCount(19)
     // Twice: set up with them, then moved to open at 9:00 AM.
-    await expect(panel.getByText('Hours, Monday to Friday')).toHaveCount(2)
+    await expect(panel.getByText('Hours (Eastern), Monday to Friday')).toHaveCount(2)
     await page.waitForLoadState('networkidle')
     await expectNoSeriousA11yViolations(page, [], '/partners')
     await page.goto('/partners?selected=tripoint&tab=history')

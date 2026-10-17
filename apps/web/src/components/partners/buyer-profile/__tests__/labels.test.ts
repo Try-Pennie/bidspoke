@@ -136,8 +136,8 @@ describe('history paths in the dotted form buyer_profile_flatten writes (#1672)'
   })
 
   it('names an hours row by its day and opening time, valued by its closing time', () => {
-    expect(profileFieldLabel('windows.1.660')).toBe('Monday hours from 11:00 AM')
-    expect(profileFieldLabel('windows.0.0')).toBe('Sunday hours from 12:00 AM')
+    expect(profileFieldLabel('windows.1.660')).toBe('Monday hours (Eastern) from 11:00 AM')
+    expect(profileFieldLabel('windows.0.0')).toBe('Sunday hours (Eastern) from 12:00 AM')
     expect(formatProfileValue('windows.1.540', 1260)).toBe('open until 9:00 PM')
     expect(formatProfileValue('windows.1.660', null)).toBe('none')
   })
@@ -172,7 +172,7 @@ describe('history paths in the dotted form buyer_profile_flatten writes (#1672)'
   })
 
   it('still reads the bracket keys the conflict view diff produces', () => {
-    expect(profileFieldLabel('windows[1:660]')).toBe('Monday hours from 11:00 AM')
+    expect(profileFieldLabel('windows[1:660]')).toBe('Monday hours (Eastern) from 11:00 AM')
     expect(profileFieldLabel('tiers[engine:10000]')).toBe('Engine tier from $10,000')
     expect(profileFieldLabel('blackout_dates[2026-12-25]')).toBe('Blackout 2026-12-25')
     expect(formatProfileValue('windows[1:660]', { day_of_week: 1, opens_minute: 660, closes_minute: 1260 })).toBe('11:00 AM to 9:00 PM')
