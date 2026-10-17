@@ -41,7 +41,7 @@ import type { HistoryEntry, PartnerHistory } from '@bidspoke/partner-history'
 
 type Row = Record<string, unknown> & { id: string; slug: string; partner_type: string; accept_signals: unknown }
 const partners = partnersJson as unknown as Row[]
-const buyerProfiles = buyerProfilesJson as unknown as Record<string, { profile: Record<string, unknown> | null; accept_signals: unknown[]; other_sellers: Array<{ id: string; name: string }> }>
+const buyerProfiles = buyerProfilesJson as unknown as Record<string, { profile: Record<string, unknown> | null; accept_signals: unknown[]; other_sellers: Array<{ id: string; name: string }>; offer_buyers: unknown[] }>
 const uuids = uuidsJson as unknown[]
 const stale = staleJson as unknown as Record<string, unknown> & { partner: Row; profile: Record<string, unknown> }
 interface DeleteCheckFixture { rpc: unknown; ledger: { unmirrored: number; unresolved: number }; uuids: Array<{ uuid: string }>; workflows: Record<string, unknown>[]; answer: unknown }
@@ -119,8 +119,16 @@ describe('the partners page fixtures are what their routes answer (#2134)', () =
     // workflow whose Bid Group lists them, which is how Main Flow names them.
     // Each row carries the organization and deleted_at the shared read selects and checks (#2142).
     const workflows = fixture.other_sellers.map((w) => ({ ...w, is_active: true, organization_id: testUser.organization_id, deleted_at: null, definition: { nodes: [{ type: 'bid_group', config: { partner_ids: [id] } }] } }))
+    // The org's enabled offer profiles with their partner's name and switch, as the
+    // other offer buyers read selects them (#2324); the route leaves out this partner itself.
+    const offerProfiles = Object.entries(buyerProfiles)
+      .filter(([, a]) => a.profile?.sold_on === 'offer' && a.profile?.is_enabled === true)
+      .map(([pid, a]) => {
+        const p = partners.find((x) => x.id === pid)!
+        return { partner_id: pid, priority: a.profile?.priority ?? null, partner_configs: { name: p.name, is_active: p.is_active } }
+      })
     supabaseWith(
-      { partner_configs: { single: withoutWarning(row) }, workflows: { list: workflows } },
+      { partner_configs: { single: withoutWarning(row) }, workflows: { list: workflows }, buyer_profiles: { list: offerProfiles } },
       async (name) => ({ data: name === 'buyer_profile_document' ? fixture.profile : null, error: null }),
     )
     const res = await call('GET', `/partners/${id}/buyer-profile`)

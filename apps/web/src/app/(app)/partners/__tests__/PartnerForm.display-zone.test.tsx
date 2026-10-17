@@ -93,15 +93,19 @@ describe('the Time zone picker under Hours', () => {
   it('offers the four zones by name, an unset profile showing Eastern', async () => {
     await renderBuyer()
     const reading = readSelect(screen.getByLabelText('Time zone'))
-    expect(reading.options).toEqual(['Eastern', 'Central', 'Mountain', 'Pacific'])
-    expect(reading.shown).toBe('Eastern')
-    expect(hours('Monday')).toEqual(['12:00 AM', '12:00 AM'])
+    // #2324: each zone reads as the design words it, "Eastern time".
+    expect(reading.options).toEqual(['Eastern time', 'Central time', 'Mountain time', 'Pacific time'])
+    expect(reading.shown).toBe('Eastern time')
+    // In Eastern, Monday all day is the same hours every day: one chip and one range (#2324).
+    expect(screen.getByRole('checkbox', { name: 'Monday' })).toHaveAttribute('aria-checked', 'true')
+    expect([screen.getByLabelText('Opens'), screen.getByLabelText('Closes')].map((b) => (b as HTMLInputElement).value)).toEqual(['12:00 AM', '12:00 AM'])
     expect(screen.getByText(/A day runs midnight to midnight Eastern time\./)).toBeInTheDocument()
   })
 
   it('choosing Pacific redraws the hours and the reset times in Pacific, and saves only the zone', async () => {
     const onSave = await renderBuyer()
-    chooseOption(screen.getByLabelText('Time zone'), 'Pacific')
+    chooseOption(screen.getByLabelText('Time zone'), 'Pacific time')
+    // In Pacific the same window touches two days with different hours, so it opens one row per day (#2324).
     expect(hours('Sunday')).toEqual(['9:00 PM', '12:00 AM'])
     expect(hours('Monday')).toEqual(['12:00 AM', '9:00 PM'])
     expect(screen.getByText(/A day runs from 9:00 PM to 9:00 PM Pacific time, starting the evening before\./)).toBeInTheDocument()
@@ -115,7 +119,7 @@ describe('the Time zone picker under Hours', () => {
   it('shows a stored zone, and a save that did not change it leaves the zone out so the stored one is kept', async () => {
     loads({ ...doc, display_time_zone: 'America/Chicago' })
     const onSave = await renderBuyer()
-    expect(readSelect(screen.getByLabelText('Time zone')).shown).toBe('Central')
+    expect(readSelect(screen.getByLabelText('Time zone')).shown).toBe('Central time')
     fireEvent.change(screen.getByLabelText('Leads per day'), { target: { value: '600' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))

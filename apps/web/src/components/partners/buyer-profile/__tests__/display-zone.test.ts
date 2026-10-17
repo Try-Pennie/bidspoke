@@ -17,6 +17,8 @@ import {
   easternDayResetSentence,
   profileWithChangedZoneOnly,
   replaceDisplayWindow,
+  sharedHoursOf,
+  sharedWindows,
 } from '../display-zone'
 
 // Far from every zone, so a local Date getter anywhere shows up as a wrong hour (L504).
@@ -156,5 +158,57 @@ describe('the zone is sent only when the person changed it', () => {
     expect(profileWithChangedZoneOnly({ ...base, display_time_zone: null }, { ...base, display_time_zone: 'America/Denver' }).display_time_zone).toBeNull()
     // A profile never stored sends a chosen zone.
     expect(profileWithChangedZoneOnly({ ...base, display_time_zone: 'America/Denver' }, null).display_time_zone).toBe('America/Denver')
+  })
+})
+
+describe('the same hours every day (#2324, PM-21)', () => {
+  const byDay = (ws: readonly ProfileWindowDocument[]) => [...ws].sort((a, b) => a.day_of_week - b.day_of_week || a.opens_minute - b.opens_minute)
+
+  it('reads weekday hours as the days and the one range they share', () => {
+    const weekdays = [1, 2, 3, 4, 5].map((d) => w(d, 540, 1260))
+    expect(sharedHoursOf(weekdays, 0)).toEqual({ days: [1, 2, 3, 4, 5], range: { opens_minute: 540, closes_minute: 1260 } })
+    // The same windows drawn in Pacific share 6:00 AM to 6:00 PM.
+    expect(sharedHoursOf(weekdays, PACIFIC_SHIFT)).toEqual({ days: [1, 2, 3, 4, 5], range: { opens_minute: 360, closes_minute: 1080 } })
+  })
+
+  it('reads no hours as no days and no range', () => {
+    expect(sharedHoursOf([], 0)).toEqual({ days: [], range: null })
+  })
+
+  it('round trips to exactly the stored windows, in every zone', () => {
+    const cases = [
+      [1, 2, 3, 4, 5].map((d) => w(d, 540, 1260)),
+      [0, 1, 2, 3, 4, 5, 6].map((d) => w(d, 0, 1440)),
+      [w(0, 600, 900), w(6, 600, 900)],
+    ]
+    for (const stored of cases) {
+      for (const shift of [0, -60, -120, PACIFIC_SHIFT]) {
+        const shared = sharedHoursOf(stored, shift)
+        expect(shared, `shift ${shift}`).not.toBeNull()
+        expect(byDay(sharedWindows(shared!.days, shared!.range!, shift)), `shift ${shift}`).toEqual(byDay(stored))
+      }
+    }
+  })
+
+  it('hours that differ by day are not shared, so they are never flattened into one range', () => {
+    expect(sharedHoursOf([w(1, 540, 1020), w(2, 600, 1020)], 0)).toBeNull()
+    // Two windows on one day.
+    expect(sharedHoursOf([w(1, 480, 600), w(1, 720, 840)], 0)).toBeNull()
+    // Touching windows stored apart are two rows, not one range.
+    expect(sharedHoursOf([w(1, 480, 600), w(1, 600, 720)], 0)).toBeNull()
+    // Monday 1:00 AM to 9:00 AM Eastern crosses midnight in Pacific, so it is drawn on two days.
+    expect(sharedHoursOf([w(1, 60, 540)], PACIFIC_SHIFT)).toBeNull()
+  })
+
+  it('keeps a range whose close is not after its open shared, so the editor flags it rather than switching view', () => {
+    const shared = sharedHoursOf([w(1, 600, 600), w(2, 600, 600)], 0)
+    expect(shared).toEqual({ days: [1, 2], range: { opens_minute: 600, closes_minute: 600 } })
+    expect(byDay(sharedWindows([1, 2], { opens_minute: 600, closes_minute: 600 }, PACIFIC_SHIFT))).toEqual([w(1, 780, 780), w(2, 780, 780)])
+  })
+
+  it('writes the chosen days and range as the Eastern windows they mean', () => {
+    // 9:00 AM to 5:00 PM Central on Tuesday is 10:00 AM to 6:00 PM Eastern.
+    expect(sharedWindows([2], { opens_minute: 540, closes_minute: 1020 }, -60)).toEqual([w(2, 600, 1080)])
+    expect(sharedWindows([], { opens_minute: 540, closes_minute: 1020 }, 0)).toEqual([])
   })
 })

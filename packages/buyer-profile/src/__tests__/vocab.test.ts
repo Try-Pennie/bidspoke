@@ -103,7 +103,8 @@ describe('the rest of the vocabulary', () => {
     expect([...PAYLOAD_NORMALISERS]).toEqual(['ssn_digits_9'])
   })
   it('states the priority direction once and caps the multiplier at 1', () => {
-    expect(PRIORITY_DIRECTION).toBe('1 is offered the lead first. A lower number outranks a higher one.')
+    // #2324: the rule in the settled design's one line.
+    expect(PRIORITY_DIRECTION).toBe('When more than one buyer can take a lead, priority 1 is offered it first.')
     expect(MULTIPLIER_CEILING).toBe(1)
   })
 })

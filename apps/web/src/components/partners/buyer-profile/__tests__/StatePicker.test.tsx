@@ -1,7 +1,8 @@
 /**
  * The state picker (#1412): 51 checkboxes from the shared vocabulary, all and
  * none, and a count, so 51 states is a scannable grid rather than a text box of
- * codes (L611).
+ * codes (L611). Since #2324 (PM-21) each state is a chip, as the settled design
+ * draws it: navy when chosen, in a white box headed by the count, All and None.
  */
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
@@ -14,6 +15,14 @@ describe('StatePicker', () => {
     expect(screen.getAllByRole('checkbox')).toHaveLength(US_STATES.length)
     expect(screen.getByRole('checkbox', { name: 'TX' })).toBeChecked()
     expect(screen.getByRole('checkbox', { name: 'NY' })).not.toBeChecked()
+  })
+
+  it('draws each state as a chip, navy when chosen, never a native box (#2324)', () => {
+    const { container } = render(<StatePicker value={['TX']} onChange={() => {}} />)
+    expect(container.querySelectorAll('input')).toHaveLength(0)
+    expect(screen.getByRole('checkbox', { name: 'TX' })).toHaveClass('chip', 'chip-on')
+    expect(screen.getByRole('checkbox', { name: 'NY' })).toHaveClass('chip')
+    expect(screen.getByRole('checkbox', { name: 'NY' })).not.toHaveClass('chip-on')
   })
 
   it('emits a sorted list without duplicates when a state is toggled', () => {
@@ -43,5 +52,13 @@ describe('StatePicker', () => {
   it('is a group with an accessible name', () => {
     render(<StatePicker value={[]} onChange={() => {}} />)
     expect(screen.getByRole('group', { name: 'States' })).toBeInTheDocument()
+  })
+
+  it('hides its name under a section heading and shows it where it has none', () => {
+    const { unmount } = render(<StatePicker value={[]} onChange={() => {}} />)
+    expect(screen.getByText('States')).toHaveClass('sr-only')
+    unmount()
+    render(<StatePicker value={[]} onChange={() => {}} legend="States for Texas" legendShown />)
+    expect(screen.getByText('States for Texas')).not.toHaveClass('sr-only')
   })
 })
