@@ -99,6 +99,10 @@ describe('saving, and a save whose answer was lost (L766)', () => {
       expect(screen.getByRole('button', { name: `Undo, ${s}` })).toBeInTheDocument()
     }
     await advance(1_000)
+    // It slides away rather than vanishing (#2322), then is gone.
+    expect(bar()).not.toBeNull()
+    expect(bar()!.closest('.save-bar-leaving')).not.toBeNull()
+    await advance(300)
     expect(bar()).toBeNull()
   })
 
@@ -247,5 +251,16 @@ describe('saving, and a save whose answer was lost (L766)', () => {
     expect(bar()).toHaveTextContent('Not confirmed yet, checking.')
     expect(screen.getByLabelText('Name')).toHaveValue('M1 renamed')
     expect(unload()).toBe(true)
+  })
+})
+
+describe('a failed save says why in words (#2322)', () => {
+  it('a server error with no sentence of its own is named by its status, never its code', async () => {
+    const onSave = vi.fn().mockRejectedValue(Object.assign(new Error('Service unavailable'), { status: 503, body: { error: 'Service unavailable' } }))
+    await renderRenamed(onSave)
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }))
+    await settle()
+    expect(bar()).toHaveTextContent('Nothing saved: The server answered with an error (HTTP 503).')
+    expect(bar()).not.toHaveTextContent('Service unavailable')
   })
 })

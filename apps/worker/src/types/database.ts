@@ -2405,10 +2405,12 @@ export type Database = {
           cf_secret_key: string
           config: Json | null
           created_at: string
+          credential_enc: string | null
           id: string
           organization_id: string
           schema_cache: Json | null
           schema_synced_at: string | null
+          sealed_for: string | null
           service_type: string
           updated_at: string
           updated_by: string | null
@@ -2420,10 +2422,12 @@ export type Database = {
           cf_secret_key: string
           config?: Json | null
           created_at?: string
+          credential_enc?: string | null
           id?: string
           organization_id: string
           schema_cache?: Json | null
           schema_synced_at?: string | null
+          sealed_for?: string | null
           service_type: string
           updated_at?: string
           updated_by?: string | null
@@ -2435,10 +2439,12 @@ export type Database = {
           cf_secret_key?: string
           config?: Json | null
           created_at?: string
+          credential_enc?: string | null
           id?: string
           organization_id?: string
           schema_cache?: Json | null
           schema_synced_at?: string | null
+          sealed_for?: string | null
           service_type?: string
           updated_at?: string
           updated_by?: string | null
@@ -3120,6 +3126,16 @@ export type Database = {
           p_org: string
         }
         Returns: undefined
+      }
+      delete_service_connection: {
+        Args: {
+          p_actor: string
+          p_organization_id: string
+          p_service_type: string
+        }
+        Returns: {
+          id: string
+        }[]
       }
       drain_lead_sightings_purge: { Args: never; Returns: undefined }
       drop_exported_sighting_partitions: {

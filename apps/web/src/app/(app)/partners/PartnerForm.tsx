@@ -12,7 +12,7 @@ import {
 import { formatElapsed, formatEtDayTime } from '@/lib/dates'
 import { pickupSentence } from '@/lib/bidding-pickup'
 import { api } from '@/lib/api'
-import { errorSentence } from '@/lib/error-sentence'
+import { causeAsSentence, errorSentence, requestFailureCause } from '@/lib/error-sentence'
 import { Plus } from 'lucide-react'
 import { BidResolverEditor } from '@/components/partners/BidResolverEditor'
 import { BidMatrixViewer } from '@/components/partners/BidMatrixViewer'
@@ -24,6 +24,7 @@ import { BuyerProfileSection, EMPTY_PROFILE } from '@/components/partners/buyer-
 import { MergeDialog } from '@/components/partners/MergeDialog'
 import { PartnerDeleteBox } from '@/components/partners/PartnerDeleteBox'
 import { RemoveButton } from '@/components/partners/RemoveButton'
+import { DoesChoice } from '@/components/partners/DoesChoice'
 import { PartnerSection, PartnerSubsection } from '@/components/partners/PartnerSection'
 import { mergeThreeWay, sameMergeValue, type MergeResult, type MergeSide, type PageHalves } from '@/lib/partner-page-merge'
 import { describeProfileErrors } from '@/components/partners/buyer-profile/labels'
@@ -34,7 +35,7 @@ import { Toggle } from '@/components/ui/Toggle'
 import { documentToProfile, soldOnSwitchBlocked, validateProfile, type BuyerProfileDocument, type ProfileError, type Signal, type StoredKind } from '@bidspoke/buyer-profile'
 import { leaveThen, useLeaveGuard, type LeaveRequest } from '@/lib/leave-guard'
 import { changedUnits } from '@/lib/partner-page-merge'
-import { SaveBar, type SaveBarState } from '@/components/partners/SaveBar'
+import { SaveBar, SaveBarDock, type SaveBarState } from '@/components/partners/SaveBar'
 import { LeaveDialog } from '@/components/partners/LeaveDialog'
 import { ACCESS_REMOVED, SESSION_EXPIRED, namedAsShown, refusedSentence, unsavedSentence } from './save-bar-text'
 import { Tabs, TabPanel } from '@/components/ui/Tabs'
@@ -199,9 +200,9 @@ const asText = (n: number | null): string => (n === null ? '' : String(n))
  * liveSections: the registry sections (partner-draft.ts) this block shows, when
  * its heading is not one of them, so a live note about them lands here (#2135).
  */
-function Section({ title, liveSections, children }: { title: string; liveSections?: readonly string[]; children: React.ReactNode }) {
+function Section({ title, liveSections, region, children }: { title: string; liveSections?: readonly string[]; region?: boolean; children: React.ReactNode }) {
   return (
-    <PartnerSection title={title}>
+    <PartnerSection title={title} region={region}>
       <LiveSectionNote sections={liveSections ?? [title]} />
       {children}
     </PartnerSection>
@@ -721,7 +722,7 @@ export default function PartnerForm({
       // check names them (#1464).
       const message = refused ?? (!hasSentence && errors.length > 0
         ? `${lead}. Fix the buyer profile first: ${describeProfileErrors(errors, profileDoc?.sold_on ?? profile?.sold_on ?? null)}`
-        : `${lead}: ${errorSentence(err, 'the partner save failed')}`)
+        : `${lead}: ${causeAsSentence(requestFailureCause(err, 'the partner save failed'))}`)
       setSaveOutcome({ kind: 'failed', message, retry: refused ? 'Save changes' : undefined })
       return { kind: 'refused' }
     }
@@ -1184,7 +1185,7 @@ export default function PartnerForm({
       try {
         await onSave(built, undefined, pendingUuids)
       } catch (err) {
-        const sentence = errorSentence(err, 'the partner save failed')
+        const sentence = causeAsSentence(requestFailureCause(err, 'the partner save failed'))
         setProfileErrors(fieldErrorsOf(err))
         setSaveOutcome({ kind: 'failed', message: `Nothing saved: ${sentence}` })
         return 'not_saved'
@@ -1301,7 +1302,9 @@ export default function PartnerForm({
                 note: liveHeld ? liveConflictSentence(liveHeld.theirName, liveHeld.keys.length) : saveOutcome.kind === 'done' ? saveOutcome.message : null,
               }
                 : null
-  const bar = barState && (
+  // No bar behind the merge dialog (#2322, design frame 12): the dialog says it
+  // all, and the bar comes back, saying it is not saved, on Keep editing.
+  const bar = barState && !mergeOpen && (
     <SaveBar
       state={barState}
       formId={formId}
@@ -1365,12 +1368,12 @@ export default function PartnerForm({
           // Its own page (design frame 5): what a partner needs before it exists, and
           // nothing more. Everything else is set on its tabs once it is created.
           <div>
-            <PartnerSection title="Name" region={false}>
+            <Section title="Name" region={false}>
               <Field id="partner-name" label="Name" labelHidden>
                 <TextInput id="partner-name" value={name} onChange={handleNameChange} placeholder="Acme Lending" />
               </Field>
-            </PartnerSection>
-            <PartnerSection title="Slug" region={false}>
+            </Section>
+            <Section title="Slug" region={false}>
               <Field id="partner-slug" label="Slug" labelHidden hint="Made from the name. Workflows and logs use it, and it cannot change after the partner is created.">
                 <TextInput
                   id="partner-slug"
@@ -1381,13 +1384,10 @@ export default function PartnerForm({
                   describedBy={describedBy('partner-slug', true, false)}
                 />
               </Field>
-            </PartnerSection>
-            <PartnerSection title="Does">
-              <div className="flex flex-col gap-1.5">
-                <Checkbox id="partner-does-sends" label="Sends us leads" checked={newDoes.sends} onChange={(v) => changeDoes({ ...newDoes, sends: v })} />
-                <Checkbox id="partner-does-buys" label="Buys leads" checked={newDoes.buys} onChange={(v) => changeDoes({ ...newDoes, buys: v })} />
-              </div>
-            </PartnerSection>
+            </Section>
+            <Section title="Does">
+              <DoesChoice idPrefix="partner-does" does={newDoes} onChange={changeDoes} />
+            </Section>
           </div>
         ) : (
         <Tabs<PartnerTab>
@@ -1397,37 +1397,34 @@ export default function PartnerForm({
           items={visible.map((t) => ({ value: t, label: TAB_LABELS[t], problem: tabsWithProblems.includes(t) }))}
         >
           <TabPanel value="partner">
-            <Section title="Identity">
-              <Field id="partner-name" label="Name" hint="Display name shown in the UI.">
-                <TextInput id="partner-name" value={name} onChange={handleNameChange} placeholder="Tripoint" describedBy={describedBy('partner-name', true, false)} />
+            {/* The Partner tab's rows as the settled design draws them (#2323, PM-20, frame 6). */}
+            <Section title="Name" region={false}>
+              <Field id="partner-name" label="Name" labelHidden>
+                <TextInput id="partner-name" value={name} onChange={handleNameChange} placeholder="Tripoint" />
               </Field>
-              <div>
-                <ChoiceGroup
-                  id="partner-type"
-                  label="Type"
-                  value={partnerType}
-                  options={PARTNER_TYPES.map((t) => ({ value: t, label: partnerTypeLabel(t) }))}
-                  onChange={setPartnerType}
-                  describedBy="partner-type-hint"
-                />
-                <p id="partner-type-hint" className="mt-1 text-xs text-hint">Source partners send leads to Pennie. Buyer partners receive bids. Both does each, on one record.</p>
+            </Section>
+            <Section title="Does">
+              <DoesChoice
+                idPrefix="partner-does"
+                does={{ sends: isSourcePartner(partnerType), buys: isBuyerPartner(partnerType) }}
+                onChange={(next) => { const type = partnerTypeFromDoes(next); if (type) setPartnerType(type) }}
+                keepOne
+              />
+            </Section>
+            <Section title="Active">
+              <div className="flex items-center gap-2.5">
+                <Toggle id="partner-active" checked={isActive} onChange={setIsActive} label="Active" describedBy="partner-active-hint" />
+                <span className="text-sm text-graphite">{isActive ? 'On' : 'Off'}</span>
               </div>
-              <div className="flex items-center gap-6">
-                <div>
-                  <span className="mb-1 block text-xs font-medium text-gray-600">Status</span>
-                  <div className="flex items-center gap-2.5 pt-1">
-                    <Toggle id="partner-active" checked={isActive} onChange={setIsActive} label="Partner active" />
-                    <span className="text-sm text-gray-700">{isActive ? 'Active' : 'Inactive'}</span>
-                  </div>
-                </div>
-              </div>
+              <p id="partner-active-hint" className="text-xs text-hint">Off: Bidspoke offers {name || 'this partner'} no leads through any step, and workflows see it as inactive.</p>
             </Section>
 
             {isBuyer && (
               <Section title="Sold through">
-                <div className="divide-y divide-gray-100 rounded-lg border border-gray-200">
-                  <div className="flex items-center justify-between gap-4 px-4 py-2.5">
-                    <span className="text-sm text-graphite">Buyer profile</span>
+                {/* Flat rows, the action beside each label (the settled design). */}
+                <div className="flex flex-col gap-2">
+                  <div data-sold-row="" className="flex items-center gap-4">
+                    <span className="w-[110px] shrink-0 text-sm text-graphite">Buyer profile</span>
                     {/* The read's own states first, so a buyer with a profile is never told to set one up (L10). */}
                     {profileLoadError !== null
                       ? <FieldError as="span" size="sm">Could not be read</FieldError>
@@ -1437,8 +1434,8 @@ export default function PartnerForm({
                           ? <span className="text-sm text-gray-600">Set up</span>
                           : <Button variant="secondary" onClick={() => chooseTab('buyer_profile')}>Set up a buyer profile</Button>}
                   </div>
-                  <div className="flex items-center justify-between gap-4 px-4 py-2.5">
-                    <span className="text-sm text-graphite">Bid Group</span>
+                  <div data-sold-row="" className="flex items-center gap-4">
+                    <span className="w-[110px] shrink-0 text-sm text-graphite">Bid Group</span>
                     {visible.includes('bid_group')
                       ? <span className="text-sm text-gray-600">Set up</span>
                       : <Button variant="secondary" onClick={() => { setBidGroupAdded(true); chooseTab('bid_group') }}>Set up for Bid Group</Button>}
@@ -1832,7 +1829,7 @@ export default function PartnerForm({
         gives it one, otherwise after the form. Its Save and Create buttons
         submit this form by id, so Enter in a field still saves.
       */}
-      {barSlot && bar ? createPortal(bar, barSlot) : bar}
+      {barSlot ? createPortal(<SaveBarDock bar={bar || null} slideOut={barState?.kind === 'done'} />, barSlot) : <SaveBarDock bar={bar || null} slideOut={barState?.kind === 'done'} />}
 
       {leaveAsk && (
         <LeaveDialog

@@ -48,7 +48,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
 import type { AllClearClaim } from './alert-recovery'
 import { logReadFailure } from './scheduled-read'
-import { parseSlackConnection, type SlackConnection } from './slack-connection'
+import { resolveSlackConnection, slackTokenProblemLine, type SlackConnection, type SlackConnectionRow } from './slack-connection'
+import { slackKeyRingFor } from './slack-key-ring'
 import { describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason } from './scheduled-slack'
 
 /**
@@ -125,16 +126,27 @@ export type SlackConnectionsRead =
   | { kind: 'unreachable'; reason: SlackListUnreachableReason }
 
 export async function readEverySlackConnection(supabase: SupabaseClient, logLabel: string, use: SlackListUse): Promise<SlackConnectionsRead> {
-  const read = await readSlackRows<{ organization_id: string; config: unknown }>(supabase, logLabel, 'slack connections', 'organization_id, config', use)
+  const read = await readSlackRows<{ organization_id: string } & SlackConnectionRow>(supabase, logLabel, 'slack connections', SLACK_ROWS_WITH_ORG, use)
   if (read.kind === 'unreachable') return read
   if (read.kind === 'stored') return { kind: 'stored', connections: read.copy, ageMs: read.ageMs }
   const connections = new Map<string, SlackConnection>()
+  const keys = slackKeyRingFor(supabase)
   for (const row of read.rows) {
-    const conn = parseSlackConnection(row.config)
-    if (conn) connections.set(row.organization_id, conn)
+    const resolved = await resolveSlackConnection(row, keys)
+    const subject = `${logLabel} slack connection for org ${row.organization_id}`
+    // Said by name either way (#2331). An org whose token nobody can read is
+    // left out of this live list, as an unparseable row always was; the probe
+    // keeps its entry in the saved copy and pages about it.
+    if (resolved.kind === 'unreadable') console.error(slackTokenProblemLine(subject, resolved, false))
+    if (resolved.kind !== 'connection') continue
+    if (resolved.problem) console.error(slackTokenProblemLine(subject, resolved.problem, true))
+    connections.set(row.organization_id, resolved.connection)
   }
   return { kind: 'live', connections }
 }
+
+/** Every column a Slack row is resolved from, with its organization (#2331). */
+const SLACK_ROWS_WITH_ORG = 'organization_id, config, credential_enc'
 
 type RowsRead<R> =
   | { kind: 'live'; rows: R[] }
@@ -193,7 +205,7 @@ async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what
  * writing the copy from the copy would re-date stale entries as fresh (#2060).
  */
 export function readSlackConnectionRows(supabase: SupabaseClient) {
-  return supabase.from('service_connections').select('organization_id, config').eq('service_type', 'slack')
+  return supabase.from('service_connections').select(SLACK_ROWS_WITH_ORG).eq('service_type', 'slack')
 }
 
 /**

@@ -323,12 +323,11 @@ describe('the Buyer profile section', () => {
   it('a profile field both people changed asks in the merge dialog, and Save both saves yours and theirs at their versions under a fresh save id', async () => {
     const onSave = vi.fn().mockRejectedValueOnce(theirsAt({ daily_lead_cap: 250, loan_amount_min: 3000 })).mockImplementationOnce(pageSaver(6))
     const dialog = await openMerge(onSave)
-    expect(within(dialog).getByRole('radiogroup', { name: 'Leads per day' }).closest('[data-merge-key]')).toHaveTextContent('Theirs 250')
-    expect(dialog).toHaveTextContent('Their change to Loan amount minimum is added.')
-    // Nothing is decided for the person: the form still shows their own edit.
+    expect(within(dialog).getByRole('radiogroup', { name: 'Leads per day' }).closest('[data-merge-key]')).toHaveTextContent(/yours 600, .* 250/)
+    expect(within(dialog).getByText('Loan amount minimum').closest('[data-merge-change]')).toHaveTextContent(/none \u2192 \$3,000(\.00)?added$/)
+    // Keep yours is chosen to start (#2322), so Save both is ready; the form still shows their own edit.
     expect(dailyCapInput()).toHaveValue(600)
-    expect(within(dialog).getByRole('button', { name: 'Save both' })).toBeDisabled()
-    fireEvent.click(within(dialog).getByRole('radio', { name: 'Keep yours' }))
+    expect(within(dialog).getByRole('radio', { name: 'Keep yours' })).toHaveAttribute('aria-checked', 'true')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save both' }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
     expect(onSave.mock.calls[1][3]).toMatchObject({ expected_partner_version: 0, expected_profile_version: 5, profile: expect.objectContaining({ daily_lead_cap: 600, loan_amount_min: 3000 }) })
@@ -340,7 +339,7 @@ describe('the Buyer profile section', () => {
   it('Use theirs takes their value, and with nothing of yours left there is nothing to save', async () => {
     const onSave = vi.fn().mockRejectedValueOnce(theirsAt({ daily_lead_cap: 250 }))
     const dialog = await openMerge(onSave)
-    fireEvent.click(within(dialog).getByRole('radio', { name: 'Use theirs' }))
+    fireEvent.click(within(dialog).getByRole('radio', { name: /^Use / }))
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save both' }))
     await screen.findByText('Nothing to save.')
     expect(onSave).toHaveBeenCalledTimes(1)
@@ -364,14 +363,14 @@ describe('the Buyer profile section', () => {
   it('a second 409 while answering re-merges against the newest save', async () => {
     const onSave = vi.fn().mockRejectedValueOnce(theirsAt({ daily_lead_cap: 250 })).mockRejectedValueOnce(theirsAt({ daily_lead_cap: 700 }, 6))
     const dialog = await openMerge(onSave)
-    fireEvent.click(within(dialog).getByRole('radio', { name: 'Keep yours' }))
+    // Keep yours is chosen to start (#2322), so Save both saves at once.
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save both' }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
     const newer = await screen.findByRole('dialog')
-    expect(within(newer).getByRole('radiogroup', { name: 'Leads per day' }).closest('[data-merge-key]')).toHaveTextContent('Was 250')
-    expect(within(newer).getByRole('radiogroup', { name: 'Leads per day' }).closest('[data-merge-key]')).toHaveTextContent('Theirs 700')
-    // Answers given against the older save do not carry over to a newer one.
-    expect(within(newer).getByRole('button', { name: 'Save both' })).toBeDisabled()
+    expect(within(newer).getByRole('radiogroup', { name: 'Leads per day' }).closest('[data-merge-key]')).toHaveTextContent('yours 600')
+    expect(within(newer).getByRole('radiogroup', { name: 'Leads per day' }).closest('[data-merge-key]')).toHaveTextContent('700')
+    // The newer save is asked about afresh, starting at Keep yours.
+    expect(within(newer).getByRole('radio', { name: 'Keep yours' })).toHaveAttribute('aria-checked', 'true')
   })
 
   it('with nothing both changed, their change is put on screen and named, and only the next press saves', async () => {

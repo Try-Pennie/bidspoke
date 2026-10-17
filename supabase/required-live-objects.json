@@ -502,5 +502,15 @@
     "args": {},
     "anon": "denied",
     "note": "Called by the Worker the moment a post-response write times out (#2292, lib/db-stall-snapshot.ts) to record what every backend is doing during the stall. Security definer, reading every running query's first 300 characters, which can carry customer data, so it MUST be denied to anon (#762). If it is missing, every stall's snapshot is stored as failed and the cause goes unrecorded again. It takes no arguments, so an empty body names it."
+  },
+  {
+    "name": "delete_service_connection",
+    "args": {
+      "p_organization_id": "00000000-0000-0000-0000-000000000000",
+      "p_service_type": "probe-none",
+      "p_actor": "00000000-0000-0000-0000-000000000000"
+    },
+    "anon": "denied",
+    "note": "The one delete of a service_connections row (#2331): DELETE /api/integrations/slack (the Slack Disconnect) and DELETE /api/connections/:service_type call it, so the table's audit trigger names the user. A WRITE, service_role only, so anon must be denied. If it is missing, the Disconnect answers 500. Probed with the all zero organization and a service type no row carries, so even a probe that ran it would delete nothing."
   }
 ]

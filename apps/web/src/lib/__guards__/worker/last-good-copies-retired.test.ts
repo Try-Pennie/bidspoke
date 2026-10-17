@@ -88,8 +88,17 @@ const KINDS: Kind[] = [
     // connections.test.ts: POST with a type outside SERVICE_TYPES, DELETE
     // /connections/slack and POST /connections/slack/sync-schema are each
     // refused before the table is touched (#2060).
+    //
+    // #2331: the backfill and the key rotation re-lock change the token's
+    // ciphertext, never the token or any setting the copy holds, and the next
+    // healthy minute probe rewrites the copy from the rows with the key ring in
+    // force; each is held true by a test that the row it wrote still resolves to
+    // the same connection (routes/api/__tests__/slack-token-seal.test.ts and
+    // lib/__tests__/secret-reencrypt.test.ts).
     exempt: {
       'apps/worker/src/routes/api/connections.ts POST /': 'upserts only salesforce, supabase or snowflake (SERVICE_TYPES), never a Slack row',
+      'apps/worker/src/routes/api/slack-token-seal.ts sealSlackTokens': 'seals the token already in config.bot_token into credential_enc: the connection the copy holds is unchanged, and the next probe rewrites the copy from the rows',
+      'apps/worker/src/lib/secret-reencrypt.ts reencryptSecrets': 're-locks credential_enc under the next key: the token the copy holds is unchanged, and the next probe rewrites the copy under the ring in force',
       'apps/worker/src/routes/api/connections.ts DELETE /:service_type': 'refuses any type outside SERVICE_TYPES before its read, so it can never delete the Slack row',
       'apps/worker/src/routes/api/connections.ts POST /:service_type/sync-schema': 'refuses any type outside SERVICE_TYPES before its read, and in any case writes only schema_cache and schema_synced_at, which the copy does not hold',
     },
@@ -374,8 +383,13 @@ describe('every handler writing service_connections edits the saved Slack copy (
     expect(found.handlers).toEqual(expect.arrayContaining(Object.keys(SLACK_COPY.exempt ?? {})))
   })
 
-  it('no database function writes the table, where a write would reach the copy unseen', () => {
-    expect([...sqlFunctionsWriting(SLACK_COPY, readMigrations())]).toEqual([])
+  // #2331: delete_service_connection is the one function that writes the table,
+  // so a Disconnect is audited under its user. Every handler that calls it is
+  // enumerated above through the rpc and held to the same rule, so it is listed
+  // here by name: a second writing function must be looked at, not slip in.
+  it('the only database function writing the table is delete_service_connection, whose callers are held to the rule', () => {
+    expect([...sqlFunctionsWriting(SLACK_COPY, readMigrations())]).toEqual(['delete_service_connection'])
+    expect(found.handlers).toEqual(expect.arrayContaining(['apps/worker/src/routes/api/integrations.ts DELETE /slack']))
   })
 })
 

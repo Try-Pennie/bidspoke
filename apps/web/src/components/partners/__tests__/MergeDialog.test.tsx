@@ -1,10 +1,11 @@
 /**
  * The field level merge dialog (#2134, PM-3).
  *
- * Only what both people changed asks a question, grouped by section, each with
- * Keep yours or Use theirs and the value before, yours and theirs. What only one
- * of them changed is named as kept or added. Saving waits for every answer;
- * Keep editing, Escape and a click outside close it and keep the answers.
+ * As the settled design draws it (#2322): what only you changed (kept), what
+ * only they changed (added), each with its value before and after, then what you
+ * both changed, one line each with Keep yours chosen to start. A combination the
+ * save would refuse is never chosen for the person. Keep editing, Escape and a
+ * click outside close it and keep the answers.
  */
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, within } from '@testing-library/react'
@@ -42,52 +43,41 @@ function renderDialog(choices: Record<string, MergeSide> = {}, over: Partial<Par
 }
 
 describe('MergeDialog', () => {
-  it('names who saved, and groups only the both changed fields by section', () => {
+  it('names who saved, says nothing is lost, and groups by what happens to each change (#2322)', () => {
     renderDialog()
     const dialog = screen.getByRole('dialog', { name: 'Editor A saved this partner while you were editing' })
-    expect(within(dialog).getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual(['Identity', 'Caps', 'Hours'])
+    expect(dialog).toHaveAccessibleDescription("Nothing is lost. Saving keeps your changes and adds Editor's. Only where you both changed the same field do you choose.")
+    expect(within(dialog).getAllByRole('heading', { level: 3 }).map((h) => h.textContent)).toEqual(['Only Editor changed', 'You both changed'])
     expect(within(dialog).getAllByRole('radiogroup')).toHaveLength(3)
     for (const name of ['Name', 'Leads per day', 'Hours (Eastern), Monday']) expect(within(dialog).getByRole('radiogroup', { name })).toBeInTheDocument()
   })
 
-  it('does not repeat the section heading on its questions (L605)', () => {
+  it('a field you both changed is one line, yours then theirs, with the choice beside it', () => {
     renderDialog()
-    const hours = screen.getByRole('region', { name: 'Hours' })
-    expect(within(hours).getByRole('radiogroup', { name: 'Hours (Eastern), Monday' })).toBeInTheDocument()
-    expect(hours.textContent?.match(/Hours/g)).toHaveLength(2)
-  })
-
-  it('shows each field\'s value before, yours and theirs, in the words the page uses', () => {
-    renderDialog()
-    const caps = question('Leads per day')
-    expect(caps).toHaveTextContent('Was 500')
-    expect(caps).toHaveTextContent('Yours 600')
-    expect(caps).toHaveTextContent('Theirs 250')
-    expect(question('Hours (Eastern), Monday')).toHaveTextContent('Yours 10:00 AM to 5:00 PM')
+    expect(question('Leads per day')).toHaveTextContent('Leads per dayyours 600, Editor\'s 250')
+    expect(question('Hours (Eastern), Monday')).toHaveTextContent('yours 10:00 AM to 5:00 PM, Editor\'s 8:00 AM to 5:00 PM')
+    expect(within(question('Leads per day')).getAllByRole('radio').map((r) => r.textContent)).toEqual(['Keep yours', "Use Editor's"])
   })
 
   it('the choice is described by the values it chooses between, and by the reason when there is one', () => {
     renderDialog()
-    expect(screen.getByRole('radiogroup', { name: 'Leads per day' })).toHaveAccessibleDescription(/Was 500.*Yours 600.*Theirs 250/)
+    expect(screen.getByRole('radiogroup', { name: 'Leads per day' })).toHaveAccessibleDescription("yours 600, Editor's 250")
   })
 
-  it('names what only one of you changed, kept with no question', () => {
+  it('a change only one of you made shows its value before and after, and what happens to it', () => {
     renderDialog()
-    expect(screen.getByText('Their change to Status is added.')).toBeInTheDocument()
+    const row = screen.getByText('Active', { selector: 'span' }).closest('[data-merge-change]') as HTMLElement
+    expect(row).toHaveTextContent('ActiveOn \u2192 Offadded')
   })
 
-  it('Save both waits for every answer, and says how many are left', () => {
-    const props = renderDialog({ name: 'mine' })
-    expect(screen.getByRole('button', { name: 'Save both' })).toBeDisabled()
-    expect(screen.getByRole('status')).toHaveTextContent('Choose for 2 more fields.')
-    fireEvent.click(screen.getAllByRole('radio', { name: 'Use theirs' })[1])
-    expect(props.onChoose).toHaveBeenCalledWith('profile.daily_lead_cap', 'theirs')
-  })
-
-  it('every answer given enables Save both', () => {
-    const props = renderDialog({ name: 'mine', 'profile.daily_lead_cap': 'theirs', 'profile.windows@1': 'mine' })
+  it('Keep yours is chosen to start, so Save both is ready at once', () => {
+    const props = renderDialog()
+    for (const group of screen.getAllByRole('radiogroup')) expect(within(group).getByRole('radio', { name: 'Keep yours' })).toHaveAttribute('aria-checked', 'true')
     const save = screen.getByRole('button', { name: 'Save both' })
     expect(save).toBeEnabled()
+    expect(screen.queryByRole('status')).toBeNull()
+    fireEvent.click(screen.getAllByRole('radio', { name: "Use Editor's" })[1])
+    expect(props.onChoose).toHaveBeenCalledWith('profile.daily_lead_cap', 'theirs')
     fireEvent.click(save)
     expect(props.onSave).toHaveBeenCalledTimes(1)
   })
@@ -105,6 +95,10 @@ describe('MergeDialog', () => {
     render(<MergeDialog result={result} theirName={null} onChoose={vi.fn()} onSave={vi.fn()} onKeepEditing={vi.fn()} />)
     expect(screen.getByRole('dialog', { name: 'Someone else saved this partner while you were editing' })).toBeInTheDocument()
     expect(question('Accept when all of')).toHaveTextContent(/cannot be saved together/i)
+    // A combination the save would refuse is never chosen for the person: Save both waits on it.
+    expect(within(question('Accept when all of')).getByRole('radio', { name: 'Keep yours' })).toHaveAttribute('aria-checked', 'false')
+    expect(screen.getByRole('button', { name: 'Save both' })).toBeDisabled()
+    expect(screen.getByRole('status')).toHaveTextContent('Choose for 1 more field.')
   })
 
   it('a row group side that is not a list reads as none of it, never throwing while the dialog renders', () => {

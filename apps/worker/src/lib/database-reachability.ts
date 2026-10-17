@@ -35,7 +35,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { minuteAllClearClaim, postMinutePage, readSlackConnectionRows } from './alert-fanout'
 import { boundedRead, type BoundableQuery, type ScheduledSlack } from './scheduled-slack'
 import { readSlackCopy, rememberSlackConnections } from './slack-copy'
-import { parseSlackConnection, type SlackConnection } from './slack-connection'
+import { resolveSlackConnection, slackTokenProblemLine, type SlackConnection, type SlackConnectionRow } from './slack-connection'
+import { judgeSlackTokens, type SlackTokenSighting } from './slack-token-health'
 import { sendDatabaseRecoveredAlert, sendDatabaseUnreachableAlert } from './slack'
 import {
   announceRecovery,
@@ -375,6 +376,12 @@ async function announceDatabaseReadable(deps: ReachabilityDeps, connections: Map
   }
 }
 
+/** The saved copy's connections as they stand, empty when there is none or it cannot be read. */
+async function currentCopy(deps: ReachabilityDeps): Promise<Map<string, SlackConnection>> {
+  const copy = await readSlackCopy(deps.kv, deps.secretKeys)
+  return copy.kind === 'read' ? copy.connections : new Map()
+}
+
 export interface ProbeDeps extends ReachabilityDeps {
   supabase: SupabaseClient
   /** The deadline timer; a test controls it (L524). */
@@ -396,7 +403,7 @@ export async function runDatabaseReachabilityProbe(deps: ProbeDeps): Promise<Pro
   await deps.stamps.started().catch((e: unknown) => console.error(`[database-reachability] started stamp failed: ${formatErr(e)}`))
   try {
     const nowMs = now()
-    const query = readSlackConnectionRows(deps.supabase) as unknown as BoundableQuery<{ organization_id: string; config: unknown }[]>
+    const query = readSlackConnectionRows(deps.supabase) as unknown as BoundableQuery<({ organization_id: string } & SlackConnectionRow)[]>
     const read = await boundedRead(query, deps.deadlineMs ?? DB_PROBE_DEADLINE_MS, deps.sleep)
     if (read.kind === 'failed') {
       const detail = `${read.how}: ${read.detail}`
@@ -405,9 +412,31 @@ export async function runDatabaseReachabilityProbe(deps: ProbeDeps): Promise<Pro
     }
     const rows = read.data ?? []
     const connections = new Map<string, SlackConnection>()
+    // Rows whose sealed token read cleanly, for the token all-clear (#2331).
+    const readable = new Map<string, SlackConnection>()
+    const sightings: SlackTokenSighting[] = []
+    let current: Map<string, SlackConnection> | null = null
     for (const row of rows) {
-      const conn = parseSlackConnection(row.config)
-      if (conn) connections.set(row.organization_id, conn)
+      const resolved = await resolveSlackConnection(row, deps.secretKeys)
+      const subject = `database-reachability slack connection for org ${row.organization_id}`
+      if (resolved.kind === 'connection') {
+        connections.set(row.organization_id, resolved.connection)
+        if (resolved.problem) {
+          console.error(slackTokenProblemLine(subject, resolved.problem, true))
+          sightings.push({ orgId: row.organization_id, reason: resolved.problem.reason, fellBackToPlaintext: true })
+        } else {
+          readable.set(row.organization_id, resolved.connection)
+        }
+      } else if (resolved.kind === 'unreadable') {
+        // Unreadable is not absent (L105): the org keeps its existing entry, so
+        // a healthy minute never erases the last good copy of a connection
+        // that is still there, only locked under a key this Worker cannot use.
+        console.error(slackTokenProblemLine(subject, resolved, false))
+        sightings.push({ orgId: row.organization_id, reason: resolved.reason, fellBackToPlaintext: false })
+        current ??= await currentCopy(deps)
+        const kept = current.get(row.organization_id)
+        if (kept) connections.set(row.organization_id, kept)
+      }
     }
     if (rows.length > 0 && connections.size === 0) {
       // The database answered, so the probe did measure it, but an empty copy
@@ -420,6 +449,7 @@ export async function runDatabaseReachabilityProbe(deps: ProbeDeps): Promise<Pro
     }
     await reportDatabaseReadable(deps.kv, 'probe', nowMs)
     await announceDatabaseReadable(deps, connections, nowMs)
+    await judgeSlackTokens(deps, sightings, connections, readable, nowMs)
     return { kind: 'answered', organizations: connections.size }
   } finally {
     await deps.stamps.completed().catch((e: unknown) => console.error(`[database-reachability] completed stamp failed: ${formatErr(e)}`))
