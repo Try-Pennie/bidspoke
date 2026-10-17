@@ -19,7 +19,7 @@
 import { DAYS_OF_WEEK, normaliseSqlPath } from '@bidspoke/buyer-profile'
 import type { HistoryEntry } from '@bidspoke/partner-history'
 import { PROFILE_PREFIX, registryEntriesFor } from '@/app/(app)/partners/partner-draft'
-import { formatDollars, formatProfileValue, profileFieldLabel, SECTION_LABELS } from '@/components/partners/buyer-profile/labels'
+import { formatDollars, formatProfileValue, profileFieldLabel, SECTION_LABELS, STORED_HOURS_LABEL } from '@/components/partners/buyer-profile/labels'
 import { formatTime } from '@/components/ui/date-time'
 import { directChangeMinutes, pickupSentenceFrom } from '@/lib/bidding-pickup'
 import { etDayHeading, etDayKey } from '@/lib/dates'
@@ -190,7 +190,7 @@ function describeWindows(paths: Array<[string, Pair]>, created: boolean, out: Li
     if (last && last.from === d.from && last.to === d.to && last.days[last.days.length - 1] === d.day - 1) last.days.push(d.day)
     else runs.push({ days: [d.day], from: d.from, to: d.to })
   }
-  for (const r of runs) out.value(`${SECTION_LABELS.windows}, ${dayRange(r.days)}`, r.from, r.to, created, r.from === 'none')
+  for (const r of runs) out.value(`${STORED_HOURS_LABEL}, ${dayRange(r.days)}`, r.from, r.to, created, r.from === 'none')
 }
 
 /**

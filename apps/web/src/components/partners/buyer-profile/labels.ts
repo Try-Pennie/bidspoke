@@ -5,7 +5,7 @@
  * flatten and the package's flattenProfileDocument produce: a scalar name, `allowed_states`,
  * `windows[day:opens]`, `blackout_dates[date]`, `tiers[population:from]`.
  */
-import { DAYS_OF_WEEK, DEFAULT_DISPLAY_TIME_ZONE, DISPLAY_TIME_ZONE_LABELS, isDisplayTimeZone, POPULATIONS, type Population, type ProfileError, type SoldOn } from '@bidspoke/buyer-profile'
+import { DAYS_OF_WEEK, DEFAULT_DISPLAY_TIME_ZONE, DISPLAY_TIME_ZONE_LABELS, EASTERN, isDisplayTimeZone, POPULATIONS, type Population, type ProfileError, type SoldOn } from '@bidspoke/buyer-profile'
 import { formatTime } from '@/components/ui/date-time'
 
 export const FIELD_LABELS: Record<string, string> = {
@@ -39,6 +39,15 @@ export const SECTION_LABELS = {
   accept_signals: 'Accept when all of',
   duplicate_signals: 'Duplicate when any of',
 } as const
+
+/**
+ * Stored hours are kept and judged in Eastern whatever zone the profile shows
+ * them in, so History and the merge dialog, which show stored hours, name that
+ * zone on the label (#2253): a person viewing Pacific is not left reading two
+ * times for one window.
+ */
+const STORED_HOURS_ZONE = DISPLAY_TIME_ZONE_LABELS[EASTERN]
+export const STORED_HOURS_LABEL = `${SECTION_LABELS.windows} (${STORED_HOURS_ZONE})`
 
 /** The two answers to Sold on (#1541), in the order the choice offers them. The Record type makes a new kind without a label a compile error (L113). */
 export const SOLD_ON_LABELS: Record<SoldOn, string> = {
@@ -163,7 +172,7 @@ export function profileFieldLabel(path: string): string {
   const row = parseRowPath(path)
   if (row?.kind === 'window') {
     const day = DAYS_OF_WEEK.find((d) => d.index === row.day)?.label ?? `Day ${row.day}`
-    return `${day} hours from ${formatTime(row.opens)}`
+    return `${day} hours (${STORED_HOURS_ZONE}) from ${formatTime(row.opens)}`
   }
   if (row?.kind === 'blackout') return row.dotted ? `Blackout ${row.date} note` : `Blackout ${row.date}`
   if (row?.kind === 'tier') {
