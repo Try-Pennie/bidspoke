@@ -5,7 +5,7 @@
  */
 import { describe, expect, it, vi } from 'vitest'
 import { useState } from 'react'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { MoneyInput } from '../form'
 
 describe('MoneyInput', () => {
@@ -66,5 +66,28 @@ describe('MoneyInput focus (#2324 review)', () => {
     fireEvent.focus(box)
     expect(box).not.toHaveAttribute('aria-invalid')
     expect(screen.queryByText('Type an amount of dollars, such as 20,000.')).toBeNull()
+  })
+})
+
+describe('MoneyInput after leaving the box (#2324 review)', () => {
+  it('an outside change back to an amount typed in an earlier visit still replaces new typing', () => {
+    let set: (v: number) => void = () => {}
+    function Host() {
+      const [v, setV] = useState<number | null>(55000)
+      set = setV
+      return <MoneyInput id="m" aria-label="Debt maximum" value={v} onChange={setV} />
+    }
+    render(<Host />)
+    const box = screen.getByRole('textbox', { name: 'Debt maximum' })
+    fireEvent.focus(box)
+    fireEvent.change(box, { target: { value: '60,000' } })
+    fireEvent.blur(box)
+    // Discard puts back 40,000; the person starts typing again.
+    act(() => set(40000))
+    fireEvent.focus(box)
+    fireEvent.change(box, { target: { value: '40,000x' } })
+    // An Undo brings back 60,000, the amount the earlier visit emitted.
+    act(() => set(60000))
+    expect(box).toHaveValue('60,000')
   })
 })

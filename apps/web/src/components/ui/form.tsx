@@ -247,8 +247,9 @@ export function MoneyInput({ id, value, onChange, placeholder, disabled, describ
           // Seeded as it reads at rest, so a stored amount is never flagged as mistyped by being focused.
           onFocus={() => { setRejected(null); setDraft(value === null ? '' : DOLLARS_AT_REST.format(value)) }}
           // Leaving the box always returns it to the stored amount, so typed text can never
-          // outlive a Discard, an Undo or a merge; text that was not an amount is said.
-          onBlur={() => { if (invalid) setRejected(trimmed); setDraft(null) }}
+          // outlive a Discard, an Undo or a merge; text that was not an amount is said. What this
+          // visit emitted is forgotten, so a later outside change back to it still replaces typing.
+          onBlur={() => { if (invalid) setRejected(trimmed); setDraft(null); emitted.current = undefined }}
           onChange={(e) => {
             const raw = e.target.value
             setDraft(raw)
