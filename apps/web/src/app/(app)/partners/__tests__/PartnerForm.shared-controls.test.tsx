@@ -82,7 +82,7 @@ describe('the partner form on the shared controls (#2137)', () => {
     expect(onSave.mock.calls[0][0]).toEqual({ sub_account_min_bids: { '22222222-2222-2222-2222-222222222222': 1.25 } })
   })
 
-  it('the switches are Radix switches with the shared class, and the type is a radio group', () => {
+  it('the switches are Radix switches with the shared class, and Does is two shared checkboxes', () => {
     renderForm()
     for (const name of ['Active', 'Circuit breaker enabled', 'Alert on errors that are retried', 'Alert on errors that are not retried']) {
       expect(screen.getByRole('switch', { name, hidden: true })).toHaveClass('toggle')
