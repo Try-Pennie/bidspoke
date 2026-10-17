@@ -158,6 +158,20 @@ export const INCIDENT_SIGNALS = [
   // it has no window. The label is the subject its all-clear names (slack.ts
   // WRITEBACK_BACKLOG_RECOVERY_SUBJECT).
   { signal: 'writeback-backlog', label: 'Failed Salesforce writes', scope: 'org', subject: 'organization', startMeans: FIRST_PAGE, windowMinutes: null },
+  // #2331. An organization's sealed Slack bot token (service_connections.
+  // credential_enc) that the minute database probe cannot open with the Worker's
+  // key ring: `slack_token_undecryptable`, or `slack_key_ring_missing` for a
+  // reader given no ring. One organization's row, keyed on its id. It judges a
+  // state, so it has no window. Paged by slack-token-health.ts.
+  {
+    signal: 'slack-token-undecryptable',
+    label: 'Slack token',
+    scope: 'org',
+    subject: 'organization',
+    startMeans: FIRST_PAGE,
+    windowMinutes: null,
+    kinds: ['slack_token_undecryptable', 'slack_key_ring_missing'],
+  },
 ] as const satisfies readonly IncidentSignalEntry[]
 
 export type IncidentSignal = (typeof INCIDENT_SIGNALS)[number]['signal']
