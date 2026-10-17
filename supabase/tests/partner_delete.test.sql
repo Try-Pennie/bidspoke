@@ -7,7 +7,7 @@
 --     delete box unlabelled, and a label cannot outlive its table;
 --  2. partner_delete_check and partner_delete_dependents are STABLE, and the
 --     grants are exact: anon and authenticated execute none of the new or
---     replaced functions, and service_role only the check, the two deletes and
+--     replaced functions, and service_role only the check, the delete and
 --     change_partner_uuid, never the dependency walk, the counter or the
 --     shared delete body;
 --  3. the same rule as the delete: for each fixture partner the check reports a
@@ -18,8 +18,8 @@
 --  5. the reviewed consequence is the one that runs: a sub-account ID added
 --     after the check, a workflow changed, added or soft deleted after it, each
 --     refuse BP024 and delete nothing; a malformed fingerprint refuses BP422;
---  6. the four argument delete of the release before deletes the sub-account
---     IDs too;
+--  6. only the reviewed (five argument) delete exists since #2254, it deletes
+--     the sub-account IDs, and it refuses a partner already gone;
 --  7. change_partner_uuid's add waits on a delete in flight and then refuses
 --     partner_not_found, rather than leaving a mapping to a gone slug (a second
 --     session through dblink).
@@ -399,7 +399,7 @@ BEGIN
     RAISE EXCEPTION 'case 6: another organization read the check';
   EXCEPTION WHEN no_data_found THEN NULL;
   END;
-  INSERT INTO suite_cases(name) VALUES ('legacy delete and organization scope');
+  INSERT INTO suite_cases(name) VALUES ('only the reviewed delete, and organization scope');
 END
 $do$;
 
