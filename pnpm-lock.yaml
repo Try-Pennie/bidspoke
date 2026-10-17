@@ -262,6 +262,9 @@ importers:
       hono:
         specifier: ^4.13.13
         version: 4.13.13
+      slack-web-api-client:
+        specifier: 1.1.14
+        version: 1.1.14
     devDependencies:
       '@cloudflare/vitest-plugin':
         specifier: ^1.4.0
@@ -4914,6 +4917,9 @@ packages:
   signal-exit@4.1.0:
     resolution: {integrity: sha512-bzyZ1e88w9O1iNJbKnOlvYTrWPDl46O1bG0D3XInv+9tkPrxrN8jUUTiFlDkkmKWgn1M6CfIA13SuGqOa9Korw==}
     engines: {node: '>=14'}
+
+  slack-web-api-client@1.1.14:
+    resolution: {integrity: sha512-6YDCbiAoPz97teNiIxSz7puF5Xa0/83MaNVjYr2GRU4uaxIrYx0iBgNUZe+zlIs1T7qmb/cXWuhNBu5Ny4LVng==}
 
   source-map-js@1.2.2:
     resolution: {integrity: sha512-KGj/8Y43x35aZVDtt+J4mK1hoLGHULMYfSkODJNQjNDC3oW1PqPoxMwo0pLUsWM/UEGzON/NxeHywEfNXNP3Vw==}
@@ -10176,6 +10182,8 @@ snapshots:
   signal-exit@4.0.2: {}
 
   signal-exit@4.1.0: {}
+
+  slack-web-api-client@1.1.14: {}
 
   source-map-js@1.2.2: {}
 

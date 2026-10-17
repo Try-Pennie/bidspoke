@@ -57,7 +57,7 @@ function makeKv(cooldownSet = false) {
 describe('runDrainStallCheck', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.2' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.2' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())

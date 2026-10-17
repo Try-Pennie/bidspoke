@@ -4,8 +4,9 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureSaturationAlert, sendFailureAlert, sendDurationAlert, postMessage, sendRecoveryAlert, sendGroupedRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, sendQueryTimeoutAlert, getSlackConnection, sendPgCronRecoveryAlert, sendWorkflowScheduleRecoveryAlert } from '../slack'
+import { sendFailureSaturationAlert, sendFailureAlert, sendDurationAlert, sendRecoveryAlert, sendGroupedRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, sendQueryTimeoutAlert, getSlackConnection, sendPgCronRecoveryAlert, sendWorkflowScheduleRecoveryAlert } from '../slack'
 import type { QueryTimeoutOffender } from '../slack'
+import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -49,6 +50,7 @@ describe('sendFailureAlert', () => {
   beforeEach(() => {
     fetchMock = vi.fn().mockResolvedValue({
       ok: true,
+      status: 200,
       json: async () => ({ ok: true }),
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -61,7 +63,7 @@ describe('sendFailureAlert', () => {
   it('strips the query string from any address in the error before it reaches Slack (L741, #1740)', async () => {
     const leaky = { ...payload, error_message: 'TypeError: Fetch API cannot load: https://p.example/x?email=jo%40example.com&phone=%28201%29' }
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, leaky, 'https://app.example.com')
-    const body = fetchMock.mock.calls[0][1].body as string
+    const body = JSON.stringify(await slackPostOf(fetchMock.mock.calls[0]))
     expect(body).not.toMatch(/%40|%28201%29|email=/)
     expect(body).toContain('https://p.example/x')
   })
@@ -75,28 +77,28 @@ describe('sendFailureAlert', () => {
   it('uses the channel override when provided', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', '#custom-channel', payload, 'https://app.example.com')
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.channel).toBe('#custom-channel')
   })
 
   it('falls back to default_channel when no override', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, payload, 'https://app.example.com')
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.channel).toBe('#alerts')
   })
 
   it('sends unfurl_links: false', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, payload, 'https://app.example.com')
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.unfurl_links).toBe(false)
   })
 
   it('includes a header block', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, payload, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const header = blocks.find((b: { type: string }) => b.type === 'header')
     expect(header).toBeDefined()
     expect(header.text.text).toContain('Failed')
@@ -105,7 +107,7 @@ describe('sendFailureAlert', () => {
   it('includes workflow name and step namespace in a section block', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, payload, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const allText = blocks.flatMap((b: { fields?: { text: string }[]; text?: { text: string } }) => [
       ...(b.fields ?? []).map((f) => f.text),
       b.text?.text ?? '',
@@ -117,7 +119,7 @@ describe('sendFailureAlert', () => {
   it('includes the error message in a code block', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, payload, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const allText = blocks.flatMap((b: { text?: { text: string } }) => [b.text?.text ?? '']).join('\n')
     expect(allText).toContain('Connection refused')
     expect(allText).toContain('```')
@@ -127,7 +129,7 @@ describe('sendFailureAlert', () => {
     const longBody = 'Code returned error response: HTTP 500 — ' + 'x'.repeat(2000)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, { ...payload, error_message: longBody }, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const errBlock = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').find((t: string) => t.includes('Code returned error response'))
     expect(errBlock).toContain('x'.repeat(2000))
     expect(errBlock).not.toContain('truncated')
@@ -137,7 +139,7 @@ describe('sendFailureAlert', () => {
     const hugeBody = 'Code returned error response: HTTP 500 — ' + 'x'.repeat(5000)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, { ...payload, error_message: hugeBody }, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const errBlock = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').find((t: string) => t.includes('Code returned error response'))
     // Stays under Slack's hard per-block cap so the POST isn't rejected.
     expect(errBlock.length).toBeLessThanOrEqual(3000)
@@ -147,7 +149,7 @@ describe('sendFailureAlert', () => {
   it('includes a markdown "View execution →" link (not an interactive button)', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, payload, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     // No block should have type: 'actions' (that's the interactive button pattern)
     expect(blocks.some((b: { type: string }) => b.type === 'actions')).toBe(false)
     // Link block should use mrkdwn with <url|text> syntax
@@ -160,7 +162,7 @@ describe('sendFailureAlert', () => {
   it('embeds workflow_id and execution_id in the execution URL', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, payload, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const allText = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(allText).toContain('wf-1')
     expect(allText).toContain('exec-abc')
@@ -169,7 +171,7 @@ describe('sendFailureAlert', () => {
   it('appends node= to the execution URL when the failed step has a node id', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, { ...payload, node_id: 'node-xyz' }, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const allText = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(allText).toContain('node=node-xyz')
     // Still carries the execution param so the overlay opens too.
@@ -179,7 +181,7 @@ describe('sendFailureAlert', () => {
   it('omits the node param when the failed step has no node id', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, payload, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const allText = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(allText).not.toContain('node=')
   })
@@ -188,7 +190,7 @@ describe('sendFailureAlert', () => {
     // 2024-01-15T18:00:00Z = 1:00 PM EST (UTC-5)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, payload, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const allText = blocks.flatMap((b: { fields?: { text: string }[] }) =>
       (b.fields ?? []).map((f) => f.text)
     ).join('\n')
@@ -201,7 +203,7 @@ describe('sendFailureAlert', () => {
     const summerPayload = { ...payload, timestamp: '2024-07-15T18:00:00.000Z' }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, summerPayload, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const allText = blocks.flatMap((b: { fields?: { text: string }[] }) =>
       (b.fields ?? []).map((f) => f.text)
     ).join('\n')
@@ -212,15 +214,15 @@ describe('sendFailureAlert', () => {
   it('uses the Authorization: Bearer bot_token header', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, payload, 'https://app.example.com')
-    const { headers } = fetchMock.mock.calls[0][1]
-    expect(headers['Authorization']).toBe('Bearer xoxb-test-token')
+    const { token } = await slackPostOf(fetchMock.mock.calls[0])
+    expect(`Bearer ${token}`).toBe('Bearer xoxb-test-token')
   })
 
   it('shows the retry count when the step retried before failing', async () => {
     const retried = { ...payload, retries_used: 2 }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, retried, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const allText = blocks.flatMap((b: { fields?: { text: string }[] }) =>
       (b.fields ?? []).map((f) => f.text)
     ).join('\n')
@@ -231,7 +233,7 @@ describe('sendFailureAlert', () => {
     const retried = { ...payload, retries_used: 1 }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, retried, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const allText = blocks.flatMap((b: { fields?: { text: string }[] }) =>
       (b.fields ?? []).map((f) => f.text)
     ).join('\n')
@@ -242,7 +244,7 @@ describe('sendFailureAlert', () => {
     // payload has no retries_used → treated as 0
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendFailureAlert(makeSupabase(slackConnection) as any, 'org-1', null, payload, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const allText = blocks.flatMap((b: { fields?: { text: string }[] }) =>
       (b.fields ?? []).map((f) => f.text)
     ).join('\n')
@@ -253,7 +255,7 @@ describe('sendFailureAlert', () => {
 describe('sendDurationAlert', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -270,7 +272,7 @@ describe('sendDurationAlert', () => {
   it('appends node= to the execution URL when the bottleneck step has a node id', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendDurationAlert(makeSupabase(slackConnection) as any, 'org-1', null, { ...durationPayload, node_id: 'node-slow' }, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const allText = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(allText).toContain('node=node-slow')
     expect(allText).toContain('execution=exec-abc')
@@ -279,7 +281,7 @@ describe('sendDurationAlert', () => {
   it('omits the node param when no bottleneck node id is present', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendDurationAlert(makeSupabase(slackConnection) as any, 'org-1', null, durationPayload, 'https://app.example.com')
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const allText = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(allText).not.toContain('node=')
   })
@@ -288,7 +290,7 @@ describe('sendDurationAlert', () => {
 describe('sendQueryTimeoutAlert (#1043)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -310,7 +312,7 @@ describe('sendQueryTimeoutAlert (#1043)', () => {
   it('names the role, the share of its ceiling, and the full int64 queryid verbatim', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendQueryTimeoutAlert(makeSupabase(slackConnection) as any, 'org-1', [offender()])
-    const { blocks } = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const { blocks } = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('service_role')
     expect(text).toContain('97%')
@@ -322,12 +324,12 @@ describe('sendQueryTimeoutAlert (#1043)', () => {
   it('leads with "close to being cancelled" when a statement is critical, and the softer header otherwise', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendQueryTimeoutAlert(makeSupabase(slackConnection) as any, 'org-1', [offender()]) // critical
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body).blocks[0].text.text).toBe('A database query is close to being cancelled')
+    expect((await slackPostOf(fetchMock.mock.calls[0])).blocks[0].text.text).toBe('A database query is close to being cancelled')
 
     fetchMock.mockClear()
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendQueryTimeoutAlert(makeSupabase(slackConnection) as any, 'org-1', [offender({ severity: 'warn', maxMs: 20000, maxPct: 20000 / 30000 })])
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body).blocks[0].text.text).toBe('A database query is approaching its timeout')
+    expect((await slackPostOf(fetchMock.mock.calls[0])).blocks[0].text.text).toBe('A database query is approaching its timeout')
   })
 
   it('does nothing when Slack is not configured', async () => {
@@ -338,29 +340,8 @@ describe('sendQueryTimeoutAlert (#1043)', () => {
   })
 })
 
-// Issue #82: Slack returns HTTP 200 with { ok: false } for channel_not_found /
-// not_in_channel / invalid_auth. postMessage (and the senders/cooldowns that
-// gate on its result) must treat that as a failure, not a silent success.
-describe('postMessage — ok:false detection', () => {
-  let fetchMock: ReturnType<typeof vi.fn>
-  beforeEach(() => { fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock) })
-  afterEach(() => vi.unstubAllGlobals())
-
-  it('returns the ts on a delivered message', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '171.99' }) })
-    expect(await postMessage('tok', '#c', [], 'hi')).toBe('171.99')
-  })
-
-  it('returns null on an HTTP-200 ok:false (e.g. channel_not_found)', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'channel_not_found' }) })
-    expect(await postMessage('tok', '#c', [], 'hi')).toBeNull()
-  })
-
-  it('returns null on an HTTP error', async () => {
-    fetchMock.mockResolvedValue({ ok: false, status: 500, json: async () => ({}) })
-    expect(await postMessage('tok', '#c', [], 'hi')).toBeNull()
-  })
-})
+// Issue #82 (ok:false is not delivered) and the rest of postMessage's failure
+// rules are proven against the Slack client in slack-deliver-message.test.ts (#2331).
 
 describe('sendSlowSpikeAlert — propagates delivery result (for cooldown gating)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -374,14 +355,14 @@ describe('sendSlowSpikeAlert — propagates delivery result (for cooldown gating
   }
 
   it('returns null when Slack reports ok:false (so the caller skips the cooldown)', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'not_in_channel' }) })
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: false, error: 'not_in_channel' }) })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sent = await sendSlowSpikeAlert(makeSupabase(slackConnection) as any, 'org-1', null, spikePayload, 'https://app')
     expect(sent).toBeNull()
   })
 
   it('returns the ts when delivered', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '200.1' }) })
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '200.1' }) })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sent = await sendSlowSpikeAlert(makeSupabase(slackConnection) as any, 'org-1', null, spikePayload, 'https://app')
     expect(sent).toBe('200.1')
@@ -391,7 +372,7 @@ describe('sendSlowSpikeAlert — propagates delivery result (for cooldown gating
 describe('sendSecretDriftAlert (#199)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -408,7 +389,7 @@ describe('sendSecretDriftAlert (#199)', () => {
       'https://app.test',
     )
     expect(sent).toBe(true)
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.channel).toBe('#alerts')
     expect(body.unfurl_links).toBe(false)
     const text = body.blocks.flatMap((b: { fields?: { text: string }[]; text?: { text: string } }) => [
@@ -492,7 +473,7 @@ describe('getSlackConnection — distinguishes a DB error from not-configured (#
 describe('sendMatrixSyncFailureAlert (#408)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -515,7 +496,7 @@ describe('sendMatrixSyncFailureAlert (#408)', () => {
       preserved: [{ config_slug: 'nerdwallet' }],
     })
     expect(sent).toBe(true)
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('sofi')
     expect(text).toContain('503')
@@ -542,7 +523,7 @@ describe('sendMatrixSyncFailureAlert (#408)', () => {
 describe('sendExportFailureAlert (#412)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -564,7 +545,7 @@ describe('sendExportFailureAlert (#412)', () => {
       jobName: 'Lead sightings export', errors: ['sightings export: Snowflake 503', 'bids export: timeout'],
     })
     expect(sent).toBe(true)
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('Lead sightings export')
     expect(text).toContain('Snowflake 503')
@@ -576,7 +557,7 @@ describe('sendExportFailureAlert (#412)', () => {
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'Lead sightings export', errors: [leaky] })
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, { jobName: 'x', errors: [leaky], title: 'Export failed' })
     for (const call of fetchMock.mock.calls) {
-      const body = JSON.parse(call[1].body)
+      const body = await slackPostOf(call)
       const text = [body.text, ...body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '')].join('\n')
       expect(text).not.toMatch(/%40|email=/)
       expect(text).toContain('https://p.example/x')
@@ -595,7 +576,7 @@ describe('sendExportFailureAlert (#412)', () => {
       context: 'Salesforce changed Sep 30 by Daniel Wright.',
       fixHint: 'update whichever is wrong.',
     })
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.blocks[0].text.text).toBe('Tripoint rate mismatch')
     const rest = body.blocks.slice(1).map((b: { text?: { text: string } }) => b.text?.text ?? '')
     expect(rest).toEqual([
@@ -611,7 +592,7 @@ describe('sendExportFailureAlert (#412)', () => {
       errors: ['one', 'two'],
       title: "Tripoint rate check couldn't run",
     })
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const rest = body.blocks.slice(1).map((b: { text?: { text: string } }) => b.text?.text ?? '')
     expect(rest).toEqual(['• one\n• two'])
   })
@@ -620,7 +601,7 @@ describe('sendExportFailureAlert (#412)', () => {
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
       jobName: 'tripoint-pricing-drift', errors: ['x'], title: 'Tripoint rate mismatch', repeat: 'Reminder 2.',
     })
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.blocks[0].text.text).toBe('Tripoint rate mismatch (still)')
   })
 
@@ -631,7 +612,7 @@ describe('sendExportFailureAlert (#412)', () => {
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
       jobName: 'Lead sightings export', errors: ['bids export: Snowflake 503'],
     })
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const header = body.blocks[0].text.text
     expect(header).toBe('Lead sightings export failed')
     expect(JSON.stringify(body.blocks).toLowerCase()).not.toContain('nightly')
@@ -644,7 +625,7 @@ describe('sendExportFailureAlert (#412)', () => {
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
       jobName: 'Lead sightings purge', errors: ['sightings purge: error code: 522'],
     })
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.blocks[0].text.text).toBe('Lead sightings purge failed')
   })
 
@@ -661,7 +642,7 @@ describe('sendExportFailureAlert (#412)', () => {
       headlineVerb: 'found something to look at',
       itemNoun: { one: 'finding', many: 'findings' },
     })
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.blocks[0].text.text).toBe('code-node-payload-prints found something to look at')
     expect(JSON.stringify(body.blocks)).toContain('reported 1 finding.')
     expect(JSON.stringify(body.blocks)).not.toContain('1 error')
@@ -674,7 +655,7 @@ describe('sendExportFailureAlert (#412)', () => {
       headlineVerb: 'found something to look at',
       itemNoun: { one: 'finding', many: 'findings' },
     })
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(JSON.stringify(body.blocks)).toContain('reported 2 findings.')
   })
 
@@ -682,7 +663,7 @@ describe('sendExportFailureAlert (#412)', () => {
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
       jobName: 'Lead sightings export', errors: ['bids export: Snowflake 503'],
     })
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.blocks[0].text.text).toBe('Lead sightings export failed')
     expect(JSON.stringify(body.blocks)).toContain('reported 1 error.')
   })
@@ -693,7 +674,7 @@ describe('sendExportFailureAlert (#412)', () => {
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
       jobName: 'Lead sightings purge', errors: ['sightings purge: error code: 522'],
     })
-    const text = JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+    const text = JSON.stringify((await slackPostOf(fetchMock.mock.calls[0])).blocks)
     expect(text).not.toContain('stale')
     expect(text).toContain('already')
   })
@@ -704,7 +685,7 @@ describe('sendExportFailureAlert (#412)', () => {
       errors: ['sightings purge: error code: 522'],
       failingSince: '2026-07-24T11:48:00.000Z',
     })
-    const text = JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+    const text = JSON.stringify((await slackPostOf(fetchMock.mock.calls[0])).blocks)
     expect(text).toContain('second consecutive')
     // Rendered in ET like every other alert timestamp (11:48 UTC = 7:48 AM EDT).
     expect(text).toContain('7:48')
@@ -716,7 +697,7 @@ describe('sendExportFailureAlert (#412)', () => {
       errors: ['bids export: Snowflake 503: connection termination'],
       fixHint: 'No action needed. The rows retry on the next run.',
     })
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = JSON.stringify(body.blocks)
     expect(text).toContain('No action needed. The rows retry on the next run.')
     expect(text).not.toContain('Check Snowflake availability')
@@ -731,7 +712,7 @@ describe('sendExportFailureAlert (#412)', () => {
       consequence: 'This run took over and is archiving the hours its predecessor left:',
       fixHint: 'Nothing is lost.',
     })
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = JSON.stringify(body.blocks)
     expect(text).toContain('is archiving the hours its predecessor left')
     expect(text).not.toContain('not exported')
@@ -742,7 +723,7 @@ describe('sendExportFailureAlert (#412)', () => {
     await sendExportFailureAlert(makeSupabase(conn) as never, 'org-1', null, {
       jobName: 'x', errors: ['boom'],
     })
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     // The generic line no longer names Snowflake (#835): it names no system at all.
     expect(JSON.stringify(body.blocks)).toContain('Read the error above')
   })
@@ -763,7 +744,7 @@ describe('sendExportFailureAlert (#412)', () => {
 describe('sendSecretDecryptAlert (#404)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -773,7 +754,7 @@ describe('sendSecretDecryptAlert (#404)', () => {
   it('posts a Block Kit message naming the undecryptable secrets with a fix path', async () => {
     const sent = await sendSecretDecryptAlert(conn, [{ key: 'ELIGIBILITY_SCOUT_CLIENT_SECRET', workflow: null }], 'https://app.test')
     expect(sent).toBe(true)
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.channel).toBe('#alerts')
     expect(body.unfurl_links).toBe(false)
     const text = body.blocks.flatMap((b: { fields?: { text: string }[]; text?: { text: string } }) => [
@@ -793,7 +774,7 @@ describe('sendSecretDecryptAlert (#404)', () => {
       [{ key: 'EQUIFAX_PASSWORD', workflow: null }, { key: 'EQUIFAX_PASSWORD', workflow: 'Main Flow' }],
       'https://app.test',
     )
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const lines = (body.blocks[2].text.text as string).split('\n')
     expect(lines).toEqual(['• `EQUIFAX_PASSWORD`', "• `EQUIFAX_PASSWORD`, saved for the workflow Main Flow, whose runs get it empty"])
   })
@@ -804,7 +785,7 @@ describe('sendSecretDecryptAlert (#404)', () => {
   const summary = async (secrets: { key: string; workflow: string | null }[]) => {
     fetchMock.mockClear()
     await sendSecretDecryptAlert(conn, secrets, 'https://app.test')
-    return JSON.parse(fetchMock.mock.calls[0][1].body).blocks[1].text.text as string
+    return (await slackPostOf(fetchMock.mock.calls[0])).blocks[1].text.text as string
   }
   const ORG_LINE = 'An organization secret is left out of every run. Code, Webhook and Salesforce nodes fall back to its Cloudflare copy if one exists; other nodes get no value.'
   const WORKFLOW_LINE = "A secret saved for one workflow is handed to that workflow's runs empty, so the organization's value of the same name is never sent in its place."
@@ -836,7 +817,7 @@ describe('sendSecretDecryptAlert (#404)', () => {
 describe('sendBackupFailureAlert (#206)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -850,7 +831,7 @@ describe('sendBackupFailureAlert (#206)', () => {
       'https://app.test',
     )
     expect(sent).toBe(true)
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.channel).toBe('#alerts')
     expect(body.unfurl_links).toBe(false)
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
@@ -867,7 +848,7 @@ describe('sendBackupFailureAlert (#206)', () => {
       { workflow_id: 'wf-9', workflow_name: 'X', consecutive_failures: 2, error_message: 'e'.repeat(500) },
       'https://app.test',
     )
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('…')
     expect(text).not.toContain('e'.repeat(400))
@@ -882,7 +863,7 @@ describe('sendBackupFailureAlert (#206)', () => {
       { workflow_id: 'wf-9', workflow_name: 'X', consecutive_failures: 2, error_message: longErr },
       'https://app.test',
     )
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('(23503)')
   })
@@ -891,7 +872,7 @@ describe('sendBackupFailureAlert (#206)', () => {
 describe('sendOutcomeDeadLetterAlert for a lost Salesforce update after the answer', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -911,14 +892,14 @@ describe('sendOutcomeDeadLetterAlert for a lost Salesforce update after the answ
       },
       'https://app.test',
     )
-  const textOf = () => {
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+  const textOf = async () => {
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     return body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
   }
 
   it('names the workflow, the time in ET, what Salesforce said, and links the run', async () => {
     await send()
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('Salesforce update lost')
     expect(text).toContain('Engine Bidding Workflow answered a lead at 1:01 AM ET')
     expect(text).toContain('1 lead was affected in the last 30 minutes.')
@@ -929,7 +910,7 @@ describe('sendOutcomeDeadLetterAlert for a lost Salesforce update after the answ
 
   it('drops the internal label, the raw JSON and the claim of retries', async () => {
     await send()
-    const text = textOf()
+    const text = (await textOf())
     expect(text).not.toContain('sf_writeback')
     expect(text).not.toContain('errorCode')
     expect(text).not.toContain('after all retries')
@@ -937,7 +918,7 @@ describe('sendOutcomeDeadLetterAlert for a lost Salesforce update after the answ
 
   it('counts several leads and links the latest run', async () => {
     await send({ window_loss_count: 3 })
-    const text = textOf()
+    const text = (await textOf())
     // #1944: a chained burst spans longer than the counter's 30 min TTL, so the
     // copy says "recently" rather than asserting a fixed window above one loss.
     expect(text).toContain('3 leads were affected recently.')
@@ -947,12 +928,12 @@ describe('sendOutcomeDeadLetterAlert for a lost Salesforce update after the answ
 
   it('passes a non-JSON Salesforce error on as written', async () => {
     await send({ error_message: 'Salesforce API error (503): Service Unavailable' })
-    expect(textOf()).toContain('Salesforce said: Service Unavailable')
+    expect((await textOf())).toContain('Salesforce said: Service Unavailable')
   })
 
   it('cuts an address in a Salesforce message at its query string, so a SOQL filter on an email cannot reach Slack (L741, #1740)', async () => {
     await send({ error_message: 'Salesforce API error (400): [{"message":"Bad query at https://pennie.my.salesforce.com/services/data/v60.0/query?q=SELECT+Id+FROM+Lead+WHERE+Email%3D%27jo%40example.com%27","errorCode":"MALFORMED_QUERY"}]' })
-    const text = textOf()
+    const text = (await textOf())
     expect(text).not.toMatch(/%40|Email%3D|q=SELECT/)
     expect(text).toContain('https://pennie.my.salesforce.com/services/data/v60.0/query')
   })
@@ -963,14 +944,14 @@ describe('sendOutcomeDeadLetterAlert for a lost Salesforce update after the answ
 describe('sendOutcomeDeadLetterAlert for work after the answer that did not finish', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
 
   const conn = { bot_token: '[REDACTED]', default_channel: '#alerts' } as unknown as SlackConnection
-  const textOf = () => {
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+  const textOf = async () => {
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     return [body.text, ...body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '')].join('\n')
   }
 
@@ -985,7 +966,7 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
       error_message: "The run's work after the answer did not finish within 12 s of the answer. Nothing confirmed whether it finished.",
       run: { workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-07T20:00:00Z' },
     }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toMatch(/did not finish/i)
     expect(text).toContain('Nothing confirmed whether they finished.')
     expect(text).not.toMatch(/may (still )?(have )?finish/i)
@@ -1006,7 +987,7 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
         still_running: ['Achieve under 10k (achieve_under_10k)'],
       },
     }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('Main Flow answered a lead at 11:20 PM ET, but the step Achieve under 10k (achieve_under_10k) was still running when Bidspoke stopped waiting. Nothing confirmed whether it or the steps after it finished.')
     expect(text).toContain('Fix: open the run below and check what Achieve under 10k (achieve_under_10k) did, and whether the steps after it ran. If this keeps happening, that step is running slowly.')
     expect(text).not.toMatch(/salesforce/i)
@@ -1025,7 +1006,7 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
         still_running: ['<!channel> & <https://evil.test|click> (patch_a)'],
       },
     }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('&lt;!channel&gt; &amp; &lt;https://evil.test|click&gt; (patch_a)')
     expect(text).not.toContain('<!channel>')
   })
@@ -1041,7 +1022,7 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
         still_running: ['patch_a', 'patch_b', 'patch_c'],
       },
     }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('the steps patch_a, patch_b and patch_c were still running')
     expect(text).toContain('those steps are running slowly')
   })
@@ -1053,7 +1034,7 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
       window_minutes: 30,
       error_message: "The run's work after the answer did not finish within 12 s of the answer; it may still finish, but nothing confirmed it",
     }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toMatch(/did not finish/i)
     expect(text).not.toMatch(/lost|must-not-lose|not auto-recovered/i)
   })
@@ -1070,7 +1051,7 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
       error_message: 'x',
       run: { workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-08T03:20:17Z' },
     }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('about 3 times recently')
     expect(text).not.toMatch(/in the last \d+ minutes/)
   })
@@ -1086,7 +1067,7 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
       error_message: 'x',
       run: { workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-08T03:20:17Z' },
     }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).not.toContain('This happened once')
     expect(text).not.toContain('|View the run ')
     expect(text).toContain('View the latest run')
@@ -1105,7 +1086,7 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
       error_message: 'x',
       run: { workflow_id: 'wf-1', workflow_name: 'Main Flow', execution_id: 'ex-1', at: '2026-10-08T03:20:17Z' },
     }, 'https://app.test')
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('This happened about 1 time in the last 30 minutes.')
     expect(text).not.toContain('1 times')
     expect(text).not.toContain('This happened once')
@@ -1116,7 +1097,7 @@ describe('sendOutcomeDeadLetterAlert for work after the answer that did not fini
 describe('sendOutcomeDeadLetterAlert (#309)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -1132,7 +1113,7 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
       'https://app.test',
     )
     expect(sent).toBe(true)
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     expect(body.channel).toBe('#alerts')
     expect(body.unfurl_links).toBe(false)
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
@@ -1154,7 +1135,7 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
       { label: 'lead_sightings.insert', window_loss_count: 1, window_minutes: 30, error_message: 'x' },
       'https://app.test',
     )
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('*1*')
     expect(text).toContain('write was lost in the last 30 minutes')
@@ -1175,7 +1156,7 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
       },
       'https://app.test',
     )
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('How to fix:')
     expect(text).not.toContain('Supabase')
@@ -1198,7 +1179,7 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
       },
       'https://app.test',
     )
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).not.toContain('Supabase')
     expect(text).not.toContain('purge')
@@ -1221,7 +1202,7 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
       },
       'https://app.test',
     )
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('Supabase')
     expect(text).not.toContain('nightly partition-purge')
@@ -1241,7 +1222,7 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
       },
       'https://app.test',
     )
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('How to fix:')
     expect(text).not.toContain('Supabase')
@@ -1263,7 +1244,7 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
       },
       'https://app.test',
     )
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toMatch(/stranded/i)
     expect(text).toMatch(/running/)
@@ -1286,7 +1267,7 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
       },
       'https://app.test',
     )
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).not.toMatch(/stranded/i)
     expect(text).not.toMatch(/recover(s|ed|ered) automatically|will be recovered/i)
@@ -1307,7 +1288,7 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
       },
       'https://app.test',
     )
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).not.toMatch(/stranded/i)
     expect(text).toContain('Supabase')
@@ -1321,7 +1302,7 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
       { label: 'lead_sightings.finalize', window_loss_count: 3, window_minutes: 30, error_message: longErr },
       'https://app.test',
     )
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
     expect(text).toContain('(23503)')
   })
@@ -1336,13 +1317,13 @@ describe('sendOutcomeDeadLetterAlert (#309)', () => {
 describe('sendOutcomeDeadLetterAlert sighting self-healing (#1953)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
   const conn = { bot_token: '[REDACTED]', default_channel: '#alerts' } as unknown as SlackConnection
-  const textOf = () => {
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+  const textOf = async () => {
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     return body.blocks.flatMap((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n')
   }
 
@@ -1358,7 +1339,7 @@ describe('sendOutcomeDeadLetterAlert sighting self-healing (#1953)', () => {
       },
       'https://app.test',
     )
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('Outcome Record Delayed')
     expect(text).not.toContain('Outcome Record Lost')
     expect(text).toMatch(/in_flight/)
@@ -1378,7 +1359,7 @@ describe('sendOutcomeDeadLetterAlert sighting self-healing (#1953)', () => {
       },
       'https://app.test',
     )
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toContain('Outcome Record Lost')
     expect(text).toMatch(/permanent/i)
     expect(text).not.toMatch(/in_flight|strand drain/i)
@@ -1396,7 +1377,7 @@ describe('sendOutcomeDeadLetterAlert sighting self-healing (#1953)', () => {
       },
       'https://app.test',
     )
-    const text = textOf()
+    const text = (await textOf())
     expect(text).toMatch(/in_flight/)
     expect(text).toMatch(/strand drain/i)
     // Honest about the case it does NOT recover: a bid lost while the sighting finalized.
@@ -1407,7 +1388,7 @@ describe('sendOutcomeDeadLetterAlert sighting self-healing (#1953)', () => {
 describe('sendFailureSpikeAlert (#248)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -1430,7 +1411,7 @@ describe('sendFailureSpikeAlert (#248)', () => {
   it('posts the signal and count, returns the ts', async () => {
     const ts = await sendFailureSpikeAlert(makeSupabase(slackConnection) as never, 'org-1', null, spikePayload, 'https://app.example.com')
     expect(ts).toBe('1.23')
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = JSON.stringify(body.blocks)
     expect(text).toContain('ACRO_GATEWAY')
     expect(text).toContain('12 failures')
@@ -1439,14 +1420,14 @@ describe('sendFailureSpikeAlert (#248)', () => {
 
   it('honors a channel override', async () => {
     await sendFailureSpikeAlert(makeSupabase(slackConnection) as never, 'org-1', '#outages', spikePayload, 'https://app.example.com')
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body).channel).toBe('#outages')
+    expect((await slackPostOf(fetchMock.mock.calls[0])).channel).toBe('#outages')
   })
 })
 
 describe('sendUpstreamOutageAlert (#331)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '9.99' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '9.99' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -1469,7 +1450,7 @@ describe('sendUpstreamOutageAlert (#331)', () => {
   it('@here-mentions the channel, names the cause + count, and uses no emoji', async () => {
     const ts = await sendUpstreamOutageAlert(makeSupabase(slackConnection) as never, 'org-1', outagePayload, 'https://app.example.com')
     expect(ts).toBe('9.99')
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = JSON.stringify(body.blocks)
     expect(text).toContain('<!here>')
     expect(text).toContain('with errors matching *Salesforce*')
@@ -1503,7 +1484,7 @@ describe('sendUpstreamOutageAlert (#331)', () => {
       'https://app.example.com',
     )
 
-    const text = JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+    const text = JSON.stringify((await slackPostOf(fetchMock.mock.calls[0])).blocks)
     expect(text).toContain('ConcurrentPerOrgLongTxn')
     expect(text).toContain('21 x')
     // The remainder is counted, so the top shape does not read as the whole story.
@@ -1520,7 +1501,7 @@ describe('sendUpstreamOutageAlert (#331)', () => {
       { ...outagePayload, error_shapes: [{ sample: 'Fetch API cannot load: https://p.example/x?phone=%28201%29555', count: 4 }] },
       'https://app.example.com',
     )
-    const text = JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+    const text = JSON.stringify((await slackPostOf(fetchMock.mock.calls[0])).blocks)
     expect(text).not.toMatch(/%28201%29|phone=/)
     expect(text).toContain('https://p.example/x')
   })
@@ -1537,7 +1518,7 @@ describe('sendUpstreamOutageAlert (#331)', () => {
     )
 
     expect(ts).toBe('9.99')
-    const text = JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+    const text = JSON.stringify((await slackPostOf(fetchMock.mock.calls[0])).blocks)
     expect(text).toContain('with errors matching *Salesforce*')
     expect(text).toContain('review the affected runs')
     expect(text).not.toContain('status page')
@@ -1557,7 +1538,7 @@ describe('sendUpstreamOutageAlert (#331)', () => {
       'https://app.example.com',
     )
 
-    const blocks = JSON.parse(fetchMock.mock.calls[0][1].body).blocks as { text?: { text?: string } }[]
+    const blocks = (await slackPostOf(fetchMock.mock.calls[0])).blocks as { text?: { text?: string } }[]
     for (const b of blocks) {
       if (b.text?.text) expect(b.text.text.length).toBeLessThanOrEqual(3000)
     }
@@ -1568,7 +1549,7 @@ describe('sendRequiredSecretsAlert', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1700000000.0001' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1700000000.0001' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => {
@@ -1596,7 +1577,7 @@ describe('sendRequiredSecretsAlert', () => {
     const sent = await sendRequiredSecretsAlert(makeSupabase(slackConnection) as any, 'org-1', ['SSN_HASH_PEPPER', 'SNOWFLAKE_USER'])
     expect(sent).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = JSON.stringify(body.blocks)
     expect(text).toContain('SSN_HASH_PEPPER')
     expect(text).toContain('SNOWFLAKE_USER')
@@ -1614,7 +1595,7 @@ describe('sendRequiredEnvVarsAlert (#394)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1700000000.0001' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1700000000.0001' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => {
@@ -1647,7 +1628,7 @@ describe('sendRequiredEnvVarsAlert (#394)', () => {
     )
     expect(sent).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = JSON.stringify(body.blocks)
     expect(text).toContain('SALESFORCE_INSTANCE_URL')
     expect(text).toContain('EQUIFAX_USERNAME')
@@ -1670,7 +1651,7 @@ describe('sendRequiredEnvVarsAlert (#394)', () => {
       ['SALESFORCE_CLIENT_ID'],
     )
     expect(sent).toBe(true)
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = (await slackPostOf(fetchMock.mock.calls[0]))
     const text = JSON.stringify(body.blocks)
     expect(text).not.toContain('/env')
   })
@@ -1679,7 +1660,7 @@ describe('sendRequiredEnvVarsAlert (#394)', () => {
 describe('the scheduled job all-clears (#851)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -1694,14 +1675,14 @@ describe('the scheduled job all-clears (#851)', () => {
     })
     return { from: () => chain } as never
   }
-  const sent = () => JSON.parse(fetchMock.mock.calls[0][1].body)
+  const sent = async () => (await slackPostOf(fetchMock.mock.calls[0]))
   const ALERTED = '2026-08-15T01:32:00.000Z'
   const ENDED = '2026-08-15T03:04:00.000Z'
   const NOW = Date.parse('2026-08-15T03:34:00.000Z')
 
   it('names the database job by its plain name and how long it was unhealthy', async () => {
     expect(await sendPgCronRecoveryAlert(connected(), 'org-1', { jobname: 'refresh-field-presence-daily', alertedAt: ALERTED, endedAt: ENDED }, NOW)).toBe(true)
-    const body = sent()
+    const body = (await sent())
     expect(body.channel).toBe('#alerts')
     const text = JSON.stringify(body.blocks)
     expect(text).toContain('refresh-field-presence-daily')
@@ -1711,7 +1692,7 @@ describe('the scheduled job all-clears (#851)', () => {
 
   it('names the scheduled workflow by its label', async () => {
     expect(await sendWorkflowScheduleRecoveryAlert(connected(), 'org-1', { label: 'Nightly backup', alertedAt: ALERTED, endedAt: ENDED }, NOW)).toBe(true)
-    const text = JSON.stringify(sent().blocks)
+    const text = JSON.stringify((await sent()).blocks)
     expect(text).toContain('Nightly backup')
     expect(text).toContain('is running on schedule again')
   })
@@ -1720,7 +1701,7 @@ describe('the scheduled job all-clears (#851)', () => {
 describe('sendRecoveryAlert (#253, #814)', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -1730,30 +1711,30 @@ describe('sendRecoveryAlert (#253, #814)', () => {
   const ALERTED = '2026-08-15T01:32:00.000Z'
   const ENDED = '2026-08-15T03:04:00.000Z'
   const base = { signal: '"ACRO_GATEWAY" failure rate', subject: 'Engine Bidding Workflow', alertedAt: ALERTED }
-  const sentText = () => JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+  const sentText = async () => JSON.stringify((await slackPostOf(fetchMock.mock.calls[0])).blocks)
 
   it('measures the duration to the LAST FAILURE, not to the announcement', async () => {
     // Announced 30 minutes after it cleared. The outage lasted 1h 32m, and the
     // reader must not be told 2 hours because we waited to be sure.
     await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: ENDED }, Date.parse('2026-08-15T03:34:00.000Z'))
-    expect(sentText()).toContain('lasted 1 hour 32 minutes')
+    expect((await sentText())).toContain('lasted 1 hour 32 minutes')
   })
 
   it('names when it cleared, since the all-clear arrives after a re-arm delay', async () => {
     await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: ENDED }, Date.parse('2026-08-15T03:34:00.000Z'))
-    expect(sentText()).toContain('11:04 PM EDT')
+    expect((await sentText())).toContain('11:04 PM EDT')
   })
 
   it('falls back to the announcement time when no end was recorded', async () => {
     await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: null }, Date.parse('2026-08-15T02:32:00.000Z'))
-    const text = sentText()
+    const text = (await sentText())
     expect(text).toContain('lasted 1 hour')
     expect(text).not.toContain('clearing at')
   })
 
   it('says nothing about the duration when the marker is unparseable', async () => {
     await sendRecoveryAlert(slack, '#alerts', { ...base, alertedAt: 'garbage', endedAt: null })
-    const text = sentText()
+    const text = (await sentText())
     expect(text).not.toContain('NaN')
     expect(text).not.toContain('lasted')
   })
@@ -1767,7 +1748,7 @@ describe('sendRecoveryAlert (#253, #814)', () => {
       { ...base, alertedAt: '2026-10-14T21:48:37.000Z', endedAt: '2026-10-14T21:48:01.000Z' },
       Date.parse('2026-10-14T22:20:00.000Z'),
     )
-    const text = sentText()
+    const text = (await sentText())
     expect(text).toContain('lasted under a minute, clearing at Oct 14, 5:48 PM EDT')
     expect(text).not.toContain('-')
   })
@@ -1787,13 +1768,13 @@ describe('sendRecoveryAlert (#253, #814)', () => {
 describe('sendRecoveryAlert on a windowed check', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
 
   const slack = { bot_token: 'xoxb-test-token' }
-  const textOf = () => JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+  const textOf = async () => JSON.stringify((await slackPostOf(fetchMock.mock.calls[0])).blocks)
 
   it('reports the measured window, not a zero gap, for a single-tick incident', async () => {
     await sendRecoveryAlert(
@@ -1808,7 +1789,7 @@ describe('sendRecoveryAlert on a windowed check', () => {
       },
       Date.parse('2026-09-02T15:00:00Z'),
     )
-    const text = textOf()
+    const text = (await textOf())
     expect(text).not.toMatch(/under a minute/)
     expect(text).toMatch(/hour/)
   })
@@ -1832,7 +1813,7 @@ describe('sendRecoveryAlert on a windowed check', () => {
       },
       Date.parse('2026-09-10T11:00:05Z'),
     )
-    const text = textOf()
+    const text = (await textOf())
     expect(text).not.toContain('clearing at')
     expect(text).toContain('6:01 AM EDT')
     expect(text).toContain('7:00 AM EDT')
@@ -1853,7 +1834,7 @@ describe('sendRecoveryAlert on a windowed check', () => {
       },
       Date.parse('2026-09-02T12:00:00Z'),
     )
-    expect(textOf()).toMatch(/6 hours/)
+    expect((await textOf())).toMatch(/6 hours/)
   })
 
   // The other checks pass no window and must be untouched by this.
@@ -1869,7 +1850,7 @@ describe('sendRecoveryAlert on a windowed check', () => {
       },
       Date.parse('2026-09-02T14:00:00Z'),
     )
-    expect(textOf()).toMatch(/20 minutes/)
+    expect((await textOf())).toMatch(/20 minutes/)
   })
 })
 
@@ -1882,7 +1863,7 @@ describe('sendRecoveryAlert on a windowed check', () => {
 describe('sendGroupedRecoveryAlert', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -1912,7 +1893,7 @@ describe('sendGroupedRecoveryAlert', () => {
     )
     expect(ok).toBe(true)
     expect(fetchMock).toHaveBeenCalledTimes(1)
-    const text = JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+    const text = JSON.stringify((await slackPostOf(fetchMock.mock.calls[0])).blocks)
     expect(text).toContain('ping_lendswift.data.data.status')
     expect(text).toContain('ping_lendswift.data.data*')
     // One header, not one per field.
@@ -1929,7 +1910,7 @@ describe('sendGroupedRecoveryAlert', () => {
       { signal: 'output field stopped', measuredWindowMinutes: 60, items },
       Date.parse('2026-09-10T11:00:05Z'),
     )
-    const section = JSON.parse(fetchMock.mock.calls[0][1].body).blocks[1].text.text as string
+    const section = (await slackPostOf(fetchMock.mock.calls[0])).blocks[1].text.text as string
     // Both subjects still named.
     expect(section).toContain('ping_lendswift.data.data*')
     expect(section).toContain('ping_lendswift.data.data.status*')
@@ -1950,7 +1931,7 @@ describe('sendGroupedRecoveryAlert', () => {
       { signal: 'output field stopped', measuredWindowMinutes: 60, items: mixed },
       Date.parse('2026-09-10T11:00:05Z'),
     )
-    const section = JSON.parse(fetchMock.mock.calls[0][1].body).blocks[1].text.text as string
+    const section = (await slackPostOf(fetchMock.mock.calls[0])).blocks[1].text.text as string
     expect(section.match(/alert fired at/g)?.length).toBe(2)
   })
 
@@ -1970,13 +1951,13 @@ describe('sendGroupedRecoveryAlert', () => {
       { signal: 'output field stopped', measuredWindowMinutes: 60, items: many },
       Date.parse('2026-09-10T11:00:05Z'),
     )
-    const section = JSON.parse(fetchMock.mock.calls[0][1].body).blocks[1].text.text as string
+    const section = (await slackPostOf(fetchMock.mock.calls[0])).blocks[1].text.text as string
     expect(section.length).toBeLessThanOrEqual(3000)
     expect(section).toMatch(/and \d+ more/)
   })
 
   it('reports a delivery failure so the caller keeps every incident open', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ ok: false, error: 'channel_not_found' }) })
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: false, error: 'channel_not_found' }) })
     const ok = await sendGroupedRecoveryAlert(
       slack,
       'C1',
@@ -1995,7 +1976,7 @@ describe('sendGroupedRecoveryAlert', () => {
 describe('sendFailureSaturationAlert', () => {
   let fetchMock: ReturnType<typeof vi.fn>
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ok: true, ts: '1.23' }) })
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
     vi.stubGlobal('fetch', fetchMock)
   })
   afterEach(() => vi.unstubAllGlobals())
@@ -2010,17 +1991,17 @@ describe('sendFailureSaturationAlert', () => {
     other_shape_count: 0,
     timestamp: '2026-09-02T12:23:00Z',
   }
-  const sentText = () => JSON.stringify(JSON.parse(fetchMock.mock.calls[0][1].body).blocks)
+  const sentText = async () => JSON.stringify((await slackPostOf(fetchMock.mock.calls[0])).blocks)
 
   it('does not ping the channel', async () => {
     await sendFailureSaturationAlert(makeSupabase(slackConnection) as never, 'org-1', payload, 'https://app.example.com')
-    expect(sentText()).not.toContain('!here')
+    expect((await sentText())).not.toContain('!here')
   })
 
   it('cuts an address in an error sample at its query string (L741, #1740)', async () => {
     const leaky = { ...payload, error_shapes: [{ sample: 'Fetch API cannot load: https://p.example/x?email=jo%40example.com', count: 17 }] }
     await sendFailureSaturationAlert(makeSupabase(slackConnection) as never, 'org-1', leaky, 'https://app.example.com')
-    const text = sentText()
+    const text = (await sentText())
     expect(text).not.toMatch(/%40|email=/)
     expect(text).toContain('https://p.example/x')
   })
@@ -2029,7 +2010,7 @@ describe('sendFailureSaturationAlert', () => {
   // builder that produced nothing at all would satisfy the assertion above.
   it('states how many runs failed out of how many, and over what window', async () => {
     await sendFailureSaturationAlert(makeSupabase(slackConnection) as never, 'org-1', payload, 'https://app.example.com')
-    const text = sentText()
+    const text = (await sentText())
     expect(text).toContain('Main Flow')
     expect(text).toContain('17 of the 19 runs')
     expect(text).toContain('5 minutes')
@@ -2040,7 +2021,7 @@ describe('sendFailureSaturationAlert', () => {
   // from the cause-keyed one.
   it('says explicitly that it has not identified a cause', async () => {
     await sendFailureSaturationAlert(makeSupabase(slackConnection) as never, 'org-1', payload, 'https://app.example.com')
-    expect(sentText()).toMatch(/not identified a cause|not why/i)
+    expect((await sentText())).toMatch(/not identified a cause|not why/i)
   })
 
   // The positive control (L159). The sibling alert in the same file DOES ping
@@ -2060,6 +2041,6 @@ describe('sendFailureSaturationAlert', () => {
       },
       'https://app.example.com',
     )
-    expect(sentText()).toContain('!here')
+    expect((await sentText())).toContain('!here')
   })
 })

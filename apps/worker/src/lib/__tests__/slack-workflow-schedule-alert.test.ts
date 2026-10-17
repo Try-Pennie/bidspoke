@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { slackPostJsonOf } from '../../__tests__/helpers/slack-fetch'
 import { sendWorkflowScheduleAlert } from '../slack'
 import type { ScheduleStatus, WatchedWorkflow } from '../workflow-schedule-watch'
 
@@ -38,8 +39,8 @@ function makeSupabase(connection: Record<string, string> | null) {
 const connection = { bot_token: 'xoxb-test', default_channel: '#alerts', workspace_name: 'Pennie' }
 
 /** Every post made to Slack, as text. */
-const posts = () =>
-  vi.mocked(fetch).mock.calls.map((call) => String((call[1] as { body: string }).body))
+const posts = async () =>
+  Promise.all(vi.mocked(fetch).mock.calls.map((call) => slackPostJsonOf(call)))
 
 const workflow = (file: string, label: string): WatchedWorkflow => ({
   file,
@@ -78,9 +79,9 @@ describe('sendWorkflowScheduleAlert: one run, one message (#843)', () => {
         { workflow: types, verdict: verdict('stale', 'last scheduled run was 2026-08-14T08:00:00Z', 60 * 3_600_000) },
       ],
     })
-    expect(posts().length, 'one message per workflow is the defect #843 exists to fix').toBe(1)
-    expect(posts()[0]).toContain('deploy-drift.yml')
-    expect(posts()[0]).toContain('db-types-drift.yml')
+    expect((await posts()).length, 'one message per workflow is the defect #843 exists to fix').toBe(1)
+    expect((await posts())[0]).toContain('deploy-drift.yml')
+    expect((await posts())[0]).toContain('db-types-drift.yml')
   })
 
   it('reports a credential problem as one fact about configuration, naming the secret to set', async () => {
@@ -91,7 +92,7 @@ describe('sendWorkflowScheduleAlert: one run, one message (#843)', () => {
       },
       workflows: [],
     })
-    const body = posts()[0]
+    const body = (await posts())[0]
     expect(body).toContain('GITHUB_ACTIONS_TOKEN')
     // It must still say WHAT is unwatched while it cannot see, or the reader
     // cannot judge how much this matters.
@@ -110,7 +111,7 @@ describe('sendWorkflowScheduleAlert: one run, one message (#843)', () => {
         { workflow: types, verdict: { ...verdict('unreadable', 'GitHub rate limit (403)'), rateLimited: true } },
       ],
     })
-    const body = posts()[0]
+    const body = (await posts())[0]
     expect(body).toContain('clears on its own')
     expect(body).not.toContain('set to a credential')
   })
@@ -123,7 +124,7 @@ describe('sendWorkflowScheduleAlert: one run, one message (#843)', () => {
         { workflow: types, verdict: verdict('unreadable', 'GitHub returned 403') },
       ],
     })
-    const body = posts()[0]
+    const body = (await posts())[0]
     expect(body).toContain('clears on its own')
     expect(body).toContain('set to a credential')
   })
@@ -133,7 +134,7 @@ describe('sendWorkflowScheduleAlert: one run, one message (#843)', () => {
       config: { reason: 'GitHub rate limit (403)', files: ['deploy-drift.yml'], rateLimited: true },
       workflows: [],
     })
-    const body = posts()[0]
+    const body = (await posts())[0]
     expect(body).toContain('clears on its own')
     expect(body).not.toContain('set to a credential')
   })
@@ -144,7 +145,7 @@ describe('sendWorkflowScheduleAlert: one run, one message (#843)', () => {
       workflows: [],
     })
     expect(delivered).toBe(false)
-    expect(posts().length).toBe(0)
+    expect((await posts()).length).toBe(0)
   })
 
   it('does not post when the org has no Slack connection', async () => {
@@ -153,7 +154,7 @@ describe('sendWorkflowScheduleAlert: one run, one message (#843)', () => {
       workflows: [{ workflow: drift, verdict: verdict('stale', 'old', 40 * 3_600_000) }],
     })
     expect(delivered).toBe(false)
-    expect(posts().length).toBe(0)
+    expect((await posts()).length).toBe(0)
   })
 })
 
@@ -166,7 +167,7 @@ describe('sendWorkflowScheduleAlert: each status says a different thing (L11)', 
 
   it('says a stale workflow has stopped running, and what breaks while it is dark', async () => {
     await send('stale', 'last scheduled run was 2026-08-15T11:17:00Z', 40 * 3_600_000)
-    const body = posts()[0]
+    const body = (await posts())[0]
     expect(body).toContain('stopped running')
     expect(body).toContain('nothing is watching Deploy Drift')
   })
@@ -175,7 +176,7 @@ describe('sendWorkflowScheduleAlert: each status says a different thing (L11)', 
     // #844. Telling somebody a workflow stopped when it is running and failing
     // sends them to the Actions tab to re-enable a schedule that is already on.
     await send('failing', 'the last 2 scheduled runs failed', 3_600_000)
-    const body = posts()[0]
+    const body = (await posts())[0]
     expect(body).toContain('failing')
     expect(body).not.toContain('stopped running')
   })
@@ -187,7 +188,7 @@ describe('sendWorkflowScheduleAlert: each status says a different thing (L11)', 
     // It also matters practically: the reader would go looking for a workflow
     // that has never once succeeded.
     await send('failing', 'the last 2 scheduled runs failed', 3_600_000)
-    const body = posts()[0]
+    const body = (await posts())[0]
     expect(body).not.toContain('every run')
     // And it must still convey that this is a pattern rather than one bad run.
     expect(body).toContain('the last 2 scheduled runs failed')
@@ -195,19 +196,19 @@ describe('sendWorkflowScheduleAlert: each status says a different thing (L11)', 
 
   it('says a missing workflow is not in the repository, and points at the watch list', async () => {
     await send('missing', 'GitHub has no workflow file named deploy-drift.yml')
-    const body = posts()[0]
+    const body = (await posts())[0]
     expect(body).toContain('WATCHED_WORKFLOWS')
   })
 
   it('says an unreadable workflow cannot be told about, never that it stopped', async () => {
     await send('unreadable', 'GitHub returned 502')
-    const body = posts()[0]
+    const body = (await posts())[0]
     expect(body).toContain('502')
     expect(body).not.toContain('has stopped running')
   })
 
   it('says a never-ran workflow has no scheduled runs on record', async () => {
     await send('never_ran', 'GitHub has no scheduled runs on record for this workflow')
-    expect(posts()[0]).toContain('no scheduled runs')
+    expect((await posts())[0]).toContain('no scheduled runs')
   })
 })
