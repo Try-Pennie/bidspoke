@@ -4,13 +4,18 @@
  * buyer profile route (`other_sellers`, the sellers OUTSIDE buyer selection
  * whose wins the buyer's caps do not count, L582).
  *
- * A bid_group, partner_bid, buyer_click_send or buyer_click_check node names
- * its partner by id in its config; the node types whose trait says so
+ * A bid_group, partner_bid, buyer_click_send, buyer_click_check or latency_gate
+ * node names its partner by id in its config; the node types whose trait says so
  * (NODE_TRAITS.referencesPartners) are each matched below, which a test
  * enforces. The two click nodes are counted only when the caller asks
  * (`includeClickNodes`): the rename impact route wants every reference, while
  * `other_sellers` must leave them out, because a click buyer's own clicks are
- * exactly what its cap counts, and a check offers rather than sells (#1543). A
+ * exactly what its cap counts, and a check offers rather than sells (#1543).
+ * A latency_gate is counted only when asked too (`includeLatencyGates`, #2251):
+ * the partner delete check wants it, because the gate's check step reads the
+ * partner's confirmation window and fails once the partner is gone, while the
+ * rename impact guards a rewrite of the partner's bid formula, which a gate
+ * never reads, and `other_sellers` counts sellers, which a gate is not. A
  * buyer_select node names none: the decision recorded on #1411 is that a
  * workflow carrying one uses every partner holding an enabled profile priced for
  * that node's population, which the caller supplies as `pricedPartnersByPopulation`
@@ -30,6 +35,8 @@ export interface FinderOptions {
   includeBuyerSelect: boolean
   /** Count buyer_click_send and buyer_click_check nodes (#1543). Stated by every caller, never defaulted. */
   includeClickNodes: boolean
+  /** Count latency_gate nodes (#2251). Stated by every caller, never defaulted. */
+  includeLatencyGates: boolean
   /** Report only active workflows. */
   liveOnly?: boolean
   /**
@@ -91,6 +98,7 @@ export function workflowsUsingPartner(
         if (options.includeClickNodes && (n.type === 'buyer_click_send' || n.type === 'buyer_click_check') && n.config.partner_id === partnerId) return true
         if (options.clickNodesOnly) return false
         if (n.type === 'partner_bid' && n.config.partner_id === partnerId) return true
+        if (options.includeLatencyGates && n.type === 'latency_gate' && n.config.partner_id === partnerId) return true
         if (n.type === 'bid_group' && bidGroupPartnerIds(n.config).includes(partnerId)) return true
         if (options.includeBuyerSelect && n.type === 'buyer_select' && typeof n.config.population === 'string') {
           return pricedPartnersByPopulation.get(n.config.population)?.has(partnerId) ?? false

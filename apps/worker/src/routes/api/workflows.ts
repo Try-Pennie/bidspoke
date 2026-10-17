@@ -1240,7 +1240,8 @@ workflows.get('/:id/rename-impact', async (c) => {
     console.error(`[workflows] rename impact could not read buyer profiles for org ${orgId}: ${err instanceof Error ? err.message : 'non Error thrown'}`)
     return c.json({ error: 'Buyer profiles could not be read, so which workflows share these partners cannot be determined. Try again.' }, 503)
   }
-  const workflowsUsingPartner = workflowsUsingPartnerShared(others, pricedPartners, { includeBuyerSelect: true, includeClickNodes: true })
+  // A Latency Gate in another workflow never reads the formula rewritten here (#2251).
+  const workflowsUsingPartner = workflowsUsingPartnerShared(others, pricedPartners, { includeBuyerSelect: true, includeClickNodes: true, includeLatencyGates: false })
 
   const partner_formulas = affected.map((p) => {
     const resolverFormula =

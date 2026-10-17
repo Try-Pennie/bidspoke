@@ -101,7 +101,7 @@ buyerProfiles.get('/:id/buyer-profile', async (c) => {
   const finder = workflowsUsingPartner(
     workflows,
     new Map(),
-    { includeBuyerSelect: false, includeClickNodes: false, liveOnly: true }
+    { includeBuyerSelect: false, includeClickNodes: false, includeLatencyGates: false, liveOnly: true }
   )
 
   return c.json({
@@ -237,7 +237,7 @@ export async function refuseSwitchAwayFromClick(
   const using = workflowsUsingPartner(
     workflows,
     new Map(),
-    { includeBuyerSelect: false, includeClickNodes: true, clickNodesOnly: true, liveOnly: true }
+    { includeBuyerSelect: false, includeClickNodes: true, includeLatencyGates: false, clickNodesOnly: true, liveOnly: true }
   )(partnerId)
   if (using.length === 0) return null
   const names = using.map((w) => w.name).join(', ')
