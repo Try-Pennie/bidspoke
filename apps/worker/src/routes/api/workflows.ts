@@ -1215,11 +1215,10 @@ workflows.get('/:id/rename-impact', async (c) => {
 
   if (affected.length === 0) return c.json({ partner_formulas: [] })
 
-  // For each affected partner, find OTHER workflows in the same org that sell
-  // to it (a partner_bid, bid_group, click node, or buyer_select priced for it),
-  // since each evaluates its formula. Those workflows would be silently broken
-  // by a formula rewrite, so we surface them to the user and (by default) skip
-  // the rewrite.
+  // For each affected partner, find OTHER workflows in the same org that name
+  // it (a partner_bid, bid_group, click node, or buyer_select priced for it). A
+  // formula rewrite made for this workflow could silently break any of them, so
+  // we surface them to the user and (by default) skip the rewrite.
   let otherWorkflows
   try {
     otherWorkflows = await readOrgWorkflows(supabase, orgId, { excludeId: id })
