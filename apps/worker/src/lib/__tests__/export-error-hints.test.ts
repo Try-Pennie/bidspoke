@@ -351,3 +351,29 @@ describe('the fix line names the system the failing step touches (#835)', () => 
     expect(hint).not.toMatch(/RLS/)
   })
 })
+
+// #2311: the wording getSalesforceToken throws when the token endpoint does not
+// answer inside its deadline (engine/nodes/salesforce.ts). The engine already
+// retries it as transient; the alert path read it as unknown and paged at once.
+describe('a Salesforce token timeout (#2311)', () => {
+  const TIMEOUT = 'the bid matrix audit failed: Salesforce token fetch timed out after 10000 ms'
+
+  it('is transient, because the next run fetches a fresh token', () => {
+    expect(isTransientExportError(TIMEOUT)).toBe(true)
+  })
+
+  it('gets a line naming Salesforce and saying there is nothing to do, never Snowflake', () => {
+    const hint = buildFixHint([TIMEOUT])
+    expect(hint).toContain('Salesforce')
+    expect(hint).toMatch(/no action/i)
+    expect(hint).not.toContain('Snowflake')
+  })
+
+  it('is not transient when Salesforce refused the credentials', () => {
+    expect(isTransientExportError('Salesforce token fetch failed (400): {"error":"invalid_client"}')).toBe(false)
+  })
+
+  it('is still never held in the enrollment view step, whose leads are not retried (#2086)', () => {
+    expect(isTransientExportError('enrollment view backfill: Salesforce token fetch timed out after 10000 ms')).toBe(false)
+  })
+})

@@ -158,8 +158,14 @@ describe('history paths in the dotted form buyer_profile_flatten writes (#1672)'
     expect(formatProfileValue('blackout_dates.2026-12-25', null)).toBe('none')
   })
 
+  // #2268: the collections cap reads as the share of debt it is.
+  it('names the collections cap as its field does, and words its value as a share of debt', () => {
+    expect(profileFieldLabel('collections_max_percent')).toBe('Collections at most')
+    expect(formatProfileValue('collections_max_percent', 75)).toBe('75% of debt')
+  })
+
   it('labels every scalar key the flatten passes through from buyer_profile_document', () => {
-    const documentScalars = ['sold_on', 'is_enabled', 'priority', 'allowed_states', 'debt_min', 'debt_max', 'loan_amount_min', 'hourly_lead_cap', 'daily_lead_cap', 'hourly_spend_cap_cents', 'daily_spend_cap_cents', 'display_time_zone']
+    const documentScalars = ['sold_on', 'is_enabled', 'priority', 'allowed_states', 'debt_min', 'debt_max', 'loan_amount_min', 'hourly_lead_cap', 'daily_lead_cap', 'hourly_spend_cap_cents', 'daily_spend_cap_cents', 'display_time_zone', 'collections_max_percent']
     for (const key of documentScalars) expect(profileFieldLabel(key), key).not.toBe(key)
   })
 

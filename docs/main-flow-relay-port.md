@@ -16,8 +16,12 @@ fixture of it is refreshed from that backup by the export script.
 The port is therefore a transform, not a file: `portMainFlow` in
 [`apps/worker/src/lib/main-flow-port/transform.ts`](../apps/worker/src/lib/main-flow-port/transform.ts)
 takes whatever the canvas holds and returns the ported definition. It is run on
-the live definition at the moment of the apply, and on the money gate's
-production fixture in the tests.
+the live definition at the moment of the apply, and in the tests on a frozen copy
+of version 169, the last version before any stage was applied
+(`__tests__/fixtures/main-flow-v169.json`, #2173). That copy is a test input,
+not a kept workflow: nobody edits it, and the canvas stays the only place Main
+Flow is changed. The tests read the money gate's fixture until the first canary,
+when it became part ported.
 
 ## What the transform changes
 
@@ -106,8 +110,11 @@ request if the edit should stand.
 ## Previewing, applying and rolling back
 
 Only a member of the production organization can save Main Flow, so this runs in
-Dan's logged in Bidspoke tab, as the Liberty1 workflow was created. Nothing has
-been applied yet; each stage is applied by its own phase issue.
+Dan's logged in Bidspoke tab, as the Liberty1 workflow was created. Each stage is
+applied by its own phase issue. The stage live now is the one `LIVE_STAGE` names
+in `gate-fixture.test.ts`: `canary_invalid_state`, applied on 2026-10-16 as
+version 172 (#2173), after an earlier apply (version 170) and its rollback
+(version 171).
 
 1. Before any apply, the engine pull request that the stage needs is merged and
    deployed, and the live commit confirmed (plan point 12).
@@ -124,11 +131,24 @@ been applied yet; each stage is applied by its own phase issue.
    `after`, the versions either side. **Save that answer**: it is the rollback
    record. Any other outcome says what it found instead
    (`refused_live_changed`, `applied_with_deploy_errors`, `stored_differs`).
-5. Refresh the money gate's fixture (`npx tsx scripts/export-money-fixture-shapes.ts`)
-   and require no difference from the PUT definition; then the fixture pull
-   request acknowledges each changed node and field in
-   `money-gate/expected-changes.json`, never `*`, and deletes each entry after
-   the deploy that ships it.
+5. Refresh the money gate's fixtures (`npx tsx scripts/export-money-fixture-shapes.ts`
+   from `apps/worker`) and require the refreshed Main Flow to be exactly the
+   version the apply answered as `after`. Set `LIVE_STAGE` in
+   `src/lib/main-flow-port/__tests__/gate-fixture.test.ts` to the stage just
+   applied, in the same pull request. That test requires the gate's Main Flow to
+   equal the transform of version 169 (the port tests' own copy,
+   `__tests__/fixtures/main-flow-v169.json`) at that stage. If it fails,
+   something other than the port changed Main Flow, most likely a canvas save,
+   and that save is looked at before anything here changes.
+
+   The refresh pull request needs no `money-gate/expected-changes.json` entry.
+   The gate replays the head's fixtures through both engines, the merge base's
+   and the head's, so a definition that changed only in the fixtures is replayed
+   identically on both sides and shows no difference. An entry would match
+   nothing and fail the gate. (Measured on the #2173 canary refresh.) What the
+   port changes in what Main Flow sends is proven by the port's own tests listed
+   below, not by the gate's base and head comparison; from the refresh on, the
+   gate replays the ported definition, so later engine changes are compared over it.
 
 To roll back, save the apply's answer as a file and print
 `npx tsx scripts/main-flow-port-tab.ts rollback <file> <worker url>`, then run it
@@ -154,7 +174,12 @@ checked", never landed. Runs the step skipped are counted and said. The message
 gives the count, how many landed, each run that did not with what was wrong (by
 run, never a value), and the relay's figure over the same hours, which is what
 Pipedream accepted, not what reached Salesforce. A day with a run that did not
-land or could not be checked is titled as an alert. It has its own heartbeat
+land or could not be checked is titled as an alert, and so is a day Main Flow
+spent off the direct write: an invalid state post that went through the relay
+after a direct one, or a day whose last post did (#2312). Relay posts from
+before the first direct post are said as coming before the switch and alert on
+nothing, as on the first report (2026-10-17), whose window began ten hours
+before version 172. It has its own heartbeat
 entry (`invalid-state-canary-watch`), so a missed morning pages, and its own
 `job_runs` row with every run that did not land.
 
@@ -174,8 +199,10 @@ heartbeat's KV keys expire on their own and need nothing.
 
 In `apps/worker/src/lib/main-flow-port/__tests__/`:
 
-- `transform.test.ts`: what the transform builds from the production fixture,
+- `transform.test.ts`: what the transform builds from the version 169 copy,
   each stage, idempotence, and every refusal.
+- `gate-fixture.test.ts`: the money gate's Main Flow fixture equals the
+  transform of the version 169 copy at `LIVE_STAGE`, the stage last applied.
 - `ported-definition.test.ts`: walks the ported graph. Every Submission write
   after the answer on the `trades_present` route is followed by the Apex call;
   the worst case from each answer to its Apex call fits 12 s by the engine's own

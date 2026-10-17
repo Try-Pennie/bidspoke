@@ -2,303 +2,6 @@
   "id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
   "name": "RML - Bidding Workflow (LendSwift)",
   "definition": {
-    "trigger": {
-      "type": "http_webhook",
-      "config": {
-        "method": "POST",
-        "auth_method": "api_key",
-        "success_node_namespaces": [
-          "patch_applicant_bid",
-          "patch_applicant_no_bid"
-        ]
-      }
-    },
-    "nodes": [
-      {
-        "id": "5bcd28cb-36a9-47b0-85ab-c61ddee683a9",
-        "namespace": "constants",
-        "label": "Constants",
-        "type": "constants",
-        "position": {
-          "x": 394,
-          "y": 197
-        },
-        "config": {
-          "data": {
-            "states": [
-              "DE",
-              "ID",
-              "KS",
-              "MO",
-              "MS",
-              "SC",
-              "TX",
-              "UT",
-              "WI"
-            ],
-            "logoSrc": "https://pub-aaaeedacc51943d1a26b21aaf3aab284.r2.dev/RML_White.png",
-            "offerName": "Reserve My Loan",
-            "multiplier": 0.65,
-            "offerTitle": "Get Cash Without the Credit Check",
-            "productType": "installment_loan",
-            "offerDetails": "A smarter way to borrow \u2014 approved based on what you earn, not your credit score.<ul><li>Borrow up to $1,000 \u2014 no credit score required</li><li>Approved in under 5 minutes</li><li>Funds deposited as soon as same day</li><li>100% online, start to finish</li></ul>",
-            "biddingActive": true,
-            "pennieClickUrl": "https://reservemyloan.com/portal/ls",
-            "maximumLoanAmount": 5001
-          },
-          "retries": 2
-        },
-        "variables": {}
-      },
-      {
-        "id": "82e843f7-8e5e-4651-8d35-6370fb0ff744",
-        "namespace": "parse_name",
-        "label": "Parse Name",
-        "type": "code",
-        "position": {
-          "x": 394,
-          "y": 350
-        },
-        "config": {
-          "script": "function sanitizeName(name, maxLength) {\n  if (name == null) return \"\";\n  return name.replace(/[^a-zA-Z]/g, \" \").substring(0, maxLength);\n}\n\nfunction extractMiddleName(fullName) {\n  if (!fullName) return '';\n  const nameParts = fullName.trim().split(' ');\n  if (nameParts.length > 2) {\n    return nameParts[1].charAt(0).toUpperCase();\n  }\n  return '';\n}\n\nconst personal = payload.personalInformation;\n\n// Guard (folded in from the old constants step): drop non-lead requests\n// that arrive with no applicant data, instead of crashing below.\nif (!personal) {\n  return { exit: true };\n}\n\nconst firstName = personal.firstName;\nconst lastName = personal.lastName;\nconst middleName = extractMiddleName(firstName);\n\nreturn {\n  firstName: sanitizeName(firstName, 15),\n  lastName: sanitizeName(lastName, 25),\n  middleName: sanitizeName(middleName, 15)\n};\n",
-          "retries": 2
-        },
-        "variables": {}
-      },
-      {
-        "id": "f164e4d5-8f83-4ff1-a7e4-d655db2b1677",
-        "namespace": "validate_bidding_and_state",
-        "label": "Validate Bidding and State",
-        "type": "code",
-        "position": {
-          "x": 394,
-          "y": 503
-        },
-        "config": {
-          "script": "function isBlank(name) {\n  return !name || name.trim() === \"\" || !/[a-zA-Z]/.test(name);\n}\n\nconst constants = steps.constants.output;\nconst allowedStates = constants.states;\nconst state = payload.personalInformation.state;\nconst validState = allowedStates.includes(state);\n\nconst firstName = steps.parse_name.output.firstName;\nconst lastName = steps.parse_name.output.lastName;\nconst validName = !isBlank(firstName) && !isBlank(lastName);\n\nconst biddingActive = constants.biddingActive;\n\nconst loanAmount = payload.loanInformation.loanAmount;\nconst validLoanAmount = loanAmount <= constants.maximumLoanAmount;\n\n// Military exclusion (#926). This read payload.personalInformation.militaryStatus\n// until 2026-08-21, a field the partner has never sent, so the strict\n// comparison against true was always false and the rejection below was\n// unreachable: zero rejections in 150,110 runs over 7 days, while 157 leads\n// carrying employmentStatus 'military' were sold. The signal the partner does\n// send is financialInformation.employmentStatus, one of employed,\n// employed_full_time, employed_part_time, military, not_employed, other,\n// retired. Measured present on 27,809 of 27,809 leads across both workflows.\nconst financial = payload.financialInformation || {};\nconst employmentStatus = financial.employmentStatus;\nconst knownEmploymentStatus = typeof employmentStatus === 'string' && employmentStatus !== '';\nconst isMilitary = employmentStatus === 'military';\n\n// All checks pass -> continue to the next node\nif (biddingActive && validState && validName && validLoanAmount && knownEmploymentStatus && !isMilitary) {\n  return { valid: true };\n}\n\nconst headers = { \"Content-Type\": \"application/json\" };\n\nif (!biddingActive) {\n  console.log(`Rejected due to bidding not being active: ${biddingActive}`);\n  return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"bidding not active\" } } };\n}\n\nif (!validState) {\n  console.log(`Rejected due to invalid_state: ${state}`);\n  return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"ineligible state\" } } };\n}\n\nif (!validName) {\n  console.log(`Rejected due to invalid name: firstName=\"${firstName}\", lastName=\"${lastName}\"`);\n  return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"invalid name\" } } };\n}\n\nif (!validLoanAmount) {\n  console.log(`Rejected due to loan amount: ${loanAmount}`);\n  return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"loan amount exceeds maximum\" } } };\n}\n\nif (isMilitary) {\n  console.log(`Rejected due to military status: employmentStatus=${employmentStatus}`);\n  return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"military status ineligible\" } } };\n}\n\n// Fails closed rather than open, which is the whole point of the repair: the\n// exclusion above must not be defeated by the field simply being absent. It has\n// been present on every lead measured, so this is expected never to fire. If it\n// starts firing, the partner payload changed, and it says so rather than\n// silently readmitting the population the exclusion exists to keep out.\nif (!knownEmploymentStatus) {\n  console.log(`Rejected due to missing employment status: ${JSON.stringify(employmentStatus)}`);\n  return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"employment status missing\" } } };\n}\n",
-          "retries": 2
-        },
-        "variables": {}
-      },
-      {
-        "id": "f4493edf-de2e-43aa-ba45-b191884112bc",
-        "namespace": "applicant_body",
-        "label": "Applicant Body",
-        "type": "code",
-        "position": {
-          "x": 394,
-          "y": 656
-        },
-        "config": {
-          "script": "function transformToSalesforceFormat(inputData, bidspokeLink, parsedName) {\n  const personal = inputData.personalInformation || {};\n  const loan = inputData.loanInformation || {};\n  const mortgage = inputData.mortgageInformation || {};\n  const credit = inputData.creditInformation || {};\n  const financial = inputData.financialInformation || {};\n  const education = inputData.educationInformation || {};\n  const legal = inputData.legalInformation || {};\n  const session = inputData.sessionInformation || {};\n\n  const mapEmploymentStatus = (status) => {\n    if (!status) return 'Other';\n    const statusMap = {\n      'employed': 'Employed',\n      'employed_full_time': 'employed_full_time',\n      'employed_part_time': 'employed_part_time',\n      'military': 'Military',\n      'not_employed': 'not_employed',\n      'self_employed': 'self_employed',\n      'retired': 'Retired',\n      'other': 'Other'\n    };\n    return statusMap[status.toLowerCase()] || 'Other';\n  };\n\n  const mapEducationLevel = (level) => {\n    if (!level) return 'Other';\n    const levelMap = {\n      'high_school': 'high_school',\n      'associate': 'Associate',\n      'bachelors': 'Bachelors',\n      'masters': 'Masters',\n      'doctorate': 'Doctorate',\n      'other_grad_degree': 'other_grad_degree',\n      'certificate': 'Certificate',\n      'did_not_graduate': 'did_not_graduate',\n      'still_enrolled': 'still_enrolled',\n      'other': 'Other'\n    };\n    return levelMap[level.toLowerCase()] || 'Other';\n  };\n\n  const mapLoanPurpose = (purpose) => {\n    if (!purpose) return 'Other';\n    const purposeMap = {\n      'auto': 'Auto', 'auto_purchase': 'auto_purchase', 'auto_refinance': 'auto_refinance',\n      'baby': 'Baby', 'boat': 'Boat', 'business': 'Business', 'car_repair': 'car_repair',\n      'cosmetic': 'Cosmetic', 'credit_card_refi': 'credit_card_refi',\n      'debt_consolidation': 'debt_consolidation', 'emergency': 'Emergency',\n      'engagement': 'Engagement', 'green': 'Green', 'home_improvement': 'home_improvement',\n      'home_purchase': 'home_purchase', 'home_refi': 'home_refi',\n      'household_expenses': 'household_expenses', 'large_purchases': 'large_purchases',\n      'life_event': 'life_event', 'medical_dental': 'medical_dental', 'motorcycle': 'Motorcycle',\n      'moving_relocation': 'moving_relocation', 'other': 'Other', 'rv': 'Rv',\n      'special_occasion': 'special_occasion', 'student_loan': 'student_loan',\n      'student_loan_refi': 'student_loan_refi', 'taxes': 'Taxes', 'unknown': 'Unknown',\n      'vacation': 'Vacation', 'wedding': 'Wedding'\n    };\n    return purposeMap[purpose.toLowerCase()] || 'Other';\n  };\n\n  const mapPaymentFrequency = (frequency) => {\n    if (!frequency) return 'Monthly';\n    const frequencyMap = {\n      'weekly': 'Weekly', 'biweekly': 'biweekly', 'twice_monthly': 'twice_monthly', 'monthly': 'Monthly'\n    };\n    return frequencyMap[frequency.toLowerCase()] || 'Monthly';\n  };\n\n  const mapCreditRating = (rating) => {\n    if (!rating) return 'Poor (<600)';\n    const ratingMap = {\n      'excellent': 'Excellent (720+)',\n      'good': 'Good (660-719)',\n      'fair': 'Fair (620-659)',\n      'poor': 'Poor (<600)',\n      'limited': 'Poor (<600)',\n      'unknown': 'Poor (<600)'\n    };\n    return ratingMap[rating.toLowerCase()] || 'Poor (<600)';\n  };\n\n  const mapPropertyStatus = (status) => {\n    if (!status) return 'Rent';\n    const statusMap = {\n      'own_outright': 'Own Outright',\n      'own_with_mortgage': 'Own with Mortgage',\n      'rent': 'Rent'\n    };\n    return statusMap[status.toLowerCase()] || 'Rent';\n  };\n\n  const formatPhoneNumber = (phone) => {\n    if (!phone) return '';\n    const digits = phone.replace(/\\D/g, '');\n    if (digits.length === 10) {\n      return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;\n    }\n    return phone;\n  };\n\n  const formatSSN = (ssn) => {\n    if (!ssn) return '';\n    return ssn.replace(/\\D/g, '');\n  };\n\n  const safeBirthDate = (dob) => {\n      if (!dob) return '1901-01-01';\n      const d = new Date(dob + 'T00:00:00Z');\n      if (isNaN(d.getTime())) return '1900-01-01';\n      if (d.getUTCFullYear() < 1900) return '1900-01-01';\n      return dob;\n    };\n\n  return {\n    \"Last_Name__c\": parsedName.lastName || '',\n    \"Middle_Name__c\": parsedName.middleName || '',\n    \"First_Name__c\": parsedName.firstName || '',\n    \"State__c\": personal.state || '',\n    \"City__c\": personal.city || '',\n    \"Zip__c\": personal.zipcode || '',\n    \"Email__c\": personal.email || '',\n    \"Phone__c\": formatPhoneNumber(personal.primaryPhone),\n    \"BirthDate__c\": safeBirthDate(personal.dateOfBirth),\n    \"Street__c\": personal.address1 || '',\n    \"AptSuite__c\": personal.address2 || '',\n    \"LoanAmount__c\": loan.loanAmount || 0,\n    \"LoanPurpose__c\": mapLoanPurpose(loan.purpose),\n    \"IncomePmtFrequency__c\": mapPaymentFrequency(financial.employmentPayFrequency),\n    \"AnnualIncomeBeforeTaxes__c\": financial.annualIncome || 0,\n    \"EmploymentStatus__c\": mapEmploymentStatus(financial.employmentStatus),\n    \"EducationLevel__c\": mapEducationLevel(education.educationLevel),\n    \"SocialSecurityNumber__c\": formatSSN(personal.ssn),\n    \"RentOrOwn__c\": mapPropertyStatus(mortgage.propertyStatus),\n    \"ApproximateCreditRating__c\": mapCreditRating(credit.providedCreditRating),\n    \"LeadUUID__c\": inputData.leadUuid,\n    \"SubaccountUUID__c\": inputData.subAccountUuid,\n    \"Source__c\": \"Engine\",\n    \"ProspectTraceId__c\": bidspokeLink,\n    \"TCPAConsentFlag__c\": legal.consentsToTcpa,\n    \"FCRAConsentFlag__c\": legal.consentsToFcra,\n    \"User_Agent__c\": (session.userAgent || '').slice(0, 255),\n    \"User_IP__c\": session.ipAddress,\n  };\n}\n\ntry {\n  return transformToSalesforceFormat(payload, execution.bidspoke_link, steps.parse_name.output);\n} catch (error) {\n  console.error('Error transforming data:', error);\n  return { response: { status: 500, body: { lead_id: payload.leadUuid, status: \"error\", reason: \"internal server error\" } } };\n}\n",
-          "retries": 2
-        },
-        "variables": {}
-      },
-      {
-        "id": "190ed877-ac71-428b-b481-125931ce5319",
-        "namespace": "create_applicant",
-        "label": "Create Applicant",
-        "type": "salesforce",
-        "position": {
-          "x": 394,
-          "y": 809
-        },
-        "config": {
-          "body": "{{steps.applicant_body.output}}",
-          "object": "Applicant__c",
-          "retries": 2,
-          "expected_errors": [
-            {
-              "code": "FIELD_CUSTOM_VALIDATION_EXCEPTION",
-              "response_body": {
-                "reason": "duplicated lead",
-                "status": "rejected",
-                "lead_id": "{{trigger.payload.leadUuid}}"
-              },
-              "message_contains": "Social Security Number was created in the last 60 days"
-            },
-            {
-              "code": "DUPLICATE_VALUE",
-              "response_body": {
-                "reason": "duplicated lead",
-                "status": "rejected",
-                "lead_id": "{{trigger.payload.leadUuid}}"
-              },
-              "message_contains": "duplicate value found: LeadUUID__c duplicates value on record with id"
-            }
-          ],
-          "transient_errors": [
-            {
-              "code": "REQUEST_LIMIT_EXCEEDED",
-              "message_contains": "Concurrent"
-            }
-          ]
-        },
-        "variables": {}
-      },
-      {
-        "id": "994c9673-0281-4a18-a438-3e521d0fa879",
-        "namespace": "ping_lendswift",
-        "label": "Ping Lendswift",
-        "type": "code",
-        "position": {
-          "x": 394,
-          "y": 966
-        },
-        "config": {
-          "script": "async function transformToLendSwift(body, refId, leadAffiliate, leadProvider, leadCampaign, subAccountBids) {\n  const personal = body.personalInformation || {};\n  const loan = body.loanInformation || {};\n  const financial = body.financialInformation || {};\n  const mortgage = body.mortgageInformation || {};\n  const session = body.sessionInformation || {};\n\n  const mapIncomeType = (status) => {\n    const map = {\n      'employed': '1', 'employed_full_time': '1', 'employed_part_time': '1',\n      'military': '6', 'not_employed': '6', 'self_employed': '5',\n      'retired': '4', 'other': '6'\n    };\n    return map[(status || '').toLowerCase()] || '6';\n  };\n\n  const mapPayFrequency = (freq) => {\n    const map = { 'weekly': '1', 'biweekly': '2', 'twice_monthly': '3', 'monthly': '4' };\n    return map[(freq || '').toLowerCase()] || '4';\n  };\n\n  const formatSSN = (ssn) => (ssn || '').replace(/\\D/g, '');\n\n  const formatPhone = (phone) => {\n    const digits = (phone || '').replace(/\\D/g, '');\n    if (digits.length === 10) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;\n    return phone || '';\n  };\n\n  const monthlyIncome = financial.annualIncome ? +(financial.annualIncome / 12).toFixed(2) : 0;\n\n  // Next pay date: 7 days from today as a sensible default\n  const nextPayDay = (() => {\n    const d = new Date();\n    d.setDate(d.getDate() + 7);\n    const mm = String(d.getMonth() + 1).padStart(2, '0');\n    const dd = String(d.getDate()).padStart(2, '0');\n    return `${mm}/${dd}/${d.getFullYear()}`;\n  })();\n\n  const minBidValue = subAccountBids?.[body.subAccountUuid] ?? null;\n\n  return {\n    data: {\n      Username: body.lendSwiftUsername,\n      Password: body.lendSwiftPassword,\n      RefID: refId || body.leadUuid || '',\n      LeadAffiliate: leadAffiliate || body.subAccountUuid || '',\n      LeadCost: 0,\n      min_bid_value: minBidValue ?? 0.00,\n      Firstname: personal.firstName || '',\n      Lastname: personal.lastName || '',\n      SSN: formatSSN(personal.ssn),\n      Email: personal.email || '',\n      DOB: personal.dateOfBirth || '',\n      Language: 'e',\n      Military: 'n',\n      HomeAddress: personal.address1 || '',\n      HomeCity: personal.city || '',\n      HomeState: personal.state || '',\n      HomeZip: personal.zipcode || '',\n      HomePhone: formatPhone(personal.primaryPhone),\n      CellPhone: formatPhone(personal.primaryPhone),\n      HomeOwner: ['own_outright', 'own_with_mortgage'].includes(mortgage.propertyStatus) ? 'y' : 'n',\n      BankInfo: { AccountToUse: 'C' },\n      EmploymentInfo: {\n        MonthlyIncome: monthlyIncome,\n        PayFrequency: mapPayFrequency(financial.employmentPayFrequency),\n        IncomeType: mapIncomeType(financial.employmentStatus),\n        PayrollType: '2',\n        NextPayDay: nextPayDay,\n      },\n      LoanInfo: { Amount: loan.loanAmount || 0 },\n      LeadProvider: leadProvider || '',\n      LeadCampaign: leadCampaign || loan.purpose || '',\n      ClientIPAddress: session.ipAddress || ''\n    },\n    control: { execution_mode: 'sync' },\n    mock_data: {},\n    metadata: {},\n  };\n}\n\nasync function makeLendSwiftRequest(reqPayload, url, apiKey) {\n  try {\n    const response = await fetch(url, {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },\n      body: JSON.stringify(reqPayload),\n    });\n    const respData = await response.json().catch(() => null);\n    if (!response.ok) {\n      return { error: true, statusCode: response.status, message: JSON.stringify(respData) };\n    }\n    return { error: false, statusCode: 200, data: respData };\n  } catch (error) {\n    return { error: true, statusCode: 500, message: error.message };\n  }\n}\n\nasync function makeLendSwiftRequestWithRetry(reqPayload, url, apiKey) {\n  let result = await makeLendSwiftRequest(reqPayload, url, apiKey);\n  if (result.error && result.statusCode >= 500 && result.statusCode < 600) {\n    await new Promise((r) => setTimeout(r, 250));\n    result = await makeLendSwiftRequest(reqPayload, url, apiKey);\n  }\n  return result;\n}\n\n// --- Credential lookup (folded in) ---\nconst state = payload.personalInformation.state;\nconst apiKey = env.LENDSWIFT_API_KEY;\nconst username = env[`LENDSWIFT_${state}_USERNAME`];\nconst password = env[`LENDSWIFT_${state}_PASSWORD`];\n\nif (!username || !password) {\n  throw new Error(`No credentials found for state: ${state}`);\n}\n\n// --- Config ---\nconst ENDPOINT_URL = \"https://risk.bf9baa41.decide.taktile.com/run/api/v1/flows/training/decide\";\nconst LEAD_PROVIDER = \"Pennie\";\n\nconst applicantId = steps.create_applicant.output.body.id;\nconst subAccountBids = steps.constants.output.LendswiftSubAccountMinBids || {};\n\nconst formattedBody = await transformToLendSwift(\n  { ...payload, lendSwiftUsername: username, lendSwiftPassword: password },\n  applicantId,\n  payload.subAccountUuid,\n  LEAD_PROVIDER,\n  payload.loanInformation && payload.loanInformation.purpose,\n  subAccountBids\n);\n\nconst result = await makeLendSwiftRequestWithRetry(formattedBody, ENDPOINT_URL, apiKey);\n\nif (result.error) {\n  console.error('Error submitting lead to LendSwift:', result.message);\n  return { response: { status: 500, body: { lead_id: payload.leadUuid, status: \"error\", reason: \"internal server error\" } } };\n}\n\nreturn result;",
-          "retries": 2
-        },
-        "variables": {}
-      },
-      {
-        "id": "0f93d25f-6b34-459a-b3aa-888f8bfade0c",
-        "namespace": "build_response",
-        "label": "Build Response",
-        "type": "code",
-        "position": {
-          "x": 394,
-          "y": 1119
-        },
-        "config": {
-          "script": "const lendswiftData = steps.ping_lendswift.output.data.data;\nconst lendswiftResult = lendswiftData.status;\nconst lendswiftBid = lendswiftData.bid_amount;\nconst constants = steps.constants.output;\nconst subAccountUuid = payload.subAccountUuid;\n\nconst floor = constants.LendswiftSubAccountMinBids?.[subAccountUuid];\n\n// Shared values used by the patch_applicant_* Salesforce Update nodes.\n// (Templates can't do math / ?? / || / dynamic keys, so we compute here.)\nconst patch = {\n  externalPartnerBid: lendswiftBid ?? null,\n  minBidAmt: (lendswiftData && lendswiftData.min_bid_value != null) ? lendswiftData.min_bid_value : floor,\n  redirectUrl: lendswiftData && lendswiftData.redirect_url,\n  rejectionReason: lendswiftData && lendswiftData.rejection_reason,\n  ts: new Date().toISOString(),\n};\n\n// --- unqualified ---\nif (!Number(lendswiftBid) || Number(lendswiftBid) <= 0 || lendswiftResult !== \"ACCEPTED\") {\n  const reason = \"unqualified_lead\";\n  return {\n    body: { lead_id: payload.leadUuid, status: \"rejected\", reason },\n    ...patch,\n    lsRejectionReason: patch.rejectionReason || reason,\n  };\n}\n\n// --- below threshold ---\nif (floor !== undefined && Number(lendswiftBid) < floor) {\n  const reason = \"bid_below_threshold\";\n  return {\n    body: { lead_id: payload.leadUuid, status: \"rejected\", reason },\n    ...patch,\n    lsRejectionReason: patch.rejectionReason || reason,\n  };\n}\n\n// --- offer (BID) ---\nconst bidAmount = lendswiftBid * constants.multiplier;\nreturn {\n  body: {\n    requestId: execution.trace_id,\n    offers: [\n      {\n        name: constants.offerName,\n        display_name: constants.offerName,\n        rate: bidAmount,\n        click_url: constants.pennieClickUrl + `/${steps.create_applicant.output.body.id}`,\n        product_type: constants.productType,\n        logo_src: constants.logoSrc,\n        offer_title: constants.offerTitle,\n        offer_details: constants.offerDetails,\n      },\n    ],\n  },\n  ...patch,\n  bidAmount,\n};",
-          "retries": 2
-        },
-        "variables": {}
-      },
-      {
-        "id": "087d1da9-1cbb-4ee9-91f1-34867b3ad72f",
-        "namespace": "return_response",
-        "label": "Return Response",
-        "type": "response",
-        "position": {
-          "x": 394,
-          "y": 1272
-        },
-        "config": {
-          "body": "{{steps.build_response.output.body}}",
-          "retries": 2,
-          "status_code": 200,
-          "continue_after_response": true
-        },
-        "variables": {}
-      },
-      {
-        "id": "1840c390-3353-4ffd-94bd-6943118a571d",
-        "namespace": "patch_applicant",
-        "label": "Patch Applicant",
-        "type": "branch",
-        "position": {
-          "x": 242,
-          "y": 1425
-        },
-        "config": {
-          "retries": 2,
-          "branches": [
-            {
-              "label": "Bid",
-              "condition": {
-                "logic": "AND",
-                "groups": [
-                  {
-                    "logic": "AND",
-                    "conditions": [
-                      {
-                        "field": "steps.return_response.output.body.offers[0].rate",
-                        "value": 0,
-                        "operator": "gt"
-                      }
-                    ]
-                  }
-                ]
-              }
-            }
-          ],
-          "use_else": true,
-          "else_label": "No Bid"
-        },
-        "variables": {}
-      },
-      {
-        "id": "0ad90712-b58e-4134-bf54-f81f1f06f47a",
-        "namespace": "branch_end_1",
-        "type": "branch_end",
-        "position": {
-          "x": 242,
-          "y": 1811
-        },
-        "config": {},
-        "variables": {}
-      },
-      {
-        "id": "631d57a0-fde9-4c54-82d0-6f0ca91acc41",
-        "namespace": "patch_applicant_bid",
-        "label": "Patch Applicant Bid",
-        "type": "salesforce",
-        "position": {
-          "x": 242,
-          "y": 1606
-        },
-        "config": {
-          "body": {
-            "BidAmount__c": "{{steps.build_response.output.bidAmount}}",
-            "BidStatus__c": "Bid",
-            "LeadSaleType__c": "Form",
-            "Redirect_URL__c": "{{steps.build_response.output.redirectUrl}}",
-            "Minimum_Bid_Amt__c": "{{steps.build_response.output.minBidAmt}}",
-            "OfferLandingPage__c": "{{steps.build_response.output.redirectUrl}}",
-            "ExternalTimestamp__c": "{{steps.build_response.output.ts}}",
-            "ExternalPartnerName__c": "LendSwift",
-            "ExternalRoutingCode__c": 4,
-            "External_Partner_Bid__c": "{{steps.build_response.output.externalPartnerBid}}"
-          },
-          "object": "Applicant__c",
-          "retries": 2,
-          "operation": "update",
-          "record_id": "{{steps.create_applicant.output.body.id}}",
-          "transient_errors": [
-            {
-              "code": "REQUEST_LIMIT_EXCEEDED",
-              "message_contains": "Concurrent"
-            }
-          ]
-        },
-        "variables": {}
-      },
-      {
-        "id": "99e707f8-d2ad-4106-86ae-9e776975d964",
-        "namespace": "patch_applicant_no_bid",
-        "label": "Patch Applicant No Bid",
-        "type": "salesforce",
-        "position": {
-          "x": 546,
-          "y": 1606
-        },
-        "config": {
-          "body": {
-            "BidStatus__c": "Rejected",
-            "Minimum_Bid_Amt__c": "{{steps.build_response.output.minBidAmt}}",
-            "RejectionReason__c": "{{steps.build_response.output.body.reason}}",
-            "ExternalPartnerName__c": "LendSwift",
-            "ExternalRoutingCode__c": 4,
-            "LS_Rejection_Reason__c": "{{steps.build_response.output.lsRejectionReason}}",
-            "External_Partner_Bid__c": "{{steps.build_response.output.externalPartnerBid}}"
-          },
-          "object": "Applicant__c",
-          "retries": 2,
-          "operation": "update",
-          "record_id": "{{steps.create_applicant.output.body.id}}",
-          "transient_errors": [
-            {
-              "code": "REQUEST_LIMIT_EXCEEDED",
-              "message_contains": "Concurrent"
-            }
-          ]
-        },
-        "variables": {}
-      }
-    ],
     "edges": [
       {
         "id": "6698f085-120f-49b8-b1d5-abb04e61bece",
@@ -384,6 +87,303 @@
         "target": "0ad90712-b58e-4134-bf54-f81f1f06f47a",
         "source_handle": "output"
       }
-    ]
+    ],
+    "nodes": [
+      {
+        "id": "5bcd28cb-36a9-47b0-85ab-c61ddee683a9",
+        "type": "constants",
+        "label": "Constants",
+        "config": {
+          "data": {
+            "states": [
+              "DE",
+              "ID",
+              "KS",
+              "MO",
+              "MS",
+              "SC",
+              "TX",
+              "UT",
+              "WI"
+            ],
+            "logoSrc": "https://pub-aaaeedacc51943d1a26b21aaf3aab284.r2.dev/RML_White.png",
+            "offerName": "Reserve My Loan",
+            "multiplier": 0.65,
+            "offerTitle": "Get Cash Without the Credit Check",
+            "productType": "installment_loan",
+            "offerDetails": "A smarter way to borrow \u2014 approved based on what you earn, not your credit score.<ul><li>Borrow up to $1,000 \u2014 no credit score required</li><li>Approved in under 5 minutes</li><li>Funds deposited as soon as same day</li><li>100% online, start to finish</li></ul>",
+            "biddingActive": true,
+            "pennieClickUrl": "https://reservemyloan.com/portal/ls",
+            "maximumLoanAmount": 5001
+          },
+          "retries": 2
+        },
+        "position": {
+          "x": 394,
+          "y": 197
+        },
+        "namespace": "constants",
+        "variables": {}
+      },
+      {
+        "id": "82e843f7-8e5e-4651-8d35-6370fb0ff744",
+        "type": "code",
+        "label": "Parse Name",
+        "config": {
+          "script": "function sanitizeName(name, maxLength) {\n  if (name == null) return \"\";\n  return name.replace(/[^a-zA-Z]/g, \" \").substring(0, maxLength);\n}\n\nfunction extractMiddleName(fullName) {\n  if (!fullName) return '';\n  const nameParts = fullName.trim().split(' ');\n  if (nameParts.length > 2) {\n    return nameParts[1].charAt(0).toUpperCase();\n  }\n  return '';\n}\n\nconst personal = payload.personalInformation;\n\n// Guard (folded in from the old constants step): drop non-lead requests\n// that arrive with no applicant data, instead of crashing below.\nif (!personal) {\n  return { exit: true };\n}\n\nconst firstName = personal.firstName;\nconst lastName = personal.lastName;\nconst middleName = extractMiddleName(firstName);\n\nreturn {\n  firstName: sanitizeName(firstName, 15),\n  lastName: sanitizeName(lastName, 25),\n  middleName: sanitizeName(middleName, 15)\n};\n",
+          "retries": 2
+        },
+        "position": {
+          "x": 394,
+          "y": 350
+        },
+        "namespace": "parse_name",
+        "variables": {}
+      },
+      {
+        "id": "f164e4d5-8f83-4ff1-a7e4-d655db2b1677",
+        "type": "code",
+        "label": "Validate Bidding and State",
+        "config": {
+          "script": "function isBlank(name) {\n  return !name || name.trim() === \"\" || !/[a-zA-Z]/.test(name);\n}\n\nconst constants = steps.constants.output;\nconst allowedStates = constants.states;\nconst state = payload.personalInformation.state;\nconst validState = allowedStates.includes(state);\n\nconst firstName = steps.parse_name.output.firstName;\nconst lastName = steps.parse_name.output.lastName;\nconst validName = !isBlank(firstName) && !isBlank(lastName);\n\nconst biddingActive = constants.biddingActive;\n\nconst loanAmount = payload.loanInformation.loanAmount;\nconst validLoanAmount = loanAmount <= constants.maximumLoanAmount;\n\n// Military exclusion (#926). This read payload.personalInformation.militaryStatus\n// until 2026-08-21, a field the partner has never sent, so the strict\n// comparison against true was always false and the rejection below was\n// unreachable: zero rejections in 150,110 runs over 7 days, while 157 leads\n// carrying employmentStatus 'military' were sold. The signal the partner does\n// send is financialInformation.employmentStatus, one of employed,\n// employed_full_time, employed_part_time, military, not_employed, other,\n// retired. Measured present on 27,809 of 27,809 leads across both workflows.\nconst financial = payload.financialInformation || {};\nconst employmentStatus = financial.employmentStatus;\nconst knownEmploymentStatus = typeof employmentStatus === 'string' && employmentStatus !== '';\nconst isMilitary = employmentStatus === 'military';\n\n// All checks pass -> continue to the next node\nif (biddingActive && validState && validName && validLoanAmount && knownEmploymentStatus && !isMilitary) {\n  return { valid: true };\n}\n\nconst headers = { \"Content-Type\": \"application/json\" };\n\nif (!biddingActive) {\n  console.log(`Rejected due to bidding not being active: ${biddingActive}`);\n  return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"bidding not active\" } } };\n}\n\nif (!validState) {\n  console.log(`Rejected due to invalid_state: ${state}`);\n  return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"ineligible state\" } } };\n}\n\nif (!validName) {\n  console.log(`Rejected due to invalid name: firstName=\"${firstName}\", lastName=\"${lastName}\"`);\n  return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"invalid name\" } } };\n}\n\nif (!validLoanAmount) {\n  console.log(`Rejected due to loan amount: ${loanAmount}`);\n  return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"loan amount exceeds maximum\" } } };\n}\n\nif (isMilitary) {\n  console.log(`Rejected due to military status: employmentStatus=${employmentStatus}`);\n  return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"military status ineligible\" } } };\n}\n\n// Fails closed rather than open, which is the whole point of the repair: the\n// exclusion above must not be defeated by the field simply being absent. It has\n// been present on every lead measured, so this is expected never to fire. If it\n// starts firing, the partner payload changed, and it says so rather than\n// silently readmitting the population the exclusion exists to keep out.\nif (!knownEmploymentStatus) {\n  console.log(`Rejected due to missing employment status: ${JSON.stringify(employmentStatus)}`);\n  return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"employment status missing\" } } };\n}\n",
+          "retries": 2
+        },
+        "position": {
+          "x": 394,
+          "y": 503
+        },
+        "namespace": "validate_bidding_and_state",
+        "variables": {}
+      },
+      {
+        "id": "f4493edf-de2e-43aa-ba45-b191884112bc",
+        "type": "code",
+        "label": "Applicant Body",
+        "config": {
+          "script": "function transformToSalesforceFormat(inputData, bidspokeLink, parsedName) {\n  const personal = inputData.personalInformation || {};\n  const loan = inputData.loanInformation || {};\n  const mortgage = inputData.mortgageInformation || {};\n  const credit = inputData.creditInformation || {};\n  const financial = inputData.financialInformation || {};\n  const education = inputData.educationInformation || {};\n  const legal = inputData.legalInformation || {};\n  const session = inputData.sessionInformation || {};\n\n  const mapEmploymentStatus = (status) => {\n    if (!status) return 'Other';\n    const statusMap = {\n      'employed': 'Employed',\n      'employed_full_time': 'employed_full_time',\n      'employed_part_time': 'employed_part_time',\n      'military': 'Military',\n      'not_employed': 'not_employed',\n      'self_employed': 'self_employed',\n      'retired': 'Retired',\n      'other': 'Other'\n    };\n    return statusMap[status.toLowerCase()] || 'Other';\n  };\n\n  const mapEducationLevel = (level) => {\n    if (!level) return 'Other';\n    const levelMap = {\n      'high_school': 'high_school',\n      'associate': 'Associate',\n      'bachelors': 'Bachelors',\n      'masters': 'Masters',\n      'doctorate': 'Doctorate',\n      'other_grad_degree': 'other_grad_degree',\n      'certificate': 'Certificate',\n      'did_not_graduate': 'did_not_graduate',\n      'still_enrolled': 'still_enrolled',\n      'other': 'Other'\n    };\n    return levelMap[level.toLowerCase()] || 'Other';\n  };\n\n  const mapLoanPurpose = (purpose) => {\n    if (!purpose) return 'Other';\n    const purposeMap = {\n      'auto': 'Auto', 'auto_purchase': 'auto_purchase', 'auto_refinance': 'auto_refinance',\n      'baby': 'Baby', 'boat': 'Boat', 'business': 'Business', 'car_repair': 'car_repair',\n      'cosmetic': 'Cosmetic', 'credit_card_refi': 'credit_card_refi',\n      'debt_consolidation': 'debt_consolidation', 'emergency': 'Emergency',\n      'engagement': 'Engagement', 'green': 'Green', 'home_improvement': 'home_improvement',\n      'home_purchase': 'home_purchase', 'home_refi': 'home_refi',\n      'household_expenses': 'household_expenses', 'large_purchases': 'large_purchases',\n      'life_event': 'life_event', 'medical_dental': 'medical_dental', 'motorcycle': 'Motorcycle',\n      'moving_relocation': 'moving_relocation', 'other': 'Other', 'rv': 'Rv',\n      'special_occasion': 'special_occasion', 'student_loan': 'student_loan',\n      'student_loan_refi': 'student_loan_refi', 'taxes': 'Taxes', 'unknown': 'Unknown',\n      'vacation': 'Vacation', 'wedding': 'Wedding'\n    };\n    return purposeMap[purpose.toLowerCase()] || 'Other';\n  };\n\n  const mapPaymentFrequency = (frequency) => {\n    if (!frequency) return 'Monthly';\n    const frequencyMap = {\n      'weekly': 'Weekly', 'biweekly': 'biweekly', 'twice_monthly': 'twice_monthly', 'monthly': 'Monthly'\n    };\n    return frequencyMap[frequency.toLowerCase()] || 'Monthly';\n  };\n\n  const mapCreditRating = (rating) => {\n    if (!rating) return 'Poor (<600)';\n    const ratingMap = {\n      'excellent': 'Excellent (720+)',\n      'good': 'Good (660-719)',\n      'fair': 'Fair (620-659)',\n      'poor': 'Poor (<600)',\n      'limited': 'Poor (<600)',\n      'unknown': 'Poor (<600)'\n    };\n    return ratingMap[rating.toLowerCase()] || 'Poor (<600)';\n  };\n\n  const mapPropertyStatus = (status) => {\n    if (!status) return 'Rent';\n    const statusMap = {\n      'own_outright': 'Own Outright',\n      'own_with_mortgage': 'Own with Mortgage',\n      'rent': 'Rent'\n    };\n    return statusMap[status.toLowerCase()] || 'Rent';\n  };\n\n  const formatPhoneNumber = (phone) => {\n    if (!phone) return '';\n    const digits = phone.replace(/\\D/g, '');\n    if (digits.length === 10) {\n      return `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6)}`;\n    }\n    return phone;\n  };\n\n  const formatSSN = (ssn) => {\n    if (!ssn) return '';\n    return ssn.replace(/\\D/g, '');\n  };\n\n  const safeBirthDate = (dob) => {\n      if (!dob) return '1901-01-01';\n      const d = new Date(dob + 'T00:00:00Z');\n      if (isNaN(d.getTime())) return '1900-01-01';\n      if (d.getUTCFullYear() < 1900) return '1900-01-01';\n      return dob;\n    };\n\n  return {\n    \"Last_Name__c\": parsedName.lastName || '',\n    \"Middle_Name__c\": parsedName.middleName || '',\n    \"First_Name__c\": parsedName.firstName || '',\n    \"State__c\": personal.state || '',\n    \"City__c\": personal.city || '',\n    \"Zip__c\": personal.zipcode || '',\n    \"Email__c\": personal.email || '',\n    \"Phone__c\": formatPhoneNumber(personal.primaryPhone),\n    \"BirthDate__c\": safeBirthDate(personal.dateOfBirth),\n    \"Street__c\": personal.address1 || '',\n    \"AptSuite__c\": personal.address2 || '',\n    \"LoanAmount__c\": loan.loanAmount || 0,\n    \"LoanPurpose__c\": mapLoanPurpose(loan.purpose),\n    \"IncomePmtFrequency__c\": mapPaymentFrequency(financial.employmentPayFrequency),\n    \"AnnualIncomeBeforeTaxes__c\": financial.annualIncome || 0,\n    \"EmploymentStatus__c\": mapEmploymentStatus(financial.employmentStatus),\n    \"EducationLevel__c\": mapEducationLevel(education.educationLevel),\n    \"SocialSecurityNumber__c\": formatSSN(personal.ssn),\n    \"RentOrOwn__c\": mapPropertyStatus(mortgage.propertyStatus),\n    \"ApproximateCreditRating__c\": mapCreditRating(credit.providedCreditRating),\n    \"LeadUUID__c\": inputData.leadUuid,\n    \"SubaccountUUID__c\": inputData.subAccountUuid,\n    \"Source__c\": \"Engine\",\n    \"ProspectTraceId__c\": bidspokeLink,\n    \"TCPAConsentFlag__c\": legal.consentsToTcpa,\n    \"FCRAConsentFlag__c\": legal.consentsToFcra,\n    \"User_Agent__c\": (session.userAgent || '').slice(0, 255),\n    \"User_IP__c\": session.ipAddress,\n  };\n}\n\ntry {\n  return transformToSalesforceFormat(payload, execution.bidspoke_link, steps.parse_name.output);\n} catch (error) {\n  console.error('Error transforming data:', error);\n  return { response: { status: 500, body: { lead_id: payload.leadUuid, status: \"error\", reason: \"internal server error\" } } };\n}\n",
+          "retries": 2
+        },
+        "position": {
+          "x": 394,
+          "y": 656
+        },
+        "namespace": "applicant_body",
+        "variables": {}
+      },
+      {
+        "id": "190ed877-ac71-428b-b481-125931ce5319",
+        "type": "salesforce",
+        "label": "Create Applicant",
+        "config": {
+          "body": "{{steps.applicant_body.output}}",
+          "object": "Applicant__c",
+          "retries": 2,
+          "expected_errors": [
+            {
+              "code": "FIELD_CUSTOM_VALIDATION_EXCEPTION",
+              "response_body": {
+                "reason": "duplicated lead",
+                "status": "rejected",
+                "lead_id": "{{trigger.payload.leadUuid}}"
+              },
+              "message_contains": "Social Security Number was created in the last 60 days"
+            },
+            {
+              "code": "DUPLICATE_VALUE",
+              "response_body": {
+                "reason": "duplicated lead",
+                "status": "rejected",
+                "lead_id": "{{trigger.payload.leadUuid}}"
+              },
+              "message_contains": "duplicate value found: LeadUUID__c duplicates value on record with id"
+            }
+          ],
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ]
+        },
+        "position": {
+          "x": 394,
+          "y": 809
+        },
+        "namespace": "create_applicant",
+        "variables": {}
+      },
+      {
+        "id": "994c9673-0281-4a18-a438-3e521d0fa879",
+        "type": "code",
+        "label": "Ping Lendswift",
+        "config": {
+          "script": "async function transformToLendSwift(body, refId, leadAffiliate, leadProvider, leadCampaign, subAccountBids) {\n  const personal = body.personalInformation || {};\n  const loan = body.loanInformation || {};\n  const financial = body.financialInformation || {};\n  const mortgage = body.mortgageInformation || {};\n  const session = body.sessionInformation || {};\n\n  const mapIncomeType = (status) => {\n    const map = {\n      'employed': '1', 'employed_full_time': '1', 'employed_part_time': '1',\n      'military': '6', 'not_employed': '6', 'self_employed': '5',\n      'retired': '4', 'other': '6'\n    };\n    return map[(status || '').toLowerCase()] || '6';\n  };\n\n  const mapPayFrequency = (freq) => {\n    const map = { 'weekly': '1', 'biweekly': '2', 'twice_monthly': '3', 'monthly': '4' };\n    return map[(freq || '').toLowerCase()] || '4';\n  };\n\n  const formatSSN = (ssn) => (ssn || '').replace(/\\D/g, '');\n\n  const formatPhone = (phone) => {\n    const digits = (phone || '').replace(/\\D/g, '');\n    if (digits.length === 10) return `${digits.slice(0, 3)}-${digits.slice(3, 6)}-${digits.slice(6)}`;\n    return phone || '';\n  };\n\n  const monthlyIncome = financial.annualIncome ? +(financial.annualIncome / 12).toFixed(2) : 0;\n\n  // Next pay date: 7 days from today as a sensible default\n  const nextPayDay = (() => {\n    const d = new Date();\n    d.setDate(d.getDate() + 7);\n    const mm = String(d.getMonth() + 1).padStart(2, '0');\n    const dd = String(d.getDate()).padStart(2, '0');\n    return `${mm}/${dd}/${d.getFullYear()}`;\n  })();\n\n  const minBidValue = subAccountBids?.[body.subAccountUuid] ?? null;\n\n  return {\n    data: {\n      Username: body.lendSwiftUsername,\n      Password: body.lendSwiftPassword,\n      RefID: refId || body.leadUuid || '',\n      LeadAffiliate: leadAffiliate || body.subAccountUuid || '',\n      LeadCost: 0,\n      min_bid_value: minBidValue ?? 0.00,\n      Firstname: personal.firstName || '',\n      Lastname: personal.lastName || '',\n      SSN: formatSSN(personal.ssn),\n      Email: personal.email || '',\n      DOB: personal.dateOfBirth || '',\n      Language: 'e',\n      Military: 'n',\n      HomeAddress: personal.address1 || '',\n      HomeCity: personal.city || '',\n      HomeState: personal.state || '',\n      HomeZip: personal.zipcode || '',\n      HomePhone: formatPhone(personal.primaryPhone),\n      CellPhone: formatPhone(personal.primaryPhone),\n      HomeOwner: ['own_outright', 'own_with_mortgage'].includes(mortgage.propertyStatus) ? 'y' : 'n',\n      BankInfo: { AccountToUse: 'C' },\n      EmploymentInfo: {\n        MonthlyIncome: monthlyIncome,\n        PayFrequency: mapPayFrequency(financial.employmentPayFrequency),\n        IncomeType: mapIncomeType(financial.employmentStatus),\n        PayrollType: '2',\n        NextPayDay: nextPayDay,\n      },\n      LoanInfo: { Amount: loan.loanAmount || 0 },\n      LeadProvider: leadProvider || '',\n      LeadCampaign: leadCampaign || loan.purpose || '',\n      ClientIPAddress: session.ipAddress || ''\n    },\n    control: { execution_mode: 'sync' },\n    mock_data: {},\n    metadata: {},\n  };\n}\n\nasync function makeLendSwiftRequest(reqPayload, url, apiKey) {\n  try {\n    const response = await fetch(url, {\n      method: 'POST',\n      headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },\n      body: JSON.stringify(reqPayload),\n    });\n    const respData = await response.json().catch(() => null);\n    if (!response.ok) {\n      return { error: true, statusCode: response.status, message: JSON.stringify(respData) };\n    }\n    return { error: false, statusCode: 200, data: respData };\n  } catch (error) {\n    return { error: true, statusCode: 500, message: error.message };\n  }\n}\n\nasync function makeLendSwiftRequestWithRetry(reqPayload, url, apiKey) {\n  let result = await makeLendSwiftRequest(reqPayload, url, apiKey);\n  if (result.error && result.statusCode >= 500 && result.statusCode < 600) {\n    await new Promise((r) => setTimeout(r, 250));\n    result = await makeLendSwiftRequest(reqPayload, url, apiKey);\n  }\n  return result;\n}\n\n// --- Credential lookup (folded in) ---\nconst state = payload.personalInformation.state;\nconst apiKey = env.LENDSWIFT_API_KEY;\nconst username = env[`LENDSWIFT_${state}_USERNAME`];\nconst password = env[`LENDSWIFT_${state}_PASSWORD`];\n\nif (!username || !password) {\n  throw new Error(`No credentials found for state: ${state}`);\n}\n\n// --- Config ---\nconst ENDPOINT_URL = \"https://risk.bf9baa41.decide.taktile.com/run/api/v1/flows/training/decide\";\nconst LEAD_PROVIDER = \"Pennie\";\n\nconst applicantId = steps.create_applicant.output.body.id;\nconst subAccountBids = steps.constants.output.LendswiftSubAccountMinBids || {};\n\nconst formattedBody = await transformToLendSwift(\n  { ...payload, lendSwiftUsername: username, lendSwiftPassword: password },\n  applicantId,\n  payload.subAccountUuid,\n  LEAD_PROVIDER,\n  payload.loanInformation && payload.loanInformation.purpose,\n  subAccountBids\n);\n\nconst result = await makeLendSwiftRequestWithRetry(formattedBody, ENDPOINT_URL, apiKey);\n\nif (result.error) {\n  console.error('Error submitting lead to LendSwift:', result.message);\n  return { response: { status: 500, body: { lead_id: payload.leadUuid, status: \"error\", reason: \"internal server error\" } } };\n}\n\nreturn result;",
+          "retries": 2
+        },
+        "position": {
+          "x": 394,
+          "y": 966
+        },
+        "namespace": "ping_lendswift",
+        "variables": {}
+      },
+      {
+        "id": "0f93d25f-6b34-459a-b3aa-888f8bfade0c",
+        "type": "code",
+        "label": "Build Response",
+        "config": {
+          "script": "const lendswiftData = steps.ping_lendswift.output.data.data;\nconst lendswiftResult = lendswiftData.status;\nconst lendswiftBid = lendswiftData.bid_amount;\nconst constants = steps.constants.output;\nconst subAccountUuid = payload.subAccountUuid;\n\nconst floor = constants.LendswiftSubAccountMinBids?.[subAccountUuid];\n\n// Shared values used by the patch_applicant_* Salesforce Update nodes.\n// (Templates can't do math / ?? / || / dynamic keys, so we compute here.)\nconst patch = {\n  externalPartnerBid: lendswiftBid ?? null,\n  minBidAmt: (lendswiftData && lendswiftData.min_bid_value != null) ? lendswiftData.min_bid_value : floor,\n  redirectUrl: lendswiftData && lendswiftData.redirect_url,\n  rejectionReason: lendswiftData && lendswiftData.rejection_reason,\n  ts: new Date().toISOString(),\n};\n\n// --- unqualified ---\nif (!Number(lendswiftBid) || Number(lendswiftBid) <= 0 || lendswiftResult !== \"ACCEPTED\") {\n  const reason = \"unqualified_lead\";\n  return {\n    body: { lead_id: payload.leadUuid, status: \"rejected\", reason },\n    ...patch,\n    lsRejectionReason: patch.rejectionReason || reason,\n  };\n}\n\n// --- below threshold ---\nif (floor !== undefined && Number(lendswiftBid) < floor) {\n  const reason = \"bid_below_threshold\";\n  return {\n    body: { lead_id: payload.leadUuid, status: \"rejected\", reason },\n    ...patch,\n    lsRejectionReason: patch.rejectionReason || reason,\n  };\n}\n\n// --- offer (BID) ---\nconst bidAmount = lendswiftBid * constants.multiplier;\n\n// The hosts that get the link token (#2092): the block below signs a link to these only.\nconst LINK_TOKEN_HOSTS = ['trypennie.com', 'www.trypennie.com', 'reservemyloan.com'];\n// BEGIN link token (#2089)\n// trypennie.com refuses a link to a Salesforce record created after its cutoff unless the\n// link carries ?t=<token>: HMAC-SHA256 of the first 15 characters of the record id, keyed\n// with LINK_TOKEN_SECRET, base64url with no padding, and reservemyloan.com is to check the\n// same token. Salesforce's LinkToken class and the Pipedream helpers sign exactly the same\n// way. Only a host in LINK_TOKEN_HOSTS, which each script sets just above this block, gets\n// the token, never a partner's domain. With no secret the link goes out unsigned, an error\n// is logged and `link_token` on this step's output says why; the run is never failed for\n// it. This block is identical in every script that signs a link, and link-token.test.ts\n// holds them all to one text (#2092).\nconst SALESFORCE_ID = /^[a-zA-Z0-9]{15}(?:[a-zA-Z0-9]{3})?$/;\nconst withLinkToken = async (url, recordId) => {\n  let host = null;\n  try { host = new URL(url).hostname; } catch {}\n  if (!LINK_TOKEN_HOSTS.includes(host)) return { url, link_token: 'not_our_host' };\n  if (typeof recordId !== 'string' || !SALESFORCE_ID.test(recordId)) return { url, link_token: 'no_record_id' };\n  const secret = env.LINK_TOKEN_SECRET;\n  if (typeof secret !== 'string' || !secret) {\n    console.error('LINK_TOKEN_SECRET is not set, so the link went out without its token (#2089)');\n    return { url, link_token: 'missing_secret' };\n  }\n  try {\n    const enc = new TextEncoder();\n    const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);\n    const signature = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(recordId.slice(0, 15))));\n    let binary = '';\n    for (const byte of signature) binary += String.fromCharCode(byte);\n    const token = btoa(binary).replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');\n    return { url: `${url}${url.includes('?') ? '&' : '?'}t=${token}`, link_token: 'signed' };\n  } catch (err) {\n    console.error(`signing the link failed, so it went out without its token (#2089): ${err && err.message}`);\n    return { url, link_token: 'sign_failed' };\n  }\n};\n// END link token (#2089)\n\nconst applicantId = steps.create_applicant.output.body.id;\nconst offerLink = await withLinkToken(constants.pennieClickUrl + `/${applicantId}`, applicantId);\nreturn {\n  body: {\n    requestId: execution.trace_id,\n    offers: [\n      {\n        name: constants.offerName,\n        display_name: constants.offerName,\n        rate: bidAmount,\n        click_url: offerLink.url,\n        product_type: constants.productType,\n        logo_src: constants.logoSrc,\n        offer_title: constants.offerTitle,\n        offer_details: constants.offerDetails,\n      },\n    ],\n  },\n  ...patch,\n  bidAmount,\n  link_token: offerLink.link_token,\n};",
+          "retries": 2
+        },
+        "position": {
+          "x": 394,
+          "y": 1119
+        },
+        "namespace": "build_response",
+        "variables": {}
+      },
+      {
+        "id": "087d1da9-1cbb-4ee9-91f1-34867b3ad72f",
+        "type": "response",
+        "label": "Return Response",
+        "config": {
+          "body": "{{steps.build_response.output.body}}",
+          "retries": 2,
+          "status_code": 200,
+          "continue_after_response": true
+        },
+        "position": {
+          "x": 394,
+          "y": 1272
+        },
+        "namespace": "return_response",
+        "variables": {}
+      },
+      {
+        "id": "1840c390-3353-4ffd-94bd-6943118a571d",
+        "type": "branch",
+        "label": "Patch Applicant",
+        "config": {
+          "retries": 2,
+          "branches": [
+            {
+              "label": "Bid",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "steps.return_response.output.body.offers[0].rate",
+                        "value": 0,
+                        "operator": "gt"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "use_else": true,
+          "else_label": "No Bid"
+        },
+        "position": {
+          "x": 242,
+          "y": 1425
+        },
+        "namespace": "patch_applicant",
+        "variables": {}
+      },
+      {
+        "id": "0ad90712-b58e-4134-bf54-f81f1f06f47a",
+        "type": "branch_end",
+        "config": {},
+        "position": {
+          "x": 242,
+          "y": 1811
+        },
+        "namespace": "branch_end_1",
+        "variables": {}
+      },
+      {
+        "id": "631d57a0-fde9-4c54-82d0-6f0ca91acc41",
+        "type": "salesforce",
+        "label": "Patch Applicant Bid",
+        "config": {
+          "body": {
+            "BidAmount__c": "{{steps.build_response.output.bidAmount}}",
+            "BidStatus__c": "Bid",
+            "LeadSaleType__c": "Form",
+            "Redirect_URL__c": "{{steps.build_response.output.redirectUrl}}",
+            "Minimum_Bid_Amt__c": "{{steps.build_response.output.minBidAmt}}",
+            "OfferLandingPage__c": "{{steps.build_response.output.redirectUrl}}",
+            "ExternalTimestamp__c": "{{steps.build_response.output.ts}}",
+            "ExternalPartnerName__c": "LendSwift",
+            "ExternalRoutingCode__c": 4,
+            "External_Partner_Bid__c": "{{steps.build_response.output.externalPartnerBid}}"
+          },
+          "object": "Applicant__c",
+          "retries": 2,
+          "operation": "update",
+          "record_id": "{{steps.create_applicant.output.body.id}}",
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ]
+        },
+        "position": {
+          "x": 242,
+          "y": 1606
+        },
+        "namespace": "patch_applicant_bid",
+        "variables": {}
+      },
+      {
+        "id": "99e707f8-d2ad-4106-86ae-9e776975d964",
+        "type": "salesforce",
+        "label": "Patch Applicant No Bid",
+        "config": {
+          "body": {
+            "BidStatus__c": "Rejected",
+            "Minimum_Bid_Amt__c": "{{steps.build_response.output.minBidAmt}}",
+            "RejectionReason__c": "{{steps.build_response.output.body.reason}}",
+            "ExternalPartnerName__c": "LendSwift",
+            "ExternalRoutingCode__c": 4,
+            "LS_Rejection_Reason__c": "{{steps.build_response.output.lsRejectionReason}}",
+            "External_Partner_Bid__c": "{{steps.build_response.output.externalPartnerBid}}"
+          },
+          "object": "Applicant__c",
+          "retries": 2,
+          "operation": "update",
+          "record_id": "{{steps.create_applicant.output.body.id}}",
+          "transient_errors": [
+            {
+              "code": "REQUEST_LIMIT_EXCEEDED",
+              "message_contains": "Concurrent"
+            }
+          ]
+        },
+        "position": {
+          "x": 546,
+          "y": 1606
+        },
+        "namespace": "patch_applicant_no_bid",
+        "variables": {}
+      }
+    ],
+    "trigger": {
+      "type": "http_webhook",
+      "config": {
+        "method": "POST",
+        "auth_method": "api_key",
+        "success_node_namespaces": [
+          "patch_applicant_bid",
+          "patch_applicant_no_bid"
+        ]
+      }
+    }
   }
 }

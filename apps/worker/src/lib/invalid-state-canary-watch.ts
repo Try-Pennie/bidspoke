@@ -14,8 +14,11 @@
  * hours ending ten minutes before the run (canaryWatchWindow), so consecutive
  * days tile and a run still writing its steps at 9 AM is read the next day.
  * "Ran natively" means the step ran as a Salesforce step, which only version 172
- * and later do; a relay post of that step is counted apart, because it means
- * Main Flow was rolled back. Test runs are left out.
+ * and later do. A relay post of that step is counted apart, and what it means
+ * depends on WHERE it falls (#2312): before the first direct post it is Main
+ * Flow before the switch, and after one it is a rollback, which pages. The first
+ * report read five pre switch posts as a rollback because it looked only at
+ * whether any relay post was in the window. Test runs are left out.
  *
  * WHAT "LANDED" MEANS, PER RUN, read back through the #2023 read-back's own
  * Salesforce path (salesforcePortFor, one GET, raced against its deadline):
@@ -46,7 +49,8 @@
  *
  * ONE MESSAGE A DAY to Main Flow's organization's alerts channel. A day with any
  * run that did not land, or could not be checked, or a check that could not run,
- * is titled as an alert with a Fix line; otherwise it is a report. It arms no
+ * or a day Main Flow spent off the direct write (#2312), is titled as an alert
+ * with a Fix line; otherwise it is a report. It arms no
  * all-clear marker, because the next day's message is the stand down, so it has
  * no INCIDENT_SIGNALS entry.
  *
@@ -127,8 +131,12 @@ export interface CanaryWatchReport {
   native: RunVerdict[]
   /** Native steps that skipped the write, with the reason the step recorded. */
   skipped: Array<{ executionId: string; reason: string }>
-  /** Steps of the watched post that went through the relay instead. */
+  /** Steps of the watched post that went through the relay, in all. */
   relayInvalidState: number
+  /** Of those, the ones that came after a direct post: Main Flow left the direct write. */
+  relayAfterSwitch: number
+  /** The day's last watched post went through the relay, so Main Flow is on the relay now. */
+  lastWasRelay: boolean
   /** Of the native runs that sent a write, how many the step itself recorded as completed. */
   nativeCompleted: number
   relay: RelayCounts | { error: string }
@@ -140,14 +148,18 @@ export interface CanaryWatchMessage {
   title: string
   lines: string[]
   fixHint?: string
-  /** A run did not land, could not be checked, or the check could not run. */
+  /** A run did not land, could not be checked, the check could not run, or Main Flow was off the direct write. */
   alert: boolean
 }
 
 export interface CanaryWatchDeps {
   now: () => number
   appUrl: string
-  /** Every step of the watched post in [from, to), test runs left out. Throws on a failed read. */
+  /**
+   * Every step of the watched post in [from, to), test runs left out, OLDEST RUN
+   * FIRST: whether a relay post is a rollback is read from the order (#2312).
+   * Throws on a failed read.
+   */
   readSteps: (fromIso: string, toIso: string) => Promise<WatchedStep[]>
   /** The relay comparison over [from, to). Throws on a failed read. */
   countRelay: (fromIso: string, toIso: string) => Promise<RelayCounts>
@@ -265,7 +277,7 @@ async function checkRun(step: WatchedStep, read: Read, appUrl: string): Promise<
 
 /** Reads the window and every native run in it back from Salesforce. Never throws. */
 async function measure(deps: CanaryWatchDeps, from: string, to: string): Promise<CanaryWatchReport> {
-  const report: CanaryWatchReport = { from, to, native: [], skipped: [], relayInvalidState: 0, nativeCompleted: 0, relay: { total: 0, accepted: 0 } }
+  const report: CanaryWatchReport = { from, to, native: [], skipped: [], relayInvalidState: 0, relayAfterSwitch: 0, lastWasRelay: false, nativeCompleted: 0, relay: { total: 0, accepted: 0 } }
   const relayPromise = deps.countRelay(from, to).then(
     (r): RelayCounts | { error: string } => r,
     (e: unknown) => ({ error: formatErr(e) }),
@@ -279,11 +291,16 @@ async function measure(deps: CanaryWatchDeps, from: string, to: string): Promise
     return report
   }
   const toRead: WatchedStep[] = []
+  let sawDirect = false
   for (const s of steps) {
     if (s.step_type !== 'salesforce') {
       report.relayInvalidState++
+      if (sawDirect) report.relayAfterSwitch++
+      report.lastWasRelay = true
       continue
     }
+    sawDirect = true
+    report.lastWasRelay = false
     const out = asObject(s.output)
     if (out?.skipped === true) {
       report.skipped.push({ executionId: s.execution_id, reason: typeof out.skip_reason === 'string' ? out.skip_reason : 'unknown' })
@@ -331,6 +348,10 @@ const SKIP_WORDS: Record<string, string> = {
   no_record_id: 'there was no Submission to write to',
 }
 
+/** The Fix line for a day Main Flow spent off the direct write (#2312). */
+const ROLLBACK_FIX =
+  "If Main Flow was rolled back on purpose, nothing else is needed. If not, open Main Flow's version history and see which version is live. Either way, the time on the relay is a gap in the week of direct writes being measured."
+
 /** The day's message, separate from the send so the words can be tested. */
 export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): CanaryWatchMessage {
   const span = `from ${etTime(report.from)} to ${etTime(report.to)}`
@@ -361,9 +382,21 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): C
     const reasons = joinAnd([...new Set(report.skipped.map((s) => SKIP_WORDS[s.reason] ?? `the step said ${s.reason}`))])
     lines.push(`${fmt(k)} more run${k === 1 ? ' was' : 's were'} skipped because ${reasons}, so nothing was sent.`)
   }
-  if (report.relayInvalidState > 0) {
-    const r = report.relayInvalidState
-    lines.push(`${fmt(r)} invalid state post${r === 1 ? '' : 's'} went through the relay instead, so Main Flow is no longer on the direct write.`)
+  const r = report.relayInvalidState
+  const posts = (k: number) => `${fmt(k)} invalid state post${k === 1 ? '' : 's'}`
+  const offDirect = report.lastWasRelay || report.relayAfterSwitch > 0
+  // Every direct post is either read back (native) or skipped, so neither means none went direct.
+  const neverDirect = r > 0 && report.native.length === 0 && report.skipped.length === 0
+  if (neverDirect) {
+    lines.push(`${r === 1 ? 'The 1 invalid state post' : `All ${posts(r)}`} went through the relay, so Main Flow is not on the direct write.`)
+  } else if (report.lastWasRelay) {
+    lines.push(`${posts(r)} went through the relay, the last of them after every direct write, so Main Flow is back on the relay.`)
+  } else {
+    const before = r - report.relayAfterSwitch
+    if (before > 0) lines.push(`${posts(before)} went through the relay before Main Flow moved to the direct write.`)
+    if (report.relayAfterSwitch > 0) {
+      lines.push(`${posts(report.relayAfterSwitch)} went through the relay between direct writes, so Main Flow left the direct write for a while and came back.`)
+    }
   }
 
   const bad = report.native.filter((v) => v.kind !== 'landed')
@@ -387,11 +420,15 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): C
     lines.push(relayLine)
   }
 
-  const alert = bad.length > 0
+  const alert = bad.length > 0 || offDirect
   let title: string
   if (notLanded > 0 && unchecked > 0) title = `${fmt(notLanded)} of ${fmt(n)} invalid state writes did not land in Salesforce, and ${fmt(unchecked)} could not be checked`
   else if (notLanded > 0) title = `${fmt(notLanded)} of ${fmt(n)} invalid state writes did not land in Salesforce`
   else if (unchecked > 0) title = `${fmt(unchecked)} of ${fmt(n)} invalid state writes could not be checked in Salesforce`
+  // Not "back on" when nothing in the window went direct: the window cannot show it ever left.
+  else if (neverDirect) title = 'Main Flow is not on the direct write for invalid state posts'
+  else if (report.lastWasRelay) title = 'Main Flow is back on the relay for invalid state posts'
+  else if (offDirect) title = 'Main Flow left the direct write for invalid state posts for a while'
   else if (n === 0) title = 'No invalid state writes to check yesterday'
   else title = n === 1 ? 'The invalid state write landed in Salesforce' : `All ${fmt(n)} invalid state writes landed in Salesforce`
 
@@ -400,10 +437,16 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): C
     lines,
     ...(alert
       ? {
-          fixHint:
+          fixHint: [
             notLanded > 0
               ? 'Open each run above and its Submission in Salesforce. If writes are being lost, roll Main Flow back to the relay with the saved rollback record.'
-              : 'Check Salesforce is answering and its login works. The check runs again tomorrow morning; check these runs by hand meanwhile.',
+              : unchecked > 0
+                ? 'Check Salesforce is answering and its login works. The check runs again tomorrow morning; check these runs by hand meanwhile.'
+                : null,
+            offDirect ? ROLLBACK_FIX : null,
+          ]
+            .filter((t): t is string => t !== null)
+            .join(' '),
         }
       : {}),
     alert,
@@ -426,7 +469,7 @@ export function canaryWatchBlocks(message: CanaryWatchMessage): unknown[] {
 function endingOf(report: CanaryWatchReport, posted: boolean): JobRunEnding {
   const count = (k: RunVerdict['kind']) => report.native.filter((v) => v.kind === k).length
   return {
-    outcome: !posted ? 'not_posted' : report.readError ? 'read_failed' : report.native.some((v) => v.kind !== 'landed') ? 'not_all_landed' : report.native.length === 0 ? 'no_runs' : 'all_landed',
+    outcome: !posted ? 'not_posted' : report.readError ? 'read_failed' : report.native.some((v) => v.kind !== 'landed') ? 'not_all_landed' : report.lastWasRelay || report.relayAfterSwitch > 0 ? 'off_direct_write' : report.native.length === 0 ? 'no_runs' : 'all_landed',
     detail: report.readError ?? `${report.native.length} runs read back`,
     summary: {
       from: report.from,
@@ -437,6 +480,8 @@ function endingOf(report: CanaryWatchReport, posted: boolean): JobRunEnding {
       unchecked: count('unchecked'),
       skipped: report.skipped.length,
       relay_invalid_state: report.relayInvalidState,
+      relay_after_switch: report.relayAfterSwitch,
+      last_was_relay: report.lastWasRelay,
       native_completed: report.nativeCompleted,
       relay: report.relay,
       // Run ids and what was wrong, never a value: the record behind the message's "and N more".
@@ -460,7 +505,7 @@ export async function runInvalidStateWatch(deps: CanaryWatchDeps): Promise<Canar
   const landed = report.native.filter((v) => v.kind === 'landed').length
   console.log(
     `[${INVALID_STATE_WATCH_JOB}] from=${from} to=${to} native=${report.native.length} landed=${landed} skipped=${report.skipped.length} ` +
-      `relay_invalid_state=${report.relayInvalidState} posted=${posted}${report.readError ? ` read_error=${report.readError}` : ''}`,
+      `relay_invalid_state=${report.relayInvalidState} relay_after_switch=${report.relayAfterSwitch} last_was_relay=${report.lastWasRelay} posted=${posted}${report.readError ? ` read_error=${report.readError}` : ''}`,
   )
   try {
     await deps.recordRun?.(startedAtMs, endingOf(report, posted))

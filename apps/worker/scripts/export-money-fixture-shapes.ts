@@ -12,6 +12,11 @@
  *                         bidspoke-workflows backup and refused unless it equals
  *                         what production runs.
  *
+ * A money workflow with no live runs in the sample window keeps the shape the
+ * committed shapes.json holds for it, marked `carried_over` (#2173), and its
+ * definition and config are exported as usual; one with no committed shape is
+ * left out.
+ *
  * It reads through a client whose insert, update, upsert, delete, rpc and schema
  * throw (money-gate/lib/read-only-client.ts), and prints names and counts only.
  * Its output guard is money-gate/lib/__tests__/export-script.test.ts, which must
@@ -22,7 +27,7 @@
  *   npx tsx scripts/export-money-fixture-shapes.ts
  */
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
@@ -49,6 +54,12 @@ export interface ExportDeps {
   write: (relativePath: string, text: string) => void
   log: (line: string) => void
   now: () => Date
+  /**
+   * The committed shapes file, or null when there is none. A money workflow with
+   * no live runs to sample keeps the shape this file holds for it (#2173), rather
+   * than dropping out of the fixtures for a quiet couple of days.
+   */
+  previousShapes?: ShapesFile | null
 }
 
 interface WorkflowRow {
@@ -110,7 +121,22 @@ export async function runExport(deps: ExportDeps): Promise<void> {
       .order('started_at', { ascending: false })
       .limit(SAMPLE_SIZE))
     if (rows.length === 0) {
-      log(`${wf.name}: no live runs in ${SAMPLE_DAYS} days, not exported`)
+      const previous = deps.previousShapes?.workflows.find((w) => w.workflow_id === wf.id)
+      if (!previous) {
+        log(`${wf.name}: no live runs in ${SAMPLE_DAYS} days and no committed shape, not exported`)
+        continue
+      }
+      // Quiet, not gone: the workflow is still a live money workflow whose definition
+      // the gate replays, so its definition and config are exported as usual and its
+      // last sampled shape is carried over, marked with when it was really sampled.
+      const sampledAt = previous.carried_over?.sampled_at ?? deps.previousShapes!.exported_at
+      shapes.push({
+        ...previous,
+        workflow_name: wf.name,
+        carried_over: { sampled_at: sampledAt, reason: `no live runs in the ${SAMPLE_DAYS} days before this export; shape kept from the export that last sampled it` },
+      })
+      live.push(wf)
+      log(`${wf.name}: no live runs in ${SAMPLE_DAYS} days, shape carried over from ${sampledAt}`)
       continue
     }
     const shape = buildWorkflowShape({ workflow_id: wf.id, workflow_name: wf.name, payloads: rows.map((r) => r.trigger_payload) })
@@ -197,7 +223,9 @@ async function main(): Promise<void> {
     key = vars.SUPABASE_SECRET_KEY
   }
   if (!url || !key) throw new Error('SUPABASE_URL and SUPABASE_SECRET_KEY are required')
+  const shapesPath = resolve(workerRoot, 'money-gate/fixtures/shapes.json')
   await runExport({
+    previousShapes: existsSync(shapesPath) ? (JSON.parse(readFileSync(shapesPath, 'utf8')) as ShapesFile) : null,
     client: makeExportClient(url, key),
     fetchBackupDefinition: fetchBackupDefinitionWithGh,
     write: (rel, text) => {

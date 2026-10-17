@@ -42,12 +42,26 @@ export interface WorkflowShape {
   /** Source names (API key labels) the samples arrived under, by the same domain rule. */
   sources?: string[]
   fields: Record<string, FieldShape>
+  /**
+   * Set when the workflow had no live runs to sample at this export, so its shape
+   * is the one the last sampling export wrote (#2173). A quiet workflow is still a
+   * live money workflow with a definition to replay, so it is kept rather than
+   * dropped; `sampled_at` is when its samples were really taken, which the stale
+   * shapes warning reads (`oldestSample`).
+   */
+  carried_over?: { sampled_at: string; reason: string }
 }
 
 export interface ShapesFile {
   version: 1
   exported_at: string
   workflows: WorkflowShape[]
+}
+
+/** When the oldest samples in the file were taken: a carried over shape's, or the export's own. */
+export function oldestSample(file: ShapesFile): string {
+  const times = [file.exported_at, ...file.workflows.flatMap((w) => (w.carried_over ? [w.carried_over.sampled_at] : []))]
+  return times.reduce((a, b) => (new Date(b).getTime() < new Date(a).getTime() ? b : a))
 }
 
 export const MAX_DOMAIN = 12
