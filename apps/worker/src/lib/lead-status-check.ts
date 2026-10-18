@@ -93,6 +93,7 @@ import { notifyExportFailure, type TitledRemedy } from './export-alerts'
 import { loadBuyerProfiles, type BuyerProfilesSnapshot } from './buyer-profile-loader'
 import { resolveSalesforceCredentialOrg } from './salesforce-creds'
 import { salesforceCount, salesforceGet, salesforceRows } from './salesforce-read'
+import { leadNamesAnotherSubmission } from './returning-customer'
 import type { Env } from '../index'
 
 export const LEAD_STATUS_JOB = 'lead-status'
@@ -435,7 +436,7 @@ export function splitBacklog(records: Array<Record<string, unknown>>): BacklogSp
     }
     const lead = r.Lead__r
     const current = lead !== null && typeof lead === 'object' ? (lead as Record<string, unknown>).Submission_Object_ID__c : null
-    if (typeof current !== 'string' || current === '' || current.slice(0, 15) === r.Id.slice(0, 15)) {
+    if (!leadNamesAnotherSubmission(current, r.Id)) {
       own++
       if (ids.length < LOGGED_IDS_MAX) ids.push(r.Id)
       answers[buyerAnswer(r)]++
