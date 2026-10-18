@@ -160,9 +160,9 @@ export const NOT_CONFIGURED_FIX: Readonly<Record<string, string>> = {
   OPS_SUPABASE_URL: DATABASE_FIX,
   OPS_SUPABASE_SECRET_KEY: DATABASE_FIX,
   OPS_CONNECTIONS_PRIVATE_KEY:
-    'Restore the ops private key from the 1Password item Bidspoke recovery keys (field OPS_CONNECTIONS_PRIVATE_KEY): from apps/worker, pipe that field into `pnpm exec wrangler secret put OPS_CONNECTIONS_PRIVATE_KEY --config wrangler.ops.toml`, never typing it on a command line. Do not generate a new key while that copy exists: every ops connection is sealed to it (docs/disaster-recovery.md, Secret inventory).',
+    'Restore the ops private key from the file ops-connections-private.pem attached to the 1Password item Bidspoke recovery keys: from apps/worker, run `op read "op://<vault>/Bidspoke recovery keys/ops-connections-private.pem" | pnpm exec wrangler secret put OPS_CONNECTIONS_PRIVATE_KEY --config wrangler.ops.toml` with the name of the vault that holds the item, never typing the key on a command line. Do not generate a new key while that copy exists: every ops connection is sealed to it (docs/disaster-recovery.md, Secret inventory).',
   OPS_CONNECTIONS_PRIVATE_KEY_NEXT:
-    'OPS_CONNECTIONS_PRIVATE_KEY_NEXT is set only during a rotation of the ops key. If one is under way, pipe the NEXT key from the 1Password item Bidspoke recovery keys (field OPS_CONNECTIONS_PRIVATE_KEY_NEXT) into `pnpm exec wrangler secret put OPS_CONNECTIONS_PRIVATE_KEY_NEXT --config wrangler.ops.toml` from apps/worker; if none is, remove it with `pnpm exec wrangler secret delete OPS_CONNECTIONS_PRIVATE_KEY_NEXT --config wrangler.ops.toml`.',
+    'OPS_CONNECTIONS_PRIVATE_KEY_NEXT is set only during a rotation of the ops key. If one is under way, pipe the NEXT key from the file ops-connections-private-next.pem attached to the 1Password item Bidspoke recovery keys into `pnpm exec wrangler secret put OPS_CONNECTIONS_PRIVATE_KEY_NEXT --config wrangler.ops.toml` from apps/worker, with op read as for the current key; if none is, remove it with `pnpm exec wrangler secret delete OPS_CONNECTIONS_PRIVATE_KEY_NEXT --config wrangler.ops.toml`.',
 }
 
 /**
