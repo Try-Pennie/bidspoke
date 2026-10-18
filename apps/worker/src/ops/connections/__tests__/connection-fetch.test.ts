@@ -361,6 +361,21 @@ describe('the login: a refused mint is needs_reauth at once; a failing token end
     expect(d.rec.needsReauth).toEqual([])
   })
 
+  it('a person bound login\'s token object that could not be reached is its own refusal, and is neither needs_reauth nor a refresh failure (#2335)', async () => {
+    const d = makeDoubles(keys, usableCopy(envelope), minting(new LoginMintError('token_object_unavailable', 'token_object_unavailable')))
+    const err = await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))
+    expect(err.code).toBe('connection_token_object_unavailable')
+    expect(d.rec.needsReauth).toEqual([])
+    expect(d.rec.refreshes).toEqual([])
+    expect(d.rec.sent).toEqual([])
+  })
+
+  it('hands the auth the sealed envelope it opened, ciphertext only, so a person bound login\'s token object opens it itself (#2335)', async () => {
+    const d = makeDoubles(keys, usableCopy(envelope), (rec) => [exampleRules(rec)])
+    await connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x')
+    expect(d.rec.authorizeCalls[0].envelope).toEqual(envelope)
+  })
+
   it('any other failure of the auth is named, and is not needs_reauth', async () => {
     const d = makeDoubles(keys, usableCopy(envelope), minting(new TypeError('cannot read properties of undefined')))
     expect((await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))).code).toBe('connection_auth_failed')

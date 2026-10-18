@@ -102,6 +102,9 @@ const KINDS: Kind[] = [
       'apps/worker/src/lib/secret-reencrypt.ts reencryptSecrets': 're-locks credential_enc under the next key: the token the copy holds is unchanged, and the next probe rewrites the copy under the ring in force',
       'apps/worker/src/routes/api/connections.ts DELETE /:service_type': 'refuses any type outside SERVICE_TYPES before its read, so it can never delete the Slack row',
       'apps/worker/src/routes/api/connections.ts POST /:service_type/sync-schema': 'refuses any type outside SERVICE_TYPES before its read, and in any case writes only schema_cache and schema_synced_at, which the copy does not hold',
+      // #2335: held true by supabase/tests/store_rotated_envelope.test.sql case D,
+      // in which a bidding_ring Slack row is answered not_found and not written.
+      'apps/worker/src/lib/ops-gateway.ts storeRotatedEnvelope': 'store_rotated_envelope writes only a person bound ops_key row, never the bidding_ring Slack alert row the copy holds',
     },
   },
 ]
@@ -390,8 +393,10 @@ describe('every handler writing service_connections edits the saved Slack copy (
   // listed here by name: another writing function must be looked at, not slip
   // in. #2332 added delete_service_connection_by_id, which the Disconnect now
   // calls; delete_service_connection leaves this list at its contract step.
-  it('the only database functions writing the table are the delete functions, whose callers are held to the rule', () => {
-    expect([...sqlFunctionsWriting(SLACK_COPY, readMigrations())].sort()).toEqual(['delete_service_connection', 'delete_service_connection_by_id'])
+  // #2335 added store_rotated_envelope, which writes only a person bound ops_key
+  // row, and whose one caller is exempted above with that reason.
+  it('the only database functions writing the table are the delete functions and the rotated login write back, whose callers are held to the rule', () => {
+    expect([...sqlFunctionsWriting(SLACK_COPY, readMigrations())].sort()).toEqual(['delete_service_connection', 'delete_service_connection_by_id', 'store_rotated_envelope'])
     expect(found.handlers).toEqual(expect.arrayContaining(['apps/worker/src/routes/api/integrations.ts DELETE /slack']))
   })
 })

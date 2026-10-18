@@ -3554,6 +3554,20 @@ export type Database = {
           sample_size: number
         }[]
       }
+      store_rotated_envelope: {
+        Args: {
+          p_connection_id: string
+          p_envelope: Json
+          p_expected_generation: number
+          p_new_generation: number
+          p_organization_id: string
+        }
+        Returns: {
+          current_generation: number
+          current_iv: string
+          outcome: string
+        }[]
+      }
       stranded_step_partitions: {
         Args: {
           p_max_measurement_age?: string

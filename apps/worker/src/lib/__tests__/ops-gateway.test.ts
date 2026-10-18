@@ -406,6 +406,7 @@ describe('the OpsGateway entrypoint', () => {
     const gw = new OpsGateway({} as ExecutionContext, { IDEMPOTENCY: store } as never)
     expect(await gw.opsTickStarted()).toEqual({ stamped: 'started' })
     expect(store.m.has(heartbeatKey(OPS_TICK_JOB))).toBe(true)
-    expect(Object.getOwnPropertyNames(OpsGateway.prototype).sort()).toEqual(['constructor', 'opsTickCompleted', 'opsTickStarted', 'opsWorkflows'])
+    // storeRotatedEnvelope: the ConnectionTokenObject's write back (#2335), tested in ops-gateway-rotated-envelope.test.ts.
+    expect(Object.getOwnPropertyNames(OpsGateway.prototype).sort()).toEqual(['constructor', 'opsTickCompleted', 'opsTickStarted', 'opsWorkflows', 'storeRotatedEnvelope'])
   })
 })
