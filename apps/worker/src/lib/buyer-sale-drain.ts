@@ -33,7 +33,7 @@
  * minute.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { CapLimits, EntryKey, LedgerEntry, UnmirroredResult } from '../durable-objects/buyer-ledger'
+import type { CapLimits, LedgerEntry, MarkMirroredResult, MirroredStamp, UnmirroredResult } from '../durable-objects/buyer-ledger'
 import type { Env } from '../index'
 import { BuyerLedgerClient, gotNoAnswer, LEDGER_UNMIRRORED_OP, MEASURED_OBJECT_CALL_P99_MS, OBJECT_CALL_DEADLINE_MS, type ClientOptions } from './buyer-object-clients'
 import { chunk } from './chunk'
@@ -177,7 +177,7 @@ export interface DrainBuyer {
 /** The two ledger calls the drain makes. */
 export interface DrainLedger {
   unmirrored(): Promise<UnmirroredResult>
-  markMirrored(keys: EntryKey[]): Promise<number>
+  markMirrored(stamps: MirroredStamp[]): Promise<MarkMirroredResult>
 }
 
 /** What a second client is told: the outbox read's own deadline. Every other call keeps the client's default. */
@@ -251,6 +251,14 @@ export interface DrainBuyerSummary {
    * decides which words the page uses, never whether it pages.
    */
   unmarked?: number
+  /**
+   * Entries whose row was written but which the ledger left unmarked because
+   * their state changed between this tick's read and its mark (#2422), so the
+   * row holds the earlier state and the next tick copies the newer one. Set only
+   * when above zero. Not delivered and not failed: nothing went wrong, and they
+   * are not held against the backlog page, because the change is seconds old.
+   */
+  changed_since_read?: number
 }
 
 export interface DrainSummary {
@@ -361,7 +369,8 @@ export async function runBuyerSaleDrain(deps: DrainDeps): Promise<DrainSummary> 
       // An entry whose row was written and whose ledger mark failed is not
       // missing from the sales table, so it is said apart (#835). Which words is
       // all this decides: the page itself was decided on the age above.
-      const left = summary.pending - summary.delivered
+      // An entry that changed since the read is neither undelivered nor unmarked (#2422).
+      const left = summary.pending - summary.delivered - (summary.changed_since_read ?? 0)
       const unmarked = summary.unmarked ?? 0
       const unwritten = left - unmarked
       const age = `The oldest is ${describeDuration(summary.remaining_oldest_age_ms) ?? `${summary.remaining_oldest_age_ms} ms`} old.`
@@ -479,14 +488,22 @@ async function drainBuyer(deps: DrainDeps, buyer: DrainBuyer, errors: string[], 
     // mirrorBuyerSale marks only after the row it wrote came back as the one sent,
     // so reaching the mark means the sales table holds the row (#835).
     let written = false
+    let changed = false
     try {
       const row = await buildBuyerSaleRow(entry, meta)
       await mirrorBuyerSale(deps.supabase, row, entry, {
-        markMirrored: (key) => {
+        markMirrored: async (stamp) => {
           written = true
-          return ledger.markMirrored([key]).then(() => undefined)
+          const r = await ledger.markMirrored([stamp])
+          changed = r.changed > 0
         },
       })
+      if (changed) {
+        // The entry moved while its row was being written (#2422): the ledger left
+        // it unmarked, and the next tick copies the state it holds now.
+        base.changed_since_read = (base.changed_since_read ?? 0) + 1
+        continue
+      }
       base.delivered += 1
       base.delivered_row_ids.push(ids[i])
     } catch (err) {

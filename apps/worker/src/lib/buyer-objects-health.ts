@@ -15,9 +15,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { withDeadline, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../index'
-import type { EntryKey, LedgerEntry, ReserveBody, ReserveResult, SaleOutcomeRecord } from '../durable-objects/buyer-ledger'
+import type { EntryKey, LedgerEntry, MirroredStamp, ReserveBody, ReserveResult, SaleOutcomeRecord } from '../durable-objects/buyer-ledger'
 import type { ClaimBody, ClaimResult } from '../durable-objects/lead-sale'
 import { BuyerLedgerClient, LeadSaleClient, OBJECT_CALL_DEADLINE_MS } from './buyer-object-clients'
+import { mirroredStamp } from './buyer-sale-mirror'
 import { ClaimTally, runBuyerSaleAttempt, type AttemptResult, type AttemptStep, type LedgerApi, type SaleApi } from './buyer-sale-attempt'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { formatErr } from './format-error'
@@ -147,7 +148,7 @@ function measuredLedger(inner: BuyerLedgerClient, rec: Recorder): LedgerApi & { 
     commit: (key: EntryKey, outcome: SaleOutcomeRecord): Promise<LedgerEntry> => rec.time('buyer ledger commit', () => inner.commit(key, outcome)),
     release: (key: EntryKey, status: 'declined' | 'released'): Promise<LedgerEntry> => rec.time('buyer ledger release', () => inner.release(key, status)),
     entry: (key: EntryKey) => rec.time('buyer ledger entry', () => inner.entry(key)),
-    markMirrored: (keys: EntryKey[]) => rec.time('buyer ledger mark-mirrored', () => inner.markMirrored(keys)),
+    markMirrored: (stamps: MirroredStamp[]) => rec.time('buyer ledger mark-mirrored', () => inner.markMirrored(stamps)),
     peek: (kind) => rec.time('buyer ledger peek', () => inner.peek(kind)),
   }
 }
@@ -159,6 +160,12 @@ function measuredSale(inner: LeadSaleClient, rec: Recorder): SaleApi {
     free: (g) => rec.time('lead sale free', () => inner.free(g)),
     heal: (g, o) => rec.time('lead sale heal', () => inner.heal(g, o)),
   }
+}
+
+async function markDrillEntriesMirrored(reader: BuyerLedgerClient, ledger: Pick<BuyerLedgerClient, 'markMirrored'>, keys: EntryKey[]): Promise<void> {
+  const read = await Promise.all(keys.map((k) => reader.entry(k)))
+  const stamps = read.flatMap((r) => (r.found ? [mirroredStamp(r.entry)] : []))
+  if (stamps.length > 0) await ledger.markMirrored(stamps)
 }
 
 export async function runBuyerObjectsDrill(env: Bindings, opts: DrillOptions = {}): Promise<BuyerObjectsDrill> {
@@ -277,7 +284,9 @@ export async function runBuyerObjectsDrill(env: Bindings, opts: DrillOptions = {
   })
 
   // The drill's entries are its own: mark them mirrored so retention can prune them (L5).
-  await ledger.markMirrored(usedKeys).catch(() => undefined)
+  // The mark names the state it confirms (#2422), so each entry is read first,
+  // on an unmeasured client, so the cleanup's reads stay out of the latency report.
+  await markDrillEntriesMirrored(new BuyerLedgerClient(env.BUYER_LEDGER, partner_id, clientOpts), ledger, usedKeys).catch(() => undefined)
 
   return {
     ok: summarizeDrill(scenarios),
