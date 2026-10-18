@@ -91,6 +91,15 @@ export function runInScheduledTick<T>(fn: () => T): T {
   return ticks.run({ source: null, failed: null }, fn)
 }
 
+/**
+ * Whether the caller runs inside a scheduled tick. The row cap detector reads it
+ * (row-cap.ts, #1436): a read at the cap fails inside a tick and is only
+ * reported on the request and engine paths.
+ */
+export function inScheduledTick(): boolean {
+  return ticks.getStore() !== undefined
+}
+
 /** Give the current tick what it reads the incident with. Outside a tick it does nothing. */
 export function attachOutageNotice(source: OutageNoticeSource): void {
   const store = ticks.getStore()
