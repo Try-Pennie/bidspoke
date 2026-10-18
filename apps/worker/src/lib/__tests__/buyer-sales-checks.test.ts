@@ -327,29 +327,29 @@ describe('runBuyerSalesChecks', () => {
 describe('judgeOutcomeRate', () => {
   it('an hour in which every attempt failed is elevated even below the rate floor (saturation, L139)', () => {
     const entries = hourOf('released', OUTCOME_SATURATION_MIN_ATTEMPTS)
-    const v = judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW)
+    const v = judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW, false)
     expect(v).toMatchObject({ verdict: 'elevated' })
     expect(v).toMatchObject({ detail: expect.stringMatching(new RegExp(`all ${OUTCOME_SATURATION_MIN_ATTEMPTS} attempts in the last hour failed`)) })
   })
 
   it('unclassified answers count as failures: a buyer timing out on everything saturates too', () => {
     const entries = Array.from({ length: OUTCOME_SATURATION_MIN_ATTEMPTS }, (_, i) => unresolved(`u-${i}`, NOW - (i + 1) * 60_000))
-    expect(judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW).verdict).toBe('elevated')
+    expect(judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW, false).verdict).toBe('elevated')
   })
 
   it('a buyer error share far above the 14 day share is elevated and names both shares', () => {
     const entries = [...hourOf('released', 4), ...hourOf('accepted', 6)]
-    const v = judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW)
+    const v = judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW, false)
     expect(v).toMatchObject({ verdict: 'elevated' })
     expect(v).toMatchObject({ detail: expect.stringMatching(/4 of 10 attempts.*failed.*40%.*1% over the prior 14 days/) })
   })
 
   it('a decline share far above the 14 day share is elevated; the same share the buyer always had is normal', () => {
     const high = [...hourOf('declined', 9), ...hourOf('accepted', 1)]
-    const v = judgeOutcomeRate(high, HEALTHY_BASELINE, NOW)
+    const v = judgeOutcomeRate(high, HEALTHY_BASELINE, NOW, false)
     expect(v).toMatchObject({ verdict: 'elevated', detail: expect.stringMatching(/9 of 10 attempts.*declined.*90%.*33% over the prior 14 days/) })
     const usual = [...hourOf('declined', 4), ...hourOf('accepted', 6)]
-    expect(judgeOutcomeRate(usual, HEALTHY_BASELINE, NOW).verdict).toBe('normal')
+    expect(judgeOutcomeRate(usual, HEALTHY_BASELINE, NOW, false).verdict).toBe('normal')
   })
 
   it('a buyer that usually declines 42% and now declines 70% is elevated (#2392): a share that high can never double', () => {
@@ -360,13 +360,13 @@ describe('judgeOutcomeRate', () => {
     // 2026-10-14 its declines rose to about 67% without any rule able to say so.
     const tripointLike: OutcomeBaseline = { attempts: 1000, failed: 1, declined: 420 }
     const entries = [...hourOf('declined', 7), ...hourOf('accepted', 3)]
-    expect(judgeOutcomeRate(entries, tripointLike, NOW)).toMatchObject({ verdict: 'elevated', detail: expect.stringMatching(/7 of 10 attempts.*declined.*70%.*42% over the prior 14 days/) })
+    expect(judgeOutcomeRate(entries, tripointLike, NOW, false)).toMatchObject({ verdict: 'elevated', detail: expect.stringMatching(/7 of 10 attempts.*declined.*70%.*42% over the prior 14 days/) })
     const usual = [...hourOf('declined', 6), ...hourOf('accepted', 4)]
-    expect(judgeOutcomeRate(usual, tripointLike, NOW).verdict).toBe('normal')
+    expect(judgeOutcomeRate(usual, tripointLike, NOW, false).verdict).toBe('normal')
   })
 
   it('a quiet hour in which every attempt failed, fewer than saturation needs, says so rather than claiming not every one failed', () => {
-    const v = judgeOutcomeRate(hourOf('released', OUTCOME_SATURATION_MIN_ATTEMPTS - 1), HEALTHY_BASELINE, NOW)
+    const v = judgeOutcomeRate(hourOf('released', OUTCOME_SATURATION_MIN_ATTEMPTS - 1), HEALTHY_BASELINE, NOW, false)
     expect(v.verdict).toBe('quiet')
     expect(v).not.toMatchObject({ detail: expect.stringMatching(/not every one failed/) })
     expect(v).toMatchObject({ detail: expect.stringMatching(new RegExp(`every one failed, fewer than the ${OUTCOME_SATURATION_MIN_ATTEMPTS}`)) })
@@ -376,31 +376,31 @@ describe('judgeOutcomeRate', () => {
     // 2 of 20 is double the 1% baseline but 9 points above it, which one bad
     // lead and one flaky call produce on an ordinary day.
     const entries = [...hourOf('released', 2), ...hourOf('accepted', 18)]
-    expect(judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW).verdict).toBe('normal')
+    expect(judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW, false).verdict).toBe('normal')
   })
 
   it('too few attempts for a rate, and none of the saturation shape, is quiet: a third state, not normal (L11)', () => {
     const entries = [...hourOf('released', 1), ...hourOf('accepted', 2)]
-    const v = judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW)
+    const v = judgeOutcomeRate(entries, HEALTHY_BASELINE, NOW, false)
     expect(v).toMatchObject({ verdict: 'quiet', detail: expect.stringMatching(new RegExp(`3 attempts in the last hour, fewer than the ${OUTCOME_RATE_MIN_ATTEMPTS}`)) })
   })
 
   it('a thin baseline leaves the rate unmeasured, while saturation is still judged', () => {
     const thin: OutcomeBaseline = { attempts: OUTCOME_BASELINE_MIN_ATTEMPTS - 1, failed: 0, declined: 0 }
     const busy = [...hourOf('released', 4), ...hourOf('accepted', 6)]
-    expect(judgeOutcomeRate(busy, thin, NOW)).toMatchObject({ verdict: 'unmeasured', reason: expect.stringMatching(/baseline.*fewer than/) })
-    expect(judgeOutcomeRate(hourOf('released', 5), thin, NOW).verdict).toBe('elevated')
+    expect(judgeOutcomeRate(busy, thin, NOW, false)).toMatchObject({ verdict: 'unmeasured', reason: expect.stringMatching(/baseline.*fewer than/) })
+    expect(judgeOutcomeRate(hourOf('released', 5), thin, NOW, false).verdict).toBe('elevated')
   })
 
   it('an unreadable baseline is unmeasured with the reason, never normal', () => {
     const busy = [...hourOf('released', 4), ...hourOf('accepted', 6)]
-    expect(judgeOutcomeRate(busy, null, NOW)).toMatchObject({ verdict: 'unmeasured', reason: expect.stringMatching(/could not be read/) })
+    expect(judgeOutcomeRate(busy, null, NOW, false)).toMatchObject({ verdict: 'unmeasured', reason: expect.stringMatching(/could not be read/) })
   })
 
   it('reads only live attempts inside the last hour: older entries and still reserved ones do not count', () => {
     const old = hourOf('released', 5).map((e) => ({ ...e, reserved_at: NOW - 3 * HOUR }))
     const reserved = { ...accepted('r-1', NOW - 60_000), status: 'reserved' as const, outcome: null, resolved_at: null }
-    expect(judgeOutcomeRate([...old, reserved], HEALTHY_BASELINE, NOW)).toMatchObject({ verdict: 'quiet' })
+    expect(judgeOutcomeRate([...old, reserved], HEALTHY_BASELINE, NOW, false)).toMatchObject({ verdict: 'quiet' })
   })
 })
 
@@ -578,6 +578,67 @@ describe('an unmeasured hour and a standing outcome rate page (#2420)', () => {
     expect(d.kv.store.has(`outcome-rate-paged:${ACME.partner_id}`)).toBe(true)
     expect(s.outcome_rate_held).toEqual(['acme'])
     expect(endingOf(s).outcome).toBe('findings')
+  })
+
+  // #2421: once a buyer's page stands it holds until the share falls back
+  // under half the 25 point rise, so one incident is one page.
+  // Ten attempts, half declined: 50% against the 33% baseline, 17 points above,
+  // between the line that clears a page (12.5) and the one that raises it (25).
+  const betweenTheLines = () => [...hourOf('declined', 5), ...hourOf('accepted', 5)]
+
+  it('judgeOutcomeRate holds a standing page through an hour between the lines, and raises nothing there when none stands', () => {
+    expect(judgeOutcomeRate(betweenTheLines(), HEALTHY_BASELINE, NOW, true)).toMatchObject({ verdict: 'held', detail: expect.stringMatching(/5 of 10 attempts in the last hour were declined by the buyer, 50% against 33%/) })
+    expect(judgeOutcomeRate(betweenTheLines(), HEALTHY_BASELINE, NOW, false).verdict).toBe('normal')
+  })
+
+  it('a standing page and an hour between the lines: nothing is sent, the marker is renewed, and the run records a finding (#2421)', async () => {
+    const d = deps(agreeing(betweenTheLines()))
+    standing(d)
+    const s = await runBuyerSalesChecks(d)
+    expect(s.buyers[0].outcome_rate.verdict).toBe('held')
+    expect(d.notifyOutcomeRate).not.toHaveBeenCalled()
+    expect(d.kv.put).toHaveBeenCalledWith(`outcome-rate-paged:${PARTNER}`, '2027-09-20T14:40:00.000Z', { expirationTtl: 24 * 3600 })
+    expect(s.outcome_rate_held).toEqual(['tripoint'])
+    expect(endingOf(s).outcome).toBe('findings')
+  })
+
+  it('the same hour with no page standing is normal and clears nothing it did not raise (#2421)', async () => {
+    const d = deps(agreeing(betweenTheLines()))
+    const s = await runBuyerSalesChecks(d)
+    expect(s.buyers[0].outcome_rate.verdict).toBe('normal')
+    expect(d.notifyOutcomeRate).toHaveBeenCalledWith([])
+    expect(d.kv.store.has(`outcome-rate-paged:${PARTNER}`)).toBe(false)
+    expect(endingOf(s).outcome).toBe('ok')
+  })
+
+  it('each buyer is judged against its own standing page: a held buyer stays off the page while a newly elevated one is paged (#2421)', async () => {
+    const failing = hourOf('released', 6)
+    const d = deps({ entries: day(failing), sales: [], winners: [], buyers: [TRIPOINT, ACME], salesforce: null })
+    d.ledger = (partnerId) => ({
+      entries: async () => (partnerId === PARTNER ? betweenTheLines() : failing),
+      unmirrored: async () => ({ entries: [], oldest_age_ms: null }),
+      unresolved: async () => [],
+    })
+    standing(d)
+    const s = await runBuyerSalesChecks(d)
+    expect(s.buyers.map((b) => b.outcome_rate.verdict)).toEqual(['held', 'elevated'])
+    expect((vi.mocked(d.notifyOutcomeRate).mock.calls[0][0] as string[]).map((l) => l.split(':')[0])).toEqual(['acme'])
+    expect(d.kv.store.has(`outcome-rate-paged:${PARTNER}`)).toBe(true)
+    expect(s.outcome_rate_held).toEqual(['tripoint'])
+  })
+
+  it('a standing marker that cannot be read leaves that buyer unmeasured and its page alone, and every other buyer is still checked (#2421)', async () => {
+    const d = deps({ ...agreeing(cleanHour()), buyers: [TRIPOINT, ACME], salesforce: null })
+    const read = d.kv.get.getMockImplementation() as (k: string) => Promise<string | null>
+    d.kv.get.mockImplementation(async (k: string) => {
+      if (k === `outcome-rate-paged:${PARTNER}`) throw new Error('KV unavailable')
+      return read(k)
+    })
+    const s = await runBuyerSalesChecks(d)
+    expect(s.buyers[0].outcome_rate).toMatchObject({ verdict: 'unmeasured', reason: expect.stringMatching(/whether this buyer's outcome rate page is standing could not be read: KV unavailable/) })
+    expect(s.buyers[1].outcome_rate.verdict).toBe('normal')
+    expect(s.outcome_rate_held).toEqual(['tripoint'])
+    expect(d.notifyOutcomeRate).not.toHaveBeenCalled()
   })
 })
 
