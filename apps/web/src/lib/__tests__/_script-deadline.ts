@@ -42,8 +42,11 @@ export function execScriptSync(
   try {
     return execFileSync(file, args, { ...options, timeout: SCRIPT_RUN_DEADLINE_MS, killSignal: 'SIGKILL' })
   } catch (e) {
-    const err = e as { code?: string; signal?: string | null }
-    if (err.code === 'ETIMEDOUT' || err.signal === 'SIGKILL') {
+    // ETIMEDOUT is Node saying ITS deadline killed the child. A child killed by
+    // anything else is a different cause and keeps its own error, status and
+    // output.
+    const err = e as { code?: string }
+    if (err.code === 'ETIMEDOUT') {
       throw new ScriptHungError(`${label} did not finish within ${SCRIPT_RUN_DEADLINE_MS} ms, so it is hung`)
     }
     throw e
