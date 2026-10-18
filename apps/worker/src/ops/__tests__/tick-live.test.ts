@@ -58,6 +58,8 @@ function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: num
     }),
     opsTickStarted: async () => { g.started++; return { ok: true } },
     opsTickCompleted: async (r: unknown) => { g.reports.push(r as OpsTickReport); return { ok: true } },
+    // The tick never hands back a rotated login (#2335): the ConnectionTokenObject does.
+    storeRotatedEnvelope: async () => { throw new Error('the tick does not call storeRotatedEnvelope') },
   }
   return g
 }

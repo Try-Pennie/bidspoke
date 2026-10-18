@@ -44,6 +44,7 @@
     "change_partner_uuid",
     "monitor_partner_page_ping",
     "delete_service_connection",
-    "delete_service_connection_by_id"
+    "delete_service_connection_by_id",
+    "store_rotated_envelope"
   ]
 }

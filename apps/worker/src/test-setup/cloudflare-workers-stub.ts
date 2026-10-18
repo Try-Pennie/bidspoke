@@ -11,3 +11,15 @@ export class WorkerEntrypoint<Env = unknown> {
     readonly env: Env,
   ) {}
 }
+
+/**
+ * The shape of an RPC Durable Object base class, so a Node test can import a
+ * module that declares one (src/ops/connection-token-object.ts, #2335). Its
+ * behaviour is proven in workerd only (connection-token-object.workers.test.ts).
+ */
+export class DurableObject<Env = unknown> {
+  constructor(
+    readonly ctx: DurableObjectState,
+    readonly env: Env,
+  ) {}
+}

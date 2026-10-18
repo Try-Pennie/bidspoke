@@ -24,6 +24,7 @@ function input(overrides: Partial<AuthorizeInput> = {}): AuthorizeInput & { mint
     generation: 1,
     target: {},
     publicConfig: {},
+    envelope: null,
     login: { plaintext: '{}' },
     candidate: false,
     renew: null,

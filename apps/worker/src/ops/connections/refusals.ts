@@ -69,6 +69,12 @@ export const CONNECTION_REFUSAL_CODES = [
   'connection_not_allowed',
   /** A rule the mint must check first (the delegation allowlist) could not be read. Not a refresh failure. */
   'connection_auth_check_unavailable',
+  /**
+   * A person bound login's ConnectionTokenObject could not be reached or failed
+   * inside (#2335). Our own infrastructure, so neither needs_reauth nor a
+   * refresh failure: the login is not at fault.
+   */
+  'connection_token_object_unavailable',
   /** The auth failed in a way that names no cause it declared. */
   'connection_auth_failed',
   /** The send failed below HTTP. */
@@ -122,8 +128,11 @@ export class RequeueAt {
  *                      nothing recorded about the login
  *   check_unavailable  a rule the mint must check could not be read: refused by
  *                      name, nothing recorded about the login
+ *   token_object_unavailable  a person bound login's ConnectionTokenObject could
+ *                      not be reached, or failed inside (#2335): refused by name,
+ *                      nothing recorded about the login
  */
-export const LOGIN_MINT_KINDS = ['refused', 'unavailable', 'rate_limited', 'not_allowed', 'check_unavailable'] as const
+export const LOGIN_MINT_KINDS = ['refused', 'unavailable', 'rate_limited', 'not_allowed', 'check_unavailable', 'token_object_unavailable'] as const
 export type LoginMintKind = (typeof LOGIN_MINT_KINDS)[number]
 
 /**
@@ -142,11 +151,29 @@ export const MINT_FAILURE_REASONS = {
     'token_uri_unexpected',
     /** The token endpoint answered a redirect: the connection names the wrong address. */
     'token_endpoint_redirected',
+    /** A person bound code exchange answered no refresh token, so the login would die within the hour (#2335). */
+    'refresh_token_missing',
   ],
   unavailable: ['token_endpoint_timeout', 'token_endpoint_unreachable', 'token_endpoint_5xx', 'token_endpoint_edge_page', 'token_response_malformed'],
   rate_limited: ['token_endpoint_rate_limited'],
-  not_allowed: ['mailbox_not_allowed', 'drive_not_allowed', 'no_delegation_scopes', 'target_invalid'],
+  not_allowed: [
+    'mailbox_not_allowed', 'drive_not_allowed', 'no_delegation_scopes', 'target_invalid',
+    /**
+     * A person bound login offered as a candidate (verify, Reconnect): refreshing
+     * it for one call and dropping the answer would spend a rotating refresh
+     * token (L5), so a person bound credential is proven by its code exchange.
+     */
+    'candidate_not_refreshable',
+  ],
   check_unavailable: ['delegation_allowlist_unreadable'],
+  token_object_unavailable: [
+    /** The object could not be reached, or answered in a shape this code does not read. */
+    'token_object_unavailable',
+    /** The object answered that its request was malformed or named another connection. */
+    'token_object_refused',
+    /** The object failed inside, after the token endpoint answered or before it was asked. */
+    'token_object_failed',
+  ],
 } as const satisfies Record<LoginMintKind, readonly string[]>
 export type MintFailureReason<K extends LoginMintKind = LoginMintKind> = (typeof MINT_FAILURE_REASONS)[K][number]
 
