@@ -139,6 +139,8 @@ because without it the node could not read the loan amount and refused every liv
 
 Since #2391 the Tripoint bid row carries that `skip_reason` too, in place of `skipped`
 (`BID_ROW_REFUSAL_REASONS` in `engine/bid-log.ts`), and the too few bids monitor reads
-`bid_recording_coverage_v4`, which counts those rows as refusals apart from attempts and
-counts them beside the attempts as recorded. A new refusal reason here is recorded as
-plain `skipped` until it is added to that list and to a new coverage version.
+`bid_recording_coverage_v4`, which leaves both out of the attempts and counts only
+`loan_amount_below_min` beside the attempts as recorded (`RECORDED_REFUSAL_REASONS`).
+`missing_lead_field` counts as neither, because a broken loan amount path produces it
+on every sell off lead and must still page. A new refusal reason here is recorded as
+plain `skipped` until it is added to those lists and to a new coverage version.

@@ -193,7 +193,7 @@ function makeKv() {
 function makeSupabase(opts: {
   orgs?: string[]
   orgsError?: string
-  /** Answers both reads unless it looks at `fn`: the six hour silence read (v2) and the ratio read (v3, #1929). */
+  /** Answers both reads unless it looks at `fn`: the six hour silence read (v2) and the ratio read (v4, #1929, #2391). */
   rpc?: (orgId: string, fn: string) => { data: unknown; error: { message: string } | null }
 }) {
   const rpcCalls: Array<{ fn: string; org: string; since: string; until?: string }> = []
@@ -727,6 +727,8 @@ describe('a refusal by a buyer\'s own rule counts as recorded (#2391)', () => {
     expect(text).toContain('300 bid attempts across 50284 leads')
     expect(text).toContain('200 leads refused by a buyer')
     expect(text).toContain('loan amount below the minimum')
+    // A missing field is written to the row but never counted as recorded (L367).
+    expect(text).not.toContain('lead field')
     expect(text).toContain('Together that is 1% of its leads')
   })
 

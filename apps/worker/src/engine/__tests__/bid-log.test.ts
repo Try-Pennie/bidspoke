@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import type { NodeDefinition, NodeType, StepOutput } from '../../types'
 import { NODE_TRAITS } from '../../types'
-import { deriveCodeNodeBidAttempts, deriveCodeNodeBidSummary, pickBidSummary, bidAttemptsForProjection, BID_ROW_REFUSAL_REASONS, type BidSummary } from '../bid-log'
+import { deriveCodeNodeBidAttempts, deriveCodeNodeBidSummary, pickBidSummary, bidAttemptsForProjection, BID_ROW_REFUSAL_REASONS, RECORDED_REFUSAL_REASONS, type BidSummary } from '../bid-log'
 
 const meta = {
   sighting_id: 'sight-1',
@@ -556,6 +556,14 @@ describe("deriveCodeNodeBidAttempts: a refusal by Tripoint's own rule (#2391)", 
 
   it('lists exactly the two refusals tripoint_ping returns', () => {
     expect([...BID_ROW_REFUSAL_REASONS].sort()).toEqual(['loan_amount_below_min', 'missing_lead_field'])
+  })
+
+  it('counts only the loan minimum as a recorded refusal, never a missing field (L367)', () => {
+    // A loan amount path that stops resolving makes every sell off lead read
+    // missing_lead_field. Counted as recorded, that fault would keep the ratio
+    // steady; counted as neither, it collapses the ratio and pages.
+    expect([...RECORDED_REFUSAL_REASONS]).toEqual(['loan_amount_below_min'])
+    for (const r of RECORDED_REFUSAL_REASONS) expect(BID_ROW_REFUSAL_REASONS).toContain(r)
   })
 
   it('keeps a plain skip, and any reason not on the list, as skipped', () => {

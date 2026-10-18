@@ -128,13 +128,27 @@ export interface DerivedBidMeta {
  * A reason not on this list is recorded as plain `skipped`, never by its word,
  * because every reader of lead_sighting_bids that counts attempts counts any
  * skip_reason other than `skipped` as one (the bid_recording_coverage functions).
- * bid_recording_coverage_v4 counts these as refusals, apart from attempts, and a
+ * bid_recording_coverage_v4 leaves every one of these out of its attempts, and a
  * web guard holds its list to this one; a reason added here must be added there
  * in a new version, or it would count as an attempt.
  */
 export const BID_ROW_REFUSAL_REASONS = ['loan_amount_below_min', 'missing_lead_field'] as const satisfies readonly OutReason[]
 export type BidRowRefusalReason = (typeof BID_ROW_REFUSAL_REASONS)[number]
 const REFUSAL_REASONS: ReadonlySet<string> = new Set(BID_ROW_REFUSAL_REASONS)
+
+/**
+ * The written refusals the too few bids monitor counts as RECORDED, beside the
+ * attempts (#2391): a deliberate rule that took the place of an attempt.
+ *
+ * Only the loan minimum. missing_lead_field is written to the row as evidence but
+ * counted as neither an attempt nor a recorded refusal, because it is also what a
+ * fault looks like: a loan amount path that stops resolving makes every sell off
+ * lead read missing_lead_field, and counted as recorded that would keep the ratio
+ * steady while Tripoint got nothing (L367). Counted as neither, it collapses the
+ * ratio and pages. bid_recording_coverage_v4's refusal_rows counts exactly these,
+ * held to this list by the same web guard.
+ */
+export const RECORDED_REFUSAL_REASONS = ['loan_amount_below_min'] as const satisfies readonly BidRowRefusalReason[]
 
 /** The listed refusal a skipped producer output names, or null for a plain skip. */
 export function refusalReasonOf(output: { skip_reason?: unknown }): BidRowRefusalReason | null {

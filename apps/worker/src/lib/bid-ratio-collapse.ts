@@ -94,9 +94,9 @@ export interface RatioRow {
   sightings: number
   /** Every bid row, `skipped` rows included; only its zero matters here (#1157 owns that case). */
   bid_rows: number
-  /** Bid rows that are real attempts: neither `skipped` nor a listed refusal (#1413, #2391, L683). */
+  /** Bid rows that are real attempts: neither `skipped` nor a written refusal (#1413, #2391, L683). */
   attempt_rows: number
-  /** Bid rows recording a refusal by a buyer's own rule, BID_ROW_REFUSAL_REASONS (#2391). */
+  /** Bid rows recording a deliberate refusal counted as recorded, RECORDED_REFUSAL_REASONS (#2391). */
   refusal_rows: number
 }
 
@@ -176,9 +176,10 @@ export function decideRatioCollapse(
     // dropping out, loses both. Every reading stored before the rule had no
     // refusals, so the history means the same thing and is kept.
     //
-    // KNOWN BLIND SPOT, by the same token (L367): a fault that turns attempts into
-    // listed refusals (a loan amount path that stops resolving, so every sell off
-    // reads missing_lead_field) keeps the sum steady and is not this check's to see.
+    // Only the loan minimum counts (RECORDED_REFUSAL_REASONS). A missing_lead_field
+    // row is written but counted as neither, because a loan amount path that stops
+    // resolving turns every sell off into one: counted as recorded, that fault
+    // would keep this sum steady (L367); counted as neither, it collapses and pages.
     const ratio = (r.attempt_rows + r.refusal_rows) / r.sightings
     const history = histories[r.workflow_id]?.ratios ?? []
 

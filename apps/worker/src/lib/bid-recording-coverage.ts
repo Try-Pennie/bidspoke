@@ -41,10 +41,10 @@ import { formatErr } from './format-error'
 import { slackOrgIds } from './alert-fanout'
 import { BID_PURGE_HORIZON_MS } from './sightings-export'
 import { OUT_REASON_LABELS } from '@bidspoke/buyer-profile'
-import { BID_ROW_REFUSAL_REASONS } from '../engine/bid-log'
+import { RECORDED_REFUSAL_REASONS } from '../engine/bid-log'
 
-/** The listed refusals in plain words, for the ratio alert (#2391). */
-const REFUSAL_WORDS = BID_ROW_REFUSAL_REASONS
+/** The refusals counted as recorded, in plain words, for the ratio alert (#2391). */
+const REFUSAL_WORDS = RECORDED_REFUSAL_REASONS
   .map((r) => OUT_REASON_LABELS[r].charAt(0).toLowerCase() + OUT_REASON_LABELS[r].slice(1))
   .join(', or ')
 import {
@@ -71,7 +71,7 @@ export interface BidCoverageRow {
  * with the refusals by a buyer's own rule counted apart from the attempts.
  */
 export interface RatioCoverageRow extends BidCoverageRow {
-  /** Bid rows whose skip_reason is a listed refusal (BID_ROW_REFUSAL_REASONS). */
+  /** Bid rows whose skip_reason is a refusal counted as recorded (RECORDED_REFUSAL_REASONS). */
   refusal_rows: number
 }
 

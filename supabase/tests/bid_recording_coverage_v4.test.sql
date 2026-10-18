@@ -55,9 +55,28 @@ BEGIN
   IF r.sightings IS DISTINCT FROM 6::bigint THEN RAISE EXCEPTION 'expected 6 leads in the window, got %', r.sightings; END IF;
   IF r.bid_rows IS DISTINCT FROM 5::bigint THEN RAISE EXCEPTION 'expected 5 bid rows, got %', r.bid_rows; END IF;
   IF r.attempt_rows IS DISTINCT FROM 2::bigint THEN RAISE EXCEPTION 'expected 2 attempts (the accept and the decline), got %', r.attempt_rows; END IF;
-  IF r.refusal_rows IS DISTINCT FROM 2::bigint THEN RAISE EXCEPTION 'expected 2 refusals, got %', r.refusal_rows; END IF;
+  -- Only loan_amount_below_min is a recorded refusal; missing_lead_field is neither (L367).
+  IF r.refusal_rows IS DISTINCT FROM 1::bigint THEN RAISE EXCEPTION 'expected 1 refusal (the loan minimum only), got %', r.refusal_rows; END IF;
   IF r.workflow_name IS DISTINCT FROM 'Coverage V4 Flow' THEN RAISE EXCEPTION 'wrong workflow name %', r.workflow_name; END IF;
   INSERT INTO coverage_v4_cases(name) VALUES ('refusals counted apart from attempts and skips');
+END
+$do$;
+
+-- ── 1b. A day where every sell off lead is missing_lead_field counts nothing ──
+-- The loan amount path breaking makes every sell off read missing_lead_field. Its
+-- rows are written, but they count as neither attempts nor refusals, so the
+-- monitor's ratio falls to zero and pages rather than holding steady.
+DO $do$
+DECLARE
+  r record;
+BEGIN
+  SELECT * INTO r FROM public.bid_recording_coverage_v4('11111111-1111-1111-1111-111111112391', '2024-10-08 10:35Z', '2024-10-08 10:45Z');
+  IF r.sightings IS DISTINCT FROM 1::bigint THEN RAISE EXCEPTION 'expected only the missing field lead, got % leads', r.sightings; END IF;
+  IF r.bid_rows IS DISTINCT FROM 1::bigint THEN RAISE EXCEPTION 'expected its row written, got %', r.bid_rows; END IF;
+  IF r.attempt_rows IS DISTINCT FROM 0::bigint OR r.refusal_rows IS DISTINCT FROM 0::bigint THEN
+    RAISE EXCEPTION 'missing_lead_field counted as % attempts and % refusals; it must be neither', r.attempt_rows, r.refusal_rows;
+  END IF;
+  INSERT INTO coverage_v4_cases(name) VALUES ('missing_lead_field is neither an attempt nor a recorded refusal');
 END
 $do$;
 
@@ -79,7 +98,7 @@ DECLARE
 BEGIN
   SELECT * INTO r FROM public.bid_recording_coverage_v4('11111111-1111-1111-1111-111111112391', '2024-10-08 10:00Z', '2024-10-08 12:01Z');
   IF r.sightings IS DISTINCT FROM 7::bigint THEN RAISE EXCEPTION 'expected 7 leads once the end moves past 12:00, got %', r.sightings; END IF;
-  IF r.refusal_rows IS DISTINCT FROM 3::bigint THEN RAISE EXCEPTION 'expected its refusal counted too, got %', r.refusal_rows; END IF;
+  IF r.refusal_rows IS DISTINCT FROM 2::bigint THEN RAISE EXCEPTION 'expected its refusal counted too, got %', r.refusal_rows; END IF;
   INSERT INTO coverage_v4_cases(name) VALUES ('a later end takes the lead in; the test run never');
 END
 $do$;
@@ -119,7 +138,7 @@ DO $do$
 DECLARE
   n int := (SELECT count(*) FROM coverage_v4_cases);
 BEGIN
-  IF n <> 5 THEN RAISE EXCEPTION 'expected 5 cases, % ran', n; END IF;
+  IF n <> 6 THEN RAISE EXCEPTION 'expected 6 cases, % ran', n; END IF;
   RAISE NOTICE '% cases passed', n;
 END
 $do$;

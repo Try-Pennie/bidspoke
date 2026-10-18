@@ -277,6 +277,15 @@ describe('decideRatioCollapse: refusals by a buyer\'s own rule (#2391)', () => {
     expect(out.readings).toEqual([])
   })
 
+  it('pages on a day where every sell off lead reads missing_lead_field, which v4 counts as neither (L367)', () => {
+    // The loan amount path broke: no attempts, and the 2,493 sell off leads all
+    // refused as missing_lead_field. Those rows are written (bid_rows) but v4
+    // counts them in neither attempt_rows nor refusal_rows.
+    const out = decideRatioCollapse([row({ ...OCT_18, bid_rows: 28_862, attempt_rows: 0, refusal_rows: 0 })], STORED)
+    expect(out.collapsed).toHaveLength(1)
+    expect(out.collapsed[0]).toMatchObject({ ratio: 0, attempt_rows: 0, refusal_rows: 0 })
+  })
+
   it('reports the refusals it counted on a collapsed workflow, so the alert can name them', () => {
     const out = decideRatioCollapse([row({ ...OCT_18, attempt_rows: 100, refusal_rows: 200 })], STORED)
     expect(out.collapsed[0]).toMatchObject({ attempt_rows: 100, refusal_rows: 200 })

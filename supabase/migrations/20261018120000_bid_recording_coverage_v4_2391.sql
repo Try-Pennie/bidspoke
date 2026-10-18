@@ -6,18 +6,24 @@
 -- (loan_amount_below_min) or is not a positive number (missing_lead_field). Those
 -- leads had been Tripoint attempts. Their bid rows said only 'skipped', so the too
 -- few bids monitor saw its attempts per lead halve with nothing broken, and paged
--- every day. The Worker now records each such refusal by its reason, and this
--- version counts those rows as refusal_rows, so they are neither an attempt nor
--- silently lost: the monitor counts them beside the attempts as recorded.
+-- every day. The Worker now records each such refusal by its reason on the bid
+-- row, and this version counts the loan minimum refusals as refusal_rows, which
+-- the monitor counts beside the attempts as recorded.
 --
 -- attempt_rows keeps its meaning: a bid row whose skip_reason is neither
--- 'skipped' nor a listed refusal. Without that second exclusion v3 would count
--- every refusal row as an attempt, because its predicate is IS DISTINCT FROM
--- 'skipped'.
+-- 'skipped' nor a written refusal. Without that exclusion v3 would count every
+-- refusal row as an attempt, because its predicate is IS DISTINCT FROM 'skipped'.
 --
--- The refusal list is BID_ROW_REFUSAL_REASONS in apps/worker/src/engine/bid-log.ts,
--- and a web guard (bid-refusal-reasons-match-sql.test.ts) fails if the two
--- differ. A reason added there needs a new version here.
+-- missing_lead_field is written to the row but counted as NEITHER an attempt nor
+-- a refusal. It is also what a fault looks like: a loan amount path that stops
+-- resolving makes every sell off lead read missing_lead_field, and counted as
+-- recorded that would hold the monitor's ratio steady while Tripoint got nothing
+-- (L367). Counted as neither, the ratio collapses and the monitor pages.
+--
+-- The written list is BID_ROW_REFUSAL_REASONS and the counted list is
+-- RECORDED_REFUSAL_REASONS, both in apps/worker/src/engine/bid-log.ts, and a web
+-- guard (bid-refusal-reasons-match-sql.test.ts) fails if either differs from the
+-- lists here. A reason added there needs a new version here.
 --
 -- Additive (ADR 0007): v3 stays until a later release drops it, so a Worker still
 -- reading v3 keeps working during the deploy. v2 stays for the six hour silence
@@ -63,7 +69,7 @@ AS $$
            OR b.skip_reason NOT IN ('skipped', 'loan_amount_below_min', 'missing_lead_field')
       ) AS attempts,
       count(*) FILTER (
-        WHERE b.skip_reason IN ('loan_amount_below_min', 'missing_lead_field')
+        WHERE b.skip_reason IN ('loan_amount_below_min')
       ) AS refusals
     FROM public.lead_sighting_bids b
     WHERE b.sighting_id = ls.id
@@ -79,7 +85,7 @@ AS $$
 $$;
 
 COMMENT ON FUNCTION public.bid_recording_coverage_v4(UUID, TIMESTAMPTZ, TIMESTAMPTZ) IS
-  'bid_recording_coverage_v3 with refusal_rows (#2391): bid rows recording a refusal by a buyer''s own rule (loan_amount_below_min, missing_lead_field), counted apart from attempt_rows. Read by the too few bids monitor over a day ending ten minutes ago.';
+  'bid_recording_coverage_v3 with refusal_rows (#2391): bid rows recording Tripoint''s loan minimum refusal (loan_amount_below_min), counted apart from attempt_rows. missing_lead_field rows are in neither count. Read by the too few bids monitor over a day ending ten minutes ago.';
 
 REVOKE ALL ON ROUTINE public.bid_recording_coverage_v4(UUID, TIMESTAMPTZ, TIMESTAMPTZ) FROM PUBLIC;
 REVOKE ALL ON ROUTINE public.bid_recording_coverage_v4(UUID, TIMESTAMPTZ, TIMESTAMPTZ) FROM anon;
