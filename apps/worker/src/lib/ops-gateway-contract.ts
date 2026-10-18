@@ -271,7 +271,9 @@ export function parseStoreRotatedEnvelopeRequest(raw: unknown): StoreRotatedEnve
     if (typeof value !== 'string' || !BASE64.test(value)) throw new OpsGatewayContractError(`the rotated envelope's ${name} is not base64`)
   }
   const shaped = { v: 1 as const, kid, wrapped_key: wrapped_key as string, iv: iv as string, ct: ct as string }
-  if (new TextEncoder().encode(JSON.stringify(shaped)).length > MAX_ENVELOPE_BYTES) throw new OpsGatewayContractError(`the rotated envelope is over ${MAX_ENVELOPE_BYTES} bytes`)
+  // Measured as the database measures it: jsonb renders a space after each colon and each comma.
+  const jsonbBytes = new TextEncoder().encode(JSON.stringify(shaped)).length + ENVELOPE_FIELDS.length * 2 - 1
+  if (jsonbBytes > MAX_ENVELOPE_BYTES) throw new OpsGatewayContractError(`the rotated envelope is over ${MAX_ENVELOPE_BYTES} bytes`)
   return { organization_id, connection_id, expected_generation, generation, envelope: shaped }
 }
 

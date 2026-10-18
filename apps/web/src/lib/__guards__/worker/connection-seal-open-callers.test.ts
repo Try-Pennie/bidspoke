@@ -10,11 +10,12 @@ import { REPO_ROOT, WORKER_SRC, listFiles, listTsFiles, sanitizeSource } from '.
  * `open` from @bidspoke/connection-seal turns an envelope into a plaintext
  * login. Every place that holds one is a place a login can leak from, so the
  * set is closed: a module may call `open` only if it is listed below with its
- * reason. Later PRs of this phase add the others the plan names (verify, which
- * must compare the sealed client id with the declaration; resealConnections,
- * which must open in order to reseal; ConnectionTokenObject, which holds the
- * refresh token), each with its own reason, in the PR that creates it, as the
- * restore drill script (#2333) was. An entry for a file that does not exist, or that no
+ * reason. ConnectionTokenObject, which holds the refresh token, was added with
+ * its reason in the PR that made it live (#2335). Later PRs of this phase add
+ * the others the plan names (verify, which must compare the sealed client id
+ * with the declaration; resealConnections, which must open in order to
+ * reseal), each with its own reason, in the PR that creates it, as the restore
+ * drill script (#2333) was. An entry for a file that does not exist, or that no
  * longer opens anything, fails here too (L96), so the list stays the truth.
  *
  * What counts as reaching `open`, outside the listed modules: a value import
@@ -23,7 +24,8 @@ import { REPO_ROOT, WORKER_SRC, listFiles, listTsFiles, sanitizeSource } from '.
  * see what is called. `seal` and the types are free to import anywhere.
  *
  * It also refuses `console.` in the connection modules
- * (apps/worker/src/ops/connections): they hold opened logins and tokens, and
+ * (apps/worker/src/ops/connections) and in ConnectionTokenObject
+ * (apps/worker/src/ops/connection-token-object.ts): they hold opened logins and tokens, and
  * the ops Worker's console feeds Workers Logs (wrangler.ops.toml:
  * invocation_logs, head_sampling_rate 1) and the tail consumer. That ban is not
  * the whole protection (finding F120): an uncaught exception's message reaches

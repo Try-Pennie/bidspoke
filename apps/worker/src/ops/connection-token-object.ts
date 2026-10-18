@@ -264,12 +264,20 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
       return failure('token_object_unavailable', 'token_object_refused')
     }
     try {
-      const stored = await this.readLogin()
-      if (stored && !this.sameConnection(stored, request)) return failure('token_object_unavailable', 'token_object_refused')
       // After any refresh in flight, so the two never both write a login.
-      while (this.inFlight && this.clock() - this.inFlight.startedAt < IN_FLIGHT_STALE_MS) await this.inFlight.promise
+      while (this.inFlight && this.clock() - this.inFlight.startedAt < IN_FLIGHT_STALE_MS) {
+        this.waiting += 1
+        try {
+          await this.inFlight.promise
+        } finally {
+          this.waiting -= 1
+        }
+      }
       let generation = 0
       const answer = await this.holdFlight(this.clock(), async () => {
+        // Read only now, under this flight: a refresh that just finished may have stored a newer login.
+        const stored = await this.readLogin()
+        if (stored && !this.sameConnection(stored, request)) return failure('token_object_unavailable', 'token_object_refused')
         const result = await this.exchangeCode(request, stored)
         if (!result.ok) return result
         generation = result.generation

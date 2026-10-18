@@ -458,6 +458,27 @@ describe('exchangeOAuthCode inside the object', () => {
     expect(gw.requests[0]).toMatchObject({ expected_generation: 1, generation: 2 })
   })
 
+  it('a consent arriving during a rotating refresh waits for it, then seals above the generation the refresh stored', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    let release!: () => void
+    const held = new Promise<void>((r) => { release = r })
+    const endpoint = tokenEndpoint(async () => { await held; return tokens('access-refresh', R2)() }, tokens('access-from-consent', R3))
+    await wire(stub, { endpoint })
+    const refreshing = stub.accessToken(request(conn, 1, await sealFor(conn, 1, { ...APP, refresh_token: R1 })))
+    await expect.poll(() => endpoint.calls.length).toBe(1)
+    const consent = stub.exchange(exchange(conn, 1, await sealFor(conn, 1, APP)))
+    await untilWaiting(stub, 1)
+    release()
+    ok(await refreshing)
+    // The refresh stored generation 2, so the consent, read after it, takes 3: never the same generation twice.
+    expect(await consent).toEqual({ ok: true, generation: 3 })
+    expect(endpoint.calls.map((c) => c.grant)).toEqual(['refresh_token', 'authorization_code'])
+    const kept = (await stored(stub))!
+    expect(kept).toMatchObject({ generation: 3, committedGeneration: 1, writeBack: 'pending' })
+    expect(await openStored(conn, kept)).toEqual({ ...APP, refresh_token: R3 })
+  })
+
   it('a consent answered with no refresh token is refused, and nothing is stored', async () => {
     const conn = connection()
     const stub = stubFor(conn)

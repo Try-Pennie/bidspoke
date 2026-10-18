@@ -66,6 +66,23 @@ describe('parseStoreRotatedEnvelopeRequest', () => {
   })
 })
 
+describe('the envelope size is measured as the database measures it', () => {
+  // jsonb renders {"ct": "...", "iv": "...", ...}: one space after each of 5 colons and 4 commas.
+  const withCt = (ctLength: number) => ({ ...ENVELOPE, ct: 'A'.repeat(ctLength) })
+  const compact = (ctLength: number) => JSON.stringify(withCt(ctLength)).length
+  const ctFor = (compactBytes: number) => compactBytes - compact(0)
+
+  it('accepts an envelope jsonb renders at exactly the limit', () => {
+    expect(() => parseStoreRotatedEnvelopeRequest(request({ envelope: withCt(ctFor(65_536 - 9)) }))).not.toThrow()
+  })
+
+  it('refuses one whose compact form is under the limit but whose jsonb rendering is over it, which the database would refuse', () => {
+    const ct = ctFor(65_530)
+    expect(compact(ct)).toBeLessThan(65_536)
+    expect(() => parseStoreRotatedEnvelopeRequest(request({ envelope: withCt(ct) }))).toThrow(OpsGatewayContractError)
+  })
+})
+
 describe('parseStoreRotatedEnvelopeAnswer (the ops side reads it)', () => {
   it('reads each outcome the function answers', () => {
     expect(STORE_ROTATED_ENVELOPE_OUTCOMES).toEqual(['stored', 'already_stored', 'moved', 'not_found'])
