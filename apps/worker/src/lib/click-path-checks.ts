@@ -31,6 +31,14 @@
  *                                than QUIET_RATE_MIN_RUNS leads or with none
  *                                eligible, so a profile switched on or edited
  *                                minutes ago is never judged on those minutes.
+ *                                But when NO lead has passed the buyer's rules
+ *                                since a change, the leads since it are judged
+ *                                against the share eligible in the 72 hours
+ *                                before it instead, so an edit that leaves no
+ *                                lead eligible pages rather than resetting the
+ *                                check to a rate of zero it never trusts
+ *                                (#2426); an edit that leaves some eligible
+ *                                re-baselines as above.
  *                                Runs the disabled profile answered are not
  *                                counted, and a run at the day's cap stands
  *                                the check down, because then not eligible is
@@ -85,8 +93,9 @@
  * stamps are written by the cron wiring (L514).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { CLICK_CHECK_BUDGET_MS, PACIFIC, isOpen, isPartnerId, zonedDayStartUtc, zonedParts, type OutReason } from '@bidspoke/buyer-profile'
+import { CLICK_CHECK_BUDGET_MS, CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, PACIFIC, isOpen, isPartnerId, zonedDayStartUtc, zonedParts, type OutReason } from '@bidspoke/buyer-profile'
 import type { Env } from '../index'
+import { RETENTION_DAYS } from '../archive/candidate-days'
 import { getSalesforceToken } from '../engine/nodes/salesforce'
 import { CLICK_RESOLVER_TYPE } from '../engine/bid-log'
 import { clearCondition, readCondition, type BackoffKv } from './alert-backoff'
@@ -162,6 +171,39 @@ export const QUIET_RATE_MIN_RUNS = 100
  * minutes through a 12 hour selling day pages by chance about once a month.
  */
 export const QUIET_MAX_CHANCE = 0.001
+/**
+ * The edit to zero comparison (#2426). Judging against the rate since the
+ * profile last changed has one blind spot: an edit that leaves NO lead eligible
+ * gives a rate of zero, which is never trusted, so the check stood down at the
+ * moment the buyer stopped being offered (the click twin of #2149). So when no
+ * lead has been eligible since the edit, the leads since it are judged against
+ * the eligible share in this window before it instead, by the same one in 1,000
+ * bar. An edit that leaves ANY lead eligible re-baselines as before.
+ *
+ * Sized from Liberty1's recorded volumes, not a fresh query: about 47 judged
+ * leads an hour inside its selling hours (272 from 12:16 to 6 PM ET on
+ * 2026-10-16, PR #2298) and about 670 a day (4,673 in the 7 days to
+ * 2026-10-14, #2104). One weekday's selling hours before an edit therefore hold
+ * several hundred leads, far past QUIET_RATE_MIN_RUNS, but an edit on a Monday
+ * morning has a weekend behind it, and a buyer closed at weekends last sold on
+ * Friday, up to about 63 hours earlier. 72 hours reaches that Friday from any
+ * edit, and stays well inside the 7 days execution steps are kept, so the
+ * leads before the edit are still there to read.
+ */
+export const EDIT_PRE_WINDOW_MS = 72 * HOUR
+/**
+ * Leads this soon after an edit are not counted on either side of it, because
+ * the check may still have judged them on the copy from before the edit: the
+ * buyer profiles copy reaches bidding within 3 minutes on a healthy day
+ * (BIDDING_PICKUP, measured 2026-10-15), and when the database read fails the
+ * check offers from a last good copy up to CLICK_CHECK_LAST_GOOD_MAX_AGE_MS old,
+ * plus a minute for KV to reach every location. Without it, a few leads judged
+ * on the old rules right after the edit would read as eligible since it and
+ * stand the comparison down.
+ */
+export const EDIT_PICKUP_GRACE_MS = CLICK_CHECK_LAST_GOOD_MAX_AGE_MS + MIN
+/** An edit older than the kept execution steps has no leads before it left to compare, so it is not looked for. */
+export const EDIT_LOOKBACK_MAX_MS = RETENTION_DAYS * 24 * HOUR
 /** How finely selling time is checked against the operating windows. Windows are whole minutes; five is finer than any window anyone sets. */
 export const QUIET_OPEN_SAMPLE_MS = 5 * MIN
 /**
@@ -216,7 +258,8 @@ export const CLICK_PATH_QUIET_REMEDY: AlertRemedy = {
     'offers were made and no click reached Bidspoke. Each line says which:',
   fixHint:
     'No eligible: the reasons on the line say why every lead was out; a missing lead field or a debt below the minimum on every lead ' +
-    'usually means a template on the Buyer Click Check node reads a path the payload no longer carries. No click: check that the ' +
+    'usually means a template on the Buyer Click Check node reads a path the payload no longer carries. A line naming a profile ' +
+    "change: open the buyer's History on the Partners page at that time and undo or correct the edit. No click: check that the " +
     "buyer's click proxy still forwards a POST to the Bidspoke custom endpoint, that the endpoint's workflow is switched on, and " +
     "that the portal's click link still works.",
   headlineVerb: 'shows a click buyer path gone quiet',
@@ -553,7 +596,7 @@ async function checkSubject(deps: ClickPathDeps, subject: ClickSubject, now: num
     buyerError = messageOf(err)
   }
 
-  const quiet = await judgeQuiet(deps, subject, { buyer, buyerError, checks, checksError, slug, partnerError }, now)
+  const quiet = await judgeQuiet(deps, subject, { buyer, buyerError, checks, checksError, readFrom, slug, partnerError }, now)
   const reconcile = await reconcileDay(deps, subject, partner, partnerError, now)
   return { partner_id: subject.partner_id, slug, check_errors, quiet, refusals, reconcile }
 }
@@ -561,7 +604,7 @@ async function checkSubject(deps: ClickPathDeps, subject: ClickSubject, now: num
 async function judgeQuiet(
   deps: ClickPathDeps,
   subject: ClickSubject,
-  read: { buyer: LoadedBuyer | null; buyerError: string | null; checks: CheckRun[] | null; checksError: string; slug: string | null; partnerError: string | null },
+  read: { buyer: LoadedBuyer | null; buyerError: string | null; checks: CheckRun[] | null; checksError: string; readFrom: number; slug: string | null; partnerError: string | null },
   now: number,
 ): Promise<QuietVerdict> {
   if (read.buyerError !== null) return { verdict: 'unmeasured', reason: `the buyer profile could not be read: ${read.buyerError}` }
@@ -603,7 +646,18 @@ async function judgeQuiet(
     notJudged = `${seen}; its eligible rate is not known: none of ${rateRuns.length} leads since the profile last changed was eligible`
   }
   const rate = rateRuns.length === 0 ? 0 : rateEligible / rateRuns.length
-  const needed = notJudged === null ? quietRunsNeeded(rate) : Infinity
+  let needed = notJudged === null ? quietRunsNeeded(rate) : Infinity
+
+  // An edit that left no lead eligible (#2426) is judged against the share
+  // before it, which the rate since the edit (zero, never trusted) cannot be.
+  // Not looked for outside selling time, as the rest of this half is not.
+  const edit: EditJudgement = changeKnown && minutes > 0 && subject.check.workflow_ids.length > 0
+    ? await judgeEditToZero(deps, subject, buyer, read.checks, read.readFrom, changedAt, now)
+    : { kind: 'none' }
+  if (edit.kind === 'page') found.push(edit.line)
+  if (edit.kind === 'too_few') notJudged = edit.detail
+  if (edit.kind !== 'none') needed = Infinity
+
   if (!atCap && eligible === 0 && counted.length >= needed) {
     found.push(
       `${counted.length} leads reached the Buyer Click Check in ${minutes} minutes of its selling hours and none was eligible. ` +
@@ -617,14 +671,90 @@ async function judgeQuiet(
   const noClick = await judgeNoClick(deps, subject, read.slug, read.partnerError, read.checks, now - NO_CLICK_WINDOW_MS, now)
   if (noClick.line) found.push(noClick.line)
   if (noClick.unread && found.length > 0) found.push(`whether the offers turned into clicks is not known: ${noClick.unread}`)
+  if (edit.kind === 'unread' && found.length > 0) found.push(`whether the profile change left any lead eligible is not known: ${edit.reason}`)
   const offers = noClick.offers
 
   if (found.length > 0) return { verdict: 'quiet', lines: found }
-  if (noClick.unread) return { verdict: 'unmeasured', reason: noClick.unread }
+  const unread = [edit.kind === 'unread' ? edit.reason : null, noClick.unread ?? null].filter((r): r is string => r !== null)
+  if (unread.length > 0) return { verdict: 'unmeasured', reason: unread.join('; ') }
   if (notJudged === 'not_open') return { verdict: 'not_open', detail: `no selling time in the ${Math.round((now - judgedFrom) / MIN)} minutes judged, ${offers} offers` }
   if (notJudged !== null) return { verdict: 'too_few', detail: notJudged }
   if (counted.length < needed) return { verdict: 'too_few', detail: `${seen}, ${needed} needed at ${rateWords(rate)} eligible` }
   return { verdict: 'normal', detail: `${seen}, ${eligible} eligible, ${offers} offers` }
+}
+
+/**
+ * The edit to zero comparison (#2426): `none` hands the judgement back to the
+ * rate since the change, which is right whenever any lead has passed the
+ * buyer's rules since it, and whenever there is no trusted share before it.
+ */
+type EditJudgement =
+  | { kind: 'none' }
+  | { kind: 'page'; line: string }
+  | { kind: 'too_few'; detail: string }
+  | { kind: 'unread'; reason: string }
+
+const ET_CLOCK = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+/** An instant for a person, in Eastern time; ICU's narrow space before AM or PM is made a plain one. */
+const etClock = (ms: number): string => `${ET_CLOCK.format(new Date(ms)).replace(/\u202f/g, ' ')} ET`
+
+/**
+ * A lead that passed the buyer's rules: eligible, or out only on the day's
+ * click cap, which buyer_click_check judges after the rules (its step 3).
+ */
+const passedRules = (r: CheckRun): boolean => r.route === 'eligible' || r.reason === 'daily_click_cap'
+
+async function judgeEditToZero(
+  deps: ClickPathDeps,
+  subject: ClickSubject,
+  buyer: LoadedBuyer,
+  checks: readonly CheckRun[],
+  readFrom: number,
+  changedAt: number,
+  now: number,
+): Promise<EditJudgement> {
+  if (changedAt < now - EDIT_LOOKBACK_MAX_MS || changedAt > now) return { kind: 'none' }
+  const settledFrom = changedAt + EDIT_PICKUP_GRACE_MS
+  // Nothing after the grace yet: the edit is minutes old and judged on nothing (#2104).
+  if (settledFrom >= now) return { kind: 'none' }
+  const counts = (r: CheckRun, fromMs: number, toMs: number) =>
+    r.reason !== null && r.reason !== 'profile_disabled' && inWindow(r.started_at, fromMs, toMs) &&
+    isOpen(buyer.profile.windows, buyer.profile.blackoutDates, Date.parse(r.started_at))
+  // The runs already read answer the usual case, a lead passing since the edit, with no further read.
+  if (checks.some((r) => passedRules(r) && counts(r, settledFrom, now + 1))) return { kind: 'none' }
+
+  const preFrom = changedAt - EDIT_PRE_WINDOW_MS
+  let runs: readonly CheckRun[] = checks
+  if (preFrom < readFrom) {
+    try {
+      runs = [...(await deps.readCheckRuns(subject, preFrom, readFrom)), ...checks]
+    } catch (err) {
+      return { kind: 'unread', reason: `the leads before the profile change at ${etClock(changedAt)} could not be read: ${messageOf(err)}` }
+    }
+  }
+  const sinceEdit = runs.filter((r) => counts(r, settledFrom, now + 1))
+  if (sinceEdit.some(passedRules)) return { kind: 'none' }
+  const beforeEdit = runs.filter((r) => counts(r, preFrom, changedAt))
+  const beforeEligible = beforeEdit.filter((r) => r.route === 'eligible').length
+  if (beforeEdit.length < QUIET_RATE_MIN_RUNS || beforeEligible === 0) return { kind: 'none' }
+
+  const before = beforeEligible / beforeEdit.length
+  const needed = quietRunsNeeded(before)
+  const hours = Math.round(EDIT_PRE_WINDOW_MS / HOUR)
+  if (sinceEdit.length < needed) {
+    return {
+      kind: 'too_few',
+      detail: `${sinceEdit.length} leads in selling hours since the profile changed at ${etClock(changedAt)}, none eligible; ${needed} needed at the ${rateWords(before)} eligible in the ${hours} hours before it`,
+    }
+  }
+  return {
+    kind: 'page',
+    line:
+      `${sinceEdit.length} leads reached the Buyer Click Check in its selling hours since its profile was changed at ${etClock(changedAt)}, and none was eligible. ` +
+      `${rateWords(before)} of leads were eligible (${beforeEligible} of ${beforeEdit.length}) in the ${hours} hours before that change, so this many with none ` +
+      `happens less than once in ${Math.round(1 / QUIET_MAX_CHANCE).toLocaleString('en-US')} at that share, and the change may have left no lead the buyer can be offered ` +
+      `(${tally(sinceEdit.map((r) => r.reason))})`,
+  }
 }
 
 /** The offers-but-no-clicks half of the quiet check: a finding, or the reason it could not be read. */
