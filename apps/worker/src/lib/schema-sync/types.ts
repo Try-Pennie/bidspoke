@@ -34,8 +34,8 @@ export type SchemaFetch = (url: string, init: RequestInit) => Promise<Response>
 
 /**
  * What every lookup is given: the fetch, and an auth already minted by the
- * caller, sent as headers on every request. A caller whose fetch applies the
- * auth itself (connectionFetch) passes none.
+ * caller, sent as headers on every request. `auth` is always given: a caller
+ * whose fetch applies the auth itself (connectionFetch) gives an empty object.
  */
 export interface SchemaRequestBase {
   readonly fetch: SchemaFetch
