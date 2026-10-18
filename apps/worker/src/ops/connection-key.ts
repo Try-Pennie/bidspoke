@@ -12,9 +12,10 @@
  * A key that imports may still be the wrong key: any sound RSA-4096 key passes
  * the import, and the bidding Worker seals to the public half committed under
  * CURRENT_OPS_KID (packages/connection-seal/src/keys.ts). So the tick also
- * seals a probe to that public half and opens it with this key, the same two
- * calls a real login takes, and a key that cannot open it is reported the same
- * way. NEXT may be the one that opens it, during a rotation (matchProblem).
+ * has the seal's checkPrivateKeyOpens seal a probe to that public half and
+ * open it with this key, the same two calls a real login takes (this module
+ * never imports `open`, whose callers are a closed list), and a key that cannot
+ * open it is reported the same way. NEXT may be the one that opens it, during a rotation (matchProblem).
  * With no kid current nothing is sealed, so only the import is checked.
  *
  * OPS_CONNECTIONS_PRIVATE_KEY_NEXT exists only during a rotation. Unset is
@@ -28,12 +29,11 @@
  * alone, never its message.
  */
 import {
+  checkPrivateKeyOpens,
   CURRENT_OPS_KID,
   importPrivateKey,
   MIN_MODULUS_BITS,
   OPS_CONNECTION_PUBLIC_KEYS,
-  open,
-  seal,
   SealError,
   type KeyRing,
 } from '@bidspoke/connection-seal'
@@ -64,22 +64,11 @@ export interface SealRegistry {
 
 const COMMITTED: SealRegistry = { currentKid: CURRENT_OPS_KID, publicKeys: OPS_CONNECTION_PUBLIC_KEYS }
 
-/** A probe bound to no real organization or connection, so it can never stand in for a login. */
-const PROBE = 'ops key check'
-const probeAad = (kid: string) => ({
-  organization_id: '00000000-0000-0000-0000-000000000000',
-  connection_id: '00000000-0000-0000-0000-000000000000',
-  service: 'ops-key-check',
-  generation: 1,
-  kid,
-})
-
 /** Whether this key opens a probe sealed to the committed public key under kid, and if not, why. */
 async function opensProbe(value: string, kid: string, publicKeys: KeyRing): Promise<string | null> {
   try {
-    const envelope = await seal(publicKeys, PROBE, probeAad(kid))
-    if ((await open({ [kid]: value }, envelope, probeAad(kid))) === PROBE) return null
-    return 'the probe opened to different text'
+    await checkPrivateKeyOpens(value, publicKeys, kid)
+    return null
   } catch (err) {
     return err instanceof SealError ? err.message : `an unexpected ${err instanceof Error ? err.name : 'error'}`
   }

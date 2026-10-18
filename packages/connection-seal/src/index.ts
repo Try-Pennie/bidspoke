@@ -7,4 +7,4 @@ export { canonicalAad, canonicalJson, KID_PATTERN, type ConnectionAad } from './
 export { SealError, type SealErrorCode } from './errors'
 export { importPrivateKey, importPublicKey, MIN_MODULUS_BITS } from './key-import'
 export { CURRENT_OPS_KID, OPS_CONNECTION_PUBLIC_KEYS } from './keys'
-export { open, seal, type KeyRing, type SealedEnvelope } from './seal'
+export { checkPrivateKeyOpens, open, seal, type KeyRing, type SealedEnvelope } from './seal'
