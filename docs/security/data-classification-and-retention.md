@@ -152,6 +152,14 @@ looked), kept like the cron heartbeat's own first-seen marker. Its resend claims
 live in the alert claim Durable Object, keyed on the run id, the step and the
 attempt.
 
+The gap measurement (#2055) keeps one fact per post-answer Salesforce write that
+was out at a run's cut-off or started too late to be recorded, under
+`at-risk-gap:<UTC day>:<kind>:<run id>:<step>`: the workflow id, the run id, the
+step's name, a time and an age in milliseconds. No field value, no record id and
+no lead data, so it carries nothing an erasure request reaches. Each expires
+after 8 days; the daily report copies the counts and up to 20 run and step names
+into `job_runs`.
+
 ### Salesforce
 
 Prospect records carry the full consumer identity and are the system of record
@@ -205,4 +213,5 @@ the site (Geoff, 2026-09-04), so the node sends no certificate. See #1081.
 | Consumer identity | Salesforce | not ours | Salesforce |
 | Lead fields of an at-risk Salesforce write, or a credit inquiry post's inquiries, encrypted | KV `at-risk-write:` | 24 hours | KV expiry (#2022, #2172) |
 | Read-back state: resend counts and field names, no values | KV `sf-read-back:` | 24 hours, daily counts 8 days, one first-seen time kept | KV expiry (#2023) |
+| At-risk gap facts: run ids, step names and times, no values | KV `at-risk-gap:` | 8 days | KV expiry (#2055) |
 | Staff email, audit | `users`, `*_by_email` | indefinite | deliberate |
