@@ -172,7 +172,7 @@ export interface RowCapEvent {
   query: string
   rows: number
   total: number | null
-  /** True when the read failed because it ran in a scheduled tick. */
+  /** True when the read ran in a scheduled tick (it then failed, unless it was an rpc not on the read only list). */
   in_scheduled_tick: boolean
   /** When it happened, RFC 3339; Better Stack reads `dt` as the event time. */
   dt: string

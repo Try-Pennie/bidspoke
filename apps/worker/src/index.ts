@@ -105,7 +105,8 @@ app.use('*', async (c, next) => {
 
 // The count of stored copies a request served or refused (#1848) is written
 // after the response, never on it, and not at all when nothing was noted.
-// Registered first so it wraps every route, the custom endpoint one included.
+// Registered right after the row cap waitUntil middleware, so it wraps every
+// route, the custom endpoint one included.
 app.use('*', async (c, next) => {
   await next()
   const kv = c.env?.IDEMPOTENCY
