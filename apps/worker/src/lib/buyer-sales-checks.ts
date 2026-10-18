@@ -68,7 +68,7 @@ import { fetchAllPaged } from './paginate'
 import { resolveSalesforceCredsFor } from './salesforce-creds'
 import { BID_PURGE_HORIZON_MS } from './sightings-export'
 import { describeDuration } from './incident-span'
-import { judgeOutcomeShares, type BaselineUnreadable, type OutcomeBaseline, type OutcomeRateRule } from './outcome-rate-rule'
+import { isoDateMinus, judgeOutcomeShares, type BaselineUnreadable, type OutcomeBaseline, type OutcomeRateRule } from './outcome-rate-rule'
 
 export { BID_PURGE_HORIZON_MS }
 
@@ -302,10 +302,6 @@ export const mismatchMarkerKey = (partnerId: string) => `buyer-sales-mismatch-se
 export const unresolvedPagedKey = (partnerId: string) => `unresolved-paged:${partnerId}`
 export const outcomeRatePagedKey = (partnerId: string) => `outcome-rate-paged:${partnerId}`
 
-function isoDateMinus(day: string, days: number): string {
-  const [y, m, d] = day.split('-').map(Number)
-  return new Date(Date.UTC(y, m - 1, d - days)).toISOString().slice(0, 10)
-}
 const previousIsoDate = (day: string) => isoDateMinus(day, 1)
 
 // ── The checks ────────────────────────────────────────────────────────────────

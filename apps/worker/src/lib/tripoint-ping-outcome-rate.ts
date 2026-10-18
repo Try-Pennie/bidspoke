@@ -38,7 +38,7 @@ import type { BackoffKv } from './alert-backoff'
 import { ENGINE_BIDDING_WORKFLOW_ID } from './engine-script-drift'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { withJobRun, type JobRunEnding } from './job-run-record'
-import { judgeOutcomeShares, type OutcomeBaseline, type OutcomeRateRule, type OutcomeRateVerdict, type BaselineUnreadable } from './outcome-rate-rule'
+import { isoDateMinus, judgeOutcomeShares, percent, type OutcomeBaseline, type OutcomeRateRule, type OutcomeRateVerdict, type BaselineUnreadable } from './outcome-rate-rule'
 import { TRIPOINT_ANSWER_NAMESPACE } from './upstream-outage'
 
 /** The heartbeat, job_runs and alerter name: distinct from buyer-outcome-rate, so each page mutes alone. */
@@ -150,11 +150,6 @@ function parseDay(raw: string, key: string): DayRollup {
   return { attempts: v.attempts, failed: v.failed, declined: v.declined, hours: v.hours }
 }
 
-function isoDateMinus(day: string, days: number): string {
-  const [y, m, d] = day.split('-').map(Number)
-  return new Date(Date.UTC(y, m - 1, d - days)).toISOString().slice(0, 10)
-}
-
 // ── The run ─────────────────────────────────────────────────────────────────
 
 export interface PingDeps {
@@ -179,7 +174,6 @@ export interface PingSummary {
 }
 
 const messageOf = (err: unknown): string => (err instanceof Error ? err.message : 'non Error thrown')
-const percent = (n: number): string => `${Math.round(n * 100)}%`
 
 /** Record each finished clock hour of the lookback that is not yet in KV. */
 async function rollUpHours(deps: PingDeps, now: number): Promise<{ recorded: number; errors: string[] }> {

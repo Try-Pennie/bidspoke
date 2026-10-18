@@ -65,7 +65,14 @@ export const OUTCOME_RATE_MIN_RISE = 0.25
 /** Shares are ratios of integers; this keeps a rise of exactly 25 points from reading as 24.999. */
 const RISE_TOLERANCE = 1e-9
 
-const percent = (n: number): string => `${Math.round(n * 100)}%`
+/** A share as a whole percent, the way every outcome rate line prints one. */
+export const percent = (n: number): string => `${Math.round(n * 100)}%`
+
+/** The calendar date `days` before an ISO date (negative for after): how both checks walk their baseline window. */
+export function isoDateMinus(day: string, days: number): string {
+  const [y, m, d] = day.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, d - days)).toISOString().slice(0, 10)
+}
 const FAILED_WHAT = 'failed before the buyer processed the lead (a buyer error or an answer nobody could classify)'
 
 export function judgeOutcomeShares(
