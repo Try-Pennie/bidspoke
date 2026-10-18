@@ -47,6 +47,7 @@ import {
   type OpsRpcName,
 } from './ops-rpcs'
 import { organizationIdFrom, type OpsSupabaseClient, type OrganizationId } from './ops-db'
+import { CONNECTION_SERVE_WINDOW_MS } from '../lib/ops-gateway-contract'
 
 /** Past the ops project's 8 s statement timeout, so the database gives up first. */
 export const OPS_RPC_DEADLINE_MS = 9_000
@@ -788,10 +789,12 @@ export async function dueQueueDepth(client: OpsSupabaseClient, options?: OpsRpcO
 
 /**
  * How long a served copy may be used: Dan's decision 3 (2026-10-17, discussion
- * #2329). The database refuses a longer one too (connection_copies_serve_window);
- * this refuses it before sending, so the error names the rule.
+ * #2329). Defined once, in the contract both Workers import, since the bidding
+ * Worker sets serve_until by it (#2335). The database refuses a longer one too
+ * (connection_copies_serve_window); this refuses it before sending, so the
+ * error names the rule.
  */
-export const CONNECTION_SERVE_WINDOW_MS = 6 * 60 * 60 * 1000
+export { CONNECTION_SERVE_WINDOW_MS }
 
 /** One ops connection as the bidding Worker serves it: ciphertext and public config only, never a plaintext login. */
 export interface ConnectionCopyInput {

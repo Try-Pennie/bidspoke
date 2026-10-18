@@ -14,11 +14,32 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import type { Env } from '../env'
 import { createSupabaseClient } from './supabase'
-import { readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, storeRotatedEnvelope } from './ops-gateway'
+import { readMoneyIdentities } from './money-identity'
+import { readOpsConnections, readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, storeRotatedEnvelope } from './ops-gateway'
 
 export class OpsGateway extends WorkerEntrypoint<Env> {
   opsWorkflows() {
     return readOpsWorkflows(createSupabaseClient(this.env, { retry: false }), Date.now())
+  }
+
+  /**
+   * Every ops connection's sealed envelope, public config and target, with
+   * serve_until 6 hours on, and the removals of the last 7 hours (#2335): two
+   * paged reads, retries off, since the tick gives up at its gateway deadline
+   * and keeps its copies. Lane wide; never a plaintext login. Who may call it
+   * and whose data: readOpsConnections in ops-gateway.ts.
+   */
+  opsConnections() {
+    return readOpsConnections(createSupabaseClient(this.env, { retry: false }), Date.now())
+  }
+
+  /**
+   * Money's measured Salesforce identity for the one organization named, and
+   * no other (#2335): one KV read. Who may call it and whose data:
+   * money-identity.ts.
+   */
+  moneyIdentities(organizationId: unknown) {
+    return readMoneyIdentities(this.env.IDEMPOTENCY, organizationId, Date.now())
   }
 
   async opsTickStarted() {

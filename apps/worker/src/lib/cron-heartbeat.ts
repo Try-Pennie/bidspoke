@@ -182,6 +182,19 @@ export const CRON_JOBS: CronJob[] = [
       "nobody is told each morning whether Main Flow's direct invalid state writes to Salesforce landed, so a lost write shows only when somebody opens the record (#2173)",
   },
   {
+    // Money's Salesforce run as identity, measured for ops verify (#2335).
+    id: 'money-identity',
+    label: 'Money Salesforce identity measurement',
+    triggerCron: '0 13 * * *',
+    // 24h cadence, 2h slack, matching the other daily jobs.
+    staleMs: 26 * H,
+    // One credential read, one token (a cache read, a mint at most), one userinfo
+    // call bounded at 10 s and one KV write.
+    maxRunMs: 30 * MIN,
+    dependents:
+      'money\'s Salesforce identity is no longer re-measured, so ops verify keeps comparing ops connections against an older reading of it, and refuses every Salesforce connection when it has none (#2335)',
+  },
+  {
     id: 'partner-reachability',
     label: 'Partner reachability probe',
     triggerCron: '*/5 * * * *',

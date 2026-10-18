@@ -35,8 +35,10 @@ import { fetchAllPaged } from './paginate'
 import { writeHeartbeat, writeHeartbeatCompleted } from './cron-heartbeat'
 import { notifyExportFailure, notifyExportRecovery } from './export-alerts'
 import {
-  OpsGatewayContractError, parseOpsTickReport, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
-  type OpsTickReport, type ServedOpsWorkflow, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer,
+  CONNECTION_SERVE_WINDOW_MS, OpsGatewayContractError, TOMBSTONE_SERVE_WINDOW_MS, parseOpsTickReport, parseSealedEnvelope,
+  parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest, servedConnectionProblem,
+  type OpsTickReport, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections, type ServedOpsWorkflow,
+  type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer,
 } from './ops-gateway-contract'
 import { formatErr } from './format-error'
 
@@ -100,6 +102,121 @@ export async function readOpsWorkflows(supabase: SupabaseClient, nowMs: number):
   }
   // A list missing a row it read is not every ops workflow, so it withdraws nothing.
   return { served_at: servedAt, complete: dropped === 0, workflows }
+}
+
+interface ConnectionRow {
+  id: string
+  organization_id: string
+  service_type: string
+  sealed_for: string | null
+  credential_generation: number
+  credential_enc: string | null
+  config: unknown
+  target: unknown
+}
+
+interface TombstoneRow {
+  connection_id: string
+  organization_id: string
+  generation: number
+  removed_at: string
+}
+
+/**
+ * Every ops connection, as last good copies for the ops Worker (#2335, PR 6 of
+ * phase 5 of #1689; plan: discussion #2329, part 2).
+ *
+ * WHO CALLS IT. The ops minute tick, through the ops Worker's OPS_GATEWAY binding
+ * (OpsGateway.opsConnections). No public route reaches it: the public edge
+ * reaches only this Worker's default export.
+ *
+ * WHOSE DATA. Lane wide system work, like the workflow list: every
+ * organization's ops_key rows of service_connections, each carrying its own
+ * organization_id, and the removals of the last 7 hours from
+ * connection_tombstones. Nothing is attributed across organizations: each row is
+ * served with the organization stored on it, the ops database matches every
+ * saved copy and tombstone against the organization it already holds
+ * (save_connection_copies, record_connection_tombstone), and the envelope's AAD
+ * binds the organization, so a copy filed under another one cannot be opened.
+ * NEVER A PLAINTEXT LOGIN: only rows sealed to the ops key are read, and of
+ * them only the sealed envelope (this Worker holds no key that opens it), the
+ * public config and the declared target, and a row whose config or target
+ * names a login field is refused (servedConnectionProblem). bidding_ring rows,
+ * the Slack alert token's, are never read: the filter excludes them and any
+ * that came through anyway is dropped.
+ *
+ * serve_until is served_at plus 6 hours (Dan's decision 3), so a removal reaches
+ * ops within 6 hours even while this Worker is down. Throws on a failed read,
+ * never serving an empty list, which would withdraw every ops copy. A row it
+ * read and could not serve makes the list incomplete, so ops withdraws nothing.
+ */
+export async function readOpsConnections(supabase: SupabaseClient, nowMs: number): Promise<ServedOpsConnections> {
+  const servedAt = new Date(nowMs).toISOString()
+  const serveUntil = new Date(nowMs + CONNECTION_SERVE_WINDOW_MS).toISOString()
+  const rows = await fetchAllPaged<ConnectionRow>(
+    (from, to) => supabase
+      .from('service_connections')
+      .select('id, organization_id, service_type, sealed_for, credential_generation, credential_enc, config, target')
+      .eq('sealed_for', 'ops_key')
+      .not('credential_enc', 'is', null)
+      .order('id', { ascending: true })
+      .range(from, to),
+    'the ops connections the minute cron keeps copies of',
+    { maxPages: MAX_PAGES },
+  )
+  const connections: ServedOpsConnection[] = []
+  let dropped = 0
+  for (const row of rows) {
+    if (row.sealed_for !== 'ops_key') {
+      dropped++
+      console.error(`[ops-gateway] the ops connections read returned connection ${row.id}, which is not sealed to the ops key; dropped, because the query's scoping did not hold`)
+      continue
+    }
+    let envelope: unknown = null
+    try {
+      envelope = JSON.parse(row.credential_enc ?? '')
+    } catch {
+      // Refused below by name, as an envelope that is not an object.
+    }
+    const served = {
+      id: row.id,
+      organization_id: row.organization_id,
+      service: row.service_type,
+      generation: row.credential_generation,
+      envelope,
+      public_config: row.config ?? {},
+      target: row.target ?? null,
+      serve_until: serveUntil,
+    }
+    const problem = servedConnectionProblem(served, servedAt)
+    if (problem !== null) {
+      dropped++
+      console.error(`[ops-gateway] connection ${row.id} was not served to the ops Worker: it has ${problem}`)
+      continue
+    }
+    connections.push({ ...served, envelope: parseSealedEnvelope(envelope, 'the envelope'), public_config: served.public_config as Record<string, unknown>, target: served.target as Record<string, unknown> | null })
+  }
+
+  const removals = await fetchAllPaged<TombstoneRow>(
+    (from, to) => supabase
+      .from('connection_tombstones')
+      .select('connection_id, organization_id, generation, removed_at')
+      .gte('removed_at', new Date(nowMs - TOMBSTONE_SERVE_WINDOW_MS).toISOString())
+      .order('connection_id', { ascending: true })
+      .order('generation', { ascending: false })
+      .range(from, to),
+    'the removed connections the ops Worker must stop using',
+    { maxPages: MAX_PAGES },
+  )
+  // One per connection, at its highest generation: a tombstone covers every generation up to its own.
+  const tombstones = new Map<string, ServedConnectionTombstone>()
+  for (const t of removals) {
+    const kept = tombstones.get(t.connection_id)
+    if (!kept || t.generation > kept.generation) {
+      tombstones.set(t.connection_id, { connection_id: t.connection_id, organization_id: t.organization_id, generation: t.generation, removed_at: t.removed_at })
+    }
+  }
+  return { served_at: servedAt, complete: dropped === 0, connections, tombstones: [...tombstones.values()] }
 }
 
 /**
