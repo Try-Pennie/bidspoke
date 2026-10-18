@@ -8,13 +8,16 @@ import {
   type ActionSchema,
   type FieldRole,
 } from '../schema/types'
-import { collectModuleGraph } from './module-graph'
+import { resolveDependencyVersions, type ImporterLock } from './lockfile'
+import { collectModuleImports } from './module-graph'
 
 /**
  * The fingerprint of one released action version (#1689 D1, #2337): a sha256
- * over its behaviour fields (arguments and traits, never a display name) and
- * the source of its run file plus every file that file reaches through a
- * relative value import (module-graph.ts says what that does not cover).
+ * over its behaviour fields (arguments and traits, never a display name), the
+ * source of its run file plus every file that file reaches through a relative
+ * value import, and the version pnpm-lock.yaml resolves for every npm package
+ * those files import, so a dependency upgrade is a change to the version
+ * (module-graph.ts says what that does not cover).
  *
  * Taken from the source TEXT, not from `run.toString()`, so a transpiler or
  * test runner upgrade that reformats emitted code cannot move it. Line endings
@@ -54,11 +57,17 @@ export function canonicalJson(value: unknown): string {
   })
 }
 
-export function computeFingerprint(action: ActionSchema, runFile: string, packageRoot: string): string {
-  const sources = collectModuleGraph(runFile).map((file) => ({
+/**
+ * Throws ModuleGraphError for an import the walker cannot follow, and
+ * LockfileError for an npm package `lock` does not resolve to a pinned version.
+ */
+export function computeFingerprint(action: ActionSchema, runFile: string, packageRoot: string, lock: ImporterLock): string {
+  const reached = collectModuleImports(runFile)
+  const sources = reached.files.map((file) => ({
     path: path.relative(packageRoot, file).split(path.sep).join('/'),
     text: readFileSync(file, 'utf8').replace(/\r\n/g, '\n'),
   }))
-  const material = canonicalJson({ behaviour: behaviourOf(action), sources })
+  const dependencies = resolveDependencyVersions(lock, reached.packages)
+  const material = canonicalJson({ behaviour: behaviourOf(action), sources, dependencies })
   return createHash('sha256').update(material).digest('hex')
 }

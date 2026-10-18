@@ -4,6 +4,7 @@ import { pathToFileURL } from 'node:url'
 import type { ActionSchema, ServiceSchema } from '../schema/types'
 import type { RuntimeAction } from '../runtime/types'
 import { actionVersionId, computeFingerprint } from './fingerprint'
+import { LockfileError, readImporterLock, type ImporterLock } from './lockfile'
 import { ModuleGraphError } from './module-graph'
 
 /**
@@ -14,7 +15,9 @@ import { ModuleGraphError } from './module-graph'
  * imports it, and it reads files, which a Worker cannot.
  *
  * - Versioning (D1): every (key, version) has a committed fingerprint, and a
- *   released one that no longer matches fails, asking for a new version.
+ *   released one that no longer matches fails, asking for a new version. That
+ *   includes an upgrade of an npm package its run reaches, read from the
+ *   lockfile; a package the lockfile does not resolve is refused by name.
  * - Traits (R11): every action decides `sideEffect` and `idempotent` itself and
  *   writes down why it is or is not idempotent.
  * - Pairing: schema and runtime hold the same (key, version) set, and each run
@@ -32,6 +35,10 @@ export interface CatalogueUnderCheck {
   readonly actionsDir: string
   /** The package root fingerprint source paths are taken relative to. */
   readonly packageRoot: string
+  /** The pnpm-lock.yaml the npm versions a fingerprint folds in are read from, absolute. */
+  readonly lockfile: string
+  /** The run files' workspace package, as the lockfile's importers section names it. */
+  readonly importer: string
 }
 
 export type ProblemCode =
@@ -50,6 +57,8 @@ export type ProblemCode =
   | 'run_file_unregistered'
   | 'run_not_from_its_file'
   | 'run_source_unreadable'
+  | 'lockfile_unreadable'
+  | 'dependency_unresolved'
   | 'fingerprint_missing'
   | 'fingerprint_changed'
   | 'fingerprint_orphaned'
@@ -176,16 +185,35 @@ export async function checkCatalogue(catalogue: CatalogueUnderCheck): Promise<Pr
     }
   }
 
-  // Versioning: committed fingerprints (D1).
+  // Versioning: committed fingerprints (D1). The lockfile is read and parsed
+  // once for the whole run, and read even when there is no action, so a wrong
+  // path fails before the first action ships rather than with it.
+  let lock: ImporterLock
+  try {
+    lock = readImporterLock(catalogue.lockfile, catalogue.importer)
+  } catch (err) {
+    if (!(err instanceof LockfileError)) throw err
+    problems.push({
+      code: 'lockfile_unreadable',
+      subject: catalogue.lockfile,
+      message: `${err.message}. No fingerprint can be checked without the versions it pins.`,
+    })
+    return problems
+  }
   for (const [id, action] of schemaById) {
     const file = files.get(id)
     if (!file) continue
     let actual: string
     try {
-      actual = computeFingerprint(action, file, catalogue.packageRoot)
+      actual = computeFingerprint(action, file, catalogue.packageRoot, lock)
     } catch (err) {
-      if (!(err instanceof ModuleGraphError)) throw err
-      problems.push({ code: 'run_source_unreadable', subject: id, message: err.message })
+      if (err instanceof ModuleGraphError) {
+        problems.push({ code: 'run_source_unreadable', subject: id, message: err.message })
+      } else if (err instanceof LockfileError) {
+        problems.push({ code: 'dependency_unresolved', subject: id, message: err.message })
+      } else {
+        throw err
+      }
       continue
     }
     const committed = catalogue.fingerprints[id]
@@ -201,7 +229,8 @@ export async function checkCatalogue(catalogue: CatalogueUnderCheck): Promise<Pr
         code: 'fingerprint_changed',
         subject: id,
         message:
-          `${id} is released and its arguments, traits or run source no longer match its committed fingerprint, ` +
+          `${id} is released and its arguments, traits, run source or the resolved version of an npm package it imports ` +
+          `no longer match its committed fingerprint, ` +
           `so every step saved on it would silently change. Put version ${action.version} back as it was and add the change as version ${next}.`,
       })
     }
