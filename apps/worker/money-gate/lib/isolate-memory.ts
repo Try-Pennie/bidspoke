@@ -18,6 +18,10 @@ export const FORGOTTEN_STATE = [
   'src/lib/stored-copy-ledger.ts:isolateId',
   'src/lib/stored-copy-ledger.ts:lastFlushAt',
   'src/lib/stored-copy-ledger.ts:pending',
+  // The row cap reports already sent to Better Stack (#1436): a run would
+  // otherwise skip a report a previous fixture's read had sent.
+  'src/lib/row-cap.ts:lastSent',
+  'src/lib/row-cap.ts:saidUnconfigured',
 ] as const
 
 export type ForgottenState = (typeof FORGOTTEN_STATE)[number]

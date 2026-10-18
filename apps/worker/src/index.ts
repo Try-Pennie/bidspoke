@@ -6,6 +6,7 @@ import shadow from './routes/shadow'
 import api from './routes/api/index'
 import { createScheduledSupabaseClient, scheduledSlackFor } from './lib/scheduled-slack'
 import { runInScheduledTick } from './lib/outage-notice'
+import { runWithRequestWaitUntil } from './lib/row-cap'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runBidRecordingCoverageCheck } from './lib/bid-recording-coverage'
 import { runTripointRevenueFillForEnv } from './lib/tripoint-revenue-fill'
@@ -86,9 +87,26 @@ import type { Env } from './env'
 
 const app = new Hono<{ Bindings: Env }>()
 
+// Every request runs with its waitUntil at hand, so a row cap report a read
+// starts is not cancelled when the response goes out (#1436, lib/row-cap.ts).
+// Registered first so every later middleware and route runs inside it.
+app.use('*', async (c, next) => {
+  let ctx: { waitUntil(promise: Promise<unknown>): void } | undefined
+  try {
+    ctx = c.executionCtx
+  } catch {
+    // A request with no execution context (a unit test) has nowhere to put it.
+    ctx = undefined
+  }
+  if (!ctx) return next()
+  const keep = ctx
+  return runWithRequestWaitUntil((p) => keep.waitUntil(p), () => next())
+})
+
 // The count of stored copies a request served or refused (#1848) is written
 // after the response, never on it, and not at all when nothing was noted.
-// Registered first so it wraps every route, the custom endpoint one included.
+// Registered right after the row cap waitUntil middleware, so it wraps every
+// route, the custom endpoint one included.
 app.use('*', async (c, next) => {
   await next()
   const kv = c.env?.IDEMPOTENCY
