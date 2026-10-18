@@ -18,12 +18,14 @@ import {
   OpsWriteTimeoutError,
   acquireSfLease,
   callOpsRpc,
+  chargedAttempts,
   claimOpsSweep,
   claimRunRequests,
   completeRunRequest,
   dueQueueDepth,
   enqueueRunRequest,
   extendRunLease,
+  lastChargedAttempt,
   opsNow,
   purgeExpiredConnectionTombstones,
   readConnectionCopy,
@@ -174,6 +176,49 @@ describe('the typed wrappers', () => {
 
     const { client: bad } = rpcFetch([{ ...row, organization_id: 'someone-else' }])
     await expect(claimRunRequests(bad, { worker: 'tick', limit: 10, perWorkflow: 2, leaseSeconds: 60 })).rejects.toThrow(/organization is not a uuid/)
+  })
+
+  it('claim: answers the uncharged attempts, so the Worker sees the charged count (#2336)', async () => {
+    const row = {
+      run_request_id: RUN, organization_id: ORG, workflow_id: WF, workflow_version: 2, trigger_kind: 'http_webhook', claim_token: TOKEN,
+      claim_expires_at: '2026-10-18T12:01:00Z', state_version: 9, attempts: 2, max_attempts: 2, resume_reason: 'resource_wait',
+      execution_chain_id: RUN, resumed_from_execution_id: null, payload: null, payload_ref: null, uncharged_attempts: 1,
+    }
+    const claim = { worker: 'tick', limit: 10, perWorkflow: 2, leaseSeconds: 60 }
+    const [claimed] = await claimRunRequests(rpcFetch([row]).client, claim)
+    expect(claimed).toMatchObject({ attempts: 2, unchargedAttempts: 1, maxAttempts: 2, resumeReason: 'resource_wait' })
+
+    // The function before migration 20261018140000 does not answer it: unknown, never 0 (L163).
+    const { uncharged_attempts: _omitted, ...before } = row
+    const [old] = await claimRunRequests(rpcFetch([before]).client, claim)
+    expect(old.unchargedAttempts).toBeNull()
+
+    for (const bad of ['1', 1.5, null, -1, 3]) {
+      await expect(claimRunRequests(rpcFetch([{ ...row, uncharged_attempts: bad }]).client, claim), String(bad)).rejects.toThrow(
+        /claim_run_requests returned uncharged_attempts that is not a whole number from 0 to attempts/,
+      )
+    }
+  })
+
+  it('claim: the charged count, and whether a retry after this start is the last, judged as the database judges them (#2336)', () => {
+    // A run of max_attempts 2 that waited twice on the Salesforce pool, claimed to resume:
+    // attempts alone (this start would be the third of 2) calls it spent, but one attempt
+    // is charged and a start resumed from a wait is not.
+    const waited = { attempts: 2, unchargedAttempts: 1, maxAttempts: 2, resumeReason: 'resource_wait' }
+    expect(chargedAttempts(waited)).toBe(1)
+    expect(waited.attempts + 1 >= waited.maxAttempts).toBe(true)
+    expect(lastChargedAttempt(waited)).toBe(false)
+    // The same run claimed as a retry after those waits: this start is charged, 2 of 2.
+    expect(lastChargedAttempt({ attempts: 3, unchargedAttempts: 2, maxAttempts: 2, resumeReason: 'retry' })).toBe(true)
+    // A lapse the sweep refunded leaves its one attempt to spend.
+    expect(lastChargedAttempt({ attempts: 1, unchargedAttempts: 1, maxAttempts: 2, resumeReason: 'retry' })).toBe(false)
+    // A run that never waited: the charged count is attempts.
+    expect(chargedAttempts({ attempts: 1, unchargedAttempts: 0 })).toBe(1)
+    expect(lastChargedAttempt({ attempts: 0, unchargedAttempts: 0, maxAttempts: 1, resumeReason: null })).toBe(true)
+    expect(lastChargedAttempt({ attempts: 0, unchargedAttempts: 0, maxAttempts: 3, resumeReason: null })).toBe(false)
+    // Not answered (the older function): unknown, so no caller can mistake it for a count.
+    expect(chargedAttempts({ attempts: 2, unchargedAttempts: null })).toBeNull()
+    expect(lastChargedAttempt({ attempts: 2, unchargedAttempts: null, maxAttempts: 3, resumeReason: null })).toBeNull()
   })
 
   it('start: a lost claim is an error, never a start', async () => {
