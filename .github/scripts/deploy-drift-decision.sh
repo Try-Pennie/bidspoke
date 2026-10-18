@@ -29,12 +29,13 @@
 #
 # Usage:
 #   deploy-drift-decision.sh <live_sha> <up_to_date:yes|no> \
-#                            <inflight_age_seconds|""|unavailable> \
+#                            <inflight|""|unavailable> \
 #                            <artifact:identical|differs|not-gated|unknown>
 #
-# `unavailable` for the age means the in-flight query could not be answered at
-# all, which is a different fact from an idle pipeline and gets its own outcome
-# (#899).
+# `inflight` is deploy-inflight-age.sh's answer, `age=<s>,running=<s|unknown>`
+# (a bare number of seconds is read as an age with the running time unknown).
+# `unavailable` means the in-flight query could not be answered at all, which is
+# a different fact from an idle pipeline and gets its own outcome (#899).
 #
 # `not-gated` is for a deploy target with no artifact gate, where the paths filter
 # is the deploy's own predicate and history therefore settles the question on its
@@ -45,10 +46,12 @@
 # on the word.
 #
 # THE FAIL-SAFE DIRECTION IS `alert`. Standing down is the narrow exception, and
-# it applies only while an in-flight deploy is YOUNGER than one deploy's worth of
-# time. A deploy stuck in progress must still page, or "a deploy is running"
-# becomes a permanent excuse for silence (LESSONS L98) and this check quietly
-# stops being able to report the thing it exists for (#327).
+# it applies only while an in-flight deploy has RUN for less than one deploy's
+# worth of time and is younger than the backstop on its whole life
+# (deploy-inflight-ceiling.sh, #2409). A deploy stuck in progress must still
+# page, or "a deploy is running" becomes a permanent excuse for silence (LESSONS
+# L98) and this check quietly stops being able to report the thing it exists
+# for (#327).
 #
 # The same reasoning governs the artifact verdict. Only an explicit `identical`
 # buys silence. A comparison that could not be completed is its own loud outcome,
@@ -58,9 +61,12 @@
 
 set -uo pipefail
 
-# A deploy takes about 6 minutes. 15 gives generous headroom for a slow run while
-# still catching one that has genuinely wedged.
-MAX_INFLIGHT_SECONDS=${MAX_INFLIGHT_SECONDS:-900}
+# When an in-flight deploy counts as stuck, and the code that judges it, live in
+# one file shared with the site check, with the measurement they were set from
+# (#2409). The age alone was the test before, and a deploy whose jobs were
+# waiting for runners read as stuck on a healthy day.
+# shellcheck source=SCRIPTDIR/deploy-inflight-ceiling.sh
+source "$(dirname "${BASH_SOURCE[0]}")/deploy-inflight-ceiling.sh"
 
 LIVE_SHA="${1-}"
 UP_TO_DATE="${2-}"
@@ -109,17 +115,16 @@ if [ "$INFLIGHT_AGE" = "unavailable" ]; then
 fi
 
 if [ -n "$INFLIGHT_AGE" ]; then
-  # Parse through one check and map anything unreadable to the loud side, rather
-  # than letting it compare false against the threshold and buy silence (L50).
-  case "$INFLIGHT_AGE" in
-    *[!0-9]*) decide alert "in-flight deploy age '${INFLIGHT_AGE}' is not a whole number of seconds, so it cannot be trusted to excuse the drift" ;;
+  # Judged through the one shared check, which maps anything unreadable to the
+  # loud side rather than letting it compare false against a ceiling and buy
+  # silence (L50).
+  judge_inflight "$INFLIGHT_AGE"
+  case "$INFLIGHT_JUDGEMENT" in
+    malformed) decide alert "${INFLIGHT_WHY}, so it cannot be trusted to excuse the drift" ;;
+    stuck) decide alert "$INFLIGHT_WHY" ;;
   esac
 
-  if [ "$INFLIGHT_AGE" -gt "$MAX_INFLIGHT_SECONDS" ]; then
-    decide alert "a deploy has been in flight ${INFLIGHT_AGE}s, past the ${MAX_INFLIGHT_SECONDS}s ceiling, so it is stuck rather than merely slow"
-  fi
-
-  decide deploy-in-flight "a deploy started ${INFLIGHT_AGE}s ago is still running, so the worker is expected to be behind for now"
+  decide deploy-in-flight "${INFLIGHT_WHY}, so the worker is expected to be behind for now"
 fi
 
 if [ "$ARTIFACT" = "differs" ]; then
