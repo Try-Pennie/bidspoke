@@ -49,12 +49,13 @@ function history(ratio: number, n = MIN_BASELINE_SAMPLES): RatioHistory {
 
 // Engine writes a `skipped` row for nine leads in ten, so bid_rows is about ten
 // times attempt_rows there; the ratio is over attempts (#1413, L683).
-const row = (over: Partial<{ workflow_id: string; workflow_name: string; sightings: number; bid_rows: number; attempt_rows: number }> = {}) => ({
+const row = (over: Partial<{ workflow_id: string; workflow_name: string; sightings: number; bid_rows: number; attempt_rows: number; refusal_rows: number }> = {}) => ({
   workflow_id: 'wf-1',
   workflow_name: 'Engine Bidding Workflow',
   sightings: 1000,
   bid_rows: 5600,
   attempt_rows: 560,
+  refusal_rows: 0,
   ...over,
 })
 
@@ -227,6 +228,73 @@ describe('the recorded reading', () => {
     // accepts the broken rate as healthy.
     const out = decideRatioCollapse([row({ attempt_rows: 16 })], { 'wf-1': history(0.56) })
     expect(out.readings).toEqual([])
+  })
+})
+
+/**
+ * #2391: a deliberate eligibility rule is not a recording fault.
+ *
+ * Version 110 of the Engine flow (2026-10-15) made tripoint_ping refuse a sell
+ * off lead with a loan amount under 2,000. Those leads had been Tripoint
+ * attempts, so the attempts per lead fell from about 5.2% to 2.4% and the check
+ * paged every day, since a collapsed reading is never stored and the median
+ * never moves.
+ *
+ * Measured over the 2026-10-18 window (13:00 UTC on the 17th to 12:50 UTC on
+ * the 18th): 50,284 leads, 1,210 attempts, and 1,283 tripoint_ping refusals for
+ * loan_amount_below_min (none for missing_lead_field). Stored readings, oldest
+ * first: 5.5, 5.5, 5.0, 5.1, 5.4, 5.4, 3.4, 2.9 percent.
+ *
+ * Leaving the refusals out of the DENOMINATOR cannot absorb this: they are
+ * 2.6% of leads but half of what used to be attempts, so 1,210 over 49,001 is
+ * still 2.5%, under the 2.6% half of the baseline. What the refusals replaced
+ * was ATTEMPTS, so a lead the workflow recorded a refusal for counts as
+ * recorded, beside its attempts. Every reading stored before the rule had no
+ * refusals, so the history means the same thing and needs no reset.
+ */
+describe('decideRatioCollapse: refusals by a buyer\'s own rule (#2391)', () => {
+  const OCT_18 = { sightings: 50_284, bid_rows: 28_862, attempt_rows: 1_210, refusal_rows: 1_283 }
+  const STORED = { 'wf-1': { ratios: [0.055, 0.055, 0.05, 0.051, 0.054, 0.054, 0.034, 0.029] } }
+
+  it('does not page on the 2026-10-18 reading, and stores it as normal', () => {
+    const out = decideRatioCollapse([row(OCT_18)], STORED)
+    expect(out.collapsed).toEqual([])
+    expect(out.readings).toHaveLength(1)
+    expect(out.readings[0].ratio).toBeCloseTo((1_210 + 1_283) / 50_284, 9)
+  })
+
+  it('would still page if the refusals were only taken out of the denominator', () => {
+    // The arithmetic that rules the denominator out, kept so it is not tried again.
+    const denominatorOnly = OCT_18.attempt_rows / (OCT_18.sightings - OCT_18.refusal_rows)
+    expect(denominatorOnly).toBeLessThan(median(STORED['wf-1'].ratios) * COLLAPSE_FACTOR)
+  })
+
+  it('still pages when the recording itself drops, refusals and attempts alike', () => {
+    // The producer dropping out of the derivation loses its refusals too.
+    const out = decideRatioCollapse([row({ ...OCT_18, attempt_rows: 300, refusal_rows: 0 })], STORED)
+    expect(out.collapsed).toHaveLength(1)
+    expect(out.collapsed[0]).toMatchObject({ attempt_rows: 300, refusal_rows: 0 })
+    expect(out.readings).toEqual([])
+  })
+
+  it('pages on a day where every sell off lead reads missing_lead_field, which v4 counts as neither (L367)', () => {
+    // The loan amount path broke: no attempts, and the 2,493 sell off leads all
+    // refused as missing_lead_field. Those rows are written (bid_rows) but v4
+    // counts them in neither attempt_rows nor refusal_rows.
+    const out = decideRatioCollapse([row({ ...OCT_18, bid_rows: 28_862, attempt_rows: 0, refusal_rows: 0 })], STORED)
+    expect(out.collapsed).toHaveLength(1)
+    expect(out.collapsed[0]).toMatchObject({ ratio: 0, attempt_rows: 0, refusal_rows: 0 })
+  })
+
+  it('reports the refusals it counted on a collapsed workflow, so the alert can name them', () => {
+    const out = decideRatioCollapse([row({ ...OCT_18, attempt_rows: 100, refusal_rows: 200 })], STORED)
+    expect(out.collapsed[0]).toMatchObject({ attempt_rows: 100, refusal_rows: 200 })
+    expect(out.collapsed[0].ratio).toBeCloseTo(300 / 50_284, 9)
+  })
+
+  it('ignores a row with no usable refusal count rather than judging it as zero', () => {
+    const bad = { ...row(OCT_18), refusal_rows: undefined as unknown as number }
+    expect(decideRatioCollapse([bad], STORED)).toMatchObject({ collapsed: [], readings: [] })
   })
 })
 
