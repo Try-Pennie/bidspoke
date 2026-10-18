@@ -56,7 +56,7 @@
 
 import { Hono, type Context } from 'hono'
 import { dbError, dbErrorUnlessNotFound, requireRowOr404, rowsTouched } from '../../lib/api-error'
-import { createSlackClient, slackBodyOf, slackCallFailure, slackNetworkCause } from '../../lib/slack-client'
+import { createSlackClient, slackBodyOf, slackCallFailure, slackNetworkCause } from '@bidspoke/slack-client'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
