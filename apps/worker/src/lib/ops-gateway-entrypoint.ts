@@ -6,10 +6,12 @@
  * ops-gateway.ts.
  *
  * A named export of this Worker's main module (index.ts), as the Durable Object
- * classes are. Each method is one bounded piece of work the tick awaits: one
- * paged read with the library's retries off (a lead client's setting, #1844),
- * since the tick gives up on it at 15 s and plans from its saved copy, or one KV
- * write of a heartbeat stamp.
+ * classes are. Each method is one bounded piece of work its caller awaits, with
+ * the library's retries off (a lead client's setting, #1844), since the tick
+ * gives up at 15 s and keeps its saved copies: the workflow list (one paged
+ * read), the connection list (two paged reads, #2335), a heartbeat stamp (one KV
+ * write), money's identity for one organization (one KV read, #2335), or a
+ * rotated login's compare and set (one rpc, #2335).
  */
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import type { Env } from '../env'

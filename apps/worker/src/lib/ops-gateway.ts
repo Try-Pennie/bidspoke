@@ -15,6 +15,13 @@
  * keeping the last on copy for ever. Not its nodes: a run's definition at its
  * version is #1950's to fetch.
  *
+ * And, since #2335 (PR 6 of phase 5 of #1689), the ops connections the same
+ * way (readOpsConnections): every ops_key row's sealed envelope, public config
+ * and target with serve_until 6 hours on, and the removals of the last 7 hours,
+ * which the tick keeps as last good copies; never a plaintext login. Money's
+ * measured Salesforce identity for one organization is served beside it from
+ * money-identity.ts (OpsGateway.moneyIdentities).
+ *
  * WHO MAY CALL IT, AND WHOSE DATA. Only a Worker on this Cloudflare account that
  * declares a service binding to the OpsGateway entrypoint, which takes a deploy;
  * the public edge reaches only the default export (spike P6), and
