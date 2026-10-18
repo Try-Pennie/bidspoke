@@ -58,6 +58,15 @@ export interface OpsEnv extends OpsDbEnv {
   /** The lane this Worker serves: "ops", from wrangler.ops.toml [vars]. */
   LANE?: string
   PORTING_CAPTURE_MASTER?: string
+  /**
+   * The ops private key (#2333): PKCS#8 PEM, RSA-OAEP of at least 4096 bits, that
+   * opens the ops connection logins sealed to its public half in
+   * packages/connection-seal/src/keys.ts. Checked every minute that it imports and
+   * opens a probe sealed to the public key under CURRENT_OPS_KID (connection-key.ts).
+   */
+  OPS_CONNECTIONS_PRIVATE_KEY?: string
+  /** The NEXT ops private key, set only during a rotation of the ops key. */
+  OPS_CONNECTIONS_PRIVATE_KEY_NEXT?: string
   PORTING_TEE: R2Bucket
   /**
    * The ops code namespace (bidspoke-code-nodes-ops). Its outbound Worker,

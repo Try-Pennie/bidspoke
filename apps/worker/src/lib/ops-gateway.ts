@@ -133,6 +133,7 @@ function unreadableReport(why: string, at: string): OpsTickReport {
   return {
     tick_id: 'unreadable', mode: 'observe', scheduled_time: null, started_at: at, finished_at: at, db_now: null,
     outcome: 'problems', problems: [`The ops tick's report could not be read (${why}), so whether the tick worked is not known.`], counts: {},
+    not_configured_secrets: [],
   }
 }
 
@@ -146,8 +147,41 @@ const LIVE_DEPS: OpsTickReportCheckDeps = {
   notifyRecovery: (kv, job, nowMs) => notifyExportRecovery(kv, job, nowMs),
 }
 
-const NOT_CONFIGURED_FIX =
+const DATABASE_FIX =
   'Create a secret key for bidspoke-worker-ops on the Bidspoke Ops project, then set OPS_SUPABASE_URL and OPS_SUPABASE_SECRET_KEY on bidspoke-worker-ops (the steps are on the pull request that added the ops minute cron, #1949).'
+
+/**
+ * The remedy for each secret the tick can report not configured (#2333), so a
+ * page names the steps for the secret that is actually missing. The ops private
+ * key is restored from its escrow, never generated afresh: every ops connection
+ * is sealed to it, and a new key would leave each one unopenable.
+ */
+export const NOT_CONFIGURED_FIX: Readonly<Record<string, string>> = {
+  OPS_SUPABASE_URL: DATABASE_FIX,
+  OPS_SUPABASE_SECRET_KEY: DATABASE_FIX,
+  OPS_CONNECTIONS_PRIVATE_KEY:
+    'Restore the ops private key from the 1Password item Bidspoke recovery keys (field OPS_CONNECTIONS_PRIVATE_KEY): from apps/worker, pipe that field into `pnpm exec wrangler secret put OPS_CONNECTIONS_PRIVATE_KEY --config wrangler.ops.toml`, never typing it on a command line. Do not generate a new key while that copy exists: every ops connection is sealed to it (docs/disaster-recovery.md, Secret inventory).',
+  OPS_CONNECTIONS_PRIVATE_KEY_NEXT:
+    'OPS_CONNECTIONS_PRIVATE_KEY_NEXT is set only during a rotation of the ops key. If one is under way, pipe the NEXT key from the 1Password item Bidspoke recovery keys (field OPS_CONNECTIONS_PRIVATE_KEY_NEXT) into `pnpm exec wrangler secret put OPS_CONNECTIONS_PRIVATE_KEY_NEXT --config wrangler.ops.toml` from apps/worker; if none is, remove it with `pnpm exec wrangler secret delete OPS_CONNECTIONS_PRIVATE_KEY_NEXT --config wrangler.ops.toml`.',
+}
+
+/**
+ * The remedy for the secrets a report named, each said once, in the order
+ * named. A report naming none comes from an ops release before #2333, whose only
+ * not configured cause was the ops database. A name with no written remedy is
+ * named as it is, never answered with another secret's steps.
+ */
+export function notConfiguredFix(secrets: readonly string[] | null): string {
+  if (secrets === null || secrets.length === 0) return DATABASE_FIX
+  const fixes: string[] = []
+  for (const name of secrets) {
+    const fix = Object.hasOwn(NOT_CONFIGURED_FIX, name)
+      ? NOT_CONFIGURED_FIX[name]
+      : `Set ${name} on bidspoke-worker-ops: from apps/worker, pipe its value into \`pnpm exec wrangler secret put ${name} --config wrangler.ops.toml\`.`
+    if (!fixes.includes(fix)) fixes.push(fix)
+  }
+  return fixes.join(' ')
+}
 const PROBLEMS_FIX = 'Search the bidspoke-worker-ops logs for ops_tick around the time of this alert: every problem is logged there with the tick it came from.'
 
 export type OpsTickReportVerdict = 'healthy' | 'alerted' | 'stale' | 'no_report'
@@ -180,7 +214,7 @@ export async function runOpsTickReportCheck(
     return 'healthy'
   }
   const remedy = kept.outcome === 'not_configured'
-    ? { title: 'The ops minute cron is not configured', fixHint: NOT_CONFIGURED_FIX }
+    ? { title: 'The ops minute cron is not configured', fixHint: notConfiguredFix(kept.not_configured_secrets) }
     : { title: 'The ops minute cron reported a problem', fixHint: PROBLEMS_FIX }
   await deps.notifyFailure(supabase, OPS_TICK_JOB, kept.problems, kv, remedy, nowMs)
   return 'alerted'

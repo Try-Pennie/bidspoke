@@ -121,21 +121,36 @@ export const FEATURE_GATED_SECRETS = [
 export const OPS_REQUIRED_SECRETS = [
   // Derives each workflow's capture key and the redaction key (src/ops/index.ts).
   'PORTING_CAPTURE_MASTER',
+  // The ops private key (#2333, phase 3 of #1689): an RSA-4096 PKCS#8 PEM that
+  // opens every ops connection login the bidding Worker sealed to its public half
+  // (packages/connection-seal). Escrowed in the 1Password item "Bidspoke recovery
+  // keys" before it was set; a lost key costs re-entering every ops connection.
+  // Required from the change that first reads it, never parked as optional (L65):
+  // the minute tick checks it imports and opens a probe sealed to the committed
+  // public key (NEXT may open it mid rotation), and reports not_configured naming it.
+  'OPS_CONNECTIONS_PRIVATE_KEY',
 ] as const
 
 /**
- * Secrets the ops Worker may hold and does not yet require (#1709 part 3). The
- * ops database's URL and named secret key (src/ops/ops-db.ts). The minute cron
+ * Secrets the ops Worker may hold and does not require (#1709 part 3). First,
+ * the ops database's URL and named secret key (src/ops/ops-db.ts). The minute cron
  * (#1949) is the first code that reads them, and it did NOT move them to
  * OPS_REQUIRED_SECRETS, deliberately: it ships before Dan has created the key,
  * and while either is unset it reports not_configured, naming it, every minute,
  * which the bidding Worker pages on (lib/ops-gateway.ts). Requiring them here as
  * well would turn main's secret parity step red and add a second daily alert for
- * the same unset key. They move to OPS_REQUIRED_SECRETS once both are set.
+ * the same unset key. They move to OPS_REQUIRED_SECRETS once both are set. Then
+ * the NEXT ops private key, which is optional for good (#2333).
  */
 export const OPS_OPTIONAL_SECRETS = [
   'OPS_SUPABASE_URL',
   'OPS_SUPABASE_SECRET_KEY',
+  // The NEXT ops private key (#2333), held only during a rotation of the ops key
+  // (docs/disaster-recovery.md). Optional because it is unset the rest of the
+  // time; listed so that setting it does not turn main's secret parity step red
+  // mid rotation. When it is set, the minute tick checks it imports too, and
+  // counts it as opening the current kid once that kid has moved to it.
+  'OPS_CONNECTIONS_PRIVATE_KEY_NEXT',
 ] as const
 
 /** Every secret the ops Worker may hold; anything else on it fails the parity check. */

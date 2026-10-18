@@ -159,3 +159,27 @@ export async function open(privateKeys: KeyRing, envelope: unknown, aad: Connect
     raw.fill(0)
   }
 }
+
+/** A probe bound to no real organization or connection, so it can never stand in for a login. */
+const PROBE = 'ops key check'
+const probeAad = (kid: string): ConnectionAad => ({
+  organization_id: '00000000-0000-0000-0000-000000000000',
+  connection_id: '00000000-0000-0000-0000-000000000000',
+  service: 'ops-key-check',
+  generation: 1,
+  kid,
+})
+
+/**
+ * Resolves when the private key opens what is sealed to the public key under
+ * kid, and throws the SealError that says why when it does not (#2333). It
+ * seals a probe and opens it, the same two calls a login takes, and takes no
+ * envelope from its caller, so it can never open a stored login: the ops key
+ * check calls this rather than `open`, whose callers stay a closed list.
+ */
+export async function checkPrivateKeyOpens(privatePem: string, publicKeys: KeyRing, kid: string): Promise<void> {
+  const envelope = await seal(publicKeys, PROBE, probeAad(kid))
+  if ((await open({ [kid]: privatePem }, envelope, probeAad(kid))) !== PROBE) {
+    throw new SealError('seal_decrypt_failed', `the probe sealed under kid ${kid} opened to different text`)
+  }
+}

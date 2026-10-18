@@ -53,9 +53,13 @@ export type OrganizationId = string & { readonly [ORGANIZATION_ID]: true }
 
 /** A missing or wrong ops database setting, refused by name. */
 export class OpsDatabaseConfigError extends Error {
-  constructor(message: string) {
+  /** The secret that is unset or wrong, so a page names its remedy (#2333). */
+  readonly secret: 'OPS_SUPABASE_URL' | 'OPS_SUPABASE_SECRET_KEY'
+
+  constructor(message: string, secret: 'OPS_SUPABASE_URL' | 'OPS_SUPABASE_SECRET_KEY') {
     super(message)
     this.name = 'OpsDatabaseConfigError'
+    this.secret = secret
   }
 }
 
@@ -100,15 +104,15 @@ export function organizationIdFrom(value: unknown): OrganizationId {
 
 function databaseUrlFrom(env: OpsDbEnv): string {
   const raw = env.OPS_SUPABASE_URL
-  if (typeof raw !== 'string' || raw.trim() === '') throw new OpsDatabaseConfigError('OPS_SUPABASE_URL is not set, so the ops database cannot be reached')
+  if (typeof raw !== 'string' || raw.trim() === '') throw new OpsDatabaseConfigError('OPS_SUPABASE_URL is not set, so the ops database cannot be reached', 'OPS_SUPABASE_URL')
   let url: URL
   try {
     url = new URL(raw)
   } catch {
-    throw new OpsDatabaseConfigError('OPS_SUPABASE_URL is not a URL, so the ops database cannot be reached')
+    throw new OpsDatabaseConfigError('OPS_SUPABASE_URL is not a URL, so the ops database cannot be reached', 'OPS_SUPABASE_URL')
   }
   if (url.hostname.split('.')[0] === BIDDING_PROJECT_REF) {
-    throw new OpsDatabaseConfigError('OPS_SUPABASE_URL names the bidding database, which the ops Worker must never reach')
+    throw new OpsDatabaseConfigError('OPS_SUPABASE_URL names the bidding database, which the ops Worker must never reach', 'OPS_SUPABASE_URL')
   }
   return raw
 }
@@ -124,7 +128,7 @@ function databaseUrlFrom(env: OpsDbEnv): string {
 export function createOpsSupabaseClient(env: OpsDbEnv, options: { fetch?: typeof fetch } = {}): OpsSupabaseClient {
   const url = databaseUrlFrom(env)
   if (typeof env.OPS_SUPABASE_SECRET_KEY !== 'string' || env.OPS_SUPABASE_SECRET_KEY.trim() === '') {
-    throw new OpsDatabaseConfigError('OPS_SUPABASE_SECRET_KEY is not set, so the ops database cannot be reached')
+    throw new OpsDatabaseConfigError('OPS_SUPABASE_SECRET_KEY is not set, so the ops database cannot be reached', 'OPS_SUPABASE_SECRET_KEY')
   }
   const client = createClient(url, env.OPS_SUPABASE_SECRET_KEY, {
     auth: { persistSession: false },
