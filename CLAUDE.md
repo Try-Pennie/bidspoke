@@ -92,8 +92,8 @@
     never run on the newest. The catalogue is empty until the first service PR;
     `src/__fixtures__/catalogue` is a test only service that proves the machinery.
   - `packages/slack-client` (#2337): `createSlackClient`, the one place a Slack Web
-    API client is built, used by the Worker's alerts and Settings routes and by the
-    catalogue's ops Slack actions. It pins slack-web-api-client exactly, with retry
+    API client is built, used by the Worker's alerts and Settings routes, and the
+    one the catalogue's ops Slack actions must use once they exist. It pins slack-web-api-client exactly, with retry
     and debug logging off, and holds the only declaration of the library.
     `slack-calls-one-client.test.ts` scans every workspace package and fails on any
     other Slack client or import.
