@@ -161,8 +161,10 @@ connections.post('/:service_type/sync-schema', async (c) => {
     else schema = await fetchSnowflakeSchema(source)
   } catch (err) {
     if (err instanceof SchemaLookupError) {
-      // A stored login that cannot be read is our state, not the service's answer.
-      return c.json({ error: err.message, code: err.code }, err.code === 'schema_credentials_malformed' ? 500 : 502)
+      // A stored login that cannot be read, or that names an address or database
+      // the lookups refuse, is our state, not the service's answer: nothing was sent.
+      const ours = err.code === 'schema_credentials_malformed' || err.code === 'schema_source_invalid'
+      return c.json({ error: err.message, code: err.code }, ours ? 500 : 502)
     }
     // Anything else is a fault of ours; its message is not repeated, since it
     // was not built to be safe to show (F120), and only its name is logged.

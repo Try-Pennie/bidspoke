@@ -431,6 +431,25 @@ describe('POST /connections/:service_type/sync-schema', () => {
     expect(vi.mocked(fetchSalesforceSchema)).not.toHaveBeenCalled()
   })
 
+  it('a stored login naming a database the lookups refuse is ours, a 500, and nothing is sent', async () => {
+    const snowflakeConn = { ...existingConn, service_type: 'snowflake', cf_secret_key: 'CONN_EXISTING' }
+    const globalFetch = vi.fn(async () => new Response('{}'))
+    vi.stubGlobal('fetch', globalFetch)
+    const real = await vi.importActual<typeof import('../../../lib/schema-sync/snowflake')>('../../../lib/schema-sync/snowflake')
+    vi.mocked(fetchSnowflakeSchema).mockImplementationOnce(real.fetchSnowflakeSchema)
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, service_connections: [{ single: snowflakeConn }, { writeRows: [{ id: 'conn-1' }] }] }) as never
+    )
+    const env = {
+      ...baseEnv,
+      CONN_EXISTING: JSON.stringify({ account: 'xy1', username: 'u', password: 'p', database: 'DB; DROP TABLE X' }),
+    } as unknown as Env
+    const res = await request(app, 'POST', '/connections/snowflake/sync-schema', { env })
+    expect(res.status).toBe(500)
+    expect((await res.json() as { code: string }).code).toBe('schema_source_invalid')
+    expect(globalFetch).not.toHaveBeenCalled()
+  })
+
   it('an unexpected error is not repeated to the browser (F120)', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.mocked(fetchSalesforceSchema).mockRejectedValue(new Error('boom with sf-token inside'))
