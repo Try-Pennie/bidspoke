@@ -77,13 +77,12 @@ So two things hold the account in:
    reused, so an entry taken off the list stops at once. A mailbox or drive outside
    it is refused by name (`mailbox_not_allowed`, `drive_not_allowed`); a list that
    cannot be read refuses the call (`connection_auth_check_unavailable`). Verify
-   checks it again at save (PR 8). No function writes the table: an entry arrives
-   only by an approval migration Dan reviews, like the Salesforce caps:
-
-   ```sql
-   INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, approved_at, approved_by)
-   VALUES ('<organization uuid>', 'mailbox', 'ops@trypennie.com', now(), 'Dan');
-   ```
+   checks it again at save (PR 8). Entries are added by signed-in users of the
+   organization through the Connections page (#2338, Dan's decision on #2411,
+   2026-10-18), every change audited with who made it and when; each row records
+   who added it and when (`added_by`, `added_at`). Until that page exists the
+   table has no write path: the ops Worker only reads it, so every Google mint is
+   refused until the page ships and someone adds an entry.
 
 ## Admin hand off
 
@@ -120,8 +119,9 @@ before the first connection of that kind is saved.
 
 1. A Workspace super admin, in Security, API controls, Domain wide delegation,
    adds the ops service account's client id with exactly the four scopes above.
-2. Dan approves the mailboxes and shared drives each organization may name, and
-   each lands as an approval migration on the ops project.
+2. A signed-in user of the organization adds each mailbox and shared drive its
+   Google connections may name, on the Connections page (#2338), which audits
+   every change.
 3. Prove it by attempting the forbidden case on the live ops Worker: a connection
    naming a mailbox not on the list must be refused with `mailbox_not_allowed`
    before any token is asked for.

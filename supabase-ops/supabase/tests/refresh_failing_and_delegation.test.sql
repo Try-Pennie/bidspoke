@@ -6,8 +6,10 @@
 --   A. The new objects are under the ops rules: google_delegation_subjects has
 --      row level security on, organization_id uuid NOT NULL and never the nil
 --      uuid (it is an organization's list), browser roles shut out and
---      service_role read only, so an entry arrives only by an approval
---      migration. record_connection_refresh and google_delegation_check are
+--      service_role read only: entries are added by signed-in users of the
+--      organization through the Connections page (#2338), which does not
+--      exist yet, so the table has no write path and the ops Worker cannot
+--      add to its own list. record_connection_refresh and google_delegation_check are
 --      SECURITY DEFINER with a fixed search_path and service_role alone may
 --      run them; the write carries a 2 second lock_timeout, the read is STABLE.
 --   B. Decision 2. A token endpoint that timed out or answered 5xx moves a
@@ -69,10 +71,10 @@ BEGIN
     IF has_table_privilege('service_role', 'public.google_delegation_subjects', v_priv) THEN RAISE EXCEPTION 'service_role holds % on google_delegation_subjects', v_priv; END IF;
   END LOOP;
 
-  -- An entry is made only by an approval migration, never by the Worker.
+  -- The ops Worker never adds to its own list: entries come from the organization's users (#2338).
   SET LOCAL ROLE service_role;
   BEGIN
-    INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, approved_at, approved_by)
+    INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, added_at, added_by)
     VALUES ('aaaaaaaa-0000-4000-8000-000000002335', 'mailbox', 'anyone@example.invalid', now(), 'worker');
     RAISE EXCEPTION 'service_role wrote a delegation subject';
   EXCEPTION WHEN insufficient_privilege THEN NULL;
@@ -87,15 +89,15 @@ BEGIN
 
   FOREACH v_stmt IN ARRAY ARRAY[
     -- An organization's list, never the lane's.
-    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, approved_at, approved_by) VALUES ('00000000-0000-0000-0000-000000000000', 'mailbox', 'a@example.invalid', now(), 'x')$s$,
-    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, approved_at, approved_by) VALUES (gen_random_uuid(), 'calendar', 'a@example.invalid', now(), 'x')$s$,
+    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, added_at, added_by) VALUES ('00000000-0000-0000-0000-000000000000', 'mailbox', 'a@example.invalid', now(), 'x')$s$,
+    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, added_at, added_by) VALUES (gen_random_uuid(), 'calendar', 'a@example.invalid', now(), 'x')$s$,
     -- Stored lower case, so one mailbox is one row.
-    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, approved_at, approved_by) VALUES (gen_random_uuid(), 'mailbox', 'Ops@Example.invalid', now(), 'x')$s$,
-    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, approved_at, approved_by) VALUES (gen_random_uuid(), 'mailbox', 'not a mailbox', now(), 'x')$s$,
-    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, approved_at, approved_by) VALUES (gen_random_uuid(), 'mailbox', '*@example.invalid', now(), 'x')$s$,
-    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, approved_at, approved_by) VALUES (gen_random_uuid(), 'drive', 'short', now(), 'x')$s$,
-    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, approved_at, approved_by) VALUES (gen_random_uuid(), 'drive', '0AaBbCcDdEe/../x', now(), 'x')$s$,
-    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, approved_at, approved_by) VALUES (gen_random_uuid(), 'mailbox', 'a@example.invalid', now(), '')$s$,
+    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, added_at, added_by) VALUES (gen_random_uuid(), 'mailbox', 'Ops@Example.invalid', now(), 'x')$s$,
+    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, added_at, added_by) VALUES (gen_random_uuid(), 'mailbox', 'not a mailbox', now(), 'x')$s$,
+    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, added_at, added_by) VALUES (gen_random_uuid(), 'mailbox', '*@example.invalid', now(), 'x')$s$,
+    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, added_at, added_by) VALUES (gen_random_uuid(), 'drive', 'short', now(), 'x')$s$,
+    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, added_at, added_by) VALUES (gen_random_uuid(), 'drive', '0AaBbCcDdEe/../x', now(), 'x')$s$,
+    $s$INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, added_at, added_by) VALUES (gen_random_uuid(), 'mailbox', 'a@example.invalid', now(), '')$s$,
     -- The refresh streak's columns move together.
     $s$INSERT INTO public.connection_health (connection_id, organization_id, refresh_failures) VALUES (gen_random_uuid(), gen_random_uuid(), 2)$s$,
     $s$INSERT INTO public.connection_health (connection_id, organization_id, refresh_failures, refresh_failing_since, refresh_last_failed_at, refresh_failure_cause) VALUES (gen_random_uuid(), gen_random_uuid(), -1, now(), now(), 'x')$s$,
@@ -251,11 +253,11 @@ DECLARE
   v_other uuid := 'bbbbbbbb-0000-4000-8000-000000002335';
   v_out text;
 BEGIN
-  -- As an approval migration would.
-  INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, approved_at, approved_by) VALUES
-    (v_org, 'mailbox', 'ops@example.invalid', now(), 'Dan (test)'),
-    (v_org, 'drive', '0AbCdEfGhIjKlMnOpQ', now(), 'Dan (test)'),
-    (v_other, 'mailbox', 'ceo@example.invalid', now(), 'Dan (test)');
+  -- As the Connections page's write path (#2338) will, for a signed-in user of each organization.
+  INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, added_at, added_by) VALUES
+    (v_org, 'mailbox', 'ops@example.invalid', now(), 'someone@example.invalid (test)'),
+    (v_org, 'drive', '0AbCdEfGhIjKlMnOpQ', now(), 'someone@example.invalid (test)'),
+    (v_other, 'mailbox', 'ceo@example.invalid', now(), 'someone@example.invalid (test)');
 
   v_out := public.google_delegation_check(v_org, 'ops@example.invalid', ARRAY[]::text[]);
   IF v_out <> 'allowed' THEN RAISE EXCEPTION 'a listed mailbox answered %', v_out; END IF;

@@ -6,8 +6,10 @@
  * scopes the admin granted, and decision 11 granted broad ones. So on every
  * authorize, before a token is minted OR reused, the connection's mailbox and
  * shared drives are checked against the organization's own allowlist
- * (google_delegation_check on the ops database, entries made only by an
- * approval migration). A subject outside it is refused by name
+ * (google_delegation_check on the ops database; entries are added by
+ * signed-in users of the organization through the Connections page, #2338,
+ * every change audited with who made it and when, and until that page exists
+ * the table has no write path). A subject outside it is refused by name
  * (connection_not_allowed: mailbox_not_allowed or drive_not_allowed), and no
  * token is asked for. Checking before the memo means a subject taken off the
  * list stops at once, not when a held token runs out. An allowlist that cannot

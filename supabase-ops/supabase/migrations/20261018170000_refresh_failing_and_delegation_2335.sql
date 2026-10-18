@@ -41,12 +41,17 @@
 -- So which mailboxes and shared drives a Google connection may name is an
 -- organization's own list:
 --   google_delegation_subjects  one row per organization, kind (mailbox or
---                   drive) and subject. STATED, NEVER DEFAULTED (L72), as the
---                   Salesforce caps are: service_role may only read it, so an
---                   entry arrives only by an approval migration that names who
---                   approved it. A mailbox is stored lower case and compared
---                   without regard to case. An organization's row, never the
---                   lane's: the nil uuid is refused.
+--                   drive) and subject. STATED, NEVER DEFAULTED (L72): an empty
+--                   list allows nothing. Entries are added by signed-in users
+--                   of the organization through the Connections page (#2338,
+--                   Dan's decision on #2411, 2026-10-18), every change audited
+--                   with who made it and when; each row carries who added it
+--                   and when (added_by, added_at). Until that page exists the
+--                   table has no write path: the ops Worker's service_role may
+--                   only read it, and this migration adds no writer. A mailbox
+--                   is stored lower case and compared without regard to case.
+--                   An organization's row, never the lane's: the nil uuid is
+--                   refused.
 --   google_delegation_check(org, mailbox, drives)  read only. Answers allowed,
 --                   or the first refusal by name: mailbox_not_allowed,
 --                   drive_not_allowed. The Google minter calls it on every
@@ -59,7 +64,7 @@
 -- SAFE TO APPLY BEFORE ITS CODE (L640). Nothing calls either function yet:
 -- connectionFetch has no caller in production, and the new columns default to
 -- an empty streak. No delegation subject is listed by this migration, so every
--- Google mint is refused until Dan approves entries.
+-- Google mint is refused until the organization adds entries (#2338).
 --
 -- Additive (ADR 0007): new columns with a default, a new table, two new
 -- functions, and connection_status replaced in place with the same signature.
@@ -192,14 +197,20 @@ CREATE TABLE public.google_delegation_subjects (
   organization_id  uuid NOT NULL CONSTRAINT google_delegation_subjects_organization_check CHECK (organization_id <> '00000000-0000-0000-0000-000000000000'),
   kind             text NOT NULL CONSTRAINT google_delegation_subjects_kind_check CHECK (kind IN ('mailbox', 'drive')),
   subject          text NOT NULL,
-  approved_at      timestamptz NOT NULL,
-  approved_by      text NOT NULL CONSTRAINT google_delegation_subjects_approved_by_check CHECK (length(approved_by) BETWEEN 1 AND 200),
+  -- Who added the entry, and when: the signed-in user of the organization, through the Connections page (#2338).
+  added_at         timestamptz NOT NULL,
+  added_by         text NOT NULL CONSTRAINT google_delegation_subjects_added_by_check CHECK (length(added_by) BETWEEN 1 AND 200),
   PRIMARY KEY (organization_id, kind, subject),
   -- A mailbox is one exact address, lower case; a shared drive is its id. No pattern, no wildcard.
   CONSTRAINT google_delegation_subjects_subject_shape CHECK (
     (kind = 'mailbox' AND subject = lower(subject) AND length(subject) <= 254 AND subject ~ '^[a-z0-9._%+-]+@[a-z0-9-]+(\.[a-z0-9-]+)+$')
     OR (kind = 'drive' AND subject ~ '^[A-Za-z0-9_-]{10,128}$'))
 );
+
+COMMENT ON TABLE public.google_delegation_subjects IS
+  'F129: the mailboxes and shared drives a Google connection of this organization may act as or name. Entries are added by signed-in users '
+  'of the organization through the Connections page (#2338), every change audited with who made it and when. Until that page exists the '
+  'table has no write path: the ops Worker (service_role) only reads it, through google_delegation_check.';
 
 ALTER TABLE public.google_delegation_subjects ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.google_delegation_subjects FROM anon, authenticated, PUBLIC;
