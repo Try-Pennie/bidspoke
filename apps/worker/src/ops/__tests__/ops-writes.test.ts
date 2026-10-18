@@ -169,6 +169,7 @@ describe('the typed wrappers', () => {
       run_request_id: RUN, organization_id: ORG, workflow_id: WF, workflow_version: 2, trigger_kind: 'schedule', claim_token: TOKEN,
       claim_expires_at: '2026-10-16T12:01:00Z', state_version: 2, attempts: 0, max_attempts: 3, resume_reason: null,
       execution_chain_id: RUN, resumed_from_execution_id: null, payload: { scheduled_for: '2026-10-16T12:00:00Z' }, payload_ref: null,
+      uncharged_attempts: 0,
     }
     const { client } = rpcFetch([row])
     const [claimed] = await claimRunRequests(client, { worker: 'tick', limit: 10, perWorkflow: 2, leaseSeconds: 60 })
@@ -188,10 +189,16 @@ describe('the typed wrappers', () => {
     const [claimed] = await claimRunRequests(rpcFetch([row]).client, claim)
     expect(claimed).toMatchObject({ attempts: 2, unchargedAttempts: 1, maxAttempts: 2, resumeReason: 'resource_wait' })
 
-    // The function before migration 20261018140000 does not answer it: unknown, never 0 (L163).
+    // Ops migration 20261018140000 is applied, so every claim answers it. An answer
+    // without it is refused by name, never read as 0 (L163) or as unknown.
     const { uncharged_attempts: _omitted, ...before } = row
-    const [old] = await claimRunRequests(rpcFetch([before]).client, claim)
-    expect(old.unchargedAttempts).toBeNull()
+    await expect(claimRunRequests(rpcFetch([before]).client, claim)).rejects.toThrow(
+      /claim_run_requests returned no uncharged_attempts/,
+    )
+    // One row missing it refuses the whole claim, not just that run.
+    await expect(claimRunRequests(rpcFetch([row, before]).client, claim)).rejects.toThrow(
+      /claim_run_requests returned no uncharged_attempts/,
+    )
 
     for (const bad of ['1', 1.5, null, -1, 3]) {
       await expect(claimRunRequests(rpcFetch([{ ...row, uncharged_attempts: bad }]).client, claim), String(bad)).rejects.toThrow(
@@ -216,9 +223,12 @@ describe('the typed wrappers', () => {
     expect(chargedAttempts({ attempts: 1, unchargedAttempts: 0 })).toBe(1)
     expect(lastChargedAttempt({ attempts: 0, unchargedAttempts: 0, maxAttempts: 1, resumeReason: null })).toBe(true)
     expect(lastChargedAttempt({ attempts: 0, unchargedAttempts: 0, maxAttempts: 3, resumeReason: null })).toBe(false)
-    // Not answered (the older function): unknown, so no caller can mistake it for a count.
-    expect(chargedAttempts({ attempts: 2, unchargedAttempts: null })).toBeNull()
-    expect(lastChargedAttempt({ attempts: 2, unchargedAttempts: null, maxAttempts: 3, resumeReason: null })).toBeNull()
+    // Always a count now the claim always answers it, so a caller has no unknown case
+    // to handle (typed number and boolean, which the typecheck holds).
+    const charged: number = chargedAttempts({ attempts: 2, unchargedAttempts: 0 })
+    const last: boolean = lastChargedAttempt({ attempts: 2, unchargedAttempts: 0, maxAttempts: 3, resumeReason: null })
+    expect(charged).toBe(2)
+    expect(last).toBe(true)
   })
 
   it('start: a lost claim is an error, never a start', async () => {
