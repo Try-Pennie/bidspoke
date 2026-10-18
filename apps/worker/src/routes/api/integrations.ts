@@ -30,7 +30,7 @@
 //
 // The audit record (#2331, F119). The table's own trigger writes one audit_log
 // row per change, naming the user from updated_by (every write here sets it)
-// or, for the Disconnect, from delete_service_connection's actor, the way
+// or, for the Disconnect, from delete_service_connection_by_id's actor, the way
 // partner_configs is audited (#1409). So these routes write no audit row of
 // their own: one record per change, not two, and the record exists whenever
 // the change does, since the trigger runs in the same transaction.
@@ -389,25 +389,23 @@ integrations.delete('/slack', async (c) => {
   if (picked.kind === 'ambiguous') return ambiguousAlertRow(c, orgId, 'disconnect', picked.count)
 
   // Disconnecting a Slack that was never connected is a no-op, not an error, so
-  // this stays 200. delete_service_connection deletes with the caller named as
-  // the actor, so the table's trigger audits the removed row under this user
-  // (#2331); a delete that matched nothing is audited by nobody (#588).
+  // this stays 200. delete_service_connection_by_id deletes with the caller
+  // named as the actor, so the table's trigger audits the removed row under
+  // this user (#2331); a delete that matched nothing is audited by nobody (#588).
   //
-  // It deletes the organization's Slack rows that are not ops_key rows
-  // (migration 20261017150000, F124), so it can never remove an ops
-  // connection. It does not take the alert row's name, so when it removes any
-  // row other than the alert row just read (none can exist: no writer creates
-  // a non ops Slack row under another name), that is said by name.
+  // It deletes the alert row just read, by its id, within this organization and
+  // never an ops_key row (migration 20261018150000, #2332). So once release 2
+  // lets an organization hold another Slack row beside the alert row, the
+  // Disconnect cannot remove it. (The delete by service type it replaced
+  // removed every non ops Slack row of the organization, which is why #2374
+  // logged slack_disconnect_removed_other_rows; that cannot happen now, as
+  // supabase/tests/service_connections_delete_by_id.test.sql case B proves.)
   if (picked.row) {
     const alertRowId = picked.row.id
-    const { blocked, rows: deleted } = await rowsTouched<{ id: string }>(c, 'service_connections.slack_disconnect', () =>
-      supabase.rpc('delete_service_connection', { p_organization_id: orgId, p_service_type: 'slack', p_actor: userId })
+    const { blocked } = await rowsTouched<{ id: string }>(c, 'service_connections.slack_disconnect', () =>
+      supabase.rpc('delete_service_connection_by_id', { p_organization_id: orgId, p_connection_id: alertRowId, p_actor: userId })
     )
     if (blocked) return blocked
-    const others = deleted.map((r) => r.id).filter((id) => id !== alertRowId)
-    if (others.length > 0) {
-      console.error(`[integrations] slack_disconnect_removed_other_rows: Disconnect for org ${orgId} removed ${others.length} Slack row(s) besides the alert row ${alertRowId}: ${others.join(', ')}`)
-    }
   }
 
   // Removed from the copy even when the delete matched no row: the database now
