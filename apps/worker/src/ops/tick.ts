@@ -39,7 +39,9 @@
  *     made it (spike P4). With nothing due, one probe goes, so the path is proven
  *     every minute (L142: observe must exercise the path, short of the forward).
  *  8. Stamp completed with the report, which the bidding Worker judges every
- *     minute and pages on (lib/ops-gateway.ts runOpsTickReportCheck).
+ *     minute and pages on (lib/ops-gateway.ts runOpsTickReportCheck), except a
+ *     missed start stamp that is the report's only problem and the first in a
+ *     row, which it holds for one tick (#2410).
  *
  * Every port is injected, so the tests set both clocks (tick.test.ts); the live
  * ports are tick-live.ts.
@@ -166,11 +168,14 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   let dbNow: string | null = null
   const items: DispatchItem[] = []
 
-  // 1. Started.
+  // 1. Started. A miss is reported, and flagged so the bidding Worker can hold a
+  // lone one for a tick (#2410): it judges whether the next tick missed too.
+  let startStampFailed = false
   try {
     await ports.gateway.started()
   } catch (err) {
-    problems.push(`The ops tick could not stamp its start with the bidding Worker (${formatErr(err)}), so the heartbeat may read it as not running.`)
+    startStampFailed = true
+    problems.push(`The ops tick could not stamp its start with the bidding Worker (${formatErr(err)}).`)
   }
 
   const db = isDb(ports.db) ? ports.db : null
@@ -385,6 +390,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     problems: capProblems(problems),
     counts,
     not_configured_secrets: notConfiguredSecrets,
+    start_stamp_failed: startStampFailed,
   }
   log('finished', { tick_id: ports.tickId, outcome, problems: problems.length, ...counts })
   for (const p of problems) log('problem', { tick_id: ports.tickId, problem: p })
