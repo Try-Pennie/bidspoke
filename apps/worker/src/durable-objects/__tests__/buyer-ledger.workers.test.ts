@@ -14,7 +14,9 @@ import { runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test'
 import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import type { Env } from '../../index'
-import { PENDING_GRACE_MS, RETENTION_MS, type BuyerLedgerObject, type Counts, type EntryResult, type LedgerEntry, type ReserveBody, type ReserveResult, type Summary, type UnmirroredResult } from '../buyer-ledger'
+import { PENDING_GRACE_MS, RETENTION_MS, type BuyerLedgerObject, type Counts, type EntryResult, type LedgerEntry, type MirroredStamp, type ReserveBody, type ReserveResult, type Summary, type UnmirroredResult } from '../buyer-ledger'
+import { BuyerLedgerClient, buyerLedgerObjectName } from '../../lib/buyer-object-clients'
+import { ledgerClientOptions, runBuyerSaleDrain, type DrainDeps } from '../../lib/buyer-sale-drain'
 
 const bindings = env as unknown as Pick<Env, 'BUYER_LEDGER'>
 
@@ -146,6 +148,13 @@ const key = (leadKey: string) => ({ lead_key: leadKey, population: 'engine', kin
 const peek = (stub: DurableObjectStub) => get<Counts>(stub, '/peek', { kind: 'live' })
 const entryOf = (stub: DurableObjectStub, leadKey: string) => get<EntryResult>(stub, '/entry', { ...key(leadKey) })
 const OUTCOME = { buyer_reference: 'TP-1', result_code: '1000', http_status: 200, payout_cents: 1500 }
+/** What a copy read of an entry, as the mark carries it (#2422). */
+const stampFrom = (e: LedgerEntry): MirroredStamp => ({ lead_key: e.lead_key, population: e.population, kind: e.kind, status: e.status, resolved_at: e.resolved_at })
+async function stampOf(stub: DurableObjectStub, leadKey: string): Promise<MirroredStamp> {
+  const r = await entryOf(stub, leadKey)
+  if (!r.found) throw new Error(`no entry ${leadKey}`)
+  return stampFrom(r.entry)
+}
 
 describe('BuyerLedgerObject outcomes', () => {
   it('commit records the outcome, entry returns it, and a second commit is refused naming the state', async () => {
@@ -229,7 +238,7 @@ describe('BuyerLedgerObject outcomes', () => {
     await setClock(stub, NOW + PENDING_GRACE_MS)
     expect(await runDurableObjectAlarm(stub)).toBe(true)
     // The drain already mirrored the unresolved state.
-    const marked = await post(stub, '/mark-mirrored', { keys: [key('lead-a')] })
+    const marked = await post(stub, '/mark-mirrored', { keys: [await stampOf(stub, 'lead-a')] })
     expect(marked.status).toBe(200)
     expect(await entryOf(stub, 'lead-a')).toMatchObject({ found: true, entry: { status: 'unresolved', mirrored: true } })
 
@@ -248,7 +257,7 @@ describe('BuyerLedgerObject outcomes', () => {
     const stub = ledger()
     await setClock(stub, NOW)
     await reserve(stub, 'lead-a')
-    await post(stub, '/mark-mirrored', { keys: [key('lead-a')] })
+    await post(stub, '/mark-mirrored', { keys: [await stampOf(stub, 'lead-a')] })
     const committed = await post(stub, '/commit', { ...key('lead-a'), outcome: OUTCOME })
     expect(committed.status).toBe(200)
     expect(await entryOf(stub, 'lead-a')).toMatchObject({ found: true, entry: { status: 'accepted', mirrored: false, resolution_source: 'buyer', resolved_by: null } })
@@ -258,7 +267,7 @@ describe('BuyerLedgerObject outcomes', () => {
     const stub = ledger()
     await setClock(stub, NOW)
     await reserve(stub, 'lead-a')
-    await post(stub, '/mark-mirrored', { keys: [key('lead-a')] })
+    await post(stub, '/mark-mirrored', { keys: [await stampOf(stub, 'lead-a')] })
     await setClock(stub, NOW + PENDING_GRACE_MS)
     expect(await runDurableObjectAlarm(stub)).toBe(true)
     expect(await entryOf(stub, 'lead-a')).toMatchObject({ found: true, entry: { status: 'unresolved', mirrored: false } })
@@ -423,8 +432,8 @@ describe('BuyerLedgerObject mirror and prune', () => {
     await reserve(stub, 'mirrored-unresolved')
     await setClock(stub, NOW + PENDING_GRACE_MS)
     expect(await runDurableObjectAlarm(stub)).toBe(true)
-    const marked = await post(stub, '/mark-mirrored', { keys: [key('mirrored-accepted'), key('mirrored-unresolved')] })
-    expect(await marked.json()).toEqual({ marked: 2 })
+    const marked = await post(stub, '/mark-mirrored', { keys: [await stampOf(stub, 'mirrored-accepted'), await stampOf(stub, 'mirrored-unresolved')] })
+    expect(await marked.json()).toEqual({ marked: 2, changed: 0 })
     expect((await get<UnmirroredResult>(stub, '/unmirrored')).entries.map((e) => e.lead_key)).toEqual(['unmirrored-accepted'])
 
     await setClock(stub, NOW + RETENTION_MS + PENDING_GRACE_MS)
@@ -433,5 +442,177 @@ describe('BuyerLedgerObject mirror and prune', () => {
     expect(await entryOf(stub, 'mirrored-accepted')).toEqual({ found: false })
     expect(await entryOf(stub, 'unmirrored-accepted')).toMatchObject({ found: true })
     expect(await entryOf(stub, 'mirrored-unresolved')).toMatchObject({ found: true, entry: { status: 'unresolved' } })
+  })
+})
+
+describe('BuyerLedgerObject marks only the state the copy read (#2422)', () => {
+  it('a copy that read a reservation the attempt then released is refused its mark, and the next copy delivers the release', async () => {
+    // The race that froze buyer_sales row d135dfd0 at reserved on 2026-09-30: the
+    // drain read the entry reserved, the attempt's cleanup released it, and the
+    // drain's mark then marked the RELEASED state copied.
+    const stub = ledger()
+    await setClock(stub, NOW)
+    await reserve(stub, 'lead-a')
+    const read = await get<UnmirroredResult>(stub, '/unmirrored')
+    expect(read.entries).toMatchObject([{ lead_key: 'lead-a', status: 'reserved', resolved_at: null }])
+    await setClock(stub, NOW + 1_000)
+    expect((await post(stub, '/release', { ...key('lead-a'), status: 'released' })).status).toBe(200)
+
+    const mark = await post(stub, '/mark-mirrored', { keys: [stampFrom(read.entries[0])] })
+    expect(mark.status).toBe(200)
+    expect(await mark.json()).toEqual({ marked: 0, changed: 1 })
+
+    const next = await get<UnmirroredResult>(stub, '/unmirrored')
+    expect(next.entries).toMatchObject([{ lead_key: 'lead-a', status: 'released', resolved_at: NOW + 1_000, mirrored: false }])
+    const again = await post(stub, '/mark-mirrored', { keys: [stampFrom(next.entries[0])] })
+    expect(await again.json()).toEqual({ marked: 1, changed: 0 })
+    expect(await entryOf(stub, 'lead-a')).toMatchObject({ found: true, entry: { status: 'released', mirrored: true } })
+  })
+
+  it('a reservation the alarm made unresolved before the mark is refused too: resolved_at is unchanged, the status moved', async () => {
+    const stub = ledger()
+    await setClock(stub, NOW)
+    await reserve(stub, 'lead-a')
+    const read = await get<UnmirroredResult>(stub, '/unmirrored')
+    await setClock(stub, NOW + PENDING_GRACE_MS)
+    expect(await runDurableObjectAlarm(stub)).toBe(true)
+    const mark = await post(stub, '/mark-mirrored', { keys: [stampFrom(read.entries[0])] })
+    expect(await mark.json()).toEqual({ marked: 0, changed: 1 })
+    expect(await entryOf(stub, 'lead-a')).toMatchObject({ found: true, entry: { status: 'unresolved', mirrored: false } })
+  })
+
+  it('a mark whose state is unchanged marks the entry copied as before, in one batch with a changed one', async () => {
+    const stub = ledger()
+    await setClock(stub, NOW)
+    await reserve(stub, 'kept')
+    await reserve(stub, 'moved')
+    await post(stub, '/commit', { ...key('kept'), outcome: OUTCOME })
+    const read = await get<UnmirroredResult>(stub, '/unmirrored')
+    await setClock(stub, NOW + 1_000)
+    await post(stub, '/release', { ...key('moved'), status: 'released' })
+    const mark = await post(stub, '/mark-mirrored', { keys: read.entries.map(stampFrom) })
+    expect(await mark.json()).toEqual({ marked: 1, changed: 1 })
+    expect(await entryOf(stub, 'kept')).toMatchObject({ found: true, entry: { status: 'accepted', mirrored: true } })
+    expect((await get<UnmirroredResult>(stub, '/unmirrored')).entries.map((e) => e.lead_key)).toEqual(['moved'])
+  })
+
+  it('a mark that does not say what state it copied is refused by name, so no caller can mark blind', async () => {
+    const stub = ledger()
+    await setClock(stub, NOW)
+    await reserve(stub, 'lead-a')
+    const bads = [
+      key('lead-a'),
+      { ...key('lead-a'), status: 'pending', resolved_at: null },
+      { ...key('lead-a'), status: 'reserved', resolved_at: 'later' },
+      { ...key('lead-a'), status: 'reserved' },
+    ]
+    for (const bad of bads) {
+      const res = await post(stub, '/mark-mirrored', { keys: [bad] })
+      expect(res.status).toBe(400)
+      expect(await res.json()).toEqual({ error: 'bad_keys' })
+    }
+    expect(await entryOf(stub, 'lead-a')).toMatchObject({ found: true, entry: { mirrored: false } })
+  })
+})
+
+describe('BuyerLedgerObject clear-mirrored re-queues one entry for the copy (#2422)', () => {
+  it('clears the copied mark on a released entry and changes nothing else, so the drain copies the ledger\'s own state', async () => {
+    const stub = ledger()
+    await setClock(stub, NOW)
+    await reserve(stub, 'lead-a')
+    await reserve(stub, 'lead-b')
+    await setClock(stub, NOW + 1_000)
+    await post(stub, '/release', { ...key('lead-a'), status: 'released' })
+    await post(stub, '/mark-mirrored', { keys: [await stampOf(stub, 'lead-a')] })
+    const before = await entryOf(stub, 'lead-a')
+    if (!before.found) throw new Error('the released entry is missing')
+    expect(before.entry).toMatchObject({ status: 'released', mirrored: true })
+    const countsBefore = await peek(stub)
+
+    const res = await post(stub, '/clear-mirrored', key('lead-a'))
+    expect(res.status).toBe(200)
+    const body = await res.json<{ cleared: boolean; entry: LedgerEntry }>()
+    expect(body).toEqual({ cleared: true, entry: { ...before.entry, mirrored: false } })
+    expect(await entryOf(stub, 'lead-a')).toEqual({ found: true, entry: { ...before.entry, mirrored: false } })
+    expect(await peek(stub)).toEqual(countsBefore)
+    expect((await get<UnmirroredResult>(stub, '/unmirrored')).entries.map((e) => e.lead_key).sort()).toEqual(['lead-a', 'lead-b'])
+
+    // Asked again, it says nothing was cleared rather than claiming a second re-queue.
+    const twice = await post(stub, '/clear-mirrored', key('lead-a'))
+    expect(await twice.json()).toMatchObject({ cleared: false, entry: { status: 'released', mirrored: false } })
+  })
+
+  it('a re-queued entry is not pruned while it waits for the copy', async () => {
+    const stub = ledger()
+    await setClock(stub, NOW)
+    await reserve(stub, 'lead-a')
+    await post(stub, '/release', { ...key('lead-a'), status: 'released' })
+    await post(stub, '/mark-mirrored', { keys: [await stampOf(stub, 'lead-a')] })
+    await post(stub, '/clear-mirrored', key('lead-a'))
+    await setClock(stub, NOW + RETENTION_MS + 1)
+    await runDurableObjectAlarm(stub)
+    expect(await entryOf(stub, 'lead-a')).toMatchObject({ found: true, entry: { status: 'released', mirrored: false } })
+  })
+
+  it('an absent entry is 404 and a malformed key is 400, by name', async () => {
+    const stub = ledger()
+    await setClock(stub, NOW)
+    const absent = await post(stub, '/clear-mirrored', key('nobody'))
+    expect(absent.status).toBe(404)
+    expect(await absent.json()).toEqual({ error: 'absent' })
+    const bad = await post(stub, '/clear-mirrored', { lead_key: '', population: 'engine', kind: 'live' })
+    expect(bad.status).toBe(400)
+    expect(await bad.json()).toEqual({ error: 'bad_key' })
+  })
+})
+
+describe('the minute drain against a real ledger, racing the attempt\'s release (#2422)', () => {
+  let raceSeq = 0
+  function drainDeps(partnerId: string, rows: Array<{ status: string }>, duringWrite: () => Promise<void>): DrainDeps {
+    const rpc = async (_fn: string, args: { p_row: { id: string; status: string } }) => {
+      rows.push({ status: args.p_row.status })
+      await duringWrite()
+      return { data: { id: args.p_row.id, status: args.p_row.status }, error: null }
+    }
+    return {
+      listBuyers: async () => [{ partner_id: partnerId, organization_id: '22222222-2222-4222-8222-222222222222', slug: 'tripoint' }],
+      ledger: (pid, opts) => new BuyerLedgerClient(bindings.BUYER_LEDGER, pid, ledgerClientOptions(opts)),
+      unreadableSince: { read: async () => ({}), write: async () => {} },
+      readExistingRows: async () => new Map(),
+      supabase: { rpc } as never,
+      notify: async () => {},
+      recordRun: async () => {},
+      now: () => NOW,
+      localDev: false,
+      log: () => {},
+    }
+  }
+
+  it('a reservation released between the copy and the mark is copied again as released on the next tick', async () => {
+    raceSeq += 1
+    const partnerId = `race-${raceSeq}`
+    const client = new BuyerLedgerClient(bindings.BUYER_LEDGER, partnerId)
+    const stub = bindings.BUYER_LEDGER.get(bindings.BUYER_LEDGER.idFromName(buyerLedgerObjectName(partnerId)))
+    await setClock(stub, NOW)
+    const k = { lead_key: 'lead-race', population: 'engine' as const, kind: 'rehearsal' as const }
+    await client.reserve({ ...k, payout_cents: 2204, execution_id: 'exec-race', limits: NO_LIMITS })
+
+    const rows: Array<{ status: string }> = []
+    let raced = false
+    // The attempt's cleanup lands while the drain's write is in flight.
+    const first = await runBuyerSaleDrain(drainDeps(partnerId, rows, async () => {
+      if (raced) return
+      raced = true
+      await client.release(k, 'released')
+    }))
+    expect(rows).toEqual([{ status: 'reserved' }])
+    expect(first.buyers[0]).toMatchObject({ pending: 1, delivered: 0, failed: 0, changed_since_read: 1 })
+    expect(first.paged).toEqual([])
+    expect(await client.entry(k)).toMatchObject({ found: true, entry: { status: 'released', mirrored: false } })
+
+    const second = await runBuyerSaleDrain(drainDeps(partnerId, rows, async () => {}))
+    expect(rows).toEqual([{ status: 'reserved' }, { status: 'released' }])
+    expect(second.buyers[0]).toMatchObject({ pending: 1, delivered: 1, failed: 0 })
+    expect(await client.entry(k)).toMatchObject({ found: true, entry: { status: 'released', mirrored: true } })
   })
 })
