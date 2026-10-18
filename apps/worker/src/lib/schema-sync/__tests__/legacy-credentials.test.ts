@@ -47,8 +47,9 @@ describe('legacySchemaSource', () => {
   })
 
   it('refuses unreadable JSON by name, without repeating any of it (F120)', () => {
-    // V8's SyntaxError message quotes the start of the text, which here is the login.
-    const err = failure(() => legacySchemaSource('salesforce', '{"access_token":"secret-123", oops', fetch))
+    // V8's SyntaxError quotes text it cannot parse ("secret-123" is not valid
+    // JSON), which for a token pasted in place of the JSON is the login itself.
+    const err = failure(() => legacySchemaSource('salesforce', 'secret-123', fetch))
     expect(err.code).toBe('schema_credentials_malformed')
     expect(`${err.message}\n${err.stack}`).not.toContain('secret-123')
     expect(err.cause).toBeUndefined()

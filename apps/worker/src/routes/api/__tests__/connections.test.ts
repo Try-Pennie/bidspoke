@@ -422,7 +422,7 @@ describe('POST /connections/:service_type/sync-schema', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn } }) as never
     )
-    const env = { ...baseEnv, CONN_EXISTING: '{"access_token":"sf-secret-999", broken' } as unknown as Env
+    const env = { ...baseEnv, CONN_EXISTING: 'sf-secret-999' } as unknown as Env
     const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env })
     expect(res.status).toBe(500)
     const raw = await res.text()
