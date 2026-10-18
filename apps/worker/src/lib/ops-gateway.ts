@@ -155,7 +155,15 @@ export async function recordOpsTickCompleted(kv: KVNamespace, raw: unknown, nowM
  * costs at most one tick before a run of misses pages.
  */
 async function previousStartMisses(kv: KVNamespace, nowMs: number): Promise<number> {
-  const raw = await kv.get(OPS_TICK_REPORT_KEY)
+  let raw: string | null
+  try {
+    raw = await kv.get(OPS_TICK_REPORT_KEY)
+  } catch (err) {
+    // The report must still be kept, so a failed read is counted as a miss
+    // before this one: the run then pages rather than being held.
+    console.error(`[ops-tick] could not read the last report to count missed start stamps (${formatErr(err)}); counting it as a miss`)
+    return OPS_TICK_START_MISSES_TO_PAGE - 1
+  }
   if (raw === null) return 0
   let prev: { received_at?: unknown; start_stamp_failed?: unknown; start_stamp_misses?: unknown }
   try {

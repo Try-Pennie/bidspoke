@@ -382,6 +382,15 @@ describe('a missed start stamp', () => {
     expect(d.sent).toEqual([])
   })
 
+  it('still keeps the report when the run before it cannot be read, and pages the miss rather than holding it', async () => {
+    const store = kv()
+    const d = deps()
+    const failingRead = { ...store, get: async () => { throw new Error('KV GET failed: 503') } }
+    await recordOpsTickCompleted(failingRead as unknown as KVNamespace, missed(1), NOW + MIN + 2000)
+    expect(JSON.parse(store.m.get(OPS_TICK_REPORT_KEY)!).tick_id).toBe('t1')
+    expect(await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW + MIN + 30_000, d)).toBe('alerted')
+  })
+
   it('refuses a report that says the stamp failed but reports no problem, so it pages as unreadable', async () => {
     const store = kv()
     const d = deps()
