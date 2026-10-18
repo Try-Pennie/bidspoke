@@ -73,6 +73,7 @@ import { TRIPOINT_PING_OUTCOME_RATE_REMEDY } from '../tripoint-ping-outcome-rate
 import { BUYER_OBJECTS_DRILL_REMEDY } from '../buyer-objects-health'
 import { ENGINE_SCRIPT_DRIFT_REMEDY, ENGINE_SCRIPT_DRIFT_UNREADABLE_REMEDY } from '../engine-script-drift'
 import { CLICK_CHECK_ERRORS_REMEDY, CLICK_PATH_QUIET_REMEDY, CLICK_PATH_UNREAD_REMEDY, CLICK_RECONCILE_REMEDY, CLICK_SEND_REFUSALS_REMEDY } from '../click-path-checks'
+import { LIVE_SHARE_REFUSALS_REMEDY, LIVE_SHARE_REFUSALS_UNREAD_REMEDY } from '../live-share-refusals'
 
 const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['archive backlog', ARCHIVE_BACKLOG_REMEDY],
@@ -114,6 +115,8 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['click path quiet', CLICK_PATH_QUIET_REMEDY],
   ['click send refusals', CLICK_SEND_REFUSALS_REMEDY],
   ['click reconcile', CLICK_RECONCILE_REMEDY],
+  ['live share refusing every lead', LIVE_SHARE_REFUSALS_REMEDY],
+  ['live share leads unread', LIVE_SHARE_REFUSALS_UNREAD_REMEDY],
 ]
 
 /**
