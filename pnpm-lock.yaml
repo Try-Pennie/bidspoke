@@ -232,6 +232,9 @@ importers:
       '@bidspoke/buyer-profile':
         specifier: workspace:*
         version: link:../../packages/buyer-profile
+      '@bidspoke/connection-seal':
+        specifier: workspace:*
+        version: link:../../packages/connection-seal
       '@bidspoke/node-types':
         specifier: workspace:*
         version: link:../../packages/node-types

@@ -22,6 +22,7 @@ import {
   HOLDER_FAILED_REASONS,
   LEASED_RUN_REQUEST_STATUSES,
   LEDGER_METHODS,
+  NON_STEP_LEASE_OUTCOMES,
   OBSERVATION_OUTCOMES,
   OBSERVATION_REASONS,
   OPS_SWEEPS,
@@ -171,8 +172,24 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     expect(sorted(constraintValues(SQL, 'run_requests_resource_wait_cause_check'))).toEqual(sorted(RESOURCE_WAIT_CAUSES))
   })
 
-  it('a resource wait\'s causes are acquire_sf_lease\'s refusals and an acquire error', () => {
-    expect(sorted(RESOURCE_WAIT_CAUSES)).toEqual(sorted([...SF_LEASE_OUTCOMES.filter((o) => o !== 'granted'), 'acquire_error']))
+  it('a resource wait\'s causes are acquire_sf_lease\'s refusals of a step and an acquire error', () => {
+    const nonStep: readonly string[] = NON_STEP_LEASE_OUTCOMES
+    expect(sorted(RESOURCE_WAIT_CAUSES)).toEqual(sorted([...SF_LEASE_OUTCOMES.filter((o) => o !== 'granted' && !nonStep.includes(o)), 'acquire_error']))
+  })
+
+  /**
+   * The non step refusals (#2335, F125) are answered only after the step branch
+   * has taken the workflow's share, so they can never reach a run. Read from
+   * the function's last definition: each is selected after `IF p_purpose =
+   * 'step'` has either returned or set the share, never inside the step branch.
+   */
+  it('acquire_sf_lease answers the non step refusals only outside the step branch', () => {
+    const body = functionBody(SQL, 'acquire_sf_lease')
+    const stepBranch = /IF p_purpose = 'step' THEN\s+v_share := v_cap\.workflow_share;\s+ELSE([\s\S]*?)END IF;/.exec(body)
+    expect(stepBranch, 'the step branch takes the workflow share').not.toBeNull()
+    expect(stepBranch![1]).toContain("'sf_purpose_cap_unset'::text")
+    const stepRefusal = /IF p_purpose = 'step' THEN\s+RETURN QUERY SELECT 'workflow_share_full'::text[\s\S]*?RETURN;\s+END IF;\s+RETURN QUERY SELECT 'purpose_share_full'::text/.exec(body)
+    expect(stepRefusal, 'a full share answers a step workflow_share_full and every other purpose purpose_share_full').not.toBeNull()
   })
 
   it('reads the last definition of a constraint and of a function (seen red)', () => {
