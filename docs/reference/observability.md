@@ -152,7 +152,7 @@ A scheduled check finds who to tell by reading the org's Slack connection. When 
 | Alert | `Bidspoke Slack alerts down`, a Better Stack logs alert on the source below (the name Dan gave it on 2026-10-16, the constant `BETTER_STACK_ALERT_NAME`) |
 | Match | The alert's query is `raw ILIKE '%bidspoke nobody can be told in Slack: the database did not answer and no saved Slack copy could stand in%'`, threshold above 0. The text is the event's `message`, the constant `NOBODY_TOLD_LINE`, pinned by `nobody-told-page.test.ts`; change both together or the alert stops matching. The alert matches on this line, never on its own name. |
 | Means | The database did not answer a scheduled Slack lookup and the saved copy could not stand in: `reason` is `no_copy` (there is no saved copy, as after a fresh deploy), `org_not_in_copy` (the copy holds no connection for that organization, or, with `organization_id` null, for any organization) or `copy_unreadable` (the copy did not decrypt, most likely written under a key since rotated). Every scheduled alert for that organization is going unsaid. Check the database first (the Supabase dashboard), then the saved copy. A `reason` of `drill` is not an outage: somebody sent a drill page (below). |
-| Source | A Better Stack HTTP log source used for nothing else. Its token is the worker secret `BETTERSTACK_OUTAGE_TOKEN`, its ingesting host `BETTERSTACK_OUTAGE_URL`. |
+| Source | The Better Stack HTTP log source `Bidspoke outage line`. Its token is the worker secret `BETTERSTACK_OUTAGE_TOKEN`, its ingesting host `BETTERSTACK_OUTAGE_URL`. It also carries the row cap line (below, #1436), which is why each alert matches on its own line and never on the whole source. |
 | Fields | Exactly four: `message`, `organization_id` (null when the read was for every organization at once, and on a drill), `reason`, and `dt` (when it happened). Never applicant data or any other field; a test pins the whole event. |
 | Cadence | At most once per organization per scheduled tick, and once sent, not again for that organization for an hour (a KV record in `IDEMPOTENCY` under `nobody-told-page:`). A send Better Stack refuses or that takes over 5 seconds writes no record, so the next tick tries again. It never delays or fails the check that raised it. |
 
@@ -167,6 +167,18 @@ A scheduled check finds who to tell by reading the org's Slack connection. When 
 | 502 | `refused`, with `status` | Better Stack refused it, so the stored token or URL is wrong (a 401 or 403 most likely means the token). A real page would be refused the same way. |
 | 504 | `no_answer`, with `deadline_ms` | No answer within the 5 second page deadline; the send was abandoned. |
 | 502 | `threw`, with `error` | The request itself failed (a malformed URL, a DNS or network failure). |
+
+### A read stopped at the row cap (Better Stack)
+
+PostgREST answers at most 1,000 rows (the `max_rows` setting of the Supabase project's Data API, set in the Supabase dashboard, outside this repo; `ROW_CAP` in `apps/worker/src/lib/row-cap.ts` equals the pagination page size) and says nothing about having stopped there. The Worker's Supabase client checks every read's `Content-Range` header (#1436). A read that came back with 1,000 rows and declared no limit of its own (no `.limit(n)` with n at most 1,000 and no `.range()`; a `.single()` read, a `head: true` count and writes are exempt) is reported every time, and inside a scheduled job the read also fails, with the error code `BIDSPOKE_ROW_CAP` and a message naming the table or rpc and the query. On a request or the engine path the read answers as before. Dan's decisions on #1437, 2026-10-18.
+
+| | |
+|---|---|
+| Line | `bidspoke read stopped at the PostgREST row cap without a declared limit`, the event's `message` and the constant `ROW_CAP_LINE`. Every hit writes it to the Worker's log as one JSON line, and sends it to the same Better Stack source as the outage line above, since the Worker's own logs do not reach Better Stack. |
+| Alert | To be created by hand in Better Stack: a logs alert on the `Bidspoke outage line` source whose query is `raw ILIKE '%bidspoke read stopped at the PostgREST row cap without a declared limit%'`, threshold above 0. Until it exists, the line is sent and nothing pages. |
+| Fields | Exactly eight: `message`, `relation` (the table, view or rpc), `kind` (`table` or `rpc`), `query` (the query string with every filter value replaced by `?`), `rows`, `total` (the count when the read asked for one, else null), `in_scheduled_tick`, and `dt`. Never a row value; a test pins the whole event. |
+| Cadence | Logged on every hit. Sent to Better Stack at most once per call site (table and query shape) per 10 minutes per Worker isolate. A send that fails or takes over 3 seconds is logged and tried again on the next hit. On a request it never delays the read; in a scheduled job it is sent before the read fails. |
+| Means | A list read is missing rows, or holds exactly 1,000. Fix it in the code: declare the limit the read needs, or read every row with `fetchAllPaged` (`apps/worker/src/lib/paginate.ts`) under a full order. |
 
 ## Estimated cost per execution
 
