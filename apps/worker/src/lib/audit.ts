@@ -43,6 +43,9 @@ export type AuditEntityType =
   // The Better Stack page for "nobody can be told in Slack" (#2063), entity id
   // the alert's name. Written when a person sends a drill page (#1303).
   | 'outage_page'
+  // One run of the ops key restore drill (#2333), entity id the drill id
+  // POST /api/admin/seal-canary generates and returns with its envelope.
+  | 'ops_key_restore_drill'
 
 export type AuditAction =
   | 'created'
@@ -75,6 +78,9 @@ export type AuditAction =
   | 'archive_searched'
   // A drill page sent to Better Stack by hand (#1303), with what came of it.
   | 'outage_page_drilled'
+  // A restore drill canary sealed to an ops public key and returned (#2333),
+  // with the kid in changes. Nothing was stored but this row.
+  | 'canary_sealed'
 
 /**
  * How long to wait between audit-write attempts (#277).
