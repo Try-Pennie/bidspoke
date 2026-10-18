@@ -398,13 +398,16 @@ function migrationFiles(): Array<{ name: string; sql: string }> {
 // to anything later.
 const STATES_A_SIZE = /\d|\bunmeasured\b/i
 
+/** The tables in `live` that are in neither BIG_TABLES nor SMALL_TABLES, sorted. */
+function undeclaredTables(live: Map<string, string>): string[] {
+  const big = new Set(BIG_TABLES)
+  return [...live.keys()].filter((t) => !big.has(t) && !Object.hasOwn(SMALL_TABLES, t)).sort()
+}
+
 describe('every table declares its expected size at creation (#962)', () => {
   it('every table a migration creates is in BIG_TABLES or SMALL_TABLES', () => {
     const live = tablesCreatedBy(migrationFiles())
-    const big = new Set(BIG_TABLES)
-    const undeclared = [...live.entries()]
-      .filter(([t]) => !big.has(t) && !(t in SMALL_TABLES))
-      .sort(([a], [b]) => a.localeCompare(b))
+    const undeclared = undeclaredTables(live).map((t) => [t, live.get(t) as string] as const)
     expect(
       undeclared.map(([t, file]) => `${t} (${file})`),
       `Table(s) created in supabase/migrations with no declared size:\n` +
@@ -476,9 +479,17 @@ describe('the table size declaration check can fail (#962)', () => {
       ...migrationFiles(),
       { name: '29991231000000_fixture.sql', sql: 'CREATE TABLE IF NOT EXISTS public.fixture_undeclared_962 (id int);' },
     ])
-    const big = new Set(BIG_TABLES)
-    const undeclared = [...live.keys()].filter((t) => !big.has(t) && !(t in SMALL_TABLES))
-    expect(undeclared).toEqual(['fixture_undeclared_962'])
+    expect(undeclaredTables(live)).toEqual(['fixture_undeclared_962'])
+  })
+
+  it('a table named like an Object prototype key is not read as declared', () => {
+    // SMALL_TABLES is a plain object, so a lookup that walks the prototype would
+    // find `constructor` or `__proto__` on every object and exempt a table of that
+    // name without anybody declaring it.
+    const live = tablesCreatedBy([
+      { name: 'fixture.sql', sql: 'CREATE TABLE constructor (id int);\nCREATE TABLE __proto__ (id int);' },
+    ])
+    expect(undeclaredTables(live)).toEqual(['__proto__', 'constructor'])
   })
 })
 

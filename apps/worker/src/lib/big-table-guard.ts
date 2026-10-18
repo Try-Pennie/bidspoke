@@ -17,7 +17,7 @@ import { sendBigTableGrowthAlert } from './slack'
 
 // Tables already known to be big and handled (paginated). This is a verbatim
 // mirror of BIG_TABLES in the web static guard
-// (apps/web/src/lib/__tests__/worker-big-table-pagination.test.ts) — a sync test
+// (apps/web/src/lib/__guards__/worker/worker-big-table-pagination.test.ts); a sync test
 // there fails the build if the two drift. Including the partitioned entries is
 // harmless: the unpaginated_big_tables RPC already excludes partitioned
 // parents/children, so they never appear in its output anyway. Listing the FULL
