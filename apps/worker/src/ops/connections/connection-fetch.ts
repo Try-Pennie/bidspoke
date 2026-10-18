@@ -495,7 +495,10 @@ async function mintFailed(
         // record_connection_refresh wrote needs_reauth itself, through its one writer.
         throw refusal('connection_needs_reauth', `${NEEDS_REAUTH_CAUSES.refreshFailingExhausted}: ${err.reason}`, secrets)
       }
-      throw refusal('connection_auth_unavailable', `the ${resolved.service} token endpoint is unavailable (${err.reason}); the connection is refresh_failing`, secrets)
+      if (outcome === 'connection_removed') throw refusal('connection_removed', 'the connection is removed', secrets)
+      // The message states only what the database answered (L11): refresh_failing when it said so.
+      const state = outcome === null ? 'the failure could not be recorded' : `the connection is ${outcome}`
+      throw refusal('connection_auth_unavailable', `the ${resolved.service} token endpoint is unavailable (${err.reason}); ${state}`, secrets)
     }
   }
 }

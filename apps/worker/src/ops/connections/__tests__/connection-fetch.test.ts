@@ -303,8 +303,20 @@ describe('the login: a refused mint is needs_reauth at once; a failing token end
   it('a streak that cannot be recorded is reported, and the call is still unavailable rather than needs_reauth', async () => {
     const d = makeDoubles(keys, usableCopy(envelope), minting(new LoginMintError('unavailable', 'token_endpoint_unreachable')))
     d.deps.recordRefresh = async () => { throw new Error('ops database down') }
-    expect((await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))).code).toBe('connection_auth_unavailable')
+    const err = await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))
+    expect(err.code).toBe('connection_auth_unavailable')
+    // It may claim only what it measured (L11): the streak was not recorded, so no status is stated.
+    expect(err.message).not.toContain('refresh_failing')
+    expect(err.message).toContain('could not be recorded')
     expect(d.rec.reports).toEqual([{ event: 'refresh_unrecorded', connection_id: CONN, purpose: 'lookup' }])
+  })
+
+  it('a streak answered connection_removed is refused as removed, not as refresh_failing', async () => {
+    const d = makeDoubles(keys, usableCopy(envelope), minting(new LoginMintError('unavailable', 'token_endpoint_5xx')))
+    d.refreshAnswer('connection_removed')
+    const err = await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))
+    expect(err.code).toBe('connection_removed')
+    expect(err.message).not.toContain('refresh_failing')
   })
 
   it('a login that a token endpoint answered ends the streak; one read from the memo writes nothing', async () => {
