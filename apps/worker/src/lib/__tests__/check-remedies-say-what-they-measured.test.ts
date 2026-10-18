@@ -69,6 +69,7 @@ import {
 } from '../buyer-sale-drain'
 import { BUYER_OUTCOME_RATE_REMEDY, BUYER_SALES_MISMATCH_REMEDY, BUYER_SALES_UNLISTED_REMEDY, BUYER_SALES_UNRESOLVED_REMEDY } from '../buyer-sales-checks'
 import { BUYER_SELECT_PARITY_REMEDY } from '../buyer-select-parity'
+import { TRIPOINT_PING_OUTCOME_RATE_REMEDY } from '../tripoint-ping-outcome-rate'
 import { BUYER_OBJECTS_DRILL_REMEDY } from '../buyer-objects-health'
 import { ENGINE_SCRIPT_DRIFT_REMEDY, ENGINE_SCRIPT_DRIFT_UNREADABLE_REMEDY } from '../engine-script-drift'
 import { CLICK_CHECK_ERRORS_REMEDY, CLICK_PATH_QUIET_REMEDY, CLICK_PATH_UNREAD_REMEDY, CLICK_RECONCILE_REMEDY, CLICK_SEND_REFUSALS_REMEDY } from '../click-path-checks'
@@ -103,6 +104,7 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['buyer sales buyer list unread', BUYER_SALES_UNLISTED_REMEDY],
   ['buyer sales unresolved', BUYER_SALES_UNRESOLVED_REMEDY],
   ['buyer outcome rate', BUYER_OUTCOME_RATE_REMEDY],
+  ['tripoint ping outcome rate', TRIPOINT_PING_OUTCOME_RATE_REMEDY],
   ['buyer select parity', BUYER_SELECT_PARITY_REMEDY],
   ['buyer objects drill', BUYER_OBJECTS_DRILL_REMEDY],
   ['engine script drift', ENGINE_SCRIPT_DRIFT_REMEDY],
