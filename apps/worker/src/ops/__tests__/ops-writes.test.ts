@@ -44,6 +44,7 @@ import {
   sweepExpiredLeases,
   sweepSfLeases,
 } from '../ops-writes'
+import type { ResourceWaitCause } from '../run-vocabulary'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const RUN = '0199f0a0-0000-7000-8000-000000000001'
@@ -86,7 +87,7 @@ afterEach(() => {
 
 describe('callOpsRpc', () => {
   it('calls the named function with its arguments', async () => {
-    const { client, calls } = rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, more: false }])
+    const { client, calls } = rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 0, more: false }])
     await sweepExpiredLeases(client, 500)
     expect(calls).toEqual([{ path: '/rest/v1/rpc/sweep_expired_leases', body: { p_limit: 500 } }])
   })
@@ -197,6 +198,37 @@ describe('the typed wrappers', () => {
     expect(calls[0].body).toEqual({
       p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN, p_outcome: 'suspend', p_reason: 'wake', p_not_before: '2026-10-16T13:00:00.000Z',
     })
+  })
+
+  it('complete: a resource wait sends its cause as p_error with its wake time (#2334)', async () => {
+    const { client, calls } = rpcFetch([{ outcome: 'completed', run_status: 'suspended', state_version: 6 }])
+    const done = await completeRunRequest(client, ORG, RUN, TOKEN, { outcome: 'suspend', reason: 'resource_wait', cause: 'sf_budget_floor', notBefore: new Date('2026-10-17T23:05:00Z') })
+    expect(done).toEqual({ outcome: 'completed', runStatus: 'suspended' })
+    expect(calls[0].body).toEqual({
+      p_organization_id: ORG, p_run_request_id: RUN, p_claim_token: TOKEN, p_outcome: 'suspend', p_reason: 'resource_wait',
+      p_error: 'sf_budget_floor', p_not_before: '2026-10-17T23:05:00.000Z',
+    })
+  })
+
+  it('complete: a resource wait ended for waiting too long reads as failed, the status the database chose', async () => {
+    const { client } = rpcFetch([{ outcome: 'completed', run_status: 'failed', state_version: 7 }])
+    const done = await completeRunRequest(client, ORG, RUN, TOKEN, { outcome: 'suspend', reason: 'resource_wait', cause: 'pool_full', notBefore: new Date('2026-10-17T23:05:00Z') })
+    expect(done).toEqual({ outcome: 'completed', runStatus: 'failed' })
+  })
+
+  it('complete: refuses a resource wait whose cause is not one the database takes, sending nothing', async () => {
+    const { client, calls } = rpcFetch([])
+    await expect(completeRunRequest(client, ORG, RUN, TOKEN, {
+      outcome: 'suspend', reason: 'resource_wait', cause: 'pool_busy' as ResourceWaitCause, notBefore: new Date('2026-10-17T23:05:00Z'),
+    })).rejects.toThrow(/pool_busy is not a resource wait cause/)
+    expect(calls).toEqual([])
+  })
+
+  it('the lease sweep reads the runs it ended failed, and refuses an answer without that count', async () => {
+    expect(await sweepExpiredLeases(rpcFetch([{ requeued: 1, retried: 2, needs_human: 0, dead: 0, failed: 1, more: false }]).client, 100))
+      .toEqual({ requeued: 1, retried: 2, needsHuman: 0, dead: 0, failed: 1, more: false })
+    await expect(sweepExpiredLeases(rpcFetch([{ requeued: 0, retried: 0, needs_human: 0, dead: 0, more: false }]).client, 100))
+      .rejects.toThrow(/sweep_expired_leases returned failed that is not a count/)
   })
 
   it('send intent: stale comes back as stale, so the caller can refuse to send', async () => {

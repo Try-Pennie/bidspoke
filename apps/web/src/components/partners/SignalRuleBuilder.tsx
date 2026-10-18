@@ -97,7 +97,6 @@ function RuleRow({ rule, onChange, onRemove, removing }: {
             aria-label="Status code"
             value={rule.code === '' ? null : Number(rule.code)}
             onChange={(v) => onChange({ ...rule, code: v === null ? '' : String(v) })}
-            step={1}
             placeholder="status"
             className="w-24"
           />

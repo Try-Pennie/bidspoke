@@ -381,6 +381,35 @@ describe('runCronGuardWatch: a tick that may have run twice pages at once (#2284
     expect(expected).toBeGreaterThan(1_400)
   })
 
+  // The hour #2284 shipped: the table began filling three minutes before the
+  // hourly run, every row was inside the tail copy's lag, and the run paged
+  // "holds 0 of the last 1,430 minutes".
+  it('does not page a record that only started filling inside the tail copy lag', async () => {
+    const young: TickDelivery[] = []
+    for (let t = NOW - 3 * MIN; t <= NOW - MIN; t += MIN) young.push(delivery({ scheduledAtMs: t }))
+    const t = deps(memoryKv(), { deliveries: deliveryRecord([], young) })
+    const r = await runCronGuardWatch(t.d)
+    expect(r.find((x) => x.kind === 'double_run')).toMatchObject({ status: 'none' })
+    expect(t.sent).toEqual([])
+    expect(t.lines.join('\n')).toMatch(/minute_coverage=0\/0/)
+  })
+
+  it('judges a record that started an hour and more ago on the span since its first minute', async () => {
+    const started = NOW - 2 * H
+    const since = (keep: (i: number) => boolean) => {
+      const out: TickDelivery[] = []
+      for (let t = started, i = 0; t <= NOW - MIN; t += MIN, i++) if (keep(i)) out.push(delivery({ scheduledAtMs: t }))
+      return out
+    }
+    const whole = deps(memoryKv(), { deliveries: deliveryRecord([], since(() => true)) })
+    await runCronGuardWatch(whole.d)
+    expect(whole.sent).toEqual([])
+    // Half of the two hours missing pages, measured on those two hours, not the day.
+    const half = deps(memoryKv(), { deliveries: deliveryRecord([], since((i) => i % 2 === 0)) })
+    await runCronGuardWatch(half.d)
+    expect(half.sent[0].message.errors[0]).toMatch(/holds \d\d of the last 11\d minutes/)
+  })
+
   it('pages that it could not check once a day, not every hour', async () => {
     const kv = memoryKv()
     const deliveries = deliveryRecord()

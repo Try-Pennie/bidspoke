@@ -132,18 +132,18 @@ export function TieredMultiplierEditor({ config, onChange }: Props) {
               return (
                 <tr key={row.tier ?? 'first'} className="align-middle">
                   <td className="py-0.5 pr-2">
-                    <NumberInput id={`${tableId}-${n}-from`} aria-label={`From, tier ${n}`} value={row.from} onChange={(v) => setFrom(row, v)} step={1} placeholder={row.tier === null ? 'No lower bound' : undefined} />
+                    <NumberInput id={`${tableId}-${n}-from`} aria-label={`From, tier ${n}`} value={row.from} onChange={(v) => setFrom(row, v)} placeholder={row.tier === null ? 'No lower bound' : undefined} />
                   </td>
                   <td className="py-0.5 pr-2">
                     {next ? (
-                      <NumberInput id={`${tableId}-${n}-to`} aria-label={`To, tier ${n}`} value={next.from} onChange={(v) => setFrom(next, v)} step={1} />
+                      <NumberInput id={`${tableId}-${n}-to`} aria-label={`To, tier ${n}`} value={next.from} onChange={(v) => setFrom(next, v)} />
                     ) : (
                       // The top tier has no upper bound in the stored rule, so there is nothing to type.
                       <span className="px-1 text-[13px] text-hint">No upper bound</span>
                     )}
                   </td>
                   <td className="py-0.5 pr-2">
-                    <NumberInput id={`${tableId}-${n}-multiplier`} aria-label={`Multiplier, tier ${n}`} value={row.multiplier} onChange={(v) => setMultiplier(row, v)} step={0.0001} mono />
+                    <NumberInput id={`${tableId}-${n}-multiplier`} aria-label={`Multiplier, tier ${n}`} value={row.multiplier} onChange={(v) => setMultiplier(row, v)} mono />
                   </td>
                   <td className="py-0.5">
                     {rows.length > 1 && <RemoveButton label={`Remove tier ${n}`} onClick={() => removeRow(i)} />}

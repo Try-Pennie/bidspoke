@@ -14,7 +14,7 @@
  * above the ceiling, beside the tier it names.
  */
 import { useId } from 'react'
-import { MULTIPLIER_CEILING, POPULATIONS, WIRED_POPULATIONS, type Population, type ProfileTierDocument } from '@bidspoke/buyer-profile'
+import { POPULATIONS, WIRED_POPULATIONS, type Population, type ProfileTierDocument } from '@bidspoke/buyer-profile'
 import { Plus } from 'lucide-react'
 import { Button, FieldError, MoneyInput, NumberInput } from '@/components/ui/form'
 import { POPULATION_LABELS, formatWhole } from './labels'
@@ -70,7 +70,7 @@ export function PricingTiersEditor({ value, onChange, errors = {} }: { value: re
                           <MoneyInput id={`${rowId}-to`} value={tier.debt_to === null ? null : Number(tier.debt_to)} onChange={(v) => update({ debt_to: v })} placeholder="No upper bound" aria-label={`Debt to, ${name}`} />
                         </td>
                         <td className="py-0.5 pr-2">
-                          <NumberInput id={`${rowId}-mult`} value={Number(tier.multiplier)} onChange={(v) => update({ multiplier: v ?? 0 })} min={0} max={MULTIPLIER_CEILING} step={0.0001} mono aria-label={`Multiplier, ${name}`} />
+                          <NumberInput id={`${rowId}-mult`} value={Number(tier.multiplier)} onChange={(v) => update({ multiplier: v ?? 0 })} min={0} mono aria-label={`Multiplier, ${name}`} />
                         </td>
                         <td className="py-0.5 pt-1">
                           <RemoveButton label={`Remove ${name}`} onClick={() => replacePopulation(population, tiers.filter((_, j) => j !== i))} />

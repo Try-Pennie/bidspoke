@@ -23,7 +23,7 @@ function opsDatabase() {
   const answers: Record<string, unknown> = {
     ops_now: '2026-10-17T10:02:30+00:00',
     claim_ops_sweep: [{ owned: true, db_now: '2026-10-17T10:02:30+00:00', last_started_at: null, last_owner: null }],
-    sweep_expired_leases: [{ requeued: 0, retried: 0, needs_human: 0, dead: 0, more: false }],
+    sweep_expired_leases: [{ requeued: 0, retried: 0, needs_human: 0, dead: 0, failed: 0, more: false }],
     expire_overdue_run_requests: [{ expired: 0, more: false }],
     run_queue_disagreements: [],
     save_workflow_copies: [{ inserted: 1, updated: 0, confirmed: 0, refused_older: 0, withdrawn: 0 }],
