@@ -130,6 +130,7 @@ jobs:
           pnpm --filter @bidspoke/partner-page-live test
           pnpm --filter @bidspoke/partner-history test
           pnpm --filter @bidspoke/service-catalogue test
+          pnpm --filter @bidspoke/slack-client test
           pnpm --filter compare-outbound test
           pnpm --filter ops-outbound test
           pnpm --filter worker-tail test
