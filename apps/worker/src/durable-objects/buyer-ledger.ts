@@ -25,10 +25,16 @@
  * while waiting for that click distorts the rehearsal readings. The alarm also
  * prunes entries older than RETENTION_MS, but only ones that are both resolved
  * and mirrored (L5); an unresolved entry is never pruned.
+ *
+ * Mirroring (#2422): every state change clears `mirrored`, and a copy marks an
+ * entry mirrored only by naming the status and resolved_at it copied, so a state
+ * change landing between a copy's read and its mark leaves the entry for the
+ * next copy. `clear-mirrored` re-queues one entry's copy without changing it.
  */
 import {
   LEDGER_KINDS,
   POPULATIONS,
+  SALE_STATUSES,
   easternParts,
   hourBucket,
   type LedgerKind,
@@ -137,6 +143,32 @@ export interface UnmirroredResult {
   oldest_age_ms: number | null
 }
 
+/**
+ * What a copy confirms it copied (#2422): the entry's key and the state it read.
+ * Status and resolved_at together name one state of an entry, because every
+ * move out of `reserved` either changes the status or stamps resolved_at, and
+ * no state is entered twice.
+ */
+export interface MirroredStamp extends EntryKey {
+  status: SaleStatus
+  resolved_at: number | null
+}
+
+/**
+ * `marked` entries were still in the state the copy read and are now copied;
+ * `changed` ones had moved since the read, so they stay for the next copy.
+ */
+export interface MarkMirroredResult {
+  marked: number
+  changed: number
+}
+
+/** `cleared` is false when the entry was already waiting for a copy. */
+export interface ClearMirroredResult {
+  cleared: boolean
+  entry: LedgerEntry
+}
+
 type Row = Record<string, SqlStorageValue>
 
 const COUNTED_STATUSES = "('reserved', 'accepted', 'unresolved')"
@@ -191,6 +223,7 @@ export class BuyerLedgerObject implements DurableObject {
       case '/unmirrored': return this.handleUnmirrored()
       case '/unresolved': return this.handleUnresolved()
       case '/mark-mirrored': return this.handleMarkMirrored(request)
+      case '/clear-mirrored': return this.handleClearMirrored(request)
       default: return jsonResponse({ error: 'not_found', path: url.pathname }, 404)
     }
   }
@@ -399,22 +432,64 @@ export class BuyerLedgerObject implements DurableObject {
     return jsonResponse({ entries: this.rows("SELECT * FROM entries WHERE status = 'unresolved' ORDER BY reserved_at ASC") })
   }
 
+  /**
+   * Marks entries copied, each only while it is still in the state the copy read
+   * (#2422). Keyed on the entry alone, the mark let a copy that read `reserved`
+   * mark the entry copied after the attempt had released it in between, so the
+   * copy said reserved for good and nothing re-copied it (buyer_sales row
+   * d135dfd0, 2026-09-30). An entry that moved is left unmarked for the next copy
+   * and counted as `changed`. Every stamp is parsed before anything is written,
+   * so a malformed batch marks nothing.
+   */
   private async handleMarkMirrored(request: Request): Promise<Response> {
     const body = await readJsonObject(request)
     if (!body || !Array.isArray(body.keys)) return jsonResponse({ error: 'bad_keys' }, 400)
-    let marked = 0
+    const stamps: MirroredStamp[] = []
     for (const raw of body.keys) {
-      const key = raw && typeof raw === 'object' ? parseKey(raw as Record<string, unknown>) : null
-      if (!key) return jsonResponse({ error: 'bad_keys' }, 400)
+      const stamp = raw && typeof raw === 'object' ? parseStamp(raw as Record<string, unknown>) : null
+      if (!stamp) return jsonResponse({ error: 'bad_keys' }, 400)
+      stamps.push(stamp)
+    }
+    let marked = 0
+    let changed = 0
+    for (const stamp of stamps) {
       const cursor = this.sql.exec(
-        'UPDATE entries SET mirrored = 1 WHERE lead_key = ? AND population = ? AND kind = ? AND mirrored = 0',
-        key.lead_key, key.population, key.kind
+        `UPDATE entries SET mirrored = 1
+         WHERE lead_key = ? AND population = ? AND kind = ? AND mirrored = 0 AND status = ? AND resolved_at IS ?`,
+        stamp.lead_key, stamp.population, stamp.kind, stamp.status, stamp.resolved_at
       )
-      marked += cursor.rowsWritten
+      if (cursor.rowsWritten > 0) {
+        marked += cursor.rowsWritten
+        continue
+      }
+      const current = this.entry(stamp)
+      if (current && (current.status !== stamp.status || current.resolved_at !== stamp.resolved_at)) changed += 1
     }
     // A newly mirrored resolved entry has a retention deadline the alarm must meet.
     await this.rearm()
-    return jsonResponse({ marked })
+    return jsonResponse<MarkMirroredResult>({ marked, changed })
+  }
+
+  /**
+   * Clears the copied mark on one entry so the drain copies the ledger's own
+   * state for it again (#2422). It never touches the status, the outcome, the
+   * payout or the resolution, so caps and spend cannot move; it only re-queues
+   * the copy. The supported repair for a copy left stale before the mark checked
+   * the state it read. An unmirrored entry is never pruned, so the re-queued one
+   * stays until the copy lands.
+   */
+  private async handleClearMirrored(request: Request): Promise<Response> {
+    const body = await readJsonObject(request)
+    const key = body && parseKey(body)
+    if (!key) return jsonResponse({ error: 'bad_key' }, 400)
+    const cursor = this.sql.exec(
+      'UPDATE entries SET mirrored = 0 WHERE lead_key = ? AND population = ? AND kind = ? AND mirrored = 1',
+      key.lead_key, key.population, key.kind
+    )
+    const entry = this.entry(key)
+    if (!entry) return jsonResponse({ error: 'absent' }, 404)
+    await this.rearm()
+    return jsonResponse<ClearMirroredResult>({ cleared: cursor.rowsWritten > 0, entry })
   }
 
   // ── Alarm ───────────────────────────────────────────────────────────────────
@@ -501,6 +576,16 @@ export function parseKey(body: Record<string, unknown>): EntryKey | null {
   if (typeof lead_key !== 'string' || lead_key === '') return null
   if (!isPopulation(population) || !isKind(kind)) return null
   return { lead_key, population, kind }
+}
+
+/** A key plus the state a copy read; both fields are required, so no caller can mark blind (#2422). */
+function parseStamp(body: Record<string, unknown>): MirroredStamp | null {
+  const key = parseKey(body)
+  if (!key) return null
+  const { status, resolved_at } = body
+  if (typeof status !== 'string' || !(SALE_STATUSES as readonly string[]).includes(status)) return null
+  if (resolved_at !== null && (typeof resolved_at !== 'number' || !Number.isInteger(resolved_at))) return null
+  return { ...key, status: status as SaleStatus, resolved_at }
 }
 
 function parseLimits(value: unknown): CapLimits | null {

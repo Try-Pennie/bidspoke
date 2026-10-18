@@ -313,7 +313,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
       const down = leadDatabaseDown(supabase)
       if (down) throw new Error(`record_buyer_sale not sent: ${down}`)
       const ledger = new BuyerLedgerClient(env.BUYER_LEDGER, partnerId)
-      await mirrorBuyerSale(supabase, row, entry, { markMirrored: (key) => ledger.markMirrored([key]).then(() => undefined) })
+      await mirrorBuyerSale(supabase, row, entry, { markMirrored: (stamp) => ledger.markMirrored([stamp]).then(() => undefined) })
     },
     logBid: makeBidLogger(supabase, ctx, 'buyer_select'),
     clock: () => Date.now(),

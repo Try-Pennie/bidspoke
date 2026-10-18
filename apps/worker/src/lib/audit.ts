@@ -81,6 +81,9 @@ export type AuditAction =
   // A restore drill canary sealed to an ops public key and returned (#2333),
   // with the kid in changes. Nothing was stored but this row.
   | 'canary_sealed'
+  // A person asked for one buyer sale to be copied again from the ledger
+  // (#2422). Nothing about the sale changed, so it is never 'updated'.
+  | 'buyer_sale_recopy_requested'
 
 /**
  * How long to wait between audit-write attempts (#277).
