@@ -435,6 +435,24 @@ describe('archiveHealth coverage past the row cap (#1437)', () => {
     expect(health.days.error).toMatch(/more than 216/)
   })
 
+  it('refuses a reply holding more day measurements than its days can, rather than reporting part of it', async () => {
+    // archive_day is the key, so nine days hold at most nine measurements. A
+    // tenth means that belief is wrong, and the report must say so rather than
+    // pick whichever nine came first.
+    const days = dayRows(9, NOW)
+    const db = postgrestDouble({
+      execution_archive_hours: hourRows(9 * 24, NOW),
+      execution_archive_days: [...days, { ...days[4], pg_execution_count: 1 }],
+      workflow_executions: EXECUTIONS,
+    })
+
+    const health = await archiveHealth(envWith(null), db, { now: () => NOW })
+
+    expect('error' in health.days).toBe(true)
+    if (!('error' in health.days)) return
+    expect(health.days.error).toMatch(/reading the day measurements.*more than 9/)
+  })
+
   it('reads a window whose largest possible reply fits one PostgREST page', () => {
     // The bound in the query is only a bound while its maximum, plus the one
     // extra row asked for to detect overflow, stays under the cap.
