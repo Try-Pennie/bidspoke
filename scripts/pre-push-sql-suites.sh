@@ -27,7 +27,30 @@ BASE_REF="origin/main"
 # Bring origin/main up to date so the merge base is the branch's real cut point.
 # Quiet, and allowed to fail: offline, an older origin/main only makes the diff
 # larger (it then includes main commits after it), which errs towards running.
-git fetch --quiet origin main >/dev/null 2>&1 || true
+#
+# Bounded, because this runs on every push: a hung network or a credential
+# prompt must not stall the push with nothing saying which step is waiting.
+# GIT_TERMINAL_PROMPT=0 refuses a prompt outright, and a watchdog kills the
+# fetch after PRE_PUSH_FETCH_TIMEOUT seconds (default 20). The watchdog writes
+# to /dev/null: this script's stdout is captured by the hook, and a watchdog
+# still holding it would keep that capture open until its sleep ended.
+FETCH_TIMEOUT="${PRE_PUSH_FETCH_TIMEOUT:-20}"
+GIT_TERMINAL_PROMPT=0 git fetch --quiet origin main >/dev/null 2>&1 </dev/null &
+fetch_pid=$!
+(
+  sleep "$FETCH_TIMEOUT"
+  kill "$fetch_pid" 2>/dev/null
+) >/dev/null 2>&1 </dev/null &
+watchdog_pid=$!
+if ! wait "$fetch_pid"; then
+  if ! kill -0 "$watchdog_pid" 2>/dev/null; then
+    echo "pre-push: fetching origin/main did not finish in ${FETCH_TIMEOUT}s, deciding the SQL suites from the local origin/main" >&2
+  else
+    echo "pre-push: could not fetch origin/main, deciding the SQL suites from the local origin/main" >&2
+  fi
+fi
+kill "$watchdog_pid" 2>/dev/null
+wait "$watchdog_pid" 2>/dev/null
 
 both() {
   echo "pre-push: $1, so running both SQL suites" >&2

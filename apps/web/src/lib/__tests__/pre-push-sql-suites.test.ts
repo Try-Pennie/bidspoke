@@ -163,6 +163,26 @@ describe('scripts/pre-push-sql-suites.sh', () => {
     expect(r.stderr).toMatch(/merge base/i)
   })
 
+  // A hung network must not stall the push: the fetch is killed at its deadline
+  // and the decision is made from the origin/main already on disk, saying so.
+  it('gives up on a hung fetch at its deadline and decides from the local origin/main', () => {
+    const { work } = fixture()
+    commitFile(work, 'supabase/migrations/20260301000000_mine.sql', 'select 3;\n')
+    git(work, 'remote', 'set-url', 'origin', 'ssh://hung.invalid/repo.git')
+    const started = Date.now()
+    const res = spawnSync('bash', [SCRIPT], {
+      cwd: work,
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: { ...process.env, GIT_SSH_COMMAND: 'sleep 30 #', PRE_PUSH_FETCH_TIMEOUT: '1' },
+    })
+    const elapsed = Date.now() - started
+    expect(res.status, res.stderr).toBe(0)
+    expect(elapsed).toBeLessThan(10_000)
+    expect(res.stderr).toMatch(/did not finish in 1s/)
+    expect(res.stdout.split('\n').filter(Boolean)).toEqual(['main'])
+  })
+
   it('runs both suites when origin/main shares no history with the branch', () => {
     const { work } = fixture()
     git(work, 'checkout', '-q', '--orphan', 'unrelated')
