@@ -80,6 +80,11 @@ describe('versioning is enforced by committed fingerprints (#1689 D1)', () => {
     expect(await codes(edited)).toEqual(['fingerprint_changed'])
   })
 
+  it('treats a change to the Google scopes an action asks for as a change to the version (#2335)', async () => {
+    const edited = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, googleScopes: ['https://www.googleapis.com/auth/spreadsheets'] }))
+    expect(await codes(edited)).toEqual(['fingerprint_changed'])
+  })
+
   it('lets a display only field change without a new version', async () => {
     const edited = withSchemaAction('fixture.echo', 1, (a) => ({
       ...a,
@@ -185,6 +190,16 @@ describe('catalogue structure', () => {
       arguments: a.arguments.map((arg) => ({ ...arg, dependsOn: ['missing'] })),
     }))
     expect(await codes(edited)).toContain('argument_depends_on_unknown')
+  })
+
+  it('refuses a Google scope the Workspace grant does not hold, and an empty scope list (#2335, F129)', async () => {
+    const outside = withSchemaAction('fixture.echo', 1, (a) => ({
+      ...a,
+      googleScopes: ['https://www.googleapis.com/auth/admin.directory.user' as 'https://www.googleapis.com/auth/drive'],
+    }))
+    expect(await codes(outside)).toContain('google_scope_not_granted')
+    const empty = withSchemaAction('fixture.echo', 1, (a) => ({ ...a, googleScopes: [] }))
+    expect(await codes(empty)).toContain('google_scope_not_granted')
   })
 
   it('refuses a dropdown with no lookup to fill it', async () => {

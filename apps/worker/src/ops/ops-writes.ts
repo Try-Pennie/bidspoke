@@ -37,9 +37,9 @@
  * new sweeps (Phases 5, 6 and 10 of #1689) are their callers.
  */
 import {
-  CONNECTION_COPY_STATES, LEDGER_METHODS, OBSERVATION_OUTCOMES, OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES, RESOURCE_WAIT_CAUSES,
-  SF_BUDGET_SOURCES, SF_LEASE_OUTCOMES, SF_LEASE_PURPOSES, TRIGGER_KINDS,
-  type ConnectionCopyState, type HolderFailedReason, type LedgerMethod, type ObservationOutcome, type OpsSweep, type OverlapRule,
+  CONNECTION_COPY_STATES, DELEGATION_CHECK_OUTCOMES, LEDGER_METHODS, OBSERVATION_OUTCOMES, OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES,
+  REFRESH_OUTCOMES, RESOURCE_WAIT_CAUSES, SF_BUDGET_SOURCES, SF_LEASE_OUTCOMES, SF_LEASE_PURPOSES, TRIGGER_KINDS,
+  type ConnectionCopyState, type DelegationCheckOutcome, type HolderFailedReason, type RefreshOutcome, type LedgerMethod, type ObservationOutcome, type OpsSweep, type OverlapRule,
   type ResourceWaitCause, type SfBudgetSource, type SfLeaseOutcome, type SfLeasePurpose, type TriggerKind,
 } from './run-vocabulary'
 import {
@@ -945,6 +945,39 @@ export async function recordConnectionNeedsReauth(
 ): Promise<HealthOutcome> {
   const name = 'record_connection_needs_reauth'
   return healthOutcome(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_connection_id: connectionId, p_cause: cause }, options))
+}
+
+/**
+ * A login's outcome on a committed connection (Dan's decision 2, #2335):
+ * a token endpoint that timed out or answered 5xx adds to the refresh streak,
+ * and the failure that takes the streak past its bound (5 failures, the first
+ * 15 minutes old) writes needs_reauth through its one writer; a login that
+ * worked ends the streak. A provider's refusal of the login is not this: it is
+ * recordConnectionNeedsReauth, at once.
+ */
+export async function recordConnectionRefresh(
+  client: OpsSupabaseClient, organizationId: OrganizationId, connectionId: string, result: { ok: true } | { ok: false; cause: string }, options?: OpsRpcOptions,
+): Promise<RefreshOutcome> {
+  const name = 'record_connection_refresh'
+  const data = await callOpsRpc(client, name, {
+    p_organization_id: organizationId, p_connection_id: connectionId, p_ok: result.ok, p_cause: result.ok ? null : result.cause,
+  }, options)
+  if (!oneOf(REFRESH_OUTCOMES)(data)) throw new OpsWriteError(`${name} returned something that is not a refresh outcome`)
+  return data
+}
+
+/**
+ * Whether a Google connection may act as this mailbox and name these shared
+ * drives (finding F129): allowed only when the organization's own list names
+ * each. Read on every Google authorize, before a token is minted or reused.
+ */
+export async function googleDelegationCheck(
+  client: OpsSupabaseClient, organizationId: OrganizationId, mailbox: string, drives: readonly string[], options?: OpsRpcOptions,
+): Promise<DelegationCheckOutcome> {
+  const name = 'google_delegation_check'
+  const data = await callOpsRpc(client, name, { p_organization_id: organizationId, p_mailbox: mailbox, p_drives: [...drives] }, options)
+  if (!oneOf(DELEGATION_CHECK_OUTCOMES)(data)) throw new OpsWriteError(`${name} returned something that is not a delegation check outcome`)
+  return data
 }
 
 /** Reconnect's writer, the only one that clears needs_reauth. */
