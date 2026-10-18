@@ -11,12 +11,12 @@
  * is resealed.
  *
  * Only ever a PUBLIC key. The private half lives in the ops Worker secret
- * OPS_CONNECTIONS_PRIVATE_KEY and the 1Password item "Bidspoke recovery keys",
- * never here; keys.test.ts scans every file in this package for it.
+ * OPS_CONNECTIONS_PRIVATE_KEY and in the file ops-connections-private.pem
+ * attached to the 1Password item "Bidspoke recovery keys", never here; keys.test.ts scans every file in this package for it.
  */
 export const OPS_CONNECTION_PUBLIC_KEYS: Readonly<Record<string, string>> = Object.freeze({
   // Generated 2026-10-17 (RSA 4096); the private half is escrowed in
-  // "Bidspoke recovery keys", field OPS_CONNECTIONS_PRIVATE_KEY.
+  // "Bidspoke recovery keys", as the attached file ops-connections-private.pem.
   'ops-2026-10': `-----BEGIN PUBLIC KEY-----
 MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAtDKUKwtVlTjzSR0g5xyc
 gsbQEDz3kfObQ8oyjHdvdiTANpReD1NniLThyj6JPLrYKvjHaB3Xgyo8z3njzdhX

@@ -30,6 +30,7 @@ import partnerDelete from './partner-delete'
 import buyerSales from './buyer-sales'
 import heldClicks from './held-clicks'
 import buyerSelectParity from './buyer-select-parity'
+import sealCanary from './seal-canary'
 import mutedAlertRoutes from './muted-alerts'
 import incidentRoutes from './incidents'
 import partnerUsageRoutes from './partner-usage'
@@ -83,6 +84,9 @@ api.route('/held-clicks', heldClicks)
 // under the admin prefix. Mounted before /admin's own routes cannot matter: a
 // Hono sub app matches only its own paths.
 api.route('/admin/buyer-select/parity', buyerSelectParity)
+// The production half of the ops key restore drill (#2333): seals a canary and
+// returns it, storing nothing but its audit row.
+api.route('/admin/seal-canary', sealCanary)
 // Which workflow steps name a partner, per node kind (#2137): the partners page's
 // Bid Group tab and confirmation window apply only where one does.
 api.route('/partners', partnerUsageRoutes)
