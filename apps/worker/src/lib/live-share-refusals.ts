@@ -262,7 +262,8 @@ export const LIVE_SHARE_REFUSALS_REMEDY: AlertRemedy = {
   itemNoun: { one: 'step', many: 'steps' },
   consequence:
     'A buyer selection step selling live refused every lead of its live share for longer than chance explains. Each of those leads ' +
-    'was sold to no buyer and skipped the old path too. Each line names the workflow, the step and why each buyer refused:',
+    'was sold to no buyer by this step; whether it went anywhere else depends on what the workflow does after no sale (on the ' +
+    'Engine flow, nothing: such a lead skips tripoint_ping too). Each line names the workflow, the step and why each buyer refused:',
   fixHint:
     'A missing lead field, or collections not wired, means the step has no template for a rule in the buyer profile, or a template ' +
     "whose path the lead does not carry: compare the step's State, Debt, Loan amount and Collections templates with a recent lead " +

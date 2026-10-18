@@ -61,6 +61,10 @@ describe('findInputGaps', () => {
     expect(findInputGaps([engine({ loan_amount: LOAN })], [tripoint, liberty])).toEqual([])
   })
 
+  it('leaves out a buyer_select step that rehearses (decide_only), since it never sells a lead', () => {
+    expect(findInputGaps([engine({ mode: 'decide_only' })], [tripoint])).toEqual([])
+  })
+
   it('leaves out a workflow that is switched off, since it judges no lead', () => {
     expect(findInputGaps([engine({}, false)], [tripoint])).toEqual([])
   })

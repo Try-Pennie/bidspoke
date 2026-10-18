@@ -18,7 +18,8 @@
  *
  * Checking only one side would leave the other route to the same state (L247).
  *
- * Which buyers a step judges follows the nodes: buyer_select judges every
+ * Which buyers a step judges follows the nodes: buyer_select set to sell live
+ * (a decide_only step rehearses and never sells, so it is left out) judges every
  * enabled profile sold on the offer and priced for its population (pricedFor,
  * the rule evaluateEligibility refuses by), and leaves click buyers out;
  * buyer_click_check judges the one buyer its partner_id names, when that buyer
@@ -90,6 +91,8 @@ function buyersJudgedBy(node: DefNode, buyers: readonly CoverageBuyer[]): Covera
   const config = node.config ?? {}
   const enabled = buyers.filter((b) => b.profile.isEnabled)
   if (node.type === 'buyer_select') {
+    // Only a step selling live loses a lead to an unread rule; decide_only rehearses and never sells.
+    if (config.mode !== 'live') return []
     const population = config.population
     if (typeof population !== 'string') return []
     // A click sold buyer is offered by buyer_click_check, never by buyer_select (#1543).
