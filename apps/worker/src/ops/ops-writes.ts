@@ -241,13 +241,43 @@ export interface ClaimedRun {
   claimToken: string
   claimExpiresAt: string
   stateVersion: number
+  /** Every start so far. Each execution's identity, so it rises on every start, charged or not. */
   attempts: number
+  /**
+   * The starts so far not charged against maxAttempts: one resumed from a wait
+   * on a resource (resource_wait) and one a lapse refunded (#2334). null when
+   * the claim did not answer it, which the function before ops migration
+   * 20261018140000 does not: unknown, never 0 (#2336).
+   */
+  unchargedAttempts: number | null
+  /** Judged against the CHARGED count (chargedAttempts), never against attempts. */
   maxAttempts: number
   resumeReason: string | null
   executionChainId: string
   resumedFromExecutionId: string | null
   payload: unknown
   payloadRef: string | null
+}
+
+/** The starts so far charged against maxAttempts, as the database counts them; null when the claim did not say. */
+export function chargedAttempts(run: Pick<ClaimedRun, 'attempts' | 'unchargedAttempts'>): number | null {
+  return run.unchargedAttempts === null ? null : run.attempts - run.unchargedAttempts
+}
+
+/**
+ * Whether a retry after this claim's start ends the run dead at max_attempts,
+ * the judgement complete_run_request makes (#2336). The start adds one attempt,
+ * charged unless the run resumes from a resource wait, so it is the run's last
+ * charged attempt when attempts + 1 - unchargedAttempts - (1 if resumed from a
+ * resource wait) reaches maxAttempts. supabase-ops/supabase/tests/
+ * claim_uncharged_attempts.test.sql checks the same rule against the database.
+ * null when the claim did not say how many attempts were uncharged.
+ */
+export function lastChargedAttempt(run: Pick<ClaimedRun, 'attempts' | 'unchargedAttempts' | 'maxAttempts' | 'resumeReason'>): boolean | null {
+  const charged = chargedAttempts(run)
+  if (charged === null) return null
+  const thisStart = run.resumeReason === 'resource_wait' ? 0 : 1
+  return charged + thisStart >= run.maxAttempts
 }
 
 export async function claimRunRequests(client: OpsSupabaseClient, claim: ClaimRunRequests, options?: OpsRpcOptions): Promise<ClaimedRun[]> {
@@ -265,6 +295,14 @@ export async function claimRunRequests(client: OpsSupabaseClient, claim: ClaimRu
     } catch {
       throw new OpsWriteError(`${name} returned a run whose organization is not a uuid`)
     }
+    const attempts = field(name, row, 'attempts', isInt, 'a whole number')
+    // Absent from the function before ops migration 20261018140000, so the code
+    // works whichever of the two lands first (L640). Present, it must be a count.
+    let unchargedAttempts: number | null = null
+    if ('uncharged_attempts' in row) {
+      const isUncharged = (v: unknown): v is number => isInt(v) && v >= 0 && v <= attempts
+      unchargedAttempts = field(name, row, 'uncharged_attempts', isUncharged, 'a whole number from 0 to attempts')
+    }
     return {
       runRequestId: field(name, row, 'run_request_id', isString, 'an id'),
       organizationId,
@@ -274,7 +312,8 @@ export async function claimRunRequests(client: OpsSupabaseClient, claim: ClaimRu
       claimToken: field(name, row, 'claim_token', isString, 'a token'),
       claimExpiresAt: field(name, row, 'claim_expires_at', isString, 'a time'),
       stateVersion: field(name, row, 'state_version', isInt, 'a whole number'),
-      attempts: field(name, row, 'attempts', isInt, 'a whole number'),
+      attempts,
+      unchargedAttempts,
       maxAttempts: field(name, row, 'max_attempts', isInt, 'a whole number'),
       resumeReason: field(name, row, 'resume_reason', isStringOrNull, 'text or null'),
       executionChainId: field(name, row, 'execution_chain_id', isString, 'an id'),
