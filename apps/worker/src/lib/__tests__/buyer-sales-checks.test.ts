@@ -485,6 +485,102 @@ describe('the outcome rate page', () => {
   })
 })
 
+// #2420: an hour the check could not measure says nothing about a standing
+// page, so it neither raises one nor clears one (L98, L695), the way the
+// Tripoint bridge already treats it; only a measured hour clears.
+describe('an unmeasured hour and a standing outcome rate page (#2420)', () => {
+  const day = (entries: LedgerEntry[]) => ({ '2027-09-20': entries, '2027-09-19': [] })
+  const ACME: CheckBuyer = { ...TRIPOINT, partner_id: '33333333-3333-4333-8333-333333333333', slug: 'acme', has_independent_record: false }
+  const CONDITION = `export-alert:${BUYER_OUTCOME_RATE_JOB}:condition`
+  // Ten attempts, enough for a rate, one in ten failed: clean against a healthy baseline.
+  const cleanHour = () => [...hourOf('released', 1), ...hourOf('accepted', 9)]
+  /** A fixture every other check agrees with, so the run's outcome is the outcome rate's alone. */
+  const agreeing = (entries: LedgerEntry[]): Fixture => {
+    const won = entries.filter((e) => e.status === 'accepted')
+    return {
+      entries: day(entries),
+      sales: entries.map((e) => ({ lead_key: e.lead_key, status: e.status, kind: 'live' })),
+      winners: won.map((e) => ({ execution_id: e.execution_id ?? '', attempted_at_utc: new Date(e.reserved_at).toISOString() })),
+      salesforce: new Set(won.map((e) => e.outcome?.buyer_reference ?? '')),
+    }
+  }
+
+  function standing(d: ReturnType<typeof deps>, partnerId = PARTNER) {
+    d.kv.store.set(`outcome-rate-paged:${partnerId}`, '2027-09-20T14:40:00.000Z')
+    d.kv.store.set(CONDITION, JSON.stringify({ since: '2027-09-20T14:40:00.000Z', alerts: 1 }))
+  }
+
+  it('a standing page and an hour whose baseline cannot be read: the page stands, and the run records the hour as unmeasured with the reason', async () => {
+    const d = deps(agreeing(cleanHour()), { readOutcomeBaseline: async () => { throw new Error('buyer_sales count timed out') } })
+    standing(d)
+    const s = await runBuyerSalesChecks(d)
+    expect(s.buyers[0].outcome_rate).toMatchObject({ verdict: 'unmeasured', reason: expect.stringMatching(/could not be read: buyer_sales count timed out/) })
+    expect(d.notifyOutcomeRate).not.toHaveBeenCalled()
+    expect(d.kv.store.get(`outcome-rate-paged:${PARTNER}`)).toBe('2027-09-20T14:40:00.000Z')
+    expect(d.kv.put).toHaveBeenCalledWith(`outcome-rate-paged:${PARTNER}`, '2027-09-20T14:40:00.000Z', { expirationTtl: 24 * 3600 })
+    expect(s.outcome_rate_held).toEqual(['tripoint'])
+    const ending = endingOf(s)
+    expect(ending.outcome).toBe('unmeasured')
+    expect(ending.detail).toMatch(/tripoint outcome rate: the baseline over the prior 14 days could not be read: buyer_sales count timed out/)
+    expect(ending.summary).toMatchObject({ held_outcome_rates: ['tripoint'] })
+  })
+
+  it('a standing page and an hour whose baseline is below its floor: the page stands', async () => {
+    const d = deps({ ...agreeing(cleanHour()), baseline: { attempts: OUTCOME_BASELINE_MIN_ATTEMPTS - 1, failed: 0, declined: 30 } })
+    standing(d)
+    const s = await runBuyerSalesChecks(d)
+    expect(s.buyers[0].outcome_rate).toMatchObject({ verdict: 'unmeasured', reason: expect.stringMatching(/holds 99 attempts, fewer than the 100 it needs/) })
+    expect(d.notifyOutcomeRate).not.toHaveBeenCalled()
+    expect(d.kv.store.has(`outcome-rate-paged:${PARTNER}`)).toBe(true)
+    expect(endingOf(s)).toMatchObject({ outcome: 'unmeasured', detail: expect.stringMatching(/tripoint outcome rate: .*fewer than the 100 it needs/) })
+  })
+
+  it('a standing page and a measured clean hour: the page clears', async () => {
+    const d = deps(agreeing(cleanHour()))
+    standing(d)
+    const s = await runBuyerSalesChecks(d)
+    expect(s.buyers[0].outcome_rate.verdict).toBe('normal')
+    expect(d.notifyOutcomeRate).toHaveBeenCalledWith([])
+    expect(d.kv.store.has(`outcome-rate-paged:${PARTNER}`)).toBe(false)
+    expect(s.outcome_rate_held).toEqual([])
+    expect(endingOf(s).outcome).toBe('ok')
+  })
+
+  it('an unmeasured buyer with no page of its own does not hold another buyer\'s page that a measured hour cleared', async () => {
+    const d = deps({ entries: day(cleanHour()), sales: [], winners: [], buyers: [TRIPOINT, ACME], salesforce: null }, {
+      readOutcomeBaseline: async (partnerId) => {
+        if (partnerId === ACME.partner_id) throw new Error('buyer_sales count timed out')
+        return HEALTHY_BASELINE
+      },
+    })
+    standing(d)
+    const s = await runBuyerSalesChecks(d)
+    expect(s.buyers.map((b) => b.outcome_rate.verdict)).toEqual(['normal', 'unmeasured'])
+    expect(d.notifyOutcomeRate).toHaveBeenCalledWith([])
+    expect(s.outcome_rate_held).toEqual([])
+  })
+
+  it('a buyer still elevated keeps paging while another buyer\'s standing page waits out an unmeasured hour', async () => {
+    const failing = hourOf('released', 6)
+    const d = deps({ entries: day(failing), sales: [], winners: [], buyers: [TRIPOINT, ACME], salesforce: null })
+    d.ledger = (partnerId) => ({
+      entries: async () => (partnerId === PARTNER ? failing : cleanHour()),
+      unmirrored: async () => ({ entries: [], oldest_age_ms: null }),
+      unresolved: async () => [],
+    })
+    d.readOutcomeBaseline = async (partnerId) => {
+      if (partnerId === ACME.partner_id) throw new Error('buyer_sales count timed out')
+      return HEALTHY_BASELINE
+    }
+    standing(d, ACME.partner_id)
+    const s = await runBuyerSalesChecks(d)
+    expect((vi.mocked(d.notifyOutcomeRate).mock.calls[0][0] as string[]).map((l) => l.split(':')[0])).toEqual(['tripoint'])
+    expect(d.kv.store.has(`outcome-rate-paged:${ACME.partner_id}`)).toBe(true)
+    expect(s.outcome_rate_held).toEqual(['acme'])
+    expect(endingOf(s).outcome).toBe('findings')
+  })
+})
+
 
 describe('productionChecksDeps reads past the row cap (#1497)', () => {
   /**

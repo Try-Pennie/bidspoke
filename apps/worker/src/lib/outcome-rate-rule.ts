@@ -59,6 +59,17 @@ export type OutcomeRateVerdict =
   | { verdict: 'elevated'; detail: string }
   | { verdict: 'unmeasured'; reason: string }
 
+/**
+ * Whether a verdict may move a page. An hour that could not be measured says
+ * nothing about a page already standing, so it neither raises one nor clears
+ * one (L98, L695): only a measured hour, elevated, normal or quiet, does. Both
+ * checks gate their page on this one predicate (L261), the bridge on its single
+ * page and buyer-outcome-rate per buyer (#2420).
+ */
+export function verdictMovesThePage(v: OutcomeRateVerdict): boolean {
+  return v.verdict !== 'unmeasured'
+}
+
 /** Elevated means at least this many points above the baseline share. */
 export const OUTCOME_RATE_MIN_RISE = 0.25
 
