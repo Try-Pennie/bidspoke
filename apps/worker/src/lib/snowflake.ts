@@ -3,6 +3,7 @@
 // configured in Snowflake; private key lives in the SNOWFLAKE_PRIVATE_KEY worker secret.
 
 import { formatErr } from './format-error'
+import { TokenMemo } from './token-memo'
 
 export interface SnowflakeConfig {
   account: string         // e.g., 'jyc55588.us-east-1' (URL prefix)
@@ -791,46 +792,44 @@ export const JWT_LIFETIME_SECONDS = 3600
  */
 export const TOKEN_REUSE_MARGIN_MS = 20 * 60 * 1000
 
-interface CachedToken {
-  jwt: Promise<string>
-  expiresAtMs: number
-}
-
 /**
- * Signed tokens, one per Snowflake identity (#609).
+ * Signed tokens, one per Snowflake identity (#609), held in a TokenMemo
+ * (`lib/token-memo.ts`, #2335) so there is one implementation of the memo.
  *
  * Keyed on account, user AND the key itself: the archive signs as several
  * identities (reader, writer, eraser), and a rotated key must never be answered
- * with a token signed by the old one. It lives at module scope, so it outlives
- * one invocation inside a reused isolate, which is safe only because reuse is
- * decided by the token's own expiry rather than by the invocation: nothing is
- * handed out with less than TOKEN_REUSE_MARGIN_MS left.
+ * with a token signed by the old one, so the key is the memo key's generation.
+ * It lives at module scope, so it outlives one invocation inside a reused
+ * isolate, which is safe only because reuse is decided by the token's own expiry
+ * rather than by the invocation: nothing is handed out with less than
+ * TOKEN_REUSE_MARGIN_MS left.
  *
- * The promise is stored rather than the string, so a burst of statements that
- * arrive together share one signing, and a signing that fails is evicted so the
- * next statement tries again instead of inheriting the rejection.
+ * The memo stores the promise rather than the string, so a burst of statements
+ * that arrive together share one signing, and a signing that fails is evicted so
+ * the next statement tries again instead of inheriting the rejection.
  */
 export class SnowflakeTokenCache {
-  private readonly entries = new Map<string, CachedToken>()
+  private readonly memo: TokenMemo<string>
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(now: () => number = Date.now) {
+    this.memo = new TokenMemo<string>({ now, reuseMarginMs: TOKEN_REUSE_MARGIN_MS })
+  }
 
   token(config: SnowflakeConfig): Promise<string> {
-    const key = `${config.account}\u0000${config.user}\u0000${config.privateKeyPem}`
-    const at = this.now()
-    const cached = this.entries.get(key)
-    if (cached && cached.expiresAtMs - at > TOKEN_REUSE_MARGIN_MS) return cached.jwt
-
-    const iat = Math.floor(at / 1000)
-    const entry: CachedToken = {
-      jwt: importPrivateKey(config.privateKeyPem).then((privateKey) => signSnowflakeJwt(config, privateKey, iat)),
-      expiresAtMs: (iat + JWT_LIFETIME_SECONDS) * 1000,
+    const key = {
+      connectionId: `snowflake:${config.account}`,
+      generation: config.privateKeyPem,
+      sub: config.user,
+      scope: '',
     }
-    this.entries.set(key, entry)
-    entry.jwt.catch(() => {
-      if (this.entries.get(key) === entry) this.entries.delete(key)
+    return this.memo.get(key, async (at) => {
+      const iat = Math.floor(at / 1000)
+      const privateKey = await importPrivateKey(config.privateKeyPem)
+      return {
+        value: await signSnowflakeJwt(config, privateKey, iat),
+        expiresAtMs: (iat + JWT_LIFETIME_SECONDS) * 1000,
+      }
     })
-    return entry.jwt
   }
 }
 
@@ -842,8 +841,18 @@ async function signSnowflakeJwt(config: SnowflakeConfig, privateKey: CryptoKey, 
   const user = config.user.toUpperCase()
   const iss = `${account}.${user}.SHA256:${fingerprint}`
   const sub = `${account}.${user}`
-  const header = { alg: 'RS256', typ: 'JWT' }
   const payload = { iss, sub, iat, exp: iat + JWT_LIFETIME_SECONDS }
+  return signRs256Jwt(privateKey, payload)
+}
+
+/**
+ * A compact RS256 JWT (RSASSA-PKCS1-v1_5 over SHA-256) of `payload`, with the
+ * header `{ alg: 'RS256', typ: 'JWT' }` (#2335). Shared by the Snowflake key
+ * pair token above and the ops login minters; it lives here, generalised in
+ * place, so the export's signing is the same code it always was.
+ */
+export async function signRs256Jwt(privateKey: CryptoKey, payload: Readonly<Record<string, unknown>>): Promise<string> {
+  const header = { alg: 'RS256', typ: 'JWT' }
 
   const headerB64 = base64UrlEncode(new TextEncoder().encode(JSON.stringify(header)))
   const payloadB64 = base64UrlEncode(new TextEncoder().encode(JSON.stringify(payload)))
