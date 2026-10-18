@@ -106,6 +106,16 @@ describe('the URL (#2137)', () => {
     expect((formProps.mock.calls.at(-1)![0] as { requestedTab: unknown }).requestedTab).toBeNull()
   })
 
+  it('the opening partner clicked again after another opens on its own tab, not the URL\'s', async () => {
+    params = new URLSearchParams('selected=liberty1&tab=bid-group')
+    render(<PartnersPage />)
+    expect(await screen.findByTestId('form')).toHaveTextContent('liberty1')
+    fireEvent.click(screen.getByRole('button', { name: /^AmOne/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Liberty1' }))
+    expect(screen.getByTestId('form')).toHaveTextContent('liberty1')
+    expect((formProps.mock.calls.at(-1)![0] as { requestedTab: unknown }).requestedTab).toBeNull()
+  })
+
   it('clicking back to the opening partner writes it into the URL again', async () => {
     params = new URLSearchParams('selected=liberty1')
     render(<PartnersPage />)

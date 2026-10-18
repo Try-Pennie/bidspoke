@@ -74,6 +74,8 @@ export default function PartnersPage() {
   // be the slug the page opened on, so comparing it with the selection put the
   // opening partner back after every click (Dan, 2026-10-17).
   const appliedSlug = useRef<string | null>(null)
+  /** The partner the URL itself opened, the only one its tab is for; a click on any row ends it. */
+  const [urlOpenedId, setUrlOpenedId] = useState<string | null>(null)
   useEffect(() => {
     // A URL that names no partner forgets the last one, so naming it again (Back, a link) opens it.
     if (!slugParam) { appliedSlug.current = null; return }
@@ -82,6 +84,7 @@ export default function PartnersPage() {
     const match = partners.find((p) => p.slug === slugParam)
     if (match) {
       appliedSlug.current = slugParam
+      setUrlOpenedId(match.id)
       setSelected(match)
       setCreating(false)
     }
@@ -93,7 +96,10 @@ export default function PartnersPage() {
     setSelected(p)
     // A different partner opens on its own tab; the same one keeps the tab it is on.
     // Compared with the open partner, never selected= read back, which can be stale.
-    if (p.slug !== selected?.slug) writeUrl(p.slug, null)
+    if (p.slug !== selected?.slug) {
+      setUrlOpenedId(null)
+      writeUrl(p.slug, null)
+    }
   }
 
   function clearSelection() {
@@ -272,9 +278,9 @@ export default function PartnersPage() {
               onDeleted={handleDeleted}
               barSlot={barSlot}
               onSaveConfirmed={(saved) => { setPartners((prev) => prev.map((p) => (p.id === saved.id ? saved : p))); setSelected(saved) }}
-              // The URL's tab belongs to the partner the URL names: a partner clicked
-              // since may be read back against the opening URL, and opens on its own tab.
-              requestedTab={selected && selected.slug === slugParam ? requestedTab : null}
+              // The URL's tab is for the partner the URL opened: one clicked since (even
+              // the same one again) is read back against the opening URL, so it opens on its own tab.
+              requestedTab={selected && selected.id === urlOpenedId ? requestedTab : null}
               onTabChange={(tab) => { if (selected) writeUrl(selected.slug, tab) }}
               partnerNames={partnerNames}
               onProblemChange={setFormProblem}
