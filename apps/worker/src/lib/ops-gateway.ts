@@ -109,8 +109,22 @@ export async function recordOpsTickStarted(kv: KVNamespace, nowMs: number): Prom
   await writeHeartbeat(kv, OPS_TICK_JOB, nowMs)
 }
 
-/** What is kept: the report as the tick sent it, and when this Worker received it. */
-type KeptReport = OpsTickReport & { received_at: string }
+/**
+ * What is kept: the report as the tick sent it, when this Worker received it,
+ * and how many reports in a row, this one included, said the start stamp failed
+ * (#2410). The run is counted per report as it arrives, never per check, because
+ * the minute check can read one report twice.
+ */
+type KeptReport = OpsTickReport & { received_at: string; start_stamp_misses: number }
+
+/**
+ * The missed start stamps in a row at which one is paged (#2410). A lone miss is
+ * held: at 15:02:29 UTC on 2026-10-18 one start stamp ran past the tick's 15 s
+ * gateway deadline two minutes after the ops Worker's deploy, paged, and no tick
+ * failed after it. Two in a row is no longer a lone miss, so it pages, one tick
+ * later than a miss paged before.
+ */
+export const OPS_TICK_START_MISSES_TO_PAGE = 2
 
 /**
  * Stamps completed and keeps the report. A report that cannot be read is kept as
@@ -125,20 +139,48 @@ export async function recordOpsTickCompleted(kv: KVNamespace, raw: unknown, nowM
     report = unreadableReport(formatErr(err), receivedAt)
   }
   await writeHeartbeatCompleted(kv, OPS_TICK_JOB, nowMs)
-  const kept: KeptReport = { ...report, received_at: receivedAt }
+  const misses = report.start_stamp_failed === true ? (await previousStartMisses(kv, nowMs)) + 1 : 0
+  if (misses > 0) {
+    console.warn(`[ops-tick] tick ${report.tick_id} could not stamp its start, ${misses} report${misses === 1 ? '' : 's'} in a row`)
+  }
+  const kept: KeptReport = { ...report, received_at: receivedAt, start_stamp_misses: misses }
   await kv.put(OPS_TICK_REPORT_KEY, JSON.stringify(kept))
+}
+
+/**
+ * The run of missed start stamps the kept report ended on. A report too old to
+ * say anything about now (OPS_TICK_REPORT_FRESH_MS) is not the tick before, so it
+ * starts no run. One that cannot be read counts as a miss, the side that pages
+ * sooner. Two overlapping ticks can both read the same previous report, which
+ * costs at most one tick before a run of misses pages.
+ */
+async function previousStartMisses(kv: KVNamespace, nowMs: number): Promise<number> {
+  const raw = await kv.get(OPS_TICK_REPORT_KEY)
+  if (raw === null) return 0
+  let prev: { received_at?: unknown; start_stamp_failed?: unknown; start_stamp_misses?: unknown }
+  try {
+    prev = JSON.parse(raw) as typeof prev
+  } catch {
+    return 1
+  }
+  if (prev === null || typeof prev !== 'object') return 1
+  const receivedMs = typeof prev.received_at === 'string' ? Date.parse(prev.received_at) : Number.NaN
+  if (Number.isFinite(receivedMs) && nowMs - receivedMs > OPS_TICK_REPORT_FRESH_MS) return 0
+  if (prev.start_stamp_failed !== true) return 0
+  const n = prev.start_stamp_misses
+  return typeof n === 'number' && Number.isInteger(n) && n >= 1 ? n : 1
 }
 
 function unreadableReport(why: string, at: string): OpsTickReport {
   return {
     tick_id: 'unreadable', mode: 'observe', scheduled_time: null, started_at: at, finished_at: at, db_now: null,
     outcome: 'problems', problems: [`The ops tick's report could not be read (${why}), so whether the tick worked is not known.`], counts: {},
-    not_configured_secrets: [],
+    not_configured_secrets: [], start_stamp_failed: null,
   }
 }
 
 export interface OpsTickReportCheckDeps {
-  notifyFailure: (supabase: SupabaseClient, job: string, errors: string[], kv: KvLike, remedy: { title: string; fixHint?: string }, nowMs: number) => Promise<void>
+  notifyFailure: (supabase: SupabaseClient, job: string, errors: string[], kv: KvLike, remedy: { title: string; context?: string; fixHint?: string }, nowMs: number) => Promise<void>
   notifyRecovery: (kv: KvLike, job: string, nowMs: number) => Promise<void>
 }
 
@@ -184,13 +226,15 @@ export function notConfiguredFix(secrets: readonly string[] | null): string {
 }
 const PROBLEMS_FIX = 'Search the bidspoke-worker-ops logs for ops_tick around the time of this alert: every problem is logged there with the tick it came from.'
 
-export type OpsTickReportVerdict = 'healthy' | 'alerted' | 'stale' | 'no_report'
+export type OpsTickReportVerdict = 'healthy' | 'alerted' | 'held' | 'stale' | 'no_report'
 
 /**
  * Judges the tick's last report, once a minute: pages on one naming problems
  * (the shared export alerter holds its own reminder schedule and its first
  * transient failure), stands an alert down on a clean one, and leaves a report
- * too old to say anything about now to the heartbeat.
+ * too old to say anything about now to the heartbeat. A report whose only
+ * problem is the first missed start stamp in a row is held (#2410): neither
+ * paged nor read as clean, so an open incident stays open.
  */
 export async function runOpsTickReportCheck(
   supabase: SupabaseClient, kv: KVNamespace, nowMs: number, deps: OpsTickReportCheckDeps = LIVE_DEPS,
@@ -200,10 +244,17 @@ export async function runOpsTickReportCheck(
   let kept: KeptReport
   try {
     const parsed: unknown = JSON.parse(raw)
-    const receivedAt = (parsed as { received_at?: unknown } | null)?.received_at
-    kept = { ...parseOpsTickReport(parsed), received_at: typeof receivedAt === 'string' ? receivedAt : '' }
+    const extra = parsed as { received_at?: unknown; start_stamp_misses?: unknown } | null
+    const receivedAt = extra?.received_at
+    const misses = extra?.start_stamp_misses
+    kept = {
+      ...parseOpsTickReport(parsed),
+      received_at: typeof receivedAt === 'string' ? receivedAt : '',
+      // A run that cannot be read is judged long enough to page, never held (L50).
+      start_stamp_misses: typeof misses === 'number' && Number.isInteger(misses) ? misses : OPS_TICK_START_MISSES_TO_PAGE,
+    }
   } catch (err) {
-    kept = { ...unreadableReport(formatErr(err), new Date(nowMs).toISOString()), received_at: new Date(nowMs).toISOString() }
+    kept = { ...unreadableReport(formatErr(err), new Date(nowMs).toISOString()), received_at: new Date(nowMs).toISOString(), start_stamp_misses: 0 }
   }
   const receivedMs = Date.parse(kept.received_at)
   // An unreadable time is judged as fresh, the side that pages, never read as an
@@ -213,9 +264,24 @@ export async function runOpsTickReportCheck(
     await deps.notifyRecovery(kv, OPS_TICK_JOB, nowMs)
     return 'healthy'
   }
+  const stampMissed = kept.start_stamp_failed === true
+  // A lone missed start stamp is held for one tick (#2410); with any other
+  // problem beside it, or the second in a row, the report pages as before.
+  if (kept.outcome === 'problems' && stampMissed && kept.problems.length === 1 && kept.start_stamp_misses < OPS_TICK_START_MISSES_TO_PAGE) {
+    console.warn(`[ops-tick] held tick ${kept.tick_id}: its start stamp failed and nothing else did; the next tick pages if its stamp fails too`)
+    return 'held'
+  }
   const remedy = kept.outcome === 'not_configured'
     ? { title: 'The ops minute cron is not configured', fixHint: notConfiguredFix(kept.not_configured_secrets) }
-    : { title: 'The ops minute cron reported a problem', fixHint: PROBLEMS_FIX }
+    : {
+        title: 'The ops minute cron reported a problem',
+        // A fixed sentence, never the running count: the alerter would read a
+        // new count each minute as a new problem and post it at once (#1768).
+        ...(stampMissed && kept.start_stamp_misses >= OPS_TICK_START_MISSES_TO_PAGE
+          ? { context: `The start stamp failed on ${OPS_TICK_START_MISSES_TO_PAGE} or more ticks in a row.` }
+          : {}),
+        fixHint: PROBLEMS_FIX,
+      }
   await deps.notifyFailure(supabase, OPS_TICK_JOB, kept.problems, kv, remedy, nowMs)
   return 'alerted'
 }
