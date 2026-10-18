@@ -42,6 +42,16 @@
     "note": "bid_recording_coverage_v2 over a window with an end (#1929), read by the too few bids monitor as service_role over a day ending ten minutes ago. Same SECURITY DEFINER shape as v2, so anon must never reach it. Probed with all three args because a probe with the wrong args answers PGRST202, which is indistinguishable from the function being absent."
   },
   {
+    "name": "bid_recording_coverage_v4",
+    "args": {
+      "p_org_id": "00000000-0000-0000-0000-000000000000",
+      "p_since": "2026-01-01T00:00:00Z",
+      "p_until": "2026-01-02T00:00:00Z"
+    },
+    "anon": "denied",
+    "note": "bid_recording_coverage_v3 plus refusal_rows (#2391), read by the too few bids monitor as service_role over a day ending ten minutes ago, which counts the Tripoint loan minimum refusal beside the attempts. Same SECURITY DEFINER shape as v3, so anon must never reach it. Probed with all three args because a probe with the wrong args answers PGRST202, which is indistinguishable from the function being absent."
+  },
+  {
     "name": "email_drop_counts_by_source",
     "args": {
       "p_org_id": "00000000-0000-0000-0000-000000000000",
