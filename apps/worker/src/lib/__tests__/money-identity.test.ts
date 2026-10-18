@@ -100,6 +100,21 @@ describe('measureMoneyIdentity', () => {
     expect(logged.join('\n')).not.toContain(TOKEN)
   })
 
+  it('reports a credential lookup that throws by name, rather than leaving the run unreported', async () => {
+    const { d } = deps({ credentialOrg: async () => { throw new Error('fetch failed') } })
+    const r = await measureMoneyIdentity(d)
+    expect(r).toEqual({ organizationId: null, measured: false, errors: [expect.stringMatching(/could not find which organization holds.*fetch failed/)] })
+  })
+
+  it('reports a reading it measured and could not keep by name, so the alert still fires', async () => {
+    const store = kv()
+    const { d } = deps({ store, kv: { get: store.get, put: async () => { throw new Error('KV put failed: 429 Too Many Requests') } } })
+    const r = await measureMoneyIdentity(d)
+    expect(r.measured).toBe(false)
+    expect(r.errors).toEqual([expect.stringMatching(/measured but could not be kept.*429/)])
+    expect(r.errors[0]).not.toContain(TOKEN)
+  })
+
   it('gives up on a userinfo call that does not answer within its deadline', async () => {
     const { d } = deps({
       timeoutMs: 20,

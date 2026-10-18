@@ -32,9 +32,11 @@
  * and the clock; run invocation (#1950) calls the rest.
  *
  * The ops connections' and Salesforce pool's wrappers (#2334, supabase-ops
- * migration 20261017220000) are at the end. Nothing calls them in the deploy
- * that adds them: the OpsConnections entrypoint, connectionFetch and the tick's
- * new sweeps (Phases 5, 6 and 10 of #1689) are their callers.
+ * migration 20261017220000) are at the end. Since #2335 the minute tick calls
+ * saveConnectionCopies and recordConnectionTombstone every minute, saving what
+ * the bidding Worker serves (connection-serve.ts). The rest wait for their
+ * callers: the OpsConnections entrypoint, connectionFetch's live wiring and the
+ * tick's new sweeps (Phases 5, 6 and 10 of #1689).
  */
 import {
   CONNECTION_COPY_STATES, DELEGATION_CHECK_OUTCOMES, LEDGER_METHODS, OBSERVATION_OUTCOMES, OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES,

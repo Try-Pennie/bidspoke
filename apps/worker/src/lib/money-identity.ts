@@ -90,7 +90,13 @@ function tokenFailure(err: unknown): string {
 
 export async function measureMoneyIdentity(deps: MoneyIdentityDeps): Promise<MoneyIdentityResult> {
   const timeoutMs = deps.timeoutMs ?? USERINFO_TIMEOUT_MS
-  const owner = await deps.credentialOrg()
+  let owner: { orgId: string | null; error: string | null }
+  try {
+    owner = await deps.credentialOrg()
+  } catch (err) {
+    // A database message names a table or a timeout, never a credential.
+    return failed(null, `The money identity was not measured: it could not find which organization holds money's Salesforce credentials (${(err as Error).message}).`)
+  }
   if (owner.orgId === null) return failed(null, `The money identity was not measured: ${owner.error ?? 'no organization holds money\'s Salesforce credentials'}.`)
   const organizationId = owner.orgId
 
@@ -145,7 +151,11 @@ export async function measureMoneyIdentity(deps: MoneyIdentityDeps): Promise<Mon
   } catch (err) {
     return failed(organizationId, `The money identity was not measured: ${(err as Error).message}.`)
   }
-  await deps.kv.put(moneySalesforceIdentityKey(organizationId), JSON.stringify({ organization_id: organizationId, ...identity }))
+  try {
+    await deps.kv.put(moneySalesforceIdentityKey(organizationId), JSON.stringify({ organization_id: organizationId, ...identity }))
+  } catch (err) {
+    return failed(organizationId, `The money identity was measured but could not be kept (${(err as Error).message}), so ops still has the last reading.`)
+  }
   return { organizationId, measured: true, errors: [] }
 }
 
