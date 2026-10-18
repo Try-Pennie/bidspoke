@@ -170,7 +170,15 @@ Bidspoke link in `PDFlow_1__c`, holds every other key the body sent with the
 value sent (`PDFlow_4__c` among them), and its Lead's `EngineUUID__c` and
 `EngineLeadUUID__c` equal the Submission's `Engine_UUID_SO__c` and
 `Engine_Lead_UUID_SO__c`. A read Salesforce did not answer is "could not be
-checked", never landed. Runs the step skipped are counted and said. The message
+checked", never landed. A post that landed and was moved on since counts as
+landed fully and is said apart (#2396), on the direct and the relay side alike:
+"superseded by a later write" when its only differing fields are
+`External_Exchange_Status__c` (still set) and `External_Timestamp__c` (moved
+forward) on a Submission last modified after the post began, as the sale's own
+completion left 11 of 100 sampled relay posts on 2026-10-18; "followed a newer Submission" when its Lead's
+`Submission_Object_ID__c` names a Submission created after this one whose Engine
+ids the Lead carries, the returning customer rule the lead status check uses.
+Runs the step skipped are counted and said. The message
 gives the count, how many landed, each run that did not with what was wrong (by
 run, never a value), and the relay's figure over the same hours.
 
