@@ -15,4 +15,8 @@ export const FIXTURE_CATALOGUE: CatalogueUnderCheck = {
   fingerprints,
   actionsDir: path.join(HERE, 'actions'),
   packageRoot: path.resolve(HERE, '../../..'),
+  // A slim lockfile of its own, so a test can bump a version in a copy of it
+  // without touching the repository's.
+  lockfile: path.join(HERE, 'fixture-lock.yaml'),
+  importer: 'packages/service-catalogue',
 }

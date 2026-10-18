@@ -6,6 +6,7 @@ import { CATALOGUE, catalogueActions } from './schema'
 import { RUNTIME_ACTIONS } from './runtime'
 import { checkCatalogue, scanForIdempotentHints } from './checks/catalogue-checks'
 import { collectModuleGraph } from './checks/module-graph'
+import { readImporterLock } from './checks/lockfile'
 import fingerprints from './fingerprints.json'
 
 /**
@@ -16,6 +17,7 @@ import fingerprints from './fingerprints.json'
  */
 const SRC = path.dirname(fileURLToPath(import.meta.url))
 const PACKAGE_ROOT = path.dirname(SRC)
+const REPO_ROOT = path.resolve(PACKAGE_ROOT, '../..')
 
 const SHIPPED = {
   label: 'shipped',
@@ -24,6 +26,8 @@ const SHIPPED = {
   fingerprints: fingerprints as Readonly<Record<string, string>>,
   actionsDir: path.join(SRC, 'runtime', 'actions'),
   packageRoot: PACKAGE_ROOT,
+  lockfile: path.join(REPO_ROOT, 'pnpm-lock.yaml'),
+  importer: path.relative(REPO_ROOT, PACKAGE_ROOT).split(path.sep).join('/'),
 }
 
 const inside = (dir: string) => (file: string) => file.startsWith(dir + path.sep)
@@ -31,6 +35,13 @@ const inside = (dir: string) => (file: string) => file.startsWith(dir + path.sep
 describe('the shipped catalogue', () => {
   it('passes every catalogue check: versions, fingerprints, traits and pairing', async () => {
     expect(await checkCatalogue(SHIPPED)).toEqual([])
+  })
+
+  it('reads its npm versions from the repository lockfile, under this package', () => {
+    // The catalogue check reads the lockfile even with no actions, so a wrong
+    // path fails the test above; this proves the read finds real entries.
+    expect(SHIPPED.importer).toBe('packages/service-catalogue')
+    expect(readImporterLock(SHIPPED.lockfile, SHIPPED.importer).versions.get('typescript')).toMatch(/^\d+\.\d+\.\d+/)
   })
 
   it('carries no test fixture action', () => {
