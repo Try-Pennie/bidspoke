@@ -27,6 +27,12 @@ export interface AuthorizeInput {
   readonly generation: number
   readonly target: unknown
   readonly publicConfig: unknown
+  /**
+   * The sealed envelope connectionFetch opened into `login`: ciphertext only. A
+   * person bound login hands it to its ConnectionTokenObject (#2335), which
+   * opens it itself, so no plaintext crosses into the object.
+   */
+  readonly envelope: unknown
   readonly login: OpenedLogin
   /**
    * A credential bidding has not committed (verify or Reconnect, findings F116

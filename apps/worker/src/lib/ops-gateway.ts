@@ -34,7 +34,10 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchAllPaged } from './paginate'
 import { writeHeartbeat, writeHeartbeatCompleted } from './cron-heartbeat'
 import { notifyExportFailure, notifyExportRecovery } from './export-alerts'
-import { parseOpsTickReport, type OpsTickReport, type ServedOpsWorkflow, type ServedOpsWorkflows } from './ops-gateway-contract'
+import {
+  OpsGatewayContractError, parseOpsTickReport, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
+  type OpsTickReport, type ServedOpsWorkflow, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer,
+} from './ops-gateway-contract'
 import { formatErr } from './format-error'
 
 /** The tick's id in the heartbeat registry and the export alerter. Never rename it: it keys its KV state. */
@@ -97,6 +100,42 @@ export async function readOpsWorkflows(supabase: SupabaseClient, nowMs: number):
   }
   // A list missing a row it read is not every ops workflow, so it withdraws nothing.
   return { served_at: servedAt, complete: dropped === 0, workflows }
+}
+
+/**
+ * A person bound connection's rotated login, handed back to its one home
+ * (#2335, PR 5 of phase 5 of #1689; plan: discussion #2329, part 2).
+ *
+ * WHO CALLS IT. The ops ConnectionTokenObject, from its write back alarm, through
+ * the ops Worker's OPS_GATEWAY binding (OpsGateway.storeRotatedEnvelope). There
+ * is no public route to it: the public edge reaches only this Worker's default
+ * export.
+ *
+ * WHOSE DATA. One service_connections row: the named connection, only within the
+ * named organization, only when it is a person bound ops_key row still at the
+ * expected generation (store_rotated_envelope, migration 20261018191000), and
+ * only its credential_enc, credential_generation and updated_at. The
+ * organization is the one the object's login was sealed under, which bidding
+ * derived from the caller's JWT when the connection was made.
+ *
+ * Refuses a malformed request by name before the database is asked, and throws
+ * on a database failure, so the object keeps the login and retries rather than
+ * reading a write that did not happen.
+ */
+export async function storeRotatedEnvelope(supabase: SupabaseClient, raw: unknown): Promise<StoreRotatedEnvelopeAnswer> {
+  const request = parseStoreRotatedEnvelopeRequest(raw)
+  const { data, error } = await supabase.rpc('store_rotated_envelope', {
+    p_organization_id: request.organization_id,
+    p_connection_id: request.connection_id,
+    p_expected_generation: request.expected_generation,
+    p_new_generation: request.generation,
+    p_envelope: request.envelope,
+  })
+  if (error) throw new Error(`store_rotated_envelope failed (${error.code ?? 'no code'}: ${error.message})`)
+  if (!Array.isArray(data) || data.length !== 1) {
+    throw new OpsGatewayContractError(`store_rotated_envelope answered ${Array.isArray(data) ? `${data.length} rows` : 'no rows'}, not one`)
+  }
+  return parseStoreRotatedEnvelopeAnswer(data[0])
 }
 
 interface KvLike {

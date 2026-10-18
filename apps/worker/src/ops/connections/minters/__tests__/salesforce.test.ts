@@ -177,7 +177,7 @@ describe('the Salesforce minter: client_credentials against the declared instanc
     for (const target of [{ ...TARGET, instance_url: 'https://collector.example.test' }, { ...TARGET, instance_url: 'http://trypennie.my.salesforce.com' }]) {
       await expect(auth.authorize({
         organizationId: ORG, connectionId: CONN, service: 'salesforce', generation: 1, target, publicConfig: {},
-        login: { plaintext: JSON.stringify(LOGIN) }, candidate: false, renew: null, noteMint: () => {},
+        envelope: null, login: { plaintext: JSON.stringify(LOGIN) }, candidate: false, renew: null, noteMint: () => {},
       })).rejects.toMatchObject({ kind: 'not_allowed', reason: 'target_invalid' })
     }
     expect(endpoint.calls).toEqual([])
