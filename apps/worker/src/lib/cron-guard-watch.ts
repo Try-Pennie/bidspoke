@@ -415,6 +415,9 @@ const MIN_JUDGED_MINUTES = 60
  * (or the window's start) to the tail copy's lag before now. Measured from the
  * first minute held, so a record that has only just started filling is judged on
  * what it could hold; a record that stopped part way is judged on the gap.
+ * The first minute is taken from every row, those inside the lag included: a
+ * record whose rows are all younger than the lag has nothing yet to judge, and
+ * was once read as holding none of the day (0 of 1,430, the hour it shipped).
  */
 function minuteCoverage(deliveries: TickDelivery[], sinceMs: number, nowMs: number): { present: number; expected: number } {
   const endMinute = Math.floor((nowMs - TAIL_COPY_LAG_MS) / MINUTE_MS)
@@ -423,9 +426,9 @@ function minuteCoverage(deliveries: TickDelivery[], sinceMs: number, nowMs: numb
   for (const d of deliveries) {
     if (d.cron !== MINUTE_CRON) continue
     const m = Math.floor(d.scheduledAtMs / MINUTE_MS)
+    if (m < first) first = m
     if (m > endMinute) continue
     minutes.add(m)
-    if (m < first) first = m
   }
   const windowStart = Math.floor(sinceMs / MINUTE_MS) + 1
   const startMinute = Number.isFinite(first) ? Math.max(first, windowStart) : windowStart
