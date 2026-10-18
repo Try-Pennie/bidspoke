@@ -37,7 +37,15 @@
 # (measure-deploy-durations.sh), so the number judged is the number measured
 # (L107).
 
+# The callers read one page of 100 jobs (a Deploy run has 15). If GitHub says
+# the run has more jobs than the page holds, the rest would be dropped and the
+# running time undercounted, which is the direction that excuses a stuck deploy.
+# So that answers the word `incomplete`, which every caller refuses as a number:
+# the in-flight query reports running=unknown, the measurement stops.
+
 def secs: fromdateiso8601;
+
+if (.total_count // 0) > (.jobs | length) then "incomplete" else
 
 [ .jobs[]
   | select(.started_at != null)
@@ -53,3 +61,5 @@ def secs: fromdateiso8601;
     elif $i[0] > .end then {total: (.total + .end - .start), start: $i[0], end: $i[1]}
     else .end = ([.end, $i[1]] | max) end)
 | (.total + (if .end == null then 0 else .end - .start end)) | floor
+
+end

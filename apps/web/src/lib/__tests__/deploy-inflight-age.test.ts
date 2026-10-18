@@ -65,6 +65,8 @@ type ListedRun = {
   jobs?: ListedJob[]
   /** Makes `gh api` for this run's jobs fail with this text. */
   jobsFail?: string
+  /** The total_count GitHub reports, when it should differ from the jobs listed. */
+  totalCount?: number
 }
 
 type Asked = { age: string; reason: string; calls: string }
@@ -115,7 +117,7 @@ const askLikeGitHub = (runs: ListedRun[], listStderr = ''): Asked => {
       started_at: iso(now, j.startedAgo ?? j.createdAgo),
       completed_at: j.completedAgo === undefined ? null : iso(now, j.completedAgo),
     }))
-    writeFileSync(path.join(dir, `jobs-${r.id}.json`), JSON.stringify({ total_count: jobs.length, jobs }))
+    writeFileSync(path.join(dir, `jobs-${r.id}.json`), JSON.stringify({ total_count: r.totalCount ?? jobs.length, jobs }))
   }
   const gh = path.join(dir, 'gh')
   writeFileSync(
@@ -479,6 +481,23 @@ describe('deploy-inflight-age: time spent waiting for a runner is not running ti
     expect(parse(age).running).toBe('unknown')
     expect(reason).toMatch(/44/)
     expect(reason).toMatch(/502/)
+  })
+
+  it('answers the running time as unknown when the jobs list holds fewer jobs than GitHub says the run has', () => {
+    // One page of 100 jobs is read. A run with more would have the rest dropped,
+    // which undercounts its running time, the permissive direction.
+    const { age, reason } = askLikeGitHub([
+      {
+        id: 77,
+        status: 'in_progress',
+        headBranch: 'main',
+        createdAgo: 300,
+        totalCount: 101,
+        jobs: [{ status: 'completed', createdAgo: 300, startedAgo: 300, completedAgo: 200 }],
+      },
+    ])
+    expect(parse(age).running).toBe('unknown')
+    expect(reason).toMatch(/77/)
   })
 
   it('is unknown if ANY in-flight run cannot be read, since that run may be the stuck one', () => {
