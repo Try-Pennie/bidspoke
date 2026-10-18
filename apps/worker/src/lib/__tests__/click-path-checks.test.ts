@@ -11,8 +11,10 @@
  *                  buyer's selling hours, over up to six hours since its
  *                  profile last changed, was eligible, and at its own eligible
  *                  rate since that change so many with none is under one in
- *                  1,000 (#2104); and offers were made with no click
- *                  execution in three hours.
+ *                  1,000 (#2104), or, when no lead has been eligible since
+ *                  that change, at the share eligible in the 72 hours before
+ *                  it (#2426); and offers were made with no click execution
+ *                  in three hours.
  *   refusals       a burst of buyer_click_send refusals for one buyer.
  *   reconcile      once per Pacific day: the counted prospects against the
  *                  Salesforce prospects the click wrote Completed.
@@ -33,6 +35,8 @@ import {
   CLICK_SEND_REFUSALS_JOB,
   CLICK_SEND_REFUSALS_REMEDY,
   clickRemedyFor,
+  EDIT_PICKUP_GRACE_MS,
+  EDIT_PRE_WINDOW_MS,
   NO_CLICK_MIN_OFFERS,
   QUIET_MIN_RUNS,
   QUIET_RATE_WINDOW_MS,
@@ -386,6 +390,124 @@ describe('quiet: zero eligible, judged against the buyer\'s own eligible rate', 
     const s = await runClickPathChecks(d)
     expect(s.subjects[0].refusals).toMatchObject({ verdict: 'unmeasured' })
     expect(last(pages, CLICK_SEND_REFUSALS_JOB)).toEqual([expect.stringMatching(/liberty1: .*could not be read.*steps timed out/)])
+  })
+})
+
+describe('quiet: a profile edit that leaves no lead eligible pages against the share before it (#2426)', () => {
+  /** Monday 2027-09-20 11:00 to 16:30 Eastern: selling hours more than 24 hours before NOW, so only a read reaching before the edit sees them. */
+  const PRE_FROM = Date.UTC(2027, 8, 20, 15, 0)
+  const PRE_TO = Date.UTC(2027, 8, 20, 20, 30)
+  /** Liberty1 after its collections cap: about 4 percent eligible (#2111), here 20 of 500. */
+  const before = (eligible = 20, total = 500) => [
+    ...runsBetween('eligible', eligible, PRE_FROM, PRE_TO, 'pre-e'),
+    ...runsBetween('debt_above_max', total - eligible, PRE_FROM, PRE_TO, 'pre-n'),
+  ]
+  /** Tuesday 13:00 Eastern, four hours before NOW, inside the selling day. */
+  const EDIT = NOW - 4 * HOUR
+  const editedBuyer = (at = EDIT) => buyer({ debtMin: 90000 }, new Date(at).toISOString())
+  /** Every lead after the edit out on the new floor, from 20 minutes after it, past the pickup grace. */
+  const after = (n = 200, from = EDIT + 20 * MIN) => [
+    ...runsBetween('debt_below_min', Math.ceil(n * 0.6), from, NOW, 'post-d'),
+    ...runsBetween('loan_amount_below_min', Math.floor(n * 0.4), from, NOW, 'post-l'),
+  ]
+
+  it('pages when a Liberty1 profile edit takes the eligible share from its level before the edit to zero', async () => {
+    const { d, pages } = deps({ checks: [...before(), ...after()], buyer: editedBuyer() })
+    const s = await runClickPathChecks(d)
+    expect(s.subjects[0].quiet.verdict).toBe('quiet')
+    const lines = last(pages, CLICK_PATH_QUIET_JOB) ?? []
+    expect(lines).toHaveLength(1)
+    expect(lines[0]).toMatch(/200 leads reached the Buyer Click Check in its selling hours since its profile was changed at Sep 21, 1:00 PM ET, and none was eligible/)
+    expect(lines[0]).toMatch(/4% of leads were eligible \(20 of 500\) in the 72 hours before that change/)
+    expect(lines[0]).toMatch(/debt_below_min 120, loan_amount_below_min 80/)
+  })
+
+  it('reads the leads before the edit from before the 24 hour rate window, only when nothing has been eligible since the edit', async () => {
+    const { d } = deps({ checks: [...before(), ...after()], buyer: editedBuyer() })
+    const calls: Array<[number, number]> = []
+    const read = d.readCheckRuns
+    d.readCheckRuns = async (s, from, to) => { calls.push([from, to]); return read(s, from, to) }
+    await runClickPathChecks(d)
+    expect(calls).toHaveLength(2)
+    expect(calls[1]).toEqual([EDIT - EDIT_PRE_WINDOW_MS, calls[0][0]])
+  })
+
+  it('pages even when leads inside the pickup grace after the edit were eligible, because they may have been judged on the old copy', async () => {
+    const stale = runsBetween('eligible', 3, EDIT, EDIT + 10 * MIN, 'stale')
+    const { d, pages } = deps({ checks: [...before(), ...stale, ...after()], buyer: editedBuyer() })
+    const s = await runClickPathChecks(d)
+    expect(s.subjects[0].quiet.verdict).toBe('quiet')
+    expect((last(pages, CLICK_PATH_QUIET_JOB) ?? [])[0]).toMatch(/since its profile was changed/)
+    expect(EDIT_PICKUP_GRACE_MS).toBeGreaterThanOrEqual(15 * MIN)
+  })
+
+  it('does not page yet when too few leads have arrived since the edit, and says what it would take at the share before it', async () => {
+    const edit = NOW - HOUR
+    const { d, pages } = deps({ checks: [...before(), ...after(40, edit + 20 * MIN)], buyer: editedBuyer(edit) })
+    const s = await runClickPathChecks(d)
+    expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
+    expect(s.subjects[0].quiet).toMatchObject({ verdict: 'too_few' })
+    expect((s.subjects[0].quiet as { detail?: string }).detail).toMatch(/40 leads in selling hours since the profile changed.*none eligible.*170 needed at the 4% eligible in the 72 hours before/)
+  })
+
+  it('stays quiet when the day\'s cap was reached after the edit, because not eligible is then the cap working', async () => {
+    const capped = runsBetween('daily_click_cap', 2, NOW - 30 * MIN, NOW, 'cap')
+    const { d, pages } = deps({ checks: [...before(), ...after(), ...capped], buyer: editedBuyer() })
+    await runClickPathChecks(d)
+    expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
+  })
+
+  it('an ordinary edit that leaves some leads eligible re-baselines on the share since it, as before', async () => {
+    // Edited Monday 18:00 Eastern at 25 percent; since then 5 of 200 eligible, so the bar is 2.5 percent and
+    // today's 100 with none is not yet unusual, where the share before the edit would have paged on them.
+    const edit = Date.UTC(2027, 8, 20, 22, 0)
+    const runs = [
+      ...runsBetween('eligible', 50, PRE_FROM, edit, 'pre-e'), ...runsBetween('debt_above_max', 150, PRE_FROM, edit, 'pre-n'),
+      ...runsBetween('eligible', 5, edit + 20 * MIN, Date.UTC(2027, 8, 21, 1, 0), 'mon-e'), ...runsBetween('debt_above_max', 95, edit + 20 * MIN, Date.UTC(2027, 8, 21, 1, 0), 'mon-n'),
+      ...runsBetween('debt_below_min', 100, NOW - 6 * HOUR, NOW, 'tue'),
+    ]
+    const { d, pages } = deps({ checks: runs, buyer: editedBuyer(edit) })
+    const s = await runClickPathChecks(d)
+    expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
+    expect((s.subjects[0].quiet as { detail?: string }).detail).toMatch(/100 leads in 360 minutes of selling time, 273 needed at 2.5% eligible/)
+  })
+
+  it('with no edit in the kept history and none eligible, says the rate is not known as before, reading once', async () => {
+    const { d, pages } = deps({
+      checks: [...runsBetween('state_not_allowed', 100, Date.UTC(2027, 8, 20, 21, 0), Date.UTC(2027, 8, 21, 1, 0), 'mon'), ...after(100, NOW - 6 * HOUR)],
+      buyer: buyer({}, '2027-09-11T10:00:00.000Z'),
+    })
+    const calls: Array<[number, number]> = []
+    const read = d.readCheckRuns
+    d.readCheckRuns = async (s, from, to) => { calls.push([from, to]); return read(s, from, to) }
+    const s = await runClickPathChecks(d)
+    expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
+    expect((s.subjects[0].quiet as { detail?: string }).detail).toMatch(/rate is not known/)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('with no lead eligible before the edit either, there is no share to compare, so it says the rate is not known as before', async () => {
+    const { d, pages } = deps({ checks: [...before(0, 500), ...after()], buyer: editedBuyer() })
+    const s = await runClickPathChecks(d)
+    expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
+    expect((s.subjects[0].quiet as { detail?: string }).detail).toMatch(/rate is not known/)
+  })
+
+  it('trusts no share from fewer than QUIET_RATE_MIN_RUNS leads before the edit, however high it is', async () => {
+    // 10 of 30 is a third, at which 60 with none would page; 30 leads is too few to trust.
+    const { d, pages } = deps({ checks: [...before(10, 30), ...after(60)], buyer: editedBuyer() })
+    const s = await runClickPathChecks(d)
+    expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
+    expect((s.subjects[0].quiet as { detail?: string }).detail).toMatch(/rate is not known/)
+  })
+
+  it('a read of the leads before the edit that fails says the check is not known, never a clean run', async () => {
+    const { d, pages } = deps({ checks: [...before(), ...after()], buyer: editedBuyer() })
+    const read = d.readCheckRuns
+    d.readCheckRuns = async (s, from, to) => { if (from < NOW - QUIET_RATE_WINDOW_MS) throw new Error('steps timed out'); return read(s, from, to) }
+    const s = await runClickPathChecks(d)
+    expect(s.subjects[0].quiet).toMatchObject({ verdict: 'unmeasured' })
+    expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([expect.stringMatching(/liberty1: .*not known.*before the profile change.*steps timed out/)])
   })
 })
 
