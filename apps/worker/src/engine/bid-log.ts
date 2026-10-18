@@ -14,6 +14,7 @@
 import type { BidAttemptInsert } from './lead-sightings'
 import type { NodeDefinition, StepOutput } from '../types'
 import { classifyTripointResultCode } from './bid-resolver'
+import type { OutReason } from '@bidspoke/buyer-profile'
 
 // A pass-through node's output becomes the input of everything downstream, and a
 // branch_end re-emits the very object it received (executeBranchEndNode). Every node's
@@ -118,7 +119,46 @@ export interface DerivedBidMeta {
   is_test: boolean
 }
 
+/**
+ * The refusals a code node's bid row carries by name (#2391): a buyer's own rule
+ * deciding a lead out before anyone was asked. tripoint_ping returns these beside
+ * its `skipped: true` since version 110 of the Engine flow (2026-10-15), Tripoint's
+ * 2,000 loan minimum, in the buyer profile's own vocabulary (OUT_REASONS).
+ *
+ * A reason not on this list is recorded as plain `skipped`, never by its word,
+ * because every reader of lead_sighting_bids that counts attempts counts any
+ * skip_reason other than `skipped` as one (the bid_recording_coverage functions).
+ * bid_recording_coverage_v4 leaves every one of these out of its attempts, and a
+ * web guard holds its list to this one; a reason added here must be added there
+ * in a new version, or it would count as an attempt.
+ */
+export const BID_ROW_REFUSAL_REASONS = ['loan_amount_below_min', 'missing_lead_field'] as const satisfies readonly OutReason[]
+export type BidRowRefusalReason = (typeof BID_ROW_REFUSAL_REASONS)[number]
+const REFUSAL_REASONS: ReadonlySet<string> = new Set(BID_ROW_REFUSAL_REASONS)
+
+/**
+ * The written refusals the too few bids monitor counts as RECORDED, beside the
+ * attempts (#2391): a deliberate rule that took the place of an attempt.
+ *
+ * Only the loan minimum. missing_lead_field is written to the row as evidence but
+ * counted as neither an attempt nor a recorded refusal, because it is also what a
+ * fault looks like: a loan amount path that stops resolving makes every sell off
+ * lead read missing_lead_field, and counted as recorded that would keep the ratio
+ * steady while Tripoint got nothing (L367). Counted as neither, it collapses the
+ * ratio and pages. bid_recording_coverage_v4's refusal_rows counts exactly these,
+ * held to this list by the same web guard.
+ */
+export const RECORDED_REFUSAL_REASONS = ['loan_amount_below_min'] as const satisfies readonly BidRowRefusalReason[]
+
+/** The listed refusal a skipped producer output names, or null for a plain skip. */
+export function refusalReasonOf(output: { skip_reason?: unknown }): BidRowRefusalReason | null {
+  const r = output.skip_reason
+  return typeof r === 'string' && REFUSAL_REASONS.has(r) ? (r as BidRowRefusalReason) : null
+}
+
 interface TripointBidOutput {
+  /** Why a skipped ping was not sent, named by the script on its own refusals (#2391). */
+  skip_reason?: unknown
   skipped?: unknown
   qualified?: unknown
   resultCode?: unknown
@@ -291,7 +331,9 @@ export function deriveCodeNodeBidAttempts(
       // stays null.
       const base = baseRow('tripoint', null)
       if (tripoint.skipped === true) {
-        rows.push({ ...base, classification: null, decline_reason: null, skip_reason: 'skipped' })
+        // A refusal by Tripoint's own rule keeps its reason (#2391), so a deliberate
+        // eligibility rule can be told apart from a lead that was never a sell off.
+        rows.push({ ...base, classification: null, decline_reason: null, skip_reason: refusalReasonOf(tripoint) ?? 'skipped' })
         continue
       }
       // An answer with no result code is recorded by what it was (#1540), never as a
