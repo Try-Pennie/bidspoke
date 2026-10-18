@@ -15,6 +15,13 @@ describe('filterUnhandledBigTables', () => {
     const out = filterUnhandledBigTables(rows)
     expect(out.map((r) => r.table_name)).toEqual(['some_new_table'])
   })
+
+  it('drops cron_tick_deliveries, the table the 2026-10-18 growth alert named (#2390)', () => {
+    // About 1,900 rows a day kept 7 days by design (#2284), and its one reader
+    // pages with an order, so the daily check must not keep alerting on it.
+    const out = filterUnhandledBigTables([{ table_name: 'cron_tick_deliveries', est_rows: 1264 }])
+    expect(out).toEqual([])
+  })
 })
 
 // Supabase mock: rpc -> table estimates; from('service_connections') list; and
