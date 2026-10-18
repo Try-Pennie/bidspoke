@@ -3129,6 +3129,19 @@ export type Database = {
           workflow_name: string
         }[]
       }
+      bid_recording_coverage_v4: {
+        Args: { p_org_id: string; p_since: string; p_until: string }
+        Returns: {
+          attempt_rows: number
+          bid_rows: number
+          is_active: boolean
+          refusal_rows: number
+          sightings: number
+          winners: number
+          workflow_id: string
+          workflow_name: string
+        }[]
+      }
       buyer_profile_document: { Args: { p_partner: string }; Returns: Json }
       buyer_profile_flatten: {
         Args: { p_doc: Json }
