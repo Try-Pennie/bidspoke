@@ -1,10 +1,12 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { stubFetch, type FetchMock } from '../../__tests__/helpers/fetch-mock'
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest'
 import { SlackAPIConnectionError, SlackAPIError } from 'slack-web-api-client'
-import { createSlackClient, slackCallFailure, slackNetworkCause } from '../slack-client'
+import { createSlackClient, slackBodyOf, slackCallFailure, slackNetworkCause } from '../index'
 
 /**
- * The one place a Slack Web API client is built (#2331 phase 1b, #1689 D3).
+ * The one place a Slack Web API client is built (#2331 phase 1b, #1689 D3),
+ * moved with its factory from the Worker into this package (#2337), so the
+ * guard below covers every caller: the Worker's alerts and Settings routes
+ * today, and the service catalogue's ops Slack actions when they arrive.
  *
  * The guard: the client createSlackClient builds has the library's rate limit
  * retry handler OFF and its debug logging OFF. Left on, the retry handler
@@ -19,6 +21,14 @@ import { createSlackClient, slackCallFailure, slackNetworkCause } from '../slack
  * fail (two requests and a setTimeout); with `logLevel: 'DEBUG'`, the logging
  * tests fail (the request body and the response are printed).
  */
+
+/** The global fetch, replaced. The Worker's typed helper does not reach this package, so this is its few lines. */
+type FetchMock = Mock<(input: Request) => Promise<Response>>
+function stubFetch(): FetchMock {
+  const mock = vi.fn<(input: Request) => Promise<Response>>()
+  vi.stubGlobal('fetch', mock)
+  return mock
+}
 
 const TOKEN = 'canary-bot-token-2331'
 const SECRET_IN_BODY = 'canary-request-body-2331'
@@ -148,5 +158,53 @@ describe('slackCallFailure: which thrown errors are a Slack answer rather than n
     expect(slackNetworkCause(new SlackAPIConnectionError('chat.postMessage', -1, '', undefined, cause))).toBe(cause)
     const other = new SyntaxError('Unexpected token <')
     expect(slackNetworkCause(other)).toBe(other)
+  })
+})
+
+describe('slackBodyOf: the body of any answer is the answer, as the Settings routes read Slack before the client (#2331)', () => {
+  let fetchMock: FetchMock
+  let warned: string[]
+  beforeEach(() => {
+    fetchMock = stubFetch()
+    warned = []
+    vi.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
+      warned.push(args.map(String).join(' '))
+    })
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  const list = () => slackBodyOf('conversations.list', () => createSlackClient({ bot_token: TOKEN }).conversations.list({ limit: 1 }))
+
+  it('returns a success as returned', async () => {
+    fetchMock.mockImplementation(async () => slackResponse({ ok: true, channels: [] }))
+    expect(await list()).toMatchObject({ ok: true, channels: [] })
+  })
+
+  it('returns the body of an ok:false refusal rather than throwing', async () => {
+    fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'invalid_auth' }))
+    expect(await list()).toMatchObject({ ok: false, error: 'invalid_auth' })
+  })
+
+  it('returns the JSON body of a 429 at once, never waiting, and logs its Retry-After', async () => {
+    const timer = vi.spyOn(globalThis, 'setTimeout')
+    fetchMock.mockImplementation(async () => slackResponse({ ok: false, error: 'ratelimited' }, 429, { 'Retry-After': '30' }))
+    expect(await list()).toEqual({ ok: false, error: 'ratelimited' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(timer).not.toHaveBeenCalled()
+    expect(warned).toEqual(['[slack] conversations.list HTTP error 429, Retry-After 30 s, not waited for'])
+  })
+
+  it('throws SyntaxError for an error status whose body is not JSON', async () => {
+    fetchMock.mockImplementation(async () => new Response('<html>bad gateway</html>', { status: 502 }))
+    await expect(list()).rejects.toBeInstanceOf(SyntaxError)
+  })
+
+  it('rethrows the fetch error itself when there was no answer', async () => {
+    const cause = new TypeError('network down')
+    fetchMock.mockImplementation(() => Promise.reject(cause))
+    await expect(list()).rejects.toBe(cause)
   })
 })

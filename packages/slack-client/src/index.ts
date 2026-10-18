@@ -1,10 +1,15 @@
 /**
- * The one place a Slack Web API client is built (#2331 phase 1b, #1689 D3).
+ * @bidspoke/slack-client: the one place a Slack Web API client is built
+ * (#2331 phase 1b, #1689 D3). It moved here from the Worker's
+ * lib/slack-client.ts (#2337) so the service catalogue's ops Slack actions
+ * (Phase 7) build their clients in the same place as every alert, under the
+ * same two settings and the same guards, rather than through a copy.
  *
  * Slack calls go through slack-web-api-client (MIT, no runtime dependencies,
- * fetch only), pinned to an exact version in package.json, instead of a hand
- * written fetch per caller. Two of its defaults are wrong for this Worker, and
- * this factory turns both off for every client:
+ * fetch only), pinned to an exact version in this package's package.json, the
+ * only manifest in the repo allowed to declare it, instead of a hand written
+ * fetch per caller. Two of its defaults are wrong for a Worker, and this
+ * factory turns both off for every client:
  *
  * - The rate limit retry handler. It sleeps for whatever Retry-After says
  *   inside the request, with no cap and no clock a test can move (L365, L524),
@@ -15,17 +20,23 @@
  *   response, and for oauth.v2.access the body holds the client secret and the
  *   refresh token. Nothing may set it, here or anywhere.
  *
- * lib/__tests__/slack-client.test.ts asserts both on what a built client does.
+ * src/__tests__/client.test.ts asserts both on what a built client does.
  * apps/web/src/lib/__guards__/worker/slack-calls-one-client.test.ts fails on
- * any Slack call made any other way, in the Worker or packages/service-catalogue.
+ * any Slack call made any other way, in the src of any workspace package (the
+ * Worker and packages/service-catalogue included), and on any import of the
+ * library outside this file: a caller takes the types it needs from here.
  *
- * Callers: deliverMessage in lib/slack.ts (every alert), sendThreadReply
- * beside it (the summary under an alert), and in routes/api/integrations.ts
- * POST /slack/resolve (auth.test and the first conversations.list), POST
- * /slack's token check (auth.test) and GET /slack/channels
- * (conversations.list, paged). Nothing else calls Slack (#2331).
+ * Callers, all in the Worker: deliverMessage in lib/slack.ts (every alert),
+ * sendThreadReply beside it (the summary under an alert), and in
+ * routes/api/integrations.ts POST /slack/resolve (auth.test and the first
+ * conversations.list), POST /slack's token check (auth.test) and GET
+ * /slack/channels (conversations.list, paged). Nothing else calls Slack
+ * (#2331).
  */
 import { SlackAPIClient, SlackAPIConnectionError, SlackAPIError } from 'slack-web-api-client'
+
+/** The library's types a caller needs, re-exported so nothing else imports the library (#2337). */
+export type { AnyMessageBlock, SlackAPIClient } from 'slack-web-api-client'
 
 /** Build a Slack client for a resolved connection's bot token, with no retries and no debug logging. */
 export function createSlackClient(connection: { bot_token: string }): SlackAPIClient {
