@@ -352,7 +352,27 @@ describe('judgeOutcomeRate', () => {
     expect(judgeOutcomeRate(usual, HEALTHY_BASELINE, NOW).verdict).toBe('normal')
   })
 
-  it('a rise that doubles a tiny share but moves it by a few points is not elevated: both tests must hold', () => {
+  it('a buyer that usually declines 42% and now declines 70% is elevated (#2392): a share that high can never double', () => {
+    // The rule used to need the share to more than double AND rise 25 points.
+    // Below a 25% baseline the 25 points already more than doubles it, so the
+    // double clause only ever bit above 25%, where it made a big decliner
+    // unpageable: Tripoint declines about 42% of what it is sent, and on
+    // 2026-10-14 its declines rose to about 67% without any rule able to say so.
+    const tripointLike: OutcomeBaseline = { attempts: 1000, failed: 1, declined: 420 }
+    const entries = [...hourOf('declined', 7), ...hourOf('accepted', 3)]
+    expect(judgeOutcomeRate(entries, tripointLike, NOW)).toMatchObject({ verdict: 'elevated', detail: expect.stringMatching(/7 of 10 attempts.*declined.*70%.*42% over the prior 14 days/) })
+    const usual = [...hourOf('declined', 6), ...hourOf('accepted', 4)]
+    expect(judgeOutcomeRate(usual, tripointLike, NOW).verdict).toBe('normal')
+  })
+
+  it('a quiet hour in which every attempt failed, fewer than saturation needs, says so rather than claiming not every one failed', () => {
+    const v = judgeOutcomeRate(hourOf('released', OUTCOME_SATURATION_MIN_ATTEMPTS - 1), HEALTHY_BASELINE, NOW)
+    expect(v.verdict).toBe('quiet')
+    expect(v).not.toMatchObject({ detail: expect.stringMatching(/not every one failed/) })
+    expect(v).toMatchObject({ detail: expect.stringMatching(new RegExp(`every one failed, fewer than the ${OUTCOME_SATURATION_MIN_ATTEMPTS}`)) })
+  })
+
+  it('a rise that doubles a tiny share but moves it by a few points is not elevated: the rise must be 25 points', () => {
     // 2 of 20 is double the 1% baseline but 9 points above it, which one bad
     // lead and one flaky call produce on an ordinary day.
     const entries = [...hourOf('released', 2), ...hourOf('accepted', 18)]

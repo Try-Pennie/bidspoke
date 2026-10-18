@@ -37,8 +37,11 @@
  * the live attempts of the last hour: the share that failed before the buyer
  * processed the lead (released, or held as unresolved) and the share the buyer
  * declined, each against the same share over the prior 14 days of buyer_sales.
- * A share is elevated when it is more than double the baseline AND at least 25
- * points above it, so a tiny baseline doubled by one flaky call does not page.
+ * A share is elevated when it is at least 25 points above the baseline, so a
+ * tiny baseline doubled by one flaky call does not page. The decision is
+ * outcome-rate-rule.ts, shared with the Tripoint bridge on the Engine
+ * tripoint_ping path (#2392, L370), which is why the double clause it used to
+ * carry is gone: it could never page a buyer declining over half its leads.
  * The rate needs 10 attempts; below that an hour in which EVERY attempt failed,
  * three or more, is elevated anyway (saturation, L139), and otherwise the hour
  * is QUIET, a third state distinct from normal (L11). A baseline thinner than
@@ -65,6 +68,7 @@ import { fetchAllPaged } from './paginate'
 import { resolveSalesforceCredsFor } from './salesforce-creds'
 import { BID_PURGE_HORIZON_MS } from './sightings-export'
 import { describeDuration } from './incident-span'
+import { isoDateMinus, judgeOutcomeShares, type BaselineUnreadable, type OutcomeBaseline, type OutcomeRateRule } from './outcome-rate-rule'
 
 export { BID_PURGE_HORIZON_MS }
 
@@ -85,9 +89,17 @@ export const OUTCOME_BASELINE_MIN_ATTEMPTS = 100
 export const OUTCOME_RATE_MIN_ATTEMPTS = 10
 /** Attempts an hour must hold for every one of them failing to be a finding on its own (L139). */
 export const OUTCOME_SATURATION_MIN_ATTEMPTS = 3
-/** Elevated means more than this multiple of the baseline share AND at least this many points above it. */
-const OUTCOME_RATE_MULTIPLE = 2
-const OUTCOME_RATE_MIN_RISE = 0.25
+
+/** buyer-outcome-rate's floors for the shared rule. */
+export const BUYER_OUTCOME_RULE: OutcomeRateRule = {
+  minAttempts: OUTCOME_RATE_MIN_ATTEMPTS,
+  saturationMinAttempts: OUTCOME_SATURATION_MIN_ATTEMPTS,
+  // A buyer that declines a third of its leads declines all of three about one
+  // hour in 27, so "nothing accepted" is not judged at this floor.
+  noAcceptSaturationMinAttempts: null,
+  baselineMinAttempts: OUTCOME_BASELINE_MIN_ATTEMPTS,
+  baselineDays: OUTCOME_BASELINE_DAYS,
+}
 
 /**
  * The buyers whose accepted sales another node writes back to Salesforce, by
@@ -218,12 +230,9 @@ export interface WinnerRow {
   attempted_at_utc: string
 }
 
-/** Live attempts over the baseline window: every resolved attempt, those that failed, those declined. */
-export interface OutcomeBaseline {
-  attempts: number
-  failed: number
-  declined: number
-}
+// The baseline shapes live with the shared rule (outcome-rate-rule.ts); here
+// readOutcomeBaseline fills OutcomeBaseline from live buyer_sales rows.
+export type { OutcomeBaseline, BaselineUnreadable }
 
 export interface ChecksDeps {
   listBuyers(): Promise<CheckBuyer[]>
@@ -293,10 +302,6 @@ export const mismatchMarkerKey = (partnerId: string) => `buyer-sales-mismatch-se
 export const unresolvedPagedKey = (partnerId: string) => `unresolved-paged:${partnerId}`
 export const outcomeRatePagedKey = (partnerId: string) => `outcome-rate-paged:${partnerId}`
 
-function isoDateMinus(day: string, days: number): string {
-  const [y, m, d] = day.split('-').map(Number)
-  return new Date(Date.UTC(y, m - 1, d - days)).toISOString().slice(0, 10)
-}
 const previousIsoDate = (day: string) => isoDateMinus(day, 1)
 
 // ── The checks ────────────────────────────────────────────────────────────────
@@ -394,17 +399,11 @@ export function mismatchKindsOf(s: Pick<BuyerCheckSummary, 'completeness' | 'con
   return kinds
 }
 
-/** How a baseline that could not be read is handed to the judge, with the reason. */
-export interface BaselineUnreadable {
-  unreadable: string
-}
-
-const percent = (n: number): string => `${Math.round(n * 100)}%`
-
 /**
- * The last hour's live attempts against the baseline. Saturation is judged
- * first and needs no baseline; the rate needs both a big enough hour and a big
- * enough baseline, and says which is missing when one is (L11).
+ * The last hour's live attempts against the baseline, by the shared rule
+ * (outcome-rate-rule.ts). Saturation is judged first and needs no baseline; the
+ * rate needs both a big enough hour and a big enough baseline, and says which
+ * is missing when one is (L11).
  */
 export function judgeOutcomeRate(
   entries: LedgerEntry[],
@@ -412,34 +411,9 @@ export function judgeOutcomeRate(
   nowMs: number,
 ): BuyerCheckSummary['outcome_rate'] {
   const hour = entries.filter((e) => e.kind === 'live' && e.status !== 'reserved' && e.reserved_at > nowMs - HOUR_MS && e.reserved_at <= nowMs)
-  const attempts = hour.length
   const failed = hour.filter((e) => e.status === 'released' || e.status === 'unresolved').length
   const declined = hour.filter((e) => e.status === 'declined').length
-  const failedWhat = 'failed before the buyer processed the lead (a buyer error or an answer nobody could classify)'
-
-  if (attempts >= OUTCOME_SATURATION_MIN_ATTEMPTS && failed === attempts) {
-    return { verdict: 'elevated', detail: `all ${attempts} attempts in the last hour ${failedWhat}` }
-  }
-  if (attempts < OUTCOME_RATE_MIN_ATTEMPTS) {
-    return { verdict: 'quiet', detail: `${attempts} attempts in the last hour, fewer than the ${OUTCOME_RATE_MIN_ATTEMPTS} a rate needs, and not every one failed` }
-  }
-  if (baseline === null) return { verdict: 'unmeasured', reason: `the baseline over the prior ${OUTCOME_BASELINE_DAYS} days could not be read` }
-  if ('unreadable' in baseline) return { verdict: 'unmeasured', reason: `the baseline over the prior ${OUTCOME_BASELINE_DAYS} days could not be read: ${baseline.unreadable}` }
-  if (baseline.attempts < OUTCOME_BASELINE_MIN_ATTEMPTS) {
-    return { verdict: 'unmeasured', reason: `the baseline over the prior ${OUTCOME_BASELINE_DAYS} days holds ${baseline.attempts} attempts, fewer than the ${OUTCOME_BASELINE_MIN_ATTEMPTS} it needs` }
-  }
-
-  const elevated = (now: number, base: number) => now > base * OUTCOME_RATE_MULTIPLE && now - base >= OUTCOME_RATE_MIN_RISE
-  const against = (base: number) => `against ${percent(base)} over the prior ${OUTCOME_BASELINE_DAYS} days`
-  const findings: string[] = []
-  const failedShare = failed / attempts
-  const failedBase = baseline.failed / baseline.attempts
-  if (elevated(failedShare, failedBase)) findings.push(`${failed} of ${attempts} attempts in the last hour ${failedWhat}, ${percent(failedShare)} ${against(failedBase)}`)
-  const declinedShare = declined / attempts
-  const declinedBase = baseline.declined / baseline.attempts
-  if (elevated(declinedShare, declinedBase)) findings.push(`${declined} of ${attempts} attempts in the last hour were declined by the buyer, ${percent(declinedShare)} ${against(declinedBase)}`)
-  if (findings.length > 0) return { verdict: 'elevated', detail: findings.join('; ') }
-  return { verdict: 'normal', detail: `${attempts} attempts in the last hour, ${percent(failedShare)} failed ${against(failedBase)}, ${percent(declinedShare)} declined ${against(declinedBase)}` }
+  return judgeOutcomeShares({ attempts: hour.length, failed, declined }, baseline, BUYER_OUTCOME_RULE)
 }
 
 /**
