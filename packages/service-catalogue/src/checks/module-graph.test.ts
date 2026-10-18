@@ -2,8 +2,9 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { collectModuleGraph, ModuleGraphError } from './module-graph'
+import { collectModuleGraph, collectModuleImports, ModuleGraphError } from './module-graph'
 import { computeFingerprint } from './fingerprint'
+import { LockfileError, type ImporterLock } from './lockfile'
 import type { ActionSchema } from '../schema/types'
 
 /** A throwaway package root with the given files, relative path to source. */
@@ -79,6 +80,39 @@ describe('collectModuleGraph', () => {
   })
 })
 
+describe('collectModuleImports', () => {
+  it('names every npm package the graph reaches, directly or through a relative import, by package name', () => {
+    const root = tree({
+      'run.ts': [
+        "import { WebClient } from '@scope/client/web'",
+        "import { helper } from './helper'",
+        "import { createHash } from 'node:crypto'",
+        "import { connect } from 'cloudflare:sockets'",
+        "import type { Shape } from 'types-only'",
+        'export const run = () => [WebClient, helper, createHash, connect]',
+      ].join('\n'),
+      'helper.ts': "import pad from 'left-pad'\nimport '@scope/client'\nexport const helper = () => import('lazy-pkg/sub/path')\nexport { pad }\n",
+    })
+    const { files, packages } = collectModuleImports(path.join(root, 'run.ts'))
+    expect(rel(root, files)).toEqual(['helper.ts', 'run.ts'])
+    expect(packages.map((p) => p.name)).toEqual(['@scope/client', 'lazy-pkg', 'left-pad'])
+    expect(path.relative(root, packages.find((p) => p.name === 'left-pad')!.importedBy)).toBe('helper.ts')
+  })
+
+  it('refuses an import through any other scheme, or a package internal # import, rather than leaving it out', () => {
+    for (const specifier of ['https://example.com/mod.js', 'npm:left-pad', '#internal']) {
+      const root = tree({ 'a.ts': `import { x } from '${specifier}'\nexport const a = x\n` })
+      try {
+        collectModuleImports(path.join(root, 'a.ts'))
+        throw new Error(`expected ${specifier} to be refused`)
+      } catch (err) {
+        expect(err).toBeInstanceOf(ModuleGraphError)
+        expect((err as ModuleGraphError).code).toBe('unsupported_import')
+      }
+    }
+  })
+})
+
 describe('computeFingerprint', () => {
   const action: ActionSchema = {
     key: 'fixture.echo',
@@ -90,6 +124,10 @@ describe('computeFingerprint', () => {
     idempotentBecause: 'It reads nothing and writes nothing.',
   }
 
+  const IMPORTER = 'packages/service-catalogue'
+  const lock = (versions: Iterable<[string, string]> = []): ImporterLock => ({ importer: IMPORTER, versions: new Map(versions) })
+  const NO_DEPS = lock()
+
   it('changes when a helper the run imports changes, and not when a type file does', () => {
     const root = tree({
       'run.ts': "import type { T } from './types'\nimport { help } from './helper'\nexport const run = (x: T) => help(x)\n",
@@ -97,17 +135,44 @@ describe('computeFingerprint', () => {
       'types.ts': 'export type T = number\n',
     })
     const runFile = path.join(root, 'run.ts')
-    const before = computeFingerprint(action, runFile, root)
+    const before = computeFingerprint(action, runFile, root, NO_DEPS)
     writeFileSync(path.join(root, 'types.ts'), 'export type T = number // reworded\n')
-    expect(computeFingerprint(action, runFile, root)).toBe(before)
+    expect(computeFingerprint(action, runFile, root, NO_DEPS)).toBe(before)
     writeFileSync(path.join(root, 'helper.ts'), 'export const help = (x: number) => x + 2\n')
-    expect(computeFingerprint(action, runFile, root)).not.toBe(before)
+    expect(computeFingerprint(action, runFile, root, NO_DEPS)).not.toBe(before)
+  })
+
+  it('changes when the resolved version of a package a helper imports changes, and not for a package nothing imports', () => {
+    const root = tree({
+      'run.ts': "import { help } from './helper'\nexport const run = () => help()\n",
+      'helper.ts': "import { WebClient } from '@scope/client'\nexport const help = () => new WebClient()\n",
+    })
+    const runFile = path.join(root, 'run.ts')
+    const deps: Array<[string, string]> = [
+      ['@scope/client', '1.1.14'],
+      ['unrelated', '2.0.0'],
+    ]
+    const before = computeFingerprint(action, runFile, root, lock(deps))
+    expect(computeFingerprint(action, runFile, root, lock([...deps, ['unrelated', '3.0.0']]))).toBe(before)
+    expect(computeFingerprint(action, runFile, root, lock([...deps, ['@scope/client', '1.1.15']]))).not.toBe(before)
+  })
+
+  it('refuses a run reaching a package the lockfile does not resolve, naming it', () => {
+    const root = tree({ 'run.ts': "import pad from 'left-pad'\nexport const run = () => pad\n" })
+    try {
+      computeFingerprint(action, path.join(root, 'run.ts'), root, NO_DEPS)
+      throw new Error('expected a refusal')
+    } catch (err) {
+      expect(err).toBeInstanceOf(LockfileError)
+      expect((err as LockfileError).code).toBe('dependency_unresolved')
+      expect((err as Error).message).toContain('left-pad')
+    }
   })
 
   it('does not depend on the order fields were written in, or on line endings', () => {
     const root = tree({ 'run.ts': 'export const run = 1\n' })
     const runFile = path.join(root, 'run.ts')
-    const before = computeFingerprint(action, runFile, root)
+    const before = computeFingerprint(action, runFile, root, NO_DEPS)
     const reordered: ActionSchema = {
       idempotentBecause: action.idempotentBecause,
       idempotent: true,
@@ -118,11 +183,11 @@ describe('computeFingerprint', () => {
       key: 'fixture.echo',
     }
     writeFileSync(runFile, 'export const run = 1\r\n')
-    expect(computeFingerprint(reordered, runFile, root)).toBe(before)
+    expect(computeFingerprint(reordered, runFile, root, NO_DEPS)).toBe(before)
   })
 
   it('is a sha256 hex digest', () => {
     const root = tree({ 'run.ts': 'export const run = 1\n' })
-    expect(computeFingerprint(action, path.join(root, 'run.ts'), root)).toMatch(/^[0-9a-f]{64}$/)
+    expect(computeFingerprint(action, path.join(root, 'run.ts'), root, NO_DEPS)).toMatch(/^[0-9a-f]{64}$/)
   })
 })
