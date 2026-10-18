@@ -106,7 +106,9 @@ export default function PartnersPage() {
     setCreating(false)
     setSelected(null)
     setFormProblem(false)
-    if (slugParam) writeUrl(null, null)
+    setUrlOpenedId(null)
+    // Always written (writeUrl does nothing when the URL already says so): selected= read back can be stale.
+    writeUrl(null, null)
   }
 
   /**
@@ -166,9 +168,12 @@ export default function PartnersPage() {
   }
 
   const showForm = creating || selected !== null
+  // Waiting only for a partner the URL names and the page has not opened yet: once
+  // opened, a close leaves selected= read back unchanged, and the prompt shows.
   const pendingSelection =
     !showForm &&
     slugParam !== null &&
+    appliedSlug.current !== slugParam &&
     (loading || partners.some((p) => p.slug === slugParam))
 
   return (

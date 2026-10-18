@@ -116,6 +116,24 @@ describe('the URL (#2137)', () => {
     expect((formProps.mock.calls.at(-1)![0] as { requestedTab: unknown }).requestedTab).toBeNull()
   })
 
+  it('starting a new partner after clicking one clears the partner from the URL, on a page opened on none', async () => {
+    render(<PartnersPage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Tripoint' }))
+    expect(lastUrl()).toBe('/partners?selected=tripoint')
+    fireEvent.click(screen.getByRole('button', { name: 'New' }))
+    expect(lastUrl()).toBe('/partners')
+  })
+
+  it('closing the partner a page opened on shows the prompt, not a blank pane waiting for it', async () => {
+    params = new URLSearchParams('selected=liberty1')
+    render(<PartnersPage />)
+    expect(await screen.findByTestId('form')).toHaveTextContent('liberty1')
+    const props = formProps.mock.calls.at(-1)![0] as { onCancel: () => void }
+    act(() => props.onCancel())
+    expect(screen.queryByTestId('form')).toBeNull()
+    expect(screen.getByText('Select a partner to configure')).toBeInTheDocument()
+  })
+
   it('clicking back to the opening partner writes it into the URL again', async () => {
     params = new URLSearchParams('selected=liberty1')
     render(<PartnersPage />)
