@@ -58,6 +58,7 @@ import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
 import { runSightingsExport, notifySetAsideRows } from './lib/sightings-export'
 import { runDeadLetterBuildTriggerCheck } from './lib/deadletter-volume'
+import { runAtRiskGapReportForEnv } from './lib/at-risk-gap-report'
 import { runKillRateDriftCheck } from './archive/kill-rate-drift'
 import { runAchieveExport, notifyEnrollmentViewSkipped } from './lib/achieve-export'
 import { recordExportRun, EXPORT_JOBS } from './lib/export-run-record'
@@ -321,6 +322,13 @@ const scheduledJobs = {
       track(
         runDeadLetterBuildTriggerCheck(env.IDEMPOTENCY, supabase, env.APP_URL)
           .catch((e) => console.error('[deadletter-build-trigger] check failed:', e))
+      )
+      // #2055: yesterday's post-answer Salesforce writes the read-back will never
+      // see, one job_runs row a day (zero days too). It records; it does not page.
+      track(
+        runAtRiskGapReportForEnv(supabase, env)
+          .then((r) => console.log(`[at-risk-gap-report] day=${r.day} cut_off_runs=${r.cut_off_runs} gaps=${r.gaps}${r.unreadable ? ' unreadable' : ''}`))
+          .catch((e) => console.error('[at-risk-gap-report] failed:', e))
       )
       // #1355: re-measure the live archive kill distribution and warn when the
       // kill-rate thresholds no longer sit where they were calibrated. Monthly
