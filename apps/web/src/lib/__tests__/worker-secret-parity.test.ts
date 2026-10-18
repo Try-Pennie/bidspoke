@@ -102,6 +102,27 @@ describe('the committed lists (#1709)', () => {
     for (const name of OPS_REQUIRED_SECRETS) expect(OPS_ALLOWED_SECRETS).toContain(name)
   })
 
+  // #2333: the ops private key opens every sealed ops connection, so the parity
+  // step fails main while it is missing from bidspoke-worker-ops (never parked as
+  // optional, L65). Its NEXT copy exists only during a rotation, so it is allowed
+  // without being required: setting it must not turn main red mid rotation.
+  it('require the ops private key on the ops Worker, and allow its NEXT copy without requiring it (#2333)', () => {
+    expect(OPS_REQUIRED_SECRETS).toContain('OPS_CONNECTIONS_PRIVATE_KEY')
+    expect(OPS_ALLOWED_SECRETS).toContain('OPS_CONNECTIONS_PRIVATE_KEY_NEXT')
+    expect(OPS_REQUIRED_SECRETS).not.toContain('OPS_CONNECTIONS_PRIVATE_KEY_NEXT')
+  })
+
+  it('fail an ops Worker that holds the NEXT key but is missing the current one (#2333)', () => {
+    const committed = { moneyRequired: MONEY_ALL, opsRequired: [...OPS_REQUIRED_SECRETS], opsAllowed: [...OPS_ALLOWED_SECRETS] }
+    const money = { deployed: true, names: [...MONEY_ALL] }
+    const withoutCurrent = [...OPS_REQUIRED_SECRETS.filter((n) => n !== 'OPS_CONNECTIONS_PRIVATE_KEY'), 'OPS_CONNECTIONS_PRIVATE_KEY_NEXT']
+    const v = parityVerdict(money, { deployed: true, names: withoutCurrent }, committed, true)
+    expect(v.ok).toBe(false)
+    expect(v.lines.join('\n')).toMatch(/bidspoke-worker-ops: missing required OPS_CONNECTIONS_PRIVATE_KEY$/m)
+    const mid = parityVerdict(money, { deployed: true, names: [...OPS_REQUIRED_SECRETS, 'OPS_CONNECTIONS_PRIVATE_KEY_NEXT'] }, committed, true)
+    expect(mid.ok).toBe(true)
+  })
+
   it('no longer allow Spike 0\'s arm on the ops Worker, whose probes are removed (#1946)', () => {
     expect(OPS_ALLOWED_SECRETS).not.toContain('OPS_SPIKE_ARM')
   })

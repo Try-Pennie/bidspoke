@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest'
 import { organizationIdFrom } from '../ops-db'
 import { OpsWriteTimeoutError, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult, type WorkflowCopy, type WorkflowCopyInput } from '../ops-writes'
 import type { OpsSweep } from '../run-vocabulary'
-import { runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts } from '../tick'
+import { runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const WF_A = '00000000-0000-4000-8000-0000000019a1'
@@ -82,6 +82,8 @@ function fake(opts: {
   dueRuns?: number
   db?: 'not_configured'
   stampFails?: boolean
+  /** What the secrets check finds unset or unusable, or the error it throws. */
+  secrets?: UnconfiguredSecret[] | Error
 } = {}): Fake {
   const calls: string[] = []
   const saved: WorkflowCopyInput[][] = []
@@ -117,7 +119,13 @@ function fake(opts: {
     tickId: 'tick-1',
     scheduledTime: Date.parse('2026-10-17T11:02:48.004Z'),
     now: () => WORKER_NOW,
-    db: opts.db === 'not_configured' ? { notConfigured: 'OPS_SUPABASE_SECRET_KEY is not set, so the ops database cannot be reached' } : db,
+    db: opts.db === 'not_configured'
+      ? { notConfigured: 'OPS_SUPABASE_SECRET_KEY is not set, so the ops database cannot be reached', secrets: ['OPS_SUPABASE_SECRET_KEY'] }
+      : db,
+    checkSecrets: async () => {
+      if (opts.secrets instanceof Error) throw opts.secrets
+      return opts.secrets ?? []
+    },
     gateway: {
       fetchWorkflows: opts.fetch ?? (async () => served()),
       started: async () => { stamps.push('started'); if (opts.stampFails) throw new Error('the gateway is not deployed') },
@@ -212,6 +220,42 @@ describe('failure boundaries', () => {
     expect(f.db.calls).toEqual([])
     expect(f.dispatched).toEqual([{ kind: 'probe' }])
     expect(f.stamps).toEqual(['started', 'completed'])
+    expect(report.not_configured_secrets).toEqual(['OPS_SUPABASE_SECRET_KEY'])
+  })
+
+  // #2333: the ops private key is checked every tick, so an unset or unusable key
+  // pages before the first connection needs it, naming which secret.
+  it('an unusable ops private key is reported not_configured by name, and every other job still runs', async () => {
+    const f = fake({ secrets: [{ secret: 'OPS_CONNECTIONS_PRIVATE_KEY', problem: 'OPS_CONNECTIONS_PRIVATE_KEY is not set on bidspoke-worker-ops, so no ops connection can be opened.' }] })
+    const report = await runOpsTick(f.ports)
+    expect(report.outcome).toBe('not_configured')
+    expect(report.not_configured_secrets).toEqual(['OPS_CONNECTIONS_PRIVATE_KEY'])
+    expect(report.problems).toEqual(['OPS_CONNECTIONS_PRIVATE_KEY is not set on bidspoke-worker-ops, so no ops connection can be opened.'])
+    // Nothing the observe tick does opens a connection yet, so the key stops none of it.
+    expect(report.db_now).toBe(DB_NOW)
+    expect(f.db.observations).toHaveLength(1)
+    expect(f.dispatched).toHaveLength(1)
+    expect(f.reports).toEqual([report])
+  })
+
+  it('names the database secret and the private key together when both are missing', async () => {
+    const f = fake({ db: 'not_configured', secrets: [{ secret: 'OPS_CONNECTIONS_PRIVATE_KEY', problem: 'the key is not set' }] })
+    const report = await runOpsTick(f.ports)
+    expect(report.outcome).toBe('not_configured')
+    expect(report.not_configured_secrets).toEqual(['OPS_SUPABASE_SECRET_KEY', 'OPS_CONNECTIONS_PRIVATE_KEY'])
+  })
+
+  it('a secrets check that throws is reported, never read as every secret being sound', async () => {
+    const f = fake({ secrets: new Error('the key import crashed') })
+    const report = await runOpsTick(f.ports)
+    expect(report.outcome).toBe('problems')
+    expect(report.problems.join(' ')).toMatch(/could not check its secrets \(the key import crashed\)/)
+    expect(f.db.observations).toHaveLength(1)
+  })
+
+  it('a healthy tick names no secret', async () => {
+    const report = await runOpsTick(fake().ports)
+    expect(report.not_configured_secrets).toEqual([])
   })
 
   it('a sweep claimed by another tick stands down, recorded and not a problem', async () => {

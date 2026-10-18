@@ -5,8 +5,10 @@
  * connects them, and turns every missing piece into a refusal by name.
  *
  * Not configured is loud, never a quiet fallback: while OPS_SUPABASE_URL or
- * OPS_SUPABASE_SECRET_KEY is unset the tick reports `not_configured` naming each
- * one, every minute, and the bidding Worker pages on it (lib/ops-gateway.ts).
+ * OPS_SUPABASE_SECRET_KEY is unset, or OPS_CONNECTIONS_PRIVATE_KEY is unset or
+ * will not import (#2333, connection-key.ts), the tick reports `not_configured`
+ * naming each one, every minute, and the bidding Worker pages on it with that
+ * secret's remedy (lib/ops-gateway.ts).
  *
  * Every call across a binding is raced against a deadline (L110), because the
  * tick awaits everything it starts and a call that never answers would hold the
@@ -14,6 +16,7 @@
  */
 import type { OpsTickReport } from '../lib/ops-gateway-contract'
 import { raceDeadline } from '../lib/alert-claim'
+import { opsConnectionKeyProblems } from './connection-key'
 import { createOpsSupabaseClient, OpsDatabaseConfigError, type OpsSupabaseClient } from './ops-db'
 import {
   claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, readWorkflowCopies, recordScheduleObservation, runQueueDisagreements,
@@ -55,12 +58,12 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
 export function opsTickDatabase(env: OpsEnv, options: LiveTickOptions = {}): OpsTickPorts['db'] {
   const missing = (['OPS_SUPABASE_URL', 'OPS_SUPABASE_SECRET_KEY'] as const).filter((k) => typeof env[k] !== 'string' || env[k].trim() === '')
   if (missing.length > 0) {
-    return { notConfigured: `${missing.join(' and ')} ${missing.length === 1 ? 'is' : 'are'} not set on bidspoke-worker-ops` }
+    return { notConfigured: `${missing.join(' and ')} ${missing.length === 1 ? 'is' : 'are'} not set on bidspoke-worker-ops`, secrets: [...missing] }
   }
   try {
     return databaseFor(createOpsSupabaseClient(env, options.fetch ? { fetch: options.fetch } : {}), options.rpc)
   } catch (err) {
-    if (err instanceof OpsDatabaseConfigError) return { notConfigured: err.message }
+    if (err instanceof OpsDatabaseConfigError) return { notConfigured: err.message, secrets: [err.secret] }
     throw err
   }
 }
@@ -83,6 +86,7 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
     scheduledTime,
     now,
     db: opsTickDatabase(env, options),
+    checkSecrets: () => opsConnectionKeyProblems(env),
     gateway: {
       fetchWorkflows: () => {
         if (!gateway) throw noGateway()

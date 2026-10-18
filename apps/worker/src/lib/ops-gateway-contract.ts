@@ -54,6 +54,10 @@ export type OpsTickMode = (typeof OPS_TICK_MODES)[number]
 export const OPS_TICK_OUTCOMES = ['ok', 'problems', 'not_configured'] as const
 export type OpsTickOutcome = (typeof OPS_TICK_OUTCOMES)[number]
 
+/** A secret's name, as Cloudflare and secret-lists.ts write it. */
+const SECRET_NAME = /^[A-Z][A-Z0-9_]{0,63}$/
+const MAX_NOT_CONFIGURED_SECRETS = 10
+
 /** A report carries at most this many problems, each at most this long, so one bad tick cannot fill KV or a Slack post. */
 export const MAX_REPORT_PROBLEMS = 20
 export const MAX_PROBLEM_LENGTH = 400
@@ -72,6 +76,13 @@ export interface OpsTickReport {
   problems: string[]
   /** What the tick did, as counts, for the logs. */
   counts: Record<string, number>
+  /**
+   * The secrets a not_configured tick found unset or unusable, by name (#2333),
+   * so the page names each one's remedy. Empty on any other outcome. Null on a
+   * report from an ops release before #2333, which named none: the only cause
+   * such a release could report was the ops database.
+   */
+  not_configured_secrets: string[] | null
 }
 
 export class OpsGatewayContractError extends Error {
@@ -135,7 +146,7 @@ export function parseServedOpsWorkflows(raw: unknown): { list: ServedOpsWorkflow
 /** The tick's report as the bidding Worker received it. Throws on one it cannot read. */
 export function parseOpsTickReport(raw: unknown): OpsTickReport {
   if (!isRecord(raw)) throw new OpsGatewayContractError('the ops tick sent a report that is not an object')
-  const { tick_id, mode, scheduled_time, started_at, finished_at, db_now, outcome, problems, counts } = raw
+  const { tick_id, mode, scheduled_time, started_at, finished_at, db_now, outcome, problems, counts, not_configured_secrets } = raw
   if (typeof tick_id !== 'string' || tick_id === '' || tick_id.length > 200) throw new OpsGatewayContractError('the ops tick report has no tick id')
   if (!(OPS_TICK_MODES as readonly unknown[]).includes(mode)) throw new OpsGatewayContractError(`the ops tick report names a mode this Worker does not know: ${String(mode)}`)
   if (!(scheduled_time === null || isTime(scheduled_time))) throw new OpsGatewayContractError('the ops tick report has an unreadable scheduled time')
@@ -145,6 +156,18 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
   if (!Array.isArray(problems) || problems.some((p) => typeof p !== 'string')) throw new OpsGatewayContractError('the ops tick report\'s problems are not a list of sentences')
   if (outcome === 'ok' ? problems.length > 0 : problems.length === 0) throw new OpsGatewayContractError(`the ops tick report says ${String(outcome)} with ${problems.length} problems`)
   if (!isRecord(counts) || Object.values(counts).some((n) => typeof n !== 'number' || !Number.isFinite(n))) throw new OpsGatewayContractError('the ops tick report\'s counts are not numbers')
+  let secrets: string[] | null = null
+  if (not_configured_secrets !== undefined) {
+    if (
+      !Array.isArray(not_configured_secrets) || not_configured_secrets.length > MAX_NOT_CONFIGURED_SECRETS ||
+      not_configured_secrets.some((n) => typeof n !== 'string' || !SECRET_NAME.test(n))
+    ) throw new OpsGatewayContractError('the ops tick report\'s not configured secrets are not a list of secret names')
+    // The names pick the page's remedy, so they must agree with the outcome.
+    if (outcome === 'not_configured' ? not_configured_secrets.length === 0 : not_configured_secrets.length > 0) {
+      throw new OpsGatewayContractError(`the ops tick report says ${String(outcome)} naming ${not_configured_secrets.length} unconfigured secrets`)
+    }
+    secrets = [...(not_configured_secrets as string[])]
+  }
   return {
     tick_id,
     mode: mode as OpsTickMode,
@@ -155,5 +178,6 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
     outcome: outcome as OpsTickOutcome,
     problems: capProblems(problems as string[]),
     counts: counts as Record<string, number>,
+    not_configured_secrets: secrets,
   }
 }

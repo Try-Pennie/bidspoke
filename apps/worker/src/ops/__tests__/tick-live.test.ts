@@ -4,13 +4,14 @@
  * and the scheduled handler, plus the refusals: an unset ops database secret
  * reported by name, a missing binding, and a gateway that never answers.
  */
-import { describe, expect, it } from 'vitest'
+import { beforeAll, describe, expect, it } from 'vitest'
 import type { OpsGatewayBinding, OpsTickReport } from '../../lib/ops-gateway-contract'
 import { dispatchKey, verifyDispatch } from '../dispatch-auth'
 import { scheduledTick, type OpsEnv } from '../index'
 import type { OpsInternalBinding } from '../internal'
 import { runOpsTick } from '../tick'
 import { GATEWAY_DEADLINE_MS, liveTickPorts, opsTickDatabase } from '../tick-live'
+import { KEYGEN_TIMEOUT_MS, opsKeyPair } from './ops-key-fixture'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
 const WF = '00000000-0000-4000-8000-0000000019a1'
@@ -79,10 +80,16 @@ function self(): OpsInternalBinding & { observed: string[] } {
   return s
 }
 
+/** A real 4096 bit ops private key, generated for this run (#2333). */
+let opsPrivateKey = ''
+beforeAll(async () => {
+  opsPrivateKey = (await opsKeyPair(4096)).privatePem
+}, KEYGEN_TIMEOUT_MS)
+
 const configured = (g = gateway(), s = self()) => ({
   env: {
     LANE: 'ops', OPS_SUPABASE_URL: 'https://zwihpjxouklvkvngkvmw.supabase.co', OPS_SUPABASE_SECRET_KEY: 'sb_secret_test_not_real',
-    PORTING_CAPTURE_MASTER: 'master-secret', OPS_GATEWAY: g, SELF: s,
+    PORTING_CAPTURE_MASTER: 'master-secret', OPS_CONNECTIONS_PRIVATE_KEY: opsPrivateKey, OPS_GATEWAY: g, SELF: s,
   } as unknown as OpsEnv,
   g,
   s,
@@ -112,7 +119,10 @@ describe('the live tick', () => {
 
 describe('not configured, said by name', () => {
   it('names both secrets when neither is set, and the tick reports not_configured', async () => {
-    expect(opsTickDatabase({ LANE: 'ops' } as unknown as OpsEnv)).toEqual({ notConfigured: 'OPS_SUPABASE_URL and OPS_SUPABASE_SECRET_KEY are not set on bidspoke-worker-ops' })
+    expect(opsTickDatabase({ LANE: 'ops' } as unknown as OpsEnv)).toEqual({
+      notConfigured: 'OPS_SUPABASE_URL and OPS_SUPABASE_SECRET_KEY are not set on bidspoke-worker-ops',
+      secrets: ['OPS_SUPABASE_URL', 'OPS_SUPABASE_SECRET_KEY'],
+    })
     const db = opsDatabase()
     const { env, g } = configured()
     const report = await runOpsTick(liveTickPorts({ ...env, OPS_SUPABASE_SECRET_KEY: undefined }, null, { now: () => NOW, fetch: db.fetch }))
@@ -120,11 +130,34 @@ describe('not configured, said by name', () => {
     expect(report.problems[0]).toMatch(/OPS_SUPABASE_SECRET_KEY is not set on bidspoke-worker-ops/)
     expect(db.called).toEqual([])
     expect(g.reports[0].outcome).toBe('not_configured')
+    expect(g.reports[0].not_configured_secrets).toEqual(['OPS_SUPABASE_SECRET_KEY'])
+  })
+
+  // #2333: the ops private key is checked on every live tick.
+  it('a live tick with the ops private key unset reports it by name, and still runs everything else', async () => {
+    const db = opsDatabase()
+    const { env, g, s } = configured()
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_CONNECTIONS_PRIVATE_KEY: undefined }, null, { now: () => NOW, fetch: db.fetch }))
+    expect(report.outcome).toBe('not_configured')
+    expect(report.not_configured_secrets).toEqual(['OPS_CONNECTIONS_PRIVATE_KEY'])
+    expect(report.problems).toEqual(['OPS_CONNECTIONS_PRIVATE_KEY is not set on bidspoke-worker-ops, so no ops connection can be opened.'])
+    expect(db.called).toEqual(expect.arrayContaining(['ops_now', 'record_schedule_observation']))
+    expect(s.observed).toEqual(['would_fire'])
+    expect(g.reports[0].not_configured_secrets).toEqual(['OPS_CONNECTIONS_PRIVATE_KEY'])
+  })
+
+  it('a live tick with a malformed ops private key reports it by name', async () => {
+    const db = opsDatabase()
+    const { env } = configured()
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_CONNECTIONS_PRIVATE_KEY: 'pasted the wrong thing' }, null, { now: () => NOW, fetch: db.fetch }))
+    expect(report.outcome).toBe('not_configured')
+    expect(report.not_configured_secrets).toEqual(['OPS_CONNECTIONS_PRIVATE_KEY'])
+    expect(report.problems[0]).toMatch(/OPS_CONNECTIONS_PRIVATE_KEY is set on bidspoke-worker-ops but does not import .*seal_key_malformed/)
   })
 
   it('refuses a URL naming the bidding database, never connecting to it', () => {
     const refused = opsTickDatabase({ LANE: 'ops', OPS_SUPABASE_URL: 'https://xvrmivmpfykwwtriqwpg.supabase.co', OPS_SUPABASE_SECRET_KEY: 'sb_secret_x' } as unknown as OpsEnv)
-    expect(refused).toEqual({ notConfigured: expect.stringMatching(/names the bidding database/) })
+    expect(refused).toEqual({ notConfigured: expect.stringMatching(/names the bidding database/), secrets: ['OPS_SUPABASE_URL'] })
   })
 })
 

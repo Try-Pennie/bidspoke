@@ -7,7 +7,10 @@
  * throw in one never cancels another:
  *
  *  1. Stamp started with the bidding Worker (lib/ops-gateway.ts), which keeps the
- *     heartbeat. The watchdog lives there, not here (L71).
+ *     heartbeat. The watchdog lives there, not here (L71). Then check the
+ *     secrets: an unset ops database secret, or an ops private key that is
+ *     unset or will not import (#2333, connection-key.ts), makes the report
+ *     not_configured and names each secret, so the page names its remedy.
  *  2. Read the DATABASE clock (#1698 D8, L736). Every fire is computed against
  *     it, never against this Worker's clock, and without it nothing is planned.
  *  3. The maintenance sweeps (lease expiry, run expiry, the queue agreement
@@ -97,6 +100,16 @@ export interface OpsTickDb {
   dueQueueDepth(): Promise<{ dueRuns: number; dueWorkflows: number; oldestDue: string | null }>
 }
 
+/**
+ * A secret the tick found unset or unusable (#2333), and the sentence saying so.
+ * The name travels in the report, so the bidding Worker pages with that secret's
+ * remedy rather than another's.
+ */
+export interface UnconfiguredSecret {
+  secret: string
+  problem: string
+}
+
 /** One thing handed to OpsInternal.observe. */
 export type DispatchItem =
   | { kind: 'would_fire'; workflowId: string; organizationId: string; scheduledFor: string; dispatchAt: string }
@@ -108,8 +121,13 @@ export interface OpsTickPorts {
   scheduledTime: number | null
   /** This Worker's clock: only the report's start and finish read it. */
   now: () => number
-  /** The ops database, or why it cannot be reached (an unset secret, by name). */
-  db: OpsTickDb | { notConfigured: string }
+  /** The ops database, or why it cannot be reached and the secrets that would reach it, by name. */
+  db: OpsTickDb | { notConfigured: string; secrets: string[] }
+  /**
+   * The secrets the tick needs beyond its database, each one found unset or
+   * unusable (#2333: the ops private key). Throws when it cannot check.
+   */
+  checkSecrets(): Promise<UnconfiguredSecret[]>
   gateway: {
     fetchWorkflows(): Promise<unknown>
     started(): Promise<void>
@@ -139,6 +157,11 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   const problems: string[] = []
   const counts: Record<string, number> = {}
   let notConfigured = false
+  const notConfiguredSecrets: string[] = []
+  const unconfigured = (secrets: readonly string[]) => {
+    notConfigured = true
+    for (const s of secrets) if (!notConfiguredSecrets.includes(s)) notConfiguredSecrets.push(s)
+  }
   let dbNow: string | null = null
   const items: DispatchItem[] = []
 
@@ -151,8 +174,19 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
 
   const db = isDb(ports.db) ? ports.db : null
   if (!isDb(ports.db)) {
-    notConfigured = true
+    unconfigured(ports.db.secrets)
     problems.push(`The ops tick cannot reach its database: ${ports.db.notConfigured}. It planned and swept nothing.`)
+  }
+
+  // The other secrets, inside their own boundary. Nothing the observe tick does
+  // below needs them yet, so a missing one is reported and stops nothing.
+  try {
+    for (const found of await ports.checkSecrets()) {
+      unconfigured([found.secret])
+      problems.push(found.problem)
+    }
+  } catch (err) {
+    problems.push(`The ops tick could not check its secrets (${formatErr(err)}), so whether the ops private key is usable is not known.`)
   }
 
   // 2. The database clock.
@@ -349,6 +383,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     outcome,
     problems: capProblems(problems),
     counts,
+    not_configured_secrets: notConfiguredSecrets,
   }
   log('finished', { tick_id: ports.tickId, outcome, problems: problems.length, ...counts })
   for (const p of problems) log('problem', { tick_id: ports.tickId, problem: p })

@@ -97,6 +97,35 @@ describe('the heartbeat the tick stamps through the gateway', () => {
     expect(kept.outcome).toBe('problems')
     expect(kept.problems[0]).toMatch(/could not be read/)
   })
+
+  // #2333: the secrets a not_configured report names pick the page's remedy, so
+  // a list that cannot be trusted is refused, and the report pages as unreadable.
+  it.each([
+    ['names no secret on a not_configured report', { outcome: 'not_configured', problems: ['x'], not_configured_secrets: [] }],
+    ['names a secret on an ok report', { outcome: 'ok', problems: [], not_configured_secrets: ['OPS_CONNECTIONS_PRIVATE_KEY'] }],
+    ['names something that is not a secret name', { outcome: 'not_configured', problems: ['x'], not_configured_secrets: ['see the logs'] }],
+    ['is not a list', { outcome: 'not_configured', problems: ['x'], not_configured_secrets: 'OPS_CONNECTIONS_PRIVATE_KEY' }],
+  ])('keeps a report whose secret list %s as unreadable', async (_label, over) => {
+    const store = kv()
+    const report = {
+      tick_id: 't', mode: 'observe', scheduled_time: null, started_at: '2026-10-17T10:02:30Z', finished_at: '2026-10-17T10:02:31Z',
+      db_now: null, counts: {}, ...over,
+    }
+    await recordOpsTickCompleted(store as unknown as KVNamespace, report, NOW)
+    const kept = JSON.parse(store.m.get(OPS_TICK_REPORT_KEY)!)
+    expect(kept.outcome).toBe('problems')
+    expect(kept.problems[0]).toMatch(/could not be read/)
+  })
+
+  it('keeps the secrets a not_configured report names', async () => {
+    const store = kv()
+    const report = {
+      tick_id: 't', mode: 'observe', scheduled_time: null, started_at: '2026-10-17T10:02:30Z', finished_at: '2026-10-17T10:02:31Z',
+      db_now: null, outcome: 'not_configured', problems: ['x'], counts: {}, not_configured_secrets: ['OPS_CONNECTIONS_PRIVATE_KEY'],
+    }
+    await recordOpsTickCompleted(store as unknown as KVNamespace, report, NOW)
+    expect(JSON.parse(store.m.get(OPS_TICK_REPORT_KEY)!).not_configured_secrets).toEqual(['OPS_CONNECTIONS_PRIVATE_KEY'])
+  })
 })
 
 describe('runOpsTickReportCheck', () => {
@@ -127,6 +156,8 @@ describe('runOpsTickReportCheck', () => {
     expect(d.sent).toEqual([{ errors: ['The lease_expiry sweep failed: lock timeout.'], title: 'The ops minute cron reported a problem', fixHint: expect.stringMatching(/ops_tick/) }])
   })
 
+  // A report from an ops release before #2333 names no secret; the only cause such
+  // a release could report was the ops database, so its remedy is the database one.
   it('pages on not configured with the fix that configures it', async () => {
     const store = kv()
     store.m.set(OPS_TICK_REPORT_KEY, stored({ outcome: 'not_configured', problems: ['The ops tick cannot reach its database: OPS_SUPABASE_SECRET_KEY is not set on bidspoke-worker-ops.'] }))
@@ -134,6 +165,59 @@ describe('runOpsTickReportCheck', () => {
     await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW, d)
     expect(d.sent[0].title).toBe('The ops minute cron is not configured')
     expect(d.sent[0].fixHint).toMatch(/OPS_SUPABASE_SECRET_KEY/)
+  })
+
+  // #2333: the page's remedy follows the secret the tick named, so a missing ops
+  // private key is never answered with the database's steps.
+  it('pages on a missing ops private key with the private key\'s remedy, not the database one', async () => {
+    const store = kv()
+    store.m.set(OPS_TICK_REPORT_KEY, stored({
+      outcome: 'not_configured',
+      problems: ['OPS_CONNECTIONS_PRIVATE_KEY is not set on bidspoke-worker-ops, so no ops connection can be opened.'],
+      not_configured_secrets: ['OPS_CONNECTIONS_PRIVATE_KEY'],
+    }))
+    const d = deps()
+    expect(await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW, d)).toBe('alerted')
+    expect(d.sent[0].title).toBe('The ops minute cron is not configured')
+    expect(d.sent[0].fixHint).toMatch(/Bidspoke recovery keys/)
+    expect(d.sent[0].fixHint).toMatch(/wrangler secret put OPS_CONNECTIONS_PRIVATE_KEY --config wrangler\.ops\.toml/)
+    expect(d.sent[0].fixHint).not.toMatch(/OPS_SUPABASE/)
+  })
+
+  it('names the remedy of every secret reported, once each, in the order reported', async () => {
+    const store = kv()
+    store.m.set(OPS_TICK_REPORT_KEY, stored({
+      outcome: 'not_configured',
+      problems: ['a', 'b', 'c'],
+      not_configured_secrets: ['OPS_SUPABASE_URL', 'OPS_CONNECTIONS_PRIVATE_KEY', 'OPS_SUPABASE_SECRET_KEY'],
+    }))
+    const d = deps()
+    await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW, d)
+    const fix = d.sent[0].fixHint ?? ''
+    expect(fix.indexOf('OPS_SUPABASE_URL')).toBeGreaterThanOrEqual(0)
+    expect(fix.indexOf('OPS_SUPABASE_URL')).toBeLessThan(fix.indexOf('Bidspoke recovery keys'))
+    // The two database secrets share one remedy, said once.
+    expect(fix.match(/Create a secret key for bidspoke-worker-ops/g)).toHaveLength(1)
+  })
+
+  it('names the NEXT key\'s own remedy, which includes deleting it when no rotation is under way', async () => {
+    const store = kv()
+    store.m.set(OPS_TICK_REPORT_KEY, stored({
+      outcome: 'not_configured', problems: ['x'], not_configured_secrets: ['OPS_CONNECTIONS_PRIVATE_KEY_NEXT'],
+    }))
+    const d = deps()
+    await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW, d)
+    expect(d.sent[0].fixHint).toMatch(/wrangler secret delete OPS_CONNECTIONS_PRIVATE_KEY_NEXT --config wrangler\.ops\.toml/)
+    expect(d.sent[0].fixHint).not.toMatch(/OPS_SUPABASE/)
+  })
+
+  it('names a secret it has no written remedy for, rather than offering another secret\'s steps', async () => {
+    const store = kv()
+    store.m.set(OPS_TICK_REPORT_KEY, stored({ outcome: 'not_configured', problems: ['x'], not_configured_secrets: ['OPS_SOMETHING_NEW'] }))
+    const d = deps()
+    await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW, d)
+    expect(d.sent[0].fixHint).toMatch(/Set OPS_SOMETHING_NEW on bidspoke-worker-ops/)
+    expect(d.sent[0].fixHint).not.toMatch(/OPS_SUPABASE|Bidspoke recovery keys/)
   })
 
   it('stands an alert down on a clean report', async () => {

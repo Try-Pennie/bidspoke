@@ -1,4 +1,4 @@
-import { fromBase64, isWellFormed, toBase64, utf8 } from './bytes'
+import { fromBase64, isWellFormed, modulusBits, toBase64, utf8 } from './bytes'
 import { canonicalAad, KID_PATTERN, type ConnectionAad } from './canonical-json'
 import { SealError } from './errors'
 import { importPrivateKey, importPublicKey, RSA_OAEP } from './key-import'
@@ -95,8 +95,11 @@ export async function seal(publicKeys: KeyRing, plaintext: string, aad: Connecti
   }
   const publicKey = await importPublicKey(keyFor(publicKeys, aad.kid, 'public'))
 
-  const contentKey = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt'])
-  const raw = new Uint8Array(await crypto.subtle.exportKey('raw', contentKey))
+  // The content key's bytes come straight from the CSPRNG and are imported for
+  // encrypt only, so the key never needs to be extractable, and the same calls
+  // type check under the DOM types and the Workers types alike.
+  const raw = crypto.getRandomValues(new Uint8Array(AES_KEY_BYTES))
+  const contentKey = await crypto.subtle.importKey('raw', raw, { name: 'AES-GCM' }, false, ['encrypt'])
   try {
     const wrapped = await crypto.subtle.encrypt({ ...RSA_OAEP, label }, publicKey, raw)
     const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES))
@@ -124,7 +127,7 @@ export async function open(privateKeys: KeyRing, envelope: unknown, aad: Connect
     throw new SealError('seal_kid_mismatch', `the envelope was sealed under kid ${parsed.kid}, not ${aad.kid}`)
   }
   const privateKey = await importPrivateKey(keyFor(privateKeys, parsed.kid, 'private'))
-  const blockBytes = (privateKey.algorithm as RsaHashedKeyAlgorithm).modulusLength / 8
+  const blockBytes = modulusBits(privateKey) / 8
   if (parsed.wrappedKey.length !== blockBytes) {
     malformed(`the envelope wrapped_key is ${parsed.wrappedKey.length} bytes, and kid ${parsed.kid} wraps ${blockBytes}`)
   }
@@ -150,7 +153,8 @@ export async function open(privateKeys: KeyRing, envelope: unknown, aad: Connect
     } catch {
       throw new SealError('seal_decrypt_failed', `the ciphertext did not open under kid ${parsed.kid} for this binding`)
     }
-    return new TextDecoder('utf-8', { fatal: true }).decode(plaintext)
+    // ignoreBOM false is the default, spelled out because the Workers types require it.
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(plaintext)
   } finally {
     raw.fill(0)
   }
