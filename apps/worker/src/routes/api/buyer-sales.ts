@@ -3,6 +3,7 @@
  *
  *   GET  /buyer-sales?status=unresolved&page=&limit=&partner_id=   the queue, from the mirror, paged, one buyer when asked
  *   POST /buyer-sales/:id/settle  { outcome }          settle one sale as accepted or released
+ *   POST /buyer-sales/:id/recopy                       copy one sale again from the ledger (#2422)
  *
  * Settle is a LEDGER operation first (L83, the violation recorded on #1412). The
  * ledger is the one home of the fact the caps count from, so the route reads the
@@ -166,6 +167,72 @@ buyerSales.post('/:id/settle', async (c) => {
   await writeAuditLog(supabase, orgId, 'buyer_sale', id, 'updated', userId, { status: { old: row.status as SaleStatus, new: outcome } })
 
   return c.json(mirrored ? { entry, mirrored } : { entry, mirrored, mirror_error: mirrorError })
+})
+
+// ── Re-copy ───────────────────────────────────────────────────────────────────
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** The `error` name in a ledger refusal's body, or null when it has none or does not parse. */
+function ledgerErrorName(body: string): string | null {
+  try {
+    return (JSON.parse(body) as { error?: string }).error ?? null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * POST /buyer-sales/:id/recopy, no body (#2422).
+ *
+ * Who may call it: any signed in member of an organization (the JWT middleware on
+ * /api), as with settle. Whose data it touches: one buyer_sales row of the
+ * caller's own organization, found by id AND organization, and that sale's
+ * ledger entry; another organization's id is 404 and its ledger is never asked.
+ *
+ * It clears the ledger's copied mark for the sale, so the minute drain copies
+ * the ledger's own state over the row through record_buyer_sale. It never
+ * changes the entry's status, outcome, payout or resolution, so no cap or spend
+ * moves; the copy itself is written by the drain, never here. The repair for a
+ * copy a mark froze before the mark checked the state it read.
+ */
+buyerSales.post('/:id/recopy', async (c) => {
+  const { orgId, userId } = c.get('user')
+  const id = c.req.param('id')
+  if (!UUID_RE.test(id)) return c.json({ error: 'Sale not found' }, 404)
+  const supabase = createSupabaseClient(c.env)
+
+  const { data, error } = await supabase
+    .from('buyer_sales')
+    .select('id, partner_id, lead_key, population, kind, status')
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .single()
+  const blocked = dbErrorUnlessNotFound(c, error)
+  if (blocked) return blocked
+  if (!data) return c.json({ error: 'Sale not found' }, 404)
+  const row = data as unknown as Pick<SaleRowForSettle, 'id' | 'partner_id' | 'lead_key' | 'population' | 'kind' | 'status'>
+  const key: EntryKey = { lead_key: row.lead_key, population: row.population as Population, kind: row.kind as LedgerKind }
+
+  const ledger = new BuyerLedgerClient(c.env.BUYER_LEDGER, row.partner_id)
+  let result
+  try {
+    result = await ledger.clearMirrored(key)
+  } catch (err) {
+    if (err instanceof ObjectCallError && err.status === 404) {
+      return c.json({ error: 'Sale not found in the ledger', detail: ledgerErrorName(err.body) }, 404)
+    }
+    console.error(`[buyer-sales] recopy failed for ${id}: ${err instanceof Error ? err.message : 'non Error thrown'}`)
+    return c.json({ error: 'ledger_unavailable', message: 'The buyer ledger did not answer, so nothing was re-queued.' }, 503)
+  }
+
+  await writeAuditLog(supabase, orgId, 'buyer_sale', id, 'buyer_sale_recopy_requested', userId, {
+    copy_status: row.status,
+    ledger_status: result.entry.status,
+    requeued: result.cleared,
+  })
+
+  return c.json({ requeued: result.cleared, entry: result.entry })
 })
 
 export default buyerSales

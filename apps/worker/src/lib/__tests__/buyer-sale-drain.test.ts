@@ -7,7 +7,7 @@
  * is reported as unmeasured, never as an empty outbox (L98, L215).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { EntryKey, LedgerEntry } from '../../durable-objects/buyer-ledger'
+import type { EntryKey, LedgerEntry, MirroredStamp } from '../../durable-objects/buyer-ledger'
 import { buyerSaleRowId } from '../buyer-sale-mirror'
 import {
   BUYER_SALE_DRAIN_JOB,
@@ -61,19 +61,28 @@ function entry(over: Partial<LedgerEntry> = {}): LedgerEntry {
 }
 
 /** An in memory ledger: unmirrored lists what is not yet marked, markMirrored marks it. */
-function fakeLedger(entries: LedgerEntry[], opts: { unreadable?: string } = {}): DrainLedger & { marked: EntryKey[] } {
+function fakeLedger(entries: LedgerEntry[], opts: { unreadable?: string; movedBeforeMark?: string[] } = {}): DrainLedger & { marked: EntryKey[]; stamps: MirroredStamp[] } {
   const marked: EntryKey[] = []
+  const stamps: MirroredStamp[] = []
   return {
     marked,
+    stamps,
     async unmirrored() {
       if (opts.unreadable) throw new Error(opts.unreadable)
       const pending = entries.filter((e) => !marked.some((k) => k.lead_key === e.lead_key && k.population === e.population && k.kind === e.kind))
       const oldest = pending[0]
       return { entries: pending, oldest_age_ms: oldest ? NOW - oldest.reserved_at : null }
     },
-    async markMirrored(keys) {
-      marked.push(...keys)
-      return keys.length
+    // An entry named in movedBeforeMark changed state after the read, so the
+    // ledger refuses its mark as the real one does (#2422).
+    async markMirrored(given) {
+      stamps.push(...given)
+      let changed = 0
+      for (const s of given) {
+        if (opts.movedBeforeMark?.includes(s.lead_key)) changed += 1
+        else marked.push({ lead_key: s.lead_key, population: s.population, kind: s.kind })
+      }
+      return { marked: given.length - changed, changed }
     },
   }
 }
@@ -120,8 +129,41 @@ describe('runBuyerSaleDrain', () => {
     expect(fn).toBe('record_buyer_sale')
     expect(args.p_row).toMatchObject({ id: await buyerSaleRowId(PARTNER, entry()), partner_id: PARTNER, organization_id: ORG, status: 'accepted', debt: null, multiplier: null, workflow_id: null, trace_id: null })
     expect(ledger.marked).toEqual([{ lead_key: 'lead-1', population: 'engine', kind: 'live' }])
+    // The mark names the state this copy wrote, so the ledger can refuse it if the entry moved (#2422).
+    expect(ledger.stamps).toEqual([{ lead_key: 'lead-1', population: 'engine', kind: 'live', status: 'accepted', resolved_at: NOW - 28_000 }])
     expect(summary.buyers[0]).toMatchObject({ slug: 'tripoint', pending: 1, delivered: 1, failed: 0 })
+    expect(summary.buyers[0].changed_since_read).toBeUndefined()
     expect(d.notify).toHaveBeenCalledWith([])
+  })
+
+  it('an entry whose state changed between the read and the mark is counted as changed, neither delivered nor failed, and is copied again next tick (#2422)', async () => {
+    // Old enough that a failure would page: a changed entry must not.
+    const moved = entry({ lead_key: 'moved', status: 'reserved', resolved_at: null, outcome: null, resolution_source: null, reserved_at: NOW - OUTBOX_BACKLOG_MS - 60_000 })
+    const kept = entry({ lead_key: 'kept' })
+    const ledger = fakeLedger([moved, kept], { movedBeforeMark: ['moved'] })
+    const d = deps({ ledger: () => ledger })
+    const summary = await runBuyerSaleDrain(d)
+    expect(d.rpc).toHaveBeenCalledTimes(2)
+    expect(summary.buyers[0]).toMatchObject({ pending: 2, delivered: 1, failed: 0, changed_since_read: 1, remaining_oldest_age_ms: null })
+    expect(summary.buyers[0].delivered_row_ids).toEqual([await buyerSaleRowId(PARTNER, kept)])
+    expect(summary.paged).toEqual([])
+    expect(summary.errors).toEqual([])
+    expect(d.notify).toHaveBeenCalledWith([])
+    // Still in the outbox for the next tick.
+    expect((await ledger.unmirrored()).entries.map((e) => e.lead_key)).toEqual(['moved'])
+  })
+
+  it('a changed entry is not counted among the undelivered when another entry pages (#2422)', async () => {
+    const stuck = entry({ lead_key: 'stuck', reserved_at: NOW - OUTBOX_BACKLOG_MS - 60_000 })
+    const moved = entry({ lead_key: 'moved', status: 'reserved', resolved_at: null, outcome: null, resolution_source: null })
+    const ledger = fakeLedger([stuck, moved], { movedBeforeMark: ['moved'] })
+    const rpc = vi.fn(async (_fn: string, args: { p_row: { id: string; lead_key: string; status: string } }) =>
+      args.p_row.lead_key === 'stuck' ? { data: null, error: { message: 'supabase down' } } : { data: { id: args.p_row.id, status: args.p_row.status }, error: null })
+    const d = deps({ ledger: () => ledger, supabase: { rpc } as never })
+    const summary = await runBuyerSaleDrain(d)
+    expect(summary.buyers[0]).toMatchObject({ pending: 2, delivered: 0, failed: 1, changed_since_read: 1 })
+    expect(summary.paged).toHaveLength(1)
+    expect(summary.paged[0]).toMatch(/^tripoint has 1 ledger entry not yet copied to the sales table\./)
   })
 
   it('carries the pricing and provenance an earlier copy of the row already holds, so a re-delivered row is not blanked', async () => {
@@ -427,8 +469,8 @@ describe('the run record of a tick that had work (#1810)', () => {
 describe('a lost or slow ledger read (#1895)', () => {
   beforeEach(() => vi.mocked(sendExportFailureAlert).mockClear())
 
-  const slow = (): DrainLedger => ({ unmirrored: async () => { throw new DeadlineError('buyer ledger unmirrored', OBJECT_CALL_DEADLINE_MS) }, markMirrored: async () => 0 })
-  const lost = (): DrainLedger => ({ unmirrored: async () => { throw new ObjectCallLostError(new Error('Network connection lost.')) }, markMirrored: async () => 0 })
+  const slow = (): DrainLedger => ({ unmirrored: async () => { throw new DeadlineError('buyer ledger unmirrored', OBJECT_CALL_DEADLINE_MS) }, markMirrored: async () => ({ marked: 0, changed: 0 }) })
+  const lost = (): DrainLedger => ({ unmirrored: async () => { throw new ObjectCallLostError(new Error('Network connection lost.')) }, markMirrored: async () => ({ marked: 0, changed: 0 }) })
 
   /** Hands out the given ledgers in order, one per client the drain makes, and records what each was given. */
   function sequence(...ledgers: DrainLedger[]) {
@@ -470,7 +512,7 @@ describe('a lost or slow ledger read (#1895)', () => {
 
   it('never asks again after an answer, such as an error status, or an error nobody classified', async () => {
     for (const err of [new ObjectCallError('buyer ledger unmirrored', 500, 'boom'), new Error('something else')]) {
-      const seq = sequence({ unmirrored: async () => { throw err }, markMirrored: async () => 0 })
+      const seq = sequence({ unmirrored: async () => { throw err }, markMirrored: async () => ({ marked: 0, changed: 0 }) })
       const summary = await runBuyerSaleDrain(deps({ ledger: seq.ledger }))
       expect(seq.asked).toHaveLength(1)
       expect(summary.buyers[0].unmeasured).toBe(err.message)
@@ -487,7 +529,7 @@ describe('a lost or slow ledger read (#1895)', () => {
     let t = NOW
     const lateBy = (left: number): DrainLedger => ({
       unmirrored: async () => { t = NOW + DRAIN_TICK_MS - left; throw new DeadlineError('buyer ledger unmirrored', OBJECT_CALL_DEADLINE_MS) },
-      markMirrored: async () => 0,
+      markMirrored: async () => ({ marked: 0, changed: 0 }),
     })
     const seq = sequence(lateBy(3_000), fakeLedger([]))
     await runBuyerSaleDrain(deps({ ledger: seq.ledger, now: () => t }))

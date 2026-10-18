@@ -383,6 +383,7 @@ A buyer profile document carries `collections_max_percent` (#2111): the most a l
 |--------|------|---------|
 | GET | `/api/buyer-sales?status=unresolved&page=&limit=&partner_id=` | The queue, paged, with the partner slug on each row and the total. `partner_id` narrows it to one buyer, and the total is then that buyer's; an empty value is refused (400 `partner_id_invalid`). |
 | POST | `/api/buyer-sales/:id/settle` | Body `{ outcome: 'accepted' \| 'released' }`. Accepted counts as sold to that buyer; released frees the slot. 409 `not_unresolved` names the state the sale is in; 503 when the ledger does not answer, with nothing changed. |
+| POST | `/api/buyer-sales/:id/recopy` | No body. Clears the ledger's copied mark for this one sale, so the minute drain copies the ledger's own state over the row within a minute (#2422). Changes nothing in the ledger (status, outcome, payout, caps and spend stay as they are) and writes no row itself. Answers `{ requeued, entry }`, `requeued` false when the entry was already waiting for a copy. 404 `Sale not found` for an id outside the caller's organization, 404 `Sale not found in the ledger` once the ledger has pruned the entry, 503 when the ledger does not answer. Audited as `buyer_sale_recopy_requested`. |
 
 ## Held clicks
 

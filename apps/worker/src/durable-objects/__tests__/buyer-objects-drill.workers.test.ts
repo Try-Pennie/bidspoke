@@ -11,6 +11,7 @@ import { env } from 'cloudflare:workers'
 import { describe, expect, it } from 'vitest'
 import type { Env } from '../../index'
 import { buyerObjectsHealth, runBuyerObjectsDrill } from '../../lib/buyer-objects-health'
+import { BuyerLedgerClient } from '../../lib/buyer-object-clients'
 
 const bindings = env as unknown as Pick<Env, 'BUYER_LEDGER' | 'LEAD_SALE'>
 
@@ -41,6 +42,13 @@ describe('buyer objects drill', () => {
       expect(report.latency[op], op).toMatchObject({ calls: expect.any(Number), p50_ms: expect.any(Number), p99_ms: expect.any(Number) })
       expect(report.latency[op].calls).toBeGreaterThan(0)
     }
+  })
+
+  it('leaves none of its own entries waiting for a copy, so retention can prune them; its mark names the state it read (#2422)', async () => {
+    const report = await runBuyerObjectsDrill(bindings, { partnerId: 'drill-marked' })
+    expect(report.ok).toBe(true)
+    const outbox = await new BuyerLedgerClient(bindings.BUYER_LEDGER, 'drill-marked').unmirrored()
+    expect(outbox.entries).toEqual([])
   })
 
   it('a second drill against the same throwaway buyer also passes, whatever the first left in the hour', async () => {
