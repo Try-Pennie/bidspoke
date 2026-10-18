@@ -20,8 +20,11 @@
  * ROW_CAP in the URL, which `.limit(n)` and `.range(a, b)` both write. A limit
  * above the cap declares nothing, since PostgREST cuts it to the cap anyway. An
  * embedded resource's `x.limit=` bounds the embed, not the read, and is ignored.
- * A `.single()` or `.maybeSingle()` read asks for one object
- * (`Accept: application/vnd.pgrst.object+json`) and is exempt. A HEAD (a count
+ * A `.single()` read asks for one object
+ * (`Accept: application/vnd.pgrst.object+json`) and is exempt. A `.maybeSingle()`
+ * read is not: postgrest-js 2.117 asks for an array and refuses more than one
+ * row itself (PGRST116), so it carries nothing to exempt it by, and 1,000 rows
+ * are an error to its caller either way. A HEAD (a count
  * with `head: true`) returns no rows and is exempt. Writes are not judged:
  * PostgREST does not apply its row cap to rows a write returns. A count that
  * shows exactly the rows returned exist (`0-999/1000`) is not a hit.
@@ -35,7 +38,10 @@
  * `{ error }` (or throws, for `.throwOnError()`), and does not retry, since it
  * retries only 503 and 520. A thrown fetch error would be retried three times
  * with 7 s of waits, re-reading the same capped rows each time. On the request
- * and engine paths the read answers as before.
+ * and engine paths the read answers as before. An rpc not on the read only list
+ * (read-only-rpcs.json) is only reported, never failed, even in a tick: by the
+ * time its rows come back it has already written, and failing it would tell the
+ * caller a committed write did not happen.
  *
  * WHAT IT CARRIES: the table or rpc name and the query's shape, with every
  * filter value replaced by `?` (redactQuery), so no lead's data reaches the log
@@ -46,6 +52,7 @@ import { PAGE_SIZE } from './paginate'
 import { inScheduledTick } from './outage-notice'
 import { raceDeadline } from './alert-claim'
 import { formatErr } from './format-error'
+import rpcLists from './read-only-rpcs.json'
 
 /**
  * The most rows PostgREST answers in one response: the `max_rows` setting of
@@ -55,6 +62,14 @@ import { formatErr } from './format-error'
  * PAGE_SIZE with it.
  */
 export const ROW_CAP = PAGE_SIZE
+
+/** The rpcs that only read, so a capped answer can be failed without hiding a write that happened. */
+const READ_ONLY_RPCS: ReadonlySet<string> = new Set(rpcLists.readOnly)
+
+/** Whether a hit inside a scheduled tick fails the read: every table read, and an rpc only if it only reads. */
+export function failsInTick(hit: RowCapHit): boolean {
+  return hit.kind === 'table' || READ_ONLY_RPCS.has(hit.relation)
+}
 
 /** The one line the Better Stack alert matches on, sent as the event's `message`. */
 export const ROW_CAP_LINE = 'bidspoke read stopped at the PostgREST row cap without a declared limit'
@@ -296,7 +311,7 @@ export function withRowCapCheck(baseFetch: typeof fetch, options: RowCapOptions 
     const event = rowCapEvent(hit, scheduled, nowMs)
     console.error(JSON.stringify(event))
     const sending = sendToBetterStack(event, options, nowMs)
-    if (!scheduled) {
+    if (!scheduled || !failsInTick(hit)) {
       // The read answers at once; the send never delays a lead, and the
       // request's waitUntil keeps it alive past the response.
       const keep = requests.getStore()

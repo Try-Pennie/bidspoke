@@ -87,6 +87,22 @@ import type { Env } from './env'
 
 const app = new Hono<{ Bindings: Env }>()
 
+// Every request runs with its waitUntil at hand, so a row cap report a read
+// starts is not cancelled when the response goes out (#1436, lib/row-cap.ts).
+// Registered first so every later middleware and route runs inside it.
+app.use('*', async (c, next) => {
+  let ctx: { waitUntil(promise: Promise<unknown>): void } | undefined
+  try {
+    ctx = c.executionCtx
+  } catch {
+    // A request with no execution context (a unit test) has nowhere to put it.
+    ctx = undefined
+  }
+  if (!ctx) return next()
+  const keep = ctx
+  return runWithRequestWaitUntil((p) => keep.waitUntil(p), () => next())
+})
+
 // The count of stored copies a request served or refused (#1848) is written
 // after the response, never on it, and not at all when nothing was noted.
 // Registered first so it wraps every route, the custom endpoint one included.
@@ -1275,10 +1291,7 @@ const scheduledJobs = {
 }
 
 export default {
-  // Each request carries its waitUntil, so a row cap report a read starts is
-  // not cancelled when the response goes out (#1436, lib/row-cap.ts).
-  fetch: (request: Request, env: Env, ctx: ExecutionContext) =>
-    runWithRequestWaitUntil((p) => ctx.waitUntil(p), () => app.fetch(request, env, ctx)),
+  fetch: app.fetch.bind(app),
   // Claims (cron expression, scheduled minute) before any job starts, and skips
   // the whole invocation when another delivery of the same tick holds it (#1899):
   // Cloudflare has delivered every tick twice since 2026-10-08 13:38 UTC. A retry

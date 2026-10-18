@@ -309,6 +309,24 @@ describe('inside a scheduled tick: the read fails', () => {
     expect((await inTick).status).toBe(500)
   })
 
+  it('a read only rpc at the cap fails inside a tick', async () => {
+    const pg = postgrest(1000)
+    const supabase = createSupabaseClient(envFor(), { fetch: pg.fetchFn })
+    const { data, error } = await runInScheduledTick(async () => await supabase.rpc('execution_counts_per_minute', { p_since: '2026-10-18T00:00:00Z', p_workflow_ids: [] }))
+    expect(data).toBeNull()
+    expect(error?.code).toBe(ROW_CAP_ERROR_CODE)
+  })
+
+  it('a mutating rpc at the cap is reported but never failed, since it has already written', async () => {
+    const pg = postgrest(1000)
+    const supabase = createSupabaseClient(envFor(), { fetch: pg.fetchFn })
+    const { data, error } = await runInScheduledTick(async () => await supabase.rpc('reduce_finalize_stranded', {} as never))
+    expect(error).toBeNull()
+    expect(data).toHaveLength(1000)
+    expect(capLines()).toHaveLength(1)
+    expect(JSON.parse(capLines()[0])).toMatchObject({ relation: 'reduce_finalize_stranded', kind: 'rpc', in_scheduled_tick: true })
+  })
+
   it('a declared limit inside a tick still answers normally', async () => {
     const pg = postgrest(1000)
     const supabase = createSupabaseClient(envFor(), { fetch: pg.fetchFn })
