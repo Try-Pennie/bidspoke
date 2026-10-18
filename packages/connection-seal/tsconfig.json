@@ -12,5 +12,6 @@
     "resolveJsonModule": true,
     "types": ["node"]
   },
-  "include": ["src"]
+  // The restore drill script opens canaries with this package, and is typechecked here (#2333).
+  "include": ["src", "../../scripts/restore-drill"]
 }

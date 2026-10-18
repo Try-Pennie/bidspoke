@@ -182,6 +182,10 @@ describe('runOpsTickReportCheck', () => {
     expect(d.sent[0].fixHint).toMatch(/Bidspoke recovery keys/)
     expect(d.sent[0].fixHint).toMatch(/wrangler secret put OPS_CONNECTIONS_PRIVATE_KEY --config wrangler\.ops\.toml/)
     expect(d.sent[0].fixHint).not.toMatch(/OPS_SUPABASE/)
+    // The escrowed copy is a file attached to the item, not a field (#2333): the
+    // remedy names the file and reads it with op read, so following it works.
+    expect(d.sent[0].fixHint).toMatch(/op read "op:\/\/<vault>\/Bidspoke recovery keys\/ops-connections-private\.pem"/)
+    expect(d.sent[0].fixHint).not.toMatch(/field/)
   })
 
   it('names the remedy of every secret reported, once each, in the order reported', async () => {
