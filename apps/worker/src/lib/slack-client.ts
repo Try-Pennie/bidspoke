@@ -16,6 +16,8 @@
  *   refresh token. Nothing may set it, here or anywhere.
  *
  * lib/__tests__/slack-client.test.ts asserts both on what a built client does.
+ * apps/web/src/lib/__guards__/worker/slack-calls-one-client.test.ts fails on
+ * any Slack call made any other way, in the Worker or packages/service-catalogue.
  *
  * Callers: deliverMessage in lib/slack.ts (every alert), sendThreadReply
  * beside it (the summary under an alert), and in routes/api/integrations.ts
