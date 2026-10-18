@@ -230,7 +230,8 @@ export interface WinnerRow {
   attempted_at_utc: string
 }
 
-/** Live attempts over the baseline window: every resolved attempt, those that failed, those declined. */
+// The baseline shapes live with the shared rule (outcome-rate-rule.ts); here
+// readOutcomeBaseline fills OutcomeBaseline from live buyer_sales rows.
 export type { OutcomeBaseline, BaselineUnreadable }
 
 export interface ChecksDeps {
