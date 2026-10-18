@@ -48,15 +48,28 @@ const secondCandidate = (): Row => ({
   config: { bot_token: 'second-bot-token', default_channel: '#second' },
 })
 
+const otherSlackRow = (): Row => ({
+  id: 'other-slack-row', organization_id: ORG, service_type: 'slack', name: 'second workspace', sealed_for: null, credential_enc: null,
+  config: { bot_token: 'other-bot-token', default_channel: '#other' },
+})
+
 /**
- * The database as the routes see it. delete_service_connection follows
- * migration 20261017150000: the org's rows of the type, never an ops_key row.
+ * The database as the routes see it. Each delete function follows its
+ * migration: delete_service_connection (20261017150000) removes the org's rows
+ * of the type that are not ops_key rows; delete_service_connection_by_id
+ * (20261018150000) removes the one row named, in the org named, never an
+ * ops_key row.
  */
 function database(rows: Row[]) {
   const fake = fakePostgrest({ service_connections: rows }, {
     auth_user_with_allowlist: () => ({ data: [{ id: USER, organization_id: ORG, email: 'dan@pennie.com', allowed: true }] }),
     delete_service_connection: (args, tables) => {
       const gone = tables.service_connections.filter((r) => r.organization_id === args.p_organization_id && r.service_type === args.p_service_type && r.sealed_for !== 'ops_key')
+      tables.service_connections = tables.service_connections.filter((r) => !gone.includes(r))
+      return { data: gone.map((r) => ({ id: r.id })) }
+    },
+    delete_service_connection_by_id: (args, tables) => {
+      const gone = tables.service_connections.filter((r) => r.id === args.p_connection_id && r.organization_id === args.p_organization_id && r.sealed_for !== 'ops_key')
       tables.service_connections = tables.service_connections.filter((r) => !gone.includes(r))
       return { data: gone.map((r) => ({ id: r.id })) }
     },
@@ -209,8 +222,21 @@ describe('DELETE /integrations/slack (Disconnect)', () => {
     expect(res.status).toBe(409)
     expect(await res.json()).toEqual({ error: 'slack_alert_connection_ambiguous' })
     expect(fake.tables.service_connections).toHaveLength(3)
-    expect(fake.requests.some((r) => r.path === 'rpc/delete_service_connection')).toBe(false)
+    expect(fake.requests.some((r) => r.path.startsWith('rpc/delete_service_connection'))).toBe(false)
     expect((await copyEntry())?.bot_token).toBe('copy-bot-token')
+  })
+
+  // Release 2 lets an organization hold a second Slack row that is not an ops
+  // row and not an alert candidate (another name). Deleting by service type
+  // removed it with the alert row; the Disconnect now deletes only the alert
+  // row it read, by id (#2332).
+  it('removes only the alert row it read, so a second non ops Slack row of the organization survives', async () => {
+    const fake = database([alertRow(), otherSlackRow(), opsRow()])
+    const res = await call('DELETE', '/integrations/slack')
+    expect(res.status).toBe(200)
+    expect(fake.tables.service_connections.map((r) => r.id).sort()).toEqual(['ops-row', 'other-slack-row'])
+    expect(fake.requests.some((r) => r.path === 'rpc/delete_service_connection')).toBe(false)
+    opsUnchanged(fake.tables.service_connections)
   })
 
   it('is still a 200 no-op when there is no alert row, and the saved copy entry goes', async () => {

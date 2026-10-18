@@ -149,10 +149,25 @@ export type ConnectionCopyState = (typeof CONNECTION_COPY_STATES)[number]
 /**
  * The shown status of a connection, derived by connection_status and nowhere
  * else: needs_reauth while a refresh failure is newer than the last Reconnect,
- * whatever the check says (L53).
+ * whatever the check says (L53); refresh_failing while a token endpoint keeps
+ * timing out or answering 5xx and has not yet held past decision 2's bound
+ * (#2335, migration 20261018170000).
  */
-export const CONNECTION_STATUSES = ['needs_reauth', 'check_failing', 'healthy', 'unchecked'] as const
+export const CONNECTION_STATUSES = ['needs_reauth', 'refresh_failing', 'check_failing', 'healthy', 'unchecked'] as const
 export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number]
+
+/**
+ * What record_connection_refresh answers (Dan's decision 2): recorded for a
+ * login that worked; refresh_failing while the streak is inside the bound;
+ * needs_reauth for the failure that took it past (5 failures, the first 15
+ * minutes old); connection_removed when a tombstone stands.
+ */
+export const REFRESH_OUTCOMES = ['recorded', 'refresh_failing', 'needs_reauth', 'connection_removed'] as const
+export type RefreshOutcome = (typeof REFRESH_OUTCOMES)[number]
+
+/** What google_delegation_check answers (finding F129): allowed, or the first refusal by name. */
+export const DELEGATION_CHECK_OUTCOMES = ['allowed', 'mailbox_not_allowed', 'drive_not_allowed'] as const
+export type DelegationCheckOutcome = (typeof DELEGATION_CHECK_OUTCOMES)[number]
 
 /** Why a Salesforce lease is taken. A step's share is its workflow's; every other purpose has a share of its own. */
 export const SF_LEASE_PURPOSES = ['step', 'lookup', 'verify', 'reconnect', 'connection_check', 'sf_limits'] as const

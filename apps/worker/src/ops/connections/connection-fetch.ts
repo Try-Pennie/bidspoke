@@ -34,6 +34,15 @@
  *     expiry signal renews the token once and retries once; a second is
  *     needs_reauth. A body that can be read only once is never sent twice.
  *
+ * THE LOGIN (./minters, Dan's decision 2). The service's authorize mints or
+ * reuses the token. A login the provider refused is needs_reauth at once. A
+ * token endpoint that timed out or answered 5xx adds to the connection's
+ * refresh streak (record_connection_refresh) and is answered
+ * connection_auth_unavailable; the database turns the streak into needs_reauth
+ * only past its bound. A login a token endpoint answered ends the streak. A
+ * mint our own rule refused (the Google delegation allowlist, F129) is
+ * connection_not_allowed and records nothing about the login.
+ *
  * CANDIDATES (findings F116 and F126). verify and Reconnect pass the envelope
  * of a generation bidding has not committed yet. It is used for this one call
  * and held only in memory: this module has no write to connection_copies at
@@ -52,7 +61,9 @@
 import { open, SealError, type KeyRing } from '@bidspoke/connection-seal'
 import { organizationIdFrom, type OrganizationId } from '../ops-db'
 import type { AcquireSfLease, ConnectionCopy, SfLeaseAnswer } from '../ops-writes'
-import { NON_STEP_LEASE_OUTCOMES, SF_LEASE_PURPOSES, type NonStepLeaseOutcome, type SfLeaseOutcome, type SfLeasePurpose } from '../run-vocabulary'
+import {
+  NON_STEP_LEASE_OUTCOMES, SF_LEASE_PURPOSES, type NonStepLeaseOutcome, type RefreshOutcome, type SfLeaseOutcome, type SfLeasePurpose,
+} from '../run-vocabulary'
 import { ConnectionRefusal, LoginMintError, RequeueAt, type ConnectionRefusalCode } from './refusals'
 import { isCredentialHeader, sanitiseRequest, scrubSecrets, secretsOfLogin, type RecordedRequest } from './sanitise'
 import type { Authorization, OpenedLogin, ServiceRules } from './service-rules'
@@ -72,8 +83,17 @@ export const RATE_LIMIT_DEFAULT_MS = 60_000
 export const RETRY_AFTER_MIN_MS = 1_000
 export const RETRY_AFTER_MAX_MS = 60 * 60_000
 
-/** The causes recorded with needs_reauth (connection_health.needs_reauth_cause). */
-export const NEEDS_REAUTH_CAUSES = { loginRefused: 'login_refused', refusedAfterRenew: 'request_refused_after_renew' } as const
+/**
+ * The causes recorded with needs_reauth (connection_health.needs_reauth_cause).
+ * A refused login is recorded as `login_refused: <reason>`. A failing token
+ * endpoint held past decision 2's bound is written by record_connection_refresh
+ * itself, as `refresh_failing_exhausted: <reason>`.
+ */
+export const NEEDS_REAUTH_CAUSES = {
+  loginRefused: 'login_refused',
+  refusedAfterRenew: 'request_refused_after_renew',
+  refreshFailingExhausted: 'refresh_failing_exhausted',
+} as const
 
 /** A credential bidding has not committed, passed in the verify or Reconnect call: ciphertext and public config only. */
 export interface CandidateConnection {
@@ -102,7 +122,7 @@ export interface ConnectionCall {
 
 /** Something worth knowing that does not change the answer. Names only. */
 export interface ConnectionEvent {
-  readonly event: 'sf_lease_release_failed' | 'needs_reauth_unrecorded'
+  readonly event: 'sf_lease_release_failed' | 'needs_reauth_unrecorded' | 'refresh_unrecorded'
   readonly connection_id: string
   readonly purpose: SfLeasePurpose
 }
@@ -117,6 +137,12 @@ export interface ConnectionFetchDeps {
   releaseSfLease(organizationId: OrganizationId, holder: string): Promise<'released' | 'not_held'>
   /** record_connection_needs_reauth. Never called for a candidate. */
   recordNeedsReauth(organizationId: OrganizationId, connectionId: string, cause: string): Promise<unknown>
+  /**
+   * record_connection_refresh (Dan's decision 2): a failing token endpoint adds
+   * to the streak and answers needs_reauth once past its bound; a login a token
+   * endpoint answered ends it. Never called for a candidate.
+   */
+  recordRefresh(organizationId: OrganizationId, connectionId: string, result: { ok: true } | { ok: false; cause: string }): Promise<RefreshOutcome>
   fetch(input: string, init?: RequestInit): Promise<Response>
   now(): number
   /** Only the interactive lease wait sleeps (L524: injected). */
@@ -356,14 +382,23 @@ function clampedRetry(now: number, at: number): Date {
   return new Date(Math.min(Math.max(at, now + RETRY_AFTER_MIN_MS), now + RETRY_AFTER_MAX_MS))
 }
 
+/**
+ * A Retry-After header as epoch ms: delta seconds or an HTTP date. Null when it
+ * is neither. Shared with the minters' token endpoint (minters/token-endpoint.ts),
+ * whose time connectionFetch clamps the same way.
+ */
+export function retryAfterAt(header: string, now: number): number | null {
+  const trimmed = header.trim()
+  const at = /^\d+$/.test(trimmed) ? now + Number(trimmed) * 1000 : Date.parse(trimmed)
+  return Number.isFinite(at) ? at : null
+}
+
 /** A 429, or a 503 that says when to come back, as a RequeueAt; anything else null. */
 function rateLimited(response: Response, now: number): RequeueAt | null {
   const header = response.headers.get('retry-after')
   if (response.status !== 429 && !(response.status === 503 && header !== null)) return null
-  if (header === null) return new RequeueAt(new Date(now + RATE_LIMIT_DEFAULT_MS), 'rate_limited')
-  const trimmed = header.trim()
-  const at = /^\d+$/.test(trimmed) ? now + Number(trimmed) * 1000 : Date.parse(trimmed)
-  return new RequeueAt(Number.isFinite(at) ? clampedRetry(now, at) : new Date(now + RATE_LIMIT_DEFAULT_MS), 'rate_limited')
+  const at = header === null ? null : retryAfterAt(header, now)
+  return new RequeueAt(at === null ? new Date(now + RATE_LIMIT_DEFAULT_MS) : clampedRetry(now, at), 'rate_limited')
 }
 
 /** A response nobody will read: its body is cancelled, so it does not hold the connection open. */
@@ -429,6 +464,54 @@ async function needsReauth(deps: ConnectionFetchDeps, call: ConnectionCall, reso
   throw refusal('connection_needs_reauth', cause, secrets)
 }
 
+/**
+ * A mint that failed, by its kind (Dan's decision 2, finding F129). Only a
+ * committed copy's failure is recorded: a candidate is not the connection's
+ * credential, so its failure says nothing about the connection (F126).
+ */
+async function mintFailed(
+  deps: ConnectionFetchDeps, call: ConnectionCall, resolved: Resolved, err: LoginMintError, secrets: readonly string[],
+): Promise<RequeueAt> {
+  switch (err.kind) {
+    case 'refused':
+      return needsReauth(deps, call, resolved, `${NEEDS_REAUTH_CAUSES.loginRefused}: ${err.reason}`, secrets)
+    case 'rate_limited': {
+      const now = deps.now()
+      return new RequeueAt(err.retryAt === null ? new Date(now + RATE_LIMIT_DEFAULT_MS) : clampedRetry(now, err.retryAt.getTime()), 'rate_limited')
+    }
+    case 'not_allowed':
+      throw refusal('connection_not_allowed', `the ${resolved.service} mint was refused by rule: ${err.reason}`, secrets)
+    case 'check_unavailable':
+      throw refusal('connection_auth_check_unavailable', `the ${resolved.service} mint could not check its rule: ${err.reason}`, secrets)
+    case 'unavailable': {
+      if (resolved.candidate) throw refusal('connection_auth_unavailable', `the ${resolved.service} token endpoint is unavailable: ${err.reason}`, secrets)
+      let outcome: RefreshOutcome | null = null
+      try {
+        outcome = await deps.recordRefresh(call.organizationId, call.connectionId, { ok: false, cause: err.reason })
+      } catch {
+        safeReport(deps, { event: 'refresh_unrecorded', connection_id: call.connectionId, purpose: call.purpose })
+      }
+      if (outcome === 'needs_reauth') {
+        // record_connection_refresh wrote needs_reauth itself, through its one writer.
+        throw refusal('connection_needs_reauth', `${NEEDS_REAUTH_CAUSES.refreshFailingExhausted}: ${err.reason}`, secrets)
+      }
+      if (outcome === 'connection_removed') throw refusal('connection_removed', 'the connection is removed', secrets)
+      // The message states only what the database answered (L11): refresh_failing when it said so.
+      const state = outcome === null ? 'the failure could not be recorded' : `the connection is ${outcome}`
+      throw refusal('connection_auth_unavailable', `the ${resolved.service} token endpoint is unavailable (${err.reason}); ${state}`, secrets)
+    }
+  }
+}
+
+/** A login a token endpoint answered ends a refresh streak. Its failure is reported and never changes the answer. */
+async function endRefreshStreak(deps: ConnectionFetchDeps, call: ConnectionCall): Promise<void> {
+  try {
+    await deps.recordRefresh(call.organizationId, call.connectionId, { ok: true })
+  } catch {
+    safeReport(deps, { event: 'refresh_unrecorded', connection_id: call.connectionId, purpose: call.purpose })
+  }
+}
+
 async function sendWithRenewal(
   deps: ConnectionFetchDeps, call: ConnectionCall, rules: ServiceRules, resolved: Resolved, login: OpenedLogin, loginSecrets: readonly string[],
   deadline: Deadline, url: string, init: RequestInit,
@@ -451,6 +534,7 @@ async function sendWithRenewal(
     }
 
     let auth: Authorization
+    let minted = false
     try {
       auth = await beforeDeadline(rules.authorize({
         organizationId: call.organizationId,
@@ -462,21 +546,16 @@ async function sendWithRenewal(
         login,
         candidate: resolved.candidate,
         renew: rejected === null ? null : { rejected },
+        noteMint: () => { minted = true },
       }), deadline)
     } catch (err) {
       const late = deadlineRefusal(deadline, 'the login', secrets)
       if (late) throw late
-      if (err instanceof LoginMintError) {
-        if (err.kind === 'refused') return needsReauth(deps, call, resolved, NEEDS_REAUTH_CAUSES.loginRefused, secrets)
-        if (err.kind === 'rate_limited') {
-          const now = deps.now()
-          return new RequeueAt(err.retryAt === null ? new Date(now + RATE_LIMIT_DEFAULT_MS) : clampedRetry(now, err.retryAt.getTime()), 'rate_limited')
-        }
-        throw refusal('connection_auth_unavailable', `the ${resolved.service} token endpoint is unavailable`, secrets)
-      }
+      if (err instanceof LoginMintError) return mintFailed(deps, call, resolved, err as LoginMintError, secrets)
       throw refusal('connection_auth_failed', `the ${resolved.service} auth failed without a declared cause`, secrets)
     }
     secrets = [...loginSecrets, ...auth.secrets, ...(rejected?.secrets ?? [])]
+    if (minted && !resolved.candidate) await endRefreshStreak(deps, call)
 
     const headers = new Headers(callerHeaders)
     for (const [name, value] of Object.entries(auth.headers)) headers.set(name, value)

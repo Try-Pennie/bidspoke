@@ -4,7 +4,8 @@
  * from being used for real.
  */
 
-function toPem(der: ArrayBuffer, label: string): string {
+/** A PEM block of label around der, as openssl writes it; built from the label so no key header sits in the source. */
+export function toPem(der: ArrayBuffer, label: string): string {
   let binary = ''
   for (const b of new Uint8Array(der)) binary += String.fromCharCode(b)
   const body = btoa(binary).match(/.{1,64}/g)!.join('\n')

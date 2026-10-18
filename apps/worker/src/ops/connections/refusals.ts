@@ -53,10 +53,22 @@ export const CONNECTION_REFUSAL_CODES = [
   'sf_lease_unavailable',
   /** The sanitised request could not be recorded, so nothing was sent. */
   'connection_record_failed',
-  /** The login was refused, or the request was refused again after one renewal. */
+  /**
+   * The login was refused, the request was refused again after one renewal, or
+   * a failing token endpoint held past decision 2's bound.
+   */
   'connection_needs_reauth',
-  /** The token endpoint timed out or answered 5xx. Not needs_reauth (Dan's decision 2). */
+  /** The token endpoint timed out or answered 5xx: refresh_failing, not yet needs_reauth (Dan's decision 2). */
   'connection_auth_unavailable',
+  /**
+   * A rule of ours refused the mint before any token was asked for: a mailbox
+   * or drive outside the organization's delegation allowlist (finding F129),
+   * no delegation scope declared, a target that does not name what the rule
+   * needs. Neither needs_reauth nor a refresh failure: the login is not at fault.
+   */
+  'connection_not_allowed',
+  /** A rule the mint must check first (the delegation allowlist) could not be read. Not a refresh failure. */
+  'connection_auth_check_unavailable',
   /** The auth failed in a way that names no cause it declared. */
   'connection_auth_failed',
   /** The send failed below HTTP. */
@@ -97,15 +109,63 @@ export class RequeueAt {
 }
 
 /**
- * What a minter throws (the minters arrive in a later PR of phase 5). kind is
- * the whole of what connectionFetch reads; the message is never forwarded.
- *   refused       the provider refused the login (invalid_grant, invalid_client): needs_reauth at once
- *   unavailable   the token endpoint timed out or answered 5xx: not needs_reauth
- *   rate_limited  the token endpoint answered 429: a RequeueAt at retryAt
+ * How a mint failed, and so what connectionFetch does (Dan's decision 2, F129):
+ *   refused            the provider refused the login (invalid_grant,
+ *                      invalid_client), or the login cannot be used as stored:
+ *                      needs_reauth at once
+ *   unavailable        the token endpoint timed out, could not be reached,
+ *                      answered 5xx or an edge page: refresh_failing, and
+ *                      needs_reauth only past the bound record_connection_refresh
+ *                      holds
+ *   rate_limited       the token endpoint answered 429: a RequeueAt at retryAt
+ *   not_allowed        a rule of ours refused the mint (F129): refused by name,
+ *                      nothing recorded about the login
+ *   check_unavailable  a rule the mint must check could not be read: refused by
+ *                      name, nothing recorded about the login
  */
-export class LoginMintError extends Error {
-  constructor(readonly kind: 'refused' | 'unavailable' | 'rate_limited', message: string, readonly retryAt: Date | null = null) {
-    super(message)
+export const LOGIN_MINT_KINDS = ['refused', 'unavailable', 'rate_limited', 'not_allowed', 'check_unavailable'] as const
+export type LoginMintKind = (typeof LOGIN_MINT_KINDS)[number]
+
+/**
+ * Why, one closed set of names. A provider's own error code is mapped onto one
+ * of these, never carried as text, so nothing a provider says rides out on a
+ * LoginMintError (F120).
+ */
+export const MINT_FAILURE_REASONS = {
+  refused: [
+    'invalid_grant', 'invalid_client', 'unauthorized_client', 'invalid_scope', 'access_denied', 'login_refused',
+    /** The stored login lacks a field the minter needs, or a key does not import. */
+    'login_malformed',
+    /** A Salesforce login whose client id is not the one the target declares. */
+    'client_id_mismatch',
+    /** A Google service account key whose token_uri is not Google's. */
+    'token_uri_unexpected',
+    /** The token endpoint answered a redirect: the connection names the wrong address. */
+    'token_endpoint_redirected',
+  ],
+  unavailable: ['token_endpoint_timeout', 'token_endpoint_unreachable', 'token_endpoint_5xx', 'token_endpoint_edge_page', 'token_response_malformed'],
+  rate_limited: ['token_endpoint_rate_limited'],
+  not_allowed: ['mailbox_not_allowed', 'drive_not_allowed', 'no_delegation_scopes', 'target_invalid'],
+  check_unavailable: ['delegation_allowlist_unreadable'],
+} as const satisfies Record<LoginMintKind, readonly string[]>
+export type MintFailureReason<K extends LoginMintKind = LoginMintKind> = (typeof MINT_FAILURE_REASONS)[K][number]
+
+/**
+ * What a minter throws. kind is what connectionFetch acts on and reason is the
+ * name it records; the message is made of those two alone, so it is safe by
+ * construction (F120), and connectionFetch still never forwards it.
+ */
+export class LoginMintError<K extends LoginMintKind = LoginMintKind> extends Error {
+  readonly kind: K
+  readonly reason: MintFailureReason<K>
+  /** For rate_limited: when the token endpoint said to come back, if it did. */
+  readonly retryAt: Date | null
+
+  constructor(kind: K, reason: MintFailureReason<K>, retryAt: Date | null = null) {
+    super(`${kind}: ${reason}`)
     this.name = 'LoginMintError'
+    this.kind = kind
+    this.reason = reason
+    this.retryAt = retryAt
   }
 }

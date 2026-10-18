@@ -16,6 +16,8 @@ import {
   ALL_OBSERVATION_REASONS,
   CONNECTION_COPY_STATES,
   CONNECTION_STATUSES,
+  DELEGATION_CHECK_OUTCOMES,
+  REFRESH_OUTCOMES,
   ALL_STATUS_REASONS,
   ENGINE_FAILED_REASONS,
   EXECUTION_STATUSES,
@@ -127,6 +129,9 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     ['connection_status', /(?:THEN|ELSE) '([a-z_]+)'/g, CONNECTION_STATUSES],
     ['connection_copy', /(?:THEN|ELSE) '([a-z_]+)'/g, CONNECTION_COPY_STATES],
     ['acquire_sf_lease', /SELECT '([a-z_]+)'::text/g, SF_LEASE_OUTCOMES],
+    // Decision 2's streak and F129's allowlist (#2335).
+    ['record_connection_refresh', /RETURN '([a-z_]+)'/g, REFRESH_OUTCOMES],
+    ['google_delegation_check', /RETURN '([a-z_]+)'/g, DELEGATION_CHECK_OUTCOMES],
   ] as const)('%s answers exactly its vocabulary', (name, pattern, values) => {
     expect(sorted([...new Set([...functionBody(SQL, name).matchAll(pattern)].map((m) => m[1]))])).toEqual(sorted(values))
   })

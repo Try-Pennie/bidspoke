@@ -521,6 +521,16 @@
       "p_actor": "00000000-0000-0000-0000-000000000000"
     },
     "anon": "denied",
-    "note": "The one delete of a service_connections row (#2331): DELETE /api/integrations/slack (the Slack Disconnect) and DELETE /api/connections/:service_type call it, so the table's audit trigger names the user. A WRITE, service_role only, so anon must be denied. If it is missing, the Disconnect answers 500. Probed with the all zero organization and a service type no row carries, so even a probe that ran it would delete nothing."
+    "note": "The delete of a service_connections row by service type (#2331). The code deployed before #2332's delete by id, and its rollback target, call it from DELETE /api/integrations/slack and DELETE /api/connections/:service_type, so it stays until the contract migration on #2332's release 2 checklist drops it. A WRITE, service_role only, so anon must be denied. Probed with the all zero organization and a service type no row carries, so even a probe that ran it would delete nothing."
+  },
+  {
+    "name": "delete_service_connection_by_id",
+    "args": {
+      "p_organization_id": "00000000-0000-0000-0000-000000000000",
+      "p_connection_id": "00000000-0000-0000-0000-000000000000",
+      "p_actor": "00000000-0000-0000-0000-000000000000"
+    },
+    "anon": "denied",
+    "note": "The delete of ONE service_connections row, by id, within the caller's organization and never an ops_key row (#2332): DELETE /api/integrations/slack (the Slack Disconnect) and DELETE /api/connections/:service_type call it with the id of the row they read, so the table's audit trigger names the user. A WRITE, service_role only, so anon must be denied. If it is missing, the Disconnect answers 500. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would delete nothing."
   }
 ]

@@ -835,7 +835,12 @@ export class SnowflakeTokenCache {
 
 const sharedTokenCache = new SnowflakeTokenCache()
 
-async function signSnowflakeJwt(config: SnowflakeConfig, privateKey: CryptoKey, iat: number): Promise<string> {
+/**
+ * A Snowflake key pair JWT for `account` and `user`, issued at `iat` (seconds).
+ * Exported unchanged for the ops Snowflake minter (#2335), which signs for a
+ * connection's declared account and user, so both lanes sign one way.
+ */
+export async function signSnowflakeJwt(config: Pick<SnowflakeConfig, 'account' | 'user'>, privateKey: CryptoKey, iat: number): Promise<string> {
   const fingerprint = await publicKeyFingerprint(privateKey)
   const account = accountForJwt(config.account)
   const user = config.user.toUpperCase()
@@ -894,7 +899,12 @@ async function publicKeyFingerprint(privateKey: CryptoKey): Promise<string> {
 // PEM parser — handles PKCS#1 and PKCS#8
 // ============================================================
 
-async function importPrivateKey(pem: string): Promise<CryptoKey> {
+/**
+ * An RSA private key from PEM (PKCS#1 or PKCS#8), for RS256 signing. Exported
+ * unchanged for the ops minters (#2335): the Snowflake key pair and a Google
+ * service account key are both PEM, so both lanes read a key one way.
+ */
+export async function importPrivateKey(pem: string): Promise<CryptoKey> {
   const trimmed = pem.replace(/\r/g, '').trim()
   const isPkcs1 = trimmed.includes('BEGIN RSA PRIVATE KEY')
   const der = pemToDer(trimmed)

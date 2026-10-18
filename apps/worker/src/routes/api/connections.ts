@@ -10,8 +10,8 @@
 //
 // The audit record (#2331, F119): the table's own trigger writes one audit_log
 // row per change, naming the user from updated_by (every write here sets it) or,
-// for a delete, from delete_service_connection's actor, as for partner_configs
-// (#1409). So these routes write no audit row of their own.
+// for a delete, from delete_service_connection_by_id's actor, as for
+// partner_configs (#1409). So these routes write no audit row of their own.
 
 import { Hono } from 'hono'
 import { dbError, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
@@ -38,8 +38,8 @@ const connections = new Hono<{ Bindings: Env; Variables: Variables }>()
  * and remove it while skipping what Phase 8's own delete does: refuse a
  * referenced connection, write the tombstone, revoke. With two rows of a type,
  * `.single()` answers PGRST116, which both routes read as not found (404).
- * delete_service_connection refuses an ops_key row too (migration
- * 20261017150000), so the store holds the line if a caller forgets this.
+ * delete_service_connection_by_id refuses an ops_key row too (migration
+ * 20261018150000), so the store holds the line if a caller forgets this.
  * No legacy row exists (measured 2026-10-17); Phase 8 retires both routes.
  */
 function legacyConnectionOf<Columns extends string>(
@@ -109,9 +109,12 @@ connections.delete('/:service_type', async (c) => {
   // None exists to orphan today (Phase 0 found 0 CONN_ secrets and no row of
   // these types), and POST can no longer create one.
 
-  // Through delete_service_connection, so the table's trigger names this user.
+  // The row just read, by its id (#2332): never every row of the type, which
+  // once release 2 allows two rows of a service would remove the other too.
+  // Through delete_service_connection_by_id, so the table's trigger names this
+  // user; it also refuses another organization's row and an ops_key row.
   const deleteBlocked = await requireRowOr404(c, 'Connection not found', () =>
-    supabase.rpc('delete_service_connection', { p_organization_id: orgId, p_service_type: serviceType, p_actor: userId })
+    supabase.rpc('delete_service_connection_by_id', { p_organization_id: orgId, p_connection_id: existing.id, p_actor: userId })
   )
   if (deleteBlocked) return deleteBlocked
 
