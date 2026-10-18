@@ -3,7 +3,8 @@
  * Covers: list returns connections without credentials, create refuses as
  * connections_moving with no Cloudflare call (#2331), delete removes the row with
  * no Cloudflare call (#2331), sync-schema calls the correct fetcher and updates
- * the cache, sync-schema returns 500 when credentials are not in env.
+ * the cache, sync-schema returns 500 when credentials are not in env, and
+ * (#2335 PR 7) a failed lookup answers its named code and writes nothing.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { recordingContext } from '../../../test-setup/wait-until'
@@ -25,6 +26,7 @@ import { fetchSalesforceSchema } from '../../../lib/schema-sync/salesforce'
 import { fetchSupabaseSchema } from '../../../lib/schema-sync/supabase-schema'
 import { fetchSnowflakeSchema } from '../../../lib/schema-sync/snowflake'
 import { makeSupabase } from './_supabase-mock'
+import { SchemaLookupError } from '../../../lib/schema-sync/errors'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
@@ -68,6 +70,16 @@ const baseEnv = {
 const envWithCreds = {
   ...baseEnv,
   CONN_EXISTING: JSON.stringify({ access_token: 'sf-token', instance_url: 'https://sf.example.com' }),
+} as unknown as Env
+
+const envWithSupabaseCreds = {
+  ...baseEnv,
+  CONN_EXISTING: JSON.stringify({ url: 'https://proj.supabase.co', service_role_key: 'sb-key' }),
+} as unknown as Env
+
+const envWithSnowflakeCreds = {
+  ...baseEnv,
+  CONN_EXISTING: JSON.stringify({ account: 'xy1.us-east-1', username: 'user', password: 'pass', database: 'DB' }),
 } as unknown as Env
 
 async function makeApp() {
@@ -293,9 +305,28 @@ describe('POST /connections/:service_type/sync-schema', () => {
     const body = await res.json() as { ok: boolean; object_count: number }
     expect(body.ok).toBe(true)
     expect(body.object_count).toBe(1)
-    expect(vi.mocked(fetchSalesforceSchema)).toHaveBeenCalledWith(
-      JSON.stringify({ access_token: 'sf-token', instance_url: 'https://sf.example.com' })
+    // The plain fetch and the auth the legacy login builds (#2335 PR 7).
+    expect(vi.mocked(fetchSalesforceSchema)).toHaveBeenCalledWith({
+      service: 'salesforce',
+      fetch: expect.any(Function),
+      auth: { Authorization: 'Bearer sf-token' },
+      instanceUrl: 'https://sf.example.com',
+    })
+  })
+
+  it('hands the lookups the plain fetch', async () => {
+    const globalFetch = vi.fn(async () => new Response('{}'))
+    vi.stubGlobal('fetch', globalFetch)
+    vi.mocked(fetchSalesforceSchema).mockImplementation(async (source) => {
+      await source.fetch('https://sf.example.com/services/data/v59.0/sobjects/', { headers: { ...source.auth } })
+      return { objects: [] }
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }] }) as never
     )
+    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
+    expect(res.status).toBe(200)
+    expect(globalFetch).toHaveBeenCalledWith('https://sf.example.com/services/data/v59.0/sobjects/', { headers: { Authorization: 'Bearer sf-token' } })
   })
 
   // #2331, F119: the schema write names its user through updated_by, so the
@@ -321,9 +352,14 @@ describe('POST /connections/:service_type/sync-schema', () => {
         service_connections: [{ single: supabaseConn }, { writeRows: [{ id: 'conn-1' }] }],
       }) as never
     )
-    const res = await request(app, 'POST', '/connections/supabase/sync-schema', { env: envWithCreds })
+    const res = await request(app, 'POST', '/connections/supabase/sync-schema', { env: envWithSupabaseCreds })
     expect(res.status).toBe(200)
-    expect(vi.mocked(fetchSupabaseSchema)).toHaveBeenCalled()
+    expect(vi.mocked(fetchSupabaseSchema)).toHaveBeenCalledWith({
+      service: 'supabase',
+      fetch: expect.any(Function),
+      auth: { apikey: 'sb-key', Authorization: 'Bearer sb-key' },
+      url: 'https://proj.supabase.co',
+    })
     expect(vi.mocked(fetchSalesforceSchema)).not.toHaveBeenCalled()
   })
 
@@ -337,13 +373,21 @@ describe('POST /connections/:service_type/sync-schema', () => {
         service_connections: [{ single: snowflakeConn }, { writeRows: [{ id: 'conn-1' }] }],
       }) as never
     )
-    const res = await request(app, 'POST', '/connections/snowflake/sync-schema', { env: envWithCreds })
+    const res = await request(app, 'POST', '/connections/snowflake/sync-schema', { env: envWithSnowflakeCreds })
     expect(res.status).toBe(200)
-    expect(vi.mocked(fetchSnowflakeSchema)).toHaveBeenCalled()
+    expect(vi.mocked(fetchSnowflakeSchema)).toHaveBeenCalledWith({
+      service: 'snowflake',
+      fetch: expect.any(Function),
+      auth: { Authorization: `Basic ${btoa('user:pass')}`, 'X-Snowflake-Authorization-Token-Type': 'BASIC' },
+      account: 'xy1.us-east-1',
+      database: 'DB',
+    })
   })
 
-  it('returns 502 when the schema fetcher throws', async () => {
-    vi.mocked(fetchSalesforceSchema).mockRejectedValue(new Error('Salesforce SObject list failed (401)'))
+  it('returns 502 with the named code when a lookup fails', async () => {
+    vi.mocked(fetchSalesforceSchema).mockRejectedValue(
+      new SchemaLookupError({ code: 'schema_auth_refused', service: 'salesforce', step: 'object_list', status: 401 }),
+    )
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },
@@ -353,8 +397,51 @@ describe('POST /connections/:service_type/sync-schema', () => {
     )
     const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
     expect(res.status).toBe(502)
-    const body = await res.json() as { error: string }
+    const body = await res.json() as { error: string; code: string }
     expect(body.error).toMatch(/401/)
+    expect(body.code).toBe('schema_auth_refused')
+  })
+
+  // L10: a describe that failed used to come back as the object with no
+  // fields, which this route cached over the last good schema.
+  it('a failed describe answers its name and leaves the cached schema alone', async () => {
+    vi.mocked(fetchSalesforceSchema).mockRejectedValue(
+      new SchemaLookupError({ code: 'schema_service_error', service: 'salesforce', step: 'object_describe', subject: 'Lead', status: 503 }),
+    )
+    const sb = makeSupabase({ users: { single: testUser }, service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }] })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
+    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
+    expect(res.status).toBe(502)
+    const body = await res.json() as { error: string; code: string }
+    expect(body.code).toBe('schema_service_error')
+    expect(body.error).toContain('describe Lead')
+    expect((sb.calls.service_connections ?? []).filter(([m]) => m === 'update')).toEqual([])
+  })
+
+  it('a stored login that is not readable is a 500 by name, and none of it is repeated', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn } }) as never
+    )
+    const env = { ...baseEnv, CONN_EXISTING: '{"access_token":"sf-secret-999", broken' } as unknown as Env
+    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env })
+    expect(res.status).toBe(500)
+    const raw = await res.text()
+    expect(raw).toContain('schema_credentials_malformed')
+    expect(raw).not.toContain('sf-secret-999')
+    expect(vi.mocked(fetchSalesforceSchema)).not.toHaveBeenCalled()
+  })
+
+  it('an unexpected error is not repeated to the browser (F120)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(fetchSalesforceSchema).mockRejectedValue(new Error('boom with sf-token inside'))
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }] }) as never
+    )
+    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
+    expect(res.status).toBe(500)
+    const raw = await res.text()
+    expect(raw).toContain('schema_sync_failed')
+    expect(raw).not.toContain('sf-token')
   })
 })
 

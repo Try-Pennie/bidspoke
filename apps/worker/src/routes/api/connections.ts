@@ -2,7 +2,8 @@
 // GET    /api/connections                            list connections (no credentials)
 // POST   /api/connections                            refused: connections_moving, 410 (#2331)
 // DELETE /api/connections/:service_type              remove a connection
-// POST   /api/connections/:service_type/sync-schema  trigger schema refresh
+// POST   /api/connections/:service_type/sync-schema  trigger schema refresh; a
+//        failure answers a named code (SchemaLookupError) and writes nothing
 
 // Who may call these: any signed in user of the organization (jwtAuth). Whose
 // data: only the caller's organization's rows, scoped by organization_id from
@@ -21,6 +22,8 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { fetchSalesforceSchema } from '../../lib/schema-sync/salesforce'
 import { fetchSupabaseSchema } from '../../lib/schema-sync/supabase-schema'
 import { fetchSnowflakeSchema } from '../../lib/schema-sync/snowflake'
+import { legacySchemaSource } from '../../lib/schema-sync/legacy-credentials'
+import { SchemaLookupError } from '../../lib/schema-sync/errors'
 import { asJson } from '../../lib/json'
 
 type Variables = AuthVariables
@@ -145,14 +148,26 @@ connections.post('/:service_type/sync-schema', async (c) => {
     return c.json({ error: 'The credentials for this connection are missing, and it cannot be saved again while connections move to sealed connections.' }, 500)
   }
 
+  // The lookups take an injected fetch and an already minted auth (#2335 PR 7):
+  // here the plain fetch and the auth built from the legacy login. A failure is
+  // a named SchemaLookupError whose message is made of names alone (F120), and
+  // nothing is written, so the canvas keeps its last good schema and shows the
+  // message, never an object with an empty field list (L10).
   let schema
   try {
-    if (serviceType === 'salesforce') schema = await fetchSalesforceSchema(credsJson)
-    else if (serviceType === 'supabase') schema = await fetchSupabaseSchema(credsJson)
-    else if (serviceType === 'snowflake') schema = await fetchSnowflakeSchema(credsJson)
-    else return c.json({ error: 'Unsupported service type' }, 400)
+    const source = legacySchemaSource(serviceType, credsJson, (url, init) => fetch(url, init))
+    if (source.service === 'salesforce') schema = await fetchSalesforceSchema(source)
+    else if (source.service === 'supabase') schema = await fetchSupabaseSchema(source)
+    else schema = await fetchSnowflakeSchema(source)
   } catch (err) {
-    return c.json({ error: err instanceof Error ? err.message : 'Schema fetch failed' }, 502)
+    if (err instanceof SchemaLookupError) {
+      // A stored login that cannot be read is our state, not the service's answer.
+      return c.json({ error: err.message, code: err.code }, err.code === 'schema_credentials_malformed' ? 500 : 502)
+    }
+    // Anything else is a fault of ours; its message is not repeated, since it
+    // was not built to be safe to show (F120), and only its name is logged.
+    console.error(`[schema-sync] ${serviceType} sync failed unexpectedly: ${err instanceof Error ? err.name : 'non Error thrown'}`)
+    return c.json({ error: 'The schema sync failed for a reason it does not name.', code: 'schema_sync_failed' }, 500)
   }
 
   const syncBlocked = await requireRowOr404(c, 'Connection not found', () =>
