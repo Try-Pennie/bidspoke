@@ -17,11 +17,11 @@
  *
  * lib/__tests__/slack-client.test.ts asserts both on what a built client does.
  *
- * Callers switched so far: deliverMessage in lib/slack.ts (every alert),
- * sendThreadReply beside it (the summary under an alert), and in
- * routes/api/integrations.ts POST /slack/resolve (auth.test and the first
- * conversations.list) and POST /slack's token check (auth.test). The rest
- * follow one per pull request (#2331).
+ * Callers: deliverMessage in lib/slack.ts (every alert), sendThreadReply
+ * beside it (the summary under an alert), and in routes/api/integrations.ts
+ * POST /slack/resolve (auth.test and the first conversations.list), POST
+ * /slack's token check (auth.test) and GET /slack/channels
+ * (conversations.list, paged). Nothing else calls Slack (#2331).
  */
 import { SlackAPIClient, SlackAPIConnectionError, SlackAPIError } from 'slack-web-api-client'
 
@@ -67,13 +67,14 @@ export function slackCallFailure(e: unknown): SlackCallFailure | null {
  * A Slack call read the way the Settings routes read Slack before the client
  * (#2331): the BODY of any answer is the answer, whatever its status.
  *
- * POST /slack/resolve (routes/api/integrations.ts) used fetchJson, which
- * parsed the body as JSON without looking at the status. So `ok:false` came
- * back as the body; a 429 or a 5xx whose body was Slack's JSON
- * (`{ ok: false, error: 'ratelimited' }`) came back as that body too; a body
- * that was not JSON threw SyntaxError; and no answer threw the fetch's own
- * error. This keeps every one of those, so what the Settings page is told
- * does not change:
+ * POST /slack/resolve and GET /slack/channels (routes/api/integrations.ts,
+ * every paged conversations.list) used fetchJson, which parsed the body as
+ * JSON without looking at the status. So `ok:false` came back as the body;
+ * a 429 or a 5xx whose body was Slack's JSON (`{ ok: false, error:
+ * 'ratelimited' }`) came back as that body too; a body that was not JSON
+ * threw SyntaxError; and no answer threw the fetch's own error. Both routes
+ * now read their answers through this, which keeps every one of those, so
+ * what the Settings page is told does not change:
  *
  * - success, and `ok:false` with no code (the library returns it without
  *   throwing): the result as returned;

@@ -56,7 +56,6 @@
 
 import { Hono, type Context } from 'hono'
 import { dbError, dbErrorUnlessNotFound, requireRowOr404, rowsTouched } from '../../lib/api-error'
-import { fetchJson } from '../../lib/json'
 import { createSlackClient, slackBodyOf, slackCallFailure, slackNetworkCause } from '../../lib/slack-client'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
@@ -294,7 +293,9 @@ integrations.get('/slack/channels', async (c) => {
   }
   if (resolved.kind === 'none') return c.json({ error: 'Slack is not connected' }, 404)
   if (resolved.problem) console.error(slackTokenProblemLine(subject, resolved.problem, true))
-  const token = resolved.connection.bot_token
+  // Through the one Slack client (#2331), each page read as its body as
+  // before (slackBodyOf), so the page is told exactly what it was.
+  const slack = createSlackClient(resolved.connection)
 
   const matches: Array<{ id: string; name: string }> = []
   const MAX_MATCHES = 50
@@ -302,24 +303,16 @@ integrations.get('/slack/channels', async (c) => {
   let cursor: string | undefined
 
   for (let page = 0; page < MAX_PAGES; page++) {
-    const url = new URL('https://slack.com/api/conversations.list')
-    url.searchParams.set('types', 'public_channel,private_channel')
-    url.searchParams.set('exclude_archived', 'true')
-    url.searchParams.set('limit', '1000')
-    if (cursor) url.searchParams.set('cursor', cursor)
-
-    const chanData = await fetchJson<{
-      ok: boolean
-      channels?: Array<{ id: string; name: string }>
-      response_metadata?: { next_cursor?: string }
-      error?: string
-    }>(url.toString(), { headers: { Authorization: `Bearer ${token}` } })
+    const chanData = await slackBodyOf('conversations.list', () =>
+      slack.conversations.list({ types: ['public_channel', 'private_channel'], exclude_archived: true, limit: 1000, cursor }),
+    )
 
     if (!chanData.ok) return c.json({ error: `Slack API error: ${chanData.error ?? 'unknown'}` }, 502)
 
     for (const ch of chanData.channels ?? []) {
-      if (ch.name.toLowerCase().includes(q)) {
-        matches.push({ id: ch.id, name: ch.name })
+      const name = ch.name ?? ''
+      if (name.toLowerCase().includes(q)) {
+        matches.push({ id: ch.id ?? '', name })
         if (matches.length >= MAX_MATCHES) break
       }
     }
