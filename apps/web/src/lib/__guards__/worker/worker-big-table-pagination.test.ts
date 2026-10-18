@@ -59,6 +59,11 @@ const BIG_TABLES = [
   // when the daily growth check flagged it. Its two list reads (the history
   // panel and Duplicate) are per workflow, 168 at most that day, and page anyway.
   'workflow_versions',
+  // One row per cron delivery, about 1,900 a day kept 7 days by its purge job
+  // (#2284), so 13,000 to 27,000 rows. The daily growth check flagged it on
+  // 2026-10-18 (#2390). Its one reader, the hourly cron guard check, pages it
+  // 1,000 rows at a time with a full order.
+  'cron_tick_deliveries',
 ]
 
 const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])
