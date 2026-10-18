@@ -1,4 +1,4 @@
-import { fromBase64 } from './bytes'
+import { fromBase64, modulusBits } from './bytes'
 import { SealError } from './errors'
 
 /**
@@ -115,7 +115,7 @@ async function importKey(pem: string, kind: KeyKind): Promise<CryptoKey> {
     // it never echoes input.
     malformed(kind, 'did not import as an RSA-OAEP key')
   }
-  const bits = (key.algorithm as RsaHashedKeyAlgorithm).modulusLength
+  const bits = modulusBits(key)
   if (bits < MIN_MODULUS_BITS) {
     throw new SealError('seal_key_too_small', `the ${kind} key is ${bits} bits, and must be at least ${MIN_MODULUS_BITS}`)
   }
