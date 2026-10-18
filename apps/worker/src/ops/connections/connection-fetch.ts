@@ -196,22 +196,16 @@ function checkCall(call: ConnectionCall): void {
   }
 }
 
-async function resolve(deps: ConnectionFetchDeps, call: ConnectionCall): Promise<Resolved> {
-  let copy: ConnectionCopy
+async function readCopyOrRefuse(readCopy: ConnectionFetchDeps['readCopy'], organizationId: OrganizationId, connectionId: string): Promise<ConnectionCopy> {
   try {
-    copy = await deps.readCopy(call.organizationId, call.connectionId)
+    return await readCopy(organizationId, connectionId)
   } catch {
     throw refusal('connection_copy_unreadable', 'the ops database did not answer the copy read', [])
   }
+}
 
-  if (call.source.kind === 'copy') {
-    if (copy.state !== 'usable') throw refusal(COPY_STATE_REFUSALS[copy.state], `the copy is ${copy.state}`, [])
-    if (copy.service === null || copy.generation === null) throw refusal('connection_copy_unreadable', 'a usable copy came back without its service or generation', [])
-    return { service: copy.service, generation: copy.generation, envelope: copy.envelope, target: copy.target, publicConfig: copy.publicConfig, candidate: false }
-  }
-
-  // A candidate is checked against what ops holds, and replaces nothing (F116, F126).
-  const candidate = call.source.candidate
+/** A candidate checked against what ops holds, replacing nothing (F116, F126). Throws a refusal by name. */
+function refuseCandidateAgainst(copy: ConnectionCopy, candidate: CandidateConnection): void {
   if (copy.state === 'connection_removed') throw refusal('connection_removed', 'the connection is removed', [])
   if (copy.state !== 'not_found') {
     if (copy.service !== null && copy.service !== candidate.service) {
@@ -221,6 +215,30 @@ async function resolve(deps: ConnectionFetchDeps, call: ConnectionCall): Promise
       throw refusal('connection_generation_older', `the candidate is generation ${candidate.generation} and ops holds ${copy.generation}`, [])
     }
   }
+}
+
+/**
+ * The candidate rules connectionFetch holds a verify or Reconnect to, for a
+ * caller that takes a candidate without sending a request through it: the
+ * person bound code exchange (minters/oauth-user.ts, #2335).
+ */
+export async function checkCandidate(
+  readCopy: ConnectionFetchDeps['readCopy'], organizationId: OrganizationId, connectionId: string, candidate: CandidateConnection,
+): Promise<void> {
+  refuseCandidateAgainst(await readCopyOrRefuse(readCopy, organizationId, connectionId), candidate)
+}
+
+async function resolve(deps: ConnectionFetchDeps, call: ConnectionCall): Promise<Resolved> {
+  const copy = await readCopyOrRefuse((organizationId, connectionId) => deps.readCopy(organizationId, connectionId), call.organizationId, call.connectionId)
+
+  if (call.source.kind === 'copy') {
+    if (copy.state !== 'usable') throw refusal(COPY_STATE_REFUSALS[copy.state], `the copy is ${copy.state}`, [])
+    if (copy.service === null || copy.generation === null) throw refusal('connection_copy_unreadable', 'a usable copy came back without its service or generation', [])
+    return { service: copy.service, generation: copy.generation, envelope: copy.envelope, target: copy.target, publicConfig: copy.publicConfig, candidate: false }
+  }
+
+  const candidate = call.source.candidate
+  refuseCandidateAgainst(copy, candidate)
   return { ...candidate, candidate: true }
 }
 
