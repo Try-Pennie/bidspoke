@@ -68,30 +68,47 @@ export default function PartnersPage() {
 
   useEffect(() => { load() }, [])
 
-  // Hydrate selection from ?selected=<slug> after the list arrives.
+  // Open the partner ?selected=<slug> names once the list arrives, and again only
+  // when the URL itself names a different one. Never because the selection moved:
+  // a row click writes the URL with replaceState, and selected= read back can still
+  // be the slug the page opened on, so comparing it with the selection put the
+  // opening partner back after every click (Dan, 2026-10-17).
+  const appliedSlug = useRef<string | null>(null)
+  /** The partner the URL itself opened, the only one its tab is for; a click on any row ends it. */
+  const [urlOpenedId, setUrlOpenedId] = useState<string | null>(null)
   useEffect(() => {
-    if (!slugParam || partners.length === 0) return
-    if (selected?.slug === slugParam) return
+    // A URL that names no partner forgets the last one, so naming it again (Back, a link) opens it.
+    if (!slugParam) { appliedSlug.current = null; return }
+    if (partners.length === 0) return
+    if (appliedSlug.current === slugParam) return
     const match = partners.find((p) => p.slug === slugParam)
     if (match) {
+      appliedSlug.current = slugParam
+      setUrlOpenedId(match.id)
       setSelected(match)
       setCreating(false)
     }
-  }, [slugParam, partners, selected?.slug])
+  }, [slugParam, partners])
 
   function selectPartner(p: Partner) {
     setDeletedNotice(null)
     setCreating(false)
     setSelected(p)
     // A different partner opens on its own tab; the same one keeps the tab it is on.
-    if (p.slug !== slugParam) writeUrl(p.slug, null)
+    // Compared with the open partner, never selected= read back, which can be stale.
+    if (p.slug !== selected?.slug) {
+      setUrlOpenedId(null)
+      writeUrl(p.slug, null)
+    }
   }
 
   function clearSelection() {
     setCreating(false)
     setSelected(null)
     setFormProblem(false)
-    if (slugParam) writeUrl(null, null)
+    setUrlOpenedId(null)
+    // Always written (writeUrl does nothing when the URL already says so): selected= read back can be stale.
+    writeUrl(null, null)
   }
 
   /**
@@ -151,9 +168,12 @@ export default function PartnersPage() {
   }
 
   const showForm = creating || selected !== null
+  // Waiting only for a partner the URL names and the page has not opened yet: once
+  // opened, a close leaves selected= read back unchanged, and the prompt shows.
   const pendingSelection =
     !showForm &&
     slugParam !== null &&
+    appliedSlug.current !== slugParam &&
     (loading || partners.some((p) => p.slug === slugParam))
 
   return (
@@ -263,7 +283,9 @@ export default function PartnersPage() {
               onDeleted={handleDeleted}
               barSlot={barSlot}
               onSaveConfirmed={(saved) => { setPartners((prev) => prev.map((p) => (p.id === saved.id ? saved : p))); setSelected(saved) }}
-              requestedTab={selected ? requestedTab : null}
+              // The URL's tab is for the partner the URL opened: one clicked since (even
+              // the same one again) is read back against the opening URL, so it opens on its own tab.
+              requestedTab={selected && selected.id === urlOpenedId ? requestedTab : null}
               onTabChange={(tab) => { if (selected) writeUrl(selected.slug, tab) }}
               partnerNames={partnerNames}
               onProblemChange={setFormProblem}
