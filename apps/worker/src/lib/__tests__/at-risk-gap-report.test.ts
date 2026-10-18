@@ -11,14 +11,14 @@ import type { JobRunEnding } from '../job-run-record'
 const NOW = Date.parse('2026-10-19T13:00:00Z')
 const YESTERDAY = '2026-10-18'
 
-function kvWith(keys: string[], opts: { pageSize?: number; listFails?: boolean } = {}) {
+function kvWith(keys: string[], opts: { pageSize?: number; listFails?: boolean; failFromPage?: number } = {}) {
   const sorted = [...keys].sort()
   const lists: Array<{ prefix: string; cursor?: string }> = []
   return {
     lists,
     async list(o: { prefix: string; limit: number; cursor?: string }) {
       lists.push({ prefix: o.prefix, cursor: o.cursor })
-      if (opts.listFails) throw new Error('KV LIST failed: 503 Service Unavailable')
+      if (opts.listFails || (opts.failFromPage !== undefined && lists.length > opts.failFromPage)) throw new Error('KV LIST failed: 503 Service Unavailable')
       const matching = sorted.filter((k) => k.startsWith(o.prefix))
       const size = Math.min(o.limit, opts.pageSize ?? o.limit)
       const from = o.cursor ? Number(o.cursor) : 0
@@ -102,6 +102,28 @@ describe('runAtRiskGapReport', () => {
     const report = await runAtRiskGapReport({ kv: kvWith(keys), now: () => NOW, recordRun: recorder().recordRun })
     expect(report.gaps).toBe(MAX_GAPS_NAMED + 5)
     expect(report.named).toHaveLength(MAX_GAPS_NAMED)
+  })
+
+  // Lessons review of #2436: a partly read day with gaps must not hide them behind
+  // "unmeasured", and a day cut short must never read as a clean zero.
+  it('records the gaps it did read as gap-found when a later page fails, and says the day was not read whole', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const rec = recorder()
+    // Listed in key order: the first page holds ex-1's cut-off and its gap, the second (which fails) ex-9's.
+    const keys = [fact('cut_off', 'ex-1', '-'), fact('unrecorded', 'ex-1'), fact('unrecorded', 'ex-9')]
+    const report = await runAtRiskGapReport({ kv: kvWith(keys, { pageSize: 2, failFromPage: 1 }), now: () => NOW, recordRun: rec.recordRun })
+    expect(report).toMatchObject({ unreadable: true, gaps: 1 })
+    expect(rec.rows[0].ending.outcome).toBe('gap-found')
+    expect(rec.rows[0].ending.detail).toContain('unreadable')
+    error.mockRestore()
+  })
+
+  it('never records a day cut short at the key cap as none: its counts are a floor', async () => {
+    const rec = recorder()
+    const keys = Array.from({ length: 7 }, (_, i) => fact('cut_off', `ex-${i}`, '-'))
+    const report = await runAtRiskGapReport({ kv: kvWith(keys, { pageSize: 3 }), now: () => NOW, recordRun: rec.recordRun, maxKeys: 3 })
+    expect(report).toMatchObject({ truncated: true, gaps: 0 })
+    expect(rec.rows[0].ending.outcome).toBe('truncated')
   })
 
   it('records that the day could not be read rather than a clean zero, and says so', async () => {

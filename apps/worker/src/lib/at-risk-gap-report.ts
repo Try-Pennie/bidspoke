@@ -19,8 +19,10 @@
  *  - cancelled: inside its first 2 s at the cut-off, or started too late, with no
  *    second look at all, because the request's work was cancelled first. This is
  *    the isolate dying inside a write's first 2 s that the #2015 plan named.
- * Outcome `gap-found` when any is counted, `none` when none is, `unreadable` when
- * the day could not be listed.
+ * Outcome `gap-found` when any is counted, even on a day not read whole (the
+ * detail then says `unreadable` or `truncated`); otherwise `unreadable` when a list
+ * failed, `truncated` when the day had more keys than MAX_KEYS_READ, and `none`
+ * only for a day read whole with no gap.
  *
  * WHY THIS DOES NOT PAGE. Every run counted here already paged, under
  * continuation_unfinished: that page stays quiet only when the read-back owns
@@ -97,6 +99,8 @@ export interface AtRiskGapReportDeps {
   kv: AtRiskGapReportKv
   now?: () => number
   recordRun: (startedAtMs: number, ending: JobRunEnding) => Promise<void>
+  /** Keys read at most; MAX_KEYS_READ unless a test sets it. */
+  maxKeys?: number
 }
 
 /** Reads the previous UTC day's facts and records one row. Never throws. */
@@ -125,7 +129,7 @@ export async function runAtRiskGapReport(deps: AtRiskGapReportDeps): Promise<AtR
         facts.set(pair, kinds)
       }
       if (page.list_complete !== false || !page.cursor) break
-      if (report.keys_listed >= MAX_KEYS_READ) {
+      if (report.keys_listed >= (deps.maxKeys ?? MAX_KEYS_READ)) {
         report.truncated = true
         break
       }
@@ -152,13 +156,16 @@ export async function runAtRiskGapReport(deps: AtRiskGapReportDeps): Promise<AtR
     }
   }
 
-  const outcome = report.unreadable ? 'unreadable' : report.gaps > 0 ? 'gap-found' : 'none'
+  // A gap read is a gap, whatever else went wrong, so it wins; `none` only for a
+  // day read whole. A day cut short is a floor, never a clean zero (lessons
+  // review of #2436).
+  const outcome = report.gaps > 0 ? 'gap-found' : report.unreadable ? 'unreadable' : report.truncated ? 'truncated' : 'none'
   if (report.gaps > 0) {
     console.error(`[${AT_RISK_GAP_REPORT_JOB}] ${report.gaps} post-answer Salesforce writes on ${day} were never recorded for the read-back: ${report.named.map((g) => `${g.execution_id} ${g.step_namespace} (${g.how})`).join(', ')}`)
   }
   await deps.recordRun(startedAt, {
     outcome,
-    detail: `day=${day} cut_off_runs=${report.cut_off_runs} held=${report.held} gaps=${report.gaps} unrecorded=${report.unrecorded} missed=${report.missed} cancelled=${report.unreported} exposed=${report.exposed} late_start=${report.late_start}${report.truncated ? ' truncated' : ''}`,
+    detail: `day=${day} cut_off_runs=${report.cut_off_runs} held=${report.held} gaps=${report.gaps} unrecorded=${report.unrecorded} missed=${report.missed} cancelled=${report.unreported} exposed=${report.exposed} late_start=${report.late_start}${report.truncated ? ' truncated' : ''}${report.unreadable ? ' unreadable' : ''}`,
     summary: { ...report },
   })
   return report
