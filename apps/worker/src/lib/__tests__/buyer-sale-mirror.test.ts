@@ -76,7 +76,9 @@ describe('mirrorBuyerSale', () => {
     const markMirrored = vi.fn().mockResolvedValue(undefined)
     await mirrorBuyerSale(supabase as never, row, entry, { markMirrored })
     expect(supabase.rpc).toHaveBeenCalledWith('record_buyer_sale', { p_row: row })
-    expect(markMirrored).toHaveBeenCalledWith({ lead_key: 'lead-1', population: 'engine', kind: 'live' })
+    // The mark carries the state the row was built from, so a ledger whose entry
+    // moved in between refuses it (#2422).
+    expect(markMirrored).toHaveBeenCalledWith({ lead_key: 'lead-1', population: 'engine', kind: 'live', status: entry.status, resolved_at: entry.resolved_at })
   })
   it('a returned row with a higher ranked status than the one sent (the rank guard kept the old row) still counts as mirrored', async () => {
     const row = await buildBuyerSaleRow({ ...entry, status: 'reserved', outcome: null }, meta)

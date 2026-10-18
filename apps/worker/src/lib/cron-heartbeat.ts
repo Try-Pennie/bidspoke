@@ -366,6 +366,18 @@ export const CRON_JOBS: CronJob[] = [
       'the buyer_select_parity_days rows the Stage A exit criteria are read from stop being refreshed, so a day can pass out of the execution_steps retention window without being summarised (#1413)',
   },
   {
+    id: 'live-share-refusals',
+    label: 'Live share refusal check',
+    triggerCron: '0 * * * *',
+    // 1h cadence, 1h slack, matching the other hourly jobs.
+    staleMs: 2 * H,
+    // One six hour step read per live buyer_select step on a normal hour, up
+    // to eight during a refusing run; seconds.
+    maxRunMs: 10 * MIN,
+    dependents:
+      'a buyer_select live share that refuses every lead (a buyer profile rule its step cannot read, say) sells nothing and pages nobody, as for 45 hours from 2026-10-13 (#2149)',
+  },
+  {
     // The ops Worker's minute cron (#1949), watched from here because the
     // watchdog must not depend on the Worker it watches (L71). Its stamps arrive
     // through the OpsGateway entrypoint (lib/ops-gateway.ts); a tick that cannot

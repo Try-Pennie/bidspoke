@@ -36,6 +36,7 @@ import {
   evaluateEligibility,
   evaluateSaleOutcome,
   getBodyField,
+  leadFieldWired,
   matchSignal,
   rankBuyers,
   withDeadline,
@@ -312,7 +313,7 @@ export function productionDeps(ctx: ExecutionContext, env: Env, supabase: Supaba
       const down = leadDatabaseDown(supabase)
       if (down) throw new Error(`record_buyer_sale not sent: ${down}`)
       const ledger = new BuyerLedgerClient(env.BUYER_LEDGER, partnerId)
-      await mirrorBuyerSale(supabase, row, entry, { markMirrored: (key) => ledger.markMirrored([key]).then(() => undefined) })
+      await mirrorBuyerSale(supabase, row, entry, { markMirrored: (stamp) => ledger.markMirrored([stamp]).then(() => undefined) })
     },
     logBid: makeBidLogger(supabase, ctx, 'buyer_select'),
     clock: () => Date.now(),
@@ -554,7 +555,7 @@ class Run {
       debt: this.resolveMaybe(this.config.debt).value,
       loanAmount: this.resolveMaybe(this.config.loan_amount).value,
       collections: this.resolveMaybe(this.config.collections).value,
-      collectionsWired: typeof this.config.collections === 'string' && this.config.collections.trim() !== '',
+      collectionsWired: leadFieldWired(this.config, 'collections'),
     }
     this.out.lead_state = parseUsState(lead.state)
     this.out.lead_debt = recordedAmount(lead.debt)

@@ -10,12 +10,13 @@
  * touches the same columns (L705).
  *
  * The rpc returns the stored row. The entry is marked mirrored in the ledger
- * only when that row is the one we sent, by id (L581); a different id is a
+ * only when that row is the one we sent, by id (L581), and only while the entry
+ * is still in the state the row was built from (#2422); a different id is a
  * refusal, an error is thrown to the caller, and in both cases the entry stays
  * unmirrored for the drain to deliver (L33).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import type { CapLimits, EntryKey, LedgerEntry, ResolutionSource } from '../durable-objects/buyer-ledger'
+import type { CapLimits, EntryKey, LedgerEntry, MirroredStamp, ResolutionSource } from '../durable-objects/buyer-ledger'
 
 export interface BuyerSaleRowMeta {
   partner_id: string
@@ -106,7 +107,17 @@ export async function buildBuyerSaleRow(entry: LedgerEntry, meta: BuyerSaleRowMe
 }
 
 export interface MirrorDeps {
-  markMirrored: (key: EntryKey) => Promise<void>
+  /**
+   * Marks the entry copied, naming the state this copy wrote (#2422): the ledger
+   * marks it only if the entry is still in that state, so a change that landed
+   * while the row was being written leaves the entry for the next copy.
+   */
+  markMirrored: (stamp: MirroredStamp) => Promise<void>
+}
+
+/** The state of `entry` a copy of it wrote, as the ledger's mark checks it. */
+export function mirroredStamp(entry: LedgerEntry): MirroredStamp {
+  return { lead_key: entry.lead_key, population: entry.population, kind: entry.kind, status: entry.status, resolved_at: entry.resolved_at }
 }
 
 export async function mirrorBuyerSale(supabase: SupabaseClient, row: BuyerSaleRow, entry: LedgerEntry, deps: MirrorDeps): Promise<void> {
@@ -116,5 +127,5 @@ export async function mirrorBuyerSale(supabase: SupabaseClient, row: BuyerSaleRo
   if (!stored || stored.id !== row.id) {
     throw new Error(`record_buyer_sale returned a different row for ${row.id}: ${JSON.stringify(stored?.id ?? null)}`)
   }
-  await deps.markMirrored({ lead_key: entry.lead_key, population: entry.population, kind: entry.kind })
+  await deps.markMirrored(mirroredStamp(entry))
 }

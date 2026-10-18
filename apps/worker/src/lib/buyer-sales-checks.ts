@@ -43,13 +43,21 @@
  * tripoint_ping path (#2392, L370), which is why the double clause it used to
  * carry is gone: it could never page a buyer declining over half its leads.
  * The rate needs 10 attempts; below that an hour in which EVERY attempt failed,
- * three or more, is elevated anyway (saturation, L139), and otherwise the hour
- * is QUIET, a third state distinct from normal (L11). A baseline thinner than
- * 100 attempts, or one that could not be read, leaves the rate unmeasured, and
- * an unmeasured hour neither raises nor clears that buyer's page (#2420): a
- * standing page stands until a measured hour clears it, and the run records
- * the hour as unmeasured with the reason. One line per buyer; a buyer that starts failing while another is already
- * paged gets out past the reminder backoff (L707).
+ * three or more, is elevated anyway (saturation, L139), and otherwise, while
+ * no page stands for the buyer, the hour is QUIET, a third state distinct from
+ * normal (L11). A baseline thinner than 100 attempts, or one that could not be
+ * read, leaves the rate unmeasured, and an unmeasured hour neither raises nor
+ * clears that buyer's page (#2420): a standing page stands until a measured
+ * hour clears it, and the run records the hour as unmeasured with the reason.
+ * Once raised, a buyer's page holds until its share falls back under 12.5
+ * points above the baseline, half the rise that raised it (#2421), so a share
+ * swinging either side of the 25 point line is one page; the rule is told
+ * whether the page stands by this check's marker. While a page stands, an hour
+ * under 10 attempts is judged against that clear line too: HELD if its share is
+ * still above it, quiet (which clears) once it is back under it or nothing was
+ * attempted, and unmeasured if the baseline cannot judge it. A thin hour never
+ * raises a page. One line per buyer; a buyer that starts failing while another
+ * is already paged gets out past the reminder backoff (L707).
  *
  * A mismatch pages only once it has persisted across two runs; a single run's
  * disagreement is usually the copy catching up. Pages go through the shared
@@ -70,7 +78,7 @@ import { fetchAllPaged } from './paginate'
 import { resolveSalesforceCredsFor } from './salesforce-creds'
 import { BID_PURGE_HORIZON_MS } from './sightings-export'
 import { describeDuration } from './incident-span'
-import { isoDateMinus, judgeOutcomeShares, verdictMovesThePage, type BaselineUnreadable, type OutcomeBaseline, type OutcomeRateRule } from './outcome-rate-rule'
+import { isoDateMinus, judgeOutcomeShares, verdictMovesThePage, type BaselineUnreadable, type OutcomeBaseline, type OutcomeRateRule, type OutcomeRateVerdict } from './outcome-rate-rule'
 
 export { BID_PURGE_HORIZON_MS }
 
@@ -281,7 +289,8 @@ export interface BuyerCheckSummary {
   unresolved: { count: number; oldest_age_ms: number | null; paged: boolean }
   /** Rehearsal reservations the ledger alarm released over the days read (#1515): a leak count, never a page. */
   rehearsals_expired: number
-  outcome_rate: Verdict<'normal' | 'quiet', 'elevated'>
+  /** The shared rule's verdict, held included (#2421). */
+  outcome_rate: OutcomeRateVerdict
 }
 
 export interface ChecksSummary {
@@ -292,7 +301,7 @@ export interface ChecksSummary {
   mismatch_lines: string[]
   unresolved_lines: string[]
   outcome_rate_lines: string[]
-  /** Buyers whose standing outcome rate page an unmeasured hour kept, neither raised nor cleared (#2420). */
+  /** Buyers whose standing outcome rate page an unmeasured hour (#2420) or a held one (#2421) kept, neither raised nor cleared. */
   outcome_rate_held: string[]
 }
 
@@ -409,17 +418,20 @@ export function mismatchKindsOf(s: Pick<BuyerCheckSummary, 'completeness' | 'con
  * The last hour's live attempts against the baseline, by the shared rule
  * (outcome-rate-rule.ts). Saturation is judged first and needs no baseline; the
  * rate needs both a big enough hour and a big enough baseline, and says which
- * is missing when one is (L11).
+ * is missing when one is (L11). `pageStanding` is whether this buyer's page
+ * stands now (its outcomeRatePagedKey marker), so a standing page holds until
+ * the share falls well back (#2421).
  */
 export function judgeOutcomeRate(
   entries: LedgerEntry[],
   baseline: OutcomeBaseline | BaselineUnreadable | null,
   nowMs: number,
+  pageStanding: boolean,
 ): BuyerCheckSummary['outcome_rate'] {
   const hour = entries.filter((e) => e.kind === 'live' && e.status !== 'reserved' && e.reserved_at > nowMs - HOUR_MS && e.reserved_at <= nowMs)
   const failed = hour.filter((e) => e.status === 'released' || e.status === 'unresolved').length
   const declined = hour.filter((e) => e.status === 'declined').length
-  return judgeOutcomeShares({ attempts: hour.length, failed, declined }, baseline, BUYER_OUTCOME_RULE)
+  return judgeOutcomeShares({ attempts: hour.length, failed, declined }, baseline, BUYER_OUTCOME_RULE, pageStanding)
 }
 
 /**
@@ -471,7 +483,19 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
   let newlyElevated = false
 
   for (const buyer of buyers) {
-    const s = await checkBuyer(deps, buyer, days, now)
+    // Whether this buyer's outcome rate page stands, read before the hour is
+    // judged: the rule holds a standing page until the share falls well back (#2421).
+    // A marker that cannot be read leaves this buyer's rate unmeasured, its
+    // page neither raised nor cleared, and the other checks still run.
+    const rateKey = outcomeRatePagedKey(buyer.partner_id)
+    let rateStanding: string | null = null
+    let rateStandingUnread: string | null = null
+    try {
+      rateStanding = await deps.kv.get(rateKey)
+    } catch (err) {
+      rateStandingUnread = messageOf(err)
+    }
+    const s = await checkBuyer(deps, buyer, days, now, rateStandingUnread === null ? rateStanding !== null : { unreadable: rateStandingUnread })
     summaries.push(s)
 
     // A mismatch pages only once it has stood across two runs.
@@ -508,19 +532,21 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
     // The outcome rate page, one line per elevated buyer. A buyer paged for the
     // first time while another's page is standing must not wait out that
     // buyer's reminder backoff (L707).
-    const rateKey = outcomeRatePagedKey(buyer.partner_id)
     if (!verdictMovesThePage(s.outcome_rate)) {
       // An hour it could not measure neither raises nor clears this buyer's
-      // page (#2420). A standing page is kept, its marker renewed so a long
-      // spell of unmeasured hours cannot clear it by expiry either.
-      const standing = await deps.kv.get(rateKey)
-      if (standing !== null) {
+      // page (#2420), and nor does a held hour, one whose share is not yet back
+      // under the clear line (#2421). A standing page is kept, its marker
+      // renewed so a long spell of such hours cannot clear it by expiry either.
+      // One whose marker could not be read may be standing, so it is kept too.
+      if (rateStanding !== null) {
         outcomeRateHeld.push(buyer.slug)
-        await deps.kv.put(rateKey, standing, { expirationTtl: OUTCOME_RATE_PAGED_TTL_SECONDS })
+        await deps.kv.put(rateKey, rateStanding, { expirationTtl: OUTCOME_RATE_PAGED_TTL_SECONDS })
+      } else if (rateStandingUnread !== null) {
+        outcomeRateHeld.push(buyer.slug)
       }
     } else if (s.outcome_rate.verdict === 'elevated') {
       outcomeRateLines.push(`${buyer.slug}: ${s.outcome_rate.detail}. Partner page: ${deps.appUrl}/partners?selected=${encodeURIComponent(buyer.slug)}`)
-      if ((await deps.kv.get(rateKey)) === null) newlyElevated = true
+      if (rateStanding === null) newlyElevated = true
       await deps.kv.put(rateKey, new Date(now).toISOString(), { expirationTtl: OUTCOME_RATE_PAGED_TTL_SECONDS })
     } else {
       await deps.kv.delete(rateKey)
@@ -556,7 +582,7 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
 
 type BuyerWork = Omit<BuyerCheckSummary, 'unresolved'> & { unresolved: BuyerCheckSummary['unresolved'] & { entries: LedgerEntry[] } }
 
-async function checkBuyer(deps: ChecksDeps, buyer: CheckBuyer, days: string[], now: number): Promise<BuyerWork> {
+async function checkBuyer(deps: ChecksDeps, buyer: CheckBuyer, days: string[], now: number, rateStanding: boolean | { unreadable: string }): Promise<BuyerWork> {
   const ledger = deps.ledger(buyer.partner_id)
   const base = { partner_id: buyer.partner_id, slug: buyer.slug }
   const unmeasuredAll = (reason: string): BuyerWork => ({
@@ -617,7 +643,9 @@ async function checkBuyer(deps: ChecksDeps, buyer: CheckBuyer, days: string[], n
   } catch (err) {
     baseline = { unreadable: messageOf(err) }
   }
-  const outcome_rate = judgeOutcomeRate(entries, baseline, now)
+  const outcome_rate: OutcomeRateVerdict = typeof rateStanding === 'boolean'
+    ? judgeOutcomeRate(entries, baseline, now, rateStanding)
+    : { verdict: 'unmeasured', reason: `whether this buyer's outcome rate page is standing could not be read: ${rateStanding.unreadable}` }
 
   const oldest = unresolvedEntries.reduce<number | null>((min, e) => (min === null || e.reserved_at < min ? e.reserved_at : min), null)
   return {
@@ -640,7 +668,7 @@ export function endingOf(summary: ChecksSummary): JobRunEnding {
   if (summary.skipped) return { outcome: 'skipped', detail: summary.skipped, summary: { days: summary.days } }
   if (summary.unmeasured) return { outcome: 'unmeasured', detail: summary.unmeasured, summary: { days: summary.days } }
   const verdicts = summary.buyers.flatMap((b) => [b.completeness.verdict, b.consistency.verdict, b.independent.verdict, b.outcome_rate.verdict])
-  const findings = summary.mismatch_lines.length > 0 || verdicts.some((v) => v === 'mismatch' || v === 'inconsistent' || v === 'unverified' || v === 'elevated')
+  const findings = summary.mismatch_lines.length > 0 || verdicts.some((v) => v === 'mismatch' || v === 'inconsistent' || v === 'unverified' || v === 'elevated' || v === 'held')
   const unmeasuredReasons = summary.buyers.flatMap((b) => {
     const checks: Array<[string, { verdict: string; reason?: string }]> = [['completeness', b.completeness], ['consistency', b.consistency], ['independent', b.independent], ['outcome rate', b.outcome_rate]]
     return checks.flatMap(([name, v]) => (v.verdict === 'unmeasured' ? [`${b.slug} ${name}: ${v.reason}`] : []))
