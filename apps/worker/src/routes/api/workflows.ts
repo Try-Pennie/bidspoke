@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { isUuidV7 } from '@bidspoke/uuidv7'
 import { sanitizeCodeNodeScripts } from '@bidspoke/script-hygiene'
 import { dbError, dbErrorUnlessNotFound, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
@@ -28,6 +28,7 @@ import { jsonEqual } from '../../lib/stable-json'
 import type { Database } from '../../types/database'
 import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
 import { loadBuyerProfiles } from '../../lib/buyer-profile-loader'
+import { hasBuyerStep, inputGapsForWorkflowSave } from '../../lib/buyer-input-coverage'
 import { pricedPartnersByPopulation } from '../../lib/priced-partners'
 import { workflowsUsingPartner as workflowsUsingPartnerShared } from '../../lib/partner-workflow-finder'
 import { readOrgWorkflows } from '../../lib/org-workflows'
@@ -78,6 +79,38 @@ function salesforceOptionRefusal(definition: unknown): string | null {
   if (!Array.isArray(nodes)) return null
   const problem = findSalesforceConfigProblems(nodes as WorkflowDefinition['nodes'])[0]
   return problem ? `${problem.namespace}: ${problem.message}` : null
+}
+
+/**
+ * A live workflow whose buyer steps cannot read a rule of an enabled buyer
+ * profile they judge (#2149) is refused, naming the step, the buyer and the
+ * rule: saved, the step would refuse every lead that buyer is offered as
+ * missing_lead_field, as the Engine live share did for 45 hours from
+ * 2026-10-13. Asked by every route that makes a definition live: a save of an
+ * active workflow, the switch on, and a restore onto an active workflow. The
+ * profiles are those the nodes read (loadBuyerProfiles); a read that fails
+ * refuses the save with 503 rather than letting it through as if no buyer were
+ * enabled (L42). A definition with no buyer step never reads them. The profile
+ * save asks the same finder from the other side (routes/api/buyer-profiles.ts).
+ */
+async function unreadBuyerRuleRefusal(
+  c: Context<{ Bindings: Env; Variables: Variables }>,
+  supabase: ReturnType<typeof createSupabaseClient>,
+  orgId: string,
+  workflow: { id: string; name: string; definition: unknown },
+): Promise<Response | null> {
+  if (!hasBuyerStep(workflow.definition)) return null
+  let snapshot
+  try {
+    snapshot = await loadBuyerProfiles(orgId, c.env.WORKFLOW_CACHE, supabase)
+  } catch (err) {
+    console.error(`[workflows] buyer profiles unreadable while checking workflow ${workflow.id}: ${formatErr(err)}`)
+    return c.json({ error: 'Nothing was saved. The buyer profiles could not be read, so whether the buyer steps can read every rule they judge is unknown. Try again.' }, 503)
+  }
+  const buyers = snapshot.buyers.map((b) => ({ partnerId: b.partner.id, name: b.partner.name, profile: b.profile }))
+  const problems = inputGapsForWorkflowSave(workflow, buyers)
+  if (problems.length === 0) return null
+  return c.json({ error: `Nothing was saved. ${problems.join(' ')}`, problems }, 422)
 }
 
 // POST /api/workflows
@@ -357,7 +390,7 @@ workflows.put('/:id', async (c) => {
   // Verify ownership
   const { data: existing, error: fetchError } = await supabase
     .from('workflows')
-    .select('id, definition, name, slack_channel')
+    .select('id, definition, name, slack_channel, is_active')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -384,6 +417,11 @@ workflows.put('/:id', async (c) => {
     // applies, so a definition PUT from a file is held to what the canvas is.
     const sfProblem = salesforceOptionRefusal(def)
     if (sfProblem) return c.json({ error: sfProblem }, 400)
+    // A live workflow's buyer steps must read every rule they judge (#2149).
+    if (existing.is_active === true) {
+      const unread = await unreadBuyerRuleRefusal(c, supabase, orgId, { id, name: body.name ?? existing.name, definition: body.definition })
+      if (unread) return unread
+    }
   }
 
   // #569: short-circuit a no-op save. If the incoming definition is structurally
@@ -635,7 +673,7 @@ workflows.patch('/:id', async (c) => {
 
   const { data: owner, error: fetchError } = await supabase
     .from('workflows')
-    .select('id')
+    .select('id, name, is_active, definition')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -644,6 +682,12 @@ workflows.patch('/:id', async (c) => {
   const fetchBlocked = dbErrorUnlessNotFound(c, fetchError)
   if (fetchBlocked) return fetchBlocked
   if (!owner) return c.json({ error: 'Workflow not found' }, 404)
+
+  // Switching on makes the definition live: its buyer steps must read every rule they judge (#2149).
+  if (body.is_active === true) {
+    const unread = await unreadBuyerRuleRefusal(c, supabase, orgId, { id, name: owner.name, definition: owner.definition })
+    if (unread) return unread
+  }
 
   const updates: Database['public']['Tables']['workflows']['Update'] = { updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name }
   if (body.is_active !== undefined) updates.is_active = body.is_active
@@ -827,7 +871,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   // 404 (not 403) to avoid leaking which workflow ids exist, matching siblings.
   const { data: owner, error: ownerError } = await supabase
     .from('workflows')
-    .select('id')
+    .select('id, name, is_active')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -847,6 +891,12 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   const blocked = dbErrorUnlessNotFound(c, versionError)
   if (blocked) return blocked
   if (!version) return c.json({ error: 'Version not found' }, 404)
+
+  // A restore onto a live workflow makes the old definition live at once (#2149).
+  if (owner.is_active === true) {
+    const unread = await unreadBuyerRuleRefusal(c, supabase, orgId, { id, name: owner.name, definition: version.definition })
+    if (unread) return unread
+  }
 
   // Restore = create a new version with the old definition. PGRST116 = no prior
   // versions → start at 1; any other error is a real failure (defaulting to 1

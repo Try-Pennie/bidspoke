@@ -27,6 +27,8 @@ import {
   PACIFIC,
   CLICK_URL_NO_PROSPECT_ID_MESSAGE,
   clickUrlCarriesProspectId,
+  registryPathOf,
+  type BuyerProfile,
   type ProfileErrorCode,
   type Signal,
 } from '@bidspoke/buyer-profile'
@@ -38,6 +40,7 @@ import { readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../..
 import { BuyerLedgerClient, ClickCounterClient } from '../../lib/buyer-object-clients'
 import { workflowsUsingPartner } from '../../lib/partner-workflow-finder'
 import { readOrgWorkflows } from '../../lib/org-workflows'
+import { inputGapsForProfileSave } from '../../lib/buyer-input-coverage'
 import type { Json } from '../../types/database'
 
 const buyerProfiles = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
@@ -208,6 +211,8 @@ buyerProfiles.put('/:id/buyer-profile', async (c) => {
 
   const inUse = await refuseSwitchAwayFromClick(c, supabase, orgId, id, profile.soldOn)
   if (inUse) return inUse
+  const unread = await refuseUnreadRules(c, supabase, orgId, id, profile)
+  if (unread) return unread
 
   const { partner_id: _partner, version: _version, ...toSave } = parsed.document
   const { data, error } = await supabase.rpc('save_buyer_profile', {
@@ -284,6 +289,41 @@ export async function refuseSwitchAwayFromClick(
     message: `This buyer is sold on the click in live workflows: ${names}. Nothing was saved. Take it off their click nodes, or switch those workflows off, before selling it on the offer.`,
     workflows: using,
   }, 409)
+}
+
+/**
+ * An enabled profile carrying a rule a LIVE workflow's buyer step has no
+ * template to read is refused (#2149), naming the workflow, the step and the
+ * missing template, on the profile field whose rule it is: saved, it would
+ * refuse every lead that step judges as missing_lead_field, which is what
+ * Tripoint's 2,000 minimum did to the Engine live share for 45 hours from
+ * 2026-10-13. The workflows are read only for an enabled profile, because a
+ * switched off one is judged by nothing; the switch on is a save, and is
+ * checked then. A failed read refuses the save rather than letting it through
+ * as if no workflow were live (L42). The same finder refuses the workflow side
+ * (routes/api/workflows.ts), so neither side can reach this state alone.
+ */
+export async function refuseUnreadRules(
+  c: Context<{ Bindings: Env; Variables: AuthVariables }>,
+  supabase: ReturnType<typeof createSupabaseClient>,
+  orgId: string,
+  partnerId: string,
+  profile: BuyerProfile
+): Promise<Response | null> {
+  if (!profile.isEnabled) return null
+  let workflows
+  try {
+    workflows = await readOrgWorkflows(supabase, orgId, { activeOnly: true })
+  } catch (err) {
+    return dbError(c, err)
+  }
+  const errors = inputGapsForProfileSave(workflows, { partnerId, name: partnerId, profile })
+  if (errors.length === 0) return null
+  return c.json({
+    error: 'rule_unread_by_live_workflow',
+    message: errors[0].message,
+    errors: errors.map((e) => ({ ...e, field: registryPathOf(e.path) })),
+  }, 422)
 }
 
 // ── Usage ─────────────────────────────────────────────────────────────────────

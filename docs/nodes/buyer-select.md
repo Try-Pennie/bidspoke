@@ -44,6 +44,8 @@ Test Runner runs, shadow runs and local development runs evaluate and report onl
 
 The node has no `retries` setting and ignores one if a definition carries it (reported as `retries_ignored`). A retried sale is a duplicate send.
 
+A rule a live step cannot read is refused at both saves (#2149). The state and the debt are always read; the loan amount only when a buyer it judges sets a minimum; collections only when one caps them (`leadFieldsNeeded` in `@bidspoke/buyer-profile`, the list the box refuses by). Saving an enabled buyer profile whose rule a live workflow's `buyer_select` or `buyer_click_check` step has no template for is refused on that profile field, naming the workflow and the step; saving, switching on or restoring a live workflow whose step cannot read an enabled profile it judges is refused, naming the buyer and the rule. A template that is set but reads a path the lead does not carry cannot be seen at save time: the hourly live share refusal check (`lib/live-share-refusals.ts`) pages after 20 refused live share leads in a row with none sent to a buyer.
+
 ## What one attempt does
 
 For each eligible buyer in rank order (priority 1 first, then the higher payout, then a stable hash of the lead key so ties spread evenly):
