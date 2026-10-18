@@ -56,6 +56,8 @@ import {
   DEAD_LETTER_RESERVE_MS,
   FINALIZE_RESERVE_MS,
   CONTINUATION_WINDOW_MS,
+  POST_RESPONSE_BUDGET_MS,
+  WAIT_UNTIL_LIMIT_MS,
   realClock,
   withReserve,
   withinBudget,
@@ -81,6 +83,7 @@ import { log } from '../lib/logger'
 import { assertDefinitionRunsInLane, assertWorkflowServedInLane, laneRefusalFor, WorkflowLaneError, LaneRefusedNodeError } from './lane'
 import { runRealityOfOptions, shadowRunRefusal, stampRunReality } from './run-reality'
 import { startAtRiskWatch, startWatchSafely, runWatched, heldUntilOf } from './at-risk-writes'
+import { AtRiskLedger } from './at-risk-gap'
 import { isCreditInquiryPost, stepRetries } from './inquiry-post'
 import { readRecoveryOrigin, type RecoveryOrigin } from './recovery-origin'
 import { writeMarker, withWriteMarker, ENGINE_ATTEMPT } from './write-marker'
@@ -528,15 +531,31 @@ export async function executeWorkflow(
   // A post-answer Salesforce update still out after 2 s is recorded for the
   // read-back (#2022). Live runs only: a test run is kept out of every record, and
   // a shadow run sends nothing to be at risk.
+  //
+  // Every watch goes through the ledger, which sees from memory whether its record
+  // landed, so a write the read-back will never see is counted at the cut-off
+  // (#2055). Same runs as the watch: a run with no watch has nothing to measure.
+  let atRiskLedger: AtRiskLedger | null = null
   if (!reality.isTest && !reality.outboundStubbed) {
-    ctx.startAtRiskWatch = (stepNamespace) =>
+    const ledger = new AtRiskLedger({
+      kv: env.IDEMPOTENCY,
+      clock: retryClock,
+      run: { workflowId, executionId },
+      // Cloudflare cancels the request's work WAIT_UNTIL_LIMIT_MS after the answer,
+      // which is past the budget's own deadline by the difference.
+      msUntilCancel: () => postResponse.msUntilCutoff(POST_RESPONSE_BUDGET_MS - WAIT_UNTIL_LIMIT_MS),
+      waitUntil: (p) => executionCtx.waitUntil(p),
+    })
+    atRiskLedger = ledger
+    ctx.startAtRiskWatch = ledger.follow((stepNamespace, kv) =>
       startAtRiskWatch({
-        kv: env.IDEMPOTENCY,
+        kv,
         keys: secretKeys(env),
         clock: retryClock,
         run: { orgId: org_id, workflowId, executionId },
         stepNamespace,
-      })
+      }),
+    )
   }
   // The lead_sighting_bids rows nodes write are usually still retrying after
   // the response when the database is down, so they take the same budget.
@@ -861,6 +880,15 @@ export async function executeWorkflow(
           neverAdvanced: finalNodeNamespace == null,
         })
         let finalErrorMessage = errorMessage
+        // Whether each watched write still out at the cut-off has a record the
+        // read-back will find (#2055). Outside every alert gate below: it measures,
+        // and a muted or outage classified run is still a run the read-back misses.
+        if (atRiskLedger && continuationError instanceof ContinuationUnfinishedError) {
+          executionCtx.waitUntil(
+            atRiskLedger.measureCutOff(continuationError.runningNamespaces)
+              .catch((e) => console.error('[at-risk-gap] the cut-off measurement threw:', formatErr(e))),
+          )
+        }
         if (finalStatus === 'degraded' && continuationError) {
           if (continuationError instanceof StepFailureError) {
             failedStep = continuationError.stepNamespace
