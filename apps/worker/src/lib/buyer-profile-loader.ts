@@ -34,7 +34,7 @@
  * (L692).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { SOLD_ON, clickDeliveryFromDocument, type BuyerProfile, type ClickDelivery, type ClickDeliveryDocument, type Signal, type SoldOn } from '@bidspoke/buyer-profile'
+import { SOLD_ON, clickDeliveryFromDocument, pricedFor, type BuyerProfile, type ClickDelivery, type ClickDeliveryDocument, type Signal, type SoldOn } from '@bidspoke/buyer-profile'
 import type { ResponseClassificationConfig } from '../engine/error-classifier'
 import { formatErr } from './format-error'
 import { leadRead } from './lead-read-budget'
@@ -469,7 +469,7 @@ export async function invalidateBuyerProfilesCache(orgId: string, kv: KVNamespac
 /** The partners a buyer_select node on this population sells to: those with an enabled profile priced for it. */
 export function partnersPricedFor(snapshot: BuyerProfilesSnapshot, population: string): string[] {
   return snapshot.buyers
-    .filter((b) => b.profile.isEnabled && b.profile.tiers.some((t) => t.population === population))
+    .filter((b) => b.profile.isEnabled && pricedFor(b.profile, population))
     .map((b) => b.partner.id)
 }
 

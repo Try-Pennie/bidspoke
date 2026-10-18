@@ -1,5 +1,6 @@
 import { easternParts, isOpen, type DisplayTimeZone, type OperatingWindow } from './clock'
 import { fnv1a32 } from './hash'
+import { leadFieldsNeeded } from './lead-fields'
 import { parseNonNegativeAmount, parsePositiveAmount, parseUsState } from './parse'
 import { priceForDebt, type Price, type PricingTier } from './tiers'
 import type { ClickDelivery } from './click-delivery'
@@ -133,6 +134,16 @@ export function judgedLimits(profile: BuyerProfile, lead: JudgedLead): JudgedLim
   }
 }
 
+/**
+ * Whether the profile prices leads of this population: the one rule
+ * evaluateEligibility refuses by, the partner finder's priced sets and the
+ * save checks of #2149 read, so a buyer_select node and the checks about it
+ * agree on which buyers it judges.
+ */
+export function pricedFor(profile: Pick<BuyerProfile, 'tiers'>, population: string): boolean {
+  return profile.tiers.some((t) => t.population === population)
+}
+
 export type Eligibility =
   | { eligible: true; debtCents: number; price: Price }
   | { eligible: false; reason: OutReason }
@@ -160,12 +171,15 @@ const out = (reason: OutReason): Out => ({ eligible: false, reason })
 function evaluateBox(profile: BuyerProfile, lead: JudgedLead, collectionsWired: boolean, instantMs: number): { inside: true; debtCents: number } | Out {
   const { state, debt, loan_amount: loanAmount, collections } = lead
   const collectionsCap = collectionsCapOf(profile)
+  // The fields this profile judges, from the one list the save checks read too
+  // (#2149, L370), so a rule a step cannot read is refused at the save rather
+  // than found here on every lead.
+  const needed = leadFieldsNeeded(profile)
   // First, so every lead says the step is not wired, whatever else it would be out for.
-  if (collectionsCap !== null && !collectionsWired) return out('collections_not_wired')
-  if (state === null) return out('missing_lead_field')
-  if (debt === null) return out('missing_lead_field')
-  if (profile.loanAmountMin !== null && loanAmount === null) return out('missing_lead_field')
-  if (collectionsCap !== null && collections === null) return out('missing_lead_field')
+  if (needed.includes('collections') && !collectionsWired) return out('collections_not_wired')
+  if (needed.some((field) => lead[field] === null)) return out('missing_lead_field')
+  // Narrowed for the comparisons below: both are always needed, so neither is null here.
+  if (state === null || debt === null) return out('missing_lead_field')
 
   if (!stateAllowed(profile, state)) return out('state_not_allowed')
   if (profile.blackoutDates.includes(easternParts(instantMs).date)) return out('blackout')
@@ -199,7 +213,7 @@ export function evaluateEligibility(
   instantMs: number
 ): Eligibility {
   if (!profile.isEnabled) return out('profile_disabled')
-  if (!profile.tiers.some((t) => t.population === population)) return out('no_pricing_for_population')
+  if (!pricedFor(profile, population)) return out('no_pricing_for_population')
 
   const box = evaluateBox(profile, parseLead(lead), lead.collectionsWired === true, instantMs)
   if (!('inside' in box)) return box
