@@ -38,7 +38,7 @@ import type { BackoffKv } from './alert-backoff'
 import { ENGINE_BIDDING_WORKFLOW_ID } from './engine-script-drift'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { withJobRun, type JobRunEnding } from './job-run-record'
-import { isoDateMinus, judgeOutcomeShares, percent, type OutcomeBaseline, type OutcomeRateRule, type OutcomeRateVerdict, type BaselineUnreadable } from './outcome-rate-rule'
+import { isoDateMinus, judgeOutcomeShares, percent, verdictMovesThePage, type OutcomeBaseline, type OutcomeRateRule, type OutcomeRateVerdict, type BaselineUnreadable } from './outcome-rate-rule'
 import { TRIPOINT_ANSWER_NAMESPACE } from './upstream-outage'
 
 /** The heartbeat, job_runs and alerter name: distinct from buyer-outcome-rate, so each page mutes alone. */
@@ -274,7 +274,7 @@ export async function runTripointPingOutcomeRate(deps: PingDeps): Promise<PingSu
 
   // An hour it could not measure says nothing about a standing page, so it
   // neither clears it nor raises one; a measured hour clears or raises (L11).
-  if (verdict.verdict !== 'unmeasured') await deps.notify(lines)
+  if (verdictMovesThePage(verdict)) await deps.notify(lines)
 
   return { window, baseline: baselineSummary, verdict, rolled_up_hours: rollup.recorded, rollup_errors: rollup.errors, lines }
 }
