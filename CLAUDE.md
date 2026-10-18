@@ -121,6 +121,12 @@
   marker (the cron heartbeat, #2103) names that key as its registry entry's `marker`,
   which is where the drain's lapse check reads it, and gives that key an expiry the
   check renews while the incident stands, so it can never keep an incident open for ever.
+- A Supabase read that comes back at the 1,000 row cap without declaring a limit
+  (`.limit(n)` with n at most 1,000, or `.range()`) is reported to Better Stack every time,
+  and inside a scheduled job the read fails with `BIDSPOKE_ROW_CAP` (#1436, `lib/row-cap.ts`).
+  A list read that may pass 1,000 rows pages with `fetchAllPaged` under a full order. The cap
+  is the Data API's `max_rows` dashboard setting; `ROW_CAP` equals `PAGE_SIZE`. The plan to
+  bound every read and then delete the big table lists is on #1437.
 - Partner saves are versioned (#2132). The partner edit route (`PUT /api/partners/:id`)
   writes through the `save_partner_config` function, which writes just the fields a save
   names and refuses one made from a version that is no longer stored (409 `stale_version`,
