@@ -10,8 +10,8 @@
  * - PATCH merges the token the row holds (opened from credential_enc) into the
  *   saved copy, so a row in the contract release's shape stays in the copy.
  * - GET /slack/channels reads the token through the same resolver.
- * - DELETE goes through delete_service_connection, so the store's audit row
- *   names the user; no route writes an audit row of its own any more, since the
+ * - DELETE goes through delete_service_connection_by_id with the alert row's
+ *   id (#2332), so the store's audit row names the user; no route writes an audit row of its own any more, since the
  *   table's trigger records every change once (F119, #1409).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -205,12 +205,12 @@ describe('GET /integrations/slack/channels', () => {
 })
 
 describe('DELETE /integrations/slack', () => {
-  it('deletes through delete_service_connection with the caller as actor, and writes no route audit row', async () => {
+  it('deletes the alert row it read, by id, with the caller as actor, and writes no route audit row', async () => {
     const { client, rec } = recordingSupabase({ row: { id: 'sc-1' } })
     vi.mocked(createSupabaseClient).mockReturnValue(client as never)
     const res = await call('DELETE', '/integrations/slack')
     expect(res.status).toBe(200)
-    expect(rec.rpcs).toEqual([{ name: 'delete_service_connection', args: { p_organization_id: ORG, p_service_type: 'slack', p_actor: USER } }])
+    expect(rec.rpcs).toEqual([{ name: 'delete_service_connection_by_id', args: { p_organization_id: ORG, p_connection_id: 'sc-1', p_actor: USER } }])
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
     expect(await copyEntry(ORG)).toBeUndefined()
   })
