@@ -13,6 +13,7 @@ import { runVolumeCliffCheck } from './lib/volume-cliff'
 import { DATABASE_REACHABILITY_JOB, reportDatabaseUnreachable, runDatabaseReachabilityProbe, type ReachabilityDeps } from './lib/database-reachability'
 import { runBuyerSaleDrainForEnv, BUYER_SALE_DRAIN_JOB } from './lib/buyer-sale-drain'
 import { runBuyerSalesChecksForEnv, BUYER_SALES_CHECKS_JOB } from './lib/buyer-sales-checks'
+import { runTripointPingOutcomeRateForEnv, TRIPOINT_PING_OUTCOME_RATE_JOB } from './lib/tripoint-ping-outcome-rate'
 import { runClickPathChecksForEnv, CLICK_PATH_CHECKS_JOB } from './lib/click-path-checks'
 import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB, EVERY_ORGANIZATION } from './lib/buyer-select-parity'
 import { runEngineScriptDriftForEnv, ENGINE_SCRIPT_DRIFT_JOB } from './lib/engine-script-drift'
@@ -1016,6 +1017,24 @@ const scheduledJobs = {
             })
             .catch((e) => console.error(`[${BUYER_SALES_CHECKS_JOB}] checks failed:`, e)),
           BUYER_SALES_CHECKS_JOB,
+        ),
+      )
+      // Tripoint's outcome rate on the Engine tripoint_ping path (#2392): the
+      // buyer outcome rate's rule over what tripoint_ping records, because those
+      // leads write no buyer_sales row. A BRIDGE, removed in the #1414 change
+      // that retires tripoint_ping. Its own job run and stamps (L557, L514).
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, TRIPOINT_PING_OUTCOME_RATE_JOB)
+            .catch((e) => console.error(`[${TRIPOINT_PING_OUTCOME_RATE_JOB}] heartbeat write failed:`, e))
+            .then(() => runTripointPingOutcomeRateForEnv(supabase, env))
+            .then((s) => {
+              if (s.skipped) return
+              console.log(`[${TRIPOINT_PING_OUTCOME_RATE_JOB}] verdict=${s.verdict.verdict} sent=${s.window.counts?.sent ?? 'unread'} baseline_hours=${s.baseline?.hours ?? 'unread'} recorded_hours=${s.rolled_up_hours} paged=${s.lines.length}`)
+              if (s.rollup_errors.length) console.error(`[${TRIPOINT_PING_OUTCOME_RATE_JOB}] hours not recorded: ${s.rollup_errors.join(' | ')}`)
+            })
+            .catch((e) => console.error(`[${TRIPOINT_PING_OUTCOME_RATE_JOB}] check failed:`, e)),
+          TRIPOINT_PING_OUTCOME_RATE_JOB,
         ),
       )
       // The click buyer path checks (#1546): the share of buyer_click_check runs
