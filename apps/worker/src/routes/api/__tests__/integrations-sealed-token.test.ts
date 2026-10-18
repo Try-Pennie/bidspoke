@@ -29,6 +29,7 @@ import { decryptSecret, encryptSecret } from '../../../lib/secret-crypto'
 import { parseSlackConnection } from '../../../lib/slack-connection'
 import { readSlackCopy, rememberSlackConnections } from '../../../lib/slack-copy'
 import { makeSupabase } from './_supabase-mock'
+import { slackPostOf } from '../../../__tests__/helpers/slack-fetch'
 
 const ORG = 'org-abc'
 const USER = 'user-1'
@@ -92,9 +93,15 @@ async function copyEntry(orgId: string) {
   return read.kind === 'read' ? read.connections.get(orgId) : undefined
 }
 
+/** Slack accepting every token: POST /slack checks the token with auth.test before saving it (#2331). */
+function slackAcceptsToken() {
+  return vi.fn(async () => new Response(JSON.stringify({ ok: true, team: 'Pennie HQ' }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+}
+
 beforeEach(async () => {
   vi.clearAllMocks()
   vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+  vi.stubGlobal('fetch', slackAcceptsToken())
   store = new Map()
   await rememberSlackConnections(env.IDEMPOTENCY as never, KEY, new Map([
     [ORG, parseSlackConnection({ bot_token: 'copy-bot-token', default_channel: '#copy' })!],
@@ -177,12 +184,14 @@ describe('GET /integrations/slack/channels', () => {
   it('lists channels with the token opened from credential_enc', async () => {
     const { client } = recordingSupabase({ row: { config: { default_channel: '#alerts' }, credential_enc: await encryptSecret(TOKEN, KEY) } })
     vi.mocked(createSupabaseClient).mockReturnValue(client as never)
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, channels: [{ id: 'C1', name: 'alerts' }] }), { status: 200 }))
+    // A fresh Response per call: a body can be read only once.
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, channels: [{ id: 'C1', name: 'alerts' }] }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
     const res = await call('GET', '/integrations/slack/channels?q=ale')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ channels: [{ id: 'C1', name: 'alerts' }] })
-    expect(((fetchMock.mock.calls[0] as [string, RequestInit])[1].headers as Record<string, string>).Authorization).toBe(`Bearer ${TOKEN}`)
+    // The search posts through createSlackClient (#2331); read the token whichever shape the call took.
+    expect((await slackPostOf(fetchMock.mock.calls[0])).token).toBe(TOKEN)
   })
 
   it('says the token cannot be read, by name, rather than that Slack is not connected', async () => {

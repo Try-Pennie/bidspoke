@@ -16,10 +16,14 @@
  *   refresh token. Nothing may set it, here or anywhere.
  *
  * lib/__tests__/slack-client.test.ts asserts both on what a built client does.
+ * apps/web/src/lib/__guards__/worker/slack-calls-one-client.test.ts fails on
+ * any Slack call made any other way, in the Worker or packages/service-catalogue.
  *
- * Callers switched so far: deliverMessage in lib/slack.ts (every alert) and
- * sendThreadReply beside it (the summary under an alert). The rest follow one
- * per pull request (#2331).
+ * Callers: deliverMessage in lib/slack.ts (every alert), sendThreadReply
+ * beside it (the summary under an alert), and in routes/api/integrations.ts
+ * POST /slack/resolve (auth.test and the first conversations.list), POST
+ * /slack's token check (auth.test) and GET /slack/channels
+ * (conversations.list, paged). Nothing else calls Slack (#2331).
  */
 import { SlackAPIClient, SlackAPIConnectionError, SlackAPIError } from 'slack-web-api-client'
 
@@ -59,6 +63,42 @@ export function slackCallFailure(e: unknown): SlackCallFailure | null {
     return { kind: 'http', status: e.status, retryAfter: e.headers?.get('Retry-After') ?? null }
   }
   return null
+}
+
+/**
+ * A Slack call read the way the Settings routes read Slack before the client
+ * (#2331): the BODY of any answer is the answer, whatever its status.
+ *
+ * POST /slack/resolve and GET /slack/channels (routes/api/integrations.ts,
+ * every paged conversations.list) used fetchJson, which parsed the body as
+ * JSON without looking at the status. So `ok:false` came back as the body;
+ * a 429 or a 5xx whose body was Slack's JSON (`{ ok: false, error:
+ * 'ratelimited' }`) came back as that body too; a body that was not JSON
+ * threw SyntaxError; and no answer threw the fetch's own error. Both routes
+ * now read their answers through this, which keeps every one of those, so
+ * what the Settings page is told does not change:
+ *
+ * - success, and `ok:false` with no code (the library returns it without
+ *   throwing): the result as returned;
+ * - `ok:false` with a code (SlackAPIError): the body it carried;
+ * - any status but 200 (SlackAPIConnectionError with that status): its body
+ *   parsed as JSON, which throws SyntaxError when it is not JSON, as before.
+ *   A 429 is never waited for (the client has no retry handler); its
+ *   Retry-After is logged;
+ * - no answer: the fetch's own error, rethrown (slackNetworkCause).
+ */
+export async function slackBodyOf<T>(apiName: string, call: () => Promise<T>): Promise<T & { ok?: boolean; error?: string }> {
+  try {
+    return (await call()) as T & { ok?: boolean; error?: string }
+  } catch (e) {
+    if (e instanceof SlackAPIError) return e.result as unknown as T & { ok?: boolean; error?: string }
+    if (e instanceof SlackAPIConnectionError && e.status > 0) {
+      const retryAfter = e.headers?.get('Retry-After') ?? null
+      console.warn(`[slack] ${apiName} HTTP error ${e.status}${retryAfter ? `, Retry-After ${retryAfter} s, not waited for` : ''}`)
+      return JSON.parse(e.body) as T & { ok?: boolean; error?: string }
+    }
+    throw slackNetworkCause(e)
+  }
 }
 
 /**
