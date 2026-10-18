@@ -14,6 +14,7 @@ import { DATABASE_REACHABILITY_JOB, reportDatabaseUnreachable, runDatabaseReacha
 import { runBuyerSaleDrainForEnv, BUYER_SALE_DRAIN_JOB } from './lib/buyer-sale-drain'
 import { runBuyerSalesChecksForEnv, BUYER_SALES_CHECKS_JOB } from './lib/buyer-sales-checks'
 import { runTripointPingOutcomeRateForEnv, TRIPOINT_PING_OUTCOME_RATE_JOB } from './lib/tripoint-ping-outcome-rate'
+import { runLiveShareRefusalsForEnv, LIVE_SHARE_REFUSALS_JOB } from './lib/live-share-refusals'
 import { runClickPathChecksForEnv, CLICK_PATH_CHECKS_JOB } from './lib/click-path-checks'
 import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB, EVERY_ORGANIZATION } from './lib/buyer-select-parity'
 import { runEngineScriptDriftForEnv, ENGINE_SCRIPT_DRIFT_JOB } from './lib/engine-script-drift'
@@ -666,6 +667,22 @@ const scheduledJobs = {
             })
             .catch((e) => console.error(`[${BUYER_SELECT_PARITY_JOB}] refresh failed:`, e)),
           BUYER_SELECT_PARITY_JOB,
+        ),
+      )
+      // A buyer_select live share refusing every lead (#2149): pages after 20
+      // refused leads in a row with none sent to a buyer. Under a job run record
+      // (L557); both heartbeat stamps (L514).
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, LIVE_SHARE_REFUSALS_JOB)
+            .catch((e) => console.error(`[${LIVE_SHARE_REFUSALS_JOB}] heartbeat write failed:`, e))
+            .then(() => runLiveShareRefusalsForEnv(supabase, env))
+            .then((s) => {
+              if (s.skipped) return
+              console.log(`[${LIVE_SHARE_REFUSALS_JOB}] ${s.subjects.map((x) => `${x.workflow_id}/${x.namespace}:${x.verdict}:${x.count ?? 'na'}`).join(' ')} paged_lines=${s.paged_lines}`)
+            })
+            .catch((e) => console.error(`[${LIVE_SHARE_REFUSALS_JOB}] check failed:`, e)),
+          LIVE_SHARE_REFUSALS_JOB,
         ),
       )
       // The kept Engine scripts against the canvas mirror (#1472): pages when a

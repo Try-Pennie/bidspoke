@@ -16,7 +16,7 @@ import type { Json } from '../../types/database'
 import { PARTNER_TYPES, isPartnerType, type PartnerType } from '../../lib/partner-roles'
 import { partnerCredentialMissing } from '../../lib/partner-credential'
 import { dailyCapObjectName } from '../../lib/daily-cap-name'
-import { clickCountIfClickSold, refuseClickUrlWithoutProspectId, refuseSwitchAwayFromClick } from './buyer-profiles'
+import { clickCountIfClickSold, refuseClickUrlWithoutProspectId, refuseSwitchAwayFromClick, refuseUnreadRules } from './buyer-profiles'
 import { documentToProfile, parseProfileDocument, partnerNumberErrors, registryPathOf, validateProfile, type PartnerNumberError, type Signal } from '@bidspoke/buyer-profile'
 import { parseLiveMissReport, type PartnerPageChange, type PartnerPageVersions } from '@bidspoke/partner-page-live'
 
@@ -509,6 +509,9 @@ partners.put('/:id/page', async (c) => {
     }
     const inUse = await refuseSwitchAwayFromClick(c, supabase, orgId, id, profile.soldOn)
     if (inUse) return inUse
+    // A rule a live workflow's buyer step cannot read (#2149).
+    const unread = await refuseUnreadRules(c, supabase, orgId, id, profile)
+    if (unread) return unread
     const { partner_id: _partner, version: _version, ...rest } = parsed.document
     profileToSave = rest as Record<string, unknown>
   }

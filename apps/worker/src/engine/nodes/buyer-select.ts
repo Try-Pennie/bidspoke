@@ -36,6 +36,7 @@ import {
   evaluateEligibility,
   evaluateSaleOutcome,
   getBodyField,
+  leadFieldWired,
   matchSignal,
   rankBuyers,
   withDeadline,
@@ -554,7 +555,7 @@ class Run {
       debt: this.resolveMaybe(this.config.debt).value,
       loanAmount: this.resolveMaybe(this.config.loan_amount).value,
       collections: this.resolveMaybe(this.config.collections).value,
-      collectionsWired: typeof this.config.collections === 'string' && this.config.collections.trim() !== '',
+      collectionsWired: leadFieldWired(this.config, 'collections'),
     }
     this.out.lead_state = parseUsState(lead.state)
     this.out.lead_debt = recordedAmount(lead.debt)
