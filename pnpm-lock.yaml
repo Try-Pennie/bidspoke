@@ -253,6 +253,9 @@ importers:
       '@bidspoke/script-hygiene':
         specifier: workspace:*
         version: link:../../packages/script-hygiene
+      '@bidspoke/service-catalogue':
+        specifier: workspace:*
+        version: link:../../packages/service-catalogue
       '@bidspoke/slack-client':
         specifier: workspace:*
         version: link:../../packages/slack-client

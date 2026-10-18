@@ -4,6 +4,7 @@
  * what the executor reads to decide how a failed send may be retried. Nothing
  * here runs; `run` lives in the runtime entry.
  */
+import type { GoogleDelegationScope } from './google-delegation'
 
 export const ARGUMENT_TYPES = ['text', 'dropdown', 'list', 'code'] as const
 export type ArgumentType = (typeof ARGUMENT_TYPES)[number]
@@ -47,6 +48,13 @@ export interface ActionSchema {
   readonly idempotent: boolean
   /** Why `idempotent` has the value it has: the decision, written down. */
   readonly idempotentBecause: string
+  /**
+   * For a Google action: the delegation scopes it needs, each one of the grant
+   * (google-delegation.ts). The ops minter asks Google for the union of these
+   * across the catalogue, so a scope no action declares is never in a token
+   * (#2335, finding F129). Absent for every other service.
+   */
+  readonly googleScopes?: readonly GoogleDelegationScope[]
 }
 
 export interface ServiceSchema {
@@ -71,6 +79,7 @@ export const ACTION_FIELD_ROLES: Readonly<Record<keyof ActionSchema, FieldRole>>
   sideEffect: 'behaviour',
   idempotent: 'behaviour',
   idempotentBecause: 'display',
+  googleScopes: 'behaviour',
 }
 
 export const ARGUMENT_FIELD_ROLES: Readonly<Record<keyof ActionArgument, FieldRole>> = {

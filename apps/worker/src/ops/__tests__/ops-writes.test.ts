@@ -33,6 +33,8 @@ import {
   readWorkflowCopies,
   recordConnectionCheck,
   recordConnectionNeedsReauth,
+  recordConnectionRefresh,
+  googleDelegationCheck,
   recordConnectionReauthCleared,
   recordConnectionTombstone,
   recordMeasuredIdentity,
@@ -420,6 +422,28 @@ describe('the ops connection wrappers (#2334)', () => {
     expect(await recordConnectionNeedsReauth(rpcFetch('connection_removed').client, ORG, CONN, 'invalid_grant')).toBe('connection_removed')
     expect(await recordConnectionReauthCleared(rpcFetch('recorded').client, ORG, CONN)).toBe('recorded')
     await expect(recordConnectionNeedsReauth(rpcFetch('maybe').client, ORG, CONN, 'invalid_grant')).rejects.toThrow(/not a health outcome/)
+  })
+
+  it('the refresh streak sends a failure with its cause and a working login without one, and fails closed on an unknown answer (#2335)', async () => {
+    const fail = rpcFetch('refresh_failing')
+    expect(await recordConnectionRefresh(fail.client, ORG, CONN, { ok: false, cause: 'token_endpoint_timeout' })).toBe('refresh_failing')
+    expect(fail.calls[0]).toEqual({ path: '/rest/v1/rpc/record_connection_refresh', body: { p_organization_id: ORG, p_connection_id: CONN, p_ok: false, p_cause: 'token_endpoint_timeout' } })
+    const ok = rpcFetch('recorded')
+    expect(await recordConnectionRefresh(ok.client, ORG, CONN, { ok: true })).toBe('recorded')
+    expect(ok.calls[0].body).toEqual({ p_organization_id: ORG, p_connection_id: CONN, p_ok: true, p_cause: null })
+    expect(await recordConnectionRefresh(rpcFetch('needs_reauth').client, ORG, CONN, { ok: false, cause: 'token_endpoint_5xx' })).toBe('needs_reauth')
+    await expect(recordConnectionRefresh(rpcFetch('healthy').client, ORG, CONN, { ok: true })).rejects.toThrow(/not a refresh outcome/)
+  })
+
+  it('the delegation check sends the mailbox and drives, and fails closed on an unknown answer (F129)', async () => {
+    const check = rpcFetch('mailbox_not_allowed')
+    expect(await googleDelegationCheck(check.client, ORG, 'someone@example.invalid', ['0AbCdEfGhIjKlMnOpQ'])).toBe('mailbox_not_allowed')
+    expect(check.calls[0]).toEqual({
+      path: '/rest/v1/rpc/google_delegation_check',
+      body: { p_organization_id: ORG, p_mailbox: 'someone@example.invalid', p_drives: ['0AbCdEfGhIjKlMnOpQ'] },
+    })
+    expect(await googleDelegationCheck(rpcFetch('allowed').client, ORG, 'ops@example.invalid', [])).toBe('allowed')
+    await expect(googleDelegationCheck(rpcFetch(true).client, ORG, 'ops@example.invalid', [])).rejects.toThrow(/not a delegation check outcome/)
   })
 
   it('connection_status keeps a status this Worker does not know as text, and says when a page was full', async () => {
