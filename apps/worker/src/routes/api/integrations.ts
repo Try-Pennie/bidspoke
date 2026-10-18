@@ -120,6 +120,17 @@ integrations.post('/slack/resolve', async (c) => {
 })
 
 /**
+ * What the Settings page shows when Slack rejects a token on save, worded by
+ * Dan (2026-10-17): Slack's own code in brackets, or no brackets when Slack
+ * gave none.
+ */
+function slackTokenRefusedMessage(slackError: string | null): string {
+  return slackError
+    ? `Slack did not accept this token (${slackError}), so nothing was saved.`
+    : 'Slack did not accept this token, so nothing was saved.'
+}
+
+/**
  * Ask Slack whether the token works before it is sealed (#2331): auth.test
  * through the one client. `ok` for a token Slack accepts; `refused` with
  * Slack's code for one it rejects. Anything that is not an answer about the
@@ -157,12 +168,13 @@ integrations.post('/slack', async (c) => {
   if (!body.default_channel) return c.json({ error: 'default_channel is required' }, 400)
 
   // The token is checked with Slack before anything is sealed or written
-  // (#2331): a token Slack rejects is refused by name, slack_token_invalid,
-  // and Slack's own code is passed back beside it.
+  // (#2331): a token Slack rejects is refused with the code
+  // slack_token_invalid and Slack's own code beside it, and `error` carries
+  // the sentence the Settings page shows (slackTokenRefusedMessage).
   const verified = await verifySlackToken(body.bot_token)
   if (verified.kind === 'refused') {
     console.error(`[integrations] slack_token_invalid: Slack refused the token for org ${orgId} (${verified.slackError ?? 'no code'}), so nothing was saved`)
-    return c.json({ error: 'slack_token_invalid', slack_error: verified.slackError }, 400)
+    return c.json({ error: slackTokenRefusedMessage(verified.slackError), code: 'slack_token_invalid', slack_error: verified.slackError }, 400)
   }
 
   // config.bot_token stays beside the sealed copy in this release (dual write,

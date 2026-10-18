@@ -14,8 +14,9 @@
  * waited for.
  *
  * POST /slack used to store whatever token it was given. It now asks Slack
- * (auth.test) first and refuses a token Slack rejects with the named error
- * slack_token_invalid, writing nothing; when Slack cannot be asked it writes
+ * (auth.test) first and refuses a token Slack rejects (code
+ * slack_token_invalid, with the sentence Dan chose for the Settings page),
+ * writing nothing; when Slack cannot be asked it writes
  * nothing either, through the generic 500.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -216,7 +217,12 @@ describe('POST /slack verifies the token before sealing (slack_token_invalid)', 
     const { call } = await app()
     const res = await call('POST', '/integrations/slack', save)
     expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: 'slack_token_invalid', slack_error: 'token_revoked' })
+    // The sentence the Settings page shows is Dan's (2026-10-17); the code stays machine readable.
+    expect(await res.json()).toEqual({
+      error: 'Slack did not accept this token (token_revoked), so nothing was saved.',
+      code: 'slack_token_invalid',
+      slack_error: 'token_revoked',
+    })
     expect(upserts()).toEqual([])
   })
 
@@ -225,7 +231,12 @@ describe('POST /slack verifies the token before sealing (slack_token_invalid)', 
     const { call } = await app()
     const res = await call('POST', '/integrations/slack', save)
     expect(res.status).toBe(400)
-    expect(await res.json()).toEqual({ error: 'slack_token_invalid', slack_error: null })
+    // No code from Slack: the brackets go.
+    expect(await res.json()).toEqual({
+      error: 'Slack did not accept this token, so nothing was saved.',
+      code: 'slack_token_invalid',
+      slack_error: null,
+    })
     expect(upserts()).toEqual([])
   })
 
