@@ -17,11 +17,11 @@
  *
  * lib/__tests__/slack-client.test.ts asserts both on what a built client does.
  *
- * Callers switched so far: deliverMessage in lib/slack.ts (every alert),
- * sendThreadReply beside it (the summary under an alert), and in
- * routes/api/integrations.ts POST /slack/resolve (auth.test and the first
- * conversations.list) and POST /slack's token check (auth.test). The rest
- * follow one per pull request (#2331).
+ * Callers: deliverMessage in lib/slack.ts (every alert), sendThreadReply
+ * beside it (the summary under an alert), and in routes/api/integrations.ts
+ * POST /slack/resolve (auth.test and the first conversations.list), POST
+ * /slack's token check (auth.test) and GET /slack/channels
+ * (conversations.list, paged). Nothing else calls Slack (#2331).
  */
 import { SlackAPIClient, SlackAPIConnectionError, SlackAPIError } from 'slack-web-api-client'
 

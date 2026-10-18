@@ -29,6 +29,7 @@ import { decryptSecret, encryptSecret } from '../../../lib/secret-crypto'
 import { parseSlackConnection } from '../../../lib/slack-connection'
 import { readSlackCopy, rememberSlackConnections } from '../../../lib/slack-copy'
 import { makeSupabase } from './_supabase-mock'
+import { slackPostOf } from '../../../__tests__/helpers/slack-fetch'
 
 const ORG = 'org-abc'
 const USER = 'user-1'
@@ -188,7 +189,8 @@ describe('GET /integrations/slack/channels', () => {
     const res = await call('GET', '/integrations/slack/channels?q=ale')
     expect(res.status).toBe(200)
     expect(await res.json()).toEqual({ channels: [{ id: 'C1', name: 'alerts' }] })
-    expect(((fetchMock.mock.calls[0] as [string, RequestInit])[1].headers as Record<string, string>).Authorization).toBe(`Bearer ${TOKEN}`)
+    // The search posts through createSlackClient (#2331); read the token whichever shape the call took.
+    expect((await slackPostOf(fetchMock.mock.calls[0])).token).toBe(TOKEN)
   })
 
   it('says the token cannot be read, by name, rather than that Slack is not connected', async () => {
