@@ -19,7 +19,20 @@ export function fromBase64(text: string): Uint8Array<ArrayBuffer> | null {
 }
 
 export function utf8(text: string): Uint8Array<ArrayBuffer> {
-  return new TextEncoder().encode(text)
+  // Copied into an ArrayBuffer backed array: the Workers types give encode() an
+  // ArrayBufferLike, which Web Crypto's BufferSource there does not accept.
+  return new Uint8Array(new TextEncoder().encode(text))
+}
+
+/**
+ * The modulus of an RSA key in bits, read the same way under the DOM types (the
+ * browser, Node) and the Workers types, which name the algorithm type
+ * differently. 0 for a key that has none, which every caller refuses.
+ */
+export function modulusBits(key: CryptoKey): number {
+  const algorithm: object = key.algorithm
+  const bits = 'modulusLength' in algorithm ? algorithm.modulusLength : undefined
+  return typeof bits === 'number' ? bits : 0
 }
 
 /** True when UTF-8 carries the string unchanged, which a lone surrogate does not. */

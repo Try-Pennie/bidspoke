@@ -27,7 +27,8 @@
 --      confirmed on a repeat, a different org refused by name; a malformed org
 --      id refused.
 --   G. The pool (F118, F127): from tables holding only the rows an approval
---      creates, the first verify of a connection with no measured row takes the
+--      creates (since #2335, F125, an approval also states each non step
+--      purpose's share, in sf_purpose_caps), the first verify of a connection with no measured row takes the
 --      bootstrap slot of its approved host; an unapproved host is refused with
 --      sf_cap_unset; any other call before verify is refused with
 --      sf_org_unmeasured; once verify has written the measured row, the sf_limits
@@ -463,7 +464,8 @@ $do$;
 
 -- ── G. The pool ──────────────────────────────────────────────────────────────
 -- Exactly the rows an approval creates (Decision 11): one approved host for the
--- bootstrap slot and one approved org cap. No measured identity, no reading.
+-- bootstrap slot, one approved org cap, and the shares of the purposes used
+-- here (#2335, F125). No measured identity, no reading.
 DO $do$
 DECLARE
   v_org uuid := 'aaaaaaaa-0000-4000-8000-000000002334';
@@ -474,6 +476,8 @@ DECLARE
 BEGIN
   INSERT INTO public.sf_bootstrap_caps (instance_host, cap, approved_at, approved_by) VALUES ('trypennie.my.salesforce.com', 1, now(), 'Dan (test)');
   INSERT INTO public.sf_pool_caps (sf_org_id, cap, workflow_share, budget_floor, approved_at, approved_by) VALUES (v_sf, 3, 2, 100, now(), 'Dan (test)');
+  INSERT INTO public.sf_purpose_caps (sf_org_id, purpose, share, approved_at, approved_by) VALUES
+    (v_sf, 'lookup', 2, now(), 'Dan (test)'), (v_sf, 'verify', 1, now(), 'Dan (test)'), (v_sf, 'sf_limits', 1, now(), 'Dan (test)');
 
   -- Before verify, a lookup is refused: nothing measured to key on.
   SELECT * INTO v_a FROM public.acquire_sf_lease(v_org, v_first, 1, 'lookup', NULL, 'g-lookup-0', 30);
@@ -540,6 +544,8 @@ DECLARE
   v_s record;
 BEGIN
   INSERT INTO public.sf_pool_caps (sf_org_id, cap, workflow_share, budget_floor, approved_at, approved_by) VALUES (v_sf, 3, 2, 100, now(), 'Dan (test)');
+  INSERT INTO public.sf_purpose_caps (sf_org_id, purpose, share, approved_at, approved_by) VALUES
+    (v_sf, 'lookup', 2, now(), 'Dan (test)'), (v_sf, 'sf_limits', 1, now(), 'Dan (test)');
   -- Two connections, declared against different hosts and owned by two organizations, measured to one org (L66, L1005).
   PERFORM public.record_measured_identity(v_org, v_one, 1, v_sf, 'ops-one@example.invalid');
   PERFORM public.record_measured_identity(v_other_org, v_two, 1, v_sf, 'ops-two@example.invalid');

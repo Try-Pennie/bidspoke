@@ -79,8 +79,9 @@ export type ResumeReason = (typeof RESUME_REASONS)[number]
 
 /**
  * What a resource_wait suspend waited on, sent as its p_error and kept on the
- * run as resource_wait_cause: acquire_sf_lease's refusals, or acquire_error
- * when the acquire call itself failed. A wait past 24 hours ends the run
+ * run as resource_wait_cause: acquire_sf_lease's refusals of a step (never
+ * NON_STEP_LEASE_OUTCOMES, which only other purposes are answered), or
+ * acquire_error when the acquire call itself failed. A wait past 24 hours ends the run
  * failed with resource_wait_exceeded, naming the last of these.
  */
 export const RESOURCE_WAIT_CAUSES = [
@@ -162,12 +163,23 @@ export const SF_LEASE_OUTCOMES = [
   'granted',
   'pool_full',
   'workflow_share_full',
+  'purpose_share_full',
   'sf_budget_floor',
   'sf_budget_unmeasured',
   'sf_org_unmeasured',
   'sf_cap_unset',
+  'sf_purpose_cap_unset',
 ] as const
 export type SfLeaseOutcome = (typeof SF_LEASE_OUTCOMES)[number]
+
+/**
+ * The refusals acquire_sf_lease answers only to a purpose other than step
+ * (#2335, F125): a non step purpose's own share is held, or has no approved
+ * number. A step's share is its workflow's, so a run's resource wait never
+ * carries either, and RESOURCE_WAIT_CAUSES leaves them out.
+ */
+export const NON_STEP_LEASE_OUTCOMES = ['purpose_share_full', 'sf_purpose_cap_unset'] as const satisfies readonly SfLeaseOutcome[]
+export type NonStepLeaseOutcome = (typeof NON_STEP_LEASE_OUTCOMES)[number]
 
 /** Where a budget reading came from: the sf_limits sweep's /limits read, or a response's Sforce-Limit-Info header. */
 export const SF_BUDGET_SOURCES = ['limits', 'sforce_limit_info'] as const

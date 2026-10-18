@@ -17,6 +17,7 @@
     "@bidspoke/uuidv7": "workspace:*",
     "@bidspoke/script-hygiene": "workspace:*",
     "@bidspoke/buyer-profile": "workspace:*",
+    "@bidspoke/connection-seal": "workspace:*",
     "@bidspoke/node-types": "workspace:*",
     "@bidspoke/porting-evidence": "workspace:*",
     "@bidspoke/workflow-definition": "workspace:*",
