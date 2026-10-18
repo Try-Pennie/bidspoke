@@ -12,10 +12,13 @@ import { DeadlineError, isPartnerId, PACIFIC, withDeadline, zonedParts, type Tim
 import type { AddMemberResult, MembersResult } from '../durable-objects/daily-cap'
 import type {
   CapLimits,
+  ClearMirroredResult,
   Counts,
   EntryKey,
   EntryResult,
   LedgerEntry,
+  MarkMirroredResult,
+  MirroredStamp,
   ReserveBody,
   ReserveResult,
   SaleOutcomeRecord,
@@ -508,8 +511,13 @@ export class BuyerLedgerClient implements LedgerApi {
     return r.entries
   }
 
-  async markMirrored(keys: EntryKey[]): Promise<number> {
-    const r = await call<{ marked: number }>(this.stub, 'buyer ledger mark-mirrored', 'http://do/mark-mirrored', postJson({ keys }), this.opts)
-    return r.marked
+  /** Marks each entry copied only while it is still in the state the copy read (#2422). */
+  markMirrored(stamps: MirroredStamp[]): Promise<MarkMirroredResult> {
+    return call<MarkMirroredResult>(this.stub, 'buyer ledger mark-mirrored', 'http://do/mark-mirrored', postJson({ keys: stamps }), this.opts)
+  }
+
+  /** Re-queues one entry's copy without changing the entry (#2422). */
+  clearMirrored(key: EntryKey): Promise<ClearMirroredResult> {
+    return call<ClearMirroredResult>(this.stub, 'buyer ledger clear-mirrored', 'http://do/clear-mirrored', postJson({ ...key }), this.opts)
   }
 }

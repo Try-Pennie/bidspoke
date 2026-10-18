@@ -15,7 +15,7 @@ vi.mock('../../../lib/supabase')
 vi.mock('../../../lib/audit')
 vi.mock('../../../lib/partner-constants-loader')
 vi.mock('../../../lib/buyer-profile-loader')
-const ledgerStub = { settle: vi.fn(), entry: vi.fn(), markMirrored: vi.fn(), summary: vi.fn(), peek: vi.fn(), unresolved: vi.fn() }
+const ledgerStub = { settle: vi.fn(), entry: vi.fn(), markMirrored: vi.fn(), clearMirrored: vi.fn(), summary: vi.fn(), peek: vi.fn(), unresolved: vi.fn() }
 vi.mock('../../../lib/buyer-object-clients', async () => {
   const actual = await vi.importActual<typeof import('../../../lib/buyer-object-clients')>('../../../lib/buyer-object-clients')
   // A plain function, not an arrow: the route constructs the client with `new`.
@@ -59,10 +59,10 @@ async function makeApp() {
   return api
 }
 
-function request(app: { request: Function }, method: string, path: string, body?: unknown) {
+function request(app: { request: Function }, method: string, path: string, body?: unknown, signedIn = true) {
   return app.request(path, {
     method,
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
+    headers: signedIn ? { 'Content-Type': 'application/json', Authorization: 'Bearer tok' } : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
   }, testEnv, mockCtx)
 }
@@ -193,5 +193,85 @@ describe('POST /buyer-sales/:id/settle', () => {
     expect(ledgerStub.settle).not.toHaveBeenCalled()
     supabaseWith({ buyer_sales: { single: null } })
     expect((await request(app, 'POST', `/buyer-sales/${rowId}/settle`, { outcome: 'released' })).status).toBe(404)
+  })
+})
+
+describe('POST /buyer-sales/:id/recopy (#2422)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  let rowId: string
+  // The stale copy: buyer_sales says reserved while the ledger released it.
+  const REHEARSAL_KEY = { ...KEY, kind: 'rehearsal' as const }
+  const staleRow = () => ({ ...saleRow, id: rowId, kind: 'rehearsal', status: 'reserved' })
+  const releasedEntry = { ...settledEntry, kind: 'rehearsal', status: 'released', resolution_source: 'rehearsal', resolved_by: null, mirrored: false }
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    ledgerStub.clearMirrored.mockResolvedValue({ cleared: true, entry: releasedEntry })
+    rowId = await buyerSaleRowId(PARTNER, REHEARSAL_KEY)
+    app = await makeApp()
+  })
+
+  it('re-queues the ledger\'s copy of the caller\'s sale, changing nothing in the ledger or the copy, and audits who asked', async () => {
+    const sb = supabaseWith({ buyer_sales: { single: staleRow() } })
+    const res = await request(app, 'POST', `/buyer-sales/${rowId}/recopy`, {})
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ requeued: true, entry: releasedEntry })
+    expect(sb.calls.buyer_sales).toEqual(expect.arrayContaining([['eq', ['id', rowId]], ['eq', ['organization_id', 'org-abc']]]))
+    expect(ledgerStub.clearMirrored).toHaveBeenCalledWith(REHEARSAL_KEY)
+    // It only re-queues: no settlement, no mark, and no copy written here.
+    expect(ledgerStub.settle).not.toHaveBeenCalled()
+    expect(ledgerStub.markMirrored).not.toHaveBeenCalled()
+    expect(vi.mocked(mirrorBuyerSale)).not.toHaveBeenCalled()
+    expect(sb.calls.buyer_sales.some(([op]) => op === 'update' || op === 'insert' || op === 'upsert' || op === 'delete')).toBe(false)
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(expect.anything(), 'org-abc', 'buyer_sale', rowId, 'buyer_sale_recopy_requested', testUser.id, {
+      copy_status: 'reserved', ledger_status: 'released', requeued: true,
+    })
+  })
+
+  it('an entry already waiting for a copy says so rather than claiming a second re-queue', async () => {
+    ledgerStub.clearMirrored.mockResolvedValue({ cleared: false, entry: releasedEntry })
+    supabaseWith({ buyer_sales: { single: staleRow() } })
+    const res = await request(app, 'POST', `/buyer-sales/${rowId}/recopy`, {})
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ requeued: false, entry: releasedEntry })
+  })
+
+  it('refuses another organization\'s sale as not found and an unauthenticated call, and never asks the ledger for either', async () => {
+    // The row lookup is scoped to the caller's organization, so another
+    // organization's id finds nothing.
+    const sb = supabaseWith({ buyer_sales: { single: null } })
+    const other = await request(app, 'POST', `/buyer-sales/${rowId}/recopy`, {})
+    expect(other.status).toBe(404)
+    expect(await other.json()).toEqual({ error: 'Sale not found' })
+    expect(sb.calls.buyer_sales).toEqual(expect.arrayContaining([['eq', ['organization_id', 'org-abc']]]))
+
+    const anonymous = await request(app, 'POST', `/buyer-sales/${rowId}/recopy`, {}, false)
+    expect(anonymous.status).toBe(401)
+
+    expect(ledgerStub.clearMirrored).not.toHaveBeenCalled()
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('an id that is not a uuid is not found without a read', async () => {
+    const sb = supabaseWith({ buyer_sales: { single: staleRow() } })
+    expect((await request(app, 'POST', '/buyer-sales/not-a-uuid/recopy', {})).status).toBe(404)
+    expect(sb.calls.buyer_sales).toBeUndefined()
+    expect(ledgerStub.clearMirrored).not.toHaveBeenCalled()
+  })
+
+  it('an entry the ledger no longer holds is 404 naming the ledger, and a ledger that does not answer is 503; neither is audited', async () => {
+    supabaseWith({ buyer_sales: { single: staleRow() } })
+    ledgerStub.clearMirrored.mockRejectedValue(new ObjectCallError('buyer ledger clear-mirrored', 404, JSON.stringify({ error: 'absent' })))
+    const absent = await request(app, 'POST', `/buyer-sales/${rowId}/recopy`, {})
+    expect(absent.status).toBe(404)
+    expect(await absent.json()).toEqual({ error: 'Sale not found in the ledger', detail: 'absent' })
+
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    ledgerStub.clearMirrored.mockRejectedValue(new Error('buyer ledger clear-mirrored did not answer within 5000 ms'))
+    const down = await request(app, 'POST', `/buyer-sales/${rowId}/recopy`, {})
+    expect(down.status).toBe(503)
+    expect(await down.json()).toMatchObject({ error: 'ledger_unavailable' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })
