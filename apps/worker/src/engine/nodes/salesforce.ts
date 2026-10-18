@@ -37,6 +37,31 @@ import { stampWriteMarker } from '../write-marker'
 import { CREDIT_INQUIRY_APEX_PATH, INQUIRY_MARKER_MARGIN_MS, inquiryPostOf, isCreditInquiryPost, lookupInquiryMarker, type InquiryMarkerLookup, type InquiryPost, type SalesforceRead } from '../inquiry-post'
 import type { RecoveryOrigin } from '../recovery-origin'
 import { formatErr } from '../../lib/format-error'
+import {
+  extractSalesforceErrorCode,
+  extractSalesforceErrorFields,
+  extractSalesforceErrorMessage,
+  findSalesforceErrorRule,
+  isSalesforceSessionRejected,
+  parseSalesforceResponse,
+  salesforceApexPath,
+  salesforceApexUrl,
+  salesforceDataUrl,
+  salesforceFailureIsTransient,
+  salesforceInstanceUrl,
+  salesforceNextPageUrl,
+  salesforceQueryUrl,
+  salesforceRecordUrl,
+  salesforceRequestHeaders,
+  salesforceSobjectUrl,
+  salesforceUpsertUrl,
+} from '../../lib/salesforce-api'
+
+// The node has always handed out these two rules, and the held write capture,
+// the read-back and the replay tool import them from here (a test swaps the
+// rule on this module to prove the capture uses it, #2054). They are the shared
+// functions themselves, not copies (#2335).
+export { salesforceFailureIsTransient, salesforceRejectedTheWrite } from '../../lib/salesforce-api'
 
 type SalesforceOperation = 'create' | 'update' | 'upsert' | 'query' | 'apex'
 
@@ -193,7 +218,7 @@ export async function executeSalesforceNode(
   // reached this node.
   const enrichedCtx: ExecutionContext = { ...ctx, env: buildSandboxEnv(env, ctx.env) }
 
-  const instanceUrl = (enrichedCtx.env.SALESFORCE_INSTANCE_URL ?? '').replace(/\/$/, '')
+  const instanceUrl = salesforceInstanceUrl(enrichedCtx.env.SALESFORCE_INSTANCE_URL ?? '')
   const clientId = enrichedCtx.env.SALESFORCE_CLIENT_ID ?? ''
   const clientSecret = enrichedCtx.env.SALESFORCE_CLIENT_SECRET ?? ''
 
@@ -241,17 +266,15 @@ export async function executeSalesforceNode(
   // Warnings from shaping the body (a rename that replaced a key the body held).
   const shapeLogs: StepLogEntry[] = []
 
-  const baseUrl = `${instanceUrl}/services/data/v60.0/sobjects/${object}`
-
   if (operation === 'create') {
-    url = baseUrl
+    url = salesforceSobjectUrl(instanceUrl, object)
     method = 'POST'
     resolvedBodyForInput = applyInjectedFields(resolveRecordBody(config, enrichedCtx, template, shapeLogs), config, enrichedCtx)
     bodyStr = JSON.stringify(resolvedBodyForInput)
   } else if (operation === 'update') {
     resolvedRecordId = coerceString(resolveValue(config.record_id ?? '', enrichedCtx))
     if (!resolvedRecordId && !config.skip_when_empty) throw new Error('Salesforce update requires record_id')
-    url = `${baseUrl}/${resolvedRecordId}`
+    url = salesforceRecordUrl(instanceUrl, object, resolvedRecordId)
     method = 'PATCH'
     const recordBody = resolveRecordBody(config, enrichedCtx, template, shapeLogs)
     // The relay's filter (#2170): nothing to write, or no record to write it to,
@@ -269,19 +292,19 @@ export async function executeSalesforceNode(
     const extField = config.external_id_field ?? ''
     resolvedExternalIdValue = coerceString(resolveValue(config.external_id_value ?? '', enrichedCtx))
     if (!extField || !resolvedExternalIdValue) throw new Error('Salesforce upsert requires external_id_field and external_id_value')
-    url = `${baseUrl}/${extField}/${resolvedExternalIdValue}`
+    url = salesforceUpsertUrl(instanceUrl, object, extField, resolvedExternalIdValue)
     method = 'PATCH'
     resolvedBodyForInput = applyInjectedFields(resolveRecordBody(config, enrichedCtx, template, shapeLogs), config, enrichedCtx)
     bodyStr = JSON.stringify(resolvedBodyForInput)
   } else if (operation === 'query') {
     resolvedSoql = coerceString(resolveValue(config.soql ?? '', enrichedCtx))
     if (!resolvedSoql) throw new Error('Salesforce query requires soql')
-    url = `${instanceUrl}/services/data/v60.0/query?q=${encodeURIComponent(resolvedSoql)}`
+    url = salesforceQueryUrl(instanceUrl, resolvedSoql)
     method = 'GET'
   } else if (operation === 'apex') {
-    const apexPath = (config.apex_path ?? '').replace(/^\/?/, '/')
+    const apexPath = salesforceApexPath(config.apex_path ?? '')
     if (!apexPath || apexPath === '/') throw new Error('Salesforce apex requires apex_path')
-    url = `${instanceUrl}${apexPath}`
+    url = salesforceApexUrl(instanceUrl, apexPath)
     method = config.apex_method === 'GET' ? 'GET' : 'POST'
     if (method === 'POST') {
       resolvedBodyForInput = resolveValue(config.body, enrichedCtx)
@@ -362,11 +385,7 @@ export async function executeSalesforceNode(
   const token = await getSalesforceToken(env, ctx.trigger.org_id, instanceUrl, clientId, clientSecret, { signal })
   const tokenMs = Date.now() - tokenStart
 
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token}`,
-    'X-Trace-Id': ctx.trigger.trace_id,
-  }
+  const headers = salesforceRequestHeaders(token, ctx.trigger.trace_id)
 
   // Salesforce bulkhead (ADR 0005 / #312): a self-imposed inflight cap on SF calls.
   // SF only limits requests running 20s+ (max 25 concurrent); sub-second calls are
@@ -418,7 +437,7 @@ export async function executeSalesforceNode(
   // its file is missing (#2176). Before the intent record: a post not sent holds none.
   if (inquiryPost && ctx.recovery) {
     const read = async (path: string): Promise<SalesforceRead> => {
-      const get: SalesforceCallOptions = { ...callOpts, url: `${instanceUrl}/services/data/v60.0${path}`, method: 'GET', operation: 'query', targetLabel: path.split('?')[0] }
+      const get: SalesforceCallOptions = { ...callOpts, url: salesforceDataUrl(instanceUrl, path), method: 'GET', operation: 'query', targetLabel: path.split('?')[0] }
       const attempt = async (): Promise<SalesforceRead> => {
         try {
           const { res, responseText } = await performSalesforceCall(undefined, get)
@@ -428,7 +447,7 @@ export async function executeSalesforceNode(
         }
       }
       const first = await attempt()
-      if (first.kind !== 'answer' || first.status !== 401) return first
+      if (first.kind !== 'answer' || !isSalesforceSessionRejected(first.status)) return first
       // A revoked cached token (#1741): refused before anything ran, so read once
       // more with a fresh login, which the post then goes out with too. A fresh
       // login that fails throws, so the step says the login failed rather than
@@ -460,7 +479,7 @@ export async function executeSalesforceNode(
   // fresh login (#1741), so clear it and send this same request once more with a
   // fresh token. A 401 means Salesforce refused before running anything, so the
   // retry cannot write twice. A second 401 is a real credential fault and fails.
-  if (res.status === 401) {
+  if (isSalesforceSessionRejected(res.status)) {
     await env.WORKFLOW_CACHE.delete(salesforceTokenCacheKey(ctx.trigger.org_id))
     console.log(`[salesforce] event=session_rejected_retry operation=${operation} target=${targetLabel} trace=${ctx.trigger.trace_id}`)
     headers.Authorization = `Bearer ${await getSalesforceToken(env, ctx.trigger.org_id, instanceUrl, clientId, clientSecret, { signal })}`
@@ -469,7 +488,7 @@ export async function executeSalesforceNode(
 
   if (!res.ok) {
     // Still refused after the fresh token: evict again so the next lead does not reuse it.
-    if (res.status === 401) {
+    if (isSalesforceSessionRejected(res.status)) {
       await env.WORKFLOW_CACHE.delete(salesforceTokenCacheKey(ctx.trigger.org_id))
     }
 
@@ -478,15 +497,10 @@ export async function executeSalesforceNode(
     // the step marked completed instead of failing the execution.
     const expected = config.expected_errors ?? []
     if (expected.length > 0) {
-      const errorCode = extractSalesforceErrorCode(parsedBody)
-      const message = extractSalesforceErrorMessage(parsedBody)
-      const matched = expected.find((e) => {
-        if (!errorCode || e.code !== errorCode) return false
-        const needle = e.message_contains?.trim()
-        if (!needle) return true
-        return (message ?? '').includes(needle)
-      })
+      const matched = findSalesforceErrorRule(expected, parsedBody)
       if (matched) {
+        const errorCode = extractSalesforceErrorCode(parsedBody)
+        const message = extractSalesforceErrorMessage(parsedBody)
         console.log(`[salesforce] expected rejection ${errorCode} — exiting workflow (trace=${ctx.trigger.trace_id})`)
         const output = { status: res.status, ok: false, errorCode, message, body: parsedBody }
         if (matched.response_body !== undefined) {
@@ -516,18 +530,7 @@ export async function executeSalesforceNode(
     err.status = res.status
     err.salesforceAnswer = answer
     if (warnLogs.length > 0) err.logs = warnLogs
-    const transientErrors = config.transient_errors ?? []
-    let matchesTransient = false
-    if (transientErrors.length > 0) {
-      const errorCode = extractSalesforceErrorCode(parsedBody)
-      const message = extractSalesforceErrorMessage(parsedBody) ?? ''
-      matchesTransient = transientErrors.some((e) => {
-        if (!errorCode || e.code !== errorCode) return false
-        const needle = e.message_contains?.trim()
-        if (!needle) return true
-        return message.includes(needle)
-      })
-    }
+    const matchesTransient = findSalesforceErrorRule(config.transient_errors ?? [], parsedBody) !== undefined
     // An HTML document instead of an API response means the request died at the
     // edge and was never processed as a business call, whatever status came with
     // it (#694). Salesforce Edge reports a connection hiccup as HTTP 400 with a
@@ -603,28 +606,6 @@ export interface SalesforceCallOptions {
   operation: SalesforceOperation
   targetLabel: string
   tokenMs: number
-}
-
-/**
- * Whether a failed Salesforce answer is worth sending again: a rate limit, a
- * server error, or an edge error page (the request died before Salesforce ran
- * it, whatever status came with it, #694). Everything else is a business
- * rejection. The node adds its own per node `transient_errors` on top; the
- * replay tool (#471) judges a held write by this same rule.
- */
-export function salesforceFailureIsTransient(status: number, responseText: string): boolean {
-  return status === 429 || status >= 500 || containsHtmlDocument(responseText)
-}
-
-/**
- * Whether Salesforce rejected the write ITSELF: a failed answer that is neither
- * worth sending again nor a login or permission refusal (401, 403), which is a
- * fault on our side that fixing the credentials clears. A different question from
- * the retry rule above, so it is its own function rather than a clause beside it:
- * the replay tool (#471) closes a held write only on this.
- */
-export function salesforceRejectedTheWrite(status: number, responseText: string): boolean {
-  return status >= 400 && status !== 401 && status !== 403 && !salesforceFailureIsTransient(status, responseText)
 }
 
 /**
@@ -752,15 +733,7 @@ export async function performSalesforceCall(
     console.log(`[salesforce] ${opts.operation} ${opts.targetLabel} 5xx detail cf-ray=${cfRay}, server=${server}, body=${bodySnippet}, trace=${opts.traceId}`)
   }
 
-  let parsedBody: unknown = null
-  if (responseText) {
-    try {
-      parsedBody = JSON.parse(responseText)
-    } catch {
-      parsedBody = responseText
-    }
-  }
-  return { res, responseText, parsedBody }
+  return { res, responseText, parsedBody: parseSalesforceResponse(responseText) }
 }
 
 /**
@@ -977,8 +950,7 @@ async function fetchQueryPage(
     resolvedInput: ResolvedStepInput
   },
 ): Promise<unknown> {
-  // nextRecordsUrl is a path (/services/data/vXX.0/query/01g...-2000), not absolute.
-  const url = nextRecordsUrl.startsWith('http') ? nextRecordsUrl : `${opts.instanceUrl}${nextRecordsUrl}`
+  const url = salesforceNextPageUrl(opts.instanceUrl, nextRecordsUrl)
 
   const slots = await takeSalesforceSlots(opts)
   if (!slots.allowed && slots.refusedBy) {
@@ -1216,38 +1188,4 @@ function applyInjectedFields(
     return { ...(body as Record<string, unknown>), ...resolved }
   }
   return resolved
-}
-
-function extractSalesforceErrorCode(body: unknown): string | null {
-  if (Array.isArray(body) && body.length > 0) {
-    const first = body[0] as { errorCode?: unknown } | undefined
-    if (first && typeof first.errorCode === 'string') return first.errorCode
-  }
-  if (body && typeof body === 'object' && 'errorCode' in body) {
-    const code = (body as { errorCode?: unknown }).errorCode
-    if (typeof code === 'string') return code
-  }
-  return null
-}
-
-/** The field API names Salesforce blamed, e.g. ["Email__c"]. */
-function extractSalesforceErrorFields(body: unknown): string[] {
-  const entries = Array.isArray(body) ? (body as unknown[]) : null
-  const first = entries && entries.length > 0 ? entries[0] : body
-  if (!first || typeof first !== 'object') return []
-  const fields = (first as { fields?: unknown }).fields
-  if (!Array.isArray(fields)) return []
-  return fields.filter((f): f is string => typeof f === 'string' && f !== '')
-}
-
-function extractSalesforceErrorMessage(body: unknown): string | null {
-  if (Array.isArray(body) && body.length > 0) {
-    const first = body[0] as { message?: unknown } | undefined
-    if (first && typeof first.message === 'string') return first.message
-  }
-  if (body && typeof body === 'object' && 'message' in body) {
-    const msg = (body as { message?: unknown }).message
-    if (typeof msg === 'string') return msg
-  }
-  return null
 }
