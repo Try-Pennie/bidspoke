@@ -1,8 +1,9 @@
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { checkCatalogue, scanForIdempotentHints, type CatalogueUnderCheck } from './catalogue-checks'
+import { collectModuleImports } from './module-graph'
 import { FIXTURE_CATALOGUE } from '../__fixtures__/catalogue'
 import type { ActionSchema, ServiceSchema } from '../schema/types'
 import type { RuntimeAction } from '../runtime/types'
@@ -29,6 +30,16 @@ function withSchemaAction(key: string, version: number, edit: (a: ActionSchema) 
   return { ...FIXTURE_CATALOGUE, services, runtime }
 }
 
+/** A temporary copy of the fixture lockfile with one edit applied, which must change it. */
+function lockfileCopy(edit: (text: string) => string): string {
+  const original = readFileSync(FIXTURE_CATALOGUE.lockfile, 'utf8')
+  const edited = edit(original)
+  expect(edited, 'the lockfile edit matched nothing').not.toBe(original)
+  const file = path.join(mkdtempSync(path.join(tmpdir(), 'catalogue-lockfile-')), 'pnpm-lock.yaml')
+  writeFileSync(file, edited)
+  return file
+}
+
 describe('the fixture catalogue is clean as committed', () => {
   it('has no problems', async () => {
     expect(await checkCatalogue(FIXTURE_CATALOGUE)).toEqual([])
@@ -37,6 +48,11 @@ describe('the fixture catalogue is clean as committed', () => {
   it('has actions to check, so a clean result cannot be vacuous', () => {
     expect(FIXTURE_CATALOGUE.runtime.length).toBeGreaterThanOrEqual(2)
     expect(Object.keys(FIXTURE_CATALOGUE.fingerprints).length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('has a run that reaches an npm package, so the dependency checks below are not vacuous', () => {
+    const { packages } = collectModuleImports(path.join(FIXTURE_CATALOGUE.actionsDir, 'fixture.echo.v2.ts'))
+    expect(packages.map((p) => p.name)).toEqual(['@eslint/js'])
   })
 })
 
@@ -80,6 +96,38 @@ describe('versioning is enforced by committed fingerprints (#1689 D1)', () => {
     const problems = await checkCatalogue({ ...FIXTURE_CATALOGUE, fingerprints })
     expect(problems.map((p) => p.code)).toEqual(['fingerprint_missing'])
     expect(problems[0].message).toContain(`"fixture.echo@2": "${expected}"`)
+  })
+
+  it('treats an upgrade of an npm package the run reaches as a change to the version', async () => {
+    const problems = await checkCatalogue({
+      ...FIXTURE_CATALOGUE,
+      lockfile: lockfileCopy((text) => text.replace('version: 10.0.1(eslint', 'version: 10.0.2(eslint')),
+    })
+    expect(problems.map((p) => p.code)).toEqual(['fingerprint_changed'])
+    expect(problems[0].subject).toBe('fixture.echo@2')
+    expect(problems[0].message).toContain('resolved version of an npm package')
+  })
+
+  it('lets an npm package no run reaches change without a new version', async () => {
+    const lockfile = lockfileCopy((text) => text.replace('version: 6.0.3', 'version: 6.0.4'))
+    expect(await codes({ ...FIXTURE_CATALOGUE, lockfile })).toEqual([])
+  })
+
+  it('refuses, by name, a run reaching an npm package the lockfile does not resolve', async () => {
+    const lockfile = lockfileCopy((text) =>
+      text.replace("      '@eslint/js':\n        specifier: ^10.0.1\n        version: 10.0.1(eslint@10.6.0(jiti@2.7.0))\n", ''),
+    )
+    const problems = await checkCatalogue({ ...FIXTURE_CATALOGUE, lockfile })
+    expect(problems.map((p) => p.code)).toEqual(['dependency_unresolved'])
+    expect(problems[0].subject).toBe('fixture.echo@2')
+    expect(problems[0].message).toContain('@eslint/js')
+  })
+
+  it('fails when the lockfile cannot be read, rather than fingerprinting without versions', async () => {
+    const problems = await checkCatalogue({ ...FIXTURE_CATALOGUE, lockfile: '/nonexistent/pnpm-lock.yaml' })
+    expect(problems.map((p) => p.code)).toEqual(['lockfile_unreadable'])
+    const wrongImporter = await checkCatalogue({ ...FIXTURE_CATALOGUE, importer: 'packages/missing' })
+    expect(wrongImporter.map((p) => p.code)).toEqual(['lockfile_unreadable'])
   })
 
   it('names a committed fingerprint whose action version is gone', async () => {
