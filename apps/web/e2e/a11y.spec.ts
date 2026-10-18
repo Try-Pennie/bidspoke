@@ -272,6 +272,24 @@ test.describe('Accessibility (axe-core)', () => {
     expect(unmatched).toEqual([])
   })
 
+  // Dan, 2026-10-17: on a page opened at ?selected=liberty1, every row click snapped
+  // back to Liberty1, because the selected= read back after a replaceState was still
+  // the opening one. Only a real Next router shows how it reads the URL back.
+  test('partners page: a page opened on one partner opens another on click, and stays there', async ({ page }) => {
+    const { unmatched } = await routePartnerFixtures(page, workerUrl())
+    await page.goto('/partners?selected=liberty1')
+    const heading = (n: string) => page.getByRole('heading', { name: n, exact: true })
+    await expect(heading('Liberty1')).toBeVisible()
+    await page.getByRole('button', { name: /^AmOne/ }).click()
+    await expect(heading('AmOne')).toBeVisible()
+    // Held, not a flash: the old page put Liberty1 back a moment after the click.
+    await expect(heading('Liberty1')).toHaveCount(0)
+    await page.getByRole('button', { name: /^Tripoint/ }).click()
+    await expect(heading('Tripoint')).toBeVisible()
+    await expect(page).toHaveURL(/selected=tripoint/)
+    expect(unmatched).toEqual([])
+  })
+
   // #2137: every tab of every fixture partner, each scanned with exactly one
   // panel visible, so a tab nobody opened by hand is still scanned (L400).
   test('partners page: every tab of every partner has no serious a11y violations, one panel at a time', async ({ page }) => {
