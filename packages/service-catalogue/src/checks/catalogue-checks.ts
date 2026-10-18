@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { ActionSchema, ServiceSchema } from '../schema/types'
+import { GOOGLE_DELEGATION_GRANTED_SCOPES } from '../schema/google-delegation'
 import type { RuntimeAction } from '../runtime/types'
 import { actionVersionId, computeFingerprint } from './fingerprint'
 import { LockfileError, readImporterLock, type ImporterLock } from './lockfile'
@@ -51,6 +52,7 @@ export type ProblemCode =
   | 'argument_duplicate_key'
   | 'argument_depends_on_unknown'
   | 'dropdown_without_source'
+  | 'google_scope_not_granted'
   | 'schema_without_run'
   | 'run_without_schema'
   | 'run_file_missing'
@@ -110,6 +112,15 @@ function checkAction(service: ServiceSchema, action: ActionSchema, problems: Pro
     }
     if (arg.type === 'dropdown' && !arg.source) {
       add('dropdown_without_source', `${id}: dropdown ${arg.key} names no lookup to fill it`)
+    }
+  }
+
+  // The ops minter asks Google for these, so each must be one the Workspace grant holds (#2335, F129).
+  if (action.googleScopes !== undefined) {
+    const granted: readonly string[] = GOOGLE_DELEGATION_GRANTED_SCOPES
+    if (action.googleScopes.length === 0) add('google_scope_not_granted', `${id} declares an empty Google scope list; leave googleScopes out instead`)
+    for (const scope of action.googleScopes) {
+      if (!granted.includes(scope)) add('google_scope_not_granted', `${id} asks for ${scope}, which the Workspace delegation grant (decision 11) does not hold`)
     }
   }
 }
