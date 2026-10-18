@@ -191,13 +191,14 @@ jobs:
           if git merge-base --is-ancestor "$LAST_WORKER_COMMIT" "$LIVE_SHA"; then UP_TO_DATE=yes; fi
           echo "up_to_date=$UP_TO_DATE" >> "$GITHUB_OUTPUT"
 
-          # Age of the oldest Deploy run still queued or running on main (#790),
+          # Whether a Deploy is queued or running on main, and for how long (#790),
           # through the one shared script so all three jobs handle a failed query
-          # the same way. It answers with the age, or empty for a definite "none",
-          # or `unavailable` when it could not find out, and those last two are
-          # deliberately different words: folding them together is what caused the
-          # false page on 2026-08-19 (#899). It always exits 0, so nothing here
-          # needs to suppress anything.
+          # the same way. It answers `age=<s>,running=<s>` (how long ago the oldest
+          # was created, and the longest any has actually held a runner, #2409),
+          # or empty for a definite "none", or `unavailable` when it could not
+          # find out, and those last two are deliberately different words:
+          # folding them together is what caused the false page on 2026-08-19
+          # (#899). It always exits 0, so nothing here needs to suppress anything.
           INFLIGHT_AGE=$(bash .github/scripts/deploy-inflight-age.sh)
           echo "inflight_age=${INFLIGHT_AGE}" >> "$GITHUB_OUTPUT"
           echo "up_to_date=$UP_TO_DATE inflight_age=${INFLIGHT_AGE:-none}"
@@ -258,7 +259,7 @@ jobs:
               # Not a strand: a deploy is mid-flight and the worker is expected to
               # be behind until it lands. The next hourly run judges the settled
               # state, and a deploy stuck past the ceiling still pages.
-              echo "::notice::A deploy is still running (${{ steps.compare.outputs.inflight_age }}s). Not paging; the next run will re-check." ;;
+              echo "::notice::A deploy is still running (${{ steps.compare.outputs.inflight_age }}). Not paging; the next run will re-check." ;;
           esac
 
       # Everything below runs only when the cheap check suspects a strand. The
@@ -477,13 +478,14 @@ jobs:
           echo "observations=${OBSERVATIONS# }" >> "$GITHUB_OUTPUT"
           echo "observations:${OBSERVATIONS}"
 
-          # Age of the oldest Deploy run still queued or running on main (#790),
+          # Whether a Deploy is queued or running on main, and for how long (#790),
           # through the one shared script so all three jobs handle a failed query
-          # the same way. It answers with the age, or empty for a definite "none",
-          # or `unavailable` when it could not find out, and those last two are
-          # deliberately different words: folding them together is what caused the
-          # false page on 2026-08-19 (#899). It always exits 0, so nothing here
-          # needs to suppress anything.
+          # the same way. It answers `age=<s>,running=<s>` (how long ago the oldest
+          # was created, and the longest any has actually held a runner, #2409),
+          # or empty for a definite "none", or `unavailable` when it could not
+          # find out, and those last two are deliberately different words:
+          # folding them together is what caused the false page on 2026-08-19
+          # (#899). It always exits 0, so nothing here needs to suppress anything.
           INFLIGHT_AGE=$(bash .github/scripts/deploy-inflight-age.sh)
           echo "inflight_age=${INFLIGHT_AGE}" >> "$GITHUB_OUTPUT"
 
@@ -660,13 +662,14 @@ jobs:
           UP_TO_DATE=no
           if git merge-base --is-ancestor "$LAST_TAIL_COMMIT" "$TAIL_SHA"; then UP_TO_DATE=yes; fi
 
-          # Age of the oldest Deploy run still queued or running on main (#790),
+          # Whether a Deploy is queued or running on main, and for how long (#790),
           # through the one shared script so all three jobs handle a failed query
-          # the same way. It answers with the age, or empty for a definite "none",
-          # or `unavailable` when it could not find out, and those last two are
-          # deliberately different words: folding them together is what caused the
-          # false page on 2026-08-19 (#899). It always exits 0, so nothing here
-          # needs to suppress anything.
+          # the same way. It answers `age=<s>,running=<s>` (how long ago the oldest
+          # was created, and the longest any has actually held a runner, #2409),
+          # or empty for a definite "none", or `unavailable` when it could not
+          # find out, and those last two are deliberately different words:
+          # folding them together is what caused the false page on 2026-08-19
+          # (#899). It always exits 0, so nothing here needs to suppress anything.
           INFLIGHT_AGE=$(bash .github/scripts/deploy-inflight-age.sh)
 
           # `not-gated` is the artifact verdict for a target with no artifact
