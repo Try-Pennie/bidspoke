@@ -40,6 +40,13 @@ import { getSlackConnection, postMessage } from './slack'
 import { formatErr } from './format-error'
 import { slackOrgIds } from './alert-fanout'
 import { BID_PURGE_HORIZON_MS } from './sightings-export'
+import { OUT_REASON_LABELS } from '@bidspoke/buyer-profile'
+import { RECORDED_REFUSAL_REASONS } from '../engine/bid-log'
+
+/** The refusals counted as recorded, in plain words, for the ratio alert (#2391). */
+const REFUSAL_WORDS = RECORDED_REFUSAL_REASONS
+  .map((r) => OUT_REASON_LABELS[r].charAt(0).toLowerCase() + OUT_REASON_LABELS[r].slice(1))
+  .join(', or ')
 import {
   decideRatioCollapse,
   appendReading,
@@ -57,6 +64,15 @@ export interface BidCoverageRow {
   /** Bid rows whose skip_reason is distinct from `skipped`: the real attempts (#1413). */
   attempt_rows: number
   winners: number
+}
+
+/**
+ * A row of bid_recording_coverage_v4, the ratio check's read (#2391): v3's counts
+ * with the refusals by a buyer's own rule counted apart from the attempts.
+ */
+export interface RatioCoverageRow extends BidCoverageRow {
+  /** Bid rows whose skip_reason is a refusal counted as recorded (RECORDED_REFUSAL_REASONS). */
+  refusal_rows: number
 }
 
 export interface SilentWorkflow {
@@ -367,11 +383,13 @@ async function checkOrgRatios(
   const since = new Date(now - BID_PURGE_HORIZON_MS).toISOString()
   const until = new Date(now - RATIO_IN_FLIGHT_MARGIN_MS).toISOString()
 
-  const { data, error } = (await supabase.rpc('bid_recording_coverage_v3', {
+  // v4 counts a refusal by a buyer's own rule apart from the attempts (#2391);
+  // its window and every other count are v3's.
+  const { data, error } = (await supabase.rpc('bid_recording_coverage_v4', {
     p_org_id: orgId,
     p_since: since,
     p_until: until,
-  })) as { data: BidCoverageRow[] | null; error: { message: string } | null }
+  })) as { data: RatioCoverageRow[] | null; error: { message: string } | null }
 
   // A failed lookup is not a clean window (L98, L11).
   if (error) {
@@ -405,6 +423,11 @@ async function checkOrgRatios(
  * (#1929). A reading of one kind compared against a median of the other would
  * page falsely or hide a real collapse. The old key is simply never read again;
  * the monitor is unbaselined for MIN_BASELINE_SAMPLES runs per workflow and says so.
+ *
+ * NOT bumped for #2391, deliberately: a reading now counts refusals by a buyer's
+ * own rule beside attempts, and every reading stored before the first such rule
+ * (Engine version 110, 2026-10-15) had none, so it measured the same thing. A bump
+ * would blind the check for every workflow for a week to absorb one.
  */
 const historyKey = (orgId: string) => `bid-ratio-history-v3:${orgId}`
 
@@ -443,7 +466,8 @@ async function readHistories(kv: KvLike, orgId: string): Promise<Record<string, 
 }
 
 /**
- * Judge each workflow's attempts-per-sighting ratio against its own history.
+ * Judge each workflow's recorded decisions per sighting (attempts, and refusals
+ * by a buyer's own rule, #2391) against its own history.
  *
  * Runs on rows the caller has already proven retained, which is what makes the
  * ratio trustworthy: a drained window would understate every workflow at once.
@@ -452,7 +476,7 @@ async function checkRatios(
   supabase: SupabaseClient,
   kv: KvLike,
   orgId: string,
-  rows: BidCoverageRow[],
+  rows: RatioCoverageRow[],
   appUrl?: string,
 ): Promise<void> {
   const histories = await readHistories(kv, orgId)
@@ -487,10 +511,16 @@ async function checkRatios(
 
     const pct = (n: number) => `${Math.round(n * 100)}%`
     const link = appUrl ? `\n\n<${appUrl}/workflows/${c.workflow_id}|Open the workflow>` : ''
+    // The refusals are counted beside the attempts (#2391), so when there were
+    // any the message says how many and which rules they can be, from the same
+    // list the bid row and v4 count by, and the expected figure covers both.
+    const counted = c.refusal_rows > 0
+      ? `This workflow recorded ${c.attempt_rows} bid attempts across ${c.sightings} leads in the last ${RATIO_WINDOW_HOURS} hours, and ${c.refusal_rows} leads refused by a buyer's own rule before anyone was asked (${REFUSAL_WORDS}). Together that is ${pct(c.ratio)} of its leads. It normally records ${pct(c.baseline)}, so about ${c.expected_rows} were expected. Rows for leads it skipped for any other reason without asking anyone are not counted.`
+      : `This workflow recorded ${c.attempt_rows} bid attempts across ${c.sightings} leads in the last ${RATIO_WINDOW_HOURS} hours, which is ${pct(c.ratio)} of its leads. It normally records ${pct(c.baseline)}, so about ${c.expected_rows} attempts were expected. Rows the workflow wrote for leads it skipped without asking anyone are not counted.`
     const text = [
       `*${c.workflow_name}*`,
       '',
-      `This workflow recorded ${c.attempt_rows} bid attempts across ${c.sightings} leads in the last ${RATIO_WINDOW_HOURS} hours, which is ${pct(c.ratio)} of its leads. It normally records ${pct(c.baseline)}, so about ${c.expected_rows} attempts were expected. Rows the workflow wrote for leads it skipped without asking anyone are not counted.`,
+      counted,
       '',
       // Derived from the ratio (#835). It fires below half the baseline, so the
       // old "most of the bid history is still there" was false by construction.

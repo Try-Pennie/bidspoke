@@ -45,8 +45,10 @@
  * The rate needs 10 attempts; below that an hour in which EVERY attempt failed,
  * three or more, is elevated anyway (saturation, L139), and otherwise the hour
  * is QUIET, a third state distinct from normal (L11). A baseline thinner than
- * 100 attempts, or one that could not be read, leaves the rate unmeasured.
- * One line per buyer; a buyer that starts failing while another is already
+ * 100 attempts, or one that could not be read, leaves the rate unmeasured, and
+ * an unmeasured hour neither raises nor clears that buyer's page (#2420): a
+ * standing page stands until a measured hour clears it, and the run records
+ * the hour as unmeasured with the reason. One line per buyer; a buyer that starts failing while another is already
  * paged gets out past the reminder backoff (L707).
  *
  * A mismatch pages only once it has persisted across two runs; a single run's
@@ -68,7 +70,7 @@ import { fetchAllPaged } from './paginate'
 import { resolveSalesforceCredsFor } from './salesforce-creds'
 import { BID_PURGE_HORIZON_MS } from './sightings-export'
 import { describeDuration } from './incident-span'
-import { isoDateMinus, judgeOutcomeShares, type BaselineUnreadable, type OutcomeBaseline, type OutcomeRateRule } from './outcome-rate-rule'
+import { isoDateMinus, judgeOutcomeShares, verdictMovesThePage, type BaselineUnreadable, type OutcomeBaseline, type OutcomeRateRule } from './outcome-rate-rule'
 
 export { BID_PURGE_HORIZON_MS }
 
@@ -290,6 +292,8 @@ export interface ChecksSummary {
   mismatch_lines: string[]
   unresolved_lines: string[]
   outcome_rate_lines: string[]
+  /** Buyers whose standing outcome rate page an unmeasured hour kept, neither raised nor cleared (#2420). */
+  outcome_rate_held: string[]
 }
 
 const STATUSES: SaleStatus[] = ['reserved', 'accepted', 'declined', 'released', 'unresolved']
@@ -301,6 +305,8 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 export const mismatchMarkerKey = (partnerId: string) => `buyer-sales-mismatch-seen:${partnerId}`
 export const unresolvedPagedKey = (partnerId: string) => `unresolved-paged:${partnerId}`
 export const outcomeRatePagedKey = (partnerId: string) => `outcome-rate-paged:${partnerId}`
+/** How long a buyer's outcome rate marker outlives the last run that set or kept it. */
+const OUTCOME_RATE_PAGED_TTL_SECONDS = 24 * 3600
 
 const previousIsoDate = (day: string) => isoDateMinus(day, 1)
 
@@ -443,7 +449,7 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
 
   if (deps.localDev) {
     deps.log(`[${BUYER_SALES_CHECKS_JOB}] skipped: local dev`)
-    return { skipped: 'local_dev', days, buyers: [], mismatch_lines: [], unresolved_lines: [], outcome_rate_lines: [] }
+    return { skipped: 'local_dev', days, buyers: [], mismatch_lines: [], unresolved_lines: [], outcome_rate_lines: [], outcome_rate_held: [] }
   }
 
   let buyers: CheckBuyer[]
@@ -452,13 +458,14 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
   } catch (err) {
     const reason = `the buyer list could not be read, so nothing was checked: ${messageOf(err)}`
     await deps.notifyMismatch([reason], BUYER_SALES_UNLISTED_REMEDY)
-    return { unmeasured: reason, days, buyers: [], mismatch_lines: [reason], unresolved_lines: [], outcome_rate_lines: [] }
+    return { unmeasured: reason, days, buyers: [], mismatch_lines: [reason], unresolved_lines: [], outcome_rate_lines: [], outcome_rate_held: [] }
   }
 
   const summaries: BuyerCheckSummary[] = []
   const mismatchLines: string[] = []
   const unresolvedLines: string[] = []
   const outcomeRateLines: string[] = []
+  const outcomeRateHeld: string[] = []
   const mismatchKinds = new Set<MismatchKind>()
   let unresolvedGrew = false
   let newlyElevated = false
@@ -502,10 +509,19 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
     // first time while another's page is standing must not wait out that
     // buyer's reminder backoff (L707).
     const rateKey = outcomeRatePagedKey(buyer.partner_id)
-    if (s.outcome_rate.verdict === 'elevated') {
+    if (!verdictMovesThePage(s.outcome_rate)) {
+      // An hour it could not measure neither raises nor clears this buyer's
+      // page (#2420). A standing page is kept, its marker renewed so a long
+      // spell of unmeasured hours cannot clear it by expiry either.
+      const standing = await deps.kv.get(rateKey)
+      if (standing !== null) {
+        outcomeRateHeld.push(buyer.slug)
+        await deps.kv.put(rateKey, standing, { expirationTtl: OUTCOME_RATE_PAGED_TTL_SECONDS })
+      }
+    } else if (s.outcome_rate.verdict === 'elevated') {
       outcomeRateLines.push(`${buyer.slug}: ${s.outcome_rate.detail}. Partner page: ${deps.appUrl}/partners?selected=${encodeURIComponent(buyer.slug)}`)
       if ((await deps.kv.get(rateKey)) === null) newlyElevated = true
-      await deps.kv.put(rateKey, new Date(now).toISOString(), { expirationTtl: 24 * 3600 })
+      await deps.kv.put(rateKey, new Date(now).toISOString(), { expirationTtl: OUTCOME_RATE_PAGED_TTL_SECONDS })
     } else {
       await deps.kv.delete(rateKey)
     }
@@ -525,13 +541,16 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
 
   await deps.notifyMismatch(mismatchLines, buyerSalesMismatchRemedy(mismatchKinds))
   await deps.notifyUnresolved(unresolvedLines)
-  await deps.notifyOutcomeRate(outcomeRateLines)
+  // A page some buyer's unmeasured hour is holding must not be cleared by an
+  // empty list; while another buyer is elevated the page stands regardless.
+  if (outcomeRateLines.length > 0 || outcomeRateHeld.length === 0) await deps.notifyOutcomeRate(outcomeRateLines)
   return {
     days,
     buyers: summaries.map(({ unresolved, ...rest }) => ({ ...rest, unresolved: { count: unresolved.count, oldest_age_ms: unresolved.oldest_age_ms, paged: unresolved.paged } })),
     mismatch_lines: mismatchLines,
     unresolved_lines: unresolvedLines,
     outcome_rate_lines: outcomeRateLines,
+    outcome_rate_held: outcomeRateHeld,
   }
 }
 
@@ -612,22 +631,32 @@ async function checkBuyer(deps: ChecksDeps, buyer: CheckBuyer, days: string[], n
   }
 }
 
-/** What the run records about itself: ok only when every check on every buyer measured and agreed. */
+/**
+ * What the run records about itself: ok only when every check on every buyer
+ * measured and agreed. An unmeasured run says which check on which buyer could
+ * not be measured and why (#2420), so job_runs holds the reason, not only the word.
+ */
 export function endingOf(summary: ChecksSummary): JobRunEnding {
   if (summary.skipped) return { outcome: 'skipped', detail: summary.skipped, summary: { days: summary.days } }
   if (summary.unmeasured) return { outcome: 'unmeasured', detail: summary.unmeasured, summary: { days: summary.days } }
   const verdicts = summary.buyers.flatMap((b) => [b.completeness.verdict, b.consistency.verdict, b.independent.verdict, b.outcome_rate.verdict])
   const findings = summary.mismatch_lines.length > 0 || verdicts.some((v) => v === 'mismatch' || v === 'inconsistent' || v === 'unverified' || v === 'elevated')
-  const unmeasured = verdicts.some((v) => v === 'unmeasured')
-  const outcome = findings ? 'findings' : unmeasured ? 'unmeasured' : 'ok'
+  const unmeasuredReasons = summary.buyers.flatMap((b) => {
+    const checks: Array<[string, { verdict: string; reason?: string }]> = [['completeness', b.completeness], ['consistency', b.consistency], ['independent', b.independent], ['outcome rate', b.outcome_rate]]
+    return checks.flatMap(([name, v]) => (v.verdict === 'unmeasured' ? [`${b.slug} ${name}: ${v.reason}`] : []))
+  })
+  const outcome = findings ? 'findings' : unmeasuredReasons.length > 0 ? 'unmeasured' : 'ok'
   return {
     outcome,
+    ...(outcome === 'unmeasured' ? { detail: unmeasuredReasons.join('; ') } : {}),
     summary: {
       days: summary.days,
       buyers: summary.buyers.map((b) => ({ slug: b.slug, completeness: b.completeness.verdict, consistency: b.consistency.verdict, independent: b.independent.verdict, unresolved: b.unresolved.count, rehearsals_expired: b.rehearsals_expired, outcome_rate: b.outcome_rate.verdict })),
       paged_mismatches: summary.mismatch_lines.length,
       paged_unresolved: summary.unresolved_lines.length,
       paged_outcome_rates: summary.outcome_rate_lines.length,
+      held_outcome_rates: summary.outcome_rate_held,
+      unmeasured: unmeasuredReasons,
     },
   }
 }

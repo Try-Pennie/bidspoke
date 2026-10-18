@@ -94,8 +94,10 @@ export interface RatioRow {
   sightings: number
   /** Every bid row, `skipped` rows included; only its zero matters here (#1157 owns that case). */
   bid_rows: number
-  /** Bid rows whose skip_reason is distinct from `skipped`: the real attempts (#1413, L683). */
+  /** Bid rows that are real attempts: neither `skipped` nor a written refusal (#1413, #2391, L683). */
   attempt_rows: number
+  /** Bid rows recording a deliberate refusal counted as recorded, RECORDED_REFUSAL_REASONS (#2391). */
+  refusal_rows: number
 }
 
 export interface CollapsedWorkflow {
@@ -106,7 +108,8 @@ export interface CollapsedWorkflow {
   sightings: number
   bid_rows: number
   attempt_rows: number
-  /** Attempts this workflow would have recorded at its usual rate. */
+  refusal_rows: number
+  /** Attempts and refusals this workflow would have recorded at its usual rate. */
   expected_rows: number
 }
 
@@ -142,7 +145,7 @@ export function decideRatioCollapse(
   const readings: Array<{ workflow_id: string; ratio: number }> = []
 
   for (const r of rows) {
-    if (!isCount(r.sightings) || !isCount(r.bid_rows) || !isCount(r.attempt_rows)) continue
+    if (!isCount(r.sightings) || !isCount(r.bid_rows) || !isCount(r.attempt_rows) || !isCount(r.refusal_rows)) continue
     // A ratio over zero leads is not a measurement. Storing it would poison the
     // median with a value the workflow never had.
     if (r.sightings === 0) continue
@@ -161,7 +164,23 @@ export function decideRatioCollapse(
     // Attempts per sighting, not rows (#1413, L683): Engine writes a `skipped`
     // row for nine leads in ten, rows that appear whether or not anything was
     // attempted, and Stage C of the buyer_select cutover removes them.
-    const ratio = r.attempt_rows / r.sightings
+    //
+    // A refusal by a buyer's own rule counts beside the attempts (#2391). Engine
+    // version 110 (2026-10-15) refused sell off leads under Tripoint's 2,000 loan
+    // minimum, leads that had been attempts, and the ratio halved with nothing
+    // broken. The refusals are a small share of LEADS but half of what had been
+    // ATTEMPTS, so leaving them out of the denominator instead moves nothing:
+    // measured on 2026-10-18, 1,210 attempts over 49,001 leads is still 2.5%
+    // against a 5.2% baseline. What a refusal replaced was an attempt, so the
+    // recorded refusal stands in for it, and a recording fault, the producer
+    // dropping out, loses both. Every reading stored before the rule had no
+    // refusals, so the history means the same thing and is kept.
+    //
+    // Only the loan minimum counts (RECORDED_REFUSAL_REASONS). A missing_lead_field
+    // row is written but counted as neither, because a loan amount path that stops
+    // resolving turns every sell off into one: counted as recorded, that fault
+    // would keep this sum steady (L367); counted as neither, it collapses and pages.
+    const ratio = (r.attempt_rows + r.refusal_rows) / r.sightings
     const history = histories[r.workflow_id]?.ratios ?? []
 
     if (history.length < MIN_BASELINE_SAMPLES) {
@@ -190,6 +209,7 @@ export function decideRatioCollapse(
         sightings: r.sightings,
         bid_rows: r.bid_rows,
         attempt_rows: r.attempt_rows,
+        refusal_rows: r.refusal_rows,
         expected_rows: Math.round(baseline * r.sightings),
       })
       // Deliberately NOT recorded: a sustained fault would otherwise walk the
