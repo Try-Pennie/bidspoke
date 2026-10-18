@@ -1,9 +1,9 @@
-import { execFileSync } from 'node:child_process'
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { REPO_ROOT } from './_scan-utils'
+import { execScriptSync, SCRIPT_TEST_TIMEOUT_MS } from './_script-deadline'
 
 /**
  * Deploy Drift must be able to tell "no deploy is running" from "I could not
@@ -43,6 +43,59 @@ import { REPO_ROOT } from './_scan-utils'
  * where the query reached GitHub and reported its own outcome out loud.
  */
 const SCRIPT = path.join(REPO_ROOT, '.github/scripts/deploy-inflight-age.sh')
+
+/**
+ * Time is SET here, never read off the machine (#2432, L290).
+ *
+ * The script measures every age as jq's `now` minus a timestamp. The stub gh
+ * runs the script's own filters with `now` defined as this instant, so every
+ * age and running time is exact. Read off the real clock instead, each answer
+ * drifted by however long the machine took to run the script, and the
+ * assertions carried windows (312 to 319s, 250 to 270s) that were a statement
+ * about how loaded the machine was.
+ */
+const NOW = 1_792_000_000
+
+/**
+ * One run of the script, killed as hung at the shared deadline (#2432, see
+ * _script-deadline.ts for why vitest's own timeout cannot do that).
+ *
+ * The work is bounded: a run is about 15 short processes (the script, the stub
+ * gh and jq for the run list, then the same for each in-flight run's jobs), with
+ * no sleep and no loop that can spin. Measured on 2026-10-18 on a 14 core
+ * MacBook: about 45 ms a test alone, and at most 1.9 s for one test in a full
+ * web run with 42 CPU burners beside it (the first test, which also pays the
+ * stubs' first exec, below), against a 20 s deadline.
+ */
+vi.setConfig({ testTimeout: SCRIPT_TEST_TIMEOUT_MS })
+
+/**
+ * The stub gh executables are written ONCE for the file, and each test tells
+ * them where its own fixture lives through STUB_DATA (#2432).
+ *
+ * On this Mac the first exec of a freshly written executable costs about 100 ms
+ * and every later one about 4 ms (measured 2026-10-18 over 10 fresh files: 98 ms
+ * first, 4 ms second; 108 ms first with 42 CPU burners running). Writing a new
+ * stub per test paid that on every test, and that cost is not this test's CPU,
+ * so it grows with whatever else on the machine is starting new executables,
+ * which in a full web run is every other script test.
+ */
+const STUBS = mkdtempSync(path.join(tmpdir(), 'inflight-stubs-'))
+const writeStub = (name: string, lines: string[]): string => {
+  const file = path.join(STUBS, name)
+  writeFileSync(file, lines.join('\n'))
+  chmodSync(file, 0o755)
+  return file
+}
+
+const runScript = (gh: string, data: string): { age: string; reason: string } => {
+  const errFile = path.join(data, 'stderr.txt')
+  const age = execScriptSync('deploy-inflight-age.sh', 'bash', ['-c', `bash "$0" 2>"$1"`, SCRIPT, errFile], {
+    encoding: 'utf8',
+    env: { ...process.env, GH_BIN: gh, STUB_DATA: data },
+  }).trim()
+  return { age, reason: readFileSync(errFile, 'utf8') }
+}
 
 /** One job of a Deploy run, with its times given as seconds before now. */
 type ListedJob = {
@@ -87,10 +140,48 @@ const iso = (now: number, ago: number): string =>
  * jobs in GitHub's shape and applies the script's `--jq` filter to them, which
  * is the shared deploy-running-seconds.jq. A queued job carries a started_at
  * equal to its created_at, as GitHub's does (read live from run 39141958054).
+ *
+ * Both run the script's filter with jq's `now` defined as NOW, so the clock is
+ * set rather than read. The stub does its own parsing with shell builtins and
+ * runs one jq per call, because every extra process it starts is time the test
+ * spends waiting on the machine (#2432).
  */
+const GH_LIKE_GITHUB = writeStub('gh-like-github', [
+  '#!/usr/bin/env bash',
+  'DIR="$STUB_DATA"',
+  'printf \'%s\\n\' "$*" >>"$DIR/calls.txt"',
+  'SUB="$1"; shift',
+  'FILE="$DIR/full.json"; BRANCH=""; FIELDS=""; FILTER="."; ENDPOINT=""',
+  'while [ $# -gt 0 ]; do',
+  '  case "$1" in',
+  '    --branch|-b) FILE="$DIR/stale.json"; BRANCH="$2"; shift ;;',
+  '    --branch=*) FILE="$DIR/stale.json"; BRANCH="${1#--branch=}" ;;',
+  '    --json) FIELDS="$2"; shift ;;',
+  '    --jq) FILTER="$2"; shift ;;',
+  '    --*) ;;',
+  '    *) [ "$SUB" = api ] && [ -z "$ENDPOINT" ] && ENDPOINT="$1" ;;',
+  '  esac',
+  '  shift',
+  'done',
+  // jq reads `now` as this fixed instant, so the clock is set, not read.
+  `CLOCK='def now: ${NOW};'`,
+  'if [ "$SUB" = api ]; then',
+  '  PREFIX="repos/{owner}/{repo}/actions/runs/"',
+  '  ID=${ENDPOINT#"$PREFIX"}; ID=${ID%%/jobs*}',
+  '  case "$ENDPOINT" in "$PREFIX"*/jobs*) ;; *) ID="" ;; esac',
+  '  case "$ID" in "" | *[!0-9]*) echo "stub gh: unexpected endpoint $ENDPOINT" >&2; exit 9 ;; esac',
+  '  if [ -f "$DIR/jobs-$ID.fail" ]; then IFS= read -r WHY <"$DIR/jobs-$ID.fail"; printf \'%s\\n\' "$WHY" >&2; exit 1; fi',
+  '  jq -r "$CLOCK $FILTER" "$DIR/jobs-$ID.json"',
+  '  exit $?',
+  'fi',
+  'if [ -f "$DIR/list-stderr" ]; then IFS= read -r -d \'\' E <"$DIR/list-stderr"; printf \'%s\' "$E" >&2; fi',
+  'jq -r --arg b "$BRANCH" --arg f "$FIELDS" "$CLOCK"\' map(select($b == "" or .headBranch == $b)) | ($f | split(",")) as $k | map(with_entries(select(.key as $x | $k | index($x)))) | \'"($FILTER)" "$FILE"',
+  '',
+])
+
 const askLikeGitHub = (runs: ListedRun[], listStderr = ''): Asked => {
   const dir = mkdtempSync(path.join(tmpdir(), 'inflight-index-'))
-  const now = Math.floor(Date.now() / 1000)
+  const now = NOW
   const withIds = runs.map((r, i) => ({ ...r, id: r.id ?? 1000 + i }))
   const asJson = (rs: typeof withIds): string =>
     JSON.stringify(
@@ -119,51 +210,15 @@ const askLikeGitHub = (runs: ListedRun[], listStderr = ''): Asked => {
     }))
     writeFileSync(path.join(dir, `jobs-${r.id}.json`), JSON.stringify({ total_count: r.totalCount ?? jobs.length, jobs }))
   }
-  const gh = path.join(dir, 'gh')
-  writeFileSync(
-    gh,
-    [
-      '#!/usr/bin/env bash',
-      `DIR=${JSON.stringify(dir)}`,
-      'printf \'%s\\n\' "$*" >>"$DIR/calls.txt"',
-      'SUB="$1"; shift',
-      'FILE="$DIR/full.json"; BRANCH=""; FIELDS=""; FILTER="."; ENDPOINT=""',
-      'while [ $# -gt 0 ]; do',
-      '  case "$1" in',
-      '    --branch|-b) FILE="$DIR/stale.json"; BRANCH="$2"; shift ;;',
-      '    --branch=*) FILE="$DIR/stale.json"; BRANCH="${1#--branch=}" ;;',
-      '    --json) FIELDS="$2"; shift ;;',
-      '    --jq) FILTER="$2"; shift ;;',
-      '    --*) ;;',
-      '    *) [ "$SUB" = api ] && [ -z "$ENDPOINT" ] && ENDPOINT="$1" ;;',
-      '  esac',
-      '  shift',
-      'done',
-      'if [ "$SUB" = api ]; then',
-      '  ID=$(printf \'%s\' "$ENDPOINT" | sed -n \'s|^repos/{owner}/{repo}/actions/runs/\\([0-9]*\\)/jobs.*|\\1|p\')',
-      '  if [ -z "$ID" ]; then echo "stub gh: unexpected endpoint $ENDPOINT" >&2; exit 9; fi',
-      '  if [ -f "$DIR/jobs-$ID.fail" ]; then cat "$DIR/jobs-$ID.fail" >&2; exit 1; fi',
-      '  jq -r "$FILTER" "$DIR/jobs-$ID.json"',
-      '  exit $?',
-      'fi',
-      `printf '%s' ${JSON.stringify(listStderr)} >&2`,
-      'jq -c --arg b "$BRANCH" --arg f "$FIELDS" \'map(select($b == "" or .headBranch == $b)) | ($f | split(",")) as $k | map(with_entries(select(.key as $x | $k | index($x))))\' "$FILE" | jq -r "$FILTER"',
-      '',
-    ].join('\n'),
-  )
-  chmodSync(gh, 0o755)
-  const errFile = path.join(dir, 'stderr.txt')
-  const age = execFileSync('bash', ['-c', `bash "$0" 2>"$1"`, SCRIPT, errFile], {
-    encoding: 'utf8',
-    env: { ...process.env, GH_BIN: gh },
-  }).trim()
+  if (listStderr) writeFileSync(path.join(dir, 'list-stderr'), listStderr)
+  const { age, reason } = runScript(GH_LIKE_GITHUB, dir)
   let calls = ''
   try {
     calls = readFileSync(path.join(dir, 'calls.txt'), 'utf8')
   } catch {
     calls = ''
   }
-  return { age, reason: readFileSync(errFile, 'utf8'), calls }
+  return { age, reason, calls }
 }
 
 /** Splits `age=<s>,running=<s|unknown>` into its two parts, failing loudly on any other shape. */
@@ -174,28 +229,33 @@ const parse = (answer: string): { age: number; running: number | 'unknown' } => 
 }
 
 /**
- * Writes a fake `gh` that prints `stdout` and exits with `code` for every call,
- * for the cases where the run list itself fails or answers nonsense.
+ * A fake `gh` that prints a fixed stdout and stderr and exits with a fixed code
+ * for every call, for the cases where the run list itself fails or answers
+ * nonsense. Each test's answer is read from its STUB_DATA directory.
+ *
+ * `%b` so an escape in the fixture becomes a real newline, the way gh's own
+ * output arrives. With `%s` the stub wrote a literal backslash-n, which the
+ * script correctly read as a non-numeric answer, so two of these tests failed
+ * for a reason that had nothing to do with what they claim (L165).
  */
+const GH_FIXED = writeStub('gh-fixed', [
+  '#!/usr/bin/env bash',
+  'DIR="$STUB_DATA"',
+  'IFS= read -r -d \'\' OUT <"$DIR/gh-stdout"',
+  'IFS= read -r -d \'\' ERR <"$DIR/gh-stderr"',
+  'IFS= read -r CODE <"$DIR/gh-code"',
+  'printf \'%b\' "$OUT"',
+  'printf \'%b\' "$ERR" >&2',
+  'exit "$CODE"',
+  '',
+])
+
 const askWith = (stdout: string, code: number, stderr = ''): { age: string; reason: string } => {
   const dir = mkdtempSync(path.join(tmpdir(), 'inflight-'))
-  const gh = path.join(dir, 'gh')
-  writeFileSync(
-    gh,
-    // `%b` so an escape in the fixture becomes a real newline, the way gh's own
-    // output arrives. With `%s` the stub wrote a literal backslash-n, which the
-    // script correctly read as a non-numeric answer, so two of these tests
-    // failed for a reason that had nothing to do with what they claim (L165).
-    `#!/usr/bin/env bash\nprintf '%b' ${JSON.stringify(stdout)}\nprintf '%b' ${JSON.stringify(stderr)} >&2\nexit ${code}\n`,
-  )
-  chmodSync(gh, 0o755)
-
-  const errFile = path.join(dir, 'stderr.txt')
-  const age = execFileSync('bash', ['-c', `bash "$0" 2>"$1"`, SCRIPT, errFile], {
-    encoding: 'utf8',
-    env: { ...process.env, GH_BIN: gh },
-  }).trim()
-  return { age, reason: readFileSync(errFile, 'utf8') }
+  writeFileSync(path.join(dir, 'gh-stdout'), stdout)
+  writeFileSync(path.join(dir, 'gh-stderr'), stderr)
+  writeFileSync(path.join(dir, 'gh-code'), `${code}\n`)
+  return runScript(GH_FIXED, dir)
 }
 
 /** A run that has been in flight 312s, one job finished after 200s of running and one still going for 50s. */
@@ -212,14 +272,12 @@ const RUN_312: ListedRun = {
 describe('deploy-inflight-age: a deploy really is in flight', () => {
   it('answers with its age and how long it has been running', () => {
     const { age, running } = parse(askLikeGitHub([RUN_312]).age)
-    expect(age).toBeGreaterThanOrEqual(312)
-    expect(age).toBeLessThan(330)
-    expect(running).toBeGreaterThanOrEqual(250)
-    expect(running).toBeLessThan(270)
+    expect(age).toBe(312)
+    expect(running).toBe(250)
   })
 
   it('says so on stderr, naming the age', () => {
-    expect(askLikeGitHub([RUN_312]).reason).toMatch(/in flight 31\ds/)
+    expect(askLikeGitHub([RUN_312]).reason).toMatch(/in flight 312s/)
   })
 })
 
@@ -259,11 +317,14 @@ describe('deploy-inflight-age: the query itself failed', () => {
 })
 
 describe('deploy-inflight-age: the query answered something unusable', () => {
-  it('is `unavailable` when the answer is not a run id and a whole number of seconds', () => {
-    expect(askWith('probably\n', 0).age).toBe('unavailable')
-    expect(askWith('7 soon\n', 0).age).toBe('unavailable')
-    expect(askWith('421\n', 0).age).toBe('unavailable')
-  })
+  // One run of the script per test, so no test holds more than one deadline's
+  // worth of work under the test timeout (#2432).
+  it.each(['probably\n', '7 soon\n', '421\n'])(
+    'is `unavailable` when the answer is not a run id and a whole number of seconds (%j)',
+    (answer) => {
+      expect(askWith(answer, 0).age).toBe('unavailable')
+    },
+  )
 
   it('is not fooled into `unavailable` by a warning on stderr of a SUCCEEDING query', () => {
     // gh writes deprecation and upgrade notices to stderr on perfectly good
@@ -292,8 +353,7 @@ describe('deploy-inflight-age: a run the branch filtered index has not caught up
       { status: 'completed', headBranch: 'main', createdAgo: 3600 },
     ])
     const parsed = parse(age)
-    expect(parsed.age).toBeGreaterThanOrEqual(65)
-    expect(parsed.age).toBeLessThan(200)
+    expect(parsed.age).toBe(70)
   })
 
   it('asks by the workflow alone, never with a branch filter', () => {
@@ -319,8 +379,7 @@ describe('deploy-inflight-age: a run the branch filtered index has not caught up
       { status: 'in_progress', headBranch: 'main', createdAgo: 400, staleUnderBranchFilter: true },
     ])
     const parsed = parse(age)
-    expect(parsed.age).toBeGreaterThanOrEqual(395)
-    expect(parsed.age).toBeLessThan(600)
+    expect(parsed.age).toBe(400)
   })
 })
 
@@ -361,10 +420,8 @@ const RUN_50841F3_AT_1483: ListedRun = {
 describe('deploy-inflight-age: time spent waiting for a runner is not running time (#2409)', () => {
   it('reads the 2026-10-18 run as 1483s old and about 753s running', () => {
     const { age, running } = parse(askLikeGitHub([RUN_50841F3_AT_1483]).age)
-    expect(age).toBeGreaterThanOrEqual(1483)
-    expect(age).toBeLessThan(1500)
-    expect(running).toBeGreaterThanOrEqual(753)
-    expect(running).toBeLessThan(770)
+    expect(age).toBe(1483)
+    expect(running).toBe(753)
   })
 
   it('does not count a queued job as running from when it was created, though GitHub gives it a started_at', () => {
@@ -456,10 +513,8 @@ describe('deploy-inflight-age: time spent waiting for a runner is not running ti
         },
       ]).age,
     )
-    expect(age).toBeGreaterThanOrEqual(1200)
-    expect(age).toBeLessThan(1220)
-    expect(running).toBeGreaterThanOrEqual(650)
-    expect(running).toBeLessThan(670)
+    expect(age).toBe(1200)
+    expect(running).toBe(650)
   })
 
   it('asks for the jobs of exactly the runs in flight on main', () => {
