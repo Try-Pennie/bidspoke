@@ -5,8 +5,9 @@
  * connects them, and turns every missing piece into a refusal by name.
  *
  * Not configured is loud, never a quiet fallback: while OPS_SUPABASE_URL or
- * OPS_SUPABASE_SECRET_KEY is unset, or OPS_CONNECTIONS_PRIVATE_KEY is unset or
- * will not import (#2333, connection-key.ts), the tick reports `not_configured`
+ * OPS_SUPABASE_SECRET_KEY is unset, or OPS_CONNECTIONS_PRIVATE_KEY is unset,
+ * will not import, or does not match the committed public key (#2333,
+ * connection-key.ts), the tick reports `not_configured`
  * naming each one, every minute, and the bidding Worker pages on it with that
  * secret's remedy (lib/ops-gateway.ts).
  *

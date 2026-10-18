@@ -2,7 +2,8 @@
  * The ops private key check inside workerd (#2333), where the minute tick runs
  * it. The Node suite (connection-key.test.ts) proves the rules; this proves the
  * runtime's own Web Crypto imports a real RSA-4096 PKCS#8 key through
- * connection-seal's importPrivateKey and refuses a short one, so a sound key is
+ * connection-seal's importPrivateKey, opens a probe sealed to its own public
+ * half, and refuses a short one, so a sound key is
  * never reported not_configured in production for a reason Node cannot show.
  */
 import { describe, expect, it } from 'vitest'

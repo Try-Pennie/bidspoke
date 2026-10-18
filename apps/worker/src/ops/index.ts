@@ -61,7 +61,8 @@ export interface OpsEnv extends OpsDbEnv {
   /**
    * The ops private key (#2333): PKCS#8 PEM, RSA-OAEP of at least 4096 bits, that
    * opens the ops connection logins sealed to its public half in
-   * packages/connection-seal/src/keys.ts. Checked every minute (connection-key.ts).
+   * packages/connection-seal/src/keys.ts. Checked every minute that it imports and
+   * opens a probe sealed to the public key under CURRENT_OPS_KID (connection-key.ts).
    */
   OPS_CONNECTIONS_PRIVATE_KEY?: string
   /** The NEXT ops private key, set only during a rotation of the ops key. */

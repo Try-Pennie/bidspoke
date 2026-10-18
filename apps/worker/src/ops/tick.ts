@@ -9,7 +9,8 @@
  *  1. Stamp started with the bidding Worker (lib/ops-gateway.ts), which keeps the
  *     heartbeat. The watchdog lives there, not here (L71). Then check the
  *     secrets: an unset ops database secret, or an ops private key that is
- *     unset or will not import (#2333, connection-key.ts), makes the report
+ *     unset, will not import, or does not match the committed public key
+ *     (#2333, connection-key.ts), makes the report
  *     not_configured and names each secret, so the page names its remedy.
  *  2. Read the DATABASE clock (#1698 D8, L736). Every fire is computed against
  *     it, never against this Worker's clock, and without it nothing is planned.

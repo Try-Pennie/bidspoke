@@ -126,7 +126,8 @@ export const OPS_REQUIRED_SECRETS = [
   // (packages/connection-seal). Escrowed in the 1Password item "Bidspoke recovery
   // keys" before it was set; a lost key costs re-entering every ops connection.
   // Required from the change that first reads it, never parked as optional (L65):
-  // the minute tick checks it imports, and reports not_configured naming it.
+  // the minute tick checks it imports and opens a probe sealed to the committed
+  // public key (NEXT may open it mid rotation), and reports not_configured naming it.
   'OPS_CONNECTIONS_PRIVATE_KEY',
 ] as const
 
@@ -147,7 +148,8 @@ export const OPS_OPTIONAL_SECRETS = [
   // The NEXT ops private key (#2333), held only during a rotation of the ops key
   // (docs/disaster-recovery.md). Optional because it is unset the rest of the
   // time; listed so that setting it does not turn main's secret parity step red
-  // mid rotation. When it is set, the minute tick checks it imports too.
+  // mid rotation. When it is set, the minute tick checks it imports too, and
+  // counts it as opening the current kid once that kid has moved to it.
   'OPS_CONNECTIONS_PRIVATE_KEY_NEXT',
 ] as const
 

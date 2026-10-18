@@ -14,7 +14,8 @@
  * CURRENT_OPS_KID (packages/connection-seal/src/keys.ts). So the tick also
  * seals a probe to that public half and opens it with this key, the same two
  * calls a real login takes, and a key that cannot open it is reported the same
- * way. With no kid current nothing is sealed, so only the import is checked.
+ * way. NEXT may be the one that opens it, during a rotation (matchProblem).
+ * With no kid current nothing is sealed, so only the import is checked.
  *
  * OPS_CONNECTIONS_PRIVATE_KEY_NEXT exists only during a rotation. Unset is
  * normal; set, it must import too, or the rotation would reseal logins to a key
@@ -73,38 +74,68 @@ const probeAad = (kid: string) => ({
   kid,
 })
 
-async function matchProblem(value: string, registry: SealRegistry): Promise<UnconfiguredSecret | null> {
-  const kid = registry.currentKid
-  if (kid === null) return null
+/** Whether this key opens a probe sealed to the committed public key under kid, and if not, why. */
+async function opensProbe(value: string, kid: string, publicKeys: KeyRing): Promise<string | null> {
   try {
-    const envelope = await seal(registry.publicKeys, PROBE, probeAad(kid))
+    const envelope = await seal(publicKeys, PROBE, probeAad(kid))
     if ((await open({ [kid]: value }, envelope, probeAad(kid))) === PROBE) return null
-    throw new Error('the probe opened to different text')
+    return 'the probe opened to different text'
   } catch (err) {
-    const why = err instanceof SealError ? err.message : `an unexpected ${err instanceof Error ? err.name : 'error'}`
-    return {
-      secret: CURRENT,
-      problem: `${CURRENT} is set on bidspoke-worker-ops but is not the private half of the public key committed as kid ${kid} (${why}), so no login bidding seals can be opened with it.`,
-    }
+    return err instanceof SealError ? err.message : `an unexpected ${err instanceof Error ? err.name : 'error'}`
+  }
+}
+
+/**
+ * Whether one of the keys that imported opens the current kid. NEXT counts: in
+ * rotation step 3 the kid has moved to the new key while it is still held in
+ * NEXT, and the opener holds both. Reported on the current secret, whose
+ * restore steps are the remedy.
+ */
+async function matchProblem(keys: { secret: string; value: string }[], registry: SealRegistry): Promise<UnconfiguredSecret | null> {
+  const kid = registry.currentKid
+  if (kid === null || keys.length === 0) return null
+  const why: string[] = []
+  for (const k of keys) {
+    const refused = await opensProbe(k.value, kid, registry.publicKeys)
+    if (refused === null) return null
+    why.push(refused)
+  }
+  const named = keys.length === 1 ? `${CURRENT} is set on bidspoke-worker-ops but is not` : `Neither ${CURRENT} nor ${NEXT} on bidspoke-worker-ops is`
+  return {
+    secret: CURRENT,
+    problem: `${named} the private half of the public key committed as kid ${kid} (${why.join('; ')}), so no login bidding seals can be opened with it.`,
   }
 }
 
 const isBlank = (v: unknown): boolean => typeof v !== 'string' || v.trim() === ''
 
-/** Each ops private key secret that is unset (the current one only), does not import, or (the current one) does not match the committed public key, current first. */
+/**
+ * Each ops private key secret that is unset (the current one only) or does not
+ * import, and, when neither the current key nor NEXT opens the kid bidding
+ * seals under, that mismatch on the current one; current first.
+ */
 export async function opsConnectionKeyProblems(env: OpsEnv, registry: SealRegistry = COMMITTED): Promise<UnconfiguredSecret[]> {
   const problems: UnconfiguredSecret[] = []
+  const imported: { secret: string; value: string }[] = []
   const current = env.OPS_CONNECTIONS_PRIVATE_KEY
   if (isBlank(current)) {
     problems.push({ secret: CURRENT, problem: `${CURRENT} is not set on bidspoke-worker-ops, so no ops connection can be opened.` })
   } else {
-    const p = (await importProblem(CURRENT, current as string)) ?? (await matchProblem(current as string, registry))
+    const p = await importProblem(CURRENT, current as string)
     if (p) problems.push(p)
+    else imported.push({ secret: CURRENT, value: current as string })
   }
   const next = env.OPS_CONNECTIONS_PRIVATE_KEY_NEXT
+  let nextProblem: UnconfiguredSecret | null = null
   if (!isBlank(next)) {
-    const p = await importProblem(NEXT, next as string)
-    if (p) problems.push(p)
+    nextProblem = await importProblem(NEXT, next as string)
+    if (!nextProblem) imported.push({ secret: NEXT, value: next as string })
   }
+  // Only once the current key imported: an unset or broken current key is already named.
+  if (imported[0]?.secret === CURRENT) {
+    const m = await matchProblem(imported, registry)
+    if (m) problems.push(m)
+  }
+  if (nextProblem) problems.push(nextProblem)
   return problems
 }
