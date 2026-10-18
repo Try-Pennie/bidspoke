@@ -568,7 +568,13 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
       // caps, and could let an empty list clear the page. An unknown last count
       // never counts as grown, so the backoff is not reset on its account.
       const read = await marker(`${unresolvedMarker} could not be read`, 'its count was paged again rather than risk never paging it', () => deps.kv.get(pagedKey))
-      const lastPaged = read.ok ? Number(read.value ?? '0') : null
+      let lastPaged = read.ok ? Number(read.value ?? '0') : null
+      // A value that is not a count would compare false against every count and
+      // never page again (L50), so it is unknown, which pages, the same as unread.
+      if (read.ok && !Number.isFinite(lastPaged)) {
+        markerFailures.push(`${unresolvedMarker} holds ${JSON.stringify(read.value)}, not a count, so its count was paged again rather than risk never paging it`)
+        lastPaged = null
+      }
       if (lastPaged === null || s.unresolved.count > lastPaged) {
         unresolvedLines.push(unresolvedLine(buyer, s.unresolved.entries, now, deps.appUrl))
         s.unresolved.paged = true
@@ -612,6 +618,8 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
   // out the backoff; it is still sent below.
   const resetBackoff = async (job: string) => {
     const family = `export-alert:${job}`
+    // readCondition catches its own KV failure and answers null, so a failed
+    // read resets nothing and cannot throw out of the run (alert-backoff.ts).
     if ((await readCondition(deps.kv, family)) === null) return
     await marker(`the ${job} reminder backoff could not be reset`, 'this page waits out the backoff', () => clearCondition(deps.kv, family))
   }

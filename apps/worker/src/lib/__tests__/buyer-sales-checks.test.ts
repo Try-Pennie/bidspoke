@@ -908,6 +908,14 @@ describe('one KV marker failing leaves every other check judged (#2431, L71, L98
     expect(endingOf(s).summary?.unmeasured).toEqual(expect.arrayContaining([expect.stringMatching(/tripoint unresolved marker could not be read/)]))
   })
 
+  it('an unresolved marker holding something that is not a count pages, never parses to a value no count can exceed (L50)', async () => {
+    const d = deps({ entries: mixed(), sales: [] })
+    d.kv.store.set(`unresolved-paged:${PARTNER}`, 'not a number')
+    const s = await runBuyerSalesChecks(d)
+    expect(d.notifyUnresolved).toHaveBeenCalledWith([expect.stringMatching(/^tripoint: 1 unresolved sale/)])
+    expect(s.marker_failures).toEqual([expect.stringMatching(/tripoint unresolved marker holds "not a number", not a count/)])
+  })
+
   it('an unreadable unresolved marker does not reset the reminder backoff, which only a count known to have grown may do', async () => {
     const d = deps({ entries: mixed(), sales: [] })
     d.kv.store.set(`export-alert:${BUYER_SALES_UNRESOLVED_JOB}:condition`, JSON.stringify({ since: '2027-09-20T15:00:00.000Z', alerts: 1 }))
