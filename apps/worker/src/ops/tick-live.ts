@@ -16,7 +16,7 @@
  */
 import type { OpsTickReport } from '../lib/ops-gateway-contract'
 import { raceDeadline } from '../lib/alert-claim'
-import { opsConnectionKeyProblems } from './connection-key'
+import { opsConnectionKeyProblems, type SealRegistry } from './connection-key'
 import { createOpsSupabaseClient, OpsDatabaseConfigError, type OpsSupabaseClient } from './ops-db'
 import {
   claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, readWorkflowCopies, recordScheduleObservation, runQueueDisagreements,
@@ -38,6 +38,8 @@ export interface LiveTickOptions {
   rpc?: OpsRpcOptions
   /** For tests: the ops client's fetch. */
   fetch?: typeof fetch
+  /** For tests: the public keys the private key must match, in place of the committed ones. */
+  sealRegistry?: SealRegistry
 }
 
 function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined): OpsTickDb {
@@ -86,7 +88,7 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
     scheduledTime,
     now,
     db: opsTickDatabase(env, options),
-    checkSecrets: () => opsConnectionKeyProblems(env),
+    checkSecrets: () => opsConnectionKeyProblems(env, options.sealRegistry),
     gateway: {
       fetchWorkflows: () => {
         if (!gateway) throw noGateway()

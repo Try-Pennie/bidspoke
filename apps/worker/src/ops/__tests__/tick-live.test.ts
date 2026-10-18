@@ -12,6 +12,7 @@ import type { OpsInternalBinding } from '../internal'
 import { runOpsTick } from '../tick'
 import { GATEWAY_DEADLINE_MS, liveTickPorts, opsTickDatabase } from '../tick-live'
 import { KEYGEN_TIMEOUT_MS, opsKeyPair } from './ops-key-fixture'
+import type { SealRegistry } from '../connection-key'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
 const WF = '00000000-0000-4000-8000-0000000019a1'
@@ -80,10 +81,13 @@ function self(): OpsInternalBinding & { observed: string[] } {
   return s
 }
 
-/** A real 4096 bit ops private key, generated for this run (#2333). */
+/** A real 4096 bit ops key pair, generated for this run (#2333), and a registry committing its public half. */
 let opsPrivateKey = ''
+let sealRegistry: SealRegistry = { currentKid: null, publicKeys: {} }
 beforeAll(async () => {
-  opsPrivateKey = (await opsKeyPair(4096)).privatePem
+  const pair = await opsKeyPair(4096)
+  opsPrivateKey = pair.privatePem
+  sealRegistry = { currentKid: 'ops-test', publicKeys: { 'ops-test': pair.publicPem } }
 }, KEYGEN_TIMEOUT_MS)
 
 const configured = (g = gateway(), s = self()) => ({
@@ -99,7 +103,7 @@ describe('the live tick', () => {
   it('runs end to end through the ops functions, signs its dispatch, and reports to the gateway', async () => {
     const db = opsDatabase()
     const { env, g, s } = configured()
-    const report = await runOpsTick(liveTickPorts(env, NOW + 17_000, { now: () => NOW, tickId: 'tick-live', fetch: db.fetch }))
+    const report = await runOpsTick(liveTickPorts(env, NOW + 17_000, { sealRegistry, now: () => NOW, tickId: 'tick-live', fetch: db.fetch }))
     expect(report.problems).toEqual([])
     expect(report.outcome).toBe('ok')
     expect(db.called).toEqual(expect.arrayContaining(['ops_now', 'claim_ops_sweep', 'save_workflow_copies', 'workflow_copies', 'record_schedule_observation', 'due_queue_depth']))
@@ -112,7 +116,7 @@ describe('the live tick', () => {
   it('a dispatch signed with the wrong key is refused by OpsInternal and reported', async () => {
     const db = opsDatabase()
     const { env } = configured()
-    const report = await runOpsTick(liveTickPorts({ ...env, PORTING_CAPTURE_MASTER: 'a-different-master' }, null, { now: () => NOW, fetch: db.fetch }))
+    const report = await runOpsTick(liveTickPorts({ ...env, PORTING_CAPTURE_MASTER: 'a-different-master' }, null, { sealRegistry, now: () => NOW, fetch: db.fetch }))
     expect(report.problems.join(' ')).toMatch(/dispatch of workflow .* failed: OpsInternal refused: bad_signature/)
   })
 })
@@ -125,7 +129,7 @@ describe('not configured, said by name', () => {
     })
     const db = opsDatabase()
     const { env, g } = configured()
-    const report = await runOpsTick(liveTickPorts({ ...env, OPS_SUPABASE_SECRET_KEY: undefined }, null, { now: () => NOW, fetch: db.fetch }))
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_SUPABASE_SECRET_KEY: undefined }, null, { sealRegistry, now: () => NOW, fetch: db.fetch }))
     expect(report.outcome).toBe('not_configured')
     expect(report.problems[0]).toMatch(/OPS_SUPABASE_SECRET_KEY is not set on bidspoke-worker-ops/)
     expect(db.called).toEqual([])
@@ -137,7 +141,7 @@ describe('not configured, said by name', () => {
   it('a live tick with the ops private key unset reports it by name, and still runs everything else', async () => {
     const db = opsDatabase()
     const { env, g, s } = configured()
-    const report = await runOpsTick(liveTickPorts({ ...env, OPS_CONNECTIONS_PRIVATE_KEY: undefined }, null, { now: () => NOW, fetch: db.fetch }))
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_CONNECTIONS_PRIVATE_KEY: undefined }, null, { sealRegistry, now: () => NOW, fetch: db.fetch }))
     expect(report.outcome).toBe('not_configured')
     expect(report.not_configured_secrets).toEqual(['OPS_CONNECTIONS_PRIVATE_KEY'])
     expect(report.problems).toEqual(['OPS_CONNECTIONS_PRIVATE_KEY is not set on bidspoke-worker-ops, so no ops connection can be opened.'])
@@ -149,10 +153,19 @@ describe('not configured, said by name', () => {
   it('a live tick with a malformed ops private key reports it by name', async () => {
     const db = opsDatabase()
     const { env } = configured()
-    const report = await runOpsTick(liveTickPorts({ ...env, OPS_CONNECTIONS_PRIVATE_KEY: 'pasted the wrong thing' }, null, { now: () => NOW, fetch: db.fetch }))
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_CONNECTIONS_PRIVATE_KEY: 'pasted the wrong thing' }, null, { sealRegistry, now: () => NOW, fetch: db.fetch }))
     expect(report.outcome).toBe('not_configured')
     expect(report.not_configured_secrets).toEqual(['OPS_CONNECTIONS_PRIVATE_KEY'])
     expect(report.problems[0]).toMatch(/OPS_CONNECTIONS_PRIVATE_KEY is set on bidspoke-worker-ops but does not import .*seal_key_malformed/)
+  })
+
+  it('a live tick with a sound key that is not the committed one reports it by name', async () => {
+    const db = opsDatabase()
+    const { env } = configured()
+    const report = await runOpsTick(liveTickPorts(env, null, { now: () => NOW, fetch: db.fetch }))
+    expect(report.outcome).toBe('not_configured')
+    expect(report.not_configured_secrets).toEqual(['OPS_CONNECTIONS_PRIVATE_KEY'])
+    expect(report.problems[0]).toMatch(/not the private half of the public key committed as kid ops-2026-10/)
   })
 
   it('refuses a URL naming the bidding database, never connecting to it', () => {
@@ -165,7 +178,7 @@ describe('the bindings', () => {
   it('a missing gateway binding is reported by name, and the tick still plans from the saved copies', async () => {
     const db = opsDatabase()
     const { env } = configured()
-    const report = await runOpsTick(liveTickPorts({ ...env, OPS_GATEWAY: undefined }, null, { now: () => NOW, fetch: db.fetch }))
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_GATEWAY: undefined }, null, { sealRegistry, now: () => NOW, fetch: db.fetch }))
     expect(report.problems.join(' ')).toMatch(/OPS_GATEWAY binding to the bidding Worker is missing/)
     expect(db.called).toContain('record_schedule_observation')
   })
@@ -176,7 +189,7 @@ describe('the bindings', () => {
     const silent = { ...gateway(), opsWorkflows: () => new Promise<never>(() => {}) }
     const waited: number[] = []
     const report = await runOpsTick(liveTickPorts({ ...env, OPS_GATEWAY: silent }, null, {
-      now: () => NOW, fetch: db.fetch, delay: async (ms) => { waited.push(ms) },
+      sealRegistry, now: () => NOW, fetch: db.fetch, delay: async (ms) => { waited.push(ms) },
     }))
     expect(waited).toContain(GATEWAY_DEADLINE_MS)
     expect(report.problems.join(' ')).toMatch(/workflow list did not answer within 15 s/)

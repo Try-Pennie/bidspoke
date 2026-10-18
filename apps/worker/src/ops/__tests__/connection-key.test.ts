@@ -9,19 +9,40 @@ import { opsConnectionKeyProblems } from '../connection-key'
 import type { OpsEnv } from '../index'
 import { KEYGEN_TIMEOUT_MS, opsKeyPair, type OpsKeyPair } from './ops-key-fixture'
 
+/** A registry holding the pair's own public half, as the committed one holds the real key's. */
+const registryOf = (pair: OpsKeyPair) => ({ currentKid: 'ops-test', publicKeys: { 'ops-test': pair.publicPem } })
+
 const env = (over: Partial<Record<'OPS_CONNECTIONS_PRIVATE_KEY' | 'OPS_CONNECTIONS_PRIVATE_KEY_NEXT', string | undefined>>) =>
   ({ LANE: 'ops', ...over }) as unknown as OpsEnv
 
 describe('opsConnectionKeyProblems', () => {
   let strong: OpsKeyPair
   let weak: OpsKeyPair
+  let other: OpsKeyPair
 
   beforeAll(async () => {
-    ;[strong, weak] = await Promise.all([opsKeyPair(4096), opsKeyPair(2048)])
+    ;[strong, weak, other] = await Promise.all([opsKeyPair(4096), opsKeyPair(2048), opsKeyPair(4096)])
   }, KEYGEN_TIMEOUT_MS)
 
   it('finds nothing wrong with a 4096 bit RSA private key and no NEXT key', async () => {
-    expect(await opsConnectionKeyProblems(env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem }))).toEqual([])
+    expect(await opsConnectionKeyProblems(env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem }), registryOf(strong))).toEqual([])
+  })
+
+  it('names a sound key that is not the private half of the public key committed under the current kid', async () => {
+    const problems = await opsConnectionKeyProblems(env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem }), registryOf(other))
+    expect(problems).toEqual([{
+      secret: 'OPS_CONNECTIONS_PRIVATE_KEY',
+      problem: expect.stringMatching(/^OPS_CONNECTIONS_PRIVATE_KEY is set on bidspoke-worker-ops but is not the private half of the public key committed as kid ops-test \(seal_unwrap_failed/),
+    }])
+  })
+
+  it('checks against the committed registry when none is passed, so a key other than ops-2026-10 is named', async () => {
+    const problems = await opsConnectionKeyProblems(env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem }))
+    expect(problems).toEqual([{ secret: 'OPS_CONNECTIONS_PRIVATE_KEY', problem: expect.stringContaining('committed as kid ops-2026-10') }])
+  })
+
+  it('checks only that the key imports while no kid is current, since nothing is sealed then', async () => {
+    expect(await opsConnectionKeyProblems(env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem }), { currentKid: null, publicKeys: {} })).toEqual([])
   })
 
   it.each([
@@ -58,12 +79,12 @@ describe('opsConnectionKeyProblems', () => {
   })
 
   it('leaves an unset NEXT key alone: it exists only during a rotation', async () => {
-    expect(await opsConnectionKeyProblems(env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem, OPS_CONNECTIONS_PRIVATE_KEY_NEXT: undefined }))).toEqual([])
+    expect(await opsConnectionKeyProblems(env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem, OPS_CONNECTIONS_PRIVATE_KEY_NEXT: undefined }), registryOf(strong))).toEqual([])
   })
 
   it('accepts a sound NEXT key, and names a NEXT key that does not import', async () => {
-    expect(await opsConnectionKeyProblems(env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem, OPS_CONNECTIONS_PRIVATE_KEY_NEXT: strong.privatePem }))).toEqual([])
-    const problems = await opsConnectionKeyProblems(env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem, OPS_CONNECTIONS_PRIVATE_KEY_NEXT: weak.privatePem }))
+    expect(await opsConnectionKeyProblems(env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem, OPS_CONNECTIONS_PRIVATE_KEY_NEXT: strong.privatePem }), registryOf(strong))).toEqual([])
+    const problems = await opsConnectionKeyProblems(env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem, OPS_CONNECTIONS_PRIVATE_KEY_NEXT: weak.privatePem }), registryOf(strong))
     expect(problems).toEqual([{ secret: 'OPS_CONNECTIONS_PRIVATE_KEY_NEXT', problem: expect.stringMatching(/^OPS_CONNECTIONS_PRIVATE_KEY_NEXT is set on bidspoke-worker-ops but does not import .*seal_key_too_small/) }])
   })
 

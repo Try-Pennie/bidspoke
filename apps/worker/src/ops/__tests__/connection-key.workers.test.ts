@@ -13,7 +13,8 @@ import { KEYGEN_TIMEOUT_MS, opsKeyPair } from './ops-key-fixture'
 describe('the ops private key check (workerd)', () => {
   it('accepts a 4096 bit key and names a 2048 bit one by its refusal', async () => {
     const [strong, weak] = await Promise.all([opsKeyPair(4096), opsKeyPair(2048)])
-    expect(await opsConnectionKeyProblems({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem } as unknown as OpsEnv)).toEqual([])
+    const registry = { currentKid: 'ops-test', publicKeys: { 'ops-test': strong.publicPem } }
+    expect(await opsConnectionKeyProblems({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem } as unknown as OpsEnv, registry)).toEqual([])
     const refused = await opsConnectionKeyProblems({ OPS_CONNECTIONS_PRIVATE_KEY: weak.privatePem } as unknown as OpsEnv)
     expect(refused).toEqual([{ secret: 'OPS_CONNECTIONS_PRIVATE_KEY', problem: expect.stringMatching(/seal_key_too_small/) }])
   }, KEYGEN_TIMEOUT_MS)

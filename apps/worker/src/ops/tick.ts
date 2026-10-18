@@ -186,7 +186,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
       problems.push(found.problem)
     }
   } catch (err) {
-    problems.push(`The ops tick could not check its secrets (${formatErr(err)}), so whether the ops private key is usable is not known.`)
+    problems.push(`The ops tick could not check its secrets (${formatErr(err)}), so whether those secrets, the ops private key among them, are usable is not known.`)
   }
 
   // 2. The database clock.
