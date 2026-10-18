@@ -68,16 +68,22 @@ export default function PartnersPage() {
 
   useEffect(() => { load() }, [])
 
-  // Hydrate selection from ?selected=<slug> after the list arrives.
+  // Open the partner ?selected=<slug> names once the list arrives, and again only
+  // when the URL itself names a different one. Never because the selection moved:
+  // a row click writes the URL with replaceState, and selected= read back can still
+  // be the slug the page opened on, so comparing it with the selection put the
+  // opening partner back after every click (Dan, 2026-10-17).
+  const appliedSlug = useRef<string | null>(null)
   useEffect(() => {
     if (!slugParam || partners.length === 0) return
-    if (selected?.slug === slugParam) return
+    if (appliedSlug.current === slugParam) return
     const match = partners.find((p) => p.slug === slugParam)
     if (match) {
+      appliedSlug.current = slugParam
       setSelected(match)
       setCreating(false)
     }
-  }, [slugParam, partners, selected?.slug])
+  }, [slugParam, partners])
 
   function selectPartner(p: Partner) {
     setDeletedNotice(null)
@@ -263,7 +269,9 @@ export default function PartnersPage() {
               onDeleted={handleDeleted}
               barSlot={barSlot}
               onSaveConfirmed={(saved) => { setPartners((prev) => prev.map((p) => (p.id === saved.id ? saved : p))); setSelected(saved) }}
-              requestedTab={selected ? requestedTab : null}
+              // The URL's tab belongs to the partner the URL names: a partner clicked
+              // since may be read back against the opening URL, and opens on its own tab.
+              requestedTab={selected && selected.slug === slugParam ? requestedTab : null}
               onTabChange={(tab) => { if (selected) writeUrl(selected.slug, tab) }}
               partnerNames={partnerNames}
               onProblemChange={setFormProblem}

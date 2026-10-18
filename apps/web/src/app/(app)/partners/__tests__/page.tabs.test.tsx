@@ -92,6 +92,31 @@ describe('the partner list (#2137)', () => {
 })
 
 describe('the URL (#2137)', () => {
+  // Dan, 2026-10-17: opened on ?selected=liberty1 (a hard refresh), clicking another
+  // partner snapped straight back to Liberty1. The URL is written with replaceState,
+  // and the selected= read back from it stayed the one the page opened on, so the
+  // effect that opens the partner the URL names put Liberty1 back after every click.
+  it('another partner clicked on a page opened with a tab opens on its own tab, not the one the URL named', async () => {
+    params = new URLSearchParams('selected=liberty1&tab=bid-group')
+    render(<PartnersPage />)
+    expect(await screen.findByTestId('form')).toHaveTextContent('liberty1')
+    expect((formProps.mock.calls.at(-1)![0] as { requestedTab: unknown }).requestedTab).toBe('bid_group')
+    fireEvent.click(screen.getByRole('button', { name: /^AmOne/ }))
+    expect(screen.getByTestId('form')).toHaveTextContent('amone')
+    expect((formProps.mock.calls.at(-1)![0] as { requestedTab: unknown }).requestedTab).toBeNull()
+  })
+
+  it('a page opened on one partner opens another when its row is clicked, and stays on it', async () => {
+    params = new URLSearchParams('selected=liberty1')
+    render(<PartnersPage />)
+    expect(await screen.findByTestId('form')).toHaveTextContent('liberty1')
+    fireEvent.click(screen.getByRole('button', { name: /^AmOne/ }))
+    expect(screen.getByTestId('form')).toHaveTextContent('amone')
+    expect(lastUrl()).toBe('/partners?selected=amone')
+    fireEvent.click(screen.getByRole('button', { name: 'Tripoint' }))
+    expect(screen.getByTestId('form')).toHaveTextContent('tripoint')
+  })
+
   it('choosing a partner writes ?selected through replaceState, and a tab change adds the tab', async () => {
     render(<PartnersPage />)
     fireEvent.click(await screen.findByRole('button', { name: 'Tripoint' }))
