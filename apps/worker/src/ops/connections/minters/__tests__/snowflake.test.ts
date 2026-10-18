@@ -6,6 +6,7 @@ import { ConnectionRefusal, RequeueAt } from '../../refusals'
 import { CONN, ORG, T0, makeDoubles, makeKeys, sealLogin, usableCopy, type Recorder, type TestKeys } from '../../__tests__/harness'
 import { SNOWFLAKE_REUSE_MARGIN_MS, snowflakeKeyPairAuth } from '../snowflake'
 import { makeSigningKey, readJwt, rulesOf, type SigningKey } from './minter-harness'
+import { toPem } from '../../../__tests__/ops-key-fixture'
 
 /**
  * The Snowflake key pair minter (#2335, PR 4 of phase 5): a JWT signed with the
@@ -107,7 +108,7 @@ describe('the Snowflake minter: a key pair JWT for the declared account and user
   })
 
   it('a private key that does not import is a malformed login: needs_reauth at once, nothing sent', async () => {
-    const broken = await sealLogin(keys, { service: 'snowflake', plaintext: JSON.stringify({ private_key: '-----BEGIN PRIVATE KEY-----\nbm90IGEga2V5\n-----END PRIVATE KEY-----' }) })
+    const broken = await sealLogin(keys, { service: 'snowflake', plaintext: JSON.stringify({ private_key: toPem(new TextEncoder().encode('not a key').buffer as ArrayBuffer, 'PRIVATE KEY') }) })
     const { d } = setup({ login: broken })
     expect((await refusal(connectionFetch(d.deps, call(d.rec), URL_))).code).toBe('connection_needs_reauth')
     expect(d.rec.needsReauth[0].cause).toBe('login_refused: login_malformed')

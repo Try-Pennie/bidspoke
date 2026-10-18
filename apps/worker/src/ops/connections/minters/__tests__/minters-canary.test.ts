@@ -15,8 +15,8 @@ import { makeSigningKey, rulesOf, type SigningKey } from './minter-harness'
  * from names only, and connectionFetch forwards none of them anyway.
  */
 
-const SF_SECRET = 'canary-sf-secret-1b2c3d4e5f'
-const ECHOED_TOKEN = 'canary-echoed-token-6a7b8c9d'
+const SF_SECRET = 'canary-salesforce-client-credential'
+const ECHOED_TOKEN = 'canary-echoed-access-token'
 const SHEETS = 'https://www.googleapis.com/auth/spreadsheets'
 const CATALOGUE: readonly ServiceSchema[] = [{
   key: 'google_sheets', name: 'Sheets',

@@ -5,6 +5,7 @@
  * a minter plus its declared hosts.
  */
 import type { MinterRules, ServiceRules } from '../../service-rules'
+import { toPem } from '../../../__tests__/ops-key-fixture'
 
 export interface TokenCall {
   url: string
@@ -56,12 +57,6 @@ export function rulesOf(service: string, minter: MinterRules, hosts: (target: un
   return { service, declaredHosts: (target) => hosts(target), ...minter }
 }
 
-function base64(bytes: ArrayBuffer): string {
-  let binary = ''
-  for (const b of new Uint8Array(bytes)) binary += String.fromCharCode(b)
-  return btoa(binary)
-}
-
 export interface SigningKey {
   /** PKCS#8 PEM, as a Snowflake key pair or a Google service account key carries it. */
   pem: string
@@ -76,7 +71,7 @@ export async function makeSigningKey(): Promise<SigningKey> {
     ['sign', 'verify'],
   )) as CryptoKeyPair
   const der = (await crypto.subtle.exportKey('pkcs8', pair.privateKey)) as ArrayBuffer
-  return { pem: `-----BEGIN PRIVATE KEY-----\n${base64(der).match(/.{1,64}/g)!.join('\n')}\n-----END PRIVATE KEY-----\n`, publicKey: pair.publicKey }
+  return { pem: toPem(der, 'PRIVATE KEY'), publicKey: pair.publicKey }
 }
 
 function fromBase64Url(text: string): Uint8Array {
