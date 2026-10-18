@@ -1,9 +1,9 @@
-import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { readWorkflow, REPO_ROOT, workflowJobBody } from './_scan-utils'
+import { execScriptSync, SCRIPT_TEST_TIMEOUT_MS, ScriptHungError } from './_script-deadline'
 
 /**
  * Every Pages deploy measures how long its routes take to flip (#901).
@@ -32,6 +32,20 @@ const SCRIPT = path.join(REPO_ROOT, '.github/scripts/pages-propagation-sample.sh
 const SHA_NEW = 'a'.repeat(40)
 const SHA_OLD = 'b'.repeat(40)
 
+/**
+ * One run of the sampler, killed as hung at the shared deadline (#2432, see
+ * _script-deadline.ts for why vitest's own timeout cannot do that).
+ *
+ * The work is bounded by the look count, never by the clock (the clock is
+ * simulated), and each look starts a fixed handful of processes: the clock
+ * stub, then per route still behind the curl stub and the shared commit stamp
+ * reader, then the sleep stub. Measured on 2026-10-18 on a 14 core MacBook:
+ * about 100 ms a test alone, and at most 3.5 s for one test in a full web run
+ * with 42 CPU burners beside it (the first test, which also pays the three
+ * stubs' first exec, below), against a 20 s deadline.
+ */
+vi.setConfig({ testTimeout: SCRIPT_TEST_TIMEOUT_MS })
+
 const page = (sha: string): string =>
   `<!DOCTYPE html><html><head><meta name="bidspoke-commit" content="${sha}"></head><body>x</body></html>`
 
@@ -43,6 +57,67 @@ type Plan = Record<string, { flipAt: number } | 'unreachable' | 'never'>
 
 type Result = { out: string; err: string; code: number; summary: string }
 
+/**
+ * The stub executables are written ONCE for the file, and each run tells them
+ * where its own clock, plan and look counters live through STUB_DATA (#2432).
+ *
+ * On this Mac the first exec of a freshly written executable costs about 100 ms
+ * and every later one about 4 ms (measured 2026-10-18 over 10 fresh files: 98 ms
+ * first, 4 ms second; 108 ms first with 42 CPU burners running). Writing three
+ * new stubs per test paid that three times on every test, and that cost is not
+ * this test's CPU, so it grows with whatever else on the machine is starting new
+ * executables, which in a full web run is every other script test. The stubs
+ * also use shell builtins only, since every process they start is paid again on
+ * every look.
+ */
+const STUBS = mkdtempSync(path.join(tmpdir(), 'propagation-stubs-'))
+writeFileSync(path.join(STUBS, 'new.html'), page(SHA_NEW))
+writeFileSync(path.join(STUBS, 'old.html'), page(SHA_OLD))
+const writeStub = (name: string, lines: string[]): string => {
+  const file = path.join(STUBS, name)
+  writeFileSync(file, [...lines, ''].join('\n'))
+  chmodSync(file, 0o755)
+  return file
+}
+
+// A simulated clock: `now` reads it and `sleep N` advances it by N, so the
+// elapsed seconds the script reports are exact and no test waits for real.
+const NOW_STUB = writeStub('now', ['#!/usr/bin/env bash', 'IFS= read -r C <"$STUB_DATA/clock"', 'printf \'%s\\n\' "$C"'])
+const SLEEP_STUB = writeStub('sleep', [
+  '#!/usr/bin/env bash',
+  'IFS= read -r C <"$STUB_DATA/clock"',
+  'printf \'%s\\n\' "$((C + $1))" >"$STUB_DATA/clock"',
+])
+const SLEEP_FROZEN_STUB = writeStub('sleep-frozen', ['#!/usr/bin/env bash', 'exit 0'])
+
+// A fake curl keyed on the URL (its last argument) with a per-route look
+// counter, answering from the run's plan: one `route<TAB>kind<TAB>flipAt` line
+// per route, matched in order on the end of the URL.
+const CURL_STUB = writeStub('curl', [
+  '#!/usr/bin/env bash',
+  'URL="${@: -1}"',
+  'F="$STUB_DATA/counts/${URL//[^a-zA-Z0-9]/_}"',
+  'N=0',
+  'if [ -f "$F" ]; then IFS= read -r N <"$F"; fi',
+  'N=$((N + 1))',
+  'printf \'%s\\n\' "$N" >"$F"',
+  'while IFS=$\'\\t\' read -r ROUTE KIND FLIP; do',
+  '  case "$URL" in',
+  '    *"$ROUTE")',
+  '      case "$KIND" in',
+  '        unreachable) exit 7 ;;',
+  '        never) SERVE=old ;;',
+  '        *) if [ "$N" -ge "$FLIP" ]; then SERVE=new; else SERVE=old; fi ;;',
+  '      esac',
+  `      IFS= read -r -d '' BODY <${JSON.stringify(STUBS)}/"$SERVE.html"`,
+  '      printf \'%s\' "$BODY"',
+  '      exit 0 ;;',
+  '  esac',
+  'done <"$STUB_DATA/plan"',
+  'echo "no plan for $URL" >&2',
+  'exit 22',
+])
+
 const sample = (
   plan: Plan,
   opts: { maxWait?: number; interval?: number; routes?: string[]; clockAdvances?: boolean } = {},
@@ -52,49 +127,15 @@ const sample = (
   const maxWait = opts.maxWait ?? 300
   const interval = opts.interval ?? 15
 
-  // A simulated clock: `now` reads it and `sleep N` advances it by N, so the
-  // elapsed seconds the script reports are exact and no test waits for real.
-  const clock = path.join(dir, 'clock')
-  writeFileSync(clock, '1000')
-  const now = path.join(dir, 'now')
-  writeFileSync(now, `#!/usr/bin/env bash\ncat ${JSON.stringify(clock)}\n`)
-  const sleep = path.join(dir, 'sleep')
+  writeFileSync(path.join(dir, 'clock'), '1000\n')
+  mkdirSync(path.join(dir, 'counts'))
   writeFileSync(
-    sleep,
-    opts.clockAdvances === false
-      ? '#!/usr/bin/env bash\nexit 0\n'
-      : `#!/usr/bin/env bash\nC=$(cat ${JSON.stringify(clock)}); echo $((C + $1)) > ${JSON.stringify(clock)}\n`,
+    path.join(dir, 'plan'),
+    Object.entries(plan)
+      .map(([route, what]) => (typeof what === 'string' ? `${route}\t${what}\t0\n` : `${route}\tflips\t${what.flipAt}\n`))
+      .join(''),
   )
-
-  // A fake curl keyed on the URL (its last argument) with a per-route look counter.
-  const curl = path.join(dir, 'curl')
-  const cases = Object.entries(plan)
-    .map(([route, what]) => {
-      const body = JSON.stringify(page(SHA_NEW))
-      const old = JSON.stringify(page(SHA_OLD))
-      if (what === 'unreachable') return `    *${route}) exit 7 ;;`
-      if (what === 'never') return `    *${route}) printf '%s' ${old} ;;`
-      return `    *${route}) if [ "$N" -ge ${what.flipAt} ]; then printf '%s' ${body}; else printf '%s' ${old}; fi ;;`
-    })
-    .join('\n')
-  writeFileSync(
-    curl,
-    [
-      '#!/usr/bin/env bash',
-      'URL="${@: -1}"',
-      `COUNTS=${JSON.stringify(dir)}/counts`,
-      'mkdir -p "$COUNTS"',
-      'KEY=$(printf \'%s\' "$URL" | tr -c \'a-zA-Z0-9\' _)',
-      'N=$(( $(cat "$COUNTS/$KEY" 2>/dev/null || echo 0) + 1 ))',
-      'echo "$N" > "$COUNTS/$KEY"',
-      'case "$URL" in',
-      cases,
-      '    *) echo "no plan for $URL" >&2; exit 22 ;;',
-      'esac',
-      '',
-    ].join('\n'),
-  )
-  for (const f of [now, sleep, curl]) chmodSync(f, 0o755)
+  const sleep = opts.clockAdvances === false ? SLEEP_FROZEN_STUB : SLEEP_STUB
 
   const summary = path.join(dir, 'summary.md')
   writeFileSync(summary, '')
@@ -102,15 +143,24 @@ const sample = (
   let out = ''
   let code = 0
   try {
-    out = execFileSync(
+    out = execScriptSync(
+      'pages-propagation-sample.sh',
       'bash',
       ['-c', `bash "$0" "$@" 2>"${errFile}"`, SCRIPT, 'https://site.test', SHA_NEW, String(maxWait), String(interval), ...routes],
       {
         encoding: 'utf8',
-        env: { ...process.env, CURL_BIN: curl, SLEEP_BIN: sleep, NOW_BIN: now, GITHUB_STEP_SUMMARY: summary },
+        env: {
+          ...process.env,
+          CURL_BIN: CURL_STUB,
+          SLEEP_BIN: sleep,
+          NOW_BIN: NOW_STUB,
+          STUB_DATA: dir,
+          GITHUB_STEP_SUMMARY: summary,
+        },
       },
     )
   } catch (e) {
+    if (e instanceof ScriptHungError) throw e
     const err = e as { status: number; stdout: string }
     code = err.status
     out = err.stdout
