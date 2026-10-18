@@ -10,7 +10,8 @@ import { MIN_BASELINE_DAYS } from './volume-anomaly'
 import { fetchAllPaged } from './paginate'
 import { formatErr } from './format-error'
 import { withJobRun, type JobRunEnding } from './job-run-record'
-import { getSlackConnection, postMessage, sendGroupedRecoveryAlert } from './slack'
+import { etTime, getSlackConnection, postMessage, sendGroupedRecoveryAlert } from './slack'
+import { notifyExportFailure, notifyExportRecovery, type TitledRemedy } from './export-alerts'
 import { listWithOverflow, MAX_LISTED_LINES } from './list-overflow'
 import { recoveryDue, settleRecovery, markAlerted, markSpikeSeen, recordPaged, refreshAlerted, type IncidentContext, type RecoveryDue, type RecoveryKv } from './alert-recovery'
 import type { IncidentEndReason, IncidentSignal, RecoveryMarkerSignal } from './incident-signals'
@@ -798,7 +799,99 @@ const SILENCES_MAX_PAGES = 1
  * empty set standing in for a failure: a run that carried on with an empty set
  * judged every silenced field as live and paged it as dead on one bad read (L98).
  */
-type SilencesRead = { kind: 'read'; silenced: Set<string> } | { kind: 'unreadable'; detail: string }
+export type SilencesRead = { kind: 'read'; silenced: Set<string> } | { kind: 'unreadable'; detail: string }
+
+/** The shared alerter's job name for the silences read failing (#2439), its own so it never shares a standing condition. */
+export const FIELD_PRESENCE_SILENCES_JOB = 'field-presence-silences'
+
+/**
+ * How long the silences read must have been failing before it pages (#2439).
+ *
+ * Sized from the schedules that read it: the drought tier every hour, the dead
+ * tier once a day at 13:00 UTC, in the same minute as an hourly run. So the
+ * failure has to SPAN this long, not merely happen on two runs: the two tiers
+ * failing together in one minute is one blip and spans seconds. A little under
+ * the hour, so a sustained failure pages on the second failing hourly run, about
+ * an hour after the first, with room for the cron's own jitter.
+ */
+export const SILENCES_UNREADABLE_PAGE_AFTER_MS = 55 * 60 * 1000
+
+/**
+ * How long the streak survives without another failure. Longer than the hour
+ * between drought runs, so consecutive failing runs extend it, and short enough
+ * that a failure after a gap of runs that never happened starts a fresh streak
+ * rather than paging on the strength of one from hours ago.
+ */
+const SILENCES_STREAK_TTL_SECONDS = 2 * 60 * 60
+const SILENCES_STREAK_KEY = 'field-presence-silences-unreadable'
+
+/** The failing streak, or null when there is none or it will not parse (L50): a fresh streak then starts. */
+function parseSilencesStreak(raw: string | null): { since: string; runs: number } | null {
+  if (raw === null) return null
+  try {
+    const v = JSON.parse(raw) as { since?: unknown; runs?: unknown }
+    if (typeof v.since !== 'string' || !Number.isFinite(Date.parse(v.since))) return null
+    if (typeof v.runs !== 'number' || !Number.isInteger(v.runs) || v.runs < 1) return null
+    return { since: v.since, runs: v.runs }
+  } catch {
+    return null
+  }
+}
+
+const SILENCES_UNREADABLE_REMEDY: TitledRemedy = {
+  title: 'Output field checks are checking nothing',
+  fixHint:
+    'Find why the Worker cannot read the field_presence_silences table (the reason is above, and in job_runs under field-presence-drought). ' +
+    'The checks start again by themselves on the first run that reads it, and this alert then stands down.',
+}
+
+/**
+ * Pages when the silences read has been failing for the window, and stands the
+ * page down on the first run that reads them (#2439). Both tiers call it, so
+ * a failure on either extends one streak and a read on either ends it.
+ *
+ * NEVER THROWS: the run it is called from has already decided to judge nothing,
+ * and a bookkeeping fault here must not turn that unmeasured run into one that
+ * reads as having thrown.
+ */
+export async function noteSilencesRead(
+  supabase: SupabaseClient,
+  kv: RecoveryKv,
+  read: SilencesRead,
+  nowMs: number,
+): Promise<void> {
+  try {
+    if (read.kind === 'read') {
+      if ((await kv.get(SILENCES_STREAK_KEY)) !== null) await kv.delete(SILENCES_STREAK_KEY)
+      // Always, not only when a streak was found: the streak can expire while a
+      // page still stands, and that page must still be stood down.
+      await notifyExportRecovery(kv, FIELD_PRESENCE_SILENCES_JOB, nowMs)
+      return
+    }
+    const prior = parseSilencesStreak(await kv.get(SILENCES_STREAK_KEY))
+    const streak = prior ? { since: prior.since, runs: prior.runs + 1 } : { since: new Date(nowMs).toISOString(), runs: 1 }
+    await kv.put(SILENCES_STREAK_KEY, JSON.stringify(streak), { expirationTtl: SILENCES_STREAK_TTL_SECONDS })
+    if (nowMs - Date.parse(streak.since) < SILENCES_UNREADABLE_PAGE_AFTER_MS) {
+      console.log(`[field-presence] silences unreadable on ${streak.runs} run(s) since ${streak.since}, held: no page until it has stood for ${SILENCES_UNREADABLE_PAGE_AFTER_MS / 60_000} minutes`)
+      return
+    }
+    await notifyExportFailure(
+      supabase,
+      FIELD_PRESENCE_SILENCES_JOB,
+      [
+        `The output field checks have not been able to read which fields are silenced since ${etTime(streak.since)}, ${streak.runs} runs in a row, so no output field has been checked since then.`,
+        `The last run said: ${read.detail}`,
+      ],
+      kv,
+      SILENCES_UNREADABLE_REMEDY,
+      nowMs,
+      // Keyed, so a moving count or a different error wording is the same standing problem.
+      { keys: ['silences-unreadable', 'silences-unreadable-last-reason'] },
+    )
+  } catch (err) {
+    console.error(`[field-presence] the silences read streak could not be kept, so a sustained failure may not page: ${formatErr(err)}`)
+  }
+}
 
 // Author-set silences for the active workflows. Keyed to match excludeSilenced.
 async function readSilences(supabase: SupabaseClient, workflowIds: string[]): Promise<SilencesRead> {
@@ -1528,6 +1621,7 @@ async function droughtRun(supabase: SupabaseClient, kv: RecoveryKv, appUrl: stri
   const rows = await readPresenceRows(supabase, workflowIds, since)
   const recent = await readPresenceWindow(supabase, workflowIds, DROUGHT_WINDOW_MINUTES)
   const read = await readSilences(supabase, workflowIds)
+  await noteSilencesRead(supabase, kv, read, Date.now())
   const unmeasured = read.kind === 'unreadable' ? read.detail : undefined
   const judged = classifyDrought(rows, recent, DROUGHT_WINDOW_MINUTES)
   const states = read.kind === 'read' ? judged : unjudged(judged)
@@ -1586,8 +1680,9 @@ async function deadRun(supabase: SupabaseClient, kv: RecoveryKv, appUrl: string)
   const since = new Date(Date.now() - EVER_CARRIED_LOOKBACK_DAYS * DAY_MS).toISOString().slice(0, 10)
   const rows = await readDeadRows(supabase, workflowIds, since)
   const read = await readSilences(supabase, workflowIds)
+  await noteSilencesRead(supabase, kv, read, Date.now())
   const unmeasured = read.kind === 'unreadable' ? read.detail : undefined
-  const classified = classifyDeadFields(rows, { windowStart: deadWindowStart(rows) })
+  const classified =classifyDeadFields(rows, { windowStart: deadWindowStart(rows) })
   // Unknown silences judge nothing (#2439): every pass below then neither pages
   // nor stands down, and the log only digest reports no field.
   const judge = read.kind === 'read' ? (s: FieldState[]) => s : unjudged
