@@ -467,9 +467,14 @@ describe('quiet: a profile edit that leaves no lead eligible pages against the s
       ...runsBetween('debt_below_min', 100, NOW - 6 * HOUR, NOW, 'tue'),
     ]
     const { d, pages } = deps({ checks: runs, buyer: editedBuyer(edit) })
+    const calls: Array<[number, number]> = []
+    const read = d.readCheckRuns
+    d.readCheckRuns = async (s, from, to) => { calls.push([from, to]); return read(s, from, to) }
     const s = await runClickPathChecks(d)
     expect(last(pages, CLICK_PATH_QUIET_JOB)).toEqual([])
     expect((s.subjects[0].quiet as { detail?: string }).detail).toMatch(/100 leads in 360 minutes of selling time, 273 needed at 2.5% eligible/)
+    // A lead eligible since the edit is seen in the runs already read, so the leads before it are never fetched.
+    expect(calls).toHaveLength(1)
   })
 
   it('with no edit in the kept history and none eligible, says the rate is not known as before, reading once', async () => {
