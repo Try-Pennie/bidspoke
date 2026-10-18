@@ -34,9 +34,21 @@ describe('the tripoint_ping outcome rate bridge is wired (#2392)', () => {
   it('runs in the 15 minute branch, stamped started and completed under its own job name', () => {
     const branch = cronBranch(INDEX, '*/15 * * * *')
     expect(branch, 'no */15 branch in the scheduled handler').not.toBeNull()
-    expect(branch).toContain('runTripointPingOutcomeRateForEnv(supabase, env)')
-    expect(branch).toMatch(/writeHeartbeat\(env\.IDEMPOTENCY, TRIPOINT_PING_OUTCOME_RATE_JOB\)/)
-    expect(branch).toMatch(/completeAfter\([\s\S]*runTripointPingOutcomeRateForEnv[\s\S]*TRIPOINT_PING_OUTCOME_RATE_JOB,\s*\),/)
+    // The one completeAfter block that runs the bridge must itself carry both
+    // stamps, so a stamp in a neighbouring block cannot stand in for it.
+    const blocks = (branch ?? '').split('completeAfter(').slice(1)
+    const own = blocks.filter((b) => b.includes('runTripointPingOutcomeRateForEnv(supabase, env)'))
+    expect(own, 'the bridge must run inside exactly one completeAfter block of the */15 branch').toHaveLength(1)
+    expect(own[0]).toMatch(/^\s*writeHeartbeat\(env\.IDEMPOTENCY, TRIPOINT_PING_OUTCOME_RATE_JOB\)/)
+    // The settled stamp: the job argument that closes this completeAfter call.
+    expect(/(\w+_JOB),\s*\),\s*\)/.exec(own[0])?.[1]).toBe('TRIPOINT_PING_OUTCOME_RATE_JOB')
+  })
+
+  it('does not accept a stamp from a neighbouring block', () => {
+    const src = "event.cron === '*/15 * * * *'\n completeAfter(\n writeHeartbeat(env.IDEMPOTENCY, OTHER_JOB)\n .then(() => runTripointPingOutcomeRateForEnv(supabase, env)),\n OTHER_JOB,\n ),\n )\n completeAfter(\n writeHeartbeat(env.IDEMPOTENCY, TRIPOINT_PING_OUTCOME_RATE_JOB),\n TRIPOINT_PING_OUTCOME_RATE_JOB,\n ),\n )\n"
+    const own = (cronBranch(src, '*/15 * * * *') ?? '').split('completeAfter(').slice(1).filter((b) => b.includes('runTripointPingOutcomeRateForEnv(supabase, env)'))
+    expect(own).toHaveLength(1)
+    expect(own[0]).not.toMatch(/^\s*writeHeartbeat\(env\.IDEMPOTENCY, TRIPOINT_PING_OUTCOME_RATE_JOB\)/)
   })
 
   it('is watched by the heartbeat registry on the cadence it runs at', () => {
