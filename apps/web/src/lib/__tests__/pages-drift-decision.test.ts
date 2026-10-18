@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { isPublicPath } from '../public-paths'
+import { inflightCeiling } from './_deploy-inflight-ceiling'
 import { REPO_ROOT } from './_scan-utils'
 
 /**
@@ -97,6 +98,50 @@ describe('pages-drift-decision: a deploy in flight', () => {
     // answers that question failed. Those are different, and the second must not
     // compare false against the ceiling and buy silence.
     expect(decide('not-a-number', '/login=behind')).toBe('alert-malformed')
+  })
+})
+
+/**
+ * Stuck is judged by RUNNING time, not by age since creation (#2409). The
+ * 15:01:03 UTC drift run on 2026-10-18 posted "The site is serving an older
+ * build" for /login, /access-denied, /dev/nodes and /docs at 1483s against a
+ * 900s ceiling, while Deploy for 50841f3 was healthy and had spent 753s
+ * of that running and the rest with jobs waiting for a runner.
+ */
+describe('pages-drift-decision: a deploy waiting for runners is not stuck (#2409)', () => {
+  const RUNNING = inflightCeiling('MAX_INFLIGHT_RUNNING_SECONDS')
+  const AGE = inflightCeiling('MAX_INFLIGHT_AGE_SECONDS')
+  const ROUTES = ['/login=behind', '/access-denied=behind', '/dev/nodes=behind', '/docs=behind']
+
+  it('stands down on the 2026-10-18 reading', () => {
+    expect(decide('age=1483,running=753', ...ROUTES)).toBe('deploy-in-flight')
+  })
+
+  it('pages a deploy that has actually been running past the ceiling', () => {
+    expect(decide(`age=${RUNNING + 200},running=${RUNNING + 1}`, ...ROUTES)).toBe('alert-stuck-deploy')
+  })
+
+  it('pages a deploy past the age backstop however little of it ran', () => {
+    expect(decide(`age=${AGE + 1},running=60`, ...ROUTES)).toBe('alert-stuck-deploy')
+  })
+
+  it('judges the age against the running ceiling when the running time could not be read', () => {
+    expect(decide(`age=${RUNNING - 1},running=unknown`, ...ROUTES)).toBe('deploy-in-flight')
+    expect(decide(`age=${RUNNING + 1},running=unknown`, ...ROUTES)).toBe('alert-stuck-deploy')
+  })
+
+  it('refuses an answer it cannot read as a broken caller', () => {
+    expect(decide('age=1483,running=lots', ...ROUTES)).toBe('alert-malformed')
+  })
+
+  it('names the stale routes in a stuck reason, as it always has', () => {
+    expect(reason(`age=${AGE + 1},running=60`, ...ROUTES)).toMatch(/\/dev\/nodes/)
+  })
+
+  it('keeps its ceilings in the one shared file, not a copy of its own (L370)', () => {
+    const text = readFileSync(SCRIPT, 'utf8')
+    expect(text).toMatch(/deploy-inflight-ceiling\.sh/)
+    expect(text).not.toMatch(/MAX_INFLIGHT_\w*=/)
   })
 })
 
@@ -466,13 +511,21 @@ describe('pages-drift-decision: the propagation grace (#901)', () => {
     expect(decideWithGrace('300', '', '--last-success-age=soon', '/docs=behind')).toBe('alert-malformed')
   })
 
-  it('refuses a grace longer than the in-flight ceiling, so a misconfigured grace cannot buy an hour of silence', () => {
-    // The in-flight ceiling is the longest a deploy is allowed to take before it
-    // counts as stuck. A propagation window longer than a whole deploy is not a
-    // propagation window, and the hourly cadence would let it hide a stranded
-    // site for most of an hour.
+  it('refuses a grace longer than its cap, so a misconfigured grace cannot buy an hour of silence', () => {
+    // A propagation window longer than a whole deploy is not a propagation
+    // window, and the hourly cadence would let it hide a stranded site for most
+    // of an hour. The cap stayed at 900s when #2409 turned the in-flight ceiling
+    // it used to share into an 1800s RUNNING ceiling, because how long a deploy
+    // runs says nothing about how long Pages takes to propagate.
     expect(decideWithGrace('901', '', '--last-success-age=10', '/docs=behind')).toBe('alert-malformed')
     expect(reasonWithGrace('901', '', '--last-success-age=10', '/docs=behind')).toMatch(/901/)
+    expect(decideWithGrace('900', '', '--last-success-age=10', '/docs=behind')).toBe('deploy-propagating')
+  })
+
+  it('keeps the grace cap within the in-flight running ceiling, so the grace stays shorter than a whole deploy', () => {
+    const cap = readFileSync(SCRIPT, 'utf8').match(/^PAGES_PROPAGATION_GRACE_MAX_SECONDS=(\d+)$/m)
+    expect(cap).not.toBeNull()
+    expect(Number(cap![1])).toBeLessThanOrEqual(inflightCeiling('MAX_INFLIGHT_RUNNING_SECONDS'))
   })
 
   it('refuses a non-numeric grace', () => {
