@@ -224,7 +224,7 @@ function makeDb(clock: VirtualClock, availability: (table: string, op: string) =
   return { client: { from, rpc } as unknown as SupabaseClient, calls, rpcCalls, executions, sightings, steps, writebacks }
 }
 
-function makeKV(clock: VirtualClock, slowFirstJournalPut = false, refuseSecondJournalPutOnce = false, getFails?: (key: string) => boolean, getRealDelayMs = 0) {
+function makeKV(clock: VirtualClock, slowFirstJournalPut = false, refuseSecondJournalPutOnce = false, getFails?: (key: string) => boolean, getRealDelayMs = 0, putFails?: (key: string) => boolean) {
   const store = new Map<string, string>()
   const puts: Array<{ at: number; key: string }> = []
   let journalPuts = 0
@@ -238,6 +238,7 @@ function makeKV(clock: VirtualClock, slowFirstJournalPut = false, refuseSecondJo
       return v === undefined ? null : t === 'json' ? JSON.parse(v) : v
     },
     async put(k: string, v: string) {
+      if (putFails?.(k)) throw new Error('KV PUT failed: 503 Service Unavailable')
       // A KV write that is slow to land, to prove two writes of one key keep their order.
       if (k.startsWith(ANSWER_JOURNAL_PREFIX)) {
         const n = journalPuts++
@@ -281,6 +282,8 @@ async function run(
     kvGetFails?: (key: string) => boolean
     // Each read of an at-risk record takes this long in REAL time (#2024).
     kvGetRealDelayMs?: number
+    // A KV write of a key this matches fails, as a KV outage would (#2055).
+    kvPutFails?: (key: string) => boolean
     // True once finalize has decided whether the work still out pages (#2024).
     // That decision reads KV and decrypts with real WebCrypto, so virtual time is
     // held at the cut-off, where it is made, until it has been, and only then runs
@@ -290,7 +293,7 @@ async function run(
 ) {
   const clock = new VirtualClock()
   const db = makeDb(clock, (table, op) => availability(clock, table, op))
-  const idempotency = makeKV(clock, options.slowFirstJournalPut, options.refuseSecondJournalPutOnce, options.kvGetFails, options.kvGetRealDelayMs)
+  const idempotency = makeKV(clock, options.slowFirstJournalPut, options.refuseSecondJournalPutOnce, options.kvGetFails, options.kvGetRealDelayMs, options.kvPutFails)
   const env = {
     IDEMPOTENCY: idempotency.kv,
     WORKFLOW_CACHE: makeKV(clock).kv,
@@ -1213,6 +1216,31 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
       expect(walked).not.toContain('achieve_after')
       expect(unfinishedDeadLetters()).toHaveLength(1)
       expect(vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.map(([, p]) => p.label)).toEqual(['continuation_unfinished'])
+    })
+
+    // #2055: the ledger says, per write out at the cut-off, whether the read-back
+    // will ever see it. Keys are on the UTC day of the virtual clock, 1970-01-01.
+    const gapKeys = (store: Map<string, string>) => [...store.keys()].filter((k) => k.startsWith('at-risk-gap:')).sort()
+
+    it('records the cut-off and the held write for the gap report (#2055)', async () => {
+      workflow({ id: 'end', namespace: 'route_response_end', type: 'branch_end' })
+      const { idempotency, result } = await run(() => 'up', SF_ENV, { stepClock: true, walkDone: recorded, decided })
+      expect(gapKeys(idempotency.store)).toEqual([
+        `at-risk-gap:1970-01-01:cut_off:${result.executionId}:-`,
+        `at-risk-gap:1970-01-01:held:${result.executionId}:patch_prospect_reject`,
+      ])
+    })
+
+    it('records a write out at the cut-off with no at-risk record as unrecorded, and the run still pages (#2055)', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      workflow({ id: 'end', namespace: 'route_response_end', type: 'branch_end' })
+      const { idempotency, result } = await run(() => 'up', SF_ENV, { stepClock: true, decided, kvPutFails: (k) => k.startsWith('at-risk-write:') })
+      expect([...idempotency.store.keys()].filter((k) => k.startsWith('at-risk-write:'))).toEqual([])
+      expect(gapKeys(idempotency.store)).toEqual([
+        `at-risk-gap:1970-01-01:cut_off:${result.executionId}:-`,
+        `at-risk-gap:1970-01-01:unrecorded:${result.executionId}:patch_prospect_reject`,
+      ])
+      expect(unfinishedDeadLetters()).toHaveLength(1)
     })
 
     it('pages when the at-risk record cannot be read', async () => {
