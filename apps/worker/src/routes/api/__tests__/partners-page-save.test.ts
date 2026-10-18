@@ -248,6 +248,52 @@ describe('PUT /partners/:id/page: the whole page in one save (#2133)', () => {
     expect(pageCalls(rpc)).toEqual([])
   })
 
+  // #2149: on 2026-10-13 a 2,000 minimum loan amount saved here while the live
+  // Engine buyer_select node had no loan amount template, and every live share
+  // lead was refused for 45 hours.
+  describe('a rule a live workflow\'s buyer step cannot read', () => {
+    const engineFlow = (selectConfig: Record<string, unknown>) => ({
+      id: 'wf-engine', name: 'Engine Bidding Workflow', is_active: true, organization_id: testUser.organization_id, deleted_at: null,
+      definition: { nodes: [{ type: 'buyer_select', namespace: 'buyer_select', config: { mode: 'live', population: 'engine', state: '{{s}}', debt: '{{d}}', ...selectConfig } }] },
+    })
+
+    it('is refused 422 on the minimum loan amount field, naming the workflow and the missing template, and calls nothing', async () => {
+      const rpc = saved()
+      supabaseWith(rpc, { workflows: { list: [engineFlow({})] } })
+      const res = await put(page({ profile: { ...doc, loan_amount_min: 2000 } }))
+      expect(res.status).toBe(422)
+      const body = await res.json() as { error: string; errors: Array<{ code: string; path: string; field: string; message: string }> }
+      expect(body.error).toBe('rule_unread_by_live_workflow')
+      expect(body.errors).toEqual([expect.objectContaining({ code: 'rule_unread_by_live_workflow', path: 'loanAmountMin', field: 'profile.loan_amount_min' })])
+      expect(body.errors[0].message).toContain('Engine Bidding Workflow')
+      expect(body.errors[0].message).toContain('Loan amount template')
+      expect(pageCalls(rpc)).toEqual([])
+    })
+
+    it('saves once the step reads the loan amount', async () => {
+      const rpc = saved()
+      supabaseWith(rpc, { workflows: { list: [engineFlow({ loan_amount: '{{l}}' })] } })
+      const res = await put(page({ profile: { ...doc, loan_amount_min: 2000 } }))
+      expect(res.status).toBe(200)
+      expect(pageCalls(rpc)).toHaveLength(1)
+    })
+
+    it('saves a switched off profile whatever the steps read, since no step judges it', async () => {
+      const rpc = saved()
+      supabaseWith(rpc, { workflows: { list: [engineFlow({})] } })
+      const res = await put(page({ profile: { ...doc, is_enabled: false, loan_amount_min: 2000 } }))
+      expect(res.status).toBe(200)
+    })
+
+    it('refuses with 5xx, saving nothing, when the workflows cannot be read, never as if none were live', async () => {
+      const rpc = saved()
+      supabaseWith(rpc, { workflows: { listError: { message: 'connection reset' } } })
+      const res = await put(page({ profile: { ...doc, loan_amount_min: 2000 } }))
+      expect(res.status).toBeGreaterThanOrEqual(500)
+      expect(pageCalls(rpc)).toEqual([])
+    })
+  })
+
   it('answers a stale pair with 409 carrying both halves, the press that last saved and its editor, and does no cache work', async () => {
     const detail = { partner: { ...ROW, name: 'Theirs', version: 6 }, profile: { ...doc, version: 4 }, partner_version: 6, profile_version: 4, last_save_id: 'f0f0f0f0-0000-4000-8000-000000000001', changed_by_name: 'Brian Nelms', changed_at: '2026-10-15T14:02:00Z' }
     const rpc = vi.fn(async () => ({ data: null, error: { code: 'BP409', message: 'stale_version', details: JSON.stringify(detail) } }))

@@ -2027,3 +2027,98 @@ describe('POST /workflows/:id/rename-apply rewrites partner formulas through the
     expect(res.status).toBe(500)
   })
 })
+
+// #2149: the workflow side of the pair. On 2026-10-13 Tripoint's profile gained
+// a 2,000 minimum loan amount while the live Engine buyer_select step had no
+// loan amount template; a canvas edit dropping the template reaches the same
+// state from this side, so a save that would make a live buyer step unable to
+// read an enabled profile's rule is refused, naming the buyer and the rule.
+describe('a live buyer step that cannot read a buyer profile rule (#2149)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const tripoint: LoadedBuyer = {
+    partner: { id: 'p-tripoint', slug: 'tripoint', name: 'Tripoint', is_active: true, api_endpoint: null, cf_secret_key: null, outbound_field_mapping: null, extra_extraction: null, accept_signals: [], response_classification: null, click_url: null, external_routing_code: null, duplicate_signals: [], circuit_enabled: false, circuit_error_threshold: 5, circuit_window_seconds: 60, circuit_cooldown_seconds: 30 },
+    profile: { partnerId: 'p-tripoint', soldOn: 'offer', isEnabled: true, priority: 1, allowedStates: ['TX'], debtMin: null, debtMax: null, loanAmountMin: 2000, hourlyLeadCap: null, dailyLeadCap: null, hourlySpendCapCents: null, dailySpendCapCents: null, windows: [], blackoutDates: [], tiers: [{ population: 'engine', debtFrom: 0, debtTo: null, multiplier: 0.001 }] },
+    version: 1,
+    updated_at: '2026-10-13T15:30:00.000Z',
+  }
+  const select = (extra: Record<string, unknown> = {}) => ({ nodes: [{ id: 'bs', namespace: 'buyer_select', type: 'buyer_select', config: { mode: 'live', population: 'engine', state: '{{s}}', debt: '{{d}}', ...extra } }], edges: [] })
+  const noLoan = select()
+  const withLoan = select({ loan_amount: '{{trigger.payload.loanInformation.loanAmount}}' })
+  const live = (definition: unknown, isActive = true) => ({ ...existingWorkflow, name: 'Engine Bidding Workflow', is_active: isActive, definition })
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    vi.mocked(loadBuyerProfiles).mockResolvedValue({ org_id: USER_ORG, loaded_at: '2026-10-18T00:00:00.000Z', content_hash: 'h', served_from: 'database', buyers: [tripoint] })
+    app = await makeApp()
+  })
+
+  const client = (tables: Record<string, TableConfig | TableConfig[]>) =>
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase({ users: { single: testUser }, ...tables }) as unknown as ReturnType<typeof createSupabaseClient>)
+
+  it('PUT on a live workflow that drops the loan amount template is 422 naming the step, the buyer and the rule, and writes no version', async () => {
+    client({ workflows: [{ single: live(withLoan) }, { single: live(noLoan) }], workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2' } }] })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: noLoan } })
+    expect(res.status).toBe(422)
+    const body = await res.json() as { error: string }
+    expect(body.error).toContain('Step buyer_select has no Loan amount template')
+    expect(body.error).toContain('Tripoint')
+    expect(body.error).toContain('a minimum loan amount of 2,000')
+    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('PUT on a switched off workflow saves, since it judges no lead; switching it on is checked', async () => {
+    client({ workflows: [{ single: live(withLoan, false) }, { single: live(noLoan, false) }], workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2' } }] })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: noLoan } })
+    expect(res.status).toBe(200)
+  })
+
+  it('PUT on a live workflow whose step reads every rule saves', async () => {
+    client({ workflows: [{ single: live(noLoan) }, { single: live(withLoan) }], workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2' } }] })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: withLoan } })
+    expect(res.status).toBe(200)
+  })
+
+  it('PATCH switching on a workflow whose step cannot read a rule is 422, and the switch is not written', async () => {
+    client({ workflows: [{ single: live(noLoan, false) }, { single: { id: 'wf-1', is_active: true } }] })
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+    expect(res.status).toBe(422)
+    expect(((await res.json()) as { error: string }).error).toContain('Loan amount')
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('PATCH switching off is never refused', async () => {
+    client({ workflows: [{ single: live(noLoan) }, { single: { id: 'wf-1', is_active: false } }] })
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })
+    expect(res.status).toBe(200)
+  })
+
+  it('restoring a version that cannot read a rule onto a live workflow is 422, and nothing is written', async () => {
+    client({
+      workflows: [{ single: live(withLoan) }, { list: [{ id: 'wf-1' }] }],
+      workflow_versions: [{ single: { id: 'ver-1', definition: noLoan, version_number: 1 } }, { single: { version_number: 3 } }, { insertResult: { id: 'ver-4' } }],
+    })
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+    expect(res.status).toBe(422)
+    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+  })
+
+  it('a save is refused with 503 when the buyer profiles cannot be read, never let through as if none were enabled', async () => {
+    vi.mocked(loadBuyerProfiles).mockRejectedValue(new Error('buyer profiles read failed'))
+    client({ workflows: [{ single: live(withLoan) }, { single: live(noLoan) }], workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2' } }] })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: noLoan } })
+    expect(res.status).toBe(503)
+  })
+
+  it('a definition with no buyer step never reads the profiles', async () => {
+    const codeOnly = { nodes: [{ id: 'c', namespace: 'c', type: 'code', config: { script: 'x' } }], edges: [] }
+    client({ workflows: [{ single: live({ nodes: [] }) }, { single: live(codeOnly) }], workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2' } }] })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: codeOnly } })
+    expect(res.status).toBe(200)
+    expect(vi.mocked(loadBuyerProfiles)).not.toHaveBeenCalled()
+  })
+})
