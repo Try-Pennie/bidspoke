@@ -49,6 +49,9 @@ export const KNOWN_BIG_TABLES = new Set([
   // Every saved version of every workflow, never pruned: 548 rows on 2026-09-30,
   // when the daily growth check flagged it.
   'workflow_versions',
+  // One row per cron delivery, about 1,900 a day kept 7 days (#2284); the daily
+  // growth check flagged it on 2026-10-18 (#2390).
+  'cron_tick_deliveries',
 ])
 
 // Alert below the 1,000-row cap so there's lead time to paginate before reads
