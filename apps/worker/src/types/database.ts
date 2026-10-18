@@ -3178,6 +3178,16 @@ export type Database = {
           id: string
         }[]
       }
+      delete_service_connection_by_id: {
+        Args: {
+          p_actor: string
+          p_connection_id: string
+          p_organization_id: string
+        }
+        Returns: {
+          id: string
+        }[]
+      }
       drain_lead_sightings_purge: { Args: never; Returns: undefined }
       drop_exported_sighting_partitions: {
         Args: { p_grace?: string }

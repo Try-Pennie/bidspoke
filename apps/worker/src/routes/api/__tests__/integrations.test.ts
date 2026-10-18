@@ -245,7 +245,7 @@ describe('DELETE /integrations/slack', () => {
     // this stays 200. Nothing was deleted, so the table's trigger audits
     // nothing; the route writes no audit row of its own (#2331, F119).
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { list: [{ id: 'sc-1' }] } }, { rpcs: { delete_service_connection: [] } }) as never
+      makeSupabase({ users: { single: testUser }, service_connections: { list: [{ id: 'sc-1' }] } }, { rpcs: { delete_service_connection_by_id: [] } }) as never
     )
     const res = await request(app, 'DELETE', '/integrations/slack')
     expect(res.status).toBe(200)
@@ -432,7 +432,7 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
           upsertResult: { id: 'sc-1', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-10-15T00:00:00Z' },
           writeRows: [{ id: 'sc-1' }],
         },
-      }, { rpcs: { delete_service_connection: [{ id: 'sc-1' }] } }) as never
+      }, { rpcs: { delete_service_connection_by_id: [{ id: 'sc-1' }] } }) as never
     )
     const res = await request(app, method, path, { body })
     expect(res.status).toBe(200)
