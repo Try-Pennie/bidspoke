@@ -200,6 +200,33 @@ describe('runOpsTickReportCheck', () => {
     expect(fix.match(/Create a secret key for bidspoke-worker-ops/g)).toHaveLength(1)
   })
 
+  // The report goes through KV between the two parses: kept by
+  // recordOpsTickCompleted, read back here. An older release's report names no
+  // secret, and the kept copy must still page with the database's remedy.
+  it('pages an older release\'s not configured report with the database remedy after it is kept and read back', async () => {
+    const store = kv()
+    await recordOpsTickCompleted(store as unknown as KVNamespace, {
+      tick_id: 't', mode: 'observe', scheduled_time: null, started_at: '2026-10-17T10:02:00Z', finished_at: '2026-10-17T10:02:01Z',
+      db_now: null, outcome: 'not_configured', problems: ['The ops tick cannot reach its database: OPS_SUPABASE_URL is not set.'], counts: {},
+    }, NOW - 30_000)
+    const d = deps()
+    expect(await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW, d)).toBe('alerted')
+    expect(d.sent[0].title).toBe('The ops minute cron is not configured')
+    expect(d.sent[0].errors).toEqual(['The ops tick cannot reach its database: OPS_SUPABASE_URL is not set.'])
+    expect(d.sent[0].fixHint).toMatch(/OPS_SUPABASE_SECRET_KEY/)
+  })
+
+  it('pages a not configured report naming the private key with its remedy after it is kept and read back', async () => {
+    const store = kv()
+    await recordOpsTickCompleted(store as unknown as KVNamespace, {
+      tick_id: 't', mode: 'observe', scheduled_time: null, started_at: '2026-10-17T10:02:00Z', finished_at: '2026-10-17T10:02:01Z',
+      db_now: null, outcome: 'not_configured', problems: ['x'], counts: {}, not_configured_secrets: ['OPS_CONNECTIONS_PRIVATE_KEY'],
+    }, NOW - 30_000)
+    const d = deps()
+    await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW, d)
+    expect(d.sent[0].fixHint).toMatch(/Bidspoke recovery keys/)
+  })
+
   it('names the NEXT key\'s own remedy, which includes deleting it when no rotation is under way', async () => {
     const store = kv()
     store.m.set(OPS_TICK_REPORT_KEY, stored({

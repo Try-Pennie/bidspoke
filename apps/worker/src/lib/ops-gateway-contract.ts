@@ -156,8 +156,11 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
   if (!Array.isArray(problems) || problems.some((p) => typeof p !== 'string')) throw new OpsGatewayContractError('the ops tick report\'s problems are not a list of sentences')
   if (outcome === 'ok' ? problems.length > 0 : problems.length === 0) throw new OpsGatewayContractError(`the ops tick report says ${String(outcome)} with ${problems.length} problems`)
   if (!isRecord(counts) || Object.values(counts).some((n) => typeof n !== 'number' || !Number.isFinite(n))) throw new OpsGatewayContractError('the ops tick report\'s counts are not numbers')
+  // Absent on a report from a release before #2333, and null once the bidding
+  // Worker has kept such a report and reads it back (recordOpsTickCompleted
+  // stores what this returns): both mean no secret was named.
   let secrets: string[] | null = null
-  if (not_configured_secrets !== undefined) {
+  if (not_configured_secrets !== undefined && not_configured_secrets !== null) {
     if (
       !Array.isArray(not_configured_secrets) || not_configured_secrets.length > MAX_NOT_CONFIGURED_SECRETS ||
       not_configured_secrets.some((n) => typeof n !== 'string' || !SECRET_NAME.test(n))
