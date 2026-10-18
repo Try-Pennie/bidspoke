@@ -242,10 +242,10 @@ function cooldownPuts(kv: ReturnType<typeof makeKv>): string[] {
 }
 
 describe('runBidRecordingCoverageCheck: who gets told (#1157)', () => {
-  it('reads v2 for the six hour silence check and v3, which takes an end, for the ratio check (#1413, #1929)', async () => {
+  it('reads v2 for the six hour silence check and v4, which takes an end and counts refusals, for the ratio check (#1413, #1929, #2391)', async () => {
     const db = makeSupabase({ rpc: () => ({ data: HEALTHY, error: null }) })
     await runBidRecordingCoverageCheck(db.client, makeKv())
-    expect(db.rpcCalls.map((c) => c.fn)).toEqual(['bid_recording_coverage_v2', 'bid_recording_coverage_v3'])
+    expect(db.rpcCalls.map((c) => c.fn)).toEqual(['bid_recording_coverage_v2', 'bid_recording_coverage_v4'])
   })
 
   it('posts once, naming the workflow and its lead volume', async () => {
@@ -394,13 +394,13 @@ import { MIN_BASELINE_SAMPLES } from '../bid-ratio-collapse'
 
 /** Engine proving the window, plus a workflow whose ratio has halved. */
 const HALVED = [
-  { workflow_id: 'wf-engine', workflow_name: 'Engine', is_active: true, sightings: 9000, bid_rows: 5000, attempt_rows: 500, winners: 300 },
-  { workflow_id: 'wf-le', workflow_name: 'Lead Economy', is_active: true, sightings: 1000, bid_rows: 60, attempt_rows: 60, winners: 20 },
+  { workflow_id: 'wf-engine', workflow_name: 'Engine', is_active: true, sightings: 9000, bid_rows: 5000, attempt_rows: 500, refusal_rows: 0, winners: 300 },
+  { workflow_id: 'wf-le', workflow_name: 'Lead Economy', is_active: true, sightings: 1000, bid_rows: 60, attempt_rows: 60, refusal_rows: 0, winners: 20 },
 ]
 /** The same two, both recording normally. */
 const BOTH_NORMAL = [
   HALVED[0],
-  { workflow_id: 'wf-le', workflow_name: 'Lead Economy', is_active: true, sightings: 1000, bid_rows: 600, attempt_rows: 600, winners: 200 },
+  { workflow_id: 'wf-le', workflow_name: 'Lead Economy', is_active: true, sightings: 1000, bid_rows: 600, attempt_rows: 600, refusal_rows: 0, winners: 200 },
 ]
 
 /** Run the check `n` times on a healthy fixture so a baseline accumulates. */
@@ -602,9 +602,9 @@ import { RATIO_IN_FLIGHT_MARGIN_MS } from '../bid-recording-coverage'
 import { alertRowListAnswer } from '../../__tests__/helpers/slack-alert-read'
 
 const GIGFI = 'RML - Bidding Workflow (GigFi)'
-const ENGINE = { workflow_id: 'wf-engine', workflow_name: 'Engine', is_active: true, sightings: 9000, bid_rows: 5000, attempt_rows: 500, winners: 300 }
+const ENGINE = { workflow_id: 'wf-engine', workflow_name: 'Engine', is_active: true, sightings: 9000, bid_rows: 5000, attempt_rows: 500, refusal_rows: 0, winners: 300 }
 const gigfiRow = (sightings: number, attempts: number) =>
-  ({ workflow_id: 'wf-gigfi', workflow_name: GIGFI, is_active: true, sightings, bid_rows: attempts, attempt_rows: attempts, winners: attempts })
+  ({ workflow_id: 'wf-gigfi', workflow_name: GIGFI, is_active: true, sightings, bid_rows: attempts, attempt_rows: attempts, refusal_rows: 0, winners: attempts })
 /** A baseline already accumulated under the current key. */
 function seedHistory(kv: ReturnType<typeof makeKv>, ratios: Record<string, number>) {
   const entry = Object.fromEntries(
@@ -622,7 +622,7 @@ describe('the ratio check judges a full day (#1929)', () => {
     vi.setSystemTime(now)
     const db = makeSupabase({ rpc: () => ({ data: BOTH_NORMAL, error: null }) })
     await runBidRecordingCoverageCheck(db.client, makeKv())
-    const ratio = db.rpcCalls.find((c) => c.fn === 'bid_recording_coverage_v3')!
+    const ratio = db.rpcCalls.find((c) => c.fn === 'bid_recording_coverage_v4')!
     expect(Date.parse(ratio.since)).toBe(now - BID_PURGE_HORIZON_MS)
     expect(Date.parse(ratio.until!)).toBe(now - RATIO_IN_FLIGHT_MARGIN_MS)
     expect(RATIO_IN_FLIGHT_MARGIN_MS).toBeGreaterThanOrEqual(5 * 60_000)
@@ -644,7 +644,7 @@ describe('the ratio check judges a full day (#1929)', () => {
     seedHistory(kv, { 'wf-engine': 500 / 9000, 'wf-gigfi': 0.67 })
     const db = makeSupabase({
       // The six hour read holds GigFi's first minute; the day holds all of it.
-      rpc: (_org, fn) => ({ data: fn === 'bid_recording_coverage_v3' ? [ENGINE, gigfiRow(3000, 1000)] : [ENGINE, gigfiRow(6, 1)], error: null }),
+      rpc: (_org, fn) => ({ data: fn === 'bid_recording_coverage_v4' ? [ENGINE, gigfiRow(3000, 1000)] : [ENGINE, gigfiRow(6, 1)], error: null }),
     })
     await runBidRecordingCoverageCheck(db.client, kv)
     expect(postMessage).toHaveBeenCalledTimes(1)
@@ -655,7 +655,7 @@ describe('the ratio check judges a full day (#1929)', () => {
     const kv = makeKv()
     seedHistory(kv, { 'wf-engine': 500 / 9000, 'wf-gigfi': 0.67 })
     const db = makeSupabase({
-      rpc: (_org, fn) => fn === 'bid_recording_coverage_v3'
+      rpc: (_org, fn) => fn === 'bid_recording_coverage_v4'
         ? { data: [ENGINE, gigfiRow(3000, 1000)], error: null }
         : { data: null, error: { message: 'statement timeout' } },
     })
@@ -667,7 +667,7 @@ describe('the ratio check judges a full day (#1929)', () => {
     const kv = makeKv()
     seedHistory(kv, { 'wf-engine': 500 / 9000, 'wf-gigfi': 0.67 })
     const drained = [{ ...ENGINE, bid_rows: 0, attempt_rows: 0 }, { ...gigfiRow(3000, 0), bid_rows: 0 }]
-    const db = makeSupabase({ rpc: (_org, fn) => ({ data: fn === 'bid_recording_coverage_v3' ? drained : [ENGINE], error: null }) })
+    const db = makeSupabase({ rpc: (_org, fn) => ({ data: fn === 'bid_recording_coverage_v4' ? drained : [ENGINE], error: null }) })
     await runBidRecordingCoverageCheck(db.client, kv)
     expect(postMessage).not.toHaveBeenCalled()
     // Nothing from an unproven day reaches the baseline either.
@@ -679,7 +679,7 @@ describe('the ratio check judges a full day (#1929)', () => {
     const kv = makeKv()
     seedHistory(kv, { 'wf-engine': 500 / 9000, 'wf-gigfi': 0.67 })
     const db = makeSupabase({
-      rpc: (_org, fn) => fn === 'bid_recording_coverage_v3' ? { data: null, error: { message: 'statement timeout' } } : { data: [ENGINE], error: null },
+      rpc: (_org, fn) => fn === 'bid_recording_coverage_v4' ? { data: null, error: { message: 'statement timeout' } } : { data: [ENGINE], error: null },
     })
     await expect(runBidRecordingCoverageCheck(db.client, kv)).resolves.toBeUndefined()
     expect(postMessage).not.toHaveBeenCalled()
@@ -693,5 +693,52 @@ describe('the ratio check judges a full day (#1929)', () => {
     await runBidRecordingCoverageCheck(db.client, kv)
     expect(postMessage).not.toHaveBeenCalled()
     expect(JSON.parse(kv.store.get('bid-ratio-history-v3:org-1')!)['wf-gigfi'].ratios).toHaveLength(1)
+  })
+})
+
+// #2391: Engine's $2,000 Tripoint minimum (version 110) refuses leads that used to
+// be attempts. A refusal recorded by its reason counts as recorded, so the check
+// stops paging on the deliberate rule and still pages on a real loss.
+describe('a refusal by a buyer\'s own rule counts as recorded (#2391)', () => {
+  const OCT_18 = { workflow_id: 'wf-engine', workflow_name: 'Engine Bidding Workflow', is_active: true, sightings: 50_284, bid_rows: 28_862, attempt_rows: 1_210, refusal_rows: 1_283, winners: 717 }
+  function seedEngine(kv: ReturnType<typeof makeKv>) {
+    kv.store.set('bid-ratio-history-v3:org-1', JSON.stringify({ 'wf-engine': { ratios: [0.055, 0.055, 0.05, 0.051, 0.054, 0.054, 0.034, 0.029] } }))
+  }
+  const textOf = () => JSON.stringify(postMessage.mock.calls[0][2])
+
+  it('does not page on the 2026-10-18 reading, and keeps the stored baseline rather than resetting it', async () => {
+    const kv = makeKv()
+    seedEngine(kv)
+    const db = makeSupabase({ rpc: () => ({ data: [OCT_18], error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    expect(postMessage).not.toHaveBeenCalled()
+    const ratios = JSON.parse(kv.store.get('bid-ratio-history-v3:org-1')!)['wf-engine'].ratios as number[]
+    expect(ratios).toHaveLength(9)
+    expect(ratios.at(-1)).toBeCloseTo((1_210 + 1_283) / 50_284, 9)
+  })
+
+  it('names the refusals it counted when the recording still collapsed', async () => {
+    const kv = makeKv()
+    seedEngine(kv)
+    const db = makeSupabase({ rpc: () => ({ data: [{ ...OCT_18, attempt_rows: 300, refusal_rows: 200 }], error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const text = textOf()
+    expect(text).toContain('300 bid attempts across 50284 leads')
+    expect(text).toContain('200 leads refused by a buyer')
+    expect(text).toContain('loan amount below the minimum')
+    expect(text).toContain('Together that is 1% of its leads')
+  })
+
+  it('says nothing about refusals when there were none', async () => {
+    const kv = makeKv()
+    seedEngine(kv)
+    const db = makeSupabase({ rpc: () => ({ data: [{ ...OCT_18, attempt_rows: 300, refusal_rows: 0 }], error: null }) })
+    await runBidRecordingCoverageCheck(db.client, kv)
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    const text = textOf()
+    expect(text).toContain('300 bid attempts across 50284 leads in the last')
+    expect(text).toContain('which is 1% of its leads')
+    expect(text).not.toContain('refused')
   })
 })

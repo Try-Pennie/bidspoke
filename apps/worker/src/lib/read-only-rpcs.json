@@ -7,6 +7,7 @@
     "auth_user_with_allowlist",
     "bid_recording_coverage_v2",
     "bid_recording_coverage_v3",
+    "bid_recording_coverage_v4",
     "email_drop_counts_by_source",
     "execution_counts_per_minute",
     "execution_purge_retention",

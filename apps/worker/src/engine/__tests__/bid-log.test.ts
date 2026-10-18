@@ -9,7 +9,7 @@
 import { describe, it, expect } from 'vitest'
 import type { NodeDefinition, NodeType, StepOutput } from '../../types'
 import { NODE_TRAITS } from '../../types'
-import { deriveCodeNodeBidAttempts, deriveCodeNodeBidSummary, pickBidSummary, bidAttemptsForProjection, type BidSummary } from '../bid-log'
+import { deriveCodeNodeBidAttempts, deriveCodeNodeBidSummary, pickBidSummary, bidAttemptsForProjection, BID_ROW_REFUSAL_REASONS, type BidSummary } from '../bid-log'
 
 const meta = {
   sighting_id: 'sight-1',
@@ -527,5 +527,51 @@ describe('bidAttemptsForProjection omits first-class bid nodes (#368)', () => {
       bid_node: { output: { resultCode: 1000, qualified: true, createLead: { id: 'L-1' } }, status: 'completed' },
     }
     expect(bidAttemptsForProjection(s, nodes)).toEqual([])
+  })
+})
+
+// ── #2391: a refusal by Tripoint's own rule is recorded by its reason ──────────
+//
+// Version 110 of the Engine flow (2026-10-15) made tripoint_ping refuse a sell off
+// lead whose loan amount is under 2,000 (`loan_amount_below_min`) or is not a
+// positive number (`missing_lead_field`), and the script names which beside its
+// `skipped: true`. The bid row recorded only `skipped`, the word for a lead that
+// was never a sell off, so the too few bids check read a deliberate refusal as a
+// lead nothing had recorded. The row now carries the script's reason, and only a
+// reason on the known list: any other word stays `skipped`, because the attempts
+// predicate counts every skip_reason other than `skipped` as an attempt.
+describe("deriveCodeNodeBidAttempts: a refusal by Tripoint's own rule (#2391)", () => {
+  const refused = (skip_reason: unknown) => steps({ tripoint_ping: {
+    skipped: true, qualified: null, createLead: null, resultCode: null,
+    tripoint_answer: 'skipped', unknown_reason: null, skip_reason,
+  } })
+
+  it('records each listed refusal by its own reason, as no attempt and no decline', () => {
+    for (const reason of BID_ROW_REFUSAL_REASONS) {
+      const rows = attemptsOf(refused(reason))
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({ partner_slug: 'tripoint', skip_reason: reason, classification: null, decline_reason: null })
+    }
+  })
+
+  it('lists exactly the two refusals tripoint_ping returns', () => {
+    expect([...BID_ROW_REFUSAL_REASONS].sort()).toEqual(['loan_amount_below_min', 'missing_lead_field'])
+  })
+
+  it('keeps a plain skip, and any reason not on the list, as skipped', () => {
+    expect(attemptsOf(refused(undefined))[0]).toMatchObject({ skip_reason: 'skipped' })
+    expect(attemptsOf(refused(null))[0]).toMatchObject({ skip_reason: 'skipped' })
+    expect(attemptsOf(refused('some_new_word'))[0]).toMatchObject({ skip_reason: 'skipped' })
+    expect(attemptsOf(refused(42))[0]).toMatchObject({ skip_reason: 'skipped' })
+  })
+
+  it('carries the refusal onto the strand projection, so a drained lead keeps it', () => {
+    expect(projectionOf(refused('loan_amount_below_min'))).toEqual([
+      { partner_slug: 'tripoint', classification: null, decline_reason: null, skip_reason: 'loan_amount_below_min', resolver_type: 'api', bid_cents: null, http_status: null },
+    ])
+  })
+
+  it('still counts a refusal as no attempt on the sighting', () => {
+    expect(summaryOf(refused('loan_amount_below_min'))).toEqual({ winner_slug: null, winner_bid_cents: null, attempted: null, responded: null })
   })
 })
