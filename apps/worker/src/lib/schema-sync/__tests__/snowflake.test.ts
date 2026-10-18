@@ -1,40 +1,54 @@
 /**
- * Snowflake schema fetcher — PRD Section 3.1
- * Covers: groups columns by schema.table, maps nullable flag, throws on non-2xx,
- * and (issue #89) polls an async 202 to completion instead of caching empty.
+ * Snowflake schema lookups (PRD Section 3.1; #2335 PR 7 of phase 5).
+ *
+ * The full sync groups INFORMATION_SCHEMA.COLUMNS into schema.table objects,
+ * polls an async 202 to completion instead of caching empty (#89), and pages
+ * every result partition (#151). The keyed lookups (tables, columns of a table)
+ * share its statement runner. All of it takes an injected fetch and an already
+ * minted auth, an injected sleep and clock for the poll (L524), and fails with a
+ * named SchemaLookupError.
  */
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { fetchSnowflakeSchema, buildSchemaFilter } from '../snowflake'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import {
+  fetchSnowflakeSchema,
+  listSnowflakeTables,
+  describeSnowflakeTable,
+  buildSchemaFilter,
+  type SnowflakeSource,
+} from '../snowflake'
+import { caught, fetchSequence, forbidGlobalFetch, headersOf, json, text, timeoutError, type Answer } from './_fetch'
 
-const CREDS = JSON.stringify({
-  account: 'xy12345.us-east-1',
-  username: 'user',
-  password: 'pass',
-  database: 'TESTDB',
-})
+const AUTH = { Authorization: `Basic ${btoa('user:pass')}`, 'X-Snowflake-Authorization-Token-Type': 'BASIC' }
 
-// Tiny poll timings so the 202 tests run instantly instead of on the 1.5s/20s
-// production cadence.
-const FAST_POLL = { pollIntervalMs: 1, pollTimeoutMs: 200 }
-
-type MockRes = { ok: boolean; status: number; json: () => Promise<unknown> }
-function res(status: number, body: unknown): MockRes {
-  return { ok: status >= 200 && status < 300, status, json: () => Promise.resolve(body) }
+/** A clock that moves only when the poll sleeps, so no test waits for real. */
+function fakeClock() {
+  let now = 0
+  const slept: number[] = []
+  return {
+    slept,
+    poll: {
+      intervalMs: 1500,
+      timeoutMs: 20000,
+      now: () => now,
+      sleep: async (ms: number) => { slept.push(ms); now += ms },
+    },
+  }
 }
 
-function fetchReturning(data: unknown, ok = true) {
-  return vi.fn().mockResolvedValue(res(ok ? 200 : 401, data))
+function source(fetch: SnowflakeSource['fetch'], extra: Partial<SnowflakeSource> = {}): SnowflakeSource {
+  return { service: 'snowflake', fetch, auth: AUTH, account: 'xy12345.us-east-1', database: 'TESTDB', poll: fakeClock().poll, ...extra }
 }
 
-// Returns each response in order on successive fetch calls, repeating the last.
-function fetchSequence(responses: MockRes[]) {
-  let i = 0
-  return vi.fn().mockImplementation(() => Promise.resolve(responses[Math.min(i++, responses.length - 1)]))
+
+function sentSql(init: RequestInit): string {
+  const body: unknown = JSON.parse(String(init.body))
+  if (typeof body !== 'object' || body === null || !('statement' in body) || typeof body.statement !== 'string') throw new Error('no statement sent')
+  return body.statement
 }
 
 afterEach(() => vi.unstubAllGlobals())
 
-describe('buildSchemaFilter — SQL literal safety', () => {
+describe('buildSchemaFilter: SQL literal safety', () => {
   it('returns an empty filter when no schema is configured', () => {
     expect(buildSchemaFilter(undefined)).toBe('')
     expect(buildSchemaFilter('')).toBe('')
@@ -45,9 +59,6 @@ describe('buildSchemaFilter — SQL literal safety', () => {
   })
 
   it('doubles a trailing backslash so it cannot escape the closing quote', () => {
-    // Snowflake treats backslash as an escape char inside string literals; a
-    // lone trailing backslash would escape the closing quote and break the
-    // query (same class as the sightings-export vector).
     expect(buildSchemaFilter('foo\\')).toBe("AND TABLE_SCHEMA = 'FOO\\\\'")
   })
 
@@ -56,132 +67,195 @@ describe('buildSchemaFilter — SQL literal safety', () => {
   })
 })
 
-describe('fetchSnowflakeSchema', () => {
+describe('fetchSnowflakeSchema (the canvas sync), on success exactly as before', () => {
   it('groups columns into schema.table objects', async () => {
-    const result = {
+    forbidGlobalFetch()
+    const { fetch } = fetchSequence(json(200, {
       data: [
-        ['PUBLIC', 'LEADS', 'ID',        'VARCHAR', 'NO'],
-        ['PUBLIC', 'LEADS', 'EMAIL',      'VARCHAR', 'YES'],
-        ['PUBLIC', 'USERS', 'ID',         'NUMBER',  'NO'],
-        ['STAGING', 'RAW',  'PAYLOAD',    'VARIANT', 'YES'],
+        ['PUBLIC', 'LEADS', 'ID', 'VARCHAR', 'NO'],
+        ['PUBLIC', 'LEADS', 'EMAIL', 'VARCHAR', 'YES'],
+        ['PUBLIC', 'USERS', 'ID', 'NUMBER', 'NO'],
+        ['STAGING', 'RAW', 'PAYLOAD', 'VARIANT', 'YES'],
       ],
-    }
-    vi.stubGlobal('fetch', fetchReturning(result))
-
-    const schema = await fetchSnowflakeSchema(CREDS)
-    expect(schema.objects).toHaveLength(3)
-
-    const leads = schema.objects.find((o) => o.name === 'PUBLIC.LEADS')!
-    expect(leads.fields).toHaveLength(2)
-    expect(leads.fields[0]).toEqual({ name: 'ID', label: 'ID', type: 'varchar', nullable: false })
-    expect(leads.fields[1]).toEqual({ name: 'EMAIL', label: 'EMAIL', type: 'varchar', nullable: true })
+    }))
+    const schema = await fetchSnowflakeSchema(source(fetch))
+    expect(schema.objects.map((o) => o.name)).toEqual(['PUBLIC.LEADS', 'PUBLIC.USERS', 'STAGING.RAW'])
+    const leads = schema.objects[0]
+    expect(leads.fields).toEqual([
+      { name: 'ID', label: 'ID', type: 'varchar', nullable: false },
+      { name: 'EMAIL', label: 'EMAIL', type: 'varchar', nullable: true },
+    ])
   })
 
-  it('returns empty objects when data is empty', async () => {
-    vi.stubGlobal('fetch', fetchReturning({ data: [] }))
-    const schema = await fetchSnowflakeSchema(CREDS)
+  it('an empty result is an honest empty answer', async () => {
+    const schema = await fetchSnowflakeSchema(source(fetchSequence(json(200, { data: [] })).fetch))
     expect(schema.objects).toEqual([])
   })
 
-  it('throws on non-200 response', async () => {
-    vi.stubGlobal('fetch', fetchReturning({}, false))
-    await expect(fetchSnowflakeSchema(CREDS)).rejects.toThrow('Snowflake schema fetch failed (401)')
+  it('sends the auth it was given and the same columns query as before', async () => {
+    const { fetch, calls } = fetchSequence(json(200, { data: [] }))
+    await fetchSnowflakeSchema(source(fetch, { schema: 'public' }))
+    expect(calls[0].url).toBe('https://xy12345.us-east-1.snowflakecomputing.com/api/v2/statements')
+    expect(calls[0].init.method).toBe('POST')
+    expect(headersOf(calls[0].init)).toMatchObject({
+      authorization: `Basic ${btoa('user:pass')}`,
+      'x-snowflake-authorization-token-type': 'BASIC',
+      'content-type': 'application/json',
+    })
+    const sql = sentSql(calls[0].init)
+    expect(sql).toContain('FROM TESTDB.INFORMATION_SCHEMA.COLUMNS')
+    expect(sql).toContain("AND TABLE_SCHEMA = 'PUBLIC'")
+    expect(JSON.parse(String(calls[0].init.body)).timeout).toBe(30)
   })
 
-  it('polls a 202 (async query) to completion and returns the schema', async () => {
-    // POST → 202 + handle, first poll still running (202), second poll → rows.
-    const mockFetch = fetchSequence([
-      res(202, { statementHandle: 'h-1', message: 'running' }),
-      res(202, { statementHandle: 'h-1', message: 'still running' }),
-      res(200, { data: [['PUBLIC', 'LEADS', 'ID', 'VARCHAR', 'NO']] }),
-    ])
-    vi.stubGlobal('fetch', mockFetch)
-
-    const schema = await fetchSnowflakeSchema(CREDS, FAST_POLL)
-    expect(schema.objects).toHaveLength(1)
-    expect(schema.objects[0].name).toBe('PUBLIC.LEADS')
-    // GET poll hits the statement-handle URL.
-    const pollUrl = mockFetch.mock.calls[1][0] as string
-    expect(pollUrl).toContain('/api/v2/statements/h-1')
-  })
-
-  it('throws (preserving the cache) when an async query never completes', async () => {
-    // Always 202: the query keeps running until the poll timeout elapses.
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(res(202, { statementHandle: 'h-2' })))
-    await expect(fetchSnowflakeSchema(CREDS, FAST_POLL)).rejects.toThrow(/still running/)
-  })
-
-  it('throws on a 202 with no statementHandle to poll', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(res(202, { message: 'accepted' })))
-    await expect(fetchSnowflakeSchema(CREDS, FAST_POLL)).rejects.toThrow(/statementHandle/)
-  })
-
-  it('throws when a poll returns a hard error', async () => {
-    const mockFetch = fetchSequence([
-      res(202, { statementHandle: 'h-3' }),
-      res(500, { message: 'internal error' }),
-    ])
-    vi.stubGlobal('fetch', mockFetch)
-    await expect(fetchSnowflakeSchema(CREDS, FAST_POLL)).rejects.toThrow('Snowflake schema poll failed (500)')
+  it('polls a 202 to completion on the injected clock', async () => {
+    const clock = fakeClock()
+    const { fetch, calls } = fetchSequence(
+      json(202, { statementHandle: 'h-1', message: 'running' }),
+      json(202, { statementHandle: 'h-1', message: 'still running' }),
+      json(200, { data: [['PUBLIC', 'LEADS', 'ID', 'VARCHAR', 'NO']] }),
+    )
+    const schema = await fetchSnowflakeSchema(source(fetch, { poll: clock.poll }))
+    expect(schema.objects.map((o) => o.name)).toEqual(['PUBLIC.LEADS'])
+    expect(calls[1].url).toContain('/api/v2/statements/h-1')
+    expect(clock.slept).toEqual([1500, 1500])
   })
 
   it('fetches every partition and concatenates the rows (#151)', async () => {
-    // POST returns partition 0 + a 3-partition manifest; GETs return parts 1 and 2.
-    const mockFetch = fetchSequence([
-      res(200, {
+    const { fetch, calls } = fetchSequence(
+      json(200, {
         statementHandle: 'h-9',
         data: [['PUBLIC', 'A', 'ID', 'VARCHAR', 'NO']],
         resultSetMetaData: { partitionInfo: [{ rowCount: 1 }, { rowCount: 1 }, { rowCount: 1 }] },
       }),
-      res(200, { data: [['PUBLIC', 'B', 'ID', 'VARCHAR', 'NO']] }),
-      res(200, { data: [['STAGING', 'C', 'ID', 'NUMBER', 'YES']] }),
-    ])
-    vi.stubGlobal('fetch', mockFetch)
-
-    const schema = await fetchSnowflakeSchema(CREDS)
-    // Without partition paging this would only see PUBLIC.A.
+      json(200, { data: [['PUBLIC', 'B', 'ID', 'VARCHAR', 'NO']] }),
+      json(200, { data: [['STAGING', 'C', 'ID', 'NUMBER', 'YES']] }),
+    )
+    const schema = await fetchSnowflakeSchema(source(fetch))
     expect(schema.objects.map((o) => o.name).sort()).toEqual(['PUBLIC.A', 'PUBLIC.B', 'STAGING.C'])
-
-    // It fetched partition 1 and 2 by handle, not partition 0 again.
-    expect(mockFetch.mock.calls[1][0]).toContain('/api/v2/statements/h-9?partition=1')
-    expect(mockFetch.mock.calls[2][0]).toContain('/api/v2/statements/h-9?partition=2')
-    expect(mockFetch).toHaveBeenCalledTimes(3)
+    expect(calls[1].url).toContain('/api/v2/statements/h-9?partition=1')
+    expect(calls[2].url).toContain('/api/v2/statements/h-9?partition=2')
+    expect(calls).toHaveLength(3)
   })
 
-  it('does not fetch extra partitions for a single-partition result (#151)', async () => {
-    const mockFetch = fetchReturning({
+  it('does not fetch extra partitions for a single partition result (#151)', async () => {
+    const { fetch, calls } = fetchSequence(json(200, {
       data: [['PUBLIC', 'A', 'ID', 'VARCHAR', 'NO']],
       resultSetMetaData: { partitionInfo: [{ rowCount: 1 }] },
-    })
-    vi.stubGlobal('fetch', mockFetch)
+    }))
+    await fetchSnowflakeSchema(source(fetch))
+    expect(calls).toHaveLength(1)
+  })
+})
 
-    const schema = await fetchSnowflakeSchema(CREDS)
-    expect(schema.objects).toHaveLength(1)
-    expect(mockFetch).toHaveBeenCalledTimes(1)  // POST only, no partition GETs
+describe('every failure is named, never an empty table or column list', () => {
+  const statementCases: Array<[string, Answer, string, number | null]> = [
+    ['401', json(401, { code: '390100', message: 'Incorrect username or password' }), 'schema_auth_refused', 401],
+    ['403', json(403, { message: 'forbidden' }), 'schema_auth_refused', 403],
+    ['500', text(500, 'Internal Server Error'), 'schema_service_error', 500],
+    ['429', json(429, {}), 'schema_rate_limited', 429],
+    ['a timeout', () => timeoutError(), 'schema_request_timeout', null],
+    ['malformed JSON', text(200, '<html>'), 'schema_response_malformed', 200],
+    ['a 200 with no data', json(200, { message: 'ok' }), 'schema_response_malformed', 200],
+    ['a row that is not a row', json(200, { data: [['PUBLIC', 'A', 'ID', null, 'NO']] }), 'schema_response_malformed', 200],
+    ['a 202 with no handle to poll', json(202, { message: 'accepted' }), 'schema_response_malformed', 202],
+  ]
+  for (const [label, answer, code, status] of statementCases) {
+    it(`the statement: ${label}`, async () => {
+      const err = await caught(fetchSnowflakeSchema(source(fetchSequence(answer).fetch)))
+      expect([err.code, err.service, err.step, err.status]).toEqual([code, 'snowflake', 'statement', status])
+    })
+  }
+
+  it('a poll that answers 500', async () => {
+    const { fetch } = fetchSequence(json(202, { statementHandle: 'h-3' }), text(500, 'internal error'))
+    const err = await caught(fetchSnowflakeSchema(source(fetch)))
+    expect([err.code, err.step, err.status]).toEqual(['schema_service_error', 'statement_poll', 500])
   })
 
-  it('throws when a partition fetch fails, leaving the cache untouched (#151)', async () => {
-    const mockFetch = fetchSequence([
-      res(200, {
+  it('a poll that times out', async () => {
+    const { fetch } = fetchSequence(json(202, { statementHandle: 'h-3' }), timeoutError())
+    const err = await caught(fetchSnowflakeSchema(source(fetch)))
+    expect([err.code, err.step]).toEqual(['schema_request_timeout', 'statement_poll'])
+  })
+
+  it('a query still running when the wait ends, on the injected clock', async () => {
+    const clock = fakeClock()
+    const { fetch } = fetchSequence(json(202, { statementHandle: 'h-2' }))
+    const err = await caught(fetchSnowflakeSchema(source(fetch, { poll: clock.poll })))
+    expect([err.code, err.step]).toEqual(['schema_query_still_running', 'statement_poll'])
+    expect(err.message).toMatch(/still running/)
+    // 20 s of waiting at 1.5 s a poll, slept on the fake clock, not for real.
+    expect(clock.slept.reduce((a, b) => a + b, 0)).toBeGreaterThanOrEqual(20000)
+  })
+
+  it('a partition that fails, so a truncated set is never cached (#151)', async () => {
+    const { fetch } = fetchSequence(
+      json(200, {
         statementHandle: 'h-err',
         data: [['PUBLIC', 'A', 'ID', 'VARCHAR', 'NO']],
         resultSetMetaData: { partitionInfo: [{ rowCount: 1 }, { rowCount: 1 }] },
       }),
-      res(500, { message: 'partition gone' }),
-    ])
-    vi.stubGlobal('fetch', mockFetch)
-    await expect(fetchSnowflakeSchema(CREDS)).rejects.toThrow('Snowflake partition 1 fetch failed (500)')
+      text(500, 'partition gone'),
+    )
+    const err = await caught(fetchSnowflakeSchema(source(fetch)))
+    expect([err.code, err.step, err.subject, err.status]).toEqual(['schema_service_error', 'statement_partition', '1', 500])
   })
 
-  it('sends Basic auth with base64-encoded credentials', async () => {
-    const mockFetch = fetchReturning({ data: [] })
-    vi.stubGlobal('fetch', mockFetch)
+  it('a multi partition result with no handle to fetch the rest', async () => {
+    const { fetch } = fetchSequence(json(200, {
+      data: [['PUBLIC', 'A', 'ID', 'VARCHAR', 'NO']],
+      resultSetMetaData: { partitionInfo: [{ rowCount: 1 }, { rowCount: 1 }] },
+    }))
+    const err = await caught(fetchSnowflakeSchema(source(fetch)))
+    expect([err.code, err.step]).toEqual(['schema_response_malformed', 'statement'])
+  })
+})
 
-    await fetchSnowflakeSchema(CREDS)
+describe('keyed lookups', () => {
+  it('tables: every table, from INFORMATION_SCHEMA.TABLES', async () => {
+    const { fetch, calls } = fetchSequence(json(200, { data: [['PUBLIC', 'LEADS'], ['STAGING', 'RAW']] }))
+    expect(await listSnowflakeTables(source(fetch, { schema: 'public' }))).toEqual([
+      { name: 'PUBLIC.LEADS', label: 'PUBLIC.LEADS' },
+      { name: 'STAGING.RAW', label: 'STAGING.RAW' },
+    ])
+    const sql = sentSql(calls[0].init)
+    expect(sql).toContain('FROM TESTDB.INFORMATION_SCHEMA.TABLES')
+    expect(sql).toContain("AND TABLE_SCHEMA = 'PUBLIC'")
+  })
 
-    const [url, init] = mockFetch.mock.calls[0] as [string, RequestInit]
-    expect(url).toContain('xy12345.us-east-1.snowflakecomputing.com')
-    const headers = init.headers as Record<string, string>
-    expect(headers['Authorization']).toBe(`Basic ${btoa('user:pass')}`)
+  it('columns of a table: that table only, its names escaped as literals', async () => {
+    const { fetch, calls } = fetchSequence(json(200, { data: [['PUBLIC', 'LEADS', 'ID', 'VARCHAR', 'NO']] }))
+    const fields = await describeSnowflakeTable(source(fetch), "PUBLIC.LE'ADS")
+    expect(fields).toEqual([{ name: 'ID', label: 'ID', type: 'varchar', nullable: false }])
+    const sql = sentSql(calls[0].init)
+    expect(sql).toContain("TABLE_SCHEMA = 'PUBLIC'")
+    expect(sql).toContain("TABLE_NAME = 'LE''ADS'")
+  })
+
+  it('columns of a table that does not exist: schema_not_found, never an empty column list', async () => {
+    const err = await caught(describeSnowflakeTable(source(fetchSequence(json(200, { data: [] })).fetch), 'PUBLIC.NOPE'))
+    expect([err.code, err.subject]).toEqual(['schema_not_found', 'PUBLIC.NOPE'])
+  })
+
+  it('a table name with no schema part is refused before sending anything', async () => {
+    const { fetch } = fetchSequence(json(200, { data: [] }))
+    const err = await caught(describeSnowflakeTable(source(fetch), 'LEADS'))
+    expect(err.code).toBe('schema_key_invalid')
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('a database that is not a plain identifier is refused before sending anything', async () => {
+    const { fetch } = fetchSequence(json(200, { data: [] }))
+    const err = await caught(listSnowflakeTables(source(fetch, { database: 'X; DROP TABLE Y' })))
+    expect(err.code).toBe('schema_source_invalid')
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('an account that is not a host label is refused before sending anything', async () => {
+    const { fetch } = fetchSequence(json(200, { data: [] }))
+    const err = await caught(listSnowflakeTables(source(fetch, { account: 'evil.example.com/x?' })))
+    expect(err.code).toBe('schema_source_invalid')
+    expect(fetch).not.toHaveBeenCalled()
   })
 })

@@ -1,84 +1,101 @@
 /**
- * Supabase schema fetcher — PRD Section 3.1
- * Covers: parses PostgREST OpenAPI definitions, marks nullability from required array,
- * throws on non-200 response.
+ * Supabase schema lookups (PRD Section 3.1; #2335 PR 7 of phase 5).
+ *
+ * PostgREST's OpenAPI root lists every exposed table. The full sync and the two
+ * keyed lookups (tables, columns of a table) take an injected fetch and an
+ * already minted auth, and every failure is a named SchemaLookupError.
  */
-import { describe, it, expect, vi, afterEach } from 'vitest'
-import { fetchSupabaseSchema } from '../supabase-schema'
+import { describe, it, expect, afterEach, vi } from 'vitest'
+import { fetchSupabaseSchema, listSupabaseTables, describeSupabaseTable, type SupabaseSource } from '../supabase-schema'
+import { caught, fetchSequence, forbidGlobalFetch, headersOf, json, text, timeoutError, type Answer } from './_fetch'
 
-const CREDS = JSON.stringify({
-  url: 'https://fake.supabase.co',
-  service_role_key: 'eyJfake',
-})
+const AUTH = { apikey: 'eyJfake', Authorization: 'Bearer eyJfake' }
 
-function fetchReturning(data: unknown, ok = true) {
-  return vi.fn().mockResolvedValue({
-    ok,
-    status: ok ? 200 : 500,
-    json: () => Promise.resolve(data),
-  })
+function source(fetch: SupabaseSource['fetch']): SupabaseSource {
+  return { service: 'supabase', fetch, auth: AUTH, url: 'https://fake.supabase.co' }
 }
+
+const SPEC = {
+  definitions: {
+    leads: {
+      properties: { id: { format: 'uuid', type: 'string' }, email: { type: 'string' }, ssn: { type: 'string' } },
+      required: ['id', 'email'],
+    },
+    users: { properties: { id: { format: 'uuid', type: 'string' }, name: { type: 'string' } }, required: ['id'] },
+  },
+}
+
 
 afterEach(() => vi.unstubAllGlobals())
 
-describe('fetchSupabaseSchema', () => {
-  it('returns normalized schema from OpenAPI definitions', async () => {
-    const spec = {
-      definitions: {
-        leads: {
-          properties: {
-            id: { format: 'uuid', type: 'string' },
-            email: { type: 'string' },
-            ssn: { type: 'string' },
-          },
-          required: ['id', 'email'],
-        },
-        users: {
-          properties: {
-            id: { format: 'uuid', type: 'string' },
-            name: { type: 'string' },
-          },
-          required: ['id'],
-        },
-      },
-    }
-
-    vi.stubGlobal('fetch', fetchReturning(spec))
-
-    const schema = await fetchSupabaseSchema(CREDS)
-    expect(schema.objects).toHaveLength(2)
-
+describe('fetchSupabaseSchema (the canvas sync), on success exactly as before', () => {
+  it('normalises every definition, nullability from required', async () => {
+    forbidGlobalFetch()
+    const schema = await fetchSupabaseSchema(source(fetchSequence(json(200, SPEC)).fetch))
+    expect(schema.objects.map((o) => o.name)).toEqual(['leads', 'users'])
     const leads = schema.objects.find((o) => o.name === 'leads')!
-    expect(leads.fields).toHaveLength(3)
-
-    const idField = leads.fields.find((f) => f.name === 'id')!
-    expect(idField.type).toBe('uuid')
-    expect(idField.nullable).toBe(false) // in required
-
-    const ssnField = leads.fields.find((f) => f.name === 'ssn')!
-    expect(ssnField.nullable).toBe(true) // not in required
+    expect(leads.fields).toEqual([
+      { name: 'id', label: 'id', type: 'uuid', nullable: false },
+      { name: 'email', label: 'email', type: 'string', nullable: false },
+      { name: 'ssn', label: 'ssn', type: 'string', nullable: true },
+    ])
   })
 
-  it('returns empty objects array when definitions is absent', async () => {
-    vi.stubGlobal('fetch', fetchReturning({ info: { title: 'PostgREST' } }))
-    const schema = await fetchSupabaseSchema(CREDS)
+  it('an exposed schema with no tables is an honest empty answer', async () => {
+    const schema = await fetchSupabaseSchema(source(fetchSequence(json(200, { definitions: {} })).fetch))
     expect(schema.objects).toEqual([])
   })
 
-  it('throws on non-200 response', async () => {
-    vi.stubGlobal('fetch', fetchReturning({}, false))
-    await expect(fetchSupabaseSchema(CREDS)).rejects.toThrow('Supabase schema fetch failed (500)')
+  it('reads the OpenAPI root with the auth it was given', async () => {
+    const { fetch, calls } = fetchSequence(json(200, SPEC))
+    await fetchSupabaseSchema(source(fetch))
+    expect(calls[0].url).toBe('https://fake.supabase.co/rest/v1/')
+    expect(headersOf(calls[0].init)).toMatchObject({ apikey: 'eyJfake', authorization: 'Bearer eyJfake' })
+  })
+})
+
+describe('every failure is named, never an empty table list', () => {
+  const cases: Array<[string, Answer, string]> = [
+    ['401', json(401, { message: 'Invalid API key' }), 'schema_auth_refused'],
+    ['403', json(403, { message: 'permission denied' }), 'schema_auth_refused'],
+    ['500', text(500, 'Internal Server Error'), 'schema_service_error'],
+    ['a timeout', () => timeoutError(), 'schema_request_timeout'],
+    ['malformed JSON', text(200, '<!doctype html>'), 'schema_response_malformed'],
+    // A PostgREST root always carries definitions: one without them is not the
+    // OpenAPI document, and an absent list read as "no tables" is L10's empty list.
+    ['a body with no definitions', json(200, { info: { title: 'PostgREST' } }), 'schema_response_malformed'],
+    ['a definition that is not an object', json(200, { definitions: { leads: 'x' } }), 'schema_response_malformed'],
+  ]
+  for (const [label, answer, code] of cases) {
+    it(label, async () => {
+      const err = await caught(fetchSupabaseSchema(source(fetchSequence(answer).fetch)))
+      expect(err.code).toBe(code)
+      expect(err.service).toBe('supabase')
+      expect(err.step).toBe('openapi')
+    })
+  }
+})
+
+describe('keyed lookups', () => {
+  it('tables: every exposed table', async () => {
+    expect(await listSupabaseTables(source(fetchSequence(json(200, SPEC)).fetch))).toEqual([
+      { name: 'leads', label: 'leads' },
+      { name: 'users', label: 'users' },
+    ])
   })
 
-  it('sends the service role key as both apikey header and Bearer token', async () => {
-    const mockFetch = fetchReturning({ definitions: {} })
-    vi.stubGlobal('fetch', mockFetch)
+  it('columns of a table', async () => {
+    const fields = await describeSupabaseTable(source(fetchSequence(json(200, SPEC)).fetch), 'users')
+    expect(fields.map((f) => f.name)).toEqual(['id', 'name'])
+  })
 
-    await fetchSupabaseSchema(CREDS)
+  it('columns of a table the spec does not hold: schema_not_found, not an empty list', async () => {
+    const err = await caught(describeSupabaseTable(source(fetchSequence(json(200, SPEC)).fetch), 'nope'))
+    expect([err.code, err.subject]).toEqual(['schema_not_found', 'nope'])
+  })
 
-    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit]
-    const headers = init.headers as Record<string, string>
-    expect(headers['apikey']).toBe('eyJfake')
-    expect(headers['Authorization']).toBe('Bearer eyJfake')
+  it('a column lookup whose read fails is named too', async () => {
+    const err = await caught(describeSupabaseTable(source(fetchSequence(text(503, 'down')).fetch), 'leads'))
+    expect([err.code, err.status]).toEqual(['schema_service_error', 503])
   })
 })
