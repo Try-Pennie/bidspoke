@@ -15,6 +15,8 @@
  * The rule is buyer-outcome-rate's own (outcome-rate-rule.ts, L370): the share
  * of the last hour's sends that failed, and the share Tripoint declined, each
  * elevated at 25 points above its share over the 14 Eastern days before today.
+ * Once the page stands it holds until the share falls back under 12.5 points
+ * above (#2421), so the Oct 14 swing between 18 and 33 points is one page.
  * Answers are classed the way the buyer_select node classes Tripoint's, so the
  * shares mean the same thing after #1414: accepted; declined, in_progress
  * (1009), invalid_data and null_id_fault are a decline; anything else (unknown,
@@ -65,7 +67,11 @@ export const TRIPOINT_SENT_ANSWERS_EXCLUDED = ['skipped'] as const
  * Below 40 the hour is quiet unless it saturates (L139): every send failed,
  * from 3, as for every buyer, or nothing was accepted, from 12. At the 42%
  * decline share, 12 sends with no accept is about 3 in 100,000; the thinnest
- * night hour after the minimum held 12 sends.
+ * night hour after the minimum held 12 sends. That is while no page stands;
+ * while one does, an hour under 40 is judged against the clear line instead
+ * (#2421): held if its share is still above it, quiet once it is back under,
+ * and never raised on its own. Oct 14's 3 AM ET hour, 38 sends at 66%
+ * declined, holds the page that way.
  *
  * The baseline needs 1,000 sends, under one day at either volume.
  */
@@ -86,6 +92,15 @@ const EXECUTION_START_SLACK_MS = 10 * 60 * 1000
 const HOUR_MS = 3_600_000
 /** Long enough for the oldest baseline day to outlive its window. */
 const ROLLUP_TTL_SECONDS = (TRIPOINT_PING_RULE.baselineDays + 2) * 24 * 3600
+
+/**
+ * Set while this check's page stands (#2421), the way buyer-outcome-rate keeps
+ * one per buyer: the shared rule holds a standing page until the share falls
+ * well back, and this is how the check knows one stands.
+ */
+export const PAGE_STANDING_KEY = 'tripoint-ping-outcome:paged'
+/** How long the marker outlives the last run that set or kept it; every run renews it while the page stands. */
+const PAGE_STANDING_TTL_SECONDS = 24 * 3600
 
 export const TRIPOINT_PING_OUTCOME_RATE_REMEDY: AlertRemedy = {
   consequence:
@@ -253,10 +268,23 @@ export async function runTripointPingOutcomeRate(deps: PingDeps): Promise<PingSu
   }
   const baselineSummary = 'unreadable' in baseline ? null : { attempts: baseline.attempts, hours: baseline.hours }
 
+  // Whether the page stands, from this check's own marker (#2421): the rule
+  // holds a standing page until the share falls well back. A marker that cannot
+  // be read leaves the hour unmeasured, so it neither raises nor clears.
+  let standing: string | null = null
+  let standingUnreadable: string | null = null
+  try {
+    standing = await deps.kv.get(PAGE_STANDING_KEY)
+  } catch (err) {
+    standingUnreadable = messageOf(err)
+  }
+
   let verdict: OutcomeRateVerdict
   try {
     window.counts = await deps.countSends(windowFrom, windowTo)
-    verdict = judgeOutcomeShares({ attempts: window.counts.sent, failed: window.counts.failed, declined: window.counts.declined }, baseline, TRIPOINT_PING_RULE)
+    verdict = standingUnreadable !== null
+      ? { verdict: 'unmeasured', reason: `whether a page is standing could not be read: ${standingUnreadable}` }
+      : judgeOutcomeShares({ attempts: window.counts.sent, failed: window.counts.failed, declined: window.counts.declined }, baseline, TRIPOINT_PING_RULE, standing !== null)
   } catch (err) {
     verdict = { verdict: 'unmeasured', reason: `the last hour's tripoint_ping steps could not be counted: ${messageOf(err)}` }
   }
@@ -272,8 +300,20 @@ export async function runTripointPingOutcomeRate(deps: PingDeps): Promise<PingSu
     lines.push(`tripoint on the Engine Bidding tripoint_ping step: ${verdict.detail}; ${accepted}. Partner page: ${deps.appUrl}/partners?selected=tripoint`)
   }
 
-  // An hour it could not measure says nothing about a standing page, so it
-  // neither clears it nor raises one; a measured hour clears or raises (L11).
+  // The marker follows the page: a raise sets it, an hour that moves nothing
+  // (held, or unmeasured) keeps a standing one alive so it cannot lapse by
+  // expiry, and an hour that clears deletes it.
+  if (verdict.verdict === 'elevated') {
+    await deps.kv.put(PAGE_STANDING_KEY, new Date(now).toISOString(), { expirationTtl: PAGE_STANDING_TTL_SECONDS })
+  } else if (!verdictMovesThePage(verdict)) {
+    if (standing !== null) await deps.kv.put(PAGE_STANDING_KEY, standing, { expirationTtl: PAGE_STANDING_TTL_SECONDS })
+  } else if (standing !== null) {
+    await deps.kv.delete(PAGE_STANDING_KEY)
+  }
+
+  // An hour it could not measure says nothing about a standing page, and a
+  // held hour is one that keeps it, so neither clears it nor raises one; any
+  // other measured hour clears or raises (L11, #2421).
   if (verdictMovesThePage(verdict)) await deps.notify(lines)
 
   return { window, baseline: baselineSummary, verdict, rolled_up_hours: rollup.recorded, rollup_errors: rollup.errors, lines }
@@ -283,7 +323,7 @@ export async function runTripointPingOutcomeRate(deps: PingDeps): Promise<PingSu
 export function endingOf(s: PingSummary): JobRunEnding {
   const summary = { window: s.window, baseline: s.baseline, verdict: s.verdict.verdict, rolled_up_hours: s.rolled_up_hours, rollup_errors: s.rollup_errors.length }
   if (s.skipped) return { outcome: 'skipped', detail: s.skipped, summary }
-  if (s.verdict.verdict === 'elevated') return { outcome: 'findings', detail: s.verdict.detail, summary }
+  if (s.verdict.verdict === 'elevated' || s.verdict.verdict === 'held') return { outcome: 'findings', detail: s.verdict.detail, summary }
   if (s.verdict.verdict === 'unmeasured') return { outcome: 'unmeasured', detail: s.verdict.reason, summary }
   if (s.rollup_errors.length > 0) {
     return { outcome: 'unmeasured', detail: `${s.rollup_errors.length} finished hours could not be recorded for the baseline: ${s.rollup_errors.join('; ')}`, summary }
