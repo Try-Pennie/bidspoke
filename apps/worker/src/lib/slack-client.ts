@@ -69,12 +69,12 @@ export function slackCallFailure(e: unknown): SlackCallFailure | null {
  *
  * POST /slack/resolve and GET /slack/channels (routes/api/integrations.ts,
  * every paged conversations.list) used fetchJson, which parsed the body as
- * JSON without looking at the status. Both read their answers through this. So `ok:false` came
- * back as the body; a 429 or a 5xx whose body was Slack's JSON
- * (`{ ok: false, error: 'ratelimited' }`) came back as that body too; a body
- * that was not JSON threw SyntaxError; and no answer threw the fetch's own
- * error. This keeps every one of those, so what the Settings page is told
- * does not change:
+ * JSON without looking at the status. So `ok:false` came back as the body;
+ * a 429 or a 5xx whose body was Slack's JSON (`{ ok: false, error:
+ * 'ratelimited' }`) came back as that body too; a body that was not JSON
+ * threw SyntaxError; and no answer threw the fetch's own error. Both routes
+ * now read their answers through this, which keeps every one of those, so
+ * what the Settings page is told does not change:
  *
  * - success, and `ok:false` with no code (the library returns it without
  *   throwing): the result as returned;

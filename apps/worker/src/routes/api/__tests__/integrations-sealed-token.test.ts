@@ -184,7 +184,8 @@ describe('GET /integrations/slack/channels', () => {
   it('lists channels with the token opened from credential_enc', async () => {
     const { client } = recordingSupabase({ row: { config: { default_channel: '#alerts' }, credential_enc: await encryptSecret(TOKEN, KEY) } })
     vi.mocked(createSupabaseClient).mockReturnValue(client as never)
-    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true, channels: [{ id: 'C1', name: 'alerts' }] }), { status: 200 }))
+    // A fresh Response per call: a body can be read only once.
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true, channels: [{ id: 'C1', name: 'alerts' }] }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
     const res = await call('GET', '/integrations/slack/channels?q=ale')
     expect(res.status).toBe(200)
