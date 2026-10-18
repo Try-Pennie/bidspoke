@@ -48,6 +48,7 @@
 import type { WorkflowLane } from '@bidspoke/node-types'
 import { SIGNATURE_HEADER, deriveHexKey, deriveWorkflowKey, redactCapture, verifyBodySignature } from '@bidspoke/porting-evidence'
 import type { OpsGatewayBinding } from '../lib/ops-gateway-contract'
+import type { ConnectionTokenObject } from './connection-token-object'
 import type { OpsDbEnv } from './ops-db'
 import { PORTING_REGISTRY, type PortingRegistry } from './porting-registry'
 import type { OpsInternalBinding } from './internal'
@@ -82,10 +83,11 @@ export interface OpsEnv extends OpsDbEnv {
    */
   OPS_GATEWAY?: OpsGatewayBinding
   /**
-   * ConnectionTokenObject, one per person bound connection (#2334). Optional,
-   * as SELF is, because nothing calls it yet and a test env may not bind it.
+   * ConnectionTokenObject, one per person bound connection (#2334, live #2335).
+   * Optional, as SELF is, because nothing that runs calls it yet and a test env
+   * may not bind it.
    */
-  CONNECTION_TOKENS?: DurableObjectNamespace
+  CONNECTION_TOKENS?: DurableObjectNamespace<ConnectionTokenObject>
 }
 
 /** The one lane this Worker serves. */
@@ -297,9 +299,11 @@ export { OpsInternal } from './internal'
 
 /**
  * The first ops Durable Object (#2334), bound as CONNECTION_TOKENS and created by
- * the ops Worker's migration v1 in wrangler.ops.toml. Inert in the deploy that
- * adds it: nothing calls it (ADR 0011). Exported from the main module because
- * the runtime finds a Durable Object class only there.
+ * the ops Worker's migration v1 in wrangler.ops.toml. Shipped inert (ADR 0011);
+ * live for person bound logins since #2335 (single flight refresh, rotated
+ * logins kept in its storage and handed back by alarm), reached by RPC from the
+ * person bound minter only. Exported from the main module because the runtime
+ * finds a Durable Object class only there.
  */
 export { ConnectionTokenObject } from './connection-token-object'
 

@@ -483,6 +483,9 @@ async function mintFailed(
       throw refusal('connection_not_allowed', `the ${resolved.service} mint was refused by rule: ${err.reason}`, secrets)
     case 'check_unavailable':
       throw refusal('connection_auth_check_unavailable', `the ${resolved.service} mint could not check its rule: ${err.reason}`, secrets)
+    case 'token_object_unavailable':
+      // Our own infrastructure, not the login: nothing is recorded about the connection.
+      throw refusal('connection_token_object_unavailable', `the ${resolved.service} login's token object: ${err.reason}`, secrets)
     case 'unavailable': {
       if (resolved.candidate) throw refusal('connection_auth_unavailable', `the ${resolved.service} token endpoint is unavailable: ${err.reason}`, secrets)
       let outcome: RefreshOutcome | null = null
@@ -543,6 +546,7 @@ async function sendWithRenewal(
         generation: resolved.generation,
         target: resolved.target,
         publicConfig: resolved.publicConfig,
+        envelope: resolved.envelope,
         login,
         candidate: resolved.candidate,
         renew: rejected === null ? null : { rejected },

@@ -39,11 +39,14 @@ import { REPO_ROOT, WORKER_SRC, listFiles, listTsFiles, sanitizeSource } from '.
 const ALLOWED_OPENERS: Readonly<Record<string, string>> = {
   'apps/worker/src/ops/connections/connection-fetch.ts':
     'connectionFetch: every connection bound request (steps, lookups, Reconnect, and the scheduled still valid and sf_limits reads) reaches the credential only through it',
+  'apps/worker/src/ops/connection-token-object.ts':
+    'ConnectionTokenObject (#2335): holds a person bound login\'s refresh token, so it opens the envelope it is handed (ciphertext only) to refresh or exchange a code, and reseals a rotated login to the ops key before it answers',
   'scripts/restore-drill/open-seal-canary.ts':
     'the restore drill (#2333): runs on a laptop, opens only the canary POST /api/admin/seal-canary returns (bound to the nil organization and connection, so no login opens under it) with the escrowed key read from stdin, and prints only pass or fail',
 }
 
 const CONNECTION_MODULES = path.join(WORKER_SRC, 'ops/connections')
+const TOKEN_OBJECT = path.join(WORKER_SRC, 'ops/connection-token-object.ts')
 
 const SPECIFIER = String.raw`['"](?:@bidspoke/connection-seal(?:/[^'"]*)?|[^'"]*packages/connection-seal(?:/[^'"]*)?)['"]`
 const NAMED_IMPORT = new RegExp(String.raw`\bimport\s+(type\s+)?\{([^}]*)\}\s*from\s*` + SPECIFIER, 'g')
@@ -114,8 +117,10 @@ describe('only the listed modules open a sealed ops login (#2335)', () => {
   })
 
   it('no connection module writes to the console', () => {
-    const modules = listTsFiles(CONNECTION_MODULES).map((full) => ({ file: rel(full), full }))
-    expect(modules.length).toBeGreaterThanOrEqual(4)
+    // ConnectionTokenObject holds refresh tokens and lives beside the connection modules, not in them (#2335).
+    const modules = [...listTsFiles(CONNECTION_MODULES), TOKEN_OBJECT].map((full) => ({ file: rel(full), full }))
+    expect(modules.length).toBeGreaterThanOrEqual(5)
+    expect(existsSync(TOKEN_OBJECT)).toBe(true)
     expect(modules.filter((m) => usesConsole(readFileSync(m.full, 'utf8'))).map((m) => m.file)).toEqual([])
   })
 
