@@ -251,6 +251,19 @@ describe('PUT /partners/:id/buyer-profile', () => {
     expect(vi.mocked(refreshBuyerProfilesCache)).not.toHaveBeenCalled()
   })
 
+  // #2149: the legacy route is held to the same rule as the page save.
+  it('a minimum a live buyer_select step has no template for is 422 naming the workflow, and nothing is saved', async () => {
+    const rpc = vi.fn()
+    const liveEngine = { ...engine, name: 'Engine Bidding Workflow', definition: { nodes: [{ type: 'buyer_select', namespace: 'buyer_select', config: { mode: 'live', population: 'engine', state: '{{s}}', debt: '{{d}}' } }] } }
+    supabaseWith({ partner_configs: { single: partnerRow }, workflows: { list: [liveEngine] } }, { rpc })
+    const res = await request(app, 'PUT', '/partners/p-1/buyer-profile', { expected_version: 2, profile: { ...doc, loan_amount_min: 2000 } })
+    expect(res.status).toBe(422)
+    const body = await res.json() as { error: string; errors: Array<{ code: string; path: string; message: string }> }
+    expect(body.error).toBe('rule_unread_by_live_workflow')
+    expect(body.errors).toEqual([expect.objectContaining({ path: 'loanAmountMin', message: expect.stringContaining('Engine Bidding Workflow') })])
+    expect(rpc).not.toHaveBeenCalled()
+  })
+
   it('enabling a buyer whose partner record has no click URL or no routing code is 422 by name, because the scripts write both from the winner (#1416)', async () => {
     const rpc = vi.fn()
     supabaseWith({ partner_configs: { single: { ...partnerRow, click_url: null, external_routing_code: null } } }, { rpc })
@@ -392,7 +405,7 @@ describe('PUT /partners/:id/buyer-profile', () => {
   // #1557: a live click workflow names this buyer; switched to the offer, its
   // check would stop offering and its send would stop judging the cap, silently.
   describe('switching a click buyer to the offer while a live workflow names it on a click node', () => {
-    const clickCheckFlow = { id: 'wf-l1', name: 'Engine Bidding', is_active: true, organization_id: 'org-abc', deleted_at: null, definition: { nodes: [{ type: 'buyer_click_check', config: { partner_id: 'p-1' } }] } }
+    const clickCheckFlow = { id: 'wf-l1', name: 'Engine Bidding', is_active: true, organization_id: 'org-abc', deleted_at: null, definition: { nodes: [{ type: 'buyer_click_check', config: { partner_id: 'p-1', state: '{{s}}', debt: '{{d}}', loan_amount: '{{l}}' } }] } }
     const clickSendFlow = { id: 'wf-send', name: 'Liberty1 click', is_active: true, organization_id: 'org-abc', deleted_at: null, definition: { nodes: [{ type: 'buyer_click_send', config: { partner_id: 'p-1' } }] } }
     afterEach(() => { vi.mocked(readBuyerSoldOn).mockReset() })
 

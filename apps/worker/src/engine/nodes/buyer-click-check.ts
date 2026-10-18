@@ -47,7 +47,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { StoredCopyRefusedError, judgeCopyAge } from '../../lib/stored-copy-age'
-import { CLICK_CHECK_BUDGET_MS, CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, CLICK_URL_PROSPECT_PLACEHOLDER, clickUrlCarriesProspectId, evaluateClickEligibility, isCap, judgedLimits, parseLead, partnerIdOf, POPULATIONS, withDeadline, type JudgedLead, type JudgedLimits, type LeadInput, type OutReason, type Population, type Timers } from '@bidspoke/buyer-profile'
+import { CLICK_CHECK_BUDGET_MS, CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, CLICK_URL_PROSPECT_PLACEHOLDER, clickUrlCarriesProspectId, evaluateClickEligibility, isCap, judgedLimits, leadFieldWired, parseLead, partnerIdOf, POPULATIONS, withDeadline, type JudgedLead, type JudgedLimits, type LeadInput, type OutReason, type Population, type Timers } from '@bidspoke/buyer-profile'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import { loadBuyerProfiles, type BuyerProfilesSnapshot, type LoadedBuyer } from '../../lib/buyer-profile-loader'
@@ -195,7 +195,7 @@ export async function executeBuyerClickCheckNode(node: NodeDefinition, ctx: Exec
     debt: resolve(config.debt, ctx),
     loanAmount: resolve(config.loan_amount, ctx),
     collections: resolve(config.collections, ctx),
-    collectionsWired: typeof config.collections === 'string' && config.collections.trim() !== '',
+    collectionsWired: leadFieldWired(config, 'collections'),
   }
   const output: BuyerClickCheckOutput = {
     _route: 'not_eligible',
