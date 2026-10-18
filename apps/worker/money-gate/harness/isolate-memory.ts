@@ -6,6 +6,7 @@
 import { forgetPartnerConstantsMemory } from '@money-gate-engine/lib/partner-constants-loader'
 import { forgetPartnerLastGoodMemory } from '@money-gate-engine/lib/partner-last-good'
 import { forgetStoredCopyLedger } from '@money-gate-engine/lib/stored-copy-ledger'
+import { forgetRowCapReports } from '@money-gate-engine/lib/row-cap'
 import type { ForgottenState } from '../lib/isolate-memory'
 
 const FORGET: Record<ForgottenState, () => void> = {
@@ -16,6 +17,8 @@ const FORGET: Record<ForgottenState, () => void> = {
   'src/lib/stored-copy-ledger.ts:isolateId': forgetStoredCopyLedger,
   'src/lib/stored-copy-ledger.ts:lastFlushAt': forgetStoredCopyLedger,
   'src/lib/stored-copy-ledger.ts:pending': forgetStoredCopyLedger,
+  'src/lib/row-cap.ts:lastSent': forgetRowCapReports,
+  'src/lib/row-cap.ts:saidUnconfigured': forgetRowCapReports,
 }
 
 export function forgetIsolateMemory(): void {

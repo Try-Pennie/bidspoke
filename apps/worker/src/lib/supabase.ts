@@ -5,6 +5,7 @@ import rpcLists from './read-only-rpcs.json'
 import { guardLocalDevWrites, type RpcClassification } from './local-dev-write-guard'
 import { secretKeys } from './secret-crypto'
 import { registerSlackKeyRing } from './slack-key-ring'
+import { withRowCapCheck } from './row-cap'
 
 // Local `wrangler dev` shares the real production Supabase project (there is no
 // separate local backend), and the Worker connects as service_role, which
@@ -148,7 +149,17 @@ export function createSupabaseClient(env: Env, options: { fetch?: typeof fetch; 
   const client = createClient<Database>(env.SUPABASE_URL, env.SUPABASE_SECRET_KEY, {
     auth: { persistSession: false },
     ...(options.retry === false ? { db: { retry: false } } : {}),
-    global: { fetch: withRequestDeadline(baseFetch, deadlineMs) },
+    // Every read that comes back at the row cap without a declared limit is
+    // reported, and fails inside a scheduled tick (#1436, row-cap.ts).
+    global: {
+      fetch: withRequestDeadline(
+        withRowCapCheck(baseFetch, {
+          betterStack: { token: env.BETTERSTACK_OUTAGE_TOKEN, url: env.BETTERSTACK_OUTAGE_URL },
+          sendFetch: baseFetch,
+        }),
+        deadlineMs,
+      ),
+    },
   })
   const guarded = guardLocalDevWrites(client, env, env.SUPABASE_URL, BIDDING_RPCS)
   // The Slack readers open the sealed bot token with this client's ring (#2331).
