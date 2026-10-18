@@ -199,7 +199,7 @@ describe('quiet when the read declared its limit or cannot be truncated', () => 
     expect(error?.code).toBe('PGRST116')
   })
 
-  it('ignores an embedded resource limit (x.limit=), which bounds the embed, not the read', () => {
+  it('still reports a read whose only limit is an embedded one (x.limit=), which bounds the embed, not the read', () => {
     const hit = detectRowCapHit({
       url: `${SUPABASE_URL}/rest/v1/workflows?select=id,steps(id)&steps.limit=5`,
       method: 'GET',
