@@ -25,6 +25,7 @@ import {
   LEAD_STATUS_BROKEN_REMEDY,
   LEAD_STATUS_UNCHECKED_REMEDY,
   LEAD_STATUS_PARTNERS,
+  deliveredClickCounter,
   type LeadStatusDeps,
 } from '../lead-status-check'
 import { notifyExportFailure } from '../export-alerts'
@@ -95,6 +96,9 @@ function counter(answers: Record<string, PartnerAnswers>, day: Date = DAY, now: 
 /** No enabled buyer profile at all: the seam set explicitly, never left to the real reader (L284). */
 const NO_PROFILES: LeadStatusDeps['loadProfiles'] = async () => snapshotOf([])
 
+/** Bidspoke delivered no click for anyone: the seam set explicitly, never left to the real reader (L284). */
+const NO_CLICKS: LeadStatusDeps['countDeliveredClicks'] = async () => 0
+
 function snapshotOf(buyers: LoadedBuyer[], extra: Partial<BuyerProfilesSnapshot> = {}): BuyerProfilesSnapshot {
   return { org_id: 'org-1', loaded_at: NOW().toISOString(), content_hash: 'h', served_from: 'database', buyers, ...extra }
 }
@@ -135,7 +139,7 @@ function judgedDay(now: Date): Date {
 function deps(answers: Record<string, PartnerAnswers>, extra: Partial<LeadStatusDeps> = {}): LeadStatusDeps {
   const at = (extra.now ?? NOW)()
   const c = counter(answers, judgedDay(at), at)
-  return { listPartners: ONLY_CHECKED, count: c.count, rows: c.rows, now: NOW, loadProfiles: NO_PROFILES, ...extra }
+  return { listPartners: ONLY_CHECKED, count: c.count, rows: c.rows, now: NOW, loadProfiles: NO_PROFILES, countDeliveredClicks: NO_CLICKS, ...extra }
 }
 
 type SentRemedy = { title?: string; context?: string; fixHint?: string }
@@ -610,14 +614,22 @@ describe('what each finding is about, for the alerter (#1768)', () => {
   })
 })
 
-// Measured in Salesforce (#1767): Liberty1 Completed Submissions by UTC day were
-// Sep 30 43, Oct 1 44, Oct 2 47, Oct 3 3 (Friday evening Eastern) and Oct 4 0,
-// a Sunday, when Liberty1 does not buy. The Monday run paged on that zero.
-describe('checkLeadStatus on a day a buyer does not buy (#1767)', () => {
-  /** Monday 2026-10-05 at 13:02 UTC, the run that paged: the day judged is Sunday Oct 4. */
+// Measured (#2395): Liberty1 Completed Submissions by UTC creation day against
+// the Liberty1 clicks Bidspoke delivered (buyer_click_send, reason sent) by the
+// click's own UTC day were Oct 12 41 and 41, Oct 13 43 and 44, Oct 14 14 and 14,
+// Oct 15 24 and 24, Oct 16 16 and 17, and Oct 17 0 and 0. The Oct 18 run paged
+// on that last zero because Oct 17 UTC opens at 8 PM Friday Eastern, inside
+// Liberty1's hours (#1767). A click buyer's sales follow the consumer's click,
+// which the hours do not bound, so the delivered clicks decide instead.
+describe('checkLeadStatus on a day a click buyer has no sales (#1767, #2395)', () => {
+  /** Monday 2026-10-05 at 13:02 UTC, the run #1767 was about: the day judged is Sunday Oct 4. */
   const MONDAY = () => new Date('2026-10-05T13:02:00Z')
+  /** Sunday 2026-10-18 at 13:01 UTC, the run #2395 was about: the day judged is Saturday Oct 17 UTC. */
+  const OCT_18 = () => new Date('2026-10-18T13:01:00Z')
   const LIBERTY1_ZERO = { Liberty1: { submissions: 0, leads: 0, backlog: 0 } }
-  const liberty1Profile = (blackoutDates: string[] = []) => async () => snapshotOf([buyer('Liberty1', 'click', WEEKDAYS_9_TO_9, blackoutDates)])
+  const liberty1Buyer = () => buyer('Liberty1', 'click', WEEKDAYS_9_TO_9)
+  const liberty1Profile = () => async () => snapshotOf([liberty1Buyer()])
+  const delivered = (n: number) => vi.fn(async () => n)
 
   /** The one line every run logs, captured without printing it. */
   async function runLogged(d: LeadStatusDeps) {
@@ -631,46 +643,82 @@ describe('checkLeadStatus on a day a buyer does not buy (#1767)', () => {
     }
   }
 
-  it('raises nothing for a click buyer with no sales on a Sunday its hours never reach, and logs why', async () => {
-    const { r, line } = await runLogged(deps(LIBERTY1_ZERO, { now: MONDAY, loadProfiles: liberty1Profile() }))
+  it('raises nothing on Oct 17 UTC, inside Liberty1\'s hours, when Bidspoke delivered no Liberty1 click either, and logs why', async () => {
+    const { r, line } = await runLogged(deps(LIBERTY1_ZERO, { now: OCT_18, loadProfiles: liberty1Profile(), countDeliveredClicks: delivered(0) }))
 
-    expect(r.day).toBe('2026-10-04')
+    expect(r.day).toBe('2026-10-17')
     expect(r.alerted).toBe(false)
     expect(alerted()).toEqual([])
-    expect(r.partners.find((p) => p.partner === 'Liberty1')?.closed_all_day).toBe(true)
-    expect(line).toContain('not reported: Liberty1 had no Completed sales and its buyer profile was closed all day')
+    expect(r.partners.find((p) => p.partner === 'Liberty1')?.no_clicks_delivered).toBe(true)
+    expect(line).toContain('not reported: Liberty1 had no Completed sales and Bidspoke delivered no Liberty1 clicks that day.')
   })
 
-  it('still raises the line for a click buyer with no sales on a Wednesday inside its hours', async () => {
-    const thursday = () => new Date('2026-10-08T13:00:00Z')
-    const { r, line } = await runLogged(deps(LIBERTY1_ZERO, { now: thursday, loadProfiles: liberty1Profile() }))
+  it('raises the line, with the delivered count, when Bidspoke delivered Liberty1 clicks that day and Salesforce has no sale', async () => {
+    const { r, line } = await runLogged(deps(LIBERTY1_ZERO, { now: OCT_18, loadProfiles: liberty1Profile(), countDeliveredClicks: delivered(17) }))
 
-    expect(r.day).toBe('2026-10-07')
-    expect(alerted()).toEqual(['Salesforce has no Completed Liberty1 sales from Oct 7, so there was nothing to compare.'])
-    expect(r.partners.find((p) => p.partner === 'Liberty1')?.closed_all_day).toBe(false)
+    expect(r.alerted).toBe(true)
+    expect(alerted()).toEqual([
+      'Salesforce has no Completed Liberty1 sales from Oct 17, but Bidspoke delivered 17 Liberty1 clicks that day, so there was nothing to compare.',
+    ])
+    expect(sentRemedy()?.title).toBe(LEAD_STATUS_UNCHECKED_REMEDY.title)
+    expect(r.partners.find((p) => p.partner === 'Liberty1')?.no_clicks_delivered).toBe(false)
     expect(line).not.toContain('not reported')
   })
 
-  it('raises nothing for a click buyer with no sales on its blackout date', async () => {
-    // Monday 2026-10-12 blacked out: the rest of that UTC day is Sunday evening Eastern, also closed.
-    const tuesday = () => new Date('2026-10-13T13:00:00Z')
-    const { r, line } = await runLogged(deps(LIBERTY1_ZERO, { now: tuesday, loadProfiles: liberty1Profile(['2026-10-12']) }))
+  it('says one click in the singular', async () => {
+    await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, { now: OCT_18, loadProfiles: liberty1Profile(), countDeliveredClicks: delivered(1) }))
 
-    expect(r.day).toBe('2026-10-12')
-    expect(alerted()).toEqual([])
-    expect(line).toContain('not reported: Liberty1')
+    expect(alerted()).toEqual([
+      'Salesforce has no Completed Liberty1 sales from Oct 17, but Bidspoke delivered 1 Liberty1 click that day, so there was nothing to compare.',
+    ])
   })
 
-  it('judges the whole UTC day, so a Saturday whose first hour is Friday evening Eastern still raises a zero', async () => {
-    const sunday = () => new Date('2026-10-04T13:00:00Z')
-    await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, { now: sunday, loadProfiles: liberty1Profile() }))
+  it('keeps the key a no sales line always had, so a standing alert is not announced as new', async () => {
+    await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, { now: OCT_18, loadProfiles: liberty1Profile(), countDeliveredClicks: delivered(3) }))
 
-    expect(alerted()).toEqual(['Salesforce has no Completed Liberty1 sales from Oct 3, so there was nothing to compare.'])
+    const call = vi.mocked(notifyExportFailure).mock.calls.find((c) => c[1] === LEAD_STATUS_JOB)
+    expect((call?.[6] as { keys?: string[] } | undefined)?.keys).toEqual(['zero:Liberty1'])
+  })
+
+  it('no longer reads the hours: a Sunday outside them with clicks delivered still raises the line', async () => {
+    await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, { now: MONDAY, loadProfiles: liberty1Profile(), countDeliveredClicks: delivered(2) }))
+
+    expect(alerted()).toEqual([
+      'Salesforce has no Completed Liberty1 sales from Oct 4, but Bidspoke delivered 2 Liberty1 clicks that day, so there was nothing to compare.',
+    ])
+  })
+
+  it('counts the clicks for the buyer profile\'s partner id over the judged UTC day', async () => {
+    const one = liberty1Buyer()
+    const countDeliveredClicks = delivered(0)
+    await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, { now: OCT_18, loadProfiles: async () => snapshotOf([one]), countDeliveredClicks }))
+
+    expect(countDeliveredClicks).toHaveBeenCalledTimes(1)
+    expect(countDeliveredClicks).toHaveBeenCalledWith(one.partner.id, new Date('2026-10-17T00:00:00Z'))
+  })
+
+  it('raises an unchecked finding, never a zero, when the delivered clicks cannot be counted (L98)', async () => {
+    const r = await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, {
+      now: OCT_18,
+      loadProfiles: liberty1Profile(),
+      countDeliveredClicks: async () => {
+        throw new Error('execution_steps count failed: canceling statement due to statement timeout')
+      },
+    }))
+
+    expect(r.alerted).toBe(true)
+    expect(alerted()).toEqual([
+      "Salesforce has no Completed Liberty1 sales from Oct 17, and the check couldn't count the Liberty1 clicks Bidspoke delivered that day: " +
+        'execution_steps count failed: canceling statement due to statement timeout',
+    ])
+    expect(r.partners.find((p) => p.partner === 'Liberty1')?.no_clicks_delivered).toBe(false)
   })
 
   it('raises an unchecked finding, never a pass, when the buyer profiles cannot be read', async () => {
+    const countDeliveredClicks = delivered(0)
     const r = await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, {
       now: MONDAY,
+      countDeliveredClicks,
       loadProfiles: async () => {
         throw new Error('buyer profiles read failed for org org-1: timeout')
       },
@@ -678,55 +726,50 @@ describe('checkLeadStatus on a day a buyer does not buy (#1767)', () => {
 
     expect(r.alerted).toBe(true)
     expect(alerted()).toEqual([
-      "Salesforce has no Completed Liberty1 sales from Oct 4, and the check couldn't read the buyer profiles to tell whether Liberty1 was buying that day: " +
+      "Salesforce has no Completed Liberty1 sales from Oct 4, and the check couldn't read the buyer profiles to tell whether Liberty1 is sold on the click: " +
         'buyer profiles read failed for org org-1: timeout',
     ])
     expect(sentRemedy()?.title).toBe(LEAD_STATUS_UNCHECKED_REMEDY.title)
+    expect(countDeliveredClicks).not.toHaveBeenCalled()
   })
 
   it('raises an unchecked finding when the only copy of the profiles is too old to trust', async () => {
     // The database read failed and the loader served its last good copy, saved an hour before the run.
-    const stale = async () => snapshotOf([buyer('Liberty1', 'click', WEEKDAYS_9_TO_9)], { served_from: 'last_good', loaded_at: '2026-10-05T12:02:00Z' })
+    const stale = async () => snapshotOf([liberty1Buyer()], { served_from: 'last_good', loaded_at: '2026-10-05T12:02:00Z' })
     await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, { now: MONDAY, loadProfiles: stale }))
 
     expect(alerted()).toEqual([
-      "Salesforce has no Completed Liberty1 sales from Oct 4, and the check couldn't read the buyer profiles to tell whether Liberty1 was buying that day: " +
+      "Salesforce has no Completed Liberty1 sales from Oct 4, and the check couldn't read the buyer profiles to tell whether Liberty1 is sold on the click: " +
         'the database read failed and the saved copy is 60 minutes old.',
     ])
   })
 
-  it('raises an unchecked finding when the buyer profile is switched on with no hours, which saving refuses', async () => {
-    await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, { now: MONDAY, loadProfiles: async () => snapshotOf([buyer('Liberty1', 'click', [])]) }))
-
-    expect(alerted()).toEqual([
-      "Salesforce has no Completed Liberty1 sales from Oct 4, and Liberty1's buyer profile is switched on with no hours, so the check couldn't tell whether it was buying that day.",
-    ])
-  })
-
   it('raises an unchecked finding when two buyer profiles carry the partner name, rather than picking one (L521)', async () => {
-    const two = async () => snapshotOf([buyer('Liberty1', 'click', WEEKDAYS_9_TO_9), buyer('Liberty1', 'click', [{ dayOfWeek: 0, opensMinute: 0, closesMinute: 1440 }])])
+    const two = async () => snapshotOf([liberty1Buyer(), buyer('Liberty1', 'click', [{ dayOfWeek: 0, opensMinute: 0, closesMinute: 1440 }])])
     await checkLeadStatus(env, supabase, deps(LIBERTY1_ZERO, { now: MONDAY, loadProfiles: two }))
 
     expect(alerted()).toEqual([
-      "Salesforce has no Completed Liberty1 sales from Oct 4, and 2 buyer profiles are named Liberty1, so the check couldn't tell whose hours to use.",
+      "Salesforce has no Completed Liberty1 sales from Oct 4, and 2 buyer profiles are named Liberty1, so the check couldn't tell whose clicks to count.",
     ])
   })
 
-  it('still raises the line for Tripoint with no sales on a Sunday, even with a buyer profile closed that day', async () => {
+  it('still raises the line for Tripoint with no sales, sold on offers, without counting any clicks', async () => {
     // Tripoint's profile prices it for buyer selection, but most Tripoint sales come
-    // through the older Tripoint ping, which never reads the profile, so its hours
-    // do not bound when Tripoint can sell.
-    const tripointOffer = async () => snapshotOf([buyer('Tripoint', 'offer', WEEKDAYS_9_TO_9), buyer('Liberty1', 'click', WEEKDAYS_9_TO_9)])
-    const r = await checkLeadStatus(env, supabase, deps({ Tripoint: { submissions: 0, leads: 0, backlog: 0 } }, { now: MONDAY, loadProfiles: tripointOffer }))
+    // through the older Tripoint ping, which never reads the profile, and it is not
+    // sold on the click, so nothing bounds when Tripoint can sell.
+    const tripointOffer = async () => snapshotOf([buyer('Tripoint', 'offer', WEEKDAYS_9_TO_9), liberty1Buyer()])
+    const countDeliveredClicks = delivered(0)
+    const r = await checkLeadStatus(env, supabase, deps({ Tripoint: { submissions: 0, leads: 0, backlog: 0 } }, { now: MONDAY, loadProfiles: tripointOffer, countDeliveredClicks }))
 
     expect(alerted()).toEqual(['Salesforce has no Completed Tripoint sales from Oct 4, so there was nothing to compare.'])
-    expect(r.partners.find((p) => p.partner === 'Tripoint')?.closed_all_day).toBe(false)
+    expect(r.partners.find((p) => p.partner === 'Tripoint')?.no_clicks_delivered).toBe(false)
+    expect(countDeliveredClicks).not.toHaveBeenCalled()
   })
 
-  it('keeps every other partner\'s findings when judging one buyer\'s hours throws, and names that buyer (L73)', async () => {
-    // A profile whose hours cannot be read at all: the judgement for Liberty1 throws.
-    const broken = buyer('Liberty1', 'click', WEEKDAYS_9_TO_9)
-    Object.defineProperty(broken.profile, 'windows', { get: () => { throw new Error('windows unreadable') } })
+  it('keeps every other partner\'s findings when judging one buyer\'s profile throws, and names that buyer (L73)', async () => {
+    // A profile that cannot be read at all: the judgement for Liberty1 throws.
+    const broken = liberty1Buyer()
+    Object.defineProperty(broken.profile, 'soldOn', { get: () => { throw new Error('profile unreadable') } })
     await checkLeadStatus(env, supabase, deps(
       { ...LIBERTY1_ZERO, AmOne: { submissions: 55, leads: 0, backlog: 0 } },
       { now: MONDAY, loadProfiles: async () => snapshotOf([broken]) },
@@ -734,7 +777,7 @@ describe('checkLeadStatus on a day a buyer does not buy (#1767)', () => {
 
     const lines = alerted()
     expect(lines).toContain(
-      "Salesforce has no Completed Liberty1 sales from Oct 4, and the check couldn't judge Liberty1's buyer hours for that day: windows unreadable",
+      "Salesforce has no Completed Liberty1 sales from Oct 4, and the check couldn't judge Liberty1's buyer profile: profile unreadable",
     )
     expect(lines.some((l) => l.startsWith('Only 0 of 55 AmOne sales on Oct 4 reached their Lead'))).toBe(true)
     expect(lines.some((l) => l.startsWith('The check itself failed'))).toBe(false)
@@ -746,13 +789,70 @@ describe('checkLeadStatus on a day a buyer does not buy (#1767)', () => {
     expect(alerted()).toEqual(['Salesforce has no Completed AmOne sales from Oct 4, so there was nothing to compare.'])
   })
 
-  it('does not read the buyer profiles on a day every judged partner had sales, so a failed read there adds nothing', async () => {
+  it('does not read the buyer profiles or count clicks on a day every judged partner had sales, so a failed read there adds nothing', async () => {
     const loadProfiles = vi.fn(async (): Promise<BuyerProfilesSnapshot> => {
       throw new Error('should not be read')
     })
-    const r = await checkLeadStatus(env, supabase, deps({}, { now: MONDAY, loadProfiles }))
+    const countDeliveredClicks = delivered(0)
+    const r = await checkLeadStatus(env, supabase, deps({}, { now: MONDAY, loadProfiles, countDeliveredClicks }))
 
     expect(r.alerted).toBe(false)
     expect(loadProfiles).not.toHaveBeenCalled()
+    expect(countDeliveredClicks).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * The real delivered click reader, against a recording query double: it must
+ * count rather than fetch rows, prune to the judged day's partition by the
+ * partition key, and refuse rather than read a zero from a failed or empty answer.
+ */
+describe('deliveredClickCounter (#2395)', () => {
+  type Answer = { count: number | null; error: unknown; status?: number; statusText?: string }
+  function recordingSupabase(answer: Answer) {
+    const calls: Array<[string, ...unknown[]]> = []
+    const query: Record<string, unknown> = {}
+    for (const m of ['select', 'eq', 'gte', 'lt']) {
+      query[m] = (...args: unknown[]) => {
+        calls.push([m, ...args])
+        return query
+      }
+    }
+    query.then = (resolve: (a: Answer) => unknown) => resolve(answer)
+    const client = {
+      from: (table: string) => {
+        calls.push(['from', table])
+        return query
+      },
+    } as unknown as SupabaseClient
+    return { client, calls }
+  }
+  const PARTNER = '4ed89cc6-b25b-4537-8b3d-5bf1fc237cc3'
+  const OCT_17 = new Date('2026-10-17T00:00:00Z')
+
+  it('counts the non test buyer_click_send steps that sent for this buyer, started inside the judged UTC day', async () => {
+    const { client, calls } = recordingSupabase({ count: 4, error: null })
+    await expect(deliveredClickCounter(client)(PARTNER, OCT_17)).resolves.toBe(4)
+
+    expect(calls).toEqual([
+      ['from', 'execution_steps'],
+      ['select', 'id', { count: 'exact', head: true }],
+      ['eq', 'step_type', 'buyer_click_send'],
+      ['eq', 'is_test', false],
+      ['eq', 'output->>reason', 'sent'],
+      ['eq', 'output->>partner_id', PARTNER],
+      ['gte', 'started_at', '2026-10-17T00:00:00.000Z'],
+      ['lt', 'started_at', '2026-10-18T00:00:00.000Z'],
+    ])
+  })
+
+  it('throws, naming the status, when the count fails, so it is never read as no clicks', async () => {
+    const { client } = recordingSupabase({ count: null, error: { message: '' }, status: 500, statusText: 'Internal Server Error' })
+    await expect(deliveredClickCounter(client)(PARTNER, OCT_17)).rejects.toThrow(/500/)
+  })
+
+  it('throws when the answer carries no count at all, rather than reading it as zero (L90)', async () => {
+    const { client } = recordingSupabase({ count: null, error: null })
+    await expect(deliveredClickCounter(client)(PARTNER, OCT_17)).rejects.toThrow(/no count/)
   })
 })
