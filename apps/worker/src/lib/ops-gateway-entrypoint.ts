@@ -14,7 +14,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import type { Env } from '../env'
 import { createSupabaseClient } from './supabase'
-import { readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted } from './ops-gateway'
+import { readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, storeRotatedEnvelope } from './ops-gateway'
 
 export class OpsGateway extends WorkerEntrypoint<Env> {
   opsWorkflows() {
@@ -29,5 +29,14 @@ export class OpsGateway extends WorkerEntrypoint<Env> {
   async opsTickCompleted(report: unknown) {
     await recordOpsTickCompleted(this.env.IDEMPOTENCY, report, Date.now())
     return { stamped: 'completed' }
+  }
+
+  /**
+   * The ops ConnectionTokenObject's compare and set of a person bound login it
+   * rotated (#2335): one rpc, retries off, since the object retries from its
+   * own alarm. Who may call it and whose row it writes: ops-gateway.ts.
+   */
+  storeRotatedEnvelope(request: unknown) {
+    return storeRotatedEnvelope(createSupabaseClient(this.env, { retry: false }), request)
   }
 }

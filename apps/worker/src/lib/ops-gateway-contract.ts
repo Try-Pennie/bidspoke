@@ -16,7 +16,12 @@
  *
  * Each side parses what it receives (L50): an RPC argument or answer is
  * whatever the other Worker's code put there, possibly an older release's.
+ *
+ * A third crosses it since #2335: a person bound connection's rotated login,
+ * handed back by the ops ConnectionTokenObject to its one home by compare and
+ * set (storeRotatedEnvelope, below).
  */
+import { KID_PATTERN } from '@bidspoke/connection-seal'
 
 /** One ops workflow's state, as the bidding database holds it. */
 export interface ServedOpsWorkflow {
@@ -45,6 +50,44 @@ export interface OpsGatewayBinding {
   opsWorkflows(): Promise<unknown>
   opsTickStarted(): Promise<unknown>
   opsTickCompleted(report: unknown): Promise<unknown>
+  /** A StoreRotatedEnvelopeRequest in; a StoreRotatedEnvelopeAnswer out (#2335). */
+  storeRotatedEnvelope(request: unknown): Promise<unknown>
+}
+
+/**
+ * A person bound connection's rotated login, handed back to its one home by
+ * the ops ConnectionTokenObject (#2335, PR 5 of phase 5 of #1689): a compare
+ * and set of service_connections.credential_enc on the generation the object
+ * last knew. The envelope is the seal's (packages/connection-seal), ciphertext
+ * only; the bidding Worker cannot open it and does not try. `generation` is the
+ * one its AAD binds, which the bidding Worker cannot read from it.
+ */
+export interface StoreRotatedEnvelopeRequest {
+  organization_id: string
+  connection_id: string
+  expected_generation: number
+  generation: number
+  envelope: { v: 1; kid: string; wrapped_key: string; iv: string; ct: string }
+}
+
+/**
+ * What store_rotated_envelope answered:
+ *   stored          written now
+ *   already_stored  the row already held this generation and envelope (a repeat
+ *                   after a lost answer)
+ *   moved           the row holds another generation, named with its envelope's
+ *                   iv (null when it has none readable), so the object can tell
+ *                   its own earlier write from a Reconnect: each seal draws a
+ *                   fresh random iv
+ *   not_found       no person bound ops row of that organization: removed
+ */
+export const STORE_ROTATED_ENVELOPE_OUTCOMES = ['stored', 'already_stored', 'moved', 'not_found'] as const
+export type StoreRotatedEnvelopeOutcome = (typeof STORE_ROTATED_ENVELOPE_OUTCOMES)[number]
+
+export interface StoreRotatedEnvelopeAnswer {
+  outcome: StoreRotatedEnvelopeOutcome
+  current_generation: number | null
+  current_iv: string | null
 }
 
 /** The tick's own mode. Observe only (#1949): live claiming and dispatch come with run invocation (#1950). */
@@ -199,4 +242,53 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
     not_configured_secrets: secrets,
     start_stamp_failed: stampFailed,
   }
+}
+
+/** What the ops copy's CHECK holds an envelope to (connection_copies_envelope_shape). */
+const MAX_ENVELOPE_BYTES = 65_536
+const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/
+const ENVELOPE_FIELDS = ['ct', 'iv', 'kid', 'v', 'wrapped_key']
+const isWhole = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v)
+
+/**
+ * A storeRotatedEnvelope request as the bidding Worker receives it, refused by
+ * name before anything reaches the database when it is not one. The envelope is
+ * checked for the seal's shape only: this Worker holds no key that opens it.
+ */
+export function parseStoreRotatedEnvelopeRequest(raw: unknown): StoreRotatedEnvelopeRequest {
+  if (!isRecord(raw)) throw new OpsGatewayContractError('the rotated envelope request is not an object')
+  const { organization_id, connection_id, expected_generation, generation, envelope } = raw
+  if (typeof organization_id !== 'string' || !UUID.test(organization_id)) throw new OpsGatewayContractError('the rotated envelope request names no organization uuid')
+  if (typeof connection_id !== 'string' || !UUID.test(connection_id)) throw new OpsGatewayContractError('the rotated envelope request names no connection uuid')
+  if (!isWhole(expected_generation) || expected_generation < 1) throw new OpsGatewayContractError('the rotated envelope request\'s expected generation is not a whole number of at least 1')
+  if (!isWhole(generation) || generation <= expected_generation) throw new OpsGatewayContractError('the rotated envelope request\'s generation is not above the expected one')
+  if (!isRecord(envelope)) throw new OpsGatewayContractError('the rotated envelope is not an object')
+  if (Object.keys(envelope).sort().join(',') !== ENVELOPE_FIELDS.join(',')) throw new OpsGatewayContractError(`the rotated envelope must have exactly the fields ${ENVELOPE_FIELDS.join(', ')}`)
+  const { v, kid, wrapped_key, iv, ct } = envelope
+  if (v !== 1) throw new OpsGatewayContractError('the rotated envelope is not version 1')
+  if (typeof kid !== 'string' || !KID_PATTERN.test(kid)) throw new OpsGatewayContractError('the rotated envelope\'s kid is not a kid')
+  for (const [name, value] of [['wrapped_key', wrapped_key], ['iv', iv], ['ct', ct]] as const) {
+    if (typeof value !== 'string' || !BASE64.test(value)) throw new OpsGatewayContractError(`the rotated envelope's ${name} is not base64`)
+  }
+  const shaped = { v: 1 as const, kid, wrapped_key: wrapped_key as string, iv: iv as string, ct: ct as string }
+  if (new TextEncoder().encode(JSON.stringify(shaped)).length > MAX_ENVELOPE_BYTES) throw new OpsGatewayContractError(`the rotated envelope is over ${MAX_ENVELOPE_BYTES} bytes`)
+  return { organization_id, connection_id, expected_generation, generation, envelope: shaped }
+}
+
+/** store_rotated_envelope's answer as the ops Worker receives it. Throws on one it cannot read. */
+export function parseStoreRotatedEnvelopeAnswer(raw: unknown): StoreRotatedEnvelopeAnswer {
+  if (!isRecord(raw)) throw new OpsGatewayContractError('the bidding Worker answered the rotated envelope with something other than an object')
+  const { outcome, current_generation, current_iv } = raw
+  if (!(STORE_ROTATED_ENVELOPE_OUTCOMES as readonly unknown[]).includes(outcome)) {
+    throw new OpsGatewayContractError(`the bidding Worker answered the rotated envelope with an outcome this Worker does not know: ${String(outcome)}`)
+  }
+  if (!(current_generation === null || (isWhole(current_generation) && current_generation >= 1))) {
+    throw new OpsGatewayContractError('the bidding Worker answered the rotated envelope with an unreadable generation')
+  }
+  if (!(current_iv === null || typeof current_iv === 'string')) throw new OpsGatewayContractError('the bidding Worker answered the rotated envelope with an unreadable iv')
+  // A row was found exactly when a generation is named.
+  if ((outcome === 'not_found') !== (current_generation === null)) {
+    throw new OpsGatewayContractError(`the bidding Worker answered the rotated envelope ${String(outcome)} with${current_generation === null ? ' no' : ''} generation`)
+  }
+  return { outcome: outcome as StoreRotatedEnvelopeOutcome, current_generation, current_iv }
 }
