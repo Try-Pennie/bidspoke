@@ -348,6 +348,16 @@ describe('failure boundaries', () => {
     expect(f.db.observations).toHaveLength(1)
     expect(report.problems.join(' ')).toMatch(/could not stamp its start with the bidding Worker/)
   })
+
+  // #2410: the bidding Worker holds a lone missed start stamp for one tick, so it
+  // must be told which problem is the stamp's without reading the sentence.
+  it('says in the report whether the start stamp failed, and claims nothing it did not measure', async () => {
+    const failed = await runOpsTick(fake({ stampFails: true }).ports)
+    expect(failed.start_stamp_failed).toBe(true)
+    expect(failed.problems).toEqual(['The ops tick could not stamp its start with the bidding Worker (the gateway is not deployed).'])
+    const stamped = await runOpsTick(fake().ports)
+    expect(stamped.start_stamp_failed).toBe(false)
+  })
 })
 
 describe('slots', () => {
