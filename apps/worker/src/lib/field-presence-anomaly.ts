@@ -8,6 +8,8 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { MIN_BASELINE_DAYS } from './volume-anomaly'
 import { fetchAllPaged } from './paginate'
+import { formatErr } from './format-error'
+import { withJobRun, type JobRunEnding } from './job-run-record'
 import { getSlackConnection, postMessage, sendGroupedRecoveryAlert } from './slack'
 import { listWithOverflow, MAX_LISTED_LINES } from './list-overflow'
 import { recoveryDue, settleRecovery, markAlerted, markSpikeSeen, recordPaged, refreshAlerted, type IncidentContext, type RecoveryDue, type RecoveryKv } from './alert-recovery'
@@ -782,18 +784,74 @@ export function excludeSilenced<T extends { workflow_id: string; field_path: str
   return hits.filter((h) => !silenced.has(`${h.workflow_id} ${h.field_path}`))
 }
 
+/**
+ * The most pages of silences one run reads (#1437, #2439). One page is 1,000
+ * rows, and the table held none on 2026-10-18, so a full page is a state nobody
+ * has seen. `fetchAllPaged` THROWS when the bound is reached with pages still
+ * full rather than returning what it has, which is the point: a truncated list
+ * fails exactly as an empty one does, judging every silence past the cut as live.
+ */
+const SILENCES_MAX_PAGES = 1
+
+/**
+ * The silences, or why they could not be read (#2439). Two answers, never an
+ * empty set standing in for a failure: a run that carried on with an empty set
+ * judged every silenced field as live and paged it as dead on one bad read (L98).
+ */
+type SilencesRead = { kind: 'read'; silenced: Set<string> } | { kind: 'unreadable'; detail: string }
+
 // Author-set silences for the active workflows. Keyed to match excludeSilenced.
-// A read failure returns an empty set (log-only detector still logs everything).
-async function readSilences(supabase: SupabaseClient, workflowIds: string[]): Promise<Set<string>> {
-  const { data, error } = await supabase
-    .from('field_presence_silences')
-    .select('workflow_id, field_path')
-    .in('workflow_id', workflowIds)
-  if (error) {
-    console.error('[field-presence] silences read failed:', error)
-    return new Set()
+async function readSilences(supabase: SupabaseClient, workflowIds: string[]): Promise<SilencesRead> {
+  try {
+    const rows = await fetchAllPaged<Record<string, unknown>>(
+      (from, to) =>
+        supabase
+          .from('field_presence_silences')
+          .select('workflow_id, field_path')
+          .in('workflow_id', workflowIds)
+          // (workflow_id, field_path) is the table's unique key, so a total order.
+          .order('workflow_id', { ascending: true })
+          .order('field_path', { ascending: true })
+          .range(from, to),
+      'field_presence_silences read',
+      { maxPages: SILENCES_MAX_PAGES },
+    )
+    return { kind: 'read', silenced: new Set(rows.map((r) => fieldKey(r.workflow_id as string, r.field_path as string))) }
+  } catch (err) {
+    const detail = `the silences could not be read, so no field was judged this run: ${formatErr(err)}`
+    console.error(`[field-presence] ${detail}`)
+    return { kind: 'unreadable', detail }
   }
-  return new Set((data ?? []).map((r) => `${r.workflow_id as string} ${r.field_path as string}`))
+}
+
+/**
+ * What a run does with its verdicts when the silences are unknown (#2439).
+ *
+ * Any field might be silenced, and nothing but the silences list can say which,
+ * so no verdict survives: a genuinely dead unsilenced field cannot be told from
+ * a silenced one. Every verdict becomes unjudged, which `alertOnStates` already
+ * handles as "this run could not tell": no page, no all-clear, and an open
+ * incident kept alive rather than left to lapse (#1803).
+ */
+function unjudged(states: FieldState[]): FieldState[] {
+  return states.map((s) => ({ workflow_id: s.workflow_id, field_path: s.field_path, verdict: 'insufficient' }))
+}
+
+/** The job_runs names of the two tiers (#2439). */
+export const FIELD_PRESENCE_DROUGHT_JOB = 'field-presence-drought'
+export const FIELD_PRESENCE_DEAD_JOB = 'field-presence-dead'
+
+/** What one run of either tier reports to job_runs. */
+interface PresenceRunResult {
+  /** Set when the run judged nothing, saying why. */
+  unmeasured?: string
+  summary: Record<string, unknown>
+}
+
+function presenceRunEnding(r: PresenceRunResult): JobRunEnding {
+  return r.unmeasured
+    ? { outcome: 'unmeasured', detail: r.unmeasured, summary: r.summary }
+    : { outcome: 'ok', summary: r.summary }
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -1457,14 +1515,23 @@ export async function runFieldPresenceDroughtCheck(
   kv: RecoveryKv,
   appUrl: string,
 ): Promise<void> {
+  // Recorded in job_runs whichever way it ends, so an hour that judged nothing
+  // can be told from an hour with nothing to say (#2439). A throw still rejects.
+  await withJobRun(supabase, FIELD_PRESENCE_DROUGHT_JOB, () => droughtRun(supabase, kv, appUrl), presenceRunEnding)
+}
+
+async function droughtRun(supabase: SupabaseClient, kv: RecoveryKv, appUrl: string): Promise<PresenceRunResult> {
   const workflows = await activeWorkflows(supabase)
-  if (workflows.length === 0) return
+  if (workflows.length === 0) return { summary: { workflows: 0 } }
   const workflowIds = workflows.map((w) => w.id)
   const since = new Date(Date.now() - (MIN_BASELINE_DAYS + 8) * DAY_MS).toISOString().slice(0, 10)
   const rows = await readPresenceRows(supabase, workflowIds, since)
   const recent = await readPresenceWindow(supabase, workflowIds, DROUGHT_WINDOW_MINUTES)
-  const states = classifyDrought(rows, recent, DROUGHT_WINDOW_MINUTES)
-  const silenced = await readSilences(supabase, workflowIds)
+  const read = await readSilences(supabase, workflowIds)
+  const unmeasured = read.kind === 'unreadable' ? read.detail : undefined
+  const judged = classifyDrought(rows, recent, DROUGHT_WINDOW_MINUTES)
+  const states = read.kind === 'read' ? judged : unjudged(judged)
+  const silenced = read.kind === 'read' ? read.silenced : new Set<string>()
 
   for (const s of states) {
     if (s.verdict === 'alerting' && !silenced.has(fieldKey(s.workflow_id, s.field_path))) {
@@ -1477,13 +1544,22 @@ export async function runFieldPresenceDroughtCheck(
     measuredWindowMinutes: DROUGHT_WINDOW_MINUTES,
     send: (slack, channel, fields, url) => sendFieldDroughtAlert(slack, channel, fields, url),
   })
+  const summary = {
+    workflows: workflows.length,
+    alerting: states.filter((s) => s.verdict === 'alerting').length,
+    healthy: states.filter((s) => s.verdict === 'healthy').length,
+    unjudged: states.filter((s) => s.verdict === 'insufficient').length,
+    paged,
+    recovered,
+    unwatchable,
+  }
   console.log(
-    `[field-presence-drought] workflows=${workflows.length} ` +
-      `alerting=${states.filter((s) => s.verdict === 'alerting').length} ` +
-      `healthy=${states.filter((s) => s.verdict === 'healthy').length} ` +
-      `unjudged=${states.filter((s) => s.verdict === 'insufficient').length} ` +
-      `paged=${paged} recovered=${recovered} unwatchable=${unwatchable}`,
+    `[field-presence-drought] workflows=${summary.workflows} ` +
+      `alerting=${summary.alerting} healthy=${summary.healthy} unjudged=${summary.unjudged} ` +
+      `paged=${paged} recovered=${recovered} unwatchable=${unwatchable}` +
+      (unmeasured ? ' silences=unreadable' : ''),
   )
+  return { unmeasured, summary }
 }
 
 /**
@@ -1497,15 +1573,29 @@ export async function runFieldPresenceDeadCheck(
   kv: RecoveryKv,
   appUrl: string,
 ): Promise<void> {
+  // Recorded in job_runs whichever way it ends (#2439), as the drought tier is.
+  await withJobRun(supabase, FIELD_PRESENCE_DEAD_JOB, () => deadRun(supabase, kv, appUrl), presenceRunEnding)
+}
+
+async function deadRun(supabase: SupabaseClient, kv: RecoveryKv, appUrl: string): Promise<PresenceRunResult> {
   const workflows = await activeWorkflows(supabase)
-  if (workflows.length === 0) return
+  if (workflows.length === 0) return { summary: { workflows: 0 } }
   const workflowIds = workflows.map((w) => w.id)
   // Four weeks, for "has this field ever carried a value" (#2018); the dead rule
   // itself still judges the last DEAD_WINDOW_DAYS of them.
   const since = new Date(Date.now() - EVER_CARRIED_LOOKBACK_DAYS * DAY_MS).toISOString().slice(0, 10)
   const rows = await readDeadRows(supabase, workflowIds, since)
-  const { dead, wrongPath, byDesign, handedOver } = classifyDeadFields(rows, { windowStart: deadWindowStart(rows) })
-  const silenced = await readSilences(supabase, workflowIds)
+  const read = await readSilences(supabase, workflowIds)
+  const unmeasured = read.kind === 'unreadable' ? read.detail : undefined
+  const classified = classifyDeadFields(rows, { windowStart: deadWindowStart(rows) })
+  // Unknown silences judge nothing (#2439): every pass below then neither pages
+  // nor stands down, and the log only digest reports no field.
+  const judge = read.kind === 'read' ? (s: FieldState[]) => s : unjudged
+  const dead = judge(classified.dead)
+  const wrongPath = judge(classified.wrongPath)
+  const byDesign = judge(classified.byDesign)
+  const handedOver = judge(classified.handedOver)
+  const silenced = read.kind === 'read' ? read.silenced : new Set<string>()
 
   const isVisible = (s: FieldState) => s.verdict === 'alerting' && !silenced.has(fieldKey(s.workflow_id, s.field_path))
   const visible = dead.filter(isVisible)
@@ -1520,7 +1610,7 @@ export async function runFieldPresenceDeadCheck(
   )
   // The gone silent check (#1215), LOG ONLY: it never pages until a replay over
   // real history has been reviewed and its activation issue is done.
-  const silent = classifySilentRare(rows)
+  const silent = judge(classifySilentRare(rows))
   console.log(
     JSON.stringify({
       event: 'field_presence_silent_shadow',
@@ -1552,10 +1642,24 @@ export async function runFieldPresenceDeadCheck(
     measuredWindowMinutes: DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES,
     send: sendFieldWrongPathAlert,
   })
+  const summary = {
+    workflows: workflows.length,
+    alerting: visible.length,
+    wrong_path: visibleWrongPath.length,
+    by_design: byDesign.length,
+    unjudged: dead.filter((s) => s.verdict === 'insufficient').length,
+    paged: d.paged + w.paged,
+    recovered: d.recovered + w.recovered,
+    stood_down_by_design: b.recovered,
+    handed_over: h.recovered,
+    unwatchable: d.unwatchable,
+  }
   console.log(
-    `[field-presence-dead] workflows=${workflows.length} alerting=${visible.length} wrong_path=${visibleWrongPath.length} ` +
-      `by_design=${byDesign.length} unjudged=${dead.filter((s) => s.verdict === 'insufficient').length} ` +
-      `paged=${d.paged + w.paged} recovered=${d.recovered + w.recovered} stood_down_by_design=${b.recovered} handed_over=${h.recovered} ` +
-      `unwatchable=${d.unwatchable}`,
+    `[field-presence-dead] workflows=${summary.workflows} alerting=${summary.alerting} wrong_path=${summary.wrong_path} ` +
+      `by_design=${summary.by_design} unjudged=${summary.unjudged} ` +
+      `paged=${summary.paged} recovered=${summary.recovered} stood_down_by_design=${summary.stood_down_by_design} handed_over=${summary.handed_over} ` +
+      `unwatchable=${summary.unwatchable}` +
+      (unmeasured ? ' silences=unreadable' : ''),
   )
+  return { unmeasured, summary }
 }
