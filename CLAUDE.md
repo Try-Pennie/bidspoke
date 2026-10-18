@@ -169,9 +169,10 @@ pnpm --filter worker test:do   # the Durable Object suites, inside workerd
 ```
 
 The worker has two vitest projects (#1410). `test:unit` is the Node suite. `test:do`
-runs `src/durable-objects/__tests__/*.workers.test.ts` inside workerd through
-`@cloudflare/vitest-plugin` (`vitest.do.config.mts`), against the bindings in
-`wrangler.toml`, because a SQLite backed object cannot be proven against a Map
+runs `src/durable-objects/__tests__/*.workers.test.ts` (project `do`, against the
+bindings in `wrangler.toml`) and `src/ops/__tests__/*.workers.test.ts` (project `ops`,
+against `wrangler.ops.toml`) inside workerd through `@cloudflare/vitest-plugin`
+(`vitest.do.config.mts`), because a SQLite backed object cannot be proven against a Map
 double. The Node config excludes those files and `tsconfig.do.json` typechecks them.
 An object's clock is a field a test replaces through `runInDurableObject`; set it in
 the FUTURE, because workerd fires an alarm whose time has passed at once, underneath
