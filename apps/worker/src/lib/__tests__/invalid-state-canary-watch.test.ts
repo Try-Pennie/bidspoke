@@ -27,6 +27,7 @@ import {
   RELAY_COMPARISON_POSTS,
   pickEvenly,
   readRelayPosts,
+  STEP_COLUMNS,
   type CanaryWatchDeps,
   type CanaryWatchReport,
   type RelayStep,
@@ -75,6 +76,7 @@ function nativeStep(run: string, sub: string, over: Partial<WatchedStep> = {}): 
     execution_id: run,
     step_type: 'salesforce',
     status: 'completed',
+    started_at: '2026-10-17T15:04:04.000Z',
     input: { resolved: { operation: 'update', object: 'Submission__c', record_id: sub, body: sentBody(run) } },
     output: { status: 204, body: null },
     ...over,
@@ -157,7 +159,7 @@ describe('the invalid state canary watch', () => {
     const subFields = new URL(`https://x${asked[0]}`).searchParams.get('fields')!.split(',')
     for (const f of [...Object.keys(sentBody(RUN_A)), 'Lead__c', 'Engine_UUID_SO__c', 'Engine_Lead_UUID_SO__c']) expect(subFields).toContain(f)
     expect(asked[0].startsWith(`/sobjects/Submission__c/${SUB_A}?`)).toBe(true)
-    expect(asked[1]).toBe(`/sobjects/Lead/${LEAD_A}?fields=EngineUUID__c,EngineLeadUUID__c`)
+    expect(asked[1]).toBe(`/sobjects/Lead/${LEAD_A}?fields=EngineUUID__c,EngineLeadUUID__c,Submission_Object_ID__c`)
     expect(posted).toHaveLength(1)
     expect(posted[0].alert).toBe(false)
     expect(posted[0].title).toBe('The invalid state write landed in Salesforce')
@@ -349,7 +351,7 @@ describe('the invalid state canary watch', () => {
   // because five relay posts sat in its window, when all five came before version
   // 172 went live and both posts after it went direct. Whether Main Flow is on the
   // relay is a question about the LAST post, never about any post.
-  const relayStep = (run: string): WatchedStep => ({ execution_id: run, step_type: 'webhook', status: 'completed', input: {}, output: { status: 200 } })
+  const relayStep = (run: string): WatchedStep => ({ execution_id: run, step_type: 'webhook', status: 'completed', started_at: '2026-10-17T15:00:00.000Z', input: {}, output: { status: 200 } })
   const landedA = { [SUB_A]: ok(landedSubmission(RUN_A, LEAD_A)), [LEAD_A]: ok(landedLead(RUN_A)), [SUB_B]: ok(landedSubmission(RUN_B, LEAD_B)), [LEAD_B]: ok(landedLead(RUN_B)) }
 
   it('relay posts from before the switch are said as such, and the day stays a report (the 2026-10-17 shape)', async () => {
@@ -432,6 +434,7 @@ describe('the invalid state canary watch', () => {
       step_namespace: 'under_10000_sf_post',
       step_type: 'webhook',
       status: 'completed',
+      started_at: '2026-10-17T13:31:13.000Z',
       input: { resolved: { method: 'POST', url: 'https://relay.example/update-submission', headers: {}, body } },
       output: { status: 200, body: { success: true } },
       ...over,
@@ -610,6 +613,223 @@ describe('the invalid state canary watch', () => {
     await expect(runInvalidStateWatch(d)).resolves.toBeDefined()
   })
 
+  // #2396: the 2026-10-18 report said 13 of 100 relay posts did not land, and all
+  // 13 had. 11 differed only in External_Exchange_Status__c and
+  // External_Timestamp__c: the relay sent Pending and the sale's own completion
+  // set Completed 30 s to 2 min later. 2 differed only because the Lead follows
+  // its customer's NEWER Submission, whose Engine ids it carries. The shapes below
+  // are those, with every id and value invented.
+  const NEWER_SUB = 'a04Ui00000NNNN1IAV'
+  const tripointBody = (run: string, sub: string) => ({
+    submissionId: sub,
+    executionId: run,
+    PDFlow_1__c: link(run),
+    External_Exchange_Status__c: 'Pending',
+    External_Timestamp__c: '2026-10-17T13:31:14.000Z',
+    VantageScore__c: 'null',
+  })
+  /** Read back after the sale's completion: the relay's post landed, then the status moved on. */
+  const completedSince = (run: string, lead: string, over: Record<string, unknown> = {}) => ({
+    PDFlow_1__c: link(run),
+    External_Exchange_Status__c: 'Completed',
+    External_Timestamp__c: '2026-10-17T13:31:41.000+0000',
+    VantageScore__c: 'null',
+    Lead__c: lead,
+    CreatedDate: '2026-10-17T13:29:07.000+0000',
+    LastModifiedDate: '2026-10-17T13:31:41.000+0000',
+    ...over,
+  })
+  const tripointSample = (sample: RelayStep[]) => async () => ({ total: sample.length, sample })
+
+  it('a relay post whose status a later write advanced landed, and is counted as superseded by a later write rather than not landed', async () => {
+    const { d, posted, asked } = deps({
+      readRelay: tripointSample([relayPost(RELAY_1, tripointBody(RELAY_1, RSUB_1), { step_namespace: 'tripoint_sf_post' })]),
+      records: { [RSUB_1]: ok(completedSince(RELAY_1, RLEAD_1)) },
+    })
+    const report = await runInvalidStateWatch(d)
+    if ('error' in report.relay) throw new Error('relay read failed')
+    expect(report.relay.sample).toEqual([
+      { kind: 'moved_on', executionId: RELAY_1, laterWrite: ['External_Exchange_Status__c', 'External_Timestamp__c'], newerSubmission: false },
+    ])
+    // The Submission read asks for when it was last written and created.
+    const fields = new URL(`https://x${asked[0]}`).searchParams.get('fields')!.split(',')
+    expect(fields).toEqual(expect.arrayContaining(['LastModifiedDate', 'CreatedDate']))
+    const text = posted[0].lines.join('\n')
+    expect(text).toContain('1 of them, spread over the day, was read back from Salesforce the same way: 1 landed fully (100.0%).')
+    expect(text).toContain('Of those, 1 was superseded since by a later write to External_Exchange_Status__c or External_Timestamp__c.')
+  })
+
+  it('a differing status on a Submission last written BEFORE the post is still a post that did not land', async () => {
+    const { d } = deps({
+      readRelay: tripointSample([relayPost(RELAY_1, tripointBody(RELAY_1, RSUB_1), { step_namespace: 'tripoint_sf_post' })]),
+      // Only the status differs, and nothing has written the record since 13:20, before the post began at 13:31:13.
+      records: { [RSUB_1]: ok(completedSince(RELAY_1, RLEAD_1, { LastModifiedDate: '2026-10-17T13:20:00.000+0000', External_Timestamp__c: '2026-10-17T13:31:14.000+0000' })) },
+    })
+    const report = await runInvalidStateWatch(d)
+    if ('error' in report.relay) throw new Error('relay read failed')
+    expect(report.relay.sample).toEqual([
+      { kind: 'not_landed', executionId: RELAY_1, problems: ['1 field holds a different value from the one the run sent: External_Exchange_Status__c.'] },
+    ])
+  })
+
+  it('a post whose step recorded no start time cannot be shown to have been superseded, so a difference is still said', async () => {
+    const { d } = deps({
+      readRelay: tripointSample([relayPost(RELAY_1, tripointBody(RELAY_1, RSUB_1), { step_namespace: 'tripoint_sf_post', started_at: '' })]),
+      records: { [RSUB_1]: ok(completedSince(RELAY_1, RLEAD_1)) },
+    })
+    const report = await runInvalidStateWatch(d)
+    if ('error' in report.relay) throw new Error('relay read failed')
+    expect(report.relay.sample.map((v) => v.kind)).toEqual(['not_landed'])
+  })
+
+  it('a field a later write would not explain still reads as not landed, naming every field that differs', async () => {
+    const { d } = deps({
+      readRelay: tripointSample([relayPost(RELAY_1, tripointBody(RELAY_1, RSUB_1), { step_namespace: 'tripoint_sf_post' })]),
+      records: { [RSUB_1]: ok(completedSince(RELAY_1, RLEAD_1, { VantageScore__c: '701' })) },
+    })
+    const report = await runInvalidStateWatch(d)
+    if ('error' in report.relay) throw new Error('relay read failed')
+    expect(report.relay.sample).toEqual([
+      {
+        kind: 'not_landed',
+        executionId: RELAY_1,
+        problems: ['3 fields hold a different value from the one the run sent: External_Exchange_Status__c, External_Timestamp__c and VantageScore__c.'],
+      },
+    ])
+  })
+
+  it('a timestamp a later write moved BACK, or a status it cleared, is not what a later write does, so it is not excused', async () => {
+    for (const over of [{ External_Timestamp__c: '2026-10-17T13:00:00.000+0000' }, { External_Exchange_Status__c: null }]) {
+      const { d } = deps({
+        readRelay: tripointSample([relayPost(RELAY_1, tripointBody(RELAY_1, RSUB_1), { step_namespace: 'tripoint_sf_post' })]),
+        records: { [RSUB_1]: ok(completedSince(RELAY_1, RLEAD_1, over)) },
+      })
+      const report = await runInvalidStateWatch(d)
+      if ('error' in report.relay) throw new Error('relay read failed')
+      expect(report.relay.sample.map((v) => v.kind)).toEqual(['not_landed'])
+    }
+  })
+
+  /** The under_10000 shape: the Submission holds all it was sent, and its Lead now names a newer Submission whose Engine ids it carries. */
+  const followedNewer = (newer: Record<string, unknown>, leadOver: Record<string, unknown> = {}): Record<string, Answer> => ({
+    [RSUB_1]: ok({ ...relaySaved(RELAY_1, RLEAD_1), CreatedDate: '2026-10-17T12:49:52.000+0000', LastModifiedDate: '2026-10-17T12:50:51.000+0000' }),
+    [RLEAD_1]: ok({ EngineUUID__c: 'uuid-newer', EngineLeadUUID__c: 'lead-uuid-newer', Submission_Object_ID__c: NEWER_SUB, ...leadOver }),
+    [NEWER_SUB]: ok({ CreatedDate: '2026-10-17T12:53:50.000+0000', Engine_UUID_SO__c: 'uuid-newer', Engine_Lead_UUID_SO__c: 'lead-uuid-newer', ...newer }),
+  })
+
+  it("a Lead that follows a NEWER Submission of the same customer, carrying that Submission's Engine ids, is counted as followed a newer Submission, not a mismatch", async () => {
+    const { d, asked, posted } = deps({ readRelay: tripointSample([relayPost(RELAY_1, relayBody(RELAY_1, RSUB_1))]), records: followedNewer({}) })
+    const report = await runInvalidStateWatch(d)
+    if ('error' in report.relay) throw new Error('relay read failed')
+    expect(report.relay.sample).toEqual([{ kind: 'moved_on', executionId: RELAY_1, laterWrite: [], newerSubmission: true }])
+    expect(asked[1]).toBe(`/sobjects/Lead/${RLEAD_1}?fields=EngineUUID__c,EngineLeadUUID__c,Submission_Object_ID__c`)
+    expect(asked[2]).toBe(`/sobjects/Submission__c/${NEWER_SUB}?fields=CreatedDate,Engine_UUID_SO__c,Engine_Lead_UUID_SO__c`)
+    expect(posted[0].lines.join('\n')).toContain('Of those, 1 has a Lead that has since followed a newer Submission of the same customer, so its Lead was not compared.')
+  })
+
+  it('a Lead naming an OLDER Submission, or a newer one whose Engine ids it does not carry either, is still a mismatch', async () => {
+    for (const newer of [{ CreatedDate: '2026-10-17T12:40:00.000+0000' }, { Engine_UUID_SO__c: 'uuid-other' }]) {
+      const { d } = deps({ readRelay: tripointSample([relayPost(RELAY_1, relayBody(RELAY_1, RSUB_1))]), records: followedNewer(newer) })
+      const report = await runInvalidStateWatch(d)
+      if ('error' in report.relay) throw new Error('relay read failed')
+      expect(report.relay.sample).toEqual([
+        { kind: 'not_landed', executionId: RELAY_1, problems: ["The Lead's Engine UUID and Engine Lead UUID differ from the Submission's."] },
+      ])
+    }
+  })
+
+  it('a Lead naming this Submission by its 15 character id is not a newer Submission, so its differing ids are a mismatch', async () => {
+    const { d, asked } = deps({ readRelay: tripointSample([relayPost(RELAY_1, relayBody(RELAY_1, RSUB_1))]), records: followedNewer({}, { Submission_Object_ID__c: RSUB_1.slice(0, 15) }) })
+    const report = await runInvalidStateWatch(d)
+    if ('error' in report.relay) throw new Error('relay read failed')
+    expect(report.relay.sample.map((v) => v.kind)).toEqual(['not_landed'])
+    expect(asked).toHaveLength(2)
+  })
+
+  it("a Lead's other Submission that Salesforce does not answer for leaves the post could not be checked, never landed", async () => {
+    const records = { ...followedNewer({}), [NEWER_SUB]: { kind: 'no_answer', error: 'no answer within 12 s' } as Answer }
+    const { d } = deps({ readRelay: tripointSample([relayPost(RELAY_1, relayBody(RELAY_1, RSUB_1))]), records })
+    const report = await runInvalidStateWatch(d)
+    if ('error' in report.relay) throw new Error('relay read failed')
+    expect(report.relay.sample).toEqual([{ kind: 'unchecked', executionId: RELAY_1, reason: "Salesforce did not answer the Lead's other Submission read (no answer within 12 s)." }])
+  })
+
+  it('the same rules hold for the direct write, so the two halves are judged alike', async () => {
+    const later = { External_Exchange_Status__c: 'Completed', External_Timestamp__c: '2026-10-17T15:05:00.000+0000', LastModifiedDate: '2026-10-17T15:05:00.000+0000' }
+    const { d, posted } = deps({
+      steps: [nativeStep(RUN_A, SUB_A), nativeStep(RUN_B, SUB_B)],
+      records: {
+        [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), ...later }),
+        [LEAD_A]: ok(landedLead(RUN_A)),
+        [SUB_B]: ok({ ...landedSubmission(RUN_B, LEAD_B), CreatedDate: '2026-10-17T15:00:00.000+0000' }),
+        [LEAD_B]: ok({ EngineUUID__c: 'uuid-newer', EngineLeadUUID__c: 'lead-uuid-newer', Submission_Object_ID__c: NEWER_SUB }),
+        [NEWER_SUB]: ok({ CreatedDate: '2026-10-17T15:30:00.000+0000', Engine_UUID_SO__c: 'uuid-newer', Engine_Lead_UUID_SO__c: 'lead-uuid-newer' }),
+      },
+    })
+    const report = await runInvalidStateWatch(d)
+    expect(report.native).toEqual([
+      { kind: 'moved_on', executionId: RUN_A, laterWrite: ['External_Exchange_Status__c', 'External_Timestamp__c'], newerSubmission: false },
+      { kind: 'moved_on', executionId: RUN_B, laterWrite: [], newerSubmission: true },
+    ])
+    expect(posted[0].alert).toBe(false)
+    expect(posted[0].title).toBe('All 2 invalid state writes landed in Salesforce')
+    expect(posted[0].lines[0]).toContain(
+      "2 landed fully: the Submission took the run's link and every field it sent, and its Lead carries the same Engine ids. " +
+        'Of those, 1 was superseded since by a later write to External_Exchange_Status__c or External_Timestamp__c, and 1 has a Lead that has since followed a newer Submission of the same customer, so its Lead was not compared.',
+    )
+  })
+
+  it('a direct write stamped since by another write is not excused by a later status change', async () => {
+    const { d } = deps({
+      steps: [nativeStep(RUN_A, SUB_A)],
+      records: {
+        [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), Bidspoke_Write__c: `${RUN_B}:send_salesforce:0`, External_Exchange_Status__c: 'Completed', LastModifiedDate: '2026-10-17T15:05:00.000+0000' }),
+        [LEAD_A]: ok(landedLead(RUN_A)),
+      },
+    })
+    const report = await runInvalidStateWatch(d)
+    expect(report.native.map((v) => v.kind)).toEqual(['not_landed'])
+  })
+
+  it('the 2026-10-18 shape reads as the relay landing 100 of 100, with the 13 moved on counted in the message and the job run record', async () => {
+    const landed = Array.from({ length: 87 }, (_, i) => ({ kind: 'landed' as const, executionId: `relay-${i}` }))
+    const laterWrite = Array.from({ length: 11 }, (_, i) => ({ kind: 'moved_on' as const, executionId: `later-${i}`, laterWrite: ['External_Exchange_Status__c', 'External_Timestamp__c'], newerSubmission: false }))
+    const newer = Array.from({ length: 2 }, (_, i) => ({ kind: 'moved_on' as const, executionId: `newer-${i}`, laterWrite: [], newerSubmission: true }))
+    const report: CanaryWatchReport = {
+      from: '2026-10-17T12:50:00.000Z', to: '2026-10-18T12:50:00.000Z', skipped: [], relayInvalidState: 0, relayAfterSwitch: 0, lastWasRelay: false, nativeCompleted: 11,
+      native: Array.from({ length: 11 }, (_, i) => ({ kind: 'landed' as const, executionId: `direct-${i}` })),
+      relay: { total: 3400, sample: [...landed, ...laterWrite, ...newer], noSubmission: 0 },
+    }
+    const text = canaryWatchMessage(report, APP).lines.join('\n')
+    expect(text).toContain(
+      "Over the same hours 3,400 of Main Flow's other outcome posts went through the relay. 100 of them, spread over the day, were read back from Salesforce the same way: 100 landed fully (100.0%). " +
+        'Of those, 11 were superseded since by a later write to External_Exchange_Status__c or External_Timestamp__c, and 2 have a Lead that has since followed a newer Submission of the same customer, so their Lead was not compared. ' +
+        'The direct writes on the same measure: 11 of 11 landed fully (100.0%).',
+    )
+    expect(text).not.toMatch(/did not/)
+
+    // And the job run record keeps them, so a reader sees how many were moved on.
+    const runs: Array<{ outcome: string; summary?: Record<string, unknown> }> = []
+    const { d } = deps({
+      steps: [nativeStep(RUN_A, SUB_A)],
+      readRelay: tripointSample([relayPost(RELAY_1, tripointBody(RELAY_1, RSUB_1), { step_namespace: 'tripoint_sf_post' })]),
+      records: {
+        [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), External_Exchange_Status__c: 'Completed', External_Timestamp__c: '2026-10-17T15:05:00.000+0000', LastModifiedDate: '2026-10-17T15:05:00.000+0000' }),
+        [LEAD_A]: ok(landedLead(RUN_A)),
+        [RSUB_1]: ok(completedSince(RELAY_1, RLEAD_1)),
+      },
+      recordRun: async (_s, ending) => {
+        runs.push(ending as { outcome: string; summary?: Record<string, unknown> })
+      },
+    })
+    await runInvalidStateWatch(d)
+    expect(runs[0].outcome).toBe('all_landed')
+    const summary = runs[0].summary!
+    expect(summary).toMatchObject({ native: 1, landed: 1, not_landed: 0, superseded_by_later_write: 1, followed_newer_submission: 0 })
+    expect(summary.relay).toMatchObject({ read: 1, landed: 1, not_landed: 0, superseded_by_later_write: 1, followed_newer_submission: 0 })
+    expect(summary.moved_on_runs).toEqual([{ kind: 'moved_on', executionId: RUN_A, laterWrite: ['External_Exchange_Status__c', 'External_Timestamp__c'], newerSubmission: false }])
+  })
+
   it('lists at most 15 runs and says how many more, so a bad day is not cut off silently', () => {
     const native = Array.from({ length: 18 }, (_, i) => ({ kind: 'not_landed' as const, executionId: `run-${i}`, problems: ['The Submission has no Bidspoke run link.'] }))
     const report: CanaryWatchReport = {
@@ -649,7 +869,7 @@ function relayDatabase(n: number, opts: { dropFromSample?: number; listError?: s
       }
       const wanted = calls.find(([m, a]) => m === 'in' && a[0] === 'id')![1][1] as string[]
       // Answered out of order, as a database may.
-      const rows = [...wanted].reverse().filter((_, i) => i !== opts.dropFromSample).map((id) => ({ id, execution_id: `run-${id}`, step_namespace: 'send_salesforce', step_type: 'webhook', status: 'completed', input: {}, output: {} }))
+      const rows = [...wanted].reverse().filter((_, i) => i !== opts.dropFromSample).map((id) => ({ id, execution_id: `run-${id}`, step_namespace: 'send_salesforce', step_type: 'webhook', status: 'completed', started_at: '2026-10-17T13:00:00.000Z', input: {}, output: {} }))
       return resolve({ data: rows, error: null })
     }
     return builder
@@ -675,6 +895,10 @@ describe('reading the relay sample from the database', () => {
       expect(q).toContainEqual(['lt', ['execution_started_at', '2026-10-18T12:50:00.000Z']])
       expect(q).toContainEqual(['not', ['is_test', 'is', true]])
     }
+    // The sample read carries each post's start, which a later write is judged against (#2396).
+    const sampleColumns = queries[3].find(([m]) => m === 'select')![1][0] as string
+    expect(sampleColumns.split(',').map((c) => c.trim())).toContain('started_at')
+    expect(STEP_COLUMNS.split(',').map((c) => c.trim())).toContain('started_at')
     expect(RELAY_COMPARISON_POSTS).not.toContain(WATCHED_STEP)
     expect(RELAY_COMPARISON_POSTS).toHaveLength(8)
   })

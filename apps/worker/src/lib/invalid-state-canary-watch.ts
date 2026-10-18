@@ -33,6 +33,18 @@
  *    equal the Submission's Engine_UUID_SO__c and Engine_Lead_UUID_SO__c, the
  *    copy SubmissionService makes on update (read from the org's Apex on
  *    2026-10-16).
+ * LANDED, THEN MOVED ON (#2396). The 2026-10-18 report said 13 of 100 relay posts
+ * did not land, and all 13 had: 11 differed only in the exchange status and its
+ * timestamp, which the sale's own completion set 30 s to 2 min after the post,
+ * and 2 only because the Lead had followed a newer Submission of the same
+ * customer. So, on both halves alike: a post whose run link and every other
+ * field match, whose only differing fields are LATER_WRITE_FIELDS holding what a
+ * later write leaves, on a Submission last modified after the post began, was
+ * superseded by a later write; and one whose Lead names a Submission created
+ * after this one (returning-customer.ts, the lead status check's rule) and
+ * carries that Submission's Engine ids followed a newer Submission. Both count
+ * as landed fully and are said apart, in the message and the job run record.
+ * Anything else that differs still reads as did not land.
  * A read that gets no answer, a refused login or an answer it cannot parse is
  * "could not check", never landed, and the first unanswered read stops the
  * Salesforce reads for the day, as the read-back's circuit does. A write the
@@ -95,7 +107,8 @@ import type { SalesforceRead } from '../engine/inquiry-post'
 import { parseWriteMarker, WRITE_MARKER_FIELD } from '../engine/write-marker'
 import { MAIN_FLOW_WORKFLOW_ID, OUTCOME_POSTS, RELAY_OMITTED_KEYS, RELAY_RENAMES } from './main-flow-port/transform'
 import { isSalesforceApiName, isSalesforceRecordId, salesforcePortFor } from './writeback-replay'
-import { sameSalesforceValue } from './salesforce-field-conflict'
+import { LAST_MODIFIED_MARGIN_MS, salesforceTimeMs, sameSalesforceValue } from './salesforce-field-conflict'
+import { leadNamesAnotherSubmission } from './returning-customer'
 import { raceDeadline } from './alert-claim'
 import { fetchAllPaged, PAGE_SIZE } from './paginate'
 import { isUuidV7 } from '@bidspoke/uuidv7'
@@ -141,6 +154,24 @@ const SUB_UUID = 'Engine_UUID_SO__c'
 const SUB_LEAD_UUID = 'Engine_Lead_UUID_SO__c'
 const LEAD_UUID = 'EngineUUID__c'
 const LEAD_LEAD_UUID = 'EngineLeadUUID__c'
+/** The Submission a Lead follows: its customer's newest (returning-customer.ts). */
+const LEAD_SUBMISSION = 'Submission_Object_ID__c'
+
+/**
+ * The fields a LATER write may change after a post landed, and what that write
+ * leaves in each (#2396). On 2026-10-18, 11 of 100 sampled relay posts read as
+ * not landed only because External_Exchange_Status__c said Completed where the
+ * relay sent Pending, and External_Timestamp__c held a time 30 s to 2 min after
+ * the one sent: the sale's own completion writes the exchange status and stamps
+ * when. These two only. Every other field a post sends is the post's own data
+ * (scores, routing, the run link, the Engine ids), which no later write was seen
+ * to change, so a difference there still reads as not landed. A later write
+ * leaves a status set, never cleared, and moves its timestamp forward, never back.
+ */
+const LATER_WRITE_FIELDS: Readonly<Record<string, 'set' | 'later'>> = {
+  External_Exchange_Status__c: 'set',
+  External_Timestamp__c: 'later',
+}
 /** A value the step logger's PII scrub replaced: what was sent cannot be known from it. */
 const REDACTED = '[REDACTED]'
 
@@ -148,9 +179,14 @@ export interface WatchedStep {
   execution_id: string
   step_type: string
   status: string
+  /** When the step began: a Submission last written after it was written since the post began (#2396). */
+  started_at: string
   input: unknown
   output: unknown
 }
+
+/** The step columns both reads select, so neither can drop the start time a later write is judged by. */
+export const STEP_COLUMNS = 'execution_id, step_type, status, started_at, input, output'
 
 /** One relay post of the eight other outcome steps, as its step recorded it. */
 export interface RelayStep extends WatchedStep {
@@ -169,6 +205,13 @@ export interface RelayReadBack {
 export type RunVerdict =
   | { kind: 'landed'; executionId: string }
   | { kind: 'not_landed'; executionId: string; problems: string[] }
+  /**
+   * Landed, then moved on (#2396): every field sent was saved, and since then a
+   * later write changed `laterWrite` (LATER_WRITE_FIELDS only), or the Lead has
+   * followed a newer Submission of the same customer, or both. Counted as landed
+   * fully, and said apart.
+   */
+  | { kind: 'moved_on'; executionId: string; laterWrite: string[]; newerSubmission: boolean }
   | { kind: 'unchecked'; executionId: string; reason: string }
   /** A relay post's Submission holds a LATER Main Flow run's link: overwritten since, so not judged. */
   | { kind: 'superseded'; executionId: string; byExecutionId: string }
@@ -295,6 +338,8 @@ interface SubmissionWrite {
   stepNamespace: string
   recordId: string
   sent: Record<string, unknown>
+  /** When the step that posted began, as it recorded it. */
+  startedAt: string
 }
 
 /** A native step's write, from what the step recorded (the body after the port's omit, rename and inject). */
@@ -305,7 +350,7 @@ function nativeWrite(step: WatchedStep): SubmissionWrite | { unchecked: string }
   if (!sent || typeof recordId !== 'string' || !isSalesforceRecordId(recordId)) {
     return { unchecked: 'The run did not record the Submission it wrote or what it sent.' }
   }
-  return { via: 'direct', executionId: step.execution_id, stepNamespace: WATCHED_STEP, recordId, sent }
+  return { via: 'direct', executionId: step.execution_id, stepNamespace: WATCHED_STEP, recordId, sent, startedAt: step.started_at }
 }
 
 /**
@@ -334,7 +379,7 @@ function relayWrite(step: RelayStep): SubmissionWrite | { unchecked: string } | 
   const renames: Readonly<Record<string, string>> = RELAY_RENAMES
   const sent: Record<string, unknown> = {}
   for (const [k, v] of Object.entries(posted)) if (!omitted.has(k)) sent[Object.hasOwn(renames, k) ? renames[k] : k] = v
-  return { via: 'relay', executionId: step.execution_id, stepNamespace: step.step_namespace, recordId, sent }
+  return { via: 'relay', executionId: step.execution_id, stepNamespace: step.step_namespace, recordId, sent, startedAt: step.started_at }
 }
 
 /**
@@ -350,6 +395,29 @@ function laterRunInLink(link: unknown, expectedLink: string, executionId: string
   return other !== executionId && isUuidV7(other) && isUuidV7(executionId) && other > executionId ? other : null
 }
 
+/**
+ * Whether every field in `differing` is one a later write explains (#2396): each
+ * is in LATER_WRITE_FIELDS and holds what such a write leaves, and the Submission
+ * was last written after the post began. The caller asks only once the run link
+ * and every other field sent match, which is what shows the post itself landed:
+ * a PATCH saves all its fields or none, so a field that differs since was changed
+ * by a write after it. A record not written since the post began cannot have
+ * been, and a post whose start is not known cannot be shown to come before it.
+ */
+function supersededByLaterWrite(differing: string[], current: Record<string, unknown>, sent: Record<string, unknown>, startedAt: string): boolean {
+  const started = salesforceTimeMs(startedAt)
+  const lastModified = salesforceTimeMs(current.LastModifiedDate)
+  // The margin is Salesforce keeping whole seconds on its own clock; here it errs towards "not since".
+  if (!Number.isFinite(started) || !Number.isFinite(lastModified) || lastModified - LAST_MODIFIED_MARGIN_MS <= started) return false
+  return differing.every((k) => {
+    const rule = Object.hasOwn(LATER_WRITE_FIELDS, k) ? LATER_WRITE_FIELDS[k] : null
+    const now = current[k]
+    if (rule === 'set') return now !== null && now !== undefined && now !== ''
+    if (rule === 'later') return salesforceTimeMs(now) > salesforceTimeMs(sent[k])
+    return false
+  })
+}
+
 /** One write's read-back. `stop` says Salesforce stopped answering. */
 async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string): Promise<{ verdict: RunVerdict; stop: boolean }> {
   const { executionId, sent, recordId } = w
@@ -361,7 +429,7 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string): Promi
   const stamped = typeof sent[WRITE_MARKER_FIELD] === 'string'
   const sentEngineIds = SUB_UUID in sent && SUB_LEAD_UUID in sent
 
-  const fields = [...new Set([...(stamped ? [WRITE_MARKER_FIELD] : []), RUN_LINK_FIELD, 'Lead__c', ...sentFields])]
+  const fields = [...new Set([...(stamped ? [WRITE_MARKER_FIELD] : []), RUN_LINK_FIELD, 'Lead__c', 'CreatedDate', 'LastModifiedDate', ...sentFields])]
   const sub = await readRecord(read, 'Submission', `/sobjects/Submission__c/${recordId}?fields=${fields.join(',')}`)
   if (sub.kind === 'unread') return unchecked(sub.reason, sub.stop)
   if (sub.kind === 'missing') return { verdict: { kind: 'not_landed', executionId, problems: ['The Submission does not exist in Salesforce.'] }, stop: false }
@@ -387,32 +455,65 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string): Promi
   if (link === null || link === undefined || link === '') problems.push('The Submission has no Bidspoke run link.')
   else if (link !== expectedLink) problems.push("The Submission's Bidspoke run link is not this run's.")
   const differing = sentFields.filter((k) => sent[k] !== REDACTED && (!(k in current) || !sameSalesforceValue(current[k], sent[k]))).sort()
-  if (differing.length > 0) {
+  const laterWrite = problems.length === 0 && differing.length > 0 && supersededByLaterWrite(differing, current, sent, w.startedAt) ? differing : []
+  if (differing.length > 0 && laterWrite.length === 0) {
     const n = differing.length
     problems.push(`${n} field${n === 1 ? ' holds' : 's hold'} a different value from the one the run sent: ${joinAnd(differing)}.`)
   }
+  const verdict = (newerSubmission: boolean): RunVerdict =>
+    problems.length > 0
+      ? { kind: 'not_landed', executionId, problems }
+      : laterWrite.length > 0 || newerSubmission
+        ? { kind: 'moved_on', executionId, laterWrite, newerSubmission }
+        : { kind: 'landed', executionId }
 
   // The Lead copy is SubmissionService's, of the Engine ids this write sent.
-  if (!sentEngineIds) return { verdict: problems.length === 0 ? { kind: 'landed', executionId } : { kind: 'not_landed', executionId, problems }, stop: false }
+  if (!sentEngineIds) return { verdict: verdict(false), stop: false }
   const leadId = current.Lead__c
   if (typeof leadId !== 'string' || !isSalesforceRecordId(leadId)) {
     problems.push('The Submission has no Lead, so its Engine ids reached no Lead.')
-  } else {
-    const lead = await readRecord(read, 'Lead', `/sobjects/Lead/${leadId}?fields=${LEAD_UUID},${LEAD_LEAD_UUID}`)
-    if (lead.kind === 'unread') {
-      if (problems.length === 0) return unchecked(lead.reason, lead.stop)
-      problems.push(`Its Lead could not be read: ${lead.reason}`)
-      return { verdict: { kind: 'not_landed', executionId, problems }, stop: lead.stop }
-    }
-    if (lead.kind === 'missing') problems.push("The Submission's Lead does not exist in Salesforce.")
-    else {
-      const which: string[] = []
-      if (!sameSalesforceValue(lead.body[LEAD_UUID], current[SUB_UUID])) which.push('Engine UUID')
-      if (!sameSalesforceValue(lead.body[LEAD_LEAD_UUID], current[SUB_LEAD_UUID])) which.push('Engine Lead UUID')
-      if (which.length > 0) problems.push(`The Lead's ${joinAnd(which)} differ${which.length === 1 ? 's' : ''} from the Submission's.`)
-    }
+    return { verdict: verdict(false), stop: false }
   }
-  return { verdict: problems.length === 0 ? { kind: 'landed', executionId } : { kind: 'not_landed', executionId, problems }, stop: false }
+  const lead = await readRecord(read, 'Lead', `/sobjects/Lead/${leadId}?fields=${LEAD_UUID},${LEAD_LEAD_UUID},${LEAD_SUBMISSION}`)
+  if (lead.kind === 'unread') {
+    if (problems.length === 0) return unchecked(lead.reason, lead.stop)
+    problems.push(`Its Lead could not be read: ${lead.reason}`)
+    return { verdict: verdict(false), stop: lead.stop }
+  }
+  if (lead.kind === 'missing') {
+    problems.push("The Submission's Lead does not exist in Salesforce.")
+    return { verdict: verdict(false), stop: false }
+  }
+  const leadIds = lead.body
+  const differsFrom = (sub: Record<string, unknown>) => {
+    const which: string[] = []
+    if (!sameSalesforceValue(leadIds[LEAD_UUID], sub[SUB_UUID])) which.push('Engine UUID')
+    if (!sameSalesforceValue(leadIds[LEAD_LEAD_UUID], sub[SUB_LEAD_UUID])) which.push('Engine Lead UUID')
+    return which
+  }
+  const which = differsFrom(current)
+  if (which.length === 0) return { verdict: verdict(false), stop: false }
+  const mismatch = `The Lead's ${joinAnd(which)} differ${which.length === 1 ? 's' : ''} from the Submission's.`
+
+  // A Lead follows its customer's newest Submission (returning-customer.ts), so a
+  // Lead naming a Submission created AFTER this one, whose Engine ids it carries,
+  // holds that visit's copy (#2396): this write's ids cannot be on it any more.
+  // Any other Lead whose ids differ is a mismatch, as before.
+  const other = leadIds[LEAD_SUBMISSION]
+  if (typeof other !== 'string' || !leadNamesAnotherSubmission(other, recordId) || !isSalesforceRecordId(other)) {
+    problems.push(mismatch)
+    return { verdict: verdict(false), stop: false }
+  }
+  const newer = await readRecord(read, "Lead's other Submission", `/sobjects/Submission__c/${other}?fields=CreatedDate,${SUB_UUID},${SUB_LEAD_UUID}`)
+  if (newer.kind === 'unread') {
+    if (problems.length === 0) return unchecked(newer.reason, newer.stop)
+    problems.push(mismatch, `The other Submission its Lead names could not be read: ${newer.reason}`)
+    return { verdict: verdict(false), stop: newer.stop }
+  }
+  const followedNewer =
+    newer.kind === 'record' && salesforceTimeMs(newer.body.CreatedDate) > salesforceTimeMs(current.CreatedDate) && differsFrom(newer.body).length === 0
+  if (!followedNewer) problems.push(mismatch)
+  return { verdict: verdict(followedNewer), stop: false }
 }
 
 /** Reads the window and every native run in it back from Salesforce. Never throws. */
@@ -515,14 +616,39 @@ const SKIP_WORDS: Record<string, string> = {
   no_record_id: 'there was no Submission to write to',
 }
 
+/** Landed fully: every field sent was saved, whether or not a later write has moved it on since (#2396). */
+const landedFully = (v: RunVerdict) => v.kind === 'landed' || v.kind === 'moved_on'
+
+/** Did not land fully, or could not be checked: what alerts, and what the record lists by run. */
+const isBad = (v: RunVerdict) => v.kind === 'not_landed' || v.kind === 'unchecked'
+
+const supersededByLater = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.laterWrite.length > 0).length
+const followedNewerSubmission = (vs: RunVerdict[]) => vs.filter((v) => v.kind === 'moved_on' && v.newerSubmission).length
+
+/**
+ * How many of those that landed fully were moved on since (#2396), by which of
+ * the two, so they are counted in the rate and still seen. A post moved on both
+ * ways is counted under each.
+ */
+function movedOnSentence(vs: RunVerdict[]): string {
+  const a = supersededByLater(vs)
+  const b = followedNewerSubmission(vs)
+  const parts = [
+    a > 0 ? `${fmt(a)} ${a === 1 ? 'was' : 'were'} superseded since by a later write to ${Object.keys(LATER_WRITE_FIELDS).join(' or ')}` : null,
+    b > 0 ? `${fmt(b)} ${b === 1 ? 'has' : 'have'} a Lead that has since followed a newer Submission of the same customer, so ${b === 1 ? 'its' : 'their'} Lead was not compared` : null,
+  ].filter((t): t is string => t !== null)
+  return parts.length === 0 ? '' : ` Of those, ${parts.join(', and ')}.`
+}
+
 /**
  * The relay comparison, on the direct writes' own measure: of the posts read
- * back, how many Salesforce holds in full (#2313). Posts a later run overwrote,
- * and posts with no Submission, are said and left out of the rate.
+ * back, how many Salesforce took in full (#2313), those moved on since among
+ * them and said (#2396). Posts a later run overwrote, and posts with no
+ * Submission, are said and left out of the rate.
  */
 function relayLine(r: RelayReadBack, directRead: number, directLanded: number): string {
   const count = (k: RunVerdict['kind']) => r.sample.filter((v) => v.kind === k).length
-  const landed = count('landed')
+  const landed = r.sample.filter(landedFully).length
   const notLanded = count('not_landed')
   const unchecked = count('unchecked')
   const superseded = count('superseded')
@@ -535,7 +661,8 @@ function relayLine(r: RelayReadBack, directRead: number, directLanded: number): 
     const rest = [notLanded > 0 ? `${fmt(notLanded)} did not` : null, unchecked > 0 ? `${fmt(unchecked)} could not be checked` : null].filter((t): t is string => t !== null)
     line +=
       ` ${fmt(judged)} of them, spread over the day, ${judged === 1 ? 'was' : 'were'} read back from Salesforce the same way: ` +
-      `${joinAnd([`${fmt(landed)} landed fully (${pct(landed, judged)})`, ...rest])}.`
+      `${joinAnd([`${fmt(landed)} landed fully (${pct(landed, judged)})`, ...rest])}.` +
+      movedOnSentence(r.sample)
   }
   if (superseded > 0) line += ` ${fmt(superseded)} ${more} ${superseded === 1 ? 'was' : 'were'} read back and left out because a later run wrote the same Submission.`
   if (r.noSubmission > 0) line += ` ${fmt(r.noSubmission)} ${more} had no Submission, so the relay wrote nothing.`
@@ -559,7 +686,7 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): C
     }
   }
   const n = report.native.length
-  const landed = report.native.filter((v) => v.kind === 'landed').length
+  const landed = report.native.filter(landedFully).length
   const notLanded = report.native.filter((v) => v.kind === 'not_landed').length
   const unchecked = report.native.filter((v) => v.kind === 'unchecked').length
   const lines: string[] = []
@@ -569,7 +696,8 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): C
   } else {
     lines.push(
       `${fmt(n)} Main Flow run${n === 1 ? '' : 's'} wrote an invalid state outcome straight to Salesforce ${span}. ` +
-        `${fmt(landed)} landed fully: the Submission holds the run's link and every field it sent, and its Lead carries the same Engine ids.`,
+        `${fmt(landed)} landed fully: the Submission took the run's link and every field it sent, and its Lead carries the same Engine ids.` +
+        movedOnSentence(report.native),
     )
   }
   if (report.skipped.length > 0) {
@@ -594,7 +722,7 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): C
     }
   }
 
-  const bad = report.native.filter((v) => v.kind !== 'landed')
+  const bad = report.native.filter(isBad)
   for (const v of bad.slice(0, MAX_LISTED_RUNS)) {
     lines.push(v.kind === 'not_landed' ? `${runLabel(appUrl, v.executionId)}: ${v.problems.join(' ')}` : `${runLabel(appUrl, v.executionId)} could not be checked: ${v.reason}`)
   }
@@ -659,15 +787,18 @@ export function canaryWatchBlocks(message: CanaryWatchMessage): unknown[] {
 function endingOf(report: CanaryWatchReport, posted: boolean): JobRunEnding {
   const count = (k: RunVerdict['kind']) => report.native.filter((v) => v.kind === k).length
   return {
-    outcome: !posted ? 'not_posted' : report.readError ? 'read_failed' : report.native.some((v) => v.kind !== 'landed') ? 'not_all_landed' : report.lastWasRelay || report.relayAfterSwitch > 0 ? 'off_direct_write' : report.native.length === 0 ? 'no_runs' : 'all_landed',
+    outcome: !posted ? 'not_posted' : report.readError ? 'read_failed' : report.native.some(isBad) ? 'not_all_landed' : report.lastWasRelay || report.relayAfterSwitch > 0 ? 'off_direct_write' : report.native.length === 0 ? 'no_runs' : 'all_landed',
     detail: report.readError ?? `${report.native.length} runs read back`,
     summary: {
       from: report.from,
       to: report.to,
       native: report.native.length,
-      landed: count('landed'),
+      // Landed fully, those a later write or a newer Submission moved on since among them (#2396).
+      landed: report.native.filter(landedFully).length,
       not_landed: count('not_landed'),
       unchecked: count('unchecked'),
+      superseded_by_later_write: supersededByLater(report.native),
+      followed_newer_submission: followedNewerSubmission(report.native),
       skipped: report.skipped.length,
       relay_invalid_state: report.relayInvalidState,
       relay_after_switch: report.relayAfterSwitch,
@@ -680,15 +811,22 @@ function endingOf(report: CanaryWatchReport, posted: boolean): JobRunEnding {
               total: report.relay.total,
               read: report.relay.sample.length,
               no_submission: report.relay.noSubmission,
-              landed: report.relay.sample.filter((v) => v.kind === 'landed').length,
+              landed: report.relay.sample.filter(landedFully).length,
               not_landed: report.relay.sample.filter((v) => v.kind === 'not_landed').length,
               unchecked: report.relay.sample.filter((v) => v.kind === 'unchecked').length,
+              // Overwritten by a later RUN, so left out of the rate; not the two below.
               superseded: report.relay.sample.filter((v) => v.kind === 'superseded').length,
+              superseded_by_later_write: supersededByLater(report.relay.sample),
+              followed_newer_submission: followedNewerSubmission(report.relay.sample),
               // Run ids and what was wrong, never a value.
-              runs: report.relay.sample.filter((v) => v.kind === 'not_landed' || v.kind === 'unchecked'),
+              runs: report.relay.sample.filter(isBad),
+              // Run ids and the field names a later write changed, never a value.
+              moved_on_runs: report.relay.sample.filter((v) => v.kind === 'moved_on'),
             },
       // Run ids and what was wrong, never a value: the record behind the message's "and N more".
-      runs: report.native.filter((v) => v.kind !== 'landed'),
+      runs: report.native.filter(isBad),
+      // Run ids and the field names a later write changed, never a value (#2396).
+      moved_on_runs: report.native.filter((v) => v.kind === 'moved_on'),
     },
   }
 }
@@ -705,9 +843,10 @@ export async function runInvalidStateWatch(deps: CanaryWatchDeps): Promise<Canar
   } catch (e) {
     console.error(`[${INVALID_STATE_WATCH_JOB}] could not post the daily message:`, formatErr(e))
   }
-  const landed = report.native.filter((v) => v.kind === 'landed').length
+  const landed = report.native.filter(landedFully).length
+  const movedOn = report.native.filter((v) => v.kind === 'moved_on').length
   console.log(
-    `[${INVALID_STATE_WATCH_JOB}] from=${from} to=${to} native=${report.native.length} landed=${landed} skipped=${report.skipped.length} ` +
+    `[${INVALID_STATE_WATCH_JOB}] from=${from} to=${to} native=${report.native.length} landed=${landed} moved_on=${movedOn} skipped=${report.skipped.length} ` +
       `relay_invalid_state=${report.relayInvalidState} relay_after_switch=${report.relayAfterSwitch} last_was_relay=${report.lastWasRelay} posted=${posted}${report.readError ? ` read_error=${report.readError}` : ''}`,
   )
   try {
@@ -747,7 +886,7 @@ export async function readRelayPosts(supabase: SupabaseClient, from: string, to:
   ).map((r) => r.id)
   const picked = pickEvenly(ids, RELAY_SAMPLE_SIZE)
   if (picked.length === 0) return { total: 0, sample: [] }
-  const { data, error } = await relayPosts('id, execution_id, step_namespace, step_type, status, input, output').in('id', picked).limit(RELAY_SAMPLE_SIZE)
+  const { data, error } = await relayPosts(`id, step_namespace, ${STEP_COLUMNS}`).in('id', picked).limit(RELAY_SAMPLE_SIZE)
   if (error) throw new Error(`relay sample read failed: ${error.message}`)
   const byId = new Map(((data ?? []) as unknown as Array<RelayStep & { id: string }>).map((r) => [r.id, r]))
   const sample = picked.map((id) => byId.get(id)).filter((r): r is RelayStep & { id: string } => r !== undefined)
@@ -775,7 +914,7 @@ export async function runInvalidStateWatchForEnv(supabase: SupabaseClient, env: 
     readSteps: async (from, to) => {
       const { data, error } = await supabase
         .from('execution_steps')
-        .select('execution_id, step_type, status, input, output')
+        .select(STEP_COLUMNS)
         .eq('workflow_id', MAIN_FLOW_WORKFLOW_ID)
         .eq('step_namespace', WATCHED_STEP)
         .gte('execution_started_at', from)
