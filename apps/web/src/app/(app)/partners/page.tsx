@@ -75,7 +75,9 @@ export default function PartnersPage() {
   // opening partner back after every click (Dan, 2026-10-17).
   const appliedSlug = useRef<string | null>(null)
   useEffect(() => {
-    if (!slugParam || partners.length === 0) return
+    // A URL that names no partner forgets the last one, so naming it again (Back, a link) opens it.
+    if (!slugParam) { appliedSlug.current = null; return }
+    if (partners.length === 0) return
     if (appliedSlug.current === slugParam) return
     const match = partners.find((p) => p.slug === slugParam)
     if (match) {
@@ -90,7 +92,8 @@ export default function PartnersPage() {
     setCreating(false)
     setSelected(p)
     // A different partner opens on its own tab; the same one keeps the tab it is on.
-    if (p.slug !== slugParam) writeUrl(p.slug, null)
+    // Compared with the open partner, never selected= read back, which can be stale.
+    if (p.slug !== selected?.slug) writeUrl(p.slug, null)
   }
 
   function clearSelection() {

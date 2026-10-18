@@ -106,6 +106,30 @@ describe('the URL (#2137)', () => {
     expect((formProps.mock.calls.at(-1)![0] as { requestedTab: unknown }).requestedTab).toBeNull()
   })
 
+  it('clicking back to the opening partner writes it into the URL again', async () => {
+    params = new URLSearchParams('selected=liberty1')
+    render(<PartnersPage />)
+    expect(await screen.findByTestId('form')).toHaveTextContent('liberty1')
+    fireEvent.click(screen.getByRole('button', { name: /^AmOne/ }))
+    expect(lastUrl()).toBe('/partners?selected=amone')
+    fireEvent.click(screen.getByRole('button', { name: 'Liberty1' }))
+    expect(screen.getByTestId('form')).toHaveTextContent('liberty1')
+    expect(lastUrl()).toBe('/partners?selected=liberty1')
+  })
+
+  it('a URL that names a partner again after naming none opens it again (Back, or a link)', async () => {
+    params = new URLSearchParams('selected=liberty1')
+    const view = render(<PartnersPage />)
+    expect(await screen.findByTestId('form')).toHaveTextContent('liberty1')
+    params = new URLSearchParams()
+    view.rerender(<PartnersPage />)
+    fireEvent.click(screen.getByRole('button', { name: /^AmOne/ }))
+    expect(screen.getByTestId('form')).toHaveTextContent('amone')
+    params = new URLSearchParams('selected=liberty1')
+    view.rerender(<PartnersPage />)
+    expect(screen.getByTestId('form')).toHaveTextContent('liberty1')
+  })
+
   it('a page opened on one partner opens another when its row is clicked, and stays on it', async () => {
     params = new URLSearchParams('selected=liberty1')
     render(<PartnersPage />)
