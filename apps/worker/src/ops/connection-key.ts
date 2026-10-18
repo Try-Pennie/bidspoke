@@ -14,9 +14,10 @@
  * that cannot open them.
  *
  * Nothing here ever carries the key's text: a refusal is reported by its
- * SealError code and message, which by the seal's own rule hold only sizes and
- * names (packages/connection-seal/src/errors.ts), and any other error by its
- * name alone.
+ * SealError message, which begins with its code (`seal_key_too_small: ...`) and
+ * by the seal's own rule holds only sizes and names
+ * (packages/connection-seal/src/errors.ts), and any other error by its name
+ * alone, never its message.
  */
 import { importPrivateKey, MIN_MODULUS_BITS, SealError } from '@bidspoke/connection-seal'
 import type { OpsEnv } from './index'
