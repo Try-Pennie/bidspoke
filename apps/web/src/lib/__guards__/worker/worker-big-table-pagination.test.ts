@@ -13,6 +13,19 @@
  * A read that is genuinely bounded some other way (e.g. filtered to a single
  * execution's handful of rows) can opt out with a `// paginate-ok: <reason>`
  * comment in the same statement.
+ *
+ * The scan only protects tables BIG_TABLES names, so the list has to be complete.
+ * Every table any migration creates must therefore be declared: in BIG_TABLES,
+ * or in SMALL_TABLES with its row count and why it stays small (#962). The
+ * declaration lives in this file, not as a marker comment in the migration, for
+ * three reasons. Applied migrations are never edited, so a marker could not be
+ * added to the 38 tables that predate this rule, and the list would start with
+ * every old table exempt. A marker is free text the parser has to pair with the
+ * right CREATE TABLE, and one paired with the wrong table exempts a table nobody
+ * declared; a map key is exact, and the test checks it both ways (a table with
+ * no entry fails, and an entry naming no live table fails). And one list
+ * puts every size claim in a single place a reviewer can read against the
+ * runtime growth check, which is what catches a forecast that turns out wrong.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync } from 'node:fs'
@@ -64,7 +77,71 @@ const BIG_TABLES = [
   // 2026-10-18 (#2390). Its one reader, the hourly cron guard check, pages it
   // 1,000 rows at a time with a full order.
   'cron_tick_deliveries',
+  // One row per day or partition each purge run decides on, never pruned: 233
+  // rows on 2026-10-18, 35 in the week before, so about 5 a day and past 1,000
+  // early in 2027. Declared here by #962 rather than left for the growth alert.
+  'purge_run_log',
 ]
+
+// Every table a migration creates that is NOT in BIG_TABLES, with how many rows
+// it holds and why it stays small (#962). The completeness test below fails on
+// a new table that is in neither list, so the size is decided once, when the
+// table is created, by the person who knows its volume, instead of by the daily
+// growth alert after it has crossed 500 rows.
+//
+// Each reason is about SIZE, never about how the table is read, so it stays
+// true if #1437 retires BIG_TABLES. It must contain a row count, or say
+// "unmeasured" plainly; the test refuses a reason with neither. A table whose
+// reason says it grows without a ceiling belongs in BIG_TABLES instead once it
+// is within a year of 1,000 rows.
+//
+// Seeded 2026-10-18 from an exact count(*) of every table on production, read
+// only. "No pruning" means no migration deletes its rows on a schedule.
+const SMALL_TABLES: Record<string, string> = {
+  // Configuration, written by hand or by a person in the app.
+  organizations: '3 rows on 2026-10-18. One per customer organization.',
+  users: '8 rows on 2026-10-18. One per person with access.',
+  user_allowlist: '9 rows on 2026-10-18. One per allowed email.',
+  workflows: '55 rows on 2026-10-18, created since 2026-04-06. One per workflow a person builds.',
+  folders: '3 rows on 2026-10-18. Workflow folders, made by hand.',
+  env_var_folders: '10 rows on 2026-10-18. Environment variable folders, made by hand.',
+  environment_variables: '62 rows on 2026-10-18, created since 2026-04-21. One per variable a person sets.',
+  service_connections: '1 row on 2026-10-18. One per connected service per organization.',
+  connection_tombstones: '0 rows on 2026-10-18. One per removed service connection generation, which a person does by hand.',
+  service_presets: '0 rows on 2026-10-18. One per saved service preset.',
+  api_sources: '7 rows on 2026-10-18. One per source holding a webhook key.',
+  webhook_endpoints: '9 rows on 2026-10-18. One per custom endpoint.',
+  source_workflow_assignments: '6 rows on 2026-10-18. One per source and workflow pairing.',
+  app_config: '1 row on 2026-10-18. Single row settings.',
+  app_settings: '1 row on 2026-10-18. One per organization setting.',
+  partner_configs: '10 rows on 2026-10-18. One per partner.',
+  partner_uuid_map: '7 rows on 2026-10-18. A handful of ids per partner.',
+  partner_bid_configs: '0 rows on 2026-10-18. One per partner bid matrix; none configured.',
+  bid_config_history: '0 rows on 2026-10-18. One per change to a bid matrix config, and none is configured.',
+  partner_daily_counts: '0 rows on 2026-10-18. Nothing writes it.',
+  buyer_profiles: '2 rows on 2026-10-18. One per buyer partner.',
+  buyer_operating_windows: '12 rows on 2026-10-18. At most 7 per buyer profile.',
+  buyer_blackout_dates: '0 rows on 2026-10-18. A few holidays per buyer profile a year.',
+  buyer_pricing_tiers: '2 rows on 2026-10-18. A handful per buyer profile.',
+  field_presence_silences: '0 rows on 2026-10-18. One per field a person silences.',
+  // Single row state.
+  execution_archive_progress: '1 row on 2026-10-18. One per archive stream.',
+  field_presence_rollup_state: '1 row on 2026-10-18. Single row watermark.',
+  // Ledgers with a ceiling set by retention or by being a defect record.
+  execution_archive_refusals: '1 row on 2026-10-18. A defect ledger its migration expects to stay at zero; no pruning.',
+  execution_archive_erasures: '0 rows on 2026-10-18. One per erasure request; no pruning.',
+  held_click_claims: '0 rows on 2026-10-18. One per held click claim, deleted on release.',
+  cron_guard_fail_opens: '8 rows on 2026-10-18. One per cron guard fail open, kept 7 days.',
+  outcome_writeback_deadletters: '0 rows on 2026-10-18. One per failed Salesforce write; finished rows kept 30 days.',
+  alert_incidents: '13 rows on 2026-10-18 after 4 days. About 3 a day, closed rows kept 90 days, so about 300.',
+  // Slow growers with no pruning, each well over a year from 1,000 rows.
+  execution_archive_days: '65 rows on 2026-10-18. One per UTC day since 2026-08-14 and no pruning, so 365 a year.',
+  buyer_select_parity_days: '34 rows on 2026-10-18. One per buyer_select workflow per Eastern day (one workflow today) and no pruning, so about 365 a year.',
+  partner_page_live_misses: '0 rows on 2026-10-18. Its migration expects a handful a day with no pruning, so a few hundred a year.',
+  // The Pipedream move inventory, loaded from exports by a script.
+  'porting.pipedream_inventory': '386 rows on 2026-10-18. One per Pipedream workflow in a loaded export; bounded by the Pipedream account.',
+  'porting.pipedream_workflow_map': '0 rows on 2026-10-18. At most one per inventory row.',
+}
 
 const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])
 const BOUND_METHODS = new Set(['single', 'maybeSingle', 'range', 'limit'])
@@ -212,6 +289,210 @@ describe('big-table pagination guard list is complete', () => {
   })
 })
 
+// ── Every table declares its size when it is created (#962) ──────────────────
+
+// Reduce a migration to the SQL that RUNS: comments and single quoted strings
+// become spaces, so prose about a table ("CREATE TABLE execution_steps" in a
+// comment) and dynamic DDL built inside a string (`format('CREATE TABLE %I
+// PARTITION OF ...')`, the monthly and daily partition makers) are never read as
+// a table being created. Dollar quoted bodies stay, because a DO block or a
+// function can create a table directly and that table is real. One pass, so a
+// `--` inside a string is not taken for a comment and an apostrophe inside a
+// comment does not open a string.
+function sqlCodeOnly(sql: string): string {
+  let out = ''
+  let i = 0
+  while (i < sql.length) {
+    const c = sql[i]
+    if (c === '-' && sql[i + 1] === '-') {
+      while (i < sql.length && sql[i] !== '\n') { out += ' '; i++ }
+      continue
+    }
+    if (c === '/' && sql[i + 1] === '*') {
+      const close = sql.indexOf('*/', i + 2)
+      const end = close === -1 ? sql.length : close + 2
+      out += sql.slice(i, end).replace(/[^\n]/g, ' ')
+      i = end
+      continue
+    }
+    if (c === "'") {
+      let j = i + 1
+      while (j < sql.length) {
+        if (sql[j] === "'" && sql[j + 1] === "'") { j += 2; continue }
+        if (sql[j] === "'") { j++; break }
+        j++
+      }
+      out += sql.slice(i, j).replace(/[^\n]/g, ' ')
+      i = j
+      continue
+    }
+    out += c
+    i++
+  }
+  return out
+}
+
+// A table name as the guard keys it: unquoted, lower case, and without the
+// default `public.` schema (the worker reads those as `.from('name')`, which is
+// how BIG_TABLES spells them). Any other schema keeps its prefix, so
+// porting.pipedream_inventory cannot be confused with a public table.
+function tableKey(raw: string): string {
+  const name = raw.replace(/"/g, '').toLowerCase()
+  return name.startsWith('public.') ? name.slice('public.'.length) : name
+}
+
+const NAME = String.raw`(?:"?[A-Za-z_][\w$]*"?\.)?"?[A-Za-z_][\w$]*"?`
+
+/**
+ * The tables a fresh database holds after every migration in `files` is applied
+ * in order: each CREATE TABLE adds its table, a DROP TABLE or a RENAME removes
+ * or renames it. Partitions are left out (a `PARTITION OF` child, or a table a
+ * later ATTACH PARTITION makes one), because the completeness test above already
+ * holds every partitioned parent to BIG_TABLES. Temporary tables are left out
+ * because they do not outlive the session that made them.
+ */
+function tablesCreatedBy(files: Array<{ name: string; sql: string }>): Map<string, string> {
+  const live = new Map<string, string>() // table key -> the migration that created it
+  for (const { name, sql } of files) {
+    const code = sqlCodeOnly(sql)
+    const stmt = new RegExp(
+      String.raw`\bCREATE\s+((?:GLOBAL\s+|LOCAL\s+)?(?:TEMP|TEMPORARY|UNLOGGED)\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(${NAME})` +
+        String.raw`|\bDROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(${NAME}(?:\s*,\s*${NAME})*)` +
+        String.raw`|\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?(${NAME})\s+RENAME\s+TO\s+(${NAME})` +
+        String.raw`|\bATTACH\s+PARTITION\s+(${NAME})`,
+      'gi',
+    )
+    let m: RegExpExecArray | null
+    while ((m = stmt.exec(code)) !== null) {
+      if (m[2] !== undefined) {
+        if (m[1] !== undefined && /TEMP/i.test(m[1])) continue
+        if (/^\s*PARTITION\s+OF\b/i.test(code.slice(stmt.lastIndex))) continue
+        live.set(tableKey(m[2]), name)
+      } else if (m[3] !== undefined) {
+        for (const t of m[3].split(',')) live.delete(tableKey(t.trim()))
+      } else if (m[4] !== undefined && m[5] !== undefined) {
+        const from = tableKey(m[4])
+        const created = live.get(from)
+        if (created === undefined) continue
+        live.delete(from)
+        // RENAME TO takes a bare name; the table stays in its own schema.
+        const schema = from.includes('.') ? from.slice(0, from.lastIndexOf('.') + 1) : ''
+        live.set(schema + tableKey(m[5]).split('.').pop(), created)
+      } else if (m[6] !== undefined) {
+        live.delete(tableKey(m[6]))
+      }
+    }
+  }
+  return live
+}
+
+function migrationFiles(): Array<{ name: string; sql: string }> {
+  return readdirSync(MIGRATIONS_DIR)
+    .filter((f) => f.endsWith('.sql'))
+    .sort()
+    .map((f) => ({ name: f, sql: readFileSync(path.join(MIGRATIONS_DIR, f), 'utf8') }))
+}
+
+// A declaration must say how big the table is, as a number, or say plainly that
+// nobody has measured it. A bare "small" or "config" is a guess nobody can hold
+// to anything later.
+const STATES_A_SIZE = /\d|\bunmeasured\b/i
+
+/** The tables in `live` that are in neither BIG_TABLES nor SMALL_TABLES, sorted. */
+function undeclaredTables(live: Map<string, string>): string[] {
+  const big = new Set(BIG_TABLES)
+  return [...live.keys()].filter((t) => !big.has(t) && !Object.hasOwn(SMALL_TABLES, t)).sort()
+}
+
+describe('every table declares its expected size at creation (#962)', () => {
+  it('every table a migration creates is in BIG_TABLES or SMALL_TABLES', () => {
+    const live = tablesCreatedBy(migrationFiles())
+    const undeclared = undeclaredTables(live).map((t) => [t, live.get(t) as string] as const)
+    expect(
+      undeclared.map(([t, file]) => `${t} (${file})`),
+      `Table(s) created in supabase/migrations with no declared size:\n` +
+        `${undeclared.map(([t, file]) => `  ${t}, created in ${file}`).join('\n')}\n\n` +
+        `Decide now, while the volume is known: add the table to BIG_TABLES if it can ` +
+        `pass 1,000 rows (and to KNOWN_BIG_TABLES in apps/worker/src/lib/big-table-guard.ts), ` +
+        `or to SMALL_TABLES in this file with how many rows it holds and why it stays there.`,
+    ).toEqual([])
+  })
+
+  it('every SMALL_TABLES entry names a live table, states a size, and is not also big', () => {
+    const live = tablesCreatedBy(migrationFiles())
+    const big = new Set(BIG_TABLES)
+    const problems: string[] = []
+    for (const [table, reason] of Object.entries(SMALL_TABLES)) {
+      // A stale entry is also how a parser fault would show: a table this file
+      // stopped finding drops out of the live set and lands here.
+      if (!live.has(table)) problems.push(`${table}: no migration creates it (or a later one drops it)`)
+      if (big.has(table)) problems.push(`${table}: in both BIG_TABLES and SMALL_TABLES`)
+      if (!STATES_A_SIZE.test(reason)) problems.push(`${table}: reason states no row count and does not say unmeasured`)
+    }
+    expect(problems).toEqual([])
+  })
+})
+
+describe('the table size declaration check can fail (#962)', () => {
+  // The two tests above pass on the real migrations whether the parser works or
+  // finds nothing at all, so drive it against fixtures it must get right.
+  const run = (sql: string) => [...tablesCreatedBy([{ name: 'fixture.sql', sql }]).keys()].sort()
+
+  it('finds plain, IF NOT EXISTS, schema qualified and quoted tables', () => {
+    expect(
+      run(
+        'CREATE TABLE a (id int);\n' +
+          'create table if not exists public.b (id int);\n' +
+          'CREATE UNLOGGED TABLE "C" (id int);\n' +
+          'CREATE TABLE porting.d (id int);\n' +
+          'DO $$ BEGIN CREATE TABLE e (id int); END $$;\n',
+      ),
+    ).toEqual(['a', 'b', 'c', 'e', 'porting.d'])
+  })
+
+  it('ignores partitions, temporary tables, comments and DDL inside strings', () => {
+    expect(
+      run(
+        'CREATE TABLE p (id int) PARTITION BY RANGE (id);\n' +
+          'CREATE TABLE p_1 PARTITION OF p FOR VALUES FROM (1) TO (2);\n' +
+          'CREATE TABLE p_2 (LIKE p);\nALTER TABLE p ATTACH PARTITION p_2 FOR VALUES FROM (2) TO (3);\n' +
+          'CREATE TEMP TABLE scratch (id int);\n' +
+          "-- CREATE TABLE in_a_comment (id int); it's prose\n" +
+          '/* CREATE TABLE in_a_block (id int) */\n' +
+          "EXECUTE format('CREATE TABLE IF NOT EXISTS %I (id int)', 'dyn');\n" +
+          "COMMENT ON TABLE p IS 'see -- CREATE TABLE in_a_string (id int)';\n",
+      ),
+    ).toEqual(['p'])
+  })
+
+  it('forgets a dropped table and follows a renamed one', () => {
+    expect(
+      run(
+        'CREATE TABLE gone (id int);\nCREATE TABLE old_name (id int);\nCREATE TABLE kept (id int);\n' +
+          'DROP TABLE IF EXISTS public.gone;\nALTER TABLE public.old_name RENAME TO new_name;\n',
+      ),
+    ).toEqual(['kept', 'new_name'])
+  })
+
+  it('a new table that is neither big nor declared small is reported', () => {
+    const live = tablesCreatedBy([
+      ...migrationFiles(),
+      { name: '29991231000000_fixture.sql', sql: 'CREATE TABLE IF NOT EXISTS public.fixture_undeclared_962 (id int);' },
+    ])
+    expect(undeclaredTables(live)).toEqual(['fixture_undeclared_962'])
+  })
+
+  it('a table named like an Object prototype key is not read as declared', () => {
+    // SMALL_TABLES is a plain object, so a lookup that walks the prototype would
+    // find `constructor` or `__proto__` on every object and exempt a table of that
+    // name without anybody declaring it.
+    const live = tablesCreatedBy([
+      { name: 'fixture.sql', sql: 'CREATE TABLE constructor (id int);\nCREATE TABLE __proto__ (id int);' },
+    ])
+    expect(undeclaredTables(live)).toEqual(['__proto__', 'constructor'])
+  })
+})
+
 describe('runtime big-table guard mirrors BIG_TABLES (#222)', () => {
   it('KNOWN_BIG_TABLES in the worker guard matches BIG_TABLES here', () => {
     // The daily runtime check (apps/worker/src/lib/big-table-guard.ts) excludes
@@ -237,7 +518,8 @@ describe('runtime big-table guard mirrors BIG_TABLES (#222)', () => {
 
 describe('each BIG_TABLES entry is load-bearing', () => {
   // Every other test here can pass while the list is wrong: the completeness
-  // test only covers PARTITIONED tables, the mirror test only compares the two
+  // tests accept a table in SMALL_TABLES as readily as one in BIG_TABLES, so
+  // moving an entry across passes them, the mirror test only compares the two
   // lists to each other, and the scan below reports nothing for a table it was
   // never told about. So none of them can fail when an entry is MISSING, which
   // is how execution_archive_ids (~105,000 rows/day by its own migration's
