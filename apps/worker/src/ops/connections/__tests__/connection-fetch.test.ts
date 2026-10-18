@@ -261,36 +261,106 @@ describe('a 429 or Retry-After is a RequeueAt, never a sleep', () => {
   })
 })
 
-describe('the login: a refused mint is needs_reauth at once; anything else is named, never needs_reauth', () => {
+describe('the login: a refused mint is needs_reauth at once; a failing token endpoint is refresh_failing first (decision 2)', () => {
   function minting(fail: Error) {
     return (rec: Recorder) => [exampleRules(rec, async () => { rec.events.push('authorize'); throw fail })]
   }
+  /** An auth that asked a token endpoint and was answered a token. */
+  const freshMint = (rec: Recorder) => [exampleRules(rec, async (input) => {
+    input.noteMint()
+    return { headers: { authorization: 'Bearer minted-token-0123' }, secrets: ['minted-token-0123'] }
+  })]
 
-  it('a login the provider refused (invalid_grant, invalid_client) records needs_reauth and sends nothing', async () => {
+  it('a login the provider refused (invalid_grant, invalid_client) records needs_reauth with its reason and sends nothing', async () => {
     const d = makeDoubles(keys, usableCopy(envelope), minting(new LoginMintError('refused', 'invalid_client')))
     const err = await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))
     expect(err.code).toBe('connection_needs_reauth')
-    expect(d.rec.needsReauth).toEqual([{ organizationId: ORG, connectionId: CONN, cause: 'login_refused' }])
+    expect(d.rec.needsReauth).toEqual([{ organizationId: ORG, connectionId: CONN, cause: 'login_refused: invalid_client' }])
+    expect(d.rec.refreshes).toEqual([])
     expect(d.rec.sent).toEqual([])
   })
 
-  it('a token endpoint that timed out or answered 5xx is unavailable, not needs_reauth', async () => {
-    const d = makeDoubles(keys, usableCopy(envelope), minting(new LoginMintError('unavailable', 'token endpoint 503')))
-    expect((await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))).code).toBe('connection_auth_unavailable')
+  it('a token endpoint that timed out or answered 5xx adds to the refresh streak and is unavailable, not needs_reauth', async () => {
+    const d = makeDoubles(keys, usableCopy(envelope), minting(new LoginMintError('unavailable', 'token_endpoint_5xx')))
+    const err = await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))
+    expect(err.code).toBe('connection_auth_unavailable')
+    expect(err.message).toContain('refresh_failing')
+    expect(d.rec.refreshes).toEqual([{ organizationId: ORG, connectionId: CONN, result: { ok: false, cause: 'token_endpoint_5xx' } }])
+    expect(d.rec.needsReauth).toEqual([])
+    expect(d.rec.sent).toEqual([])
+  })
+
+  it('the failure that takes the streak past its bound is needs_reauth, written by the database, not again here', async () => {
+    const d = makeDoubles(keys, usableCopy(envelope), minting(new LoginMintError('unavailable', 'token_endpoint_timeout')))
+    d.refreshAnswer('needs_reauth')
+    const err = await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))
+    expect(err.code).toBe('connection_needs_reauth')
+    expect(err.message).toContain('refresh_failing_exhausted')
+    expect(d.rec.refreshes).toHaveLength(1)
     expect(d.rec.needsReauth).toEqual([])
   })
 
-  it('a token endpoint that rate limited the mint is a RequeueAt at its time', async () => {
-    const d = makeDoubles(keys, usableCopy(envelope), minting(new LoginMintError('rate_limited', 'token endpoint 429', new Date(T0 + 45_000))))
+  it('a streak that cannot be recorded is reported, and the call is still unavailable rather than needs_reauth', async () => {
+    const d = makeDoubles(keys, usableCopy(envelope), minting(new LoginMintError('unavailable', 'token_endpoint_unreachable')))
+    d.deps.recordRefresh = async () => { throw new Error('ops database down') }
+    expect((await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))).code).toBe('connection_auth_unavailable')
+    expect(d.rec.reports).toEqual([{ event: 'refresh_unrecorded', connection_id: CONN, purpose: 'lookup' }])
+  })
+
+  it('a login that a token endpoint answered ends the streak; one read from the memo writes nothing', async () => {
+    const minted = makeDoubles(keys, usableCopy(envelope), freshMint)
+    expect(((await connectionFetch(minted.deps, call(minted.rec), 'https://api.example.test/x')) as Response).status).toBe(200)
+    expect(minted.rec.refreshes).toEqual([{ organizationId: ORG, connectionId: CONN, result: { ok: true } }])
+
+    const reused = makeDoubles(keys, usableCopy(envelope), (rec) => [exampleRules(rec)])
+    await connectionFetch(reused.deps, call(reused.rec), 'https://api.example.test/x')
+    expect(reused.rec.refreshes).toEqual([])
+  })
+
+  it('a failure to end the streak is reported and never changes the answer', async () => {
+    const d = makeDoubles(keys, usableCopy(envelope), freshMint)
+    d.deps.recordRefresh = async () => { throw new Error('ops database down') }
+    expect(((await connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x')) as Response).status).toBe(200)
+    expect(d.rec.reports).toEqual([{ event: 'refresh_unrecorded', connection_id: CONN, purpose: 'lookup' }])
+  })
+
+  it('a token endpoint that rate limited the mint is a RequeueAt at its time, and no failure', async () => {
+    const d = makeDoubles(keys, usableCopy(envelope), minting(new LoginMintError('rate_limited', 'token_endpoint_rate_limited', new Date(T0 + 45_000))))
     const res = await connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x')
     expect(res).toBeInstanceOf(RequeueAt)
     expect((res as RequeueAt).notBefore.getTime()).toBe(T0 + 45_000)
+    expect(d.rec.refreshes).toEqual([])
+  })
+
+  it('a mint our own rule refuses (F129) is refused by name, and is neither needs_reauth nor a refresh failure', async () => {
+    const d = makeDoubles(keys, usableCopy(envelope), minting(new LoginMintError('not_allowed', 'mailbox_not_allowed')))
+    const err = await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))
+    expect(err.code).toBe('connection_not_allowed')
+    expect(err.message).toContain('mailbox_not_allowed')
+    expect(d.rec.needsReauth).toEqual([])
+    expect(d.rec.refreshes).toEqual([])
+    expect(d.rec.sent).toEqual([])
+  })
+
+  it('a rule that could not be checked is its own refusal, and is not a refresh failure', async () => {
+    const d = makeDoubles(keys, usableCopy(envelope), minting(new LoginMintError('check_unavailable', 'delegation_allowlist_unreadable')))
+    expect((await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))).code).toBe('connection_auth_check_unavailable')
+    expect(d.rec.refreshes).toEqual([])
+    expect(d.rec.needsReauth).toEqual([])
   })
 
   it('any other failure of the auth is named, and is not needs_reauth', async () => {
     const d = makeDoubles(keys, usableCopy(envelope), minting(new TypeError('cannot read properties of undefined')))
     expect((await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))).code).toBe('connection_auth_failed')
     expect(d.rec.needsReauth).toEqual([])
+    expect(d.rec.refreshes).toEqual([])
+  })
+
+  it('a LoginMintError\'s message is its kind and reason alone, so nothing a provider said can ride on it (F120)', () => {
+    const err = new LoginMintError('refused', 'invalid_grant')
+    expect(err.message).toBe('refused: invalid_grant')
+    expect(Object.keys(err).sort()).toEqual(['kind', 'name', 'reason', 'retryAt'])
+    expect(err.name).toBe('LoginMintError')
   })
 
   it('a failure to record needs_reauth is reported, and the refusal still stands', async () => {
@@ -373,6 +443,21 @@ describe('a candidate: a credential bidding has not committed, verified in memor
       source: { kind: 'candidate', candidate: { service: 'example', generation: 2, envelope: next, target: { host: 'api.example.test' }, publicConfig: {} } },
     }), 'https://api.example.test/x'))).code).toBe('connection_needs_reauth')
     expect(d.rec.needsReauth).toEqual([])
+  })
+
+  it('a candidate whose token endpoint fails, or works, writes nothing about the refresh streak', async () => {
+    const next = await sealLogin(keys, { generation: 2 })
+    const candidate = { kind: 'candidate' as const, candidate: { service: 'example', generation: 2, envelope: next, target: { host: 'api.example.test' }, publicConfig: {} } }
+    const failing = makeDoubles(keys, usableCopy(envelope), (rec) => [exampleRules(rec, async () => { throw new LoginMintError('unavailable', 'token_endpoint_timeout') })])
+    expect((await refusal(connectionFetch(failing.deps, call(failing.rec, { purpose: 'verify', source: candidate }), 'https://api.example.test/x'))).code)
+      .toBe('connection_auth_unavailable')
+    expect(failing.rec.refreshes).toEqual([])
+    const working = makeDoubles(keys, usableCopy(envelope), (rec) => [exampleRules(rec, async (input) => {
+      input.noteMint()
+      return { headers: { authorization: 'Bearer minted-token-0123' }, secrets: ['minted-token-0123'] }
+    })])
+    await connectionFetch(working.deps, call(working.rec, { purpose: 'verify', source: candidate }), 'https://api.example.test/x')
+    expect(working.rec.refreshes).toEqual([])
   })
 
   it('a create\'s first verify needs no copy at all', async () => {

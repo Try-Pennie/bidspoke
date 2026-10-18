@@ -1,0 +1,127 @@
+# Ops connection logins and the admin hand off (#2335)
+
+How the ops Worker turns a sealed connection login into the credential a request
+carries, what each login must contain, how a failing login is recorded, and what
+an admin must set up outside the repo before a Salesforce or Google connection can
+work. Phase 5 of #1689; plan: discussion #2329, part 2; Dan's decisions of
+2026-10-17 (discussioncomment 19000411).
+
+Nothing here is called in production yet. The minters are the `authorize` of each
+catalogue service's runtime entry, which arrives with that service (Phase 7), and
+connectionFetch, which calls them, has no caller until the OpsConnections
+entrypoint (PR 8 of this phase) and the ops executor (Phase 9).
+
+## The minters (`apps/worker/src/ops/connections/minters/`)
+
+| Minter | Services | Login (sealed JSON) | Target (declared, public) | Expiry signal |
+|---|---|---|---|---|
+| `staticKeyAuth` | Slack ops bot (decision 6), OpenAI, Anthropic, Supabase, HTTP | `{ "api_key" }`, or `bot_token` for Slack, `service_key` for Supabase | the service's hosts | 401 |
+| `snowflakeKeyPairAuth` | Snowflake | `{ "private_key": "<PEM>" }` | `{ account, user }` | 401 |
+| `salesforceClientCredentialsAuth` | Salesforce | `{ client_id, client_secret }` of the org's ops connected app | `{ instance_url, client_id }` | 401 (INVALID_SESSION_ID), the money path's own rule |
+| `googleDelegationAuth` | Google (Sheets, Gmail, Calendar, Drive) | the service account key JSON Google issues | `{ subject: "<mailbox>", drives?: ["<shared drive id>"] }` | 401 |
+
+- Tokens are held per isolate in a `TokenMemo` keyed by connection, generation,
+  mailbox and scope, so two mailboxes never share a token and a reconnect never
+  meets the old credential's token. A credential bidding has not committed yet
+  (verify, Reconnect) mints for its one call and never touches the memo.
+- On the expiry signal connectionFetch renews once and retries once. The renewal
+  evicts the memo entry only if it still holds the rejected token (compared by
+  identity), so concurrent rejections cause one mint. A second refusal is
+  `needs_reauth`.
+- Salesforce asks only the declared instance's `/services/oauth2/token`, and only
+  an https `*.salesforce.com` host. A login whose client id is not the declared
+  one is refused before anything is sent. The money path's `getSalesforceToken`
+  and its KV cache are not used.
+- Google asks only `https://oauth2.googleapis.com/token`; a key naming any other
+  `token_uri` is refused, so the signed assertion goes nowhere else.
+- Every failure is a `LoginMintError` whose message is its kind and reason alone
+  (F120), and connectionFetch forwards none of it.
+
+## A failing login (Dan's decision 2)
+
+| What happened | Recorded | The caller gets |
+|---|---|---|
+| The provider refused the login (`invalid_grant`, `invalid_client`, `unauthorized_client`, ...), or the stored login is malformed | `needs_reauth` at once, cause `login_refused: <reason>` | `connection_needs_reauth` |
+| The token endpoint timed out, could not be reached, answered 5xx or an edge page | one more failure in the connection's refresh streak (`record_connection_refresh`); status `refresh_failing` | `connection_auth_unavailable` |
+| The streak reaches 5 failures AND began 15 minutes ago | `needs_reauth`, cause `refresh_failing_exhausted: <reason>`, written by the database through `record_connection_needs_reauth` | `connection_needs_reauth` |
+| The token endpoint answered 429 | nothing | a `RequeueAt` at its Retry-After |
+| A token endpoint answered a token | the streak ends | the response |
+| A rule of ours refused the mint (below) | nothing | `connection_not_allowed`, naming the rule |
+
+Both bounds, because either alone is wrong: a count alone sends a connection to
+`needs_reauth` on a 30 second outage that a burst of parallel steps meets five
+times, and a span alone lets one slow failure an hour later do it. They live once,
+in `record_connection_refresh` (supabase-ops migration 20261018170000). A
+Reconnect starts a new streak. Nothing is recorded for a credential that is only
+being verified.
+
+## Google: delegation scopes and the mailbox allowlist (F129, decision 11)
+
+Domain wide delegation lets the ops service account act as any mailbox in the
+Workspace for the scopes the admin grants, and decision 11 grants broad ones once.
+So two things hold the account in:
+
+1. **Scopes.** The admin grants decision 11's four:
+   `https://www.googleapis.com/auth/gmail.modify`,
+   `https://www.googleapis.com/auth/calendar`,
+   `https://www.googleapis.com/auth/drive`,
+   `https://www.googleapis.com/auth/spreadsheets`
+   (`GOOGLE_DELEGATION_GRANTED_SCOPES` in `packages/service-catalogue`). The
+   minter asks Google only for the union of what the catalogue's Google actions
+   declare (`googleDelegationScopes(CATALOGUE)`), and a catalogue check refuses an
+   action declaring a scope outside the grant. While no Google action ships, the
+   list is empty and every Google mint is refused (`no_delegation_scopes`).
+2. **The allowlist.** `google_delegation_subjects` on the ops database names, per
+   organization, each mailbox a Google connection may act as and each shared drive
+   it may name. The minter checks it on every request, before a token is minted or
+   reused, so an entry taken off the list stops at once. A mailbox or drive outside
+   it is refused by name (`mailbox_not_allowed`, `drive_not_allowed`); a list that
+   cannot be read refuses the call (`connection_auth_check_unavailable`). Verify
+   checks it again at save (PR 8). No function writes the table: an entry arrives
+   only by an approval migration Dan reviews, like the Salesforce caps:
+
+   ```sql
+   INSERT INTO public.google_delegation_subjects (organization_id, kind, subject, approved_at, approved_by)
+   VALUES ('<organization uuid>', 'mailbox', 'ops@trypennie.com', now(), 'Dan');
+   ```
+
+## Admin hand off
+
+Each step is a person's, outside the repo, and goes on the manual steps card
+before the first connection of that kind is saved.
+
+### Salesforce, per org (trypennie first, then pennie)
+
+1. Create a **dedicated integration user** (a free Salesforce Integration User
+   licence where the org has one, decision 5). It is the connected app's run as
+   user and nothing else: no person signs in as it.
+2. Create the permission set **`Bidspoke Ops Integration`** (API name
+   `Bidspoke_Ops_Integration`), with the permission set licence "Salesforce API
+   Integration" where the Integration User licence is used, and assign it to that
+   user and to no one else. It grants:
+   - system permission **API Enabled**, and nothing else at the system level: not
+     Modify All Data, View All Data, View Setup and Configuration, Manage Users,
+     Customize Application or Author Apex;
+   - object and field access **only** as each ported action needs it, named in
+     that action's pull request (Phase 7), never ahead of it. It starts with none.
+3. Create the connected app **`Bidspoke Ops`** with OAuth enabled, the OAuth scope
+   **`api`** only (not `full`, not `refresh_token`), and **Enable Client
+   Credentials Flow** with the run as user set to the user from step 1.
+4. Give its consumer key and secret to the person adding the connection: the key
+   is the connection's declared `client_id` (and goes in the login too), the
+   secret goes only in the sealed login. It must not be the money connected app:
+   bidding refuses money's client id at save.
+5. Prove it by attempting what it must not do: with the connection verified, send
+   one write the permission set does not grant (for example, create an Account).
+   It must fail with an insufficient access error. Success is a finding, filed
+   before the connection is used.
+
+### Google Workspace
+
+1. A Workspace super admin, in Security, API controls, Domain wide delegation,
+   adds the ops service account's client id with exactly the four scopes above.
+2. Dan approves the mailboxes and shared drives each organization may name, and
+   each lands as an approval migration on the ops project.
+3. Prove it by attempting the forbidden case on the live ops Worker: a connection
+   naming a mailbox not on the list must be refused with `mailbox_not_allowed`
+   before any token is asked for.

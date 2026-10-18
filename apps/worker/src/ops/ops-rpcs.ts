@@ -38,6 +38,8 @@ export const OPS_ORGANIZATION_RPCS = [
   'record_measured_identity',
   'acquire_sf_lease',
   'release_sf_lease',
+  // Decision 2's refresh streak (#2335).
+  'record_connection_refresh',
 ] as const
 
 /**
@@ -68,10 +70,11 @@ export const OPS_LANE_RPCS = [
  * and connection_storage.test.sql). Lane wide ones take no organization;
  * organization scoped ones take p_organization_id and answer only that
  * organization's rows (#2334: one connection's copy, and one organization's
- * connection statuses).
+ * connection statuses; #2335: whether a mailbox and drives are on that
+ * organization's Google delegation allowlist).
  */
 export const OPS_LANE_READ_ONLY_RPCS = ['run_queue_disagreements', 'ops_now', 'workflow_copies', 'due_queue_depth'] as const
-export const OPS_ORGANIZATION_READ_ONLY_RPCS = ['connection_copy', 'connection_status'] as const
+export const OPS_ORGANIZATION_READ_ONLY_RPCS = ['connection_copy', 'connection_status', 'google_delegation_check'] as const
 export const OPS_READ_ONLY_RPCS = [...OPS_LANE_READ_ONLY_RPCS, ...OPS_ORGANIZATION_READ_ONLY_RPCS] as const
 
 export const OPS_MUTATING_RPCS = [...OPS_ORGANIZATION_RPCS, ...OPS_LANE_RPCS] as const

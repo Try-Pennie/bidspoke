@@ -8,6 +8,7 @@
 import { seal, type KeyRing, type SealedEnvelope } from '@bidspoke/connection-seal'
 import type { OrganizationId } from '../../ops-db'
 import type { ConnectionCopy, SfLeaseAnswer } from '../../ops-writes'
+import type { RefreshOutcome } from '../../run-vocabulary'
 import type { ConnectionFetchDeps } from '../connection-fetch'
 import type { Authorization, AuthorizeInput, ServiceRules } from '../service-rules'
 
@@ -84,6 +85,8 @@ export interface Recorder {
   sent: Array<{ url: string; init: RequestInit }>
   recorded: unknown[]
   needsReauth: Array<{ organizationId: string; connectionId: string; cause: string }>
+  /** record_connection_refresh calls (Dan's decision 2), in order. */
+  refreshes: Array<{ organizationId: string; connectionId: string; result: { ok: true } | { ok: false; cause: string } }>
   leases: Array<{ op: 'acquire'; purpose: string; holder: string; bootstrapHost?: string; workflowId?: string } | { op: 'release'; holder: string }>
   reports: unknown[]
   slept: number[]
@@ -97,6 +100,8 @@ export interface Doubles {
   /** Replace what each acquire answers, in order; the last repeats. */
   leaseAnswers: (...answers: Array<SfLeaseAnswer | Error>) => void
   setCopy: (copy: ConnectionCopy | Error) => void
+  /** What record_connection_refresh answers a failure (refresh_failing until set). */
+  refreshAnswer: (outcome: RefreshOutcome) => void
   now: { value: number }
 }
 
@@ -147,8 +152,9 @@ export function salesforceRules(rec: Recorder, auth?: (input: AuthorizeInput) =>
 }
 
 export function makeDoubles(keys: TestKeys, copy: ConnectionCopy | Error, rules: (rec: Recorder) => ServiceRules[]): Doubles {
-  const rec: Recorder = { events: [], authorizeCalls: [], sent: [], recorded: [], needsReauth: [], leases: [], reports: [], slept: [] }
+  const rec: Recorder = { events: [], authorizeCalls: [], sent: [], recorded: [], needsReauth: [], refreshes: [], leases: [], reports: [], slept: [] }
   const now = { value: T0 }
+  let refreshAnswer: RefreshOutcome = 'refresh_failing'
   let answers: Array<Response | (() => Response | Promise<Response>) | Error> = [new Response('ok', { status: 200 })]
   let leaseAnswers: Array<SfLeaseAnswer | Error> = [{ outcome: 'granted', leaseId: 'lease-1', expiresAt: new Date(T0 + 90_000).toISOString(), pool: 'org' }]
   let current: ConnectionCopy | Error = copy
@@ -176,6 +182,10 @@ export function makeDoubles(keys: TestKeys, copy: ConnectionCopy | Error, rules:
     },
     recordNeedsReauth: async (organizationId, connectionId, cause) => {
       rec.needsReauth.push({ organizationId, connectionId, cause })
+    },
+    recordRefresh: async (organizationId, connectionId, result) => {
+      rec.refreshes.push({ organizationId, connectionId, result })
+      return result.ok ? 'recorded' : refreshAnswer
     },
     fetch: async (input, init) => {
       rec.events.push('send')
@@ -207,6 +217,9 @@ export function makeDoubles(keys: TestKeys, copy: ConnectionCopy | Error, rules:
     },
     setCopy: (c) => {
       current = c
+    },
+    refreshAnswer: (outcome) => {
+      refreshAnswer = outcome
     },
     now,
   }

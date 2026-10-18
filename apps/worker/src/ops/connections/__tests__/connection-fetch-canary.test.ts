@@ -57,7 +57,10 @@ function call(rec: Recorder, overrides: Partial<ConnectionCall> = {}): Connectio
 
 /** Everything the canary must be absent from, after one call. */
 function everythingThatLeaves(d: Doubles, err: unknown): string {
-  return [visibleText(err), consoleLines.join('\n'), JSON.stringify(d.rec.recorded), JSON.stringify(d.rec.needsReauth), JSON.stringify(d.rec.reports)].join('\n')
+  return [
+    visibleText(err), consoleLines.join('\n'), JSON.stringify(d.rec.recorded), JSON.stringify(d.rec.needsReauth), JSON.stringify(d.rec.refreshes),
+    JSON.stringify(d.rec.reports),
+  ].join('\n')
 }
 
 function expectNoCanary(text: string) {
@@ -78,8 +81,10 @@ async function caught(promise: Promise<unknown>): Promise<unknown> {
 
 describe('the canary never leaves connectionFetch on a failure path (F120)', () => {
   it('a token endpoint error that echoes the request (refused login)', async () => {
+    // A LoginMintError's message is built from its kind and reason alone; this one is
+    // overwritten to prove connectionFetch would not forward it even then.
     const d = makeDoubles(keys, usableCopy(envelope), (rec) => [exampleRules(rec, async () => {
-      throw new LoginMintError('refused', `invalid_client: client_secret=${LOGIN_SECRET} assertion=${ACCESS_TOKEN}`)
+      throw Object.assign(new LoginMintError('refused', 'invalid_client'), { message: `invalid_client: client_secret=${LOGIN_SECRET} assertion=${ACCESS_TOKEN}` })
     })])
     const err = await caught(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))
     expect(d.rec.needsReauth).toHaveLength(1)

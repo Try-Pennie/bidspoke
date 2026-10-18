@@ -1,8 +1,9 @@
 /**
  * What connectionFetch needs from each service (#2335, phase 5 of #1689). The
  * catalogue's runtime entries fill these per service as each service arrives
- * (Phase 7); the minters behind `authorize` are a later PR of this phase. Until
- * then nothing supplies rules, so connectionFetch refuses every service by name
+ * (Phase 7), each taking its `authorize` and `expired` from one of the minters
+ * in ./minters (MinterRules) and adding its declared hosts. Until then nothing
+ * supplies rules, so connectionFetch refuses every service by name
  * (connection_service_unknown).
  */
 import type { OrganizationId } from '../ops-db'
@@ -40,6 +41,13 @@ export interface AuthorizeInput {
    * caller has just minted.
    */
   readonly renew: { readonly rejected: Authorization } | null
+  /**
+   * Called by the auth when it asked a token endpoint and was answered a token
+   * (not when it reused one, signed one locally or read a static key), so
+   * connectionFetch can end a refresh streak (Dan's decision 2). The minters'
+   * shared memo helper calls it, so no minter has to remember to.
+   */
+  readonly noteMint: () => void
 }
 
 export interface ServiceRules {
@@ -64,3 +72,6 @@ export interface ServiceRules {
   /** The beforeRequest auth: mints or reuses a token. Throws LoginMintError by kind. */
   authorize(input: AuthorizeInput): Promise<Authorization>
 }
+
+/** What a minter supplies: the auth, the expiry signal it answers, and for Salesforce the instance host. */
+export type MinterRules = Pick<ServiceRules, 'authorize' | 'expired' | 'salesforce'>
