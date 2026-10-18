@@ -6,6 +6,7 @@ import shadow from './routes/shadow'
 import api from './routes/api/index'
 import { createScheduledSupabaseClient, scheduledSlackFor } from './lib/scheduled-slack'
 import { runInScheduledTick } from './lib/outage-notice'
+import { runWithRequestWaitUntil } from './lib/row-cap'
 import { runVolumeAnomalyCheck } from './lib/volume-anomaly'
 import { runBidRecordingCoverageCheck } from './lib/bid-recording-coverage'
 import { runTripointRevenueFillForEnv } from './lib/tripoint-revenue-fill'
@@ -1274,7 +1275,10 @@ const scheduledJobs = {
 }
 
 export default {
-  fetch: app.fetch.bind(app),
+  // Each request carries its waitUntil, so a row cap report a read starts is
+  // not cancelled when the response goes out (#1436, lib/row-cap.ts).
+  fetch: (request: Request, env: Env, ctx: ExecutionContext) =>
+    runWithRequestWaitUntil((p) => ctx.waitUntil(p), () => app.fetch(request, env, ctx)),
   // Claims (cron expression, scheduled minute) before any job starts, and skips
   // the whole invocation when another delivery of the same tick holds it (#1899):
   // Cloudflare has delivered every tick twice since 2026-10-08 13:38 UTC. A retry

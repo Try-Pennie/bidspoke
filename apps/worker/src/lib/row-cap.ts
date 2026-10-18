@@ -41,6 +41,7 @@
  * filter value replaced by `?` (redactQuery), so no lead's data reaches the log
  * or Better Stack (L482). The whole event is pinned by a test.
  */
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { PAGE_SIZE } from './paginate'
 import { inScheduledTick } from './outage-notice'
 import { raceDeadline } from './alert-claim'
@@ -207,6 +208,21 @@ export function forgetRowCapReports(): void {
 
 const realDelay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms))
 
+/**
+ * The request's waitUntil, so a send started on a request outlives the
+ * response: work not handed to waitUntil can be cancelled once the response is
+ * returned. The Worker's fetch handler runs every request inside it (index.ts).
+ * A read outside any request (a Durable Object, an entrypoint called over a
+ * binding) has none, and its send is left to finish on its own; the log line is
+ * written either way.
+ */
+const requests = new AsyncLocalStorage<(p: Promise<unknown>) => void>()
+
+/** Run a request so a row cap report it starts is kept alive past its response. */
+export function runWithRequestWaitUntil<T>(waitUntil: (p: Promise<unknown>) => void, fn: () => T): T {
+  return requests.run(waitUntil, fn)
+}
+
 /** Send one event to Better Stack. Resolves in every case, within ROW_CAP_SEND_DEADLINE_MS. */
 async function sendToBetterStack(event: RowCapEvent, options: RowCapOptions, nowMs: number): Promise<void> {
   try {
@@ -281,8 +297,16 @@ export function withRowCapCheck(baseFetch: typeof fetch, options: RowCapOptions 
     console.error(JSON.stringify(event))
     const sending = sendToBetterStack(event, options, nowMs)
     if (!scheduled) {
-      // The read answers at once; the send never delays a lead.
-      void sending
+      // The read answers at once; the send never delays a lead, and the
+      // request's waitUntil keeps it alive past the response.
+      const keep = requests.getStore()
+      try {
+        if (keep) keep(sending)
+        else void sending
+      } catch {
+        // A waitUntil that refuses (a test's missing context) leaves the send to finish on its own.
+        void sending
+      }
       return res
     }
     // A failing tick may end as soon as the read fails, so the report goes first.

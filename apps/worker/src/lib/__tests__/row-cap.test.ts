@@ -24,6 +24,7 @@ import {
   rowCapEvent,
   withRowCapCheck,
   forgetRowCapReports,
+  runWithRequestWaitUntil,
 } from '../row-cap'
 import { PAGE_SIZE } from '../paginate'
 import type { Env } from '../../index'
@@ -142,6 +143,17 @@ describe('outside a scheduled tick: every hit is reported, and the read still an
     await vi.waitFor(() => expect(pg.sends).toHaveLength(2))
   })
 
+  it('hands the send to the request\'s waitUntil, so it outlives the response', async () => {
+    const pg = postgrest(1000)
+    const kept: Promise<unknown>[] = []
+    const wrapped = withRowCapCheck(pg.fetchFn, { betterStack: { token: 'bs-token', url: BETTER_STACK_URL }, sendFetch: pg.fetchFn })
+    const res = await runWithRequestWaitUntil((p) => kept.push(p), () => wrapped(`${SUPABASE_URL}/rest/v1/execution_steps?select=id`, { method: 'GET' }))
+    expect(res.status).toBe(200)
+    expect(kept).toHaveLength(1)
+    await Promise.all(kept)
+    expect(pg.sends).toHaveLength(1)
+  })
+
   it('a failed Better Stack send never fails the read', async () => {
     const pg = postgrest(1000)
     const sendFetch = (async () => { throw new Error('network down') }) as typeof fetch
@@ -228,8 +240,16 @@ describe('quiet when the read declared its limit or cannot be truncated', () => 
     expect(detectRowCapHit({ url: `${SUPABASE_URL}/rest/v1/workflows`, method: 'POST', accept: null, contentRange: '0-999/*' })).toBeNull()
   })
 
-  it('is quiet on an error response and on a response with no Content-Range', () => {
+  it('is quiet on a response with no Content-Range', () => {
     expect(detectRowCapHit({ url: `${SUPABASE_URL}/rest/v1/workflows?select=id`, method: 'GET', accept: null, contentRange: null })).toBeNull()
+  })
+
+  it('is quiet on an error response, whatever range it carries, and passes it through untouched', async () => {
+    const pg = postgrest(1000, { status: 503 })
+    const wrapped = withRowCapCheck(pg.fetchFn, { inScheduledTick: () => true })
+    const res = await wrapped(`${SUPABASE_URL}/rest/v1/workflows?select=id`, { method: 'GET' })
+    expect(res.status).toBe(503)
+    expect(capLines()).toHaveLength(0)
   })
 
   it('reads nothing that is not PostgREST (auth, storage)', () => {
