@@ -330,6 +330,19 @@ export const CRON_JOBS: CronJob[] = [
       'nothing is comparing the buyer ledgers against buyer_sales, the bid rows and the Salesforce write back, nobody is paged for sales waiting on a person, and a buyer failing or declining every lead goes unnoticed (#1413)',
   },
   {
+    // BRIDGE (#2392): removed with tripoint-ping-outcome-rate.ts in the #1414 change.
+    id: 'tripoint-ping-outcome-rate',
+    label: 'Tripoint outcome rate on tripoint_ping',
+    triggerCron: '*/15 * * * *',
+    // 15 minute cadence, half an hour slack: two missed runs before it is dark.
+    staleMs: 45 * MIN,
+    // At most 16 head counts of an hour of steps and a few hundred KV reads;
+    // seconds when the rows are warm.
+    maxRunMs: 10 * MIN,
+    dependents:
+      "nothing notices Tripoint failing or declining an unusual share of the Engine leads the tripoint_ping step sends it, which is what went unseen on 2026-10-14 (#2392)",
+  },
+  {
     id: 'click-path-checks',
     label: 'Click buyer path checks',
     triggerCron: '*/15 * * * *',
