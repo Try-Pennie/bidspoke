@@ -83,6 +83,13 @@ export interface OpsTickReport {
    * such a release could report was the ops database.
    */
   not_configured_secrets: string[] | null
+  /**
+   * Whether the tick's started stamp through the gateway failed (#2410), so the
+   * bidding Worker can hold a lone miss for one tick without reading the
+   * sentence. True only with a problem reported. Null on a report from an ops
+   * release before #2410, which pages on a missed stamp at once, as it did.
+   */
+  start_stamp_failed: boolean | null
 }
 
 export class OpsGatewayContractError extends Error {
@@ -146,7 +153,7 @@ export function parseServedOpsWorkflows(raw: unknown): { list: ServedOpsWorkflow
 /** The tick's report as the bidding Worker received it. Throws on one it cannot read. */
 export function parseOpsTickReport(raw: unknown): OpsTickReport {
   if (!isRecord(raw)) throw new OpsGatewayContractError('the ops tick sent a report that is not an object')
-  const { tick_id, mode, scheduled_time, started_at, finished_at, db_now, outcome, problems, counts, not_configured_secrets } = raw
+  const { tick_id, mode, scheduled_time, started_at, finished_at, db_now, outcome, problems, counts, not_configured_secrets, start_stamp_failed } = raw
   if (typeof tick_id !== 'string' || tick_id === '' || tick_id.length > 200) throw new OpsGatewayContractError('the ops tick report has no tick id')
   if (!(OPS_TICK_MODES as readonly unknown[]).includes(mode)) throw new OpsGatewayContractError(`the ops tick report names a mode this Worker does not know: ${String(mode)}`)
   if (!(scheduled_time === null || isTime(scheduled_time))) throw new OpsGatewayContractError('the ops tick report has an unreadable scheduled time')
@@ -171,6 +178,14 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
     }
     secrets = [...(not_configured_secrets as string[])]
   }
+  // Absent before #2410, null once such a report is kept and read back.
+  let stampFailed: boolean | null = null
+  if (start_stamp_failed !== undefined && start_stamp_failed !== null) {
+    if (typeof start_stamp_failed !== 'boolean') throw new OpsGatewayContractError('the ops tick report says neither that its start stamp failed nor that it did not')
+    // A failed stamp is reported as a problem, so one with no problem is not a report to trust.
+    if (start_stamp_failed && outcome === 'ok') throw new OpsGatewayContractError('the ops tick report says its start stamp failed and reports no problem')
+    stampFailed = start_stamp_failed
+  }
   return {
     tick_id,
     mode: mode as OpsTickMode,
@@ -182,5 +197,6 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
     problems: capProblems(problems as string[]),
     counts: counts as Record<string, number>,
     not_configured_secrets: secrets,
+    start_stamp_failed: stampFailed,
   }
 }

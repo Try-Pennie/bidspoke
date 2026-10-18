@@ -1,6 +1,8 @@
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
+import { inflightCeiling } from './_deploy-inflight-ceiling'
 import { REPO_ROOT } from './_scan-utils'
 
 /**
@@ -26,7 +28,9 @@ import { REPO_ROOT } from './_scan-utils'
  * THE FAIL-SAFE DIRECTION IS `alert`, and standing down is the narrow exception.
  * In particular a deploy STUCK in progress must still page (L98: finding a reason
  * to stay quiet must not become the only path), so the stand-down applies only
- * while the in-flight run is younger than one deploy's worth of time.
+ * while the in-flight run has RUN for less than one deploy's worth of time and
+ * is younger than the backstop on its whole life (#2409, both ceilings in
+ * deploy-inflight-ceiling.sh).
  *
  * Issue #802 added the fourth input. The check decided "behind" from git history
  * over the apps/worker PATH, while the deploy decides from the built BUNDLE, so a
@@ -45,9 +49,14 @@ import { REPO_ROOT } from './_scan-utils'
 const SCRIPT = path.join(REPO_ROOT, '.github/scripts/deploy-drift-decision.sh')
 
 /**
- * live sha, whether the latest worker commit is already live, in-flight deploy
- * age in seconds ('' = none), and how the confirming artifact comparison came
- * out ('identical' | 'differs' | 'unknown').
+ * live sha, whether the latest worker commit is already live, the in-flight
+ * answer from deploy-inflight-age.sh, and how the confirming artifact
+ * comparison came out ('identical' | 'differs' | 'unknown').
+ *
+ * The in-flight answer is `age=<s>,running=<s|unknown>` (#2409), '' for no
+ * deploy in flight, or `unavailable` when the query failed. A bare number of
+ * seconds is read as an age with the running time unknown, which is what every
+ * case written before #2409 passes.
  *
  * The artifact argument defaults to 'differs', so every case written before #802
  * keeps meaning what it meant: the worker is genuinely behind on shipping code.
@@ -55,10 +64,10 @@ const SCRIPT = path.join(REPO_ROOT, '.github/scripts/deploy-drift-decision.sh')
 function decide(
   live: string,
   matches: string,
-  inflightAgeSeconds: string,
+  inflight: string,
   artifact: string = 'differs',
 ): string {
-  return execFileSync('bash', [SCRIPT, live, matches, inflightAgeSeconds, artifact], {
+  return execFileSync('bash', [SCRIPT, live, matches, inflight, artifact], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim()
@@ -67,10 +76,10 @@ function decide(
 const SHA = 'a'.repeat(40)
 
 /** Runs the script and returns only what it wrote to stderr, where the reason goes. */
-function reason(live: string, matches: string, inflightAgeSeconds: string, artifact = 'differs'): string {
+function reason(live: string, matches: string, inflight: string, artifact = 'differs'): string {
   return execFileSync(
     'bash',
-    ['-c', 'bash "$0" "$@" 2>&1 >/dev/null', SCRIPT, live, matches, inflightAgeSeconds, artifact],
+    ['-c', 'bash "$0" "$@" 2>&1 >/dev/null', SCRIPT, live, matches, inflight, artifact],
     { encoding: 'utf8' },
   )
 }
@@ -210,6 +219,67 @@ describe('a target with no artifact gate (#739)', () => {
     // script does not know, it must land on alert-unconfirmed rather than
     // quietly behaving like a confirmed comparison.
     expect(decide('abc1234', 'no', '', 'not-gate')).toBe('alert-unconfirmed')
+  })
+})
+
+/**
+ * Stuck is judged by RUNNING time, not by age since creation (#2409).
+ *
+ * The 15:01:03 UTC drift run on 2026-10-18 paged "a deploy has been in flight
+ * 1483s, past the 900s ceiling" while Deploy for 50841f3 was healthy: created
+ * 14:37:47, finished green 15:06:21, and its jobs held a runner for 753s
+ * of that. The rest was jobs waiting for a runner that Deploy for 49c3f3c and
+ * pull request CI were using. So the age script now answers with both numbers,
+ * and the ceilings live in one sourced file, set from 115 measured runs.
+ */
+describe('a deploy waiting for runners is not stuck (#2409)', () => {
+  const RUNNING = inflightCeiling('MAX_INFLIGHT_RUNNING_SECONDS')
+  const AGE = inflightCeiling('MAX_INFLIGHT_AGE_SECONDS')
+
+  it('stands down on the 2026-10-18 reading: 1483s old, 753s of it running', () => {
+    expect(decide(SHA, 'no', 'age=1483,running=753')).toBe('deploy-in-flight')
+    expect(decide(SHA, 'no', 'age=1483,running=753', 'not-gated')).toBe('deploy-in-flight')
+  })
+
+  it('says in the reason how much of the age was running', () => {
+    expect(reason(SHA, 'no', 'age=1483,running=753')).toMatch(/1483s[\s\S]*753s/)
+  })
+
+  it('pages a deploy that has actually been RUNNING past the ceiling', () => {
+    expect(decide(SHA, 'no', `age=${RUNNING + 200},running=${RUNNING + 1}`)).toBe('alert')
+    expect(reason(SHA, 'no', `age=${RUNNING + 200},running=${RUNNING + 1}`)).toMatch(/stuck/)
+  })
+
+  it('still stands down at exactly the running ceiling', () => {
+    expect(decide(SHA, 'no', `age=${RUNNING + 200},running=${RUNNING}`)).toBe('deploy-in-flight')
+  })
+
+  it('pages a deploy past the age backstop however little of it ran, so runners that never come still page', () => {
+    // L98: without this a run whose jobs never get a runner holds its running
+    // time still for ever and "a deploy is running" excuses everything.
+    expect(decide(SHA, 'no', `age=${AGE + 1},running=60`)).toBe('alert')
+    expect(decide(SHA, 'no', `age=${AGE + 1},running=60`, 'not-gated')).toBe('alert')
+    expect(reason(SHA, 'no', `age=${AGE + 1},running=60`)).toMatch(/runner/)
+  })
+
+  it('judges the age against the running ceiling when the running time could not be read', () => {
+    // The age is an upper bound on the running time, so this can only err
+    // toward paging, which is the pre-#2409 behaviour and the loud side.
+    expect(decide(SHA, 'no', `age=${RUNNING - 1},running=unknown`)).toBe('deploy-in-flight')
+    expect(decide(SHA, 'no', `age=${RUNNING + 1},running=unknown`)).toBe('alert')
+    expect(reason(SHA, 'no', `age=${RUNNING + 1},running=unknown`)).toMatch(/could not be read/)
+  })
+
+  it('alerts on an answer it cannot read, rather than standing down', () => {
+    expect(decide(SHA, 'no', 'age=1483,running=lots')).toBe('alert')
+    expect(decide(SHA, 'no', 'running=10,age=10')).toBe('alert')
+    expect(decide(SHA, 'no', 'age=,running=10')).toBe('alert')
+  })
+
+  it('keeps its ceilings in the one shared file, not a copy of its own (L370)', () => {
+    const text = readFileSync(SCRIPT, 'utf8')
+    expect(text).toMatch(/deploy-inflight-ceiling\.sh/)
+    expect(text).not.toMatch(/MAX_INFLIGHT_\w*=/)
   })
 })
 

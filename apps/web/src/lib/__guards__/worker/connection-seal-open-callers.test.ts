@@ -13,8 +13,8 @@ import { REPO_ROOT, WORKER_SRC, listFiles, listTsFiles, sanitizeSource } from '.
  * reason. Later PRs of this phase add the others the plan names (verify, which
  * must compare the sealed client id with the declaration; resealConnections,
  * which must open in order to reseal; ConnectionTokenObject, which holds the
- * refresh token; the restore drill script), each with its own reason, in the
- * PR that creates it. An entry for a file that does not exist, or that no
+ * refresh token), each with its own reason, in the PR that creates it, as the
+ * restore drill script (#2333) was. An entry for a file that does not exist, or that no
  * longer opens anything, fails here too (L96), so the list stays the truth.
  *
  * What counts as reaching `open`, outside the listed modules: a value import
@@ -32,13 +32,15 @@ import { REPO_ROOT, WORKER_SRC, listFiles, listTsFiles, sanitizeSource } from '.
  *
  * Scanned: the Worker's source, every package but the seal itself, and the
  * scripts outside apps/worker/src that the Worker scan cannot see (the repo's
- * scripts/ and apps/worker/scripts), where the restore drill will live.
+ * scripts/ and apps/worker/scripts), where the restore drill script lives.
  * Comments are stripped; tests are not scanned.
  */
 
 const ALLOWED_OPENERS: Readonly<Record<string, string>> = {
   'apps/worker/src/ops/connections/connection-fetch.ts':
     'connectionFetch: every connection bound request (steps, lookups, Reconnect, and the scheduled still valid and sf_limits reads) reaches the credential only through it',
+  'scripts/restore-drill/open-seal-canary.ts':
+    'the restore drill (#2333): runs on a laptop, opens only the canary POST /api/admin/seal-canary returns (bound to the nil organization and connection, so no login opens under it) with the escrowed key read from stdin, and prints only pass or fail',
 }
 
 const CONNECTION_MODULES = path.join(WORKER_SRC, 'ops/connections')

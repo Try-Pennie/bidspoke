@@ -15,8 +15,10 @@
 # edge-rendered functions, and hands every reading to this script.
 #
 # Usage:
-#   pages-drift-decision.sh <inflight_age_seconds|""|unavailable> [--last-success-age=<seconds|""|unavailable>] [<path>=<state> ...]
+#   pages-drift-decision.sh <inflight|""|unavailable> [--last-success-age=<seconds|""|unavailable>] [<path>=<state> ...]
 #
+# `inflight` is deploy-inflight-age.sh's answer, `age=<s>,running=<s|unknown>`
+# (a bare number of seconds is read as an age with the running time unknown).
 # `unavailable` means the in-flight query could not be answered at all, which is
 # a different fact from an idle pipeline and gets its own outcome (#899).
 #
@@ -56,7 +58,8 @@
 #    side with no error raised (L50).
 #  - A deploy STUCK in flight still pages, so "a deploy is running" cannot become
 #    a permanent excuse for silence, which is how the worker's own version of
-#    this check was nearly lost.
+#    this check was nearly lost. Stuck is judged by how long the deploy has
+#    RUN, with a backstop on its whole life, never by its age alone (#2409).
 #
 # An in-flight deploy excuses a route being BEHIND and nothing else. It does not
 # explain a build with no stamp or a route that will not answer, so those are
@@ -64,9 +67,12 @@
 
 set -uo pipefail
 
-# A Pages deploy takes a few minutes. 15 gives generous headroom for a slow run
-# while still catching one that has genuinely wedged. Matches the worker gate.
-MAX_INFLIGHT_SECONDS=${MAX_INFLIGHT_SECONDS:-900}
+# When an in-flight deploy counts as stuck, and the code that judges it, live in
+# one file shared with the worker gate, with the measurement they were set from
+# (#2409). Before, each script kept its own 900s copy of the age ceiling, and a
+# deploy whose jobs were waiting for runners read as stuck on a healthy day.
+# shellcheck source=SCRIPTDIR/deploy-inflight-ceiling.sh
+source "$(dirname "${BASH_SOURCE[0]}")/deploy-inflight-ceiling.sh"
 
 # How long after a Pages upload a route may still serve the previous build
 # before that counts as stranded (#901). ZERO UNTIL MEASURED: the deploy's
@@ -74,10 +80,19 @@ MAX_INFLIGHT_SECONDS=${MAX_INFLIGHT_SECONDS:-900}
 # every Pages deploy, and the constant is set from several of those readings,
 # never from one or from a guess (L656, L172). Zero is the OFF value (L72), so
 # forgetting to set it leaves the check exactly as strict as it was. The issue
-# that sets it from the samples is #1394. The in-flight ceiling above bounds it:
-# a grace longer than a whole deploy is not a propagation window, and on an
-# hourly cadence it would hide a stranded site for most of an hour.
+# that sets it from the samples is #1394.
 PAGES_PROPAGATION_GRACE_SECONDS=${PAGES_PROPAGATION_GRACE_SECONDS:-0}
+
+# The longest grace this script accepts. A grace longer than a whole deploy is
+# not a propagation window, and on an hourly cadence it would hide a stranded
+# site for most of an hour. Until #2409 the cap was the 900s in-flight ceiling.
+# That ceiling became a running ceiling of 1800s, set from how long deploys RUN,
+# which says nothing about how long Pages takes to propagate, so the cap stays
+# at 900 on its own rather than doubling with it. The sampler measuring the
+# grace waits at most 300s (deploy.yml), so a grace taken from its readings is
+# well inside this. It must also stay at or below MAX_INFLIGHT_RUNNING_SECONDS,
+# which a test checks.
+PAGES_PROPAGATION_GRACE_MAX_SECONDS=900
 
 INFLIGHT_AGE="${1-}"
 shift || true
@@ -131,8 +146,8 @@ done
 case "$PAGES_PROPAGATION_GRACE_SECONDS" in
   *[!0-9]*) decide alert-malformed "PAGES_PROPAGATION_GRACE_SECONDS '${PAGES_PROPAGATION_GRACE_SECONDS}' is not a whole number of seconds, so the check is misconfigured" ;;
 esac
-if [ "$PAGES_PROPAGATION_GRACE_SECONDS" -gt "$MAX_INFLIGHT_SECONDS" ]; then
-  decide alert-malformed "PAGES_PROPAGATION_GRACE_SECONDS is ${PAGES_PROPAGATION_GRACE_SECONDS}s, above the ${MAX_INFLIGHT_SECONDS}s in-flight ceiling, so it is not a propagation window and the check is misconfigured"
+if [ "$PAGES_PROPAGATION_GRACE_SECONDS" -gt "$PAGES_PROPAGATION_GRACE_MAX_SECONDS" ]; then
+  decide alert-malformed "PAGES_PROPAGATION_GRACE_SECONDS is ${PAGES_PROPAGATION_GRACE_SECONDS}s, above the ${PAGES_PROPAGATION_GRACE_MAX_SECONDS}s cap, so it is not a propagation window and the check is misconfigured"
 fi
 
 if [ "$SAMPLES" -eq 0 ]; then
@@ -179,15 +194,13 @@ if [ "$INFLIGHT_AGE" = "unavailable" ]; then
 fi
 
 if [ -n "$INFLIGHT_AGE" ]; then
-  case "$INFLIGHT_AGE" in
-    *[!0-9]*) decide alert-malformed "in-flight deploy age '${INFLIGHT_AGE}' is not a whole number of seconds, so it cannot be trusted to excuse these stale routes: ${BEHIND}" ;;
+  judge_inflight "$INFLIGHT_AGE"
+  case "$INFLIGHT_JUDGEMENT" in
+    malformed) decide alert-malformed "${INFLIGHT_WHY}, so it cannot be trusted to excuse these stale routes: ${BEHIND}" ;;
+    stuck) decide alert-stuck-deploy "${INFLIGHT_WHY}, and these routes are still stale: ${BEHIND}" ;;
   esac
 
-  if [ "$INFLIGHT_AGE" -gt "$MAX_INFLIGHT_SECONDS" ]; then
-    decide alert-stuck-deploy "a deploy has been in flight ${INFLIGHT_AGE}s, past the ${MAX_INFLIGHT_SECONDS}s ceiling, so it is stuck rather than merely slow, and these routes are still stale: ${BEHIND}"
-  fi
-
-  decide deploy-in-flight "a deploy started ${INFLIGHT_AGE}s ago is still running, so these routes are expected to be behind for now: ${BEHIND}"
+  decide deploy-in-flight "${INFLIGHT_WHY}, so these routes are expected to be behind for now: ${BEHIND}"
 fi
 
 # The propagation grace (#901), consulted only once no deploy is in flight: a

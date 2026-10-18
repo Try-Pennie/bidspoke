@@ -182,6 +182,10 @@ describe('runOpsTickReportCheck', () => {
     expect(d.sent[0].fixHint).toMatch(/Bidspoke recovery keys/)
     expect(d.sent[0].fixHint).toMatch(/wrangler secret put OPS_CONNECTIONS_PRIVATE_KEY --config wrangler\.ops\.toml/)
     expect(d.sent[0].fixHint).not.toMatch(/OPS_SUPABASE/)
+    // The escrowed copy is a file attached to the item, not a field (#2333): the
+    // remedy names the file and reads it with op read, so following it works.
+    expect(d.sent[0].fixHint).toMatch(/op read "op:\/\/<vault>\/Bidspoke recovery keys\/ops-connections-private\.pem"/)
+    expect(d.sent[0].fixHint).not.toMatch(/field/)
   })
 
   it('names the remedy of every secret reported, once each, in the order reported', async () => {
@@ -278,6 +282,119 @@ describe('runOpsTickReportCheck', () => {
     store.m.set(OPS_TICK_REPORT_KEY, 'not json')
     const d = deps()
     expect(await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW, d)).toBe('alerted')
+    expect(d.sent[0].errors[0]).toMatch(/could not be read/)
+  })
+})
+
+// #2410: one start stamp that ran past the gateway deadline paged at 15:02:29 UTC
+// on 2026-10-18, two minutes after a deploy, and nothing failed after it. A lone
+// missed stamp is held for one tick; the second in a row pages.
+describe('a missed start stamp', () => {
+  const STAMP = 'The ops tick could not stamp its start with the bidding Worker (the bidding Worker\'s heartbeat did not answer within 15 s).'
+  const MIN = 60_000
+  const report = (n: number, over: Record<string, unknown> = {}) => ({
+    tick_id: `t${n}`, mode: 'observe', scheduled_time: null,
+    started_at: new Date(NOW + n * MIN).toISOString(), finished_at: new Date(NOW + n * MIN + 1000).toISOString(),
+    db_now: null, outcome: 'ok', problems: [], counts: {}, start_stamp_failed: false, ...over,
+  })
+  const missed = (n: number, over: Record<string, unknown> = {}) => report(n, { outcome: 'problems', problems: [STAMP], start_stamp_failed: true, ...over })
+
+  function deps() {
+    const sent: Array<{ errors: string[]; title: string; context?: string }> = []
+    const recovered: string[] = []
+    return {
+      sent,
+      recovered,
+      notifyFailure: async (_s: unknown, _job: string, errors: string[], _k: unknown, remedy: { title: string; context?: string }) => {
+        sent.push({ errors, title: remedy.title, context: remedy.context })
+      },
+      notifyRecovery: async (_k: unknown, job: string) => { recovered.push(job) },
+    }
+  }
+
+  /** One tick: its report arrives, then the bidding Worker's minute check judges it. */
+  async function tick(store: ReturnType<typeof kv>, d: ReturnType<typeof deps>, n: number, r: Record<string, unknown>) {
+    await recordOpsTickCompleted(store as unknown as KVNamespace, r, NOW + n * MIN + 2000)
+    return runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW + n * MIN + 30_000, d)
+  }
+
+  it('does not page on one missed stamp followed by a clean tick', async () => {
+    const store = kv()
+    const d = deps()
+    expect(await tick(store, d, 0, report(0))).toBe('healthy')
+    expect(await tick(store, d, 1, missed(1))).toBe('held')
+    expect(await tick(store, d, 2, report(2))).toBe('healthy')
+    expect(d.sent).toEqual([])
+  })
+
+  it('holds the same report however many times the check reads it, because it counts ticks, not checks', async () => {
+    const store = kv()
+    const d = deps()
+    expect(await tick(store, d, 1, missed(1))).toBe('held')
+    expect(await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW + MIN + 60_000, d)).toBe('held')
+    expect(await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW + MIN + 90_000, d)).toBe('held')
+    expect(d.sent).toEqual([])
+  })
+
+  it('pages on the second missed stamp in a row, saying it was two or more in a row', async () => {
+    const store = kv()
+    const d = deps()
+    expect(await tick(store, d, 1, missed(1))).toBe('held')
+    expect(await tick(store, d, 2, missed(2))).toBe('alerted')
+    expect(d.sent).toEqual([{
+      errors: [STAMP], title: 'The ops minute cron reported a problem',
+      context: 'The start stamp failed on 2 or more ticks in a row.',
+    }])
+  })
+
+  it('pages a sustained failure no more than one tick later than before #2410, and keeps paging it', async () => {
+    const store = kv()
+    const d = deps()
+    const verdicts: string[] = []
+    for (let n = 1; n <= 5; n++) verdicts.push(await tick(store, d, n, missed(n)))
+    // Before #2410 the first was 'alerted'; the alerter's own reminder schedule
+    // decides what reaches Slack after that, as it does for every job.
+    expect(verdicts).toEqual(['held', 'alerted', 'alerted', 'alerted', 'alerted'])
+    // The words do not change as the run lengthens, so the alerter reads it as one standing problem.
+    expect(new Set(d.sent.map((s) => JSON.stringify(s))).size).toBe(1)
+  })
+
+  it('pages at once when the missed stamp is not the only problem', async () => {
+    const store = kv()
+    const d = deps()
+    expect(await tick(store, d, 1, missed(1, { problems: [STAMP, 'The lease_expiry sweep failed: lock timeout.'] }))).toBe('alerted')
+    expect(d.sent[0].errors).toEqual([STAMP, 'The lease_expiry sweep failed: lock timeout.'])
+  })
+
+  it('pages at once on a report from an ops release that does not say whether the stamp failed', async () => {
+    const store = kv()
+    const d = deps()
+    const { start_stamp_failed: _omitted, ...older } = missed(1)
+    expect(await tick(store, d, 1, older)).toBe('alerted')
+  })
+
+  it('does not count a missed stamp from a report too old to say anything about now as the one before', async () => {
+    const store = kv()
+    const d = deps()
+    expect(await tick(store, d, 0, missed(0))).toBe('held')
+    const later = Math.ceil(OPS_TICK_REPORT_FRESH_MS / MIN) + 1
+    expect(await tick(store, d, later, missed(later))).toBe('held')
+    expect(d.sent).toEqual([])
+  })
+
+  it('still keeps the report when the run before it cannot be read, and pages the miss rather than holding it', async () => {
+    const store = kv()
+    const d = deps()
+    const failingRead = { ...store, get: async () => { throw new Error('KV GET failed: 503') } }
+    await recordOpsTickCompleted(failingRead as unknown as KVNamespace, missed(1), NOW + MIN + 2000)
+    expect(JSON.parse(store.m.get(OPS_TICK_REPORT_KEY)!).tick_id).toBe('t1')
+    expect(await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW + MIN + 30_000, d)).toBe('alerted')
+  })
+
+  it('refuses a report that says the stamp failed but reports no problem, so it pages as unreadable', async () => {
+    const store = kv()
+    const d = deps()
+    expect(await tick(store, d, 1, report(1, { start_stamp_failed: true }))).toBe('alerted')
     expect(d.sent[0].errors[0]).toMatch(/could not be read/)
   })
 })
