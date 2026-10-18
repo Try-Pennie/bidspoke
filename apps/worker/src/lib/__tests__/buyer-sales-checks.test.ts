@@ -847,3 +847,136 @@ describe('the page wording follows what was measured (#835)', () => {
     expect(BUYER_SALES_UNRESOLVED_REMEDY.consequence).not.toMatch(/Each holds a slot/)
   })
 })
+
+describe('one KV marker failing leaves every other check judged (#2431, L71, L98)', () => {
+  const ACME: CheckBuyer = { ...TRIPOINT, partner_id: '33333333-3333-4333-8333-333333333333', slug: 'acme', has_independent_record: false }
+  // Today holds one accepted sale and one unresolved one; the copy holds nothing, so completeness is a mismatch.
+  const mixed = () => ({ '2027-09-20': [accepted('lead-1', NOW - 10 * 60_000), unresolved('lead-u1', NOW - 20 * 60_000)], '2027-09-19': [] })
+
+  /** Makes one KV operation on one key throw, leaving every other call to the fake store. */
+  function failing(d: ReturnType<typeof deps>, op: 'get' | 'put' | 'delete', key: string) {
+    const real = d.kv[op].getMockImplementation() as (k: string, ...rest: unknown[]) => Promise<unknown>
+    d.kv[op].mockImplementation((async (k: string, ...rest: unknown[]) => {
+      if (k === key) throw new Error('KV unavailable')
+      return real(k, ...rest)
+    }) as never)
+  }
+
+  it('a mismatch marker that cannot be read leaves completeness, consistency, independent, unresolved and outcome rate judged, and the mismatch page is neither raised nor cleared', async () => {
+    const d = deps({ entries: mixed(), sales: [] })
+    failing(d, 'get', `buyer-sales-mismatch-seen:${PARTNER}`)
+    const s = await runBuyerSalesChecks(d)
+    expect(s.buyers[0].completeness.verdict).toBe('mismatch')
+    expect(s.buyers[0].consistency.verdict).toBe('consistent')
+    expect(s.buyers[0].independent.verdict).toBe('verified')
+    expect(s.buyers[0].outcome_rate.verdict).not.toBe('unmeasured')
+    expect(s.buyers[0].unresolved).toMatchObject({ count: 1, paged: true })
+    expect(d.notifyUnresolved).toHaveBeenCalledWith([expect.stringMatching(/^tripoint: 1 unresolved sale/)])
+    expect(d.notifyOutcomeRate).toHaveBeenCalled()
+    // Neither a page on what may be a one run disagreement nor an all clear on a mismatch measured this run.
+    expect(d.notifyMismatch).not.toHaveBeenCalled()
+    expect(s.mismatch_held).toEqual(['tripoint'])
+    expect(s.marker_failures).toEqual([expect.stringMatching(/tripoint mismatch marker could not be read: KV unavailable/)])
+    const ending = endingOf(s)
+    expect(ending.outcome).toBe('findings')
+    expect(ending.summary?.unmeasured).toEqual(expect.arrayContaining([expect.stringMatching(/tripoint mismatch marker could not be read: KV unavailable/)]))
+    // The marker is still written, so the next run can tell the mismatch persisted.
+    expect(d.kv.store.has(`buyer-sales-mismatch-seen:${PARTNER}`)).toBe(true)
+  })
+
+  it("a buyer whose mismatch marker cannot be read does not stop another buyer's persisting mismatch paging", async () => {
+    const d = deps({ sales: [], buyers: [TRIPOINT, ACME], salesforce: null })
+    d.kv.store.set(`buyer-sales-mismatch-seen:${ACME.partner_id}`, '2027-09-20T15:25:00.000Z')
+    failing(d, 'get', `buyer-sales-mismatch-seen:${PARTNER}`)
+    await runBuyerSalesChecks(d)
+    expect((vi.mocked(d.notifyMismatch).mock.calls[0][0] as string[]).map((l) => l.split(':')[0])).toEqual(['acme'])
+  })
+
+  it('an unresolved marker that cannot be read pages the count again rather than risk never paging it, and every other check is judged', async () => {
+    const d = deps({ entries: mixed(), sales: [] })
+    d.kv.store.set(`buyer-sales-mismatch-seen:${PARTNER}`, '2027-09-20T15:25:00.000Z')
+    failing(d, 'get', `unresolved-paged:${PARTNER}`)
+    const s = await runBuyerSalesChecks(d)
+    expect(s.buyers[0].completeness.verdict).toBe('mismatch')
+    expect(s.buyers[0].consistency.verdict).toBe('consistent')
+    expect(s.buyers[0].independent.verdict).toBe('verified')
+    expect(s.buyers[0].outcome_rate.verdict).not.toBe('unmeasured')
+    expect(d.notifyMismatch).toHaveBeenCalledWith([expect.stringMatching(/^tripoint: completeness/)], expect.anything())
+    expect(d.notifyUnresolved).toHaveBeenCalledWith([expect.stringMatching(/^tripoint: 1 unresolved sale/)])
+    expect(s.buyers[0].unresolved.paged).toBe(true)
+    expect(s.marker_failures).toEqual([expect.stringMatching(/tripoint unresolved marker could not be read: KV unavailable/)])
+    expect(endingOf(s).summary?.unmeasured).toEqual(expect.arrayContaining([expect.stringMatching(/tripoint unresolved marker could not be read/)]))
+  })
+
+  it('an unreadable unresolved marker does not reset the reminder backoff, which only a count known to have grown may do', async () => {
+    const d = deps({ entries: mixed(), sales: [] })
+    d.kv.store.set(`export-alert:${BUYER_SALES_UNRESOLVED_JOB}:condition`, JSON.stringify({ since: '2027-09-20T15:00:00.000Z', alerts: 1 }))
+    d.kv.store.set(`export-alert:${BUYER_SALES_UNRESOLVED_JOB}:cooldown`, '1')
+    failing(d, 'get', `unresolved-paged:${PARTNER}`)
+    await runBuyerSalesChecks(d)
+    expect(d.kv.store.has(`export-alert:${BUYER_SALES_UNRESOLVED_JOB}:cooldown`)).toBe(true)
+  })
+
+  it('a failed write to any marker is recorded with what it costs and does not abort the run', async () => {
+    const d = deps({ entries: mixed(), sales: [] })
+    failing(d, 'put', `buyer-sales-mismatch-seen:${PARTNER}`)
+    failing(d, 'put', `unresolved-paged:${PARTNER}`)
+    const s = await runBuyerSalesChecks(d)
+    expect(d.notifyMismatch).toHaveBeenCalled()
+    expect(d.notifyUnresolved).toHaveBeenCalledWith([expect.stringMatching(/^tripoint: 1 unresolved sale/)])
+    expect(d.notifyOutcomeRate).toHaveBeenCalled()
+    expect(s.marker_failures).toEqual([
+      expect.stringMatching(/tripoint mismatch marker could not be written: KV unavailable/),
+      expect.stringMatching(/tripoint unresolved marker could not be written: KV unavailable/),
+    ])
+  })
+
+  it('a marker that cannot be cleared on a clean run is recorded, and the run is unmeasured rather than a pass', async () => {
+    const d = deps()
+    failing(d, 'delete', `buyer-sales-mismatch-seen:${PARTNER}`)
+    failing(d, 'delete', `unresolved-paged:${PARTNER}`)
+    failing(d, 'delete', `outcome-rate-paged:${PARTNER}`)
+    const s = await runBuyerSalesChecks(d)
+    expect(s.buyers[0].completeness.verdict).toBe('complete')
+    expect(d.notifyMismatch).toHaveBeenCalledWith([], expect.anything())
+    expect(s.marker_failures).toEqual([
+      expect.stringMatching(/tripoint mismatch marker could not be cleared: KV unavailable/),
+      expect.stringMatching(/tripoint unresolved marker could not be cleared: KV unavailable/),
+      expect.stringMatching(/tripoint outcome rate marker could not be cleared: KV unavailable/),
+    ])
+    const ending = endingOf(s)
+    expect(ending.outcome).toBe('unmeasured')
+    expect(ending.detail).toMatch(/tripoint mismatch marker could not be cleared/)
+  })
+
+  it('an outcome rate marker that cannot be written after a page is recorded, and the page still goes', async () => {
+    const d = deps({ entries: { '2027-09-20': hourOf('released', 12), '2027-09-19': [] }, sales: [], winners: [] })
+    failing(d, 'put', `outcome-rate-paged:${PARTNER}`)
+    const s = await runBuyerSalesChecks(d)
+    expect(s.buyers[0].outcome_rate.verdict).toBe('elevated')
+    expect(d.notifyOutcomeRate).toHaveBeenCalledWith([expect.stringMatching(/^tripoint: /)])
+    expect(s.marker_failures).toEqual([expect.stringMatching(/tripoint outcome rate marker could not be written: KV unavailable/)])
+  })
+
+  it('a reminder backoff that cannot be reset is recorded, and the page still goes', async () => {
+    const two = [unresolved('lead-u1', NOW - 40 * 60_000), unresolved('lead-u2', NOW - 30 * 60_000)]
+    const d = deps({ entries: { '2027-09-20': two, '2027-09-19': [] }, sales: two.map((e) => ({ lead_key: e.lead_key, status: 'unresolved', kind: 'live' })), winners: [] })
+    d.kv.store.set(`unresolved-paged:${PARTNER}`, '1')
+    d.kv.store.set(`export-alert:${BUYER_SALES_UNRESOLVED_JOB}:condition`, JSON.stringify({ since: '2027-09-20T15:00:00.000Z', alerts: 1 }))
+    failing(d, 'delete', `export-alert:${BUYER_SALES_UNRESOLVED_JOB}:condition`)
+    const s = await runBuyerSalesChecks(d)
+    expect(d.notifyUnresolved).toHaveBeenCalledWith([expect.stringMatching(/^tripoint: 2 unresolved sales/)])
+    expect(s.marker_failures).toEqual([expect.stringMatching(/the buyer-sales-unresolved reminder backoff could not be reset: KV unavailable/)])
+  })
+
+  it('one page that cannot be sent does not stop the others, and the run is recorded as failed with the reason', async () => {
+    const d = deps({ entries: mixed(), sales: [] }, { notifyMismatch: vi.fn(async () => { throw new Error('alerter KV unavailable') }) })
+    const s = await runBuyerSalesChecks(d)
+    expect(d.notifyUnresolved).toHaveBeenCalled()
+    expect(d.notifyOutcomeRate).toHaveBeenCalled()
+    expect(s.alert_failures).toEqual([expect.stringMatching(/the buyer-sales-mismatch page could not be sent: alerter KV unavailable/)])
+    const ending = endingOf(s)
+    expect(ending.outcome).toBe('failed')
+    expect(ending.detail).toMatch(/buyer-sales-mismatch page could not be sent: alerter KV unavailable/)
+  })
+})
