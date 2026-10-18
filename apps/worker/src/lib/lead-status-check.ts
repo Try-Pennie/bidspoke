@@ -203,7 +203,7 @@ interface Finding {
    * span being worked through is not.
    */
   key: string
-  /** Set on a judged partner's no sales line, which stands only if that partner could have sold that day. */
+  /** Set on a judged partner's no sales line, which stands unless the partner is a click buyer Bidspoke delivered no click to that day. */
   zeroFor?: string
   /** Set on a backlog line that says what the buyer answered for each sale (#1837). */
   answered?: boolean
@@ -493,7 +493,7 @@ async function measure(
     const why = 'err' in subs ? subs.err : (leads as { err: string }).err
     findings.push({ kind: 'unchecked', text: `The check couldn't count ${partner} sales in Salesforce: ${why}`, key: `uncounted:${partner}` })
   } else if (judged && subs.n === 0) {
-    // judgeZeroDays decides whether this stands, from the partner's buyer profile.
+    // judgeZeroDays decides whether this stands, from the buyer profile and the clicks Bidspoke delivered that day.
     findings.push({ kind: 'unchecked', text: `${noSales(partner, on)}, so there was nothing to compare.`, zeroFor: partner, key: `zero:${partner}` })
   } else if (judged && subs.n >= MIN_SUBMISSIONS_TO_JUDGE && leads.n / subs.n < LEAD_COMPLETED_MIN_SHARE) {
     const older = status.backlog ? ` ${fmt(status.backlog)} older ${partner} sales are also waiting.` : ''
