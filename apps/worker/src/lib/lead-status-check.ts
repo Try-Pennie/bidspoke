@@ -47,26 +47,48 @@
  * judged partner with no Completed sale at all is reported rather than read as
  * agreement (L98, L215).
  *
- * BUT NOT ON A DAY THE BUYER COULD NOT SELL (#1767). Liberty1 buys Monday to
- * Friday, so every Monday run paged on Sunday's zero. A zero is reported only
- * when the partner could have sold that day. For a buyer sold on the click that
- * is read from its buyer profile, through the one loader and the one isOpen the
- * click check offers it by: could have sold means some minute of the judged UTC
- * day falls inside an operating window and outside a blackout date. The UTC day
- * spans two Eastern dates, so a Saturday whose first hour is Friday evening
- * Eastern still counts as a selling day; that errs toward reporting (L42). A
- * buyer sold on offers keeps the old rule, because the older Tripoint ping
- * sells it without reading its profile, so its hours bound nothing; so does a
- * partner with no enabled profile. The profile maps to the Salesforce partner
- * by partner_configs.name, the value Salesforce records as the partner, and is
- * then the one keyed by that partner's id. A profile that cannot be read, or
- * reads as something saving refuses, is its own finding, never a pass. The
- * profiles are read only when a judged partner had no sales.
+ * BUT NOT WHEN A CLICK BUYER WAS SENT NOTHING TO SELL (#1767, #2395). A buyer
+ * sold on the click sells when a consumer clicks, so its zero is judged against
+ * the clicks Bidspoke delivered to it: the non test buyer_click_send steps that
+ * answered sent for its partner id. None delivered and none in Salesforce is
+ * agreement and reports nothing; any delivered beside a zero is reported with
+ * the delivered count. Its buyer profile's operating hours are NOT the test any
+ * more (#1767 used them): they gate the offer, not the click (decided
+ * 2026-09-24), so a click lands outside them, and the UTC day judged spans two
+ * Eastern dates. On 2026-10-18 that paged on Oct 17 UTC, which opens at 8 PM
+ * Friday Eastern inside Liberty1's hours, while Bidspoke had delivered no
+ * Liberty1 click that day either.
+ *
+ * WHICH DAY THE CLICKS ARE COUNTED OVER. The click's own UTC day (the step's
+ * started_at, which is also the partition key, so the read touches one day's
+ * partition), not the day its Submission was created, which Salesforce is
+ * keyed on and execution_steps does not hold. Nearly every click follows its
+ * Submission by about a minute, so the two days agree: Oct 12 to 17 they were
+ * 41 and 41, 43 and 44, 14 and 14, 24 and 24, 16 and 17, and 0 and 0
+ * (Salesforce first). The gap is a click landing on a later day than its
+ * Submission, as one did on Oct 16 for a Submission created Oct 1. Such a click
+ * counts on the day it landed, so on a day with no Submission of its own it
+ * raises the zero line; that errs toward reporting (L42). The other way round,
+ * a Submission clicked only on a later day whose sale Salesforce then failed
+ * to record reads here as agreement (none on either side for its day); the
+ * click reconcile (click-path-checks.ts) matches every counted click to a
+ * Completed record by the click's own stamp, so it is found there. Comparing
+ * a nonzero Completed count with the delivered count is that reconcile's job,
+ * record by record, so it is not repeated here.
+ *
+ * A buyer sold on offers keeps the old rule, because the older Tripoint ping
+ * sells it without reading its profile; so does a partner with no enabled
+ * profile. The profile maps to the Salesforce partner by partner_configs.name,
+ * the value Salesforce records as the partner, and its partner id is the one
+ * the clicks are counted for. Profiles that cannot be read, two profiles with
+ * one name, or a delivered count that cannot be read are each their own
+ * finding, never a pass or a zero (L98). The profiles are read, and the clicks
+ * counted, only when a judged partner had no sales.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { judgeCopyAge } from './stored-copy-age'
-import { CLICK_CHECK_LAST_GOOD_MAX_AGE_MS, isOpenDuring } from '@bidspoke/buyer-profile'
-import { formatErr } from './format-error'
+import { CLICK_CHECK_LAST_GOOD_MAX_AGE_MS } from '@bidspoke/buyer-profile'
+import { describeReadError, formatErr } from './format-error'
 import { notifyExportFailure, type TitledRemedy } from './export-alerts'
 import { loadBuyerProfiles, type BuyerProfilesSnapshot } from './buyer-profile-loader'
 import { resolveSalesforceCredentialOrg } from './salesforce-creds'
@@ -263,6 +285,12 @@ export interface LeadStatusDeps {
   listPartners?: (dayStart: Date) => Promise<Array<{ partner: string | null; n: number }>>
   /** The enabled buyer profiles of the org whose Salesforce this reads. Injected likewise. */
   loadProfiles?: () => Promise<BuyerProfilesSnapshot>
+  /**
+   * How many clicks Bidspoke delivered to the buyer with this partner id in the
+   * UTC day starting at `dayStart` (#2395). Injected likewise. Throws when it
+   * cannot count, which is never read as none.
+   */
+  countDeliveredClicks?: (partnerId: string, dayStart: Date) => Promise<number>
   now?: () => Date
 }
 
@@ -278,8 +306,8 @@ export interface PartnerLeadStatus {
   backlog_returning: number | null
   /** The first LOGGED_IDS_MAX of the waiting sales' ids, logged so a counted sale can be looked up afterwards (#2019). */
   waiting_ids: string[]
-  /** True when it had no Completed sales and its buyer profile was closed every minute of the day, so the zero was not reported. */
-  closed_all_day: boolean
+  /** True when it is sold on the click, had no Completed sales, and Bidspoke delivered it no click that day, so the zero was not reported. */
+  no_clicks_delivered: boolean
 }
 
 export interface LeadStatusResult {
@@ -309,13 +337,14 @@ export async function checkLeadStatus(env: Env, supabase: SupabaseClient, deps: 
   const rows = deps.rows ?? ((soql: string) => salesforceRows(env, supabase, soql, 'the Lead status check', BACKLOG_MAX_ROWS))
   const listPartners = deps.listPartners ?? salesforcePartnerLister(env, supabase)
   const loadProfiles = deps.loadProfiles ?? salesforceOrgBuyerProfiles(env, supabase)
+  const countDeliveredClicks = deps.countDeliveredClicks ?? deliveredClickCounter(supabase)
 
   let partners: PartnerLeadStatus[] = []
   let found: Finding[]
   try {
     const measured = await Promise.all(LEAD_STATUS_PARTNERS.map((p) => measure(count, rows, p, dayStart, day, now)))
     partners = measured.map((m) => m.status)
-    const judged = await judgeZeroDays(measured.flatMap((m) => m.findings), partners, loadProfiles, dayStart, now)
+    const judged = await judgeZeroDays(measured.flatMap((m) => m.findings), partners, loadProfiles, countDeliveredClicks, dayStart, now)
     found = [...judged, ...(await uncoveredPartners(listPartners, dayStart, day))]
   } catch (err) {
     found = [{ kind: 'unchecked', text: `The check itself failed: ${formatErr(err)}`, key: 'check-failed' }]
@@ -333,8 +362,8 @@ export async function checkLeadStatus(env: Env, supabase: SupabaseClient, deps: 
   // partner's numbers are visible rather than only heard from on a complaint.
   const unread = (n: number | null) => (n === null ? 'unread' : String(n))
   const notReported = partners
-    .filter((p) => p.closed_all_day)
-    .map((p) => ` not reported: ${p.partner} had no Completed sales and its buyer profile was closed all day.`)
+    .filter((p) => p.no_clicks_delivered)
+    .map((p) => ` not reported: ${p.partner} had no Completed sales and Bidspoke delivered no ${p.partner} clicks that day.`)
     .join('')
   console.log(
     `[lead-status] day=${day} ` +
@@ -455,7 +484,7 @@ async function measure(
     backlog: 'err' in backlog ? null : backlog.own,
     backlog_returning: 'err' in backlog ? null : backlog.returning,
     waiting_ids: 'err' in backlog ? [] : backlog.ownIds,
-    closed_all_day: false,
+    no_clicks_delivered: false,
   }
 
   // A count that could not be read is a refusal for every partner, judged or
@@ -493,16 +522,17 @@ const noSales = (partner: string, on: string) => `Salesforce has no Completed ${
 type ProfileRead = { snapshot: BuyerProfilesSnapshot } | { err: string }
 
 /**
- * Keeps a judged partner's no sales line only where the partner could have sold
- * that day (#1767), dropping it for a click buyer whose profile was closed every
- * minute of the UTC day and marking that partner closed_all_day. The profiles
- * are read once, and only when there is a line to decide. Every other finding
- * passes through in its place.
+ * Keeps a judged partner's no sales line only where it means something
+ * (#1767, #2395): it is dropped for a click buyer Bidspoke delivered no click
+ * that day, marking that partner no_clicks_delivered, and names the delivered
+ * count when there were some. The profiles are read once, and only when there
+ * is a line to decide. Every other finding passes through in its place.
  */
 async function judgeZeroDays(
   findings: Finding[],
   partners: PartnerLeadStatus[],
   loadProfiles: () => Promise<BuyerProfilesSnapshot>,
+  countDeliveredClicks: (partnerId: string, dayStart: Date) => Promise<number>,
   dayStart: Date,
   now: Date,
 ): Promise<Finding[]> {
@@ -515,22 +545,22 @@ async function judgeZeroDays(
       kept.push(f)
       continue
     }
-    // Its own failure boundary (L73): a profile whose hours cannot be judged
-    // names that partner, and every other partner's findings still go out,
-    // rather than the whole run collapsing into one "check itself failed" line.
-    let verdict: Finding | 'closed' | null
+    // Its own failure boundary (L73): a profile that cannot be judged names
+    // that partner, and every other partner's findings still go out, rather
+    // than the whole run collapsing into one "check itself failed" line.
+    let verdict: Finding | 'none_delivered' | null
     try {
-      verdict = zeroDayVerdict(f.zeroFor, read, dayStart, on)
+      verdict = await zeroDayVerdict(f, read, countDeliveredClicks, dayStart, on)
     } catch (err) {
       verdict = {
         kind: 'unchecked',
-        text: `${noSales(f.zeroFor, on)}, and the check couldn't judge ${f.zeroFor}'s buyer hours for that day: ${formatErr(err)}`,
+        text: `${noSales(f.zeroFor, on)}, and the check couldn't judge ${f.zeroFor}'s buyer profile: ${formatErr(err)}`,
         key: `zero-profile-unjudged:${f.zeroFor}`,
       }
     }
-    if (verdict === 'closed') {
+    if (verdict === 'none_delivered') {
       const status = partners.find((p) => p.partner === f.zeroFor)
-      if (status) status.closed_all_day = true
+      if (status) status.no_clicks_delivered = true
     } else kept.push(verdict ?? f)
   }
   return kept
@@ -555,16 +585,24 @@ async function readProfiles(loadProfiles: () => Promise<BuyerProfilesSnapshot>, 
 }
 
 /**
- * For one judged partner with no sales: 'closed' when its click buyer profile
- * was closed all day, null when the plain no sales line stands, or the
- * unchecked finding that replaces it when the profile cannot be judged.
+ * For one judged partner's no sales line: 'none_delivered' when it is a click
+ * buyer Bidspoke delivered no click that day, null when the plain line stands
+ * (no enabled profile, or sold on offers), or the finding that replaces it:
+ * the line with the delivered count, or why the check could not tell.
  */
-function zeroDayVerdict(partner: string, read: ProfileRead, dayStart: Date, on: string): Finding | 'closed' | null {
+async function zeroDayVerdict(
+  line: Finding,
+  read: ProfileRead,
+  countDeliveredClicks: (partnerId: string, dayStart: Date) => Promise<number>,
+  dayStart: Date,
+  on: string,
+): Promise<Finding | 'none_delivered' | null> {
+  const partner = line.zeroFor as string
   const lead = noSales(partner, on)
   if ('err' in read) {
     return {
       kind: 'unchecked',
-      text: `${lead}, and the check couldn't read the buyer profiles to tell whether ${partner} was buying that day: ${read.err}`,
+      text: `${lead}, and the check couldn't read the buyer profiles to tell whether ${partner} is sold on the click: ${read.err}`,
       key: `zero-profiles-unread:${partner}`,
     }
   }
@@ -573,22 +611,28 @@ function zeroDayVerdict(partner: string, read: ProfileRead, dayStart: Date, on: 
   if (named.length > 1) {
     return {
       kind: 'unchecked',
-      text: `${lead}, and ${named.length} buyer profiles are named ${partner}, so the check couldn't tell whose hours to use.`,
+      text: `${lead}, and ${named.length} buyer profiles are named ${partner}, so the check couldn't tell whose clicks to count.`,
       key: `zero-profiles-ambiguous:${partner}`,
     }
   }
   // No enabled profile, or one sold on offers that the older Tripoint ping also
-  // sells without reading it: nothing bounds when this partner can sell.
+  // sells without reading it: nothing here says whether this partner was sent
+  // anything to sell, so the plain line stands.
   if (named.length === 0 || named[0].profile.soldOn !== 'click') return null
-  const { windows, blackoutDates } = named[0].profile
-  if (windows.length === 0) {
+  let delivered: number
+  try {
+    delivered = await countDeliveredClicks(named[0].partner.id, dayStart)
+  } catch (err) {
     return {
       kind: 'unchecked',
-      text: `${lead}, and ${partner}'s buyer profile is switched on with no hours, so the check couldn't tell whether it was buying that day.`,
-      key: `zero-profile-no-hours:${partner}`,
+      text: `${lead}, and the check couldn't count the ${partner} clicks Bidspoke delivered that day: ${formatErr(err)}`,
+      key: `zero-delivered-uncounted:${partner}`,
     }
   }
-  return isOpenDuring(windows, blackoutDates, dayStart.getTime(), dayStart.getTime() + 86_400_000) ? null : 'closed'
+  if (delivered === 0) return 'none_delivered'
+  const clicks = delivered === 1 ? `1 ${partner} click` : `${fmt(delivered)} ${partner} clicks`
+  // The same key as the plain line: it is the same problem, now with its count.
+  return { ...line, text: `${lead}, but Bidspoke delivered ${clicks} that day, so there was nothing to compare.` }
 }
 
 /**
@@ -696,5 +740,39 @@ export function salesforcePartnerLister(
       partner: typeof r.External_Partner_Name__c === 'string' ? r.External_Partner_Name__c : null,
       n: typeof r.n === 'number' ? r.n : 0,
     }))
+  }
+}
+
+/**
+ * The real delivered click reader (#2395): a count, never rows, of the non test
+ * buyer_click_send steps that answered sent for this buyer and started inside
+ * the UTC day. started_at is execution_steps' partition key, so the read
+ * touches that one day's partition. No index leads with step_type for these
+ * rows, so it scans that partition: 4.7 s for Oct 16's 1.1 million rows,
+ * measured 2026-10-18, against the 30 s statement limit, and it runs only on a
+ * day a click buyer had no sales. It is not narrowed to the workflows a
+ * definition names today, because a workflow edited or switched off since
+ * would hide clicks it delivered that day. A HEAD count carries no error body,
+ * so the status is named, and an answer with no count is refused (L90).
+ */
+export function deliveredClickCounter(supabase: SupabaseClient): (partnerId: string, dayStart: Date) => Promise<number> {
+  return async (partnerId, dayStart) => {
+    const { count, error, status, statusText } = (await supabase
+      .from('execution_steps')
+      .select('id', { count: 'exact', head: true })
+      .eq('step_type', 'buyer_click_send')
+      .eq('is_test', false)
+      .eq('output->>reason', 'sent')
+      .eq('output->>partner_id', partnerId)
+      .gte('started_at', dayStart.toISOString())
+      .lt('started_at', new Date(dayStart.getTime() + 86_400_000).toISOString())) as unknown as {
+      count: number | null
+      error: unknown
+      status?: number
+      statusText?: string
+    }
+    if (error) throw new Error(`execution_steps count failed: ${describeReadError(error, status, statusText)}`)
+    if (typeof count !== 'number') throw new Error('execution_steps answered the delivered click count with no count')
+    return count
   }
 }
