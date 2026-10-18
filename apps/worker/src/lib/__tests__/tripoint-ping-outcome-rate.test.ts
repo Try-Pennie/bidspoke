@@ -16,12 +16,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../../index'
-import { judgeOutcomeShares, type OutcomeBaseline } from '../outcome-rate-rule'
+import { OUTCOME_RATE_CLEAR_RISE, OUTCOME_RATE_MIN_RISE, judgeOutcomeShares, verdictMovesThePage, type OutcomeBaseline } from '../outcome-rate-rule'
 import {
   TRIPOINT_PING_OUTCOME_RATE_JOB,
   TRIPOINT_PING_OUTCOME_RATE_REMEDY,
   TRIPOINT_PING_RULE,
   TRIPOINT_SENT_ANSWERS_EXCLUDED,
+  PAGE_STANDING_KEY,
   hourKey,
   dayKey,
   pingCountsFrom,
@@ -75,7 +76,8 @@ const BASELINE_FOR_OCT_17: OutcomeBaseline = { attempts: 15_845, declined: 7_649
 /** The lowest whole day decline share measured (Oct 17, 500 of 1,255): the strictest baseline a quiet day meets. */
 const STRICT_BASELINE: OutcomeBaseline = { attempts: 10_000, declined: 4_000, failed: 0 }
 
-const judge = (r: Row, baseline: OutcomeBaseline) => judgeOutcomeShares({ attempts: r[4], declined: r[2], failed: r[3] }, baseline, TRIPOINT_PING_RULE)
+/** An hour judged with no page standing: whether it would raise one. */
+const judge = (r: Row, baseline: OutcomeBaseline, pageStanding = false) => judgeOutcomeShares({ attempts: r[4], declined: r[2], failed: r[3] }, baseline, TRIPOINT_PING_RULE, pageStanding)
 
 describe('the measured Oct 14 shape pages and the Oct 16 and 17 shapes do not', () => {
   it('Oct 14: the hour starting at midnight ET, 98 minutes after Tripoint stopped taking small loans, is the first to page, and most busy hours page', () => {
@@ -113,34 +115,137 @@ describe('the floor and saturation (L716, L139)', () => {
   it('fewer sends than the floor are quiet even at a high decline share; at the floor they are judged', () => {
     const min = TRIPOINT_PING_RULE.minAttempts
     expect(min).toBe(40)
-    const under = judgeOutcomeShares({ attempts: min - 1, declined: min - 10, failed: 0 }, base, TRIPOINT_PING_RULE)
+    const under = judgeOutcomeShares({ attempts: min - 1, declined: min - 10, failed: 0 }, base, TRIPOINT_PING_RULE, false)
     expect(under).toMatchObject({ verdict: 'quiet', detail: expect.stringMatching(new RegExp(`${min - 1} attempts in the last hour, fewer than the ${min} a rate needs`)) })
-    expect(judgeOutcomeShares({ attempts: min, declined: min - 9, failed: 0 }, base, TRIPOINT_PING_RULE).verdict).toBe('elevated')
+    expect(judgeOutcomeShares({ attempts: min, declined: min - 9, failed: 0 }, base, TRIPOINT_PING_RULE, false).verdict).toBe('elevated')
   })
 
   it('below the floor, an hour in which Tripoint accepted nothing is still a finding once it holds enough sends', () => {
     const n = TRIPOINT_PING_RULE.noAcceptSaturationMinAttempts as number
     expect(n).toBe(12)
-    expect(judgeOutcomeShares({ attempts: n, declined: n, failed: 0 }, base, TRIPOINT_PING_RULE)).toMatchObject({
+    expect(judgeOutcomeShares({ attempts: n, declined: n, failed: 0 }, base, TRIPOINT_PING_RULE, false)).toMatchObject({
       verdict: 'elevated',
       detail: expect.stringMatching(new RegExp(`none of the ${n} attempts in the last hour was accepted`)),
     })
-    expect(judgeOutcomeShares({ attempts: n - 1, declined: n - 1, failed: 0 }, base, TRIPOINT_PING_RULE)).toMatchObject({
+    expect(judgeOutcomeShares({ attempts: n - 1, declined: n - 1, failed: 0 }, base, TRIPOINT_PING_RULE, false)).toMatchObject({
       verdict: 'quiet',
       detail: expect.stringMatching(new RegExp(`none was accepted, fewer than the ${n}`)),
     })
   })
 
   it('every send failing is a finding from three sends, as for every buyer', () => {
-    expect(judgeOutcomeShares({ attempts: 3, declined: 0, failed: 3 }, base, TRIPOINT_PING_RULE).verdict).toBe('elevated')
+    expect(judgeOutcomeShares({ attempts: 3, declined: 0, failed: 3 }, base, TRIPOINT_PING_RULE, false).verdict).toBe('elevated')
   })
 
   it('needs a baseline of 1,000 sends, and says how much it holds when it has fewer', () => {
     const thin: OutcomeBaseline = { attempts: 999, declined: 400, failed: 0, span: '9 recorded hours of the prior 14 days' }
-    expect(judgeOutcomeShares({ attempts: 100, declined: 90, failed: 0 }, thin, TRIPOINT_PING_RULE)).toMatchObject({
+    expect(judgeOutcomeShares({ attempts: 100, declined: 90, failed: 0 }, thin, TRIPOINT_PING_RULE, false)).toMatchObject({
       verdict: 'unmeasured',
       reason: expect.stringMatching(/9 recorded hours of the prior 14 days holds 999 attempts, fewer than the 1000/),
     })
+  })
+})
+
+// #2421: on Oct 14 the decline share swung 18 to 33 points above the 42%
+// baseline hour to hour, so a rule that raises and clears on the one 25 point
+// line raised and stood down again and again through one incident. Once a page
+// stands it now holds until the share falls back under half that rise.
+describe('one incident is one page: a standing page holds until the share falls well back (#2421)', () => {
+  /**
+   * Walk hours the way both checks keep their page: a raise sets it, a held hour
+   * keeps it, any other hour that moves the page clears it, and an hour that
+   * does not move the page leaves it as it was.
+   */
+  function walk(hours: Array<[Row, OutcomeBaseline]>, hysteresis = true) {
+    let standing = false
+    const raises: string[] = []
+    const clears: string[] = []
+    for (const [r, baseline] of hours) {
+      const v = judge(r, baseline, hysteresis && standing)
+      if (!verdictMovesThePage(v)) continue
+      if (v.verdict === 'elevated') {
+        if (!standing) raises.push(r[0])
+        standing = true
+      } else {
+        if (standing) clears.push(r[0])
+        standing = false
+      }
+    }
+    return { raises, clears }
+  }
+
+  const OCT_14_THEN_16: Array<[Row, OutcomeBaseline]> = [
+    ...OCT_13_NIGHT_AND_OCT_14.map((r) => [r, BASELINE_FOR_OCT_14] as [Row, OutcomeBaseline]),
+    ...OCT_16.map((r) => [r, BASELINE_FOR_OCT_16] as [Row, OutcomeBaseline]),
+  ]
+
+  it('the measured Oct 14 shape raises once, at midnight ET, and nothing clears it until the share genuinely falls back on Oct 16', () => {
+    expect(walk(OCT_14_THEN_16)).toEqual({ raises: ['10-14 00'], clears: ['10-16 00'] })
+  })
+
+  it('control: judged on the one line with no memory of a standing page, the same hours raise and clear repeatedly', () => {
+    const { raises, clears } = walk(OCT_14_THEN_16, false)
+    expect(raises.length).toBeGreaterThan(1)
+    expect(clears.length).toBeGreaterThan(1)
+  })
+
+  it('every judged Oct 14 hour sits above the clear line, the lowest (05 ET, 60% against 42%) by more than 5 points', () => {
+    const base = BASELINE_FOR_OCT_14.declined / BASELINE_FOR_OCT_14.attempts
+    const rises = OCT_13_NIGHT_AND_OCT_14.filter((r) => r[0].startsWith('10-14')).map((r) => r[2] / r[4] - base)
+    expect(Math.min(...rises) - OUTCOME_RATE_CLEAR_RISE).toBeGreaterThan(0.05)
+  })
+
+  it('the clear line is half the 25 point rise: 12.5 points above the baseline share, the line itself still standing', () => {
+    expect(OUTCOME_RATE_MIN_RISE).toBe(0.25)
+    expect(OUTCOME_RATE_CLEAR_RISE).toBe(OUTCOME_RATE_MIN_RISE / 2)
+    const forty: OutcomeBaseline = { attempts: 10_000, declined: 4_000, failed: 0 }
+    const hour = (declined: number) => ({ attempts: 1_000, declined, failed: 0 })
+    expect(judgeOutcomeShares(hour(525), forty, TRIPOINT_PING_RULE, true).verdict).toBe('held')
+    expect(judgeOutcomeShares(hour(524), forty, TRIPOINT_PING_RULE, true).verdict).toBe('normal')
+    expect(judgeOutcomeShares(hour(649), forty, TRIPOINT_PING_RULE, true).verdict).toBe('held')
+    expect(judgeOutcomeShares(hour(650), forty, TRIPOINT_PING_RULE, true).verdict).toBe('elevated')
+    // With no page standing the band between the lines raises nothing.
+    expect(judgeOutcomeShares(hour(649), forty, TRIPOINT_PING_RULE, false).verdict).toBe('normal')
+  })
+
+  it('the same hysteresis holds for the failed share', () => {
+    const clean: OutcomeBaseline = { attempts: 10_000, declined: 4_000, failed: 100 }
+    const hour = (failed: number) => ({ attempts: 1_000, declined: 300, failed })
+    expect(judgeOutcomeShares(hour(135), clean, TRIPOINT_PING_RULE, true).verdict).toBe('held')
+    expect(judgeOutcomeShares(hour(134), clean, TRIPOINT_PING_RULE, true).verdict).toBe('normal')
+  })
+
+  it('a held hour says what it measured and the line that would clear it', () => {
+    const v = judge(OCT_13_NIGHT_AND_OCT_14[7], BASELINE_FOR_OCT_14, true) // 10-14 05, 32 of 53 declined
+    expect(v).toMatchObject({
+      verdict: 'held',
+      detail: expect.stringMatching(/32 of 53 attempts in the last hour were declined by the buyer, 60% against 42% over the prior 14 days.*under the 25 points above the baseline that raise a page, but not back under the 12\.5 that clear one/),
+    })
+  })
+
+  it('a held hour neither raises nor clears the page', () => {
+    expect(verdictMovesThePage({ verdict: 'held', detail: 'x' })).toBe(false)
+  })
+
+  it('while a page stands, an hour too thin to raise one still holds it if its share stays above the clear line, and is quiet once it falls back', () => {
+    // 10-14 03: 38 sends, under the 40 a rate needs, 66% declined against 42%.
+    expect(judge(OCT_13_NIGHT_AND_OCT_14[5], BASELINE_FOR_OCT_14, false).verdict).toBe('quiet')
+    expect(judge(OCT_13_NIGHT_AND_OCT_14[5], BASELINE_FOR_OCT_14, true)).toMatchObject({ verdict: 'held', detail: expect.stringMatching(/^38 attempts in the last hour, fewer than the 40 a rate needs to raise a page; 25 of 38/) })
+    // A thin hour never raises a page, however high its share.
+    expect(judgeOutcomeShares({ attempts: 30, declined: 28, failed: 0 }, BASELINE_FOR_OCT_14, TRIPOINT_PING_RULE, true).verdict).toBe('held')
+    expect(judgeOutcomeShares({ attempts: 30, declined: 15, failed: 0 }, BASELINE_FOR_OCT_14, TRIPOINT_PING_RULE, true)).toMatchObject({ verdict: 'quiet', detail: expect.stringMatching(/30 attempts in the last hour, fewer than the 40 a rate needs/) })
+    expect(judgeOutcomeShares({ attempts: 0, declined: 0, failed: 0 }, BASELINE_FOR_OCT_14, TRIPOINT_PING_RULE, true).verdict).toBe('quiet')
+  })
+
+  it('while a page stands, a thin hour whose baseline cannot be judged is unmeasured, so it holds rather than clears', () => {
+    const thin: OutcomeBaseline = { attempts: 999, declined: 400, failed: 0 }
+    expect(judgeOutcomeShares({ attempts: 30, declined: 25, failed: 0 }, thin, TRIPOINT_PING_RULE, true).verdict).toBe('unmeasured')
+    expect(judgeOutcomeShares({ attempts: 30, declined: 25, failed: 0 }, null, TRIPOINT_PING_RULE, true).verdict).toBe('unmeasured')
+  })
+
+  it('saturation still raises whether or not a page stands', () => {
+    expect(judgeOutcomeShares({ attempts: 12, declined: 12, failed: 0 }, BASELINE_FOR_OCT_14, TRIPOINT_PING_RULE, true).verdict).toBe('elevated')
+    expect(judgeOutcomeShares({ attempts: 3, declined: 0, failed: 3 }, null, TRIPOINT_PING_RULE, true).verdict).toBe('elevated')
   })
 })
 
@@ -290,6 +395,100 @@ describe('runTripointPingOutcomeRate', () => {
     expect(s.skipped).toBe('local_dev')
     expect(d.notify).not.toHaveBeenCalled()
     expect(endingOf(s).outcome).toBe('skipped')
+  })
+})
+
+describe('runTripointPingOutcomeRate keeps one page per incident (#2421)', () => {
+  /** The UTC instant an Eastern hour label of Oct 2026 starts at (EDT, UTC minus 4). */
+  const etHourStart = (label: string) => {
+    const [md, hh] = label.split(' ')
+    const dd = Number(md.split('-')[1])
+    return Date.UTC(2026, 9, dd, Number(hh) + 4)
+  }
+  /** Rollup reads are whole clock hours; anything else is the judged window. */
+  const isRollup = (from: number, to: number) => from % HOUR === 0 && to - from === HOUR
+  const BETWEEN_THE_LINES: PingCounts = { sent: 100, accepted: 43, declined: 57, failed: 0 }
+
+  it('the measured Oct 14 hours, run one by one, raise one page and send no all clear until Oct 16', async () => {
+    let clock = NOW
+    let current: PingCounts = HEALTHY_HOUR
+    const d = deps({ now: () => clock }, (from, to) => (isRollup(from, to) ? HEALTHY_HOUR : current))
+    seedBaseline(d.kv, HEALTHY_HOUR)
+    const raises: string[] = []
+    const clears: string[] = []
+    for (const r of [...OCT_13_NIGHT_AND_OCT_14, ...OCT_16]) {
+      clock = etHourStart(r[0]) + HOUR + 20 * 60_000
+      current = { sent: r[4], accepted: r[1], declined: r[2], failed: r[3] }
+      const before = d.kv.store.has(PAGE_STANDING_KEY)
+      d.notify.mockClear()
+      await runTripointPingOutcomeRate(d)
+      const after = d.kv.store.has(PAGE_STANDING_KEY)
+      if (!before && after) raises.push(r[0])
+      if (before && !after) {
+        clears.push(r[0])
+        expect(d.notify).toHaveBeenCalledWith([])
+      }
+      if (before && after) expect(d.notify.mock.calls.every((c) => (c[0] as string[]).length > 0), r[0]).toBe(true)
+    }
+    expect(raises).toEqual(['10-14 00'])
+    expect(clears).toEqual(['10-16 00'])
+  })
+
+  it('an elevated hour sets the standing marker; a clean hour then deletes it and sends the all clear', async () => {
+    let current: PingCounts = { sent: 160, accepted: 52, declined: 108, failed: 0 }
+    const d = deps({}, (from, to) => (isRollup(from, to) ? HEALTHY_HOUR : current))
+    seedBaseline(d.kv, HEALTHY_HOUR)
+    await runTripointPingOutcomeRate(d)
+    expect(d.kv.put).toHaveBeenCalledWith(PAGE_STANDING_KEY, new Date(NOW).toISOString(), { expirationTtl: 24 * 3600 })
+    current = { sent: 120, accepted: 70, declined: 50, failed: 0 }
+    await runTripointPingOutcomeRate(d)
+    expect(d.kv.store.has(PAGE_STANDING_KEY)).toBe(false)
+    expect(d.notify).toHaveBeenLastCalledWith([])
+  })
+
+  it('a standing page and an hour between the lines: nothing is sent, the marker is renewed, and the run records a finding', async () => {
+    const d = deps({}, (from, to) => (isRollup(from, to) ? HEALTHY_HOUR : BETWEEN_THE_LINES))
+    seedBaseline(d.kv, HEALTHY_HOUR)
+    d.kv.store.set(PAGE_STANDING_KEY, '2026-10-14T04:20:00.000Z')
+    const s = await runTripointPingOutcomeRate(d)
+    expect(s.verdict.verdict).toBe('held')
+    expect(d.notify).not.toHaveBeenCalled()
+    expect(d.kv.put).toHaveBeenCalledWith(PAGE_STANDING_KEY, '2026-10-14T04:20:00.000Z', { expirationTtl: 24 * 3600 })
+    expect(endingOf(s)).toMatchObject({ outcome: 'findings', detail: expect.stringMatching(/not back under the 12\.5 that clear one/) })
+  })
+
+  it('the same hour with no page standing is normal and raises nothing', async () => {
+    const d = deps({}, (from, to) => (isRollup(from, to) ? HEALTHY_HOUR : BETWEEN_THE_LINES))
+    seedBaseline(d.kv, HEALTHY_HOUR)
+    const s = await runTripointPingOutcomeRate(d)
+    expect(s.verdict.verdict).toBe('normal')
+    expect(d.kv.store.has(PAGE_STANDING_KEY)).toBe(false)
+    expect(d.notify).toHaveBeenCalledWith([])
+  })
+
+  it('an unmeasured hour keeps a standing marker alive rather than letting it expire', async () => {
+    const d = deps({}, (from, to) => {
+      if (!isRollup(from, to)) throw new Error('execution_steps count timed out')
+      return HEALTHY_HOUR
+    })
+    seedBaseline(d.kv, HEALTHY_HOUR)
+    d.kv.store.set(PAGE_STANDING_KEY, '2026-10-14T04:20:00.000Z')
+    await runTripointPingOutcomeRate(d)
+    expect(d.notify).not.toHaveBeenCalled()
+    expect(d.kv.put).toHaveBeenCalledWith(PAGE_STANDING_KEY, '2026-10-14T04:20:00.000Z', { expirationTtl: 24 * 3600 })
+  })
+
+  it('a standing marker that cannot be read leaves the hour unmeasured, so it neither raises nor clears', async () => {
+    const d = deps()
+    seedBaseline(d.kv, HEALTHY_HOUR)
+    const read = d.kv.get.getMockImplementation() as (k: string) => Promise<string | null>
+    d.kv.get.mockImplementation(async (k: string) => {
+      if (k === PAGE_STANDING_KEY) throw new Error('KV unavailable')
+      return read(k)
+    })
+    const s = await runTripointPingOutcomeRate(d)
+    expect(s.verdict).toMatchObject({ verdict: 'unmeasured', reason: expect.stringMatching(/whether a page is standing could not be read: KV unavailable/) })
+    expect(d.notify).not.toHaveBeenCalled()
   })
 })
 
