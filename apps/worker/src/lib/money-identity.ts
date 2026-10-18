@@ -165,10 +165,12 @@ export async function measureMoneyIdentity(deps: MoneyIdentityDeps): Promise<Mon
  * unreadable or names another organization: a reading that cannot be trusted is
  * never answered as one, nor as unmeasured.
  */
-export async function readMoneyIdentities(kv: Pick<KvLike, 'get'>, organizationId: unknown, nowMs: number): Promise<ServedMoneyIdentities> {
-  if (typeof organizationId !== 'string' || !UUID.test(organizationId)) {
+export async function readMoneyIdentities(kv: Pick<KvLike, 'get'>, askedFor: unknown, nowMs: number): Promise<ServedMoneyIdentities> {
+  if (typeof askedFor !== 'string' || !UUID.test(askedFor)) {
     throw new OpsGatewayContractError('the money identities were asked for with no organization uuid')
   }
+  // The writer keys on the database's lowercase id, so the lookup does too.
+  const organizationId = askedFor.toLowerCase()
   const servedAt = new Date(nowMs).toISOString()
   const raw = await kv.get(moneySalesforceIdentityKey(organizationId))
   if (raw === null) return { organization_id: organizationId, served_at: servedAt, salesforce: null }

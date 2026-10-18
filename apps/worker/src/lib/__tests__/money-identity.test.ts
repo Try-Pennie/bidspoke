@@ -136,6 +136,12 @@ describe('readMoneyIdentities, what OpsGateway.moneyIdentities serves', () => {
     expect(parseServedMoneyIdentities(served, ORG)).toEqual(served)
   })
 
+  it('finds the reading for an organization id asked in capitals, since the writer keys on the lowercase id', async () => {
+    const served = await readMoneyIdentities(store(), ORG.toUpperCase(), NOW)
+    expect(served.organization_id).toBe(ORG)
+    expect(served.salesforce).toEqual({ sf_org_id: SF_ORG, username: USERNAME, measured_at: '2026-10-18T13:00:05.000Z' })
+  })
+
   it('answers another organization with no reading, never this one\'s', async () => {
     expect(await readMoneyIdentities(store(), OTHER_ORG, NOW)).toEqual({ organization_id: OTHER_ORG, served_at: new Date(NOW).toISOString(), salesforce: null })
   })
