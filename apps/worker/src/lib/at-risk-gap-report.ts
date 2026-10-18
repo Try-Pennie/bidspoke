@@ -163,11 +163,17 @@ export async function runAtRiskGapReport(deps: AtRiskGapReportDeps): Promise<AtR
   if (report.gaps > 0) {
     console.error(`[${AT_RISK_GAP_REPORT_JOB}] ${report.gaps} post-answer Salesforce writes on ${day} were never recorded for the read-back: ${report.named.map((g) => `${g.execution_id} ${g.step_namespace} (${g.how})`).join(', ')}`)
   }
-  await deps.recordRun(startedAt, {
-    outcome,
-    detail: `day=${day} cut_off_runs=${report.cut_off_runs} held=${report.held} gaps=${report.gaps} unrecorded=${report.unrecorded} missed=${report.missed} cancelled=${report.unreported} exposed=${report.exposed} late_start=${report.late_start}${report.truncated ? ' truncated' : ''}${report.unreadable ? ' unreadable' : ''}`,
-    summary: { ...report },
-  })
+  // Any gaps are in the log line above, and every fact stays in KV for 8 days, so
+  // a row that cannot be written is said, never thrown into the daily batch.
+  try {
+    await deps.recordRun(startedAt, {
+      outcome,
+      detail: `day=${day} cut_off_runs=${report.cut_off_runs} held=${report.held} gaps=${report.gaps} unrecorded=${report.unrecorded} missed=${report.missed} cancelled=${report.unreported} exposed=${report.exposed} late_start=${report.late_start}${report.truncated ? ' truncated' : ''}${report.unreadable ? ' unreadable' : ''}`,
+      summary: { ...report },
+    })
+  } catch (e) {
+    console.error(`[${AT_RISK_GAP_REPORT_JOB}] could not record the report of ${day} in job_runs, so that day has no row:`, formatErr(e))
+  }
   return report
 }
 

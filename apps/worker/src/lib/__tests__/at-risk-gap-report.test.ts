@@ -126,6 +126,18 @@ describe('runAtRiskGapReport', () => {
     expect(rec.rows[0].ending.outcome).toBe('truncated')
   })
 
+  it('never throws when its row cannot be recorded, and says so (lessons review of #2436)', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const report = await runAtRiskGapReport({
+      kv: kvWith([fact('unrecorded', 'ex-1')]),
+      now: () => NOW,
+      recordRun: async () => { throw new Error('job_runs insert failed') },
+    })
+    expect(report.gaps).toBe(1)
+    expect(error.mock.calls.some((c) => String(c[0]).includes('could not record'))).toBe(true)
+    error.mockRestore()
+  })
+
   it('records that the day could not be read rather than a clean zero, and says so', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     const rec = recorder()
