@@ -12,6 +12,8 @@ vi.mock('@/lib/api', () => ({
       getSlack: vi.fn(),
       updateSlackSettings: vi.fn().mockResolvedValue({ ok: true }),
       searchSlackChannels: vi.fn().mockResolvedValue({ channels: [] }),
+      resolveSlack: vi.fn(),
+      saveSlack: vi.fn(),
     },
     servicePresets: { list: vi.fn().mockResolvedValue([]) },
   },
@@ -54,5 +56,43 @@ describe('Integrations page — backup failure alerts toggle (#223)', () => {
     )
     // optimistic flip
     expect(toggle).toHaveAttribute('aria-checked', 'false')
+  })
+})
+
+/**
+ * Saving a token Slack rejects (#2331). The Worker refuses it with code
+ * slack_token_invalid and the sentence Dan chose, which api.ts surfaces as the
+ * thrown Error's message. The page must show that sentence as an error, keep
+ * the form so the token can be fixed, and never read as connected or empty.
+ */
+describe('Integrations page: a token Slack rejects on save (#2331)', () => {
+  const FAKE_TOKEN = 'xoxb-fake'
+
+  async function saveRejectedWith(message: string) {
+    vi.mocked(api.integrations.getSlack).mockResolvedValue({ connected: false } as never)
+    vi.mocked(api.integrations.resolveSlack).mockResolvedValue({ workspace_name: 'Pennie HQ', channels: [{ id: 'C1', name: 'alerts' }] } as never)
+    vi.mocked(api.integrations.saveSlack).mockRejectedValue(Object.assign(new Error(message), { status: 400 }))
+    render(<IntegrationsPage />)
+    const input = await screen.findByLabelText('Bot token')
+    fireEvent.change(input, { target: { value: FAKE_TOKEN } })
+    fireEvent.blur(input)
+    await screen.findByText('Pennie HQ')
+    fireEvent.click(screen.getByRole('button', { name: 'Connect Slack' }))
+    await waitFor(() => expect(api.integrations.saveSlack).toHaveBeenCalled())
+  }
+
+  it.each([
+    'Slack did not accept this token (token_revoked), so nothing was saved.',
+    'Slack did not accept this token, so nothing was saved.',
+  ])('shows "%s" as an error, keeping the form and claiming no connection', async (message) => {
+    await saveRejectedWith(message)
+    const shown = await screen.findByText(message)
+    // The error banner, not a neutral note or an empty state.
+    expect(shown.className).toMatch(/text-red-700/)
+    expect(screen.queryByText('Slack connected successfully.')).toBeNull()
+    expect(screen.queryByText('Connected')).toBeNull()
+    // The form is still there with the token, so it can be corrected and saved again.
+    expect(screen.getByLabelText('Bot token')).toHaveValue(FAKE_TOKEN)
+    expect(screen.getByRole('button', { name: 'Connect Slack' })).toBeInTheDocument()
   })
 })

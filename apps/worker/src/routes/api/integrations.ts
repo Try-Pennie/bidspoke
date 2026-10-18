@@ -1,6 +1,6 @@
 // Integrations management: the Slack connection (Phase 1.7).
 // POST   /api/integrations/slack/resolve   validate a token, return the workspace name and channel list
-// POST   /api/integrations/slack           save or replace the Slack connection
+// POST   /api/integrations/slack           save or replace the Slack connection, once Slack accepts the token
 // GET    /api/integrations/slack           the current Slack connection (token never returned)
 // GET    /api/integrations/slack/channels  search channels by name
 // PATCH  /api/integrations/slack/settings  alert toggles and channels
@@ -57,6 +57,7 @@
 import { Hono, type Context } from 'hono'
 import { dbError, dbErrorUnlessNotFound, requireRowOr404, rowsTouched } from '../../lib/api-error'
 import { fetchJson } from '../../lib/json'
+import { createSlackClient, slackBodyOf, slackCallFailure, slackNetworkCause } from '../../lib/slack-client'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -98,33 +99,61 @@ integrations.post('/slack/resolve', async (c) => {
   if (!body.bot_token) return c.json({ error: 'bot_token is required' }, 400)
 
   const token = body.bot_token.trim()
+  // Through the one Slack client (#2331), each answer read as its body as
+  // before (slackBodyOf), so the page is told exactly what it was.
+  const slack = createSlackClient({ bot_token: token })
 
-  const authData = await fetchJson<{ ok: boolean; team?: string; error?: string }>(
-    'https://slack.com/api/auth.test',
-    {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-    }
-  )
+  const authData = await slackBodyOf('auth.test', () => slack.auth.test())
   if (!authData.ok) {
     return c.json({ error: `Invalid token: ${authData.error ?? 'auth.test failed'}` }, 400)
   }
 
-  const chanData = await fetchJson<{
-    ok: boolean
-    channels?: Array<{ id: string; name: string }>
-    error?: string
-  }>(
-    'https://slack.com/api/conversations.list?types=public_channel,private_channel&exclude_archived=true&limit=1000',
-    { headers: { Authorization: `Bearer ${token}` } }
+  const chanData = await slackBodyOf('conversations.list', () =>
+    slack.conversations.list({ types: ['public_channel', 'private_channel'], exclude_archived: true, limit: 1000 }),
   )
 
   const channels = chanData.ok
-    ? (chanData.channels ?? []).map((ch) => ({ id: ch.id, name: ch.name })).sort((a, b) => a.name.localeCompare(b.name))
+    ? (chanData.channels ?? []).map((ch) => ({ id: ch.id ?? '', name: ch.name ?? '' })).sort((a, b) => a.name.localeCompare(b.name))
     : []
 
   return c.json({ workspace_name: authData.team ?? '', channels })
 })
+
+/**
+ * What the Settings page shows when Slack rejects a token on save, worded by
+ * Dan (2026-10-17): Slack's own code in brackets, or no brackets when Slack
+ * gave none.
+ */
+function slackTokenRefusedMessage(slackError: string | null): string {
+  return slackError
+    ? `Slack did not accept this token (${slackError}), so nothing was saved.`
+    : 'Slack did not accept this token, so nothing was saved.'
+}
+
+/**
+ * Ask Slack whether the token works before it is sealed (#2331): auth.test
+ * through the one client. `ok` for a token Slack accepts; `refused` with
+ * Slack's code for one it rejects. Anything that is not an answer about the
+ * token (a 429, a 5xx, a body that is not JSON, no answer at all) throws, so
+ * the save answers the generic 500 and writes nothing: a token Slack could
+ * not be asked about is neither saved nor called invalid. A 429 is never
+ * waited for.
+ */
+async function verifySlackToken(token: string): Promise<{ kind: 'ok' } | { kind: 'refused'; slackError: string | null }> {
+  try {
+    const answer = await createSlackClient({ bot_token: token }).auth.test()
+    // The library throws only for ok:false WITH a code; without one it returns.
+    if (answer.ok) return { kind: 'ok' }
+    return { kind: 'refused', slackError: answer.error ?? null }
+  } catch (e) {
+    const failure = slackCallFailure(e)
+    if (failure?.kind === 'api') return { kind: 'refused', slackError: failure.error }
+    if (failure?.kind === 'http') {
+      throw new Error(`auth.test answered HTTP ${failure.status}${failure.retryAfter ? ` (Retry-After ${failure.retryAfter} s, not waited for)` : ''}, so the token could not be checked`, { cause: e })
+    }
+    throw slackNetworkCause(e)
+  }
+}
 
 integrations.post('/slack', async (c) => {
   const { orgId, userId, email } = c.get('user')
@@ -137,6 +166,16 @@ integrations.post('/slack', async (c) => {
 
   if (!body.bot_token) return c.json({ error: 'bot_token is required' }, 400)
   if (!body.default_channel) return c.json({ error: 'default_channel is required' }, 400)
+
+  // The token is checked with Slack before anything is sealed or written
+  // (#2331): a token Slack rejects is refused with the code
+  // slack_token_invalid and Slack's own code beside it, and `error` carries
+  // the sentence the Settings page shows (slackTokenRefusedMessage).
+  const verified = await verifySlackToken(body.bot_token)
+  if (verified.kind === 'refused') {
+    console.error(`[integrations] slack_token_invalid: Slack refused the token for org ${orgId} (${verified.slackError ?? 'no code'}), so nothing was saved`)
+    return c.json({ error: slackTokenRefusedMessage(verified.slackError), code: 'slack_token_invalid', slack_error: verified.slackError }, 400)
+  }
 
   // config.bot_token stays beside the sealed copy in this release (dual write,
   // see the header): the rollback target reads only it.
