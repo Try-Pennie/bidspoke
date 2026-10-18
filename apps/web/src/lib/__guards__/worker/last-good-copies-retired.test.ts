@@ -384,12 +384,14 @@ describe('every handler writing service_connections edits the saved Slack copy (
     expect(found.handlers).toEqual(expect.arrayContaining(Object.keys(SLACK_COPY.exempt ?? {})))
   })
 
-  // #2331: delete_service_connection is the one function that writes the table,
-  // so a Disconnect is audited under its user. Every handler that calls it is
-  // enumerated above through the rpc and held to the same rule, so it is listed
-  // here by name: a second writing function must be looked at, not slip in.
-  it('the only database function writing the table is delete_service_connection, whose callers are held to the rule', () => {
-    expect([...sqlFunctionsWriting(SLACK_COPY, readMigrations())]).toEqual(['delete_service_connection'])
+  // #2331: the delete functions are the only functions that write the table,
+  // so a Disconnect is audited under its user. Every handler that calls one is
+  // enumerated above through the rpc and held to the same rule, so they are
+  // listed here by name: another writing function must be looked at, not slip
+  // in. #2332 added delete_service_connection_by_id, which the Disconnect now
+  // calls; delete_service_connection leaves this list at its contract step.
+  it('the only database functions writing the table are the delete functions, whose callers are held to the rule', () => {
+    expect([...sqlFunctionsWriting(SLACK_COPY, readMigrations())].sort()).toEqual(['delete_service_connection', 'delete_service_connection_by_id'])
     expect(found.handlers).toEqual(expect.arrayContaining(['apps/worker/src/routes/api/integrations.ts DELETE /slack']))
   })
 })

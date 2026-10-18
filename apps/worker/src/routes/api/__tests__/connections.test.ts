@@ -201,21 +201,24 @@ describe('DELETE /connections/:service_type', () => {
     )
     const res = await request(app, 'DELETE', '/connections/salesforce')
     expect(res.status).toBe(200)
-    expect(rpc).toHaveBeenCalledWith('delete_service_connection', expect.objectContaining({ p_service_type: 'salesforce' }))
+    expect(rpc).toHaveBeenCalledWith('delete_service_connection_by_id', expect.objectContaining({ p_connection_id: 'conn-1' }))
     expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
     expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
   })
 
   // #2331, F119: the table's trigger audits every change once, naming the user
-  // through delete_service_connection's actor, so the route writes none.
-  it('deletes through delete_service_connection with the caller as actor, and writes no route audit row', async () => {
+  // through the delete function's actor, so the route writes none. #2332: it
+  // deletes the row it read by id, never every row of the type, so once release
+  // 2 allows a second row of a service that one survives.
+  it('deletes the row it read by id with the caller as actor, never by service type, and writes no route audit row', async () => {
     const rpc = vi.fn(async () => ({ data: [{ id: 'conn-1' }], error: null }))
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn } }, { rpc }) as never
     )
     const res = await request(app, 'DELETE', '/connections/salesforce')
     expect(res.status).toBe(200)
-    expect(rpc).toHaveBeenCalledWith('delete_service_connection', { p_organization_id: testUser.organization_id, p_service_type: 'salesforce', p_actor: testUser.id })
+    expect(rpc).toHaveBeenCalledWith('delete_service_connection_by_id', { p_organization_id: testUser.organization_id, p_connection_id: 'conn-1', p_actor: testUser.id })
+    expect(rpc).not.toHaveBeenCalledWith('delete_service_connection', expect.anything())
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 
@@ -372,7 +375,7 @@ describe('DELETE /connections/:service_type: zero-row + DB error (#588)', () => 
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase(
         { users: { single: testUser }, service_connections: { single: existingConn } },
-        { rpcs: { delete_service_connection: [] } },
+        { rpcs: { delete_service_connection_by_id: [] } },
       ) as never
     )
     const res = await request(app, 'DELETE', '/connections/salesforce')
@@ -428,8 +431,8 @@ describe('POST /connections/:service_type/sync-schema: zero-row update (#588)', 
 // 8's delete, which refuses a referenced connection, writes the tombstone and
 // revokes. With two rows of a type, `.single()` answers PGRST116, which these
 // routes read as not found: a 404, never a 500. The store refuses the same way
-// (delete_service_connection spares ops_key rows), proven against Postgres in
-// supabase/tests/service_connections_expand.test.sql case F.
+// (delete_service_connection_by_id spares ops_key rows), proven against
+// Postgres in supabase/tests/service_connections_delete_by_id.test.sql case D.
 describe('legacy routes never reach an ops connection (#2332, F124)', () => {
   let app: Awaited<ReturnType<typeof makeApp>>
   const opsRow = { id: 'conn-ops', service_type: 'salesforce', cf_secret_key: null, sealed_for: 'ops_key' }
@@ -459,7 +462,7 @@ describe('legacy routes never reach an ops connection (#2332, F124)', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
     const res = await request(app, 'DELETE', '/connections/salesforce')
     expect(res.status).toBe(404)
-    expect(rpc).not.toHaveBeenCalledWith('delete_service_connection', expect.anything())
+    expect(rpc).not.toHaveBeenCalled()
   })
 
   it('sync-schema reads only a legacy row of the type', async () => {
