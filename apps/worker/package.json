@@ -23,9 +23,9 @@
     "@bidspoke/workflow-definition": "workspace:*",
     "@bidspoke/partner-page-live": "workspace:*",
     "@bidspoke/partner-history": "workspace:*",
+    "@bidspoke/slack-client": "workspace:*",
     "@supabase/supabase-js": "^2.117.3",
-    "hono": "^4.13.13",
-    "slack-web-api-client": "1.1.14"
+    "hono": "^4.13.13"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.0",
