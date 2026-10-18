@@ -245,11 +245,11 @@ export interface ClaimedRun {
   attempts: number
   /**
    * The starts so far not charged against maxAttempts: one resumed from a wait
-   * on a resource (resource_wait) and one a lapse refunded (#2334). null when
-   * the claim did not answer it, which the function before ops migration
-   * 20261018140000 does not: unknown, never 0 (#2336).
+   * on a resource (resource_wait) and one a lapse refunded (#2334). Always
+   * answered since ops migration 20261018140000; a claim without it is refused,
+   * never read as 0 (#2336).
    */
-  unchargedAttempts: number | null
+  unchargedAttempts: number
   /** Judged against the CHARGED count (chargedAttempts), never against attempts. */
   maxAttempts: number
   resumeReason: string | null
@@ -259,9 +259,9 @@ export interface ClaimedRun {
   payloadRef: string | null
 }
 
-/** The starts so far charged against maxAttempts, as the database counts them; null when the claim did not say. */
-export function chargedAttempts(run: Pick<ClaimedRun, 'attempts' | 'unchargedAttempts'>): number | null {
-  return run.unchargedAttempts === null ? null : run.attempts - run.unchargedAttempts
+/** The starts so far charged against maxAttempts, as the database counts them. */
+export function chargedAttempts(run: Pick<ClaimedRun, 'attempts' | 'unchargedAttempts'>): number {
+  return run.attempts - run.unchargedAttempts
 }
 
 /**
@@ -271,13 +271,10 @@ export function chargedAttempts(run: Pick<ClaimedRun, 'attempts' | 'unchargedAtt
  * charged attempt when attempts + 1 - unchargedAttempts - (1 if resumed from a
  * resource wait) reaches maxAttempts. supabase-ops/supabase/tests/
  * claim_uncharged_attempts.test.sql checks the same rule against the database.
- * null when the claim did not say how many attempts were uncharged.
  */
-export function lastChargedAttempt(run: Pick<ClaimedRun, 'attempts' | 'unchargedAttempts' | 'maxAttempts' | 'resumeReason'>): boolean | null {
-  const charged = chargedAttempts(run)
-  if (charged === null) return null
+export function lastChargedAttempt(run: Pick<ClaimedRun, 'attempts' | 'unchargedAttempts' | 'maxAttempts' | 'resumeReason'>): boolean {
   const thisStart = run.resumeReason === 'resource_wait' ? 0 : 1
-  return charged + thisStart >= run.maxAttempts
+  return chargedAttempts(run) + thisStart >= run.maxAttempts
 }
 
 export async function claimRunRequests(client: OpsSupabaseClient, claim: ClaimRunRequests, options?: OpsRpcOptions): Promise<ClaimedRun[]> {
@@ -296,13 +293,12 @@ export async function claimRunRequests(client: OpsSupabaseClient, claim: ClaimRu
       throw new OpsWriteError(`${name} returned a run whose organization is not a uuid`)
     }
     const attempts = field(name, row, 'attempts', isInt, 'a whole number')
-    // Absent from the function before ops migration 20261018140000, so the code
-    // works whichever of the two lands first (L640). Present, it must be a count.
-    let unchargedAttempts: number | null = null
-    if ('uncharged_attempts' in row) {
-      const isUncharged = (v: unknown): v is number => isInt(v) && v >= 0 && v <= attempts
-      unchargedAttempts = field(name, row, 'uncharged_attempts', isUncharged, 'a whole number from 0 to attempts')
-    }
+    // Required since ops migration 20261018140000 is applied (#2336). Its absence
+    // is refused by name, never read as 0: that would judge max_attempts by every
+    // start rather than the charged ones.
+    if (!('uncharged_attempts' in row)) throw new OpsWriteError(`${name} returned no uncharged_attempts`)
+    const isUncharged = (v: unknown): v is number => isInt(v) && v >= 0 && v <= attempts
+    const unchargedAttempts = field(name, row, 'uncharged_attempts', isUncharged, 'a whole number from 0 to attempts')
     return {
       runRequestId: field(name, row, 'run_request_id', isString, 'an id'),
       organizationId,
