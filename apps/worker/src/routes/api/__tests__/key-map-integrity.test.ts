@@ -159,4 +159,27 @@ describe('rebuildKeyMap when the api_sources read fails', () => {
       freshkey: 'new_partner',
     })
   })
+
+  // #1437: the read spans every organization, so past PostgREST's 1,000 row cap
+  // an unpaged read came back cut and the sources past the cut lost their keys
+  // from the live map. It pages by the primary key now.
+  it('reads every page of api_sources, so a key past the row cap reaches the map', async () => {
+    const firstPage = Array.from({ length: 1000 }, (_, i) => ({ name: `source_${i}`, api_key: `key-${i}` }))
+    const supabase = makeSupabase({
+      users: { single: testUser },
+      api_sources: [
+        { insertResult: { id: 'src-new' } },
+        { list: firstPage },
+        { list: [{ name: 'new_partner', api_key: 'freshkey' }] },
+      ],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(supabase as unknown as ReturnType<typeof createSupabaseClient>)
+
+    await request(app, 'POST', '/sources', { name: 'new_partner' })
+
+    const maps = writtenMaps()
+    expect(maps.length).toBe(1)
+    expect(maps[0]).toMatchObject({ 'key-0': 'source_0', 'key-999': 'source_999', freshkey: 'new_partner' })
+    expect(supabase.calls.api_sources).toContainEqual(['range', [1000, 1999]])
+  })
 })

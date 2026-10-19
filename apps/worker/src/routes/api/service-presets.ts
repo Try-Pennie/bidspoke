@@ -1,5 +1,7 @@
 import { Hono } from 'hono'
 import { dbError, dbErrorUnlessNotFound, requireRowOr404 } from '../../lib/api-error'
+import { fetchUpTo } from '../../lib/paginate'
+import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -13,13 +15,17 @@ const servicePresets = new Hono<{ Bindings: Env; Variables: Variables }>()
 servicePresets.get('/', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
-  const { data, error } = await supabase
-    .from('service_presets')
-    .select('id, name, slug, auth_type, base_url, created_at')
-    .eq('organization_id', orgId)
-    .order('name')
-  if (error) return dbError(c, error)
-  return c.json(data ?? [])
+  // Read whole or refused, never cut at the row cap (#1437).
+  try {
+    return c.json(await fetchUpTo((limit) => supabase
+      .from('service_presets')
+      .select('id, name, slug, auth_type, base_url, created_at')
+      .eq('organization_id', orgId)
+      .order('name')
+      .limit(limit), CONFIG_LIST_BOUNDS.servicePresets, 'service presets list'))
+  } catch (err) {
+    return dbError(c, err)
+  }
 })
 
 servicePresets.post('/', async (c) => {

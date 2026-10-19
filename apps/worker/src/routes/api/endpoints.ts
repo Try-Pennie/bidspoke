@@ -13,6 +13,8 @@
 
 import { Hono } from 'hono'
 import { dbError, dbErrorUnlessNotFound, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
+import { fetchUpTo } from '../../lib/paginate'
+import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -71,14 +73,20 @@ endpoints.get('/', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
 
-  const { data, error } = await supabase
-    .from('webhook_endpoints')
-    .select('id, subdomain, path, workflow_id, source_name, is_active, created_at, updated_at, workflows(name)')
-    .eq('organization_id', orgId)
-    .order('subdomain')
-    .order('path')
-
-  if (error) return dbError(c, error)
+  // Read whole or refused, never cut at the row cap (#1437).
+  type EndpointListRow = { workflows: { name: string } | { name: string }[] | null } & Record<string, unknown>
+  let data: EndpointListRow[]
+  try {
+    data = await fetchUpTo<EndpointListRow>((limit) => supabase
+      .from('webhook_endpoints')
+      .select('id, subdomain, path, workflow_id, source_name, is_active, created_at, updated_at, workflows(name)')
+      .eq('organization_id', orgId)
+      .order('subdomain')
+      .order('path')
+      .limit(limit), CONFIG_LIST_BOUNDS.webhookEndpoints, 'webhook endpoints list')
+  } catch (err) {
+    return dbError(c, err)
+  }
 
   // Flatten the workflows join (Supabase returns the related row as an array)
   const rows = (data ?? []).map((row) => {

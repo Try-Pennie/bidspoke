@@ -8,7 +8,54 @@
  * sync. fetchAllPaged reads every row across pages.
  */
 import { describe, it, expect } from 'vitest'
-import { DEFAULT_MAX_PAGES, fetchAllPaged, PAGE_SIZE } from '../paginate'
+import { DEFAULT_MAX_PAGES, fetchAllPaged, fetchUpTo, PAGE_SIZE, RowBoundExceededError } from '../paginate'
+
+// #1437 P6: a config list declared to hold at most n rows. It asks for n + 1, so
+// one row past the bound is SEEN and refused rather than cut off at n.
+describe('fetchUpTo', () => {
+  const rows = (k: number) => Array.from({ length: k }, (_, i) => ({ id: `r${i}` }))
+
+  it('asks for one row more than its bound', async () => {
+    const asked: number[] = []
+    await fetchUpTo(async (limit) => { asked.push(limit); return { data: rows(2), error: null } }, 10, 'folders')
+    expect(asked).toEqual([11])
+  })
+
+  it('returns the whole list when it holds up to the bound', async () => {
+    expect(await fetchUpTo(async () => ({ data: rows(10), error: null }), 10, 'folders')).toHaveLength(10)
+    expect(await fetchUpTo(async () => ({ data: [], error: null }), 10, 'folders')).toEqual([])
+  })
+
+  it('refuses a list holding more than its bound, naming the read, rather than returning the first n', async () => {
+    const read = fetchUpTo(async () => ({ data: rows(11), error: null }), 10, 'folders list')
+    await expect(read).rejects.toBeInstanceOf(RowBoundExceededError)
+    await expect(fetchUpTo(async () => ({ data: rows(11), error: null }), 10, 'folders list')).rejects.toThrow(
+      'folders list holds more than 10 rows',
+    )
+  })
+
+  it('throws with the label on a failed read', async () => {
+    await expect(fetchUpTo(async () => ({ data: null, error: { message: 'boom' } }), 10, 'folders list')).rejects.toThrow(
+      'folders list failed: boom',
+    )
+  })
+
+  // n + 1 must stay under PostgREST's cap: at n = 1,000 a capped answer of 1,000
+  // rows could not be told from a complete one.
+  it.each([0, -1, 1.5, PAGE_SIZE, PAGE_SIZE + 1])('refuses a bound of %s before reading', async (n) => {
+    let read = false
+    await expect(fetchUpTo(async () => { read = true; return { data: [], error: null } }, n, 'folders list')).rejects.toThrow(
+      'a fetchUpTo bound must be a whole number from 1 to 999',
+    )
+    expect(read).toBe(false)
+  })
+
+  it('accepts the largest bound, 999, which asks for exactly the cap', async () => {
+    const asked: number[] = []
+    await fetchUpTo(async (limit) => { asked.push(limit); return { data: rows(999), error: null } }, PAGE_SIZE - 1, 'big list')
+    expect(asked).toEqual([PAGE_SIZE])
+  })
+})
 
 describe('fetchAllPaged', () => {
   // A page of `n` rows with unique ids, simulating a PostgREST range response.

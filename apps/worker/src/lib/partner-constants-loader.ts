@@ -1,5 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { leadRead } from './lead-read-budget'
+import { fetchUpTo } from './paginate'
+import { CONFIG_LIST_BOUNDS } from './config-list-bounds'
 import { confirmedAt, isDueForReconfirm, judgeCopyAge, readConfirmedCopy, refuseStoredCopy, serveStoredCopy } from './stored-copy-age'
 import { formatErr } from './format-error'
 
@@ -143,30 +145,35 @@ async function writeCopies(orgId: string, kv: KVNamespace, constants: PartnerCon
 
 /** The constants from the database, or the read's error message. */
 async function readFromDb(orgId: string, supabase: SupabaseClient): Promise<{ constants: PartnerConstants } | { error: string }> {
-  const [uuidRes, partnerRes] = await Promise.all([
-    leadRead(supabase, supabase.from('partner_uuid_map').select('uuid, partner_slug').eq('org_id', orgId), 'partner uuid map'),
-    leadRead(
-      supabase,
-      supabase
-        .from('partner_configs')
-        .select('id, slug, sell_off_offer_title, sell_off_offer_details, click_url, is_active, sub_account_min_bids')
-        .eq('organization_id', orgId),
-      'partner constants'
-    ),
-  ])
-
   // Either read failing fails the whole load: the caller serves the last-good
-  // copy or refuses, and never caches a half read.
-  if (uuidRes.error || partnerRes.error) {
-    return { error: (uuidRes.error ?? partnerRes.error)?.message ?? 'unknown error' }
+  // copy or refuses, and never caches a half read. A list past its bound fails
+  // it the same way (#1437), since cut at the row cap it would be cached as the
+  // whole set.
+  try {
+    const [uuidRows, partnerRows] = await Promise.all([
+      fetchUpTo<PartnerConstantsUuidRow>(
+        (limit) => leadRead(supabase, supabase.from('partner_uuid_map').select('uuid, partner_slug').eq('org_id', orgId).limit(limit), 'partner uuid map'),
+        CONFIG_LIST_BOUNDS.partnerUuids,
+        'partner uuid map',
+      ),
+      fetchUpTo<PartnerConstantsPartnerRow>(
+        (limit) => leadRead(
+          supabase,
+          supabase
+            .from('partner_configs')
+            .select('id, slug, sell_off_offer_title, sell_off_offer_details, click_url, is_active, sub_account_min_bids')
+            .eq('organization_id', orgId)
+            .limit(limit),
+          'partner constants'
+        ),
+        CONFIG_LIST_BOUNDS.partnerConfigs,
+        'partner constants',
+      ),
+    ])
+    return { constants: partnerConstantsFromRows(uuidRows, partnerRows) }
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : 'unknown error' }
   }
-
-  // read-guard-ok (#439): both errors are checked in the block directly above,
-  // which hands the failure back. By here the reads have succeeded.
-  const { data: uuidRows } = uuidRes // read-guard-ok: checked in the block above (#439)
-  const { data: partnerRows } = partnerRes // read-guard-ok: checked in the block above (#439)
-
-  return { constants: partnerConstantsFromRows(uuidRows ?? [], partnerRows ?? []) }
 }
 
 export interface PartnerConstantsUuidRow {
