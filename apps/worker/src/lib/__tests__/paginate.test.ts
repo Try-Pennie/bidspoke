@@ -8,7 +8,7 @@
  * sync. fetchAllPaged reads every row across pages.
  */
 import { describe, it, expect } from 'vitest'
-import { fetchAllPaged, PAGE_SIZE } from '../paginate'
+import { DEFAULT_MAX_PAGES, fetchAllPaged, PAGE_SIZE } from '../paginate'
 
 describe('fetchAllPaged', () => {
   // A page of `n` rows with unique ids, simulating a PostgREST range response.
@@ -64,6 +64,28 @@ describe('fetchAllPaged', () => {
       fetchAllPaged(async () => { n++; return { data: page(PAGE_SIZE, n * PAGE_SIZE), error: null } }, 'env read', { maxPages: 3 }),
     ).rejects.toThrow('env read did not reach its last row within 3 pages')
     expect(n).toBe(3)
+  })
+
+  // #1785, #1437: with no bound named, a read still returning full pages at the
+  // default bound used to hand back its first 200,000 rows with no error, a short
+  // read that looked complete. Reaching the bound now refuses for every caller.
+  it('refuses a read still returning full pages at the default bound', async () => {
+    let n = 0
+    const full = page(PAGE_SIZE, 0)
+    await expect(
+      fetchAllPaged(async () => { n++; return { data: full, error: null } }, 'unbounded read'),
+    ).rejects.toThrow(`unbounded read did not reach its last row within ${DEFAULT_MAX_PAGES} pages`)
+    expect(n).toBe(DEFAULT_MAX_PAGES)
+  })
+
+  it('returns every row when the end arrives on the last page of the default bound', async () => {
+    let n = 0
+    const full = page(PAGE_SIZE, 0)
+    const rows = await fetchAllPaged(async () => {
+      n++
+      return { data: n === DEFAULT_MAX_PAGES ? page(1, 0) : full, error: null }
+    }, 'unbounded read')
+    expect(rows).toHaveLength((DEFAULT_MAX_PAGES - 1) * PAGE_SIZE + 1)
   })
 
   it('returns every row when the end arrives within the named bound', async () => {
