@@ -41,6 +41,21 @@ const describeUnavailable = (body) => {
  *   fetchProbe: (url: string, token: string) => Promise<{ status: number, body: unknown }>,
  *   now: () => number, sleep: (ms: number) => Promise<void> }} deps
  */
+/**
+ * A seconds setting from the environment: the default when it is absent, else a
+ * positive finite number, else refused by name. An empty or mistyped value would
+ * otherwise turn the ask count into NaN or Infinity and report "no answer"
+ * instead of the setting that caused it (L50).
+ */
+export function secondsSetting(raw, fallback, name) {
+  if (raw === undefined) return fallback
+  const value = raw.trim() === '' ? Number.NaN : Number(raw)
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error(`${name} must be a positive number of seconds, and is ${JSON.stringify(raw)}`)
+  }
+  return value
+}
+
 export async function probeAfterDeploy(deps) {
   const url = `${deps.workerUrl.replace(/\/+$/, '')}${PROBE_PATH}`
   const start = deps.now()
@@ -104,10 +119,18 @@ async function main() {
       process.exit(1)
     }
   }
+  let budgetSeconds, intervalSeconds
+  try {
+    budgetSeconds = secondsSetting(env.BUDGET_SECONDS, 120, 'BUDGET_SECONDS')
+    intervalSeconds = secondsSetting(env.INTERVAL_SECONDS, 10, 'INTERVAL_SECONDS')
+  } catch (err) {
+    console.error(`::error::ops-connections-probe: ${err.message}, so nothing was measured.`)
+    process.exit(1)
+  }
   const result = await probeAfterDeploy({
     workerUrl: env.WORKER_URL,
-    budgetSeconds: Number(env.BUDGET_SECONDS ?? '120'),
-    intervalSeconds: Number(env.INTERVAL_SECONDS ?? '10'),
+    budgetSeconds,
+    intervalSeconds,
     signIn: async () => (await passwordSession(fetch, env.SUPABASE_URL, env.SUPABASE_ANON_KEY, env.E2E_EMAIL, env.E2E_PASSWORD)).access_token,
     fetchProbe: async (url, token) => {
       const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(60_000) })
