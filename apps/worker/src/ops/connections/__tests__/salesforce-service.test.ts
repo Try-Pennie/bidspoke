@@ -9,9 +9,10 @@
  * proven against Postgres in supabase-ops/supabase/tests/connection_storage.test.sql):
  * nothing measured and not verify, sf_org_unmeasured; nothing measured and a
  * verify of a host with no approved bootstrap row, sf_cap_unset; a measured org
- * with no approved cap, sf_cap_unset. Production has no cap rows until Dan
- * approves them (Decision 11), so every Salesforce call is refused at the lease,
- * by name, before a token is asked for.
+ * with no approved cap, sf_cap_unset. Production holds approved rows for the
+ * trypennie org only (Decision 11, ops migration 20261020010000, proven in
+ * sf_lane_approval.test.sql), so a call to any other org or host is refused at
+ * the lease, by name, before a token is asked for.
  */
 import { beforeAll, describe, expect, it } from 'vitest'
 import type { SealedEnvelope } from '@bidspoke/connection-seal'

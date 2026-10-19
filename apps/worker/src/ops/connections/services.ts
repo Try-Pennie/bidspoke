@@ -9,9 +9,11 @@
  * identity measurement (./identity.ts) and, where it has lookups, its schema
  * target. Snowflake was the first (snowflake-service.ts). Salesforce
  * (salesforce-service.ts) is registered ahead of its actions, so verify and
- * lookups reach the ops pool, which refuses every one by name until Dan
- * approves its caps (Decision 11: sf_cap_unset, or sf_org_unmeasured before
- * verify has measured the org). Every service not listed here is refused by
+ * lookups reach the ops pool, which grants them only within the caps Dan
+ * approved for the org (Decision 11, ops migration 20261020010000: the
+ * trypennie org alone so far) and refuses every other one by name
+ * (sf_cap_unset, or sf_org_unmeasured before verify has measured the org).
+ * Every service not listed here is refused by
  * name (connection_service_unknown).
  *
  * No entry holds a fetch: a minter that asks a token endpoint asks it through

@@ -6,8 +6,9 @@
  * declared instance). No catalogue action uses it yet.
  *
  * Every request takes a lease from the ops pool first (connectionFetch), and
- * acquire_sf_lease refuses each one by name until Dan approves the caps
- * (Decision 11): verify of a connection not yet measured asks the bootstrap
+ * acquire_sf_lease grants it only within the caps Dan approved (Decision 11,
+ * ops migration 20261020010000, the trypennie org and its instance host only so
+ * far) and refuses the rest by name: verify of a connection not yet measured asks the bootstrap
  * slot of its declared host and is refused sf_cap_unset while that host has
  * no approved row; any other call before verify has measured the org is
  * sf_org_unmeasured; a measured org with no approved cap is sf_cap_unset. The
