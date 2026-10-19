@@ -28,10 +28,10 @@ export const DEFAULT_MAX_PAGES = 200
  * (#1785, #1437). The bound is `maxPages` when given (#1681), otherwise
  * DEFAULT_MAX_PAGES. A caller treats the throw as "could not measure", the same
  * as a failed page, never as a count. Measured on 2026-10-19, the largest read
- * any caller makes is the buyer select parity refresh's three hour window of the
- * Engine flow, at most 12,020 rows (13 pages), so the default bound sits far
- * above every read today; a caller expected to grow past it narrows its query or
- * names its own bound.
+ * any caller makes is the live share check's six hour window of the Engine
+ * flow's buyer_select steps, at most 15,991 rows (16 pages), so the default
+ * bound sits far above every read today; a caller expected to grow past it
+ * narrows its query or names its own bound.
  */
 export async function fetchAllPaged<T>(
   makeQuery: (from: number, to: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }>,
