@@ -20,6 +20,8 @@ const AT_ONCE = [
   'workflows_too_many', 'copies_read_limit', 'schedule_refused', 'schedule_no_version', 'slot_missed', 'dispatch_failed',
   'connections_list_unreadable', 'connection_refused', 'connections_too_many', 'connection_copies_expired', 'connections_step_failed',
   'report_unreadable', 'unkeyed',
+  // The sf_limits sweep (#2336): it runs every fourth tick, so no kind of its can be reported by three ticks in a row.
+  'sf_limits_failed', 'sf_limits_orgs_limit', 'sf_limits_refused', 'sf_limits_unreadable', 'sf_limits_read_failed',
 ]
 
 describe('the rule each kind of tick problem pages by', () => {

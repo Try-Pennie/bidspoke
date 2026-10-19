@@ -32,6 +32,10 @@
  *  - money's measured Salesforce run as identity for one organization
  *    (moneyIdentities), a non secret value ops verify compares a credential's
  *    measured identity against.
+ *
+ * And since #2340, the heartbeat stamps of the ops jobs other than the tick
+ * (opsJobStarted, opsJobCompleted), each a sweep inside the tick that the
+ * bidding Worker watches under its own id (OPS_GATEWAY_JOBS, below).
  */
 import { CURRENT_OPS_KID, KID_PATTERN } from '@bidspoke/connection-seal'
 
@@ -62,6 +66,9 @@ export interface OpsGatewayBinding {
   opsWorkflows(): Promise<unknown>
   opsTickStarted(): Promise<unknown>
   opsTickCompleted(report: unknown): Promise<unknown>
+  /** An ops job's heartbeat stamps (#2340): an id from OPS_GATEWAY_JOBS, and on completion an OpsJobReport. */
+  opsJobStarted(jobId: string): Promise<unknown>
+  opsJobCompleted(jobId: string, report: unknown): Promise<unknown>
   /** A StoreRotatedEnvelopeRequest in; a StoreRotatedEnvelopeAnswer out (#2335). */
   storeRotatedEnvelope(request: unknown): Promise<unknown>
   /** A ReplaceConnectionEnvelopeRequest in; a ReplaceConnectionEnvelopeAnswer out (#2333, the reseal). */
@@ -349,6 +356,20 @@ export const OPS_TICK_PROBLEM_RULES = {
   report_unreadable: 'at_once',
   /** A sentence from an ops release before #2506, which says nothing of its kind. */
   unkeyed: 'at_once',
+  // The sf_limits sweep (#2336, ops/sf-limits.ts), claimed every 4 minutes, so
+  // no kind of its can be reported by three ticks in a row: the sweep holds a
+  // failure the next read may not meet itself, by its reading's age, and
+  // reports only what is due to page.
+  /** The read of which orgs are measured failed, or the sweep threw past its own boundaries. */
+  sf_limits_failed: 'at_once',
+  /** As many measured orgs as one sweep reads: any past them had no reading renewed. */
+  sf_limits_orgs_limit: 'at_once',
+  /** A refusal the next read will meet again: a 4xx, a refusal by rule or state (sf_cap_unset, needs_reauth). */
+  sf_limits_refused: 'at_once',
+  /** A body whose DailyApiRequests cannot be read: a named refusal, never a NaN (L50). */
+  sf_limits_unreadable: 'at_once',
+  /** A failure the next read may not meet, reported only once the org's reading is older than one renewal. */
+  sf_limits_read_failed: 'at_once',
 } as const satisfies Record<string, OpsTickProblemRule>
 
 export type OpsTickProblemKind = keyof typeof OPS_TICK_PROBLEM_RULES
@@ -513,6 +534,50 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
     start_stamp_failed: stampFailed,
     problem_keys: capped.problem_keys,
   }
+}
+
+/**
+ * The ops jobs other than the tick that stamp a heartbeat through the gateway
+ * (#2340, phase 10 of #1689): OpsGateway.opsJobStarted and opsJobCompleted
+ * accept only these, and dispatch each to its own literal stamp in
+ * lib/ops-gateway.ts. Each is a sweep inside the ops minute tick, watched from
+ * the bidding Worker (L71) by its own CRON_JOBS entry under the same id. The
+ * tick itself is not one: it stamps through opsTickStarted and opsTickCompleted.
+ *
+ * SF_LIMITS_JOB is the sf_limits sweep (#2336, ops/sf-limits.ts). NEVER rename
+ * it: it keys the job's heartbeat state in KV.
+ */
+export const SF_LIMITS_JOB = 'ops-sf-limits'
+export const OPS_GATEWAY_JOBS = [SF_LIMITS_JOB] as const
+export type OpsGatewayJob = (typeof OPS_GATEWAY_JOBS)[number]
+
+/** An ops job id as the bidding Worker receives it, refused by name when it stamps none. */
+export function parseOpsJobId(raw: unknown): OpsGatewayJob {
+  if (typeof raw === 'string' && (OPS_GATEWAY_JOBS as readonly string[]).includes(raw)) return raw as OpsGatewayJob
+  // Cut short and kept to an id's characters, so a refusal cannot carry a payload into the logs.
+  const named = typeof raw === 'string' ? `'${raw.slice(0, 64).replace(/[^a-z0-9-]/gi, '?')}'` : `a ${raw === null ? 'null' : typeof raw}`
+  throw new OpsGatewayContractError(`${named} is not an ops job this Worker stamps (${OPS_GATEWAY_JOBS.join(', ')})`)
+}
+
+/** What an ops job sends with its completion: when it ran, and what it did as counts, for the logs. */
+export interface OpsJobReport {
+  started_at: string
+  finished_at: string
+  counts: Record<string, number>
+}
+
+const MAX_JOB_COUNTS = 50
+
+/** An ops job's report as the bidding Worker received it. Throws on one it cannot read. */
+export function parseOpsJobReport(raw: unknown): OpsJobReport {
+  if (!isRecord(raw)) throw new OpsGatewayContractError('the ops job sent a report that is not an object')
+  const { started_at, finished_at, counts } = raw
+  if (!isTime(started_at) || !isTime(finished_at)) throw new OpsGatewayContractError('the ops job report has an unreadable start or finish')
+  if (!isRecord(counts) || Object.keys(counts).length > MAX_JOB_COUNTS
+    || Object.entries(counts).some(([k, n]) => !/^[a-z][a-z0-9_]{0,63}$/.test(k) || typeof n !== 'number' || !Number.isFinite(n))) {
+    throw new OpsGatewayContractError('the ops job report\'s counts are not named numbers')
+  }
+  return { started_at, finished_at, counts: { ...(counts as Record<string, number>) } }
 }
 
 /** What the ops copy's CHECK holds an envelope to (connection_copies_envelope_shape). */

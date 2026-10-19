@@ -19,7 +19,10 @@
  *     owner per interval (claim_ops_sweep: a try advisory lock then a timestamp
  *     compare and set), because Cloudflare overlaps and retries crons: a tick
  *     that loses the claim stands down and says so. Then the Salesforce lease
- *     sweep, which needs no claim (TICK_SF_LEASE_SWEEP says why).
+ *     sweep, which needs no claim (TICK_SF_LEASE_SWEEP says why). Since #2336
+ *     the sf_limits sweep too (sf-limits.ts), which reads each measured
+ *     Salesforce org's limits beside the rest of the tick and is awaited before
+ *     step 8, stamping its own heartbeat (SF_LIMITS_JOB) through the gateway.
  *  4. The workflows (decision 4, 2026-10-16): fetch the ops workflows' state from
  *     the bidding Worker over the service binding, save it as the last good
  *     copy, then read the copies back. The tick plans from what the database
@@ -54,14 +57,15 @@
  */
 import { planFires, scheduleFloorMs, scheduleFromTrigger, validateSchedule, type MissedReason, type PlannedFire, type ScheduleConfig } from '@bidspoke/workflow-definition'
 import {
-  capTickProblems, parseServedOpsWorkflows, tickProblem, type OpsTickMode, type OpsTickOutcome, type OpsTickProblemKind, type OpsTickReport,
-  type TickProblem,
+  SF_LIMITS_JOB, capTickProblems, parseServedOpsWorkflows, tickProblem, type OpsGatewayJob, type OpsJobReport, type OpsTickMode, type OpsTickOutcome,
+  type OpsTickProblemKind, type OpsTickReport, type TickProblem,
 } from '../lib/ops-gateway-contract'
+import { SF_LIMITS_EVERY_SECONDS, SF_LIMITS_MAX_ORGS, runSfLimitsSweep, type SfLimitsSweepDeps, type SfLimitsSweepResult } from './sf-limits'
 import { formatErr } from '../lib/format-error'
 import { saveServedConnections, type ConnectionServeDb } from './connection-serve'
 import type { OrganizationId } from './ops-db'
 import {
-  MAX_COPIES_PER_SAVE, type QueueDisagreement, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult,
+  MAX_COPIES_PER_SAVE, type QueueDisagreement, type SaveCopiesResult, type ScheduleObservation, type SfLimitsTarget, type SweepClaim, type SweepResult,
   type WorkflowCopy, type WorkflowCopyInput,
 } from './ops-writes'
 import { OBSERVATION_REASONS, type OpsSweep } from './run-vocabulary'
@@ -78,11 +82,11 @@ export const TICK_CLAIM_LIMIT = 40
 const COPIES_READ_LIMIT = 1000
 
 /**
- * The sweeps the tick claims. connection_check (Phase 10) and sf_limits (Phase 6)
- * are claimable but arrive with the code that runs them, so naming either here
- * is a compile error in runOpsTick until it is handled there.
+ * The sweeps the tick claims. connection_check (Phase 10) is claimable but
+ * arrives with the code that runs it, so naming it here is a compile error in
+ * runOpsTick until it is handled there.
  */
-export type TickSweep = Exclude<OpsSweep, 'connection_check' | 'sf_limits'>
+export type TickSweep = Exclude<OpsSweep, 'connection_check'>
 
 /**
  * The sweeps, each with the interval its owner claims. A minute sweep claims 50 s,
@@ -94,12 +98,22 @@ export type TickSweep = Exclude<OpsSweep, 'connection_check' | 'sf_limits'>
  * tombstone_expiry (#2334) deletes connection tombstones past their expires_at,
  * which is 7 hours after the removal. An expired tombstone guards nothing (every
  * copy it covered is past its serve_until), so an hour's delay costs only the row.
+ *
+ * sf_limits (#2336, sf-limits.ts) reads each measured Salesforce org's /limits
+ * and writes its budget reading, every 4 to 5 minutes (sf-limits.ts THE
+ * INTERVAL says why). Unlike the others it runs BESIDE the rest of the tick,
+ * awaited before the report: its reads go to Salesforce and are bounded at 45 s
+ * each, which must not hold the schedules back. It stamps its own heartbeat
+ * (SF_LIMITS_JOB) only when it owns the claim, and reports its failures as
+ * keyed problems that each page at once, since it can never be reported by
+ * three ticks in a row (it holds a transient one itself, by its reading's age).
  */
 export const TICK_SWEEPS: ReadonlyArray<{ sweep: TickSweep; everySeconds: number; pageLimit: number; maxPages: number }> = [
   { sweep: 'lease_expiry', everySeconds: 50, pageLimit: 500, maxPages: 4 },
   { sweep: 'run_expiry', everySeconds: 50, pageLimit: 500, maxPages: 4 },
   { sweep: 'queue_agreement', everySeconds: 14 * 60, pageLimit: 100, maxPages: 1 },
   { sweep: 'tombstone_expiry', everySeconds: 59 * 60, pageLimit: 500, maxPages: 4 },
+  { sweep: 'sf_limits', everySeconds: SF_LIMITS_EVERY_SECONDS, pageLimit: SF_LIMITS_MAX_ORGS, maxPages: 1 },
 ]
 
 /**
@@ -144,6 +158,10 @@ export interface OpsTickDb extends ConnectionServeDb {
   readCopies(limit: number): Promise<{ copies: WorkflowCopy[]; reachedLimit: boolean }>
   recordObservation(organizationId: OrganizationId, obs: ScheduleObservation): Promise<'recorded' | 'already_recorded'>
   dueQueueDepth(): Promise<{ dueRuns: number; dueWorkflows: number; oldestDue: string | null }>
+  /** The sf_limits sweep's measured orgs (sf_limits_targets, #2336). */
+  sfLimitsTargets(limit: number): Promise<{ targets: SfLimitsTarget[]; reachedLimit: boolean }>
+  /** A measured org's reading from its /limits read (record_sf_budget_reading, source limits). */
+  recordSfLimitsReading(sfOrgId: string, reading: { dailyApiMax: number; dailyApiRemaining: number }): Promise<'recorded'>
 }
 
 /**
@@ -180,7 +198,12 @@ export interface OpsTickPorts {
     fetchConnections(): Promise<unknown>
     started(): Promise<void>
     completed(report: OpsTickReport): Promise<void>
+    /** An ops job's heartbeat stamps (OpsGateway.opsJobStarted and opsJobCompleted, #2340). */
+    jobStarted(job: OpsGatewayJob): Promise<void>
+    jobCompleted(job: OpsGatewayJob, report: OpsJobReport): Promise<void>
   }
+  /** The sf_limits sweep's read of one org's /limits (#2336): connectionFetch, purpose sf_limits, in tick-live.ts. */
+  sfLimits: Pick<SfLimitsSweepDeps, 'read' | 'sleep' | 'log'>
   /** Throws when the call is refused or fails. */
   dispatch(item: DispatchItem): Promise<void>
 }
@@ -200,6 +223,32 @@ function log(event: string, fields: Record<string, string | number | boolean | n
   console.log(JSON.stringify({ event: 'ops_tick', step: event, ...fields }))
 }
 
+/**
+ * The sf_limits sweep wired to the tick's ports. Never rejects: a throw past
+ * the sweep's own boundaries is reported as sf_limits_failed, so the tick's
+ * report still goes.
+ */
+function startSfLimits(ports: OpsTickPorts, db: OpsTickDb): Promise<SfLimitsSweepResult> {
+  const job: OpsGatewayJob = SF_LIMITS_JOB
+  return (async () => {
+    // Read at once, so a port this deploy lacks is this sweep's failure by name.
+    const { read, sleep, log } = ports.sfLimits
+    return runSfLimitsSweep({
+      targets: (limit) => db.sfLimitsTargets(limit),
+      read,
+      record: (sfOrgId, reading) => db.recordSfLimitsReading(sfOrgId, reading),
+      started: () => ports.gateway.jobStarted(job),
+      completed: (report) => ports.gateway.jobCompleted(job, report),
+      now: ports.now,
+      sleep,
+      log,
+    })
+  })().catch((err: unknown) => ({
+    problems: [tickProblem('sf_limits_failed', `The sf_limits sweep failed: ${formatErr(err)}.`)],
+    counts: {},
+  }))
+}
+
 export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   const startedAt = new Date(ports.now()).toISOString()
   // Each problem keyed by its kind (#2506), so the bidding Worker can hold one a
@@ -215,6 +264,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   }
   let dbNow: string | null = null
   const items: DispatchItem[] = []
+  let sfLimitsRun: Promise<SfLimitsSweepResult> | null = null
 
   // 1. Started. A miss is reported under start_stamp, which the bidding Worker
   // holds until three ticks in a row miss (#2506), and flagged as before (#2410).
@@ -271,6 +321,11 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
           continue
         }
         bump(counts, 'sweeps_run')
+        if (s.sweep === 'sf_limits') {
+          // Beside the rest of the tick, awaited before the report (TICK_SWEEPS says why).
+          sfLimitsRun = startSfLimits(ports, db)
+          continue
+        }
         if (s.sweep === 'queue_agreement') {
           const rows = await db.queueDisagreements(s.pageLimit)
           if (rows.length > 0) {
@@ -471,6 +526,13 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     if (item.kind === 'probe') problem('probe_failed', `The probe through the dispatch path failed: ${formatErr(r.reason)}.`)
     else problem('dispatch_failed', `The dispatch of workflow ${item.workflowId}'s ${slotLabel(Date.parse(item.scheduledFor))} slot failed: ${formatErr(r.reason)}.`, item.workflowId)
   })
+
+  // 7b. The sf_limits sweep, if this tick owns it, settled before the report carries its problems.
+  if (sfLimitsRun !== null) {
+    const sf = await sfLimitsRun
+    problems.push(...sf.problems)
+    for (const [key, n] of Object.entries(sf.counts)) bump(counts, key, n)
+  }
 
   // 8. Completed.
   const outcome: OpsTickOutcome = notConfigured ? 'not_configured' : problems.length > 0 ? 'problems' : 'ok'

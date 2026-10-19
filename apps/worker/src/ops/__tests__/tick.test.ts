@@ -21,7 +21,11 @@ import {
   type WorkflowCopy, type WorkflowCopyInput,
 } from '../ops-writes'
 import type { OpsSweep } from '../run-vocabulary'
-import { runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
+import { ConnectionRefusal, RequeueAt } from '../connections/refusals'
+import type { SfLimitsTarget } from '../ops-writes'
+import { SF_LIMITS_EVERY_SECONDS } from '../sf-limits'
+import { SF_LIMITS_JOB } from '../../lib/ops-gateway-contract'
+import { TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const WF_A = '00000000-0000-4000-8000-0000000019a1'
@@ -84,10 +88,27 @@ function servedConnections() {
 
 interface Fake {
   ports: OpsTickPorts
-  db: OpsTickDb & { calls: string[]; saved: WorkflowCopyInput[][]; savedConnections: ConnectionCopyInput[][]; observations: ScheduleObservation[] }
+  db: OpsTickDb & {
+    calls: string[]; saved: WorkflowCopyInput[][]; savedConnections: ConnectionCopyInput[][]; observations: ScheduleObservation[]
+    sfReadings: Array<{ sfOrgId: string; dailyApiMax: number; dailyApiRemaining: number }>
+  }
   dispatched: DispatchItem[]
   stamps: string[]
   reports: unknown[]
+  /** The ops jobs' stamps through the gateway (#2340), as `started:<job>` and `completed:<job>`. */
+  jobStamps: string[]
+  sfReads: string[]
+}
+
+const SF_ORG = '00Dst0000000001AAA'
+
+/** One measured Salesforce org, as sf_limits_targets answers it (#2336). */
+function sfTarget(over: Partial<SfLimitsTarget> = {}): SfLimitsTarget {
+  return {
+    sfOrgId: SF_ORG, organizationId: ORG, connectionId: CONN, generation: 1,
+    target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: '3MVG-ops' },
+    readingMeasuredAt: '2026-10-17T09:58:30.000Z', dbNow: DB_NOW, ...over,
+  }
 }
 
 function fake(opts: {
@@ -110,11 +131,18 @@ function fake(opts: {
   stampFails?: boolean
   /** What the secrets check finds unset or unusable, or the error it throws. */
   secrets?: UnconfiguredSecret[] | Error
+  /** The measured Salesforce orgs the sf_limits sweep finds (#2336); none by default, as today. */
+  sfTargets?: SfLimitsTarget[]
+  /** What each /limits read answers. */
+  sfRead?: (t: SfLimitsTarget) => Promise<Response | RequeueAt>
+  /** The ops job stamps fail (#2340). */
+  jobStampFails?: boolean
 } = {}): Fake {
   const calls: string[] = []
   const saved: WorkflowCopyInput[][] = []
   const savedConnections: ConnectionCopyInput[][] = []
   const observations: ScheduleObservation[] = []
+  const sfReadings: Array<{ sfOrgId: string; dailyApiMax: number; dailyApiRemaining: number }> = []
   const fail = (name: keyof OpsTickDb) => {
     calls.push(name)
     const e = opts.failing?.[name]
@@ -125,7 +153,15 @@ function fake(opts: {
     saved,
     savedConnections,
     observations,
+    sfReadings,
     async now() { fail('now'); return DB_NOW },
+    async sfLimitsTargets(limit: number) {
+      fail('sfLimitsTargets'); calls.push(`sfLimitsTargets:${limit}`)
+      return { targets: opts.sfTargets ?? [], reachedLimit: false }
+    },
+    async recordSfLimitsReading(sfOrgId: string, reading: { dailyApiMax: number; dailyApiRemaining: number }) {
+      fail('recordSfLimitsReading'); sfReadings.push({ sfOrgId, ...reading }); return 'recorded' as const
+    },
     async claimSweep(sweep: OpsSweep, _owner: string, every: number): Promise<SweepClaim> {
       fail('claimSweep'); calls.push(`claim:${sweep}`, `claim:${sweep}:${every}`)
       return { owned: opts.sweepOwned ?? true, lastStartedAt: null, lastOwner: 'another-tick' }
@@ -153,6 +189,8 @@ function fake(opts: {
   const dispatched: DispatchItem[] = []
   const stamps: string[] = []
   const reports: unknown[] = []
+  const jobStamps: string[] = []
+  const sfReads: string[] = []
   const ports: OpsTickPorts = {
     tickId: 'tick-1',
     scheduledTime: Date.parse('2026-10-17T11:02:48.004Z'),
@@ -169,13 +207,24 @@ function fake(opts: {
       fetchConnections: opts.fetchConnections ?? (async () => servedConnections()),
       started: async () => { stamps.push('started'); if (opts.stampFails) throw new Error('the gateway is not deployed') },
       completed: async (r) => { stamps.push('completed'); reports.push(r); if (opts.stampFails) throw new Error('the gateway is not deployed') },
+      jobStarted: async (job) => { jobStamps.push(`started:${job}`); if (opts.jobStampFails) throw new Error('the gateway is not deployed') },
+      jobCompleted: async (job) => { jobStamps.push(`completed:${job}`); if (opts.jobStampFails) throw new Error('the gateway is not deployed') },
+    },
+    sfLimits: {
+      read: async (t, url) => {
+        sfReads.push(url)
+        return (opts.sfRead ?? (async () => Response.json({ DailyApiRequests: { Max: 1_680_000, Remaining: 1_205_253 } })))(t)
+      },
+      // The deadlines never pass unless a test makes them.
+      sleep: () => new Promise<void>(() => undefined),
+      log: () => undefined,
     },
     dispatch: async (item) => {
       if (opts.dispatchFails?.(item)) throw new Error('OpsInternal refused: bad_signature')
       dispatched.push(item)
     },
   }
-  return { ports, db, dispatched, stamps, reports }
+  return { ports, db, dispatched, stamps, reports, jobStamps, sfReads }
 }
 
 describe('a healthy tick', () => {
@@ -306,7 +355,10 @@ describe('failure boundaries', () => {
     expect(f.db.calls).not.toContain('purgeTombstones')
     // The Salesforce lease sweep takes no claim, so a held interval never stops it.
     expect(f.db.calls).toContain('sweepSfLeases')
-    expect(report.counts.sweeps_stood_down).toBe(4)
+    // The sf_limits sweep stands down too: no orgs read, nothing stamped (#2336).
+    expect(f.db.calls).not.toContain('sfLimitsTargets')
+    expect(f.jobStamps).toEqual([])
+    expect(report.counts.sweeps_stood_down).toBe(5)
     expect(report.outcome).toBe('ok')
   })
 
@@ -490,7 +542,9 @@ describe('the connection storage sweeps (#2334)', () => {
     const report = await runOpsTick(f.ports)
     expect(f.db.calls.filter((c) => c.startsWith('sweepSfLeases:'))).toEqual([`sweepSfLeases:${500}`])
     // claim_ops_sweep has no name for it and it needs none (TICK_SF_LEASE_SWEEP), so these are every claim a tick makes.
-    expect(f.db.calls.filter((c) => /^claim:[a-z_]+$/.test(c))).toEqual(['claim:lease_expiry', 'claim:run_expiry', 'claim:queue_agreement', 'claim:tombstone_expiry'])
+    expect(f.db.calls.filter((c) => /^claim:[a-z_]+$/.test(c))).toEqual([
+      'claim:lease_expiry', 'claim:run_expiry', 'claim:queue_agreement', 'claim:tombstone_expiry', 'claim:sf_limits',
+    ])
     expect(report.counts.sf_leases_swept).toBe(2)
     expect(report.outcome).toBe('ok')
   })
@@ -563,7 +617,10 @@ describe('problem keys (#2506)', () => {
     ['a secret found unusable', { secrets: [{ secret: 'OPS_CONNECTIONS_PRIVATE_KEY', problem: 'the key is not set' }] }, ['not_configured:OPS_CONNECTIONS_PRIVATE_KEY']],
     ['a secrets check that throws', { secrets: new Error('the key import crashed') }, ['secrets_unchecked']],
     ['an unreadable database clock', failsOn('now'), ['db_clock']],
-    ['a sweep claim that fails', failsOn('claimSweep'), ['sweep_claim_failed:lease_expiry', 'sweep_claim_failed:run_expiry', 'sweep_claim_failed:queue_agreement', 'sweep_claim_failed:tombstone_expiry']],
+    ['a sweep claim that fails', failsOn('claimSweep'), [
+      'sweep_claim_failed:lease_expiry', 'sweep_claim_failed:run_expiry', 'sweep_claim_failed:queue_agreement', 'sweep_claim_failed:tombstone_expiry',
+      'sweep_claim_failed:sf_limits',
+    ]],
     ['a lease sweep that fails after its claim', failsOn('sweepLeases'), ['sweep_failed:lease_expiry']],
     ['a run expiry sweep that fails after its claim', failsOn('expireRuns'), ['sweep_failed:run_expiry']],
     ['an agreement check that fails after its claim', failsOn('queueDisagreements'), ['agreement_check_failed']],
@@ -605,5 +662,87 @@ describe('problem keys (#2506)', () => {
       const report = await runOpsTick(fake(opts).ports)
       for (const key of report.problem_keys ?? []) expect(Object.keys(OPS_TICK_PROBLEM_RULES)).toContain(key.split(':')[0])
     }
+  })
+})
+
+describe('the sf_limits sweep inside the tick (#2336)', () => {
+  it('is claimed every 4 minutes through claim_ops_sweep, as one of the tick\'s sweeps', async () => {
+    expect(TICK_SWEEPS.find((s) => s.sweep === 'sf_limits')?.everySeconds).toBe(SF_LIMITS_EVERY_SECONDS)
+    const f = fake()
+    await runOpsTick(f.ports)
+    expect(f.db.calls).toContain(`claim:sf_limits:${SF_LIMITS_EVERY_SECONDS}`)
+  })
+
+  it('with no measured org (today), claims, finds nothing, stamps the job and reports nothing', async () => {
+    const f = fake()
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls).toContain('sfLimitsTargets:10')
+    expect(f.sfReads).toEqual([])
+    expect(f.jobStamps).toEqual([`started:${SF_LIMITS_JOB}`, `completed:${SF_LIMITS_JOB}`])
+    expect(report.outcome).toBe('ok')
+    expect(report.problems).toEqual([])
+    expect(report.counts.sf_limits_orgs).toBe(0)
+  })
+
+  it('reads a measured org\'s limits and records its daily API remaining, the counts in the tick\'s report', async () => {
+    const f = fake({ sfTargets: [sfTarget()] })
+    const report = await runOpsTick(f.ports)
+    expect(f.sfReads).toEqual(['https://trypennie.my.salesforce.com/services/data/v60.0/limits'])
+    expect(f.db.sfReadings).toEqual([{ sfOrgId: SF_ORG, dailyApiMax: 1_680_000, dailyApiRemaining: 1_205_253 }])
+    expect(report.counts).toMatchObject({ sf_limits_orgs: 1, sf_limits_recorded: 1 })
+    expect(report.outcome).toBe('ok')
+  })
+
+  it('carries the sweep\'s keyed problems into the tick\'s report, each paged at once', async () => {
+    const f = fake({ sfTargets: [sfTarget()], sfRead: async () => { throw new ConnectionRefusal('sf_cap_unset', 'the ops Salesforce pool answered sf_cap_unset') } })
+    const report = await runOpsTick(f.ports)
+    expect(report.outcome).toBe('problems')
+    expect(report.problem_keys).toEqual([`sf_limits_refused:${SF_ORG}`])
+    expect(report.problems[0]).toMatch(/sf_cap_unset/)
+  })
+
+  it('holds a transient failure while the org\'s reading is young, and the tick stays ok', async () => {
+    const f = fake({ sfTargets: [sfTarget()], sfRead: async () => new RequeueAt(new Date(WORKER_NOW + 60_000), 'rate_limited') })
+    const report = await runOpsTick(f.ports)
+    expect(report.outcome).toBe('ok')
+    expect(report.counts.sf_limits_held).toBe(1)
+  })
+
+  it('goes on, and the tick stays ok, when the job stamps fail: the heartbeat is what pages a sweep that stops stamping', async () => {
+    const f = fake({ sfTargets: [sfTarget()], jobStampFails: true })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.sfReadings).toHaveLength(1)
+    expect(report.outcome).toBe('ok')
+    expect(report.counts.sf_limits_stamps_failed).toBe(2)
+  })
+
+  it('reports a failed claim of sf_limits under sweep_claim_failed, which the next tick asks again', async () => {
+    const f = fake({ failing: { claimSweep: new OpsWriteTimeoutError('claim_ops_sweep did not answer within 9000 ms') } })
+    const report = await runOpsTick(f.ports)
+    expect(report.problem_keys).toContain('sweep_claim_failed:sf_limits')
+    expect(f.jobStamps).toEqual([])
+  })
+
+  it('reports a sweep that throws past its own boundaries as sf_limits_failed, and the rest of the tick still runs', async () => {
+    const f = fake()
+    const ports = { ...f.ports, sfLimits: undefined as unknown as OpsTickPorts['sfLimits'] }
+    const report = await runOpsTick(ports)
+    expect(report.problem_keys).toEqual(['sf_limits_failed'])
+    expect(f.dispatched).toHaveLength(1)
+  })
+
+  it('runs beside the rest of the tick, so a slow read does not hold the schedules back', async () => {
+    let release: () => void = () => undefined
+    const pending = new Promise<Response>((resolve) => { release = () => resolve(Response.json({ DailyApiRequests: { Max: 10, Remaining: 9 } })) })
+    const f = fake({ sfTargets: [sfTarget()], sfRead: () => pending })
+    const done = runOpsTick(f.ports)
+    // Let the tick reach its dispatch while the read is still out.
+    for (let i = 0; i < 50 && f.dispatched.length === 0; i++) await Promise.resolve()
+    expect(f.dispatched).toHaveLength(1)
+    expect(f.reports).toEqual([])
+    release()
+    const report = await done
+    expect(report.counts.sf_limits_recorded).toBe(1)
+    expect(f.reports).toHaveLength(1)
   })
 })

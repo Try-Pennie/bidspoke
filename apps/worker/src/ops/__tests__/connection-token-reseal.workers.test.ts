@@ -73,7 +73,7 @@ function gateway(answer: (request: Record<string, unknown>) => StoreRotatedEnvel
   return {
     requests,
     binding: {
-      opsWorkflows: unused, opsTickStarted: unused, opsTickCompleted: unused, opsConnections: unused, moneyIdentities: unused, replaceConnectionEnvelope: unused,
+      opsWorkflows: unused, opsTickStarted: unused, opsTickCompleted: unused, opsJobStarted: unused, opsJobCompleted: unused, opsConnections: unused, moneyIdentities: unused, replaceConnectionEnvelope: unused,
       storeRotatedEnvelope: async (request: unknown) => {
         requests.push(request as Record<string, unknown>)
         return answer(request as Record<string, unknown>)

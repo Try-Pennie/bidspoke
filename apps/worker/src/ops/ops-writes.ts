@@ -1084,6 +1084,66 @@ export async function readMeasuredSfOrg(
   return sfOrgId
 }
 
+/**
+ * One measured Salesforce org the sf_limits sweep reads, and the connection it
+ * reads it through (sf_limits_targets, #2336): the org the connection MEASURED
+ * as, never its declared target (L83), and the organization every later call
+ * for it is made under. readingMeasuredAt is the org's last budget reading, or
+ * null when it has none; dbNow is the clock that reading's age is judged on.
+ */
+export interface SfLimitsTarget {
+  sfOrgId: string
+  organizationId: OrganizationId
+  connectionId: string
+  generation: number
+  /** The copy's declared target, whose instance_url the read is sent to. connectionFetch checks it against the declared hosts again. */
+  target: unknown
+  readingMeasuredAt: string | null
+  dbNow: string
+}
+
+/** The most measured orgs one read returns, as sf_limits_targets holds it. */
+export const SF_LIMITS_TARGETS_MAX = 100
+
+const UUID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/**
+ * Every measured Salesforce org, at most `limit`, each with one connection that
+ * can read it now. Lane wide, like workflow_copies. Throws on a failed read or a
+ * row of the wrong shape: an empty list would read as nothing measured.
+ */
+export async function readSfLimitsTargets(
+  client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions,
+): Promise<{ targets: SfLimitsTarget[]; reachedLimit: boolean }> {
+  const name = 'sf_limits_targets'
+  if (!Number.isInteger(limit) || limit < 1 || limit > SF_LIMITS_TARGETS_MAX) throw new OpsWriteError(`${name}: the limit must be a whole number from 1 to ${SF_LIMITS_TARGETS_MAX}`)
+  const all = rows(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  const targets = all.map((row): SfLimitsTarget => {
+    const sfOrgId = field(name, row, 'sf_org_id', isString, 'an org id')
+    if (!SF_ORG_ID.test(sfOrgId)) throw new OpsWriteError(`${name} returned an org id that is not an 18 character Salesforce org id`)
+    let organizationId: OrganizationId
+    try {
+      organizationId = organizationIdFrom(row.organization_id)
+    } catch {
+      throw new OpsWriteError(`${name} returned a target whose organization is not a uuid`)
+    }
+    const connectionId = field(name, row, 'connection_id', isString, 'an id')
+    if (!UUID_SHAPE.test(connectionId)) throw new OpsWriteError(`${name} returned a target whose connection is not a uuid`)
+    const generation = field(name, row, 'generation', isInt, 'a whole number')
+    if (generation < 1) throw new OpsWriteError(`${name} returned a generation below 1`)
+    return {
+      sfOrgId,
+      organizationId,
+      connectionId,
+      generation,
+      target: row.target ?? null,
+      readingMeasuredAt: field(name, row, 'reading_measured_at', isTimeOrNull, 'a time or null'),
+      dbNow: field(name, row, 'db_now', isTime, 'a time'),
+    }
+  })
+  return { targets, reachedLimit: targets.length === limit }
+}
+
 /** What take_lookup_allowance answers: allowed (used counts this lookup), or rate_limited until retryAt. */
 export type LookupAllowance =
   | { outcome: 'allowed'; used: number; retryAt: null }

@@ -77,10 +77,49 @@ used. The parser and the recorder are `apps/worker/src/ops/connections/sf-budget
 - **It cannot start the pool on its own.** Every call but `sf_limits` is refused
   `sf_budget_unmeasured` until a reading exists, and a refused call gets no
   response to read. The first reading, and one after any quiet spell of more than
-  15 minutes, comes from the `sf_limits` sweep (a later pull request of this
-  phase), which is exempt from the budget and writes source `limits`. From then
-  on the calls themselves keep the reading fresh while they flow, and the sweep
-  is the floor under it when they do not; whichever reading is later stands.
+  15 minutes, comes from the `sf_limits` sweep (below), which is exempt from the
+  budget and writes source `limits`. From then on the calls themselves keep the
+  reading fresh while they flow, and the sweep is the floor under it when they
+  do not; whichever reading is later stands.
+
+## The sf_limits sweep (#2336)
+
+One of the ops minute tick's claimed sweeps (`apps/worker/src/ops/sf-limits.ts`,
+wired in `tick.ts` `TICK_SWEEPS`), which runs beside the rest of the tick and is
+awaited before its report.
+
+- **Which orgs.** `sf_limits_targets` (ops migration 20261019230000): one row per
+  Salesforce org a connection's verify MEASURED as, never a declared target, each
+  naming one connection whose copy can serve now (service `salesforce`, the
+  measured generation, not withdrawn, not expired, no tombstone), a healthy one
+  before one in `needs_reauth`. At most 10 a sweep. With no measured org, which
+  is today until the first ops Salesforce connection is verified, the sweep
+  claims, finds nothing and reports nothing.
+- **The read.** `GET <instance_url>/services/data/v60.0/limits` through
+  connectionFetch, purpose `sf_limits`, the committed copy only, recording
+  nothing (a GET by the tick, no step). Salesforce documents the body as one
+  object per limit, each `{ "Max": n, "Remaining": n }` (REST API Developer
+  Guide v68.0, "Limits"; available to a user with View Setup and Configuration,
+  so one without it is a 403). Only `DailyApiRequests` is read; a missing,
+  non numeric, fractional, out of range or inconsistent value is refused by name
+  (`no_daily_api_requests`, `not_whole`, `out_of_range`, `max_not_positive`,
+  `remaining_above_max`, and `not_json` or `too_large` for the body), never
+  written. Remaining below zero is written. Each read costs one API call.
+- **How often.** Claimed every 240 s, so every 4 to 5 minutes. A floor refusal
+  answers retry_at = the reading's measured_at plus 5 minutes, so the reading is
+  renewed by then; a reading goes stale at 15 minutes, so three renewals in a row
+  must fail first. Salesforce says the figures are accurate within five minutes
+  and asks not to be polled rapidly, so faster gains nothing.
+- **Failures** page through the tick's report, each at once: a refusal the next
+  read meets again (a 4xx, a refusal by rule or state such as `sf_cap_unset` or
+  `connection_needs_reauth`, an unreadable body) at once; a passing one (a
+  timeout, a busy pool, a 5xx, a rate limit, a write the ops database missed)
+  only once the org's reading is older than 7 minutes, which only a second
+  failure in a row leaves it. docs/reference/observability.md has the kinds.
+- **Its heartbeat** is `ops-sf-limits` in the bidding Worker's `CRON_JOBS`,
+  stamped through `OpsGateway.opsJobStarted` and `opsJobCompleted` (#2340), which
+  accept only the ids in `OPS_GATEWAY_JOBS` and are reached only by the ops
+  Worker's `OPS_GATEWAY` binding.
 
 ## OpsConnections (`apps/worker/src/ops/ops-connections-entrypoint.ts`)
 

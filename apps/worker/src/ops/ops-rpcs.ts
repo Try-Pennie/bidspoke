@@ -75,7 +75,11 @@ export const OPS_LANE_RPCS = [
  * connection statuses; #2335: whether a mailbox and drives are on that
  * organization's Google delegation allowlist).
  */
-export const OPS_LANE_READ_ONLY_RPCS = ['run_queue_disagreements', 'ops_now', 'workflow_copies', 'due_queue_depth'] as const
+export const OPS_LANE_READ_ONLY_RPCS = [
+  'run_queue_disagreements', 'ops_now', 'workflow_copies', 'due_queue_depth',
+  // The sf_limits sweep's measured Salesforce orgs (#2336): a Salesforce org belongs to no one organization.
+  'sf_limits_targets',
+] as const
 export const OPS_ORGANIZATION_READ_ONLY_RPCS = ['connection_copy', 'connection_status', 'google_delegation_check'] as const
 export const OPS_READ_ONLY_RPCS = [...OPS_LANE_READ_ONLY_RPCS, ...OPS_ORGANIZATION_READ_ONLY_RPCS] as const
 

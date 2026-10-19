@@ -9,8 +9,8 @@
  * classes are. Each method is one bounded piece of work its caller awaits, with
  * the library's retries off (a lead client's setting, #1844), since the tick
  * gives up at 15 s and keeps its saved copies: the workflow list (one paged
- * read), the connection list (two paged reads, #2335), a heartbeat stamp (one KV
- * write), money's identity for one organization (one KV read, #2335), a
+ * read), the connection list (two paged reads, #2335), a heartbeat stamp of the
+ * tick or of an ops job (one KV write, #2340), money's identity for one organization (one KV read, #2335), a
  * rotated login's compare and set (one rpc, #2335), or a resealed login's
  * compare and set during a rotation of the ops key (one rpc, #2333).
  */
@@ -19,7 +19,8 @@ import type { Env } from '../env'
 import { createSupabaseClient } from './supabase'
 import { readMoneyIdentities } from './money-identity'
 import {
-  readOpsConnections, readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, replaceConnectionEnvelope, storeRotatedEnvelope,
+  readOpsConnections, readOpsWorkflows, recordOpsJobCompleted, recordOpsJobStarted, recordOpsTickCompleted, recordOpsTickStarted, replaceConnectionEnvelope,
+  storeRotatedEnvelope,
 } from './ops-gateway'
 
 export class OpsGateway extends WorkerEntrypoint<Env> {
@@ -55,6 +56,23 @@ export class OpsGateway extends WorkerEntrypoint<Env> {
   async opsTickCompleted(report: unknown) {
     await recordOpsTickCompleted(this.env.IDEMPOTENCY, report, Date.now())
     return { stamped: 'completed' }
+  }
+
+  /**
+   * An ops job's started stamp (#2340): one KV write under the job's own id,
+   * for an id in OPS_GATEWAY_JOBS only, any other refused by name. Called by
+   * the ops Worker's sweeps (the sf_limits sweep, #2336) over its OPS_GATEWAY
+   * binding, and by nothing else. Who may call it: ops-gateway.ts.
+   */
+  async opsJobStarted(jobId: unknown) {
+    const job = await recordOpsJobStarted(this.env.IDEMPOTENCY, jobId, Date.now())
+    return { stamped: 'started', job }
+  }
+
+  /** An ops job's completed stamp (#2340), as opsJobStarted, with the job's report, which is only logged. */
+  async opsJobCompleted(jobId: unknown, report: unknown) {
+    const job = await recordOpsJobCompleted(this.env.IDEMPOTENCY, jobId, report, Date.now())
+    return { stamped: 'completed', job }
   }
 
   /**

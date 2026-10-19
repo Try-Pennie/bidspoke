@@ -110,6 +110,8 @@ function gateway(...answers: Array<StoreRotatedEnvelopeAnswer | Error | ((reques
       opsWorkflows: async () => { throw new Error('not used') },
       opsTickStarted: async () => { throw new Error('not used') },
       opsTickCompleted: async () => { throw new Error('not used') },
+      opsJobStarted: async () => { throw new Error('not used') },
+      opsJobCompleted: async () => { throw new Error('not used') },
       opsConnections: async () => { throw new Error('not used') },
       moneyIdentities: async () => { throw new Error('not used') },
       replaceConnectionEnvelope: async () => { throw new Error('not used') },
