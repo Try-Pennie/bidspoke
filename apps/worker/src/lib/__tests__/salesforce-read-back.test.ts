@@ -33,6 +33,7 @@ import {
   type SalesforceReadBackDeps,
 } from '../salesforce-read-back'
 import { WAIT_UNTIL_LIMIT_MS } from '../post-response-budget'
+import { salesforceTimeMs } from '../salesforce-field-conflict'
 import { completedKey } from '../cron-heartbeat'
 import { runUnconfirmedWriteSweep } from '../unconfirmed-write-sweep'
 import { putUnconfirmedWrite, UNCONFIRMED_WRITE_PREFIX } from '../../engine/unconfirmed-writes'
@@ -763,6 +764,17 @@ describe('sameSalesforceValue', () => {
     expect(sameSalesforceValue(4.0, 4)).toBe(true)
     expect(sameSalesforceValue('2026-10-15T12:00:00.000+0000', '2026-10-15T12:00:00.123Z')).toBe(true)
     expect(sameSalesforceValue(true, 'true')).toBe(true)
+  })
+
+  // #2485: Main Flow's invalid state body sends PD_Completed_Timestamp__c with no
+  // zone, which Salesforce saves as UTC. Read in the host's zone it differed by
+  // the zone's offset on any machine not set to UTC, so a test of a real body
+  // passed in CI and failed on a laptop.
+  it('reads a time sent with no zone as UTC, as Salesforce and the Worker do, whatever zone the host is in', () => {
+    expect(salesforceTimeMs('2026-10-18T16:14:32')).toBe(Date.UTC(2026, 9, 18, 16, 14, 32))
+    expect(salesforceTimeMs('2026-10-18T16:14:32.927')).toBe(Date.UTC(2026, 9, 18, 16, 14, 32, 927))
+    expect(sameSalesforceValue('2026-10-18T16:14:32.000+0000', '2026-10-18T16:14:32')).toBe(true)
+    expect(salesforceTimeMs('2026-10-18T16:14:32-0400')).toBe(Date.UTC(2026, 9, 18, 20, 14, 32))
   })
 
   it('reads a genuinely different value as different', () => {
