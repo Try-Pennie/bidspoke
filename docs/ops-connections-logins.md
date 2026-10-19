@@ -154,7 +154,10 @@ run beside the rest of the tick and awaited before its report.
   declared ones), through connectionFetch, purpose `connection_check`, the
   committed copy only, recording nothing. A Salesforce probe takes a lease under
   the `connection_check` share of 1 (Decision 11), so the connections of one org
-  are probed one after another. Each connection has its own 45 second deadline.
+  are probed one after another. Each connection has its own 45 second deadline,
+  and no probe starts once 10 seconds of the sweep have passed, so a sweep takes
+  at most 55 seconds; a connection not reached is counted as deferred and, being
+  the least recently checked, goes first next sweep.
 - **What it writes.** `record_connection_check` only, so the `last_check_*`
   columns: a passing check, or a failed one with a cause that is a name (a
   refusal code, `http_<status>`, `identity_changed`, `identity_mismatch`), never

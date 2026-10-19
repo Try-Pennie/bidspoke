@@ -64,7 +64,11 @@ describe('the refresh_failing page bound is the database\'s escalation bound (#2
   })
 
   it('tells the two apart when they differ, so a green run means the comparison can fail', () => {
-    const body = "c_limit CONSTANT integer := 6;\n  c_span CONSTANT interval := interval '15 minutes';"
-    expect(databaseBound(body)).not.toEqual(workerBound(CONTRACT))
+    // Built from the real bound, one failure and one minute past it, so this holds whatever the bound is.
+    const real = databaseBound(latestRefreshFunction().body)
+    const failuresOff = `c_limit CONSTANT integer := ${real.failures + 1};\n  c_span CONSTANT interval := interval '${real.spanMinutes} minutes';`
+    const spanOff = `c_limit CONSTANT integer := ${real.failures};\n  c_span CONSTANT interval := interval '${real.spanMinutes + 1} minutes';`
+    expect(workerBound(CONTRACT)).not.toEqual(databaseBound(failuresOff))
+    expect(workerBound(CONTRACT)).not.toEqual(databaseBound(spanOff))
   })
 })

@@ -469,9 +469,11 @@ export const CRON_JOBS: CronJob[] = [
     // One sweep is one read of the connections and one identity probe each,
     // bounded at 45 s a connection (CONNECTION_CHECK_DEADLINE_MS), the
     // connections of one Salesforce org one after another and the rest at once.
-    // Below the minute trigger it rides, as every minute job's must be; judged
-    // by the drought below, never by one run.
-    maxRunMs: 50 * 1000,
+    // No probe starts once 10 s of the sweep have passed
+    // (CONNECTION_CHECK_START_BUDGET_MS), so one sweep takes at most 55 s, below
+    // the minute trigger it rides, as every minute job's must be. Judged by the
+    // drought below, never by one run.
+    maxRunMs: 55 * 1000,
     // Three sweeps in a row at their usual 15 minute spacing with no completion
     // while starts go on, so a completion stamp or two the gateway missed is
     // never read as a killed sweep.

@@ -196,6 +196,24 @@ describe('the all clear', () => {
     expect(JSON.parse(h.kv.store.get(OPS_CONNECTION_LOGIN_STATE_KEY)!)).toEqual({ open: {} })
   })
 
+  it('never overwrites the open incidents when it could not read them, so an owed all clear survives a failed read', async () => {
+    const h = harness()
+    await h.run(judged(list([needs()])))
+    // The record cannot be read this minute, and the list no longer names the connection.
+    const get = h.kv.get.getMockImplementation()!
+    h.kv.get.mockImplementation(async (k: string) => {
+      if (k === OPS_CONNECTION_LOGIN_STATE_KEY) throw new Error('KV did not answer')
+      return get(k)
+    })
+    const out = await h.run(judged(list([needs({ connection_id: CONN_B, organization_id: ORG_B })])), NOW + 5 * MIN)
+    expect(out.errors.join(' ')).toMatch(/could not be read/)
+    expect(JSON.parse(h.kv.store.get(OPS_CONNECTION_LOGIN_STATE_KEY)!).open).toHaveProperty(CONN_A)
+    // Once it reads again, the all clear owed for the first connection goes.
+    h.kv.get.mockImplementation(get)
+    await h.run(judged(list([])), NOW + 6 * MIN)
+    expect(h.sendRecovery.mock.calls.map(([org]) => org)).toContain(ORG_A)
+  })
+
   it('writes its state only when it changes, not every minute', async () => {
     const h = harness()
     await h.run(judged(list([needs()])))

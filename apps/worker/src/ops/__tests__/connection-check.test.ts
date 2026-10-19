@@ -26,7 +26,7 @@ import { IdentityMismatch, IdentityUnreadable, type MeasuredIdentity } from '../
 import { organizationIdFrom } from '../ops-db'
 import type { ConnectionCheckTarget } from '../ops-writes'
 import {
-  CONNECTION_CHECK_DEADLINE_MS, CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_HOLD_WHILE_YOUNGER_MS, CONNECTION_CHECK_MAX_CONNECTIONS,
+  CONNECTION_CHECK_DEADLINE_MS, CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_HOLD_WHILE_YOUNGER_MS, CONNECTION_CHECK_MAX_CONNECTIONS, CONNECTION_CHECK_START_BUDGET_MS,
   CONNECTION_CHECK_REFUSAL_KINDS, REFRESH_FAILING_PAGE_FAILURES, REFRESH_FAILING_PAGE_SPAN_MS, judgeConnectionLogins, runConnectionCheckSweep,
   type ConnectionCheckSweepDeps, type ProbeAnswer, type ProbeSeen,
 } from '../connection-check'
@@ -93,6 +93,8 @@ function harness(opts: {
   expire?: number[]
   /** With expire: end only this many of those waits, in call order; the rest never end. */
   expireFirst?: number
+  /** This Worker's clock, when a test moves it. */
+  now?: () => number
 } = {}): Harness {
   const probes: string[] = []
   const recorded: Harness['recorded'] = []
@@ -117,7 +119,7 @@ function harness(opts: {
     },
     started: async () => { stamps.push('started'); if (opts.startFails) throw new Error('the bidding Worker\'s heartbeat did not answer within 15 s') },
     completed: async (report) => { stamps.push('completed'); reports.push(report); if (opts.completeFails) throw new Error('the gateway is not deployed') },
-    now: () => WORKER_NOW,
+    now: opts.now ?? (() => WORKER_NOW),
     sleep: (ms) => {
       if (!opts.expire?.includes(ms)) return new Promise<void>(() => undefined)
       if (opts.expireFirst !== undefined && expired++ >= opts.expireFirst) return new Promise<void>(() => undefined)
@@ -142,6 +144,10 @@ describe('the interval', () => {
 
   it('bounds one connection inside the minute the tick rides', () => {
     expect(CONNECTION_CHECK_DEADLINE_MS).toBeLessThan(60_000)
+  })
+
+  it('starts no probe past its start budget, so one sweep ends within the budget and one deadline', () => {
+    expect(CONNECTION_CHECK_START_BUDGET_MS + CONNECTION_CHECK_DEADLINE_MS).toBeLessThan(60_000)
   })
 })
 
@@ -381,6 +387,22 @@ describe('the sweep', () => {
     releases.get(CONN_C)!()
     const out = await done
     expect(out.counts.connection_check_passed).toBe(3)
+  })
+
+  it('starts no probe once its start budget is spent, and leaves the rest, least recently checked, for the next sweep', async () => {
+    let clock = WORKER_NOW
+    const h = harness({
+      targets: [target(), target({ connectionId: CONN_B }), target({ connectionId: CONN_C })],
+      now: () => clock,
+      // The first probe is slow: the budget is spent when it answers.
+      probe: async () => { clock += CONNECTION_CHECK_START_BUDGET_MS; return { kind: 'measured', identity: sfIdentity() } },
+    })
+    const out = await runConnectionCheckSweep(h.deps)
+    expect(h.probes).toEqual([CONN_A])
+    expect(h.recorded.map((r) => r.connectionId)).toEqual([CONN_A])
+    expect(out.counts).toMatchObject({ connection_check_passed: 1, connection_check_deferred: 2 })
+    // Not a failure: nothing was asked of them, and nothing about them is reported or recorded.
+    expect(out.problems).toEqual([])
   })
 
   it('every refusal code connectionFetch can throw is classified, so a new one is a compile and a test failure', () => {

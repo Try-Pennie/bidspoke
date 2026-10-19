@@ -216,10 +216,14 @@ export async function runOpsConnectionLoginCheck(deps: OpsConnectionLoginDeps): 
   const errors: string[] = []
   const summary: OpsConnectionLoginSummary = { judged: false, paged: [], allClear: [], errors }
   let rawState: string | null = null
+  // A record that could not be read is not an empty one: writing over it would
+  // drop every incident it holds, and with it the all clear each is owed.
+  let stateRead = true
   try {
     rawState = await deps.kv.get(OPS_CONNECTION_LOGIN_STATE_KEY)
   } catch (err) {
-    errors.push(`the open incidents could not be read: ${formatErr(err)}`)
+    stateRead = false
+    errors.push(`the open incidents could not be read, so they are left as stored: ${formatErr(err)}`)
   }
   const previous = parseState(rawState)
   const read = await deps.readLogins()
@@ -264,7 +268,7 @@ export async function runOpsConnectionLoginCheck(deps: OpsConnectionLoginDeps): 
     }
   }
 
-  if (JSON.stringify(next) !== JSON.stringify(previous)) {
+  if (stateRead && JSON.stringify(next) !== JSON.stringify(previous)) {
     try {
       await deps.kv.put(OPS_CONNECTION_LOGIN_STATE_KEY, JSON.stringify(next))
     } catch (err) {

@@ -68,8 +68,8 @@
  * never a message: a refusal's message is built from names, and an error that
  * is not one is named by its kind alone (F120).
  *
- * Each connection is its own failure boundary with its own deadline, and the
- * sweep never throws. It stamps start and completion with the bidding Worker
+ * Each connection is its own failure boundary with its own deadline, no probe
+ * starts past CONNECTION_CHECK_START_BUDGET_MS, and the sweep never throws. It stamps start and completion with the bidding Worker
  * (OpsGateway.opsJobStarted and opsJobCompleted, under CONNECTION_CHECK_JOB); a
  * stamp that fails is counted and never stops the sweep, and a sweep that stops
  * stamping is the ops-connection-check heartbeat's to page (cron-heartbeat.ts),
@@ -105,6 +105,16 @@ export const CONNECTION_CHECK_MAX_CONNECTIONS = 50
 export const CONNECTION_CHECK_PROBE_DEADLINE_MS = 30_000
 /** One connection's whole probe, the copy read, lease, login, identity read and record included. Past it the probe is a failure of that connection alone. */
 export const CONNECTION_CHECK_DEADLINE_MS = 45_000
+/**
+ * No probe starts once this much of the sweep has passed (on this Worker's
+ * clock), so one sweep takes at most this plus one connection's deadline, 55 s,
+ * inside the minute the tick rides, however many connections of one Salesforce
+ * org wait their turn. The ones not reached are counted as deferred; being the
+ * least recently checked, they go first next sweep. A probe answers in about a
+ * second, so 10 s reaches about ten connections of one org on a healthy day,
+ * and every connection of every other org at once.
+ */
+export const CONNECTION_CHECK_START_BUDGET_MS = 10_000
 /** A failure the next probe may not meet is held while the last passing check is younger than this: one interval with a missed tick (16 minutes), and less than two (28). */
 export const CONNECTION_CHECK_HOLD_WHILE_YOUNGER_MS = 20 * 60_000
 /** The login states one tick reads: every ops connection, well inside PostgREST's 1,000 rows (L24). */
@@ -200,6 +210,7 @@ export interface ConnectionCheckSweepResult {
 type Outcome =
   | { kind: 'passed' }
   | { kind: 'unprobed' }
+  | { kind: 'deferred' }
   | { kind: 'refused' | 'unreadable' | 'login' | 'failed' | 'not_run' | 'gone'; cause: string }
 
 /** A Salesforce identity is verify's when the org (by its 15 character form) and the username (in any case) agree. */
@@ -241,7 +252,7 @@ async function checkConnection(deps: ConnectionCheckSweepDeps, target: Connectio
     : raced.kind === 'timed_out'
       ? { kind: 'failed', cause: `deadline of ${CONNECTION_CHECK_DEADLINE_MS / 1000} s` }
       : { kind: 'refused', cause: 'failed without a named refusal' }
-  if (outcome.kind === 'unprobed' || outcome.kind === 'not_run' || outcome.kind === 'gone') return outcome
+  if (outcome.kind === 'unprobed' || outcome.kind === 'deferred' || outcome.kind === 'not_run' || outcome.kind === 'gone') return outcome
 
   const result = outcome.kind === 'passed' ? { ok: true as const } : { ok: false as const, cause: outcome.cause }
   let written: 'recorded' | 'connection_removed'
@@ -316,8 +327,16 @@ export async function runConnectionCheckSweep(deps: ConnectionCheckSweepDeps): P
   }
 
   const outcomes = new Map<ConnectionCheckTarget, Outcome>()
+  const startedMs = deps.now()
   await Promise.all(groupsOf(toProbe).map(async (group) => {
-    for (const t of group) outcomes.set(t, await checkConnection(deps, t, bump))
+    for (const t of group) {
+      // The first of each group always starts; a later one only inside the budget.
+      if (t !== group[0] && deps.now() - startedMs >= CONNECTION_CHECK_START_BUDGET_MS) {
+        outcomes.set(t, { kind: 'deferred' })
+        continue
+      }
+      outcomes.set(t, await checkConnection(deps, t, bump))
+    }
   }))
 
   for (const t of toProbe) {
@@ -330,6 +349,9 @@ export async function runConnectionCheckSweep(deps: ConnectionCheckSweepDeps): P
         continue
       case 'unprobed':
         bump('connection_check_unprobed')
+        continue
+      case 'deferred':
+        bump('connection_check_deferred')
         continue
       case 'gone':
         bump('connection_check_gone')
