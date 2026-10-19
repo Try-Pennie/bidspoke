@@ -181,6 +181,10 @@ export async function readFieldHistory(
 ): Promise<FieldHistory | { kind: 'no_answer'; error: string }> {
   // With no readable start there is no "since" to ask about, which clears nothing.
   if (!Number.isFinite(args.sinceMs)) return { kind: 'unread', why: 'the write has no readable start time' }
+  // A name that is not a plain Salesforce name never reaches a query, and is not the object having no history.
+  if (!isSalesforceApiName(args.sfObject) || !isSalesforceRecordId(args.recordId) || !args.fields.every(isSalesforceApiName)) {
+    return { kind: 'unread', why: 'a name is not a plain Salesforce name, so no query was made' }
+  }
   const queries = fieldHistoryQueries(args.sfObject, args.recordId, args.fields, args.sinceMs)
   if (!queries) return { kind: 'not_kept' }
   const ask = async (path: string, what: string): Promise<Array<Record<string, unknown>> | { kind: 'unread'; why: string } | { kind: 'no_answer'; error: string }> => {
@@ -265,8 +269,13 @@ export interface MovedFieldValues {
   /** Present only for a field of a quotable type: anything else may be a lead's personal data. */
   held?: unknown
   sending?: unknown
-  /** `changed`: its history records a change since the write began, the latest at `changed_at`. */
-  history: 'changed' | 'not_kept' | 'unread'
+  /**
+   * `changed`: its history records a change since the write began, the latest
+   * at `changed_at`. `not_kept`: Salesforce tracks no history of the field.
+   * `not_checked`: the record's object is not one whose history this code reads.
+   * `unread`: the history could not be read.
+   */
+  history: 'changed' | 'not_kept' | 'not_checked' | 'unread'
   changed_at?: string
 }
 
@@ -283,7 +292,8 @@ export function movedFieldValues(args: {
   return moved.map((field) => {
     const base = history?.quotable?.includes(field) ? { field, held: current[field] ?? null, sending: body[field] ?? null } : { field }
     if (!history || history.kind === 'unread') return { ...base, history: 'unread' as const }
-    if (history.kind === 'not_kept' || !history.tracked.includes(field)) return { ...base, history: 'not_kept' as const }
+    if (history.kind === 'not_kept') return { ...base, history: 'not_checked' as const }
+    if (!history.tracked.includes(field)) return { ...base, history: 'not_kept' as const }
     const latest = Math.max(...history.changes.filter((c) => c.field === field && c.atMs + LAST_MODIFIED_MARGIN_MS > since).map((c) => c.atMs))
     // Tracked and moved means a change was recorded; one that is not is a read that cannot be placed.
     return Number.isFinite(latest) ? { ...base, history: 'changed' as const, changed_at: new Date(latest).toISOString() } : { ...base, history: 'unread' as const }

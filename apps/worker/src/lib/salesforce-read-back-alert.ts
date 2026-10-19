@@ -19,7 +19,7 @@
  */
 import { LAST_MODIFIED_MARGIN_MS } from './salesforce-field-conflict'
 
-export type ReadBackAlertKind ='resend_failed' | 'unknown' | 'conflict' | 'unread' | 'not_running'
+export type ReadBackAlertKind = 'resend_failed' | 'unknown' | 'conflict' | 'unread' | 'not_running'
 
 /** Why a tick read nothing, in the words the unread alert uses. */
 export type UnreadReason =
@@ -58,7 +58,7 @@ export interface ReadBackAlertWrite {
    * what the field's history says (#2264). Known only on the tick that decided
    * it, so an alert sent again on a later tick goes without.
    */
-  conflict_values?: Array<{ field: string; held?: unknown; sending?: unknown; history: 'changed' | 'not_kept' | 'unread'; changed_at?: string }>
+  conflict_values?: Array<{ field: string; held?: unknown; sending?: unknown; history: 'changed' | 'not_kept' | 'not_checked' | 'unread'; changed_at?: string }>
   /** A credit inquiry post (#2172) rather than an update: it sets no field by name, and is worded as a post. */
   inquiry_post?: true
   /** conflict: whether the other fields were written. */
@@ -287,6 +287,7 @@ function valueSentence(v: ConflictValue, firstAttemptAt: string): string {
     : `${plain(v.field)} held a different value from the one Bidspoke was sending, not quoted here because a field of its kind can hold a lead's personal data.`
   if (v.history === 'changed' && v.changed_at) return `${values} Its Salesforce history shows it was changed at ${clockOnDay(v.changed_at)}, ${changedWhen(v.changed_at, firstAttemptAt)}.`
   if (v.history === 'not_kept') return `${values} Salesforce keeps no history of that field, so whether another writer set it could not be checked.`
+  if (v.history === 'not_checked') return `${values} Bidspoke does not read Salesforce's field history for that kind of record, so whether another writer set it could not be checked.`
   return `${values} Its Salesforce history could not be read, so whether another writer set it could not be checked.`
 }
 

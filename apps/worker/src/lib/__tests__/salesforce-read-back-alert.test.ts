@@ -97,6 +97,9 @@ describe('composeSalesforceReadBackAlert', () => {
     it('says when the field keeps no history, or its history could not be read, so who set it could not be checked', () => {
       const notKept = text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], conflict_values: [{ field: 'BidStatus__c', held: 'No Bid', sending: 'Rejected', history: 'not_kept' }], resent: true })] })
       expect(notKept).toContain('BidStatus__c held "No Bid" where Bidspoke was sending "Rejected". Salesforce keeps no history of that field, so whether another writer set it could not be checked.')
+      const notChecked = text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], conflict_values: [{ field: 'BidStatus__c', held: 'No Bid', sending: 'Rejected', history: 'not_checked' }], resent: true })] })
+      expect(notChecked).toContain("Bidspoke does not read Salesforce's field history for that kind of record, so whether another writer set it could not be checked.")
+      expect(notChecked).not.toContain('Salesforce keeps no history')
       const unread = text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], conflict_values: [{ field: 'BidStatus__c', held: 'No Bid', sending: 'Rejected', history: 'unread' }], resent: true })] })
       expect(unread).toContain('Its Salesforce history could not be read, so whether another writer set it could not be checked.')
     })

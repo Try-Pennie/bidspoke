@@ -18,7 +18,7 @@ import { WRITE_MARKER_FIELD } from '../../engine/write-marker'
 import type { SalesforcePort } from '../writeback-replay'
 import type { SalesforceReadBackAlert } from '../salesforce-read-back-alert'
 import { runSalesforceReadBack, type SalesforceReadBackDeps } from '../salesforce-read-back'
-import { readFieldHistory } from '../salesforce-field-conflict'
+import { movedFieldValues, readFieldHistory } from '../salesforce-field-conflict'
 import { PROSPECT_FIELD_TYPES, PROSPECT_TRACKED_FIELDS, REJECT_RESEND_RUNS, type RejectResendRun } from './fixtures/reject-patch-resend-2264'
 
 const KEY = Buffer.from(new Uint8Array(32).map((_, i) => i + 7)).toString('base64')
@@ -233,11 +233,19 @@ describe('readFieldHistory, the one history read both resenders use', () => {
     expect(await readFieldHistory(twice(answer({ totalSize: 0, done: true, records: [] })), { ...args, sinceMs: Number.NaN })).toMatchObject({ kind: 'unread' })
   })
 
-  it('refuses a name that is not a plain Salesforce name, so nothing else reaches a query', async () => {
+  it('refuses a name that is not a plain Salesforce name, so nothing else reaches a query, and calls that unread, not a field without history', async () => {
     const get = vi.fn()
-    expect(await readFieldHistory(get, { sfObject: 'Prospect__c', recordId: "a06' OR Id != '", fields: ['BidStatus__c'], sinceMs: SINCE })).toEqual({ kind: 'not_kept' })
-    expect(await readFieldHistory(get, { sfObject: 'Prospect__c', recordId: 'a06Ui00002srFqSIAU', fields: ["BidStatus__c') OR ('x"], sinceMs: SINCE })).toEqual({ kind: 'not_kept' })
+    expect(await readFieldHistory(get, { sfObject: 'Prospect__c', recordId: "a06' OR Id != '", fields: ['BidStatus__c'], sinceMs: SINCE })).toMatchObject({ kind: 'unread' })
+    expect(await readFieldHistory(get, { sfObject: 'Prospect__c', recordId: 'a06Ui00002srFqSIAU', fields: ["BidStatus__c') OR ('x"], sinceMs: SINCE })).toMatchObject({ kind: 'unread' })
     expect(get).not.toHaveBeenCalled()
+  })
+})
+
+describe('movedFieldValues names why a field could not be cleared', () => {
+  const args = { moved: ['A__c'], body: { A__c: 'new' }, current: { A__c: 'old' }, sinceMs: Date.parse('2026-10-19T13:39:06.360Z') }
+  it('an object whose history this code does not read is not_checked; an untracked field on one it does is not_kept', () => {
+    expect(movedFieldValues({ ...args, history: { kind: 'not_kept' } })).toEqual([{ field: 'A__c', history: 'not_checked' }])
+    expect(movedFieldValues({ ...args, history: { kind: 'read', tracked: [], changes: [], quotable: [] } })).toEqual([{ field: 'A__c', history: 'not_kept' }])
   })
 })
 
