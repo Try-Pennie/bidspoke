@@ -4,7 +4,7 @@
 //                              power the Sources page reveal/copy + curl example.
 //                              Intra-org visibility is acceptable for this team.
 // POST   /api/sources        — create new source, returns the new api_key
-// DELETE /api/sources/:name  — revoke all keys for a source
+// DELETE /api/sources/:name  (revokes the key of a source; one per name, as api_sources is UNIQUE organization_id, name)
 
 import { Hono } from 'hono'
 import type { Context } from 'hono'
@@ -312,31 +312,35 @@ sources.delete('/:name/workflows/:workflow_id', async (c) => {
   return c.json({ ok: true })
 })
 
-// DELETE /api/sources/:name — revoke all keys for a source
+// DELETE /api/sources/:name: revoke the key of a source. One row per name (api_sources is UNIQUE organization_id, name).
 sources.delete('/:name', async (c) => {
   const { orgId, userId } = c.get('user')
   const name = c.req.param('name')
 
   const supabase = createSupabaseClient(c.env)
 
-  // Authoritative existence check + grab the id and key(s) being revoked.
-  const { data: existingRows } = await supabase
+  // Authoritative existence check + grab the id and key being revoked. One row at
+  // most: api_sources is UNIQUE (organization_id, name). A failed read is not a
+  // missing source, so it is a 500 rather than a 404 (#1437).
+  const { data: existing, error: existingError } = await supabase
     .from('api_sources')
     .select('id, api_key')
     .eq('organization_id', orgId)
     .eq('name', name)
+    .maybeSingle()
 
-  if (!existingRows || existingRows.length === 0) return c.json({ error: 'Source not found' }, 404)
-  const rows = existingRows as { id: string; api_key: string }[]
-  const deletedKeys = new Set(rows.map((r) => r.api_key))
-  const sourceId = rows[0].id
+  if (existingError) return dbError(c, existingError)
+  if (!existing) return c.json({ error: 'Source not found' }, 404)
+  const row = existing as { id: string; api_key: string }
+  const deletedKeys = new Set([row.api_key])
+  const sourceId = row.id
 
-  // Revoke first: rebuild the map from the table minus the deleted key(s), so
+  // Revoke first: rebuild the map from the table minus the deleted key, so
   // auth is cut before the row is removed and a stale-snapshot read-modify-write
   // can't drop an unrelated source's key. Manual keys are preserved.
   // A delete whose rebuild read failed must not write either. The alternative is
   // worse than it looks: the merged map would be the stale env snapshot minus
-  // the deleted keys, so the revocation appears to work while any key added by a
+  // the deleted key, so the revocation appears to work while any key added by a
   // concurrent mutation is silently dropped from production.
   const rebuilt = await rebuildKeyMap(supabase, parseKeyMap(c.env.API_KEY_MAP ?? '{}'), deletedKeys)
   if (rebuilt.error) return keyMapReadFailed(c, rebuilt.error)

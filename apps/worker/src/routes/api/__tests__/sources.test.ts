@@ -199,6 +199,14 @@ describe('POST /sources', () => {
   })
 })
 
+// The delete route reads the source as ONE row (api_sources is UNIQUE on
+// organization_id, name), then the key map rebuild lists every source, then the
+// delete runs (#1437).
+function oneSource(row: Record<string, unknown>) {
+  const withId = { id: 'src-1', ...row }
+  return [{ maybeSingle: withId }, { list: [withId] }, { writeRows: [{ id: withId.id }] }]
+}
+
 describe('DELETE /sources/:name', () => {
   let app: Awaited<ReturnType<typeof makeApp>>
 
@@ -221,7 +229,7 @@ describe('DELETE /sources/:name', () => {
 
   it('returns 200 when source is deleted', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, api_sources: { list: [{ name: 'website_form', api_key: 'abcd1234' }] } }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, api_sources: oneSource({ name: 'website_form', api_key: 'abcd1234' }) }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'DELETE', '/sources/website_form')
     expect(res.status).toBe(200)
@@ -231,7 +239,7 @@ describe('DELETE /sources/:name', () => {
 
   it('rebuilds the map without the deleted key before calling setCfSecret', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, api_sources: { list: [{ name: 'website_form', api_key: 'abcd1234' }] } }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, api_sources: oneSource({ name: 'website_form', api_key: 'abcd1234' }) }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     await request(app, 'DELETE', '/sources/website_form')
     const [, updatedMap] = vi.mocked(setCfSecret).mock.calls[0]
@@ -244,7 +252,7 @@ describe('DELETE /sources/:name', () => {
     // EXISTING_KEY_MAP: abcd1234→website_form. Delete a table source ('crm') whose
     // key isn't the manual one — the manual abcd1234 must survive.
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, api_sources: { list: [{ name: 'crm', api_key: 'crmkey' }] } }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, api_sources: oneSource({ name: 'crm', api_key: 'crmkey' }) }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     await request(app, 'DELETE', '/sources/crm')
     const [, updatedMap] = vi.mocked(setCfSecret).mock.calls[0]
@@ -288,12 +296,28 @@ describe('DELETE /sources: zero-row + DB error (#588)', () => {
       makeSupabase({
         users: { single: testUser },
         // existence read, then rebuildKeyMap read, then the DELETE touches nothing.
-        api_sources: [{ list: [row] }, { list: [row] }, { writeRows: [] }],
+        api_sources: [{ maybeSingle: row }, { list: [row] }, { writeRows: [] }],
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'DELETE', '/sources/website_form')
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({ error: 'Source not found' })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('DELETE /:name returns 500 (not a false 404) when the existence read fails', async () => {
+    // A failed read is not a missing source: answering 404 would tell the caller
+    // the source is gone while its key still authenticates (#1437).
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({
+        users: { single: testUser },
+        api_sources: [{ maybeSingleError: { code: '57014', message: 'statement timeout' } }],
+      }) as unknown as ReturnType<typeof createSupabaseClient>
+    )
+    const res = await request(app, 'DELETE', '/sources/website_form')
+    expect(res.status).toBe(500)
+    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 
@@ -303,7 +327,7 @@ describe('DELETE /sources: zero-row + DB error (#588)', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },
-        api_sources: [{ list: [row] }, { list: [row] }, { deleteError: { code: '42P01', message: 'relation missing' } }],
+        api_sources: [{ maybeSingle: row }, { list: [row] }, { deleteError: { code: '42P01', message: 'relation missing' } }],
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'DELETE', '/sources/website_form')

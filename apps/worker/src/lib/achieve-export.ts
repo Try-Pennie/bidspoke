@@ -309,8 +309,9 @@ async function backfillTrades(supabase: SupabaseClient): Promise<number> {
     )
     const sinceBound = new Date(new Date(oldest).getTime() - 60 * 60 * 1000).toISOString()
 
-    // paginate-ok: bounded to one BACKFILL_BATCH (100) of execution_ids, and
-    // each execution has a single trades_request step — at most ~100 rows.
+    // paginate-ok .in(execution_id): bounded to one BACKFILL_BATCH (100) of
+    // execution_ids, and each execution has a single trades_request step, so at
+    // most ~100 rows (measured 2026-10-18: never more than 1 per execution).
     const { data: steps, error: stepsErr } = await supabase
       .from('execution_steps')
       .select('execution_id, output')

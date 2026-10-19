@@ -187,6 +187,7 @@ partnerHistory.get('/:id/history', async (c) => {
       const found = new Map<string, UserName>()
       for (let i = 0; i < editorIds.length; i += USERS_CHUNK) {
         const chunk = editorIds.slice(i, i + USERS_CHUNK)
+        // paginate-ok .in(id): one USERS_CHUNK (100) of primary keys, one row each.
         const { data, error } = await supabase.from('users').select('id, display_name, email').in('id', chunk)
         if (error) throw new ReadFailed('users', error.message)
         for (const u of (data ?? []) as UserName[]) found.set(u.id, u)
