@@ -425,6 +425,11 @@ export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: strin
  *    name, through the read-back's one rule (salesforce-field-conflict.ts). The
  *    row's creation is when the write began for this rule: the failed attempts
  *    were all answered before it, so a change after it is another writer's;
+ *  - a field that rule calls moved is then asked about in Salesforce's field
+ *    history (#2264, readFieldHistory): a tracked field with no change recorded
+ *    since the row was written is sent after all. A history query with no
+ *    answer spends nothing, like the record read (or holds, when the bulkhead
+ *    refused it); one refused or unreadable leaves the field out;
  *  - a read with no usable answer spends nothing; a read Salesforce refuses
  *    (the record is gone, a field it does not know) closes the row as refused,
  *    since the write would be refused too;
