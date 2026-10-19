@@ -100,6 +100,8 @@ export const OPS_CONNECTIONS_REFUSAL_CODES = [
   'verify_identity_unmeasurable',
   /** The service's identity answer could not be read. */
   'verify_identity_unreadable',
+  /** The service measured another identity than the connection's target declares (#2337). */
+  'verify_identity_mismatch',
   /** A generation ops holds as its copy measured another identity than before. */
   'identity_changed',
   /** The measured identity could not be written, so the connection is not verified. */
@@ -182,8 +184,10 @@ export interface ExchangeOAuthCodeRequest {
   redirect_uri: string
 }
 
-/** What verify measured the credential as. Salesforce's today; each service adds its own kind with its measurement (Phase 7). */
-export type MeasuredIdentityAnswer = { kind: 'salesforce'; sf_org_id: string; username: string }
+/** What verify measured the credential as. Each service adds its own kind with its measurement (Phase 7). */
+export type MeasuredIdentityAnswer =
+  | { kind: 'salesforce'; sf_org_id: string; username: string }
+  | { kind: 'snowflake'; account_locator: string; organization_name: string | null; account_name: string | null; user: string }
 
 export type VerifyAnswer = { ok: true; service: string; generation: number; identity: MeasuredIdentityAnswer } | OpsConnectionsRefused
 export type ClearReauthAnswer = { ok: true; service: string; generation: number; identity: MeasuredIdentityAnswer; cleared: true } | OpsConnectionsRefused

@@ -20,11 +20,18 @@ export type ActionArgs = Readonly<Record<string, JsonValue>>
  * What a run is handed. `fetch` is the connection bound fetch (Phase 5's
  * connectionFetch): it applies the connection's auth after anything is
  * recorded, so a run never holds a login itself. `signal` is the step's
- * deadline.
+ * deadline. `target` is the connection's declared target, its public half (a
+ * Snowflake account, a Salesforce instance), which is where the run's requests
+ * go; connectionFetch refuses any other host. `sleep` is every wait a run makes
+ * (a poll's interval), injected so a test crossing one does not wait (L524).
+ *
+ * How a run fails is runtime/failure.ts.
  */
 export interface ActionContext {
   readonly fetch: (input: string, init?: RequestInit) => Promise<Response>
   readonly signal: AbortSignal
+  readonly target: JsonValue
+  readonly sleep: (ms: number) => Promise<void>
 }
 
 export type ActionRun = (ctx: ActionContext, args: ActionArgs) => Promise<JsonValue>
