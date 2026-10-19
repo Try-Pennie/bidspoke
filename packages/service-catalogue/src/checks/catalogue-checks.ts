@@ -17,8 +17,10 @@ import { ModuleGraphError } from './module-graph'
  *
  * - Versioning (D1): every (key, version) has a committed fingerprint, and a
  *   released one that no longer matches fails, asking for a new version. That
- *   includes an upgrade of an npm package its run reaches, read from the
- *   lockfile; a package the lockfile does not resolve is refused by name.
+ *   includes an edit to a workspace package its run imports, and an upgrade
+ *   anywhere in the dependency closure of an npm package its run reaches, read
+ *   from the lockfile; a package or snapshot the lockfile does not resolve is
+ *   refused by name.
  * - Traits (R11): every action decides `sideEffect` and `idempotent` itself and
  *   writes down why it is or is not idempotent.
  * - Pairing: schema and runtime hold the same (key, version) set, and each run
@@ -240,8 +242,8 @@ export async function checkCatalogue(catalogue: CatalogueUnderCheck): Promise<Pr
         code: 'fingerprint_changed',
         subject: id,
         message:
-          `${id} is released and its arguments, traits, run source or the resolved version of an npm package it imports ` +
-          `no longer match its committed fingerprint, ` +
+          `${id} is released and its arguments, traits, run source (a workspace package's included), the resolved version ` +
+          `of an npm package it imports or a package that one depends on no longer match its committed fingerprint, ` +
           `so every step saved on it would silently change. Put version ${action.version} back as it was and add the change as version ${next}.`,
       })
     }
