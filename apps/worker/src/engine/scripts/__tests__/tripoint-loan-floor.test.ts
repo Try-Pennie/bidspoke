@@ -53,19 +53,25 @@ async function ping(payload: Json) {
   const common = { payload, env: fixtures.env, execution: fixtures.execution }
   const tp = (await runCanvasScript(TRIPOINT_PING, { ...common, steps, fetch })) as Json
   steps.tripoint_ping = { output: tp }
-  const response = (await runCanvasScript(BUILD_RESPONSE_BODY, { ...common, steps })) as { isRejected: boolean; body: Json }
+  const response = (await runCanvasScript(BUILD_RESPONSE_BODY, { ...common, steps })) as { isRejected: boolean; body: Json; reject_patch?: Json }
   return { tp, response, calls }
 }
 
 describe('Tripoint is sent only a loan of 2,000 or more', () => {
-  it('a 1,999 loan is not sent, and the lead takes the Pennie pages', async () => {
+  // A sell off lead no buyer takes is rejected (Dan, 2026-10-19). From the floor's paste on
+  // 2026-10-15 until this, a refused lead fell through to the Pennie offer at the engine bid,
+  // about 1,250 a day with nothing resold; on 10-14 Tripoint declined them and they were rejected.
+  it('a 1,999 loan is not sent, and the lead is rejected as a decline would be', async () => {
     const { tp, response, calls } = await ping(leadWithLoan({ loanAmount: 1999, purpose: 'other' }))
     expect(calls).toBe(0)
     expect(tp.skipped).toBe(true)
     expect(tp.tripoint_answer).toBe('skipped')
     expect(tp.skip_reason).toBe('loan_amount_below_min')
     expect((tp.sale as Json).skipped).toBe(true)
-    expect(response.isRejected).toBe(false)
+    expect(response.isRejected).toBe(true)
+    expect(response.body).toEqual({ lead_id: fixtures.payload.leadUuid, status: 'rejected', reason: 'unqualified_lead' })
+    // Tripoint was never asked, so it has no answer to record.
+    expect(response.reject_patch).toEqual({ BidStatus__c: 'Rejected', RejectionReason__c: 'unqualified_lead' })
   })
 
   it('a 2,000 loan is sent', async () => {
@@ -75,11 +81,12 @@ describe('Tripoint is sent only a loan of 2,000 or more', () => {
     expect(tp.skip_reason).toBeUndefined()
   })
 
-  it('a lead with no loan amount is not sent, named as a missing field', async () => {
-    const { tp, calls } = await ping(leadWithLoan(undefined))
+  it('a lead with no loan amount is not sent, named as a missing field, and rejected', async () => {
+    const { tp, response, calls } = await ping(leadWithLoan(undefined))
     expect(calls).toBe(0)
     expect(tp.skipped).toBe(true)
     expect(tp.skip_reason).toBe('missing_lead_field')
+    expect(response.isRejected).toBe(true)
   })
 
   it('a loan amount that is not a number is a missing field, never a pass', async () => {
