@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { collectModuleGraph, collectModuleImports, ModuleGraphError } from './module-graph'
+import { collectModuleGraph, collectModuleImports, ModuleGraphError, type WorkspaceLinks } from './module-graph'
 import { computeFingerprint } from './fingerprint'
 import { LockfileError, type ImporterLock } from './lockfile'
 import type { ActionSchema } from '../schema/types'
@@ -113,6 +113,101 @@ describe('collectModuleImports', () => {
   })
 })
 
+describe('collectModuleImports, following workspace packages through their lockfile links', () => {
+  // A throwaway workspace: the catalogue at packages/cat, linked to packages/helper,
+  // which is linked in turn to packages/deeper.
+  const workspace = () =>
+    tree({
+      'packages/cat/run.ts': "import { help } from '@bidspoke/helper'\nimport { extra } from '@bidspoke/helper/extra'\nexport const run = () => [help, extra]\n",
+      'packages/helper/package.json': JSON.stringify({ exports: { '.': './src/index.ts', './extra': './src/extra.ts' } }),
+      'packages/helper/src/index.ts': "import { inner } from './inner'\nimport pad from 'left-pad'\nexport const help = () => [inner, pad]\n",
+      'packages/helper/src/inner.ts': 'export const inner = 1\n',
+      'packages/helper/src/extra.ts': "import { deep } from '@bidspoke/deeper'\nexport const extra = deep\n",
+      'packages/helper/src/unused.ts': 'export const unused = 1\n',
+      'packages/deeper/package.json': JSON.stringify({ main: './index.ts' }),
+      'packages/deeper/index.ts': "import { WebClient } from '@scope/client'\nexport const deep = WebClient\n",
+    })
+  const LINKS: Record<string, Record<string, string>> = {
+    'packages/cat': { '@bidspoke/helper': '../helper' },
+    'packages/helper': { '@bidspoke/deeper': '../deeper' },
+  }
+  const linksFor = (root: string, links = LINKS): WorkspaceLinks => ({
+    root: { importer: 'packages/cat', dir: path.join(root, 'packages/cat') },
+    linkOf: (importer, name) => links[importer]?.[name],
+  })
+
+  it("follows a linked package into the files its exports name, and records each npm import under that package's importer", () => {
+    const root = workspace()
+    const { files, packages } = collectModuleImports(path.join(root, 'packages/cat/run.ts'), linksFor(root))
+    expect(rel(root, files)).toEqual(
+      [
+        'packages/cat/run.ts',
+        'packages/deeper/index.ts',
+        'packages/helper/src/extra.ts',
+        'packages/helper/src/index.ts',
+        'packages/helper/src/inner.ts',
+      ].sort(),
+    )
+    expect(packages.map((p) => [p.name, p.importer])).toEqual([
+      ['@scope/client', 'packages/deeper'],
+      ['left-pad', 'packages/helper'],
+    ])
+  })
+
+  it("records the entry package's own npm imports under its importer", () => {
+    const root = tree({ 'packages/cat/run.ts': "import pad from 'left-pad'\nexport const run = pad\n" })
+    const { packages } = collectModuleImports(path.join(root, 'packages/cat/run.ts'), linksFor(root))
+    expect(packages).toEqual([{ name: 'left-pad', importedBy: path.join(root, 'packages/cat/run.ts'), importer: 'packages/cat' }])
+  })
+
+  it('records an unlinked workspace package as a package, for the fingerprint to refuse by name', () => {
+    const root = workspace()
+    const { packages } = collectModuleImports(path.join(root, 'packages/cat/run.ts'), linksFor(root, { 'packages/cat': {} }))
+    expect(packages.map((p) => p.name)).toEqual(['@bidspoke/helper'])
+  })
+
+  it('refuses a subpath the linked package does not export, rather than guessing a file', () => {
+    const root = workspace()
+    writeFileSync(path.join(root, 'packages/cat/run.ts'), "import { x } from '@bidspoke/helper/unused'\nexport const run = x\n")
+    try {
+      collectModuleImports(path.join(root, 'packages/cat/run.ts'), linksFor(root))
+      throw new Error('expected a refusal')
+    } catch (err) {
+      expect(err).toBeInstanceOf(ModuleGraphError)
+      expect((err as ModuleGraphError).code).toBe('unresolved_import')
+    }
+  })
+
+  it('refuses an exports entry it cannot read as one file, such as a set of conditions', () => {
+    const root = workspace()
+    writeFileSync(
+      path.join(root, 'packages/helper/package.json'),
+      JSON.stringify({ exports: { '.': { import: './src/index.ts', require: './src/index.cjs' } } }),
+    )
+    try {
+      collectModuleImports(path.join(root, 'packages/cat/run.ts'), linksFor(root))
+      throw new Error('expected a refusal')
+    } catch (err) {
+      expect(err).toBeInstanceOf(ModuleGraphError)
+      expect((err as ModuleGraphError).code).toBe('unsupported_import')
+    }
+  })
+
+  it("refuses a relative import that leaves its package, whose npm imports would be read against the wrong importer", () => {
+    const root = tree({
+      'packages/cat/run.ts': "import { x } from '../elsewhere/x'\nexport const run = x\n",
+      'packages/elsewhere/x.ts': 'export const x = 1\n',
+    })
+    try {
+      collectModuleImports(path.join(root, 'packages/cat/run.ts'), linksFor(root))
+      throw new Error('expected a refusal')
+    } catch (err) {
+      expect(err).toBeInstanceOf(ModuleGraphError)
+      expect((err as ModuleGraphError).code).toBe('import_leaves_package')
+    }
+  })
+})
+
 describe('computeFingerprint', () => {
   const action: ActionSchema = {
     key: 'fixture.echo',
@@ -125,7 +220,16 @@ describe('computeFingerprint', () => {
   }
 
   const IMPORTER = 'packages/service-catalogue'
-  const lock = (versions: Iterable<[string, string]> = []): ImporterLock => ({ importer: IMPORTER, versions: new Map(versions) })
+  /** A lockfile with the given direct versions for the catalogue, and a leaf snapshot for each. */
+  const lock = (versions: Iterable<[string, string]> = []): ImporterLock => {
+    const own = new Map(versions)
+    return {
+      importer: IMPORTER,
+      versions: own,
+      importers: new Map([[IMPORTER, own]]),
+      snapshots: new Map([...own].map(([name, version]) => [`${name}@${version}`, []])),
+    }
+  }
   const NO_DEPS = lock()
 
   it('changes when a helper the run imports changes, and not when a type file does', () => {
@@ -167,6 +271,68 @@ describe('computeFingerprint', () => {
       expect((err as LockfileError).code).toBe('dependency_unresolved')
       expect((err as Error).message).toContain('left-pad')
     }
+  })
+
+  describe('over a workspace package and the dependency closure', () => {
+    // The catalogue at packages/service-catalogue, linked to packages/helper,
+    // which imports @scope/client; @scope/client depends on inner, inner on leaf.
+    const files = () =>
+      tree({
+        'packages/service-catalogue/run.ts': "import { help } from '@bidspoke/helper'\nexport const run = () => help()\n",
+        'packages/helper/package.json': JSON.stringify({ exports: { '.': './src/index.ts' } }),
+        'packages/helper/src/index.ts': "import { WebClient } from '@scope/client'\nexport const help = () => new WebClient()\n",
+      })
+    const workspaceLock = (edit: { client?: string; leaf?: string; unrelated?: string; link?: boolean } = {}): ImporterLock => {
+      const client = edit.client ?? '1.1.14'
+      const leaf = edit.leaf ?? '1.0.0'
+      const own = new Map(edit.link === false ? [] : [['@bidspoke/helper', 'link:../helper']])
+      return {
+        importer: IMPORTER,
+        versions: own,
+        importers: new Map([
+          [IMPORTER, own],
+          ['packages/helper', new Map([['@scope/client', client]])],
+        ]),
+        snapshots: new Map<string, string[]>([
+          [`@scope/client@${client}`, ['inner@2.0.0']],
+          ['inner@2.0.0', [`leaf@${leaf}`]],
+          [`leaf@${leaf}`, []],
+          [`unrelated@${edit.unrelated ?? '3.0.0'}`, []],
+        ]),
+      }
+    }
+    const fingerprint = (root: string, l: ImporterLock) =>
+      computeFingerprint(action, path.join(root, 'packages/service-catalogue/run.ts'), path.join(root, 'packages/service-catalogue'), l)
+
+    it("changes when the workspace package's source changes", () => {
+      const root = files()
+      const before = fingerprint(root, workspaceLock())
+      writeFileSync(path.join(root, 'packages/helper/src/index.ts'), "import { WebClient } from '@scope/client'\nexport const help = () => WebClient\n")
+      expect(fingerprint(root, workspaceLock())).not.toBe(before)
+    })
+
+    it("changes when the workspace package's own npm dependency is upgraded", () => {
+      const root = files()
+      expect(fingerprint(root, workspaceLock({ client: '1.1.15' }))).not.toBe(fingerprint(root, workspaceLock()))
+    })
+
+    it('changes when a transitive dependency moves within its range, and not for a snapshot nothing reaches', () => {
+      const root = files()
+      const before = fingerprint(root, workspaceLock())
+      expect(fingerprint(root, workspaceLock({ unrelated: '3.0.1' }))).toBe(before)
+      expect(fingerprint(root, workspaceLock({ leaf: '1.0.1' }))).not.toBe(before)
+    })
+
+    it('refuses a workspace package the catalogue does not declare, by name', () => {
+      try {
+        fingerprint(files(), workspaceLock({ link: false }))
+        throw new Error('expected a refusal')
+      } catch (err) {
+        expect(err).toBeInstanceOf(LockfileError)
+        expect((err as LockfileError).code).toBe('dependency_unresolved')
+        expect((err as Error).message).toContain('@bidspoke/helper')
+      }
+    })
   })
 
   it('does not depend on the order fields were written in, or on line endings', () => {
