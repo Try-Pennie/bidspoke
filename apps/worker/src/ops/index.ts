@@ -298,6 +298,17 @@ const handler = createOpsHandler()
 export { OpsInternal } from './internal'
 
 /**
+ * The connections entrypoint (#2335, PR 8 of phase 5): verify, clearReauth,
+ * revoke, health, lookup and exchangeOAuthCode, for the bidding Worker's
+ * OPS_CONNECTIONS service binding (PR 9) alone. A named export, so the public
+ * edge never reaches it. Once bidding binds it, a deploy or rollback to a version
+ * without it breaks every call through the binding (the Phase 0 spike, #2330):
+ * it is the ops Worker's rollback floor (docs/disaster-recovery.md), and
+ * ops-connections-entrypoint.test.ts fails if it stops being exported here.
+ */
+export { OpsConnections } from './ops-connections-entrypoint'
+
+/**
  * The first ops Durable Object (#2334), bound as CONNECTION_TOKENS and created by
  * the ops Worker's migration v1 in wrangler.ops.toml. Shipped inert (ADR 0011);
  * live for person bound logins since #2335 (single flight refresh, rotated

@@ -40,6 +40,8 @@ export const OPS_ORGANIZATION_RPCS = [
   'release_sf_lease',
   // Decision 2's refresh streak (#2335).
   'record_connection_refresh',
+  // The per organization cap on OpsConnections.lookup (#2335, PR 8).
+  'take_lookup_allowance',
 ] as const
 
 /**

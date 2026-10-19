@@ -8,8 +8,44 @@ work. Phase 5 of #1689; plan: discussion #2329, part 2; Dan's decisions of
 
 Nothing here is called in production yet. The minters are the `authorize` of each
 catalogue service's runtime entry, which arrives with that service (Phase 7), and
-connectionFetch, which calls them, has no caller until the OpsConnections
-entrypoint (PR 8 of this phase) and the ops executor (Phase 9).
+connectionFetch, which calls them, is called by the OpsConnections entrypoint
+(PR 8 of this phase, below), which nothing binds until PR 9, and later by the ops
+executor (Phase 9). No service is registered on ops yet
+(`apps/worker/src/ops/connections/services.ts`), so every OpsConnections call that
+reaches a service is refused `connection_service_unknown` until Phase 7.
+
+## OpsConnections (`apps/worker/src/ops/ops-connections-entrypoint.ts`)
+
+The ops Worker's named entrypoint for the bidding Worker's `OPS_CONNECTIONS`
+binding (PR 9), and nothing else: the public edge reaches only the default export.
+Each request names one organization (from the caller's JWT, on bidding) and is
+parsed by `apps/worker/src/lib/ops-connections-contract.ts`; every answer is a
+value, a refusal naming its cause. Each method has a ceiling
+(`OPS_CONNECTIONS_CEILINGS_MS`) past which its work is stopped and it answers
+`ops_connections_timeout`; the bidding Worker's own deadline must be longer.
+
+| Method | Does | Writes |
+|---|---|---|
+| `verify` | Measures what the credential authenticates as through connectionFetch (Salesforce: `/services/oauth2/userinfo`); refuses money's run as user (`money_identity_match`), a sealed client id other than the declared one (`verify_client_id_mismatch`), a person bound candidate (`candidate_not_refreshable`: it is proven by its code exchange), and a service with no measurement yet (`verify_identity_unmeasurable`). | the measured identity, under the generation the request carried |
+| `clearReauth` | Reconnect: `verify` of the candidate, then the clearing. Bidding calls it after its compare and set committed the candidate's generation. | `reauth_cleared_at` |
+| `revoke` | A removal. | the ops tombstone |
+| `health` | Each connection's status (`connection_status`). | nothing |
+| `lookup` | One level of a connection's schema, behind 60 lookups a minute per organization (`take_lookup_allowance`). | the allowance |
+| `exchangeOAuthCode` | A person bound login's consent, to its ConnectionTokenObject. | the object's storage |
+
+- **No copy is written by any of these (F116, F126).** verify and clearReauth use
+  the candidate (the bidding row's sealed envelope at its new generation) for
+  their one call; the committed copy arrives only by the minute serve of the
+  committed row. A failed verify or a lost compare and set leaves ops on the
+  committed generation, and the next serve of it is accepted.
+- **Money's Salesforce identity** is read from `OPS_GATEWAY.moneyIdentities`,
+  measured daily on bidding. A reading more than 50 hours old (one missed daily
+  run plus two hours) is treated as unmeasured, and with no reading verify
+  refuses every Salesforce connection (`money_identity_unmeasured`) before any
+  Salesforce call.
+- A candidate's measured identity is replaced by the next candidate's at the same
+  generation (ops migration 20261019010000); a generation ops holds is never
+  overwritten (`identity_changed`).
 
 ## The minters (`apps/worker/src/ops/connections/minters/`)
 

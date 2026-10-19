@@ -444,8 +444,12 @@ function loginField(value: unknown, depth = 0): string | null {
   return null
 }
 
-/** Why public config or a target cannot be served in the clear, or null when it can. */
-function clearFieldProblem(value: unknown, what: 'public config' | 'a target'): string | null {
+/**
+ * Why public config or a target cannot be served in the clear, or null when it
+ * can. Also holds a candidate passed to OpsConnections (ops-connections-contract.ts)
+ * to the same rule, so both ways in carry one.
+ */
+export function clearFieldProblem(value: unknown, what: 'public config' | 'a target'): string | null {
   const found = loginField(value)
   if (found) return `${what} naming the login field ${found}`
   if (jsonbBytesAtMost(value) > MAX_CONFIG_BYTES) return `${what} over ${MAX_CONFIG_BYTES} bytes`
