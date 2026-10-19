@@ -144,7 +144,7 @@ describe('the Salesforce entry is registered on the ops Worker', () => {
   })
 })
 
-describe('with no approved cap, as in production today: refused at the lease, by name', () => {
+describe('with no approved cap (any org or host Dan has not approved): refused at the lease, by name', () => {
   it('verify reaches the lease, asks the bootstrap slot of the declared host, and is refused sf_cap_unset before any token is asked for', async () => {
     const w = await world()
     expect(await verify(w)).toMatchObject({ ok: false, refused: 'sf_cap_unset' })
