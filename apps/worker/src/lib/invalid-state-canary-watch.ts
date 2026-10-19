@@ -1006,6 +1006,15 @@ export async function runInvalidStateWatch(deps: CanaryWatchDeps): Promise<Canar
   return report
 }
 
+/** The filter methods the relay filter calls, which every supabase-js filter builder has, each returning the builder. */
+interface RelayFilterable {
+  eq(column: string, value: string): RelayFilterable
+  in(column: string, values: string[]): RelayFilterable
+  gte(column: string, value: string): RelayFilterable
+  lt(column: string, value: string): RelayFilterable
+  not(column: string, operator: string, value: boolean): RelayFilterable
+}
+
 /**
  * The relay comparison's posts in [from, to): every post's id, in time order, a
  * page at a time (PostgREST answers at most 1,000 rows), then the full rows of a
@@ -1014,28 +1023,33 @@ export async function runInvalidStateWatch(deps: CanaryWatchDeps): Promise<Canar
  * read that comes back short. Throws on a failed read.
  */
 export async function readRelayPosts(supabase: SupabaseClient, from: string, to: string): Promise<{ total: number; sample: RelayStep[] }> {
-  const relayPosts = (columns: string) =>
-    // paginate-ok: a shared filter, never read on its own. Both callers below
-    // bound it, the id list by fetchAllPaged's .range() and the sample by .limit().
-    supabase
-      .from('execution_steps')
-      .select(columns)
+  // The relay filter, applied to each read below; each read declares its own
+  // bound after it (#1437): the id list pages with a full order, the sample is
+  // one .limit() of the ids it picked.
+  const onlyRelayPosts = <Q extends { eq: unknown }>(query: Q): Q =>
+    (query as unknown as RelayFilterable)
       .eq('workflow_id', MAIN_FLOW_WORKFLOW_ID)
       .in('step_namespace', [...RELAY_COMPARISON_POSTS])
       .eq('step_type', 'webhook')
       .gte('execution_started_at', from)
       .lt('execution_started_at', to)
-      .not('is_test', 'is', true)
+      .not('is_test', 'is', true) as unknown as Q
   const ids = (
     await fetchAllPaged<{ id: string }>(
-      (lo, hi) => relayPosts('id').order('execution_started_at', { ascending: true }).order('id', { ascending: true }).range(lo, hi),
+      (lo, hi) =>
+        onlyRelayPosts(supabase.from('execution_steps').select('id'))
+          .order('execution_started_at', { ascending: true })
+          .order('id', { ascending: true })
+          .range(lo, hi),
       'relay post list',
       { maxPages: Math.ceil(MAX_RELAY_POSTS / PAGE_SIZE) },
     )
   ).map((r) => r.id)
   const picked = pickEvenly(ids, RELAY_SAMPLE_SIZE)
   if (picked.length === 0) return { total: 0, sample: [] }
-  const { data, error } = await relayPosts(`id, step_namespace, ${STEP_COLUMNS}`).in('id', picked).limit(RELAY_SAMPLE_SIZE)
+  const { data, error } = await onlyRelayPosts(supabase.from('execution_steps').select(`id, step_namespace, ${STEP_COLUMNS}`))
+    .in('id', picked)
+    .limit(RELAY_SAMPLE_SIZE)
   if (error) throw new Error(`relay sample read failed: ${error.message}`)
   const byId = new Map(((data ?? []) as unknown as Array<RelayStep & { id: string }>).map((r) => [r.id, r]))
   const sample = picked.map((id) => byId.get(id)).filter((r): r is RelayStep & { id: string } => r !== undefined)
