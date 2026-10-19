@@ -379,12 +379,14 @@ describe('failure boundaries', () => {
     expect(report.problems.join(' ')).toMatch(/could not stamp its start with the bidding Worker/)
   })
 
-  // #2410: the bidding Worker holds a lone missed start stamp for one tick, so it
-  // must be told which problem is the stamp's without reading the sentence.
+  // #2410 added the flag; since #2506 the stamp's problem is keyed start_stamp
+  // and held, like every transient kind, until three ticks in a row miss. The
+  // flag stays, and claims nothing it did not measure.
   it('says in the report whether the start stamp failed, and claims nothing it did not measure', async () => {
     const failed = await runOpsTick(fake({ stampFails: true }).ports)
     expect(failed.start_stamp_failed).toBe(true)
     expect(failed.problems).toEqual(['The ops tick could not stamp its start with the bidding Worker (the gateway is not deployed).'])
+    expect(failed.problem_keys).toEqual(['start_stamp'])
     const stamped = await runOpsTick(fake().ports)
     expect(stamped.start_stamp_failed).toBe(false)
   })
