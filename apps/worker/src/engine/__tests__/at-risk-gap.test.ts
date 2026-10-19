@@ -61,12 +61,6 @@ function setup(opts: { recordFails?: boolean; gapFails?: boolean; startThrows?: 
   return { clock, kv, ledger, start }
 }
 
-/** Moves the clock to `ms` whether or not anything is waiting: the clock only moves to timers. */
-async function advanceTo(clock: VirtualClock, ms: number) {
-  void clock.delay(ms - clock.now())
-  await clock.run(ms)
-}
-
 const gap = (kind: string, step = 'patch_prospect_reject') => atRiskGapKey(DAY, kind as never, RUN.executionId, step)
 
 afterEach(() => {
@@ -91,7 +85,7 @@ describe('AtRiskLedger at the cut-off', () => {
     const { clock, kv, ledger, start } = setup()
     const w = start('patch_prospect_reject')
     w.note(REQ)
-    await advanceTo(clock, 5_000)
+    await clock.run(5_000)
     // The record is encrypted with real WebCrypto: wait for it, not for a number of turns.
     await vi.waitFor(() => expect(kv.store.has(RECORD)).toBe(true))
     await ledger.measureCutOff(['patch_prospect_reject'])
@@ -104,7 +98,7 @@ describe('AtRiskLedger at the cut-off', () => {
     const { clock, kv, ledger, start } = setup({ recordFails: true })
     const w = start('patch_prospect_reject')
     w.note(REQ)
-    await advanceTo(clock, 5_000)
+    await clock.run(5_000)
     await ledger.measureCutOff(['patch_prospect_reject'])
     expect(kv.gapKeys()).toContain(gap('unrecorded'))
     expect(kv.gapKeys()).not.toContain(gap('held'))
@@ -115,7 +109,7 @@ describe('AtRiskLedger at the cut-off', () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     const { clock, kv, ledger, start } = setup({ startThrows: true })
     expect(() => start('patch_prospect_reject')).toThrow('SECRET_ENCRYPTION_KEY')
-    await advanceTo(clock, 5_000)
+    await clock.run(5_000)
     await ledger.measureCutOff(['patch_prospect_reject'])
     expect(kv.gapKeys()).toContain(gap('unrecorded'))
   })
@@ -129,13 +123,20 @@ describe('AtRiskLedger at the cut-off', () => {
   it('looks again at a write still inside its first 2 s: caught up once it is recorded', async () => {
     const { clock, kv, ledger, start } = setup()
     await clock.run(1_000)
+    const startedAt = clock.now()
+    expect(startedAt).toBe(1_000)
     const w = start('patch_prospect_reject')
     w.note(REQ)
-    await clock.run(1_500)
+    await clock.run(startedAt + 500)
     const measured = ledger.measureCutOff(['patch_prospect_reject'])
-    await clock.run(1_000 + AT_RISK_AFTER_MS)
+    // The 2 s mark: the record's write starts, and the second look is still a grace away.
+    await clock.run(startedAt + AT_RISK_AFTER_MS)
+    expect(kv.gapKeys()).toEqual([atRiskGapKey(DAY, 'cut_off', RUN.executionId, '-'), gap('exposed')].sort())
+    // The record is encrypted with real WebCrypto. Real time passes here and the
+    // virtual clock does not, so the second look cannot run before the record
+    // lands however busy the runner is (#2470).
     await vi.waitFor(() => expect(kv.store.has(RECORD)).toBe(true))
-    await clock.run(1_000 + AT_RISK_AFTER_MS + RECORD_GRACE_MS)
+    await clock.run(startedAt + AT_RISK_AFTER_MS + RECORD_GRACE_MS)
     await measured
     expect(kv.gapKeys()).toEqual([atRiskGapKey(DAY, 'cut_off', RUN.executionId, '-'), gap('exposed'), gap('caught_up')].sort())
     await w.settle('unknown')
@@ -184,7 +185,7 @@ describe('AtRiskLedger at the cut-off', () => {
     const { clock, ledger, start } = setup({ gapFails: true })
     const w = start('patch_prospect_reject')
     w.note(REQ)
-    await advanceTo(clock, 5_000)
+    await clock.run(5_000)
     await expect(ledger.measureCutOff(['patch_prospect_reject'])).resolves.toBeUndefined()
     await w.settle('unknown')
   })
