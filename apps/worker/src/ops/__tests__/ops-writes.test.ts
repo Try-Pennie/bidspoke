@@ -29,6 +29,7 @@ import {
   opsNow,
   purgeExpiredConnectionTombstones,
   readConnectionCopy,
+  readMeasuredSfOrg,
   readConnectionStatus,
   readWorkflowCopies,
   recordConnectionCheck,
@@ -535,5 +536,47 @@ describe('the ops connection wrappers (#2334)', () => {
     expect(await recordSfBudgetReading(reading.client, SF, { dailyApiMax: 15000, dailyApiRemaining: -3, source: 'sforce_limit_info' })).toBe('recorded')
     expect(reading.calls[0].body).toEqual({ p_sf_org_id: SF, p_daily_api_max: 15000, p_daily_api_remaining: -3, p_source: 'sforce_limit_info' })
     await expect(recordSfBudgetReading(reading.client, SF, { dailyApiMax: 1, dailyApiRemaining: 1, source: 'guess' as never })).rejects.toThrow(/not a reading source/)
+  })
+})
+
+describe('readMeasuredSfOrg (#2336)', () => {
+  const CONN_ID = '33333333-3333-4333-8333-333333333333'
+  const SF = '00Dcs0000000001EAA'
+
+  /** A fetch answering the one table read with `rows`, recording the URL. */
+  function tableFetch(rows: unknown, status = 200) {
+    const urls: URL[] = []
+    const f = (async (input: string | URL | Request) => {
+      urls.push(new URL(input instanceof Request ? input.url : input.toString()))
+      return Response.json(rows, { status })
+    }) as typeof fetch
+    return { client: createOpsSupabaseClient(env, { fetch: f }), urls }
+  }
+
+  it('reads the connection generation\'s measured org, scoped to the organization', async () => {
+    const t = tableFetch([{ sf_org_id: SF, organization_id: ORG }])
+    expect(await readMeasuredSfOrg(t.client, ORG, CONN_ID, 2)).toBe(SF)
+    const url = t.urls[0]
+    expect(url.pathname).toBe('/rest/v1/connection_measured_identity')
+    expect(url.searchParams.get('organization_id')).toBe(`eq.${ORG}`)
+    expect(url.searchParams.get('connection_id')).toBe(`eq.${CONN_ID}`)
+    expect(url.searchParams.get('generation')).toBe('eq.2')
+  })
+
+  it('answers null when verify has not measured that generation', async () => {
+    expect(await readMeasuredSfOrg(tableFetch([]).client, ORG, CONN_ID, 2)).toBeNull()
+  })
+
+  it('refuses a stored org id that is not the 18 character form, which would key a second pool', async () => {
+    await expect(readMeasuredSfOrg(tableFetch([{ sf_org_id: SF.slice(0, 15), organization_id: ORG }]).client, ORG, CONN_ID, 2)).rejects.toThrow(/18 character/)
+  })
+
+  it('refuses two rows for one connection generation rather than choosing one', async () => {
+    const rows = [{ sf_org_id: SF, organization_id: ORG }, { sf_org_id: '00Dcs0000000002EAA', organization_id: ORG }]
+    await expect(readMeasuredSfOrg(tableFetch(rows).client, ORG, CONN_ID, 2)).rejects.toThrow(/more than one/)
+  })
+
+  it('throws a failed read rather than answering unmeasured', async () => {
+    await expect(readMeasuredSfOrg(tableFetch({ code: 'XX000', message: 'boom' }, 500).client, ORG, CONN_ID, 2)).rejects.toThrow(/failed/)
   })
 })
