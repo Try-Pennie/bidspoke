@@ -16,14 +16,14 @@
 --   E. delete_service_connection_by_id deletes and names its actor; a hand run
 --      delete is labelled direct_sql. (The delete by service type this case
 --      used to call was dropped in #2332's release 2.)
---
--- Every insert names its row: release 2 dropped the trigger that named a row
--- saved with none.
 --   F. A change to nothing audited writes no row.
 --   G. The planted token and ciphertext appear in no audit row.
 --   H. With audit_log locked by another session, a save fails by name
 --      (connection_audit_failed) within the bound rather than hanging, and the
 --      write does not land unaudited.
+--
+-- Every insert here (cases A, D, E, F and F2) names its row, because #2332's
+-- release 2 dropped the trigger that named a row saved with none.
 
 CREATE TEMP TABLE IF NOT EXISTS sca_cases (name text PRIMARY KEY);
 DELETE FROM sca_cases;
