@@ -190,7 +190,7 @@ describe('the Salesforce minter: client_credentials against the declared instanc
     await connectionFetch(d.deps, call(d.rec), URL_)
     const next = await sealLogin(keys, { service: 'salesforce', generation: 2, plaintext: JSON.stringify(LOGIN) })
     await connectionFetch(d.deps, call(d.rec, {
-      purpose: 'reconnect',
+      purpose: 'verify',
       source: { kind: 'candidate', candidate: { service: 'salesforce', generation: 2, envelope: next, target: TARGET, publicConfig: {} } },
     }), URL_)
     await connectionFetch(d.deps, call(d.rec), URL_)

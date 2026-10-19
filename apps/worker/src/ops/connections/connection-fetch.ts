@@ -19,7 +19,7 @@
  *
  * ORDER, and why:
  *  1. The call: a valid organization, a step names its workflow and nothing
- *     else does, a candidate is verify's or Reconnect's alone.
+ *     else does, a candidate is verify's alone (Reconnect's call is a verify).
  *  2. The copy: a tombstone, a withdrawal and serve_until, as the database
  *     judged them on its own clock. A candidate (below) is checked against the
  *     copy's tombstone, service and generation instead.
@@ -74,7 +74,7 @@ import type { Authorization, OpenedLogin, ServiceRules } from './service-rules'
 export const CONNECTION_FETCH_DEADLINE_MS = 60_000
 /** A lease outlives the call's deadline, so it never lapses while its request is in flight. */
 export const SF_LEASE_TTL_SECONDS = 90
-/** How long lookup, verify and Reconnect wait on a full pool before they are refused (plan: a short stated time). */
+/** How long lookup and verify (Reconnect's call is a verify) wait on a full pool before they are refused (plan: a short stated time). */
 export const SF_INTERACTIVE_WAIT_MS = 2_000
 export const SF_INTERACTIVE_POLL_MS = 250
 /** When a step refused a lease with no time of its own is next tried. */
@@ -164,8 +164,9 @@ export interface ConnectionFetchDeps {
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-const CANDIDATE_PURPOSES: ReadonlySet<SfLeasePurpose> = new Set(['verify', 'reconnect'])
-const INTERACTIVE_PURPOSES: ReadonlySet<SfLeasePurpose> = new Set(['lookup', 'verify', 'reconnect'])
+// Reconnect's call is a verify (clearReauth), so it has no purpose of its own (#2336).
+const CANDIDATE_PURPOSES: ReadonlySet<SfLeasePurpose> = new Set(['verify'])
+const INTERACTIVE_PURPOSES: ReadonlySet<SfLeasePurpose> = new Set(['lookup', 'verify'])
 const BUSY_OUTCOMES: ReadonlySet<SfLeaseOutcome> = new Set(['pool_full', 'workflow_share_full', 'purpose_share_full'])
 
 const COPY_STATE_REFUSALS: Readonly<Record<Exclude<ConnectionCopy['state'], 'usable'>, ConnectionRefusalCode>> = {

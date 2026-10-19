@@ -32,7 +32,7 @@ export const CONNECTION_REFUSAL_CODES = [
   'connection_service_mismatch',
   /** A candidate older than the copy ops holds. */
   'connection_generation_older',
-  /** A candidate is verify's and Reconnect's alone. */
+  /** A candidate is verify's alone (Reconnect's call is a verify). */
   'connection_candidate_not_allowed',
   /** The envelope did not open: another organization, connection, service, generation or key. */
   'connection_seal_refused',
