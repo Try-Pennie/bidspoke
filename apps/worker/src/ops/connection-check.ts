@@ -9,9 +9,11 @@
  * step failed on it. The sweep proves each connection's login on a schedule, so
  * the failure is found and paged before a workflow meets it.
  *
- * WHAT, per connection connection_check_targets lists (every copy not withdrawn
- * and not removed, the login states that may page first and the least recently
- * checked first within each band, supabase-ops migration 20261020030000): ask the service who the credential is, through
+ * WHAT, per connection connection_check_targets lists (supabase-ops migration
+ * 20261020030000: every copy not withdrawn and not removed, in three bands,
+ * each login state that may page first, then the other servable copies, then
+ * the expired ones, the least recently checked first within each band): ask
+ * the service who the credential is, through
  * connectionFetch with the connection's committed copy, purpose
  * connection_check, by the service's registered identity probe (the one verify
  * uses: Salesforce /services/oauth2/userinfo, Snowflake CURRENT_USER() and the
@@ -107,7 +109,12 @@ export const CONNECTION_CHECK_EVERY_SECONDS = 14 * 60
  * the other.
  */
 export const CONNECTION_CHECK_READ_LIMIT = 500
-/** The most connections one sweep probes. None in production today; the list gives them least recently checked first, so a sweep past it rotates. */
+/**
+ * The most connections one sweep probes, counted over the ones it can probe
+ * only (servable and not in needs_reauth). None in production today. Within
+ * each band the list gives them least recently checked first, so a sweep past
+ * the limit rotates through them.
+ */
 export const CONNECTION_CHECK_MAX_CONNECTIONS = 50
 /** connectionFetch's own deadline for each request of a probe: an identity read is one small GET or statement. */
 export const CONNECTION_CHECK_PROBE_DEADLINE_MS = 30_000
