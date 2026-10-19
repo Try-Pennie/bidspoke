@@ -54,7 +54,9 @@ CREATE OR REPLACE FUNCTION pg_temp.sre_envelope(p_iv text)
 RETURNS jsonb
 LANGUAGE sql
 AS $fn$
-  SELECT jsonb_build_object('v', 1, 'kid', 'ops-test-1', 'wrapped_key', 'cGxhbnRlZC13cmFwcGVk', 'iv', p_iv, 'ct', 'cGxhbnRlZC1jdA==')
+  SELECT jsonb_build_object('v', 1, 'kid', 'ops-test-1',
+    'wrapped_key', encode(convert_to('planted-wrapped', 'UTF8'), 'base64'), 'iv', p_iv,
+    'ct', encode(convert_to('planted-ct', 'UTF8'), 'base64'))
 $fn$;
 
 -- The rows every case starts from: org A's person bound ops row at generation 3,
@@ -70,7 +72,7 @@ BEGIN
   VALUES
     ('33333333-3333-3333-3333-33333333c001', '11111111-1111-1111-1111-11111112335a', 'salesforce', 'sre person', 'oauth_user', NULL,
      NULL, pg_temp.sre_envelope('aXYtZ2VuLTMtcm93')::text, 'ops_key', true, 3, '22222222-2222-2222-2222-22222222335a', '{"instance_url":"https://example.my.salesforce.com"}'),
-    -- Another service type: the old one row per service unique still holds.
+    -- Another service type, not person bound.
     ('33333333-3333-3333-3333-33333333c002', '11111111-1111-1111-1111-11111112335a', 'snowflake', 'sre shared', 'key_pair', NULL,
      NULL, pg_temp.sre_envelope('aXYtc2hhcmVkLXJvdw')::text, 'ops_key', false, 3, NULL, NULL),
     ('33333333-3333-3333-3333-33333333c003', '11111111-1111-1111-1111-11111112335a', 'slack', 'slack', 'oauth', NULL,
