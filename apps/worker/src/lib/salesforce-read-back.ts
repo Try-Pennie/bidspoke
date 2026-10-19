@@ -36,8 +36,9 @@
  *    another tick holds is that tick's to send, and a won claim's attempt count
  *    is written BEFORE the send (its claim freed if that write fails).
  *  - A field that now holds a different non-blank value, set by another writer
- *    since the write began, is not overwritten. It is named, field name only, in
- *    a conflict alert, and conflicts are counted per field against the resends
+ *    since the write began, is not overwritten. It is named in a conflict alert
+ *    with the value it held and the value being sent (#2264, never stored), and
+ *    conflicts are counted per field against the resends
  *    that carried it. "Since the write began" is read off LastModifiedDate: a
  *    record nobody has written since then holds only values from before the
  *    write, which are exactly what it was sent to replace (a Prospect's No Bid,
