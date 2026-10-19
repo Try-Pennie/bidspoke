@@ -101,8 +101,8 @@
  *
  * ONE MESSAGE A DAY to Main Flow's organization's alerts channel. A day with any
  * run that did not land, or could not be checked, or a check that could not run,
- * or a day Main Flow spent off the direct write (#2312), is titled as an alert
- * with a Fix line; otherwise it is a report. It arms no
+ * or a day Main Flow spent off the direct write (#2312), or an overwrite storm
+ * (#2485), is titled as an alert with a Fix line; otherwise it is a report. It arms no
  * all-clear marker, because the next day's message is the stand down, so it has
  * no INCIDENT_SIGNALS entry.
  *
@@ -269,7 +269,7 @@ export interface CanaryWatchMessage {
   title: string
   lines: string[]
   fixHint?: string
-  /** A run did not land, could not be checked, the check could not run, or Main Flow was off the direct write. */
+  /** A run did not land, could not be checked, the check could not run, Main Flow was off the direct write, or an overwrite storm. */
   alert: boolean
 }
 
@@ -349,7 +349,11 @@ async function readRecord(read: Read, what: string, path: string): Promise<Recor
 
 /** One Submission write to read back: the run, its step, the record and the PATCH body as Salesforce received it. */
 interface SubmissionWrite {
-  /** A direct write is the canary's subject and is never left out; only a relay post can be judged overwritten. */
+  /**
+   * A relay post is judged overwritten by a later run's link alone; a direct
+   * write only when its Submission also holds that later run's stamp of the same
+   * step (#2485), and an unstamped one never.
+   */
   via: 'direct' | 'relay'
   executionId: string
   stepNamespace: string
@@ -487,7 +491,8 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
 
   // A relay post has no stamp to say whose write the record holds, so a later
   // run's link means it was overwritten since, and what the record holds is that
-  // run's. A direct write is never left out: one without its stamp is judged below.
+  // run's. A direct write is set aside only on a later run's stamp of the same
+  // step, below (#2485); one without its stamp is judged on what it sent.
   if (w.via === 'relay' && !stamped) {
     const later = laterRunInLink(link, expectedLink, executionId)
     if (later) return { verdict: { kind: 'superseded', executionId, byExecutionId: later }, stop: false }
