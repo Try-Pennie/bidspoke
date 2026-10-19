@@ -107,6 +107,32 @@ describe('probeAfterDeploy', () => {
     expect((await probeAfterDeploy(d)).outcome).toBe('unreachable')
   })
 
+  it('names a 5xx that is not the route\'s own as an error answer, with its status', async () => {
+    const { deps: d } = deps([{ status: 500, body: { error: 'Internal server error' } }], { budgetSeconds: 20 })
+    const result = await probeAfterDeploy(d)
+    expect(result.outcome).toBe('error-answer')
+    expect(result.message).toContain('last 500')
+  })
+
+  it('asks again on a 200 whose body is not the route\'s answer (a page in front of the Worker), never reading it as ops answering', async () => {
+    const { deps: d } = deps([{ status: 200, body: null }, ANSWERED])
+    expect((await probeAfterDeploy(d)).outcome).toBe('answered')
+    const stuck = deps([{ status: 200, body: null }], { budgetSeconds: 20 })
+    const result = await probeAfterDeploy(stuck.deps)
+    expect(result.outcome).toBe('unrecognised')
+    expect(result.message).not.toContain('OpsConnections answered')
+  })
+
+  it('is bounded by the clock too: a slow sleep ends it before the count does', async () => {
+    const { deps: d, asked } = deps([THREW], { budgetSeconds: 30, intervalSeconds: 10 })
+    let clock = 0
+    d.now = () => clock
+    d.sleep = async () => { clock += 25_000 }
+    await probeAfterDeploy(d)
+    // The count allows 4 asks; the clock passes 30 s after the second sleep.
+    expect(asked.length).toBe(3)
+  })
+
   it('is bounded by a count of asks too, so a clock that never moves cannot spin it', async () => {
     const { deps: d, asked } = deps([THREW], { budgetSeconds: 30, intervalSeconds: 10 })
     d.sleep = async () => {}

@@ -14,6 +14,8 @@
 //   not-signed-in   sign in failed, or the route refused the session: measured nothing.
 //   unavailable     the binding threw, was absent or did not answer, to the end of the budget.
 //   route-missing   the old version, without the probe route, answered to the end.
+//   error-answer    a 5xx other than the route's own 503 and 502, to the end.
+//   unrecognised    a status or body the route never sends, to the end.
 //   unreachable     every ask failed on the network.
 //   and a missing E2E_PASSWORD is an error, never a skip.
 //
@@ -62,13 +64,15 @@ export async function probeAfterDeploy(deps) {
       if (status === 401 || status === 403) {
         return { outcome: 'not-signed-in', message: `${url} refused the e2e session with ${status}, so the probe measured nothing.` }
       }
-      if (status === 502 || status === 200) {
-        const answer = typeof body?.answer === 'string' ? body.answer : JSON.stringify(body)
-        return { outcome: 'unexpected', message: `OpsConnections answered ${answer} through the binding, not ${EXPECTED}: the ops Worker is answering but not as its probe request earns (its LANE or its contract).` }
+      // The route's own answers carry a string `answer` (502, or a 200 naming another one): ops answered, so its config is the fault.
+      if ((status === 502 || status === 200) && typeof body?.answer === 'string') {
+        return { outcome: 'unexpected', message: `OpsConnections answered ${body.answer} through the binding, not ${EXPECTED}: the ops Worker is answering but not as its probe request earns (its LANE or its contract).` }
       }
       if (status === 503) last = { outcome: 'unavailable', seen: describeUnavailable(body) }
       else if (status === 404) last = { outcome: 'route-missing', seen: '404, the version without the probe route' }
-      else last = { outcome: 'unreachable', seen: `${status}` }
+      else if (status === 200 || status === 502) last = { outcome: 'unrecognised', seen: `${status} with a body that is not the probe route's answer` }
+      else if (status >= 500) last = { outcome: 'error-answer', seen: `${status}, an error answer that is not the probe route's` }
+      else last = { outcome: 'unrecognised', seen: `${status}, which the probe route never answers` }
       console.error(`ops-connections-probe: ask ${ask} answered ${last.seen}`)
     } catch (e) {
       last = { outcome: 'unreachable', seen: e instanceof Error ? e.message : 'a network error' }
@@ -81,6 +85,8 @@ export async function probeAfterDeploy(deps) {
   const messages = {
     unavailable: `The call through OPS_CONNECTIONS did not answer within ${deps.budgetSeconds} s: last ${last.seen}. A throw names no cause, so this does not say whether the ops Worker is running; check that the deployed bidspoke-worker-ops exports OpsConnections (ops-exports-entrypoint.mjs).`,
     'route-missing': `${url} answered 404 for ${deps.budgetSeconds} s: the deployed bidding Worker is not the version with the probe route.`,
+    'error-answer': `${url} answered with an error for ${deps.budgetSeconds} s: last ${last.seen}.`,
+    unrecognised: `${url} answered something the probe route never sends for ${deps.budgetSeconds} s: last ${last.seen}.`,
     unreachable: `${url} gave no answer for ${deps.budgetSeconds} s: last ${last.seen}.`,
   }
   return { outcome: last.outcome, message: messages[last.outcome] }
