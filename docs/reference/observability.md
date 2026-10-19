@@ -143,6 +143,38 @@ The volume, matrix, and config toggles live on the Integrations page (Slack sett
 
 The volume-cliff and slow-spike checks run on a per-minute cron and only evaluate active workflows in orgs that have Slack connected.
 
+### The ops minute cron (`export-alert:ops-tick`)
+
+The ops Worker (`bidspoke-worker-ops`) runs one tick a minute and sends its report to the bidding Worker through the OpsGateway. The bidding Worker judges the last report every minute (`runOpsTickReportCheck` in `apps/worker/src/lib/ops-gateway.ts`) and pages through the shared export alerter, so its page and all clear pair up in `alert_incidents` as signal `export-alert`, subject `ops-tick`.
+
+| Page | Means |
+|---|---|
+| The ops minute cron reported a problem | A tick reported a problem that is due to page: one that pages at once, or one that three ticks in a row reported. A context line `Reported by 3 or more ticks in a row.` says every problem on the page is the second kind. |
+| The ops minute cron is not configured | A secret the tick needs is unset or unusable. It names the secret and its remedy, and pages at once. |
+
+**Three ticks in a row (#2506, Dan's decision 2026-10-19).** Every problem in a report carries a key: its kind, and what it is about where there is one (a sweep, a workflow, a connection, a secret), such as `sweep_failed:run_expiry`. The bidding Worker counts each key's ticks in a row as the report arrives, never by the problem's sentence, which carries an error's own words and figures. A problem a passing tick would clear pages only on the third tick in a row that reports it; one tick's is logged and counted. A tick without that problem, a clean one included, ends its count. The rule for each kind is `OPS_TICK_PROBLEM_RULES` in `apps/worker/src/lib/ops-gateway-contract.ts`:
+
+| Rule | Kinds |
+|---|---|
+| Three ticks in a row | `start_stamp`, `db_clock`, `sweep_claim_failed` (any sweep), `sweep_failed` (lease_expiry, run_expiry, tombstone_expiry, sf_lease_expiry), `workflows_fetch_failed`, `workflows_save_failed`, `copies_read_failed`, `schedule_plan_failed`, `claim_depth_failed`, `probe_failed`, `connections_fetch_failed`, `connections_save_failed`, `tombstone_record_failed`, `problems_left_out` |
+| At once, not transient | `db_not_configured`, `not_configured`, `secrets_unchecked`, `queue_disagreement`, `workflow_refused`, `workflows_too_many`, `copies_read_limit`, `schedule_refused`, `schedule_no_version`, `connections_list_unreadable`, `connection_refused`, `connections_too_many`, `connection_copies_expired`, `connections_step_failed` |
+| At once, never reported again by a later tick | `slot_missed` (recorded once), `dispatch_failed` (a slot is dispatched once), `agreement_check_failed` (the check runs every 14 minutes) |
+| At once, written by the bidding Worker | `report_unreadable`, and `unkeyed` for each problem of an ops release before #2506, except a lone missed start stamp, which is held as `start_stamp` |
+
+A kind the bidding Worker has no rule for pages at once. A page lists only the problems due to page; problems held beside them are in the logs. A tick whose every problem is held pages nothing and is not read as clean either, so an open incident stays open until a clean tick stands it down.
+
+**How to read it.** In the bidding Worker's logs (`bidspoke-worker`):
+
+- `ops_tick_problem_held`: a problem held, with its `key`, `in_a_row` and `pages_at` (3). One line per held problem per tick.
+- `ops_tick_count_unknown`: the count in KV could not be read (`why: read`) or written (`why: write`). That tick's problems page rather than being held, since a count that cannot be carried could hold a problem for ever.
+- `[ops-tick] held tick`: the minute check found only held problems.
+
+Every problem's sentence is in the ops Worker's own logs (`bidspoke-worker-ops`), event `ops_tick`, step `problem`, with its `key`.
+
+**The count in KV.** One record, `ops-tick:problem-streaks` in `IDEMPOTENCY`, written as each report arrives, with a 10 minute expiry that every tick keeping a problem standing renews; a clean tick removes it. A record older than 10 minutes, by its own time, starts every count afresh even before KV expires it. The same report delivered twice counts once. Two overlapping ticks, or a KV read in another location that does not yet see the last write, can delay a page by a tick.
+
+**A tick that stops reporting** is not this page's to catch: the `ops-tick` cron heartbeat (`apps/worker/src/lib/cron-heartbeat.ts`) pages on a tick that never starts or never finishes, and a report older than 10 minutes is left to it.
+
 ### When nobody can be told in Slack (Better Stack)
 
 A scheduled check finds who to tell by reading the org's Slack connection. When the database does not answer, it falls back to the saved copy of the Slack connections. When that fallback fails too, no Slack alert can be posted at all, and the worker's own log lines do not reach Better Stack (log forwarding was narrowed on 2026-09-09 to keep applicant data out, #1007). For that one case the worker sends a fixed line straight to a Better Stack HTTP log source (#2063, `apps/worker/src/lib/nobody-told-page.ts`). Neither the database nor Slack is on that path.

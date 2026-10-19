@@ -6,9 +6,12 @@
  * not depend on, so it keeps judging when the ops Worker is down (L71).
  */
 import { createClient } from '@supabase/supabase-js'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { completedKey, heartbeatKey } from '../cron-heartbeat'
-import { OPS_TICK_JOB, OPS_TICK_REPORT_KEY, OPS_TICK_REPORT_FRESH_MS, readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, runOpsTickReportCheck } from '../ops-gateway'
+import {
+  OPS_TICK_JOB, OPS_TICK_REPORT_KEY, OPS_TICK_REPORT_FRESH_MS, OPS_TICK_STREAKS_KEY, OPS_TICK_STREAK_TTL_SECONDS, OPS_TICK_TICKS_IN_A_ROW_TO_PAGE,
+  readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, runOpsTickReportCheck,
+} from '../ops-gateway'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
 const WF = '00000000-0000-4000-8000-0000000019a1'
@@ -286,118 +289,321 @@ describe('runOpsTickReportCheck', () => {
   })
 })
 
-// #2410: one start stamp that ran past the gateway deadline paged at 15:02:29 UTC
-// on 2026-10-18, two minutes after a deploy, and nothing failed after it. A lone
-// missed stamp is held for one tick; the second in a row pages.
-describe('a missed start stamp', () => {
-  const STAMP = 'The ops tick could not stamp its start with the bidding Worker (the bidding Worker\'s heartbeat did not answer within 15 s).'
+// #2506 (Dan's decision, 2026-10-19). On 2026-10-18 and 2026-10-19 the page
+// fired on one tick each (a start stamp past its deadline, then the run_expiry
+// sweep's claim_ops_sweep past its 9000 ms deadline), and each recovered by
+// itself. A problem a passing tick would clear now pages only once three ticks
+// in a row report it; one tick's is logged and counted. #2410 held a lone
+// missed start stamp for one tick; that rule is this one now.
+describe('three ticks in a row (#2506)', () => {
   const MIN = 60_000
+  const SWEEP = 'The run_expiry sweep failed: claim_ops_sweep passed its 9000 ms deadline and may still have committed.'
+  const LEASES = 'The lease_expiry sweep failed: lock timeout.'
+  const STAMP = 'The ops tick could not stamp its start with the bidding Worker (the bidding Worker\'s heartbeat did not answer within 15 s).'
+  const MISSED = 'Workflow 00000000-0000-4000-8000-0000000019a1 missed its Oct 19, 2:35 PM ET slot (catch_up_none): the tick did not see it inside its five minute window.'
   const report = (n: number, over: Record<string, unknown> = {}) => ({
     tick_id: `t${n}`, mode: 'observe', scheduled_time: null,
     started_at: new Date(NOW + n * MIN).toISOString(), finished_at: new Date(NOW + n * MIN + 1000).toISOString(),
-    db_now: null, outcome: 'ok', problems: [], counts: {}, start_stamp_failed: false, ...over,
+    db_now: null, outcome: 'ok', problems: [], problem_keys: [], counts: {}, start_stamp_failed: false, ...over,
   })
-  const missed = (n: number, over: Record<string, unknown> = {}) => report(n, { outcome: 'problems', problems: [STAMP], start_stamp_failed: true, ...over })
+  const bad = (n: number, problems: Array<[string, string]>, over: Record<string, unknown> = {}) =>
+    report(n, { outcome: 'problems', problems: problems.map(([, t]) => t), problem_keys: problems.map(([k]) => k), ...over })
+  const sweep: [string, string] = ['sweep_failed:run_expiry', SWEEP]
+  const leases: [string, string] = ['sweep_failed:lease_expiry', LEASES]
 
   function deps() {
-    const sent: Array<{ errors: string[]; title: string; context?: string }> = []
+    const sent: Array<{ errors: string[]; title: string; context?: string; options?: unknown }> = []
     const recovered: string[] = []
     return {
       sent,
       recovered,
-      notifyFailure: async (_s: unknown, _job: string, errors: string[], _k: unknown, remedy: { title: string; context?: string }) => {
-        sent.push({ errors, title: remedy.title, context: remedy.context })
+      notifyFailure: async (_s: unknown, _job: string, errors: string[], _k: unknown, remedy: { title: string; context?: string }, _now: number, options?: unknown) => {
+        sent.push({ errors, title: remedy.title, context: remedy.context, options })
       },
       notifyRecovery: async (_k: unknown, job: string) => { recovered.push(job) },
     }
   }
 
-  /** One tick: its report arrives, then the bidding Worker's minute check judges it. */
-  async function tick(store: ReturnType<typeof kv>, d: ReturnType<typeof deps>, n: number, r: Record<string, unknown>) {
+  /** One tick: its report arrives, then the bidding Worker's minute check judges it. Both clocks are set. */
+  async function tick(store: ReturnType<typeof kv> | KvShape, d: ReturnType<typeof deps>, n: number, r: Record<string, unknown>) {
     await recordOpsTickCompleted(store as unknown as KVNamespace, r, NOW + n * MIN + 2000)
     return runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW + n * MIN + 30_000, d)
   }
 
-  it('does not page on one missed stamp followed by a clean tick', async () => {
+  /** The named lines a tick logs about its problems, captured rather than printed. */
+  function heldLines() {
+    const lines: Array<Record<string, unknown>> = []
+    const spy = vi.spyOn(console, 'warn').mockImplementation((line: unknown) => {
+      if (typeof line === 'string' && line.startsWith('{')) lines.push(JSON.parse(line) as Record<string, unknown>)
+    })
+    return { lines, restore: () => spy.mockRestore() }
+  }
+
+  it('does not page one bad tick, and logs it by name with its count', async () => {
     const store = kv()
     const d = deps()
-    expect(await tick(store, d, 0, report(0))).toBe('healthy')
-    expect(await tick(store, d, 1, missed(1))).toBe('held')
-    expect(await tick(store, d, 2, report(2))).toBe('healthy')
+    const log = heldLines()
+    try {
+      expect(await tick(store, d, 1, bad(1, [sweep]))).toBe('held')
+    } finally {
+      log.restore()
+    }
     expect(d.sent).toEqual([])
+    expect(log.lines).toContainEqual(expect.objectContaining({ event: 'ops_tick_problem_held', tick_id: 't1', key: 'sweep_failed:run_expiry', in_a_row: 1, pages_at: OPS_TICK_TICKS_IN_A_ROW_TO_PAGE }))
+  })
+
+  it('pages once on the third tick in a row, naming that it was three in a row, and has the alerter page it without a grace of its own', async () => {
+    const store = kv()
+    const d = deps()
+    const verdicts = [await tick(store, d, 1, bad(1, [sweep])), await tick(store, d, 2, bad(2, [sweep])), await tick(store, d, 3, bad(3, [sweep]))]
+    expect(verdicts).toEqual(['held', 'held', 'alerted'])
+    expect(d.sent).toEqual([{
+      errors: [SWEEP], title: 'The ops minute cron reported a problem',
+      context: `Reported by ${OPS_TICK_TICKS_IN_A_ROW_TO_PAGE} or more ticks in a row.`,
+      options: { repeatsHeldByCaller: true },
+    }])
+  })
+
+  it('resets the count on a tick without the problem: bad, good, bad pages nothing', async () => {
+    const store = kv()
+    const d = deps()
+    const verdicts = [
+      await tick(store, d, 1, bad(1, [sweep])), await tick(store, d, 2, bad(2, [sweep])), await tick(store, d, 3, report(3)),
+      await tick(store, d, 4, bad(4, [sweep])), await tick(store, d, 5, bad(5, [sweep])),
+    ]
+    expect(verdicts).toEqual(['held', 'held', 'healthy', 'held', 'held'])
+    expect(d.sent).toEqual([])
+  })
+
+  it('resets the count on a tick that reports only another problem', async () => {
+    const store = kv()
+    const d = deps()
+    const verdicts = [
+      await tick(store, d, 1, bad(1, [sweep])), await tick(store, d, 2, bad(2, [sweep])), await tick(store, d, 3, bad(3, [leases])),
+      await tick(store, d, 4, bad(4, [sweep])),
+    ]
+    expect(verdicts).toEqual(['held', 'held', 'held', 'held'])
+    expect(d.sent).toEqual([])
+  })
+
+  it('counts each problem on its own, and pages only the one that reached three', async () => {
+    const store = kv()
+    const d = deps()
+    expect(await tick(store, d, 1, bad(1, [sweep]))).toBe('held')
+    expect(await tick(store, d, 2, bad(2, [sweep, leases]))).toBe('held')
+    expect(await tick(store, d, 3, bad(3, [sweep, leases]))).toBe('alerted')
+    expect(d.sent.at(-1)?.errors).toEqual([SWEEP])
+    expect(await tick(store, d, 4, bad(4, [sweep, leases]))).toBe('alerted')
+    expect(d.sent.at(-1)?.errors).toEqual([SWEEP, LEASES])
+  })
+
+  // The sentence names the error's own words and figures, which move between
+  // ticks; the key names the sweep and the kind, which do not.
+  it('reads a problem by its key, so the same sweep failing in different words is one problem', async () => {
+    const store = kv()
+    const d = deps()
+    await tick(store, d, 1, bad(1, [['sweep_failed:run_expiry', 'The run_expiry sweep failed: claim_ops_sweep passed its 9000 ms deadline and may still have committed.']]))
+    await tick(store, d, 2, bad(2, [['sweep_failed:run_expiry', 'The run_expiry sweep failed: expire_ops_runs failed (57014): canceling statement due to statement timeout.']]))
+    expect(await tick(store, d, 3, bad(3, [['sweep_failed:run_expiry', 'The run_expiry sweep failed: error code: 522.']]))).toBe('alerted')
+  })
+
+  it('pages a sustained problem on every tick from the third, in the same words, so the alerter reads one standing problem', async () => {
+    const store = kv()
+    const d = deps()
+    const verdicts: string[] = []
+    for (let n = 1; n <= 6; n++) verdicts.push(await tick(store, d, n, bad(n, [sweep])))
+    expect(verdicts).toEqual(['held', 'held', 'alerted', 'alerted', 'alerted', 'alerted'])
+    // The context is a fixed sentence, never the running count (#1768).
+    expect(new Set(d.sent.map((s) => JSON.stringify(s))).size).toBe(1)
   })
 
   it('holds the same report however many times the check reads it, because it counts ticks, not checks', async () => {
     const store = kv()
     const d = deps()
-    expect(await tick(store, d, 1, missed(1))).toBe('held')
-    expect(await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW + MIN + 60_000, d)).toBe('held')
-    expect(await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW + MIN + 90_000, d)).toBe('held')
+    expect(await tick(store, d, 1, bad(1, [sweep]))).toBe('held')
+    for (const at of [60_000, 90_000, 120_000, 150_000]) {
+      expect(await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW + MIN + at, d)).toBe('held')
+    }
     expect(d.sent).toEqual([])
   })
 
-  it('pages on the second missed stamp in a row, saying it was two or more in a row', async () => {
+  it('counts a report delivered twice once, by its tick id', async () => {
     const store = kv()
     const d = deps()
-    expect(await tick(store, d, 1, missed(1))).toBe('held')
-    expect(await tick(store, d, 2, missed(2))).toBe('alerted')
-    expect(d.sent).toEqual([{
-      errors: [STAMP], title: 'The ops minute cron reported a problem',
-      context: 'The start stamp failed on 2 or more ticks in a row.',
-    }])
-  })
-
-  it('pages a sustained failure no more than one tick later than before #2410, and keeps paging it', async () => {
-    const store = kv()
-    const d = deps()
-    const verdicts: string[] = []
-    for (let n = 1; n <= 5; n++) verdicts.push(await tick(store, d, n, missed(n)))
-    // Before #2410 the first was 'alerted'; the alerter's own reminder schedule
-    // decides what reaches Slack after that, as it does for every job.
-    expect(verdicts).toEqual(['held', 'alerted', 'alerted', 'alerted', 'alerted'])
-    // The words do not change as the run lengthens, so the alerter reads it as one standing problem.
-    expect(new Set(d.sent.map((s) => JSON.stringify(s))).size).toBe(1)
-  })
-
-  it('pages at once when the missed stamp is not the only problem', async () => {
-    const store = kv()
-    const d = deps()
-    expect(await tick(store, d, 1, missed(1, { problems: [STAMP, 'The lease_expiry sweep failed: lock timeout.'] }))).toBe('alerted')
-    expect(d.sent[0].errors).toEqual([STAMP, 'The lease_expiry sweep failed: lock timeout.'])
-  })
-
-  it('pages at once on a report from an ops release that does not say whether the stamp failed', async () => {
-    const store = kv()
-    const d = deps()
-    const { start_stamp_failed: _omitted, ...older } = missed(1)
-    expect(await tick(store, d, 1, older)).toBe('alerted')
-  })
-
-  it('does not count a missed stamp from a report too old to say anything about now as the one before', async () => {
-    const store = kv()
-    const d = deps()
-    expect(await tick(store, d, 0, missed(0))).toBe('held')
-    const later = Math.ceil(OPS_TICK_REPORT_FRESH_MS / MIN) + 1
-    expect(await tick(store, d, later, missed(later))).toBe('held')
+    await tick(store, d, 1, bad(1, [sweep]))
+    await tick(store, d, 2, bad(2, [sweep]))
+    expect(await tick(store, d, 2, bad(2, [sweep]))).toBe('held')
     expect(d.sent).toEqual([])
   })
 
-  it('still keeps the report when the run before it cannot be read, and pages the miss rather than holding it', async () => {
+  it.each([
+    ['a missed slot, which no later tick reports again', ['slot_missed:00000000-0000-4000-8000-0000000019a1', MISSED]],
+    ['a disagreement between the run queue and the runs, which is a defect', ['queue_disagreement', 'The agreement check found 2 runs where the run queue and the runs disagree.']],
+    ['a served workflow in a shape not read, which is a defect', ['workflow_refused', 'The bidding Worker served workflow row 1 in a shape the ops Worker does not read, so it was not saved.']],
+    ['a kind this Worker has no rule for', ['a_kind_from_a_newer_release', 'Something new went wrong.']],
+  ] as Array<[string, [string, string]]>)('pages at once on %s', async (_label, problem) => {
     const store = kv()
     const d = deps()
-    const failingRead = { ...store, get: async () => { throw new Error('KV GET failed: 503') } }
-    await recordOpsTickCompleted(failingRead as unknown as KVNamespace, missed(1), NOW + MIN + 2000)
-    expect(JSON.parse(store.m.get(OPS_TICK_REPORT_KEY)!).tick_id).toBe('t1')
-    expect(await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW + MIN + 30_000, d)).toBe('alerted')
+    expect(await tick(store, d, 1, bad(1, [problem]))).toBe('alerted')
+    expect(d.sent[0].errors).toEqual([problem[1]])
+    // Not a problem held for three ticks, so no context says so.
+    expect(d.sent[0].context).toBeUndefined()
   })
 
-  it('refuses a report that says the stamp failed but reports no problem, so it pages as unreadable', async () => {
+  it('pages at once on not configured, which is not transient', async () => {
+    const store = kv()
+    const d = deps()
+    const r = bad(1, [['not_configured:OPS_CONNECTIONS_PRIVATE_KEY', 'OPS_CONNECTIONS_PRIVATE_KEY is not set on bidspoke-worker-ops, so no ops connection can be opened.']], {
+      outcome: 'not_configured', not_configured_secrets: ['OPS_CONNECTIONS_PRIVATE_KEY'],
+    })
+    expect(await tick(store, d, 1, r)).toBe('alerted')
+    expect(d.sent[0].title).toBe('The ops minute cron is not configured')
+  })
+
+  it('pages the at once problem of a tick at once, and holds the transient one beside it', async () => {
+    const store = kv()
+    const d = deps()
+    expect(await tick(store, d, 1, bad(1, [sweep, ['slot_missed:00000000-0000-4000-8000-0000000019a1', MISSED]]))).toBe('alerted')
+    expect(d.sent[0].errors).toEqual([MISSED])
+  })
+
+  it('pages an unreadable report at once', async () => {
     const store = kv()
     const d = deps()
     expect(await tick(store, d, 1, report(1, { start_stamp_failed: true }))).toBe('alerted')
     expect(d.sent[0].errors[0]).toMatch(/could not be read/)
   })
+
+  describe('the all clear', () => {
+    it('stands the page down on the first clean tick after it', async () => {
+      const store = kv()
+      const d = deps()
+      for (let n = 1; n <= 3; n++) await tick(store, d, n, bad(n, [sweep]))
+      expect(await tick(store, d, 4, report(4))).toBe('healthy')
+      expect(d.recovered).toEqual([OPS_TICK_JOB])
+    })
+
+    // A held tick is not a clean one: the incident stays open, so the page and
+    // its all clear still pair, and an all clear never says a tick with a
+    // problem in it was healthy.
+    it('keeps the incident open through a held tick', async () => {
+      const store = kv()
+      const d = deps()
+      for (let n = 1; n <= 3; n++) await tick(store, d, n, bad(n, [sweep]))
+      expect(await tick(store, d, 4, bad(4, [leases]))).toBe('held')
+      expect(d.recovered).toEqual([])
+    })
+  })
+
+  describe('the count in KV', () => {
+    it('is kept with an expiry, renewed on every tick that keeps a problem standing', async () => {
+      const store = kv()
+      const ttls: Array<number | undefined> = []
+      const watched = { ...store, put: async (k: string, v: string, o?: { expirationTtl?: number }) => { if (k === OPS_TICK_STREAKS_KEY) ttls.push(o?.expirationTtl); return store.put(k, v) } }
+      const d = deps()
+      for (let n = 1; n <= 3; n++) await tick(watched, d, n, bad(n, [sweep]))
+      expect(ttls).toEqual([OPS_TICK_STREAK_TTL_SECONDS, OPS_TICK_STREAK_TTL_SECONDS, OPS_TICK_STREAK_TTL_SECONDS])
+      // An expiry no longer than the window a report says anything about now in.
+      expect(OPS_TICK_STREAK_TTL_SECONDS * 1000).toBeLessThanOrEqual(OPS_TICK_REPORT_FRESH_MS)
+    })
+
+    it('is removed by a clean tick', async () => {
+      const store = kv()
+      const d = deps()
+      await tick(store, d, 1, bad(1, [sweep]))
+      expect(store.m.has(OPS_TICK_STREAKS_KEY)).toBe(true)
+      await tick(store, d, 2, report(2))
+      expect(store.m.has(OPS_TICK_STREAKS_KEY)).toBe(false)
+    })
+
+    // KV's own expiry is lazy, so the age is judged on the injected clock too:
+    // a count left from ticks long ago cannot make a new problem page early.
+    it('starts afresh after a gap longer than the window, even if KV has not yet expired the count', async () => {
+      const store = kv()
+      const d = deps()
+      await tick(store, d, 0, bad(0, [sweep]))
+      await tick(store, d, 1, bad(1, [sweep]))
+      const later = Math.ceil(OPS_TICK_REPORT_FRESH_MS / MIN) + 2
+      expect(await tick(store, d, later, bad(later, [sweep]))).toBe('held')
+      expect(d.sent).toEqual([])
+    })
+
+    // Fail toward paging (L71, L50): without the count, a held problem could
+    // be held for ever, so the tick whose count cannot be read or carried pages.
+    it('pages when the count cannot be read, and still stamps the tick completed and keeps its report', async () => {
+      const store = kv()
+      const d = deps()
+      const failingRead = { ...store, get: async (k: string) => { if (k === OPS_TICK_STREAKS_KEY) throw new Error('KV GET failed: 503'); return store.get(k) } }
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(await tick(failingRead, d, 1, bad(1, [sweep]))).toBe('alerted')
+        expect(errors.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/ops_tick_count_unknown/)
+      } finally {
+        errors.mockRestore()
+      }
+      expect(store.m.get(completedKey(OPS_TICK_JOB))).toBe(new Date(NOW + MIN + 2000).toISOString())
+      expect(JSON.parse(store.m.get(OPS_TICK_REPORT_KEY)!).tick_id).toBe('t1')
+    })
+
+    it('pages when the count cannot be written, since the next tick could not carry it on', async () => {
+      const store = kv()
+      const d = deps()
+      const failingWrite = { ...store, put: async (k: string, v: string) => { if (k === OPS_TICK_STREAKS_KEY) throw new Error('KV PUT failed: 503'); return store.put(k, v) } }
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(await tick(failingWrite, d, 1, bad(1, [sweep]))).toBe('alerted')
+        expect(errors.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/ops_tick_count_unknown/)
+      } finally {
+        errors.mockRestore()
+      }
+    })
+
+    it('pages when the count it reads back is unreadable', async () => {
+      const store = kv()
+      const d = deps()
+      store.m.set(OPS_TICK_STREAKS_KEY, 'not json')
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(await tick(store, d, 1, bad(1, [sweep]))).toBe('alerted')
+      } finally {
+        errors.mockRestore()
+      }
+    })
+
+    it('pages a kept report from before #2506, which carries no counts, rather than holding it', async () => {
+      const store = kv()
+      const d = deps()
+      store.m.set(OPS_TICK_REPORT_KEY, JSON.stringify({ ...bad(1, [sweep]), received_at: new Date(NOW).toISOString(), start_stamp_misses: 1 }))
+      expect(await runOpsTickReportCheck({} as never, store as unknown as KVNamespace, NOW + 30_000, d)).toBe('alerted')
+    })
+  })
+
+  // An ops release before #2506 sends no keys. It can still say its start stamp
+  // failed (#2410), so a lone stamp is held like any transient problem; any
+  // other sentence it sends cannot be told from a defect, so it pages at once.
+  describe('a report from an ops release before #2506', () => {
+    const older = (n: number, problems: string[], stamp: boolean) => {
+      const { problem_keys: _none, ...r } = report(n, { outcome: 'problems', problems, start_stamp_failed: stamp })
+      return r
+    }
+
+    it('holds a lone missed start stamp until three in a row', async () => {
+      const store = kv()
+      const d = deps()
+      const verdicts = [await tick(store, d, 1, older(1, [STAMP], true)), await tick(store, d, 2, older(2, [STAMP], true)), await tick(store, d, 3, older(3, [STAMP], true))]
+      expect(verdicts).toEqual(['held', 'held', 'alerted'])
+    })
+
+    it('pages any other problem at once', async () => {
+      const store = kv()
+      const d = deps()
+      expect(await tick(store, d, 1, older(1, [SWEEP], false))).toBe('alerted')
+      expect(await tick(kv(), deps(), 1, older(1, [STAMP, SWEEP], true))).toBe('alerted')
+    })
+  })
 })
+
+type KvShape = { get: (k: string) => Promise<string | null>; put: (k: string, v: string, o?: { expirationTtl?: number }) => Promise<void>; delete: (k: string) => Promise<void> }
 
 describe('the OpsGateway entrypoint', () => {
   it('stamps through the methods the ops Worker calls, and has no others', async () => {
