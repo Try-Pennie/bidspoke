@@ -604,6 +604,25 @@ const scheduledJobs = {
           }
         })().catch((e) => console.error('[invalid-state-canary-watch] failed:', e))
       )
+      // Money's Salesforce run as identity, for ops verify to refuse an ops
+      // connection that authenticates as money's user (#2335). One userinfo call
+      // with money's token, through getSalesforceToken unchanged. Its own
+      // heartbeat, so a missed day pages, and its own failure boundary (L71).
+      track(
+        (async () => {
+          const { runMoneyIdentityForEnv, MONEY_IDENTITY_JOB } = await import('./lib/money-identity')
+          await writeHeartbeat(env.IDEMPOTENCY, MONEY_IDENTITY_JOB).catch((e) =>
+            console.error('[cron-heartbeat] money-identity write failed:', e)
+          )
+          try {
+            await runMoneyIdentityForEnv(supabase, env)
+          } finally {
+            await writeHeartbeatCompleted(env.IDEMPOTENCY, MONEY_IDENTITY_JOB).catch((e) =>
+              console.error('[cron-heartbeat] money-identity completed write failed:', e)
+            )
+          }
+        })().catch((e) => console.error('[money-identity] failed:', e))
+      )
       // The deletion gate's measurements (#872, Phase A4). SHADOW: it writes
       // numbers to execution_archive_days and nothing reads them to authorise a
       // deletion until A5 (#873). Daily, because it re-measures every day still

@@ -32,6 +32,11 @@ import { WORKER_SRC, listTsFiles, sanitizeSource } from '../../__tests__/_scan-u
  *   (service_connections.credential_enc, sealed_for = 'bidding_ring') during a
  *   SECRET_ENCRYPTION_KEY rotation, and reads nothing else of the table. It is
  *   not an alert path, so the bounded lookup has nothing to give it.
+ * - lib/ops-gateway.ts serves the ops connections to the ops Worker's minute
+ *   tick (#2335, OpsGateway.opsConnections): only rows sealed to the ops key,
+ *   and of them only the envelope, public config and target. It never reads a
+ *   Slack alert row (sealed_for = 'bidding_ring'), drops one if the filter lets
+ *   it through, and is not an alert path.
  */
 
 /** Each allowed file outside routes/api, with why it may name the table. */
@@ -39,6 +44,7 @@ const ALLOWED_WITH_REASON: Record<string, string> = {
   'lib/slack.ts': 'the Slack connection lookups (getSlackConnection, readSlackConnectionForLead)',
   'lib/alert-fanout.ts': 'the all-org Slack reads (slackOrgIds, forEachSlackOrg, readEverySlackConnection) and the probe read',
   'lib/secret-reencrypt.ts': 're-locks bidding_ring sealed Slack tokens in a key rotation, and reads nothing else (#2331)',
+  'lib/ops-gateway.ts': 'serves the ops_key rows (envelope, public config, target) to the ops tick, never a bidding_ring row (#2335)',
 }
 const ALLOWED = Object.keys(ALLOWED_WITH_REASON)
 const ALLOWED_DIRS = ['routes/api/']

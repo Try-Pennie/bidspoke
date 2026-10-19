@@ -407,6 +407,16 @@ describe('the OpsGateway entrypoint', () => {
     expect(await gw.opsTickStarted()).toEqual({ stamped: 'started' })
     expect(store.m.has(heartbeatKey(OPS_TICK_JOB))).toBe(true)
     // storeRotatedEnvelope: the ConnectionTokenObject's write back (#2335), tested in ops-gateway-rotated-envelope.test.ts.
-    expect(Object.getOwnPropertyNames(OpsGateway.prototype).sort()).toEqual(['constructor', 'opsTickCompleted', 'opsTickStarted', 'opsWorkflows', 'storeRotatedEnvelope'])
+    // opsConnections and moneyIdentities: the serve (#2335), tested in ops-gateway-connections.test.ts and money-identity.test.ts.
+    expect(Object.getOwnPropertyNames(OpsGateway.prototype).sort()).toEqual([
+      'constructor', 'moneyIdentities', 'opsConnections', 'opsTickCompleted', 'opsTickStarted', 'opsWorkflows', 'storeRotatedEnvelope',
+    ])
+  })
+
+  it('answers moneyIdentities for the organization asked about, and refuses a call naming none (#2335)', async () => {
+    const { OpsGateway } = await import('../ops-gateway-entrypoint')
+    const gw = new OpsGateway({} as ExecutionContext, { IDEMPOTENCY: kv() } as never)
+    await expect(gw.moneyIdentities(ORG)).resolves.toMatchObject({ organization_id: ORG, salesforce: null })
+    await expect(gw.moneyIdentities(undefined)).rejects.toThrow(/no organization uuid/)
   })
 })
