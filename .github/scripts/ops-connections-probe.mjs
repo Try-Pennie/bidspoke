@@ -26,6 +26,7 @@
 
 import { pathToFileURL } from 'node:url'
 import { passwordSession } from './e2e-session.mjs'
+import { secondsSetting } from './seconds-setting.mjs'
 
 export const PROBE_PATH = '/api/admin/ops-connections-probe'
 const EXPECTED = 'ops_connections_request_invalid'
@@ -41,21 +42,6 @@ const describeUnavailable = (body) => {
  *   fetchProbe: (url: string, token: string) => Promise<{ status: number, body: unknown }>,
  *   now: () => number, sleep: (ms: number) => Promise<void> }} deps
  */
-/**
- * A seconds setting from the environment: the default when it is absent, else a
- * positive finite number, else refused by name. An empty or mistyped value would
- * otherwise turn the ask count into NaN or Infinity and report "no answer"
- * instead of the setting that caused it (L50).
- */
-export function secondsSetting(raw, fallback, name) {
-  if (raw === undefined) return fallback
-  const value = raw.trim() === '' ? Number.NaN : Number(raw)
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`${name} must be a positive number of seconds, and is ${JSON.stringify(raw)}`)
-  }
-  return value
-}
-
 export async function probeAfterDeploy(deps) {
   const url = `${deps.workerUrl.replace(/\/+$/, '')}${PROBE_PATH}`
   const start = deps.now()

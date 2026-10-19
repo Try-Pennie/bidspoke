@@ -24,6 +24,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { sessionCookieHeader } from '../../apps/web/e2e/session-cookies.ts'
 import { passwordSession } from './e2e-session.mjs'
+import { secondsSetting } from './seconds-setting.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const GATE_HEADER = 'x-bidspoke-gate'
@@ -105,11 +106,19 @@ async function main() {
       process.exit(1)
     }
   }
+  let budgetSeconds, intervalSeconds
+  try {
+    budgetSeconds = secondsSetting(env.BUDGET_SECONDS, 180, 'BUDGET_SECONDS')
+    intervalSeconds = secondsSetting(env.INTERVAL_SECONDS, 15, 'INTERVAL_SECONDS')
+  } catch (err) {
+    console.error(`partners-page-follows: ${err.message}, so nothing was measured.`)
+    process.exit(1)
+  }
   const result = await followPartnersPage({
     siteUrl: env.SITE_URL,
     expectedSha: env.EXPECTED_SHA,
-    budgetSeconds: Number(env.BUDGET_SECONDS ?? '180'),
-    intervalSeconds: Number(env.INTERVAL_SECONDS ?? '15'),
+    budgetSeconds,
+    intervalSeconds,
     signIn: () => signInWithPassword(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, env.E2E_EMAIL, env.E2E_PASSWORD),
     fetchPage: (url, cookie) => fetch(url, { headers: { Cookie: cookie }, redirect: 'manual' }),
     now: () => Date.now(),

@@ -14,7 +14,7 @@
  * because a new version reaches every edge over a few seconds.
  */
 import { describe, expect, it } from 'vitest'
-import { probeAfterDeploy, PROBE_PATH, secondsSetting } from '../../../../../.github/scripts/ops-connections-probe.mjs'
+import { probeAfterDeploy, PROBE_PATH } from '../../../../../.github/scripts/ops-connections-probe.mjs'
 
 type Answer = { status: number; body: unknown } | Error
 
@@ -139,19 +139,5 @@ describe('probeAfterDeploy', () => {
     d.sleep = async () => {}
     await probeAfterDeploy(d)
     expect(asked.length).toBe(4)
-  })
-})
-
-describe('secondsSetting', () => {
-  it('uses the default when the setting is absent', () => {
-    expect(secondsSetting(undefined, 120, 'BUDGET_SECONDS')).toBe(120)
-  })
-
-  it('reads a positive number of seconds', () => {
-    expect(secondsSetting('45', 120, 'BUDGET_SECONDS')).toBe(45)
-  })
-
-  it.each(['', '  ', 'abc', '0', '-5', 'Infinity', 'NaN'])('refuses %j by name rather than probing with it', (raw) => {
-    expect(() => secondsSetting(raw, 120, 'INTERVAL_SECONDS')).toThrow(/INTERVAL_SECONDS/)
   })
 })
