@@ -131,6 +131,18 @@ export function uuidv7(now: number = Date.now()): string {
  * partitions and finds nothing, which reads as a missing archive (L11).
  */
 export function utcDayFromUuidV7(id: string): string | null {
+  const ms = mintedMsFromUuidV7(id)
+  // `toISOString` is UTC by definition, so this cannot pick up the host's
+  // timezone the way a getFullYear and getMonth computation would (L39).
+  return ms === null ? null : new Date(ms).toISOString().slice(0, 10)
+}
+
+/**
+ * The millisecond a UUIDv7 was minted at, or `null` when the id cannot answer,
+ * refusing exactly what utcDayFromUuidV7 refuses. Two runs are ordered by it
+ * (#2485): an execution id is minted when its run starts.
+ */
+export function mintedMsFromUuidV7(id: string): number | null {
   if (typeof id !== 'string' || !UUID_SHAPE.test(id)) return null
   if (id[14] !== '7') return null
   // The variant, binary 10, is the other half of the format. Checking only the
@@ -140,10 +152,7 @@ export function utcDayFromUuidV7(id: string): string | null {
 
   const ms = parseInt(id.slice(0, 8) + id.slice(9, 13), 16)
   if (!Number.isFinite(ms) || ms < EARLIEST_PLAUSIBLE_MS) return null
-
-  // `toISOString` is UTC by definition, so this cannot pick up the host's
-  // timezone the way a getFullYear and getMonth computation would (L39).
-  return new Date(ms).toISOString().slice(0, 10)
+  return ms
 }
 
 /** Whether `id` is a UUIDv7 this module would read a day out of. */
