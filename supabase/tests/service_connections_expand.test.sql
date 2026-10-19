@@ -5,24 +5,21 @@
 -- by replaying every migration from empty, never production. The token and the
 -- ciphertexts below are planted placeholders, not credentials.
 --
--- WHAT IT PROVES:
---   A. The exact row integrations.ts POST /slack upserted BEFORE this release
---      (no name, cf_secret_key '', ON CONFLICT (organization_id, service_type)),
---      which keeps running between the migration's Apply and this release's
---      deploy and stays the rollback target, still inserts, gets name =
---      service_type from the trigger, and a second save updates that row (L640).
---   B. The upsert this release's integrations.ts sends (name 'slack', cf_secret_key null,
---      ON CONFLICT (organization_id, service_type, name)) lands on the alert row
---      the backfill named and updates it rather than erroring (L168).
+-- WHAT IT PROVES (as the schema stands after every migration, release 2's
+-- contract step 20261019150000 included, which dropped the old one row per
+-- service unique, the name defaulting trigger and the delete by service type;
+-- what release 2 changed is proven in service_connections_contract.test.sql):
+--   B. The upsert integrations.ts POST /slack sends (name 'slack', cf_secret_key
+--      null, ON CONFLICT (organization_id, service_type, name)) lands on the
+--      alert row the release 1 backfill named and updates it rather than
+--      erroring (L168).
 --   C. An ops_key row with no name is refused by NOT NULL, never defaulted.
 --   D. The alert name is reserved: an ops_key slack row named 'slack' is refused
 --      by its CHECK, so it can never take the alert row's place.
---   E. A second row per service exists only after release 2 drops the old
---      unique, and even then a second alert row (slack, bidding_ring) is refused
---      by the partial unique index.
---   F. delete_service_connection never deletes an ops_key row (F124): with
---      exactly one ops_key row it deletes nothing, and the Slack Disconnect
---      beside an ops slack row removes only the alert row.
+--   (A, E and F were the upsert of the code before release 1, a simulated
+--   release 2 and the delete by service type. All three went with release 2:
+--   their coverage is service_connections_contract.test.sql cases C to G and
+--   service_connections_delete_by_id.test.sql cases B to D.)
 --   G. auth_type accepts the six catalogue kinds (api_key among them) and still
 --      the legacy oauth and credentials; anything else is
 --      refused.
@@ -51,63 +48,20 @@ BEGIN
 END
 $do$;
 
--- ── A. Today's upsert keeps working, and the trigger names the row ───────────
-DO $do$
-DECLARE
-  first_id uuid;
-  second_id uuid;
-  r record;
-BEGIN
-  -- Exactly what routes/api/integrations.ts POST /slack sent before this
-  -- release (the code running until it deploys, and its rollback target).
-  INSERT INTO public.service_connections
-    (organization_id, service_type, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
-  VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'oauth', '',
-          '{"bot_token":"planted-bot-token-2332","default_channel":"#alerts","workspace_name":"Test"}',
-          'planted-ciphertext-2332-a', 'bidding_ring', '22222222-2222-2222-2222-22222222332a', 'sce2332@example.test')
-  ON CONFLICT (organization_id, service_type) DO UPDATE SET
-    auth_type = EXCLUDED.auth_type, cf_secret_key = EXCLUDED.cf_secret_key, config = EXCLUDED.config,
-    credential_enc = EXCLUDED.credential_enc, sealed_for = EXCLUDED.sealed_for,
-    updated_by = EXCLUDED.updated_by, updated_by_email = EXCLUDED.updated_by_email
-  RETURNING id INTO first_id;
-
-  SELECT * INTO r FROM public.service_connections WHERE id = first_id;
-  IF r.name IS DISTINCT FROM 'slack' THEN RAISE EXCEPTION 'an insert with no name was named %, not its service_type', r.name; END IF;
-
-  -- The same save again: the old conflict target still matches, so it updates.
-  INSERT INTO public.service_connections
-    (organization_id, service_type, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
-  VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'oauth', '',
-          '{"bot_token":"planted-bot-token-2332","default_channel":"#alerts-2","workspace_name":"Test"}',
-          'planted-ciphertext-2332-b', 'bidding_ring', '22222222-2222-2222-2222-22222222332a', 'sce2332@example.test')
-  ON CONFLICT (organization_id, service_type) DO UPDATE SET
-    auth_type = EXCLUDED.auth_type, cf_secret_key = EXCLUDED.cf_secret_key, config = EXCLUDED.config,
-    credential_enc = EXCLUDED.credential_enc, sealed_for = EXCLUDED.sealed_for,
-    updated_by = EXCLUDED.updated_by, updated_by_email = EXCLUDED.updated_by_email
-  RETURNING id INTO second_id;
-
-  IF second_id IS DISTINCT FROM first_id THEN RAISE EXCEPTION 'the second save made a new row'; END IF;
-  IF (SELECT count(*) FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-11111112332a') <> 1 THEN
-    RAISE EXCEPTION 'the second save left more than one row';
-  END IF;
-  IF (SELECT config ->> 'default_channel' FROM public.service_connections WHERE id = first_id) <> '#alerts-2' THEN
-    RAISE EXCEPTION 'the second save did not update the row';
-  END IF;
-  IF (SELECT name FROM public.service_connections WHERE id = first_id) <> 'slack' THEN
-    RAISE EXCEPTION 'the second save changed the name';
-  END IF;
-  INSERT INTO sce_cases VALUES ('the previous release''s upsert inserts with name = service_type and a second save updates the same row');
-END
-$do$;
-
 -- ── B. The release 1 upsert lands on the alert row ───────────────────────────
 DO $do$
 DECLARE
   alert_id uuid;
   landed_id uuid;
 BEGIN
-  SELECT id INTO alert_id FROM public.service_connections
-  WHERE organization_id = '11111111-1111-1111-1111-11111112332a' AND service_type = 'slack';
+  -- The alert row as the release 1 backfill left it: named after its
+  -- service_type, cf_secret_key normalised to null.
+  INSERT INTO public.service_connections
+    (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
+  VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'slack', 'oauth', NULL,
+          '{"bot_token":"planted-bot-token-2332","default_channel":"#alerts","workspace_name":"Test"}',
+          'planted-ciphertext-2332-a', 'bidding_ring', '22222222-2222-2222-2222-22222222332a', 'sce2332@example.test')
+  RETURNING id INTO alert_id;
 
   -- What this release's integrations.ts sends: name 'slack' explicitly, cf_secret_key null, and the new
   -- conflict target.
@@ -184,89 +138,6 @@ BEGIN
     RAISE EXCEPTION 'the refused ops save changed the alert row';
   END IF;
   INSERT INTO sce_cases VALUES ('an ops slack row can never take the alert name, and the alert row is unchanged byte for byte');
-END
-$do$;
-
--- ── E. A second row per service only after release 2; never a second alert row
-DO $do$
-DECLARE
-  refused text;
-BEGIN
-  -- While the old unique holds (release 1), a second slack row is refused by it.
-  BEGIN
-    INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, credential_enc, sealed_for)
-    VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'ops-alerts', 'bot_token', 'planted-ops-ciphertext-2332', 'ops_key');
-  EXCEPTION WHEN unique_violation THEN
-    GET STACKED DIAGNOSTICS refused = CONSTRAINT_NAME;
-  END;
-  IF refused IS DISTINCT FROM 'service_connections_org_type_unique' THEN
-    RAISE EXCEPTION 'a second slack row in release 1 was refused by % rather than the old unique', refused;
-  END IF;
-
-  -- Release 2, simulated inside a block that is rolled back: with the old
-  -- unique dropped, a named ops row saves beside the alert row, and a second
-  -- alert row is refused by the partial unique index.
-  BEGIN
-    ALTER TABLE public.service_connections DROP CONSTRAINT service_connections_org_type_unique;
-    INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, credential_enc, sealed_for)
-    VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'ops-alerts', 'bot_token', 'planted-ops-ciphertext-2332', 'ops_key');
-    IF (SELECT count(*) FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-11111112332a') <> 2 THEN
-      RAISE EXCEPTION 'release 2 did not allow a second, named slack row';
-    END IF;
-    refused := NULL;
-    BEGIN
-      INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, credential_enc, sealed_for)
-      VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'second-alert', 'oauth', NULL, 'planted-ciphertext-2332-d', 'bidding_ring');
-    EXCEPTION WHEN unique_violation THEN
-      GET STACKED DIAGNOSTICS refused = CONSTRAINT_NAME;
-    END;
-    IF refused IS DISTINCT FROM 'service_connections_one_alert_row' THEN
-      RAISE EXCEPTION 'a second alert row was refused by % rather than the partial unique index', refused;
-    END IF;
-
-    -- F124, the Disconnect half: beside an ops slack row it removes only the alert row.
-    PERFORM public.delete_service_connection('11111111-1111-1111-1111-11111112332a', 'slack', '22222222-2222-2222-2222-22222222332a');
-    IF EXISTS (SELECT 1 FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-11111112332a' AND sealed_for = 'bidding_ring') THEN
-      RAISE EXCEPTION 'the Disconnect did not remove the alert row';
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-11111112332a' AND sealed_for = 'ops_key') THEN
-      RAISE EXCEPTION 'the Disconnect removed the ops slack row';
-    END IF;
-    RAISE EXCEPTION 'sce_release2_rollback';
-  EXCEPTION WHEN raise_exception THEN
-    IF SQLERRM <> 'sce_release2_rollback' THEN RAISE; END IF;
-  END;
-
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'service_connections_org_type_unique') THEN
-    RAISE EXCEPTION 'the simulated release 2 was not rolled back';
-  END IF;
-  IF (SELECT count(*) FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-11111112332a') <> 1 THEN
-    RAISE EXCEPTION 'the simulated release 2 left rows behind';
-  END IF;
-  INSERT INTO sce_cases VALUES ('a second row per service only after release 2, never a second alert row, and Disconnect spares the ops row');
-END
-$do$;
-
--- ── F. F124: a lone ops_key row is never deleted by service type ─────────────
-DO $do$
-DECLARE
-  ops_id uuid;
-  n int;
-BEGIN
-  INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, credential_enc, sealed_for)
-  VALUES ('11111111-1111-1111-1111-11111112332b', 'salesforce', 'Pennie ops', 'oauth_client_credentials', 'planted-ops-ciphertext-2332', 'ops_key')
-  RETURNING id INTO ops_id;
-
-  SELECT count(*) INTO n FROM public.delete_service_connection('11111111-1111-1111-1111-11111112332b', 'salesforce', '22222222-2222-2222-2222-22222222332a');
-  IF n <> 0 THEN RAISE EXCEPTION 'delete_service_connection reported % rows deleted for a lone ops_key row', n; END IF;
-  IF NOT EXISTS (SELECT 1 FROM public.service_connections WHERE id = ops_id) THEN
-    RAISE EXCEPTION 'delete_service_connection deleted a lone ops_key row';
-  END IF;
-  IF EXISTS (SELECT 1 FROM public.connection_tombstones WHERE connection_id = ops_id) THEN
-    RAISE EXCEPTION 'a tombstone was written for a row that was not deleted';
-  END IF;
-  DELETE FROM public.service_connections WHERE id = ops_id;
-  INSERT INTO sce_cases VALUES ('with exactly one ops_key row, delete by service type deletes nothing');
 END
 $do$;
 
@@ -384,7 +255,7 @@ DO $do$
 DECLARE
   n int := (SELECT count(*) FROM sce_cases);
 BEGIN
-  IF n <> 10 THEN RAISE EXCEPTION 'expected 10 cases, % ran', n; END IF;
+  IF n <> 7 THEN RAISE EXCEPTION 'expected 7 cases, % ran', n; END IF;
   RAISE NOTICE 'service_connections_expand.test.sql: % cases passed', n;
 END
 $do$;

@@ -135,10 +135,11 @@ describe('POST /integrations/slack seals the token', () => {
 
   // #2332 (phase 2 of #1689): the alert row is named 'slack', the name
   // migration 20261017150000 backfilled onto it and reserves from ops rows, and
-  // the upsert names the new UNIQUE (organization_id, service_type, name). The
-  // old UNIQUE still holds until release 2, so the name must be the backfilled
-  // one or the save would error instead of updating. Proven against Postgres in
-  // supabase/tests/service_connections_expand.test.sql case B.
+  // the upsert names the UNIQUE (organization_id, service_type, name). Release 2
+  // dropped the old UNIQUE and the trigger that named a row saved with none, so
+  // the name must be sent and must be the alert row's, or the save would land on
+  // another row or fail NOT NULL. Proven against Postgres in
+  // supabase/tests/service_connections_contract.test.sql case C.
   it('names the alert row slack and upserts on (organization_id, service_type, name)', async () => {
     const { client, rec } = recordingSupabase()
     vi.mocked(createSupabaseClient).mockReturnValue(client as never)

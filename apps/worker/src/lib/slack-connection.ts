@@ -67,8 +67,8 @@ export const SLACK_ROW_COLUMNS = 'config, credential_enc'
 
 // ── The alert row (#2332, phase 2 of #1689) ─────────────────────────────────
 //
-// An organization can hold more than one Slack row once release 2 drops the
-// old UNIQUE (organization_id, service_type): an ops connection (sealed_for
+// An organization can hold more than one Slack row since release 2 dropped the
+// old UNIQUE (organization_id, service_type) (migration 20261019150000): an ops connection (sealed_for
 // 'ops_key', its own name and bot, #1689 Phase 8) beside the alert bot's row.
 // Every alert reader and writer reads only the ALERT row, through the one
 // filter below, so an ops row can never be read as the alert row and post an
@@ -86,7 +86,7 @@ export const SLACK_ROW_COLUMNS = 'config, credential_enc'
 // never "no Slack" and never one of them picked (L55, L1005). UNIQUE
 // (organization_id, service_type, name) makes it impossible today, and the
 // partial unique index service_connections_one_alert_row makes two sealed
-// alert rows impossible after release 2, but a reader that picked one would
+// alert rows impossible, but a reader that picked one would
 // hide the day a constraint changes. Each reader asks for
 // SLACK_ALERT_READ_LIMIT rows, enough to tell one from several, rather than
 // `.maybeSingle()`: its more than one row error reads, on the scheduled
