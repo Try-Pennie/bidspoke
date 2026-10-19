@@ -37,7 +37,9 @@
  * the bidding Worker serves (connection-serve.ts). The OpsConnections
  * entrypoint's live wiring (ops-connections-live.ts, #2335 PR 8) calls the copy
  * read, the health writers and reader, the measured identity, the pool, the
- * tombstone and the lookup allowance; the rest wait for the tick's new sweeps
+ * tombstone and the lookup allowance, and since #2336 readMeasuredSfOrg and
+ * recordSfBudgetReading, for the budget reading a Salesforce response carries
+ * (connections/sf-budget-reading.ts); the rest wait for the tick's new sweeps
  * (Phases 6 and 10 of #1689).
  */
 import {
@@ -50,7 +52,7 @@ import {
   OPS_LANE_READ_ONLY_RPCS, OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_READ_ONLY_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS,
   type OpsRpcName,
 } from './ops-rpcs'
-import { organizationIdFrom, type OpsSupabaseClient, type OrganizationId } from './ops-db'
+import { organizationIdFrom, readOpsRows, type OpsSupabaseClient, type OrganizationId } from './ops-db'
 import { CONNECTION_SERVE_WINDOW_MS } from '../lib/ops-gateway-contract'
 
 /** Past the ops project's 8 s statement timeout, so the database gives up first. */
@@ -1055,6 +1057,31 @@ export async function recordMeasuredIdentity(
   }, options)
   if (!oneOf(MEASURED_IDENTITY_OUTCOMES)(data)) throw new OpsWriteError(`${name} returned something that is not an identity outcome`)
   return data
+}
+
+/**
+ * The Salesforce org one connection generation MEASURED as
+ * (connection_measured_identity, written only by verify), or null while verify
+ * has not measured it (#2336). The key a response's budget reading is written
+ * under, the same one acquire_sf_lease draws the call's lease from, never the
+ * declared target (L83). A read, through readOpsRows, so it is held to the
+ * organization by type and at run time.
+ */
+export async function readMeasuredSfOrg(
+  client: OpsSupabaseClient, organizationId: OrganizationId, connectionId: string, generation: number,
+): Promise<string | null> {
+  const { rows } = await readOpsRows<{ sf_org_id: unknown }>(client, organizationId, {
+    table: 'connection_measured_identity',
+    columns: 'sf_org_id,organization_id',
+    limit: 2,
+    refine: (q) => q.eq('connection_id', connectionId).eq('generation', generation),
+  })
+  if (rows.length === 0) return null
+  // The primary key is (connection_id, generation), so two rows mean the read is not what this code believes it is.
+  if (rows.length > 1) throw new OpsWriteError('connection_measured_identity answered more than one row for one connection generation')
+  const sfOrgId = rows[0].sf_org_id
+  if (typeof sfOrgId !== 'string' || !SF_ORG_ID.test(sfOrgId)) throw new OpsWriteError('connection_measured_identity holds an org id that is not an 18 character Salesforce org id')
+  return sfOrgId
 }
 
 /** What take_lookup_allowance answers: allowed (used counts this lookup), or rate_limited until retryAt. */
