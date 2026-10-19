@@ -45,10 +45,15 @@ export const LAST_MODIFIED_MARGIN_MS = 2_000
 
 const isBlank = (v: unknown) => v === null || v === undefined || v === ''
 
-/** A Salesforce time read as ms: `2026-10-15T12:00:00.000+0000` included. NaN otherwise. */
+/**
+ * A Salesforce time read as ms: `2026-10-15T12:00:00.000+0000` included. NaN otherwise.
+ * A time with no zone is UTC, as Salesforce saves it (#2485): Date.parse would
+ * read it in the host's zone, which is UTC in a Worker and not on a laptop.
+ */
 export function salesforceTimeMs(v: unknown): number {
   if (typeof v !== 'string' || !/^\d{4}-\d\d-\d\dT/.test(v)) return Number.NaN
-  return Date.parse(v.replace(/([+-]\d\d)(\d\d)$/, '$1:$2'))
+  const zoned = /T\d\d:\d\d(:\d\d(\.\d+)?)?$/.test(v) ? `${v}Z` : v
+  return Date.parse(zoned.replace(/([+-]\d\d)(\d\d)$/, '$1:$2'))
 }
 
 /**

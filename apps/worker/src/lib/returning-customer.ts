@@ -17,3 +17,13 @@
 export function leadNamesAnotherSubmission(named: unknown, submissionId: string): boolean {
   return typeof named === 'string' && named !== '' && named.slice(0, 15) !== submissionId.slice(0, 15)
 }
+
+/**
+ * Whether `named` names `submissionId` itself, on the same 15 character rule. A
+ * Lead naming nothing names no Submission. The invalid state canary watch reads
+ * a Lead naming its own Submission as one whose Engine ids came from that
+ * Submission's first completion (#2485).
+ */
+export function leadNamesSubmission(named: unknown, submissionId: string): boolean {
+  return typeof named === 'string' && named !== '' && named.slice(0, 15) === submissionId.slice(0, 15)
+}
