@@ -13,6 +13,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { CLICK_CHECK_LAST_GOOD_MAX_AGE_MS } from '@bidspoke/buyer-profile'
 import { STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS, StoredCopyRefusedError } from '../stored-copy-age'
+import { CONFIG_LIST_BOUNDS } from '../config-list-bounds'
 import { BUYER_PROFILES_CACHE_TTL_SECONDS, BUYER_PROFILES_REFRESH_AFTER_SECONDS, invalidateBuyerProfilesCache, keepBuyerProfilesWarm, loadBuyerProfiles, partnersPricedFor, readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../buyer-profile-loader'
 
 const ROW = {
@@ -45,14 +46,15 @@ const ROW = {
 }
 
 function fakeSupabase(result: { data: unknown; error: { message: string } | null }) {
-  const calls: Array<{ table: string; select: string; filters: Array<[string, unknown]> }> = []
+  const calls: Array<{ table: string; select: string; filters: Array<[string, unknown]>; limit?: number }> = []
   const supabase = {
     from(table: string) {
-      const call = { table, select: '', filters: [] as Array<[string, unknown]> }
+      const call: { table: string; select: string; filters: Array<[string, unknown]>; limit?: number } = { table, select: '', filters: [] }
       calls.push(call)
       const builder = {
         select(cols: string) { call.select = cols; return builder },
         eq(col: string, val: unknown) { call.filters.push([col, val]); return builder },
+        limit(n: number) { call.limit = n; return builder },
         then(resolve: (v: typeof result) => unknown) { return Promise.resolve(result).then(resolve) },
       }
       return builder
@@ -153,6 +155,32 @@ describe('loadBuyerProfiles', () => {
     expect(snapshot.buyers.map((b) => b.partner.slug)).toEqual(['tripoint'])
     expect(snapshot.served_from).toBe('last_good')
     expect(store.has('buyer-profiles:org-1')).toBe(false)
+  })
+
+  // #1437 P6: the org's profiles are read whole or the read fails like a failed
+  // read. Cut at the row cap, a buyer past the cut would silently stop being offered.
+  it('asks for one profile past its bound', async () => {
+    const { supabase, calls } = fakeSupabase({ data: [ROW], error: null })
+    const { kv } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, supabase)
+    expect(calls[0].limit).toBe(CONFIG_LIST_BOUNDS.buyerProfiles + 1)
+  })
+
+  it('a list past its bound serves the last good copy and caches nothing, as a failed read does', async () => {
+    const good = fakeSupabase({ data: [ROW], error: null })
+    const { kv, store } = fakeKv()
+    await loadBuyerProfiles('org-1', kv, good.supabase)
+    store.delete('buyer-profiles:org-1')
+    const many = Array.from({ length: CONFIG_LIST_BOUNDS.buyerProfiles + 1 }, (_, i) => ({ ...ROW, partner_id: `p-${i}` }))
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const snapshot = await loadBuyerProfiles('org-1', kv, fakeSupabase({ data: many, error: null }).supabase)
+      expect(snapshot.served_from).toBe('last_good')
+      expect(snapshot.buyers).toHaveLength(1)
+      expect(store.has('buyer-profiles:org-1')).toBe(false)
+    } finally {
+      logged.mockRestore()
+    }
   })
 
   // #1847: the copy is served for at most thirty minutes after a read last
@@ -397,6 +425,7 @@ describe('keepBuyerProfilesWarm (#1632)', () => {
         const builder = {
           select: () => builder,
           eq: () => builder,
+          limit: () => builder,
           async then(resolve: (v: unknown) => unknown) {
             await refreshBuyerProfilesCache('org-1', kv, saved.supabase)
             return resolve({ data: [{ ...ROW, version: 3 }], error: null })
@@ -427,6 +456,7 @@ describe('keepBuyerProfilesWarm (#1632)', () => {
         const builder = {
           select: () => builder,
           eq: () => builder,
+          limit: () => builder,
           async then(resolve: (v: unknown) => unknown) {
             await refreshBuyerProfilesCache('org-1', kv, saved.supabase)
             return resolve({ data: [{ ...ROW, version: 3 }], error: null })
@@ -459,6 +489,7 @@ describe('keepBuyerProfilesWarm (#1632)', () => {
         const builder = {
           select: () => builder,
           eq: () => builder,
+          limit: () => builder,
           async then(resolve: (v: unknown) => unknown) {
             await refreshBuyerProfilesCache('org-1', kv, failedSave.supabase)
             return resolve({ data: [{ ...ROW, version: 3 }], error: null })
@@ -581,6 +612,7 @@ describe('a cache miss answers from the database without waiting on KV writes (#
         const builder = {
           select: () => builder,
           eq: () => builder,
+          limit: () => builder,
           then(resolve: (v: unknown) => unknown) { now += 450; return Promise.resolve({ data: [ROW], error: null }).then(resolve) },
         }
         return builder

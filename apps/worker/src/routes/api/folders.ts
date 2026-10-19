@@ -12,6 +12,8 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
 import type { Database } from '../../types/database'
 import { formatErr } from '../../lib/format-error'
+import { fetchUpTo } from '../../lib/paginate'
+import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
 
 type Variables = AuthVariables
 
@@ -20,13 +22,17 @@ const folders = new Hono<{ Bindings: Env; Variables: Variables }>()
 folders.get('/', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
-  const { data, error } = await supabase
-    .from('folders')
-    .select('id, organization_id, parent_id, name, created_at, updated_at')
-    .eq('organization_id', orgId)
-    .order('name')
-  if (error) return dbError(c, error)
-  return c.json(data ?? [])
+  // Read whole or refused, never cut at the row cap (#1437).
+  try {
+    return c.json(await fetchUpTo((limit) => supabase
+      .from('folders')
+      .select('id, organization_id, parent_id, name, created_at, updated_at')
+      .eq('organization_id', orgId)
+      .order('name')
+      .limit(limit), CONFIG_LIST_BOUNDS.folders, 'folders list'))
+  } catch (err) {
+    return dbError(c, err)
+  }
 })
 
 folders.post('/', async (c) => {

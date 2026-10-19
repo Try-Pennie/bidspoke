@@ -23,7 +23,8 @@ import { DEFAULT_RETRIES, SUGGESTION_MIN_SAMPLE, suggestedTimeoutMs } from '../.
 import { collectWorkflowDurationStats } from '../../lib/timeout-audit'
 import type { WorkflowDefinition, StepOutput } from '../../types'
 import { asJson } from '../../lib/json'
-import { fetchAllPaged } from '../../lib/paginate'
+import { fetchAllPaged, fetchUpTo } from '../../lib/paginate'
+import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
 import { jsonEqual } from '../../lib/stable-json'
 import type { Database } from '../../types/database'
 import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
@@ -44,15 +45,18 @@ workflows.get('/', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
 
-  const { data, error } = await supabase
-    .from('workflows')
-    .select('id, name, description, is_active, folder_id, created_at, updated_at, updated_by_email, updated_by_name')
-    .eq('organization_id', orgId)
-    .is('deleted_at', null)
-    .order('updated_at', { ascending: false })
-
-  if (error) return dbError(c, error)
-  return c.json(data)
+  // Read whole or refused, never cut at the row cap (#1437).
+  try {
+    return c.json(await fetchUpTo((limit) => supabase
+      .from('workflows')
+      .select('id, name, description, is_active, folder_id, created_at, updated_at, updated_by_email, updated_by_name')
+      .eq('organization_id', orgId)
+      .is('deleted_at', null)
+      .order('updated_at', { ascending: false })
+      .limit(limit), CONFIG_LIST_BOUNDS.workflows, 'workflows list'))
+  } catch (err) {
+    return dbError(c, err)
+  }
 })
 
 /**
@@ -1247,14 +1251,21 @@ workflows.get('/:id/rename-impact', async (c) => {
   if (ownBlocked) return ownBlocked
   if (!owner) return c.json({ error: 'Workflow not found' }, 404)
 
-  const { data: partners, error: partnersError } = await supabase
-    .from('partner_configs')
-    .select('id, name, slug, bid_formula, bid_resolver_config')
-    .eq('organization_id', orgId)
-  if (partnersError) return dbError(c, partnersError)
+  // Every partner of the org, read whole or refused (#1437): a partner past a
+  // cut list would be renamed under this workflow without being shown here.
+  let partners: PartnerForRename[]
+  try {
+    partners = await fetchUpTo<PartnerForRename>((limit) => supabase
+      .from('partner_configs')
+      .select('id, name, slug, bid_formula, bid_resolver_config')
+      .eq('organization_id', orgId)
+      .limit(limit), CONFIG_LIST_BOUNDS.partnerConfigs, 'partners for rename impact')
+  } catch (err) {
+    return dbError(c, err)
+  }
 
   const affected: PartnerForRename[] = []
-  for (const p of (partners ?? []) as PartnerForRename[]) {
+  for (const p of partners) {
     const resolverFormula =
       p.bid_resolver_config && typeof (p.bid_resolver_config).formula === 'string'
         ? ((p.bid_resolver_config).formula)
@@ -1337,6 +1348,12 @@ workflows.post('/:id/rename-apply', async (c) => {
   }
   const partnerIds = body.partner_ids as string[]
   if (partnerIds.length === 0) return c.json({ updated: 0 })
+  // The ids come straight from the body, so their number is bounded here, before
+  // anything is read: an org holds at most this many partners, and a read of more
+  // would come back cut at the row cap and rename only some of them (#1437).
+  if (partnerIds.length > CONFIG_LIST_BOUNDS.partnerConfigs) {
+    return c.json({ error: `partner_ids may name at most ${CONFIG_LIST_BOUNDS.partnerConfigs} partners` }, 400)
+  }
 
   const { data: owner, error: ownError } = await supabase
     .from('workflows')
@@ -1349,17 +1366,22 @@ workflows.post('/:id/rename-apply', async (c) => {
   if (ownBlocked) return ownBlocked
   if (!owner) return c.json({ error: 'Workflow not found' }, 404)
 
-  const { data: partners, error: partnersError } = await supabase
-    .from('partner_configs')
-    .select('id, name, slug, bid_formula, bid_resolver_config')
-    .eq('organization_id', orgId)
-    .in('id', partnerIds)
-  if (partnersError) return dbError(c, partnersError)
+  let partners: PartnerForRename[]
+  try {
+    partners = await fetchUpTo<PartnerForRename>((limit) => supabase
+      .from('partner_configs')
+      .select('id, name, slug, bid_formula, bid_resolver_config')
+      .eq('organization_id', orgId)
+      .in('id', partnerIds)
+      .limit(limit), CONFIG_LIST_BOUNDS.partnerConfigs, 'partners to rename')
+  } catch (err) {
+    return dbError(c, err)
+  }
 
   let updated = 0
 
   const notCleared: string[] = []
-  for (const p of (partners ?? []) as PartnerForRename[]) {
+  for (const p of partners) {
     const nextLegacy = rewriteStepsRefs(p.bid_formula, oldNs, newNs)
     const cfg = (p.bid_resolver_config ?? {})
     const cfgFormula = typeof cfg.formula === 'string' ? cfg.formula : null

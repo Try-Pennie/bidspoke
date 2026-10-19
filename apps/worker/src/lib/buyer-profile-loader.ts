@@ -38,6 +38,8 @@ import { SOLD_ON, clickDeliveryFromDocument, pricedFor, type BuyerProfile, type 
 import type { ResponseClassificationConfig } from '../engine/error-classifier'
 import { formatErr } from './format-error'
 import { leadRead } from './lead-read-budget'
+import { fetchUpTo } from './paginate'
+import { CONFIG_LIST_BOUNDS } from './config-list-bounds'
 import { isDueForReconfirm, judgeCopyAge, refuseStoredCopy, serveStoredCopy } from './stored-copy-age'
 
 /** How long a cached snapshot may serve without a rebuild reaching it: the staleness bound on a save that bypassed the routes (#1492). */
@@ -300,15 +302,23 @@ async function readSnapshot(orgId: string, supabase: SupabaseClient, now: () => 
   // Every profile of the org, switched off ones included (#1849): a click on an
   // offer made before its buyer was switched off still needs that profile, and
   // reading it here puts it behind this snapshot's cache and last good copy.
-  const { data, error } = await leadRead(
-    supabase,
-    supabase.from('buyer_profiles').select(SELECT).eq('organization_id', orgId),
+  // Read whole or refused (#1437): a list cut at the row cap would stop offering
+  // the buyers past the cut. A refusal throws like a failed read, so the caller
+  // serves the last good copy or refuses the lead. A failed read throws its own
+  // words, which the buyer nodes and the scheduled checks show as they are.
+  const rows = await fetchUpTo<ProfileRow>(
+    (limit) => leadRead(
+      supabase,
+      supabase.from('buyer_profiles').select(SELECT).eq('organization_id', orgId).limit(limit),
+      'buyer profiles',
+      { deadlineMs: BUYER_PROFILES_READ_DEADLINE_MS }
+    ).then((read) => {
+      if (read.error) throw new Error(read.error.message)
+      return read
+    }),
+    CONFIG_LIST_BOUNDS.buyerProfiles,
     'buyer profiles',
-    { deadlineMs: BUYER_PROFILES_READ_DEADLINE_MS }
   )
-  if (error) throw new Error(error.message)
-
-  const rows = (data ?? []) as unknown as ProfileRow[]
   // Only a row whose flag is exactly true is offered; anything else is switched off.
   const buyers = rows.filter((r) => r.is_enabled === true).map(shape)
   const switched_off: SwitchedOffProfile[] = rows

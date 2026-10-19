@@ -1,5 +1,7 @@
 import { Hono, type Context } from 'hono'
 import { dbError, dbErrorUnlessNotFound, isNotFoundError } from '../../lib/api-error'
+import { fetchUpTo } from '../../lib/paginate'
+import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -42,14 +44,19 @@ executions.get('/', async (c) => {
     if (!wf) return c.json({ error: 'Workflow not found' }, 404)
     workflowIds = [wf.id]
   } else {
-    const { data: wfs, error: wfsError } = await supabase
-      .from('workflows')
-      .select('id')
-      .eq('organization_id', orgId)
     // A dropped error here would silently return an empty execution list (looks
-    // like "no executions") instead of surfacing the failure.
-    if (wfsError) return dbError(c, wfsError)
-    workflowIds = (wfs ?? []).map((w) => w.id)
+    // like "no executions") instead of surfacing the failure, and a list cut at
+    // the row cap would silently leave some workflows' runs out (#1437).
+    try {
+      const wfs = await fetchUpTo<{ id: string }>((limit) => supabase
+        .from('workflows')
+        .select('id')
+        .eq('organization_id', orgId)
+        .limit(limit), CONFIG_LIST_BOUNDS.workflows, 'org workflow ids')
+      workflowIds = wfs.map((w) => w.id)
+    } catch (err) {
+      return dbError(c, err)
+    }
     if (workflowIds.length === 0) return c.json([])
   }
 
