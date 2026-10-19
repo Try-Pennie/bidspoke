@@ -1,4 +1,4 @@
 {
-  "snowflake.execute-sql-query@1": "fe070585408f281e52611b04e9ff522bcff5726a4ad2cc33420d4739879c8209",
-  "snowflake.insert-multiple-rows@1": "673b5482d6bc1fe6cd2605003b6a82ec50ca0c6fc0963cce35b9eb67881c1acb"
+  "snowflake.execute-sql-query@1": "446d92f163872f3fb89d058f1ec9246a7fa6a674088b7cdb44ba1887164cefa8",
+  "snowflake.insert-multiple-rows@1": "9f6cbad90dc3167a7503acde7fa5e079501bd31c2d47999274c8a06e49f3fbdd"
 }

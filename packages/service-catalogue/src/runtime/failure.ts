@@ -15,7 +15,8 @@
  * not yet seen answered (an expired login, a 429 turned into a requeue, a lost
  * connection) is passed on unchanged rather than wrapped in one of these: the
  * executor reads those itself. An action wraps such an error only once something
- * it sent has already been applied, so a requeue can never repeat a write.
+ * it sent may already have been applied (a statement sent, its answer not yet
+ * read), as `unknown`, so a requeue can never repeat a write.
  */
 
 export type ActionOutcome = 'not_applied' | 'applied' | 'unknown'
