@@ -66,10 +66,10 @@ const plaintextOf = (config: unknown): string | null => {
 }
 
 /**
- * The most Slack rows one organization's seal reads (#1437). Today the store
- * holds at most one (UNIQUE organization_id, service_type; measured 2026-10-18,
- * one row in all). Release 2 of #2332 allows an alert row plus named ops rows,
- * and 20 leaves room for that. The read asks for one more, and a full answer
+ * The most Slack rows one organization's seal reads (#1437). Measured
+ * 2026-10-18 the store holds one Slack row in all. Release 2 of #2332
+ * (migration 20261019150000) allows an alert row plus named ops rows, and 20
+ * leaves room for that. The read asks for one more, and a full answer
  * throws: a cut list could call the contract release safe with a row unseen.
  */
 export const SLACK_ROWS_MAX = 20
