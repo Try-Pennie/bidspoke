@@ -521,6 +521,8 @@ describe('the ops connection wrappers (#2334)', () => {
     await expect(acquireSfLease(client, ORG, { connectionId: CONN, generation: 1, purpose: 'lookup', holder: 'h', ttlSeconds: 60, bootstrapHost: 'x.my.salesforce.com' }))
       .rejects.toThrow(/only verify/)
     await expect(acquireSfLease(client, ORG, { connectionId: CONN, generation: 1, purpose: 'drain' as never, holder: 'h', ttlSeconds: 60 })).rejects.toThrow(/not a purpose/)
+    // Retired with no caller (#2336): Reconnect's lease is a verify.
+    await expect(acquireSfLease(client, ORG, { connectionId: CONN, generation: 1, purpose: 'reconnect' as never, holder: 'h', ttlSeconds: 60 })).rejects.toThrow(/reconnect is not a purpose/)
     expect(calls).toEqual([])
   })
 

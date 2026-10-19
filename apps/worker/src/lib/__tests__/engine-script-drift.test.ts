@@ -81,6 +81,14 @@ import BIDDING_LENDSWIFT_RAW from '../../engine/scripts/bidding-lendswift/build_
 import SIGN_SUBMISSION_LINK_RAW from '../../engine/scripts/forms-engine/sign_submission_link.js?raw'
 // @ts-expect-error Vite resolves the ?raw suffix to the file's text.
 import TRIPOINT_PING_BEFORE_LOAN_FLOOR_RAW from './fixtures/tripoint_ping.canvas-before-loan-floor.txt?raw'
+// @ts-expect-error Vite resolves the ?raw suffix to the file's text.
+import BUILD_RESPONSE_BODY_BEFORE_UNSOLD_SELL_OFF_RAW from './fixtures/build_response_body.canvas-before-unsold-sell-off.txt?raw'
+/**
+ * The canvas build_response_body before a sell off lead no buyer took was rejected, exactly as
+ * version 112 held it on 2026-10-19 (its hash is the baseline). It carries the #2089 and #2092
+ * edits, so the tests about those read it rather than the kept file.
+ */
+const BEFORE_UNSOLD_SELL_OFF_BUILD_RESPONSE_BODY = BUILD_RESPONSE_BODY_BEFORE_UNSOLD_SELL_OFF_RAW as string
 /** The canvas scripts the #2089 edits were derived from, read from the mirror on 2026-10-14. */
 const BEFORE_2089_BUILD_RESPONSE_BODY = (BUILD_RESPONSE_BODY_BEFORE_2089_RAW as string).replace(/[\r\n]+$/, '')
 const BEFORE_2089_LEAD_ECONOMY_RETURN_RESPONSE = (LEAD_ECONOMY_RETURN_RESPONSE_BEFORE_2089_RAW as string).replace(/[\r\n]+$/, '')
@@ -146,8 +154,8 @@ describe('the kept scripts the check compares', () => {
     for (const kept of KEPT_ENGINE_SCRIPTS) expect(stripTrailingWhitespace(kept.script), kept.file).toBe(kept.script)
   })
 
-  it('carry no canvas baseline and no new node allowance, tripoint_ping apart: the canvas holds the other three, the #2092 save of build_response_body included, so any difference is a drift or a missing node', () => {
-    for (const kept of KEPT_ENGINE_SCRIPTS.filter((k) => k.namespace !== 'tripoint_ping')) {
+  it('carry no canvas baseline and no new node allowance, tripoint_ping and build_response_body apart: the canvas holds the other two, so any difference is a drift or a missing node', () => {
+    for (const kept of KEPT_ENGINE_SCRIPTS.filter((k) => k.namespace !== 'tripoint_ping' && k.namespace !== 'build_response_body')) {
       expect(kept.newNodeSince, kept.file).toBeUndefined()
       expect(kept.canvasBaselineSha256, kept.file).toBeNull()
       expect(kept.baselineReadOn, kept.file).toBeNull()
@@ -164,6 +172,28 @@ describe('the kept scripts the check compares', () => {
     const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'tripoint_ping', config: { script } }] })
     expect((await judgeKeptScripts([kept], definition(before), 'Engine Bidding Workflow'))[0].state).toBe('awaiting_paste')
     expect((await judgeKeptScripts([kept], definition(kept.script), 'Engine Bidding Workflow'))[0].state).toBe('agree')
+  })
+
+  it('build_response_body awaits its unsold sell off paste: the canvas script it was derived from reads as awaiting, not drift', async () => {
+    const kept = KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'build_response_body')!
+    expect(kept.newNodeSince).toBeUndefined()
+    expect(kept.canvasBaselineSha256).toBe(await sha256Hex(BEFORE_UNSOLD_SELL_OFF_BUILD_RESPONSE_BODY))
+    expect(kept.baselineReadOn).toBe('2026-10-19')
+    const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'build_response_body', config: { script } }] })
+    expect((await judgeKeptScripts([kept], definition(BEFORE_UNSOLD_SELL_OFF_BUILD_RESPONSE_BODY), 'Engine Bidding Workflow'))[0].state).toBe('awaiting_paste')
+    expect((await judgeKeptScripts([kept], definition(BEFORE_UNSOLD_SELL_OFF_BUILD_RESPONSE_BODY + '\n// edited'), 'Engine Bidding Workflow'))[0].state).toBe('drift')
+    expect((await judgeKeptScripts([kept], definition(kept.script), 'Engine Bidding Workflow'))[0].state).toBe('agree')
+  })
+
+  it('build_response_body differs from the canvas script it was derived from only by the unsold sell off rejection', () => {
+    const kept = KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'build_response_body')!.script
+    const rule = /\/\/ A sell off lead that no buyer took is rejected the same way[\s\S]*?const unsoldSellOff = [^\n]*\n/
+    expect(kept).toMatch(rule)
+    const undone = kept
+      .replace(rule, '')
+      .replace('  if (declined || unsoldSellOff) {', '  if (declined) {')
+      .replace('// is rejected above, so the Pennie pages below are for a lead that is not a sell off.', '// now takes the Pennie pages below, which is where a lead with no sale belongs.')
+    expect(undone).toBe(BEFORE_UNSOLD_SELL_OFF_BUILD_RESPONSE_BODY)
   })
 
   it('build_response_body pages a canvas put back to its #2089 script as a drift, now that the #2092 save landed (2026-10-15 10:16 AM ET)', async () => {
@@ -186,12 +216,12 @@ describe('the kept scripts the check compares', () => {
   })
 
   it('build_response_body differs from its #2092 baseline only inside the link token block and its host list, so the paste changes no offer', () => {
-    const kept = KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'build_response_body')!.script
+    const kept = BEFORE_UNSOLD_SELL_OFF_BUILD_RESPONSE_BODY
     expect(withoutSigningBlock(kept).replace(/[\r\n]+$/, '')).toBe(withoutSigningBlock(BEFORE_2092.build_response_body).replace(/[\r\n]+$/, ''))
   })
 
   it('build_response_body differs from the canvas script before #2089 only by the link token', () => {
-    const kept = withoutSigningBlock(KEPT_ENGINE_SCRIPTS.find((k) => k.namespace === 'build_response_body')!.script)
+    const kept = withoutSigningBlock(BEFORE_UNSOLD_SELL_OFF_BUILD_RESPONSE_BODY)
     const wiring = "\nconst prospectId = steps.create_prospect.output.body.id;\n// A click sale's landing page already carries the prospect id (#1544).\nconst offerLink = await withLinkToken(clickSale ? redirectUrl : redirectUrl + `/${prospectId}`, prospectId);\n\n"
     const undone = kept
       .replace(wiring, '')

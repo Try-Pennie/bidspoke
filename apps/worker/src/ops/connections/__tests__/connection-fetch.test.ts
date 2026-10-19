@@ -6,6 +6,7 @@ import {
 } from '../connection-fetch'
 import { ConnectionRefusal, LoginMintError, RequeueAt } from '../refusals'
 import type { RecordedRequest } from '../sanitise'
+import type { SfLeasePurpose } from '../../run-vocabulary'
 import {
   ACCESS_TOKEN, CONN, ORG, OTHER_ORG, RENEWED_TOKEN, T0, exampleRules, makeDoubles, makeKeys, salesforceRules, sealLogin, usableCopy,
   type Recorder, type TestKeys,
@@ -165,6 +166,16 @@ describe('the order of checks: the copy first, then the envelope, then the host'
     expect((await refusal(connectionFetch(d.deps, call(d.rec, { organizationId: 'nope' as typeof ORG }), 'https://api.example.test/x'))).code).toBe('connection_call_invalid')
     expect((await refusal(connectionFetch(d.deps, call(d.rec, { purpose: 'step' }), 'https://api.example.test/x'))).code).toBe('connection_call_invalid')
     expect((await refusal(connectionFetch(d.deps, call(d.rec, { purpose: 'lookup', workflowId: 'w' }), 'https://api.example.test/x'))).code).toBe('connection_call_invalid')
+  })
+
+  it('refuses the retired reconnect purpose, for the copy and for a candidate, sending nothing (#2336)', async () => {
+    const d = makeDoubles(keys, usableCopy(envelope), (rec) => [exampleRules(rec)])
+    const retired = 'reconnect' as unknown as SfLeasePurpose
+    const candidate = { service: 'example', generation: 2, envelope, target: { host: 'api.example.test' }, publicConfig: {} }
+    expect((await refusal(connectionFetch(d.deps, call(d.rec, { purpose: retired }), 'https://api.example.test/x'))).code).toBe('connection_call_invalid')
+    expect((await refusal(connectionFetch(d.deps, call(d.rec, { purpose: retired, source: { kind: 'candidate', candidate } }), 'https://api.example.test/x'))).code)
+      .toBe('connection_call_invalid')
+    expect(d.rec.sent).toEqual([])
   })
 
   it('a recorder that fails stops the request before anything is sent (record first)', async () => {
@@ -453,11 +464,11 @@ describe('the network and the deadline', () => {
 })
 
 describe('a candidate: a credential bidding has not committed, verified in memory only (F116, F126)', () => {
-  it('a reconnect\'s new generation is used from the call while the copy still holds the old one, and writes nothing on ops', async () => {
+  it('a Reconnect\'s new generation (its verify) is used from the call while the copy still holds the old one, and writes nothing on ops', async () => {
     const next = await sealLogin(keys, { generation: 2 })
     const d = makeDoubles(keys, usableCopy(envelope), (rec) => [exampleRules(rec)])
     const res = await connectionFetch(d.deps, call(d.rec, {
-      purpose: 'reconnect',
+      purpose: 'verify',
       source: { kind: 'candidate', candidate: { service: 'example', generation: 2, envelope: next, target: { host: 'api.example.test' }, publicConfig: {} } },
     }), 'https://api.example.test/x')
     expect((res as Response).status).toBe(200)
@@ -517,17 +528,17 @@ describe('a candidate: a credential bidding has not committed, verified in memor
     for (const state of ['connection_copy_expired', 'connection_withdrawn'] as const) {
       const d = makeDoubles(keys, usableCopy(envelope, { state, envelope: null }), (rec) => [exampleRules(rec)])
       const res = await connectionFetch(d.deps, call(d.rec, {
-        purpose: 'reconnect',
+        purpose: 'verify',
         source: { kind: 'candidate', candidate: { service: 'example', generation: 2, envelope: next, target: { host: 'api.example.test' }, publicConfig: {} } },
       }), 'https://api.example.test/x')
       expect((res as Response).status).toBe(200)
     }
   })
 
-  it('refuses a generation older than the copy, a removed connection, another service, and any purpose but verify or reconnect', async () => {
+  it('refuses a generation older than the copy, a removed connection, another service, and any purpose but verify', async () => {
     const d = makeDoubles(keys, usableCopy(envelope, { generation: 3 }), (rec) => [exampleRules(rec)])
     const candidate = { service: 'example', generation: 2, envelope, target: { host: 'api.example.test' }, publicConfig: {} }
-    expect((await refusal(connectionFetch(d.deps, call(d.rec, { purpose: 'reconnect', source: { kind: 'candidate', candidate } }), 'https://api.example.test/x'))).code).toBe('connection_generation_older')
+    expect((await refusal(connectionFetch(d.deps, call(d.rec, { purpose: 'verify', source: { kind: 'candidate', candidate } }), 'https://api.example.test/x'))).code).toBe('connection_generation_older')
     d.setCopy(usableCopy(envelope, { state: 'connection_removed', envelope: null }))
     expect((await refusal(connectionFetch(d.deps, call(d.rec, { purpose: 'verify', source: { kind: 'candidate', candidate: { ...candidate, generation: 9 } } }), 'https://api.example.test/x'))).code).toBe('connection_removed')
     d.setCopy(usableCopy(envelope, { service: 'other' }))
@@ -582,7 +593,7 @@ describe('the Salesforce lease lives inside connectionFetch (L621)', () => {
     expect(d.rec.leases).toEqual([])
   })
 
-  it.each(['lookup', 'verify', 'reconnect'] as const)('%s waits the stated time on a full pool, then is refused as sf_pool_busy, sending nothing', async (purpose) => {
+  it.each(['lookup', 'verify'] as const)('%s waits the stated time on a full pool, then is refused as sf_pool_busy, sending nothing', async (purpose) => {
     const d = makeDoubles(keys, sfCopy(), (rec) => [salesforceRules(rec)])
     const retryAt = new Date(T0 + 30_000).toISOString()
     d.leaseAnswers({ outcome: 'pool_full', retryAt })

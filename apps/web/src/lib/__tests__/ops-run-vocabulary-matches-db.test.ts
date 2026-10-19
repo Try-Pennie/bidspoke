@@ -94,6 +94,8 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     ['ops_lane_sweeps_sweep_check', OPS_SWEEPS],
     // The ops connections' and Salesforce pool's (#2334).
     ['sf_leases_purpose_check', SF_LEASE_PURPOSES],
+    // Every purpose but step has a share of its own (#2335, F125); a step's is its workflow's.
+    ['sf_purpose_caps_purpose_check', SF_LEASE_PURPOSES.filter((p) => p !== 'step')],
     ['sf_budget_readings_source_check', SF_BUDGET_SOURCES],
   ] as const)('%s', (name, values) => {
     expect(sorted(constraintValues(SQL, name))).toEqual(sorted(values))
@@ -140,6 +142,20 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     const guard = /p_purpose NOT IN \(([^)]*)\)/.exec(functionBody(SQL, 'acquire_sf_lease'))
     expect(guard).not.toBeNull()
     expect(sorted([...guard![1].matchAll(/'([^']*)'/g)].map((m) => m[1]))).toEqual(sorted(SF_LEASE_PURPOSES))
+  })
+
+  /**
+   * A lease purpose nothing takes is a share Dan would be asked to approve for
+   * nothing (#2336). Reconnect's lease is a verify (clearReauth in
+   * ops/connections/ops-connections.ts), because only verify takes the
+   * bootstrap slot a new generation needs, so the reconnect purpose was retired
+   * from the vocabulary and from both CHECKs.
+   */
+  it('reconnect is no lease purpose, in the code or in either table (#2336)', () => {
+    const purposes: readonly string[] = SF_LEASE_PURPOSES
+    expect(purposes).not.toContain('reconnect')
+    expect(constraintValues(SQL, 'sf_leases_purpose_check')).not.toContain('reconnect')
+    expect(constraintValues(SQL, 'sf_purpose_caps_purpose_check')).not.toContain('reconnect')
   })
 
   it('claim_ops_sweep, as last replaced, guards the same sweeps its table allows', () => {
