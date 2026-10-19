@@ -14,8 +14,9 @@
  * as a post for its Submission, with the check a person can make: the Inquiries
  * file on that Submission's Lead. The read-back never groups posts with updates.
  */
+import { LAST_MODIFIED_MARGIN_MS } from './salesforce-field-conflict'
 
-export type ReadBackAlertKind = 'resend_failed' | 'unknown' | 'conflict' | 'unread' | 'not_running'
+export type ReadBackAlertKind ='resend_failed' | 'unknown' | 'conflict' | 'unread' | 'not_running'
 
 /** Why a tick read nothing, in the words the unread alert uses. */
 export type UnreadReason =
@@ -262,10 +263,20 @@ function quoted(v: unknown): string {
 
 type ConflictValue = NonNullable<ReadBackAlertWrite['conflict_values']>[number]
 
+/**
+ * When a recorded change came relative to the update's start. Salesforce stamps
+ * the change in whole seconds on its own clock, so one within the margin of the
+ * start may have come just before it, and the sentence says it cannot tell.
+ */
+function changedWhen(changedAt: string, firstAttemptAt: string): string {
+  const after = Date.parse(changedAt) - Date.parse(firstAttemptAt) >= LAST_MODIFIED_MARGIN_MS
+  return after ? 'after the update began' : 'within two seconds of when the update began, too close to tell which came first'
+}
+
 /** One sentence per left out field: the two values, and what its history says about who set the one Salesforce holds. */
-function valueSentence(v: ConflictValue): string {
+function valueSentence(v: ConflictValue, firstAttemptAt: string): string {
   const values = `${plain(v.field)} held ${quoted(v.held)} where Bidspoke was sending ${quoted(v.sending)}.`
-  if (v.history === 'changed' && v.changed_at) return `${values} Its Salesforce history shows it was changed at ${clockOnDay(v.changed_at)}, after the update began.`
+  if (v.history === 'changed' && v.changed_at) return `${values} Its Salesforce history shows it was changed at ${clockOnDay(v.changed_at)}, ${changedWhen(v.changed_at, firstAttemptAt)}.`
   if (v.history === 'not_kept') return `${values} Salesforce keeps no history of that field, so whether another writer set it could not be checked.`
   return `${values} Its Salesforce history could not be read, so whether another writer set it could not be checked.`
 }
@@ -274,7 +285,7 @@ function valueSentence(v: ConflictValue): string {
 function valuesOf(w: ReadBackAlertWrite): string | null {
   const values = w.conflict_values ?? []
   if (values.length === 0 || values.length !== (w.conflict_fields ?? []).length) return null
-  return values.map(valueSentence).join(' ')
+  return values.map((v) => valueSentence(v, w.first_attempt_at)).join(' ')
 }
 
 function conflict(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert {

@@ -85,6 +85,15 @@ describe('composeSalesforceReadBackAlert', () => {
       ])
     })
 
+    it('does not claim a change stamped within two seconds of the update\'s start came after it', () => {
+      // Salesforce stamps whole seconds on its own clock; the update began at 00:29:54.
+      const near = text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], conflict_values: [{ ...changed, changed_at: '2026-10-15T00:29:55.000Z' }], resent: true })] })
+      expect(near).toContain('Its Salesforce history shows it was changed at 8:29 PM ET on Oct 14, within two seconds of when the update began, too close to tell which came first.')
+      expect(near).not.toContain('after the update began')
+      const clear = text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], conflict_values: [{ ...changed, changed_at: '2026-10-15T00:29:56.000Z' }], resent: true })] })
+      expect(clear).toContain('changed at 8:29 PM ET on Oct 14, after the update began.')
+    })
+
     it('says when the field keeps no history, or its history could not be read, so who set it could not be checked', () => {
       const notKept = text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], conflict_values: [{ field: 'BidStatus__c', held: 'No Bid', sending: 'Rejected', history: 'not_kept' }], resent: true })] })
       expect(notKept).toContain('BidStatus__c held "No Bid" where Bidspoke was sending "Rejected". Salesforce keeps no history of that field, so whether another writer set it could not be checked.')
