@@ -63,6 +63,11 @@
  * disagreement is usually the copy catching up. Pages go through the shared
  * export alerter so the same KV keys mute them. The run records its own outcome
  * through job_runs, so a lifetime of zero passes reads as broken (L557).
+ *
+ * Each KV marker read or write is handled on its own (#2431): a failed one
+ * costs only the page decision that marker feeds, is recorded in job_runs with
+ * what it costs, and every other check is still judged and paged (L71, L98).
+ * Which way a failed READ decides is chosen per marker, beside it.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { easternDayStartUtc, easternParts, hourBucket, type SaleStatus } from '@bidspoke/buyer-profile'
@@ -303,6 +308,12 @@ export interface ChecksSummary {
   outcome_rate_lines: string[]
   /** Buyers whose standing outcome rate page an unmeasured hour (#2420) or a held one (#2421) kept, neither raised nor cleared. */
   outcome_rate_held: string[]
+  /** Buyers with a mismatch whose marker could not be read, so the mismatch page was neither raised nor cleared on their account (#2431). */
+  mismatch_held: string[]
+  /** Each KV marker read or write that failed, with what it costs (#2431). The checks were still judged; the run is not a pass. */
+  marker_failures: string[]
+  /** Each page that could not be sent (#2431). The other pages were still attempted; the run is failed. */
+  alert_failures: string[]
 }
 
 const STATUSES: SaleStatus[] = ['reserved', 'accepted', 'declined', 'released', 'unresolved']
@@ -461,7 +472,7 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
 
   if (deps.localDev) {
     deps.log(`[${BUYER_SALES_CHECKS_JOB}] skipped: local dev`)
-    return { skipped: 'local_dev', days, buyers: [], mismatch_lines: [], unresolved_lines: [], outcome_rate_lines: [], outcome_rate_held: [] }
+    return { skipped: 'local_dev', days, buyers: [], mismatch_lines: [], unresolved_lines: [], outcome_rate_lines: [], outcome_rate_held: [], mismatch_held: [], marker_failures: [], alert_failures: [] }
   }
 
   let buyers: CheckBuyer[]
@@ -470,7 +481,7 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
   } catch (err) {
     const reason = `the buyer list could not be read, so nothing was checked: ${messageOf(err)}`
     await deps.notifyMismatch([reason], BUYER_SALES_UNLISTED_REMEDY)
-    return { unmeasured: reason, days, buyers: [], mismatch_lines: [reason], unresolved_lines: [], outcome_rate_lines: [], outcome_rate_held: [] }
+    return { unmeasured: reason, days, buyers: [], mismatch_lines: [reason], unresolved_lines: [], outcome_rate_lines: [], outcome_rate_held: [], mismatch_held: [], marker_failures: [], alert_failures: [] }
   }
 
   const summaries: BuyerCheckSummary[] = []
@@ -478,9 +489,27 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
   const unresolvedLines: string[] = []
   const outcomeRateLines: string[] = []
   const outcomeRateHeld: string[] = []
+  const mismatchHeld: string[] = []
+  const markerFailures: string[] = []
+  const alertFailures: string[] = []
   const mismatchKinds = new Set<MismatchKind>()
   let unresolvedGrew = false
   let newlyElevated = false
+
+  // Every marker read and write goes through here (#2431). A KV failure must
+  // cost only the decision that marker feeds, never the run: before this one
+  // throw silenced every check on every buyer for the run (L71). The failure is
+  // recorded with what it costs, so job_runs says why (L98). Which way each
+  // caller decides on a failed READ is set beside it, since the safe side
+  // differs per marker.
+  const marker = async <T>(what: string, cost: string, op: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false }> => {
+    try {
+      return { ok: true, value: await op() }
+    } catch (err) {
+      markerFailures.push(`${what}: ${messageOf(err)}, so ${cost}`)
+      return { ok: false }
+    }
+  }
 
   for (const buyer of buyers) {
     // Whether this buyer's outcome rate page stands, read before the hour is
@@ -503,29 +532,55 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
     if (s.completeness.verdict === 'mismatch') mismatches.push(`completeness: ${s.completeness.detail}`)
     if (s.consistency.verdict === 'inconsistent') mismatches.push(`consistency: ${s.consistency.detail}`)
     if (s.independent.verdict === 'unverified') mismatches.push(`independent: ${s.independent.detail}`)
-    const marker = mismatchMarkerKey(buyer.partner_id)
+    const seenKey = mismatchMarkerKey(buyer.partner_id)
+    const mismatchMarker = `${buyer.slug} mismatch marker`
     if (mismatches.length > 0) {
-      const seenBefore = (await deps.kv.get(marker)) !== null
-      if (seenBefore) {
+      // A marker that cannot be read HOLDS: this buyer neither raises the
+      // mismatch page nor lets it clear. Raising could page a single run's
+      // disagreement, the copy catching up, which is what the two run rule
+      // exists to keep quiet (L36); treating it as unseen and so sending no line
+      // would let an empty list clear a page for a mismatch this run has just
+      // measured as still true. Holding risks one run's delay on a new page.
+      const seen = await marker(`${mismatchMarker} could not be read`, 'its mismatch was neither paged nor cleared', () => deps.kv.get(seenKey))
+      if (!seen.ok) {
+        mismatchHeld.push(buyer.slug)
+      } else if (seen.value !== null) {
         mismatchLines.push(`${buyer.slug}: ${mismatches.join(' | ')}`)
         for (const k of mismatchKindsOf(s)) mismatchKinds.add(k)
       }
-      await deps.kv.put(marker, new Date(now).toISOString(), { expirationTtl: 24 * 3600 })
+      // Written even after a failed read, so the next run can tell the mismatch persisted.
+      await marker(`${mismatchMarker} could not be written`, 'the next run cannot tell this mismatch has persisted and waits a run longer to page it', () =>
+        deps.kv.put(seenKey, new Date(now).toISOString(), { expirationTtl: 24 * 3600 }))
     } else {
-      await deps.kv.delete(marker)
+      await marker(`${mismatchMarker} could not be cleared`, 'a new mismatch within a day may page on its first run', () => deps.kv.delete(seenKey))
     }
 
     // The unresolved page, keyed on the count.
     const pagedKey = unresolvedPagedKey(buyer.partner_id)
+    const unresolvedMarker = `${buyer.slug} unresolved marker`
     if (s.unresolved.count === 0) {
-      await deps.kv.delete(pagedKey)
+      await marker(`${unresolvedMarker} could not be cleared`, 'the next unresolved sales may not page until it expires unless they outnumber the count it holds', () => deps.kv.delete(pagedKey))
     } else {
-      const lastPaged = Number((await deps.kv.get(pagedKey)) ?? '0')
-      if (s.unresolved.count > lastPaged) {
+      // A marker that cannot be read PAGES: the count came from the ledger, not
+      // from KV, and the marker only stops a repeat. Saying the count again is a
+      // duplicate the alerter's reminder backoff throttles; holding could leave
+      // a person never told about sales holding slots and dollars against the
+      // caps, and could let an empty list clear the page. An unknown last count
+      // never counts as grown, so the backoff is not reset on its account.
+      const read = await marker(`${unresolvedMarker} could not be read`, 'its count was paged again rather than risk never paging it', () => deps.kv.get(pagedKey))
+      let lastPaged = read.ok ? Number(read.value ?? '0') : null
+      // A value that is not a count would compare false against every count and
+      // never page again (L50), so it is unknown, which pages, the same as unread.
+      if (read.ok && !Number.isFinite(lastPaged)) {
+        markerFailures.push(`${unresolvedMarker} holds ${JSON.stringify(read.value)}, not a count, so its count was paged again rather than risk never paging it`)
+        lastPaged = null
+      }
+      if (lastPaged === null || s.unresolved.count > lastPaged) {
         unresolvedLines.push(unresolvedLine(buyer, s.unresolved.entries, now, deps.appUrl))
         s.unresolved.paged = true
-        if (lastPaged > 0) unresolvedGrew = true
-        await deps.kv.put(pagedKey, String(s.unresolved.count), { expirationTtl: 7 * 24 * 3600 })
+        if (lastPaged !== null && lastPaged > 0) unresolvedGrew = true
+        await marker(`${unresolvedMarker} could not be written`, 'the next run may page the same count again', () =>
+          deps.kv.put(pagedKey, String(s.unresolved.count), { expirationTtl: 7 * 24 * 3600 }))
       }
     }
 
@@ -538,38 +593,57 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
       // under the clear line (#2421). A standing page is kept, its marker
       // renewed so a long spell of such hours cannot clear it by expiry either.
       // One whose marker could not be read may be standing, so it is kept too.
+      const rateMarker = `${buyer.slug} outcome rate marker could not be written`
       if (rateStanding !== null) {
         outcomeRateHeld.push(buyer.slug)
-        await deps.kv.put(rateKey, rateStanding, { expirationTtl: OUTCOME_RATE_PAGED_TTL_SECONDS })
+        const standing = rateStanding
+        await marker(rateMarker, 'a standing page may expire within a day and then clear on an hour still above the clear line', () =>
+          deps.kv.put(rateKey, standing, { expirationTtl: OUTCOME_RATE_PAGED_TTL_SECONDS }))
       } else if (rateStandingUnread !== null) {
         outcomeRateHeld.push(buyer.slug)
       }
     } else if (s.outcome_rate.verdict === 'elevated') {
       outcomeRateLines.push(`${buyer.slug}: ${s.outcome_rate.detail}. Partner page: ${deps.appUrl}/partners?selected=${encodeURIComponent(buyer.slug)}`)
       if (rateStanding === null) newlyElevated = true
-      await deps.kv.put(rateKey, new Date(now).toISOString(), { expirationTtl: OUTCOME_RATE_PAGED_TTL_SECONDS })
+      await marker(`${buyer.slug} outcome rate marker could not be written`, 'the next run will not know this page stands and may clear it before the share falls well back', () =>
+        deps.kv.put(rateKey, new Date(now).toISOString(), { expirationTtl: OUTCOME_RATE_PAGED_TTL_SECONDS }))
     } else {
-      await deps.kv.delete(rateKey)
+      await marker(`${buyer.slug} outcome rate marker could not be cleared`, 'the next run may hold a page that has already cleared', () => deps.kv.delete(rateKey))
     }
   }
 
   // A count that grew must get out past the reminder backoff, but only when it
   // was this job that set the condition: a cooldown standing on its own is a
-  // person's mute and stays (L523).
-  if (unresolvedGrew) {
-    const family = `export-alert:${BUYER_SALES_UNRESOLVED_JOB}`
-    if ((await readCondition(deps.kv, family)) !== null) await clearCondition(deps.kv, family)
+  // person's mute and stays (L523). A reset that fails leaves the page to wait
+  // out the backoff; it is still sent below.
+  const resetBackoff = async (job: string) => {
+    const family = `export-alert:${job}`
+    // readCondition catches its own KV failure and answers null, so a failed
+    // read resets nothing and cannot throw out of the run (alert-backoff.ts).
+    if ((await readCondition(deps.kv, family)) === null) return
+    await marker(`the ${job} reminder backoff could not be reset`, 'this page waits out the backoff', () => clearCondition(deps.kv, family))
   }
-  if (newlyElevated) {
-    const family = `export-alert:${BUYER_OUTCOME_RATE_JOB}`
-    if ((await readCondition(deps.kv, family)) !== null) await clearCondition(deps.kv, family)
-  }
+  if (unresolvedGrew) await resetBackoff(BUYER_SALES_UNRESOLVED_JOB)
+  if (newlyElevated) await resetBackoff(BUYER_OUTCOME_RATE_JOB)
 
-  await deps.notifyMismatch(mismatchLines, buyerSalesMismatchRemedy(mismatchKinds))
-  await deps.notifyUnresolved(unresolvedLines)
+  // Each page is sent on its own, so one the alerter cannot send (its own KV,
+  // Slack) does not stop the others; the run then records itself as failed.
+  const send = async (job: string, op: () => Promise<void>) => {
+    try {
+      await op()
+    } catch (err) {
+      alertFailures.push(`the ${job} page could not be sent: ${messageOf(err)}`)
+    }
+  }
+  // A page a buyer's unreadable marker is holding must not be cleared by an empty list.
+  if (mismatchLines.length > 0 || mismatchHeld.length === 0) {
+    await send(BUYER_SALES_MISMATCH_JOB, () => deps.notifyMismatch(mismatchLines, buyerSalesMismatchRemedy(mismatchKinds)))
+  }
+  await send(BUYER_SALES_UNRESOLVED_JOB, () => deps.notifyUnresolved(unresolvedLines))
   // A page some buyer's unmeasured hour is holding must not be cleared by an
   // empty list; while another buyer is elevated the page stands regardless.
-  if (outcomeRateLines.length > 0 || outcomeRateHeld.length === 0) await deps.notifyOutcomeRate(outcomeRateLines)
+  if (outcomeRateLines.length > 0 || outcomeRateHeld.length === 0) await send(BUYER_OUTCOME_RATE_JOB, () => deps.notifyOutcomeRate(outcomeRateLines))
+  for (const failure of [...markerFailures, ...alertFailures]) deps.log(`[${BUYER_SALES_CHECKS_JOB}] ${failure}`)
   return {
     days,
     buyers: summaries.map(({ unresolved, ...rest }) => ({ ...rest, unresolved: { count: unresolved.count, oldest_age_ms: unresolved.oldest_age_ms, paged: unresolved.paged } })),
@@ -577,6 +651,9 @@ export async function runBuyerSalesChecks(deps: ChecksDeps): Promise<ChecksSumma
     unresolved_lines: unresolvedLines,
     outcome_rate_lines: outcomeRateLines,
     outcome_rate_held: outcomeRateHeld,
+    mismatch_held: mismatchHeld,
+    marker_failures: markerFailures,
+    alert_failures: alertFailures,
   }
 }
 
@@ -663,6 +740,8 @@ async function checkBuyer(deps: ChecksDeps, buyer: CheckBuyer, days: string[], n
  * What the run records about itself: ok only when every check on every buyer
  * measured and agreed. An unmeasured run says which check on which buyer could
  * not be measured and why (#2420), so job_runs holds the reason, not only the word.
+ * A KV marker that failed is one of those reasons, and a page that could not be
+ * sent makes the run failed (#2431).
  */
 export function endingOf(summary: ChecksSummary): JobRunEnding {
   if (summary.skipped) return { outcome: 'skipped', detail: summary.skipped, summary: { days: summary.days } }
@@ -672,11 +751,13 @@ export function endingOf(summary: ChecksSummary): JobRunEnding {
   const unmeasuredReasons = summary.buyers.flatMap((b) => {
     const checks: Array<[string, { verdict: string; reason?: string }]> = [['completeness', b.completeness], ['consistency', b.consistency], ['independent', b.independent], ['outcome rate', b.outcome_rate]]
     return checks.flatMap(([name, v]) => (v.verdict === 'unmeasured' ? [`${b.slug} ${name}: ${v.reason}`] : []))
-  })
-  const outcome = findings ? 'findings' : unmeasuredReasons.length > 0 ? 'unmeasured' : 'ok'
+  }).concat(summary.marker_failures)
+  // A page that could not be sent outranks everything: somebody was not told (#2431).
+  const outcome = summary.alert_failures.length > 0 ? 'failed' : findings ? 'findings' : unmeasuredReasons.length > 0 ? 'unmeasured' : 'ok'
   return {
     outcome,
     ...(outcome === 'unmeasured' ? { detail: unmeasuredReasons.join('; ') } : {}),
+    ...(outcome === 'failed' ? { detail: summary.alert_failures.join('; ') } : {}),
     summary: {
       days: summary.days,
       buyers: summary.buyers.map((b) => ({ slug: b.slug, completeness: b.completeness.verdict, consistency: b.consistency.verdict, independent: b.independent.verdict, unresolved: b.unresolved.count, rehearsals_expired: b.rehearsals_expired, outcome_rate: b.outcome_rate.verdict })),
@@ -684,7 +765,9 @@ export function endingOf(summary: ChecksSummary): JobRunEnding {
       paged_unresolved: summary.unresolved_lines.length,
       paged_outcome_rates: summary.outcome_rate_lines.length,
       held_outcome_rates: summary.outcome_rate_held,
+      held_mismatches: summary.mismatch_held,
       unmeasured: unmeasuredReasons,
+      alert_failures: summary.alert_failures,
     },
   }
 }
