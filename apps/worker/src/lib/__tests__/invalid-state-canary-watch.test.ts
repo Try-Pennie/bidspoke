@@ -904,6 +904,24 @@ describe('reading the relay sample from the database', () => {
     expect(RELAY_COMPARISON_POSTS).toHaveLength(8)
   })
 
+  it('each read carries the relay filter and its own bound: the list pages under a full order, the sample is one limit (#1437)', async () => {
+    const { supabase, queries } = relayDatabase(1500)
+    await readRelayPosts(supabase, 'a', 'b')
+    const names = (q: Array<[string, unknown[]]>) => q.map(([m]) => m)
+    const [page1, page2, sampleRead] = queries
+    for (const [lo, q] of [[0, page1], [1000, page2]] as const) {
+      expect(q).toContainEqual(['eq', ['workflow_id', MAIN_FLOW_WORKFLOW_ID]])
+      expect(q).toContainEqual(['order', ['execution_started_at', { ascending: true }]])
+      expect(q).toContainEqual(['order', ['id', { ascending: true }]])
+      expect(q).toContainEqual(['range', [lo, lo + 999]])
+      expect(names(q)).not.toContain('limit')
+    }
+    expect(sampleRead).toContainEqual(['eq', ['workflow_id', MAIN_FLOW_WORKFLOW_ID]])
+    expect(sampleRead).toContainEqual(['limit', [RELAY_SAMPLE_SIZE]])
+    expect(names(sampleRead)).not.toContain('range')
+    expect(queries).toHaveLength(3)
+  })
+
   it('a sample read that comes back short throws, rather than comparing against fewer posts than it says', async () => {
     const { supabase } = relayDatabase(300, { dropFromSample: 3 })
     await expect(readRelayPosts(supabase, 'a', 'b')).rejects.toThrow('the relay sample read returned 99 of 100 posts')

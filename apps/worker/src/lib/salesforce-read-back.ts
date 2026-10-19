@@ -1156,6 +1156,27 @@ export async function bulkheadBusy(env: Env, job: string = SF_READ_BACK_JOB): Pr
   return asked.value.inflight >= asked.value.limit ? 'bulkhead_busy' : null
 }
 
+/**
+ * How many workflow ids one names read asks for (#1437). `id` is the primary
+ * key, so a chunk answers at most this many rows, well under PostgREST's 1,000
+ * row cap, however long the list it was handed.
+ */
+export const WORKFLOW_NAMES_CHUNK = 100
+
+/** The names of the workflows an alert names, by id, a chunk at a time. Throws on a failed read. */
+export async function readWorkflowNames(supabase: SupabaseClient, ids: string[]): Promise<Map<string, string>> {
+  const unique = [...new Set(ids)]
+  const names = new Map<string, string>()
+  for (let i = 0; i < unique.length; i += WORKFLOW_NAMES_CHUNK) {
+    const chunk = unique.slice(i, i + WORKFLOW_NAMES_CHUNK)
+    // paginate-ok .in(id): one WORKFLOW_NAMES_CHUNK (100) of distinct primary keys, one row each at most.
+    const { data, error } = await supabase.from('workflows').select('id, name').in('id', chunk)
+    if (error) throw new Error(error.message)
+    for (const w of (data ?? []) as Array<{ id: string; name: string }>) names.set(w.id, w.name)
+  }
+  return names
+}
+
 export async function runSalesforceReadBackForEnv(supabase: SupabaseClient, env: Env): Promise<ReadBackSummary> {
   const keys = secretKeys(env)
   return runSalesforceReadBack({
@@ -1169,11 +1190,7 @@ export async function runSalesforceReadBackForEnv(supabase: SupabaseClient, env:
       : { claim: () => Promise.resolve('unanswered' as const), release: () => Promise.resolve() },
     alertClaims: env.ALERT_CLAIM ? makeAlertClaims(env.ALERT_CLAIM) : undefined,
     slackFor: slackForEnv(supabase),
-    workflowNames: async (ids) => {
-      const { data, error } = await supabase.from('workflows').select('id, name').in('id', ids)
-      if (error) throw new Error(error.message)
-      return new Map(((data ?? []) as Array<{ id: string; name: string }>).map((w) => [w.id, w.name]))
-    },
+    workflowNames: (ids) => readWorkflowNames(supabase, ids),
     appUrl: env.APP_URL,
     recordRun: (startedAtMs, ending) => recordFinishedJobRun(supabase, SF_READ_BACK_JOB, startedAtMs, ending),
   })

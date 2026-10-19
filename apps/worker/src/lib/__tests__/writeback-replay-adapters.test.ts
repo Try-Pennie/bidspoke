@@ -15,6 +15,7 @@ import { supabaseHeldWriteStore, salesforcePortFor } from '../writeback-replay'
 import { SALESFORCE_BULKHEAD_KEY } from '../bulkhead-client'
 import { fakeBulkheads } from '../../__tests__/helpers/fake-bulkheads'
 import { isSalesforceBulkheadShed } from '../../engine/nodes/salesforce'
+import { fakePostgrest } from '../../__tests__/helpers/postgrest-fake'
 
 interface Built { table: string; op: string; columns?: string; patch?: unknown; filters: Array<[string, string, unknown]> }
 
@@ -77,6 +78,37 @@ describe('supabaseHeldWriteStore', () => {
     await supabaseHeldWriteStore(db.client).list('org-1', 'pending')
     expect(db.built[0].columns).not.toMatch(/encrypted/)
     expect(eqs(db.built[0])).toEqual({ organization_id: 'org-1', status: 'pending' })
+  })
+})
+
+describe('listing held writes past the row cap (#1437)', () => {
+  // A dead letter table grows during a Salesforce outage, so the list must reach
+  // every row however many there are, through PostgREST's 1,000 row cap. Many
+  // rows share one created_at, so only the id tiebreaker keeps the pages whole.
+  const rows = Array.from({ length: 2_500 }, (_, i) => ({
+    id: `dl-${String(i).padStart(5, '0')}`,
+    organization_id: i % 10 === 0 ? 'org-2' : 'org-1',
+    workflow_id: 'wf-1', execution_id: `run-${i}`, step_namespace: 'sf', sf_object: 'Prospect__c', sf_record_id: null,
+    sf_operation: 'update', error_type: 'transient', replayable: true,
+    status: i % 3 === 0 ? 'replayed' : 'pending', attempts: 0,
+    created_at: `2026-10-1${i % 7}T00:00:00.000Z`, updated_at: '2026-10-19T00:00:00.000Z', finished_at: null,
+  }))
+
+  it('returns every row of the organization, each once, with no status filter', async () => {
+    const db = fakePostgrest({ outcome_writeback_deadletters: rows.map((r) => ({ ...r })) }, {}, { rowCap: 1_000 })
+    const listed = await supabaseHeldWriteStore(db.client).list('org-1')
+    const want = rows.filter((r) => r.organization_id === 'org-1')
+    expect(want.length).toBeGreaterThan(1_000)
+    expect(new Set(listed.map((r) => r.id)).size).toBe(want.length)
+    expect(listed).toHaveLength(want.length)
+  })
+
+  it('returns every row of one status, each once', async () => {
+    const db = fakePostgrest({ outcome_writeback_deadletters: rows.map((r) => ({ ...r })) }, {}, { rowCap: 1_000 })
+    const listed = await supabaseHeldWriteStore(db.client).list('org-1', 'pending')
+    const want = rows.filter((r) => r.organization_id === 'org-1' && r.status === 'pending')
+    expect(want.length).toBeGreaterThan(1_000)
+    expect(listed.map((r) => r.id).sort()).toEqual(want.map((r) => r.id).sort())
   })
 })
 
