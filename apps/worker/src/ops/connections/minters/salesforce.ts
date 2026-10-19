@@ -13,7 +13,8 @@
  * instance's /services/oauth2/token, never a host the login names, and only of
  * an https *.salesforce.com host, so the client secret cannot be sent anywhere
  * else. A login whose client id is not the declared one is refused before
- * anything is asked (verify compares them too, in PR 8).
+ * anything is asked (client_id_mismatch); OpsConnections.verify answers that
+ * refusal by its own name, verify_client_id_mismatch (#2335, PR 8).
  *
  * A client_credentials answer carries no expires_in, and a session ends by the
  * org's timeout or a revocation, so the memo's clock is only a ceiling
