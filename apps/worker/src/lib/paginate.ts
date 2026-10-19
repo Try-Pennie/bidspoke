@@ -50,3 +50,39 @@ export async function fetchAllPaged<T>(
   }
   throw new Error(`${label} did not reach its last row within ${maxPages} pages`)
 }
+
+/** A read that found more rows than its declared bound, so it answered nothing. */
+export class RowBoundExceededError extends Error {
+  constructor(readonly label: string, readonly bound: number) {
+    super(`${label} holds more than ${bound} rows, its declared bound, so it was refused rather than cut short`)
+    this.name = 'RowBoundExceededError'
+  }
+}
+
+/**
+ * A list read declared to hold at most `n` rows, read whole or refused (#1437,
+ * decision (b)): one organization's config list, a few to a few dozen rows
+ * today, where paging would be ceremony. The bounds are in config-list-bounds.ts.
+ *
+ * Asks for `n + 1` rows through `makeQuery(limit)`, which finishes its query with
+ * `.limit(limit)`. Up to `n` back is the whole list. More than `n` throws
+ * RowBoundExceededError, never the first `n`, because a list cut short looks
+ * exactly like a complete one (L211). A failed read throws with the label too.
+ * `n` is a whole number from 1 to PAGE_SIZE - 1, so `n + 1` never passes
+ * PostgREST's 1,000 row cap, where a capped answer could not be told from a
+ * complete one.
+ */
+export async function fetchUpTo<T>(
+  makeQuery: (limit: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }>,
+  n: number,
+  label: string,
+): Promise<T[]> {
+  if (!Number.isInteger(n) || n < 1 || n >= PAGE_SIZE) {
+    throw new Error(`${label}: a fetchUpTo bound must be a whole number from 1 to ${PAGE_SIZE - 1}, not ${n}`)
+  }
+  const { data, error } = await makeQuery(n + 1)
+  if (error) throw new Error(`${label} failed: ${error.message}`)
+  const rows = (data ?? []) as T[]
+  if (rows.length > n) throw new RowBoundExceededError(label, n)
+  return rows
+}

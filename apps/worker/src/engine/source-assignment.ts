@@ -1,4 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import { fetchUpTo } from '../lib/paginate'
+import { CONFIG_LIST_BOUNDS } from '../lib/config-list-bounds'
 
 export class SourceNotAuthorizedError extends Error {
   constructor(source: string, workflowId: string) {
@@ -32,17 +34,23 @@ export async function enforceSourceAssignment(
   source: string,
   workflowId: string
 ): Promise<void> {
-  const { data: assignments, error } = await supabase
-    .from('source_workflow_assignments')
-    .select('workflow_id')
-    .eq('organization_id', orgId)
-    .eq('source_name', source)
-
   // Fail CLOSED on a lookup error: a null `data` from a failed query is
   // indistinguishable from "no assignment rows", and treating it as the latter
   // would silently lift a source's workflow restriction during a DB blip (#65).
-  if (error) throw new SourceAuthUnavailableError(source, error.message)
-  if (!assignments || assignments.length === 0) return
+  // A list past its bound fails closed the same way (#1437): cut at the row cap
+  // it could leave this workflow out, so it is not the allow list.
+  let assignments: { workflow_id: string }[]
+  try {
+    assignments = await fetchUpTo<{ workflow_id: string }>((limit) => supabase
+      .from('source_workflow_assignments')
+      .select('workflow_id')
+      .eq('organization_id', orgId)
+      .eq('source_name', source)
+      .limit(limit), CONFIG_LIST_BOUNDS.sourceAssignments, 'source_workflow_assignments')
+  } catch (err) {
+    throw new SourceAuthUnavailableError(source, err instanceof Error ? err.message : 'non Error thrown')
+  }
+  if (assignments.length === 0) return
   const allowed = assignments.some((a) => a.workflow_id === workflowId)
   if (!allowed) throw new SourceNotAuthorizedError(source, workflowId)
 }

@@ -11,7 +11,8 @@ import { writeAuditLog } from '../../lib/audit'
 import { loadWorkflowDefinition } from '../../engine/definition-loader'
 import { deriveWatchedFieldMap } from '../../engine/watched-fields'
 import { findDroughts, classifyDeadFields, deadWindowStart, EVER_CARRIED_LOOKBACK_DAYS, type PresenceRow } from '../../lib/field-presence-anomaly'
-import { fetchAllPaged } from '../../lib/paginate'
+import { fetchAllPaged, fetchUpTo } from '../../lib/paginate'
+import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
 
 type Variables = AuthVariables
 const fieldCoverage = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -95,10 +96,18 @@ fieldCoverage.get('/:workflowId', async (c) => {
     if (!prev || r.day > prev.day) latestByField.set(r.field_path, r)
   }
 
-  const { data: silenceRows } = await supabase
-    .from('field_presence_silences')
-    .select('field_path, reason, created_at')
-    .eq('workflow_id', workflowId)
+  // Read whole or refused (#1437), and a failed read is a 500: this read used to
+  // drop its error, which showed every silenced field as unsilenced.
+  let silenceRows: { field_path: string; reason: string | null; created_at: string }[]
+  try {
+    silenceRows = await fetchUpTo((limit) => supabase
+      .from('field_presence_silences')
+      .select('field_path, reason, created_at')
+      .eq('workflow_id', workflowId)
+      .limit(limit), CONFIG_LIST_BOUNDS.fieldSilences, 'field presence silences')
+  } catch (err) {
+    return dbError(c, err)
+  }
 
   const fields = map.fields.map((f) => {
     const latest = latestByField.get(f.path)

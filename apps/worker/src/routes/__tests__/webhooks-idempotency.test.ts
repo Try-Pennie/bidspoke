@@ -65,13 +65,13 @@ function makeKV(seed: Record<string, string> = {}) {
   } as unknown as KVNamespace
 }
 
-// enforceSourceAssignment does one select/eq/eq chain; an empty result means
-// "source unrestricted", which is what the route's enforceSourceAssignment:true
-// resolves to for this fixture.
+// enforceSourceAssignment does one select/eq/eq/limit chain (the limit is its
+// declared bound, #1437); an empty result means "source unrestricted", which is
+// what the route's enforceSourceAssignment:true resolves to for this fixture.
 const supabase = {
   from: () => ({
     select: () => ({
-      eq: () => ({ eq: () => Promise.resolve({ data: [], error: null }) }),
+      eq: () => ({ eq: () => ({ limit: () => Promise.resolve({ data: [], error: null }) }) }),
     }),
   }),
 } as unknown as SupabaseClient
