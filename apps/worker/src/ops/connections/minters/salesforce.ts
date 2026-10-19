@@ -33,8 +33,12 @@ import { readAccessToken, requestToken, type TokenEndpointDeps } from './token-e
 export const SALESFORCE_TOKEN_LIFE_MS = 3_500_000
 export const SALESFORCE_REUSE_MARGIN_MS = 60_000
 
-/** The declared instance as an https Salesforce URL, or target_invalid. */
-function instanceOf(target: unknown): URL {
+/**
+ * The declared instance as an https Salesforce URL, or target_invalid. Shared
+ * with verify's identity measurement and the schema lookups' source
+ * (../salesforce-service.ts), so one rule says what a Salesforce target may name.
+ */
+export function salesforceInstanceOf(target: unknown): URL {
   const raw = targetString(targetFields(target), 'instance_url')
   let url: URL
   try {
@@ -55,10 +59,10 @@ export function salesforceClientCredentialsAuth(deps: TokenEndpointDeps): Minter
   return {
     expired: (response) => isSalesforceSessionRejected(response.status),
     salesforce: {
-      instanceHost: (target) => instanceOf(target).hostname.toLowerCase(),
+      instanceHost: (target) => salesforceInstanceOf(target).hostname.toLowerCase(),
     },
     authorize: async (input: AuthorizeInput): Promise<Authorization> => {
-      const instance = instanceOf(input.target)
+      const instance = salesforceInstanceOf(input.target)
       const declaredClientId = targetString(targetFields(input.target), 'client_id')
       const login = loginFields(input.login)
       const clientId = loginString(login, 'client_id')

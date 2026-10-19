@@ -47,6 +47,7 @@ import {
   startRunExecution,
   sweepExpiredLeases,
   sweepSfLeases,
+  takeLookupAllowance,
 } from '../ops-writes'
 import type { ResourceWaitCause } from '../run-vocabulary'
 
@@ -464,6 +465,25 @@ describe('the ops connection wrappers (#2334)', () => {
     expect(await recordMeasuredIdentity(client, ORG, CONN, 2, { sfOrgId: SF, username: 'ops@x' })).toBe('recorded')
     expect(calls[0].body).toEqual({ p_organization_id: ORG, p_connection_id: CONN, p_generation: 2, p_sf_org_id: SF, p_username: 'ops@x' })
     expect(await recordMeasuredIdentity(rpcFetch('identity_changed').client, ORG, CONN, 2, { sfOrgId: SF, username: 'ops@x' })).toBe('identity_changed')
+  })
+
+  it('a candidate\'s measurement replaced by the next candidate\'s is read as replaced (#2335, PR 8, F126)', async () => {
+    expect(await recordMeasuredIdentity(rpcFetch('replaced').client, ORG, CONN, 2, { sfOrgId: SF, username: 'ops@x' })).toBe('replaced')
+    await expect(recordMeasuredIdentity(rpcFetch('overwritten').client, ORG, CONN, 2, { sfOrgId: SF, username: 'ops@x' })).rejects.toThrow(/not an identity outcome/)
+  })
+
+  it('take_lookup_allowance sends the organization and its cap, and reads allowed or rate_limited by name (#2335, PR 8)', async () => {
+    const allowed = rpcFetch([{ outcome: 'allowed', used: 3, retry_at: null }])
+    expect(await takeLookupAllowance(allowed.client, ORG, 60)).toEqual({ outcome: 'allowed', used: 3, retryAt: null })
+    expect(allowed.calls[0]).toEqual({ path: '/rest/v1/rpc/take_lookup_allowance', body: { p_organization_id: ORG, p_per_minute: 60 } })
+    expect(await takeLookupAllowance(rpcFetch([{ outcome: 'rate_limited', used: 60, retry_at: '2026-10-19T10:01:00+00:00' }]).client, ORG, 60))
+      .toEqual({ outcome: 'rate_limited', used: 60, retryAt: '2026-10-19T10:01:00+00:00' })
+    await expect(takeLookupAllowance(rpcFetch([{ outcome: 'rate_limited', used: 60, retry_at: null }]).client, ORG, 60)).rejects.toThrow(/rate_limited with no retry_at/)
+    await expect(takeLookupAllowance(rpcFetch([{ outcome: 'maybe', used: 1, retry_at: null }]).client, ORG, 60)).rejects.toThrow(/allowance outcome/)
+    const none = rpcFetch([])
+    await expect(takeLookupAllowance(none.client, ORG, 0)).rejects.toThrow(/1 to 600/)
+    await expect(takeLookupAllowance(none.client, ORG, 601)).rejects.toThrow(/1 to 600/)
+    expect(none.calls).toEqual([])
   })
 
   it('acquire_sf_lease sends a verify with its host, and reads a grant', async () => {

@@ -438,6 +438,10 @@ DECLARE
   v_conn uuid := '00000000-0000-4000-8000-0000000023f1';
   v_org uuid := 'aaaaaaaa-0000-4000-8000-000000002334';
 BEGIN
+  -- Ops holds generation 1 as its copy, so its measurement is the committed
+  -- credential's. A generation the copy does not hold yet is a candidate's,
+  -- measured afresh (#2335, PR 8: ops_connections_entrypoint.test.sql).
+  PERFORM public.save_connection_copies(now(), false, jsonb_build_array(pg_temp.cs_copy(v_conn, v_org, 1, now() + interval '6 hours')));
   IF public.record_measured_identity(v_org, v_conn, 1, '00Dcs0000000001EAA', 'ops@trypennie.example') <> 'recorded' THEN RAISE EXCEPTION 'a first measurement was not recorded'; END IF;
   IF public.record_measured_identity(v_org, v_conn, 1, '00Dcs0000000001EAA', 'ops@trypennie.example') <> 'confirmed' THEN RAISE EXCEPTION 'a repeat was not a confirmation'; END IF;
   IF public.record_measured_identity(v_org, v_conn, 1, '00Dcs0000000002EAA', 'ops@trypennie.example') <> 'identity_changed' THEN
