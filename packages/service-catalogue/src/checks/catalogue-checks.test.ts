@@ -106,11 +106,36 @@ describe('versioning is enforced by committed fingerprints (#1689 D1)', () => {
   it('treats an upgrade of an npm package the run reaches as a change to the version', async () => {
     const problems = await checkCatalogue({
       ...FIXTURE_CATALOGUE,
-      lockfile: lockfileCopy((text) => text.replace('version: 10.0.1(eslint', 'version: 10.0.2(eslint')),
+      // As pnpm writes an upgrade: the importer's version and the snapshot's key move together.
+      lockfile: lockfileCopy((text) => text.replace('version: 10.0.1(eslint', 'version: 10.0.2(eslint').replace("'@eslint/js@10.0.1(", "'@eslint/js@10.0.2(")),
     })
     expect(problems.map((p) => p.code)).toEqual(['fingerprint_changed'])
     expect(problems[0].subject).toBe('fixture.echo@2')
     expect(problems[0].message).toContain('resolved version of an npm package')
+  })
+
+  it("treats a transitive dependency moving within its range as a change to the version (the package's closure)", async () => {
+    // @eslint/js -> eslint -> esquery -> estraverse: only the last moves.
+    const problems = await checkCatalogue({
+      ...FIXTURE_CATALOGUE,
+      lockfile: lockfileCopy((text) =>
+        text.replace('      estraverse: 5.3.0', '      estraverse: 5.3.1').replace('  estraverse@5.3.0: {}', '  estraverse@5.3.1: {}'),
+      ),
+    })
+    expect(problems.map((p) => p.code)).toEqual(['fingerprint_changed'])
+    expect(problems[0].subject).toBe('fixture.echo@2')
+  })
+
+  it('lets a snapshot no run reaches change without a new version', async () => {
+    const lockfile = lockfileCopy((text) => text.replace('  typescript@6.0.3: {}', '  typescript@6.0.4: {}'))
+    expect(await codes({ ...FIXTURE_CATALOGUE, lockfile })).toEqual([])
+  })
+
+  it('refuses, by name, a dependency of a reached package that the lockfile holds no snapshot for', async () => {
+    const lockfile = lockfileCopy((text) => text.replace('  estraverse@5.3.0: {}\n', ''))
+    const problems = await checkCatalogue({ ...FIXTURE_CATALOGUE, lockfile })
+    expect(problems.map((p) => p.code)).toEqual(['dependency_unresolved'])
+    expect(problems[0].message).toContain('estraverse@5.3.0')
   })
 
   it('lets an npm package no run reaches change without a new version', async () => {
