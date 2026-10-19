@@ -48,6 +48,14 @@ value, a refusal naming its cause. Each method has a ceiling
 - A candidate's measured identity is replaced by the next candidate's at the same
   generation (ops migration 20261019010000); a generation ops holds is never
   overwritten (`identity_changed`).
+- **Salesforce lease purposes** (`SF_LEASE_PURPOSES` in `run-vocabulary.ts`, and
+  the CHECKs on `sf_leases` and `sf_purpose_caps`): `step`, `lookup`, `verify`,
+  `connection_check` and `sf_limits`. Each but `step` needs a share of its own in
+  `sf_purpose_caps` that Dan approves. Reconnect has no purpose of its own:
+  clearReauth's call is a `verify`, because only verify takes the bootstrap slot
+  a new generation needs, so the `reconnect` purpose was retired as having no
+  caller (#2336, ops migration 20261019200000, which refuses to run while any row
+  holds it).
 
 ## The minters (`apps/worker/src/ops/connections/minters/`)
 

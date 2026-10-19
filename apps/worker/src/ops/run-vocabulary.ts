@@ -169,8 +169,14 @@ export type RefreshOutcome = (typeof REFRESH_OUTCOMES)[number]
 export const DELEGATION_CHECK_OUTCOMES = ['allowed', 'mailbox_not_allowed', 'drive_not_allowed'] as const
 export type DelegationCheckOutcome = (typeof DELEGATION_CHECK_OUTCOMES)[number]
 
-/** Why a Salesforce lease is taken. A step's share is its workflow's; every other purpose has a share of its own. */
-export const SF_LEASE_PURPOSES = ['step', 'lookup', 'verify', 'reconnect', 'connection_check', 'sf_limits'] as const
+/**
+ * Why a Salesforce lease is taken. A step's share is its workflow's; every
+ * other purpose has a share of its own. Reconnect takes none of its own: its
+ * call is a verify of the candidate (clearReauth), because only verify takes
+ * the bootstrap slot a new generation needs, so the reconnect purpose was
+ * retired as having no caller (#2336, ops migration 20261019200000).
+ */
+export const SF_LEASE_PURPOSES = ['step', 'lookup', 'verify', 'connection_check', 'sf_limits'] as const
 export type SfLeasePurpose = (typeof SF_LEASE_PURPOSES)[number]
 
 /** What acquire_sf_lease answers. Every refusal is named; none is read as no limit. */
