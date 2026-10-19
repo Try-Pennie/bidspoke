@@ -837,11 +837,16 @@ jobs:
       # Worker's OPS_CONNECTIONS binding names (#2335, PR 9 of phase 5). Cloudflare
       # deploys a binding to a missing entrypoint green and every call then throws
       # (spike #2330), and the repo cannot say what is live, so this reads the live
-      # script through the Cloudflare API. Pull requests only, and only those
-      # touching the binding, the ops Worker or the check itself (the script
-      # decides, from the files below; it measures whenever they could not be
-      # read), so the state of the ops Worker never holds up a money hotfix. A fork
-      # or Dependabot pull request has no token and is skipped with a notice;
+      # script through the Cloudflare API. Pull requests only, and only those that
+      # change the binding or the ops Worker (the script decides from each file's
+      # patch: wrangler.toml, which holds the money Worker's own config, counts
+      # only when its patch changes a line naming OPS_CONNECTIONS or
+      # bidspoke-worker-ops). When the files cannot be read it skips with a
+      # warning rather than measuring, so the state of the ops Worker or a
+      # Cloudflare failure never holds up a money hotfix (Hard Rule 1); Deploy's
+      # "OPS_CONNECTIONS answers through the binding" job still catches a missing
+      # entrypoint after deploy, and the money path never calls the binding. A
+      # fork or Dependabot pull request has no token and is skipped with a notice;
       # anywhere else a missing token fails.
       - name: Deployed ops Worker exports OpsConnections (live)
         if: ${{ !cancelled() && github.event_name == 'pull_request' }}
@@ -855,13 +860,13 @@ jobs:
             echo "::notice::No CLOUDFLARE_API_TOKEN on a fork or Dependabot PR, so the deployed ops Worker was not read."
             exit 0
           fi
-          if CHANGED_FILES=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[].filename'); then
-            CHANGED_FILES_READ=true
+          PR_FILES="${RUNNER_TEMP}/pr-files.jsonl"
+          if gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[] | {filename, patch} | @json' > "${PR_FILES}"; then
+            PR_FILES_READ=true
           else
-            CHANGED_FILES_READ=false
-            CHANGED_FILES=""
+            PR_FILES_READ=false
           fi
-          export CHANGED_FILES CHANGED_FILES_READ
+          export PR_FILES PR_FILES_READ
           node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON .github/scripts/ops-exports-entrypoint.mjs
 
       # EVERY SCANNER BELOW RUNS WITH ITS OWN EXIT CODE DISARMED, ON PURPOSE (#779).

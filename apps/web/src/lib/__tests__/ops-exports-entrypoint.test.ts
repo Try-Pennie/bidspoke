@@ -16,11 +16,13 @@
  * before that deploy, held no OpsConnections at all, which is the red case.
  */
 import { describe, expect, it } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
-import { WORKER_SRC } from './_scan-utils'
+import { REPO_ROOT } from './_scan-utils'
 import {
-  ENTRYPOINT, METHODS, bindingCheckNeeded, checkDeployedOps, entrypointVerdict, mainModuleOf,
+  bindingCheckDecision, checkDeployedOps, entrypointVerdict, mainModuleOf, readPrFiles,
 } from '../../../../../.github/scripts/ops-exports-entrypoint.mjs'
 
 const CLASS = `var OpsConnections = class extends WorkerEntrypoint2 {
@@ -77,25 +79,6 @@ const BEFORE_2456 = `${PRELUDE}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${E
 
 const multipart = (module: string, boundary = 'd28ee68c2356ba3b54c8674af8f8084af5ffdf75bf0f37cbd1d477c97e5d') =>
   `--${boundary}\r\nContent-Disposition: form-data; name="index.js"; filename="index.js"\r\nContent-Type: application/javascript+module\r\n\r\n${module}\r\n--${boundary}--\r\n`
-
-/**
- * OPS_CONNECTIONS_METHODS read from the contract's source, not imported: the
- * contract's type imports would pull worker modules into the web typecheck.
- */
-function contractMethods(): string[] {
-  const src = readFileSync(path.join(WORKER_SRC, 'lib/ops-connections-contract.ts'), 'utf8')
-  const list = /export const OPS_CONNECTIONS_METHODS = \[([^\]]*)\] as const/.exec(src)?.[1]
-  if (!list) throw new Error('ops-connections-contract.ts declares no OPS_CONNECTIONS_METHODS list')
-  return [...list.matchAll(/'([A-Za-z]+)'/g)].map((m) => m[1])
-}
-
-describe('the methods it requires are the contract\'s', () => {
-  it('names OpsConnections and exactly OPS_CONNECTIONS_METHODS', () => {
-    expect(ENTRYPOINT).toBe('OpsConnections')
-    expect(contractMethods()).toHaveLength(6)
-    expect([...METHODS].sort()).toEqual(contractMethods().sort())
-  })
-})
 
 describe('mainModuleOf', () => {
   it('reads the one module out of the multipart body the API answers', () => {
@@ -204,23 +187,97 @@ describe('checkDeployedOps', () => {
   })
 })
 
-describe('bindingCheckNeeded: which pull requests it measures', () => {
+/**
+ * Which pull requests it measures (#2335, the lessons review of #2460). Hard
+ * Rule 1: the state of the ops Worker, or a Cloudflare API failure, must never
+ * hold up a money hotfix. wrangler.toml carries the money Worker's vars and
+ * bindings, so it counts only when its patch changes a line naming the binding
+ * or the ops Worker; and a pull request whose files cannot be read is skipped
+ * with a warning, since a missing entrypoint is still caught after deploy by
+ * "OPS_CONNECTIONS answers through the binding" and never reaches the money path.
+ */
+describe('bindingCheckDecision: which pull requests it measures', () => {
+  const file = (filename: string, patch?: string) => (patch === undefined ? { filename } : { filename, patch })
+  const MONEY_VAR_PATCH = '@@ -140,7 +140,7 @@ [vars]\n PARTNER_PROBE_ALERTS = "on"\n-ENGINE_BID_TIMEOUT_MS = "9000"\n+ENGINE_BID_TIMEOUT_MS = "8000"\n # a comment that mentions OPS_CONNECTIONS in passing\n'
+  const ADD_BINDING_PATCH = '@@ -112,3 +112,8 @@ namespace = "bidspoke-code-nodes-compare"\n outbound = { service = "bidspoke-compare-outbound" }\n+\n+[[services]]\n+binding = "OPS_CONNECTIONS"\n+service = "bidspoke-worker-ops"\n+entrypoint = "OpsConnections"\n'
+  const RETARGET_PATCH = '@@ -120,3 +120,3 @@\n binding = "OPS_CONNECTIONS"\n-service = "bidspoke-worker-ops"\n+service = "bidspoke-worker-ops-next"\n'
+
   it.each([
-    ['apps/worker/wrangler.toml'],
     ['apps/worker/wrangler.ops.toml'],
     ['apps/worker/src/ops/index.ts'],
     ['apps/worker/src/lib/ops-connections-client.ts'],
     ['apps/worker/src/lib/ops-connections-contract.ts'],
     ['.github/scripts/ops-exports-entrypoint.mjs'],
-  ])('measures a pull request touching %s', (file) => {
-    expect(bindingCheckNeeded([file], true)).toBe(true)
+  ])('measures a pull request touching %s, whatever its patch', (name) => {
+    expect(bindingCheckDecision([file(name, '@@ -1 +1 @@\n-a\n+b\n')], true)).toEqual({ measure: true, reason: expect.stringContaining(name) })
   })
 
-  it('leaves one touching only the engine or the web app alone, so ops can never hold up a money hotfix', () => {
-    expect(bindingCheckNeeded(['apps/worker/src/engine/index.ts', 'apps/web/src/app/page.tsx'], true)).toBe(false)
+  it('does not measure a wrangler.toml patch that changes only a money var, even beside an unchanged line or comment naming the binding', () => {
+    expect(bindingCheckDecision([file('apps/worker/wrangler.toml', MONEY_VAR_PATCH)], true)).toMatchObject({ measure: false })
   })
 
-  it('measures when the file list could not be read, rather than skipping on nothing', () => {
-    expect(bindingCheckNeeded([], false)).toBe(true)
+  it('measures a wrangler.toml patch that adds the OPS_CONNECTIONS binding', () => {
+    expect(bindingCheckDecision([file('apps/worker/wrangler.toml', ADD_BINDING_PATCH)], true)).toMatchObject({ measure: true })
+  })
+
+  it('measures a wrangler.toml patch that removes or retargets a line naming bidspoke-worker-ops', () => {
+    expect(bindingCheckDecision([file('apps/worker/wrangler.toml', RETARGET_PATCH)], true)).toMatchObject({ measure: true })
+  })
+
+  it('counts a wrangler.toml whose patch GitHub omitted (too large) as touching the binding', () => {
+    expect(bindingCheckDecision([file('apps/worker/wrangler.toml')], true)).toMatchObject({ measure: true })
+  })
+
+  it('leaves one touching only the engine or the web app alone', () => {
+    expect(bindingCheckDecision([file('apps/worker/src/engine/index.ts', '+x'), file('apps/web/src/app/page.tsx', '+y')], true)).toMatchObject({ measure: false })
+  })
+
+  it('skips, unmeasured, when the file list could not be read: bidding wins', () => {
+    expect(bindingCheckDecision([], false)).toEqual({ measure: false, unread: true, reason: expect.stringMatching(/could not be read/) })
+  })
+})
+
+describe('readPrFiles: the per file patches the CI step saves', () => {
+  it('reads one JSON object per line, keeping each file name and its patch, and an omitted patch as absent', () => {
+    const jsonl = `${JSON.stringify({ filename: 'apps/worker/wrangler.toml', patch: '@@ -1 +1 @@\n-a\n+b' })}\n${JSON.stringify({ filename: 'big.json', patch: null })}\n`
+    expect(readPrFiles(jsonl)).toEqual([{ filename: 'apps/worker/wrangler.toml', patch: '@@ -1 +1 @@\n-a\n+b' }, { filename: 'big.json' }])
+  })
+
+  it('refuses a line that is not a file entry, rather than reading part of the list as all of it', () => {
+    expect(() => readPrFiles('{"filename":"a"}\nnot json\n')).toThrow(/line 2/)
+    expect(() => readPrFiles('{"nope":1}\n')).toThrow(/line 1/)
+  })
+})
+
+/**
+ * The script as CI runs it, on the two pull requests that must never be held:
+ * it exits 0 before any Cloudflare call (the token here is a plain word that
+ * would fail any real call, so a measurement would exit 1).
+ */
+describe('run as the CI step runs it', () => {
+  const run = (env: Record<string, string>) => spawnSync(process.execPath, ['--disable-warning=MODULE_TYPELESS_PACKAGE_JSON', '.github/scripts/ops-exports-entrypoint.mjs'], {
+    cwd: REPO_ROOT, encoding: 'utf8', env: { ...process.env, CLOUDFLARE_API_TOKEN: 'not-a-real-token', PR_FILES: '', ...env },
+  })
+
+  it('skips with a warning, exiting 0, when the pull request\'s files could not be read', () => {
+    const r = run({ PR_FILES_READ: 'false' })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toMatch(/^::warning::The deployed ops Worker was not read: the pull request's files could not be read/m)
+  })
+
+  it('skips with a warning when the saved list is unreadable', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'pr-files-'))
+    writeFileSync(path.join(dir, 'files.jsonl'), 'not json\n')
+    const r = run({ PR_FILES_READ: 'true', PR_FILES: path.join(dir, 'files.jsonl') })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('::warning::The deployed ops Worker was not read')
+  })
+
+  it('does not measure, exiting 0, a pull request whose wrangler.toml patch changes only a money var', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'pr-files-'))
+    writeFileSync(path.join(dir, 'files.jsonl'), `${JSON.stringify({ filename: 'apps/worker/wrangler.toml', patch: '@@ -1 +1 @@\n-ENGINE_BID_TIMEOUT_MS = "9000"\n+ENGINE_BID_TIMEOUT_MS = "8000"' })}\n`)
+    const r = run({ PR_FILES_READ: 'true', PR_FILES: path.join(dir, 'files.jsonl') })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('not measured, because it changes neither the OPS_CONNECTIONS binding nor the ops Worker')
   })
 })

@@ -14,11 +14,17 @@
 // script content, and passes only when its main module exports OpsConnections
 // as a class extending WorkerEntrypoint with every method bidding calls.
 //
-// CI runs it on a pull request touching the binding, the ops Worker or this
-// script (bindingCheckNeeded), so a change that would bind a missing entrypoint
-// cannot merge on a green check, while a money hotfix is never held up by the
-// state of the ops Worker (Hard Rule 1). After deploy, Deploy calls through the
-// binding itself (ops-connections-probe.mjs). Any API failure fails (L98).
+// CI runs it only on a pull request that changes the binding, the ops Worker or
+// this script (bindingCheckDecision), so a change that would bind a missing
+// entrypoint cannot merge on a green check. A money hotfix is never held up by
+// the state of the ops Worker or a Cloudflare API failure (Hard Rule 1):
+// wrangler.toml, which carries the money Worker's own vars and bindings, counts
+// only when its patch changes a line naming OPS_CONNECTIONS or the ops Worker,
+// and a pull request whose files cannot be read is skipped with a warning.
+// Bidding wins those cases because nothing is lost: after deploy, Deploy calls
+// through the binding itself (ops-connections-probe.mjs), and a missing
+// entrypoint can never reach the money path. Once measured, any API failure
+// fails (L98).
 
 import { readFileSync, realpathSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
@@ -32,18 +38,55 @@ export const METHODS = ['verify', 'clearReauth', 'revoke', 'health', 'lookup', '
 
 const API = 'https://api.cloudflare.com/client/v4'
 
-/** The pull request files that can change whether the binding resolves. */
+/** The pull request files that can change whether the binding resolves, whatever their patch. */
 const BINDING_SURFACE = [
-  /^apps\/worker\/wrangler(\.ops)?\.toml$/,
+  /^apps\/worker\/wrangler\.ops\.toml$/,
   /^apps\/worker\/src\/ops\//,
   /^apps\/worker\/src\/lib\/ops-connections-/,
   /^\.github\/scripts\/ops-exports-entrypoint\.mjs$/,
 ]
 
-/** Whether a pull request is measured: one touching the binding's surface, or one whose files could not be read. */
-export function bindingCheckNeeded(files, filesRead) {
-  if (!filesRead) return true
-  return files.some((f) => BINDING_SURFACE.some((re) => re.test(f)))
+/** The money Worker's config: it counts only when its patch changes a line naming the binding or the ops Worker. */
+const MONEY_CONFIG = 'apps/worker/wrangler.toml'
+const BINDING_LINE = /\bOPS_CONNECTIONS\b|\bbidspoke-worker-ops\b/
+
+/** Whether a unified diff patch adds or removes a line naming the binding or the ops Worker (headers and context lines aside). */
+function patchNamesBinding(patch) {
+  return patch.split('\n').some((line) => /^[+-]/.test(line) && !/^(\+\+\+|---)( |$)/.test(line) && BINDING_LINE.test(line.slice(1)))
+}
+
+/**
+ * Whether a pull request is measured, and why. `files` are the pull request's
+ * files as GitHub lists them ({ filename, patch }), where an omitted patch (too
+ * large to show) counts as touching the binding. When the list could not be
+ * read the answer is to skip, unread: never to hold a money pull request on it.
+ */
+export function bindingCheckDecision(files, filesRead) {
+  if (!filesRead) {
+    return { measure: false, unread: true, reason: "the pull request's files could not be read, so whether it changes the OPS_CONNECTIONS binding or the ops Worker is unknown" }
+  }
+  for (const { filename, patch } of files) {
+    if (BINDING_SURFACE.some((re) => re.test(filename))) return { measure: true, reason: `it changes ${filename}` }
+    if (filename === MONEY_CONFIG) {
+      if (typeof patch !== 'string') return { measure: true, reason: `it changes ${filename}, whose patch GitHub did not show` }
+      if (patchNamesBinding(patch)) return { measure: true, reason: `its ${filename} patch changes a line naming OPS_CONNECTIONS or ${OPS}` }
+    }
+  }
+  return { measure: false, reason: 'it changes neither the OPS_CONNECTIONS binding nor the ops Worker' }
+}
+
+/** The pull request files the CI step saved, one JSON object per line ({ filename, patch }), refused by line when malformed. */
+export function readPrFiles(jsonl) {
+  return jsonl.split('\n').map((line, i) => [line.trim(), i + 1]).filter(([line]) => line !== '').map(([line, n]) => {
+    let entry
+    try {
+      entry = JSON.parse(line)
+    } catch {
+      throw new Error(`the pull request file list is not JSON at line ${n}`)
+    }
+    if (entry === null || typeof entry !== 'object' || typeof entry.filename !== 'string') throw new Error(`the pull request file list has no file name at line ${n}`)
+    return typeof entry.patch === 'string' ? { filename: entry.filename, patch: entry.patch } : { filename: entry.filename }
+  })
 }
 
 /** The main module's source out of the multipart body content/v2 answers: index.js, or the one JavaScript module. */
@@ -144,10 +187,28 @@ async function main() {
     console.error('::error::CLOUDFLARE_API_TOKEN is not set, so whether the deployed ops Worker exports OpsConnections was not measured.')
     process.exit(1)
   }
-  const files = (process.env.CHANGED_FILES ?? '').split('\n').map((f) => f.trim()).filter(Boolean)
-  if (process.env.CHANGED_FILES_READ !== undefined && !bindingCheckNeeded(files, process.env.CHANGED_FILES_READ === 'true')) {
-    console.log('ops-exports-entrypoint: this pull request touches neither the OPS_CONNECTIONS binding nor the ops Worker, so the deployed ops Worker is not read.')
-    return
+  // On a pull request the CI step names the saved file list (PR_FILES) and whether it was read (PR_FILES_READ).
+  if (process.env.PR_FILES_READ !== undefined) {
+    let files = []
+    let filesRead = process.env.PR_FILES_READ === 'true'
+    if (filesRead) {
+      try {
+        files = readPrFiles(readFileSync(process.env.PR_FILES ?? '', 'utf8'))
+      } catch (err) {
+        console.error(`ops-exports-entrypoint: ${err instanceof Error ? err.message : 'the file list could not be read'}`)
+        filesRead = false
+      }
+    }
+    const decision = bindingCheckDecision(files, filesRead)
+    if (!decision.measure) {
+      if (decision.unread) {
+        console.log(`::warning::The deployed ops Worker was not read: ${decision.reason}. Not measured rather than holding a pull request that may be a money hotfix; Deploy's "OPS_CONNECTIONS answers through the binding" job still calls through the binding after deploy.`)
+      } else {
+        console.log(`ops-exports-entrypoint: not measured, because ${decision.reason}.`)
+      }
+      return
+    }
+    console.log(`ops-exports-entrypoint: measured, because ${decision.reason}.`)
   }
   const here = dirname(realpathSync(fileURLToPath(import.meta.url)))
   const account = accountIdFrom(readFileSync(resolve(here, '../../apps/worker/wrangler.toml'), 'utf8'))

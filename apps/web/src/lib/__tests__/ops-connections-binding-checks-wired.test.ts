@@ -5,8 +5,9 @@
  * then throws (spike #2330), so:
  *
  *  - before merge, CI's Security scans job reads the DEPLOYED ops script
- *    (ops-exports-entrypoint.mjs) on a pull request touching the binding or the
- *    ops Worker, and skips only where no token can exist (a fork or Dependabot);
+ *    (ops-exports-entrypoint.mjs) on a pull request changing the binding or the
+ *    ops Worker, skipping a fork or Dependabot (no token) and, with a warning,
+ *    a pull request whose files could not be read;
  *  - after deploy, Deploy makes a real call through the binding
  *    (ops-connections-probe.mjs) once either Worker deployed, and fails the run
  *    unless it is answered.
@@ -24,10 +25,10 @@ describe('before merge: the deployed ops Worker is read', () => {
     expect(step).toContain('node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON .github/scripts/ops-exports-entrypoint.mjs')
   })
 
-  it('hands the script the pull request\'s files and whether they could be read, so it measures when unsure', () => {
-    expect(step).toContain('gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate')
-    expect(step).toContain('CHANGED_FILES_READ=false')
-    expect(step).toContain('export CHANGED_FILES CHANGED_FILES_READ')
+  it('hands the script each file\'s patch and whether the list could be read, so it can skip a money only change and an unreadable list', () => {
+    expect(step).toContain(`gh api "repos/\${GITHUB_REPOSITORY}/pulls/\${PR}/files" --paginate --jq '.[] | {filename, patch} | @json' > "\${PR_FILES}"`)
+    expect(step).toContain('PR_FILES_READ=false')
+    expect(step).toContain('export PR_FILES PR_FILES_READ')
   })
 
   it('skips only a fork or a Dependabot pull request with no token, and says so', () => {
