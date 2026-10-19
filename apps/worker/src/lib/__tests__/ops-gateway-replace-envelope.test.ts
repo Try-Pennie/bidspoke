@@ -20,7 +20,10 @@ import readOnlyRpcs from '../read-only-rpcs.json'
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
 const CONN = '00000000-0000-4000-8000-000000002333'
 const OLD_KID = 'ops-2025-01'
-const ENVELOPE = { v: 1, kid: 'ops-2026-10', wrapped_key: 'd3JhcHBlZA==', iv: 'aXYtNDI=', ct: 'Y3QtNDI=' }
+// The envelope names whatever kid is committed as current, never a copy of it,
+// so moving CURRENT_OPS_KID in a rotation leaves these tests asking the same thing.
+if (typeof CURRENT_OPS_KID !== 'string') throw new Error('these tests need a committed current kid')
+const ENVELOPE = { v: 1, kid: CURRENT_OPS_KID, wrapped_key: 'd3JhcHBlZA==', iv: 'aXYtNDI=', ct: 'Y3QtNDI=' }
 
 const request = (over: Record<string, unknown> = {}) => ({
   organization_id: ORG,
@@ -47,7 +50,6 @@ function rpcDb(body: unknown, status = 200) {
 
 describe('parseReplaceConnectionEnvelopeRequest', () => {
   it('reads a well formed request whose envelope names the committed current kid', () => {
-    expect(CURRENT_OPS_KID).toBe(ENVELOPE.kid)
     expect(parseReplaceConnectionEnvelopeRequest(request())).toEqual(request())
   })
 
@@ -95,8 +97,8 @@ describe('parseReplaceConnectionEnvelopeAnswer (the ops side reads it)', () => {
 
 describe('replaceConnectionEnvelope on the bidding Worker', () => {
   it('calls replace_connection_envelope with the request and answers its one row', async () => {
-    const db = rpcDb([{ outcome: 'replaced', current_generation: 3, current_kid: 'ops-2026-10' }])
-    await expect(replaceConnectionEnvelope(db.client, request())).resolves.toEqual({ outcome: 'replaced', current_generation: 3, current_kid: 'ops-2026-10' })
+    const db = rpcDb([{ outcome: 'replaced', current_generation: 3, current_kid: ENVELOPE.kid }])
+    await expect(replaceConnectionEnvelope(db.client, request())).resolves.toEqual({ outcome: 'replaced', current_generation: 3, current_kid: ENVELOPE.kid })
     expect(db.calls).toHaveLength(1)
     expect(db.calls[0].url.pathname).toBe('/rest/v1/rpc/replace_connection_envelope')
     expect(db.calls[0].body).toEqual({
@@ -125,9 +127,13 @@ describe('replaceConnectionEnvelope on the bidding Worker', () => {
   })
 
   it('throws on an answer of no row or of more than one', async () => {
-    await expect(replaceConnectionEnvelope(rpcDb([]).client, request())).rejects.toThrow(OpsGatewayContractError)
-    const two = [{ outcome: 'replaced', current_generation: 3, current_kid: 'ops-2026-10' }, { outcome: 'replaced', current_generation: 3, current_kid: 'ops-2026-10' }]
-    await expect(replaceConnectionEnvelope(rpcDb(two).client, request())).rejects.toThrow(OpsGatewayContractError)
+    const none = rpcDb([])
+    await expect(replaceConnectionEnvelope(none.client, request())).rejects.toThrow(OpsGatewayContractError)
+    const two = [{ outcome: 'replaced', current_generation: 3, current_kid: ENVELOPE.kid }, { outcome: 'replaced', current_generation: 3, current_kid: ENVELOPE.kid }]
+    const many = rpcDb(two)
+    await expect(replaceConnectionEnvelope(many.client, request())).rejects.toThrow(OpsGatewayContractError)
+    // Both reached the database, so the refusal is the answer's, not the request's.
+    expect([none.calls.length, many.calls.length]).toEqual([1, 1])
   })
 
   it('is classified as a write, so a local dev run against production refuses it', () => {

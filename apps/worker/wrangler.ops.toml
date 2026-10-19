@@ -49,6 +49,9 @@ LANE = "ops"
 # docs/disaster-recovery.md, rotating the ops private key, step 3): "preview",
 # then "apply", makes the minute cron reseal every ops connection login still
 # under an old kid (src/ops/reseal-live.ts). Unset, nothing is resealed.
+# Set 2026-10-19 for the practice rotation (#2333): kid ops-2026-10 to
+# ops-2026-10-19, preview first.
+OPS_RESEAL = "preview"
 
 # The ops code namespace (#1709, plan 0.E): where ops workflows' code nodes will
 # run, apart from the bidding namespace (bidspoke-code-nodes) and the compare

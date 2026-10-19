@@ -4,6 +4,7 @@
  * and the scheduled handler, plus the refusals: an unset ops database secret
  * reported by name, a missing binding, and a gateway that never answers.
  */
+import { CURRENT_OPS_KID } from '@bidspoke/connection-seal'
 import { beforeAll, describe, expect, it } from 'vitest'
 import type { OpsGatewayBinding, OpsTickReport } from '../../lib/ops-gateway-contract'
 import { dispatchKey, verifyDispatch } from '../dispatch-auth'
@@ -187,7 +188,7 @@ describe('not configured, said by name', () => {
     const report = await runOpsTick(liveTickPorts(env, null, { now: () => NOW, fetch: db.fetch }))
     expect(report.outcome).toBe('not_configured')
     expect(report.not_configured_secrets).toEqual(['OPS_CONNECTIONS_PRIVATE_KEY'])
-    expect(report.problems[0]).toMatch(/not the private half of the public key committed as kid ops-2026-10/)
+    expect(report.problems[0]).toContain(`not the private half of the public key committed as kid ${CURRENT_OPS_KID} (`)
   })
 
   it('refuses a URL naming the bidding database, never connecting to it', () => {
