@@ -8,6 +8,11 @@ import { RUNTIME_ACTIONS } from './registry'
 import type { RuntimeAction } from './types'
 
 export * from './types'
+export * from './failure'
+export {
+  SNOWFLAKE_MAX_RESULT_ROWS, rowObjects, runSnowflakeStatement, snowflakeHost, snowflakeTargetOf,
+  type SnowflakeResult, type SnowflakeStatementContext, type SnowflakeTarget,
+} from './snowflake/statement'
 export { RUNTIME_ACTIONS, SERVICE_RUNTIMES } from './registry'
 
 /** The run a step pinned to (key, version) executes, or a named refusal (D1). */
