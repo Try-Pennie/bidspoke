@@ -14,9 +14,11 @@
  *
  * THE METHODS.
  *  verify       measures what the credential authenticates as through
- *               connectionFetch (never only the declaration), refuses money's
- *               Salesforce run as user, and records the measurement under the
- *               generation the request carried (record_measured_identity). With a
+ *               connectionFetch (never only the declaration). For Salesforce it
+ *               refuses money's run as user and records the measurement under the
+ *               generation the request carried (record_measured_identity); for
+ *               Snowflake it refuses a measured user or account other than the
+ *               declared target and records nothing (snowflake-service.ts). With a
  *               candidate (a credential bidding has not committed) it uses that
  *               envelope for this one call and WRITES NO COPY (F116, F126): the
  *               committed copy arrives only by a serve of the committed row.
