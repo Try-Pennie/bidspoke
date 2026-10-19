@@ -4,6 +4,7 @@ import {
   CONNECTION_FETCH_DEADLINE_MS, RATE_LIMIT_DEFAULT_MS, RETRY_AFTER_MAX_MS, SF_INTERACTIVE_WAIT_MS, SF_LEASE_TTL_SECONDS, STEP_LEASE_REQUEUE_MS,
   connectionFetch, type ConnectionCall,
 } from '../connection-fetch'
+import { SF_BUDGET_READING_DEADLINE_MS } from '../sf-budget-reading'
 import { ConnectionRefusal, LoginMintError, RequeueAt } from '../refusals'
 import type { RecordedRequest } from '../sanitise'
 import type { SfLeasePurpose } from '../../run-vocabulary'
@@ -664,6 +665,128 @@ describe('the Salesforce lease lives inside connectionFetch (L621)', () => {
     const d = makeDoubles(keys, sfCopy(), (rec) => [salesforceRules(rec)])
     await refusal(connectionFetch(d.deps, call(d.rec), 'https://evil.example.test/x'))
     expect(d.rec.leases).toEqual([])
+  })
+})
+
+describe('the budget reading: a Salesforce response\'s Sforce-Limit-Info keeps the pool measured (#2336)', () => {
+  const sfCopy = () => usableCopy(sfEnvelope, { service: 'salesforce', target: SF_TARGET })
+  const SF_URL = 'https://trypennie.my.salesforce.com/services/data/v61.0/query?q=select'
+  const withLimit = (status: number, value = 'api-usage=10018/100000; api-bursts=1/750', body = '{}') =>
+    new Response(status === 204 ? null : body, { status, headers: { 'sforce-limit-info': value } })
+
+  it('hands the recorder used and max, the connection generation and the clock, alongside the lease release', async () => {
+    const d = makeDoubles(keys, sfCopy(), (rec) => [salesforceRules(rec)])
+    d.respond(withLimit(200))
+    d.now.value = T0 + 5_000
+    const res = await connectionFetch(d.deps, call(d.rec), SF_URL)
+    expect((res as Response).status).toBe(200)
+    expect(d.rec.budget).toEqual([{ organizationId: ORG, connectionId: CONN, generation: 1, reading: { used: 10018, max: 100000 }, now: T0 + 5_000 }])
+    expect(d.rec.events).toEqual(['acquire', 'record', 'authorize', 'send', 'release', 'budget'])
+    expect(d.rec.reports).toEqual([])
+  })
+
+  it.each([201, 204, 400, 404, 500])('records the header a %i response carries, since every REST answer counts against the org', async (status) => {
+    const d = makeDoubles(keys, sfCopy(), (rec) => [salesforceRules(rec)])
+    d.respond(withLimit(status))
+    await connectionFetch(d.deps, call(d.rec), SF_URL)
+    expect(d.rec.budget.map((b) => b.reading)).toEqual([{ used: 10018, max: 100000 }])
+  })
+
+  it('records the header of a 429 it answers as a RequeueAt', async () => {
+    const d = makeDoubles(keys, sfCopy(), (rec) => [salesforceRules(rec)])
+    d.respond(withLimit(429, 'api-usage=15003/15000'))
+    expect(await connectionFetch(d.deps, call(d.rec, { purpose: 'step', workflowId: 'wf-1' }), SF_URL)).toBeInstanceOf(RequeueAt)
+    expect(d.rec.budget.map((b) => b.reading)).toEqual([{ used: 15003, max: 15000 }])
+  })
+
+  it('a renewal sends twice and records once, the later reading', async () => {
+    const d = makeDoubles(keys, sfCopy(), (rec) => [salesforceRules(rec)])
+    d.respond(withLimit(401, 'api-usage=7/100', '[{"errorCode":"INVALID_SESSION_ID"}]'), withLimit(200, 'api-usage=8/100'))
+    await connectionFetch(d.deps, call(d.rec), SF_URL)
+    expect(d.rec.sent).toHaveLength(2)
+    expect(d.rec.budget.map((b) => b.reading)).toEqual([{ used: 8, max: 100 }])
+  })
+
+  it('records the reading of a call that ends refused, since Salesforce answered it', async () => {
+    const d = makeDoubles(keys, sfCopy(), (rec) => [salesforceRules(rec)])
+    d.respond(withLimit(401, 'api-usage=9/100', '[{"errorCode":"INVALID_SESSION_ID"}]'))
+    expect((await refusal(connectionFetch(d.deps, call(d.rec), SF_URL))).code).toBe('connection_needs_reauth')
+    expect(d.rec.budget.map((b) => b.reading)).toEqual([{ used: 9, max: 100 }])
+  })
+
+  it('a response with no header records nothing and reports nothing', async () => {
+    const d = makeDoubles(keys, sfCopy(), (rec) => [salesforceRules(rec)])
+    await connectionFetch(d.deps, call(d.rec), SF_URL)
+    expect(d.rec.budget).toEqual([])
+    expect(d.rec.reports).toEqual([])
+  })
+
+  it('a header it cannot read records nothing and is reported by the parser\'s name for why, never its value', async () => {
+    const d = makeDoubles(keys, sfCopy(), (rec) => [salesforceRules(rec)])
+    d.respond(withLimit(200, 'api-usage=lots/100000'))
+    expect(((await connectionFetch(d.deps, call(d.rec), SF_URL)) as Response).status).toBe(200)
+    expect(d.rec.budget).toEqual([])
+    expect(d.rec.reports).toEqual([{ event: 'sf_limit_info_unreadable', connection_id: CONN, purpose: 'lookup', cause: 'malformed' }])
+  })
+
+  it('records nothing for a lease from the bootstrap slot: the connection has no measured org yet', async () => {
+    const d = makeDoubles(keys, sfCopy(), (rec) => [salesforceRules(rec)])
+    d.leaseAnswers({ outcome: 'granted', leaseId: 'lease-b', expiresAt: new Date(T0 + 90_000).toISOString(), pool: 'bootstrap' })
+    d.respond(withLimit(200))
+    await connectionFetch(d.deps, call(d.rec, { purpose: 'verify' }), SF_URL)
+    expect(d.rec.budget).toEqual([])
+  })
+
+  it('records nothing for a candidate, whose generation is not the committed one', async () => {
+    const d = makeDoubles(keys, sfCopy(), (rec) => [salesforceRules(rec)])
+    d.respond(withLimit(200))
+    const candidate = { service: 'salesforce', generation: 2, envelope: await sealLogin(keys, { service: 'salesforce', generation: 2 }), target: SF_TARGET, publicConfig: {} }
+    await connectionFetch(d.deps, call(d.rec, { purpose: 'verify', source: { kind: 'candidate', candidate } }), SF_URL)
+    expect(d.rec.sent).toHaveLength(1)
+    expect(d.rec.budget).toEqual([])
+  })
+
+  it('records nothing for a service that is not Salesforce, whatever its headers say', async () => {
+    const d = makeDoubles(keys, usableCopy(envelope), (rec) => [exampleRules(rec)])
+    d.respond(withLimit(200))
+    await connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x')
+    expect(d.rec.budget).toEqual([])
+  })
+
+  it('a write that fails is reported by name, without its detail, and the call still answers', async () => {
+    const d = makeDoubles(keys, sfCopy(), (rec) => [salesforceRules(rec)])
+    d.respond(withLimit(200, 'api-usage=1/100', 'the body'))
+    d.budgetAnswer(async () => { throw new Error(`record_sf_budget_reading failed near ${ACCESS_TOKEN}`) })
+    const res = (await connectionFetch(d.deps, call(d.rec), SF_URL)) as Response
+    expect(res.status).toBe(200)
+    expect(await res.text()).toBe('the body')
+    expect(d.rec.reports).toEqual([{ event: 'sf_budget_reading_unrecorded', connection_id: CONN, purpose: 'lookup', cause: 'write_failed' }])
+    expect(JSON.stringify(d.rec.reports)).not.toContain(ACCESS_TOKEN)
+    expect(d.rec.events).toContain('release')
+  })
+
+  it('a recorder that throws before it returns a promise is caught the same way', async () => {
+    const d = makeDoubles(keys, sfCopy(), (rec) => [salesforceRules(rec)])
+    d.respond(withLimit(200, 'api-usage=1/100'))
+    d.deps.recordSfBudget = () => { throw new Error('no client') }
+    expect(((await connectionFetch(d.deps, call(d.rec), SF_URL)) as Response).status).toBe(200)
+    expect(d.rec.reports).toEqual([{ event: 'sf_budget_reading_unrecorded', connection_id: CONN, purpose: 'lookup', cause: 'write_failed' }])
+  })
+
+  it('a write that never answers is given up at its stated bound, and the call answers then, with its lease released', async () => {
+    const d = makeDoubles(keys, sfCopy(), (rec) => [salesforceRules(rec)])
+    d.respond(withLimit(200, 'api-usage=1/100'))
+    d.budgetAnswer(() => new Promise(() => undefined))
+    const res = (await connectionFetch(d.deps, call(d.rec), SF_URL)) as Response
+    expect(res.status).toBe(200)
+    expect(d.rec.slept).toEqual([SF_BUDGET_READING_DEADLINE_MS])
+    expect(d.rec.reports).toEqual([{ event: 'sf_budget_reading_unrecorded', connection_id: CONN, purpose: 'lookup', cause: 'deadline' }])
+    expect(d.rec.leases.filter((l) => l.op === 'release')).toHaveLength(1)
+  })
+
+  it('states a bound well inside the call\'s own deadline', () => {
+    expect(SF_BUDGET_READING_DEADLINE_MS).toBeLessThanOrEqual(1_000)
+    expect(SF_BUDGET_READING_DEADLINE_MS).toBeLessThan(CONNECTION_FETCH_DEADLINE_MS)
   })
 })
 
