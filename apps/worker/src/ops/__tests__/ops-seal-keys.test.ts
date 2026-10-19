@@ -62,9 +62,20 @@ describe('opsSealKeys through a rotation', () => {
     expect(keys.privateKeys).toEqual({ 'ops-b': b.privatePem })
   })
 
-  it('step 4, done: the new key alone, under the new kid alone', () => {
-    const keys = opsSealKeys(env(b.privatePem), { currentKid: 'ops-b', publicKeys: { 'ops-b': b.publicPem } })
+  it('step 4, secrets changed before the old kid is removed (the new key in PRIMARY, NEXT deleted, both kids committed): the new kid opens from PRIMARY', async () => {
+    const publicKeys = { 'ops-a': a.publicPem, 'ops-b': b.publicPem }
+    const keys = opsSealKeys(env(b.privatePem), { currentKid: 'ops-b', publicKeys })
     expect(keys.privateKeys).toEqual({ 'ops-b': b.privatePem })
+    expect(keys.kid).toBe('ops-b')
+    await expect(open(keys.privateKeys, await seal(publicKeys, 'login ops-b', aad('ops-b')), aad('ops-b'))).resolves.toBe('login ops-b')
+  })
+
+  it('step 4, done: the new key alone, under the new kid alone, opened from PRIMARY', async () => {
+    const publicKeys = { 'ops-b': b.publicPem }
+    const keys = opsSealKeys(env(b.privatePem), { currentKid: 'ops-b', publicKeys })
+    expect(keys.privateKeys).toEqual({ 'ops-b': b.privatePem })
+    expect(keys.kid).toBe('ops-b')
+    await expect(open(keys.privateKeys, await seal(publicKeys, 'login ops-b', aad('ops-b')), aad('ops-b'))).resolves.toBe('login ops-b')
   })
 
   it('a key that is not the committed public key\'s other half opens nothing, rather than being tried under the current kid', () => {
