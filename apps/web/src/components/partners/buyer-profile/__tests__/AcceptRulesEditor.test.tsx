@@ -57,7 +57,7 @@ describe('AcceptRulesEditor', () => {
   it('adds and removes rules', () => {
     const onChange = vi.fn()
     render(<AcceptRulesEditor value={rules} onChange={onChange} />)
-    fireEvent.click(screen.getByRole('button', { name: /add accept rule/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add rule, accept' }))
     expect(onChange).toHaveBeenLastCalledWith([...rules, { field: '', equals: '' }])
     fireEvent.click(within(screen.getAllByRole('group', { name: /accept rule/i })[0]).getByRole('button', { name: /remove/i }))
     expect(onChange).toHaveBeenLastCalledWith([rules[1]])
@@ -88,7 +88,7 @@ describe('AcceptRulesEditor', () => {
     expect(screen.queryByRole('group', { name: /accept rule/i })).toBeNull()
     expect(screen.getByText(/every decline is recorded as Fail/i)).toBeInTheDocument()
     expect(screen.queryByText(/no answer counts as a sale/i)).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: /add duplicate rule/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add rule, duplicate' }))
     expect(onChange).toHaveBeenLastCalledWith([{ field: '', equals: '' }])
     render(<AcceptRulesEditor kind="duplicate" value={rules} onChange={onChange} />)
     expect(screen.getAllByRole('group', { name: /duplicate rule/i })).toHaveLength(2)
