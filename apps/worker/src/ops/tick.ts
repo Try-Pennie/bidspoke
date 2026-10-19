@@ -315,7 +315,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
         return r.more
       })
     } catch (err) {
-      problems.push(`The ${sf.sweep} sweep failed: ${formatErr(err)}.`)
+      problem('sweep_failed', `The ${sf.sweep} sweep failed: ${formatErr(err)}.`, sf.sweep)
     }
   }
 

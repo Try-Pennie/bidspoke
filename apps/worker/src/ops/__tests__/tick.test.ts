@@ -348,6 +348,7 @@ describe('failure boundaries', () => {
     const f = fake({ failing: { purgeTombstones: new Error('lock timeout') } })
     const report = await runOpsTick(f.ports)
     expect(report.problems).toEqual(['The tombstone_expiry sweep failed: lock timeout.'])
+    expect(report.problem_keys).toEqual(['sweep_failed:tombstone_expiry'])
     expect(f.db.calls).toEqual(expect.arrayContaining(['sweepLeases', 'expireRuns', 'queueDisagreements', 'sweepSfLeases', 'saveConnectionCopies']))
     expect(f.db.observations).toHaveLength(1)
     expect(f.dispatched).toHaveLength(1)
@@ -357,6 +358,7 @@ describe('failure boundaries', () => {
     const f = fake({ failing: { sweepSfLeases: new Error('statement timeout') } })
     const report = await runOpsTick(f.ports)
     expect(report.problems).toEqual(['The sf_lease_expiry sweep failed: statement timeout.'])
+    expect(report.problem_keys).toEqual(['sweep_failed:sf_lease_expiry'])
     expect(f.db.calls).toEqual(expect.arrayContaining(['sweepLeases', 'expireRuns', 'queueDisagreements', 'purgeTombstones', 'saveConnectionCopies']))
     expect(f.db.observations).toHaveLength(1)
     expect(f.dispatched).toHaveLength(1)
@@ -561,7 +563,7 @@ describe('problem keys (#2506)', () => {
     ['a secret found unusable', { secrets: [{ secret: 'OPS_CONNECTIONS_PRIVATE_KEY', problem: 'the key is not set' }] }, ['not_configured:OPS_CONNECTIONS_PRIVATE_KEY']],
     ['a secrets check that throws', { secrets: new Error('the key import crashed') }, ['secrets_unchecked']],
     ['an unreadable database clock', failsOn('now'), ['db_clock']],
-    ['a sweep claim that fails', failsOn('claimSweep'), ['sweep_claim_failed:lease_expiry', 'sweep_claim_failed:run_expiry', 'sweep_claim_failed:queue_agreement']],
+    ['a sweep claim that fails', failsOn('claimSweep'), ['sweep_claim_failed:lease_expiry', 'sweep_claim_failed:run_expiry', 'sweep_claim_failed:queue_agreement', 'sweep_claim_failed:tombstone_expiry']],
     ['a lease sweep that fails after its claim', failsOn('sweepLeases'), ['sweep_failed:lease_expiry']],
     ['a run expiry sweep that fails after its claim', failsOn('expireRuns'), ['sweep_failed:run_expiry']],
     ['an agreement check that fails after its claim', failsOn('queueDisagreements'), ['agreement_check_failed']],

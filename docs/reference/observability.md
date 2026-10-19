@@ -156,7 +156,7 @@ The ops Worker (`bidspoke-worker-ops`) runs one tick a minute and sends its repo
 
 | Rule | Kinds |
 |---|---|
-| Three ticks in a row | `start_stamp`, `db_clock`, `sweep_claim_failed` (any sweep), `sweep_failed` (lease_expiry, run_expiry), `workflows_fetch_failed`, `workflows_save_failed`, `copies_read_failed`, `schedule_plan_failed`, `claim_depth_failed`, `probe_failed`, `connections_fetch_failed`, `connections_save_failed`, `tombstone_record_failed`, `problems_left_out` |
+| Three ticks in a row | `start_stamp`, `db_clock`, `sweep_claim_failed` (any sweep), `sweep_failed` (lease_expiry, run_expiry, tombstone_expiry, sf_lease_expiry), `workflows_fetch_failed`, `workflows_save_failed`, `copies_read_failed`, `schedule_plan_failed`, `claim_depth_failed`, `probe_failed`, `connections_fetch_failed`, `connections_save_failed`, `tombstone_record_failed`, `problems_left_out` |
 | At once, not transient | `db_not_configured`, `not_configured`, `secrets_unchecked`, `queue_disagreement`, `workflow_refused`, `workflows_too_many`, `copies_read_limit`, `schedule_refused`, `schedule_no_version`, `connections_list_unreadable`, `connection_refused`, `connections_too_many`, `connection_copies_expired`, `connections_step_failed` |
 | At once, never reported again by a later tick | `slot_missed` (recorded once), `dispatch_failed` (a slot is dispatched once), `agreement_check_failed` (the check runs every 14 minutes) |
 | At once, written by the bidding Worker | `report_unreadable`, and `unkeyed` for each problem of an ops release before #2506, except a lone missed start stamp, which is held as `start_stamp` |
