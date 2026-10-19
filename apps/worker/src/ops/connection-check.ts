@@ -10,7 +10,7 @@
  * the failure is found and paged before a workflow meets it.
  *
  * WHAT, per connection connection_check_targets lists (every copy not withdrawn
- * and not removed, least recently checked first, supabase-ops migration
+ * and not removed, those it probes first and the least recently checked first among them, supabase-ops migration
  * 20261020030000): ask the service who the credential is, through
  * connectionFetch with the connection's committed copy, purpose
  * connection_check, by the service's registered identity probe (the one verify
@@ -99,7 +99,7 @@ import type { ConnectionCheckTarget } from './ops-writes'
 
 /** claim_ops_sweep's interval for connection_check: see THE INTERVAL above. */
 export const CONNECTION_CHECK_EVERY_SECONDS = 14 * 60
-/** The most connections one sweep probes. None in production today; the least recently checked come first, so a full sweep rotates. */
+/** The most connections one sweep reads. None in production today; the ones it probes come first, least recently checked first, so a full sweep rotates. */
 export const CONNECTION_CHECK_MAX_CONNECTIONS = 50
 /** connectionFetch's own deadline for each request of a probe: an identity read is one small GET or statement. */
 export const CONNECTION_CHECK_PROBE_DEADLINE_MS = 30_000
@@ -313,7 +313,7 @@ export async function runConnectionCheckSweep(deps: ConnectionCheckSweepDeps): P
     targets = read.targets
     counts.connection_check_connections = targets.length
     if (read.reachedLimit) {
-      problems.push(tickProblem('connection_check_limit', `The connection check found ${CONNECTION_CHECK_MAX_CONNECTIONS} ops connections, its limit, so any past them wait for a later sweep; the least recently checked go first.`))
+      problems.push(tickProblem('connection_check_limit', `The connection check found ${CONNECTION_CHECK_MAX_CONNECTIONS} ops connections, its limit, so any past them wait for a later sweep; of those it probes, the least recently checked go first.`))
     }
   } catch (err) {
     problems.push(tickProblem('connection_check_failed', `The connection check could not read which ops connections to check (${formatErr(err)}), so no login was proved; it runs again in ${CONNECTION_CHECK_EVERY_SECONDS / 60} minutes.`))

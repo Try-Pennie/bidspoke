@@ -142,7 +142,8 @@ run beside the rest of the tick and awaited before its report.
 
 - **Which connections.** `connection_check_targets` (ops migration
   20261020030000, additive): every copy not withdrawn and not covered by a
-  tombstone, across organizations, least recently checked first, with its
+  tombstone, across organizations, the ones the sweep probes first (servable and
+  not in `needs_reauth`) and the least recently checked first among them, with its
   derived status (connection_status's own rule), its refresh streak, the
   identity verify measured for its generation, and the database clock. At most
   50 a sweep. A copy past its serve window, and one in `needs_reauth`, are not
