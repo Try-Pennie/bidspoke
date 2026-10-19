@@ -122,11 +122,18 @@
   which is where the drain's lapse check reads it, and gives that key an expiry the
   check renews while the incident stands, so it can never keep an incident open for ever.
 - A Supabase read that comes back at the 1,000 row cap without declaring a limit
-  (`.limit(n)` with n at most 1,000, or `.range()`) is reported to Better Stack every time,
+  (`.single()`, `.limit(n)` with n at most 1,000, or `.range()`, which CI also requires an
+  `.order()` beside) is reported to Better Stack every time,
   and inside a scheduled job the read fails with `BIDSPOKE_ROW_CAP` (#1436, `lib/row-cap.ts`).
   A list read that may pass 1,000 rows pages with `fetchAllPaged` under a full order. The cap
-  is the Data API's `max_rows` dashboard setting; `ROW_CAP` equals `PAGE_SIZE`. The plan to
-  bound every read and then delete the big table lists is on #1437.
+  is the Data API's `max_rows` dashboard setting; `ROW_CAP` equals `PAGE_SIZE`. #1437 tracks
+  bounding the reads still unbounded and then retiring the big table lists the older check used.
+  CI holds every `.from(` in `apps/worker/src`, on any table, to those declarations before it
+  ships (`worker-big-table-pagination.test.ts`), also accepting `.maybeSingle()`, which refuses
+  more than one row itself. A read bounded by its filter
+  says so as `// paginate-ok .eq(column): <why>`, naming a row selecting filter that is on the
+  query. Reads unbounded today are listed in `worker-unbounded-reads-baseline.json`, which may
+  only shrink: converting one means lowering its count in the same change.
 - Partner saves are versioned (#2132). The partner edit route (`PUT /api/partners/:id`)
   writes through the `save_partner_config` function, which writes just the fields a save
   names and refuses one made from a version that is no longer stored (409 `stale_version`,
