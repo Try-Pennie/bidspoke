@@ -39,6 +39,7 @@ import { daysHeldInPostgres } from '../archive/days-held'
 import { canonicalHourStart } from '../archive/clock'
 import { withJobRun } from './job-run-record'
 import { formatErr } from './format-error'
+import { fetchAllPaged } from './paginate'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import type { Env } from '../index'
 
@@ -314,6 +315,20 @@ async function backlogPass(deps: BacklogDeps): Promise<BacklogRunSummary> {
     return { stop: 'wall-time', day, progressed: false, hoursRecorded: before, setAside: false, detail }
   }
 
+  // WHY THE STATE IS WRITTEN BEFORE STEPS THAT CAN THROW, and is not moved
+  // after them (#2440). Both the repair and the re-read of recorded hours below
+  // can throw (a Postgres failure, or a read that outgrows its page bound), and
+  // a throw leaves this write standing. That is safe, and
+  // moving it would undo #1039, for two reasons:
+  //  - The state holds no position. It is an attempt count and set-aside
+  //    windows, never "archived up to here". Which day comes next and which
+  //    hours it is missing are read afresh from execution_archive_hours every
+  //    run, so a failed attempt cannot leave saved progress pointing past work
+  //    it never did: the next run sees exactly the hours Postgres holds.
+  //  - What it does claim, that this day was attempted, is true of a run that
+  //    threw just as of one the platform killed. Written after the throwing
+  //    steps, a killed run would count nothing, which is the bug #1039 fixed.
+  // The thrown reason is recorded on the run's job_runs row by withJobRun.
   const attemptedState = beginAttempt(state, day)
   await deps.writeState(attemptedState)
 
@@ -391,6 +406,14 @@ export const BACKLOG_STATE_KEY = 'execution-archive:backlog-state'
  */
 export const LOOKBACK_DAYS = 14
 
+/**
+ * The most pages the recorded-hours read may take before it fails (#2440).
+ *
+ * The window is one row per hour, so ten pages is 10,000 hours, over a year:
+ * a read that has not finished by then is not reading the window it asked for.
+ */
+const RECORDED_HOURS_MAX_PAGES = 10
+
 function dayString(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10)
 }
@@ -433,18 +456,29 @@ export function backlogDeps(env: Env, supabase: SupabaseClient, reArchive: Backl
     recordedHoursByDay: async () => {
       const todayMs = Date.parse(`${dayString(now().getTime())}T00:00:00.000Z`)
       const from = dayString(todayMs - LOOKBACK_DAYS * 24 * 60 * 60 * 1000)
-      // paginate-ok: bounded by the date window to LOOKBACK_DAYS * 24 rows, one per
-      // archived hour. archive-backlog-run.test.ts pins that product under the
-      // PostgREST cap, because past it this read would truncate silently and
-      // finished hours would read as missing (#1191).
-      const { data, error } = await supabase
-        .from('execution_archive_hours')
-        .select('hour_start')
-        .gte('hour_start', `${from}T00:00:00.000Z`)
-      if (error) throw new Error(`reading recorded archive hours failed: ${formatErr(error)}`)
+      // PAGED, by the primary key (#1191, #1437). The date window keeps this to
+      // (LOOKBACK_DAYS + 1) * 24 rows today, one per archived hour, well inside a
+      // page, but the window is a constant somebody widens (it went 7 to 14 in
+      // #1038) and the table is never pruned. One unpaged read past the cap would
+      // truncate, so finished hours read as missing, or since #1436 fail this
+      // scheduled run with BIDSPOKE_ROW_CAP. `hour_start` is the primary key, so
+      // the order is total and no page skips or repeats a row.
+      const rows = await fetchAllPaged<{ hour_start?: unknown }>(
+        (rangeFrom, rangeTo) =>
+          supabase
+            .from('execution_archive_hours')
+            .select('hour_start')
+            .gte('hour_start', `${from}T00:00:00.000Z`)
+            .order('hour_start', { ascending: true })
+            .range(rangeFrom, rangeTo),
+        'reading recorded archive hours',
+        // A read still returning full pages here is not this window any more,
+        // so it fails loudly rather than answering with part of it.
+        { maxPages: RECORDED_HOURS_MAX_PAGES },
+      )
 
       const byDay: Record<string, string[]> = {}
-      for (const row of (data ?? []) as Array<{ hour_start?: unknown }>) {
+      for (const row of rows) {
         if (typeof row.hour_start !== 'string') continue
         const canonical = canonicalHourStart(row.hour_start)
         if (canonical === null) continue
