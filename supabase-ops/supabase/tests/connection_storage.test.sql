@@ -478,7 +478,7 @@ DECLARE
   v_sf text := '00Dcs0000000003EAA';
   v_a record;
 BEGIN
-  INSERT INTO public.sf_bootstrap_caps (instance_host, cap, approved_at, approved_by) VALUES ('trypennie.my.salesforce.com', 1, now(), 'Dan (test)');
+  INSERT INTO public.sf_bootstrap_caps (instance_host, cap, approved_at, approved_by) VALUES ('cs.my.salesforce.com', 1, now(), 'Dan (test)');
   INSERT INTO public.sf_pool_caps (sf_org_id, cap, workflow_share, budget_floor, approved_at, approved_by) VALUES (v_sf, 3, 2, 100, now(), 'Dan (test)');
   INSERT INTO public.sf_purpose_caps (sf_org_id, purpose, share, approved_at, approved_by) VALUES
     (v_sf, 'lookup', 2, now(), 'Dan (test)'), (v_sf, 'verify', 1, now(), 'Dan (test)'), (v_sf, 'sf_limits', 1, now(), 'Dan (test)');
@@ -494,10 +494,10 @@ BEGIN
   IF v_a.outcome <> 'sf_cap_unset' THEN RAISE EXCEPTION 'a verify against an unapproved host was answered %', v_a.outcome; END IF;
 
   -- The first verify takes the approved host's bootstrap slot (case is the host's, not the caller's).
-  SELECT * INTO v_a FROM public.acquire_sf_lease(v_org, v_first, 1, 'verify', NULL, 'g-verify-1', 30, 'TryPennie.my.salesforce.com');
+  SELECT * INTO v_a FROM public.acquire_sf_lease(v_org, v_first, 1, 'verify', NULL, 'g-verify-1', 30, 'CS.my.salesforce.com');
   IF v_a.outcome <> 'granted' OR v_a.pool <> 'bootstrap' OR v_a.lease_id IS NULL THEN RAISE EXCEPTION 'the first verify was answered %', v_a; END IF;
   -- The slot is one: a second connection's first verify on that host waits for it.
-  SELECT * INTO v_a FROM public.acquire_sf_lease(v_org, v_second, 1, 'verify', NULL, 'g-verify-2', 30, 'trypennie.my.salesforce.com');
+  SELECT * INTO v_a FROM public.acquire_sf_lease(v_org, v_second, 1, 'verify', NULL, 'g-verify-2', 30, 'cs.my.salesforce.com');
   IF v_a.outcome <> 'pool_full' OR v_a.retry_at IS NULL THEN RAISE EXCEPTION 'a second bootstrap verify was answered %', v_a; END IF;
 
   -- Verify measures the org, writes the row and releases.
@@ -523,7 +523,7 @@ BEGIN
   IF (SELECT count(*) FROM public.sf_leases WHERE holder = 'g-lookup-2') <> 1 THEN RAISE EXCEPTION 'a holder holds two leases'; END IF;
   PERFORM public.release_sf_lease(v_org, 'g-lookup-2');
   -- Verify again after it is measured goes through the org's pool, not the bootstrap slot.
-  SELECT * INTO v_a FROM public.acquire_sf_lease(v_org, v_first, 1, 'verify', NULL, 'g-verify-3', 30, 'trypennie.my.salesforce.com');
+  SELECT * INTO v_a FROM public.acquire_sf_lease(v_org, v_first, 1, 'verify', NULL, 'g-verify-3', 30, 'cs.my.salesforce.com');
   IF v_a.pool <> 'org' THEN RAISE EXCEPTION 'a measured connection''s verify used the bootstrap slot'; END IF;
   PERFORM public.release_sf_lease(v_org, 'g-verify-3');
   -- A new generation is unmeasured until its own verify.

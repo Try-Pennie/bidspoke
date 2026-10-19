@@ -17,10 +17,24 @@ pull request of Phase 7 (#2337, `snowflake-service.ts`), and Salesforce
 call that reaches any other service is refused `connection_service_unknown` until
 that service's own Phase 7 pull request registers it.
 
-**Salesforce is registered and refused at the pool.** Every ops Salesforce request
-takes a lease from `acquire_sf_lease` before its login is opened into a token, and
-until Dan approves the caps (Decision 11) no cap row exists, so each is refused by
-name and nothing is asked of Salesforce, not even a token:
+**Salesforce is registered, and the pool is approved for the trypennie org only.**
+Every ops Salesforce request takes a lease from `acquire_sf_lease` before its login
+is opened into a token. Dan approved the trypennie numbers on 2026-10-19 (Decision
+11, recorded on #2336), and ops migration 20261020010000 writes them, the only rows
+these tables hold:
+
+| Table | Row | Approved |
+|---|---|---|
+| `sf_pool_caps` | org `00DDp00000170r6MAA` (trypennie) | `cap` 3 at once, `workflow_share` 2 (so one lane always stays free for checks, the limits reading and lookups), `budget_floor` 250,000 remaining daily calls |
+| `sf_bootstrap_caps` | host `trypennie.my.salesforce.com` | `cap` 1 |
+| `sf_purpose_caps` | that org | share 1 each for `lookup`, `verify`, `connection_check`, `sf_limits` |
+
+Partner orgs (tpl2, achieve) have no rows: each is approved by a migration of its
+own when the first workflow using that org is ported, with no exemption from the
+pool. An approval is changed only by a new migration; re-running 20261020010000
+over a row holding other values refuses by name and overwrites nothing.
+service_role can only read the three tables. A call without an approved row is
+still refused by name and nothing is asked of Salesforce, not even a token:
 
 | Call | State | Refused |
 |---|---|---|
