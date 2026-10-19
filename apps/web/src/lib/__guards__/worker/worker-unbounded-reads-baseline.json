@@ -8,21 +8,9 @@
   "lib/buyer-sale-drain.ts": {
     "buyer_profiles": 1
   },
-  "lib/held-click-sale-writes.ts": {
-    "execution_steps": 1
-  },
-  "lib/invalid-state-canary-watch.ts": {
-    "execution_steps": 1
-  },
   "lib/partner-constants-loader.ts": {
     "partner_configs": 1,
     "partner_uuid_map": 1
-  },
-  "lib/salesforce-read-back.ts": {
-    "workflows": 1
-  },
-  "lib/writeback-replay.ts": {
-    "outcome_writeback_deadletters": 2
   },
   "routes/api/access.ts": {
     "user_allowlist": 1

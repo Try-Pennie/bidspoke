@@ -86,7 +86,11 @@ const defaultDeps: HeldClickSaleDeps = {
   },
   async loadSteps(supabase, executionId, heldAt) {
     const at = Date.parse(heldAt)
-    // paginate-ok: one execution's steps, a few dozen at most
+    // paginate-ok .eq(execution_id): one execution's steps, one per node visit
+    // plus a group's partner attempts, and the engine stops a walk at
+    // MAX_WALK_STEPS (500) visits. At most 37 a run over every run retained on
+    // 2026-10-19 (about 608,000 since 2026-10-12), and the started_at window
+    // below narrows it further.
     const { data, error } = await supabase
       .from('execution_steps')
       .select('step_namespace, output')
