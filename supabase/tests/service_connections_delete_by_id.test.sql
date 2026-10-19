@@ -5,17 +5,17 @@
 -- by replaying every migration from empty, never production. The tokens and the
 -- ciphertexts below are planted placeholders, not credentials.
 --
--- WHY: delete_service_connection(org, service_type, actor) deletes every row of
--- the type in the organization that is not an ops_key row. Release 2 drops the
--- old one row per service unique, after which an organization can hold two rows
--- of one service, and a Disconnect of one would remove both. The callers now
--- delete by the id of the row they read, scoped to the caller's organization.
+-- WHY: the delete it replaced, by organization and service type, deleted every
+-- row of the type that was not an ops_key row. Release 2 (20261019150000)
+-- dropped the old one row per service unique, so an organization can hold two
+-- rows of one service, and a delete by type would remove both. The callers
+-- delete by the id of the row they read, scoped to the caller's organization,
+-- and release 2 dropped the delete by type.
 --
--- WHAT IT PROVES (each under a simulated release 2, the old unique dropped,
--- inside a block that is rolled back):
---   A. Control: the scenario is real. With the alert row and a second, non ops
---      slack row of the same organization, the OLD delete by service type
---      removes both.
+-- WHAT IT PROVES (each inside a block that is rolled back):
+--   A. Control: the scenario is real. An organization holds the alert row and a
+--      second, non ops slack row side by side, so a delete keyed on the service
+--      type would reach both.
 --   B. The delete by id removes only the row it names: the second slack row of
 --      the same organization survives, and the function returns exactly that id.
 --   C. Another organization's row cannot be deleted: a call naming org B with
@@ -25,8 +25,7 @@
 --   E. The audit row of the delete names the actor, and the actor setting does
 --      not outlive the call.
 --   F. Only service_role may call it; the browser roles may not.
---   G. The old signature still exists beside it (expand), for the running code
---      and its rollback target until the contract step drops it.
+--   G. The old delete by service type is gone (release 2, the contract step).
 --
 -- HOW IT ASSERTS: RAISE EXCEPTION inside DO blocks, one case per block, counted
 -- into a temp table and compared to the number at the bottom.
@@ -46,15 +45,14 @@ BEGIN
 END
 $do$;
 
--- The rows every case starts from, under a simulated release 2: org A's alert
+-- The rows every case starts from: org A's alert
 -- row, a second non ops slack row of org A, an ops slack row of org A, and org
 -- B's alert row. Called inside each case's rolled back block.
-CREATE OR REPLACE FUNCTION pg_temp.scd_release2_rows()
+CREATE OR REPLACE FUNCTION pg_temp.scd_rows()
 RETURNS void
 LANGUAGE plpgsql
 AS $fn$
 BEGIN
-  ALTER TABLE public.service_connections DROP CONSTRAINT service_connections_org_type_unique;
   INSERT INTO public.service_connections (id, organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for)
   VALUES
     ('33333333-3333-3333-3333-33333333a001', '11111111-1111-1111-1111-11111112333a', 'slack', 'slack', 'oauth', NULL,
@@ -68,20 +66,21 @@ BEGIN
 END
 $fn$;
 
--- ── A. Control: the old delete by service type removes both slack rows ──────
+-- ── A. Control: two non ops slack rows of one organization exist ────────────
 DO $do$
 DECLARE
   n int;
 BEGIN
   BEGIN
-    PERFORM pg_temp.scd_release2_rows();
-    SELECT count(*) INTO n FROM public.delete_service_connection('11111111-1111-1111-1111-11111112333a', 'slack', '22222222-2222-2222-2222-22222222333a');
-    IF n <> 2 THEN RAISE EXCEPTION 'control: the old delete by service type removed % rows, not the 2 non ops slack rows', n; END IF;
+    PERFORM pg_temp.scd_rows();
+    SELECT count(*) INTO n FROM public.service_connections
+    WHERE organization_id = '11111111-1111-1111-1111-11111112333a' AND service_type = 'slack' AND sealed_for IS DISTINCT FROM 'ops_key';
+    IF n <> 2 THEN RAISE EXCEPTION 'control: org A holds % non ops slack rows, not the 2 a delete by type would both reach', n; END IF;
     RAISE EXCEPTION 'scd_rollback';
   EXCEPTION WHEN raise_exception THEN
     IF SQLERRM <> 'scd_rollback' THEN RAISE; END IF;
   END;
-  INSERT INTO scd_cases VALUES ('control: the old delete by service type removes a second slack row of the same organization');
+  INSERT INTO scd_cases VALUES ('control: an organization holds two non ops slack rows side by side');
 END
 $do$;
 
@@ -91,7 +90,7 @@ DECLARE
   ids uuid[];
 BEGIN
   BEGIN
-    PERFORM pg_temp.scd_release2_rows();
+    PERFORM pg_temp.scd_rows();
     SELECT array_agg(d.id) INTO ids
     FROM public.delete_service_connection_by_id('11111111-1111-1111-1111-11111112333a', '33333333-3333-3333-3333-33333333a001', '22222222-2222-2222-2222-22222222333a') d;
     IF ids IS DISTINCT FROM ARRAY['33333333-3333-3333-3333-33333333a001'::uuid] THEN
@@ -120,7 +119,7 @@ DECLARE
   n int;
 BEGIN
   BEGIN
-    PERFORM pg_temp.scd_release2_rows();
+    PERFORM pg_temp.scd_rows();
     -- Org B's caller names org A's alert row.
     SELECT count(*) INTO n
     FROM public.delete_service_connection_by_id('11111111-1111-1111-1111-11111112333b', '33333333-3333-3333-3333-33333333a001', '22222222-2222-2222-2222-22222222333a');
@@ -145,7 +144,7 @@ DECLARE
   n int;
 BEGIN
   BEGIN
-    PERFORM pg_temp.scd_release2_rows();
+    PERFORM pg_temp.scd_rows();
     SELECT count(*) INTO n
     FROM public.delete_service_connection_by_id('11111111-1111-1111-1111-11111112333a', '33333333-3333-3333-3333-33333333a003', '22222222-2222-2222-2222-22222222333a');
     IF n <> 0 THEN RAISE EXCEPTION 'the delete by id reported % rows deleted for an ops_key row', n; END IF;
@@ -166,7 +165,7 @@ DECLARE
   a record;
 BEGIN
   BEGIN
-    PERFORM pg_temp.scd_release2_rows();
+    PERFORM pg_temp.scd_rows();
     DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112333a';
     PERFORM public.delete_service_connection_by_id('11111111-1111-1111-1111-11111112333a', '33333333-3333-3333-3333-33333333a001', '22222222-2222-2222-2222-22222222333a');
     SELECT * INTO a FROM public.audit_log
@@ -206,21 +205,21 @@ BEGIN
 END
 $do$;
 
--- ── G. The old signature is still there (expand) ────────────────────────────
+-- ── G. The old delete by service type is gone (contract) ────────────────────
 DO $do$
 BEGIN
-  IF to_regprocedure('public.delete_service_connection(uuid, text, uuid)') IS NULL THEN
-    RAISE EXCEPTION 'the old delete_service_connection(uuid, text, uuid) is gone before its contract step';
+  IF to_regprocedure('public.delete_service_connection(uuid, text, uuid)') IS NOT NULL THEN
+    RAISE EXCEPTION 'the old delete_service_connection(uuid, text, uuid) is still there after release 2';
   END IF;
-  INSERT INTO scd_cases VALUES ('the old signature stays beside the new one until the contract step');
+  INSERT INTO scd_cases VALUES ('the old delete by service type is gone');
 END
 $do$;
 
 -- ── Clean up ─────────────────────────────────────────────────────────────────
 DO $do$
 BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'service_connections_org_type_unique') THEN
-    RAISE EXCEPTION 'a simulated release 2 was not rolled back';
+  IF EXISTS (SELECT 1 FROM public.service_connections WHERE organization_id IN ('11111111-1111-1111-1111-11111112333a', '11111111-1111-1111-1111-11111112333b')) THEN
+    RAISE EXCEPTION 'a case''s rows were not rolled back';
   END IF;
 END
 $do$;

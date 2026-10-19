@@ -12,7 +12,7 @@
  * reporting rows changed. The plaintext in config.bot_token is left where it is:
  * the code before this release reads only that (L640), and it is stripped only
  * in the contract release, which may go ahead only when `readyForContract`
- * is true for every organization: each Slack row sealed, opening under the key
+ * is true for every organization: its Slack alert row sealed, opening under the key
  * new writes use, holding the same token as config.bot_token, and no key
  * rotation in flight. The verification reads the rows back after the writes,
  * so it measures what was stored, not what was meant to be (L581).
@@ -27,6 +27,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { decryptSecret, encryptSecret, type SecretKeys } from '../../lib/secret-crypto'
 import { NO_ROW_MATCHED_CODE, requireRowsAffected } from '../../lib/db-retry'
+import { onlySlackAlertRow } from '../../lib/slack-connection'
 
 export interface SealVerification {
   id: string
@@ -66,21 +67,30 @@ const plaintextOf = (config: unknown): string | null => {
 }
 
 /**
- * The most Slack rows one organization's seal reads (#1437). Today the store
- * holds at most one (UNIQUE organization_id, service_type; measured 2026-10-18,
- * one row in all). Release 2 of #2332 allows an alert row plus named ops rows,
- * and 20 leaves room for that. The read asks for one more, and a full answer
- * throws: a cut list could call the contract release safe with a row unseen.
+ * The most Slack rows one organization's seal reads (#1437). The read is the
+ * alert row only (below), of which UNIQUE (organization_id, service_type, name)
+ * allows one per organization, so the bound is a backstop rather than a size.
+ * The read asks for one more, and a full answer throws: a cut list could call
+ * the contract release safe with a row unseen.
  */
 export const SLACK_ROWS_MAX = 20
 
+/**
+ * The organization's Slack ALERT row (#2332): the seal and the contract verdict
+ * are about the alert bot's token in config.bot_token. Release 2 (migration
+ * 20261019150000) lets an organization hold other Slack rows beside it, an ops
+ * connection sealed for the ops key with no plaintext, which would hold the
+ * verdict at not ready for ever, or a second workspace, which must never be
+ * sealed for the alert row's ring. So the read goes through onlySlackAlertRow,
+ * like every alert reader.
+ */
 async function readRows(supabase: SupabaseClient, orgId: string): Promise<SlackRow[]> {
-  const { data, error } = await supabase
-    .from('service_connections')
-    .select('id, config, credential_enc')
-    .eq('organization_id', orgId)
-    .eq('service_type', 'slack')
-    .limit(SLACK_ROWS_MAX + 1)
+  const { data, error } = await onlySlackAlertRow(
+    supabase
+      .from('service_connections')
+      .select('id, config, credential_enc')
+      .eq('organization_id', orgId),
+  ).limit(SLACK_ROWS_MAX + 1)
   if (error) throw new Error(`reading service_connections failed: ${error.message}`)
   const rows: SlackRow[] = data ?? []
   if (rows.length > SLACK_ROWS_MAX) {
