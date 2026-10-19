@@ -112,6 +112,23 @@ binding = "COMPARE_CODE_LOADER"
 namespace = "bidspoke-code-nodes-compare"
 outbound = { service = "bidspoke-compare-outbound" }
 
+# The ops Worker's OpsConnections entrypoint (#2335, PR 9 of phase 5 of #1689):
+# verify, clearReauth, revoke, health, lookup and exchangeOAuthCode for the
+# Connections routes. A NAMED entrypoint, never the ops Worker's default export
+# (which the public route reaches). Reached only through
+# src/lib/ops-connections-client.ts, which races every call against a per method
+# deadline; never from the engine, a node, a Durable Object or the webhook
+# routes (Hard Rule 1, ops-connections-off-money-path.test.ts).
+#
+# Cloudflare deploys this binding green even when the deployed ops Worker does
+# not export OpsConnections, and every call then throws (spike #2330). So CI
+# reads the DEPLOYED ops script before merge (ops-exports-entrypoint.mjs), and
+# Deploy makes a real call through it afterwards (ops-connections-probe.mjs).
+[[services]]
+binding = "OPS_CONNECTIONS"
+service = "bidspoke-worker-ops"
+entrypoint = "OpsConnections"
+
 # Hyperdrive — RETIRED 2026-06-20, code removed #363. The direct-Postgres
 # execution-log hot path was provisioned 2026-06-12 to dodge the nightly
 # partition-purge schema-cache 503s; the purge is now TRUNCATE-based (migration

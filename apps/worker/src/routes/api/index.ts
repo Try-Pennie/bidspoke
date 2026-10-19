@@ -31,6 +31,7 @@ import buyerSales from './buyer-sales'
 import heldClicks from './held-clicks'
 import buyerSelectParity from './buyer-select-parity'
 import sealCanary from './seal-canary'
+import opsConnectionsProbe from './ops-connections-probe'
 import mutedAlertRoutes from './muted-alerts'
 import incidentRoutes from './incidents'
 import partnerUsageRoutes from './partner-usage'
@@ -87,6 +88,9 @@ api.route('/admin/buyer-select/parity', buyerSelectParity)
 // The production half of the ops key restore drill (#2333): seals a canary and
 // returns it, storing nothing but its audit row.
 api.route('/admin/seal-canary', sealCanary)
+// The deploy's real call through the OPS_CONNECTIONS binding (#2335): one call
+// ops refuses by name before reading anything, so it touches nobody's data.
+api.route('/admin/ops-connections-probe', opsConnectionsProbe)
 // Which workflow steps name a partner, per node kind (#2137): the partners page's
 // Bid Group tab and confirmation window apply only where one does.
 api.route('/partners', partnerUsageRoutes)

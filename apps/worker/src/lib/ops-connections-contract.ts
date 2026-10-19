@@ -206,6 +206,13 @@ export type HealthAnswer = { ok: true; connections: HealthRow[]; reached_limit: 
 export type LookupAnswer = { ok: true; answer: SchemaLookupAnswer } | OpsConnectionsRefused
 export type ExchangeOAuthCodeAnswer = { ok: true; generation: number } | OpsConnectionsRefused
 
+/**
+ * The bidding Worker's OPS_CONNECTIONS binding (wrangler.toml, PR 9) to this
+ * entrypoint. Each method takes its request and answers unknown, which the
+ * bidding side reads through lib/ops-connections-client.ts before trusting it.
+ */
+export type OpsConnectionsBinding = { readonly [M in OpsConnectionsMethod]: (request: unknown) => Promise<unknown> }
+
 export class OpsConnectionsContractError extends Error {
   constructor(message: string) {
     super(message)
