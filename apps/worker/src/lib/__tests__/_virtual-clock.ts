@@ -65,13 +65,18 @@ export class VirtualClock implements RetryClock {
 
   /**
    * Fires timers in time order, letting every promise chain settle between
-   * them, until nothing is left waiting or `untilMs` is reached. Returns the
-   * time it stopped at.
+   * them, up to `untilMs`, and returns the time it stopped at. Given a finite
+   * `untilMs`, the clock ends there even when nothing was waiting (#2470): a
+   * test that runs to 1 s before starting work means the work starts at 1 s, and
+   * every mark it then counts from that start lands where the test says.
    */
   async run(untilMs = Number.POSITIVE_INFINITY): Promise<number> {
     for (let guard = 0; guard < 100_000; guard++) {
       await settle()
-      if (this.timers.length === 0) return this.t
+      if (this.timers.length === 0) {
+        if (Number.isFinite(untilMs) && untilMs > this.t) this.t = untilMs
+        return this.t
+      }
       this.timers.sort((a, b) => a.at - b.at || a.seq - b.seq)
       const next = this.timers[0]
       if (next.at > untilMs) {
