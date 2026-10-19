@@ -9,7 +9,8 @@
  *
  * Clock, sleep and network are injected (L290, L524). Each outcome has its own
  * sentence (L11): answered passes; unexpected and not-signed-in fail at once;
- * unavailable, route-missing and unreachable are asked again until the budget,
+ * unavailable, route-missing, error-answer, unrecognised and unreachable are
+ * asked again until the budget,
  * because a new version reaches every edge over a few seconds.
  */
 import { describe, expect, it } from 'vitest'
