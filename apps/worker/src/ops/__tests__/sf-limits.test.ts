@@ -72,8 +72,11 @@ function harness(opts: {
   completeFails?: boolean
   /** A sleep that resolves at once for the deadlines named, and never for any other. */
   expire?: number[]
+  /** With expire: end only this many of those waits, in call order; the rest never end. */
+  expireFirst?: number
 } = {}): Harness {
   const reads: Harness['reads'] = []
+  let expired = 0
   const recorded: Harness['recorded'] = []
   const stamps: string[] = []
   const reports: OpsJobReport[] = []
@@ -96,7 +99,11 @@ function harness(opts: {
     started: async () => { stamps.push('started'); if (opts.startFails) throw new Error('the bidding Worker\'s heartbeat did not answer within 15 s') },
     completed: async (report) => { stamps.push('completed'); reports.push(report); if (opts.completeFails) throw new Error('the gateway is not deployed') },
     now: () => WORKER_NOW,
-    sleep: (ms) => (opts.expire?.includes(ms) ? Promise.resolve() : new Promise<void>(() => undefined)),
+    sleep: (ms) => {
+      if (!opts.expire?.includes(ms)) return new Promise<void>(() => undefined)
+      if (opts.expireFirst !== undefined && expired++ >= opts.expireFirst) return new Promise<void>(() => undefined)
+      return Promise.resolve()
+    },
     log: (fields) => { logs.push(fields) },
   }
   return { deps, reads, recorded, stamps, reports, logs }
@@ -265,8 +272,11 @@ describe('the sweep', () => {
     it('bounds one org\'s read by its own deadline, so a read that never answers is a failure of that org alone', async () => {
       const h = harness({
         targets: [target({ readingMeasuredAt: minutesBefore(8) }), target({ sfOrgId: SF_TWO })],
-        read: (t) => (t.sfOrgId === SF_ONE ? new Promise<Response>(() => undefined) : Promise.resolve(Response.json(limitsBody()))),
+        // The other org answers a macrotask later, as a real read would: only its own deadline may end it.
+        read: (t) => (t.sfOrgId === SF_ONE ? new Promise<Response>(() => undefined) : new Promise<Response>((r) => setTimeout(() => r(Response.json(limitsBody())), 0))),
+        // Only the first org's deadline ends; the other's read must win on its own.
         expire: [SF_LIMITS_ORG_DEADLINE_MS],
+        expireFirst: 1,
       })
       const out = await runSfLimitsSweep(h.deps)
       expect(out.problems.map((p) => p.key)).toEqual([`sf_limits_read_failed:${SF_ONE}`])
