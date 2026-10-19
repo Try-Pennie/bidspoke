@@ -129,8 +129,17 @@ describe('every answer is a value, refused by name', () => {
       connection_copy: [{ state: 'not_found', connection_id: CONN, service: null, generation: null, envelope: null, public_config: null, target: null, served_at: null, serve_until: null, db_now: '2026-10-19T10:00:00+00:00' }],
     })
     const answer = await opsConnectionsAnswer({ ...configured, OPS_CONNECTIONS_PRIVATE_KEY: pair.privatePem } as OpsEnv, 'verify', { organization_id: ORG, connection_id: CONN },
-      (await import('../../lib/ops-connections-contract')).parseVerifyRequest, { opsFetch: db.fetch })
+      (await import('../../lib/ops-connections-contract')).parseVerifyRequest, { opsFetch: db.fetch, sealRegistry: { currentKid: 'ops-test', publicKeys: { 'ops-test': pair.publicPem } } })
     expect(answer).toMatchObject({ ok: false, refused: 'connection_not_found' })
     expect(db.calls.map((c) => c.rpc)).toEqual(['connection_copy'])
+  }, KEYGEN_TIMEOUT_MS)
+
+  it('refuses as not configured a set key that is the private half of no committed public key (#2333), rather than trying it under the current kid', async () => {
+    const [pair, committed] = await Promise.all([opsKeyPair(4096), opsKeyPair(4096)])
+    const db = opsDatabase({})
+    const answer = await opsConnectionsAnswer({ ...configured, OPS_CONNECTIONS_PRIVATE_KEY: pair.privatePem } as OpsEnv, 'verify', { organization_id: ORG, connection_id: CONN },
+      (await import('../../lib/ops-connections-contract')).parseVerifyRequest, { opsFetch: db.fetch, sealRegistry: { currentKid: 'ops-test', publicKeys: { 'ops-test': committed.publicPem } } })
+    expect(answer).toMatchObject({ ok: false, refused: 'ops_connections_not_configured', detail: expect.stringContaining('not the private half of any committed public key') })
+    expect(db.calls).toEqual([])
   }, KEYGEN_TIMEOUT_MS)
 })

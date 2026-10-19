@@ -10,14 +10,17 @@
  * the library's retries off (a lead client's setting, #1844), since the tick
  * gives up at 15 s and keeps its saved copies: the workflow list (one paged
  * read), the connection list (two paged reads, #2335), a heartbeat stamp (one KV
- * write), money's identity for one organization (one KV read, #2335), or a
- * rotated login's compare and set (one rpc, #2335).
+ * write), money's identity for one organization (one KV read, #2335), a
+ * rotated login's compare and set (one rpc, #2335), or a resealed login's
+ * compare and set during a rotation of the ops key (one rpc, #2333).
  */
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import type { Env } from '../env'
 import { createSupabaseClient } from './supabase'
 import { readMoneyIdentities } from './money-identity'
-import { readOpsConnections, readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, storeRotatedEnvelope } from './ops-gateway'
+import {
+  readOpsConnections, readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, replaceConnectionEnvelope, storeRotatedEnvelope,
+} from './ops-gateway'
 
 export class OpsGateway extends WorkerEntrypoint<Env> {
   opsWorkflows() {
@@ -61,5 +64,16 @@ export class OpsGateway extends WorkerEntrypoint<Env> {
    */
   storeRotatedEnvelope(request: unknown) {
     return storeRotatedEnvelope(createSupabaseClient(this.env, { retry: false }), request)
+  }
+
+  /**
+   * The ops Worker's resealConnections' compare and set of one login moved to
+   * the current ops kid during a rotation of the ops key (#2333): one rpc,
+   * retries off, since the reseal reports a row it could not write and is run
+   * again until nothing is left. Who may call it and whose row it writes:
+   * ops-gateway.ts.
+   */
+  replaceConnectionEnvelope(request: unknown) {
+    return replaceConnectionEnvelope(createSupabaseClient(this.env, { retry: false }), request)
   }
 }

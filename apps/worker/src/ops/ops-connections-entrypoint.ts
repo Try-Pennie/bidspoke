@@ -44,6 +44,7 @@ import {
 import {
   clearReauth, connectionHealth, exchangeConnectionCode, lookupConnection, revokeConnection, verifyConnection, type OpsConnectionsDeps,
 } from './connections/ops-connections'
+import type { SealRegistryOf } from './connection-token-object'
 import { OPS_LANE, type OpsEnv } from './index'
 import { OpsDatabaseConfigError } from './ops-db'
 import { liveOpsConnectionsDeps, OpsConnectionsNotConfigured } from './ops-connections-live'
@@ -69,6 +70,8 @@ export interface OpsConnectionsAnswerOptions<Req, Ans> {
   opsFetch?: typeof fetch
   /** For tests: the ceiling's timer. */
   delay?: (ms: number) => Promise<void>
+  /** For tests: the committed public keys the private key is matched against (#2333, opsSealKeys). */
+  sealRegistry?: SealRegistryOf
 }
 
 const refused = (code: OpsConnectionsRefused['refused'], detail: string): OpsConnectionsRefused => ({ ok: false, refused: code, detail, retry_at: null })
@@ -101,7 +104,7 @@ export async function opsConnectionsAnswer<Req extends { organization_id: string
 
   let deps: OpsConnectionsDeps
   try {
-    deps = liveOpsConnectionsDeps(env, { opsFetch: options.opsFetch, opensLogins: OPENS_LOGINS.has(method) })
+    deps = liveOpsConnectionsDeps(env, { opsFetch: options.opsFetch, opensLogins: OPENS_LOGINS.has(method), sealRegistry: options.sealRegistry })
   } catch (err) {
     const answer = err instanceof OpsDatabaseConfigError || err instanceof OpsConnectionsNotConfigured
       ? refused('ops_connections_not_configured', err.message)

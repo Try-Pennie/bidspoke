@@ -61,6 +61,7 @@ function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: num
     opsTickCompleted: async (r: unknown) => { g.reports.push(r as OpsTickReport); return { ok: true } },
     // The tick never hands back a rotated login (#2335): the ConnectionTokenObject does.
     storeRotatedEnvelope: async () => { throw new Error('the tick does not call storeRotatedEnvelope') },
+    replaceConnectionEnvelope: async () => { throw new Error('the tick does not call replaceConnectionEnvelope') },
     // The serve (#2335): one ops connection, ciphertext and public config only.
     opsConnections: async () => ({
       served_at: '2026-10-17T10:02:31.000Z', complete: true, tombstones: [],
@@ -81,6 +82,7 @@ function self(): OpsInternalBinding & { observed: string[] } {
   const s = {
     observed: [] as string[],
     ping: async () => ({ lane: 'ops' }),
+    resealConnections: async () => { throw new Error('the tick does not call resealConnections') },
     // Answers a refusal as OpsInternal.observe does: a value, never a throw across the binding.
     observe: async (signed: unknown) => {
       try {

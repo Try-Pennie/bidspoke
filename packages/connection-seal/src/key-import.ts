@@ -99,12 +99,54 @@ function algorithmOid(der: Uint8Array, kind: KeyKind): Uint8Array {
   return der.subarray(oid.start, oid.end)
 }
 
-async function importKey(pem: string, kind: KeyKind): Promise<CryptoKey> {
-  const der = decodePem(pem, kind)
+function requireRsa(der: Uint8Array, kind: KeyKind): void {
   const oid = algorithmOid(der, kind)
   if (oid.length !== RSA_ENCRYPTION_OID.length || RSA_ENCRYPTION_OID.some((b, i) => oid[i] !== b)) {
     throw new SealError('seal_key_not_rsa', `the ${kind} key is not an RSA key`)
   }
+}
+
+/**
+ * The RSA modulus of a key, read from its DER without importing it, with any
+ * leading zero bytes dropped (#2333). The private and public halves of one
+ * pair have the same modulus and no two pairs do, so this is how the ops ring
+ * tells which committed kid a private key opens (ring.ts). It proves only the
+ * match: whether the key really opens is the minute key check's
+ * (checkPrivateKeyOpens), which does the real decrypt.
+ *
+ * PKCS#8: SEQUENCE { version, algorithm, OCTET STRING { RSAPrivateKey: SEQUENCE
+ * { version, modulus, ... } } }. SPKI: SEQUENCE { algorithm, BIT STRING { 0
+ * unused bits, RSAPublicKey: SEQUENCE { modulus, publicExponent } } }. Throws a
+ * SealError on any key that is not one of those.
+ */
+export function rsaModulusOf(pem: string, kind: KeyKind): Uint8Array {
+  const der = decodePem(pem, kind)
+  requireRsa(der, kind)
+  const outer = readTlv(der, 0, der.length, kind)
+  let cursor = outer.start
+  if (kind === 'private') cursor = readTlv(der, cursor, outer.end, kind).end
+  const algorithm = readTlv(der, cursor, outer.end, kind)
+  const body = readTlv(der, algorithm.end, outer.end, kind)
+  let start = body.start
+  if (kind === 'private') {
+    if (body.tag !== 0x04) malformed(kind, 'DER has no private key OCTET STRING')
+  } else {
+    if (body.tag !== 0x03 || der[body.start] !== 0) malformed(kind, 'DER has no public key BIT STRING')
+    start += 1
+  }
+  const key = readTlv(der, start, body.end, kind)
+  if (key.tag !== 0x30) malformed(kind, 'DER has no RSA key SEQUENCE')
+  let field = readTlv(der, key.start, key.end, kind)
+  if (kind === 'private') field = readTlv(der, field.end, key.end, kind)
+  if (field.tag !== 0x02) malformed(kind, 'DER has no modulus INTEGER')
+  let first = field.start
+  while (first < field.end - 1 && der[first] === 0) first++
+  return der.slice(first, field.end)
+}
+
+async function importKey(pem: string, kind: KeyKind): Promise<CryptoKey> {
+  const der = decodePem(pem, kind)
+  requireRsa(der, kind)
   let key: CryptoKey
   try {
     key = await crypto.subtle.importKey(kind === 'public' ? 'spki' : 'pkcs8', der, RSA_OAEP, false, [
