@@ -83,7 +83,7 @@ describe('parseServedOpsConnections', () => {
   })
 
   it('never puts a refused row\'s values in the sentence that refuses it', () => {
-    const { refused } = parseServedOpsConnections(list([connection({ public_config: { client_secret: 'canary-s3cret-91f2' } }), connection({ envelope: 'canary-plain-77ab' })]))
+    const { refused } = parseServedOpsConnections(list([connection({ public_config: { client_secret: 'canary-client-credential-value' } }), connection({ envelope: 'canary-plain-envelope-value' })]))
     expect(refused).toHaveLength(2)
     for (const r of refused) expect(r).not.toMatch(/canary/)
   })
