@@ -34,11 +34,11 @@ const SERVICE_TYPES = new Set<string>(['salesforce', 'supabase', 'snowflake'])
 const connections = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 /**
- * The most connections GET /api/connections lists (#1437). Today the store
- * holds at most one row per organization and service type (UNIQUE
- * organization_id, service_type), so at most three rows here; measured
- * 2026-10-18 the largest organization holds none. Release 2 of #2332 allows
- * several named rows of a type, and 100 leaves room for that while staying far
+ * The most connections GET /api/connections lists (#1437). Until release 2 of
+ * #2332 the store held at most one row per organization and service type, so at
+ * most three rows here; measured 2026-10-18 the largest organization holds none.
+ * Release 2 (migration 20261019150000) allows several named rows of a type,
+ * and 100 leaves room for that while staying far
  * under PostgREST's 1,000 row cap. The read asks for one more, so a cut answer
  * is seen and refused rather than shown as the whole list.
  */
@@ -134,7 +134,7 @@ connections.delete('/:service_type', async (c) => {
   // these types), and POST can no longer create one.
 
   // The row just read, by its id (#2332): never every row of the type, which
-  // once release 2 allows two rows of a service would remove the other too.
+  // now that release 2 allows two rows of a service would remove the other too.
   // Through delete_service_connection_by_id, so the table's trigger names this
   // user; it also refuses another organization's row and an ops_key row.
   const deleteBlocked = await requireRowOr404(c, 'Connection not found', () =>
