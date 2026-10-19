@@ -105,6 +105,9 @@ const KINDS: Kind[] = [
       // #2335: held true by supabase/tests/store_rotated_envelope.test.sql case D,
       // in which a bidding_ring Slack row is answered not_found and not written.
       'apps/worker/src/lib/ops-gateway.ts storeRotatedEnvelope': 'store_rotated_envelope writes only a person bound ops_key row, never the bidding_ring Slack alert row the copy holds',
+      // #2333: held true by supabase/tests/replace_connection_envelope.test.sql case D,
+      // in which a bidding_ring Slack row is answered not_found and not written.
+      'apps/worker/src/lib/ops-gateway.ts replaceConnectionEnvelope': 'replace_connection_envelope writes only an ops_key row, never the bidding_ring Slack alert row the copy holds',
     },
   },
 ]
@@ -395,9 +398,13 @@ describe('every handler writing service_connections edits the saved Slack copy (
   // calls, and its release 2 (20261019150000) dropped the delete by service
   // type it replaced.
   // #2335 added store_rotated_envelope, which writes only a person bound ops_key
-  // row, and whose one caller is exempted above with that reason.
-  it('the only database functions writing the table are the delete by id and the rotated login write back, whose callers are held to the rule', () => {
-    expect([...sqlFunctionsWriting(SLACK_COPY, readMigrations())].sort()).toEqual(['delete_service_connection_by_id', 'store_rotated_envelope'])
+  // row, and whose one caller is exempted above with that reason. #2333 added
+  // replace_connection_envelope, the reseal's write back, which writes only an
+  // ops_key row, and whose one caller is exempted above with that reason.
+  it('the only database functions writing the table are the delete by id and the two ops login write backs, whose callers are held to the rule', () => {
+    expect([...sqlFunctionsWriting(SLACK_COPY, readMigrations())].sort()).toEqual([
+      'delete_service_connection_by_id', 'replace_connection_envelope', 'store_rotated_envelope',
+    ])
     expect(found.handlers).toEqual(expect.arrayContaining(['apps/worker/src/routes/api/integrations.ts DELETE /slack']))
   })
 })

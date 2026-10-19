@@ -52,6 +52,7 @@ import type { ConnectionTokenObject } from './connection-token-object'
 import type { OpsDbEnv } from './ops-db'
 import { PORTING_REGISTRY, type PortingRegistry } from './porting-registry'
 import type { OpsInternalBinding } from './internal'
+import { scheduledReseal } from './reseal-live'
 import { runOpsTick } from './tick'
 import { liveTickPorts } from './tick-live'
 
@@ -68,6 +69,12 @@ export interface OpsEnv extends OpsDbEnv {
   OPS_CONNECTIONS_PRIVATE_KEY?: string
   /** The NEXT ops private key, set only during a rotation of the ops key. */
   OPS_CONNECTIONS_PRIVATE_KEY_NEXT?: string
+  /**
+   * Set only during a rotation of the ops key (#2333), in wrangler.ops.toml
+   * [vars]: "preview" or "apply" makes the minute cron run resealConnections
+   * after each tick (reseal-live.ts). Unset, nothing is resealed.
+   */
+  OPS_RESEAL?: string
   PORTING_TEE: R2Bucket
   /**
    * The ops code namespace (bidspoke-code-nodes-ops). Its outbound Worker,
@@ -323,14 +330,25 @@ export { ConnectionTokenObject } from './connection-token-object'
  * every request does: a deploy that lost its config must not tick as the ops
  * Worker. The tick is awaited whole, because every call it dispatches is
  * cancelled the moment this invocation ends (spike P4).
+ *
+ * Then, only while OPS_RESEAL is set during a rotation of the ops key (#2333),
+ * the reseal, in its own boundary: it runs even when the tick threw (the throw
+ * is raised after it), and it never throws itself (reseal-live.ts).
  */
-export async function scheduledTick(controller: { scheduledTime: number }, env: OpsEnv): Promise<void> {
+export async function scheduledTick(controller: { scheduledTime: number }, env: OpsEnv, reseal: (env: OpsEnv) => Promise<unknown> = scheduledReseal): Promise<void> {
   if (env.LANE !== OPS_LANE) {
     const reason = env.LANE ? 'lane_not_ops' : 'lane_unset'
     console.error(JSON.stringify({ event: 'ops_tick', step: 'refused', reason }))
     throw new Error(`the ops minute cron refused to tick: ${reason}`)
   }
-  await runOpsTick(liveTickPorts(env, controller.scheduledTime))
+  let tickFailed: { error: unknown } | null = null
+  try {
+    await runOpsTick(liveTickPorts(env, controller.scheduledTime))
+  } catch (error) {
+    tickFailed = { error }
+  }
+  await reseal(env)
+  if (tickFailed) throw tickFailed.error
 }
 
 export default {

@@ -135,6 +135,69 @@ export function parseAccessTokenAnswer(raw: unknown): AccessTokenAnswer {
   return { ok: true, token, tokenId, expiresAtMs, minted }
 }
 
+/**
+ * A reseal of the login the object holds, during a rotation of the ops key
+ * (#2333): the connection it is asked about, and whether to write (apply) or
+ * only say what it would do (the default).
+ */
+export interface ResealLoginRequest {
+  readonly organizationId: string
+  readonly connectionId: string
+  readonly service: string
+  readonly apply: boolean
+}
+
+/**
+ * What the object holds, and what the reseal did with it:
+ *   none          no login (the connection is not person bound, or its login was handed back and given up)
+ *   current       under the current kid already
+ *   would_reseal  under an old kid; a preview, so nothing was written
+ *   resealed      was under fromKid, and is now under the current kid, at the same generation
+ */
+export const RESEAL_LOGIN_STATES = ['none', 'current', 'would_reseal', 'resealed'] as const
+export type ResealLoginState = (typeof RESEAL_LOGIN_STATES)[number]
+
+/**
+ * Why a reseal did nothing, by name (L11):
+ *   refused         the request was malformed, or named another connection, organization or service than the login's
+ *   busy            a refresh or a consent was in flight; run it again
+ *   no_current_kid  no kid is current, so nothing may be sealed
+ *   no_key          the login's kid has no private key on this Worker (NEXT unset, or the wrong key in it)
+ *   open_failed     the login did not open under its kid's key
+ *   failed          anything else, named by nothing it held
+ */
+export const RESEAL_LOGIN_REFUSALS = ['refused', 'busy', 'no_current_kid', 'no_key', 'open_failed', 'failed'] as const
+export type ResealLoginRefusal = (typeof RESEAL_LOGIN_REFUSALS)[number]
+
+export type ResealLoginAnswer =
+  | { readonly ok: true; readonly state: ResealLoginState; readonly fromKid: string | null }
+  | { readonly ok: false; readonly reason: ResealLoginRefusal }
+
+export function parseResealLoginRequest(raw: unknown): ResealLoginRequest {
+  if (!isRecord(raw)) throw new TokenObjectContractError('the reseal request is not an object')
+  const { organizationId, connectionId, service, apply } = raw
+  if (typeof organizationId !== 'string' || !UUID.test(organizationId)) throw new TokenObjectContractError('the reseal request names no organization uuid')
+  if (typeof connectionId !== 'string' || !UUID.test(connectionId)) throw new TokenObjectContractError('the reseal request names no connection uuid')
+  if (typeof service !== 'string' || !SERVICE.test(service)) throw new TokenObjectContractError('the reseal request names no service')
+  if (!(apply === undefined || typeof apply === 'boolean')) throw new TokenObjectContractError('the reseal request\'s apply is not true or false')
+  return { organizationId, connectionId, service, apply: apply === true }
+}
+
+export function parseResealLoginAnswer(raw: unknown): ResealLoginAnswer {
+  if (!isRecord(raw)) throw new TokenObjectContractError('the object answered the reseal with something other than an object')
+  if (raw.ok === false) {
+    if (!(RESEAL_LOGIN_REFUSALS as readonly unknown[]).includes(raw.reason)) throw new TokenObjectContractError('the object refused the reseal for a reason this code does not know')
+    return { ok: false, reason: raw.reason as ResealLoginRefusal }
+  }
+  if (raw.ok !== true) throw new TokenObjectContractError('the object answered the reseal with neither ok nor a refusal')
+  const { state, fromKid } = raw
+  if (!(RESEAL_LOGIN_STATES as readonly unknown[]).includes(state)) throw new TokenObjectContractError('the object answered the reseal with a state this code does not know')
+  if ((state === 'none') !== (fromKid === null) || !(fromKid === null || nonEmpty(fromKid, 64))) {
+    throw new TokenObjectContractError('the object answered the reseal with an unreadable kid')
+  }
+  return { ok: true, state: state as ResealLoginState, fromKid: fromKid as string | null }
+}
+
 export function parseExchangeAnswer(raw: unknown): ExchangeAnswer {
   if (!isRecord(raw)) throw new TokenObjectContractError('the object answered something other than an object')
   if (raw.ok === false) return parseFailure(raw)

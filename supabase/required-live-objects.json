@@ -544,5 +544,17 @@
     },
     "anon": "denied",
     "note": "The compare and set that hands a person bound ops connection's rotated login back to service_connections (#2335): the OpsGateway entrypoint's storeRotatedEnvelope calls it for the ops ConnectionTokenObject, which retries from an alarm while it is missing or failing, so a missing function leaves every rotated login held only in the object's storage. A WRITE, service_role only, so anon must be denied. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would write nothing."
+  },
+  {
+    "name": "replace_connection_envelope",
+    "args": {
+      "p_organization_id": "00000000-0000-0000-0000-000000000000",
+      "p_connection_id": "00000000-0000-0000-0000-000000000000",
+      "p_expected_kid": "probe-old",
+      "p_expected_generation": 1,
+      "p_envelope": { "v": 1, "kid": "probe-new", "wrapped_key": "cHJvYmU=", "iv": "cHJvYmU=", "ct": "cHJvYmU=" }
+    },
+    "anon": "denied",
+    "note": "The compare and set that moves one ops connection's sealed login to the current ops key during a rotation of that key (#2333): the OpsGateway entrypoint's replaceConnectionEnvelope calls it for the ops Worker's resealConnections, which reports each row it could not write, so a missing function leaves every login under the old kid and the rotation cannot finish. A WRITE, service_role only, so anon must be denied. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would write nothing."
   }
 ]
