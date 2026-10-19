@@ -15,7 +15,7 @@
  * handed the organization of the request.
  */
 import { raceDeadline } from '../lib/alert-claim'
-import { opsSealKeys } from './connection-token-object'
+import { opsSealKeys, type SealRegistryOf } from './connection-token-object'
 import { tokenObjectsOf, type TokenObjects } from './connections/minters/oauth-user'
 import type { OpsConnectionsDeps } from './connections/ops-connections'
 import { opsServiceEntry } from './connections/services'
@@ -40,6 +40,8 @@ export interface LiveOpsConnectionsOptions {
   opsFetch?: typeof fetch
   /** Whether the method opens a sealed login (verify, clearReauth, lookup), and so needs the ops private key. */
   opensLogins: boolean
+  /** For tests: the committed public keys and current kid, in place of packages/connection-seal/src/keys.ts. */
+  sealRegistry?: SealRegistryOf
 }
 
 const noTokenObjects: TokenObjects = {
@@ -49,9 +51,10 @@ const noTokenObjects: TokenObjects = {
 /** Throws OpsDatabaseConfigError or OpsConnectionsNotConfigured, each naming its secret. */
 export function liveOpsConnectionsDeps(env: OpsEnv, options: LiveOpsConnectionsOptions): OpsConnectionsDeps {
   const client = createOpsSupabaseClient(env, options.opsFetch ? { fetch: options.opsFetch } : {})
-  const privateKeys = opsSealKeys(env).privateKeys
+  const privateKeys = opsSealKeys(env, options.sealRegistry).privateKeys
   if (options.opensLogins && Object.keys(privateKeys).length === 0) {
-    throw new OpsConnectionsNotConfigured('OPS_CONNECTIONS_PRIVATE_KEY', 'OPS_CONNECTIONS_PRIVATE_KEY is not set on bidspoke-worker-ops, so no ops connection login can be opened')
+    // Empty when the key is unset, or set and the private half of no committed kid (#2333, opsSealKeys).
+    throw new OpsConnectionsNotConfigured('OPS_CONNECTIONS_PRIVATE_KEY', 'OPS_CONNECTIONS_PRIVATE_KEY is not set on bidspoke-worker-ops, or is not the private half of any committed public key, so no ops connection login can be opened')
   }
   const gateway = env.OPS_GATEWAY
   return {

@@ -8,7 +8,9 @@
  * can reach a method here; and the default fetch handler (index.ts) has no path
  * that forwards to it, which ops-internal.test.ts pins. A Worker on this account
  * could reach it only by declaring its own binding to this entrypoint, which
- * takes a deploy. Data reached: none.
+ * takes a deploy. Data reached: none, except by resealConnections (#2333),
+ * which reads every organization's ops connections from the bidding Worker,
+ * ciphertext only, and writes each back only within its own organization.
  *
  * Each method refuses by name outside the ops lane, the same rule the fetch
  * handler applies, so a deploy that lost its config cannot answer here either.
@@ -25,6 +27,8 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { dispatchKey, verifyDispatch, type SignedDispatch } from './dispatch-auth'
 import { OPS_LANE, type OpsEnv } from './index'
+import { resealConnections, type ResealRefused, type ResealReport } from './reseal'
+import { liveResealDeps, ResealNotConfigured } from './reseal-live'
 
 /** A refusal by OpsInternal, carrying its reason. */
 export class OpsInternalRefused extends Error {
@@ -38,6 +42,8 @@ export class OpsInternalRefused extends Error {
 export interface OpsInternalBinding {
   ping(): Promise<unknown>
   observe(signed: SignedDispatch): Promise<unknown>
+  /** A ResealReport or a ResealRefused (#2333). */
+  resealConnections(request: { apply: boolean }): Promise<unknown>
 }
 
 /** What observe answers. */
@@ -91,5 +97,35 @@ export class OpsInternal extends WorkerEntrypoint<OpsEnv> {
       if (err instanceof OpsInternalRefused) return { observed: false, refused: err.reason }
       throw err
     }
+  }
+
+  /**
+   * The reseal during a rotation of the ops key (#2333, reseal.ts): previews
+   * unless the request says apply. Called by the minute cron while OPS_RESEAL
+   * is set (reseal-live.ts), through SELF, so it has its own CPU budget. Every
+   * answer is a value, a refusal included. The request carries only apply: a
+   * caller could at most reseal a login to the committed current kid, which is
+   * what every new seal uses anyway.
+   */
+  async resealConnections(raw?: unknown): Promise<ResealReport | ResealRefused> {
+    try {
+      opsInternalIdentity(this.env)
+    } catch (err) {
+      return { ok: false, refused: 'lane_refused', detail: err instanceof OpsInternalRefused ? err.reason : 'the lane could not be read' }
+    }
+    const request = raw === undefined ? {} : raw
+    if (typeof request !== 'object' || request === null || Array.isArray(request)
+      || !Object.keys(request).every((k) => k === 'apply')
+      || !((request as { apply?: unknown }).apply === undefined || typeof (request as { apply?: unknown }).apply === 'boolean')) {
+      return { ok: false, refused: 'request_invalid', detail: 'a reseal request is { apply?: boolean } and nothing else' }
+    }
+    let deps
+    try {
+      deps = liveResealDeps(this.env)
+    } catch (err) {
+      if (err instanceof ResealNotConfigured) return { ok: false, refused: 'not_configured', detail: err.message }
+      throw err
+    }
+    return resealConnections(deps, request as { apply?: boolean })
   }
 }

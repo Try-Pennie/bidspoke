@@ -43,9 +43,10 @@ import { writeHeartbeat, writeHeartbeatCompleted } from './cron-heartbeat'
 import { notifyExportFailure, notifyExportRecovery } from './export-alerts'
 import {
   CONNECTION_SERVE_WINDOW_MS, OpsGatewayContractError, TOMBSTONE_SERVE_WINDOW_MS, parseOpsTickReport, parseSealedEnvelope,
-  parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest, servedConnectionProblem,
-  type OpsTickReport, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections, type ServedOpsWorkflow,
-  type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer,
+  parseReplaceConnectionEnvelopeAnswer, parseReplaceConnectionEnvelopeRequest, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
+  servedConnectionProblem,
+  type OpsTickReport, type ReplaceConnectionEnvelopeAnswer, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections,
+  type ServedOpsWorkflow, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer,
 } from './ops-gateway-contract'
 import { formatErr } from './format-error'
 
@@ -260,6 +261,45 @@ export async function storeRotatedEnvelope(supabase: SupabaseClient, raw: unknow
     throw new OpsGatewayContractError(`store_rotated_envelope answered ${Array.isArray(data) ? `${data.length} rows` : 'no rows'}, not one`)
   }
   return parseStoreRotatedEnvelopeAnswer(data[0])
+}
+
+/**
+ * One ops connection's login, moved to the current ops kid during a rotation
+ * of the ops key, handed back to its one home (#2333, the reseal; plan:
+ * discussion #2329, phase 3).
+ *
+ * WHO CALLS IT. The ops Worker's resealConnections (src/ops/reseal.ts), through
+ * the ops Worker's OPS_GATEWAY binding (OpsGateway.replaceConnectionEnvelope).
+ * There is no public route to it: the public edge reaches only this Worker's
+ * default export, and apps/web/src/lib/__tests__/ops-worker-config.test.ts
+ * allows the ops Worker this one binding into it.
+ *
+ * WHOSE DATA. One service_connections row: the named connection, only within
+ * the named organization, only an ops_key row (never the bidding_ring Slack
+ * alert row), only while it is still at the expected generation and its
+ * envelope names the expected kid (replace_connection_envelope, migration
+ * 20261019160000), and only its credential_enc and updated_at, never its
+ * generation. The new envelope must name the committed current kid, which the
+ * request parse holds before the database is asked.
+ *
+ * Refuses a malformed request by name before the database is asked, and throws
+ * on a database failure, so the reseal reports the row as not written rather
+ * than reading a write that did not happen.
+ */
+export async function replaceConnectionEnvelope(supabase: SupabaseClient, raw: unknown): Promise<ReplaceConnectionEnvelopeAnswer> {
+  const request = parseReplaceConnectionEnvelopeRequest(raw)
+  const { data, error } = await supabase.rpc('replace_connection_envelope', {
+    p_organization_id: request.organization_id,
+    p_connection_id: request.connection_id,
+    p_expected_kid: request.expected_kid,
+    p_expected_generation: request.expected_generation,
+    p_envelope: request.envelope,
+  })
+  if (error) throw new Error(`replace_connection_envelope failed (${error.code ?? 'no code'}: ${error.message})`)
+  if (!Array.isArray(data) || data.length !== 1) {
+    throw new OpsGatewayContractError(`replace_connection_envelope answered ${Array.isArray(data) ? `${data.length} rows` : 'no rows'}, not one`)
+  }
+  return parseReplaceConnectionEnvelopeAnswer(data[0])
 }
 
 interface KvLike {

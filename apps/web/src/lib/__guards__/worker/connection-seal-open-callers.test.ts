@@ -11,10 +11,10 @@ import { REPO_ROOT, WORKER_SRC, listFiles, listTsFiles, sanitizeSource } from '.
  * login. Every place that holds one is a place a login can leak from, so the
  * set is closed: a module may call `open` only if it is listed below with its
  * reason. ConnectionTokenObject, which holds the refresh token, was added with
- * its reason in the PR that made it live (#2335). Later PRs of this phase add
- * the others the plan names (verify, which must compare the sealed client id
- * with the declaration; resealConnections, which must open in order to
- * reseal), each with its own reason, in the PR that creates it, as the restore
+ * its reason in the PR that made it live (#2335), and resealConnections, which
+ * must open in order to reseal, in the PR that made it (#2333). A later PR of
+ * this phase adds verify (which must compare the sealed client id with the
+ * declaration) with its own reason, in the PR that creates it, as the restore
  * drill script (#2333) was. An entry for a file that does not exist, or that no
  * longer opens anything, fails here too (L96), so the list stays the truth.
  *
@@ -24,8 +24,9 @@ import { REPO_ROOT, WORKER_SRC, listFiles, listTsFiles, sanitizeSource } from '.
  * see what is called. `seal` and the types are free to import anywhere.
  *
  * It also refuses `console.` in the connection modules
- * (apps/worker/src/ops/connections) and in ConnectionTokenObject
- * (apps/worker/src/ops/connection-token-object.ts): they hold opened logins and tokens, and
+ * (apps/worker/src/ops/connections), in ConnectionTokenObject
+ * (apps/worker/src/ops/connection-token-object.ts) and in resealConnections
+ * (apps/worker/src/ops/reseal.ts): they hold opened logins and tokens, and
  * the ops Worker's console feeds Workers Logs (wrangler.ops.toml:
  * invocation_logs, head_sampling_rate 1) and the tail consumer. That ban is not
  * the whole protection (finding F120): an uncaught exception's message reaches
@@ -42,13 +43,16 @@ const ALLOWED_OPENERS: Readonly<Record<string, string>> = {
   'apps/worker/src/ops/connections/connection-fetch.ts':
     'connectionFetch: every connection bound request (steps, lookups, Reconnect, and the scheduled still valid and sf_limits reads) reaches the credential only through it',
   'apps/worker/src/ops/connection-token-object.ts':
-    'ConnectionTokenObject (#2335): holds a person bound login\'s refresh token, so it opens the envelope it is handed (ciphertext only) to refresh or exchange a code, and reseals a rotated login to the ops key before it answers',
+    'ConnectionTokenObject (#2335): holds a person bound login\'s refresh token, so it opens the envelope it is handed (ciphertext only) to refresh or exchange a code, and reseals a rotated login to the ops key before it answers; during a rotation of the ops key it reseals the login it holds to the current kid (resealLogin, #2333)',
+  'apps/worker/src/ops/reseal.ts':
+    'resealConnections (#2333): during a rotation of the ops key it opens each login still under an old kid only to seal the same login to the current kid at once, and the plaintext never leaves that one function',
   'scripts/restore-drill/open-seal-canary.ts':
     'the restore drill (#2333): runs on a laptop, opens only the canary POST /api/admin/seal-canary returns (bound to the nil organization and connection, so no login opens under it) with the escrowed key read from stdin, and prints only pass or fail',
 }
 
 const CONNECTION_MODULES = path.join(WORKER_SRC, 'ops/connections')
 const TOKEN_OBJECT = path.join(WORKER_SRC, 'ops/connection-token-object.ts')
+const RESEAL = path.join(WORKER_SRC, 'ops/reseal.ts')
 
 const SPECIFIER = String.raw`['"](?:@bidspoke/connection-seal(?:/[^'"]*)?|[^'"]*packages/connection-seal(?:/[^'"]*)?)['"]`
 const NAMED_IMPORT = new RegExp(String.raw`\bimport\s+(type\s+)?\{([^}]*)\}\s*from\s*` + SPECIFIER, 'g')
@@ -119,10 +123,12 @@ describe('only the listed modules open a sealed ops login (#2335)', () => {
   })
 
   it('no connection module writes to the console', () => {
-    // ConnectionTokenObject holds refresh tokens and lives beside the connection modules, not in them (#2335).
-    const modules = [...listTsFiles(CONNECTION_MODULES), TOKEN_OBJECT].map((full) => ({ file: rel(full), full }))
-    expect(modules.length).toBeGreaterThanOrEqual(5)
+    // ConnectionTokenObject holds refresh tokens and lives beside the connection modules, not in them (#2335),
+    // and resealConnections holds each login it reseals between the open and the seal (#2333).
+    const modules = [...listTsFiles(CONNECTION_MODULES), TOKEN_OBJECT, RESEAL].map((full) => ({ file: rel(full), full }))
+    expect(modules.length).toBeGreaterThanOrEqual(6)
     expect(existsSync(TOKEN_OBJECT)).toBe(true)
+    expect(existsSync(RESEAL)).toBe(true)
     expect(modules.filter((m) => usesConsole(readFileSync(m.full, 'utf8'))).map((m) => m.file)).toEqual([])
   })
 

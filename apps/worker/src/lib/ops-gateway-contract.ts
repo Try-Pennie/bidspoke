@@ -19,7 +19,9 @@
  *
  * A third crosses it since #2335: a person bound connection's rotated login,
  * handed back by the ops ConnectionTokenObject to its one home by compare and
- * set (storeRotatedEnvelope, below).
+ * set (storeRotatedEnvelope, below). And since #2333, the same for a login the
+ * ops Worker's resealConnections moved to the current kid during a rotation of
+ * the ops key (replaceConnectionEnvelope, below).
  *
  * And two more since PR 6 of #2335 (plan: discussion #2329, part 2):
  *  - the ops connections, served by the bidding Worker (opsConnections), which
@@ -31,7 +33,7 @@
  *    (moneyIdentities), a non secret value ops verify compares a credential's
  *    measured identity against.
  */
-import { KID_PATTERN } from '@bidspoke/connection-seal'
+import { CURRENT_OPS_KID, KID_PATTERN } from '@bidspoke/connection-seal'
 
 /** One ops workflow's state, as the bidding database holds it. */
 export interface ServedOpsWorkflow {
@@ -62,6 +64,8 @@ export interface OpsGatewayBinding {
   opsTickCompleted(report: unknown): Promise<unknown>
   /** A StoreRotatedEnvelopeRequest in; a StoreRotatedEnvelopeAnswer out (#2335). */
   storeRotatedEnvelope(request: unknown): Promise<unknown>
+  /** A ReplaceConnectionEnvelopeRequest in; a ReplaceConnectionEnvelopeAnswer out (#2333, the reseal). */
+  replaceConnectionEnvelope(request: unknown): Promise<unknown>
   /** A ServedOpsConnections, for parseServedOpsConnections (#2335). */
   opsConnections(): Promise<unknown>
   /** One organization's ServedMoneyIdentities, for parseServedMoneyIdentities (#2335). */
@@ -180,6 +184,44 @@ export interface StoreRotatedEnvelopeAnswer {
   outcome: StoreRotatedEnvelopeOutcome
   current_generation: number | null
   current_iv: string | null
+}
+
+/**
+ * One ops connection's login moved from an old kid to the current one during a
+ * rotation of the ops key (#2333, the reseal): the ops Worker's
+ * resealConnections opens the envelope under expected_kid and seals the same
+ * login to the current kid at the SAME generation, and this compare and set
+ * writes it only while the row is still at expected_generation under
+ * expected_kid. Ciphertext only; the bidding Worker cannot open either envelope.
+ */
+export interface ReplaceConnectionEnvelopeRequest {
+  organization_id: string
+  connection_id: string
+  /** The kid the row's envelope named when the reseal read it. */
+  expected_kid: string
+  /** The row's credential_generation then, which the reseal keeps. */
+  expected_generation: number
+  /** Sealed under the committed current kid (CURRENT_OPS_KID), and no other. */
+  envelope: SealedEnvelopeShape
+}
+
+/**
+ * What replace_connection_envelope answered:
+ *   replaced          written now
+ *   already_replaced  the row already holds this very envelope (a repeat after a
+ *                     lost answer)
+ *   moved             the row is at another generation or names another kid,
+ *                     named in the answer (kid null when its credential names
+ *                     none); not written
+ *   not_found         no ops_key row of that organization: removed
+ */
+export const REPLACE_CONNECTION_ENVELOPE_OUTCOMES = ['replaced', 'already_replaced', 'moved', 'not_found'] as const
+export type ReplaceConnectionEnvelopeOutcome = (typeof REPLACE_CONNECTION_ENVELOPE_OUTCOMES)[number]
+
+export interface ReplaceConnectionEnvelopeAnswer {
+  outcome: ReplaceConnectionEnvelopeOutcome
+  current_generation: number | null
+  current_kid: string | null
 }
 
 /** The tick's own mode. Observe only (#1949): live claiming and dispatch come with run invocation (#1950). */
@@ -395,6 +437,46 @@ export function parseStoreRotatedEnvelopeAnswer(raw: unknown): StoreRotatedEnvel
     throw new OpsGatewayContractError(`the bidding Worker answered the rotated envelope ${String(outcome)} with${current_generation === null ? ' no' : ''} generation`)
   }
   return { outcome: outcome as StoreRotatedEnvelopeOutcome, current_generation, current_iv }
+}
+
+/**
+ * A replaceConnectionEnvelope request as the bidding Worker receives it,
+ * refused by name before anything reaches the database when it is not one. The
+ * new envelope must name the committed current kid (currentKid, CURRENT_OPS_KID
+ * in packages/connection-seal/src/keys.ts), so the ops Worker can move a login
+ * only to the key every new seal already uses, never to a kid of its choosing;
+ * while no kid is current, every request is refused.
+ */
+export function parseReplaceConnectionEnvelopeRequest(raw: unknown, currentKid: string | null = CURRENT_OPS_KID): ReplaceConnectionEnvelopeRequest {
+  if (!isRecord(raw)) throw new OpsGatewayContractError('the envelope replace request is not an object')
+  const { organization_id, connection_id, expected_kid, expected_generation, envelope } = raw
+  if (typeof organization_id !== 'string' || !UUID.test(organization_id)) throw new OpsGatewayContractError('the envelope replace request names no organization uuid')
+  if (typeof connection_id !== 'string' || !UUID.test(connection_id)) throw new OpsGatewayContractError('the envelope replace request names no connection uuid')
+  if (typeof expected_kid !== 'string' || !KID_PATTERN.test(expected_kid)) throw new OpsGatewayContractError('the envelope replace request\'s expected kid is not a kid')
+  if (!isWhole(expected_generation) || expected_generation < 1) throw new OpsGatewayContractError('the envelope replace request\'s expected generation is not a whole number of at least 1')
+  const shaped = parseSealedEnvelope(envelope, 'the replacing envelope')
+  if (currentKid === null) throw new OpsGatewayContractError('no kid is current on the bidding Worker, so no envelope may replace another')
+  if (shaped.kid !== currentKid) throw new OpsGatewayContractError(`the replacing envelope is sealed under kid ${shaped.kid}, not the current kid ${currentKid}`)
+  if (expected_kid === currentKid) throw new OpsGatewayContractError('the envelope replace request expects the current kid, so there is nothing to reseal')
+  return { organization_id, connection_id, expected_kid, expected_generation, envelope: shaped }
+}
+
+/** replace_connection_envelope's answer as the ops Worker receives it. Throws on one it cannot read. */
+export function parseReplaceConnectionEnvelopeAnswer(raw: unknown): ReplaceConnectionEnvelopeAnswer {
+  if (!isRecord(raw)) throw new OpsGatewayContractError('the bidding Worker answered the envelope replace with something other than an object')
+  const { outcome, current_generation, current_kid } = raw
+  if (!(REPLACE_CONNECTION_ENVELOPE_OUTCOMES as readonly unknown[]).includes(outcome)) {
+    throw new OpsGatewayContractError(`the bidding Worker answered the envelope replace with an outcome this Worker does not know: ${String(outcome)}`)
+  }
+  if (!(current_generation === null || (isWhole(current_generation) && current_generation >= 1))) {
+    throw new OpsGatewayContractError('the bidding Worker answered the envelope replace with an unreadable generation')
+  }
+  if (!(current_kid === null || typeof current_kid === 'string')) throw new OpsGatewayContractError('the bidding Worker answered the envelope replace with an unreadable kid')
+  // A row was found exactly when a generation is named.
+  if ((outcome === 'not_found') !== (current_generation === null)) {
+    throw new OpsGatewayContractError(`the bidding Worker answered the envelope replace ${String(outcome)} with${current_generation === null ? ' no' : ''} generation`)
+  }
+  return { outcome: outcome as ReplaceConnectionEnvelopeOutcome, current_generation, current_kid }
 }
 
 /** What the ops copy's CHECKs hold public config and a target to (connection_copies_public_config_shape, _target_shape). */
