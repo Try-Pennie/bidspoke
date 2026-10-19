@@ -16,13 +16,22 @@
 
 export const PAGE_SIZE = 1000
 
-const DEFAULT_MAX_PAGES = 200
+/** The page bound when a caller names none: 200 pages, 200,000 rows. */
+export const DEFAULT_MAX_PAGES = 200
 
 /**
- * `maxPages` names a bound for a caller that must have every row or none (#1681):
- * a read still returning full pages when it reaches the bound THROWS instead of
- * returning what it has. Without it the read stops at 200 pages and returns
- * the rows so far, as it always has.
+ * Every row the query matches, or a throw. Never a short list.
+ *
+ * A read still returning full pages when it reaches its page bound THROWS
+ * (`<label> did not reach its last row within N pages`) instead of returning
+ * the rows so far, because a short read looks exactly like a complete one
+ * (#1785, #1437). The bound is `maxPages` when given (#1681), otherwise
+ * DEFAULT_MAX_PAGES. A caller treats the throw as "could not measure", the same
+ * as a failed page, never as a count. Measured on 2026-10-19, the largest read
+ * any caller makes is the live share check's six hour window of the Engine
+ * flow's buyer_select steps, at most 15,991 rows (16 pages), so the default
+ * bound sits far above every read today; a caller expected to grow past it
+ * narrows its query or names its own bound.
  */
 export async function fetchAllPaged<T>(
   makeQuery: (from: number, to: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }>,
@@ -39,6 +48,5 @@ export async function fetchAllPaged<T>(
     out.push(...(data as T[]))
     if (data.length < PAGE_SIZE) return out
   }
-  if (opts.maxPages !== undefined) throw new Error(`${label} did not reach its last row within ${maxPages} pages`)
-  return out
+  throw new Error(`${label} did not reach its last row within ${maxPages} pages`)
 }
