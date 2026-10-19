@@ -33,7 +33,7 @@ function failingSupabase(): SupabaseClient {
   const chain: unknown = new Proxy({}, {
     get(_, prop) {
       if (typeof prop === 'symbol') return undefined
-      if (prop === 'eq') return () => Promise.resolve({ data: null, error: { message: 'pool timeout' } })
+      if (prop === 'then') return (res: (v: unknown) => unknown) => Promise.resolve({ data: null, error: { message: 'pool timeout' } }).then(res)
       return () => chain
     },
   })

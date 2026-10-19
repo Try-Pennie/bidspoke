@@ -373,6 +373,17 @@ describe('productionDrainDeps lists offer buyers only', () => {
     const buyers = await productionDrainDeps(supabase, {} as unknown as Env).listBuyers()
     expect(buyers.map((b) => b.partner_id)).toEqual(['p-real'])
   })
+
+  // #1437: every organization's offer buyers, paged past PostgREST's 1,000 row
+  // cap, as the buyer sales checks list them. Unpaged, the buyers past the cap
+  // were never drained, and nothing said so.
+  it('lists every offer buyer past the row cap', async () => {
+    const supabase = profilesTableDouble(Array.from({ length: 1_001 }, (_, i) => (
+      { partner_id: `p-${String(i).padStart(4, '0')}`, sold_on: 'offer', organizations: { is_synthetic: false }, partner_configs: { organization_id: ORG, slug: `s${i}` } }
+    )))
+    const buyers = await productionDrainDeps(supabase, {} as unknown as Env).listBuyers()
+    expect(buyers).toHaveLength(1_001)
+  })
 })
 
 /**

@@ -37,6 +37,7 @@ import type { CapLimits, LedgerEntry, MarkMirroredResult, MirroredStamp, Unmirro
 import type { Env } from '../index'
 import { BuyerLedgerClient, gotNoAnswer, LEDGER_UNMIRRORED_OP, MEASURED_OBJECT_CALL_P99_MS, OBJECT_CALL_DEADLINE_MS, type ClientOptions } from './buyer-object-clients'
 import { chunk } from './chunk'
+import { fetchAllPaged } from './paginate'
 import { buildBuyerSaleRow, buyerSaleRowId, mirrorBuyerSale, type BuyerSaleRowMeta } from './buyer-sale-mirror'
 import { notifyExportFailure, type TitledRemedy } from './export-alerts'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
@@ -603,15 +604,21 @@ export function productionDrainDeps(supabase: SupabaseClient, env: Env): DrainDe
       // Every offer buyer with a profile, enabled or not: a disabled buyer can
       // still hold entries from before it was disabled. A click sold buyer
       // (#1541) never reserves in the ledger, so it has no outbox here.
-      const { data, error } = await supabase
-        .from('buyer_profiles')
-        .select('partner_id, partner_configs!inner(organization_id, slug), organizations!inner(is_synthetic)')
-        .eq('sold_on', 'offer')
-        // Never a synthetic organization's buyer (#2135): the one predicate that
-        // marks the partners page delivery monitor's organization (L261).
-        .eq('organizations.is_synthetic', false)
-      if (error) throw new Error(`buyer_profiles: ${error.message}`)
-      return ((data ?? []) as unknown as Array<{ partner_id: string; partner_configs: { organization_id: string; slug: string } }>).map((r) => ({
+      // Every organization's, paged by the primary key past PostgREST's 1,000 row
+      // cap (#1437), as the buyer sales checks list them. A failed page throws.
+      const data = await fetchAllPaged<{ partner_id: string; partner_configs: { organization_id: string; slug: string } }>(
+        (from, to) => supabase
+          .from('buyer_profiles')
+          .select('partner_id, partner_configs!inner(organization_id, slug), organizations!inner(is_synthetic)')
+          .eq('sold_on', 'offer')
+          // Never a synthetic organization's buyer (#2135): the one predicate that
+          // marks the partners page delivery monitor's organization (L261).
+          .eq('organizations.is_synthetic', false)
+          .order('partner_id', { ascending: true })
+          .range(from, to),
+        'buyer_profiles',
+      )
+      return data.map((r) => ({
         partner_id: r.partner_id,
         organization_id: r.partner_configs.organization_id,
         slug: r.partner_configs.slug,

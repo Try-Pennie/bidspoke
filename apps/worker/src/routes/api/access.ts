@@ -1,5 +1,7 @@
 import { Hono } from 'hono'
 import { dbError, requireRowOr404 } from '../../lib/api-error'
+import { fetchUpTo } from '../../lib/paginate'
+import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -10,12 +12,16 @@ const access = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 // GET /api/access — list all allowed emails
 access.get('/', async (c) => {
   const supabase = createSupabaseClient(c.env)
-  const { data, error } = await supabase
-    .from('user_allowlist')
-    .select('email, added_by, added_at')
-    .order('added_at', { ascending: true })
-  if (error) return dbError(c, error)
-  return c.json(data)
+  // Read whole or refused, never cut at the row cap (#1437).
+  try {
+    return c.json(await fetchUpTo((limit) => supabase
+      .from('user_allowlist')
+      .select('email, added_by, added_at')
+      .order('added_at', { ascending: true })
+      .limit(limit), CONFIG_LIST_BOUNDS.allowlist, 'allowlist'))
+  } catch (err) {
+    return dbError(c, err)
+  }
 })
 
 // POST /api/access — add an email to the allowlist
