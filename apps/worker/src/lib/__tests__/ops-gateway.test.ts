@@ -615,10 +615,30 @@ describe('the OpsGateway entrypoint', () => {
     // storeRotatedEnvelope: the ConnectionTokenObject's write back (#2335), tested in ops-gateway-rotated-envelope.test.ts.
     // opsConnections and moneyIdentities: the serve (#2335), tested in ops-gateway-connections.test.ts and money-identity.test.ts.
     // replaceConnectionEnvelope: the reseal's write back (#2333), tested in ops-gateway-replace-envelope.test.ts.
+    // opsJobStarted and opsJobCompleted: the ops jobs' stamps (#2340), tested in ops-gateway-jobs.test.ts and below.
     expect(Object.getOwnPropertyNames(OpsGateway.prototype).sort()).toEqual([
-      'constructor', 'moneyIdentities', 'opsConnections', 'opsTickCompleted', 'opsTickStarted', 'opsWorkflows', 'replaceConnectionEnvelope',
-      'storeRotatedEnvelope',
+      'constructor', 'moneyIdentities', 'opsConnections', 'opsJobCompleted', 'opsJobStarted', 'opsTickCompleted', 'opsTickStarted', 'opsWorkflows',
+      'replaceConnectionEnvelope', 'storeRotatedEnvelope',
     ])
+  })
+
+  it('stamps an ops job through opsJobStarted and opsJobCompleted, and refuses an id it does not watch by name (#2340)', async () => {
+    const { OpsGateway } = await import('../ops-gateway-entrypoint')
+    const store = kv()
+    const gw = new OpsGateway({} as ExecutionContext, { IDEMPOTENCY: store } as never)
+    expect(await gw.opsJobStarted('ops-sf-limits')).toEqual({ stamped: 'started', job: 'ops-sf-limits' })
+    expect(store.m.has(heartbeatKey('ops-sf-limits'))).toBe(true)
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined)
+    try {
+      const report = { started_at: '2026-10-19T18:00:01Z', finished_at: '2026-10-19T18:00:02Z', counts: { sf_limits_orgs: 0 } }
+      expect(await gw.opsJobCompleted('ops-sf-limits', report)).toEqual({ stamped: 'completed', job: 'ops-sf-limits' })
+    } finally {
+      log.mockRestore()
+    }
+    expect(store.m.has(completedKey('ops-sf-limits'))).toBe(true)
+    await expect(gw.opsJobStarted(OPS_TICK_JOB)).rejects.toThrow(/not an ops job this Worker stamps/)
+    await expect(gw.opsJobCompleted('ops-connection-check', {})).rejects.toThrow(/not an ops job this Worker stamps/)
+    expect(store.m.has(heartbeatKey(OPS_TICK_JOB))).toBe(false)
   })
 
   it('answers moneyIdentities for the organization asked about, and refuses a call naming none (#2335)', async () => {

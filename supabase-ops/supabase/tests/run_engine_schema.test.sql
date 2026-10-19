@@ -144,6 +144,8 @@ BEGIN
     AND p.proname <> ALL (ARRAY['record_connection_refresh', 'google_delegation_check'])
     -- The lookup allowance behind OpsConnections.lookup (#2335, PR 8), held to the same rules by ops_connections_entrypoint.test.sql.
     AND p.proname <> ALL (ARRAY['take_lookup_allowance'])
+    -- The sf_limits sweep's list of measured orgs (#2336), held to the same rules by sf_limits_targets.test.sql.
+    AND p.proname <> ALL (ARRAY['sf_limits_targets'])
     AND EXISTS (SELECT 1 FROM pg_depend d WHERE d.objid = p.oid AND d.deptype = 'e') IS FALSE
     AND p.proowner = 'postgres'::regrole;
   IF v_count <> 0 THEN RAISE EXCEPTION '% public function(s) executable by service_role are not on the run engine list', v_count; END IF;

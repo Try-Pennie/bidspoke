@@ -30,6 +30,7 @@ import {
   purgeExpiredConnectionTombstones,
   readConnectionCopy,
   readMeasuredSfOrg,
+  readSfLimitsTargets,
   readConnectionStatus,
   readWorkflowCopies,
   recordConnectionCheck,
@@ -578,5 +579,51 @@ describe('readMeasuredSfOrg (#2336)', () => {
 
   it('throws a failed read rather than answering unmeasured', async () => {
     await expect(readMeasuredSfOrg(tableFetch({ code: 'XX000', message: 'boom' }, 500).client, ORG, CONN_ID, 2)).rejects.toThrow(/failed/)
+  })
+})
+
+describe('readSfLimitsTargets (#2336)', () => {
+  const SF = '00Dst0000000001AAA'
+  const CONN_ID = '33333333-3333-4333-8333-333333333333'
+  const DB_NOW = '2026-10-19T18:00:00.000Z'
+  const row = (over: Record<string, unknown> = {}) => ({
+    sf_org_id: SF, organization_id: ORG, connection_id: CONN_ID, generation: 2,
+    target: { instance_url: 'https://example.my.salesforce.com', client_id: 'plain-client' },
+    reading_measured_at: '2026-10-19T17:57:00.000Z', db_now: DB_NOW, ...over,
+  })
+
+  it('reads one target per measured org, each under its own organization, and says when the page is full', async () => {
+    const t = rpcFetch([row(), row({ sf_org_id: '00Dst0000000002AAA', reading_measured_at: null })])
+    const read = await readSfLimitsTargets(t.client, 2)
+    expect(t.calls).toEqual([{ path: '/rest/v1/rpc/sf_limits_targets', body: { p_limit: 2 } }])
+    expect(read.reachedLimit).toBe(true)
+    expect(read.targets).toEqual([
+      { sfOrgId: SF, organizationId: ORG, connectionId: CONN_ID, generation: 2, target: row().target, readingMeasuredAt: '2026-10-19T17:57:00.000Z', dbNow: DB_NOW },
+      { sfOrgId: '00Dst0000000002AAA', organizationId: ORG, connectionId: CONN_ID, generation: 2, target: row().target, readingMeasuredAt: null, dbNow: DB_NOW },
+    ])
+    expect((await readSfLimitsTargets(rpcFetch([row()]).client, 2)).reachedLimit).toBe(false)
+    expect(await readSfLimitsTargets(rpcFetch([]).client, 2)).toEqual({ targets: [], reachedLimit: false })
+  })
+
+  it.each([
+    ['a 15 character org id, which would key a second pool', { sf_org_id: SF.slice(0, 15) }, /18 character/],
+    ['an organization that is not a uuid', { organization_id: 'everyone' }, /organization/],
+    ['a connection that is not a uuid', { connection_id: 'any' }, /connection/],
+    ['a generation that is not a whole number', { generation: '2' }, /generation/],
+    ['a reading time that is not a time', { reading_measured_at: 'recently' }, /reading_measured_at/],
+    ['no database clock', { db_now: null }, /db_now/],
+  ])('refuses a row carrying %s', async (_label, over, message) => {
+    await expect(readSfLimitsTargets(rpcFetch([row(over)]).client, 2)).rejects.toThrow(message)
+  })
+
+  it('refuses a limit the database would refuse, before calling it', async () => {
+    const t = rpcFetch([])
+    await expect(readSfLimitsTargets(t.client, 0)).rejects.toThrow(/1 to 100/)
+    await expect(readSfLimitsTargets(t.client, 101)).rejects.toThrow(/1 to 100/)
+    expect(t.calls).toEqual([])
+  })
+
+  it('throws a failed read rather than answering no orgs, which would read as nothing measured', async () => {
+    await expect(readSfLimitsTargets(rpcFetch({ code: 'XX000', message: 'boom' }, { status: 500 }).client, 2)).rejects.toThrow()
   })
 })

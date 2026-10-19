@@ -42,6 +42,8 @@ function opsDatabase() {
     save_connection_copies: [{ inserted: 1, updated: 0, confirmed: 0, refused_older: 0, refused_expired: 0, refused_removed: 0, withdrawn: 0 }],
     purge_expired_connection_tombstones: [{ purged: 1, more: false }],
     sweep_sf_leases: [{ swept: 2, more: false }],
+    // The sf_limits sweep's measured orgs (#2336): none, as today.
+    sf_limits_targets: [],
   }
   const fakeFetch: typeof globalThis.fetch = (async (input: string | URL | Request) => {
     const name = new URL(input instanceof Request ? input.url : input.toString()).pathname.replace('/rest/v1/rpc/', '')
@@ -52,16 +54,21 @@ function opsDatabase() {
   return { fetch: fakeFetch, called }
 }
 
-function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: number } {
+function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: number; jobStamps: string[]; jobReports: unknown[] } {
   const g = {
     reports: [] as OpsTickReport[],
     started: 0,
+    jobStamps: [] as string[],
+    jobReports: [] as unknown[],
     opsWorkflows: async () => ({
       served_at: '2026-10-17T10:02:31.000Z', complete: true,
       workflows: [{ id: WF, organization_id: ORG, is_active: true, deleted_at: null, updated_at: '2026-10-17T09:00:00.000Z', version_number: 3, trigger: schedule }],
     }),
     opsTickStarted: async () => { g.started++; return { ok: true } },
     opsTickCompleted: async (r: unknown) => { g.reports.push(r as OpsTickReport); return { ok: true } },
+    // The ops jobs' stamps (#2340): the sf_limits sweep's.
+    opsJobStarted: async (job: string) => { g.jobStamps.push(`started:${job}`); return { stamped: 'started', job } },
+    opsJobCompleted: async (job: string, r: unknown) => { g.jobStamps.push(`completed:${job}`); g.jobReports.push(r); return { stamped: 'completed', job } },
     // The tick never hands back a rotated login (#2335): the ConnectionTokenObject does.
     storeRotatedEnvelope: async () => { throw new Error('the tick does not call storeRotatedEnvelope') },
     replaceConnectionEnvelope: async () => { throw new Error('the tick does not call replaceConnectionEnvelope') },
@@ -134,6 +141,43 @@ describe('the live tick', () => {
     expect(s.observed).toEqual(['would_fire'])
     expect(g.started).toBe(1)
     expect(g.reports).toEqual([report])
+  })
+
+  it('runs the sf_limits sweep through its ops function and stamps it through the gateway under its own job id (#2336, #2340)', async () => {
+    const db = opsDatabase()
+    const { env, g } = configured()
+    const report = await runOpsTick(liveTickPorts(env, null, { sealRegistry, now: () => NOW, fetch: db.fetch }))
+    expect(db.called).toContain('sf_limits_targets')
+    expect(g.jobStamps).toEqual(['started:ops-sf-limits', 'completed:ops-sf-limits'])
+    expect(g.jobReports).toEqual([{ started_at: new Date(NOW).toISOString(), finished_at: new Date(NOW).toISOString(), counts: { sf_limits_orgs: 0 } }])
+    expect(report.outcome).toBe('ok')
+  })
+
+  it('reads a measured org through connectionFetch, which refuses by name a copy the ops database does not hold (#2336)', async () => {
+    const db = opsDatabase()
+    const answers = db as unknown as { fetch: typeof fetch }
+    const base = answers.fetch
+    const CONN = '00000000-0000-4000-8000-0000000023c1'
+    const withTarget: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const name = new URL(input instanceof Request ? input.url : input.toString()).pathname.replace('/rest/v1/rpc/', '')
+      if (name === 'sf_limits_targets') {
+        db.called.push(name)
+        return Response.json([{
+          sf_org_id: '00Dst0000000001AAA', organization_id: ORG, connection_id: CONN, generation: 1,
+          target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: '3MVG-ops' }, reading_measured_at: null, db_now: '2026-10-17T10:02:30+00:00',
+        }])
+      }
+      if (name === 'connection_copy') {
+        db.called.push(name)
+        return Response.json([{ state: 'not_found', connection_id: CONN, service: null, generation: null, envelope: null, public_config: null, target: null, served_at: null, serve_until: null, db_now: '2026-10-17T10:02:30+00:00' }])
+      }
+      return base(input, init)
+    }) as typeof fetch
+    const { env } = configured()
+    const report = await runOpsTick(liveTickPorts(env, null, { sealRegistry, now: () => NOW, fetch: withTarget }))
+    expect(db.called).toContain('connection_copy')
+    expect(report.problem_keys).toEqual(['sf_limits_refused:00Dst0000000001AAA'])
+    expect(report.problems[0]).toMatch(/connection_not_found/)
   })
 
   it('a dispatch signed with the wrong key is refused by OpsInternal and reported', async () => {

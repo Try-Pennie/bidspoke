@@ -89,6 +89,8 @@ export interface CronJob {
    * taken up to 320 s, and each start overwrites the last, so at the next tick a
    * late finish and a kill look the same and a real kill is masked by the next
    * start. A job killed every time still shows as no completion for this long.
+   * Also for a sweep inside the ops minute tick (ops-sf-limits, #2336), whose
+   * stamps cross a service binding and so can be lost one at a time.
    */
   completionDroughtMs?: number
   /** What stops working while this job is dark (for the alert body). */
@@ -414,6 +416,39 @@ export const CRON_JOBS: CronJob[] = [
       'ported ops workflows are not scheduled: nothing works out which of their slots are due, records them or reports a missed one, and the run engine\'s lease and expiry sweeps stop (#1949)',
     darkFixHint:
       'confirm bidspoke-worker-ops deployed with its minute trigger (wrangler.ops.toml `[triggers]`, and the Deploy Ops Worker job checks the deploy listed it), that its logs show `ops_tick` lines, and that its OPS_GATEWAY binding reaches this Worker, since the tick stamps its heartbeat through it.',
+  },
+  {
+    // The sf_limits sweep inside the ops minute tick (#2336, ops/sf-limits.ts),
+    // watched here as the tick is (L71). It stamps through the OpsGateway's
+    // opsJobStarted and opsJobCompleted (lib/ops-gateway.ts, #2340) each time it
+    // owns its claim, every 4 to 5 minutes. Its trigger is the tick's: a sweep
+    // rides the one ops minute cron and has none of its own.
+    id: 'ops-sf-limits',
+    label: 'Ops Salesforce limits reading',
+    triggerCron: '* * * * *',
+    worker: 'bidspoke-worker-ops',
+    // The tick's own 25 minutes plus one sweep interval with a missed tick (5),
+    // so a tick that is dark pages as ops-tick first, with the tick's remedy,
+    // and a sweep that stopped while the tick runs pages as itself. The tick
+    // logs about a seventh to a third fewer runs than a minute cron should
+    // (#2347: 308 distinct ticks finished in the 360 minutes from 13:00 to 19:00
+    // UTC on 2026-10-19), which moves one sweep by a minute or two, far inside
+    // this. Past it the org's reading is long stale (15 minutes), and every ops
+    // Salesforce call to it is refused sf_budget_unmeasured, which the sweep's
+    // own problems report before this does.
+    staleMs: 30 * MIN,
+    // One sweep is one read of the measured orgs and one /limits read each,
+    // each bounded at 45 s (SF_LIMITS_ORG_DEADLINE_MS), all at once. Below the
+    // minute trigger it rides, as every minute job's must be; judged by the
+    // drought below, never by one run.
+    maxRunMs: 50 * 1000,
+    // Three sweeps in a row with no completion while starts go on, so one
+    // completion stamp the gateway missed is never read as a killed sweep.
+    completionDroughtMs: 15 * MIN,
+    dependents:
+      'the ops Salesforce pool\'s budget readings are renewed only while ops happens to be calling each org, so an org ops has not called for 15 minutes refuses its next ops Salesforce call as sf_budget_unmeasured (#2336)',
+    darkFixHint:
+      'confirm the ops-tick heartbeat is healthy first (this sweep runs inside it), then search the bidspoke-worker-ops logs for ops_tick lines with sf_limits counts or problems, and check claim_ops_sweep\'s ops_lane_sweeps row for sf_limits in the ops database: a sweep that claims but never stamps reaches this Worker through the same OPS_GATEWAY binding as the tick.',
   },
   {
     id: 'engine-script-drift',

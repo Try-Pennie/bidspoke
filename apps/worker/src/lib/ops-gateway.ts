@@ -37,16 +37,23 @@
  * runs but fails, or is not configured, pages too: a problem a passing tick
  * would clear once three ticks in a row report it, any other at once (#2506).
  * Neither depends on the ops Worker being up: it is the thing watched.
+ *
+ * The ops jobs other than the tick (#2340), each a sweep inside it, stamp the
+ * same way under their own ids (OpsGateway.opsJobStarted and opsJobCompleted):
+ * only the ids in OPS_GATEWAY_JOBS, each by its own literal stamp below, and
+ * each watched by its own CRON_JOBS entry. The first is the sf_limits sweep
+ * (SF_LIMITS_JOB, #2336). Its problems page through the tick's report.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { fetchAllPaged } from './paginate'
 import { writeHeartbeat, writeHeartbeatCompleted } from './cron-heartbeat'
 import { notifyExportFailure, notifyExportRecovery } from './export-alerts'
 import {
-  CONNECTION_SERVE_WINDOW_MS, OpsGatewayContractError, TOMBSTONE_SERVE_WINDOW_MS, parseOpsTickReport, parseSealedEnvelope, problemRuleOf,
+  CONNECTION_SERVE_WINDOW_MS, OpsGatewayContractError, SF_LIMITS_JOB, TOMBSTONE_SERVE_WINDOW_MS, parseOpsJobId, parseOpsJobReport, parseOpsTickReport,
+  parseSealedEnvelope, problemRuleOf,
   parseReplaceConnectionEnvelopeAnswer, parseReplaceConnectionEnvelopeRequest, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
   servedConnectionProblem,
-  type OpsTickReport, type ReplaceConnectionEnvelopeAnswer, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections,
+  type OpsGatewayJob, type OpsJobReport, type OpsTickReport, type ReplaceConnectionEnvelopeAnswer, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections,
   type ServedOpsWorkflow, type ServedOpsWorkflows, type StoreRotatedEnvelopeAnswer,
 } from './ops-gateway-contract'
 import { formatErr } from './format-error'
@@ -311,6 +318,61 @@ interface KvLike {
 
 export async function recordOpsTickStarted(kv: KVNamespace, nowMs: number): Promise<void> {
   await writeHeartbeat(kv, OPS_TICK_JOB, nowMs)
+}
+
+/**
+ * The sf_limits sweep's id in the heartbeat registry (#2336, #2340), defined
+ * in the contract the ops Worker shares and stamped below by its own literal
+ * call, as OPS_TICK_JOB is above.
+ */
+export { SF_LIMITS_JOB } from './ops-gateway-contract'
+
+/**
+ * An ops job's started stamp (OpsGateway.opsJobStarted, #2340). Only the ids
+ * in OPS_GATEWAY_JOBS are accepted, each dispatched to its own literal stamp,
+ * so an id this Worker does not watch is refused by name and writes nothing,
+ * and the tick cannot be stamped round its own methods.
+ */
+export async function recordOpsJobStarted(kv: KVNamespace, rawJobId: unknown, nowMs: number): Promise<OpsGatewayJob> {
+  const job = parseOpsJobId(rawJobId)
+  switch (job) {
+    case SF_LIMITS_JOB:
+      await writeHeartbeat(kv, SF_LIMITS_JOB, nowMs)
+      return job
+    default: {
+      const unhandled: never = job
+      throw new OpsGatewayContractError(`no started stamp for ${String(unhandled)}`)
+    }
+  }
+}
+
+/**
+ * An ops job's completed stamp (OpsGateway.opsJobCompleted, #2340). The run
+ * finished whatever its report says, so a report this Worker cannot read is
+ * logged as unreadable and the completion is still stamped: the heartbeat
+ * must not read a finished run as killed. The job's problems reach the page
+ * through the tick's own report (its keyed problems), not through this one,
+ * which is only logged.
+ */
+export async function recordOpsJobCompleted(kv: KVNamespace, rawJobId: unknown, rawReport: unknown, nowMs: number): Promise<OpsGatewayJob> {
+  const job = parseOpsJobId(rawJobId)
+  let report: OpsJobReport | null = null
+  try {
+    report = parseOpsJobReport(rawReport)
+  } catch (err) {
+    logLine('error', { event: 'ops_job_report_unreadable', job, detail: formatErr(err) })
+  }
+  switch (job) {
+    case SF_LIMITS_JOB:
+      await writeHeartbeatCompleted(kv, SF_LIMITS_JOB, nowMs)
+      break
+    default: {
+      const unhandled: never = job
+      throw new OpsGatewayContractError(`no completed stamp for ${String(unhandled)}`)
+    }
+  }
+  if (report !== null) console.log(JSON.stringify({ event: 'ops_job_completed', job, ...report.counts }))
+  return job
 }
 
 /**

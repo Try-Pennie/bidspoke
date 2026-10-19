@@ -1,7 +1,9 @@
 /**
  * The minute cron's live ports (#1949): the ops database through ops-writes.ts,
  * the bidding Worker's OpsGateway through the OPS_GATEWAY binding, and
- * OpsInternal through the SELF binding. tick.ts holds the rules; this only
+ * OpsInternal through the SELF binding, and since #2336 the sf_limits sweep's
+ * /limits read through connectionFetch with the OpsConnections live
+ * dependencies. tick.ts holds the rules; this only
  * connects them, and turns every missing piece into a refusal by name.
  *
  * Not configured is loud, never a quiet fallback: while OPS_SUPABASE_URL or
@@ -20,9 +22,13 @@ import { raceDeadline } from '../lib/alert-claim'
 import { opsConnectionKeyProblems, type SealRegistry } from './connection-key'
 import { createOpsSupabaseClient, OpsDatabaseConfigError, type OpsSupabaseClient } from './ops-db'
 import {
-  claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, readWorkflowCopies, recordConnectionTombstone,
-  recordScheduleObservation, runQueueDisagreements, saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions,
+  claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, readSfLimitsTargets, readWorkflowCopies,
+  recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements, saveConnectionCopies, saveWorkflowCopies,
+  sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions,
 } from './ops-writes'
+import { connectionFetch, type ConnectionFetchDeps } from './connections/connection-fetch'
+import { liveOpsConnectionsDeps } from './ops-connections-live'
+import { SF_LIMITS_READ_DEADLINE_MS } from './sf-limits'
 import { dispatchKey, signDispatch } from './dispatch-auth'
 import type { OpsEnv } from './index'
 import type { DispatchItem, OpsTickDb, OpsTickPorts } from './tick'
@@ -58,6 +64,33 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     dueQueueDepth: () => dueQueueDepth(client, rpc),
     saveConnectionCopies: (servedAt, complete, copies) => saveConnectionCopies(client, servedAt, complete, copies, rpc),
     recordConnectionTombstone: (org, connectionId, generation, removedAt) => recordConnectionTombstone(client, org, connectionId, generation, removedAt, rpc),
+    sfLimitsTargets: (limit) => readSfLimitsTargets(client, limit, rpc),
+    recordSfLimitsReading: (sfOrgId, reading) => recordSfBudgetReading(client, sfOrgId, { ...reading, source: 'limits' }, rpc),
+  }
+}
+
+/**
+ * The sf_limits sweep's read of one org (#2336): connectionFetch with the
+ * OpsConnections live dependencies (ops-connections-live.ts, the one place an
+ * ops module hands the platform fetch on), purpose sf_limits, the committed
+ * copy only. Its dependencies are built on the first read, so a tick with no
+ * measured org never needs the ops private key, and a key that is missing
+ * fails the read by name (OpsConnectionsNotConfigured) rather than the tick.
+ */
+function sfLimitsRead(env: OpsEnv, options: LiveTickOptions): OpsTickPorts['sfLimits']['read'] {
+  let deps: ConnectionFetchDeps | null = null
+  return async (target, url) => {
+    if (deps === null) {
+      const live = liveOpsConnectionsDeps(env, { opensLogins: true, ...(options.fetch ? { opsFetch: options.fetch } : {}), ...(options.sealRegistry ? { sealRegistry: options.sealRegistry } : {}) })
+      deps = { ...live.connection, rulesFor: (service) => live.services(service)?.rules, deadlineMs: SF_LIMITS_READ_DEADLINE_MS }
+    }
+    return connectionFetch(deps, {
+      organizationId: target.organizationId,
+      connectionId: target.connectionId,
+      source: { kind: 'copy' },
+      purpose: 'sf_limits',
+      record: { recordsNothing: 'the sf_limits read is a GET of the org\'s own limits, made by the tick and no step, so there is no send ledger to record it in' },
+    }, url, { method: 'GET', headers: { accept: 'application/json' } })
   }
 }
 
@@ -111,6 +144,19 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
         if (!gateway) throw noGateway()
         await bounded('the bidding Worker\'s heartbeat', () => gateway.opsTickCompleted(report), GATEWAY_DEADLINE_MS, options.delay)
       },
+      jobStarted: async (job) => {
+        if (!gateway) throw noGateway()
+        await bounded(`the bidding Worker's heartbeat for ${job}`, () => gateway.opsJobStarted(job), GATEWAY_DEADLINE_MS, options.delay)
+      },
+      jobCompleted: async (job, report) => {
+        if (!gateway) throw noGateway()
+        await bounded(`the bidding Worker's heartbeat for ${job}`, () => gateway.opsJobCompleted(job, report), GATEWAY_DEADLINE_MS, options.delay)
+      },
+    },
+    sfLimits: {
+      read: sfLimitsRead(env, options),
+      sleep: options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+      log: (fields) => console.log(JSON.stringify(fields)),
     },
     dispatch: async (item: DispatchItem) => {
       if (!self) throw new Error('the SELF binding is missing from this deploy')
