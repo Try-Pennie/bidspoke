@@ -12,7 +12,8 @@ import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { writeAuditLog } from '../../lib/audit'
 import { syncBidConfig } from '../../lib/bid-matrix-sync'
-import { fetchAllPaged } from '../../lib/paginate'
+import { fetchAllPaged, fetchUpTo } from '../../lib/paginate'
+import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
 import { asJson } from '../../lib/json'
 import type { Database } from '../../types/database'
 
@@ -39,18 +40,22 @@ route.get('/', async (c) => {
   const supabase = createSupabaseClient(c.env)
   const partnerId = c.req.query('partner_id')
 
-  let query = supabase
-    .from('partner_bid_configs')
-    .select('id, partner_id, slug, name, is_default, is_active, sync_source, sf_object, sf_filters, dimensions, last_synced_at, last_sync_error, created_at, updated_at, updated_by_email, updated_by_name')
-    .eq('organization_id', orgId)
-    .order('partner_id', { ascending: true })
-    .order('is_default', { ascending: false })
-
-  if (partnerId) query = query.eq('partner_id', partnerId)
-
-  const { data, error } = await query
-  if (error) return dbError(c, error)
-  return c.json(data)
+  // Read whole or refused, never cut at the row cap (#1437).
+  try {
+    return c.json(await fetchUpTo((limit) => {
+      let query = supabase
+        .from('partner_bid_configs')
+        .select('id, partner_id, slug, name, is_default, is_active, sync_source, sf_object, sf_filters, dimensions, last_synced_at, last_sync_error, created_at, updated_at, updated_by_email, updated_by_name')
+        .eq('organization_id', orgId)
+      if (partnerId) query = query.eq('partner_id', partnerId)
+      return query
+        .order('partner_id', { ascending: true })
+        .order('is_default', { ascending: false })
+        .limit(limit)
+    }, CONFIG_LIST_BOUNDS.partnerBidConfigs, 'partner bid configs list'))
+  } catch (err) {
+    return dbError(c, err)
+  }
 })
 
 // ── Get one (with rows) ───────────────────────────────────────────────────────

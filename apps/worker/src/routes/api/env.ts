@@ -1,5 +1,7 @@
 import { Hono } from 'hono'
 import { dbError, dbErrorUnlessNotFound, requireRowOr404 } from '../../lib/api-error'
+import { fetchUpTo } from '../../lib/paginate'
+import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -39,16 +41,22 @@ env.get('/', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
 
-  const { data, error } = await supabase
-    .from('environment_variables')
-    .select('id, key, value, is_secret, scope, workflow_id, folder_id, updated_at, updated_by_email')
-    .eq('organization_id', orgId)
-    .order('key', { ascending: true })
-
-  if (error) return dbError(c, error)
+  // Read whole or refused, never cut at the row cap (#1437).
+  type EnvListRow = { id: string; key: string; value: string | null; is_secret: boolean; scope: string; workflow_id: string | null; folder_id: string | null; updated_at: string; updated_by_email: string | null }
+  let data: EnvListRow[]
+  try {
+    data = await fetchUpTo<EnvListRow>((limit) => supabase
+      .from('environment_variables')
+      .select('id, key, value, is_secret, scope, workflow_id, folder_id, updated_at, updated_by_email')
+      .eq('organization_id', orgId)
+      .order('key', { ascending: true })
+      .limit(limit), CONFIG_LIST_BOUNDS.environmentVariables, 'environment variables list')
+  } catch (err) {
+    return dbError(c, err)
+  }
 
   // Mask secret values
-  const masked = (data ?? []).map((row) => ({
+  const masked = data.map((row) => ({
     ...row,
     value: row.is_secret ? null : row.value,
   }))
@@ -324,16 +332,23 @@ env.post('/resync-secrets', async (c) => {
   const cfNames = await listCfSecretNames(c.env.CLOUDFLARE_ACCOUNT_ID, c.env.CLOUDFLARE_API_TOKEN)
   if (cfNames === null) return c.json({ error: 'Cloudflare secret sync is not configured' }, 503)
 
-  const { data, error } = await supabase
-    .from('environment_variables')
-    .select('id, key, value')
-    .eq('organization_id', orgId)
-    .eq('is_secret', true)
-    // Org secrets only: a workflow's own secret is never mirrored (#1681).
-    .eq('scope', 'global')
-  if (error) return dbError(c, error)
+  // Read whole or refused, never cut at the row cap (#1437): a cut list would
+  // report the resync done while leaving the rest unrepaired.
+  let data: { id: string; key: string; value: string | null }[]
+  try {
+    data = await fetchUpTo<{ id: string; key: string; value: string | null }>((limit) => supabase
+      .from('environment_variables')
+      .select('id, key, value')
+      .eq('organization_id', orgId)
+      .eq('is_secret', true)
+      // Org secrets only: a workflow's own secret is never mirrored (#1681).
+      .eq('scope', 'global')
+      .limit(limit), CONFIG_LIST_BOUNDS.environmentVariables, 'org secrets for resync')
+  } catch (err) {
+    return dbError(c, err)
+  }
 
-  const missing = (data ?? []).filter((s) => !cfNames.has(s.key))
+  const missing = data.filter((s) => !cfNames.has(s.key))
   const resynced: string[] = []
   const skipped: { key: string; reason: string }[] = []
 
