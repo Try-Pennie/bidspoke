@@ -299,7 +299,7 @@ describe('the Buyer profile section', () => {
   // #2328: a decline rule's status used to be rounded on save; now it is refused, once, under the decline rules.
   it('a decline rule status that is not an HTTP status is refused once, under the decline rules', async () => {
     const onSave = await renderBuyer()
-    fireEvent.click(screen.getByRole('button', { name: 'Add decline rule on the HTTP status' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add HTTP status rule, decline' }))
     fireEvent.change(screen.getByRole('spinbutton', { name: /HTTP status/ }), { target: { value: '4.5' } })
     fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
     const reason = 'An HTTP status in a decline rule is a whole number from 100 to 599.'
