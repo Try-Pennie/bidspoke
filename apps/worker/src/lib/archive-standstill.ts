@@ -179,7 +179,7 @@ export async function checkArchiveStandstill(
  */
 async function recentRuns(supabase: SupabaseClient): Promise<RecentRun[] | null> {
   try {
-    // paginate-ok: the handful of runs the standstill window covers
+    // The handful of runs the standstill window covers (.limit(6)).
     const { data, error } = await supabase
       .from('job_runs')
       .select('outcome, started_at, finished_at')

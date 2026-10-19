@@ -422,7 +422,7 @@ export async function readLastPurge(supabase: SupabaseClient, days: string[]): P
   // cleanup has recorded anything" (lessons review, #835). The days beneath the
   // gate are a handful, so this is a handful of reads.
   for (const day of days) {
-    // paginate-ok: one row, the newest for this day
+    // One row, the newest for this day (.limit(1)).
     const { data, error } = await supabase
       .from('purge_run_log')
       .select('archive_day, outcome, reason, recorded_at')
@@ -448,6 +448,9 @@ export async function readBeneathStatus(
   supabase: SupabaseClient,
   days: string[],
 ): Promise<Map<string, BeneathStatus>> {
+  // paginate-ok .in(archive_day): archive_day is the primary key, so one row per
+  // day asked about, and the days are those beneath the gate (at most the
+  // backlog walk's LOOKBACK_DAYS, 14).
   const { data, error } = await supabase
     .from('execution_archive_days')
     .select(
@@ -891,6 +894,9 @@ async function gatePass(
   // and the reaper. A failed read here is a failed run, not an empty set: an
   // empty set would measure every stamped day and alert on each (L98).
   used.postgres += 1
+  // paginate-ok .in(archive_day): archive_day is the primary key, so one row per
+  // day asked about: the candidates (RETENTION_DAYS + 2) and the days beneath
+  // the gate (at most LOOKBACK_DAYS, 14).
   const stampedRead = await supabase
     .from('execution_archive_days')
     .select('archive_day')

@@ -186,6 +186,21 @@ const PAGINATE_OK = /paginate-ok((?:\s+\.\w+\(\s*[\w.]+\s*\))*)\s*:/
 
 interface ChainCall { name: string; args: string }
 
+// The index just past the type argument list opening at `open` (a `<`), or
+// `open` itself when it never closes: an arrow's `=>` is not a closing `>`.
+function consumeTypeArgs(src: string, open: number): number {
+  let depth = 0
+  for (let k = open; k < src.length; k++) {
+    const ch = src[k]
+    if (ch === '<') depth++
+    else if (ch === '>' && src[k - 1] !== '=') {
+      depth--
+      if (depth === 0) return k + 1
+    }
+  }
+  return open
+}
+
 // Walk the .method(...) chain starting at `from` (the index just past .from(...)),
 // in SANITIZED source (comments blanked, strings kept). Returns each call with
 // its argument text and the index where the chain ends.
@@ -198,6 +213,9 @@ function walkChain(src: string, from: number): { calls: ChainCall[]; end: number
     let j = i + 1
     let name = ''
     while (j < src.length && /\w/.test(src[j])) { name += src[j]; j++ }
+    // A type argument (`.single<Row>()`) is part of the call, not the end of
+    // the chain, so a bound written after one is still seen (#1437).
+    if (src[j] === '<') j = consumeTypeArgs(src, j)
     if (src[j] !== '(') break
     const end = consumeParens(src, j)
     calls.push({ name, args: src.slice(j + 1, end - 1) })
@@ -320,6 +338,29 @@ function builderFinishes(src: string, fromIndex: number, chainEnd: number): Chai
   return finishes
 }
 
+/**
+ * The calls chained onto a wrapper the read at `fromIndex`..`chainEnd` is passed
+ * to as its ONLY argument (`onlySlackAlertRow(supabase.from(..)..).limit(2)`):
+ * such a wrapper adds filters and hands the builder back, so a bound chained
+ * after it bounds the read. Empty when the read is not a sole call argument,
+ * since a call taking more (`leadRead(supabase, query, label)`) may return
+ * something else entirely (#1437).
+ */
+function wrapperTail(src: string, fromIndex: number, chainEnd: number): ChainCall[] {
+  let r = fromIndex
+  while (r > 0 && /\s/.test(src[r - 1])) r--
+  while (r > 0 && /[\w$.]/.test(src[r - 1])) r--
+  while (r > 0 && /\s/.test(src[r - 1])) r--
+  if (src[r - 1] !== '(' || !/[\w$]/.test(src[r - 2] ?? '')) return []
+  let k = chainEnd
+  while (k > fromIndex && /\s/.test(src[k - 1])) k--
+  while (/\s/.test(src[k] ?? '')) k++
+  if (src[k] === ',') k++
+  while (/\s/.test(src[k] ?? '')) k++
+  if (src[k] !== ')') return []
+  return walkChain(src, k + 1).calls
+}
+
 function scanSource(raw: string, relPath: string): Finding[] {
   const findings: Finding[] = []
   // Comments blanked so a `.from(` in prose is not a read; strings kept so the
@@ -353,7 +394,9 @@ function scanSource(raw: string, relPath: string): Finding[] {
     // filters added conditionally, then `await query.order(..).range(..)`), each
     // place that finishes it, with this chain in front.
     const isLimited = (chain: ChainCall[]) => chain.some((c) => isRowLimit(c, src))
-    const finishes = isLimited(calls) ? [calls] : (builderFinishes(src, m.index, end)?.map((t) => [...calls, ...t]) ?? [calls])
+    // A wrapper the read is handed to alone, and the calls chained onto it.
+    const wrapped = [...calls, ...wrapperTail(src, m.index, end)]
+    const finishes = isLimited(wrapped) ? [wrapped] : (builderFinishes(src, m.index, end)?.map((t) => [...calls, ...t]) ?? [calls])
     const limited = finishes.length > 0 && finishes.every(isLimited)
     // A .range() read pages, and paging without a stable ORDER BY tears. This is
     // NOT covered by the limit check: .range() satisfies that check while still
@@ -931,6 +974,33 @@ describe('the every table read rule can fail (#1437)', () => {
 
   it('a .from( inside a comment is not a read', () => {
     expect(scan("// supabase.from('fixture_invented_1437').select('*')\nconst x = 1\n")).toEqual([])
+  })
+
+  it('a read passed alone to a wrapper is judged with the calls chained onto the wrapper', () => {
+    // `onlySlackAlertRow(query).limit(n)`: the wrapper adds filters and hands the
+    // builder back, so the bound after it bounds the read (slack.ts, #1437).
+    expect(scan("return onlySlackAlertRow(supabase.from('fixture_invented_1437').select('*').eq('organization_id', org)).limit(2)\n")).toEqual([])
+    expect(scan("return wrap(\n  supabase\n    .from('fixture_invented_1437')\n    .select('*')\n    .eq('organization_id', org),\n).limit(SMALL)\n")).toEqual([])
+    // With nothing chained onto the wrapper, or a limit over the cap, it is unbounded.
+    expect(scan("return wrap(supabase.from('fixture_invented_1437').select('*'))\n").map((f) => f.kind)).toEqual(['unbounded'])
+    expect(scan("return wrap(supabase.from('fixture_invented_1437').select('*')).limit(5000)\n").map((f) => f.kind)).toEqual(['unbounded'])
+    // Not the wrapper's only argument: what comes back need not be the builder.
+    expect(scan("return leadRead(supabase, supabase.from('fixture_invented_1437').select('*')).limit(2)\n").map((f) => f.kind)).toEqual(['unbounded'])
+    expect(scan("return leadRead(supabase.from('fixture_invented_1437').select('*'), 'label').limit(2)\n").map((f) => f.kind)).toEqual(['unbounded'])
+  })
+
+  it('a type argument on a chained call does not end the chain', () => {
+    // `.single<T>()` reads one row; the walker once stopped at the `<` and
+    // reported the read as unbounded (custom-endpoint.ts, #1437).
+    const typed = "await supabase.from('fixture_invented_1437').select('*').eq('id', id).single<{ id: string; f: (x: number) => void; m: Map<string, Array<number>> }>()\n"
+    expect(scan(typed)).toEqual([])
+    expect(scan("await supabase.from('fixture_invented_1437').select('*').maybeSingle<Row>()\n")).toEqual([])
+    // A type argument bounds nothing by itself.
+    expect(scan("await supabase.from('fixture_invented_1437').select<'*'>('*').eq('id', id)\n").map((f) => f.kind)).toEqual(['unbounded'])
+    expect(scan("await supabase.from('fixture_invented_1437').select('*').returns<Row[]>()\n").map((f) => f.kind)).toEqual(['unbounded'])
+    // And a limit after one is still seen.
+    expect(scan("await supabase.from('fixture_invented_1437').select('*').returns<Row[]>().limit(5000)\n").map((f) => f.kind)).toEqual(['unbounded'])
+    expect(scan("await supabase.from('fixture_invented_1437').select('*').returns<Row[]>().limit(10)\n")).toEqual([])
   })
 
   it('the baseline comparison reports a new read and a baseline entry that no longer exists', () => {

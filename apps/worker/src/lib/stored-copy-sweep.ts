@@ -372,9 +372,9 @@ export function sweepSources(supabase: SupabaseClient<Database>, kv: KVNamespace
       )
       return rows.map(({ workflows, ...row }) => ({ ...row, trigger_auth_method: workflows?.auth_method ?? null }))
     },
-    // paginate-ok: at most ID_CHUNK rows a request, one per id asked for.
+    // paginate-ok .in(id): at most ID_CHUNK rows a request, one per id asked for.
     partners: (ids) => inChunks(ids, (chunk) => supabase.from('partner_configs').select('id, updated_at').in('id', chunk)),
-    // paginate-ok: at most ID_CHUNK rows a request, one per id asked for.
+    // paginate-ok .in(id): at most ID_CHUNK rows a request, one per id asked for.
     workflows: (ids) => inChunks(ids, (chunk) => supabase.from('workflows').select('id, updated_at').in('id', chunk)),
     refreshWorkflow: (id) => refreshWorkflowCaches(id, kv, supabase),
     // The lookup's own reader, so the sweep compares exactly what a lead would copy.

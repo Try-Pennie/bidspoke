@@ -17,7 +17,7 @@
 import { describe, expect, it } from 'vitest'
 import { decryptSecret, encryptSecret, secretKeys } from '../../../lib/secret-crypto'
 import { resolveSlackConnection } from '../../../lib/slack-connection'
-import { sealSlackTokens } from '../slack-token-seal'
+import { SLACK_ROWS_MAX, sealSlackTokens } from '../slack-token-seal'
 
 const ORG = 'org-mine'
 const OTHER = 'org-other'
@@ -31,16 +31,19 @@ type Row = Record<string, unknown>
 
 function fakeTable(rows: Row[]) {
   const writes: { patch: Row; filters: [string, string, unknown][] }[] = []
+  const limits: number[] = []
   const client = {
     from(table: string) {
       if (table !== 'service_connections') throw new Error(`unexpected table ${table}`)
       const filters: [string, string, unknown][] = []
       let patch: Row | null = null
+      let limit: number | null = null
       const match = (r: Row) => filters.every(([op, c, v]) => (op === 'is' ? r[c] === v : r[c] === v))
       const b = {
         select: () => b,
         eq: (c: string, v: unknown) => { filters.push(['eq', c, v]); return b },
         is: (c: string, v: unknown) => { filters.push(['is', c, v]); return b },
+        limit: (n: number) => { limit = n; limits.push(n); return b },
         update: (p: Row) => { patch = p; return b },
         then: (resolve: (r: unknown) => unknown) => {
           if (patch) {
@@ -49,13 +52,14 @@ function fakeTable(rows: Row[]) {
             hit.forEach((r) => Object.assign(r, patch))
             return Promise.resolve({ data: hit.map((r) => ({ id: r.id })), error: null }).then(resolve)
           }
-          return Promise.resolve({ data: rows.filter(match).map((r) => ({ ...r })), error: null }).then(resolve)
+          const found = rows.filter(match).map((r) => ({ ...r }))
+          return Promise.resolve({ data: limit === null ? found : found.slice(0, limit), error: null }).then(resolve)
         },
       }
       return b
     },
   }
-  return { client, writes }
+  return { client, writes, limits }
 }
 
 function rowsFor() {
@@ -75,6 +79,24 @@ describe('sealSlackTokens', () => {
     expect(rows[0].credential_enc).toBeNull()
     expect(r).toMatchObject({ dryRun: true, rowsSeen: 1, sealed: 1, alreadySealed: 0, readyForContract: false })
     expect(r.verification).toEqual([{ id: 'sc-mine', sealed: false, opensWithLockKey: false, matchesPlaintext: null }])
+  })
+
+  it('reads one row past its bound, and refuses a full answer rather than judging a cut list (#1437)', async () => {
+    // A cut list could read every row it saw as sealed and call the contract
+    // release safe while an unseen row still holds only the plaintext.
+    const many = Array.from({ length: SLACK_ROWS_MAX + 1 }, (_, i) => ({
+      id: `sc-${i}`, organization_id: ORG, service_type: 'slack', config: { bot_token: `t-${i}` }, credential_enc: null, sealed_for: null,
+    })) as Row[]
+    const { client, writes, limits } = fakeTable(many)
+    const keys = secretKeys({ SECRET_ENCRYPTION_KEY: newKey() })
+    await expect(sealSlackTokens(client as never, keys, ORG, ACTOR, { dryRun: false })).rejects.toThrow(`more than ${SLACK_ROWS_MAX} Slack rows`)
+    expect(limits).toEqual([SLACK_ROWS_MAX + 1])
+    expect(writes).toEqual([])
+
+    // At the bound itself every row is seen.
+    const { client: whole } = fakeTable(many.slice(0, SLACK_ROWS_MAX))
+    const r = await sealSlackTokens(whole as never, keys, ORG, ACTOR, { dryRun: true })
+    expect(r.rowsSeen).toBe(SLACK_ROWS_MAX)
   })
 
   it('seals the caller org row only, naming the actor, and verifies it from what was stored', async () => {

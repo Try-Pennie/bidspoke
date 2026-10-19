@@ -51,6 +51,8 @@ export interface TableConfig {
   count?: number
   /** `.maybeSingle()` result. Falls back to `single`, then null. */
   maybeSingle?: Record<string, unknown> | null
+  /** `.maybeSingle()` returns this error instead (a real DB error; no rows is not one). */
+  maybeSingleError?: QueryError
   insertResult?: Record<string, unknown> | null
   insertError?: QueryError
   updateResult?: Record<string, unknown> | null
@@ -229,6 +231,7 @@ export function makeSupabase(
               if (table === 'user_allowlist' && cfg.single === undefined && cfg.maybeSingle === undefined) {
                 return () => Promise.resolve({ data: { email: allowlistEmail }, error: null })
               }
+              if (cfg.maybeSingleError) return () => Promise.resolve({ data: null, error: cfg.maybeSingleError })
               return () => Promise.resolve({ data: cfg.maybeSingle ?? cfg.single ?? null, error: null })
             }
 

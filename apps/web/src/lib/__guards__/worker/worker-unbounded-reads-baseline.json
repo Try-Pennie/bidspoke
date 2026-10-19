@@ -2,14 +2,8 @@
   "engine/source-assignment.ts": {
     "source_workflow_assignments": 1
   },
-  "lib/achieve-export.ts": {
-    "execution_steps": 1
-  },
   "lib/alert-fanout.ts": {
     "service_connections": 2
-  },
-  "lib/archive-gate.ts": {
-    "execution_archive_days": 2
   },
   "lib/bid-matrix-sync.ts": {
     "partner_bid_configs": 1
@@ -18,8 +12,7 @@
     "buyer_profiles": 1
   },
   "lib/buyer-sale-drain.ts": {
-    "buyer_profiles": 1,
-    "buyer_sales": 1
+    "buyer_profiles": 1
   },
   "lib/buyer-sales-checks.ts": {
     "buyer_profiles": 1
@@ -49,13 +42,7 @@
   "lib/payload-print-check.ts": {
     "workflows": 1
   },
-  "lib/replayed-executions.ts": {
-    "workflow_executions": 1
-  },
   "lib/required-env-vars.ts": {
-    "environment_variables": 1
-  },
-  "lib/salesforce-creds.ts": {
     "environment_variables": 1
   },
   "lib/salesforce-read-back.ts": {
@@ -72,14 +59,7 @@
     "environment_variables": 1,
     "service_connections": 1
   },
-  "lib/slack.ts": {
-    "service_connections": 1
-  },
   "lib/slow-execution-rate.ts": {
-    "workflows": 1
-  },
-  "lib/stored-copy-sweep.ts": {
-    "partner_configs": 1,
     "workflows": 1
   },
   "lib/upstream-outage.ts": {
@@ -97,16 +77,8 @@
   "routes/api/access.ts": {
     "user_allowlist": 1
   },
-  "routes/api/admin.ts": {
-    "execution_archive_hours": 1,
-    "execution_steps": 1,
-    "lead_sightings": 1
-  },
   "routes/api/buyer-profiles.ts": {
     "buyer_profiles": 1
-  },
-  "routes/api/connections.ts": {
-    "service_connections": 2
   },
   "routes/api/endpoints.ts": {
     "webhook_endpoints": 1
@@ -118,8 +90,6 @@
     "environment_variables": 2
   },
   "routes/api/executions.ts": {
-    "execution_steps": 2,
-    "workflow_executions": 1,
     "workflows": 1
   },
   "routes/api/field-coverage.ts": {
@@ -128,14 +98,8 @@
   "routes/api/folders.ts": {
     "folders": 1
   },
-  "routes/api/integrations.ts": {
-    "service_connections": 1
-  },
   "routes/api/partner-bid-configs.ts": {
     "partner_bid_configs": 1
-  },
-  "routes/api/partner-history.ts": {
-    "users": 1
   },
   "routes/api/partner-uuids.ts": {
     "partner_uuid_map": 1
@@ -146,19 +110,12 @@
   "routes/api/service-presets.ts": {
     "service_presets": 1
   },
-  "routes/api/slack-token-seal.ts": {
-    "service_connections": 1
-  },
   "routes/api/sources.ts": {
-    "api_sources": 3,
+    "api_sources": 2,
     "source_workflow_assignments": 2
   },
   "routes/api/workflows.ts": {
-    "execution_steps": 1,
     "partner_configs": 2,
     "workflows": 1
-  },
-  "routes/custom-endpoint.ts": {
-    "webhook_endpoints": 1
   }
 }
