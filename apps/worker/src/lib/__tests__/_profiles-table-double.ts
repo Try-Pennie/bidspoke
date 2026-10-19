@@ -38,7 +38,8 @@ export function profilesTableDouble(rows: ProfileTableRow[]): SupabaseClient {
         range: (from: number, to: number) => { window = [from, to]; return builder },
         then: (resolve: (v: { data: ProfileTableRow[]; error: null }) => void) => {
           const matched = rows.filter((r) => filters.every(([c, v]) => !applies(c) || valueAt(r, c) === v))
-          resolve({ data: window ? matched.slice(window[0], window[1] + 1) : matched, error: null })
+          // Unpaged, PostgREST answers at most its 1,000 row cap, silently (#1437).
+          resolve({ data: window ? matched.slice(window[0], window[1] + 1) : matched.slice(0, 1000), error: null })
         },
       }
       return builder

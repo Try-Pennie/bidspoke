@@ -4,6 +4,8 @@
  */
 import { Hono } from 'hono'
 import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
+import { fetchUpTo } from '../../lib/paginate'
+import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -182,14 +184,18 @@ partners.get('/', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
 
-  const { data, error } = await supabase
-    .from('partner_configs')
-    .select('*')
-    .eq('organization_id', orgId)
-    .order('priority', { ascending: true })
-
-  if (error) return dbError(c, error)
-  return c.json((data ?? []).map((row) => withCredentialWarning(c.env, row)))
+  // Read whole or refused, never cut at the row cap (#1437).
+  try {
+    const rows = await fetchUpTo<Record<string, unknown>>((limit) => supabase
+      .from('partner_configs')
+      .select('*')
+      .eq('organization_id', orgId)
+      .order('priority', { ascending: true })
+      .limit(limit), CONFIG_LIST_BOUNDS.partnerConfigs, 'partners list')
+    return c.json(rows.map((row) => withCredentialWarning(c.env, row)))
+  } catch (err) {
+    return dbError(c, err)
+  }
 })
 
 // ── Get ───────────────────────────────────────────────────────────────────────

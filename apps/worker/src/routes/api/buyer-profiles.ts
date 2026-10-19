@@ -36,6 +36,8 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
+import { fetchUpTo } from '../../lib/paginate'
+import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
 import { readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../../lib/buyer-profile-loader'
 import { BuyerLedgerClient, ClickCounterClient } from '../../lib/buyer-object-clients'
 import { workflowsUsingPartner } from '../../lib/partner-workflow-finder'
@@ -93,14 +95,14 @@ interface OfferBuyer {
  * read throws rather than answering an empty list, which would say exactly that.
  */
 async function readOtherOfferBuyers(supabase: ReturnType<typeof createSupabaseClient>, orgId: string, partnerId: string): Promise<OfferBuyer[]> {
-  const { data, error } = await supabase
+  // Read whole or refused (#1437): where this buyer stands among a cut list is wrong.
+  const rows = await fetchUpTo<{ partner_id: string; priority: number | null; partner_configs: { name: string; is_active: boolean } | null }>((limit) => supabase
     .from('buyer_profiles')
     .select('partner_id, priority, partner_configs!inner(name, is_active)')
     .eq('organization_id', orgId)
     .eq('sold_on', 'offer')
     .eq('is_enabled', true)
-  if (error) throw error
-  const rows = (data ?? []) as unknown as Array<{ partner_id: string; priority: number | null; partner_configs: { name: string; is_active: boolean } | null }>
+    .limit(limit), CONFIG_LIST_BOUNDS.buyerProfiles, 'other offer buyers')
   return rows
     .filter((r) => r.partner_id !== partnerId && r.partner_configs?.is_active === true)
     .map((r) => ({ id: r.partner_id, name: r.partner_configs?.name ?? r.partner_id, priority: r.priority }))

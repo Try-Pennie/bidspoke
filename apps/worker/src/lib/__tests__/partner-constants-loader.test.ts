@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { loadPartnerConstants, invalidatePartnerConstantsCache, keepPartnerConstantsConfirmed, forgetPartnerConstantsMemory } from '../partner-constants-loader'
 import { STORED_COPY_MAX_AGE_MS, STORED_COPY_RECONFIRM_AFTER_MS, StoredCopyRefusedError } from '../stored-copy-age'
+import { CONFIG_LIST_BOUNDS } from '../config-list-bounds'
 
 const ORG = 'org-test'
 const CACHE_KEY = `partner-constants-v2-${ORG}`
@@ -32,7 +33,7 @@ function makeSupabase(uuidRows: unknown[] = [], partnerRows: unknown[] = []) {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
         if (prop === 'select') return () => chain
-        if (prop === 'eq') return () => Promise.resolve({ data: rows, error: null })
+        if (prop === 'then') return (res: (v: unknown) => unknown) => Promise.resolve({ data: rows, error: null }).then(res)
         return () => chain
       },
     })
@@ -298,7 +299,7 @@ function makeSupabaseError() {
   const chain: unknown = new Proxy({}, {
     get(_, prop) {
       if (typeof prop === 'symbol') return undefined
-      if (prop === 'eq') return () => Promise.resolve({ data: null, error: { message: 'pool timeout' } })
+      if (prop === 'then') return (res: (v: unknown) => unknown) => Promise.resolve({ data: null, error: { message: 'pool timeout' } }).then(res)
       return () => chain
     },
   })
@@ -352,6 +353,37 @@ describe('loadPartnerConstants — DB error handling (1.1, the #391 shape)', () 
 
     expect(kv.put).toHaveBeenCalledWith(CACHE_KEY, expect.any(String), { expirationTtl: 60 * 60 * 24 * 30 })
     expect(kv.put).toHaveBeenCalledWith(LASTGOOD_KEY, expect.any(String), { metadata: { confirmed_at: expect.any(String) } })
+  })
+
+  // #1437 P6: each list is read whole or the load fails like a failed read. A
+  // list cut at the row cap would be cached as the whole set for thirty days.
+  it.each([
+    ['partner uuid map', () => makeSupabase(Array.from({ length: CONFIG_LIST_BOUNDS.partnerUuids + 1 }, (_, i) => ({ uuid: `u-${i}`, partner_slug: 'sofi' })), [])],
+    ['partner configs', () => makeSupabase([], Array.from({ length: CONFIG_LIST_BOUNDS.partnerConfigs + 1 }, (_, i) => ({ id: `p-${i}`, slug: `s${i}`, is_active: true })))],
+  ] as const)('refuses a %s list past its bound, caching nothing and serving the last-good copy', async (_label, sb) => {
+    const lastGood = { subAccountIdsMap: { 'uuid-1': 'sofi' }, sellOff: {}, clickUrls: {}, activeBidding: { sofi: true }, subAccountMinBids: {} }
+    const kv = makeKvByKey({ [LASTGOOD_KEY]: confirmed(lastGood, 60_000) })
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      expect(await loadPartnerConstants(ORG, kv, sb() as never)).toEqual(lastGood)
+      expect(kv.put).not.toHaveBeenCalledWith(CACHE_KEY, expect.anything(), expect.anything())
+    } finally {
+      logged.mockRestore()
+    }
+  })
+
+  it('asks each list for one row past its bound', async () => {
+    const limits: unknown[] = []
+    const chain: unknown = new Proxy({}, {
+      get(_, prop) {
+        if (typeof prop === 'symbol') return undefined
+        if (prop === 'then') return (res: (v: unknown) => unknown) => Promise.resolve({ data: [], error: null }).then(res)
+        if (prop === 'limit') return (n: unknown) => { limits.push(n); return chain }
+        return () => chain
+      },
+    })
+    await loadPartnerConstants(ORG, makeKvByKey({}), { from: () => chain } as never)
+    expect(limits.sort()).toEqual([CONFIG_LIST_BOUNDS.partnerConfigs + 1, CONFIG_LIST_BOUNDS.partnerUuids + 1].sort())
   })
 })
 

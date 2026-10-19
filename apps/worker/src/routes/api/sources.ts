@@ -9,6 +9,8 @@
 import { Hono } from 'hono'
 import type { Context } from 'hono'
 import { dbError, isNotFoundError, requireRowOr404, rowsTouched } from '../../lib/api-error'
+import { fetchAllPaged, fetchUpTo } from '../../lib/paginate'
+import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { setCfSecret } from '../../lib/cf-secrets'
@@ -63,9 +65,18 @@ async function rebuildKeyMap(
   currentEnvMap: Record<string, string>,
   removeKeys: Set<string> = new Set(),
 ): Promise<KeyMapResult> {
-  const { data, error } = await supabase.from('api_sources').select('name, api_key')
-  if (error) return { error }
-  const rows = (data ?? []) as { name: string; api_key: string }[]
+  // Every organization's sources, paged by the primary key past PostgREST's
+  // 1,000 row cap (#1437): a map rebuilt from a cut list would drop the keys of
+  // the sources it never saw. A failed page answers the error, never a part.
+  let rows: { name: string; api_key: string }[]
+  try {
+    rows = await fetchAllPaged<{ name: string; api_key: string }>(
+      (from, to) => supabase.from('api_sources').select('name, api_key').order('id', { ascending: true }).range(from, to),
+      'api_sources key map read',
+    )
+  } catch (error) {
+    return { error }
+  }
   const dbMap: Record<string, string> = {}
   const dbKeys = new Set<string>()
   for (const r of rows) {
@@ -131,13 +142,17 @@ function keyMapReadFailed(c: Context, error: unknown): Response {
 sources.get('/', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
-  const { data, error } = await supabase
-    .from('api_sources')
-    .select('name, api_key, created_at')
-    .eq('organization_id', orgId)
-    .order('name')
-  if (error) return dbError(c, error)
-  return c.json(data ?? [])
+  // Read whole or refused, never cut at the row cap (#1437).
+  try {
+    return c.json(await fetchUpTo((limit) => supabase
+      .from('api_sources')
+      .select('name, api_key, created_at')
+      .eq('organization_id', orgId)
+      .order('name')
+      .limit(limit), CONFIG_LIST_BOUNDS.apiSources, 'api sources list'))
+  } catch (err) {
+    return dbError(c, err)
+  }
 })
 
 // POST /api/sources — body: { name: string, assign_workflow_id?: string }
@@ -204,12 +219,16 @@ sources.post('/', async (c) => {
 sources.get('/assignments', async (c) => {
   const { orgId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
-  const { data, error } = await supabase
-    .from('source_workflow_assignments')
-    .select('source_name, workflow_id')
-    .eq('organization_id', orgId)
-  if (error) return dbError(c, error)
-  return c.json(data ?? [])
+  // Read whole or refused, never cut at the row cap (#1437).
+  try {
+    return c.json(await fetchUpTo((limit) => supabase
+      .from('source_workflow_assignments')
+      .select('source_name, workflow_id')
+      .eq('organization_id', orgId)
+      .limit(limit), CONFIG_LIST_BOUNDS.sourceAssignments, 'source assignments list'))
+  } catch (err) {
+    return dbError(c, err)
+  }
 })
 
 // GET /api/sources/:name/workflows — list workflow_ids assigned to this source
@@ -217,13 +236,18 @@ sources.get('/:name/workflows', async (c) => {
   const { orgId } = c.get('user')
   const name = c.req.param('name')
   const supabase = createSupabaseClient(c.env)
-  const { data, error } = await supabase
-    .from('source_workflow_assignments')
-    .select('workflow_id')
-    .eq('organization_id', orgId)
-    .eq('source_name', name)
-  if (error) return dbError(c, error)
-  return c.json((data ?? []).map((r) => r.workflow_id))
+  // Read whole or refused, never cut at the row cap (#1437).
+  try {
+    const rows = await fetchUpTo<{ workflow_id: string }>((limit) => supabase
+      .from('source_workflow_assignments')
+      .select('workflow_id')
+      .eq('organization_id', orgId)
+      .eq('source_name', name)
+      .limit(limit), CONFIG_LIST_BOUNDS.sourceAssignments, 'source workflows list')
+    return c.json(rows.map((r) => r.workflow_id))
+  } catch (err) {
+    return dbError(c, err)
+  }
 })
 
 // POST /api/sources/:name/workflows — body: { workflow_id }
