@@ -1,11 +1,23 @@
 /**
  * The ops Salesforce service as OpsConnections uses it (#2335, PR 8 of phase 5
- * of #1689): the client_credentials minter (minters/salesforce.ts) with its
- * declared host, what verify measures (userinfo), and where a schema lookup
- * sends (the declared instance). The catalogue's Salesforce runtime entry
- * (Phase 7) registers it on the ops Worker; until then no service is registered
- * (services.ts) and every ops Salesforce call is refused by name, and the ops
- * pool refuses every one anyway until Dan approves its cap (Decision 11).
+ * of #1689; registered in services.ts by #2337, phase 7): the
+ * client_credentials minter (minters/salesforce.ts) with its declared host,
+ * what verify measures (userinfo), and where a schema lookup sends (the
+ * declared instance). No catalogue action uses it yet.
+ *
+ * Every request takes a lease from the ops pool first (connectionFetch), and
+ * acquire_sf_lease refuses each one by name until Dan approves the caps
+ * (Decision 11): verify of a connection not yet measured asks the bootstrap
+ * slot of its declared host and is refused sf_cap_unset while that host has
+ * no approved row; any other call before verify has measured the org is
+ * sf_org_unmeasured; a measured org with no approved cap is sf_cap_unset. The
+ * lease comes before the login, so a refused call asks no token either.
+ *
+ * Verify asks the bidding Worker for money's run as identity before anything
+ * else (OPS_GATEWAY.moneyIdentities, which the bidding Worker's daily
+ * money-identity job measures), refuses a credential that authenticates as it,
+ * and records what it measured under the generation (record_measured_identity),
+ * which is the row the lease's org pool is keyed on.
  *
  * The target is `{ instance_url, client_id }`; the login `{ client_id,
  * client_secret }` of the org's ops connected app (docs/ops-connections-logins.md).
@@ -13,7 +25,7 @@
 import { ConnectionRefusal, LoginMintError } from './refusals'
 import { IdentityUnreadable, type IdentityProbe } from './identity'
 import { salesforceClientCredentialsAuth, salesforceInstanceOf } from './minters/salesforce'
-import type { TokenEndpointDeps } from './minters/token-endpoint'
+import type { MinterClockDeps } from './minters/token-endpoint'
 import type { OpsServiceEntry, SchemaTarget } from './ops-connections'
 
 /** The 18 character org id userinfo answers, the form the ops pool is keyed on. */
@@ -59,7 +71,8 @@ export function salesforceSchemaTarget(target: unknown): SchemaTarget {
   return { service: 'salesforce', instanceUrl: instanceOrigin(target) }
 }
 
-export function salesforceServiceEntry(deps: TokenEndpointDeps): OpsServiceEntry {
+/** The minter asks its token endpoint through connectionFetch (AuthorizeInput.fetch), so the entry needs only a clock. */
+export function salesforceServiceEntry(deps: MinterClockDeps): OpsServiceEntry {
   const minter = salesforceClientCredentialsAuth(deps)
   return {
     rules: { service: 'salesforce', declaredHosts: (target) => [minter.salesforce!.instanceHost(target)], ...minter },

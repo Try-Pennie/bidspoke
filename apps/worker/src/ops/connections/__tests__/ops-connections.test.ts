@@ -52,8 +52,9 @@ interface World {
 
 function world(opts: { copy?: Parameters<typeof makeDoubles>[1]; services?: (endpoint: TokenEndpoint) => Record<string, OpsServiceEntry> } = {}): World {
   const endpoint = tokenEndpoint(Response.json({ access_token: 'plain-ops-access-token' }))
-  const services = opts.services?.(endpoint) ?? { salesforce: salesforceServiceEntry({ fetch: endpoint.fetch, now: () => T0 }) }
-  const d = makeDoubles(keys, opts.copy ?? usableCopy(committed, { service: 'salesforce', target: TARGET }), () => Object.values(services).map((s) => s.rules))
+  const services = opts.services?.(endpoint) ?? { salesforce: salesforceServiceEntry({ now: () => T0 }) }
+  // The minter's token request goes through connectionFetch's fetch, which hands it to the endpoint double.
+  const d = makeDoubles(keys, opts.copy ?? usableCopy(committed, { service: 'salesforce', target: TARGET }), () => Object.values(services).map((s) => s.rules), endpoint.fetch)
   d.respond(userinfo())
   const measured: World['measured'] = []
   const cleared: World['cleared'] = []
@@ -203,10 +204,10 @@ describe('verify: the credential is measured, never only declared', () => {
 
   it('a person bound candidate is refused candidate_not_refreshable: it is proven by its code exchange (#2425)', async () => {
     const w = world({
-      services: (endpoint) => ({
+      services: () => ({
         gmail_user: {
-          ...salesforceServiceEntry({ fetch: endpoint.fetch, now: () => T0 }),
-          rules: { ...salesforceServiceEntry({ fetch: endpoint.fetch, now: () => T0 }).rules, service: 'gmail_user' },
+          ...salesforceServiceEntry({ now: () => T0 }),
+          rules: { ...salesforceServiceEntry({ now: () => T0 }).rules, service: 'gmail_user' },
           oauthUser: { tokenUrl: () => 'https://oauth2.googleapis.com/token', expired: (r) => r.status === 401 },
         },
       }),
@@ -217,7 +218,7 @@ describe('verify: the credential is measured, never only declared', () => {
   })
 
   it('a service with no identity measurement is refused by name, and an unknown service too: verify never passes unmeasured', async () => {
-    const w = world({ services: (endpoint) => ({ salesforce: { ...salesforceServiceEntry({ fetch: endpoint.fetch, now: () => T0 }), identity: undefined } }) })
+    const w = world({ services: () => ({ salesforce: { ...salesforceServiceEntry({ now: () => T0 }), identity: undefined } }) })
     expect(await verify(w)).toMatchObject({ ok: false, refused: 'verify_identity_unmeasurable' })
     const none = world({ services: () => ({}) })
     expect(await verify(none)).toMatchObject({ ok: false, refused: 'connection_service_unknown' })
@@ -388,7 +389,7 @@ describe('lookup: behind the per organization cap, through connectionFetch', () 
   it('a key the service does not answer, and a service with no lookups, are refused before anything is sent', async () => {
     const w = world()
     expect(await lookupConnection(w.deps, { organization_id: ORG, connection_id: CONN, key: 'tables', parents: [] })).toMatchObject({ ok: false, refused: 'schema_key_invalid' })
-    const none = world({ services: (endpoint) => ({ salesforce: { ...salesforceServiceEntry({ fetch: endpoint.fetch, now: () => T0 }), schema: undefined } }) })
+    const none = world({ services: () => ({ salesforce: { ...salesforceServiceEntry({ now: () => T0 }), schema: undefined } }) })
     expect(await lookupConnection(none.deps, { organization_id: ORG, connection_id: CONN, key: 'objects', parents: [] })).toMatchObject({ ok: false, refused: 'lookup_not_supported' })
     expect([...w.d.rec.sent, ...none.d.rec.sent]).toEqual([])
   })
@@ -405,9 +406,9 @@ describe('exchangeOAuthCode: a person bound login\'s consent', () => {
     const w = world({
       // A first consent: ops holds no copy of the connection yet.
       copy: usableCopy(committed, { state: 'not_found', envelope: null, service: null, generation: null }),
-      services: (endpoint) => ({
+      services: () => ({
         gmail_user: {
-          rules: { ...salesforceServiceEntry({ fetch: endpoint.fetch, now: () => T0 }).rules, service: 'gmail_user' },
+          rules: { ...salesforceServiceEntry({ now: () => T0 }).rules, service: 'gmail_user' },
           oauthUser: { tokenUrl: () => 'https://oauth2.googleapis.com/token', expired: (r) => r.status === 401 },
         },
       }),

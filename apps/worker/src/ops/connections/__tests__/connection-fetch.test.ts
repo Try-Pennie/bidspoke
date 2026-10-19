@@ -666,3 +666,41 @@ describe('the Salesforce lease lives inside connectionFetch (L621)', () => {
     expect(d.rec.leases).toEqual([])
   })
 })
+
+describe('the login\'s own token request goes through connectionFetch too (#2337)', () => {
+  /** An auth that asks a token endpoint with the fetch connectionFetch hands it, then puts the token on the request. */
+  const askingAt = (tokenUrl: string) => (rec: Recorder) => [exampleRules(rec, async (input) => {
+    const res = await input.fetch(tokenUrl, { method: 'POST', body: 'grant_type=client_credentials', redirect: 'follow' })
+    const token = ((await res.json()) as { access_token: string }).access_token
+    return { headers: { authorization: `Bearer ${token}` }, secrets: [token] }
+  })]
+
+  it('hands the auth a fetch that sends to a declared host, never following a redirect, before the request itself', async () => {
+    const d = makeDoubles(keys, usableCopy(envelope), askingAt('https://api.example.test/oauth/token'))
+    d.respond(Response.json({ access_token: 'plain-minted-token' }), new Response('ok', { status: 200 }))
+    const res = await connectionFetch(d.deps, call(d.rec), 'https://api.example.test/v1/items')
+    expect((res as Response).status).toBe(200)
+    // Recorded first, then the token request the auth made, then the request itself.
+    expect(d.rec.events).toEqual(['record', 'send', 'send'])
+    expect(d.rec.sent.map((s) => s.url)).toEqual(['https://api.example.test/oauth/token', 'https://api.example.test/v1/items'])
+    expect(d.rec.sent[0].init.redirect).toBe('manual')
+    expect(new Headers(d.rec.sent[1].init.headers).get('authorization')).toBe('Bearer plain-minted-token')
+    // The token request is the login's, not the call's: only the call's request is recorded.
+    expect(d.rec.recorded).toHaveLength(1)
+  })
+
+  it.each([
+    ['an undeclared host', 'https://collector.example.test/oauth/token'],
+    ['plain http', 'http://api.example.test/oauth/token'],
+    ['credentials in the URL', 'https://someone:pw@api.example.test/oauth/token'],
+    ['another port', 'https://api.example.test:8443/oauth/token'],
+  ])('a token request to %s is refused by rule before anything is sent, and is neither needs_reauth nor a refresh failure', async (_what, tokenUrl) => {
+    const d = makeDoubles(keys, usableCopy(envelope), askingAt(tokenUrl))
+    const err = await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/v1/items'))
+    expect(err.code).toBe('connection_not_allowed')
+    expect(err.mintReason).toBe('token_host_not_declared')
+    expect(d.rec.sent).toEqual([])
+    expect(d.rec.needsReauth).toEqual([])
+    expect(d.rec.refreshes).toEqual([])
+  })
+})

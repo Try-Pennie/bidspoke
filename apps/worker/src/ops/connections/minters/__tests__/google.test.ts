@@ -65,7 +65,6 @@ function setup(endpoint: TokenEndpoint, opts: Setup = {}) {
   const checks: Array<{ organizationId: OrganizationId; mailbox: string; drives: readonly string[] }> = []
   const allowed = { fn: opts.allowed ?? ((mailbox: string) => (mailbox === 'ops@example.invalid' ? 'allowed' : 'mailbox_not_allowed')) }
   const auth = googleDelegationAuth({
-    fetch: endpoint.fetch,
     now: () => now,
     tokenTimeoutMs: opts.tokenTimeoutMs,
     ...(opts.catalogue === 'shipped' ? {} : { catalogue: opts.catalogue ?? CATALOGUE }),
@@ -76,9 +75,10 @@ function setup(endpoint: TokenEndpoint, opts: Setup = {}) {
       return answer
     },
   })
+  // The grant goes through connectionFetch's fetch (#2337), so the entry declares Google's token host beside the API's.
   const d = makeDoubles(keys, usableCopy(opts.login ?? envelope, { service: 'google_sheets', target: opts.target ?? TARGET }), () => [
-    rulesOf('google_sheets', auth, () => ['sheets.googleapis.com']),
-  ])
+    rulesOf('google_sheets', auth, () => ['sheets.googleapis.com', 'oauth2.googleapis.com']),
+  ], endpoint.fetch)
   return { d, checks, allowed, advance: (ms: number) => { now += ms; d.now.value = now } }
 }
 

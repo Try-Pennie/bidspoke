@@ -12,7 +12,9 @@
  * target is `{ instance_url, client_id }`. The token is asked of the declared
  * instance's /services/oauth2/token, never a host the login names, and only of
  * an https *.salesforce.com host, so the client secret cannot be sent anywhere
- * else. A login whose client id is not the declared one is refused before
+ * else. It is asked through connectionFetch's own fetch (AuthorizeInput.fetch,
+ * #2337), which holds it to the connection's declared hosts a second time; the
+ * minter is built with a clock and no fetch. A login whose client id is not the declared one is refused before
  * anything is asked (client_id_mismatch); OpsConnections.verify answers that
  * refusal by its own name, verify_client_id_mismatch (#2335, PR 8).
  *
@@ -28,7 +30,7 @@ import { LoginMintError } from '../refusals'
 import type { Authorization, AuthorizeInput, MinterRules } from '../service-rules'
 import { authorizeThroughMemo } from './memo-authorize'
 import { loginFields, loginString, targetFields, targetString } from './login-fields'
-import { readAccessToken, requestToken, type TokenEndpointDeps } from './token-endpoint'
+import { readAccessToken, requestToken, type MinterClockDeps } from './token-endpoint'
 
 /** The money path's TOKEN_TTL_S (engine/nodes/salesforce.ts), the same ceiling for the same kind of token. */
 export const SALESFORCE_TOKEN_LIFE_MS = 3_500_000
@@ -55,7 +57,7 @@ export function salesforceInstanceOf(target: unknown): URL {
   return url
 }
 
-export function salesforceClientCredentialsAuth(deps: TokenEndpointDeps): MinterRules {
+export function salesforceClientCredentialsAuth(deps: MinterClockDeps): MinterRules {
   const memo = new TokenMemo<Authorization>({ now: () => deps.now(), reuseMarginMs: SALESFORCE_REUSE_MARGIN_MS })
   return {
     expired: (response) => isSalesforceSessionRejected(response.status),
@@ -71,7 +73,8 @@ export function salesforceClientCredentialsAuth(deps: TokenEndpointDeps): Minter
       if (clientId !== declaredClientId) throw new LoginMintError('refused', 'client_id_mismatch')
       const key = { connectionId: input.connectionId, generation: input.generation, sub: '', scope: '' }
       return authorizeThroughMemo(memo, key, input, async (nowMs) => {
-        const json = await requestToken(deps, `${instance.origin}/services/oauth2/token`, new URLSearchParams({
+        // connectionFetch's fetch (AuthorizeInput.fetch), held to the declared hosts: the minter holds none of its own (#2337).
+        const json = await requestToken({ ...deps, fetch: input.fetch }, `${instance.origin}/services/oauth2/token`, new URLSearchParams({
           grant_type: 'client_credentials',
           client_id: clientId,
           client_secret: clientSecret,

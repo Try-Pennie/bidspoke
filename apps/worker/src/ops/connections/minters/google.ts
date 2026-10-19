@@ -24,7 +24,10 @@
  * mailbox, the space joined scope and aud Google's token URI, signed RS256 with
  * the account's key (lib/snowflake.ts signRs256Jwt, the shared signer), then a
  * jwt-bearer grant POSTed to that URI. A key naming any other token_uri is
- * refused, so the signed assertion is never sent elsewhere.
+ * refused, so the signed assertion is never sent elsewhere. The grant goes
+ * through connectionFetch's own fetch (AuthorizeInput.fetch, #2337), which
+ * sends only to the connection's declared hosts, so a Google service's entry
+ * must declare oauth2.googleapis.com beside the API host it calls.
  *
  * The login is the service account key JSON Google issues ({ client_email,
  * private_key, token_uri, ... }); the target is `{ subject: "<mailbox>",
@@ -41,7 +44,7 @@ import { LoginMintError } from '../refusals'
 import type { Authorization, AuthorizeInput, MinterRules } from '../service-rules'
 import { authorizeThroughMemo } from './memo-authorize'
 import { loginFields, loginString, targetFields, targetString } from './login-fields'
-import { readAccessToken, requestToken, type TokenEndpointDeps } from './token-endpoint'
+import { readAccessToken, requestToken, type MinterClockDeps } from './token-endpoint'
 
 export const GOOGLE_TOKEN_URI = 'https://oauth2.googleapis.com/token'
 export const GOOGLE_ASSERTION_LIFETIME_SECONDS = 3600
@@ -51,7 +54,7 @@ export const MAX_DECLARED_DRIVES = 100
 
 const MAILBOX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
-export interface GoogleDelegationDeps extends TokenEndpointDeps {
+export interface GoogleDelegationDeps extends MinterClockDeps {
   /** google_delegation_check (ops-writes.ts googleDelegationCheck), bound to the ops client. */
   checkDelegation(organizationId: OrganizationId, mailbox: string, drives: readonly string[]): Promise<DelegationCheckOutcome>
   /** The catalogue the scopes are derived from. The shipped one unless a test passes its own. */
@@ -107,7 +110,8 @@ export function googleDelegationAuth(deps: GoogleDelegationDeps): MinterRules {
         const assertion = await signRs256Jwt(privateKey, {
           iss: clientEmail, sub: mailbox, scope, aud: GOOGLE_TOKEN_URI, iat, exp: iat + GOOGLE_ASSERTION_LIFETIME_SECONDS,
         })
-        const json = await requestToken(deps, GOOGLE_TOKEN_URI, new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }))
+        // connectionFetch's fetch (AuthorizeInput.fetch, #2337): the minter holds none of its own.
+        const json = await requestToken({ ...deps, fetch: input.fetch }, GOOGLE_TOKEN_URI, new URLSearchParams({ grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer', assertion }))
         const token = readAccessToken(json)
         const expiresIn = typeof json.expires_in === 'number' && Number.isFinite(json.expires_in) && json.expires_in > 0 ? json.expires_in : GOOGLE_ASSERTION_LIFETIME_SECONDS
         return { value: { headers: { authorization: `Bearer ${token}` }, secrets: [token] }, expiresAtMs: nowMs + expiresIn * 1000 }

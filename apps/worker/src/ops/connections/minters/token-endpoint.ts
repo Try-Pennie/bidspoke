@@ -28,12 +28,20 @@ import { LoginMintError, type MintFailureReason } from '../refusals'
 /** Under connectionFetch's 60 s deadline, as the money path's token fetch is (SALESFORCE_TOKEN_TIMEOUT_MS). */
 export const TOKEN_ENDPOINT_TIMEOUT_MS = 10_000
 
-export interface TokenEndpointDeps {
-  fetch(input: string, init?: RequestInit): Promise<Response>
+/** What a minter is built with: its clock, and its own token timeout. Its fetch comes with each call (AuthorizeInput.fetch, #2337). */
+export interface MinterClockDeps {
   /** Epoch ms (L524: injected). */
   now(): number
   /** Defaults to TOKEN_ENDPOINT_TIMEOUT_MS. */
   tokenTimeoutMs?: number
+}
+
+export interface TokenEndpointDeps extends MinterClockDeps {
+  /**
+   * For a minter, AuthorizeInput.fetch: connectionFetch's own, held to the
+   * connection's declared hosts. A LoginMintError it throws passes through.
+   */
+  fetch(input: string, init?: RequestInit): Promise<Response>
 }
 
 /** The OAuth error codes named as themselves; any other refusal is login_refused. */
@@ -78,7 +86,9 @@ export async function requestToken(deps: TokenEndpointDeps, url: string, body: U
     retryAfter = res.headers.get('retry-after')
     // The timeout covers the body too: a body that never finishes holds the call as long.
     text = await res.text()
-  } catch {
+  } catch (err) {
+    // A refusal the fetch made by rule before sending (connectionFetch's token fetch, #2337) is that refusal, not an unreachable endpoint.
+    if (err instanceof LoginMintError) throw err
     throw new LoginMintError('unavailable', controller.signal.aborted ? 'token_endpoint_timeout' : 'token_endpoint_unreachable')
   } finally {
     clearTimeout(timer)
