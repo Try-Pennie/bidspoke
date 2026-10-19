@@ -272,40 +272,89 @@ async function readWatermark(
   }
 }
 
+/**
+ * The days the coverage report judges: retention plus one on the old side, so a
+ * day the purge should already have taken still appears (that is a finding, not
+ * an absence), and today, so the current day's partial coverage is visible.
+ * Nine days at a retention of seven.
+ */
+export const COVERAGE_WINDOW_DAYS = RETENTION_DAYS + 2
+
+/**
+ * The most hour rows that window can hold: `hour_start` is the table's key and
+ * an hour's `archive_day` is its UTC date (`archiveDay`), so a day holds at most
+ * 24. Pinned under PostgREST's 1,000 row cap by archive-health.test.ts.
+ */
+export const COVERAGE_HOUR_ROWS_MAX = COVERAGE_WINDOW_DAYS * 24
+
+/**
+ * Refuses a reply larger than the query's own bound says is possible.
+ *
+ * Each read asks for one row more than it can legitimately hold, so a belief
+ * about the table that has stopped being true (a second row per hour, a day
+ * written in another timezone) becomes this section's error instead of a report
+ * quietly built from the first rows that fit (L11).
+ */
+function withinBound<T>(rows: T[] | null, max: number, what: string): T[] {
+  const list = rows ?? []
+  if (list.length > max) {
+    throw new Error(`${what}: the report's ${COVERAGE_WINDOW_DAYS} days hold at most ${max} rows, and more than ${max} came back`)
+  }
+  return list
+}
+
 async function readCoverage(
   supabase: SupabaseClient,
   now: Date,
 ): Promise<{ coverage: DayCoverage[] }> {
-  // A window one day wider than retention on each side: the oldest end so a day
-  // the purge should already have taken still appears (that is a finding, not
-  // an absence), and today so the current day's partial coverage is visible.
   const day = (offsetDays: number) =>
     new Date(now.getTime() + offsetDays * 86_400_000).toISOString().slice(0, 10)
-  const daysHeld = await daysHeldInPostgres(supabase, {
-    from: day(-(RETENTION_DAYS + 1)),
-    to: day(0),
-  })
+  const from = day(-(COVERAGE_WINDOW_DAYS - 1))
+  const to = day(0)
+  const daysHeld = await daysHeldInPostgres(supabase, { from, to })
 
-  // paginate-ok: at most retention + 1 days of hours, a few hundred rows
+  // paginate-ok: bounded in the query to the report's window (from..to, nine
+  // days), so at most COVERAGE_HOUR_ROWS_MAX (216) rows. The table itself is
+  // never pruned (1,531 rows on 2026-10-18), so without the window this read
+  // came back as an arbitrary 1,000 of them (#1437).
   const { data: hourRows, error: hoursError } = await supabase
     .from('execution_archive_hours')
     .select('archive_day, hour_start')
+    .gte('archive_day', from)
+    .lte('archive_day', to)
+    .order('archive_day', { ascending: true })
+    .order('hour_start', { ascending: true })
+    .limit(COVERAGE_HOUR_ROWS_MAX + 1)
   if (hoursError) throw new Error(`reading the recorded hours: ${formatErr(hoursError)}`)
 
   const hoursByDay: Record<string, string[]> = {}
-  for (const row of (hourRows ?? []) as Array<{ archive_day?: unknown; hour_start?: unknown }>) {
+  for (const row of withinBound(
+    hourRows as Array<{ archive_day?: unknown; hour_start?: unknown }> | null,
+    COVERAGE_HOUR_ROWS_MAX,
+    'reading the recorded hours',
+  )) {
     if (typeof row.archive_day !== 'string') continue
     ;(hoursByDay[row.archive_day] ??= []).push(String(row.hour_start))
   }
 
-  // paginate-ok: one row per retained day
+  // paginate-ok: bounded in the query to the report's window, one row per day
+  // (archive_day is the key), so at most COVERAGE_WINDOW_DAYS (9) rows. The
+  // table gains a row a day and is never pruned (65 rows on 2026-10-18).
   const { data: measured, error: measuredError } = await supabase
     .from('execution_archive_days')
     .select('archive_day, pg_execution_count, sf_execution_count, hours_execution_count')
+    .gte('archive_day', from)
+    .lte('archive_day', to)
+    .order('archive_day', { ascending: true })
+    .limit(COVERAGE_WINDOW_DAYS + 1)
   if (measuredError) throw new Error(`reading the day measurements: ${formatErr(measuredError)}`)
 
   const measurements: Record<string, { pgExecutions: number; sfExecutions: number; hoursExecutions: number }> = {}
-  for (const row of (measured ?? []) as Array<Record<string, unknown>>) {
+  for (const row of withinBound(
+    measured as Array<Record<string, unknown>> | null,
+    COVERAGE_WINDOW_DAYS,
+    'reading the day measurements',
+  )) {
     if (typeof row.archive_day !== 'string') continue
     measurements[row.archive_day] = {
       pgExecutions: Number(row.pg_execution_count ?? 0),
