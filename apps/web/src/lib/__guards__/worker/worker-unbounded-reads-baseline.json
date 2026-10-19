@@ -8,9 +8,6 @@
   "lib/alert-fanout.ts": {
     "service_connections": 2
   },
-  "lib/archive-backlog-run.ts": {
-    "execution_archive_hours": 1
-  },
   "lib/archive-gate.ts": {
     "execution_archive_days": 2
   },
