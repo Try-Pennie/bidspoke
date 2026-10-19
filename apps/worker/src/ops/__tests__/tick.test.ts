@@ -96,6 +96,10 @@ function fake(opts: {
   fetchConnections?: () => Promise<unknown>
   sweepOwned?: boolean
   leases?: SweepResult
+  /** What each page of the tombstone_expiry sweep answers (#2334). */
+  tombstones?: { purged: number; more: boolean }
+  /** What each page of the Salesforce lease sweep answers (#2334). */
+  sfLeases?: { swept: number; more: boolean }
   failing?: Partial<Record<keyof OpsTickDb, Error>>
   observed?: (o: ScheduleObservation) => 'recorded' | 'already_recorded'
   dispatchFails?: (item: DispatchItem) => boolean
@@ -121,8 +125,13 @@ function fake(opts: {
     savedConnections,
     observations,
     async now() { fail('now'); return DB_NOW },
-    async claimSweep(sweep: OpsSweep): Promise<SweepClaim> { fail('claimSweep'); calls.push(`claim:${sweep}`); return { owned: opts.sweepOwned ?? true, lastStartedAt: null, lastOwner: 'another-tick' } },
+    async claimSweep(sweep: OpsSweep, _owner: string, every: number): Promise<SweepClaim> {
+      fail('claimSweep'); calls.push(`claim:${sweep}`, `claim:${sweep}:${every}`)
+      return { owned: opts.sweepOwned ?? true, lastStartedAt: null, lastOwner: 'another-tick' }
+    },
     async sweepLeases() { fail('sweepLeases'); return opts.leases ?? { requeued: 0, retried: 0, needsHuman: 0, dead: 0, failed: 0, more: false } },
+    async purgeTombstones(limit: number) { fail('purgeTombstones'); calls.push(`purgeTombstones:${limit}`); return opts.tombstones ?? { purged: 0, more: false } },
+    async sweepSfLeases(limit: number) { fail('sweepSfLeases'); calls.push(`sweepSfLeases:${limit}`); return opts.sfLeases ?? { swept: 0, more: false } },
     async expireRuns() { fail('expireRuns'); return { expired: 0, more: false } },
     async queueDisagreements() {
       fail('queueDisagreements')
@@ -293,7 +302,10 @@ describe('failure boundaries', () => {
     expect(f.db.calls).not.toContain('sweepLeases')
     expect(f.db.calls).not.toContain('expireRuns')
     expect(f.db.calls).not.toContain('queueDisagreements')
-    expect(report.counts.sweeps_stood_down).toBe(3)
+    expect(f.db.calls).not.toContain('purgeTombstones')
+    // The Salesforce lease sweep takes no claim, so a held interval never stops it.
+    expect(f.db.calls).toContain('sweepSfLeases')
+    expect(report.counts.sweeps_stood_down).toBe(4)
     expect(report.outcome).toBe('ok')
   })
 
@@ -325,8 +337,28 @@ describe('failure boundaries', () => {
     const report = await runOpsTick(f.ports)
     expect(f.db.calls).toContain('expireRuns')
     expect(f.db.calls).toContain('queueDisagreements')
+    expect(f.db.calls).toContain('purgeTombstones')
+    expect(f.db.calls).toContain('sweepSfLeases')
     expect(f.db.observations).toHaveLength(1)
     expect(report.problems.join(' ')).toMatch(/lease_expiry sweep failed: lock timeout/)
+  })
+
+  it('a tombstone sweep that throws is reported by name and stops neither the other sweeps nor the schedules (#2334)', async () => {
+    const f = fake({ failing: { purgeTombstones: new Error('lock timeout') } })
+    const report = await runOpsTick(f.ports)
+    expect(report.problems).toEqual(['The tombstone_expiry sweep failed: lock timeout.'])
+    expect(f.db.calls).toEqual(expect.arrayContaining(['sweepLeases', 'expireRuns', 'queueDisagreements', 'sweepSfLeases', 'saveConnectionCopies']))
+    expect(f.db.observations).toHaveLength(1)
+    expect(f.dispatched).toHaveLength(1)
+  })
+
+  it('a Salesforce lease sweep that throws is reported by name and stops neither the other sweeps nor the schedules (#2334)', async () => {
+    const f = fake({ failing: { sweepSfLeases: new Error('statement timeout') } })
+    const report = await runOpsTick(f.ports)
+    expect(report.problems).toEqual(['The sf_lease_expiry sweep failed: statement timeout.'])
+    expect(f.db.calls).toEqual(expect.arrayContaining(['sweepLeases', 'expireRuns', 'queueDisagreements', 'purgeTombstones', 'saveConnectionCopies']))
+    expect(f.db.observations).toHaveLength(1)
+    expect(f.dispatched).toHaveLength(1)
   })
 
   it('reports a disagreement between the queue and the runs', async () => {
@@ -420,6 +452,61 @@ describe('slots', () => {
     const f = fake({ copies: [copy({ scheduleKnownSince: '2026-10-17T10:00:00.000Z' })] })
     await runOpsTick(f.ports)
     expect(f.db.observations).toEqual([])
+  })
+})
+
+describe('the connection storage sweeps (#2334)', () => {
+  it('claims tombstone_expiry for just under an hour and counts the tombstones it purged', async () => {
+    const f = fake({ tombstones: { purged: 3, more: false } })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls).toContain(`claim:tombstone_expiry:${59 * 60}`)
+    expect(f.db.calls.filter((c) => c.startsWith('purgeTombstones:'))).toEqual([`purgeTombstones:${500}`])
+    expect(report.counts.tombstones_purged).toBe(3)
+    expect(report.outcome).toBe('ok')
+  })
+
+  it('a tombstone_expiry interval another tick holds is a stand down, and nothing is purged', async () => {
+    const f = fake({ sweepOwned: false, tombstones: { purged: 3, more: false } })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls).toContain('claim:tombstone_expiry')
+    expect(f.db.calls).not.toContain('purgeTombstones')
+    expect(report.counts.tombstones_purged).toBeUndefined()
+  })
+
+  it('pages the tombstone sweep while it says there is more, and stops at four pages', async () => {
+    const f = fake({ tombstones: { purged: 500, more: true } })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls.filter((c) => c === 'purgeTombstones')).toHaveLength(4)
+    expect(report.counts.tombstones_purged).toBe(2000)
+  })
+
+  it('sweeps lapsed Salesforce leases every tick with no claim, and counts them', async () => {
+    const f = fake({ sfLeases: { swept: 2, more: false } })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls.filter((c) => c.startsWith('sweepSfLeases:'))).toEqual([`sweepSfLeases:${500}`])
+    // claim_ops_sweep has no name for it and it needs none (TICK_SF_LEASE_SWEEP), so these are every claim a tick makes.
+    expect(f.db.calls.filter((c) => /^claim:[a-z_]+$/.test(c))).toEqual(['claim:lease_expiry', 'claim:run_expiry', 'claim:queue_agreement', 'claim:tombstone_expiry'])
+    expect(report.counts.sf_leases_swept).toBe(2)
+    expect(report.outcome).toBe('ok')
+  })
+
+  it('pages the Salesforce lease sweep while it says there is more, and stops at four pages', async () => {
+    const f = fake({ sfLeases: { swept: 500, more: true } })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls.filter((c) => c === 'sweepSfLeases')).toHaveLength(4)
+    expect(report.counts.sf_leases_swept).toBe(2000)
+  })
+
+  it('a claim that throws for one sweep stops neither the sweeps after it nor the Salesforce lease sweep', async () => {
+    const f = fake()
+    const claim = f.db.claimSweep.bind(f.db)
+    f.db.claimSweep = async (sweep, owner, every) => {
+      if (sweep === 'lease_expiry') throw new Error('connection reset')
+      return claim(sweep, owner, every)
+    }
+    const report = await runOpsTick(f.ports)
+    expect(report.problems).toEqual(['The lease_expiry sweep failed: connection reset.'])
+    expect(f.db.calls).toEqual(expect.arrayContaining(['expireRuns', 'queueDisagreements', 'purgeTombstones', 'sweepSfLeases']))
   })
 })
 
