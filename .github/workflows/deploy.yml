@@ -460,15 +460,33 @@ jobs:
     # check (14s measured in Verify), plus headroom. Bounds a HANG, not slowness (#1062).
     timeout-minutes: 10
     # deploy-worker too (#1949): the ops Worker binds the bidding Worker's
-    # OpsGateway entrypoint, so the bidding Worker deploys first. Only the order:
-    # always() below means its result is not required, and a skipped or failed
-    # bidding deploy still lets this run (the tick reports a gateway it cannot reach).
+    # OpsGateway entrypoint, so the bidding Worker deploys first. always() below
+    # lets a SKIPPED bidding deploy through, the common case, since most ops
+    # changes do not touch the bidding Worker. But always() lets a FAILED or
+    # CANCELLED one through too, and an ops change that relies on something new
+    # on the bidding side (a gateway method, a moved key id) would then ship
+    # against a bidding Worker that does not have it (#2510, L789). So the first
+    # step refuses those by name, says why in the step summary, and fails, and
+    # nothing after it runs. A step rather than this if:, because a skipped job
+    # has no output to say why. deploy-ops-follows-bidding.test.ts evaluates both.
     needs: [verify, changes, deploy-ops-outbound, deploy-worker]
     if: |
       always()
       && needs.verify.result == 'success'
       && needs.changes.outputs.ops_worker == 'true'
     steps:
+      # always() so it also reports on a cancelled run. It allows only success
+      # and skipped, so a result it does not know is refused too.
+      - name: Refuse when the bidding Worker deploy did not land
+        if: always() && needs.deploy-worker.result != 'success' && needs.deploy-worker.result != 'skipped'
+        env:
+          BIDDING_RESULT: ${{ needs.deploy-worker.result }}
+        run: |
+          msg="Deploy Ops Worker stopped: Deploy Worker ended $BIDDING_RESULT, so the bidding Worker this ops Worker calls through OpsGateway may not have what this change needs. Fix or re-run the bidding deploy; ops deploys after it lands."
+          echo "::error title=Ops deploy held back::$msg"
+          echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
       - uses: actions/checkout@v7
 
       - uses: pnpm/action-setup@v6

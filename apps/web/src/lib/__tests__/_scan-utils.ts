@@ -425,6 +425,93 @@ export function workflowStepBody(jobBody: string, stepName: string): string {
   return matches[0].body
 }
 
+/**
+ * The `if:` of a job body (indent 4) or a step body (indent 8, the key under a
+ * step's `- `), joined onto one line, or null when it has none. Reads both the
+ * single line form and a `|` or `>` block, whose lines run until the indent
+ * falls back to the key's.
+ */
+export function workflowIf(body: string, indent: 4 | 8): string | null {
+  const lines = body.split('\n')
+  const key = new RegExp(`^(?: {${indent}}|${' '.repeat(indent - 2)}- )if:\\s*(.*)$`)
+  for (let i = 0; i < lines.length; i++) {
+    const m = key.exec(lines[i])
+    if (!m) continue
+    const rest = m[1].trim()
+    if (rest !== '|' && rest !== '>' && rest !== '|-' && rest !== '>-') return rest
+    const block: string[] = []
+    for (let j = i + 1; j < lines.length; j++) {
+      const line = lines[j]
+      if (line.trim() === '') continue
+      if (line.length - line.trimStart().length <= indent) break
+      block.push(line.trim())
+    }
+    return block.join(' ')
+  }
+  return null
+}
+
+/** The `needs:` list of a job body, in the `needs: [a, b]` form, or [] when it has none. */
+export function workflowNeeds(jobBody: string): string[] {
+  const m = jobBody.match(/^ {4}needs: \[([^\]]*)\]/m)
+  return m ? m[1].split(',').map((s) => s.trim()) : []
+}
+
+/**
+ * Evaluates a workflow `if:` for the subset of the GitHub expression language
+ * the deploy conditions use: always(), &&, ||, parentheses, == and != on dotted
+ * lookups into `ctx` and quoted strings. So "a skipped Worker deploy still lets
+ * this run" is a computed answer rather than a reading of the text. Throws on a
+ * token it does not know (a `!`, a function other than always()), so a new
+ * construct is reported rather than misread.
+ */
+export function evaluateWorkflowIf(expr: string, ctx: Record<string, unknown>): boolean {
+  const tokens = expr.match(/always\(\)|&&|\|\||==|!=|\(|\)|'[^']*'|[A-Za-z_][\w.-]*|\S/g) ?? []
+  const name = /^[A-Za-z_][\w.-]*$/
+  tokens.forEach((t, n) => {
+    const operator = ['always()', '&&', '||', '==', '!=', '(', ')'].includes(t) || /^'[^']*'$/.test(t)
+    // A name followed by `(` is a function call, such as success() or failure(), which this does not evaluate.
+    if ((!operator && !name.test(t)) || (name.test(t) && tokens[n + 1] === '(')) {
+      throw new Error(`evaluateWorkflowIf does not know '${t}${tokens[n + 1] === '(' ? '(' : ''}' in: ${expr}`)
+    }
+  })
+  let i = 0
+  const peek = () => tokens[i]
+  const take = () => tokens[i++]
+  const lookup = (p: string): unknown => p.split('.').reduce<unknown>((o, k) => (o && typeof o === 'object' ? (o as Record<string, unknown>)[k] : undefined), ctx)
+  function primary(): unknown {
+    const t = take()
+    if (t === '(') { const v = or(); take(); return v }
+    if (t === 'always()') return true
+    if (t?.startsWith("'")) return t.slice(1, -1)
+    if (t === 'true') return true
+    if (t === 'false') return false
+    return lookup(t ?? '')
+  }
+  function comparison(): unknown {
+    const left = primary()
+    if (peek() === '==' || peek() === '!=') {
+      const op = take()
+      const right = primary()
+      return op === '==' ? left === right : left !== right
+    }
+    return left
+  }
+  function and(): unknown {
+    let v = comparison()
+    while (peek() === '&&') { take(); const r = comparison(); v = Boolean(v) && Boolean(r) }
+    return v
+  }
+  function or(): unknown {
+    let v = and()
+    while (peek() === '||') { take(); const r = and(); v = Boolean(v) || Boolean(r) }
+    return v
+  }
+  const value = Boolean(or())
+  if (i !== tokens.length) throw new Error(`evaluateWorkflowIf stopped at token ${i} of ${tokens.length} in: ${expr}`)
+  return value
+}
+
 /** Read a workflow file from the repo and return its text. */
 export function readWorkflow(relativePath: string): string {
   const file = path.join(REPO_ROOT, relativePath)
