@@ -11,10 +11,6 @@
   "lib/archive-gate.ts": {
     "execution_archive_days": 2
   },
-  "lib/archive-health.ts": {
-    "execution_archive_days": 1,
-    "execution_archive_hours": 1
-  },
   "lib/bid-matrix-sync.ts": {
     "partner_bid_configs": 1
   },
