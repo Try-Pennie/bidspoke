@@ -104,7 +104,8 @@ export const TICK_SWEEPS: ReadonlyArray<{ sweep: TickSweep; everySeconds: number
  * The Salesforce lease sweep (#2334, sweep_sf_leases), which runs every tick and
  * takes no claim. claim_ops_sweep has no name for it, and it needs none: it
  * deletes only leases already past expires_at, FOR UPDATE SKIP LOCKED, and a
- * lapsed lease stopped counting toward any pool the moment it lapsed (L409). So
+ * lapsed lease stopped counting toward any pool the moment it lapsed, since
+ * acquire_sf_lease counts only leases whose expires_at is still ahead. So
  * two overlapping ticks each delete different rows and neither changes what an
  * acquire sees, and a claim would cost the same one call a minute the sweep
  * does. It only keeps sf_leases small.
