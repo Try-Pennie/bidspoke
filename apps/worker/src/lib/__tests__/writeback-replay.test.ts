@@ -19,6 +19,7 @@ import {
   type SalesforcePort,
 } from '../writeback-replay'
 import { isSalesforceBulkheadShed } from '../../engine/nodes/salesforce'
+import { PROSPECT_TRACKED_FIELDS, REJECT_RESEND_RUNS } from './fixtures/reject-patch-resend-2264'
 
 const KEY = Buffer.from(new Uint8Array(32).map((_, i) => i + 3)).toString('base64')
 const ORG = '11111111-1111-1111-1111-111111111471'
@@ -482,5 +483,73 @@ describe('a send the Salesforce bulkhead refused', () => {
     expect(isSalesforceBulkheadShed(shed())).toBe(true)
     expect(isSalesforceBulkheadShed(new Error('Salesforce bulkhead: at capacity'))).toBe(false)
     expect(isSalesforceBulkheadShed('bulkheadShed')).toBe(false)
+  })
+})
+
+describe('the drain and a field still at its value from before the write (#2264)', () => {
+  // The 2026-10-19 reject patch, as a stored row written when the patch began.
+  const RUN = REJECT_RESEND_RUNS[1]
+  const reject = async () =>
+    row({
+      sf_object: 'Prospect__c',
+      sf_record_id: RUN.prospectId,
+      step_namespace: 'patch_prospect_reject',
+      body_encrypted: await encryptSecret(JSON.stringify({ BidStatus__c: 'Rejected', RejectionReason__c: 'unqualified_lead' }), KEY),
+      created_at: RUN.patchProspectReject.startedAt,
+      updated_at: RUN.patchProspectReject.startedAt,
+    })
+
+  /** Answers the record read, the two history queries (the fixture's tracked list and history), and the PATCH. */
+  function port(record: Record<string, unknown>, history: Array<{ Field: string; CreatedDate: string }>, queries: 'answer' | Error = 'answer') {
+    const sent: Array<{ method: string; path: string; body?: string }> = []
+    const p: SalesforcePort = {
+      async send(method, path, body) {
+        sent.push({ method, path, body })
+        if (path.startsWith('/query?q=')) {
+          if (queries instanceof Error) throw queries
+          const soql = decodeURIComponent(path.slice('/query?q='.length))
+          const asked = [...(soql.match(/IN \(([^)]*)\)/)?.[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
+          const records = /FROM FieldDefinition /.test(soql)
+            ? PROSPECT_TRACKED_FIELDS.filter((f) => asked.includes(f)).map((f) => ({ QualifiedApiName: f }))
+            : history.filter((h) => asked.includes(h.Field))
+          return { status: 200, text: JSON.stringify({ totalSize: records.length, done: true, records }) }
+        }
+        if (method === 'GET') return { status: 200, text: JSON.stringify(record) }
+        return { status: 204, text: '' }
+      },
+      postApex: () => Promise.reject(new Error('the drain posted to Apex')),
+    }
+    return { port: p, sent }
+  }
+  const patchBody = (sent: Array<{ method: string; body?: string }>) => JSON.parse(sent.find((s) => s.method === 'PATCH')!.body!) as Record<string, unknown>
+
+  it('sends BidStatus__c when the run itself wrote the record since but the field has no change recorded', async () => {
+    rows = [await reject()]
+    const { store } = memoryStore(rows)
+    const sf = port(RUN.readAtResend, RUN.historyAtResend)
+    const r = await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 })
+    expect(r).toMatchObject({ kind: 'replayed', moved: [] })
+    expect(patchBody(sf.sent)).toEqual({ BidStatus__c: 'Rejected', RejectionReason__c: 'unqualified_lead' })
+  })
+
+  it('leaves BidStatus__c out when its history records another writer changing it after the write began', async () => {
+    rows = [await reject()]
+    const { store } = memoryStore(rows)
+    const sf = port({ ...RUN.readAtResend, BidStatus__c: 'Won Bid', LastModifiedDate: '2026-10-19T13:40:30.000+0000' }, [
+      ...RUN.historyAtResend,
+      { Field: 'BidStatus__c', CreatedDate: '2026-10-19T13:40:30.000+0000' },
+    ])
+    const r = await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 })
+    expect(r).toMatchObject({ kind: 'replayed', moved: ['BidStatus__c'] })
+    expect(patchBody(sf.sent)).toEqual({ RejectionReason__c: 'unqualified_lead' })
+  })
+
+  it('spends nothing when the history query gets no answer', async () => {
+    rows = [await reject()]
+    const { store } = memoryStore(rows)
+    const sf = port(RUN.readAtResend, RUN.historyAtResend, new Error('socket hang up'))
+    expect(await drainHeldWrite(deps(store, sf.port), ORG, ID, { maxAttempts: 2 })).toMatchObject({ kind: 'read_unanswered' })
+    expect(sf.sent.filter((s) => s.method === 'PATCH')).toEqual([])
+    expect(rows[0]).toMatchObject({ status: 'pending', attempts: 0 })
   })
 })

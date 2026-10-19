@@ -3,8 +3,11 @@
  * (lib/salesforce-read-back.ts) decides what to say; this composes the words, and
  * slack.ts only lays them out.
  *
- * Every alert names the record and the field names a write set, never a value:
- * the values are lead data, and the run page shows them when its step was logged.
+ * Every alert names the record and the field names a write set. The one place
+ * a value appears is the conflict alert (#2264): for each field left out it
+ * names the value Salesforce held and the value Bidspoke was sending, so the
+ * person can decide without opening the run, and what the field's history
+ * said. Those values come from the tick that decided, and are never stored.
  * Times are in ET.
  *
  * A credit inquiry post (#2172) sets no field by name, so its alerts are worded
@@ -45,6 +48,12 @@ export interface ReadBackAlertWrite {
   still_trying?: boolean
   /** conflict: the fields left out because each held a different value. */
   conflict_fields?: string[]
+  /**
+   * conflict: each left out field's value in Salesforce and the value Bidspoke
+   * was sending, and what the field's history says (#2264). Known only on the
+   * tick that decided it, so an alert sent again on a later tick goes without.
+   */
+  conflict_values?: Array<{ field: string; held: unknown; sending: unknown; history: 'changed' | 'not_kept' | 'unread'; changed_at?: string }>
   /** A credit inquiry post (#2172) rather than an update: it sets no field by name, and is worded as a post. */
   inquiry_post?: true
   /** conflict: whether the other fields were written. */
@@ -240,6 +249,34 @@ function unknown(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert {
   }
 }
 
+/** How long a value an alert quotes may be, so one long text field cannot fill the message. */
+export const QUOTED_VALUE_MAX = 80
+
+/** A Salesforce value as an alert quotes it: text in straight quotes, blank as nothing. */
+function quoted(v: unknown): string {
+  if (v === null || v === undefined || v === '') return 'nothing'
+  const text = typeof v === 'string' ? v : typeof v === 'number' || typeof v === 'boolean' ? String(v) : JSON.stringify(v)
+  const cut = text.length > QUOTED_VALUE_MAX ? `${text.slice(0, QUOTED_VALUE_MAX)}...` : text
+  return typeof v === 'string' ? `"${plain(cut)}"` : plain(cut)
+}
+
+type ConflictValue = NonNullable<ReadBackAlertWrite['conflict_values']>[number]
+
+/** One sentence per left out field: the two values, and what its history says about who set the one Salesforce holds. */
+function valueSentence(v: ConflictValue): string {
+  const values = `${plain(v.field)} held ${quoted(v.held)} where Bidspoke was sending ${quoted(v.sending)}.`
+  if (v.history === 'changed' && v.changed_at) return `${values} Its Salesforce history shows it was changed at ${clockOnDay(v.changed_at)}, after the update began.`
+  if (v.history === 'not_kept') return `${values} Salesforce keeps no history of that field, so whether another writer set it could not be checked.`
+  return `${values} Its Salesforce history could not be read, so whether another writer set it could not be checked.`
+}
+
+/** The values sentences of a write, or null when this alert does not carry them (one sent again on a later tick). */
+function valuesOf(w: ReadBackAlertWrite): string | null {
+  const values = w.conflict_values ?? []
+  if (values.length === 0 || values.length !== (w.conflict_fields ?? []).length) return null
+  return values.map(valueSentence).join(' ')
+}
+
 function conflict(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert {
   const title = 'Salesforce update resent without some fields'
   const rates = (p.conflict_rates ?? [])
@@ -255,13 +292,21 @@ function conflict(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert {
   const [w] = p.writes
   if (p.writes.length === 1) {
     const n = (w.conflict_fields ?? []).length
+    const values = valuesOf(w)
+    const [only] = w.conflict_values ?? []
+    const fix = !values
+      ? `Fix: open that ${objectName(w.sf_object)} in Salesforce and decide whether ${n === 1 ? 'that field should keep its' : 'those fields should keep their'} current ${n === 1 ? 'value' : 'values'}. The run below shows the values Bidspoke was sending, if its step was recorded.`
+      : n === 1
+        ? `Fix: open that ${objectName(w.sf_object)} in Salesforce and decide whether ${plain(only.field)} should keep ${quoted(only.held)} or be set to ${quoted(only.sending)}.`
+        : `Fix: open that ${objectName(w.sf_object)} in Salesforce and decide, for each of those fields, whether it should keep the value it holds or be set to the one Bidspoke was sending.`
     return {
       title,
       fallback: `${title}: ${record(w)}`,
       sections: [
         `${plain(w.workflow_name)} answered a lead at ${clock(w.first_attempt_at)} ET, and a Salesforce update after the answer did not land. ${what(w)}`,
+        ...(values ? [values] : []),
         ...(rates ? [rates] : []),
-        `Fix: open that ${objectName(w.sf_object)} in Salesforce and decide whether ${n === 1 ? 'that field should keep its' : 'those fields should keep their'} current ${n === 1 ? 'value' : 'values'}. The run below shows the values Bidspoke was sending, if its step was recorded.`,
+        fix,
         runLink(appUrl, w, 'View the run →'),
       ],
     }
@@ -271,7 +316,7 @@ function conflict(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert {
     fallback: `${title}: ${p.writes.length} updates`,
     sections: [
       `${p.writes.length} Salesforce updates made after leads were answered did not land, and when Bidspoke sent them again some fields already held a different value, so those fields were left as they were.`,
-      lines(p.writes, appUrl, (x) => `${plain(x.workflow_name)} at ${clock(x.first_attempt_at)} ET: ${what(x)}`),
+      lines(p.writes, appUrl, (x) => `${plain(x.workflow_name)} at ${clock(x.first_attempt_at)} ET: ${what(x)}${valuesOf(x) ? ` ${valuesOf(x)}` : ''}`),
       ...(rates ? [rates] : []),
       'Fix: open each record in Salesforce and decide whether those fields should keep their current values. Each run shows the values Bidspoke was sending, if its step was recorded.',
     ],

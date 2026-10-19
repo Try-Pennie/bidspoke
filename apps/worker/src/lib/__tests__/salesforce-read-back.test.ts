@@ -417,7 +417,7 @@ describe('two writes to one record in one run', () => {
 })
 
 describe('a field another writer has moved', () => {
-  it('is not overwritten, and is named, by field name only, in a conflict alert', async () => {
+  it('is not overwritten, and is named in a conflict alert with its two values, which are never stored', async () => {
     // Liberty1's update_prospect wrote Fail; another writer has since set Completed.
     const r = rig({ [PROSPECT]: { ExternalExchangeStatus__c: 'Completed', ExternalPartnerName__c: null, LastModifiedDate: SINCE_THE_RUNS } })
     await hold(r.kv, { step: 'update_prospect', body: { ExternalExchangeStatus__c: 'Fail', ExternalPartnerName__c: 'Liberty1' } })
@@ -426,7 +426,13 @@ describe('a field another writer has moved', () => {
     expect(r.sf.records[PROSPECT].ExternalExchangeStatus__c).toBe('Completed')
     expect(r.alerts).toHaveLength(1)
     expect(r.alerts[0]).toMatchObject({ kind: 'conflict', writes: [{ conflict_fields: ['ExternalExchangeStatus__c'], resent: true }] })
-    expect(JSON.stringify(r.alerts[0])).not.toMatch(/Completed|"Fail"/)
+    // The alert names the value held and the value being sent (#2264, reversing
+    // the field-names-only wording of #2023), so a person can decide without the
+    // run. The read-back's own state still never holds a value.
+    expect(r.alerts[0].writes[0].conflict_values).toMatchObject([{ field: 'ExternalExchangeStatus__c', held: 'Completed', sending: 'Fail' }])
+    const state = [...r.kv.store.entries()].filter(([k]) => k.startsWith('sf-read-back:'))
+    expect(state.length).toBeGreaterThan(0)
+    expect(JSON.stringify(state)).not.toMatch(/Completed|"Fail"/)
   })
 
   it('counts the conflict per field, against the resends that carried that field', async () => {
