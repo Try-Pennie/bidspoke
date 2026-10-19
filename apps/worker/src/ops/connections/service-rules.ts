@@ -54,6 +54,17 @@ export interface AuthorizeInput {
    * shared memo helper calls it, so no minter has to remember to.
    */
   readonly noteMint: () => void
+  /**
+   * The one fetch a minter may ask its token endpoint with (#2337): connectionFetch's
+   * own, which sends only to an https URL on one of the connection's declared
+   * hosts, on port 443 with no credentials in the URL, and never follows a
+   * redirect. Anything else is refused before it is sent, as a LoginMintError
+   * (not_allowed, token_host_not_declared). So the platform's fetch is reached
+   * by connectionFetch alone, the token request included (the guard
+   * ops-connection-requests-through-fetch.test.ts), and no minter holds a fetch
+   * of its own.
+   */
+  readonly fetch: (url: string, init?: RequestInit) => Promise<Response>
 }
 
 export interface ServiceRules {

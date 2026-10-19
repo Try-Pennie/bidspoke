@@ -12,9 +12,27 @@ connectionFetch, which calls them, is called by the OpsConnections entrypoint
 (PR 8 of this phase, below), which nothing binds until PR 9, and later by the ops
 executor (Phase 9). The services registered on ops are listed in
 `apps/worker/src/ops/connections/services.ts`: Snowflake since the first service
-pull request of Phase 7 (#2337, `snowflake-service.ts`). An OpsConnections call that
-reaches any other service is refused `connection_service_unknown` until that
-service's own Phase 7 pull request registers it.
+pull request of Phase 7 (#2337, `snowflake-service.ts`), and Salesforce
+(`salesforce-service.ts`, #2337) ahead of its catalogue actions. An OpsConnections
+call that reaches any other service is refused `connection_service_unknown` until
+that service's own Phase 7 pull request registers it.
+
+**Salesforce is registered and refused at the pool.** Every ops Salesforce request
+takes a lease from `acquire_sf_lease` before its login is opened into a token, and
+until Dan approves the caps (Decision 11) no cap row exists, so each is refused by
+name and nothing is asked of Salesforce, not even a token:
+
+| Call | State | Refused |
+|---|---|---|
+| `verify` | money's identity unmeasured, or older than 50 hours | `money_identity_unmeasured`, before any lease |
+| `verify` | the connection not yet measured, no approved `sf_bootstrap_caps` row for its declared instance host | `sf_cap_unset` |
+| `lookup` (and every other purpose) | the connection not yet measured | `sf_org_unmeasured` |
+| any | measured, no approved `sf_pool_caps` row for the org | `sf_cap_unset` |
+
+Once a host's bootstrap row is approved, verify asks the declared instance's token
+endpoint and `/services/oauth2/userinfo`, refuses money's run as user, and records
+the measured org and username under the generation, which is the row the org's
+pool is keyed on from then on.
 
 ## OpsConnections (`apps/worker/src/ops/ops-connections-entrypoint.ts`)
 
@@ -74,12 +92,21 @@ value, a refusal naming its cause. Each method has a ceiling
   evicts the memo entry only if it still holds the rejected token (compared by
   identity), so concurrent rejections cause one mint. A second refusal is
   `needs_reauth`.
+- A minter holds no fetch of its own. It asks its token endpoint with the fetch
+  connectionFetch hands it (`AuthorizeInput.fetch`, #2337), which sends only to
+  an https URL on one of the connection's declared hosts, on port 443 with no
+  credentials in the URL, and never follows a redirect; anything else is refused
+  before it is sent (`connection_not_allowed`, `token_host_not_declared`). So the
+  platform's fetch is reached only through connectionFetch, the token request
+  included.
 - Salesforce asks only the declared instance's `/services/oauth2/token`, and only
   an https `*.salesforce.com` host. A login whose client id is not the declared
   one is refused before anything is sent. The money path's `getSalesforceToken`
   and its KV cache are not used.
 - Google asks only `https://oauth2.googleapis.com/token`; a key naming any other
-  `token_uri` is refused, so the signed assertion goes nowhere else.
+  `token_uri` is refused, so the signed assertion goes nowhere else. A Google
+  service's entry must therefore declare `oauth2.googleapis.com` beside the API
+  host it calls.
 - Every failure is a `LoginMintError` whose message is its kind and reason alone
   (F120), and connectionFetch forwards none of it.
 

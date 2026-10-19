@@ -29,6 +29,8 @@ function input(overrides: Partial<AuthorizeInput> = {}): AuthorizeInput & { mint
     candidate: false,
     renew: null,
     noteMint: () => { counted.mints += 1 },
+    // The memo's own tests mint through a function they pass, never through a token endpoint.
+    fetch: async (): Promise<Response> => { throw new Error('the memo asked a token endpoint itself') },
     ...overrides,
   })
 }
@@ -157,6 +159,12 @@ describe('requestToken: one classification of a token endpoint\'s answer', () =>
     const endpoint = tokenEndpoint(answer)
     const err = await failure(requestToken(deps(endpoint), 'https://login.example.test/token', body()).then(readAccessToken))
     expect([err.kind, err.reason]).toEqual(['unavailable', reason])
+  })
+
+  it('a refusal the fetch itself raised by rule passes through as itself, never as an unreachable endpoint (#2337)', async () => {
+    const refusing = { fetch: async (): Promise<Response> => { throw new LoginMintError('not_allowed', 'token_host_not_declared') }, now: () => T0 }
+    const err = await failure(requestToken(refusing, 'https://login.example.test/token', body()))
+    expect([err.kind, err.reason]).toEqual(['not_allowed', 'token_host_not_declared'])
   })
 
   it('a token endpoint that never answers is unavailable at its own timeout', async () => {

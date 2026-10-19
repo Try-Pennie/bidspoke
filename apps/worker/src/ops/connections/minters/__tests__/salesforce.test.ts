@@ -29,10 +29,11 @@ beforeAll(async () => {
 
 function setup(endpoint: TokenEndpoint, opts: { login?: SealedEnvelope; target?: unknown; tokenTimeoutMs?: number } = {}) {
   let now = T0
-  const auth = salesforceClientCredentialsAuth({ fetch: endpoint.fetch, now: () => now, tokenTimeoutMs: opts.tokenTimeoutMs })
+  const auth = salesforceClientCredentialsAuth({ now: () => now, tokenTimeoutMs: opts.tokenTimeoutMs })
+  // The token request goes through connectionFetch's fetch, which hands it to the endpoint double.
   const d = makeDoubles(keys, usableCopy(opts.login ?? envelope, { service: 'salesforce', target: opts.target ?? TARGET }), () => [
     rulesOf('salesforce', auth, (target) => [new URL((target as { instance_url: string }).instance_url).hostname]),
-  ])
+  ], endpoint.fetch)
   return { d, auth, advance: (ms: number) => { now += ms; d.now.value = now } }
 }
 
@@ -177,7 +178,7 @@ describe('the Salesforce minter: client_credentials against the declared instanc
     for (const target of [{ ...TARGET, instance_url: 'https://collector.example.test' }, { ...TARGET, instance_url: 'http://trypennie.my.salesforce.com' }]) {
       await expect(auth.authorize({
         organizationId: ORG, connectionId: CONN, service: 'salesforce', generation: 1, target, publicConfig: {},
-        envelope: null, login: { plaintext: JSON.stringify(LOGIN) }, candidate: false, renew: null, noteMint: () => {},
+        envelope: null, login: { plaintext: JSON.stringify(LOGIN) }, candidate: false, renew: null, noteMint: () => {}, fetch: endpoint.fetch,
       })).rejects.toMatchObject({ kind: 'not_allowed', reason: 'target_invalid' })
     }
     expect(endpoint.calls).toEqual([])

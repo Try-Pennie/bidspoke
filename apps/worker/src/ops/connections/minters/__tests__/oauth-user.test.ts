@@ -80,6 +80,8 @@ function input(over: Partial<AuthorizeInput> = {}): AuthorizeInput & { mints: nu
     candidate: false,
     renew: null,
     noteMint: () => { counted.mints += 1 },
+    // A person bound login asks its token object, never a token endpoint, so this fetch is never called.
+    fetch: async (): Promise<Response> => { throw new Error('a person bound auth asked a token endpoint itself') },
     ...over,
   })
 }

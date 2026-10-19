@@ -76,10 +76,10 @@ function echoing(status: number) {
 describe('the canary never leaves through a minter (F120)', () => {
   it.each([401, 400, 503])('Salesforce: a token endpoint answering %i with the request echoed back', async (status) => {
     const envelope = await sealLogin(keys, { service: 'salesforce', plaintext: JSON.stringify({ client_id: 'ops-client', client_secret: SF_SECRET }) })
-    const auth = salesforceClientCredentialsAuth({ fetch: echoing(status), now: () => T0 })
+    const auth = salesforceClientCredentialsAuth({ now: () => T0 })
     const d = makeDoubles(keys, usableCopy(envelope, { service: 'salesforce', target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: 'ops-client' } }), () => [
       rulesOf('salesforce', auth, () => ['trypennie.my.salesforce.com']),
-    ])
+    ], echoing(status))
     const err = await caught(connectionFetch(d.deps, call(d.rec), 'https://trypennie.my.salesforce.com/services/data/v60.0/limits'))
     const text = everythingThatLeaves(d, err)
     for (const secret of [SF_SECRET, ECHOED_TOKEN]) {
@@ -95,17 +95,18 @@ describe('the canary never leaves through a minter (F120)', () => {
     })
     const sentAssertions: string[] = []
     const auth = googleDelegationAuth({
-      fetch: async (input, init) => {
-        sentAssertions.push(new URLSearchParams(String(init?.body)).get('assertion') ?? '')
-        return echoing(400)(input, init)
-      },
       now: () => T0,
       catalogue: CATALOGUE,
       checkDelegation: async () => 'allowed',
     })
+    const echoingGoogle = async (input: string, init?: RequestInit) => {
+      sentAssertions.push(new URLSearchParams(String(init?.body)).get('assertion') ?? '')
+      return echoing(400)(input, init)
+    }
+    // A Google entry declares its token host beside the API host: the grant goes through connectionFetch's fetch (#2337).
     const d = makeDoubles(keys, usableCopy(envelope, { service: 'google_sheets', target: { subject: 'ops@example.invalid' } }), () => [
-      rulesOf('google_sheets', auth, () => ['sheets.googleapis.com']),
-    ])
+      rulesOf('google_sheets', auth, () => ['sheets.googleapis.com', 'oauth2.googleapis.com']),
+    ], echoingGoogle)
     const err = await caught(connectionFetch(d.deps, call(d.rec), 'https://sheets.googleapis.com/v4/spreadsheets/x'))
     expect(sentAssertions[0].length).toBeGreaterThan(100)
     const text = everythingThatLeaves(d, err)
