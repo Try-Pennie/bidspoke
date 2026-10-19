@@ -545,7 +545,12 @@ async function releaseLease(deps: ConnectionFetchDeps, call: ConnectionCall, hol
   }
 }
 
-/** Writes the call's budget reading, bounded and caught: never throws, never waits past SF_BUDGET_READING_DEADLINE_MS. */
+/**
+ * Writes the call's budget reading, bounded and caught: never throws, never waits past SF_BUDGET_READING_DEADLINE_MS.
+ * The measured org read inside it has its own deadline since #2505 (readOpsRows, OPS_STATEMENT_DEADLINE_MS, 9 s),
+ * and this race stays: it is the tighter bound, because a reading rides on the answer of a live call and may delay
+ * it by at most a second. The read it stops waiting for is aborted at its own deadline, so none is left running.
+ */
 async function recordBudget(deps: ConnectionFetchDeps, call: ConnectionCall, resolved: Resolved, budget: BudgetObserver | null): Promise<void> {
   if (budget === null || budget.reading === null) return
   const { reading, at } = budget

@@ -15,7 +15,10 @@
  *   `.from(` on this client only inside readOpsRows and a `.rpc(` only inside
  *   callOpsRpc (ops-writes.ts), and fails on any other `.from(`, `.rpc(` or
  *   `.schema(` against it, and on the client being handed to anything typed
- *   wider than OpsSupabaseClient, where that scan could no longer follow it.
+ *   wider than OpsSupabaseClient, where that scan could no longer follow it;
+ * - every request, read or write, has one deadline (sendWithinOpsDeadline,
+ *   OPS_STATEMENT_DEADLINE_MS, #2505) that aborts it, so a hung database never
+ *   holds a caller for ever (L110).
  *
  * The minute cron (#1949, tick.ts) is the first reader: it calls the run engine's
  * functions every minute. OPS_SUPABASE_URL and OPS_SUPABASE_SECRET_KEY are still
@@ -68,6 +71,65 @@ export class OpsReadError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'OpsReadError'
+  }
+}
+
+/** The read passed its deadline and was abandoned, its request aborted. Nothing was read. */
+export class OpsReadTimeoutError extends OpsReadError {
+  constructor(message: string) {
+    super(message)
+    this.name = 'OpsReadTimeoutError'
+  }
+}
+
+/**
+ * The deadline of every ops database request, read or write (L110). PostgREST
+ * requests on the ops project stop at the authenticator's 8 s statement timeout
+ * (docs/ops-ceilings-spike.md P8), so this is just past it: a statement still
+ * running is cancelled by the database first, and this ends only a request the
+ * database never answered.
+ */
+export const OPS_STATEMENT_DEADLINE_MS = 9_000
+
+export interface OpsDeadlineOptions {
+  /** Defaults to OPS_STATEMENT_DEADLINE_MS. */
+  deadlineMs?: number
+  /**
+   * The timer seam (L524): resolves once the deadline has passed. A test hands
+   * one it ends itself, so it ends only this wait. Unset, a platform timer is
+   * used and cleared once the request answers.
+   */
+  delay?: (ms: number) => Promise<void>
+}
+
+/** What one ops request came to: its answer, a thrown error, or its deadline. */
+export type OpsSent<T> = { kind: 'answered'; value: T } | { kind: 'threw'; error: unknown } | { kind: 'timed_out'; deadlineMs: number }
+
+/**
+ * Sends one ops request with a deadline, the one mechanism readOpsRows and
+ * callOpsRpc (ops-writes.ts) share (#2505). The request is handed an abort
+ * signal, and the deadline ABORTS it rather than only ceasing to wait, so no
+ * request is left running behind a caller that has moved on. supabase-js
+ * answers an aborted request with an error rather than throwing, so an answer
+ * that arrives once the signal has fired is the deadline too.
+ */
+export async function sendWithinOpsDeadline<T>(
+  send: (signal: AbortSignal) => PromiseLike<T>,
+  options: OpsDeadlineOptions = {},
+): Promise<OpsSent<T>> {
+  const deadlineMs = options.deadlineMs ?? OPS_STATEMENT_DEADLINE_MS
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  if (options.delay) void options.delay(deadlineMs).then(abort, abort)
+  else timer = setTimeout(abort, deadlineMs)
+  try {
+    const value = await send(controller.signal)
+    return controller.signal.aborted ? { kind: 'timed_out', deadlineMs } : { kind: 'answered', value }
+  } catch (error) {
+    return controller.signal.aborted ? { kind: 'timed_out', deadlineMs } : { kind: 'threw', error }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
   }
 }
 
@@ -182,12 +244,16 @@ function namesOwnOrganizationId(columns: string): boolean {
 /**
  * The only read of the ops database (L18). Filters on the organization, refuses
  * a row of another one, and throws on a database error rather than answering no
- * rows.
+ * rows. Holds the read to OPS_STATEMENT_DEADLINE_MS, the deadline callOpsRpc
+ * holds every write to, through the same mechanism (#2505): a read the database
+ * never answers is aborted and refused as OpsReadTimeoutError, so no caller on a
+ * live path waits on it for ever.
  */
 export async function readOpsRows<Row extends object>(
   client: OpsSupabaseClient,
   organizationId: OrganizationId,
   read: OpsRead,
+  options: OpsDeadlineOptions = {},
 ): Promise<OpsReadResult<Row & { organization_id: string }>> {
   // The type erases at run time, so a forced cast is caught here (L688).
   organizationIdFrom(organizationId)
@@ -200,7 +266,15 @@ export async function readOpsRows<Row extends object>(
   const columns = read.columns.trim() === '*' || namesOwnOrganizationId(read.columns) ? read.columns : `${read.columns},organization_id`
   let query: OpsQuery = client.from(read.table).select(columns as '*').eq('organization_id', organizationId)
   if (read.refine) query = read.refine(query)
-  const { data, error } = await query.limit(read.limit)
+  const limited = query.limit(read.limit)
+  const sent = await sendWithinOpsDeadline((signal) => limited.abortSignal(signal), options)
+  if (sent.kind === 'timed_out') {
+    throw new OpsReadTimeoutError(`An ops read of ${read.table} passed its ${sent.deadlineMs} ms deadline, so its request was aborted and nothing was read`)
+  }
+  if (sent.kind === 'threw') {
+    throw new OpsReadError(`An ops read of ${read.table} could not be sent: ${sent.error instanceof Error ? sent.error.message : 'unknown error'}`)
+  }
+  const { data, error } = sent.value
 
   if (error) throw new OpsReadError(`An ops read of ${read.table} failed (${error.code ?? 'no code'}): ${error.message}`)
   const rows = (data ?? []) as unknown as Array<Row & { organization_id: string }>
