@@ -26,10 +26,11 @@ import { IdentityMismatch, IdentityUnreadable, type MeasuredIdentity } from '../
 import { organizationIdFrom } from '../ops-db'
 import type { ConnectionCheckTarget } from '../ops-writes'
 import {
-  CONNECTION_CHECK_DEADLINE_MS, CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_HOLD_WHILE_YOUNGER_MS, CONNECTION_CHECK_MAX_CONNECTIONS, CONNECTION_CHECK_READ_LIMIT, CONNECTION_CHECK_START_BUDGET_MS,
+  CONNECTION_CHECK_DEADLINE_MS, CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_PROBE_DEADLINE_MS, CONNECTION_CHECK_HOLD_WHILE_YOUNGER_MS, CONNECTION_CHECK_MAX_CONNECTIONS, CONNECTION_CHECK_READ_LIMIT, CONNECTION_CHECK_START_BUDGET_MS,
   CONNECTION_CHECK_REFUSAL_KINDS, REFRESH_FAILING_PAGE_FAILURES, REFRESH_FAILING_PAGE_SPAN_MS, judgeConnectionLogins, runConnectionCheckSweep,
   type ConnectionCheckSweepDeps, type ProbeAnswer, type ProbeSeen,
 } from '../connection-check'
+import { GATEWAY_DEADLINE_MS } from '../tick-live'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const OTHER_ORG = organizationIdFrom('7a2d3c9f-1e4b-4d2f-8b66-2c3d4e5f6071')
@@ -146,8 +147,11 @@ describe('the interval', () => {
     expect(CONNECTION_CHECK_DEADLINE_MS).toBeLessThan(60_000)
   })
 
-  it('starts no probe past its start budget, so one sweep ends within the budget and one deadline', () => {
-    expect(CONNECTION_CHECK_START_BUDGET_MS + CONNECTION_CHECK_DEADLINE_MS).toBeLessThan(60_000)
+  it('starts no probe past its start budget, so one sweep, its read and both stamps included, ends inside the minute it rides', () => {
+    // The budget runs from the sweep's start, before its started stamp and its read; the completed stamp follows the last check.
+    expect(CONNECTION_CHECK_START_BUDGET_MS + CONNECTION_CHECK_DEADLINE_MS + GATEWAY_DEADLINE_MS).toBeLessThan(60_000)
+    // A check is bounded by its own deadline, and each request inside it by connectionFetch's shorter one.
+    expect(CONNECTION_CHECK_PROBE_DEADLINE_MS).toBeLessThan(CONNECTION_CHECK_DEADLINE_MS)
   })
 })
 
@@ -386,6 +390,19 @@ describe('the sweep', () => {
     expect(out.counts.connection_check_passed).toBe(3)
   })
 
+  it('starts no probe at all when the read of the list spent the budget, and pages one whose last pass is old, never going quiet', async () => {
+    let clock = WORKER_NOW
+    const h = harness({ targets: [target({ lastCheckOkAt: minutesBefore(30) }), target({ connectionId: CONN_B })], now: () => clock })
+    const read = h.deps.targets
+    h.deps.targets = async (limit) => { clock += CONNECTION_CHECK_START_BUDGET_MS; return read(limit) }
+    const out = await runConnectionCheckSweep(h.deps)
+    expect(h.probes).toEqual([])
+    expect(h.recorded).toEqual([])
+    expect(out.counts).toMatchObject({ connection_check_deferred: 2, connection_check_held: 1 })
+    expect(out.problems.map((p) => p.key)).toEqual([`connection_check_unavailable:${CONN_A}`])
+    expect(out.problems[0].text).toMatch(/sweep_budget/)
+  })
+
   it('starts no probe once its start budget is spent, and leaves the rest, least recently checked, for the next sweep', async () => {
     let clock = WORKER_NOW
     const h = harness({
@@ -397,8 +414,8 @@ describe('the sweep', () => {
     const out = await runConnectionCheckSweep(h.deps)
     expect(h.probes).toEqual([CONN_A])
     expect(h.recorded.map((r) => r.connectionId)).toEqual([CONN_A])
-    expect(out.counts).toMatchObject({ connection_check_passed: 1, connection_check_deferred: 2 })
-    // Not a failure: nothing was asked of them, and nothing about them is reported or recorded.
+    expect(out.counts).toMatchObject({ connection_check_passed: 1, connection_check_deferred: 2, connection_check_held: 2 })
+    // Not a failed check: nothing was asked of them, so nothing is recorded; held, as a check that could not be made is, while their last pass is young.
     expect(out.problems).toEqual([])
   })
 

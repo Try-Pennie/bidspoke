@@ -117,15 +117,20 @@ export const CONNECTION_CHECK_READ_LIMIT = 500
  */
 export const CONNECTION_CHECK_MAX_CONNECTIONS = 50
 /** connectionFetch's own deadline for each request of a probe: an identity read is one small GET or statement. */
-export const CONNECTION_CHECK_PROBE_DEADLINE_MS = 30_000
+export const CONNECTION_CHECK_PROBE_DEADLINE_MS = 20_000
 /** One connection's whole check, the copy read, lease, login, identity read and the record of its result included. Past it the check is a failure of that connection alone. */
-export const CONNECTION_CHECK_DEADLINE_MS = 45_000
+export const CONNECTION_CHECK_DEADLINE_MS = 30_000
 /**
- * No probe starts once this much of the sweep has passed (on this Worker's
- * clock), so one sweep takes at most this plus one connection's deadline, 55 s,
- * inside the minute the tick rides, however many connections of one Salesforce
- * org wait their turn. The ones not reached are counted as deferred; being the
- * least recently checked, they go first next sweep. A probe answers in about a
+ * No probe starts once this much of the sweep has passed, counted on this
+ * Worker's clock from the sweep's start, before its started stamp and its read
+ * of the list. So the last check ends within this plus one check's deadline
+ * (40 s), and the completed stamp, bounded at 15 s by the gateway call, within
+ * 55 s: inside the minute the tick rides, however many connections of one
+ * Salesforce org wait their turn and however slow the read. A connection not
+ * reached is counted as deferred and treated as a check that could not be made
+ * (cause sweep_budget): held while its last pass is young and paged once it is
+ * old, so a sweep whose budget is always spent cannot go quiet. Being the least
+ * recently checked, it goes first next sweep. A probe answers in about a
  * second, so 10 s reaches about ten connections of one org on a healthy day,
  * and every connection of every other org at once.
  */
@@ -225,7 +230,6 @@ export interface ConnectionCheckSweepResult {
 type Outcome =
   | { kind: 'passed' }
   | { kind: 'unprobed' }
-  | { kind: 'deferred' }
   | { kind: 'refused' | 'unreadable' | 'login' | 'failed' | 'not_run' | 'gone'; cause: string }
 
 /** A Salesforce identity is verify's when the org (by its 15 character form) and the username (in any case) agree. */
@@ -271,7 +275,7 @@ async function checkConnection(deps: ConnectionCheckSweepDeps, target: Connectio
 /** The probe, then the record of its result. Never throws. */
 async function probeAndRecord(deps: ConnectionCheckSweepDeps, target: ConnectionCheckTarget, bump: (key: string) => void): Promise<Outcome> {
   const outcome = await probeConnection(deps, target)
-  if (outcome.kind === 'unprobed' || outcome.kind === 'deferred' || outcome.kind === 'not_run' || outcome.kind === 'gone') return outcome
+  if (outcome.kind === 'unprobed' || outcome.kind === 'not_run' || outcome.kind === 'gone') return outcome
 
   const result = outcome.kind === 'passed' ? { ok: true as const } : { ok: false as const, cause: outcome.cause }
   let written: 'recorded' | 'connection_removed'
@@ -311,7 +315,9 @@ function groupsOf(targets: readonly ConnectionCheckTarget[]): ConnectionCheckTar
 }
 
 export async function runConnectionCheckSweep(deps: ConnectionCheckSweepDeps): Promise<ConnectionCheckSweepResult> {
-  const startedAt = new Date(deps.now()).toISOString()
+  // The start budget runs from here, before the started stamp and the read (CONNECTION_CHECK_START_BUDGET_MS).
+  const startedMs = deps.now()
+  const startedAt = new Date(startedMs).toISOString()
   const problems: TickProblem[] = []
   const counts: Record<string, number> = {}
   const bump = (key: string) => { counts[key] = (counts[key] ?? 0) + 1 }
@@ -353,12 +359,11 @@ export async function runConnectionCheckSweep(deps: ConnectionCheckSweepDeps): P
   }
 
   const outcomes = new Map<ConnectionCheckTarget, Outcome>()
-  const startedMs = deps.now()
   await Promise.all(groupsOf(toProbe).map(async (group) => {
     for (const t of group) {
-      // The first of each group always starts; a later one only inside the budget.
-      if (t !== group[0] && deps.now() - startedMs >= CONNECTION_CHECK_START_BUDGET_MS) {
-        outcomes.set(t, { kind: 'deferred' })
+      if (deps.now() - startedMs >= CONNECTION_CHECK_START_BUDGET_MS) {
+        bump('connection_check_deferred')
+        outcomes.set(t, { kind: 'not_run', cause: 'sweep_budget' })
         continue
       }
       outcomes.set(t, await checkConnection(deps, t, bump))
@@ -375,9 +380,6 @@ export async function runConnectionCheckSweep(deps: ConnectionCheckSweepDeps): P
         continue
       case 'unprobed':
         bump('connection_check_unprobed')
-        continue
-      case 'deferred':
-        bump('connection_check_deferred')
         continue
       case 'gone':
         bump('connection_check_gone')

@@ -466,13 +466,14 @@ export const CRON_JOBS: CronJob[] = [
     // a sweep that starts and never finishes pages as vanished, with its own
     // remedy, before it can read as stale.
     staleMs: 50 * MIN,
-    // One sweep is one read of the connections and one identity probe each,
-    // bounded at 45 s a connection (CONNECTION_CHECK_DEADLINE_MS), the
-    // connections of one Salesforce org one after another and the rest at once.
-    // No probe starts once 10 s of the sweep have passed
-    // (CONNECTION_CHECK_START_BUDGET_MS), so one sweep takes at most 55 s, below
-    // the minute trigger it rides, as every minute job's must be. Judged by the
-    // drought below, never by one run.
+    // One sweep is its started stamp, one read of the connections, one check
+    // each (bounded at 30 s, CONNECTION_CHECK_DEADLINE_MS, the connections of
+    // one Salesforce org one after another and the rest at once), and its
+    // completed stamp (15 s at most). No check starts once 10 s have passed
+    // since the sweep began (CONNECTION_CHECK_START_BUDGET_MS), so the whole
+    // sweep, stamps and read included, takes at most 55 s, below the minute
+    // trigger it rides, as every minute job's must be. Judged by the drought
+    // below, never by one run.
     maxRunMs: 55 * 1000,
     // Three sweeps in a row at their usual 15 minute spacing with no completion
     // while starts go on, so a completion stamp or two the gateway missed is

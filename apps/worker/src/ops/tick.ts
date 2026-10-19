@@ -117,7 +117,7 @@ export type TickSweep = OpsSweep
  * connection_check (#2340, connection-check.ts) proves each ops connection's
  * login every 14 to 15 minutes (connection-check.ts THE INTERVAL says why), and
  * runs beside the rest of the tick in the same way and for the same reason: its
- * probes go to the services, bounded at 45 s each. It stamps its own heartbeat
+ * probes go to the services, bounded at 30 s each and 55 s a sweep. It stamps its own heartbeat
  * (CONNECTION_CHECK_JOB) only when it owns the claim, and holds a transient
  * failure itself, by the age of the connection's last passing check.
  */
