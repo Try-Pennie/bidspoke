@@ -7,15 +7,27 @@
  * connectionFetch with the connection's own credential, who it really is, and
  * refuses a credential whose measured identity is money's. Salesforce's
  * measurement is here (salesforce-service.ts: /services/oauth2/userinfo, the org
- * id and username). The others the plan names (Snowflake's CURRENT_USER() and
- * account, a Supabase key's project ref, Google's token for the declared
+ * id and username), and Snowflake's (snowflake-service.ts: CURRENT_USER() and
+ * the account, which must be the ones the target declares, #2337). The others
+ * the plan names (a Supabase key's project ref, Google's token for the declared
  * mailbox, Slack's auth.test) arrive with each service's rules (Phase 7), each
  * as another kind here; until a service has one, verify refuses it by name
  * (verify_identity_unmeasurable), never passes it unmeasured.
  */
 
 /** What a credential authenticates as, measured. */
-export type MeasuredIdentity = { readonly kind: 'salesforce'; readonly sfOrgId: string; readonly username: string }
+export type MeasuredIdentity =
+  | { readonly kind: 'salesforce'; readonly sfOrgId: string; readonly username: string }
+  | {
+      readonly kind: 'snowflake'
+      /** CURRENT_ACCOUNT(): the account locator. */
+      readonly accountLocator: string
+      /** CURRENT_ORGANIZATION_NAME() and CURRENT_ACCOUNT_NAME(), null where Snowflake answers none. */
+      readonly organizationName: string | null
+      readonly accountName: string | null
+      /** CURRENT_USER(). */
+      readonly user: string
+    }
 
 /** connectionFetch bound to one verify call: a response, or a ConnectionRefusal thrown by name. */
 export type BoundFetch = (url: string, init?: RequestInit) => Promise<Response>
@@ -35,6 +47,18 @@ export class IdentityUnreadable extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'IdentityUnreadable'
+  }
+}
+
+/**
+ * The service answered with an identity, and it is not the one the connection's
+ * target declares: the credential is somebody else's. The message names fields,
+ * never their values.
+ */
+export class IdentityMismatch extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'IdentityMismatch'
   }
 }
 

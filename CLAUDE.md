@@ -83,13 +83,15 @@
     edited once released (D1): `src/fingerprints.json` holds a sha256 per
     `key@version` over its arguments, traits and the source of its run file
     `src/runtime/actions/<key>.v<version>.ts` plus every file that run file
-    reaches through relative value imports (type only imports are left out), and
-    a changed one fails, asking for a new version. A new version's
+    reaches through relative value imports (type only imports are left out) or
+    through a workspace package, followed into its source, plus the resolved
+    version of every npm package reached and its whole dependency closure in the
+    lockfile; a changed one fails, asking for a new version. A new version's
     fingerprint line is printed by the failing test for you to add. Every action
     decides `sideEffect` and `idempotent` itself, with `idempotentBecause` saying
     why, never from a Pipedream annotation (R11). Steps resolve an action by
     `(key, version)` and a missing version is refused as `action_version_missing`,
-    never run on the newest. The catalogue is empty until the first service PR;
+    never run on the newest. Snowflake (#2337) is its first service;
     `src/__fixtures__/catalogue` is a test only service that proves the machinery.
   - `packages/slack-client` (#2337): `createSlackClient`, the one place a Slack Web
     API client is built, used by the Worker's alerts and Settings routes, and the
