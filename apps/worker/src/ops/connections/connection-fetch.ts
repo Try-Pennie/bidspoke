@@ -37,7 +37,10 @@
  *     needs_reauth. A body that can be read only once is never sent twice.
  *
  * THE LOGIN (./minters, Dan's decision 2). The service's authorize mints or
- * reuses the token. A login the provider refused is needs_reauth at once. A
+ * reuses the token. A minter that asks a token endpoint asks it with the fetch
+ * handed to it here (AuthorizeInput.fetch, #2337), held to the same https and
+ * declared host rule as the request and never following a redirect, so the
+ * token request too reaches the platform only through this module. A login the provider refused is needs_reauth at once. A
  * token endpoint that timed out or answered 5xx adds to the connection's
  * refresh streak (record_connection_refresh) and is answered
  * connection_auth_unavailable; the database turns the streak into needs_reauth
@@ -68,7 +71,7 @@ import {
 } from '../run-vocabulary'
 import { ConnectionRefusal, LoginMintError, RequeueAt, type ConnectionRefusalCode, type MintFailureReason } from './refusals'
 import { isCredentialHeader, sanitiseRequest, scrubSecrets, secretsOfLogin, type RecordedRequest } from './sanitise'
-import type { Authorization, OpenedLogin, ServiceRules } from './service-rules'
+import type { Authorization, AuthorizeInput, OpenedLogin, ServiceRules } from './service-rules'
 
 /** The whole call, the mint and both attempts included. */
 export const CONNECTION_FETCH_DEADLINE_MS = 60_000
@@ -291,6 +294,26 @@ function checkUrl(url: string, rules: ServiceRules, resolved: Resolved, secrets:
   if (parsed.username !== '' || parsed.password !== '') throw refusal('connection_url_invalid', 'the request URL carries credentials', secrets)
   if (parsed.port !== '' && parsed.port !== '443') throw refusal('connection_url_invalid', `port ${parsed.port} is not the declared host's`, secrets)
   return parsed
+}
+
+/**
+ * The fetch a minter asks its token endpoint with (AuthorizeInput.fetch, #2337):
+ * held to the same URL rule as the request itself (checkUrl), and never
+ * following a redirect, so the client secret or a signed assertion can only go
+ * to a host the connection declares. A URL outside that rule is refused by name
+ * before anything is sent; the refusal's own detail is dropped, as every other
+ * minter failure's is. The token request is the login's, not the call's, so it
+ * is not recorded in the call's send record: it carries the login itself.
+ */
+function tokenFetchFor(deps: ConnectionFetchDeps, rules: ServiceRules, resolved: Resolved, secrets: readonly string[]): AuthorizeInput['fetch'] {
+  return async (url, init = {}) => {
+    try {
+      checkUrl(url, rules, resolved, secrets)
+    } catch {
+      throw new LoginMintError('not_allowed', 'token_host_not_declared')
+    }
+    return deps.fetch(url, { ...init, redirect: 'manual' })
+  }
 }
 
 function isNonStepOutcome(outcome: SfLeaseOutcome): outcome is NonStepLeaseOutcome {
@@ -585,6 +608,7 @@ async function sendWithRenewal(
         candidate: resolved.candidate,
         renew: rejected === null ? null : { rejected },
         noteMint: () => { minted = true },
+        fetch: tokenFetchFor(deps, rules, resolved, secrets),
       }), deadline)
     } catch (err) {
       const late = deadlineRefusal(deadline, 'the login', secrets)

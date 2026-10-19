@@ -178,6 +178,12 @@ export const MINT_FAILURE_REASONS = {
      * token (L5), so a person bound credential is proven by its code exchange.
      */
     'candidate_not_refreshable',
+    /**
+     * A minter's token request named a URL connectionFetch would not send a
+     * request to: not https, a host the connection does not declare, a port or
+     * credentials in the URL (#2337). Nothing was sent.
+     */
+    'token_host_not_declared',
   ],
   check_unavailable: ['delegation_allowlist_unreadable'],
   token_object_unavailable: [

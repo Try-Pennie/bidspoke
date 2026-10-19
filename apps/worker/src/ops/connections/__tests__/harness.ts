@@ -151,7 +151,24 @@ export function salesforceRules(rec: Recorder, auth?: (input: AuthorizeInput) =>
   }
 }
 
-export function makeDoubles(keys: TestKeys, copy: ConnectionCopy | Error, rules: (rec: Recorder) => ServiceRules[]): Doubles {
+/**
+ * A minter's token request reaches the platform through connectionFetch's
+ * fetch (AuthorizeInput.fetch, #2337). Given a token endpoint double, the
+ * doubles' fetch hands it every request whose path ends in /token, so a test
+ * reads the token requests from the endpoint and the service's own requests
+ * from `rec.sent`. Without one, every request is the recorder's.
+ */
+export type TokenEndpointFetch = (url: string, init?: RequestInit) => Promise<Response>
+
+const isTokenRequest = (url: string): boolean => {
+  try {
+    return new URL(url).pathname.endsWith('/token')
+  } catch {
+    return false
+  }
+}
+
+export function makeDoubles(keys: TestKeys, copy: ConnectionCopy | Error, rules: (rec: Recorder) => ServiceRules[], tokenEndpoint?: TokenEndpointFetch): Doubles {
   const rec: Recorder = { events: [], authorizeCalls: [], sent: [], recorded: [], needsReauth: [], refreshes: [], leases: [], reports: [], slept: [] }
   const now = { value: T0 }
   let refreshAnswer: RefreshOutcome = 'refresh_failing'
@@ -188,6 +205,7 @@ export function makeDoubles(keys: TestKeys, copy: ConnectionCopy | Error, rules:
       return result.ok ? 'recorded' : refreshAnswer
     },
     fetch: async (input, init) => {
+      if (tokenEndpoint && isTokenRequest(String(input))) return tokenEndpoint(String(input), init)
       rec.events.push('send')
       rec.sent.push({ url: String(input), init: init ?? {} })
       const answer = answers.length > 1 ? answers.shift()! : answers[0]

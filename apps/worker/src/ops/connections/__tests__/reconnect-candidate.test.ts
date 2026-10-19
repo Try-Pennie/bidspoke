@@ -123,8 +123,9 @@ function round(): Round {
       : Response.json({ access_token: tokenFor(secret) }))
     return answering(input, init)
   }
-  const entry = salesforceServiceEntry({ fetch: minterFetch, now: () => T0 })
-  const d = makeDoubles(keys, usableCopy(generationN), () => [entry.rules])
+  const entry = salesforceServiceEntry({ now: () => T0 })
+  // The minter's token request goes through connectionFetch's fetch, which hands it to minterFetch.
+  const d = makeDoubles(keys, usableCopy(generationN), () => [entry.rules], minterFetch)
   const copies = opsCopies(() => d.now.value)
   d.deps.readCopy = copies.readCopy
   d.respond(async () => Response.json({ organization_id: '00Dcs0000000001EAA', preferred_username: 'ops-integration@trypennie.example' }))
