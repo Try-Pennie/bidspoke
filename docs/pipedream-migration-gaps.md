@@ -49,7 +49,7 @@ Borrowed from Automatisch:
 
 ### 6. More than one Salesforce org
 Today: Bidspoke logs into one Salesforce org.
-Need: one connection per org. The export uses trypennie (47 workflows), pennie (3), tpl2 (2), Liberty1's (1) and Achieve's (1, `Import Tradelines`, through its own `ACHIEVE_SF_*` settings).
+Need: one connection per org. The export signs in to our own org, trypennie (48 workflows; `pennie.my.salesforce.com`, a fallback default in 3 Achieve workflows, is almost certainly its old address), and to two partners' orgs with logins they issued Pennie: Tripoint's `tpl2` (2) and Achieve's (2, `Import Tradelines` and `update-expenses`, through their own `ACHIEVE_SF_*` settings). Liberty1 is not a login: `Liberty1 - CTA Click > Push Lead` posts to a public Salesforce Site webhook (checked 2026-10-19, #2330).
 
 ### 7. Data stores (104 workflows)
 Today: Bidspoke has one shared store that can only save, read and delete, and code steps can't reach it.
