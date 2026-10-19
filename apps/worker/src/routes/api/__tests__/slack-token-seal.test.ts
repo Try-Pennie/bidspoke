@@ -36,11 +36,22 @@ function fakeTable(rows: Row[]) {
     from(table: string) {
       if (table !== 'service_connections') throw new Error(`unexpected table ${table}`)
       const filters: [string, string, unknown][] = []
+      const ors: string[] = []
       let patch: Row | null = null
       let limit: number | null = null
-      const match = (r: Row) => filters.every(([op, c, v]) => (op === 'is' ? r[c] === v : r[c] === v))
+      // Each `.or` is a comma separated list of column.op.value terms, any of
+      // which may match: eq compares the value, is.null tests for null.
+      const orMatch = (r: Row, list: string) => list.split(',').some((term) => {
+        const [c, op, ...v] = term.split('.')
+        const value = v.join('.')
+        if (op === 'is' && value === 'null') return r[c] === null || r[c] === undefined
+        if (op === 'eq') return r[c] === value
+        throw new Error(`fake: unsupported or term ${term}`)
+      })
+      const match = (r: Row) => filters.every(([op, c, v]) => (op === 'is' ? r[c] === v : r[c] === v)) && ors.every((o) => orMatch(r, o))
       const b = {
         select: () => b,
+        or: (list: string) => { ors.push(list); return b },
         eq: (c: string, v: unknown) => { filters.push(['eq', c, v]); return b },
         is: (c: string, v: unknown) => { filters.push(['is', c, v]); return b },
         limit: (n: number) => { limit = n; limits.push(n); return b },
@@ -64,8 +75,8 @@ function fakeTable(rows: Row[]) {
 
 function rowsFor() {
   return [
-    { id: 'sc-mine', organization_id: ORG, service_type: 'slack', config: { bot_token: 'mine-bot-token', default_channel: '#a' }, credential_enc: null, sealed_for: null },
-    { id: 'sc-other', organization_id: OTHER, service_type: 'slack', config: { bot_token: 'other-bot-token', default_channel: '#b' }, credential_enc: null, sealed_for: null },
+    { id: 'sc-mine', organization_id: ORG, service_type: 'slack', name: 'slack', config: { bot_token: 'mine-bot-token', default_channel: '#a' }, credential_enc: null, sealed_for: null },
+    { id: 'sc-other', organization_id: OTHER, service_type: 'slack', name: 'slack', config: { bot_token: 'other-bot-token', default_channel: '#b' }, credential_enc: null, sealed_for: null },
   ] as Row[]
 }
 
@@ -85,7 +96,7 @@ describe('sealSlackTokens', () => {
     // A cut list could read every row it saw as sealed and call the contract
     // release safe while an unseen row still holds only the plaintext.
     const many = Array.from({ length: SLACK_ROWS_MAX + 1 }, (_, i) => ({
-      id: `sc-${i}`, organization_id: ORG, service_type: 'slack', config: { bot_token: `t-${i}` }, credential_enc: null, sealed_for: null,
+      id: `sc-${i}`, organization_id: ORG, service_type: 'slack', name: 'slack', config: { bot_token: `t-${i}` }, credential_enc: null, sealed_for: null,
     })) as Row[]
     const { client, writes, limits } = fakeTable(many)
     const keys = secretKeys({ SECRET_ENCRYPTION_KEY: newKey() })
@@ -167,6 +178,29 @@ describe('sealSlackTokens', () => {
     const said = JSON.stringify(r2)
     expect(said).not.toContain('mine-bot-token')
     expect(said).not.toContain(rows2[0].credential_enc as string)
+  })
+
+  // #2332 release 2 lets an organization hold other Slack rows beside the alert
+  // row: an ops connection (sealed for the ops key, no plaintext) and a second
+  // workspace under another name. The seal and its verdict are about the alert
+  // row only: an ops row would hold the verdict at not ready for ever (no
+  // plaintext to match), and a second row must never be sealed as the alert
+  // row's ring.
+  it('seals and judges only the alert row, leaving an ops Slack row and a second Slack row alone', async () => {
+    const key = newKey()
+    const rows = rowsFor()
+    const opsEnc = await encryptSecret('ops-bot-token', newKey())
+    rows.push(
+      { id: 'sc-ops', organization_id: ORG, service_type: 'slack', name: 'ops-alerts', config: { default_channel: '#ops' }, credential_enc: opsEnc, sealed_for: 'ops_key' },
+      { id: 'sc-second', organization_id: ORG, service_type: 'slack', name: 'second workspace', config: { bot_token: 'second-bot-token' }, credential_enc: null, sealed_for: null },
+    )
+    const { client, writes } = fakeTable(rows)
+    const r = await sealSlackTokens(client as never, secretKeys({ SECRET_ENCRYPTION_KEY: key }), ORG, ACTOR, { dryRun: false })
+    expect(r).toMatchObject({ rowsSeen: 1, sealed: 1, alreadySealed: 0, cannotSeal: [], readyForContract: true })
+    expect(r.verification.map((v) => v.id)).toEqual(['sc-mine'])
+    expect(writes).toHaveLength(1)
+    expect(rows.find((x) => x.id === 'sc-ops')).toMatchObject({ credential_enc: opsEnc, sealed_for: 'ops_key' })
+    expect(rows.find((x) => x.id === 'sc-second')).toMatchObject({ credential_enc: null, sealed_for: null })
   })
 
   // The saved Slack copy is not edited by the backfill, which changes the

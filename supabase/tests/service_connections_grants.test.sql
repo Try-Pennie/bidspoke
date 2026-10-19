@@ -15,7 +15,9 @@
 --   D. service_role, the Worker, still reads and writes it.
 --   E. sealed_for takes only the two values, and a ciphertext must name what it
 --      is sealed for.
---   F. Only service_role may call delete_service_connection.
+--   F. Only service_role may call delete_service_connection_by_id, the one
+--      delete of the table a route calls, and every other function of that
+--      name family is gone (#2332 release 2 dropped the delete by type).
 --
 -- HOW IT ASSERTS: RAISE EXCEPTION inside DO blocks, one case per block, counted
 -- into a temp table and compared to the number at the bottom.
@@ -143,16 +145,21 @@ $do$;
 DO $do$
 DECLARE
   r text;
+  others text;
 BEGIN
   FOREACH r IN ARRAY ARRAY['anon', 'authenticated'] LOOP
-    IF has_function_privilege(r, 'public.delete_service_connection(uuid, text, uuid)', 'EXECUTE') THEN
-      RAISE EXCEPTION '% may call delete_service_connection', r;
+    IF has_function_privilege(r, 'public.delete_service_connection_by_id(uuid, uuid, uuid)', 'EXECUTE') THEN
+      RAISE EXCEPTION '% may call delete_service_connection_by_id', r;
     END IF;
   END LOOP;
-  IF NOT has_function_privilege('service_role', 'public.delete_service_connection(uuid, text, uuid)', 'EXECUTE') THEN
-    RAISE EXCEPTION 'service_role may not call delete_service_connection';
+  IF NOT has_function_privilege('service_role', 'public.delete_service_connection_by_id(uuid, uuid, uuid)', 'EXECUTE') THEN
+    RAISE EXCEPTION 'service_role may not call delete_service_connection_by_id';
   END IF;
-  INSERT INTO scg_cases VALUES ('only service_role may call delete_service_connection');
+  SELECT string_agg(p.oid::regprocedure::text, ', ') INTO others
+  FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+  WHERE n.nspname = 'public' AND p.proname LIKE 'delete\_service\_connection%' AND p.proname <> 'delete_service_connection_by_id';
+  IF others IS NOT NULL THEN RAISE EXCEPTION 'another delete of the table is still there: %', others; END IF;
+  INSERT INTO scg_cases VALUES ('only service_role may call delete_service_connection_by_id, and no other delete of the table remains');
 END
 $do$;
 

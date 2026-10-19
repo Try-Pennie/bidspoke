@@ -84,7 +84,7 @@ export function AcceptRulesEditor({ value, onChange, refusal, kind = 'accept' }:
         <>
           {refusal && <FieldError alert size="xs">{refusal}</FieldError>}
           <div>
-            <Button variant="quiet" aria-label={`Add ${kind} rule`} onClick={() => onChange([...value, { field: '', equals: '' }])}>
+            <Button variant="quiet" aria-label={`Add rule, ${kind}`} onClick={() => onChange([...value, { field: '', equals: '' }])}>
               <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add rule
             </Button>
           </div>

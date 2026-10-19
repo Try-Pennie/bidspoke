@@ -43,7 +43,6 @@
     "save_partner_page",
     "change_partner_uuid",
     "monitor_partner_page_ping",
-    "delete_service_connection",
     "delete_service_connection_by_id",
     "store_rotated_envelope",
     "replace_connection_envelope"

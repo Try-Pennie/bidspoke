@@ -395,14 +395,15 @@ describe('every handler writing service_connections edits the saved Slack copy (
   // enumerated above through the rpc and held to the same rule, so they are
   // listed here by name: another writing function must be looked at, not slip
   // in. #2332 added delete_service_connection_by_id, which the Disconnect now
-  // calls; delete_service_connection leaves this list at its contract step.
+  // calls, and its release 2 (20261019150000) dropped the delete by service
+  // type it replaced.
   // #2335 added store_rotated_envelope, which writes only a person bound ops_key
   // row, and whose one caller is exempted above with that reason. #2333 added
   // replace_connection_envelope, the reseal's write back, which writes only an
   // ops_key row, and whose one caller is exempted above with that reason.
-  it('the only database functions writing the table are the delete functions and the two ops login write backs, whose callers are held to the rule', () => {
+  it('the only database functions writing the table are the delete by id and the two ops login write backs, whose callers are held to the rule', () => {
     expect([...sqlFunctionsWriting(SLACK_COPY, readMigrations())].sort()).toEqual([
-      'delete_service_connection', 'delete_service_connection_by_id', 'replace_connection_envelope', 'store_rotated_envelope',
+      'delete_service_connection_by_id', 'replace_connection_envelope', 'store_rotated_envelope',
     ])
     expect(found.handlers).toEqual(expect.arrayContaining(['apps/worker/src/routes/api/integrations.ts DELETE /slack']))
   })
