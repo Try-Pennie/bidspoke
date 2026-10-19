@@ -45,6 +45,10 @@ bucket_name = "bidspoke-porting-tee"
 # when this is unset or names another lane (#1709).
 [vars]
 LANE = "ops"
+# OPS_RESEAL is set here ONLY during a rotation of the ops key (#2333,
+# docs/disaster-recovery.md, rotating the ops private key, step 3): "preview",
+# then "apply", makes the minute cron reseal every ops connection login still
+# under an old kid (src/ops/reseal-live.ts). Unset, nothing is resealed.
 
 # The ops code namespace (#1709, plan 0.E): where ops workflows' code nodes will
 # run, apart from the bidding namespace (bidspoke-code-nodes) and the compare

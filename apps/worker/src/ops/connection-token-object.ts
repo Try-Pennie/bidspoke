@@ -59,13 +59,14 @@
  * OpsConnections entrypoint exists (PR 8 of this phase).
  */
 import { DurableObject } from 'cloudflare:workers'
-import { CURRENT_OPS_KID, open, OPS_CONNECTION_PUBLIC_KEYS, seal, type KeyRing, type SealedEnvelope } from '@bidspoke/connection-seal'
+import { CURRENT_OPS_KID, open, OPS_CONNECTION_PUBLIC_KEYS, privateKeyRing, seal, type KeyRing, type SealedEnvelope } from '@bidspoke/connection-seal'
 import { parseStoreRotatedEnvelopeAnswer, type OpsGatewayBinding, type StoreRotatedEnvelopeAnswer } from '../lib/ops-gateway-contract'
 import type { OpsEnv } from './index'
 import { LoginMintError, type LoginMintKind, type MintFailureReason } from './connections/refusals'
 import { readAccessToken, requestToken, TOKEN_ENDPOINT_TIMEOUT_MS } from './connections/minters/token-endpoint'
 import {
-  parseAccessTokenRequest, parseExchangeRequest, type AccessTokenAnswer, type ExchangeAnswer, type TokenObjectFailure, type TokenObjectLogin,
+  parseAccessTokenRequest, parseExchangeRequest, parseResealLoginRequest, type AccessTokenAnswer, type ExchangeAnswer, type ResealLoginAnswer,
+  type ResealLoginRequest, type TokenObjectFailure, type TokenObjectLogin,
 } from './connections/token-object-contract'
 
 /** What the fetch handler answers: the object is reached by RPC only. */
@@ -123,18 +124,32 @@ export interface SealKeys {
   kid: string | null
 }
 
+/** The committed public keys and the kid new seals use; a parameter for the tests. */
+export interface SealRegistryOf {
+  currentKid: string | null
+  publicKeys: KeyRing
+}
+
+const COMMITTED_REGISTRY: SealRegistryOf = { currentKid: CURRENT_OPS_KID, publicKeys: OPS_CONNECTION_PUBLIC_KEYS }
+
 /**
- * The ops Worker's own keys: the private half of the current kid, and the
- * committed public keys bidding seals to. Only the current kid opens here: a
- * login sealed under a kid in rotation is resealed by resealConnections, a
- * later PR, which extends this.
+ * The ops Worker's own keys: every committed kid whose private half this Worker
+ * holds, in OPS_CONNECTIONS_PRIVATE_KEY or, during a rotation,
+ * OPS_CONNECTIONS_PRIVATE_KEY_NEXT, and the committed public keys bidding seals
+ * to, with the current kid new seals use (#2333). Neither secret is assumed to
+ * hold any kid: privateKeyRing gives each kid the held key whose modulus is its
+ * public key's, because in rotation step 3 the new kid is current while its key
+ * is still in NEXT. So mid rotation a login under either kid opens, which is
+ * what lets resealConnections (reseal.ts) move every login to the current kid,
+ * and what lets this object open a login the reseal has not reached yet. A key
+ * that matches no committed kid opens nothing; the minute key check
+ * (connection-key.ts) names it.
  */
-export function opsSealKeys(env: Pick<OpsEnv, 'OPS_CONNECTIONS_PRIVATE_KEY'>): SealKeys {
-  const privateKeys: Record<string, string> = {}
-  if (CURRENT_OPS_KID !== null && typeof env.OPS_CONNECTIONS_PRIVATE_KEY === 'string' && env.OPS_CONNECTIONS_PRIVATE_KEY.trim() !== '') {
-    privateKeys[CURRENT_OPS_KID] = env.OPS_CONNECTIONS_PRIVATE_KEY
-  }
-  return { privateKeys, publicKeys: OPS_CONNECTION_PUBLIC_KEYS, kid: CURRENT_OPS_KID }
+export function opsSealKeys(
+  env: Pick<OpsEnv, 'OPS_CONNECTIONS_PRIVATE_KEY' | 'OPS_CONNECTIONS_PRIVATE_KEY_NEXT'>, registry: SealRegistryOf = COMMITTED_REGISTRY,
+): SealKeys {
+  const held = [env.OPS_CONNECTIONS_PRIVATE_KEY, env.OPS_CONNECTIONS_PRIVATE_KEY_NEXT].filter((v): v is string => typeof v === 'string' && v.trim() !== '')
+  return { privateKeys: privateKeyRing(held, registry.publicKeys), publicKeys: registry.publicKeys, kid: registry.currentKid }
 }
 
 type Source =
@@ -289,6 +304,61 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
     }
   }
 
+  /**
+   * The reseal of the login this object holds, during a rotation of the ops key
+   * (#2333; the 2026-10-18 comment on #2333): a login under a kid that is not
+   * current is opened with that kid's key and sealed, the same login at the
+   * SAME generation, to the current kid, so a rotated login still waiting for
+   * its write back reaches the row under the key that will stay. Called by
+   * resealConnections (reseal.ts) for every served connection; previews unless
+   * the request says apply. Every other field of the stored login is kept: the
+   * write back goes on as it was (pending stays pending), and a send of the old
+   * envelope whose answer was lost is still recognised (the alarm tells a
+   * reseal, which keeps the generation, from a Reconnect).
+   *
+   * Under blockConcurrencyWhile, so no request or alarm reads the login between
+   * this read and this write, and never while a refresh or a consent is in
+   * flight (answered busy, for the next run), so the two never both write a
+   * login. The callback never throws (a throw there resets the object). The
+   * plaintext lives only inside this method and is never logged or answered.
+   */
+  async resealLogin(raw: unknown): Promise<ResealLoginAnswer> {
+    let request: ResealLoginRequest
+    try {
+      request = parseResealLoginRequest(raw)
+    } catch {
+      return { ok: false, reason: 'refused' }
+    }
+    return this.ctx.blockConcurrencyWhile(async (): Promise<ResealLoginAnswer> => {
+      try {
+        if (this.inFlight && this.clock() - this.inFlight.startedAt < IN_FLIGHT_STALE_MS) return { ok: false, reason: 'busy' }
+        const stored = await this.readLogin()
+        if (!stored) return { ok: true, state: 'none', fromKid: null }
+        if (!this.sameConnection(stored, request)) return { ok: false, reason: 'refused' }
+        const keys = this.sealKeys()
+        if (keys.kid === null) return { ok: false, reason: 'no_current_kid' }
+        const fromKid = stored.envelope.kid
+        if (fromKid === keys.kid) return { ok: true, state: 'current', fromKid }
+        if (!Object.hasOwn(keys.privateKeys, fromKid)) return { ok: false, reason: 'no_key' }
+        if (!request.apply) return { ok: true, state: 'would_reseal', fromKid }
+        const binding = { organization_id: stored.organizationId, connection_id: stored.connectionId, service: stored.service, generation: stored.generation }
+        let plaintext: string
+        try {
+          plaintext = await open(keys.privateKeys, stored.envelope, { ...binding, kid: fromKid })
+        } catch {
+          return { ok: false, reason: 'open_failed' }
+        }
+        const envelope = await seal(keys.publicKeys, plaintext, { ...binding, kid: keys.kid })
+        await this.writeLogin({ ...stored, envelope })
+        // The token held came from this login; it is the same login under another envelope.
+        if (this.held?.loginIv === stored.envelope.iv) this.held = { ...this.held, loginIv: envelope.iv }
+        return { ok: true, state: 'resealed', fromKid }
+      } catch {
+        return { ok: false, reason: 'failed' }
+      }
+    })
+  }
+
   /** The write back: one compare and set, then retry later, give up, or rest. */
   async alarm(): Promise<void> {
     const login = await this.readLogin()
@@ -323,7 +393,11 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
       case 'stored':
       case 'already_stored': {
         if (!current) return
-        if (current.envelope.iv === login.envelope.iv) {
+        // The same envelope, or the same login resealed while the send was on its
+        // way (#2333): a reseal keeps the generation, and nothing else ever writes
+        // a second login at one generation here. The row then holds this login
+        // under the old kid, which resealConnections moves.
+        if (current.envelope.iv === login.envelope.iv || current.generation === login.generation) {
           await this.writeLogin({ ...current, committedGeneration: login.generation, writeBack: 'landed', attempts: 0 })
           return
         }
@@ -340,6 +414,13 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
           await this.ctx.storage.setAlarm(now)
           return
         }
+        if (landed && current && current.generation === landed.generation) {
+          // An earlier send of this same login landed, and a reseal has since given
+          // it a new envelope (#2333): the row holds it, under the old kid, which
+          // resealConnections moves. Not a Reconnect, so nothing is given up.
+          await this.writeLogin({ ...current, committedGeneration: landed.generation, writeBack: 'landed', attempts: 0 })
+          return
+        }
         // The row moved past this object (a Reconnect): the row is the authority, and this login is dead.
         await this.giveUp()
         return
@@ -351,7 +432,7 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
     }
   }
 
-  private sameConnection(stored: StoredLogin, request: TokenObjectLogin): boolean {
+  private sameConnection(stored: StoredLogin, request: Pick<TokenObjectLogin, 'organizationId' | 'connectionId' | 'service'>): boolean {
     return stored.organizationId === request.organizationId && stored.connectionId === request.connectionId && stored.service === request.service
   }
 

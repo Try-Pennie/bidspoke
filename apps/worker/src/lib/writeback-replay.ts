@@ -50,7 +50,7 @@ import {
   salesforceTokenCacheKey,
 } from '../engine/nodes/salesforce'
 import { WRITE_MARKER_FIELD } from '../engine/write-marker'
-import { fieldsMovedSince } from './salesforce-field-conflict'
+import { fieldsMovedSince, readFieldHistory } from './salesforce-field-conflict'
 
 /**
  * Every status a held write can carry: the CHECK on the table, and what each
@@ -425,6 +425,11 @@ export async function replayHeldWrite(deps: ReplayDeps, orgId: string, id: strin
  *    name, through the read-back's one rule (salesforce-field-conflict.ts). The
  *    row's creation is when the write began for this rule: the failed attempts
  *    were all answered before it, so a change after it is another writer's;
+ *  - a field that rule calls moved is then asked about in Salesforce's field
+ *    history (#2264, readFieldHistory): a tracked field with no change recorded
+ *    since the row was written is sent after all. A history query with no
+ *    answer spends nothing, like the record read (or holds, when the bulkhead
+ *    refused it); one refused or unreadable leaves the field out;
  *  - a read with no usable answer spends nothing; a read Salesforce refuses
  *    (the record is gone, a field it does not know) closes the row as refused,
  *    since the write would be refused too;
@@ -465,7 +470,29 @@ export async function drainHeldWrite(deps: ReplayDeps, orgId: string, id: string
   }
 
   const fields = names.filter((f) => f !== WRITE_MARKER_FIELD)
-  const moved = fieldsMovedSince({ fields, body, current, sinceMs: Date.parse(row.created_at), earlier: opts.earlier ?? [] })
+  const sinceMs = Date.parse(row.created_at)
+  let moved = fieldsMovedSince({ fields, body, current, sinceMs, earlier: opts.earlier ?? [] })
+  if (moved.length > 0) {
+    // A field the record read calls moved is asked about in its own history
+    // (#2264, the read-back's same rule): the record being written since says
+    // nothing about WHICH field. Nothing is claimed yet, so an unanswered
+    // query spends nothing, as an unanswered read does.
+    let shed: unknown = null
+    const history = await readFieldHistory(
+      async (historyPath) => {
+        try {
+          return { kind: 'answer', ...(await sf.send('GET', historyPath)) }
+        } catch (e) {
+          if (isSalesforceBulkheadShed(e)) shed = e
+          return { kind: 'no_answer', error: formatErr(e) }
+        }
+      },
+      { sfObject: row.sf_object, recordId: row.sf_record_id, fields: moved, sinceMs },
+    )
+    if (history.kind === 'no_answer') return shed ? { kind: 'held', error: formatErr(shed), recorded: true } : { kind: 'read_unanswered', error: history.error }
+    if (history.kind === 'unread') console.error(`[writeback-replay] the field history of ${row.sf_object} ${row.sf_record_id} could not be read, so ${moved.join(', ')} stay left out: ${history.why}`)
+    moved = fieldsMovedSince({ fields, body, current, sinceMs, earlier: opts.earlier ?? [], history })
+  }
   const note = moved.length > 0 ? `Sent without the fields changed in Salesforce since the write failed: ${moved.join(', ')}` : undefined
   if (moved.length > 0 && moved.length === fields.length) {
     const at = now()

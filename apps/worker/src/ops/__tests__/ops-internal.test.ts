@@ -37,8 +37,8 @@ describe('OpsInternal over the binding', () => {
     expect(entry.ping()).toEqual({ lane: 'ops', entrypoint: 'OpsInternal' })
   })
 
-  it('exposes ping and observe and nothing else until the run engine adds its run method (B3)', () => {
-    expect(Object.getOwnPropertyNames(OpsInternal.prototype).sort()).toEqual(['constructor', 'observe', 'ping'])
+  it('exposes ping, observe and the reseal (#2333) and nothing else until the run engine adds its run method (B3)', () => {
+    expect(Object.getOwnPropertyNames(OpsInternal.prototype).sort()).toEqual(['constructor', 'observe', 'ping', 'resealConnections'])
   })
 
   it('observe verifies a signed dispatch and answers what it observed (#1949)', async () => {

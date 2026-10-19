@@ -408,8 +408,10 @@ describe('the OpsGateway entrypoint', () => {
     expect(store.m.has(heartbeatKey(OPS_TICK_JOB))).toBe(true)
     // storeRotatedEnvelope: the ConnectionTokenObject's write back (#2335), tested in ops-gateway-rotated-envelope.test.ts.
     // opsConnections and moneyIdentities: the serve (#2335), tested in ops-gateway-connections.test.ts and money-identity.test.ts.
+    // replaceConnectionEnvelope: the reseal's write back (#2333), tested in ops-gateway-replace-envelope.test.ts.
     expect(Object.getOwnPropertyNames(OpsGateway.prototype).sort()).toEqual([
-      'constructor', 'moneyIdentities', 'opsConnections', 'opsTickCompleted', 'opsTickStarted', 'opsWorkflows', 'storeRotatedEnvelope',
+      'constructor', 'moneyIdentities', 'opsConnections', 'opsTickCompleted', 'opsTickStarted', 'opsWorkflows', 'replaceConnectionEnvelope',
+      'storeRotatedEnvelope',
     ])
   })
 

@@ -36,14 +36,22 @@
  *    another tick holds is that tick's to send, and a won claim's attempt count
  *    is written BEFORE the send (its claim freed if that write fails).
  *  - A field that now holds a different non-blank value, set by another writer
- *    since the write began, is not overwritten. It is named, field name only, in
- *    a conflict alert, and conflicts are counted per field against the resends
+ *    since the write began, is not overwritten. It is named in a conflict alert
+ *    with the value it held and the value being sent (#2264, never stored), and
+ *    conflicts are counted per field against the resends
  *    that carried it. "Since the write began" is read off LastModifiedDate: a
  *    record nobody has written since then holds only values from before the
  *    write, which are exactly what it was sent to replace (a Prospect's No Bid,
  *    which every reject patch replaces). A record written since, or one whose
  *    stamp cannot be read, is judged field by field, which overwrites nothing
- *    another writer may have set.
+ *    another writer may have set. A field that judgement calls moved is then
+ *    asked about in Salesforce's own field history (#2264), because the run's
+ *    own prospect_trades update writes the Prospect milliseconds before every
+ *    reject patch: a tracked field with no change recorded since the write
+ *    began still holds its value from before it, and is sent. A history query
+ *    with no answer stops the tick like any other call, deciding nothing. The
+ *    conflict alert names each left out field's two values, from this tick's
+ *    read, never stored.
  *  - Nothing is sent while Salesforce's bulkhead is full or cannot be asked
  *    (fail closed), and the first call that gets no answer stops the tick's
  *    Salesforce traffic, which is this job's circuit: no Salesforce circuit
@@ -110,7 +118,7 @@ import { formatErr } from './format-error'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
 import { getSlackConnection, sendSalesforceReadBackAlert, type SlackConnection } from './slack'
 import { BulkheadClient, salesforceBulkheadLimit } from './bulkhead-client'
-import { fieldsMovedSince, LAST_MODIFIED_MARGIN_MS, sameSalesforceValue } from './salesforce-field-conflict'
+import { fieldsMovedSince, LAST_MODIFIED_MARGIN_MS, movedFieldValues, readFieldHistory, sameSalesforceValue, type FieldHistory, type MovedFieldValues } from './salesforce-field-conflict'
 import type { ReadBackAlertWrite, SalesforceReadBackAlert, UnreadReason } from './salesforce-read-back-alert'
 
 export const SF_READ_BACK_JOB = 'salesforce-read-back'
@@ -226,6 +234,10 @@ export interface ReadBackSummary {
   exhausted: number
   /** Writes with at least one field left out as moved. */
   conflicts: number
+  /** Field history queries made (#2264), counted in reads too. */
+  history_reads: number
+  /** Fields the record read called moved that their own history showed nobody changed, so they were sent. */
+  history_cleared: number
   /** Left for a later tick: the claim said no, or the attempt could not be recorded. */
   deferred: number
   /** This tick's resends, per object and field: how many carried the field, and how many found it moved. */
@@ -390,14 +402,15 @@ export type RecordDecision =
   | { id: string; verdict: 'landed'; attempt: number }
   | { id: string; verdict: 'superseded' }
   | { id: string; verdict: 'exhausted' }
-  | { id: string; verdict: 'conflict_only'; conflicts: string[]; ownedByLater: string[]; candidates: string[] }
-  | { id: string; verdict: 'resend'; send: Record<string, unknown>; conflicts: string[]; ownedByLater: string[]; candidates: string[] }
+  | { id: string; verdict: 'conflict_only'; conflicts: string[]; conflictValues: MovedFieldValues[]; ownedByLater: string[]; candidates: string[] }
+  | { id: string; verdict: 'resend'; send: Record<string, unknown>; conflicts: string[]; conflictValues: MovedFieldValues[]; ownedByLater: string[]; candidates: string[] }
 
 /**
  * Decides every held write to one record from one read of it. `entries` are in
- * attempt order, oldest first.
+ * attempt order, oldest first. `history`, once read, is what Salesforce's field
+ * history says about the fields a first decision called moved (#2264).
  */
-export function decideRecord(entries: RecordEntry[], current: Record<string, unknown>): RecordDecision[] {
+export function decideRecord(entries: RecordEntry[], current: Record<string, unknown>, history?: FieldHistory): RecordDecision[] {
   const stamp = parseWriteMarker(current[WRITE_MARKER_FIELD])
   const stampedId = stamp ? `${stamp.executionId}:${stamp.stepNamespace}` : null
   // The newest write of the run to set each field owns it.
@@ -414,10 +427,11 @@ export function decideRecord(entries: RecordEntry[], current: Record<string, unk
     // The one moved field rule (salesforce-field-conflict.ts), which the drain
     // of stored writes also applies (#468): a value an earlier write of the run
     // sent is ours, and this newer write replaces it.
-    const conflicts = fieldsMovedSince({ fields: own, body: e.body, current, sinceMs: e.firstAttemptMs, earlier: entries.slice(0, i).map((x) => x.body) })
+    const conflicts = fieldsMovedSince({ fields: own, body: e.body, current, sinceMs: e.firstAttemptMs, earlier: entries.slice(0, i).map((x) => x.body), history })
+    const conflictValues = movedFieldValues({ moved: conflicts, body: e.body, current, sinceMs: e.firstAttemptMs, history })
     const send = own.filter((f) => !conflicts.includes(f))
-    if (send.length === 0) return { id: e.id, verdict: 'conflict_only', conflicts, ownedByLater, candidates: own }
-    return { id: e.id, verdict: 'resend', send: Object.fromEntries(send.map((f) => [f, e.body[f]])), conflicts, ownedByLater, candidates: own }
+    if (send.length === 0) return { id: e.id, verdict: 'conflict_only', conflicts, conflictValues, ownedByLater, candidates: own }
+    return { id: e.id, verdict: 'resend', send: Object.fromEntries(send.map((f) => [f, e.body[f]])), conflicts, conflictValues, ownedByLater, candidates: own }
   })
 }
 
@@ -425,7 +439,7 @@ function emptySummary(): ReadBackSummary {
   return {
     listed: 0, truncated: false, skipped: 0, not_ours: 0, unreadable_entries: 0, nothing_to_send: 0, finished: 0, young: 0, unread: 0, reads: 0,
     landed: 0, landed_by_resend: 0, superseded: 0, resent: 0, resent_confirmed: 0, resend_unanswered: 0, resend_refused: 0,
-    exhausted: 0, conflicts: 0, deferred: 0, conflict_fields: {}, alerts: 0,
+    exhausted: 0, conflicts: 0, history_reads: 0, history_cleared: 0, deferred: 0, conflict_fields: {}, alerts: 0,
   }
 }
 
@@ -437,6 +451,8 @@ interface Finding {
   fields: string[]
   detail?: string
   conflict_fields?: string[]
+  /** conflict: each left out field's two values, known only on the tick that decided it, never stored (#2264). */
+  conflict_values?: MovedFieldValues[]
   resent?: boolean
   still_trying?: boolean
 }
@@ -626,7 +642,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
     }
     if (answer.status >= 200 && answer.status < 300) {
       s.resent_confirmed++
-      if (d.conflicts.length > 0) await finish(h, { kind: 'conflict', conflict_fields: d.conflicts, resent: true })
+      if (d.conflicts.length > 0) await finish(h, { kind: 'conflict', conflict_fields: d.conflicts, resent: true }, { conflict_values: d.conflictValues })
       else await forget(h)
       return null
     }
@@ -766,10 +782,31 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
       return { unread: true, stop: 'salesforce_not_answering' }
     }
 
-    const decisions = decideRecord(
-      group.map((h) => ({ id: h.id, body: h.body, attempts: h.state.attempts, ownedByLater: h.state.owned_by_later ?? [], firstAttemptMs: h.firstAttemptMs })),
-      current,
-    )
+    const entries = group.map((h) => ({ id: h.id, body: h.body, attempts: h.state.attempts, ownedByLater: h.state.owned_by_later ?? [], firstAttemptMs: h.firstAttemptMs }))
+    let decisions = decideRecord(entries, current)
+    // A field the record read calls moved is asked about in its own history
+    // (#2264): the record being written since says nothing about WHICH field.
+    const judged = decisions.flatMap((d, i) => ((d.verdict === 'resend' || d.verdict === 'conflict_only') && d.conflicts.length > 0 ? [{ d, h: group[i] }] : []))
+    if (judged.length > 0) {
+      const moved = [...new Set(judged.flatMap(({ d }) => ('conflicts' in d ? d.conflicts : [])))]
+      const history = await readFieldHistory(
+        (historyPath) => {
+          s.reads++
+          s.history_reads++
+          return call(port, 'GET', historyPath)
+        },
+        { sfObject: head.sf_object, recordId: head.sf_record_id, fields: moved, sinceMs: Math.min(...judged.map(({ h }) => h.firstAttemptMs)) },
+      )
+      if (history.kind === 'no_answer') {
+        // As any unanswered call: nothing is decided or sent, and the tick stops.
+        console.warn(`[${SF_READ_BACK_JOB}] reading the field history of ${head.sf_object} ${head.sf_record_id} got no answer: ${history.error}`)
+        return { unread: true, stop: 'salesforce_not_answering' }
+      }
+      if (history.kind === 'unread') console.error(`[${SF_READ_BACK_JOB}] the field history of ${head.sf_object} ${head.sf_record_id} could not be read, so ${moved.join(', ')} stay left out: ${history.why}`)
+      decisions = decideRecord(entries, current, history)
+      const stillMoved = new Set(decisions.flatMap((d) => (d.verdict === 'resend' || d.verdict === 'conflict_only' ? d.conflicts : [])))
+      s.history_cleared += moved.filter((f) => !stillMoved.has(f)).length
+    }
     // Oldest first, so a newer write's resend lands last and its stamp is the one left.
     for (const [i, d] of decisions.entries()) {
       const h = group[i]
@@ -786,7 +823,7 @@ export async function runSalesforceReadBack(deps: SalesforceReadBackDeps): Promi
       } else if (d.verdict === 'conflict_only') {
         count(h, d.candidates, d.conflicts)
         s.conflicts++
-        await finish(h, { kind: 'conflict', conflict_fields: d.conflicts, resent: false })
+        await finish(h, { kind: 'conflict', conflict_fields: d.conflicts, resent: false }, { conflict_values: d.conflictValues })
       } else {
         const stop = await resend(h, d, port, path)
         if (stop) return { stop }
@@ -923,6 +960,7 @@ async function deliverFindings(
       ...(f.detail ? { detail: f.detail } : {}),
       ...(f.still_trying !== undefined ? { still_trying: f.still_trying } : {}),
       ...(f.conflict_fields ? { conflict_fields: f.conflict_fields } : {}),
+      ...(f.conflict_values ? { conflict_values: f.conflict_values } : {}),
       ...(f.resent !== undefined ? { resent: f.resent } : {}),
     }))
     const payload: SalesforceReadBackAlert = { kind, writes }

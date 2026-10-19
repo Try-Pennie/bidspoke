@@ -3428,6 +3428,20 @@ export type Database = {
         }
         Returns: number
       }
+      replace_connection_envelope: {
+        Args: {
+          p_connection_id: string
+          p_envelope: Json
+          p_expected_generation: number
+          p_expected_kid: string
+          p_organization_id: string
+        }
+        Returns: {
+          current_generation: number
+          current_kid: string
+          outcome: string
+        }[]
+      }
       save_buyer_profile: {
         Args: {
           p_actor: string
