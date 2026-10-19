@@ -146,6 +146,12 @@ export interface KeptWorkflow {
  * minimum loan amount, refusing a smaller or unreadable loan before anything is
  * sent. Its baseline is the canvas script as it stood, read from the live
  * definition on 2026-10-15; clear it once the paste reads as agree.
+ *
+ * build_response_body was edited here first on 2026-10-19: a sell off lead no buyer
+ * took is rejected, even when no buyer was asked (the loan minimum above, or
+ * buyer_select finding no eligible buyer), instead of being offered at the engine
+ * bid. Its baseline is version 112's script, read from the live definition on
+ * 2026-10-19; clear it once the paste reads as agree.
  */
 export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
   {
@@ -159,8 +165,9 @@ export const KEPT_ENGINE_SCRIPTS: readonly KeptScript[] = [
     namespace: 'build_response_body',
     file: 'build_response_body.js',
     script: BUILD_RESPONSE_BODY,
-    canvasBaselineSha256: null,
-    baselineReadOn: null,
+    // Version 112, before a sell off lead no buyer took was rejected (2026-10-19).
+    canvasBaselineSha256: 'ad6f63456ae5f6576ed852d3b107f5a7c42b5afa5ddc4fed9fc3e3947b45a04f',
+    baselineReadOn: '2026-10-19',
   },
   {
     namespace: 'patch_prospect_body',

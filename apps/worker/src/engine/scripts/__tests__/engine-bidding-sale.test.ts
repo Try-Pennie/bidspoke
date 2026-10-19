@@ -221,6 +221,18 @@ describe('node arms: a lead the buyer_select node decided gets the bodies of its
     expect(JSON.stringify(got.patch)).toBe(JSON.stringify(ARMS.sold_1001.patch_prospect_body))
   })
 
+  // Dan, 2026-10-19: a sell off lead no buyer takes is rejected, never offered at the engine
+  // bid. The node records no eligible buyer as a skipped sale, the same shape tripoint_ping
+  // gives a lead it never sent, and both used to fall through to the Pennie offer.
+  it('node no_sale with no eligible buyer: a sell off lead nobody was asked about is rejected with the two fields alone', async () => {
+    const steps = baseSteps(fixtures.prospect_trades_sell_off)
+    steps.buyer_select = { output: { _route: 'no_sale', reason: 'no_eligible_buyer', mode_effective: 'live', population: 'engine', sale: skippedSale() } }
+    const got = await runChain(steps, null, false)
+    expect(JSON.stringify(legacyResponse(got.response))).toBe(JSON.stringify(ARMS.declined_1003.response))
+    expect((got.response as Arm['response'] & { reject_patch?: unknown }).reject_patch).toEqual({ BidStatus__c: 'Rejected', RejectionReason__c: 'unqualified_lead' })
+    expect(got.patch).toBeNull()
+  })
+
   it('zero engineBid is rejected before any sale is read, whichever node produced it', async () => {
     const steps = baseSteps(fixtures.prospect_trades_zero_bid)
     steps.buyer_select = nodeStep('sold', sale({ accepted: true, buyer_reference: 'masked', result_code: '1001' }))
