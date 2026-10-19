@@ -32,8 +32,8 @@
  * new, and two runs at once are kept apart by the compare and set on the rows
  * and by blockConcurrencyWhile in each object. RUN AGAIN UNTIL NOTHING IS LEFT:
  * the report counts every login still under another kid or not known to be
- * current (a row that moved, a refusal, a failure, one past the per run
- * limit), and says nothing_left only when that count is zero and the list it
+ * current (a row that moved, a refusal, a failure, one past a per run limit),
+ * and says nothing_left only when that count is zero and the list it
  * read named every ops connection.
  *
  * A CRASH between a seal and its write back writes nothing: the old envelope is
@@ -42,7 +42,7 @@
  *
  * WHO CALLS IT. OpsInternal.resealConnections (internal.ts), reached only
  * through this Worker's own SELF binding: the minute cron calls it while
- * OPS_RESEAL is set on this Worker (reseal-schedule.ts), and nothing else.
+ * OPS_RESEAL is set on this Worker (reseal-live.ts), and nothing else.
  * WHOSE DATA. Lane wide system work, like the tick: every organization's ops
  * connections, each opened and sealed under its own organization (the AAD binds
  * it) and written back only within it.
@@ -68,7 +68,7 @@ export type RowOutcome = (typeof ROW_OUTCOMES)[number]
 
 /** What becomes of each token object's login in a run: its state, or why it did nothing. */
 export const OBJECT_OUTCOMES = [
-  'none', 'current', 'would_reseal', 'resealed', 'refused', 'busy', 'no_current_kid', 'no_key', 'open_failed', 'failed', 'deferred',
+  'none', 'current', 'would_reseal', 'resealed', 'refused', 'busy', 'no_current_kid', 'no_key', 'open_failed', 'failed',
 ] as const
 export type ObjectOutcome = (typeof OBJECT_OUTCOMES)[number]
 
@@ -80,10 +80,15 @@ const OBJECT_DONE: ReadonlySet<ObjectOutcome> = new Set(['none', 'current', 'res
 export interface ResealLimits {
   /** Rows resealed at most in one run; a row past it is counted as left, and the next run takes it. */
   maxRowReseals: number
-  /** Token objects asked at most in one run. */
-  maxObjects: number
+  /**
+   * Token object logins resealed at most in one run. Every object is still
+   * asked every run: past this, an object is asked to preview, so one still
+   * under an old kid answers would_reseal, is counted as left, and is resealed
+   * by a later run, whatever its place in the list.
+   */
+  maxObjectReseals: number
 }
-export const RESEAL_LIMITS: ResealLimits = { maxRowReseals: 100, maxObjects: 200 }
+export const RESEAL_LIMITS: ResealLimits = { maxRowReseals: 100, maxObjectReseals: 100 }
 
 /** The most problems one report names. */
 export const MAX_RESEAL_PROBLEMS = 20
@@ -153,10 +158,10 @@ export async function resealConnections(
   const note = (what: string, outcome: string) => { if (problems.length < MAX_RESEAL_PROBLEMS) problems.push(`${what}: ${outcome}`) }
   const connections = served.list.connections
 
-  for (const [i, c] of connections.entries()) {
-    const outcome: ObjectOutcome = i < limits.maxObjects ? await resealObject(deps, c, apply) : 'deferred'
+  for (const c of connections) {
+    const outcome = await resealObject(deps, c, apply && objects.resealed < limits.maxObjectReseals)
     objects[outcome] += 1
-    if (!OBJECT_DONE.has(outcome) && outcome !== 'would_reseal' && outcome !== 'deferred') note(`token object ${c.id}`, outcome)
+    if (!OBJECT_DONE.has(outcome) && outcome !== 'would_reseal') note(`token object ${c.id}`, outcome)
   }
 
   let resealed = 0

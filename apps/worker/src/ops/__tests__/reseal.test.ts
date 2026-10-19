@@ -248,12 +248,47 @@ describe('resealConnections applied', () => {
     expect(b.writes).toEqual([])
   }, KEYGEN_TIMEOUT_MS)
 
-  it('reseals at most the per run limit, leaving the rest deferred for the next run', async () => {
+  it('reseals at most the per run limit of rows, leaving the rest deferred, and the next run takes them', async () => {
     const b = bidding([await rowUnder(before(), id(1)), await rowUnder(before(), id(2)), await rowUnder(before(), id(3))])
-    const report = okReport(await resealConnections(deps(b, objects()), { apply: true }, { maxRowReseals: 2, maxObjects: 2 }))
-    expect(report.rows).toMatchObject({ resealed: 2, deferred: 1 })
-    expect(report.objects).toMatchObject({ none: 2, deferred: 1 })
-    expect(report).toMatchObject({ left: 2, nothing_left: false })
+    const first = okReport(await resealConnections(deps(b, objects()), { apply: true }, { maxRowReseals: 2, maxObjectReseals: 2 }))
+    expect(first.rows).toMatchObject({ resealed: 2, deferred: 1 })
+    expect(first).toMatchObject({ left: 1, nothing_left: false })
+    const second = okReport(await resealConnections(deps(b, objects()), { apply: true }, { maxRowReseals: 2, maxObjectReseals: 2 }))
+    expect(second.rows).toMatchObject({ resealed: 1, current: 2 })
+    expect(second.nothing_left).toBe(true)
+  })
+
+  it('asks every token object every run, and reseals at most the per run limit of them, so a login past the limit is reached on a later run', async () => {
+    const rows = await Promise.all([1, 2, 3, 4, 5].map((n) => rowUnder(during(), id(n))))
+    // Objects that each hold a login under the old kid until one is asked to apply.
+    const held = new Set(rows.map((r) => r.id))
+    const asked: Array<[string, boolean]> = []
+    const resealedInOrder: string[] = []
+    const o = {
+      calls: [],
+      reseal: async (connectionId: string, request: ResealLoginRequest): Promise<unknown> => {
+        asked.push([connectionId, request.apply])
+        if (!held.has(connectionId)) return { ok: true, state: 'current', fromKid: NEW }
+        if (!request.apply) return { ok: true, state: 'would_reseal', fromKid: OLD }
+        held.delete(connectionId)
+        resealedInOrder.push(connectionId)
+        return { ok: true, state: 'resealed', fromKid: OLD }
+      },
+    } as unknown as ReturnType<typeof objects>
+    const limits = { maxRowReseals: 100, maxObjectReseals: 2 }
+    const runs: ResealReport[] = []
+    for (let i = 0; i < 3; i++) runs.push(okReport(await resealConnections(deps(bidding(rows), o), { apply: true }, limits)))
+    expect(runs.map((r) => r.objects)).toEqual([
+      expect.objectContaining({ resealed: 2, would_reseal: 3 }),
+      expect.objectContaining({ resealed: 2, would_reseal: 1, current: 2 }),
+      expect.objectContaining({ resealed: 1, current: 4 }),
+    ])
+    expect(runs.map((r) => r.nothing_left)).toEqual([false, false, true])
+    // Every object is asked on every run, and each run reseals the next two still under the old kid.
+    expect(resealedInOrder).toEqual([id(1), id(2), id(3), id(4), id(5)])
+    expect(asked).toHaveLength(15)
+    // Past the limit an object is asked only to preview, so it writes nothing that run.
+    expect(asked.slice(2, 5)).toEqual([[id(3), false], [id(4), false], [id(5), false]])
   })
 })
 
