@@ -422,7 +422,7 @@ export async function readLastPurge(supabase: SupabaseClient, days: string[]): P
   // cleanup has recorded anything" (lessons review, #835). The days beneath the
   // gate are a handful, so this is a handful of reads.
   for (const day of days) {
-    // paginate-ok: one row, the newest for this day
+    // One row, the newest for this day (.limit(1)).
     const { data, error } = await supabase
       .from('purge_run_log')
       .select('archive_day, outcome, reason, recorded_at')

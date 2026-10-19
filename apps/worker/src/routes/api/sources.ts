@@ -335,12 +335,12 @@ sources.delete('/:name', async (c) => {
   const deletedKeys = new Set([row.api_key])
   const sourceId = row.id
 
-  // Revoke first: rebuild the map from the table minus the deleted key(s), so
+  // Revoke first: rebuild the map from the table minus the deleted key, so
   // auth is cut before the row is removed and a stale-snapshot read-modify-write
   // can't drop an unrelated source's key. Manual keys are preserved.
   // A delete whose rebuild read failed must not write either. The alternative is
   // worse than it looks: the merged map would be the stale env snapshot minus
-  // the deleted keys, so the revocation appears to work while any key added by a
+  // the deleted key, so the revocation appears to work while any key added by a
   // concurrent mutation is silently dropped from production.
   const rebuilt = await rebuildKeyMap(supabase, parseKeyMap(c.env.API_KEY_MAP ?? '{}'), deletedKeys)
   if (rebuilt.error) return keyMapReadFailed(c, rebuilt.error)

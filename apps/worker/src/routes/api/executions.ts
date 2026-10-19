@@ -488,7 +488,7 @@ executions.get('/:id', async (c) => {
     // `execution_started_at_utc` is the table's partition key and is stamped
     // from the same instant as the execution's own started_at, so naming it
     // prunes to one partition instead of scanning every month.
-    // paginate-ok: at most one sighting per execution
+    // One row at most: one sighting per execution, read with .maybeSingle().
     supabase
       .from('lead_sightings')
       .select('quoted_rate_cents, winning_bid_cents, winning_partner_slug')
