@@ -14,6 +14,7 @@
  * database clock, so a fire computed on the wrong one is visible.
  */
 import { describe, expect, it } from 'vitest'
+import { OPS_TICK_PROBLEM_RULES } from '../../lib/ops-gateway-contract'
 import { organizationIdFrom } from '../ops-db'
 import {
   OpsWriteTimeoutError, type ConnectionCopyInput, type SaveConnectionCopiesResult, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult,
@@ -347,6 +348,7 @@ describe('failure boundaries', () => {
     const f = fake({ failing: { purgeTombstones: new Error('lock timeout') } })
     const report = await runOpsTick(f.ports)
     expect(report.problems).toEqual(['The tombstone_expiry sweep failed: lock timeout.'])
+    expect(report.problem_keys).toEqual(['sweep_failed:tombstone_expiry'])
     expect(f.db.calls).toEqual(expect.arrayContaining(['sweepLeases', 'expireRuns', 'queueDisagreements', 'sweepSfLeases', 'saveConnectionCopies']))
     expect(f.db.observations).toHaveLength(1)
     expect(f.dispatched).toHaveLength(1)
@@ -356,6 +358,7 @@ describe('failure boundaries', () => {
     const f = fake({ failing: { sweepSfLeases: new Error('statement timeout') } })
     const report = await runOpsTick(f.ports)
     expect(report.problems).toEqual(['The sf_lease_expiry sweep failed: statement timeout.'])
+    expect(report.problem_keys).toEqual(['sweep_failed:sf_lease_expiry'])
     expect(f.db.calls).toEqual(expect.arrayContaining(['sweepLeases', 'expireRuns', 'queueDisagreements', 'purgeTombstones', 'saveConnectionCopies']))
     expect(f.db.observations).toHaveLength(1)
     expect(f.dispatched).toHaveLength(1)
@@ -410,12 +413,14 @@ describe('failure boundaries', () => {
     expect(report.problems.join(' ')).toMatch(/could not stamp its start with the bidding Worker/)
   })
 
-  // #2410: the bidding Worker holds a lone missed start stamp for one tick, so it
-  // must be told which problem is the stamp's without reading the sentence.
+  // #2410 added the flag; since #2506 the stamp's problem is keyed start_stamp
+  // and held, like every transient kind, until three ticks in a row miss. The
+  // flag stays, and claims nothing it did not measure.
   it('says in the report whether the start stamp failed, and claims nothing it did not measure', async () => {
     const failed = await runOpsTick(fake({ stampFails: true }).ports)
     expect(failed.start_stamp_failed).toBe(true)
     expect(failed.problems).toEqual(['The ops tick could not stamp its start with the bidding Worker (the gateway is not deployed).'])
+    expect(failed.problem_keys).toEqual(['start_stamp'])
     const stamped = await runOpsTick(fake().ports)
     expect(stamped.start_stamp_failed).toBe(false)
   })
@@ -541,5 +546,64 @@ describe('the ops connections (#2335)', () => {
     const f = fake({ db: 'not_configured', fetchConnections: async () => { asked = true; return servedConnections() } })
     await runOpsTick(f.ports)
     expect(asked).toBe(false)
+  })
+})
+
+// #2506: the bidding Worker pages a problem a passing tick would clear only once
+// three ticks in a row report it, and every other problem at once. It tells the
+// two apart, and one problem from another, by a key per problem: the kind of
+// problem and, where there is one, what it is about (a sweep, a workflow, a
+// secret), never the sentence, which carries an error's own words and figures.
+describe('problem keys (#2506)', () => {
+  const GONE = '00000000-0000-4000-8000-0000000023c9'
+  const failsOn = (name: keyof OpsTickDb) => ({ failing: { [name]: new Error('canceling statement due to statement timeout') } })
+  const cases: Array<[string, Parameters<typeof fake>[0], string[]]> = [
+    ['a missed start stamp', { stampFails: true }, ['start_stamp']],
+    ['an unreachable database', { db: 'not_configured' }, ['db_not_configured']],
+    ['a secret found unusable', { secrets: [{ secret: 'OPS_CONNECTIONS_PRIVATE_KEY', problem: 'the key is not set' }] }, ['not_configured:OPS_CONNECTIONS_PRIVATE_KEY']],
+    ['a secrets check that throws', { secrets: new Error('the key import crashed') }, ['secrets_unchecked']],
+    ['an unreadable database clock', failsOn('now'), ['db_clock']],
+    ['a sweep claim that fails', failsOn('claimSweep'), ['sweep_claim_failed:lease_expiry', 'sweep_claim_failed:run_expiry', 'sweep_claim_failed:queue_agreement', 'sweep_claim_failed:tombstone_expiry']],
+    ['a lease sweep that fails after its claim', failsOn('sweepLeases'), ['sweep_failed:lease_expiry']],
+    ['a run expiry sweep that fails after its claim', failsOn('expireRuns'), ['sweep_failed:run_expiry']],
+    ['an agreement check that fails after its claim', failsOn('queueDisagreements'), ['agreement_check_failed']],
+    ['a disagreement the agreement check found', { disagreements: 2 }, ['queue_disagreement']],
+    ['a workflow list that cannot be fetched', { fetch: async () => { throw new Error('the bidding database did not answer') } }, ['workflows_fetch_failed']],
+    ['a served workflow it cannot read', { fetch: async () => served([{}, { id: 'not-a-uuid' }]) }, ['workflow_refused']],
+    ['a workflow save that fails', failsOn('saveCopies'), ['workflows_save_failed']],
+    ['a copies read that fails', failsOn('readCopies'), ['copies_read_failed']],
+    ['a refused schedule', { copies: [copy({ trigger: schedule({ ...every5, interval_seconds: 30 }) })] }, [`schedule_refused:${WF_A}`]],
+    ['a schedule with no saved version', { copies: [copy({ versionNumber: null })] }, [`schedule_no_version:${WF_A}`]],
+    ['a schedule whose recording fails', failsOn('recordObservation'), [`schedule_plan_failed:${WF_A}`]],
+    ['a missed slot', { copies: [copy({ scheduleKnownSince: '2026-10-17T09:00:00.000Z', lastObserved: '2026-10-17T09:30:00.000Z' })] }, [`slot_missed:${WF_A}`]],
+    ['a claim depth read that fails', failsOn('dueQueueDepth'), ['claim_depth_failed']],
+    ['a slot whose dispatch fails', { dispatchFails: (item) => item.kind === 'would_fire' }, [`dispatch_failed:${WF_A}`]],
+    ['a probe whose dispatch fails', { copies: [copy({ trigger: { type: 'http_webhook', config: {} } })], dispatchFails: (item) => item.kind === 'probe' }, ['probe_failed']],
+    ['a connection list that cannot be fetched', { fetchConnections: async () => { throw new Error('the connection list did not answer within 15 s') } }, ['connections_fetch_failed']],
+    ['a connection list it cannot read', { fetchConnections: async () => ({ served_at: 'never' }) }, ['connections_list_unreadable']],
+    ['a connection save that fails', failsOn('saveConnectionCopies'), ['connections_save_failed']],
+    ['a removal that cannot be recorded', {
+      ...failsOn('recordConnectionTombstone'),
+      fetchConnections: async () => ({ ...servedConnections(), tombstones: [{ connection_id: GONE, organization_id: ORG, generation: 1, removed_at: '2026-10-17T10:00:00.000Z' }] }),
+    }, [`tombstone_record_failed:${GONE}`]],
+  ]
+
+  it.each(cases)('keys %s', async (_label, opts, keys) => {
+    const report = await runOpsTick(fake(opts).ports)
+    expect(report.problem_keys).toEqual(keys)
+    // One key per sentence, in the same order, so the bidding Worker pages the sentences it judged.
+    expect(report.problems).toHaveLength(keys.length)
+  })
+
+  it('names no key on a healthy tick', async () => {
+    const report = await runOpsTick(fake().ports)
+    expect(report.problem_keys).toEqual([])
+  })
+
+  it('keys every problem by a kind the bidding Worker has a rule for', async () => {
+    for (const [, opts] of cases) {
+      const report = await runOpsTick(fake(opts).ports)
+      for (const key of report.problem_keys ?? []) expect(Object.keys(OPS_TICK_PROBLEM_RULES)).toContain(key.split(':')[0])
+    }
   })
 })

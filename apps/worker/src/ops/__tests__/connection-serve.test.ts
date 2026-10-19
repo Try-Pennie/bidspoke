@@ -86,14 +86,14 @@ describe('saveServedConnections', () => {
     const r = await saveServedConnections(f.d, async () => { throw new Error('the bidding Worker\'s connection list did not answer within 15 s') })
     expect(f.calls).toEqual([])
     expect(r.problems).toHaveLength(1)
-    expect(r.problems[0]).toMatch(/could not fetch the ops connections .*15 s.*serve_until.*6 hours/)
+    expect(r.problems[0].text).toMatch(/could not fetch the ops connections .*15 s.*serve_until.*6 hours/)
   })
 
   it('reports a list it cannot read and saves nothing', async () => {
     const f = db()
     const r = await saveServedConnections(f.d, async () => ({ served_at: SERVED_AT }))
     expect(f.calls).toEqual([])
-    expect(r.problems[0]).toMatch(/connection list could not be read/)
+    expect(r.problems[0].text).toMatch(/connection list could not be read/)
   })
 
   it('reports each refused row by name, saves the rest, and withdraws nothing', async () => {
@@ -102,13 +102,16 @@ describe('saveServedConnections', () => {
     expect(f.saves[0].complete).toBe(false)
     expect(f.saves[0].copies.map((c) => c.connectionId)).toEqual([CONN])
     expect(r.problems).toHaveLength(1)
-    expect(r.problems[0]).toMatch(new RegExp(`${GONE}.*client_secret`))
+    expect(r.problems[0].text).toMatch(new RegExp(`${GONE}.*client_secret`))
+    // A row refused by its shape is a defect, which the bidding Worker pages at once (#2506).
+    expect(r.problems[0].key).toBe('connection_refused')
   })
 
   it('reports copies that arrived already past their serve_until, which no ops step may use', async () => {
     const f = db({ saveConnectionCopies: async () => ok(0, { refusedExpired: 1 }) })
     const r = await saveServedConnections(f.d, async () => served())
-    expect(r.problems[0]).toMatch(/1 served connection copy arrived already past its serve_until/)
+    expect(r.problems[0].text).toMatch(/1 served connection copy arrived already past its serve_until/)
+    expect(r.problems[0].key).toBe('connection_copies_expired')
   })
 
   it('counts a lower generation and a removed one without paging: each is the database keeping a newer state', async () => {
@@ -125,8 +128,8 @@ describe('saveServedConnections', () => {
     })
     const r = await saveServedConnections(f.d, async () => served([connection()], [{ connection_id: GONE, organization_id: ORG, generation: 3, removed_at: '2026-10-18T21:00:00.000Z' }]))
     expect(r.problems).toHaveLength(2)
-    expect(r.problems[0]).toMatch(new RegExp(`removal of connection ${GONE}.*record_connection_tombstone`))
-    expect(r.problems[1]).toMatch(/could not save the connections it fetched.*save_connection_copies/)
+    expect(r.problems[0].text).toMatch(new RegExp(`removal of connection ${GONE}.*record_connection_tombstone`))
+    expect(r.problems[1].text).toMatch(/could not save the connections it fetched.*save_connection_copies/)
   })
 
   it('saves a list longer than one save carries in parts, and then withdraws nothing', async () => {
@@ -134,6 +137,7 @@ describe('saveServedConnections', () => {
     const many = Array.from({ length: MAX_COPIES_PER_SAVE + 1 }, (_, i) => connection({ id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}` }))
     const r = await saveServedConnections(f.d, async () => served(many))
     expect(f.saves.map((s) => [s.copies.length, s.complete])).toEqual([[MAX_COPIES_PER_SAVE, false], [1, false]])
-    expect(r.problems[0]).toMatch(/more than one save carries/)
+    expect(r.problems[0].text).toMatch(/more than one save carries/)
+    expect(r.problems[0].key).toBe('connections_too_many')
   })
 })

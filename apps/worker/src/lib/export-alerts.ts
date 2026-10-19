@@ -217,11 +217,20 @@ export type ExportJobWording = 'export-job'
  * finding means its words with every number read as one (alert-backoff
  * meaningOf), which covers a count, an age or a day of the month that moves
  * between runs. A caller whose distinct problems differ only in their numbers,
- * or whose moving part is a word, names its own.
+ * or whose moving part is a word, names its own. It also says whether the
+ * caller already held its findings until they repeated.
  */
 export interface AlertMeaning {
   /** One per finding, in the same order as the findings. */
   keys?: readonly string[]
+  /**
+   * The caller held these findings until they repeated before calling (#2506:
+   * the ops tick report check pages a transient problem only once three ticks
+   * in a row report it). The transient grace below counts calls, and that
+   * check calls once a minute on one kept report, so the grace would hold the
+   * third tick again without measuring another tick. True skips the grace.
+   */
+  repeatsHeldByCaller?: boolean
 }
 
 /** The caller's keys when they name every finding; otherwise the default meaning, so a mismatch never loses the page. */
@@ -263,7 +272,7 @@ export async function notifyExportFailure(
   // permissions, schema, unrecognised errors) still pages immediately.
   let failingSince: string | undefined
   let intermittentSince: string | undefined
-  if (kv && errors.every(isTransientExportError)) {
+  if (kv && meaning.repeatsHeldByCaller !== true && errors.every(isTransientExportError)) {
     const pending = parsePendingFailure(await kv.get(pendingKey))
     if (!pending) {
       await kv.put(pendingKey, writePendingFailure({ since: new Date().toISOString(), recovered: false }), {
