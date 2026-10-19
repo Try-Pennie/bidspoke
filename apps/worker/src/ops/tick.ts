@@ -15,9 +15,11 @@
  *  2. Read the DATABASE clock (#1698 D8, L736). Every fire is computed against
  *     it, never against this Worker's clock, and without it nothing is planned.
  *  3. The maintenance sweeps (lease expiry, run expiry, the queue agreement
- *     check), each with one owner per interval (claim_ops_sweep: a try advisory
- *     lock then a timestamp compare and set), because Cloudflare overlaps and
- *     retries crons: a tick that loses the claim stands down and says so.
+ *     check, and since #2334 the connection tombstone expiry), each with one
+ *     owner per interval (claim_ops_sweep: a try advisory lock then a timestamp
+ *     compare and set), because Cloudflare overlaps and retries crons: a tick
+ *     that loses the claim stands down and says so. Then the Salesforce lease
+ *     sweep, which needs no claim (TICK_SF_LEASE_SWEEP says why).
  *  4. The workflows (decision 4, 2026-10-16): fetch the ops workflows' state from
  *     the bidding Worker over the service binding, save it as the last good
  *     copy, then read the copies back. The tick plans from what the database
@@ -76,17 +78,48 @@ export const TICK_CLAIM_LIMIT = 40
 const COPIES_READ_LIMIT = 1000
 
 /**
+ * The sweeps the tick claims. connection_check (Phase 10) and sf_limits (Phase 6)
+ * are claimable but arrive with the code that runs them, so naming either here
+ * is a compile error in runOpsTick until it is handled there.
+ */
+export type TickSweep = Exclude<OpsSweep, 'connection_check' | 'sf_limits'>
+
+/**
  * The sweeps, each with the interval its owner claims. A minute sweep claims 50 s,
  * not 60: the tick's start moves by a second or so between minutes (scheduledTime
  * lands at :48, spike #1946), and a 60 s interval would make every other minute
- * stand down. Each pages a bounded number of times, then leaves the rest to the
- * next minute.
+ * stand down. An hourly one claims 59 minutes for the same reason. Each pages a
+ * bounded number of times, then leaves the rest to its next interval.
+ *
+ * tombstone_expiry (#2334) deletes connection tombstones past their expires_at,
+ * which is 7 hours after the removal. An expired tombstone guards nothing (every
+ * copy it covered is past its serve_until), so an hour's delay costs only the row.
  */
-export const TICK_SWEEPS: ReadonlyArray<{ sweep: OpsSweep; everySeconds: number; pageLimit: number; maxPages: number }> = [
+export const TICK_SWEEPS: ReadonlyArray<{ sweep: TickSweep; everySeconds: number; pageLimit: number; maxPages: number }> = [
   { sweep: 'lease_expiry', everySeconds: 50, pageLimit: 500, maxPages: 4 },
   { sweep: 'run_expiry', everySeconds: 50, pageLimit: 500, maxPages: 4 },
   { sweep: 'queue_agreement', everySeconds: 14 * 60, pageLimit: 100, maxPages: 1 },
+  { sweep: 'tombstone_expiry', everySeconds: 59 * 60, pageLimit: 500, maxPages: 4 },
 ]
+
+/**
+ * The Salesforce lease sweep (#2334, sweep_sf_leases), which runs every tick and
+ * takes no claim. claim_ops_sweep has no name for it, and it needs none: it
+ * deletes only leases already past expires_at, FOR UPDATE SKIP LOCKED, and a
+ * lapsed lease stopped counting toward any pool the moment it lapsed, since
+ * acquire_sf_lease counts only leases whose expires_at is still ahead. So
+ * two overlapping ticks each delete different rows and neither changes what an
+ * acquire sees, and a claim would cost the same one call a minute the sweep
+ * does. It only keeps sf_leases small.
+ */
+export const TICK_SF_LEASE_SWEEP = { sweep: 'sf_lease_expiry', pageLimit: 500, maxPages: 4 } as const
+
+/** Pages a sweep until it says there is no more, at most maxPages times. */
+async function drain(maxPages: number, page: () => Promise<boolean>): Promise<void> {
+  for (let n = 0; n < maxPages; n++) {
+    if (!(await page())) return
+  }
+}
 
 // planFires' reasons are the observation vocabulary's (run-vocabulary.ts, and
 // through it the database's CHECK): each line fails to compile when they differ.
@@ -102,6 +135,10 @@ export interface OpsTickDb extends ConnectionServeDb {
   claimSweep(sweep: OpsSweep, owner: string, everySeconds: number): Promise<SweepClaim>
   sweepLeases(limit: number): Promise<SweepResult>
   expireRuns(limit: number): Promise<{ expired: number; more: boolean }>
+  /** The tombstone_expiry sweep (purge_expired_connection_tombstones). */
+  purgeTombstones(limit: number): Promise<{ purged: number; more: boolean }>
+  /** The Salesforce lease sweep (sweep_sf_leases). */
+  sweepSfLeases(limit: number): Promise<{ swept: number; more: boolean }>
   queueDisagreements(limit: number): Promise<QueueDisagreement[]>
   saveCopies(servedAt: string, complete: boolean, copies: readonly WorkflowCopyInput[]): Promise<SaveCopiesResult>
   readCopies(limit: number): Promise<{ copies: WorkflowCopy[]; reachedLimit: boolean }>
@@ -242,16 +279,43 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
           }
           continue
         }
-        for (let page = 0; page < s.maxPages; page++) {
-          const more = s.sweep === 'lease_expiry'
-            ? await db.sweepLeases(s.pageLimit).then((r) => { bump(counts, 'leases_swept', r.requeued + r.retried + r.needsHuman + r.dead + r.failed); return r.more })
-            : await db.expireRuns(s.pageLimit).then((r) => { bump(counts, 'runs_expired', r.expired); return r.more })
-          if (!more) break
-        }
+        const sweep = s.sweep
+        await drain(s.maxPages, async () => {
+          switch (sweep) {
+            case 'lease_expiry': {
+              const r = await db.sweepLeases(s.pageLimit)
+              bump(counts, 'leases_swept', r.requeued + r.retried + r.needsHuman + r.dead + r.failed)
+              return r.more
+            }
+            case 'run_expiry': {
+              const r = await db.expireRuns(s.pageLimit)
+              bump(counts, 'runs_expired', r.expired)
+              return r.more
+            }
+            case 'tombstone_expiry': {
+              const r = await db.purgeTombstones(s.pageLimit)
+              bump(counts, 'tombstones_purged', r.purged)
+              return r.more
+            }
+          }
+        })
       } catch (err) {
         if (s.sweep === 'queue_agreement') problem('agreement_check_failed', `The ${s.sweep} sweep failed: ${formatErr(err)}.`)
         else problem('sweep_failed', `The ${s.sweep} sweep failed: ${formatErr(err)}.`, s.sweep)
       }
+    }
+
+    // The Salesforce lease sweep, every tick, unclaimed (TICK_SF_LEASE_SWEEP), its own boundary.
+    const sf = TICK_SF_LEASE_SWEEP
+    try {
+      bump(counts, 'sweeps_run')
+      await drain(sf.maxPages, async () => {
+        const r = await db.sweepSfLeases(sf.pageLimit)
+        bump(counts, 'sf_leases_swept', r.swept)
+        return r.more
+      })
+    } catch (err) {
+      problems.push(`The ${sf.sweep} sweep failed: ${formatErr(err)}.`)
     }
   }
 

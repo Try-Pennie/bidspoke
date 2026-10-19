@@ -63,6 +63,9 @@ function opsDb() {
     claimSweep: async () => ({ owned: false, lastStartedAt: null, lastOwner: 'another-tick' }),
     sweepLeases: async () => { throw new Error('not claimed') },
     expireRuns: async () => { throw new Error('not claimed') },
+    purgeTombstones: async () => { throw new Error('not claimed') },
+    // Unclaimed (TICK_SF_LEASE_SWEEP), so it runs every tick: nothing has lapsed here.
+    sweepSfLeases: async () => ({ swept: 0, more: false }),
     queueDisagreements: async () => [],
     saveCopies: async () => ({ inserted: 0, updated: 0, confirmed: 0, refusedOlder: 0, withdrawn: 0 }),
     readCopies: async () => ({ copies: [], reachedLimit: false }),

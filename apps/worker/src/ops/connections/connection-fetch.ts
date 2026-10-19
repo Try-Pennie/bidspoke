@@ -35,6 +35,11 @@
  *  6. A 429, or a 503 with Retry-After, is a RequeueAt. The service's declared
  *     expiry signal renews the token once and retries once; a second is
  *     needs_reauth. A body that can be read only once is never sent twice.
+ *  7. For Salesforce, the latest response's Sforce-Limit-Info is the org's
+ *     budget reading (#2336, ./sf-budget-reading.ts), handed to recordSfBudget
+ *     beside the lease release, for a committed copy whose lease came from its
+ *     measured org's pool. Bounded by SF_BUDGET_READING_DEADLINE_MS and caught:
+ *     a reading never changes the answer, and its failure is reported by name.
  *
  * THE LOGIN (./minters, Dan's decision 2). The service's authorize mints or
  * reuses the token. A minter that asks a token endpoint asks it with the fetch
@@ -71,6 +76,7 @@ import {
 } from '../run-vocabulary'
 import { ConnectionRefusal, LoginMintError, RequeueAt, type ConnectionRefusalCode, type MintFailureReason } from './refusals'
 import { isCredentialHeader, sanitiseRequest, scrubSecrets, secretsOfLogin, type RecordedRequest } from './sanitise'
+import { parseSforceLimitInfo, SF_BUDGET_READING_DEADLINE_MS } from './sf-budget-reading'
 import type { Authorization, AuthorizeInput, OpenedLogin, ServiceRules } from './service-rules'
 
 /** The whole call, the mint and both attempts included. */
@@ -134,9 +140,15 @@ export interface ConnectionCall {
 
 /** Something worth knowing that does not change the answer. Names only. */
 export interface ConnectionEvent {
-  readonly event: 'sf_lease_release_failed' | 'needs_reauth_unrecorded' | 'refresh_unrecorded'
+  readonly event: 'sf_lease_release_failed' | 'needs_reauth_unrecorded' | 'refresh_unrecorded' | 'sf_budget_reading_unrecorded' | 'sf_limit_info_unreadable'
   readonly connection_id: string
   readonly purpose: SfLeasePurpose
+  /**
+   * A name from a closed set, never a value: the parser's refusal for
+   * sf_limit_info_unreadable, and write_failed or deadline for
+   * sf_budget_reading_unrecorded.
+   */
+  readonly cause?: string
 }
 
 export interface ConnectionFetchDeps {
@@ -156,8 +168,16 @@ export interface ConnectionFetchDeps {
    */
   recordRefresh(organizationId: OrganizationId, connectionId: string, result: { ok: true } | { ok: false; cause: string }): Promise<RefreshOutcome>
   fetch(input: string, init?: RequestInit): Promise<Response>
+  /**
+   * A Salesforce org's budget reading from a response's Sforce-Limit-Info
+   * (#2336): ./sf-budget-reading.ts recordSfBudgetReadingFor, which keys it on
+   * the connection generation's measured org and writes it at most once per org
+   * a minute. Called only for a committed copy whose lease came from the org
+   * pool; its failure is reported and never changes the answer.
+   */
+  recordSfBudget(organizationId: OrganizationId, connectionId: string, generation: number, reading: { used: number; max: number }, now: number): Promise<unknown>
   now(): number
-  /** Only the interactive lease wait sleeps (L524: injected). */
+  /** The interactive lease wait, and the bound on a budget reading's write (L524: injected). */
   sleep(ms: number): Promise<void>
   /** A lease holder unique to this call. */
   newHolder(): string
@@ -333,8 +353,8 @@ function leaseRefusalCode(outcome: Exclude<SfLeaseOutcome, 'granted'>): Connecti
   }
 }
 
-/** The lease, or a RequeueAt for a step. Throws a named refusal for everything else. */
-async function takeLease(deps: ConnectionFetchDeps, call: ConnectionCall, rules: ServiceRules, resolved: Resolved, holder: string): Promise<RequeueAt | null> {
+/** The pool the lease came from, or a RequeueAt for a step. Throws a named refusal for everything else. */
+async function takeLease(deps: ConnectionFetchDeps, call: ConnectionCall, rules: ServiceRules, resolved: Resolved, holder: string): Promise<RequeueAt | 'org' | 'bootstrap'> {
   let bootstrapHost: string | undefined
   if (call.purpose === 'verify') {
     try {
@@ -361,7 +381,7 @@ async function takeLease(deps: ConnectionFetchDeps, call: ConnectionCall, rules:
       if (call.purpose === 'step') return new RequeueAt(new Date(deps.now() + STEP_LEASE_REQUEUE_MS), 'acquire_error')
       throw refusal('sf_lease_unavailable', 'the ops Salesforce pool did not answer', [])
     }
-    if (answer.outcome === 'granted') return null
+    if (answer.outcome === 'granted') return answer.pool
     const retryAt = answer.retryAt === null ? null : new Date(answer.retryAt)
     if (call.purpose === 'step') {
       const outcome = answer.outcome
@@ -478,24 +498,70 @@ export async function connectionFetch(deps: ConnectionFetchDeps, call: Connectio
   checkUrl(url, rules, resolved, loginSecrets)
 
   const holder = rules.salesforce ? deps.newHolder() : null
+  let pool: 'org' | 'bootstrap' | null = null
   if (holder !== null) {
-    const requeue = await takeLease(deps, call, rules, resolved, holder)
-    if (requeue) return requeue
+    const lease = await takeLease(deps, call, rules, resolved, holder)
+    if (lease instanceof RequeueAt) return lease
+    pool = lease
   }
+  // Only a committed copy drawing on its measured org's pool has an org to read for (a bootstrap verify has none yet, and a candidate is not the committed generation).
+  const budget: BudgetObserver | null = pool === 'org' && !resolved.candidate ? { reading: null, at: 0 } : null
   const deadline = startDeadline(deps.deadlineMs ?? CONNECTION_FETCH_DEADLINE_MS, call.signal)
   try {
-    return await sendWithRenewal(deps, call, rules, resolved, login, loginSecrets, deadline, url, init)
+    return await sendWithRenewal(deps, call, rules, resolved, login, loginSecrets, deadline, url, init, budget)
   } finally {
     deadline.clear()
     if (holder !== null) {
-      try {
-        await deps.releaseSfLease(call.organizationId, holder)
-      } catch {
-        // The lease lapses at its TTL and stops counting then (L409); say so, and keep the answer.
-        safeReport(deps, { event: 'sf_lease_release_failed', connection_id: call.connectionId, purpose: call.purpose })
-      }
+      // The reading's write rides beside the release, so it adds no wait unless it is the slower of the two, and then at most its bound.
+      await Promise.all([releaseLease(deps, call, holder), recordBudget(deps, call, resolved, budget)])
     }
   }
+}
+
+/** The latest budget reading a call's responses carried, and when it arrived (the injected clock). */
+interface BudgetObserver {
+  reading: { used: number; max: number } | null
+  at: number
+}
+
+/** Reads a response's Sforce-Limit-Info into the observer; an unreadable one is reported by the parser's name. */
+function observeBudget(deps: ConnectionFetchDeps, call: ConnectionCall, budget: BudgetObserver | null, response: Response): void {
+  if (budget === null) return
+  const parsed = parseSforceLimitInfo(response.headers.get('sforce-limit-info'))
+  if (parsed.ok) {
+    budget.reading = { used: parsed.used, max: parsed.max }
+    budget.at = deps.now()
+  } else if (parsed.refusal !== 'absent') {
+    safeReport(deps, { event: 'sf_limit_info_unreadable', connection_id: call.connectionId, purpose: call.purpose, cause: parsed.refusal })
+  }
+}
+
+async function releaseLease(deps: ConnectionFetchDeps, call: ConnectionCall, holder: string): Promise<void> {
+  try {
+    await deps.releaseSfLease(call.organizationId, holder)
+  } catch {
+    // The lease lapses at its TTL and stops counting then (L409); say so, and keep the answer.
+    safeReport(deps, { event: 'sf_lease_release_failed', connection_id: call.connectionId, purpose: call.purpose })
+  }
+}
+
+/** Writes the call's budget reading, bounded and caught: never throws, never waits past SF_BUDGET_READING_DEADLINE_MS. */
+async function recordBudget(deps: ConnectionFetchDeps, call: ConnectionCall, resolved: Resolved, budget: BudgetObserver | null): Promise<void> {
+  if (budget === null || budget.reading === null) return
+  const { reading, at } = budget
+  // A recorder that throws before returning a promise is caught here too.
+  const write = Promise.resolve().then(() => deps.recordSfBudget(call.organizationId, call.connectionId, resolved.generation, reading, at))
+  let outcome: 'written' | 'write_failed' | 'deadline'
+  try {
+    outcome = await Promise.race([
+      write.then(() => 'written' as const, () => 'write_failed' as const),
+      deps.sleep(SF_BUDGET_READING_DEADLINE_MS).then(() => 'deadline' as const),
+    ])
+  } catch {
+    // Only the injected sleep can reject here; the write's own outcome is already caught.
+    outcome = 'deadline'
+  }
+  if (outcome !== 'written') safeReport(deps, { event: 'sf_budget_reading_unrecorded', connection_id: call.connectionId, purpose: call.purpose, cause: outcome })
 }
 
 function safeReport(deps: ConnectionFetchDeps, event: ConnectionEvent): void {
@@ -575,7 +641,7 @@ async function endRefreshStreak(deps: ConnectionFetchDeps, call: ConnectionCall)
 
 async function sendWithRenewal(
   deps: ConnectionFetchDeps, call: ConnectionCall, rules: ServiceRules, resolved: Resolved, login: OpenedLogin, loginSecrets: readonly string[],
-  deadline: Deadline, url: string, init: RequestInit,
+  deadline: Deadline, url: string, init: RequestInit, budget: BudgetObserver | null,
 ): Promise<Response | RequeueAt> {
   const method = (init.method ?? 'GET').toUpperCase()
   // The connection's auth is the only credential a request carries: one the caller set is never sent.
@@ -628,6 +694,7 @@ async function sendWithRenewal(
     } catch {
       throw deadlineRefusal(deadline, `the ${method} request`, secrets) ?? refusal('connection_network_error', `the ${method} request to ${new URL(url).hostname} failed below HTTP`, secrets)
     }
+    observeBudget(deps, call, budget, response)
 
     const requeue = rateLimited(response, deps.now())
     if (requeue) {

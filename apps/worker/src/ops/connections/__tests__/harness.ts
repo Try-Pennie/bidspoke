@@ -79,7 +79,7 @@ export function usableCopy(envelope: SealedEnvelope, overrides: Partial<Connecti
 }
 
 export interface Recorder {
-  /** What happened, in order: open, record, authorize, send, release. */
+  /** What happened, in order: acquire, record, authorize or renew, send, release, budget. */
   events: string[]
   authorizeCalls: AuthorizeInput[]
   sent: Array<{ url: string; init: RequestInit }>
@@ -90,6 +90,8 @@ export interface Recorder {
   leases: Array<{ op: 'acquire'; purpose: string; holder: string; bootstrapHost?: string; workflowId?: string } | { op: 'release'; holder: string }>
   reports: unknown[]
   slept: number[]
+  /** recordSfBudget calls (#2336): what connectionFetch handed the budget recorder. */
+  budget: Array<{ organizationId: string; connectionId: string; generation: number; reading: { used: number; max: number }; now: number }>
 }
 
 export interface Doubles {
@@ -102,6 +104,8 @@ export interface Doubles {
   setCopy: (copy: ConnectionCopy | Error) => void
   /** What record_connection_refresh answers a failure (refresh_failing until set). */
   refreshAnswer: (outcome: RefreshOutcome) => void
+  /** Replace what recordSfBudget does once it has recorded the call (resolves at once until set). */
+  budgetAnswer: (answer: () => Promise<unknown>) => void
   now: { value: number }
 }
 
@@ -169,12 +173,13 @@ const isTokenRequest = (url: string): boolean => {
 }
 
 export function makeDoubles(keys: TestKeys, copy: ConnectionCopy | Error, rules: (rec: Recorder) => ServiceRules[], tokenEndpoint?: TokenEndpointFetch): Doubles {
-  const rec: Recorder = { events: [], authorizeCalls: [], sent: [], recorded: [], needsReauth: [], refreshes: [], leases: [], reports: [], slept: [] }
+  const rec: Recorder = { events: [], authorizeCalls: [], sent: [], recorded: [], needsReauth: [], refreshes: [], leases: [], reports: [], slept: [], budget: [] }
   const now = { value: T0 }
   let refreshAnswer: RefreshOutcome = 'refresh_failing'
   let answers: Array<Response | (() => Response | Promise<Response>) | Error> = [new Response('ok', { status: 200 })]
   let leaseAnswers: Array<SfLeaseAnswer | Error> = [{ outcome: 'granted', leaseId: 'lease-1', expiresAt: new Date(T0 + 90_000).toISOString(), pool: 'org' }]
   let current: ConnectionCopy | Error = copy
+  let budgetAnswer: () => Promise<unknown> = async () => 'recorded'
   let holder = 0
   const byService = new Map(rules(rec).map((r) => [r.service, r]))
 
@@ -214,9 +219,16 @@ export function makeDoubles(keys: TestKeys, copy: ConnectionCopy | Error, rules:
       return response.clone()
     },
     now: () => now.value,
+    // A macrotask, so a double that answers in a microtask always beats a sleep it is raced against (the budget reading's bound).
     sleep: async (ms) => {
       rec.slept.push(ms)
       now.value += ms
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    },
+    recordSfBudget: async (organizationId, connectionId, generation, reading, at) => {
+      rec.events.push('budget')
+      rec.budget.push({ organizationId, connectionId, generation, reading, now: at })
+      return budgetAnswer()
     },
     newHolder: () => `holder-${++holder}`,
     report: (event) => {
@@ -238,6 +250,9 @@ export function makeDoubles(keys: TestKeys, copy: ConnectionCopy | Error, rules:
     },
     refreshAnswer: (outcome) => {
       refreshAnswer = outcome
+    },
+    budgetAnswer: (answer) => {
+      budgetAnswer = answer
     },
     now,
   }

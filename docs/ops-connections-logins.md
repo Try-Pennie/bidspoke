@@ -28,11 +28,59 @@ name and nothing is asked of Salesforce, not even a token:
 | `verify` | the connection not yet measured, no approved `sf_bootstrap_caps` row for its declared instance host | `sf_cap_unset` |
 | `lookup` (and every other purpose) | the connection not yet measured | `sf_org_unmeasured` |
 | any | measured, no approved `sf_pool_caps` row for the org | `sf_cap_unset` |
+| any but `sf_limits` | measured and approved, no `sf_budget_readings` row for the org, or one older than 15 minutes | `sf_budget_unmeasured` |
+| any but `sf_limits` | the org's latest reading is below its approved `budget_floor` | `sf_budget_floor` |
 
 Once a host's bootstrap row is approved, verify asks the declared instance's token
 endpoint and `/services/oauth2/userinfo`, refuses money's run as user, and records
 the measured org and username under the generation, which is the row the org's
 pool is keyed on from then on.
+
+## The budget reading (#2336)
+
+Every Salesforce REST response carries the org's daily API usage in its
+`Sforce-Limit-Info` header (`api-usage=<used>/<max>`, fields separated by
+semicolons, as in Salesforce's own example `api-usage=10018/100000;
+api-bursts=1/750`; REST API Developer Guide, "Limit Info Header"). connectionFetch
+reads it from every response a Salesforce call gets, whatever its status, and
+hands the latest one to `recordSfBudget`, which writes it through
+`record_sf_budget_reading` as source `sforce_limit_info` with remaining = max minus
+used. The parser and the recorder are `apps/worker/src/ops/connections/sf-budget-reading.ts`.
+
+- **Which org.** The org the connection generation MEASURED as
+  (`connection_measured_identity`, read once per connection generation per
+  isolate), the same key the call's lease was drawn from. Only a committed copy
+  whose lease came from the org pool is read for: a bootstrap verify has no
+  measured org yet, and a candidate is not the committed generation.
+- **How often.** At most once per Salesforce org a minute per isolate
+  (`SF_BUDGET_READING_MIN_INTERVAL_MS`). A reading is fresh for 15 minutes, so a
+  minute old one serves the pool as well as a new one, while a write per response
+  would add an ops database round trip and a subrequest to every Salesforce call,
+  out of the 10,000 per invocation a dispatched run shares with its own work
+  (docs/ops-ceilings-spike.md, P3). A failed write gives its minute back, so the
+  next response tries again.
+- **Never in the way.** The write runs beside the lease release, so it adds no
+  wait unless it is the slower of the two, and then at most
+  `SF_BUDGET_READING_DEADLINE_MS` (1 s). A write that fails or passes the bound is
+  reported as `sf_budget_reading_unrecorded` (cause `write_failed` or
+  `deadline`), and a header present but unreadable as `sf_limit_info_unreadable`
+  with the parser's reason (`no_api_usage`, `malformed`, `not_finite`,
+  `out_of_range`, `max_not_positive`). Neither carries a value, and neither
+  changes the call's answer.
+- **Used above max is a reading.** Salesforce lets an org run past its allocation
+  for a while; that is written as remaining below zero, which the table allows,
+  so the pool refuses at once as `sf_budget_floor`.
+- **measured_at is the database's clock**, as `record_sf_budget_reading` has
+  always stamped it, because `acquire_sf_lease` judges the 15 minutes on the
+  database's own `now()`. The Worker's clock decides only the minute between
+  writes.
+- **It cannot start the pool on its own.** Every call but `sf_limits` is refused
+  `sf_budget_unmeasured` until a reading exists, and a refused call gets no
+  response to read. The first reading, and one after any quiet spell of more than
+  15 minutes, comes from the `sf_limits` sweep (a later pull request of this
+  phase), which is exempt from the budget and writes source `limits`. From then
+  on the calls themselves keep the reading fresh while they flow, and the sweep
+  is the floor under it when they do not; whichever reading is later stands.
 
 ## OpsConnections (`apps/worker/src/ops/ops-connections-entrypoint.ts`)
 

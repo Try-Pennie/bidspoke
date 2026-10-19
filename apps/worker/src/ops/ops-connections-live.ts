@@ -17,13 +17,14 @@
 import { raceDeadline } from '../lib/alert-claim'
 import { opsSealKeys, type SealRegistryOf } from './connection-token-object'
 import { tokenObjectsOf, type TokenObjects } from './connections/minters/oauth-user'
+import { recordSfBudgetReadingFor, SfBudgetMemory } from './connections/sf-budget-reading'
 import type { OpsConnectionsDeps } from './connections/ops-connections'
 import { opsServiceEntry } from './connections/services'
 import type { OpsEnv } from './index'
 import { createOpsSupabaseClient } from './ops-db'
 import {
-  acquireSfLease, readConnectionCopy, readConnectionStatus, recordConnectionNeedsReauth, recordConnectionReauthCleared, recordConnectionRefresh,
-  recordConnectionTombstone, recordMeasuredIdentity, releaseSfLease, takeLookupAllowance,
+  acquireSfLease, readConnectionCopy, readConnectionStatus, readMeasuredSfOrg, recordConnectionNeedsReauth, recordConnectionReauthCleared, recordConnectionRefresh,
+  recordConnectionTombstone, recordMeasuredIdentity, recordSfBudgetReading, releaseSfLease, takeLookupAllowance,
 } from './ops-writes'
 import { GATEWAY_DEADLINE_MS } from './tick-live'
 
@@ -42,7 +43,17 @@ export interface LiveOpsConnectionsOptions {
   opensLogins: boolean
   /** For tests: the committed public keys and current kid, in place of packages/connection-seal/src/keys.ts. */
   sealRegistry?: SealRegistryOf
+  /** For tests: the budget reading's memory, in place of this isolate's. */
+  sfBudgetMemory?: SfBudgetMemory
 }
+
+/**
+ * What this isolate remembers between requests about Salesforce budget readings
+ * (#2336): each connection generation's measured org, and when each org's
+ * reading was last written. Module scope, so it outlives one request; losing it
+ * costs one read and one write, never a wrong reading.
+ */
+const SF_BUDGET_MEMORY = new SfBudgetMemory()
 
 const noTokenObjects: TokenObjects = {
   get: () => { throw new Error('the CONNECTION_TOKENS binding is missing from this deploy') },
@@ -67,6 +78,11 @@ export function liveOpsConnectionsDeps(env: OpsEnv, options: LiveOpsConnectionsO
       recordRefresh: (organizationId, connectionId, result) => recordConnectionRefresh(client, organizationId, connectionId, result),
       // The platform's fetch, to connectionFetch alone.
       fetch: (input, init) => fetch(input, init),
+      recordSfBudget: (organizationId, connectionId, generation, reading, at) => recordSfBudgetReadingFor({
+        memory: options.sfBudgetMemory ?? SF_BUDGET_MEMORY,
+        readMeasuredSfOrg: (org, conn, gen) => readMeasuredSfOrg(client, org, conn, gen),
+        recordSfBudgetReading: (sfOrgId, r) => recordSfBudgetReading(client, sfOrgId, { ...r, source: 'sforce_limit_info' }),
+      }, organizationId, connectionId, generation, reading, at),
       now: () => Date.now(),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       newHolder: () => `ops-connections-${crypto.randomUUID()}`,
