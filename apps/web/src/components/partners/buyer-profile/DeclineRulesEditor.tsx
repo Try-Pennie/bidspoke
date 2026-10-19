@@ -40,10 +40,10 @@ export function DeclineRulesEditor({ value, onChange }: { value: SignalRules; on
       count={rules.length}
       after={
         <div className="flex flex-wrap gap-x-3">
-          <Button variant="quiet" aria-label="Add decline rule" onClick={() => set([...rules, emptyBody()])}>
+          <Button variant="quiet" aria-label="Add rule, decline" onClick={() => set([...rules, emptyBody()])}>
             <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add rule
           </Button>
-          <Button variant="quiet" aria-label="Add decline rule on the HTTP status" onClick={() => set([...rules, emptyStatus()])}>
+          <Button variant="quiet" aria-label="Add HTTP status rule, decline" onClick={() => set([...rules, emptyStatus()])}>
             <Plus className="h-3.5 w-3.5" aria-hidden="true" /> Add HTTP status rule
           </Button>
         </div>
