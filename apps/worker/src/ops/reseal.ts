@@ -62,7 +62,7 @@ import { parseResealLoginAnswer, type ResealLoginRequest } from './connections/t
 
 /** What becomes of each service_connections row in a run. */
 export const ROW_OUTCOMES = [
-  'current', 'would_reseal', 'resealed', 'already_resealed', 'moved', 'not_found', 'no_key', 'open_failed', 'write_failed', 'unreadable', 'deferred',
+  'current', 'would_reseal', 'resealed', 'already_resealed', 'moved', 'not_found', 'no_key', 'open_failed', 'seal_failed', 'write_failed', 'unreadable', 'deferred',
 ] as const
 export type RowOutcome = (typeof ROW_OUTCOMES)[number]
 
@@ -199,12 +199,18 @@ async function resealObject(deps: ResealDeps, c: ServedOpsConnection, apply: boo
 
 async function resealRow(deps: ResealDeps, c: ServedOpsConnection, current: string): Promise<RowOutcome> {
   const binding = { organization_id: c.organization_id, connection_id: c.id, service: c.service, generation: c.generation }
-  let envelope: SealedEnvelope
+  let plaintext: string
   try {
-    const plaintext = await open(deps.keys.privateKeys, c.envelope, { ...binding, kid: c.envelope.kid })
-    envelope = await seal(deps.keys.publicKeys, plaintext, { ...binding, kid: current })
+    plaintext = await open(deps.keys.privateKeys, c.envelope, { ...binding, kid: c.envelope.kid })
   } catch {
     return 'open_failed'
+  }
+  // A seal that fails is the current kid's public key, never the login's old key (L11).
+  let envelope: SealedEnvelope
+  try {
+    envelope = await seal(deps.keys.publicKeys, plaintext, { ...binding, kid: current })
+  } catch {
+    return 'seal_failed'
   }
   try {
     const answer = parseReplaceConnectionEnvelopeAnswer(await deps.replaceEnvelope({

@@ -248,6 +248,17 @@ describe('resealConnections applied', () => {
     expect(b.writes).toEqual([])
   }, KEYGEN_TIMEOUT_MS)
 
+  it('names a row that opened but could not be sealed to the current kid as seal_failed, not open_failed (L11)', async () => {
+    const b = bidding([await rowUnder(before(), id(1))])
+    // The old key opens it; the current kid's public key is unusable, so the seal is what fails.
+    const broken: SealKeys = { ...during(), publicKeys: { [OLD]: oldPair.publicPem, [NEW]: 'not a public key' } }
+    const report = okReport(await resealConnections(deps(b, objects(), broken), { apply: true }))
+    expect(report.rows).toMatchObject({ seal_failed: 1, open_failed: 0 })
+    expect(report.left).toBe(1)
+    expect(report.problems).toEqual([`connection ${id(1)}: seal_failed`])
+    expect(b.writes).toEqual([])
+  })
+
   it('reseals at most the per run limit of rows, leaving the rest deferred, and the next run takes them', async () => {
     const b = bidding([await rowUnder(before(), id(1)), await rowUnder(before(), id(2)), await rowUnder(before(), id(3))])
     const first = okReport(await resealConnections(deps(b, objects()), { apply: true }, { maxRowReseals: 2, maxObjectReseals: 2 }))
