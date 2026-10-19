@@ -2,11 +2,13 @@
  * connectionFetch: the one path for every connection bound request on the ops
  * Worker (#2335, phase 5 of #1689, plan: discussion #2329, part 2).
  *
- * WHO CALLS IT. Nothing, in the deploy that adds it. Its callers arrive in later
- * PRs of this phase and the next: the OpsConnections entrypoint (verify,
- * Reconnect, lookups), the still valid check and the sf_limits read (Phase 10
- * and 6), and the ops executor's steps (Phase 9). Each passes an OrganizationId
- * that the bidding Worker derived from the caller's JWT.
+ * WHO CALLS IT. The OpsConnections entrypoint (verify, Reconnect, lookups;
+ * ./ops-connections.ts, #2335 PR 8), which only the bidding Worker's
+ * OPS_CONNECTIONS binding reaches (PR 9); later the still valid check and the
+ * sf_limits read (Phase 10 and 6) and the ops executor's steps (Phase 9). Each
+ * passes an OrganizationId that the bidding Worker derived from the caller's
+ * JWT. No other ops module reaches the platform's fetch (the guard
+ * ops-connection-requests-through-fetch.test.ts).
  *
  * WHOSE DATA. One connection of that organization: its copy in the ops
  * database, read through connection_copy, which refuses another organization's
@@ -49,7 +51,7 @@
  * all, and a candidate's failure writes nothing about the connection's health.
  * Only a bidding serve of the committed row moves the copy forward, so a failed
  * verify or a lost compare and set on bidding leaves ops on the committed
- * generation. The entrypoint that makes verify and Reconnect is a later PR.
+ * generation (proven end to end in __tests__/reconnect-candidate.test.ts).
  *
  * WHAT LEAVES (finding F120). Nothing here writes to the console (the guard
  * apps/web/src/lib/__guards__/worker/connection-seal-open-callers.test.ts
@@ -64,7 +66,7 @@ import type { AcquireSfLease, ConnectionCopy, SfLeaseAnswer } from '../ops-write
 import {
   NON_STEP_LEASE_OUTCOMES, SF_LEASE_PURPOSES, type NonStepLeaseOutcome, type RefreshOutcome, type SfLeaseOutcome, type SfLeasePurpose,
 } from '../run-vocabulary'
-import { ConnectionRefusal, LoginMintError, RequeueAt, type ConnectionRefusalCode } from './refusals'
+import { ConnectionRefusal, LoginMintError, RequeueAt, type ConnectionRefusalCode, type MintFailureReason } from './refusals'
 import { isCredentialHeader, sanitiseRequest, scrubSecrets, secretsOfLogin, type RecordedRequest } from './sanitise'
 import type { Authorization, OpenedLogin, ServiceRules } from './service-rules'
 
@@ -118,6 +120,13 @@ export interface ConnectionCall {
   readonly workflowId?: string
   readonly record: RecordTarget
   readonly signal?: AbortSignal
+  /**
+   * Told which service and generation this call used, once the copy or
+   * candidate has passed, before anything is opened or sent: verify records what
+   * it measured under the generation the request really carried, which a serve
+   * may have moved on since verify last read the copy (#2335, PR 8).
+   */
+  readonly onResolved?: (resolved: { readonly service: string; readonly generation: number }) => void
 }
 
 /** Something worth knowing that does not change the answer. Names only. */
@@ -167,8 +176,10 @@ const COPY_STATE_REFUSALS: Readonly<Record<Exclude<ConnectionCopy['state'], 'usa
 }
 
 /** A refusal whose detail is scrubbed of every known secret on the way out, whatever it was built from. */
-function refusal(code: ConnectionRefusalCode, detail: string, secrets: readonly string[], retryAt: Date | null = null): ConnectionRefusal {
-  return new ConnectionRefusal(code, scrubSecrets(detail, secrets), retryAt)
+function refusal(
+  code: ConnectionRefusalCode, detail: string, secrets: readonly string[], retryAt: Date | null = null, mintReason: MintFailureReason | null = null,
+): ConnectionRefusal {
+  return new ConnectionRefusal(code, scrubSecrets(detail, secrets), retryAt, mintReason)
 }
 
 interface Resolved {
@@ -435,6 +446,7 @@ function isSingleUse(body: unknown): boolean {
 export async function connectionFetch(deps: ConnectionFetchDeps, call: ConnectionCall, url: string, init: RequestInit = {}): Promise<Response | RequeueAt> {
   checkCall(call)
   const resolved = await resolve(deps, call)
+  call.onResolved?.({ service: resolved.service, generation: resolved.generation })
   const rules = deps.rulesFor(resolved.service)
   if (rules === undefined) throw refusal('connection_service_unknown', `no rules for the ${resolved.service} service on this Worker`, [])
   const login = await openLogin(deps, call, resolved)
@@ -470,7 +482,9 @@ function safeReport(deps: ConnectionFetchDeps, event: ConnectionEvent): void {
   }
 }
 
-async function needsReauth(deps: ConnectionFetchDeps, call: ConnectionCall, resolved: Resolved, cause: string, secrets: readonly string[]): Promise<never> {
+async function needsReauth(
+  deps: ConnectionFetchDeps, call: ConnectionCall, resolved: Resolved, cause: string, secrets: readonly string[], mintReason: MintFailureReason | null = null,
+): Promise<never> {
   // A candidate is not the committed credential: its failure says nothing about the connection (F126).
   if (!resolved.candidate) {
     try {
@@ -479,7 +493,7 @@ async function needsReauth(deps: ConnectionFetchDeps, call: ConnectionCall, reso
       safeReport(deps, { event: 'needs_reauth_unrecorded', connection_id: call.connectionId, purpose: call.purpose })
     }
   }
-  throw refusal('connection_needs_reauth', cause, secrets)
+  throw refusal('connection_needs_reauth', cause, secrets, null, mintReason)
 }
 
 /**
@@ -490,36 +504,38 @@ async function needsReauth(deps: ConnectionFetchDeps, call: ConnectionCall, reso
 async function mintFailed(
   deps: ConnectionFetchDeps, call: ConnectionCall, resolved: Resolved, err: LoginMintError, secrets: readonly string[],
 ): Promise<RequeueAt> {
+  // The reason rides on every refusal below as a name from the closed set, so a caller can act on it (verify, #2335 PR 8).
+  const reason = err.reason
   switch (err.kind) {
     case 'refused':
-      return needsReauth(deps, call, resolved, `${NEEDS_REAUTH_CAUSES.loginRefused}: ${err.reason}`, secrets)
+      return needsReauth(deps, call, resolved, `${NEEDS_REAUTH_CAUSES.loginRefused}: ${reason}`, secrets, reason)
     case 'rate_limited': {
       const now = deps.now()
       return new RequeueAt(err.retryAt === null ? new Date(now + RATE_LIMIT_DEFAULT_MS) : clampedRetry(now, err.retryAt.getTime()), 'rate_limited')
     }
     case 'not_allowed':
-      throw refusal('connection_not_allowed', `the ${resolved.service} mint was refused by rule: ${err.reason}`, secrets)
+      throw refusal('connection_not_allowed', `the ${resolved.service} mint was refused by rule: ${reason}`, secrets, null, reason)
     case 'check_unavailable':
-      throw refusal('connection_auth_check_unavailable', `the ${resolved.service} mint could not check its rule: ${err.reason}`, secrets)
+      throw refusal('connection_auth_check_unavailable', `the ${resolved.service} mint could not check its rule: ${reason}`, secrets, null, reason)
     case 'token_object_unavailable':
       // Our own infrastructure, not the login: nothing is recorded about the connection.
-      throw refusal('connection_token_object_unavailable', `the ${resolved.service} login's token object: ${err.reason}`, secrets)
+      throw refusal('connection_token_object_unavailable', `the ${resolved.service} login's token object: ${reason}`, secrets, null, reason)
     case 'unavailable': {
-      if (resolved.candidate) throw refusal('connection_auth_unavailable', `the ${resolved.service} token endpoint is unavailable: ${err.reason}`, secrets)
+      if (resolved.candidate) throw refusal('connection_auth_unavailable', `the ${resolved.service} token endpoint is unavailable: ${reason}`, secrets, null, reason)
       let outcome: RefreshOutcome | null = null
       try {
-        outcome = await deps.recordRefresh(call.organizationId, call.connectionId, { ok: false, cause: err.reason })
+        outcome = await deps.recordRefresh(call.organizationId, call.connectionId, { ok: false, cause: reason })
       } catch {
         safeReport(deps, { event: 'refresh_unrecorded', connection_id: call.connectionId, purpose: call.purpose })
       }
       if (outcome === 'needs_reauth') {
         // record_connection_refresh wrote needs_reauth itself, through its one writer.
-        throw refusal('connection_needs_reauth', `${NEEDS_REAUTH_CAUSES.refreshFailingExhausted}: ${err.reason}`, secrets)
+        throw refusal('connection_needs_reauth', `${NEEDS_REAUTH_CAUSES.refreshFailingExhausted}: ${reason}`, secrets, null, reason)
       }
       if (outcome === 'connection_removed') throw refusal('connection_removed', 'the connection is removed', secrets)
       // The message states only what the database answered (L11): refresh_failing when it said so.
       const state = outcome === null ? 'the failure could not be recorded' : `the connection is ${outcome}`
-      throw refusal('connection_auth_unavailable', `the ${resolved.service} token endpoint is unavailable (${err.reason}); ${state}`, secrets)
+      throw refusal('connection_auth_unavailable', `the ${resolved.service} token endpoint is unavailable (${reason}); ${state}`, secrets, null, reason)
     }
   }
 }
