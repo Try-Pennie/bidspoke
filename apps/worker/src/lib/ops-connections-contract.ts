@@ -41,9 +41,13 @@ export type OpsConnectionsMethod = (typeof OPS_CONNECTIONS_METHODS)[number]
  * ops_connections_timeout and aborts the request it was making. The bidding
  * Worker's own per method deadline (PR 9) must be longer than these, so ops
  * answers by name before bidding gives up:
- *   verify, clearReauth  the money identity read (15 s at most), one
+ *   verify, clearReauth  Salesforce: the money identity read (15 s at most), one
  *                        connectionFetch (a 2 s pool wait, a mint, a request),
- *                        and the measured identity write (9 s at most)
+ *                        and the measured identity write (9 s at most).
+ *                        Snowflake: one statement, polled 2 s apart while it
+ *                        runs and writing nothing; its 60 poll budget is longer
+ *                        than this ceiling, so a statement still running at
+ *                        45 s is answered ops_connections_timeout by name
  *   exchangeOAuthCode    one token request in the token object (10 s) and its write
  *   lookup               the allowance, the copy read and one to three requests
  *   revoke, health       one ops database call (9 s at most)
@@ -100,6 +104,8 @@ export const OPS_CONNECTIONS_REFUSAL_CODES = [
   'verify_identity_unmeasurable',
   /** The service's identity answer could not be read. */
   'verify_identity_unreadable',
+  /** The service measured another identity than the connection's target declares (#2337). */
+  'verify_identity_mismatch',
   /** A generation ops holds as its copy measured another identity than before. */
   'identity_changed',
   /** The measured identity could not be written, so the connection is not verified. */
@@ -182,8 +188,10 @@ export interface ExchangeOAuthCodeRequest {
   redirect_uri: string
 }
 
-/** What verify measured the credential as. Salesforce's today; each service adds its own kind with its measurement (Phase 7). */
-export type MeasuredIdentityAnswer = { kind: 'salesforce'; sf_org_id: string; username: string }
+/** What verify measured the credential as. Each service adds its own kind with its measurement (Phase 7). */
+export type MeasuredIdentityAnswer =
+  | { kind: 'salesforce'; sf_org_id: string; username: string }
+  | { kind: 'snowflake'; account_locator: string; organization_name: string | null; account_name: string | null; user: string }
 
 export type VerifyAnswer = { ok: true; service: string; generation: number; identity: MeasuredIdentityAnswer } | OpsConnectionsRefused
 export type ClearReauthAnswer = { ok: true; service: string; generation: number; identity: MeasuredIdentityAnswer; cleared: true } | OpsConnectionsRefused
