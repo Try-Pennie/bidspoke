@@ -427,3 +427,51 @@ describe('runSlowExecutionCheck recovery (#253)', () => {
     expect(kv.store.has('slow-spike-cooldown:wf-1')).toBe(true)
   })
 })
+
+// #1785: the completed runs read is the high volume caller of the shared paged
+// reader (the Engine flow alone ran 52,959 times on 2026-10-17). A read still
+// returning full pages at the reader's bound is a window the check never saw the
+// end of, so it is "could not measure": the check refuses, which the minute cron
+// logs, and neither pages a spike nor sends an all-clear judged on part of it.
+describe('runSlowExecutionCheck at the paged reader bound (#1785)', () => {
+  function fullPageSupabase(row: Record<string, unknown>) {
+    const full = new Array(1000).fill(0).map(() => row)
+    const workflow = { id: 'wf-1', name: 'Engine Bidding', organization_id: 'org-1', slack_channel: null, definition: { trigger: { type: 'http_webhook', config: { duration_alert_ms: THRESHOLD } } } }
+    return {
+      from: (table: string) => {
+        const data = table === 'workflow_executions' ? full : table === 'workflows' ? [workflow] : [{ organization_id: 'org-1' }]
+        const chain: unknown = new Proxy({}, {
+          get(_t, prop) {
+            if (prop === 'then') return (res: (v: unknown) => unknown) => Promise.resolve({ data, error: null }).then(res)
+            return () => chain
+          },
+        })
+        return chain
+      },
+    }
+  }
+  function kvWith(initial: Record<string, string>) {
+    const m = new Map(Object.entries(initial))
+    return { store: m, get: vi.fn(async (k: string) => m.get(k) ?? null), put: vi.fn(async (k: string, v: string) => { m.set(k, v) }), delete: vi.fn(async (k: string) => { m.delete(k) }) }
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(getSlackConnection).mockResolvedValue({ bot_token: 'xoxb-t', default_channel: 'C1' } as never)
+    vi.mocked(sendRecoveryAlert).mockResolvedValue(true)
+  })
+
+  it('refuses rather than paging a spike judged on the first 200,000 runs', async () => {
+    const slow = fullPageSupabase({ workflow_id: 'wf-1', duration_ms: THRESHOLD * 4, started_at: new Date(Date.now() - 1000).toISOString() })
+    await expect(runSlowExecutionCheck(slow as never, kvWith({}) as never, 'https://app.example.com')).rejects.toThrow('did not reach its last row')
+    expect(sendSlowSpikeAlert).not.toHaveBeenCalled()
+  })
+
+  it('refuses rather than sending an all-clear judged on the first 200,000 runs', async () => {
+    const fast = fullPageSupabase({ workflow_id: 'wf-1', duration_ms: 100, started_at: new Date(Date.now() - 1000).toISOString() })
+    const kv = kvWith({ 'slow-spike-recovery:wf-1': new Date(Date.now() - 90 * 60_000).toISOString() })
+    await expect(runSlowExecutionCheck(fast as never, kv as never, 'https://app.example.com')).rejects.toThrow('did not reach its last row')
+    expect(sendRecoveryAlert).not.toHaveBeenCalled()
+    expect(kv.store.has('slow-spike-recovery:wf-1')).toBe(true)
+  })
+})
