@@ -224,8 +224,9 @@ describe('the ops Worker route (#1709)', () => {
  * OPS_CONNECTIONS, to the NAMED entrypoint OpsConnections, never the ops
  * Worker's default export (which its public route reaches) and never a second
  * binding. Cloudflare deploys it green even when the deployed ops Worker lacks
- * the entrypoint (#2330), so the deploy checks the live script before deploying
- * and calls through the binding after.
+ * the entrypoint (#2330), so CI reads the live ops script on a pull request
+ * before merge (ops-exports-entrypoint.mjs), and Deploy calls through the
+ * binding after the Workers deploy (ops-connections-probe.mjs).
  */
 describe('the bidding Worker\'s OPS_CONNECTIONS binding (#2335)', () => {
   const toml = read('apps/worker/wrangler.toml')
