@@ -2,11 +2,18 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import path from 'node:path'
 
 /**
- * The files a module reaches through its relative VALUE imports, transitively,
- * and the npm packages those files import (#2337). Two checks stand on it: the
- * version fingerprint covers an action's run file, everything it reaches, and
- * the resolved version of every npm package reached (lockfile.ts), and the
- * schema entry must reach nothing under runtime/.
+ * The files a module reaches through its relative VALUE imports and the
+ * workspace packages it imports, transitively, and the npm packages those files
+ * import (#2337). Two checks stand on it: the version fingerprint covers an
+ * action's run file, everything it reaches, and the dependency closure of every
+ * npm package reached (lockfile.ts), and the schema entry must reach nothing
+ * under runtime/.
+ *
+ * What it does NOT cover, stated so nobody reads the fingerprint as more than it
+ * is (L400): an npm package is pinned by the version the lockfile resolves, not
+ * by its content's integrity hash, so it trusts the registry never to republish
+ * a version (npm refuses to), and a `node:` or `cloudflare:` built in is not
+ * pinned at all.
  *
  * Type only imports (`import type`, `export type ... from`) are left out: they
  * are erased before anything runs, so they change no behaviour and pull nothing
@@ -21,16 +28,22 @@ import path from 'node:path'
  * built in. Any other scheme (`https:`, `npm:`) and a package internal `#`
  * import are refused here, since nothing pins what they load.
  *
- * What it does NOT cover, stated so nobody reads the fingerprint as more than it
- * is (L400): only the version of each package a run imports DIRECTLY is folded
- * in. The packages THAT package depends on are not, so a lockfile change to one
- * of them alone (pnpm moving a transitive dependency within its range) does not
- * move the fingerprint. A workspace package import (`@bidspoke/...`) is refused
- * outright rather than ignored, because that source lives in this repo and
- * changes with no version bump at all; extend this walker before a run needs one.
+ * A workspace package (`@bidspoke/...`, or any package the lockfile links to a
+ * local path) is FOLLOWED when the walk is given the lockfile's links: its
+ * source lives in this repo and changes with no version bump at all, so the
+ * files its package.json exports name join the graph as relative imports do,
+ * and the npm packages those files import are recorded under that package's
+ * own importer, the lockfile entry that says which version it gets. Each file
+ * belongs to the package it was reached through, and a relative import that
+ * leaves that package is refused, since its imports would then be read against
+ * the wrong importer. Without links (the schema entry check) a workspace import
+ * is refused by name rather than ignored.
+ *
+ * The dependency closure of each npm package, everything it depends on in turn,
+ * is the lockfile's to give (lockfile.ts resolveDependencies), not this walk's.
  */
 
-export type ModuleGraphErrorCode = 'workspace_import' | 'unresolved_import' | 'unsupported_import'
+export type ModuleGraphErrorCode = 'workspace_import' | 'unresolved_import' | 'unsupported_import' | 'import_leaves_package'
 
 export class ModuleGraphError extends Error {
   constructor(
@@ -42,8 +55,11 @@ export class ModuleGraphError extends Error {
       code === 'workspace_import'
         ? `${file} imports the workspace package ${specifier}, whose source no fingerprint covers`
         : code === 'unsupported_import'
-          ? `${file} imports ${specifier}, which is neither a relative file, a runtime built in nor an npm package the lockfile can pin`
-          : `${file} imports ${specifier}, which resolves to no file`,
+          ? `${file} imports ${specifier}, which is neither a relative file, a runtime built in, a workspace package ` +
+            'export naming one file, nor an npm package the lockfile can pin'
+          : code === 'import_leaves_package'
+            ? `${file} imports ${specifier}, which leaves the package it belongs to; import that package by name instead`
+            : `${file} imports ${specifier}, which resolves to no file`,
     )
     this.name = 'ModuleGraphError'
   }
@@ -91,13 +107,76 @@ const packageNameOf = (specifier: string) =>
     .slice(0, specifier.startsWith('@') ? 2 : 1)
     .join('/')
 
-const byName = ([a]: [string, string], [b]: [string, string]) => (a < b ? -1 : a > b ? 1 : 0)
+/** The workspace package a file belongs to: its lockfile importer key and its directory. */
+export interface PackageOwner {
+  readonly importer: string
+  readonly dir: string
+}
+
+/** What the walk needs to follow workspace packages: where it starts, and the lockfile's links. */
+export interface WorkspaceLinks {
+  /** The package the entry file belongs to. */
+  readonly root: PackageOwner
+  /** The path `name` is linked to under `importer` (the part after `link:`), or undefined when it is not linked. */
+  readonly linkOf: (importer: string, name: string) => string | undefined
+}
 
 export interface ModuleImports {
   /** Every file reached, the entry included, as sorted absolute paths. */
   readonly files: string[]
-  /** Every npm package those files import for its value, sorted by name, with the first file found importing it. */
-  readonly packages: Array<{ name: string; importedBy: string }>
+  /**
+   * Every npm package those files import for its value, sorted by importer then
+   * name, with the first file found importing it and the importer that file
+   * belongs to (null when the walk was given no links).
+   */
+  readonly packages: Array<{ name: string; importedBy: string; importer: string | null }>
+}
+
+const inside = (dir: string, file: string) => file === dir || file.startsWith(dir + path.sep)
+
+/**
+ * The file a linked package's package.json names for `subpath` (`.` or
+ * `./extra`): an `exports` string or a map of subpaths to one file each, else
+ * `main` for the root. Conditions or patterns are refused rather than guessed.
+ */
+function packageEntry(dir: string, subpath: string, fromFile: string, specifier: string): string {
+  let manifest: { exports?: unknown; main?: unknown }
+  try {
+    manifest = JSON.parse(readFileSync(path.join(dir, 'package.json'), 'utf8')) as typeof manifest
+  } catch {
+    throw new ModuleGraphError('unresolved_import', fromFile, specifier)
+  }
+  let target: unknown
+  if (manifest.exports !== undefined) {
+    const exportsField = manifest.exports
+    target =
+      typeof exportsField === 'string'
+        ? subpath === '.'
+          ? exportsField
+          : undefined
+        : exportsField !== null && typeof exportsField === 'object' && !Array.isArray(exportsField)
+          ? (exportsField as Record<string, unknown>)[subpath]
+          : null
+  } else if (subpath === '.') {
+    target = manifest.main
+  }
+  if (target === undefined) throw new ModuleGraphError('unresolved_import', fromFile, specifier)
+  if (typeof target !== 'string' || !target.startsWith('./') || target.includes('*')) {
+    throw new ModuleGraphError('unsupported_import', fromFile, specifier)
+  }
+  const file = path.resolve(dir, target)
+  if (!inside(dir, file) || !isFile(file)) throw new ModuleGraphError('unresolved_import', fromFile, specifier)
+  return file
+}
+
+const byOwnerThenName = (
+  a: { name: string; importer: string | null },
+  b: { name: string; importer: string | null },
+) => {
+  const ai = a.importer ?? ''
+  const bi = b.importer ?? ''
+  if (ai !== bi) return ai < bi ? -1 : 1
+  return a.name < b.name ? -1 : a.name > b.name ? 1 : 0
 }
 
 /** Every file `entry` reaches, itself included, as sorted absolute paths. */
@@ -105,35 +184,55 @@ export function collectModuleGraph(entry: string): string[] {
   return collectModuleImports(entry).files
 }
 
-/** Every file `entry` reaches and every npm package those files import. */
-export function collectModuleImports(entry: string): ModuleImports {
-  const seen = new Set<string>()
-  const packages = new Map<string, string>()
-  const queue = [path.resolve(entry)]
+/**
+ * Every file `entry` reaches and every npm package those files import. Given
+ * `links`, workspace packages are followed into their source (see the top of
+ * this file); without, a `@bidspoke/` import is refused.
+ */
+export function collectModuleImports(entry: string, links?: WorkspaceLinks): ModuleImports {
+  const owners = new Map<string, PackageOwner | null>()
+  const packages = new Map<string, { name: string; importedBy: string; importer: string | null }>()
+  const root: PackageOwner | null = links ? { importer: links.root.importer, dir: path.resolve(links.root.dir) } : null
+  const queue: Array<{ file: string; owner: PackageOwner | null }> = [{ file: path.resolve(entry), owner: root }]
   while (queue.length > 0) {
-    const file = queue.shift()!
-    if (seen.has(file)) continue
-    seen.add(file)
+    const { file, owner } = queue.shift()!
+    if (owners.has(file)) continue
+    owners.set(file, owner)
     if (file.endsWith('.json')) continue
     for (const specifier of valueImportSpecifiers(readFileSync(file, 'utf8'))) {
       if (specifier.startsWith('.')) {
         const resolved = resolveRelative(file, specifier)
         if (!resolved) throw new ModuleGraphError('unresolved_import', file, specifier)
-        queue.push(resolved)
-      } else if (specifier.startsWith('@bidspoke/')) {
-        throw new ModuleGraphError('workspace_import', file, specifier)
-      } else if (BUILTIN_SCHEME.test(specifier)) {
+        if (owner && !inside(owner.dir, resolved)) throw new ModuleGraphError('import_leaves_package', file, specifier)
+        queue.push({ file: resolved, owner })
         continue
-      } else if (/^[a-z][a-z0-9+.-]*:/i.test(specifier) || specifier.startsWith('#') || specifier.startsWith('/')) {
-        throw new ModuleGraphError('unsupported_import', file, specifier)
-      } else {
-        const name = packageNameOf(specifier)
-        if (!packages.has(name)) packages.set(name, file)
       }
+      if (BUILTIN_SCHEME.test(specifier)) continue
+      if (/^[a-z][a-z0-9+.-]*:/i.test(specifier) || specifier.startsWith('#') || specifier.startsWith('/')) {
+        throw new ModuleGraphError('unsupported_import', file, specifier)
+      }
+      const name = packageNameOf(specifier)
+      if (!links || !owner) {
+        if (specifier.startsWith('@bidspoke/')) throw new ModuleGraphError('workspace_import', file, specifier)
+      } else {
+        const link = links.linkOf(owner.importer, name)
+        if (link !== undefined) {
+          const linked: PackageOwner = {
+            importer: path.posix.normalize(path.posix.join(owner.importer, link)),
+            dir: path.resolve(owner.dir, link),
+          }
+          const subpath = `.${specifier.slice(name.length)}`
+          queue.push({ file: packageEntry(linked.dir, subpath, file, specifier), owner: linked })
+          continue
+        }
+      }
+      const importer = owner?.importer ?? null
+      const id = `${importer ?? ''} ${name}`
+      if (!packages.has(id)) packages.set(id, { name, importedBy: file, importer })
     }
   }
   return {
-    files: [...seen].sort(),
-    packages: [...packages].sort(byName).map(([name, importedBy]) => ({ name, importedBy })),
+    files: [...owners.keys()].sort(),
+    packages: [...packages.values()].sort(byOwnerThenName),
   }
 }
