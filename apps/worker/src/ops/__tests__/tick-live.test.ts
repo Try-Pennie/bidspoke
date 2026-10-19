@@ -40,6 +40,8 @@ function opsDatabase() {
     record_schedule_observation: [{ outcome: 'recorded', observation_id: '11111111-2222-4333-8444-555555555555' }],
     due_queue_depth: [{ due_runs: 0, due_workflows: 0, oldest_due: null }],
     save_connection_copies: [{ inserted: 1, updated: 0, confirmed: 0, refused_older: 0, refused_expired: 0, refused_removed: 0, withdrawn: 0 }],
+    purge_expired_connection_tombstones: [{ purged: 1, more: false }],
+    sweep_sf_leases: [{ swept: 2, more: false }],
   }
   const fakeFetch: typeof globalThis.fetch = (async (input: string | URL | Request) => {
     const name = new URL(input instanceof Request ? input.url : input.toString()).pathname.replace('/rest/v1/rpc/', '')
@@ -125,6 +127,9 @@ describe('the live tick', () => {
     expect(report.outcome).toBe('ok')
     expect(db.called).toEqual(expect.arrayContaining(['ops_now', 'claim_ops_sweep', 'save_workflow_copies', 'workflow_copies', 'record_schedule_observation', 'due_queue_depth', 'save_connection_copies']))
     expect(report.counts.connection_copies_saved).toBe(1)
+    // The two connection storage sweeps (#2334), through their real ops functions.
+    expect(db.called).toEqual(expect.arrayContaining(['purge_expired_connection_tombstones', 'sweep_sf_leases']))
+    expect(report.counts).toMatchObject({ tombstones_purged: 1, sf_leases_swept: 2 })
     expect(db.called.indexOf('save_workflow_copies')).toBeLessThan(db.called.indexOf('workflow_copies'))
     expect(s.observed).toEqual(['would_fire'])
     expect(g.started).toBe(1)
