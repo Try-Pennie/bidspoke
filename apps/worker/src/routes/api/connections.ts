@@ -34,6 +34,17 @@ const SERVICE_TYPES = new Set<string>(['salesforce', 'supabase', 'snowflake'])
 const connections = new Hono<{ Bindings: Env; Variables: Variables }>()
 
 /**
+ * The most connections GET /api/connections lists (#1437). Today the store
+ * holds at most one row per organization and service type (UNIQUE
+ * organization_id, service_type), so at most three rows here; measured
+ * 2026-10-18 the largest organization holds none. Release 2 of #2332 allows
+ * several named rows of a type, and 100 leaves room for that while staying far
+ * under PostgREST's 1,000 row cap. The read asks for one more, so a cut answer
+ * is seen and refused rather than shown as the whole list.
+ */
+export const CONNECTIONS_LIST_MAX = 100
+
+/**
  * The org's LEGACY row of a type (#2332, F124): one whose credential is a
  * Cloudflare secret (cf_secret_key set) and was never sealed (sealed_for null).
  * DELETE and sync-schema find their row by service type alone, so without this
@@ -41,6 +52,8 @@ const connections = new Hono<{ Bindings: Env; Variables: Variables }>()
  * and remove it while skipping what Phase 8's own delete does: refuse a
  * referenced connection, write the tombstone, revoke. With two rows of a type,
  * `.single()` answers PGRST116, which both routes read as not found (404).
+ * The `.single()` is here rather than at each caller, so the read's one row
+ * bound is on the query itself (#1437).
  * delete_service_connection_by_id refuses an ops_key row too (migration
  * 20261018150000), so the store holds the line if a caller forgets this.
  * No legacy row exists (measured 2026-10-17); Phase 8 retires both routes.
@@ -58,6 +71,7 @@ function legacyConnectionOf<Columns extends string>(
     .eq('service_type', serviceType)
     .is('sealed_for', null)
     .not('cf_secret_key', 'is', null)
+    .single()
 }
 
 // GET /api/connections
@@ -70,7 +84,14 @@ connections.get('/', async (c) => {
     .eq('organization_id', orgId)
     .in('service_type', ['salesforce', 'supabase', 'snowflake'])
     .order('service_type')
+    .limit(CONNECTIONS_LIST_MAX + 1)
   if (error) return dbError(c, error)
+  // A full answer may have been cut short: refused by name rather than shown as
+  // the whole list (#1437).
+  if ((data ?? []).length > CONNECTIONS_LIST_MAX) {
+    console.error(`[connections] org ${orgId} has more than ${CONNECTIONS_LIST_MAX} connections; the list read is bounded at ${CONNECTIONS_LIST_MAX} and was refused rather than cut`)
+    return c.json({ error: `More than ${CONNECTIONS_LIST_MAX} connections: the list cannot be shown whole` }, 500)
+  }
   return c.json(data ?? [])
 })
 
@@ -99,7 +120,7 @@ connections.delete('/:service_type', async (c) => {
   }
 
   const supabase = createSupabaseClient(c.env)
-  const { data: existing, error: existingError } = await legacyConnectionOf(supabase, orgId, serviceType, 'id').single()
+  const { data: existing, error: existingError } = await legacyConnectionOf(supabase, orgId, serviceType, 'id')
 
   // PGRST116 = no connection for this org (→ 404); a real error must not look
   // like a 404, which would block a legitimate delete (#303).
@@ -135,7 +156,7 @@ connections.post('/:service_type/sync-schema', async (c) => {
   }
 
   const supabase = createSupabaseClient(c.env)
-  const { data: conn, error: connError } = await legacyConnectionOf(supabase, orgId, serviceType, 'id, cf_secret_key, service_type').single()
+  const { data: conn, error: connError } = await legacyConnectionOf(supabase, orgId, serviceType, 'id, cf_secret_key, service_type')
 
   if (connError && !isNotFoundError(connError)) return dbError(c, connError)
   // A row with no Cloudflare secret name is not a legacy connection (#2332).

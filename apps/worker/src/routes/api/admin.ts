@@ -161,7 +161,8 @@ admin.post('/backfill-sightings', async (c) => {
 
     // Skip executions that already have a sighting backfilled
     const execIds = executions.map((e) => e.id)
-    // paginate-ok: bounded to one backfill page of execution ids (one sighting each)
+    // paginate-ok .in(execution_id): one backfill page (PAGE_SIZE, 500) of execution ids, one
+    // sighting each (measured 2026-10-18: never more than 1 per execution)
     const { data: existingSightings, error: existingErr } = await supabase
       .from('lead_sightings')
       .select('execution_id')
@@ -191,7 +192,7 @@ admin.post('/backfill-sightings', async (c) => {
       // Pull execution_steps for this run to extract terminal info + enrichment + bids.
       // Order by step_order (monotonic, unique per execution); started_at is too coarse
       // when many steps share the same second, producing non-deterministic "last step".
-      // paginate-ok: one execution's steps (tens of rows, well under the cap)
+      // paginate-ok .eq(execution_id): one execution's steps (tens of rows, well under the cap)
       const { data: steps, error: stepsErr } = await supabase
         .from('execution_steps')
         .select('step_namespace, step_type, status, output, started_at, step_order')
@@ -472,7 +473,7 @@ async function recordedHoursAmong(
   supabase: ReturnType<typeof createSupabaseClient>,
   hours: string[],
 ): Promise<Set<string>> {
-  // paginate-ok: bounded to the hours asked about, which is one day's 24 (#1191).
+  // paginate-ok .in(hour_start): bounded to the hours asked about, which is one day's 24 (#1191).
   const { data, error } = await supabase
     .from('execution_archive_hours')
     .select('hour_start')

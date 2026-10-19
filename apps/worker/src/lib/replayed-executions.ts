@@ -15,7 +15,8 @@ export async function readReplayedIds(supabase: SupabaseClient, ids: readonly st
   const replayed = new Set<string>()
   for (let i = 0; i < ids.length; i += REPLAYED_CHUNK) {
     const chunk = ids.slice(i, i + REPLAYED_CHUNK)
-    // paginate-ok: bounded to one chunk (<=100) of parent ids; few children each
+    // paginate-ok .in(parent_execution_id): one chunk (<=100) of parent ids, few
+    // children each (measured 2026-10-18: never more than 1)
     const { data, error } = await supabase
       .from('workflow_executions')
       .select('parent_execution_id')

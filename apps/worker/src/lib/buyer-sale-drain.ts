@@ -557,7 +557,7 @@ export async function readExistingBuyerSaleRows(supabase: SupabaseClient, ids: s
     const { data, error } = await supabase
       .from('buyer_sales')
       .select('id, workflow_id, trace_id, debt, multiplier, live_percent_in_force, caps_in_force')
-      .in('id', batch) // paginate-ok: at most EXISTING_ROWS_PER_READ ids, one row each
+      .in('id', batch) // paginate-ok .in(id): at most EXISTING_ROWS_PER_READ ids of the primary key, one row each
     if (error) throw new Error(`buyer_sales: ${error.message}`)
     for (const r of (data ?? []) as unknown as ExistingRowRecord[]) {
       out.set(r.id, { workflow_id: r.workflow_id, trace_id: r.trace_id, debt: num(r.debt), multiplier: num(r.multiplier), live_percent_in_force: r.live_percent_in_force, caps_in_force: r.caps_in_force })
