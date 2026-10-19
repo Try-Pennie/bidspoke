@@ -65,14 +65,27 @@ const plaintextOf = (config: unknown): string | null => {
   return typeof t === 'string' && t.length > 0 ? t : null
 }
 
+/**
+ * The most Slack rows one organization's seal reads (#1437). Today the store
+ * holds at most one (UNIQUE organization_id, service_type; measured 2026-10-18,
+ * one row in all). Release 2 of #2332 allows an alert row plus named ops rows,
+ * and 20 leaves room for that. The read asks for one more, and a full answer
+ * throws: a cut list could call the contract release safe with a row unseen.
+ */
+export const SLACK_ROWS_MAX = 20
+
 async function readRows(supabase: SupabaseClient, orgId: string): Promise<SlackRow[]> {
   const { data, error } = await supabase
     .from('service_connections')
     .select('id, config, credential_enc')
     .eq('organization_id', orgId)
     .eq('service_type', 'slack')
+    .limit(SLACK_ROWS_MAX + 1)
   if (error) throw new Error(`reading service_connections failed: ${error.message}`)
   const rows: SlackRow[] = data ?? []
+  if (rows.length > SLACK_ROWS_MAX) {
+    throw new Error(`organization ${orgId} has more than ${SLACK_ROWS_MAX} Slack rows; the read is bounded there, so the seal was refused rather than judged on a cut list`)
+  }
   return rows
 }
 

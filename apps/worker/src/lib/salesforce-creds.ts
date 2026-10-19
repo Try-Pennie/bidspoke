@@ -110,7 +110,8 @@ export async function requireSalesforceCreds(
 export async function resolveSalesforceCredentialOrg(
   supabase: SupabaseClient,
 ): Promise<{ orgId: string | null; error: string | null }> {
-  // paginate-ok: one row per organization holding a global SALESFORCE_INSTANCE_URL, single digits
+  // paginate-ok .eq(key): one row per organization holding a global SALESFORCE_INSTANCE_URL, single digits
+  // (measured 2026-10-18: 1 row, 3 organizations in all)
   const { data, error } = await supabase
     .from('environment_variables')
     .select('organization_id')

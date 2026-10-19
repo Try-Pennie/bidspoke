@@ -319,17 +319,21 @@ sources.delete('/:name', async (c) => {
 
   const supabase = createSupabaseClient(c.env)
 
-  // Authoritative existence check + grab the id and key(s) being revoked.
-  const { data: existingRows } = await supabase
+  // Authoritative existence check + grab the id and key being revoked. One row at
+  // most: api_sources is UNIQUE (organization_id, name). A failed read is not a
+  // missing source, so it is a 500 rather than a 404 (#1437).
+  const { data: existing, error: existingError } = await supabase
     .from('api_sources')
     .select('id, api_key')
     .eq('organization_id', orgId)
     .eq('name', name)
+    .maybeSingle()
 
-  if (!existingRows || existingRows.length === 0) return c.json({ error: 'Source not found' }, 404)
-  const rows = existingRows as { id: string; api_key: string }[]
-  const deletedKeys = new Set(rows.map((r) => r.api_key))
-  const sourceId = rows[0].id
+  if (existingError) return dbError(c, existingError)
+  if (!existing) return c.json({ error: 'Source not found' }, 404)
+  const row = existing as { id: string; api_key: string }
+  const deletedKeys = new Set([row.api_key])
+  const sourceId = row.id
 
   // Revoke first: rebuild the map from the table minus the deleted key(s), so
   // auth is cut before the row is removed and a stale-snapshot read-modify-write

@@ -27,6 +27,7 @@ import { fetchSupabaseSchema } from '../../../lib/schema-sync/supabase-schema'
 import { fetchSnowflakeSchema } from '../../../lib/schema-sync/snowflake'
 import { makeSupabase } from './_supabase-mock'
 import { SchemaLookupError } from '../../../lib/schema-sync/errors'
+import { CONNECTIONS_LIST_MAX } from '../connections'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
@@ -126,6 +127,27 @@ describe('GET /connections', () => {
     expect(body).toHaveLength(1)
     expect(body[0].service_type).toBe('salesforce')
     expect(Object.keys(body[0])).not.toContain('cf_secret_key')
+  })
+
+  it('asks for one row past its bound, and answers a full answer as a failure rather than a cut list (#1437)', async () => {
+    // A cut list would show the page as if some connections did not exist.
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const { cf_secret_key: _omit, ...row } = existingConn
+    const full = Array.from({ length: CONNECTIONS_LIST_MAX + 1 }, (_, i) => ({ ...row, id: `conn-${i}` }))
+    const supabase = makeSupabase({ users: { single: testUser }, service_connections: { list: full } })
+    vi.mocked(createSupabaseClient).mockReturnValue(supabase as never)
+    const res = await request(app, 'GET', '/connections')
+    expect(res.status).toBe(500)
+    expect(supabase.calls.service_connections).toContainEqual(['limit', [CONNECTIONS_LIST_MAX + 1]])
+    expect(errorLog.mock.calls.flat().join(' ')).toContain('more than 100')
+
+    // At the bound itself the list is whole.
+    vi.mocked(createSupabaseClient).mockReturnValue(
+      makeSupabase({ users: { single: testUser }, service_connections: { list: full.slice(0, CONNECTIONS_LIST_MAX) } }) as never
+    )
+    const whole = await request(app, 'GET', '/connections')
+    expect(whole.status).toBe(200)
+    expect(await whole.json()).toHaveLength(CONNECTIONS_LIST_MAX)
   })
 })
 

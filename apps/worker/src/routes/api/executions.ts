@@ -466,14 +466,15 @@ executions.get('/:id', async (c) => {
   // gotcha on the list endpoint.
   const execStartedAt = execution.started_at
   const [stepsRes, childrenRes, sightingRes] = await Promise.all([
-    // paginate-ok: one execution's steps (tens of rows, well under the cap)
+    // paginate-ok .eq(execution_id): one execution's steps (tens of rows, well under the cap;
+    // measured 2026-10-18: at most 37)
     supabase
       .from('execution_steps')
       .select(stepColumns)
       .eq('execution_id', id)
       .gte('started_at', execStartedAt)
       .order('step_order', { ascending: true }),
-    // paginate-ok: one execution's replay/resume children (a handful)
+    // paginate-ok .eq(parent_execution_id): one execution's replay/resume children (a handful)
     supabase
       .from('workflow_executions')
       .select('id, started_at, status, outcome, source')
@@ -510,7 +511,7 @@ executions.get('/:id', async (c) => {
     // partitions newer than the current execution. Doesn't bound the lower end
     // tightly (we'd need parent.started_at for that), but is still a big win
     // once daily partitions accumulate.
-    // paginate-ok: one resumed-from execution's completed steps (tens of rows)
+    // paginate-ok .eq(execution_id): one resumed-from execution's completed steps (tens of rows)
     const { data: parentSteps } = await supabase
       .from('execution_steps')
       .select(stepColumns)
