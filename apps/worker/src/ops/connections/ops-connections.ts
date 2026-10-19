@@ -14,9 +14,11 @@
  *
  * THE METHODS.
  *  verify       measures what the credential authenticates as through
- *               connectionFetch (never only the declaration), refuses money's
- *               Salesforce run as user, and records the measurement under the
- *               generation the request carried (record_measured_identity). With a
+ *               connectionFetch (never only the declaration). For Salesforce it
+ *               refuses money's run as user and records the measurement under the
+ *               generation the request carried (record_measured_identity); for
+ *               Snowflake it refuses a measured user or account other than the
+ *               declared target and records nothing (snowflake-service.ts). With a
  *               candidate (a credential bidding has not committed) it uses that
  *               envelope for this one call and WRITES NO COPY (F116, F126): the
  *               committed copy arrives only by a serve of the committed row.
@@ -52,7 +54,7 @@ import type { SalesforceSource, SnowflakeSource, SupabaseSource } from '../../li
 import { organizationIdFrom, type OrganizationId } from '../ops-db'
 import type { ConnectionCopy, ConnectionHealthStatus, LookupAllowance, MeasuredIdentityOutcome } from '../ops-writes'
 import { connectionFetch, type CandidateConnection, type ConnectionCall, type ConnectionFetchDeps, type ConnectionSource } from './connection-fetch'
-import { IdentityUnreadable, isMoneySalesforceIdentity, type BoundFetch, type IdentityProbe, type MeasuredIdentity } from './identity'
+import { IdentityMismatch, IdentityUnreadable, isMoneySalesforceIdentity, type BoundFetch, type IdentityProbe, type MeasuredIdentity } from './identity'
 import { exchangeOAuthCode, type OAuthUserService, type TokenObjects } from './minters/oauth-user'
 import { ConnectionRefusal, RequeueAt } from './refusals'
 import type { ServiceRules } from './service-rules'
@@ -204,6 +206,11 @@ async function moneySalesforceIdentity(deps: OpsConnectionsDeps, organizationId:
 }
 
 function identityAnswer(identity: MeasuredIdentity): MeasuredIdentityAnswer {
+  if (identity.kind === 'snowflake') {
+    return {
+      kind: 'snowflake', account_locator: identity.accountLocator, organization_name: identity.organizationName, account_name: identity.accountName, user: identity.user,
+    }
+  }
   return { kind: identity.kind, sf_org_id: identity.sfOrgId, username: identity.username }
 }
 
@@ -238,12 +245,16 @@ async function verifyIdentity(
   } catch (err) {
     if (err instanceof ConnectionRefusal) return fromRefusal(err, true)
     if (err instanceof IdentityUnreadable) return refuse('verify_identity_unreadable', err.message)
+    if (err instanceof IdentityMismatch) return refuse('verify_identity_mismatch', err.message)
     return unexpected(err, 'the identity measurement')
   }
   // connectionFetch resolved the subject before any request, so a measured identity always has one.
   const resolved = used as { service: string; generation: number } | null
   if (resolved === null) return refuse('ops_connections_failed', 'the identity was measured without a request through connectionFetch')
 
+  // A Snowflake identity is the declared one or the probe refused it, and
+  // nothing about it is kept (snowflake-service.ts says why).
+  if (identity.kind !== 'salesforce') return { ok: true, service: resolved.service, generation: resolved.generation, identity: identityAnswer(identity) }
   if (money !== null && isMoneySalesforceIdentity(identity, money)) {
     return refuse('money_identity_match', 'the credential authenticates as money\'s Salesforce run as user, which an ops connection may never act as')
   }

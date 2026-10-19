@@ -1,1 +1,4 @@
-{}
+{
+  "snowflake.execute-sql-query@1": "3d7b959fb6e8785d05844bc177f28733ea21cbccdcd23fe1ffe7eb8481edf1ff",
+  "snowflake.insert-multiple-rows@1": "95eb475d487dcdf9aa098de2e5c910cc0e9732ac0da2a1b0d44be7d2fdcc321b"
+}
