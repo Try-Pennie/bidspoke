@@ -214,6 +214,16 @@ describe('the all clear', () => {
     expect(h.sendRecovery.mock.calls.map(([org]) => org)).toContain(ORG_A)
   })
 
+  it.each([
+    ['not JSON', '{"open":'],
+    ['an entry with no organization', JSON.stringify({ open: { [CONN_A]: { service: 'salesforce', state: 'needs_reauth' } } })],
+  ])('says so when its record of open incidents is %s, rather than reading it as none', async (_label, raw) => {
+    const h = harness()
+    h.kv.store.set(OPS_CONNECTION_LOGIN_STATE_KEY, raw)
+    const out = await h.run(judged(list([])))
+    expect(out.errors.join(' ')).toMatch(/could not be read, so its all clear cannot be sent/)
+  })
+
   it('writes its state only when it changes, not every minute', async () => {
     const h = harness()
     await h.run(judged(list([needs()])))

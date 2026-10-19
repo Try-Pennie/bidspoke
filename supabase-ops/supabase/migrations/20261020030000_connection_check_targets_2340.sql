@@ -29,9 +29,11 @@
 --              count and start, the identity verify measured for the copy's
 --              generation (Salesforce only; null when none), and the database
 --              clock, so every age is judged on one clock (L736).
--- The least recently checked first (never checked before any), then by id, so a
--- sweep held to its limit reaches every connection in turn. At most p_limit
--- rows, so the caller can tell a full page (L24).
+-- The ones the sweep probes first (servable and not in needs_reauth, the two it
+-- skips, which no check is ever recorded for and so would otherwise stay first
+-- for ever), then the least recently checked (never checked before any), then by
+-- id, so a sweep held to its limit reaches every connection it can probe in
+-- turn. At most p_limit rows, so the caller can tell a full page (L24).
 --
 -- Additive only (ADR 0007): one new read only function, nothing else changes.
 -- Nothing calls it until the ops Worker that carries the sweep deploys, and that
@@ -72,7 +74,11 @@ BEGIN
     ON m.connection_id = c.connection_id AND m.generation = c.generation AND m.organization_id = c.organization_id
   WHERE c.withdrawn_at IS NULL
     AND (t.connection_id IS NULL OR t.generation < c.generation)
-  ORDER BY greatest(h.last_check_ok_at, h.last_check_failed_at) ASC NULLS FIRST, c.connection_id
+  ORDER BY
+    -- false sorts first: a copy the sweep will probe.
+    (c.serve_until <= now() OR coalesce(h.needs_reauth_at > coalesce(h.reauth_cleared_at, '-infinity'::timestamptz), false)),
+    greatest(h.last_check_ok_at, h.last_check_failed_at) ASC NULLS FIRST,
+    c.connection_id
   LIMIT p_limit;
 END
 $fn$;

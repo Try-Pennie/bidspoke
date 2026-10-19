@@ -63,23 +63,32 @@ interface LoginState {
   open: Record<string, OpenLogin>
 }
 
-function parseState(raw: string | null): LoginState {
-  if (!raw) return { open: {} }
+/**
+ * The stored record, and how many of its entries could not be read. Nothing
+ * can be recovered from an entry that cannot be read (it is the only copy of
+ * whose incident it was), so the record is written over all the same: refusing
+ * to would leave the check unable to keep any incident again. Each lost
+ * incident's marker lapses at its expiry, and the drain closes it as lapsed,
+ * which says truthfully that no all clear was sent. The count is reported.
+ */
+function parseState(raw: string | null): { state: LoginState; unreadable: number } {
+  if (!raw) return { state: { open: {} }, unreadable: 0 }
   try {
     const v = JSON.parse(raw) as { open?: unknown }
     const open: Record<string, OpenLogin> = {}
-    if (v.open && typeof v.open === 'object' && !Array.isArray(v.open)) {
-      for (const [id, e] of Object.entries(v.open as Record<string, unknown>)) {
-        const o = e as Partial<OpenLogin> | null
-        if (o && typeof o.organization_id === 'string' && typeof o.service === 'string' && (o.state === 'needs_reauth' || o.state === 'refresh_failing')) {
-          open[id] = { organization_id: o.organization_id, service: o.service, state: o.state }
-        }
+    if (!v.open || typeof v.open !== 'object' || Array.isArray(v.open)) return { state: { open }, unreadable: 1 }
+    let unreadable = 0
+    for (const [id, e] of Object.entries(v.open as Record<string, unknown>)) {
+      const o = e as Partial<OpenLogin> | null
+      if (o && typeof o.organization_id === 'string' && typeof o.service === 'string' && (o.state === 'needs_reauth' || o.state === 'refresh_failing')) {
+        open[id] = { organization_id: o.organization_id, service: o.service, state: o.state }
+      } else {
+        unreadable++
       }
     }
-    return { open }
+    return { state: { open }, unreadable }
   } catch {
-    // An unreadable record forgets which incidents were open; their markers still lapse at their expiry, and the drain closes them as lapsed.
-    return { open: {} }
+    return { state: { open: {} }, unreadable: 1 }
   }
 }
 
@@ -225,7 +234,11 @@ export async function runOpsConnectionLoginCheck(deps: OpsConnectionLoginDeps): 
     stateRead = false
     errors.push(`the open incidents could not be read, so they are left as stored: ${formatErr(err)}`)
   }
-  const previous = parseState(rawState)
+  const parsed = parseState(rawState)
+  const previous = parsed.state
+  if (parsed.unreadable > 0) {
+    errors.push(`${parsed.unreadable} open incident record${parsed.unreadable === 1 ? '' : 's'} could not be read, so ${parsed.unreadable === 1 ? 'its' : 'their'} all clear cannot be sent; each closes as lapsed when its marker expires`)
+  }
   const read = await deps.readLogins()
 
   if (!read.judged) {

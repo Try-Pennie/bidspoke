@@ -16,8 +16,10 @@
 --   D. Each row's status is the one connection_status derives for it, and it
 --      carries the streak, the needs_reauth time and cause, and the identity
 --      verify measured for its generation, with the database clock.
---   E. The least recently checked come first, never checked before all, so a
---      sweep held to its limit reaches every connection in turn.
+--   E. The ones the sweep probes come first, so the copies it skips (past their
+--      serve window, or in needs_reauth), which no check is recorded for, can
+--      never fill its limit; then the least recently checked, never checked
+--      before all, so a sweep held to its limit reaches every connection in turn.
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh builds
 -- (SQL_SUITE_PROJECT=ops), inside one transaction rolled back at the end.
@@ -173,15 +175,20 @@ BEGIN
   IF v_row.db_now IS NULL OR v_row.db_now > now() + interval '1 second' THEN RAISE EXCEPTION 'a row carries no database clock'; END IF;
   INSERT INTO cc_cases VALUES ('each row carries connection_status''s status, the streak, needs_reauth and its generation''s measured identity');
 
-  -- E. Least recently checked first: never checked, then the oldest check.
+  -- E. The probed first, never checked before the oldest check; the skipped last.
   SELECT array_agg(connection_id) INTO v_ids FROM public.connection_check_targets(500);
-  IF v_ids[1:3] @> ARRAY[v_unchecked, v_reauth, v_failing] IS NOT TRUE OR ARRAY[v_unchecked, v_reauth, v_failing] @> v_ids[1:3] IS NOT TRUE THEN
-    RAISE EXCEPTION 'the never checked do not come first: %', v_ids;
+  IF v_ids[1:2] @> ARRAY[v_unchecked, v_failing] IS NOT TRUE OR ARRAY[v_unchecked, v_failing] @> v_ids[1:2] IS NOT TRUE THEN
+    RAISE EXCEPTION 'the never checked of the probed do not come first: %', v_ids;
   END IF;
-  IF v_ids[4:7] IS DISTINCT FROM ARRAY[v_expired, v_snowflake, v_reissued, v_healthy] THEN RAISE EXCEPTION 'the checked are not oldest check first: %', v_ids; END IF;
+  IF v_ids[3:5] IS DISTINCT FROM ARRAY[v_snowflake, v_reissued, v_healthy] THEN RAISE EXCEPTION 'the checked are not oldest check first: %', v_ids; END IF;
+  -- The one in needs_reauth was never checked and the expired one was checked longest ago, yet both come last.
+  IF v_ids[6:7] IS DISTINCT FROM ARRAY[v_reauth, v_expired] THEN RAISE EXCEPTION 'the copies the sweep skips do not come last: %', v_ids; END IF;
   SELECT count(*) INTO v_rows FROM public.connection_check_targets(2);
   IF v_rows <> 2 THEN RAISE EXCEPTION 'a limit of 2 answered % rows', v_rows; END IF;
-  INSERT INTO cc_cases VALUES ('least recently checked first, held to the limit');
+  IF EXISTS (SELECT 1 FROM public.connection_check_targets(5) WHERE connection_id IN (v_reauth, v_expired)) THEN
+    RAISE EXCEPTION 'a limit filled before the probed ones ran out holds a copy the sweep skips';
+  END IF;
+  INSERT INTO cc_cases VALUES ('the probed first, least recently checked first among them, the skipped last, held to the limit');
 END
 $do$;
 
