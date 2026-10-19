@@ -10,15 +10,15 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.117.3",
-    "pg": "8.23.0"
+    "@supabase/supabase-js": "^2.118.0",
+    "pg": "8.23.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@types/node": "^26.6.4",
-    "@types/pg": "8.23.0",
-    "@typescript-eslint/eslint-plugin": "^8.71.1",
-    "@typescript-eslint/parser": "^8.71.1",
+    "@types/node": "^26.6.5",
+    "@types/pg": "8.23.1",
+    "@typescript-eslint/eslint-plugin": "^8.71.2",
+    "@typescript-eslint/parser": "^8.71.2",
     "eslint": "^10.6.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"

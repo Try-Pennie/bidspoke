@@ -14,13 +14,13 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "slack-web-api-client": "1.1.14"
+    "slack-web-api-client": "1.1.15"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@typescript-eslint/eslint-plugin": "^8.71.1",
-    "@typescript-eslint/parser": "^8.71.1",
-    "@types/node": "^26.6.4",
+    "@typescript-eslint/eslint-plugin": "^8.71.2",
+    "@typescript-eslint/parser": "^8.71.2",
+    "@types/node": "^26.6.5",
     "eslint": "^10.6.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
