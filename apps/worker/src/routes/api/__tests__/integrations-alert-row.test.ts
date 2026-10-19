@@ -54,20 +54,15 @@ const otherSlackRow = (): Row => ({
 })
 
 /**
- * The database as the routes see it. Each delete function follows its
- * migration: delete_service_connection (20261017150000) removes the org's rows
- * of the type that are not ops_key rows; delete_service_connection_by_id
- * (20261018150000) removes the one row named, in the org named, never an
- * ops_key row.
+ * The database as the routes see it. delete_service_connection_by_id follows
+ * its migration (20261018150000): it removes the one row named, in the org
+ * named, never an ops_key row. The delete by service type it replaced was
+ * dropped in release 2 (20261019150000), so the fake has no handler for it
+ * either: a call to it fails here as it would in production.
  */
 function database(rows: Row[]) {
   const fake = fakePostgrest({ service_connections: rows }, {
     auth_user_with_allowlist: () => ({ data: [{ id: USER, organization_id: ORG, email: 'dan@pennie.com', allowed: true }] }),
-    delete_service_connection: (args, tables) => {
-      const gone = tables.service_connections.filter((r) => r.organization_id === args.p_organization_id && r.service_type === args.p_service_type && r.sealed_for !== 'ops_key')
-      tables.service_connections = tables.service_connections.filter((r) => !gone.includes(r))
-      return { data: gone.map((r) => ({ id: r.id })) }
-    },
     delete_service_connection_by_id: (args, tables) => {
       const gone = tables.service_connections.filter((r) => r.id === args.p_connection_id && r.organization_id === args.p_organization_id && r.sealed_for !== 'ops_key')
       tables.service_connections = tables.service_connections.filter((r) => !gone.includes(r))
@@ -227,8 +222,8 @@ describe('DELETE /integrations/slack (Disconnect)', () => {
   })
 
   // Release 2 lets an organization hold a second Slack row that is not an ops
-  // row and not an alert candidate (another name). Deleting by service type
-  // removed it with the alert row; the Disconnect now deletes only the alert
+  // row and not an alert candidate (another name). The dropped delete by service
+  // type removed it with the alert row; the Disconnect now deletes only the alert
   // row it read, by id (#2332).
   it('removes only the alert row it read, so a second non ops Slack row of the organization survives', async () => {
     const fake = database([alertRow(), otherSlackRow(), opsRow()])

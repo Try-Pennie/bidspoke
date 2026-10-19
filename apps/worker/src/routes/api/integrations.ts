@@ -10,8 +10,8 @@
 // data: only the caller's organization's Slack ALERT row, every read and write
 // scoped by organization_id from the verified token, never from the request.
 //
-// The alert row (#2332, phase 2 of #1689). Once release 2 lets an organization
-// hold an ops Slack connection beside the alert bot's row, every read here goes
+// The alert row (#2332, phase 2 of #1689). Since release 2 (migration
+// 20261019150000) an organization may hold an ops Slack connection beside the alert bot's row, every read here goes
 // through onlySlackAlertRow (lib/slack-connection.ts): service_type 'slack',
 // name 'slack', sealed_for 'bidding_ring' or the legacy unsealed form. So
 // Settings never shows, edits, searches with or disconnects an ops connection.
@@ -199,9 +199,10 @@ integrations.post('/slack', async (c) => {
   //
   // #2332 (phase 2 of #1689): the row is named 'slack' and the conflict target
   // is UNIQUE (organization_id, service_type, name), from migration
-  // 20261017150000, which backfilled that name onto every existing row. The old
-  // UNIQUE (organization_id, service_type) still holds until release 2, so any
-  // other name here would hit it and error instead of updating. No ops_key row
+  // 20261017150000, which backfilled that name onto every existing row. Release
+  // 2 (20261019150000) dropped the old UNIQUE (organization_id, service_type)
+  // and the trigger that named a row saved with none, so this name is what
+  // keeps the save on the one alert row, and it must always be sent. No ops_key row
   // may be named 'slack' (service_connections_alert_name_reserved), so this
   // upsert can only ever land on an alert row, never on an ops connection's
   // credential_enc. This code deploys only once that migration is applied: the
@@ -394,8 +395,8 @@ integrations.delete('/slack', async (c) => {
   // this user (#2331); a delete that matched nothing is audited by nobody (#588).
   //
   // It deletes the alert row just read, by its id, within this organization and
-  // never an ops_key row (migration 20261018150000, #2332). So once release 2
-  // lets an organization hold another Slack row beside the alert row, the
+  // never an ops_key row (migration 20261018150000, #2332). So now that release
+  // 2 lets an organization hold another Slack row beside the alert row, the
   // Disconnect cannot remove it. (The delete by service type it replaced
   // removed every non ops Slack row of the organization, which is why #2374
   // logged slack_disconnect_removed_other_rows; that cannot happen now, as

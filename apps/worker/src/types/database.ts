@@ -3181,16 +3181,6 @@ export type Database = {
         }
         Returns: undefined
       }
-      delete_service_connection: {
-        Args: {
-          p_actor: string
-          p_organization_id: string
-          p_service_type: string
-        }
-        Returns: {
-          id: string
-        }[]
-      }
       delete_service_connection_by_id: {
         Args: {
           p_actor: string
