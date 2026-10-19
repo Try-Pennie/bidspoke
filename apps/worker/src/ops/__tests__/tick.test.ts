@@ -15,7 +15,10 @@
  */
 import { describe, expect, it } from 'vitest'
 import { organizationIdFrom } from '../ops-db'
-import { OpsWriteTimeoutError, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult, type WorkflowCopy, type WorkflowCopyInput } from '../ops-writes'
+import {
+  OpsWriteTimeoutError, type ConnectionCopyInput, type SaveConnectionCopiesResult, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult,
+  type WorkflowCopy, type WorkflowCopyInput,
+} from '../ops-writes'
 import type { OpsSweep } from '../run-vocabulary'
 import { runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
 
@@ -62,9 +65,25 @@ function served(workflows: Array<Record<string, unknown>> = [{}]) {
   }
 }
 
+const CONN = '00000000-0000-4000-8000-0000000023c1'
+
+/** One ops connection as the bidding Worker serves it (#2335): ciphertext and public config only. */
+function servedConnections() {
+  return {
+    served_at: '2026-10-17T11:02:31.000Z',
+    complete: true,
+    connections: [{
+      id: CONN, organization_id: ORG, service: 'salesforce', generation: 1,
+      envelope: { v: 1, kid: 'ops-2026-10', wrapped_key: 'd3JhcHBlZA==', iv: 'aXZpdml2aXZpdml2', ct: 'Y2lwaGVydGV4dA==' },
+      public_config: {}, target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: '3MVG-ops' }, serve_until: '2026-10-17T17:02:31.000Z',
+    }],
+    tombstones: [],
+  }
+}
+
 interface Fake {
   ports: OpsTickPorts
-  db: OpsTickDb & { calls: string[]; saved: WorkflowCopyInput[][]; observations: ScheduleObservation[] }
+  db: OpsTickDb & { calls: string[]; saved: WorkflowCopyInput[][]; savedConnections: ConnectionCopyInput[][]; observations: ScheduleObservation[] }
   dispatched: DispatchItem[]
   stamps: string[]
   reports: unknown[]
@@ -73,6 +92,8 @@ interface Fake {
 function fake(opts: {
   copies?: WorkflowCopy[]
   fetch?: () => Promise<unknown>
+  /** What the bidding Worker answers the connection list with (#2335). */
+  fetchConnections?: () => Promise<unknown>
   sweepOwned?: boolean
   leases?: SweepResult
   failing?: Partial<Record<keyof OpsTickDb, Error>>
@@ -87,6 +108,7 @@ function fake(opts: {
 } = {}): Fake {
   const calls: string[] = []
   const saved: WorkflowCopyInput[][] = []
+  const savedConnections: ConnectionCopyInput[][] = []
   const observations: ScheduleObservation[] = []
   const fail = (name: keyof OpsTickDb) => {
     calls.push(name)
@@ -96,6 +118,7 @@ function fake(opts: {
   const db = {
     calls,
     saved,
+    savedConnections,
     observations,
     async now() { fail('now'); return DB_NOW },
     async claimSweep(sweep: OpsSweep): Promise<SweepClaim> { fail('claimSweep'); calls.push(`claim:${sweep}`); return { owned: opts.sweepOwned ?? true, lastStartedAt: null, lastOwner: 'another-tick' } },
@@ -111,6 +134,11 @@ function fake(opts: {
     async readCopies() { fail('readCopies'); return { copies: opts.copies ?? [copy()], reachedLimit: false } },
     async recordObservation(_org: unknown, o: ScheduleObservation) { fail('recordObservation'); observations.push(o); return opts.observed?.(o) ?? 'recorded' },
     async dueQueueDepth() { fail('dueQueueDepth'); return { dueRuns: opts.dueRuns ?? 0, dueWorkflows: opts.dueRuns ? 1 : 0, oldestDue: null } },
+    async saveConnectionCopies(_servedAt: string, _complete: boolean, list: readonly ConnectionCopyInput[]): Promise<SaveConnectionCopiesResult> {
+      fail('saveConnectionCopies'); savedConnections.push([...list])
+      return { inserted: list.length, updated: 0, confirmed: 0, refusedOlder: 0, refusedExpired: 0, refusedRemoved: 0, withdrawn: 0 }
+    },
+    async recordConnectionTombstone() { fail('recordConnectionTombstone'); return { outcome: 'recorded' as const, copiesRemoved: 0 } },
   }
   const dispatched: DispatchItem[] = []
   const stamps: string[] = []
@@ -128,6 +156,7 @@ function fake(opts: {
     },
     gateway: {
       fetchWorkflows: opts.fetch ?? (async () => served()),
+      fetchConnections: opts.fetchConnections ?? (async () => servedConnections()),
       started: async () => { stamps.push('started'); if (opts.stampFails) throw new Error('the gateway is not deployed') },
       completed: async (r) => { stamps.push('completed'); reports.push(r); if (opts.stampFails) throw new Error('the gateway is not deployed') },
     },
@@ -391,5 +420,39 @@ describe('slots', () => {
     const f = fake({ copies: [copy({ scheduleKnownSince: '2026-10-17T10:00:00.000Z' })] })
     await runOpsTick(f.ports)
     expect(f.db.observations).toEqual([])
+  })
+})
+
+describe('the ops connections (#2335)', () => {
+  it('saves the connections the bidding Worker served as last good copies, with the serve_until it set', async () => {
+    const f = fake()
+    const report = await runOpsTick(f.ports)
+    expect(report.outcome).toBe('ok')
+    expect(f.db.savedConnections).toEqual([[expect.objectContaining({ connectionId: CONN, organizationId: ORG, generation: 1, serveUntil: '2026-10-17T17:02:31.000Z' })]])
+    expect(report.counts).toMatchObject({ connections_served: 1, connection_copies_saved: 1 })
+  })
+
+  it('a bidding Worker that cannot be reached for connections is reported, saves no copy, and stops nothing else', async () => {
+    const f = fake({ fetchConnections: async () => { throw new Error('the bidding Worker\'s connection list did not answer within 15 s') } })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.savedConnections).toEqual([])
+    expect(report.problems).toEqual([expect.stringMatching(/could not fetch the ops connections .*serve_until/)])
+    // The workflows were saved and the schedule fired all the same.
+    expect(f.db.saved).toHaveLength(1)
+    expect(f.dispatched).toHaveLength(1)
+  })
+
+  it('a failed connection save is reported and the schedules still fire', async () => {
+    const f = fake({ failing: { saveConnectionCopies: new OpsWriteTimeoutError('save_connection_copies passed its 9000 ms deadline and may still have committed') } })
+    const report = await runOpsTick(f.ports)
+    expect(report.problems).toEqual([expect.stringMatching(/could not save the connections it fetched.*save_connection_copies/)])
+    expect(f.dispatched).toHaveLength(1)
+  })
+
+  it('with no database it fetches no connections, since there is nowhere to keep them', async () => {
+    let asked = false
+    const f = fake({ db: 'not_configured', fetchConnections: async () => { asked = true; return servedConnections() } })
+    await runOpsTick(f.ports)
+    expect(asked).toBe(false)
   })
 })

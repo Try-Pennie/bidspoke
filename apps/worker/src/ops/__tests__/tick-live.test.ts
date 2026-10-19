@@ -38,6 +38,7 @@ function opsDatabase() {
     }],
     record_schedule_observation: [{ outcome: 'recorded', observation_id: '11111111-2222-4333-8444-555555555555' }],
     due_queue_depth: [{ due_runs: 0, due_workflows: 0, oldest_due: null }],
+    save_connection_copies: [{ inserted: 1, updated: 0, confirmed: 0, refused_older: 0, refused_expired: 0, refused_removed: 0, withdrawn: 0 }],
   }
   const fakeFetch: typeof globalThis.fetch = (async (input: string | URL | Request) => {
     const name = new URL(input instanceof Request ? input.url : input.toString()).pathname.replace('/rest/v1/rpc/', '')
@@ -60,6 +61,17 @@ function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: num
     opsTickCompleted: async (r: unknown) => { g.reports.push(r as OpsTickReport); return { ok: true } },
     // The tick never hands back a rotated login (#2335): the ConnectionTokenObject does.
     storeRotatedEnvelope: async () => { throw new Error('the tick does not call storeRotatedEnvelope') },
+    // The serve (#2335): one ops connection, ciphertext and public config only.
+    opsConnections: async () => ({
+      served_at: '2026-10-17T10:02:31.000Z', complete: true, tombstones: [],
+      connections: [{
+        id: '00000000-0000-4000-8000-0000000023c1', organization_id: ORG, service: 'salesforce', generation: 1,
+        envelope: { v: 1, kid: 'ops-2026-10', wrapped_key: 'd3JhcHBlZA==', iv: 'aXZpdml2aXZpdml2', ct: 'Y2lwaGVydGV4dA==' },
+        public_config: {}, target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: '3MVG-ops' }, serve_until: '2026-10-17T16:02:31.000Z',
+      }],
+    }),
+    // Verify's, in PR 8 of #2335: the tick never asks.
+    moneyIdentities: async () => { throw new Error('the tick does not call moneyIdentities') },
   }
   return g
 }
@@ -108,7 +120,8 @@ describe('the live tick', () => {
     const report = await runOpsTick(liveTickPorts(env, NOW + 17_000, { sealRegistry, now: () => NOW, tickId: 'tick-live', fetch: db.fetch }))
     expect(report.problems).toEqual([])
     expect(report.outcome).toBe('ok')
-    expect(db.called).toEqual(expect.arrayContaining(['ops_now', 'claim_ops_sweep', 'save_workflow_copies', 'workflow_copies', 'record_schedule_observation', 'due_queue_depth']))
+    expect(db.called).toEqual(expect.arrayContaining(['ops_now', 'claim_ops_sweep', 'save_workflow_copies', 'workflow_copies', 'record_schedule_observation', 'due_queue_depth', 'save_connection_copies']))
+    expect(report.counts.connection_copies_saved).toBe(1)
     expect(db.called.indexOf('save_workflow_copies')).toBeLessThan(db.called.indexOf('workflow_copies'))
     expect(s.observed).toEqual(['would_fire'])
     expect(g.started).toBe(1)
@@ -195,6 +208,19 @@ describe('the bindings', () => {
     }))
     expect(waited).toContain(GATEWAY_DEADLINE_MS)
     expect(report.problems.join(' ')).toMatch(/workflow list did not answer within 15 s/)
+  })
+
+  it('a connection list that never answers is given up on at its deadline, and no copy is saved (#2335)', async () => {
+    const db = opsDatabase()
+    const { env } = configured()
+    const silent = { ...gateway(), opsConnections: () => new Promise<never>(() => {}) }
+    // A deadline that passes at once, so every gateway call is given up on; only the connection list never answers at all.
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_GATEWAY: silent }, null, {
+      sealRegistry, now: () => NOW, fetch: db.fetch, delay: async () => {},
+    }))
+    expect(report.problems).toContainEqual(expect.stringMatching(/could not fetch the ops connections .*connection list did not answer within 15 s/))
+    expect(db.called).not.toContain('save_connection_copies')
+    expect(db.called).toContain('record_schedule_observation')
   })
 })
 

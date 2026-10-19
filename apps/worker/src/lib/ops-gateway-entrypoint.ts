@@ -6,19 +6,42 @@
  * ops-gateway.ts.
  *
  * A named export of this Worker's main module (index.ts), as the Durable Object
- * classes are. Each method is one bounded piece of work the tick awaits: one
- * paged read with the library's retries off (a lead client's setting, #1844),
- * since the tick gives up on it at 15 s and plans from its saved copy, or one KV
- * write of a heartbeat stamp.
+ * classes are. Each method is one bounded piece of work its caller awaits, with
+ * the library's retries off (a lead client's setting, #1844), since the tick
+ * gives up at 15 s and keeps its saved copies: the workflow list (one paged
+ * read), the connection list (two paged reads, #2335), a heartbeat stamp (one KV
+ * write), money's identity for one organization (one KV read, #2335), or a
+ * rotated login's compare and set (one rpc, #2335).
  */
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import type { Env } from '../env'
 import { createSupabaseClient } from './supabase'
-import { readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, storeRotatedEnvelope } from './ops-gateway'
+import { readMoneyIdentities } from './money-identity'
+import { readOpsConnections, readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, storeRotatedEnvelope } from './ops-gateway'
 
 export class OpsGateway extends WorkerEntrypoint<Env> {
   opsWorkflows() {
     return readOpsWorkflows(createSupabaseClient(this.env, { retry: false }), Date.now())
+  }
+
+  /**
+   * Every ops connection's sealed envelope, public config and target, with
+   * serve_until 6 hours on, and the removals of the last 7 hours (#2335): two
+   * paged reads, retries off, since the tick gives up at its gateway deadline
+   * and keeps its copies. Lane wide; never a plaintext login. Who may call it
+   * and whose data: readOpsConnections in ops-gateway.ts.
+   */
+  opsConnections() {
+    return readOpsConnections(createSupabaseClient(this.env, { retry: false }), Date.now())
+  }
+
+  /**
+   * Money's measured Salesforce identity for the one organization named, and
+   * no other (#2335): one KV read. Who may call it and whose data:
+   * money-identity.ts.
+   */
+  moneyIdentities(organizationId: unknown) {
+    return readMoneyIdentities(this.env.IDEMPOTENCY, organizationId, Date.now())
   }
 
   async opsTickStarted() {

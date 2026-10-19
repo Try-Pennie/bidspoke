@@ -20,6 +20,16 @@
  * A third crosses it since #2335: a person bound connection's rotated login,
  * handed back by the ops ConnectionTokenObject to its one home by compare and
  * set (storeRotatedEnvelope, below).
+ *
+ * And two more since PR 6 of #2335 (plan: discussion #2329, part 2):
+ *  - the ops connections, served by the bidding Worker (opsConnections), which
+ *    the tick keeps as last good copies: each one's sealed envelope (ciphertext
+ *    only), public config, declared target and serve_until, and the removals of
+ *    the last 7 hours. Never a plaintext login: the bidding Worker cannot open an
+ *    envelope, and a public config or target naming a login field is refused;
+ *  - money's measured Salesforce run as identity for one organization
+ *    (moneyIdentities), a non secret value ops verify compares a credential's
+ *    measured identity against.
  */
 import { KID_PATTERN } from '@bidspoke/connection-seal'
 
@@ -52,6 +62,88 @@ export interface OpsGatewayBinding {
   opsTickCompleted(report: unknown): Promise<unknown>
   /** A StoreRotatedEnvelopeRequest in; a StoreRotatedEnvelopeAnswer out (#2335). */
   storeRotatedEnvelope(request: unknown): Promise<unknown>
+  /** A ServedOpsConnections, for parseServedOpsConnections (#2335). */
+  opsConnections(): Promise<unknown>
+  /** One organization's ServedMoneyIdentities, for parseServedMoneyIdentities (#2335). */
+  moneyIdentities(organizationId: string): Promise<unknown>
+}
+
+/**
+ * How long a served connection copy may be used: Dan's decision 3 (2026-10-17,
+ * discussion #2329). serve_until is served_at plus this, so a removal reaches
+ * ops within 6 hours even while the bidding Worker is down (L625). The ops copy's
+ * CHECK holds the same bound (connection_copies_serve_window).
+ */
+export const CONNECTION_SERVE_WINDOW_MS = 6 * 60 * 60 * 1000
+
+/**
+ * How long a removal is served: the life of an ops tombstone (expires_at is at
+ * least removed_at plus 7 hours, connection_tombstones_ops_outlives_copies), the
+ * serve window plus an hour, after which every copy served before the removal is
+ * past its serve_until anyway.
+ */
+export const TOMBSTONE_SERVE_WINDOW_MS = 7 * 60 * 60 * 1000
+
+/** The seal's envelope (packages/connection-seal): ciphertext and its key id, nothing else. */
+export interface SealedEnvelopeShape {
+  v: 1
+  kid: string
+  wrapped_key: string
+  iv: string
+  ct: string
+}
+
+/** One ops connection as the bidding Worker serves it: ciphertext and public config only. */
+export interface ServedOpsConnection {
+  /** service_connections.id. */
+  id: string
+  organization_id: string
+  /** service_connections.service_type. */
+  service: string
+  /** credential_generation, which the envelope's AAD binds. */
+  generation: number
+  envelope: SealedEnvelopeShape
+  public_config: Record<string, unknown>
+  /** The declared host and account identity, or null for none. */
+  target: Record<string, unknown> | null
+  /** served_at plus CONNECTION_SERVE_WINDOW_MS. */
+  serve_until: string
+}
+
+/** A removal of the last TOMBSTONE_SERVE_WINDOW_MS, at its highest generation. */
+export interface ServedConnectionTombstone {
+  connection_id: string
+  organization_id: string
+  generation: number
+  removed_at: string
+}
+
+export interface ServedOpsConnections {
+  /** The bidding Worker's clock when it read the list. */
+  served_at: string
+  /** The list names every ops connection, so one it omits is withdrawn on ops. */
+  complete: boolean
+  connections: ServedOpsConnection[]
+  tombstones: ServedConnectionTombstone[]
+}
+
+/**
+ * Money's Salesforce run as identity for one organization, as the bidding
+ * Worker last measured it from money's own token (/services/oauth2/userinfo):
+ * the Salesforce org id and the username. Non secret identifiers, never a login.
+ */
+export interface MoneySalesforceIdentity {
+  sf_org_id: string
+  username: string
+  measured_at: string
+}
+
+export interface ServedMoneyIdentities {
+  /** The organization asked about, and the only one answered. */
+  organization_id: string
+  served_at: string
+  /** Null when there is no reading for that organization: unmeasured, never a pass. */
+  salesforce: MoneySalesforceIdentity | null
 }
 
 /**
@@ -262,19 +354,29 @@ export function parseStoreRotatedEnvelopeRequest(raw: unknown): StoreRotatedEnve
   if (typeof connection_id !== 'string' || !UUID.test(connection_id)) throw new OpsGatewayContractError('the rotated envelope request names no connection uuid')
   if (!isWhole(expected_generation) || expected_generation < 1) throw new OpsGatewayContractError('the rotated envelope request\'s expected generation is not a whole number of at least 1')
   if (!isWhole(generation) || generation <= expected_generation) throw new OpsGatewayContractError('the rotated envelope request\'s generation is not above the expected one')
-  if (!isRecord(envelope)) throw new OpsGatewayContractError('the rotated envelope is not an object')
-  if (Object.keys(envelope).sort().join(',') !== ENVELOPE_FIELDS.join(',')) throw new OpsGatewayContractError(`the rotated envelope must have exactly the fields ${ENVELOPE_FIELDS.join(', ')}`)
+  return { organization_id, connection_id, expected_generation, generation, envelope: parseSealedEnvelope(envelope, 'the rotated envelope') }
+}
+
+/**
+ * The seal's envelope and nothing else, as the ops copy's CHECK holds it
+ * (connection_copies_envelope_shape), refused by name (`what`) otherwise. One
+ * rule for every envelope that crosses the binding, either way. Each message
+ * names a field, never a value.
+ */
+export function parseSealedEnvelope(envelope: unknown, what: string): SealedEnvelopeShape {
+  if (!isRecord(envelope)) throw new OpsGatewayContractError(`${what} is not an object`)
+  if (Object.keys(envelope).sort().join(',') !== ENVELOPE_FIELDS.join(',')) throw new OpsGatewayContractError(`${what} must have exactly the fields ${ENVELOPE_FIELDS.join(', ')}`)
   const { v, kid, wrapped_key, iv, ct } = envelope
-  if (v !== 1) throw new OpsGatewayContractError('the rotated envelope is not version 1')
-  if (typeof kid !== 'string' || !KID_PATTERN.test(kid)) throw new OpsGatewayContractError('the rotated envelope\'s kid is not a kid')
+  if (v !== 1) throw new OpsGatewayContractError(`${what} is not version 1`)
+  if (typeof kid !== 'string' || !KID_PATTERN.test(kid)) throw new OpsGatewayContractError(`${what}'s kid is not a kid`)
   for (const [name, value] of [['wrapped_key', wrapped_key], ['iv', iv], ['ct', ct]] as const) {
-    if (typeof value !== 'string' || !BASE64.test(value)) throw new OpsGatewayContractError(`the rotated envelope's ${name} is not base64`)
+    if (typeof value !== 'string' || !BASE64.test(value)) throw new OpsGatewayContractError(`${what}'s ${name} is not base64`)
   }
   const shaped = { v: 1 as const, kid, wrapped_key: wrapped_key as string, iv: iv as string, ct: ct as string }
   // Measured as the database measures it: jsonb renders a space after each colon and each comma.
   const jsonbBytes = new TextEncoder().encode(JSON.stringify(shaped)).length + ENVELOPE_FIELDS.length * 2 - 1
-  if (jsonbBytes > MAX_ENVELOPE_BYTES) throw new OpsGatewayContractError(`the rotated envelope is over ${MAX_ENVELOPE_BYTES} bytes`)
-  return { organization_id, connection_id, expected_generation, generation, envelope: shaped }
+  if (jsonbBytes > MAX_ENVELOPE_BYTES) throw new OpsGatewayContractError(`${what} is over ${MAX_ENVELOPE_BYTES} bytes`)
+  return shaped
 }
 
 /** store_rotated_envelope's answer as the ops Worker receives it. Throws on one it cannot read. */
@@ -293,4 +395,178 @@ export function parseStoreRotatedEnvelopeAnswer(raw: unknown): StoreRotatedEnvel
     throw new OpsGatewayContractError(`the bidding Worker answered the rotated envelope ${String(outcome)} with${current_generation === null ? ' no' : ''} generation`)
   }
   return { outcome: outcome as StoreRotatedEnvelopeOutcome, current_generation, current_iv }
+}
+
+/** What the ops copy's CHECKs hold public config and a target to (connection_copies_public_config_shape, _target_shape). */
+const MAX_CONFIG_BYTES = 16_384
+const SERVICE_KEY = /^[a-z][a-z0-9_]{0,63}$/
+/**
+ * A field name that holds a login rather than describing one. Public config and
+ * a target are served in the clear, so a row naming one of these is refused
+ * rather than carried to ops: the login belongs only inside the sealed envelope.
+ */
+const LOGIN_FIELD = /secret|passw|private_?key|api_?key|access_?token|refresh_?token|bot_?token|^token$|bearer/i
+const MAX_DEPTH = 10
+
+/** A safe name for a row in a sentence: its id when it is a plain id, otherwise its position. */
+function rowName(value: unknown, index: number): string {
+  return typeof value === 'string' && value.length <= 64 && /^[\w-]+$/.test(value) ? value : `row ${index}`
+}
+
+/**
+ * At least as many bytes as jsonb renders the value in: jsonb puts a space after
+ * each colon and each comma, so every one in the JSON is counted twice, those
+ * inside strings too. An overcount only refuses earlier than the CHECK would.
+ */
+function jsonbBytesAtMost(value: unknown): number {
+  const json = JSON.stringify(value)
+  let extra = 0
+  for (const ch of json) if (ch === ':' || ch === ',') extra++
+  return new TextEncoder().encode(json).length + extra
+}
+
+/** The first field naming a login, by its name (never its value). */
+function loginField(value: unknown, depth = 0): string | null {
+  if (depth > MAX_DEPTH) return 'a field nested too deep to check'
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = loginField(item, depth + 1)
+      if (found) return found
+    }
+    return null
+  }
+  if (!isRecord(value)) return null
+  for (const [key, inner] of Object.entries(value)) {
+    if (LOGIN_FIELD.test(key)) return /^[\w.-]{1,64}$/.test(key) ? key : 'a field'
+    const found = loginField(inner, depth + 1)
+    if (found) return found
+  }
+  return null
+}
+
+/** Why public config or a target cannot be served in the clear, or null when it can. */
+function clearFieldProblem(value: unknown, what: 'public config' | 'a target'): string | null {
+  const found = loginField(value)
+  if (found) return `${what} naming the login field ${found}`
+  if (jsonbBytesAtMost(value) > MAX_CONFIG_BYTES) return `${what} over ${MAX_CONFIG_BYTES} bytes`
+  return null
+}
+
+/**
+ * Why one served connection cannot be saved on ops, or null when it can. Each
+ * reason names a field, never a value. The bidding Worker runs every row it
+ * serves through this too (lib/ops-gateway.ts), so the two sides hold one rule.
+ */
+export function servedConnectionProblem(row: unknown, servedAt: string): string | null {
+  if (!isRecord(row)) return 'a row that is not an object'
+  if (typeof row.id !== 'string' || !UUID.test(row.id)) return 'an id that is not a uuid'
+  if (typeof row.organization_id !== 'string' || !UUID.test(row.organization_id)) return 'an organization that is not a uuid'
+  if (typeof row.service !== 'string' || !SERVICE_KEY.test(row.service)) return 'a service that is not a service key'
+  if (!isWhole(row.generation) || row.generation < 1) return 'a generation that is not a whole number of at least 1'
+  try {
+    parseSealedEnvelope(row.envelope, 'the envelope')
+  } catch (err) {
+    return `an envelope that is not the seal's (${(err as Error).message})`
+  }
+  if (!isRecord(row.public_config)) return 'public config that is not an object'
+  const config = clearFieldProblem(row.public_config, 'public config')
+  if (config) return config
+  if (row.target !== null) {
+    if (!isRecord(row.target)) return 'a target that is neither an object nor null'
+    const target = clearFieldProblem(row.target, 'a target')
+    if (target) return target
+  }
+  if (!isTime(row.serve_until)) return 'a serve_until that is not a time'
+  const until = Date.parse(row.serve_until)
+  const served = Date.parse(servedAt)
+  if (until <= served || until - served > CONNECTION_SERVE_WINDOW_MS) return 'a serve_until more than 6 hours after it was served, or not after it'
+  return null
+}
+
+function servedTombstoneProblem(row: unknown): string | null {
+  if (!isRecord(row)) return 'a row that is not an object'
+  if (typeof row.connection_id !== 'string' || !UUID.test(row.connection_id)) return 'a connection that is not a uuid'
+  if (typeof row.organization_id !== 'string' || !UUID.test(row.organization_id)) return 'an organization that is not a uuid'
+  if (!isWhole(row.generation) || row.generation < 1) return 'a generation that is not a whole number of at least 1'
+  if (!isTime(row.removed_at)) return 'a removal time that is not a time'
+  return null
+}
+
+/**
+ * The served connections, with each row that cannot be saved on ops refused by
+ * name rather than saved. Throws when the list itself is malformed. A list with
+ * a refused connection is not complete, so it withdraws nothing on ops. A
+ * refused removal leaves the list complete: the removed connection is not in the
+ * list either, so the complete list still withdraws its copy.
+ */
+export function parseServedOpsConnections(raw: unknown): { list: ServedOpsConnections; refused: string[] } {
+  if (!isRecord(raw)) throw new OpsGatewayContractError('the bidding Worker answered the connection list with something other than an object')
+  if (!isTime(raw.served_at)) throw new OpsGatewayContractError('the bidding Worker\'s connection list has no served_at time')
+  if (typeof raw.complete !== 'boolean') throw new OpsGatewayContractError('the bidding Worker\'s connection list does not say whether it is complete')
+  if (!Array.isArray(raw.connections)) throw new OpsGatewayContractError('the bidding Worker\'s connection list has no connections array')
+  if (!Array.isArray(raw.tombstones)) throw new OpsGatewayContractError('the bidding Worker\'s connection list has no removals array')
+  const servedAt = raw.served_at
+  const refused: string[] = []
+  const connections: ServedOpsConnection[] = []
+  raw.connections.forEach((row: unknown, i: number) => {
+    const problem = servedConnectionProblem(row, servedAt)
+    if (problem !== null) {
+      refused.push(`The bidding Worker served connection ${rowName(isRecord(row) ? row.id : null, i)} with ${problem}, so it was not saved.`)
+      return
+    }
+    const r = row as Record<string, unknown>
+    connections.push({
+      id: r.id as string,
+      organization_id: r.organization_id as string,
+      service: r.service as string,
+      generation: r.generation as number,
+      envelope: parseSealedEnvelope(r.envelope, 'the envelope'),
+      public_config: r.public_config as Record<string, unknown>,
+      target: r.target as Record<string, unknown> | null,
+      serve_until: r.serve_until as string,
+    })
+  })
+  const refusedConnections = refused.length
+  const tombstones: ServedConnectionTombstone[] = []
+  raw.tombstones.forEach((row: unknown, i: number) => {
+    const problem = servedTombstoneProblem(row)
+    if (problem !== null) {
+      refused.push(`The bidding Worker served the removal of ${rowName(isRecord(row) ? row.connection_id : null, i)} with ${problem}, so it was not recorded.`)
+      return
+    }
+    const r = row as Record<string, unknown>
+    tombstones.push({ connection_id: r.connection_id as string, organization_id: r.organization_id as string, generation: r.generation as number, removed_at: r.removed_at as string })
+  })
+  return { list: { served_at: servedAt, complete: raw.complete && refusedConnections === 0, connections, tombstones }, refused }
+}
+
+/** A Salesforce org id: 00D and 12 more, or 15 more in its 18 character form. */
+const SF_ORG_ID = /^00D[A-Za-z0-9]{12}(?:[A-Za-z0-9]{3})?$/
+const MAX_USERNAME = 320
+
+/** One stored or served reading, refused by name when it is not one. */
+export function parseMoneySalesforceIdentity(raw: unknown, what: string): MoneySalesforceIdentity {
+  if (!isRecord(raw)) throw new OpsGatewayContractError(`${what} is not an object`)
+  const { sf_org_id, username, measured_at } = raw
+  if (typeof sf_org_id !== 'string' || !SF_ORG_ID.test(sf_org_id)) throw new OpsGatewayContractError(`${what} has no Salesforce org id`)
+  if (typeof username !== 'string' || username.trim() === '' || username.length > MAX_USERNAME) throw new OpsGatewayContractError(`${what} has no username`)
+  if (!isTime(measured_at)) throw new OpsGatewayContractError(`${what} has no measurement time`)
+  return { sf_org_id, username, measured_at }
+}
+
+/**
+ * The money identities the bidding Worker answered for one organization, as
+ * the ops Worker receives them. Refuses an answer for any organization but the
+ * one asked about, so another organization's reading can never be read as this
+ * one's. A null salesforce is unmeasured, which verify refuses by name
+ * (money_identity_unmeasured), never a pass.
+ */
+export function parseServedMoneyIdentities(raw: unknown, organizationId: string): ServedMoneyIdentities {
+  if (!isRecord(raw)) throw new OpsGatewayContractError('the bidding Worker answered the money identities with something other than an object')
+  if (typeof raw.organization_id !== 'string' || raw.organization_id.toLowerCase() !== organizationId.toLowerCase()) {
+    throw new OpsGatewayContractError('the bidding Worker answered the money identities for another organization than the one asked about')
+  }
+  if (!isTime(raw.served_at)) throw new OpsGatewayContractError('the bidding Worker\'s money identities have no served_at time')
+  const salesforce = raw.salesforce === null ? null : parseMoneySalesforceIdentity(raw.salesforce, 'the money Salesforce identity')
+  return { organization_id: raw.organization_id, served_at: raw.served_at, salesforce }
 }

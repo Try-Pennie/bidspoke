@@ -32,9 +32,11 @@
  * and the clock; run invocation (#1950) calls the rest.
  *
  * The ops connections' and Salesforce pool's wrappers (#2334, supabase-ops
- * migration 20261017220000) are at the end. Nothing calls them in the deploy
- * that adds them: the OpsConnections entrypoint, connectionFetch and the tick's
- * new sweeps (Phases 5, 6 and 10 of #1689) are their callers.
+ * migration 20261017220000) are at the end. Since #2335 the minute tick calls
+ * saveConnectionCopies and recordConnectionTombstone every minute, saving what
+ * the bidding Worker serves (connection-serve.ts). The rest wait for their
+ * callers: the OpsConnections entrypoint, connectionFetch's live wiring and the
+ * tick's new sweeps (Phases 5, 6 and 10 of #1689).
  */
 import {
   CONNECTION_COPY_STATES, DELEGATION_CHECK_OUTCOMES, LEDGER_METHODS, OBSERVATION_OUTCOMES, OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES,
@@ -47,6 +49,7 @@ import {
   type OpsRpcName,
 } from './ops-rpcs'
 import { organizationIdFrom, type OpsSupabaseClient, type OrganizationId } from './ops-db'
+import { CONNECTION_SERVE_WINDOW_MS } from '../lib/ops-gateway-contract'
 
 /** Past the ops project's 8 s statement timeout, so the database gives up first. */
 export const OPS_RPC_DEADLINE_MS = 9_000
@@ -788,10 +791,12 @@ export async function dueQueueDepth(client: OpsSupabaseClient, options?: OpsRpcO
 
 /**
  * How long a served copy may be used: Dan's decision 3 (2026-10-17, discussion
- * #2329). The database refuses a longer one too (connection_copies_serve_window);
- * this refuses it before sending, so the error names the rule.
+ * #2329). Defined once, in the contract both Workers import, since the bidding
+ * Worker sets serve_until by it (#2335). The database refuses a longer one too
+ * (connection_copies_serve_window); this refuses it before sending, so the
+ * error names the rule.
  */
-export const CONNECTION_SERVE_WINDOW_MS = 6 * 60 * 60 * 1000
+export { CONNECTION_SERVE_WINDOW_MS }
 
 /** One ops connection as the bidding Worker serves it: ciphertext and public config only, never a plaintext login. */
 export interface ConnectionCopyInput {

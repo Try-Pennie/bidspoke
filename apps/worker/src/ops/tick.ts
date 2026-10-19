@@ -25,6 +25,9 @@
  *     two overlapping ticks' (save_workflow_copies refuses an older copy, and a
  *     copy not newer than the last known switch off may not start). A failed
  *     fetch plans from the saved copies and says so; with none, it plans nothing.
+ *     Then the ops connections the same way (#2335, connection-serve.ts): saved
+ *     through save_connection_copies, each with the serve_until the bidding
+ *     Worker set; a failed fetch saves none, so each copy expires on time.
  *  5. The schedules, each inside its own boundary: planFires (packages/
  *     workflow-definition) with the database clock, the floor and the last slot
  *     observed; each fire recorded in schedule_fire_observations, whose UNIQUE
@@ -51,6 +54,7 @@ import {
   capProblems, parseServedOpsWorkflows, type OpsTickMode, type OpsTickOutcome, type OpsTickReport,
 } from '../lib/ops-gateway-contract'
 import { formatErr } from '../lib/format-error'
+import { saveServedConnections, type ConnectionServeDb } from './connection-serve'
 import type { OrganizationId } from './ops-db'
 import {
   MAX_COPIES_PER_SAVE, type QueueDisagreement, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult,
@@ -91,7 +95,7 @@ void fireReasonsAgree
 void missReasonsAgree
 
 /** The ops database, as the tick uses it. The live one is ops-writes.ts through tick-live.ts. */
-export interface OpsTickDb {
+export interface OpsTickDb extends ConnectionServeDb {
   now(): Promise<string>
   claimSweep(sweep: OpsSweep, owner: string, everySeconds: number): Promise<SweepClaim>
   sweepLeases(limit: number): Promise<SweepResult>
@@ -133,6 +137,8 @@ export interface OpsTickPorts {
   checkSecrets(): Promise<UnconfiguredSecret[]>
   gateway: {
     fetchWorkflows(): Promise<unknown>
+    /** The ops connections, served by the bidding Worker (#2335). */
+    fetchConnections(): Promise<unknown>
     started(): Promise<void>
     completed(report: OpsTickReport): Promise<void>
   }
@@ -283,6 +289,17 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
       problems.push(`The ops tick could not fetch the ops workflows from the bidding Worker (${fetchError}), so it planned from the saved copies, the oldest last confirmed ${slotLabel(oldest)}.`)
     } else {
       problems.push(`The ops tick could not fetch the ops workflows from the bidding Worker (${fetchError}) and has no saved copy, so it planned nothing.`)
+    }
+  }
+
+  // 4b. The connections (#2335), their own boundary.
+  if (db) {
+    try {
+      const saved = await saveServedConnections(db, () => ports.gateway.fetchConnections())
+      problems.push(...saved.problems)
+      for (const [key, n] of Object.entries(saved.counts)) bump(counts, key, n)
+    } catch (err) {
+      problems.push(`The ops tick could not save the ops connections: ${formatErr(err)}.`)
     }
   }
 

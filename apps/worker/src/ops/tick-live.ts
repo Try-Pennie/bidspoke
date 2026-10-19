@@ -20,8 +20,8 @@ import { raceDeadline } from '../lib/alert-claim'
 import { opsConnectionKeyProblems, type SealRegistry } from './connection-key'
 import { createOpsSupabaseClient, OpsDatabaseConfigError, type OpsSupabaseClient } from './ops-db'
 import {
-  claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, readWorkflowCopies, recordScheduleObservation, runQueueDisagreements,
-  saveWorkflowCopies, sweepExpiredLeases, type OpsRpcOptions,
+  claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, readWorkflowCopies, recordConnectionTombstone, recordScheduleObservation,
+  runQueueDisagreements, saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, type OpsRpcOptions,
 } from './ops-writes'
 import { dispatchKey, signDispatch } from './dispatch-auth'
 import type { OpsEnv } from './index'
@@ -54,6 +54,8 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     readCopies: (limit) => readWorkflowCopies(client, limit, rpc),
     recordObservation: (org, obs) => recordScheduleObservation(client, org, obs, rpc),
     dueQueueDepth: () => dueQueueDepth(client, rpc),
+    saveConnectionCopies: (servedAt, complete, copies) => saveConnectionCopies(client, servedAt, complete, copies, rpc),
+    recordConnectionTombstone: (org, connectionId, generation, removedAt) => recordConnectionTombstone(client, org, connectionId, generation, removedAt, rpc),
   }
 }
 
@@ -94,6 +96,10 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
       fetchWorkflows: () => {
         if (!gateway) throw noGateway()
         return bounded('the bidding Worker\'s workflow list', () => gateway.opsWorkflows(), GATEWAY_DEADLINE_MS, options.delay)
+      },
+      fetchConnections: () => {
+        if (!gateway) throw noGateway()
+        return bounded('the bidding Worker\'s connection list', () => gateway.opsConnections(), GATEWAY_DEADLINE_MS, options.delay)
       },
       started: async () => {
         if (!gateway) throw noGateway()
