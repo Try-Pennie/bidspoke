@@ -50,8 +50,12 @@ LANE = "ops"
 # then "apply", makes the minute cron reseal every ops connection login still
 # under an old kid (src/ops/reseal-live.ts). Unset, nothing is resealed.
 # Set 2026-10-19 for the practice rotation (#2333): kid ops-2026-10 to
-# ops-2026-10-19, preview first.
-OPS_RESEAL = "preview"
+# ops-2026-10-19, preview first; apply from 2026-10-19 after three preview
+# runs (3:43 to 3:46 PM ET) all reported nothing_left with nothing to reseal.
+# Removed in the pull request that starts step 4, once two apply runs in a row
+# report nothing_left; while it stays, every minute asks each token object
+# (#2486 pages if it is left set or keeps leaving logins).
+OPS_RESEAL = "apply"
 
 # The ops code namespace (#1709, plan 0.E): where ops workflows' code nodes will
 # run, apart from the bidding namespace (bidspoke-code-nodes) and the compare
@@ -111,7 +115,8 @@ tag = "v1"
 new_sqlite_classes = ["ConnectionTokenObject"]
 
 # The run engine's minute cron (#1949, B2): scheduled() in src/ops/index.ts runs
-# one tick of src/ops/tick.ts, in observe mode. Always stated, never left out
+# one tick of src/ops/tick.ts, in observe mode, and then, only while OPS_RESEAL
+# is set above, the reseal, which writes in apply. Always stated, never left out
 # (#1946): wrangler deploy leaves a Worker's existing schedules in place when the
 # config names none. A new cron first fires about 16 minutes after the deploy
 # that adds it, and its scheduledTime lands at :48 within the minute (spike,
