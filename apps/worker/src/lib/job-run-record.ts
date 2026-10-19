@@ -19,7 +19,7 @@
  * is what the issue asks for and what no alert can give.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { formatErr } from './format-error'
+import { formatErr, truncateErrorForAlert } from './format-error'
 import { requireRowsAffected } from './db-retry'
 import type { KillCounts } from '../archive/kill-rate'
 
@@ -406,6 +406,9 @@ export async function withJobRun<T>(
   endingOf: (result: T) => JobRunEnding,
 ): Promise<T> {
   const handle = await startJobRun(supabase, job)
+  // The fallback, written only if describing a thrown error itself fails below.
+  // A run the platform kills writes nothing at all, since its `finally` never
+  // runs, and that missing ending is how a kill is told apart.
   let ending: JobRunEnding = {
     outcome: 'threw',
     detail: 'the run threw before it could report an outcome',
@@ -420,6 +423,21 @@ export async function withJobRun<T>(
       ending = { outcome: 'ok', detail: `the run finished, but its summary could not be built: ${formatErr(err)}` }
     }
     return result
+  } catch (err) {
+    // WHY it threw, not only that it did (#2440). A row saying "threw" with no
+    // reason tells the reader something failed and nothing about what, and
+    // left the cause only in a console line beside it. Bounded and rendered
+    // through formatErr, so a PostgREST error object
+    // reads as its message and code rather than "[object Object]", and an
+    // address in it loses its query string. The error itself is rethrown
+    // untouched: recording it must never change what the caller sees.
+    try {
+      ending = { outcome: 'threw', detail: `the run threw: ${truncateErrorForAlert(formatErr(err), 1000)}` }
+    } catch {
+      // Describing it failed; the fallback ending stands and the work's own
+      // error, not this one, is what unwinds.
+    }
+    throw err
   } finally {
     await finishJobRun(supabase, handle, ending)
   }

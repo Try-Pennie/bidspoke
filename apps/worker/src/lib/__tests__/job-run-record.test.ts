@@ -189,6 +189,30 @@ describe('withJobRun', () => {
     expect(close?.row).toMatchObject({ outcome: 'threw' })
   })
 
+  it('records WHY it threw, not only that it did (#2440)', async () => {
+    const { client, writes } = supabaseDouble()
+
+    // A PostgREST error is a plain object, not an Error, so this also pins that
+    // the reason is rendered rather than written as "[object Object]".
+    await expect(
+      withJobRun(
+        client,
+        'a-job',
+        async () => {
+          // eslint-disable-next-line @typescript-eslint/only-throw-error -- the PostgREST error shape, which is not an Error, is what this pins
+          throw { message: 'read stopped at the row cap', code: 'BIDSPOKE_ROW_CAP' }
+        },
+        () => ({ outcome: 'ok' }),
+      ),
+    ).rejects.toMatchObject({ code: 'BIDSPOKE_ROW_CAP' })
+
+    const close = writes.find((w) => w.op === 'update')
+    expect(close?.row.outcome).toBe('threw')
+    expect(String(close?.row.detail)).toContain('read stopped at the row cap')
+    expect(String(close?.row.detail)).toContain('BIDSPOKE_ROW_CAP')
+    expect(String(close?.row.detail)).not.toContain('[object Object]')
+  })
+
   it('does not let a failure to derive the ending swallow the work\'s own error', async () => {
     const { client } = supabaseDouble()
 
