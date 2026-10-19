@@ -877,14 +877,15 @@ describe('every worker list read declares its bound (#115, #185, #1437)', () => 
 
   it('the ops read helper is safe by construction, and the scan can see it', () => {
     // readOpsRows (ops/ops-db.ts) is the only read of the ops database, and it
-    // finishes every query with .limit(read.limit), a limit it refuses above
+    // finishes every query with .limit(read.limit) before sending it within its
+    // deadline (#2505), a limit it refuses above
     // OPS_READ_ROW_CAP. Its callers name no `.from(`, so nothing else in ops/ is
     // a read. Prove the scan judges the helper's read rather than missing it:
     // the same file without its limit is reported.
     const raw = readFileSync(path.join(WORKER_SRC, 'ops/ops-db.ts'), 'utf8')
-    expect(raw).toContain('await query.limit(read.limit)')
+    expect(raw).toContain('const limited = query.limit(read.limit)')
     expect(scanSource(raw, 'ops/ops-db.ts')).toEqual([])
-    const unlimited = scanSource(raw.replace('await query.limit(read.limit)', 'await query'), 'ops/ops-db.ts')
+    const unlimited = scanSource(raw.replace('const limited = query.limit(read.limit)', 'const limited = query'), 'ops/ops-db.ts')
     expect(unlimited.map((f) => [f.table, f.kind])).toEqual([['<read.table>', 'unbounded']])
   })
 })

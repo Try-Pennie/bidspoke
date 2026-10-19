@@ -9,7 +9,7 @@
  * and turns a lost claim into an error the caller cannot mistake for success.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createOpsSupabaseClient, organizationIdFrom, type OpsDbEnv } from '../ops-db'
+import { createOpsSupabaseClient, organizationIdFrom, OPS_STATEMENT_DEADLINE_MS, type OpsDbEnv } from '../ops-db'
 import {
   CONNECTION_SERVE_WINDOW_MS,
   OPS_RPC_DEADLINE_MS,
@@ -139,9 +139,27 @@ describe('callOpsRpc', () => {
     expect(sent()).toBe(1)
   })
 
+  it('ends a call at the deadline a caller names, through the same timer seam as readOpsRows (#2505)', async () => {
+    const { client, sent } = hangingFetch()
+    const asked: number[] = []
+    let end: () => void = () => { throw new Error('the deadline was never asked for') }
+    const delay = (ms: number) => { asked.push(ms); return new Promise<void>((resolve) => { end = resolve }) }
+    const pending = callOpsRpc(client, 'sweep_expired_leases', { p_limit: 1 }, { deadlineMs: 300, delay })
+    const outcome = pending.then(() => 'resolved', (err: unknown) => err)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(asked).toEqual([300])
+    end()
+    const err = await outcome
+    expect(err).toBeInstanceOf(OpsWriteTimeoutError)
+    expect(String(err)).toMatch(/sweep_expired_leases passed its 300 ms deadline and may still have committed/)
+    expect(sent()).toBe(1)
+  })
+
   it('sets its deadline past the ops project\'s 8 s statement timeout, so the database gives up first', () => {
     expect(OPS_RPC_DEADLINE_MS).toBeGreaterThan(8_000)
     expect(OPS_RPC_DEADLINE_MS).toBeLessThan(60_000)
+    // One deadline for every ops request, read or write (#2505).
+    expect(OPS_RPC_DEADLINE_MS).toBe(OPS_STATEMENT_DEADLINE_MS)
   })
 })
 
