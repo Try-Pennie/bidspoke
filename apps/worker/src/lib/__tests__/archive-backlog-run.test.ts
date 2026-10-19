@@ -354,18 +354,134 @@ describe('runArchiveBacklog', () => {
   })
 })
 
-describe('the recorded-hours read stays under the PostgREST cap (#1191)', () => {
-  // recordedHoursByDay reads one row per archived hour across LOOKBACK_DAYS, with
-  // no page size: its bound is the date window. PostgREST answers at most
-  // PAGE_SIZE rows to such a read and says nothing about the rest, so past that
-  // point finished hours would read as missing and the walk would go back over
-  // days already archived. The lookback was widened from 7 to 14 as a temporary
-  // measure (#1038), and this is what stops the next widening from crossing the
-  // line unnoticed (L188).
-  it('LOOKBACK_DAYS worth of hours is well inside one PostgREST page', () => {
-    const rows = LOOKBACK_DAYS * 24
-    const maxDays = Math.floor((PAGE_SIZE - 1) / 24)
-    expect(rows, `${LOOKBACK_DAYS} days is ${rows} hourly rows; the cap is ${PAGE_SIZE}, so the lookback must stay at or below ${maxDays} days, or the read must page`).toBeLessThan(PAGE_SIZE)
+/**
+ * Every attempt leaves a run record that says how it ended (#2440).
+ *
+ * The walk saves its attempt count to KV before the work, then re-reads the
+ * recorded hours after it. That re-read can throw (a Postgres failure, or since
+ * #1436 a read that reaches the row cap inside a scheduled job), and a run that
+ * throws there must leave a CLOSED row naming the reason, never one saying only
+ * that something went wrong, and never no row at all, which reads as a kill.
+ */
+describe('a run that throws after saving its state (#2440)', () => {
+  function throwingOnTheReRead() {
+    const d = deps({ recorded: { '2026-08-16': 4 } })
+    const first = d.injected.recordedHoursByDay
+    let reads = 0
+    d.injected.recordedHoursByDay = async () => {
+      reads += 1
+      if (reads === 1) return first()
+      throw new Error('reading recorded archive hours failed: read stopped at the row cap (BIDSPOKE_ROW_CAP)')
+    }
+    return d
+  }
+
+  it('closes its run record as threw, carrying the reason', async () => {
+    const d = throwingOnTheReRead()
+
+    await expect(runArchiveBacklog(d.injected)).rejects.toThrow('BIDSPOKE_ROW_CAP')
+
+    // The attempt was saved before the throw, so this is exactly the path the
+    // issue names: state written, then a throw.
+    expect(d.written).toBe(true)
+    const close = d.jobRuns.find((r) => r.op === 'update')
+    expect(close, 'the run record was never closed, so the attempt reads as killed').toBeDefined()
+    expect(close?.outcome).toBe('threw')
+    expect(String(close?.detail)).toContain('BIDSPOKE_ROW_CAP')
+  })
+
+  it('leaves only the attempt count saved, never a claim about the work', async () => {
+    const d = throwingOnTheReRead()
+
+    await expect(runArchiveBacklog(d.injected)).rejects.toThrow('BIDSPOKE_ROW_CAP')
+
+    // The attempt counts (#1039), and nothing else moved: no set aside, and no
+    // position, because the walk keeps none in KV. Where it is comes from the
+    // hours Postgres holds, read afresh each run.
+    expect(d.state.noProgress).toEqual({ '2026-08-16': 1 })
+    expect(d.state.setAsideUntil).toEqual({})
+  })
+
+  it('works the same day again on the next run, from what Postgres holds', async () => {
+    const failed = throwingOnTheReRead()
+    await expect(runArchiveBacklog(failed.injected)).rejects.toThrow('BIDSPOKE_ROW_CAP')
+
+    const next = deps({ recorded: { '2026-08-16': 4 }, state: failed.state })
+    const r = await runArchiveBacklog(next.injected)
+
+    expect(r.day).toBe('2026-08-16')
+    expect(r.progressed).toBe(true)
+    // Progress clears the count the failed run left behind.
+    expect(next.state.noProgress['2026-08-16']).toBeUndefined()
+  })
+
+  it('closes a normal run with the outcome it reached', async () => {
+    const d = deps({ recorded: { '2026-08-16': 4 } })
+
+    await runArchiveBacklog(d.injected)
+
+    expect(d.jobRuns.find((r) => r.op === 'insert')).toMatchObject({ job: 'execution-archive-backlog' })
+    expect(d.jobRuns.find((r) => r.op === 'update')).toMatchObject({
+      outcome: 'progressed',
+      detail: '2026-08-16: 4 to 6 of 24 hours',
+    })
+  })
+})
+
+/**
+ * The recorded-hours read pages under a full order (#1191, #1437).
+ *
+ * It reads one row per archived hour across LOOKBACK_DAYS. PostgREST answers at
+ * most PAGE_SIZE rows to one read and says nothing about the rest, so a single
+ * read past that point would make finished hours read as missing and send the
+ * walk back over days already archived; since #1436 it would instead fail the
+ * run with BIDSPOKE_ROW_CAP. Paging by the primary key keeps it whole however
+ * far the lookback is widened (L188).
+ */
+describe('backlogDeps reads every recorded hour, past one page', () => {
+  function hoursDouble(total: number) {
+    const start = Date.parse('2026-08-01T00:00:00.000Z')
+    const rows = Array.from({ length: total }, (_, i) => ({ hour_start: new Date(start + i * 3600000).toISOString() }))
+    const asked: Array<{ order: string | null; from: number; to: number }> = []
+    const client = {
+      from(table: string) {
+        expect(table).toBe('execution_archive_hours')
+        let order: string | null = null
+        const chain: Record<string, unknown> = {
+          select: () => chain,
+          gte: () => chain,
+          order: (col: string) => { order = col; return chain },
+          range: (from: number, to: number) => {
+            asked.push({ order, from, to })
+            return Promise.resolve({ data: rows.slice(from, to + 1), error: null })
+          },
+        }
+        return chain
+      },
+    }
+    return { client, asked }
+  }
+
+  it('returns every hour when there are more than one page of them', async () => {
+    const total = PAGE_SIZE + 37
+    const { client, asked } = hoursDouble(total)
+    const wired = backlogDeps(
+      {} as unknown as Parameters<typeof backlogDeps>[0],
+      client as unknown as Parameters<typeof backlogDeps>[1],
+      async () => ({ hoursArchived: 0, failed: false, detail: '' }),
+    )
+
+    const byDay = await wired.recordedHoursByDay()
+
+    const count = Object.values(byDay).reduce((n, hours) => n + hours.length, 0)
+    expect(count).toBe(total)
+    expect(asked.length).toBe(2)
+    // Ordered by the primary key, so the second page neither skips nor repeats.
+    for (const a of asked) expect(a.order).toBe('hour_start')
+  })
+
+  it('LOOKBACK_DAYS is still well inside one page, so the paging is a safety net', () => {
+    expect((LOOKBACK_DAYS + 1) * 24).toBeLessThan(PAGE_SIZE)
   })
 })
 
