@@ -5,6 +5,7 @@
  * to be, mid rotation), is named, so the bidding Worker pages with that secret's remedy before the first
  * ops connection needs the key.
  */
+import { CURRENT_OPS_KID } from '@bidspoke/connection-seal'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { opsConnectionKeyProblems } from '../connection-key'
 import type { OpsEnv } from '../index'
@@ -37,9 +38,10 @@ describe('opsConnectionKeyProblems', () => {
     }])
   })
 
-  it('checks against the committed registry when none is passed, so a key other than ops-2026-10 is named', async () => {
+  it('checks against the committed registry when none is passed, so a key other than the current kid\'s is named', async () => {
     const problems = await opsConnectionKeyProblems(env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem }))
-    expect(problems).toEqual([{ secret: 'OPS_CONNECTIONS_PRIVATE_KEY', problem: expect.stringContaining('committed as kid ops-2026-10') }])
+    // Ended by the space and bracket after the kid, so a kid that merely begins with it cannot match.
+    expect(problems).toEqual([{ secret: 'OPS_CONNECTIONS_PRIVATE_KEY', problem: expect.stringContaining(`committed as kid ${CURRENT_OPS_KID} (`) }])
   })
 
   it('accepts the current kid opened by NEXT, as in rotation step 3 when the kid has moved and the secrets have not', async () => {

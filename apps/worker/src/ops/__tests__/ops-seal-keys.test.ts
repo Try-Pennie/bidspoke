@@ -8,7 +8,7 @@
  * tried with the old key and no login of either kid opened. Each kid now gets
  * the held key that is its own private half, whichever secret holds it.
  */
-import { open, seal, type ConnectionAad } from '@bidspoke/connection-seal'
+import { CURRENT_OPS_KID, open, seal, type ConnectionAad } from '@bidspoke/connection-seal'
 import { beforeAll, describe, expect, it } from 'vitest'
 import { opsSealKeys } from '../connection-token-object'
 import { KEYGEN_TIMEOUT_MS, opsKeyPair, type OpsKeyPair } from './ops-key-fixture'
@@ -81,6 +81,6 @@ describe('opsSealKeys through a rotation', () => {
     expect(opsSealKeys(env('  ', '')).privateKeys).toEqual({})
     // The committed public key's private half is in 1Password, not here, so no test key matches it.
     expect(opsSealKeys(env(a.privatePem)).privateKeys).toEqual({})
-    expect(opsSealKeys(env(a.privatePem)).kid).toBe('ops-2026-10')
+    expect(opsSealKeys(env(a.privatePem)).kid).toBe(CURRENT_OPS_KID)
   })
 })

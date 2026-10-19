@@ -54,4 +54,4 @@ H617llSOkt54GWvXpWmWqBZIi8/r1NWyysI2Q2iNATt3R2HV8dF+lEy24QshCrg7
 })
 
 /** The kid new seals use. */
-export const CURRENT_OPS_KID: string | null = 'ops-2026-10'
+export const CURRENT_OPS_KID: string | null = 'ops-2026-10-19'
