@@ -23,7 +23,7 @@
  * envelope only inside connectionFetch, under the organization it is filed under.
  */
 import { formatErr } from '../lib/format-error'
-import { parseServedOpsConnections } from '../lib/ops-gateway-contract'
+import { parseServedOpsConnections, tickProblem, type TickProblem } from '../lib/ops-gateway-contract'
 import { organizationIdFrom, type OrganizationId } from './ops-db'
 import { MAX_COPIES_PER_SAVE, type ConnectionCopyInput, type SaveConnectionCopiesResult } from './ops-writes'
 
@@ -34,13 +34,13 @@ export interface ConnectionServeDb {
 }
 
 export interface ConnectionServeOutcome {
-  /** Each a sentence a person can act on. */
-  problems: string[]
+  /** Each a sentence a person can act on, keyed by its kind (#2506). */
+  problems: TickProblem[]
   counts: Record<string, number>
 }
 
 export async function saveServedConnections(db: ConnectionServeDb, fetchConnections: () => Promise<unknown>): Promise<ConnectionServeOutcome> {
-  const problems: string[] = []
+  const problems: TickProblem[] = []
   const counts: Record<string, number> = {}
   const bump = (key: string, by = 1) => { counts[key] = (counts[key] ?? 0) + by }
 
@@ -48,18 +48,18 @@ export async function saveServedConnections(db: ConnectionServeDb, fetchConnecti
   try {
     raw = await fetchConnections()
   } catch (err) {
-    problems.push(`The ops tick could not fetch the ops connections from the bidding Worker (${formatErr(err)}), so it saved none: each saved copy stays usable until its serve_until, at most 6 hours after it was last served.`)
+    problems.push(tickProblem('connections_fetch_failed', `The ops tick could not fetch the ops connections from the bidding Worker (${formatErr(err)}), so it saved none: each saved copy stays usable until its serve_until, at most 6 hours after it was last served.`))
     return { problems, counts }
   }
   let parsed: ReturnType<typeof parseServedOpsConnections>
   try {
     parsed = parseServedOpsConnections(raw)
   } catch (err) {
-    problems.push(`The bidding Worker's connection list could not be read (${formatErr(err)}), so no connection copy was saved.`)
+    problems.push(tickProblem('connections_list_unreadable', `The bidding Worker's connection list could not be read (${formatErr(err)}), so no connection copy was saved.`))
     return { problems, counts }
   }
   const { list, refused } = parsed
-  problems.push(...refused)
+  problems.push(...refused.map((text) => tickProblem('connection_refused', text)))
   bump('connections_served', list.connections.length)
 
   for (const t of list.tombstones) {
@@ -68,7 +68,7 @@ export async function saveServedConnections(db: ConnectionServeDb, fetchConnecti
       if (r.outcome === 'recorded') bump('connection_removals_recorded')
       bump('connection_copies_removed', r.copiesRemoved)
     } catch (err) {
-      problems.push(`The removal of connection ${t.connection_id} could not be recorded (${formatErr(err)}); the next tick records it, and its copy is withdrawn by a complete list or expires at its serve_until.`)
+      problems.push(tickProblem('tombstone_record_failed', `The removal of connection ${t.connection_id} could not be recorded (${formatErr(err)}); the next tick records it, and its copy is withdrawn by a complete list or expires at its serve_until.`, t.connection_id))
     }
   }
 
@@ -78,7 +78,7 @@ export async function saveServedConnections(db: ConnectionServeDb, fetchConnecti
   }))
   // A list too long for one save is saved in parts and withdraws nothing, since no one part is the whole list.
   const oneSave = copies.length <= MAX_COPIES_PER_SAVE
-  if (!oneSave) problems.push(`The bidding Worker served ${copies.length} ops connections, more than one save carries, so connections it no longer names were not withdrawn.`)
+  if (!oneSave) problems.push(tickProblem('connections_too_many', `The bidding Worker served ${copies.length} ops connections, more than one save carries, so connections it no longer names were not withdrawn.`))
   for (let at = 0; at < copies.length || at === 0; at += MAX_COPIES_PER_SAVE) {
     try {
       const saved = await db.saveConnectionCopies(list.served_at, list.complete && oneSave, copies.slice(at, at + MAX_COPIES_PER_SAVE))
@@ -88,12 +88,12 @@ export async function saveServedConnections(db: ConnectionServeDb, fetchConnecti
       bump('connection_copies_withdrawn', saved.withdrawn)
       if (saved.refusedExpired > 0) {
         bump('connection_copies_refused_expired', saved.refusedExpired)
-        problems.push(saved.refusedExpired === 1
+        problems.push(tickProblem('connection_copies_expired', saved.refusedExpired === 1
           ? '1 served connection copy arrived already past its serve_until and was refused: the list was served more than 6 hours before the ops database\'s clock.'
-          : `${saved.refusedExpired} served connection copies arrived already past their serve_until and were refused: the list was served more than 6 hours before the ops database's clock.`)
+          : `${saved.refusedExpired} served connection copies arrived already past their serve_until and were refused: the list was served more than 6 hours before the ops database's clock.`))
       }
     } catch (err) {
-      problems.push(`The ops tick could not save the connections it fetched (${formatErr(err)}); the saved copies stay as they were, each until its serve_until.`)
+      problems.push(tickProblem('connections_save_failed', `The ops tick could not save the connections it fetched (${formatErr(err)}); the saved copies stay as they were, each until its serve_until.`))
     }
   }
   return { problems, counts }

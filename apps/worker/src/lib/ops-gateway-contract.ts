@@ -261,12 +261,130 @@ export interface OpsTickReport {
    */
   not_configured_secrets: string[] | null
   /**
-   * Whether the tick's started stamp through the gateway failed (#2410), so the
-   * bidding Worker can hold a lone miss for one tick without reading the
-   * sentence. True only with a problem reported. Null on a report from an ops
-   * release before #2410, which pages on a missed stamp at once, as it did.
+   * Whether the tick's started stamp through the gateway failed (#2410). True
+   * only with a problem reported. Since #2506 the stamp's problem is keyed
+   * start_stamp like any other; this flag still lets the bidding Worker hold a
+   * lone missed stamp in a report from an ops release that keys nothing. Null
+   * on a report from an ops release before #2410.
    */
   start_stamp_failed: boolean | null
+  /**
+   * One key per problem, side by side with `problems` (#2506): the problem's
+   * kind and, where it is about one, its subject (a sweep, a workflow, a
+   * connection, a secret), as `kind` or `kind:subject`. The bidding Worker
+   * counts a problem across ticks by this key, never by its sentence, which
+   * carries an error's own words and figures and moves between ticks. Null on a
+   * report from an ops release before #2506, which keyed nothing.
+   */
+  problem_keys: string[] | null
+}
+
+/**
+ * How a kind of tick problem pages (#2506, Dan's decision 2026-10-19).
+ * three_in_a_row: a problem a passing tick would clear, and that the next tick
+ * reports again while its cause stands (a call past its deadline, a read or
+ * write the database or the gateway did not answer). It pages once three ticks
+ * in a row report it; one tick's is logged and counted.
+ * at_once: a problem that is not transient (a secret not set, a defect in what
+ * was served or found), or one no later tick can report again (a missed slot is
+ * recorded once, a slot is dispatched once, the agreement check runs every 14
+ * minutes), so holding it for three ticks would hold it for ever.
+ */
+export type OpsTickProblemRule = 'three_in_a_row' | 'at_once'
+
+/** Every kind of problem the tick reports, and its rule. A kind not listed here pages at once. */
+export const OPS_TICK_PROBLEM_RULES = {
+  // The gateway, and the ops database, failing to answer in time: each is asked again next tick.
+  start_stamp: 'three_in_a_row',
+  db_clock: 'three_in_a_row',
+  /** claim_ops_sweep itself failed, which every sweep asks again on the next tick (the 2026-10-19 page). */
+  sweep_claim_failed: 'three_in_a_row',
+  /** A minute sweep (lease_expiry, run_expiry) failed after its claim: claimed again 50 s on. */
+  sweep_failed: 'three_in_a_row',
+  workflows_fetch_failed: 'three_in_a_row',
+  workflows_save_failed: 'three_in_a_row',
+  copies_read_failed: 'three_in_a_row',
+  /** A schedule's planning or recording failed: the slot stays due and is tried again next tick. */
+  schedule_plan_failed: 'three_in_a_row',
+  claim_depth_failed: 'three_in_a_row',
+  /** The probe through the dispatch path, sent every tick nothing is due. */
+  probe_failed: 'three_in_a_row',
+  connections_fetch_failed: 'three_in_a_row',
+  connections_save_failed: 'three_in_a_row',
+  /** A removal is served for 7 hours, so the next tick records it again. */
+  tombstone_record_failed: 'three_in_a_row',
+  /**
+   * The sentence saying how many problems a report left out. Every at_once
+   * problem is kept ahead of it (capTickProblems), so it stands only for held
+   * ones; were it paged at once, one bad tick with many schedules would page.
+   */
+  problems_left_out: 'three_in_a_row',
+
+  // Not transient: a person must act, and waiting three minutes only delays them.
+  db_not_configured: 'at_once',
+  not_configured: 'at_once',
+  /** The secrets check reads only this Worker's own secrets, so a throw is a defect, not a blip. */
+  secrets_unchecked: 'at_once',
+  queue_disagreement: 'at_once',
+  workflow_refused: 'at_once',
+  workflows_too_many: 'at_once',
+  copies_read_limit: 'at_once',
+  schedule_refused: 'at_once',
+  schedule_no_version: 'at_once',
+  connections_list_unreadable: 'at_once',
+  connection_refused: 'at_once',
+  connections_too_many: 'at_once',
+  connection_copies_expired: 'at_once',
+  /** The connection step threw past its own boundaries, which nothing expects. */
+  connections_step_failed: 'at_once',
+  // Reported once, never again by a later tick.
+  /** The agreement check failed after its claim; it is not tried again for 14 minutes. */
+  agreement_check_failed: 'at_once',
+  /** A missed slot is recorded, and reported, once. */
+  slot_missed: 'at_once',
+  /** A recorded slot is dispatched once. */
+  dispatch_failed: 'at_once',
+  // Written by the bidding Worker, never by the tick.
+  /** A report it could not read. */
+  report_unreadable: 'at_once',
+  /** A sentence from an ops release before #2506, which says nothing of its kind. */
+  unkeyed: 'at_once',
+} as const satisfies Record<string, OpsTickProblemRule>
+
+export type OpsTickProblemKind = keyof typeof OPS_TICK_PROBLEM_RULES
+
+/** One problem as the tick builds it: the key the bidding Worker counts it by, and the sentence a person reads. */
+export interface TickProblem {
+  key: string
+  text: string
+}
+
+export function tickProblem(kind: OpsTickProblemKind, text: string, subject?: string): TickProblem {
+  return { key: subject === undefined ? kind : `${kind}:${subject}`, text }
+}
+
+/** The rule a problem pages by, read from its key's kind; a kind with no rule pages at once (L50). */
+export function problemRuleOf(key: string): OpsTickProblemRule {
+  const kind = key.split(':')[0]
+  return Object.hasOwn(OPS_TICK_PROBLEM_RULES, kind) ? OPS_TICK_PROBLEM_RULES[kind as OpsTickProblemKind] : 'at_once'
+}
+
+/** A key's shape: a kind in lower case, and an optional subject (a sweep, an id, a secret's name). */
+const PROBLEM_KEY = /^[a-z][a-z0-9_]{0,63}(?::[A-Za-z0-9_.-]{1,128})?$/
+
+/**
+ * Caps a keyed problem list as capProblems caps a plain one, keeping each key
+ * beside its sentence. A list over the cap keeps every problem that pages at
+ * once ahead of those it leaves out, so the sentence saying how many were left
+ * out stands only for held ones, and a problem that must page is never hidden
+ * behind it.
+ */
+export function capTickProblems(list: readonly TickProblem[]): { problems: string[]; problem_keys: string[] } {
+  if (list.length <= MAX_REPORT_PROBLEMS) return { problems: list.map((p) => clipProblem(p.text)), problem_keys: list.map((p) => p.key) }
+  const ordered = [...list.filter((p) => problemRuleOf(p.key) === 'at_once'), ...list.filter((p) => problemRuleOf(p.key) !== 'at_once')]
+  const shown = ordered.slice(0, MAX_REPORT_PROBLEMS - 1)
+  const leftOut = tickProblem('problems_left_out', `${list.length - shown.length} more problems were left out of this report; the ops Worker's logs have every one.`)
+  return { problems: [...shown, leftOut].map((p) => clipProblem(p.text)), problem_keys: [...shown, leftOut].map((p) => p.key) }
 }
 
 export class OpsGatewayContractError extends Error {
@@ -280,9 +398,14 @@ const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typ
 const isTime = (v: unknown): v is string => typeof v === 'string' && Number.isFinite(Date.parse(v))
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
+/** One problem cut to the length a report carries. */
+function clipProblem(p: string): string {
+  return p.length > MAX_PROBLEM_LENGTH ? `${p.slice(0, MAX_PROBLEM_LENGTH - 3)}...` : p
+}
+
 /** Caps a problem list, saying how many were left out rather than dropping them silently. */
 export function capProblems(problems: readonly string[]): string[] {
-  const clipped = problems.map((p) => (p.length > MAX_PROBLEM_LENGTH ? `${p.slice(0, MAX_PROBLEM_LENGTH - 3)}...` : p))
+  const clipped = problems.map(clipProblem)
   if (clipped.length <= MAX_REPORT_PROBLEMS) return clipped
   const shown = clipped.slice(0, MAX_REPORT_PROBLEMS - 1)
   return [...shown, `${clipped.length - shown.length} more problems were left out of this report; the ops Worker's logs have every one.`]
@@ -330,7 +453,7 @@ export function parseServedOpsWorkflows(raw: unknown): { list: ServedOpsWorkflow
 /** The tick's report as the bidding Worker received it. Throws on one it cannot read. */
 export function parseOpsTickReport(raw: unknown): OpsTickReport {
   if (!isRecord(raw)) throw new OpsGatewayContractError('the ops tick sent a report that is not an object')
-  const { tick_id, mode, scheduled_time, started_at, finished_at, db_now, outcome, problems, counts, not_configured_secrets, start_stamp_failed } = raw
+  const { tick_id, mode, scheduled_time, started_at, finished_at, db_now, outcome, problems, counts, not_configured_secrets, start_stamp_failed, problem_keys } = raw
   if (typeof tick_id !== 'string' || tick_id === '' || tick_id.length > 200) throw new OpsGatewayContractError('the ops tick report has no tick id')
   if (!(OPS_TICK_MODES as readonly unknown[]).includes(mode)) throw new OpsGatewayContractError(`the ops tick report names a mode this Worker does not know: ${String(mode)}`)
   if (!(scheduled_time === null || isTime(scheduled_time))) throw new OpsGatewayContractError('the ops tick report has an unreadable scheduled time')
@@ -363,6 +486,19 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
     if (start_stamp_failed && outcome === 'ok') throw new OpsGatewayContractError('the ops tick report says its start stamp failed and reports no problem')
     stampFailed = start_stamp_failed
   }
+  // Absent before #2506, null once such a report is kept and read back. The
+  // keys pick which problems page now, so a list that cannot be matched to
+  // the sentences one for one is refused and the report pages as unreadable.
+  let capped: { problems: string[]; problem_keys: string[] | null } = { problems: capProblems(problems as string[]), problem_keys: null }
+  if (problem_keys !== undefined && problem_keys !== null) {
+    if (!Array.isArray(problem_keys) || problem_keys.some((k) => typeof k !== 'string' || !PROBLEM_KEY.test(k))) {
+      throw new OpsGatewayContractError('the ops tick report\'s problem keys are not a list of problem keys')
+    }
+    if (problem_keys.length !== problems.length) {
+      throw new OpsGatewayContractError(`the ops tick report names ${problem_keys.length} problem keys for ${problems.length} problems`)
+    }
+    capped = capTickProblems((problems as string[]).map((text, i) => ({ key: problem_keys[i] as string, text })))
+  }
   return {
     tick_id,
     mode: mode as OpsTickMode,
@@ -371,10 +507,11 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
     finished_at,
     db_now: db_now,
     outcome: outcome as OpsTickOutcome,
-    problems: capProblems(problems as string[]),
+    problems: capped.problems,
     counts: counts as Record<string, number>,
     not_configured_secrets: secrets,
     start_stamp_failed: stampFailed,
+    problem_keys: capped.problem_keys,
   }
 }
 

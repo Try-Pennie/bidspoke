@@ -42,16 +42,18 @@
  *     made it (spike P4). With nothing due, one probe goes, so the path is proven
  *     every minute (L142: observe must exercise the path, short of the forward).
  *  8. Stamp completed with the report, which the bidding Worker judges every
- *     minute and pages on (lib/ops-gateway.ts runOpsTickReportCheck), except a
- *     missed start stamp that is the report's only problem and the first in a
- *     row, which it holds for one tick (#2410).
+ *     minute and pages on (lib/ops-gateway.ts runOpsTickReportCheck). Each
+ *     problem carries a key, its kind and subject (#2506): a kind a passing tick
+ *     would clear pages only once three ticks in a row report it, and every
+ *     other kind at once (OPS_TICK_PROBLEM_RULES in lib/ops-gateway-contract.ts).
  *
  * Every port is injected, so the tests set both clocks (tick.test.ts); the live
  * ports are tick-live.ts.
  */
 import { planFires, scheduleFloorMs, scheduleFromTrigger, validateSchedule, type MissedReason, type PlannedFire, type ScheduleConfig } from '@bidspoke/workflow-definition'
 import {
-  capProblems, parseServedOpsWorkflows, type OpsTickMode, type OpsTickOutcome, type OpsTickReport,
+  capTickProblems, parseServedOpsWorkflows, tickProblem, type OpsTickMode, type OpsTickOutcome, type OpsTickProblemKind, type OpsTickReport,
+  type TickProblem,
 } from '../lib/ops-gateway-contract'
 import { formatErr } from '../lib/format-error'
 import { saveServedConnections, type ConnectionServeDb } from './connection-serve'
@@ -163,7 +165,10 @@ function log(event: string, fields: Record<string, string | number | boolean | n
 
 export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   const startedAt = new Date(ports.now()).toISOString()
-  const problems: string[] = []
+  // Each problem keyed by its kind (#2506), so the bidding Worker can hold one a
+  // passing tick would clear until three ticks in a row report it.
+  const problems: TickProblem[] = []
+  const problem = (kind: OpsTickProblemKind, text: string, subject?: string) => { problems.push(tickProblem(kind, text, subject)) }
   const counts: Record<string, number> = {}
   let notConfigured = false
   const notConfiguredSecrets: string[] = []
@@ -174,20 +179,20 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   let dbNow: string | null = null
   const items: DispatchItem[] = []
 
-  // 1. Started. A miss is reported, and flagged so the bidding Worker can hold a
-  // lone one for a tick (#2410): it judges whether the next tick missed too.
+  // 1. Started. A miss is reported under start_stamp, which the bidding Worker
+  // holds until three ticks in a row miss (#2506), and flagged as before (#2410).
   let startStampFailed = false
   try {
     await ports.gateway.started()
   } catch (err) {
     startStampFailed = true
-    problems.push(`The ops tick could not stamp its start with the bidding Worker (${formatErr(err)}).`)
+    problem('start_stamp', `The ops tick could not stamp its start with the bidding Worker (${formatErr(err)}).`)
   }
 
   const db = isDb(ports.db) ? ports.db : null
   if (!isDb(ports.db)) {
     unconfigured(ports.db.secrets)
-    problems.push(`The ops tick cannot reach its database: ${ports.db.notConfigured}. It planned and swept nothing.`)
+    problem('db_not_configured', `The ops tick cannot reach its database: ${ports.db.notConfigured}. It planned and swept nothing.`)
   }
 
   // The other secrets, inside their own boundary. Nothing the observe tick does
@@ -195,10 +200,10 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   try {
     for (const found of await ports.checkSecrets()) {
       unconfigured([found.secret])
-      problems.push(found.problem)
+      problem('not_configured', found.problem, found.secret)
     }
   } catch (err) {
-    problems.push(`The ops tick could not check its secrets (${formatErr(err)}), so whether those secrets, the ops private key among them, are usable is not known.`)
+    problem('secrets_unchecked', `The ops tick could not check its secrets (${formatErr(err)}), so whether those secrets, the ops private key among them, are usable is not known.`)
   }
 
   // 2. The database clock.
@@ -206,15 +211,24 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     try {
       dbNow = await db.now()
     } catch (err) {
-      problems.push(`The ops tick could not read the database clock (${formatErr(err)}), so it planned no fires: none may be computed on the Worker's clock.`)
+      problem('db_clock', `The ops tick could not read the database clock (${formatErr(err)}), so it planned no fires: none may be computed on the Worker's clock.`)
     }
   }
 
   // 3. Sweeps, each its own boundary.
   if (db) {
     for (const s of TICK_SWEEPS) {
+      // The claim in its own boundary (#2506): a claim that failed is asked again
+      // on the next tick, for every sweep, while a sweep that failed after its
+      // claim is next tried when its interval comes round.
+      let claim: SweepClaim
       try {
-        const claim = await db.claimSweep(s.sweep, ports.tickId, s.everySeconds)
+        claim = await db.claimSweep(s.sweep, ports.tickId, s.everySeconds)
+      } catch (err) {
+        problem('sweep_claim_failed', `The ${s.sweep} sweep failed: ${formatErr(err)}.`, s.sweep)
+        continue
+      }
+      try {
         if (!claim.owned) {
           bump(counts, 'sweeps_stood_down')
           continue
@@ -224,7 +238,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
           const rows = await db.queueDisagreements(s.pageLimit)
           if (rows.length > 0) {
             const kinds = [...new Set(rows.map((r) => r.kind))].join(', ')
-            problems.push(`The agreement check found ${rows.length}${rows.length === s.pageLimit ? ' or more' : ''} runs where the run queue and the runs disagree (${kinds}); every write keeps the two together, so each is a defect to look into.`)
+            problem('queue_disagreement', `The agreement check found ${rows.length}${rows.length === s.pageLimit ? ' or more' : ''} runs where the run queue and the runs disagree (${kinds}); every write keeps the two together, so each is a defect to look into.`)
           }
           continue
         }
@@ -235,7 +249,8 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
           if (!more) break
         }
       } catch (err) {
-        problems.push(`The ${s.sweep} sweep failed: ${formatErr(err)}.`)
+        if (s.sweep === 'queue_agreement') problem('agreement_check_failed', `The ${s.sweep} sweep failed: ${formatErr(err)}.`)
+        else problem('sweep_failed', `The ${s.sweep} sweep failed: ${formatErr(err)}.`, s.sweep)
       }
     }
   }
@@ -245,7 +260,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   let fetchError: string | null = null
   try {
     fetched = parseServedOpsWorkflows(await ports.gateway.fetchWorkflows())
-    problems.push(...fetched.refused)
+    for (const text of fetched.refused) problem('workflow_refused', text)
     bump(counts, 'workflows_served', fetched.list.workflows.length)
   } catch (err) {
     fetchError = formatErr(err)
@@ -259,14 +274,14 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     // A list too long for one save is saved in parts and withdraws nothing, since
     // no one part is the complete list.
     const oneSave = inputs.length <= MAX_COPIES_PER_SAVE
-    if (!oneSave) problems.push(`The bidding Worker served ${inputs.length} ops workflows, more than one save carries, so workflows it no longer names were not withdrawn.`)
+    if (!oneSave) problem('workflows_too_many', `The bidding Worker served ${inputs.length} ops workflows, more than one save carries, so workflows it no longer names were not withdrawn.`)
     for (let at = 0; at < inputs.length || at === 0; at += MAX_COPIES_PER_SAVE) {
       try {
         const saved = await db.saveCopies(list.served_at, list.complete && oneSave, inputs.slice(at, at + MAX_COPIES_PER_SAVE))
         bump(counts, 'copies_refused_older', saved.refusedOlder)
         bump(counts, 'copies_withdrawn', saved.withdrawn)
       } catch (err) {
-        problems.push(`The ops tick could not save the workflows it fetched (${formatErr(err)}); it planned from the copies as they were.`)
+        problem('workflows_save_failed', `The ops tick could not save the workflows it fetched (${formatErr(err)}); it planned from the copies as they were.`)
       }
       if (inputs.length === 0) break
     }
@@ -277,18 +292,18 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     try {
       const read = await db.readCopies(COPIES_READ_LIMIT)
       copies = read.copies
-      if (read.reachedLimit) problems.push(`The ops tick read ${COPIES_READ_LIMIT} workflow copies, its limit, so any past it were not planned.`)
+      if (read.reachedLimit) problem('copies_read_limit', `The ops tick read ${COPIES_READ_LIMIT} workflow copies, its limit, so any past it were not planned.`)
     } catch (err) {
-      problems.push(`The ops tick could not read the saved workflow copies (${formatErr(err)}), so it planned no fires.`)
+      problem('copies_read_failed', `The ops tick could not read the saved workflow copies (${formatErr(err)}), so it planned no fires.`)
     }
   }
   if (fetchError !== null) {
     if (copies.length > 0) {
       bump(counts, 'copies_used_saved')
       const oldest = Math.min(...copies.map((c) => Date.parse(c.confirmedAt)))
-      problems.push(`The ops tick could not fetch the ops workflows from the bidding Worker (${fetchError}), so it planned from the saved copies, the oldest last confirmed ${slotLabel(oldest)}.`)
+      problem('workflows_fetch_failed', `The ops tick could not fetch the ops workflows from the bidding Worker (${fetchError}), so it planned from the saved copies, the oldest last confirmed ${slotLabel(oldest)}.`)
     } else {
-      problems.push(`The ops tick could not fetch the ops workflows from the bidding Worker (${fetchError}) and has no saved copy, so it planned nothing.`)
+      problem('workflows_fetch_failed', `The ops tick could not fetch the ops workflows from the bidding Worker (${fetchError}) and has no saved copy, so it planned nothing.`)
     }
   }
 
@@ -299,7 +314,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
       problems.push(...saved.problems)
       for (const [key, n] of Object.entries(saved.counts)) bump(counts, key, n)
     } catch (err) {
-      problems.push(`The ops tick could not save the ops connections: ${formatErr(err)}.`)
+      problem('connections_step_failed', `The ops tick could not save the ops connections: ${formatErr(err)}.`)
     }
   }
 
@@ -318,12 +333,12 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
         const found = validateSchedule(sched.config)
         if (found.length > 0) {
           bump(counts, 'schedules_refused')
-          problems.push(`The schedule of workflow ${c.workflowId} is refused: ${found.map((p) => p.message).join('; ')}. It was kept and not fired.`)
+          problem('schedule_refused', `The schedule of workflow ${c.workflowId} is refused: ${found.map((p) => p.message).join('; ')}. It was kept and not fired.`, c.workflowId)
           continue
         }
         if (c.versionNumber === null) {
           bump(counts, 'schedules_refused')
-          problems.push(`Workflow ${c.workflowId} has a schedule but has no saved version, so there is nothing to run; it was not fired.`)
+          problem('schedule_no_version', `Workflow ${c.workflowId} has a schedule but has no saved version, so there is nothing to run; it was not fired.`, c.workflowId)
           continue
         }
         if (c.scheduleKnownSince === null) throw new Error('its copy has a schedule but no floor')
@@ -359,11 +374,11 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
           })
           if (outcome === 'recorded') {
             bump(counts, 'slots_missed')
-            problems.push(`Workflow ${c.workflowId} missed its ${slotLabel(plan.missed.scheduled_for)} slot (${plan.missed.reason}): the tick did not see it inside its five minute window.`)
+            problem('slot_missed', `Workflow ${c.workflowId} missed its ${slotLabel(plan.missed.scheduled_for)} slot (${plan.missed.reason}): the tick did not see it inside its five minute window.`, c.workflowId)
           }
         }
       } catch (err) {
-        problems.push(`The schedule of workflow ${c.workflowId} could not be planned: ${formatErr(err)}.`)
+        problem('schedule_plan_failed', `The schedule of workflow ${c.workflowId} could not be planned: ${formatErr(err)}.`, c.workflowId)
       }
     }
   }
@@ -375,7 +390,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
       bump(counts, 'due_runs', depth.dueRuns)
       bump(counts, 'would_claim', Math.min(depth.dueRuns, TICK_CLAIM_LIMIT, depth.dueWorkflows * TICK_CLAIM_PER_WORKFLOW))
     } catch (err) {
-      problems.push(`The ops tick could not read what a claim would find: ${formatErr(err)}.`)
+      problem('claim_depth_failed', `The ops tick could not read what a claim would find: ${formatErr(err)}.`)
     }
   }
 
@@ -389,13 +404,13 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     }
     bump(counts, 'dispatch_failed')
     const item = toSend[i]
-    problems.push(item.kind === 'probe'
-      ? `The probe through the dispatch path failed: ${formatErr(r.reason)}.`
-      : `The dispatch of workflow ${item.workflowId}'s ${slotLabel(Date.parse(item.scheduledFor))} slot failed: ${formatErr(r.reason)}.`)
+    if (item.kind === 'probe') problem('probe_failed', `The probe through the dispatch path failed: ${formatErr(r.reason)}.`)
+    else problem('dispatch_failed', `The dispatch of workflow ${item.workflowId}'s ${slotLabel(Date.parse(item.scheduledFor))} slot failed: ${formatErr(r.reason)}.`, item.workflowId)
   })
 
   // 8. Completed.
   const outcome: OpsTickOutcome = notConfigured ? 'not_configured' : problems.length > 0 ? 'problems' : 'ok'
+  const capped = capTickProblems(problems)
   const report: OpsTickReport = {
     tick_id: ports.tickId,
     mode: OPS_TICK_MODE,
@@ -404,13 +419,14 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     finished_at: new Date(ports.now()).toISOString(),
     db_now: dbNow,
     outcome,
-    problems: capProblems(problems),
+    problems: capped.problems,
     counts,
     not_configured_secrets: notConfiguredSecrets,
     start_stamp_failed: startStampFailed,
+    problem_keys: capped.problem_keys,
   }
   log('finished', { tick_id: ports.tickId, outcome, problems: problems.length, ...counts })
-  for (const p of problems) log('problem', { tick_id: ports.tickId, problem: p })
+  for (const p of problems) log('problem', { tick_id: ports.tickId, key: p.key, problem: p.text })
   try {
     await ports.gateway.completed(report)
   } catch (err) {

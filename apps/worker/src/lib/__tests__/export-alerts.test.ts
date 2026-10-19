@@ -559,3 +559,30 @@ describe('a lone Salesforce token timeout waits for the next run (#2311)', () =>
     expect(sendExportFailureAlert).toHaveBeenCalledTimes(1)
   })
 })
+
+/**
+ * #2506: the ops tick report check holds a problem until three ticks in a row
+ * report it, then calls the alerter. The alerter's own grace counts calls, and
+ * that check reads one kept report every minute, so its grace would hold the
+ * third tick once more without ever measuring another tick. A caller that held
+ * the repeats itself says so, and the first transient failure then pages.
+ */
+describe('notifyExportFailure for a caller that holds repeats itself', () => {
+  beforeEach(() => vi.clearAllMocks())
+  const TRANSIENT = ['The run_expiry sweep failed: error code: 522.']
+  const titled = { title: 'The ops minute cron reported a problem' }
+
+  it('pages the first transient failure at once and writes no grace marker', async () => {
+    vi.mocked(sendExportFailureAlert).mockResolvedValue(true)
+    const kv = makeKv()
+    await notifyExportFailure(makeSupabase(['org-1']), 'ops-tick', TRANSIENT, kv, titled, Date.now(), { repeatsHeldByCaller: true })
+    expect(vi.mocked(sendExportFailureAlert)).toHaveBeenCalledTimes(1)
+    expect(kv.put.mock.calls.map(([key]) => key)).not.toContain('export-alert-pending:ops-tick')
+  })
+
+  it('still holds the first transient failure for a caller that does not say so', async () => {
+    const kv = makeKv()
+    await notifyExportFailure(makeSupabase(['org-1']), 'ops-tick', TRANSIENT, kv, titled, Date.now())
+    expect(vi.mocked(sendExportFailureAlert)).not.toHaveBeenCalled()
+  })
+})
