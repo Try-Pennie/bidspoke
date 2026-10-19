@@ -1171,8 +1171,10 @@ export interface ConnectionCheckTarget {
 export const CONNECTION_CHECK_TARGETS_MAX = 500
 
 /**
- * Every ops connection not withdrawn and not removed, at most `limit`, least
- * recently checked first. Lane wide. Throws on a failed read or a row of the
+ * Every ops connection not withdrawn and not removed, at most `limit`: the
+ * ones the sweep probes first (servable and not in needs_reauth), least
+ * recently checked first among them, then the ones it skips (migration
+ * 20261020030000 says why). Lane wide. Throws on a failed read or a row of the
  * wrong shape: an empty list would read as nothing to check and every login
  * state cleared.
  */
