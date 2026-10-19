@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { utcDayFromUuidV7, uuidv7 } from './index'
+import { mintedMsFromUuidV7, utcDayFromUuidV7, uuidv7 } from './index'
 
 /**
  * Time ordered execution ids (#869, Phase A1 of the never delete without a
@@ -145,6 +145,21 @@ describe('utcDayFromUuidV7: refuses rather than guessing', () => {
     // the reader refuses and the invariant is unenforceable (L150).
     for (let i = 0; i < 500; i++) {
       expect(utcDayFromUuidV7(uuidv7())).not.toBeNull()
+    }
+  })
+})
+
+describe('mintedMsFromUuidV7: the instant an id was minted, for ordering runs (#2485)', () => {
+  it('reads back the millisecond the id was minted at', () => {
+    const at = Date.UTC(2026, 9, 18, 15, 59, 10, 3)
+    expect(mintedMsFromUuidV7(uuidv7(at))).toBe(at)
+    // A real Main Flow run id, minted when its execution started (15:59:10.003 UTC).
+    expect(mintedMsFromUuidV7('01a14fbd-04b3-72f7-8cfa-dbae9da39ea5')).toBe(Date.UTC(2026, 9, 18, 15, 59, 10, 3))
+  })
+
+  it('refuses exactly what utcDayFromUuidV7 refuses', () => {
+    for (const id of ['9f8e7d6c-5b4a-4938-8271-605f4e3d2c1b', '0198f0a0-1c00-7000-0000-000000000000', '', 'not-a-uuid', '00000000-0000-7000-8000-000000000000']) {
+      expect(mintedMsFromUuidV7(id)).toBeNull()
     }
   })
 })
