@@ -10,68 +10,22 @@
  * measurement that never gates and PAGES_ROUTES is public by a recorded
  * decision, so neither is touched: a new job signs in and reads /partners.
  *
- * The `if:` conditions are evaluated here, by a small evaluator for the subset
- * of the GitHub expression language they use, so "a web only change still
- * deploys Pages" is a computed answer rather than a reading of the text.
+ * The `if:` conditions are evaluated here, by the small evaluator in
+ * _scan-utils.ts for the subset of the GitHub expression language they use, so
+ * "a web only change still deploys Pages" is a computed answer rather than a
+ * reading of the text. deploy-ops-follows-bidding.test.ts uses it too (#2510).
  */
 import { describe, expect, it } from 'vitest'
-import { readWorkflow, workflowJobBody } from './_scan-utils'
+import { evaluateWorkflowIf, readWorkflow, workflowIf, workflowJobBody, workflowNeeds } from './_scan-utils'
 
 const deploy = readWorkflow('.github/workflows/deploy.yml')
 const pagesJob = workflowJobBody(deploy, 'deploy-pages')
 // Empty when the job is missing, so each case below reports its own failure.
 const followsJob = (() => { try { return workflowJobBody(deploy, 'partners-page-follows') } catch { return '' } })()
 
-/** The job's `if:` on one line, or null when it has none. */
-function ifOf(job: string): string | null {
-  const m = job.match(/^ {4}if: (.+)$/m)
-  return m ? m[1].trim() : null
-}
-
-function needsOf(job: string): string[] {
-  const m = job.match(/^ {4}needs: \[([^\]]*)\]/m)
-  return m ? m[1].split(',').map((s) => s.trim()) : []
-}
-
-type Ctx = Record<string, unknown>
-
-/** Evaluates always(), &&, ||, parentheses, == and != on dotted lookups and quoted strings. */
-function evaluate(expr: string, ctx: Ctx): boolean {
-  const tokens = expr.match(/always\(\)|&&|\|\||==|!=|\(|\)|'[^']*'|[A-Za-z_][\w.-]*/g) ?? []
-  let i = 0
-  const peek = () => tokens[i]
-  const take = () => tokens[i++]
-  const lookup = (path: string): unknown => path.split('.').reduce<unknown>((o, k) => (o && typeof o === 'object' ? (o as Record<string, unknown>)[k] : undefined), ctx)
-  function primary(): unknown {
-    const t = take()
-    if (t === '(') { const v = or(); take(); return v }
-    if (t === 'always()') return true
-    if (t?.startsWith("'")) return t.slice(1, -1)
-    if (t === 'true') return true
-    if (t === 'false') return false
-    return lookup(t ?? '')
-  }
-  function comparison(): unknown {
-    const left = primary()
-    if (peek() === '==' || peek() === '!=') {
-      const op = take()
-      const right = primary()
-      return op === '==' ? left === right : left !== right
-    }
-    return left
-  }
-  function and(): unknown {
-    let v = comparison()
-    while (peek() === '&&') { take(); const r = comparison(); v = Boolean(v) && Boolean(r) }
-    return v
-  }
-  function or(): unknown {
-    let v = and()
-    while (peek() === '||') { take(); const r = and(); v = Boolean(v) || Boolean(r) }
-    return v
-  }
-  return Boolean(or())
-}
+const ifOf = (job: string) => workflowIf(job, 4)
+const needsOf = workflowNeeds
+const evaluate = evaluateWorkflowIf
 
 const pagesRuns = (worker: string, pagesChanged = 'true', verify = 'success') =>
   evaluate(ifOf(pagesJob) ?? 'false', {
