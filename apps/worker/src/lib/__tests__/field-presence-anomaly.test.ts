@@ -6,8 +6,14 @@ vi.mock('../slack', () => ({
   postMessage: vi.fn(),
   sendRecoveryAlert: vi.fn(),
   sendGroupedRecoveryAlert: vi.fn(),
+  etTime: (at: number | string | Date) => new Date(at).toISOString(),
+}))
+vi.mock('../export-alerts', () => ({
+  notifyExportFailure: vi.fn(),
+  notifyExportRecovery: vi.fn(),
 }))
 import { getSlackConnection, postMessage, sendRecoveryAlert, sendGroupedRecoveryAlert } from '../slack'
+import { notifyExportFailure, notifyExportRecovery } from '../export-alerts'
 import type { PresenceRow, RecentPresence } from '../field-presence-anomaly'
 import {
   dailyRate, mean, stddev, isStableBaseline, detectDrought, detectDayOneDead,
@@ -17,6 +23,7 @@ import {
   sendFieldDeadAlert, DEAD_SIGNAL, DEAD_RECOVERED_PHRASE,
   classifyDeadFields, EVER_CARRIED_LOOKBACK_DAYS, BY_DESIGN_PHRASE, WRONG_PATH_SIGNAL, deadWindowStart,
   classifySilentRare, SILENT_MIN_EXPECTED, HANDED_TO_WRONG_PATH_PHRASE,
+  noteSilencesRead, FIELD_PRESENCE_SILENCES_JOB, SILENCES_UNREADABLE_PAGE_AFTER_MS,
 } from '../field-presence-anomaly'
 
 const DMR = DEAD_MIN_RUNS
@@ -974,6 +981,148 @@ describe('field-presence alerting', () => {
     expect(postMessage).not.toHaveBeenCalled()
   })
 
+  /**
+   * #2439. A failed silences read used to carry on with an empty set, so every
+   * field a person had silenced was judged as live and paged as dead on one bad
+   * read (L98: a failed read is not an empty answer). Without the list there is
+   * no telling a silenced field from an unsilenced one, so the run judges
+   * nothing: no page, no all-clear, open incidents kept alive, and the run is
+   * recorded in job_runs as unmeasured with the reason.
+   */
+  describe('a silences read that fails is unknown, not empty (#2439)', () => {
+    type JobRunWrite = { op: 'insert' | 'update'; payload: Record<string, unknown> }
+    type SilencesAnswer = { data: unknown[] } | { error: string } | { throws: string }
+
+    function recordingSupabase(
+      fixture: { rollup: unknown[]; window: unknown[] } | unknown[],
+      silences: SilencesAnswer,
+    ) {
+      const f = Array.isArray(fixture) ? { rollup: fixture, window: [] } : fixture
+      const jobRuns: JobRunWrite[] = []
+      return {
+        jobRuns,
+        from: (table: string) => {
+          let write: JobRunWrite | null = null
+          const answer = (): Promise<unknown> => {
+            if (table === 'job_runs') {
+              if (write) jobRuns.push(write)
+              return Promise.resolve({ data: write?.op === 'insert' ? { id: 'run-1' } : [{ id: 'run-1' }], error: null })
+            }
+            if (table === 'field_presence_silences') {
+              if ('throws' in silences) return Promise.reject(new Error(silences.throws))
+              if ('error' in silences) return Promise.resolve({ data: null, error: { message: silences.error } })
+              return Promise.resolve({ data: silences.data, error: null })
+            }
+            const data = table === 'workflows' ? [WF] : table === 'field_presence_daily' ? f.rollup : []
+            return Promise.resolve({ data, error: null })
+          }
+          const chain: unknown = new Proxy({}, {
+            get(_t, prop) {
+              if (prop === 'then') return (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => answer().then(res, rej)
+              return (...args: unknown[]) => {
+                if (prop === 'insert' || prop === 'update') write = { op: prop, payload: args[0] as Record<string, unknown> }
+                return chain
+              }
+            },
+          })
+          return chain
+        },
+        rpc: () => Promise.resolve({ data: f.window, error: null }),
+      }
+    }
+
+    const ending = (jobRuns: JobRunWrite[]) => jobRuns.find((w) => w.op === 'update')?.payload
+
+    it('drought: a silences read that errors pages no field and records the run as unmeasured', async () => {
+      const supabase = recordingSupabase(collapsedWindow('scout.final', 500, 0, today), { error: 'statement timeout' })
+      await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
+      expect(postMessage).not.toHaveBeenCalled()
+      expect(supabase.jobRuns.find((w) => w.op === 'insert')?.payload).toMatchObject({ job: 'field-presence-drought' })
+      expect(ending(supabase.jobRuns)).toMatchObject({ outcome: 'unmeasured' })
+      expect(String(ending(supabase.jobRuns)?.detail)).toMatch(/silences.*statement timeout/)
+    })
+
+    it('drought: a silences read that THROWS pages no field and records the run as unmeasured', async () => {
+      const supabase = recordingSupabase(collapsedWindow('scout.final', 500, 0, today), { throws: 'fetch failed' })
+      await runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)
+      expect(postMessage).not.toHaveBeenCalled()
+      expect(ending(supabase.jobRuns)).toMatchObject({ outcome: 'unmeasured' })
+      expect(String(ending(supabase.jobRuns)?.detail)).toMatch(/fetch failed/)
+    })
+
+    it('drought: an unknown run sends no all-clear and keeps the open incident alive', async () => {
+      // A healthy field with an open incident would normally stand down. With the
+      // silences unknown it might be silenced, and an unjudged run must neither
+      // end an incident nor let its marker lapse (#1803).
+      const id = 'wf-1 scout.final'
+      const kv = makeKv({ [`field-presence-drought-recovery:${id}`]: '2026-06-27T10:00:00.000Z' })
+      const supabase = recordingSupabase(collapsedWindow('scout.final', 500, 500, today), { error: 'statement timeout' })
+      await runFieldPresenceDroughtCheck(supabase as never, kv, APP_URL)
+      expect(sendGroupedRecoveryAlert).not.toHaveBeenCalled()
+      expect(kv.store.get(`field-presence-drought-recovery:${id}`)).toBe('2026-06-27T10:00:00.000Z')
+    })
+
+    it('dead: a silences read that errors pages no field and records the run as unmeasured', async () => {
+      const supabase = recordingSupabase(deadRows(['a.one', 'b.two']), { error: 'statement timeout' })
+      await runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)
+      expect(postMessage).not.toHaveBeenCalled()
+      expect(supabase.jobRuns.find((w) => w.op === 'insert')?.payload).toMatchObject({ job: 'field-presence-dead' })
+      expect(ending(supabase.jobRuns)).toMatchObject({ outcome: 'unmeasured' })
+    })
+
+    it('a silences list too long to read in full is unknown too, never a truncated list', async () => {
+      // A truncated list fails the same way an empty one does: every silence
+      // past the cut is judged as live. 1,000 rows is a full page.
+      const many = Array.from({ length: 1000 }, (_, i) => ({ workflow_id: 'wf-1', field_path: `f.${i}` }))
+      const supabase = recordingSupabase(deadRows(['a.one']), { data: many })
+      await runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)
+      expect(postMessage).not.toHaveBeenCalled()
+      expect(ending(supabase.jobRuns)).toMatchObject({ outcome: 'unmeasured' })
+    })
+
+    it('the drought run pages the read failure on its second failing hour, and stands it down on the next good read', async () => {
+      vi.mocked(notifyExportFailure).mockReset()
+      vi.mocked(notifyExportRecovery).mockReset()
+      const kv = makeKv()
+      const failing = recordingSupabase(collapsedWindow('scout.final', 500, 0, today), { error: 'statement timeout' })
+      const start = Date.now()
+      vi.useFakeTimers({ toFake: ['Date'] })
+      try {
+        vi.setSystemTime(start)
+        await runFieldPresenceDroughtCheck(failing as never, kv, APP_URL)
+        expect(notifyExportFailure).not.toHaveBeenCalled()
+        vi.setSystemTime(start + 60 * 60 * 1000)
+        await runFieldPresenceDroughtCheck(failing as never, kv, APP_URL)
+        expect(notifyExportFailure).toHaveBeenCalledTimes(1)
+        expect(vi.mocked(notifyExportFailure).mock.calls[0][1]).toBe(FIELD_PRESENCE_SILENCES_JOB)
+        vi.setSystemTime(start + 2 * 60 * 60 * 1000)
+        const reading = recordingSupabase(collapsedWindow('scout.final', 500, 500, today), { data: [] })
+        await runFieldPresenceDroughtCheck(reading as never, kv, APP_URL)
+        expect(notifyExportRecovery).toHaveBeenCalledWith(kv, FIELD_PRESENCE_SILENCES_JOB, start + 2 * 60 * 60 * 1000)
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('a successful read behaves as before: the unsilenced field pages, the silenced one does not, and the run is ok', async () => {
+      // Positive control: the same double, read working, reaches a page, so the
+      // silence of the tests above is the unknown read and not the harness (L140).
+      const supabase = recordingSupabase(deadRows(['a.one', 'b.two']), { data: [{ workflow_id: 'wf-1', field_path: 'b.two' }] })
+      await runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)
+      expect(postMessage).toHaveBeenCalledTimes(1)
+      const text = JSON.stringify(vi.mocked(postMessage).mock.calls[0])
+      expect(text).toContain('a.one')
+      expect(text).not.toContain('b.two')
+      expect(ending(supabase.jobRuns)).toMatchObject({ outcome: 'ok' })
+
+      vi.mocked(postMessage).mockClear()
+      const drought = recordingSupabase(collapsedWindow('scout.final', 500, 0, today), { data: [] })
+      await runFieldPresenceDroughtCheck(drought as never, makeKv(), APP_URL)
+      expect(postMessage).toHaveBeenCalledTimes(1)
+      expect(ending(drought.jobRuns)).toMatchObject({ outcome: 'ok' })
+    })
+  })
+
   it('does not start a cooldown for any field when the group send failed', async () => {
     // Same rule the per-field path had: a kicked bot must not buy 12 hours of
     // silence over fields that are still dead.
@@ -1630,5 +1779,78 @@ describe('the gone silent check, log only (#1215)', () => {
   it('leaves alone a field that never carried a value, and one the hourly check already judges', () => {
     expect(verdict(series('never', 3300, Array(22).fill(0)), 'never')).toBeUndefined()
     expect(verdict(series('steady', 3300, [0, ...Array(21).fill(3300)]), 'steady')).toBeUndefined()
+  })
+})
+
+/**
+ * #2439. One failed silences read judges nothing and says nothing, but a read
+ * that keeps failing leaves the checks blind with no page at all. So a failure
+ * that has stood for the window (a little under the hour between drought runs)
+ * pages through the shared alerter, and the first run that reads the silences
+ * stands it down. One blip, or the daily and hourly runs failing together in the
+ * same minute, never pages.
+ */
+describe('a silences read failing for the window pages (#2439)', () => {
+  const T0 = Date.parse('2026-10-18T13:00:05.000Z')
+  const HOUR = 60 * 60 * 1000
+  const unreadable = { kind: 'unreadable' as const, detail: 'the silences could not be read, so no field was judged this run: statement timeout' }
+  const read = { kind: 'read' as const, silenced: new Set<string>() }
+  const supabase = {} as never
+
+  beforeEach(() => {
+    vi.mocked(notifyExportFailure).mockReset()
+    vi.mocked(notifyExportRecovery).mockReset()
+  })
+
+  it('one failed run does not page', async () => {
+    const kv = makeKv()
+    await noteSilencesRead(supabase, kv, unreadable, T0)
+    expect(notifyExportFailure).not.toHaveBeenCalled()
+  })
+
+  it('the daily and hourly runs failing in the same minute do not page', async () => {
+    const kv = makeKv()
+    await noteSilencesRead(supabase, kv, unreadable, T0)
+    await noteSilencesRead(supabase, kv, unreadable, T0 + 20_000)
+    expect(notifyExportFailure).not.toHaveBeenCalled()
+  })
+
+  it('failures across the window page once, with its own job name, the reason and a remedy', async () => {
+    const kv = makeKv()
+    await noteSilencesRead(supabase, kv, unreadable, T0)
+    await noteSilencesRead(supabase, kv, unreadable, T0 + HOUR)
+    expect(notifyExportFailure).toHaveBeenCalledTimes(1)
+    const [, job, findings, passedKv, remedy, now, meaning] = vi.mocked(notifyExportFailure).mock.calls[0]
+    expect(job).toBe(FIELD_PRESENCE_SILENCES_JOB)
+    expect(findings.join(' ')).toContain('2 runs in a row')
+    expect(findings.join(' ')).toContain('statement timeout')
+    expect(passedKv).toBe(kv)
+    expect(remedy).toMatchObject({ title: expect.any(String), fixHint: expect.any(String) })
+    expect(now).toBe(T0 + HOUR)
+    // Stable keys, so the changing count and error text read as the same problem.
+    expect(meaning?.keys).toHaveLength(findings.length)
+  })
+
+  it('the window is a little under the hour between drought runs, so a sustained failure pages on the second hourly run', () => {
+    expect(SILENCES_UNREADABLE_PAGE_AFTER_MS).toBeLessThan(HOUR)
+    expect(SILENCES_UNREADABLE_PAGE_AFTER_MS).toBeGreaterThan(30 * 60 * 1000)
+  })
+
+  it('a successful read stands the page down and clears the streak', async () => {
+    const kv = makeKv()
+    await noteSilencesRead(supabase, kv, unreadable, T0)
+    await noteSilencesRead(supabase, kv, read, T0 + HOUR / 2)
+    expect(notifyExportRecovery).toHaveBeenCalledWith(kv, FIELD_PRESENCE_SILENCES_JOB, T0 + HOUR / 2)
+    // The streak starts again from the next failure, so this one alone does not page.
+    await noteSilencesRead(supabase, kv, unreadable, T0 + HOUR)
+    expect(notifyExportFailure).not.toHaveBeenCalled()
+    await noteSilencesRead(supabase, kv, unreadable, T0 + 2 * HOUR)
+    expect(notifyExportFailure).toHaveBeenCalledTimes(1)
+  })
+
+  it('an unreadable streak record starts a fresh streak rather than paging on one failure', async () => {
+    const kv = makeKv({ 'field-presence-silences-unreadable': 'not json' })
+    await noteSilencesRead(supabase, kv, unreadable, T0)
+    expect(notifyExportFailure).not.toHaveBeenCalled()
   })
 })
