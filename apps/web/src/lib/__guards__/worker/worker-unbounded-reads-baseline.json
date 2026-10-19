@@ -1,14 +1,1 @@
-{
-  "lib/held-click-sale-writes.ts": {
-    "execution_steps": 1
-  },
-  "lib/invalid-state-canary-watch.ts": {
-    "execution_steps": 1
-  },
-  "lib/salesforce-read-back.ts": {
-    "workflows": 1
-  },
-  "lib/writeback-replay.ts": {
-    "outcome_writeback_deadletters": 2
-  }
-}
+{}

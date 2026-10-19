@@ -588,15 +588,15 @@ export function supabaseHeldWriteStore(supabase: SupabaseClient): HeldWriteStore
       )
     },
     async list(orgId, status) {
+      // A dead letter table grows during a Salesforce outage, so the list pages
+      // under a full order (id breaks every created_at tie) rather than trusting
+      // a filter to keep it small (#1437). Past 50 pages it throws, not truncates.
       return fetchAllPaged<HeldWriteSummary>(
-        (from, to) =>
-          (status
-            ? supabase.from('outcome_writeback_deadletters').select(SUMMARY_COLUMNS).eq('organization_id', orgId).eq('status', status)
-            : supabase.from('outcome_writeback_deadletters').select(SUMMARY_COLUMNS).eq('organization_id', orgId)
-          )
-            .order('created_at', { ascending: false })
-            .order('id')
-            .range(from, to),
+        (from, to) => {
+          let query = supabase.from('outcome_writeback_deadletters').select(SUMMARY_COLUMNS).eq('organization_id', orgId)
+          if (status) query = query.eq('status', status)
+          return query.order('created_at', { ascending: false }).order('id').range(from, to)
+        },
         'listing held Salesforce writes',
         { maxPages: 50 },
       )
