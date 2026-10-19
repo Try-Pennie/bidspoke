@@ -1,12 +1,13 @@
-import { readFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { CATALOGUE, catalogueActions } from './schema'
 import { RUNTIME_ACTIONS } from './runtime'
 import { checkCatalogue, scanForIdempotentHints } from './checks/catalogue-checks'
-import { collectModuleGraph } from './checks/module-graph'
-import { readImporterLock } from './checks/lockfile'
+import { collectModuleGraph, collectModuleImports } from './checks/module-graph'
+import { linkedPath, readImporterLock, resolveDependencies } from './checks/lockfile'
 import fingerprints from './fingerprints.json'
 
 /**
@@ -42,6 +43,28 @@ describe('the shipped catalogue', () => {
     // path fails the test above; this proves the read finds real entries.
     expect(SHIPPED.importer).toBe('packages/service-catalogue')
     expect(readImporterLock(SHIPPED.lockfile, SHIPPED.importer).versions.get('typescript')).toMatch(/^\d+\.\d+\.\d+/)
+  })
+
+  it("reads the repository lockfile's snapshots, so a package's closure is its real one", () => {
+    const lock = readImporterLock(SHIPPED.lockfile, SHIPPED.importer)
+    const { closure } = resolveDependencies(lock, [{ name: '@eslint/js', importedBy: 'probe', importer: SHIPPED.importer }])
+    // @eslint/js reaches eslint as its peer, and eslint reaches estraverse through esquery.
+    expect(closure.some((key) => key.startsWith('eslint@'))).toBe(true)
+    expect(closure.some((key) => key.startsWith('estraverse@'))).toBe(true)
+    expect(closure.length).toBeGreaterThan(50)
+  })
+
+  it("follows a real workspace link into the package's source and reads its npm imports under its own importer", () => {
+    const lock = readImporterLock(SHIPPED.lockfile, SHIPPED.importer)
+    const probe = path.join(mkdtempSync(path.join(tmpdir(), 'catalogue-probe-')), 'run.ts')
+    writeFileSync(probe, "import { createSlackClient } from '@bidspoke/slack-client'\nexport const run = createSlackClient\n")
+    const { files, packages } = collectModuleImports(probe, {
+      root: { importer: 'apps/worker', dir: path.join(REPO_ROOT, 'apps/worker') },
+      linkOf: (importer, name) => linkedPath(lock, importer, name),
+    })
+    expect(files).toContain(path.join(REPO_ROOT, 'packages/slack-client/src/index.ts'))
+    expect(packages).toContainEqual(expect.objectContaining({ name: 'slack-web-api-client', importer: 'packages/slack-client' }))
+    expect(resolveDependencies(lock, packages).closure.some((key) => key.startsWith('slack-web-api-client@'))).toBe(true)
   })
 
   it('carries no test fixture action', () => {

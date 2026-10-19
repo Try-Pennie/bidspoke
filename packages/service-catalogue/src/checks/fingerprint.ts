@@ -8,16 +8,19 @@ import {
   type ActionSchema,
   type FieldRole,
 } from '../schema/types'
-import { resolveDependencyVersions, type ImporterLock } from './lockfile'
+import { linkedPath, resolveDependencies, type ImporterLock } from './lockfile'
 import { collectModuleImports } from './module-graph'
 
 /**
  * The fingerprint of one released action version (#1689 D1, #2337): a sha256
  * over its behaviour fields (arguments and traits, never a display name), the
  * source of its run file plus every file that file reaches through a relative
- * value import, and the version pnpm-lock.yaml resolves for every npm package
- * those files import, so a dependency upgrade is a change to the version
- * (module-graph.ts says what that does not cover).
+ * value import or a workspace package it imports (followed through the
+ * lockfile's `link:`), the version pnpm-lock.yaml resolves for every npm
+ * package those files import, each under the importer of the file importing
+ * it, and every package those depend on in turn from the lockfile's snapshots.
+ * So a dependency upgrade anywhere in that closure, and an edit to a workspace
+ * package's source, is a change to the version.
  *
  * Taken from the source TEXT, not from `run.toString()`, so a transpiler or
  * test runner upgrade that reformats emitted code cannot move it. Line endings
@@ -62,12 +65,15 @@ export function canonicalJson(value: unknown): string {
  * LockfileError for an npm package `lock` does not resolve to a pinned version.
  */
 export function computeFingerprint(action: ActionSchema, runFile: string, packageRoot: string, lock: ImporterLock): string {
-  const reached = collectModuleImports(runFile)
+  const reached = collectModuleImports(runFile, {
+    root: { importer: lock.importer, dir: packageRoot },
+    linkOf: (importer, name) => linkedPath(lock, importer, name),
+  })
   const sources = reached.files.map((file) => ({
     path: path.relative(packageRoot, file).split(path.sep).join('/'),
     text: readFileSync(file, 'utf8').replace(/\r\n/g, '\n'),
   }))
-  const dependencies = resolveDependencyVersions(lock, reached.packages)
-  const material = canonicalJson({ behaviour: behaviourOf(action), sources, dependencies })
+  const { direct, closure } = resolveDependencies(lock, reached.packages)
+  const material = canonicalJson({ behaviour: behaviourOf(action), sources, dependencies: direct, closure })
   return createHash('sha256').update(material).digest('hex')
 }
