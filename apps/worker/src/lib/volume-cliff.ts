@@ -280,10 +280,11 @@ export async function runVolumeCliffCheck(
   const windowStart = new Date(windowStartMs).toISOString()
 
   // Aggregate per-minute counts in the database rather than streaming raw rows
-  // into the Worker. This collapses thousands of rows to ~60 per workflow and
-  // sidesteps PostgREST's 1000-row page cap, which previously forced unordered
-  // OFFSET pagination that silently dropped the newest rows (the trailing-5-min
-  // window) and fired false cliff alerts.
+  // into the Worker: this collapses thousands of rows to at most 60 per workflow.
+  // Reading raw rows once forced unordered OFFSET pagination that silently
+  // dropped the newest rows (the trailing 5 minute window) and fired false cliff
+  // alerts. The row cap applies to this rpc's answer too (about 17 busy
+  // workflows fill it), so it is paged, ordered by workflow and minute (#1437).
   let rows: MinuteCount[]
   try {
     rows = await readExecutionCountsPerMinute(supabase, workflowIds, windowStart, 'execution_counts_per_minute')

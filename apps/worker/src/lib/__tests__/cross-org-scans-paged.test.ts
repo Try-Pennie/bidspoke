@@ -161,13 +161,15 @@ describe('the environment variable scans (#1437)', () => {
 })
 
 describe('the key rotation reads every stored value (#1437)', () => {
-  it('previews every row of all three tables past the cap, rather than refusing at it', async () => {
+  it('previews every row past the cap of the three tables that refused at it, rather than refusing', async () => {
     const primary = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
     const next = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))))
     const keys = secretKeys({ SECRET_ENCRYPTION_KEY: primary, SECRET_ENCRYPTION_KEY_NEXT: next })
     const locked = await encryptSecret('value', primary)
     // Only the row sorting last holds a value, so reaching it proves the read
-    // went past the cap at the cost of one decryption per table.
+    // went past the cap at the cost of one decryption per table. The held
+    // writebacks, the fourth table, paged before this change and have their
+    // own test in secret-reencrypt.test.ts; here they are empty.
     const last = 1500 - 1
     const env = Array.from({ length: 1500 }, (_, i) => ({ id: `ev-${pad(i)}`, key: `K${i}`, value: i === last ? locked : null, is_secret: true }))
     const settings = Array.from({ length: 1500 }, (_, i) => ({ organization_id: `org-${pad(i % 3)}`, key: `k-${pad(i)}`, value_encrypted: i === last ? locked : null }))
