@@ -217,7 +217,7 @@ describe('the invalid state canary watch', () => {
     expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ['1 field holds a different value from the one the run sent: PDFlow_4__c.'] })
   })
 
-  it("a direct run that sent no stamp and whose Submission holds a later run's link did not land: only a relay post is ever left out as overwritten", async () => {
+  it("a direct run that sent no stamp and whose Submission holds a later run's link did not land: a direct write is set aside only on a later run's stamp of the same step (#2485)", async () => {
     const { Bidspoke_Write__c: _stamp, ...unstamped } = sentBody(RUN_A)
     const step = nativeStep(RUN_A, SUB_A, { input: { resolved: { operation: 'update', object: 'Submission__c', record_id: SUB_A, body: unstamped } } })
     const { d } = deps({
