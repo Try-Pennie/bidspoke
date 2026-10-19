@@ -17,6 +17,7 @@ import { recoveryDue, settleRecovery, markAlerted, markSpikeSeen, recordPaged, r
 import type { IncidentEndReason, IncidentSignal, RecoveryMarkerSignal } from './incident-signals'
 import { deriveWatchedFields } from '../engine/watched-fields'
 import type { WorkflowDefinition } from '../types'
+import { readActiveWorkflows } from './active-workflows'
 
 export { MIN_BASELINE_DAYS }
 export const BASELINE_MIN_DAY_RUNS = 10
@@ -1019,13 +1020,12 @@ function watchedNow(workflows: ActiveWorkflow[]): Map<string, Set<string> | null
  * absence of a run.
  */
 async function activeWorkflows(supabase: SupabaseClient): Promise<ActiveWorkflow[]> {
-  const { data, error } = await supabase
-    .from('workflows')
-    .select('id, name, organization_id, slack_channel, definition')
-    .eq('is_active', true)
-    .is('deleted_at', null)
-  if (error) throw new Error(`workflows read failed: ${error.message}`)
-  return (data ?? []).map((w) => ({
+  const data = await readActiveWorkflows<Record<string, unknown>>(
+    supabase,
+    'id, name, organization_id, slack_channel, definition',
+    'workflows read',
+  )
+  return data.map((w) => ({
     id: w.id as string,
     name: w.name as string,
     organization_id: w.organization_id as string,
@@ -1143,20 +1143,24 @@ export function deadWindowStart(rows: PresenceRow[]): string | undefined {
  * healthy field collapsed, and an empty answer is indistinguishable from a field
  * with no traffic (L215, L211). The caller logs and skips the cycle.
  */
-async function readPresenceWindow(
+export async function readPresenceWindow(
   supabase: SupabaseClient,
   workflowIds: string[],
   windowMinutes: number,
 ): Promise<RecentPresence[]> {
   const since = new Date(Date.now() - windowMinutes * 60 * 1000).toISOString()
-  const { data, error } = await supabase.rpc('field_presence_window', {
-    p_workflow_ids: workflowIds,
-    p_since: since,
-  })
-  if (error) {
-    throw new Error(`field_presence_window read failed: ${error.message}`)
-  }
-  const rows = (data ?? []) as Record<string, unknown>[]
+  // Paged (#1437): one row per workflow per field, 172 on 2026-10-18 from four
+  // workflows, so a few more busy workflows reach the 1,000 row cap. The
+  // function groups by workflow and field, so that pair is a full order.
+  const rows = await fetchAllPaged<Record<string, unknown>>(
+    (from, to) =>
+      supabase
+        .rpc('field_presence_window', { p_workflow_ids: workflowIds, p_since: since })
+        .order('workflow_id', { ascending: true })
+        .order('field_path', { ascending: true })
+        .range(from, to),
+    'field_presence_window read',
+  )
   return rows.map((r) => ({
     workflow_id: r.workflow_id as string,
     field_path: r.field_path as string,

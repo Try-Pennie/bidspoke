@@ -26,8 +26,10 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { logReadFailure } from './scheduled-read'
 import { scheduledSlackFor } from './scheduled-slack'
-import { probeSlackConnectionsTable, readSlackConnectionRows } from './alert-fanout'
+import { probeSlackConnectionsTable, readEverySlackAlertRow } from './alert-fanout'
 import { formatErr } from './format-error'
+import { readActiveWorkflows, type ActiveWorkflowRow } from './active-workflows'
+import { readExecutionCountsPerMinute, type MinuteCount } from './execution-counts'
 import { getSlackConnection, postMessage } from './slack'
 import { announceRecovery, markAlerted, markSpikeSeen, recordPaged, RECOVERY_TTL_SECONDS, type IncidentContext, type RecoveryKv } from './alert-recovery'
 import { sendRecoveryAlert } from './slack'
@@ -238,38 +240,37 @@ export async function runVolumeCliffCheck(
   // the saved copy (#2250 review, L98): so every answered() below follows a read
   // the database itself answered, an empty answer included, and a tick that
   // could read nothing reports a failure, never an answered run.
-  const { data: slackOrgs, error: slackOrgsError } = await readSlackConnectionRows(supabase)
-  logReadFailure('volume-cliff', 'slack connections', slackOrgsError)
-  if (slackOrgsError) {
+  let slackOrgs: { organization_id: string }[]
+  try {
+    slackOrgs = await readEverySlackAlertRow(supabase)
+  } catch (slackOrgsError) {
+    logReadFailure('volume-cliff', 'slack connections', slackOrgsError)
     await failed('slack connections', slackOrgsError)
     return
   }
 
-  const slackOrgIds = (slackOrgs ?? []).map((c) => c.organization_id as string)
+  const slackOrgIds = slackOrgs.map((c) => c.organization_id)
   if (slackOrgIds.length === 0) {
     await answered()
     return
   }
 
-  const { data: workflows, error: workflowsError } = await supabase
-    .from('workflows')
-    .select('id, name, organization_id, slack_channel')
-    .in('organization_id', slackOrgIds)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-  logReadFailure('volume-cliff', 'workflows', workflowsError)
-  if (workflowsError) {
+  let workflows: Pick<ActiveWorkflowRow, 'id' | 'name' | 'organization_id' | 'slack_channel'>[]
+  try {
+    workflows = await readActiveWorkflows<Pick<ActiveWorkflowRow, 'id' | 'name' | 'organization_id' | 'slack_channel'>>(supabase, 'id, name, organization_id, slack_channel', 'volume-cliff workflows', slackOrgIds)
+  } catch (workflowsError) {
+    logReadFailure('volume-cliff', 'workflows', workflowsError)
     await failed('workflows', workflowsError)
     return
   }
 
-  if (!workflows?.length) {
+  if (!workflows.length) {
     await answered()
     return
   }
 
   const now = clock()
-  const workflowIds = workflows.map((w) => w.id as string)
+  const workflowIds = workflows.map((w) => w.id)
 
   // 60 wall-clock-minute buckets ending with the current (partial) minute at
   // index 59. windowStart is minute-aligned so the DB's date_trunc('minute', …)
@@ -283,12 +284,11 @@ export async function runVolumeCliffCheck(
   // sidesteps PostgREST's 1000-row page cap, which previously forced unordered
   // OFFSET pagination that silently dropped the newest rows (the trailing-5-min
   // window) and fired false cliff alerts.
-  const { data: counts, error: countsError } = await supabase.rpc('execution_counts_per_minute', {
-    p_workflow_ids: workflowIds,
-    p_since: windowStart,
-  })
-  if (countsError) {
-    console.error(`[volume-cliff] execution_counts_per_minute failed: ${countsError.message}`)
+  let rows: MinuteCount[]
+  try {
+    rows = await readExecutionCountsPerMinute(supabase, workflowIds, windowStart, 'execution_counts_per_minute')
+  } catch (countsError) {
+    console.error(`[volume-cliff] ${formatErr(countsError)}`)
     await failed('execution counts', countsError)
     return
   }
@@ -296,7 +296,6 @@ export async function runVolumeCliffCheck(
   // Every read answered. The database all-clear is the owner's to send, once the
   // probe and these reads have answered for its whole window (#2061).
   await answered()
-  const rows = (counts ?? []) as { workflow_id: string; minute: string; cnt: number | string }[]
   console.log(`[volume-cliff] fetched ${rows.length} minute-buckets across ${workflows.length} workflows`)
 
   const perWorkflow = new Map<string, number[]>()
@@ -319,12 +318,12 @@ export async function runVolumeCliffCheck(
   }
 
   for (const wf of workflows) {
-    const wfId = wf.id as string
+    const wfId = wf.id
     const bucket = perWorkflow.get(wfId)
     if (!bucket) continue
 
     const backoff = volumeCliffBackoffKey(wfId)
-    const incident: IncidentContext = { scope: { kind: 'org', organizationId: wf.organization_id as string }, subjectLabel: wf.name as string }
+    const incident: IncidentContext = { scope: { kind: 'org', organizationId: wf.organization_id }, subjectLabel: wf.name }
 
     const cliff = detectCliff(bucket)
     if (!cliff) {
@@ -340,14 +339,14 @@ export async function runVolumeCliffCheck(
         backoffCooldownKey(backoff),
         incident,
         async (alertedAt, endedAt) => {
-          const slack = await getSlackConnection(supabase, wf.organization_id as string)
+          const slack = await getSlackConnection(supabase, wf.organization_id)
           if (!slack || !slack.volume_alerts_enabled) return false
           return sendRecoveryAlert(
             slack,
-            (wf.slack_channel as string | null) ?? slack.default_channel,
+            wf.slack_channel ?? slack.default_channel,
             // Judges the trailing RECENT_WINDOW_MINUTES, so a one-tick cliff has a
             // zero span: name the window it measured, not a gap it did not (#1108).
-            { signal: 'volume cliff', subject: wf.name as string, alertedAt, endedAt, measuredWindowMinutes: RECENT_WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
+            { signal: 'volume cliff', subject: wf.name, alertedAt, endedAt, measuredWindowMinutes: RECENT_WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
           )
         },
         { hasEvidence: () => isVolumeRecovered(bucket) },
@@ -372,7 +371,7 @@ export async function runVolumeCliffCheck(
       continue
     }
 
-    const slack = await getSlackConnection(supabase, wf.organization_id as string)
+    const slack = await getSlackConnection(supabase, wf.organization_id)
     if (!slack || !slack.volume_alerts_enabled) {
       console.log(`[volume-cliff] no Slack / opted-out org=${wf.organization_id} workflow_id=${wfId}`)
       continue
@@ -396,11 +395,11 @@ export async function runVolumeCliffCheck(
 
     // Honor the per-workflow channel override, like every other alert path;
     // fall back to the org default (#110).
-    const channel = (wf.slack_channel as string | null) ?? slack.default_channel
+    const channel = wf.slack_channel ?? slack.default_channel
     const sent = await sendCliffAlert(slack, channel, {
       workflow_id: wfId,
-      workflow_name: wf.name as string,
-      organization_id: wf.organization_id as string,
+      workflow_name: wf.name,
+      organization_id: wf.organization_id,
       recent_count: cliff.recentCount,
       baseline_per_min: cliff.baselinePerMin,
     }, appUrl, selfCheck, repeat)

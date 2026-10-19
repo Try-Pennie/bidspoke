@@ -138,6 +138,8 @@ export function makeArchiveDouble(opts: {
         // been asserted as behaviour (L52).
         is() { return chain },
         order() { return chain },
+        // The workflow organizations read pages (#1437); one page answers it all.
+        range() { return chain },
         limit() { return chain },
         maybeSingle() { return Promise.resolve(resolve()) },
         // `single` unwraps to ONE row and a plain await yields the ARRAY. The

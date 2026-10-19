@@ -2,8 +2,9 @@
  * A buyer_profiles table double that APPLIES the equality filters a reader
  * chains, the way PostgREST does, so a test proves which rows a reader gets
  * back rather than which methods it happened to call (L63). Only `.from`,
- * `.select` and `.eq` are modelled; anything else throws, so a reader that
- * starts using another filter is noticed rather than silently unfiltered.
+ * `.select`, `.eq` and paging (`.order`, `.range`, #1437) are modelled; anything
+ * else throws, so a reader that starts using another filter is noticed rather
+ * than silently unfiltered.
  *
  * A filter on an embedded column (`organizations.is_synthetic`, #2135) removes
  * parent rows only when the select embeds that relation `!inner`, as PostgREST
@@ -24,6 +25,7 @@ export function profilesTableDouble(rows: ProfileTableRow[]): SupabaseClient {
       if (table !== 'buyer_profiles') throw new Error(`unexpected table ${table}`)
       const filters: Array<[string, unknown]> = []
       let selected = ''
+      let window: [number, number] | null = null
       const applies = (column: string) => {
         const dot = column.indexOf('.')
         return dot < 0 || selected.replace(/\s/g, '').includes(`${column.slice(0, dot)}!inner(`)
@@ -31,8 +33,13 @@ export function profilesTableDouble(rows: ProfileTableRow[]): SupabaseClient {
       const builder = {
         select: (columns: string) => { selected = columns; return builder },
         eq: (column: string, value: unknown) => { filters.push([column, value]); return builder },
-        then: (resolve: (v: { data: ProfileTableRow[]; error: null }) => void) =>
-          resolve({ data: rows.filter((r) => filters.every(([c, v]) => !applies(c) || valueAt(r, c) === v)), error: null }),
+        // The rows stay in the order given; the page is the window asked for.
+        order: () => builder,
+        range: (from: number, to: number) => { window = [from, to]; return builder },
+        then: (resolve: (v: { data: ProfileTableRow[]; error: null }) => void) => {
+          const matched = rows.filter((r) => filters.every(([c, v]) => !applies(c) || valueAt(r, c) === v))
+          resolve({ data: window ? matched.slice(window[0], window[1] + 1) : matched, error: null })
+        },
       }
       return builder
     },

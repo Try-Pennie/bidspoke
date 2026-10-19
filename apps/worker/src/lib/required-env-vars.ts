@@ -21,6 +21,8 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import type { Env } from '../index'
 import { sendRequiredEnvVarsAlert } from './slack'
+import { formatErr } from './format-error'
+import { fetchAllPaged } from './paginate'
 
 /** Non-secret config keys a production org cannot run live traffic without. */
 export const REQUIRED_ENV_VARS = [
@@ -44,6 +46,26 @@ export interface RequiredEnvVarsResult {
 }
 
 /**
+ * One org's non-secret global variables, paged by the primary key past
+ * PostgREST's 1,000 row cap (#1437), so a key past the cap is never reported
+ * missing. Throws on a failed page.
+ */
+export async function readOrgPlainGlobalVars(supabase: SupabaseClient, orgId: string): Promise<{ key: string; value: string | null }[]> {
+  return fetchAllPaged<{ key: string; value: string | null }>(
+    (from, to) =>
+      supabase
+        .from('environment_variables')
+        .select('key, value')
+        .eq('organization_id', orgId)
+        .eq('scope', 'global')
+        .is('is_secret', false)
+        .order('id', { ascending: true })
+        .range(from, to),
+    `environment_variables read for org ${orgId}`,
+  )
+}
+
+/**
  * Daily guard: for every org with a Slack connection, read its non-secret env
  * vars straight from the DB and alert if any required key is missing or blank.
  * Orgs with no non-secret env vars configured at all are skipped (an unconfigured
@@ -60,21 +82,15 @@ export async function runRequiredEnvVarsCheck(
   let alerted = false
 
   for (const orgId of orgIds) {
-    const { data, error } = await supabase
-      .from('environment_variables')
-      .select('key, value')
-      .eq('organization_id', orgId)
-      .eq('scope', 'global')
-      .is('is_secret', false)
-
-    if (error) {
+    let rows: { key: string; value: string | null }[]
+    try {
+      rows = await readOrgPlainGlobalVars(supabase, orgId)
+    } catch (error) {
       // Transient DB error: don't treat as missing (that's the #391 failure mode
       // inverted). Log and skip — the next daily run re-checks.
-      console.error(`[required-env-vars] load failed for org ${orgId}, skipping: ${(error as { message: string }).message}`)
+      console.error(`[required-env-vars] load failed for org ${orgId}, skipping: ${formatErr(error)}`)
       continue
     }
-
-    const rows = (data ?? []) as { key: string; value: string | null }[]
     if (rows.length === 0) continue // unconfigured tenant — nothing to assert
 
     const vars: Record<string, string> = {}

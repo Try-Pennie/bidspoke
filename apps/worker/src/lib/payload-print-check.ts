@@ -2,6 +2,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { findPayloadPrints, type PayloadPrint } from './payload-print-scan'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { formatErr } from './format-error'
+import { fetchAllPaged } from './paginate'
 import { isAccepted } from './payload-print-baseline'
 
 export const PAYLOAD_PRINT_JOB = 'code-node-payload-prints'
@@ -65,6 +66,22 @@ export interface PayloadPrintCheckDeps {
   notify?: (messages: string[], remedy?: AlertRemedy) => Promise<void>
 }
 
+/** Every undeleted workflow's definition, active or not, of every organization. Throws on a failed read. */
+export async function readLiveWorkflowDefinitions(supabase: SupabaseClient): Promise<Array<{ id: string; name: string; definition: unknown }>> {
+  // Paged by the primary key past PostgREST's 1,000 row cap (#1437).
+  return fetchAllPaged<{ id: string; name: string; definition: unknown }>(
+    (from, to) =>
+      supabase
+        .from('workflows')
+        .select('id, name, definition')
+        // Soft delete: tombstones are not live workflows and must not be scanned.
+        .is('deleted_at', null)
+        .order('id', { ascending: true })
+        .range(from, to),
+    'workflow definitions read',
+  )
+}
+
 /**
  * Daily scan for code nodes printing a whole object into the log stream (#1230).
  *
@@ -89,17 +106,7 @@ export async function checkPayloadPrints(
   const unreadable: string[] = []
   const findings: PayloadPrintFinding[] = []
 
-  const readWorkflows =
-    deps.readWorkflows ??
-    (async () => {
-      const { data, error } = await supabase
-        .from('workflows')
-        .select('id, name, definition')
-        // Soft delete: tombstones are not live workflows and must not be scanned.
-        .is('deleted_at', null)
-      if (error !== null) throw new Error(JSON.stringify(error))
-      return (data ?? []) as Array<{ id: string; name: string; definition: unknown }>
-    })
+  const readWorkflows = deps.readWorkflows ?? (() => readLiveWorkflowDefinitions(supabase))
 
   try {
     const rows = await readWorkflows()

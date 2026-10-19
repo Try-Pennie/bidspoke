@@ -32,6 +32,8 @@ import type { Env } from '../index'
 import { rowReach } from './env-loader'
 import { decryptSecret, secretKeys, type SecretKeyInput } from './secret-crypto'
 import { getSlackConnection, sendSecretDecryptAlert } from './slack'
+import { formatErr } from './format-error'
+import { fetchAllPaged } from './paginate'
 
 interface EmbeddedWorkflow {
   name: string
@@ -81,6 +83,21 @@ export interface SecretDecryptHealthResult {
   skipped?: string
 }
 
+/** Every organization's secret variables, with the workflow each is scoped to. Throws on a failed read. */
+export async function readSecretRows(supabase: SupabaseClient): Promise<SecretRow[]> {
+  // Paged by the primary key past PostgREST's 1,000 row cap (#1437).
+  return fetchAllPaged<SecretRow>(
+    (from, to) =>
+      supabase
+        .from('environment_variables')
+        .select('key, value, organization_id, scope, workflow_id, workflows(name, deleted_at)')
+        .eq('is_secret', true)
+        .order('id', { ascending: true })
+        .range(from, to),
+    'environment_variables secrets read',
+  )
+}
+
 export async function runSecretDecryptHealthCheck(
   supabase: SupabaseClient,
   env: Env,
@@ -91,21 +108,19 @@ export async function runSecretDecryptHealthCheck(
     return { checked: 0, undecryptable: 0, alerted: false, skipped: 'no-encryption-key' }
   }
 
-  const { data, error } = await supabase
-    .from('environment_variables')
-    .select('key, value, organization_id, scope, workflow_id, workflows(name, deleted_at)')
-    .eq('is_secret', true)
-
-  if (error) {
+  let secrets: SecretRow[]
+  try {
+    secrets = await readSecretRows(supabase)
+  } catch (error) {
     // A transient DB error must never raise a false alert (the #391 outage shape,
     // inverted). Log and skip: the next daily run re-checks.
-    console.error(`[secret-decrypt-health] load failed, skipping: ${error.message}`)
+    console.error(`[secret-decrypt-health] load failed, skipping: ${formatErr(error)}`)
     return { checked: 0, undecryptable: 0, alerted: false, skipped: 'db-error' }
   }
 
   // A workflow scoped secret counts only while its workflow can still run, and
   // only when it names one, which is the set the loader hands a run (#1681).
-  const rows = ((data ?? []) as SecretRow[]).filter((row) => {
+  const rows = secrets.filter((row) => {
     const reach = rowReach(row)
     return reach === 'org' || (reach === 'workflow' && !embeddedWorkflow(row)?.deleted_at)
   })

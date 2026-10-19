@@ -40,7 +40,7 @@ function fakeSupabase(
       if (table === 'service_connections') {
         return { select: () => alertRowListAnswer({ data: orgRows, error: null }) }
       }
-      // environment_variables: select().eq(org).eq(scope).is(is_secret)
+      // environment_variables: select().eq(org).eq(scope).is(is_secret).order(id).range(page)
       let orgId = ''
       const result = () =>
         errorOrgs.includes(orgId)
@@ -51,7 +51,10 @@ function fakeSupabase(
           if (col === 'organization_id') orgId = val
           return chain
         },
-        is: () => result(),
+        is: () => chain,
+        // Paged past the row cap (#1437); one page answers it all.
+        order: () => chain,
+        range: () => result(),
       }
       return { select: () => chain }
     },

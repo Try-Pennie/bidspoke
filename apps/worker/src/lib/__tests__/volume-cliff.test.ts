@@ -22,6 +22,7 @@ import { encryptSecret } from '../secret-crypto'
 import { recoveryKey, RECOVERY_TTL_SECONDS } from '../alert-recovery'
 import { BACKOFF_STEPS_SECONDS } from '../alert-backoff'
 import type { AlertClaims } from '../alert-claim'
+import { rpcAnswer } from '../../__tests__/helpers/rpc-answer'
 
 // A real 32 byte key so the last-good copy is exercised through the real cipher.
 const TEST_KEY = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)))
@@ -139,6 +140,8 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
           : [{ id: WF, name: 'Main Flow', organization_id: ORG, slack_channel: null }]
       const builder: Record<string, unknown> = {
         select: () => builder,
+        order: () => builder,
+        range: () => builder,
         eq: () => builder,
         or: () => builder,
         in: () => builder,
@@ -151,7 +154,7 @@ describe('runVolumeCliffCheck recovery (#253)', () => {
     }
     return {
       from,
-      rpc: () => Promise.resolve({ data: perMinute.map((m) => ({ workflow_id: WF, ...m })), error: null }),
+      rpc: () => rpcAnswer({ data: perMinute.map((m) => ({ workflow_id: WF, ...m })), error: null }),
     } as unknown as Parameters<typeof runVolumeCliffCheck>[0]
   }
 
@@ -352,7 +355,7 @@ describe('runVolumeCliffCheck logs a failed read (#439)', () => {
         })
         return chain
       },
-      rpc: () => Promise.resolve({ data: [], error: null }),
+      rpc: () => rpcAnswer({ data: [], error: null }),
     } as unknown as Parameters<typeof runVolumeCliffCheck>[0]
   }
 
@@ -399,14 +402,14 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
           ? [{ organization_id: ORG, config: { bot_token: CONN.bot_token, default_channel: CONN.default_channel } }]
           : [{ id: WF, name: 'Main Flow', organization_id: ORG, slack_channel: null }]
       const builder: Record<string, unknown> = {
-        select: () => builder, eq: () => builder, or: () => builder, in: () => builder, is: () => builder, limit: () => builder, abortSignal: () => builder,
+        select: () => builder, order: () => builder, range: () => builder, eq: () => builder, or: () => builder, in: () => builder, is: () => builder, limit: () => builder, abortSignal: () => builder,
         then: (res: (v: { data: unknown[]; error: null }) => unknown) => res({ data: rows, error: null }),
       }
       return builder
     }
     return {
       from,
-      rpc: () => Promise.resolve({ data: null, error: { message: 'connection refused', code: '08006' } }),
+      rpc: () => rpcAnswer({ data: null, error: { message: 'connection refused', code: '08006' } }),
     } as unknown as Parameters<typeof runVolumeCliffCheck>[0]
   }
 
@@ -423,7 +426,7 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
     })
     return {
       from: () => chain,
-      rpc: () => Promise.resolve({ data: null, error: { message: 'connection refused', code: '08006' } }),
+      rpc: () => rpcAnswer({ data: null, error: { message: 'connection refused', code: '08006' } }),
     } as unknown as Parameters<typeof runVolumeCliffCheck>[0]
   }
 
@@ -437,14 +440,14 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
           ? slackRows
           : [{ id: WF, name: 'Main Flow', organization_id: ORG, slack_channel: null }]
       const builder: Record<string, unknown> = {
-        select: () => builder, eq: () => builder, or: () => builder, in: () => builder, is: () => builder, limit: () => builder, abortSignal: () => builder,
+        select: () => builder, order: () => builder, range: () => builder, eq: () => builder, or: () => builder, in: () => builder, is: () => builder, limit: () => builder, abortSignal: () => builder,
         then: (res: (v: { data: unknown[]; error: null }) => unknown) => res({ data: rows, error: null }),
       }
       return builder
     }
     return {
       from,
-      rpc: () => Promise.resolve({ data: minutes.map((m) => ({ workflow_id: WF, ...m })), error: null }),
+      rpc: () => rpcAnswer({ data: minutes.map((m) => ({ workflow_id: WF, ...m })), error: null }),
     } as unknown as Parameters<typeof runVolumeCliffCheck>[0]
   }
 
@@ -482,7 +485,7 @@ describe('runVolumeCliffCheck during a database outage (#1297)', () => {
 
   // #2250 review (L98): a run that never read the database must not feed the
   // owner's all-clear. The organization list is read straight from the
-  // database (readSlackConnectionRows), never through the scheduled lookup, so
+  // database (readEverySlackAlertRow), never through the scheduled lookup, so
   // even on the scheduled client with a saved copy present a failed read gives
   // no list to stand on: the run reports a failure and no answered run, and an
   // earlier unbroken run of answers is broken, which holds the all-clear.
@@ -681,14 +684,14 @@ describe('runVolumeCliffCheck posts once per claim (#1298)', () => {
           ? [{ organization_id: ORG, config: { bot_token: CONN.bot_token, default_channel: CONN.default_channel } }]
           : [{ id: WF, name: 'Main Flow', organization_id: ORG, slack_channel: null }]
       const builder: Record<string, unknown> = {
-        select: () => builder, eq: () => builder, or: () => builder, in: () => builder, is: () => builder, limit: () => builder, abortSignal: () => builder,
+        select: () => builder, order: () => builder, range: () => builder, eq: () => builder, or: () => builder, in: () => builder, is: () => builder, limit: () => builder, abortSignal: () => builder,
         then: (res: (v: { data: unknown[]; error: null }) => unknown) => res({ data: rows, error: null }),
       }
       return builder
     }
     return {
       from,
-      rpc: () => Promise.resolve({ data: minutes.map((m) => ({ workflow_id: WF, ...m })), error: null }),
+      rpc: () => rpcAnswer({ data: minutes.map((m) => ({ workflow_id: WF, ...m })), error: null }),
     } as unknown as Parameters<typeof runVolumeCliffCheck>[0]
   }
 
@@ -704,7 +707,7 @@ describe('runVolumeCliffCheck posts once per claim (#1298)', () => {
     })
     return {
       from: () => chain,
-      rpc: () => Promise.resolve({ data: null, error: { message: 'connection refused', code: '08006' } }),
+      rpc: () => rpcAnswer({ data: null, error: { message: 'connection refused', code: '08006' } }),
     } as unknown as Parameters<typeof runVolumeCliffCheck>[0]
   }
 

@@ -5,14 +5,8 @@
   "lib/achieve-export.ts": {
     "execution_steps": 1
   },
-  "lib/alert-fanout.ts": {
-    "service_connections": 2
-  },
   "lib/archive-gate.ts": {
     "execution_archive_days": 2
-  },
-  "lib/bid-matrix-sync.ts": {
-    "partner_bid_configs": 1
   },
   "lib/buyer-profile-loader.ts": {
     "buyer_profiles": 1
@@ -20,21 +14,6 @@
   "lib/buyer-sale-drain.ts": {
     "buyer_profiles": 1,
     "buyer_sales": 1
-  },
-  "lib/buyer-sales-checks.ts": {
-    "buyer_profiles": 1
-  },
-  "lib/cache-prewarm.ts": {
-    "workflows": 1
-  },
-  "lib/execution-archive.ts": {
-    "workflows": 1
-  },
-  "lib/failure-rate.ts": {
-    "workflows": 1
-  },
-  "lib/field-presence-anomaly.ts": {
-    "workflows": 1
   },
   "lib/held-click-sale-writes.ts": {
     "execution_steps": 1
@@ -46,14 +25,8 @@
     "partner_configs": 1,
     "partner_uuid_map": 1
   },
-  "lib/payload-print-check.ts": {
-    "workflows": 1
-  },
   "lib/replayed-executions.ts": {
     "workflow_executions": 1
-  },
-  "lib/required-env-vars.ts": {
-    "environment_variables": 1
   },
   "lib/salesforce-creds.ts": {
     "environment_variables": 1
@@ -61,34 +34,11 @@
   "lib/salesforce-read-back.ts": {
     "workflows": 1
   },
-  "lib/secret-decrypt-health.ts": {
-    "environment_variables": 1
-  },
-  "lib/secret-drift.ts": {
-    "environment_variables": 1
-  },
-  "lib/secret-reencrypt.ts": {
-    "app_settings": 1,
-    "environment_variables": 1,
-    "service_connections": 1
-  },
   "lib/slack.ts": {
     "service_connections": 1
   },
-  "lib/slow-execution-rate.ts": {
-    "workflows": 1
-  },
   "lib/stored-copy-sweep.ts": {
     "partner_configs": 1,
-    "workflows": 1
-  },
-  "lib/upstream-outage.ts": {
-    "workflows": 1
-  },
-  "lib/volume-anomaly.ts": {
-    "workflows": 1
-  },
-  "lib/volume-cliff.ts": {
     "workflows": 1
   },
   "lib/writeback-replay.ts": {

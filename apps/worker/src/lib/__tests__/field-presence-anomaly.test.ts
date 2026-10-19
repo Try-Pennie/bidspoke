@@ -15,6 +15,7 @@ vi.mock('../export-alerts', () => ({
 import { getSlackConnection, postMessage, sendRecoveryAlert, sendGroupedRecoveryAlert } from '../slack'
 import { notifyExportFailure, notifyExportRecovery } from '../export-alerts'
 import type { PresenceRow, RecentPresence } from '../field-presence-anomaly'
+import { rpcAnswer } from '../../__tests__/helpers/rpc-answer'
 import {
   dailyRate, mean, stddev, isStableBaseline, detectDrought, detectDayOneDead,
   findDroughts, excludeSilenced, MIN_WINDOW_SAMPLE, DEAD_MIN_RUNS, DEAD_MIN_DAYS,
@@ -378,7 +379,7 @@ describe('runFieldPresence*Check on a failing rollup read', () => {
         field_presence_daily: { data: [], error: null },
         field_presence_silences: { data: [], error: null },
       }),
-      rpc: () => Promise.resolve({ data: null, error: { message: 'statement timeout' } }),
+      rpc: () => rpcAnswer({ data: null, error: { message: 'statement timeout' } }),
     }
     await expect(runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)).rejects.toThrow(
       /field_presence_window/,
@@ -394,7 +395,7 @@ describe('runFieldPresence*Check on a failing rollup read', () => {
         field_presence_daily: { data: [], error: null },
         field_presence_silences: { data: [], error: null },
       }),
-      rpc: () => Promise.resolve({ data: [], error: null }),
+      rpc: () => rpcAnswer({ data: [], error: null }),
     }
     await expect(runFieldPresenceDroughtCheck(supabase as never, makeKv(), APP_URL)).resolves.toBeUndefined()
     await expect(runFieldPresenceDeadCheck(supabase as never, makeKv(), APP_URL)).resolves.toBeUndefined()
@@ -793,7 +794,7 @@ describe('field-presence alerting', () => {
       // the detector reading an empty window and calling everything unjudged.
       rpc: (name: string) => {
         if (name !== 'field_presence_window') throw new Error(`unexpected rpc: ${name}`)
-        return Promise.resolve({ data: f.window, error: null })
+        return rpcAnswer({ data: f.window, error: null })
       },
     }
   }
@@ -1027,7 +1028,7 @@ describe('field-presence alerting', () => {
           })
           return chain
         },
-        rpc: () => Promise.resolve({ data: f.window, error: null }),
+        rpc: () => rpcAnswer({ data: f.window, error: null }),
       }
     }
 
@@ -1591,7 +1592,7 @@ describe('the daily dead run, narrowed (#2018, #1803)', () => {
         })
         return chain
       },
-      rpc: () => Promise.resolve({ data: [], error: null }),
+      rpc: () => rpcAnswer({ data: [], error: null }),
     }
   }
 

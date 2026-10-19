@@ -18,6 +18,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../index'
 import { listCfSecretNames } from './cf-secrets'
 import { getSlackConnection, sendSecretDriftAlert } from './slack'
+import { fetchAllPaged } from './paginate'
 
 export interface DbSecret {
   key: string
@@ -43,6 +44,21 @@ export interface SecretDriftResult {
   skipped?: string
 }
 
+/** Every organization's secret variable names and scopes. Throws on a failed read. */
+export async function readDbSecrets(supabase: SupabaseClient): Promise<DbSecret[]> {
+  // Paged by the primary key past PostgREST's 1,000 row cap (#1437).
+  return fetchAllPaged<DbSecret>(
+    (from, to) =>
+      supabase
+        .from('environment_variables')
+        .select('key, scope, workflow_id, organization_id')
+        .eq('is_secret', true)
+        .order('id', { ascending: true })
+        .range(from, to),
+    'environment_variables query',
+  )
+}
+
 export async function runSecretDriftCheck(
   supabase: SupabaseClient,
   env: Env
@@ -50,13 +66,7 @@ export async function runSecretDriftCheck(
   const cfNames = await listCfSecretNames(env.CLOUDFLARE_ACCOUNT_ID, env.CLOUDFLARE_API_TOKEN)
   if (cfNames === null) return { checked: 0, missing: 0, alerted: false, skipped: 'cf-not-configured' }
 
-  const { data, error } = await supabase
-    .from('environment_variables')
-    .select('key, scope, workflow_id, organization_id')
-    .eq('is_secret', true)
-  if (error) throw new Error(`environment_variables query failed: ${error.message}`)
-
-  const dbSecrets = (data ?? []) as DbSecret[]
+  const dbSecrets = await readDbSecrets(supabase)
   const missing = findMissingSecrets(dbSecrets, cfNames)
   if (missing.length === 0) return { checked: dbSecrets.length, missing: 0, alerted: false }
 

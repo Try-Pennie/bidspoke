@@ -20,7 +20,8 @@ type Answer = { data: unknown; error: unknown }
  */
 export function alertRowListAnswer(answer: Answer | Promise<Answer>): PromiseLike<Answer> {
   const builder: Record<string, unknown> = {}
-  for (const m of ['eq', 'or', 'retry', 'abortSignal']) builder[m] = () => builder
+  // `order` and `range`: the read pages past the row cap (#1437); one page answers it all.
+  for (const m of ['eq', 'or', 'order', 'range', 'retry', 'abortSignal']) builder[m] = () => builder
   builder.then = (resolve?: (v: Answer) => unknown, reject?: (e: unknown) => unknown) => Promise.resolve(answer).then(resolve, reject)
   return builder as unknown as PromiseLike<Answer>
 }

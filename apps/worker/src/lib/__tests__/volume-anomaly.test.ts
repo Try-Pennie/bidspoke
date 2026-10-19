@@ -213,6 +213,8 @@ function makeSupabase(statsRows: { workflow_id: string; day: string; run_count: 
         // org's connection ends in .limit(2).
         const chain: Record<string, unknown> = {
           select: () => chain,
+          order: () => chain,
+          range: () => chain,
           eq: () => chain,
           or: () => chain,
           limit: () => Promise.resolve({ data: [{ config: { bot_token: 'xoxb', default_channel: '#alerts' } }], error: null }),
@@ -221,7 +223,11 @@ function makeSupabase(statsRows: { workflow_id: string; day: string; run_count: 
         return chain
       }
       if (table === 'workflows') {
-        return { select: () => ({ in: () => ({ eq: () => ({ is: async () => ({ data: [{ id: 'wf-1', organization_id: 'org-1' }], error: null }) }) }) }) }
+        // Paged with a full order (#1437); one page answers it all.
+        const wf: Record<string, unknown> = {}
+        for (const m of ['select', 'in', 'eq', 'is', 'order', 'range']) wf[m] = () => wf
+        wf.then = (resolve: (v: unknown) => void) => resolve({ data: [{ id: 'wf-1', organization_id: 'org-1' }], error: null })
+        return wf
       }
       if (table === 'workflow_stats_daily') {
         return { select: () => ({ in: () => ({ gte: () => ({ eq: () => terminal() }) }) }) }

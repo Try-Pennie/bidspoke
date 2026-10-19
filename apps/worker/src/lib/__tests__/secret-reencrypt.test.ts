@@ -224,7 +224,7 @@ describe('reencryptSecrets', () => {
     const { keys } = await setup()
     const broken = {
       from: () => ({
-        select: () => ({ eq: () => ({ then: (r: (v: unknown) => void) => r({ data: null, error: { message: 'boom' } }) }) }),
+        select: () => ({ eq: () => ({ order: () => ({ range: () => ({ then: (r: (v: unknown) => void) => r({ data: null, error: { message: 'boom' } }) }) }) }) }),
       }),
     }
     await expect(reencryptSecrets(broken as never, keys, { dryRun: true })).rejects.toThrow(/boom/)

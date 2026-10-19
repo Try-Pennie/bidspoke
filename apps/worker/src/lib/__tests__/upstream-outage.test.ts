@@ -19,6 +19,7 @@ import {
 } from '../upstream-outage'
 import { sendUpstreamOutageAlert, sendFailureSaturationAlert } from '../slack'
 import { claimLedger, gate, overlap } from './_claims-double'
+import { rpcAnswer } from '../../__tests__/helpers/rpc-answer'
 
 describe('classifyOutageCause (#331)', () => {
   it('classifies Salesforce 5xx and concurrency-governor errors as the salesforce cause', () => {
@@ -266,7 +267,7 @@ function makeSupabase(tables: Record<string, unknown[]>) {
     // denominator silently empty and every workflow unjudged.
     rpc: (name: string) => {
       if (name !== 'execution_counts_per_minute') throw new Error(`unexpected rpc: ${name}`)
-      return Promise.resolve({ data: tables.__runTotals ?? [], error: null })
+      return rpcAnswer({ data: tables.__runTotals ?? [], error: null })
     },
     from: (table: string) => {
       const data = tables[table] ?? []

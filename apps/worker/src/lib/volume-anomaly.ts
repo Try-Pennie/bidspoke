@@ -30,6 +30,7 @@ import { orgIdsToTell, slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
 import { getSlackConnection, postMessage } from './slack'
 import { fetchAllPaged } from './paginate'
+import { readActiveWorkflows, type ActiveWorkflowRow } from './active-workflows'
 
 export const DEFAULT_LOW_THRESHOLD_PCT = 50
 export const DEFAULT_HIGH_THRESHOLD_PCT = 200
@@ -106,19 +107,18 @@ export async function runVolumeAnomalyCheck(
   if (orgIds.length === 0) return
 
   // 2. Get workflow IDs for those orgs
-  const { data: workflows, error: workflowsError } = await supabase
-    .from('workflows')
-    .select('id, organization_id')
-    .in('organization_id', orgIds)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-  logReadFailure('volume-anomaly', 'workflows', workflowsError)
+  let workflows: Pick<ActiveWorkflowRow, 'id' | 'organization_id'>[] = []
+  try {
+    workflows = await readActiveWorkflows<Pick<ActiveWorkflowRow, 'id' | 'organization_id'>>(supabase, 'id, organization_id', 'volume-anomaly workflows', orgIds)
+  } catch (error) {
+    logReadFailure('volume-anomaly', 'workflows', error)
+  }
 
   const wfToOrg: Record<string, string> = {}
   const orgWorkflowIds: Record<string, string[]> = {}
-  for (const wf of workflows ?? []) {
-    const wfId = wf.id as string
-    const orgId = wf.organization_id as string
+  for (const wf of workflows) {
+    const wfId = wf.id
+    const orgId = wf.organization_id
     wfToOrg[wfId] = orgId
     if (!orgWorkflowIds[orgId]) orgWorkflowIds[orgId] = []
     orgWorkflowIds[orgId].push(wfId)
