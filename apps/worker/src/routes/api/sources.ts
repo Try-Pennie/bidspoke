@@ -4,7 +4,7 @@
 //                              power the Sources page reveal/copy + curl example.
 //                              Intra-org visibility is acceptable for this team.
 // POST   /api/sources        — create new source, returns the new api_key
-// DELETE /api/sources/:name   revoke the key of a source (one per name: api_sources is UNIQUE organization_id, name)
+// DELETE /api/sources/:name  (revokes the key of a source; one per name, as api_sources is UNIQUE organization_id, name)
 
 import { Hono } from 'hono'
 import type { Context } from 'hono'

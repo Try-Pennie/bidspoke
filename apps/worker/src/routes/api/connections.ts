@@ -36,7 +36,7 @@ const connections = new Hono<{ Bindings: Env; Variables: Variables }>()
 /**
  * The most connections GET /api/connections lists (#1437). Today the store
  * holds at most one row per organization and service type (UNIQUE
- * organization_id, service_type), so three of these types; measured
+ * organization_id, service_type), so at most three rows here; measured
  * 2026-10-18 the largest organization holds none. Release 2 of #2332 allows
  * several named rows of a type, and 100 leaves room for that while staying far
  * under PostgREST's 1,000 row cap. The read asks for one more, so a cut answer
