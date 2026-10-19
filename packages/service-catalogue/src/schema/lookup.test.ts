@@ -18,7 +18,12 @@ describe('resolveActionVersion', () => {
     const v2 = resolveActionVersion(FIXTURE_RUNTIME_ACTIONS, 'fixture.echo', 2)
     if (!v1.ok || !v2.ok) throw new Error('both fixture versions must resolve')
 
-    const ctx = { fetch: () => Promise.reject(new Error('the fixture makes no call')), signal: new AbortController().signal }
+    const ctx = {
+      fetch: () => Promise.reject(new Error('the fixture makes no call')),
+      signal: new AbortController().signal,
+      target: null,
+      sleep: () => Promise.reject(new Error('the fixture never waits')),
+    }
     const outV1 = await v1.action.run(ctx, { text: 'hi' })
     const outV2 = await v2.action.run(ctx, { text: 'hi' })
     expect(outV1).toEqual({ echo: 'hi' })
