@@ -1,7 +1,8 @@
 /**
  * The wording of the Salesforce read-back's alerts (#2023): a plain title, short
  * full sentences, times in ET, the record and the field names a write set, and
- * never a value, which is lead data.
+ * no value, which is lead data, except the two values of a field a conflict
+ * alert left out (#2264), so a person can decide without opening the run.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { composeSalesforceReadBackAlert, NAMED_WRITES, type ReadBackAlertWrite, type SalesforceReadBackAlert } from '../salesforce-read-back-alert'
@@ -69,6 +70,69 @@ describe('composeSalesforceReadBackAlert', () => {
     expect(text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], resent: false })] })).toContain(
       'Bidspoke did not send it again, because every field it set on Prospect a06Ui00002sLkNuIAK (BidStatus__c) already held a different value.',
     )
+  })
+
+  describe('a conflict carrying the values the tick read (#2264)', () => {
+    const changed = { field: 'BidStatus__c', held: 'Won Bid', sending: 'Rejected', history: 'changed' as const, changed_at: '2026-10-15T00:31:00.000Z' }
+
+    it('names the value Salesforce held, the value Bidspoke was sending, and when the field history says it changed', () => {
+      const c = composeSalesforceReadBackAlert({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], conflict_values: [changed], resent: true })] }, APP)
+      expect(c.sections).toEqual([
+        'Engine Bidding Workflow answered a lead at 8:29 PM ET, and a Salesforce update after the answer did not land. Bidspoke sent it again, leaving out BidStatus__c, because that field already held a different value. It updated Prospect a06Ui00002sLkNuIAK with the rest.',
+        'BidStatus__c held "Won Bid" where Bidspoke was sending "Rejected". Its Salesforce history shows it was changed at 8:31 PM ET on Oct 14, after the update began.',
+        'Fix: open that Prospect in Salesforce and decide whether BidStatus__c should keep "Won Bid" or be set to "Rejected".',
+        `<${APP}/workflows/wf-1?execution=01a13cf7-0191-7dc3-aada-59ceeacc1616|View the run →>`,
+      ])
+    })
+
+    it('does not claim a change stamped within two seconds of the update\'s start came after it', () => {
+      // Salesforce stamps whole seconds on its own clock; the update began at 00:29:54.
+      const near = text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], conflict_values: [{ ...changed, changed_at: '2026-10-15T00:29:55.000Z' }], resent: true })] })
+      expect(near).toContain('Its Salesforce history shows it was changed at 8:29 PM ET on Oct 14, within two seconds of when the update began, too close to tell which came first.')
+      expect(near).not.toContain('after the update began')
+      const clear = text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], conflict_values: [{ ...changed, changed_at: '2026-10-15T00:29:56.000Z' }], resent: true })] })
+      expect(clear).toContain('changed at 8:29 PM ET on Oct 14, after the update began.')
+    })
+
+    it('says when the field keeps no history, or its history could not be read, so who set it could not be checked', () => {
+      const notKept = text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], conflict_values: [{ field: 'BidStatus__c', held: 'No Bid', sending: 'Rejected', history: 'not_kept' }], resent: true })] })
+      expect(notKept).toContain('BidStatus__c held "No Bid" where Bidspoke was sending "Rejected". Salesforce keeps no history of that field, so whether another writer set it could not be checked.')
+      const notChecked = text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], conflict_values: [{ field: 'BidStatus__c', held: 'No Bid', sending: 'Rejected', history: 'not_checked' }], resent: true })] })
+      expect(notChecked).toContain("Bidspoke does not read Salesforce's field history for that kind of record, so whether another writer set it could not be checked.")
+      expect(notChecked).not.toContain('Salesforce keeps no history')
+      const unread = text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], conflict_values: [{ field: 'BidStatus__c', held: 'No Bid', sending: 'Rejected', history: 'unread' }], resent: true })] })
+      expect(unread).toContain('Its Salesforce history could not be read, so whether another writer set it could not be checked.')
+    })
+
+    it('quotes a blank as nothing, a number bare, and cuts a long value short', () => {
+      const t = text({
+        kind: 'conflict',
+        writes: [write({ conflict_fields: ['A__c', 'B__c'], conflict_values: [
+          { field: 'A__c', held: 1200, sending: null, history: 'not_kept' },
+          { field: 'B__c', held: 'x'.repeat(200), sending: '<b>', history: 'not_kept' },
+        ], resent: false })],
+      })
+      expect(t).toContain('A__c held 1200 where Bidspoke was sending nothing.')
+      expect(t).toContain(`B__c held "${'x'.repeat(80)}..." where Bidspoke was sending "&lt;b&gt;".`)
+      expect(t).toContain('decide, for each of those fields, whether it should keep the value it holds or be set to the one Bidspoke was sending.')
+    })
+
+    it('puts the values on each write\'s line when it names several', () => {
+      const t = text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], conflict_values: [changed], resent: true }), write({ conflict_fields: ['BidStatus__c'], resent: true })] })
+      expect(t).toContain('It updated Prospect a06Ui00002sLkNuIAK with the rest. BidStatus__c held "Won Bid" where Bidspoke was sending "Rejected".')
+      expect(t).not.toMatch(DASHES)
+    })
+
+    it('says a field\'s values are not quoted when the read-back did not quote them, and points at the run for them', () => {
+      const t = text({ kind: 'conflict', writes: [write({ conflict_fields: ['RejectionReason__c'], conflict_values: [{ field: 'RejectionReason__c', history: 'not_kept' }], resent: true })] })
+      expect(t).toContain("RejectionReason__c held a different value from the one Bidspoke was sending, not quoted here because a field of its kind can hold a lead's personal data. Salesforce keeps no history of that field")
+      expect(t).toContain('The run below shows the values Bidspoke was sending, if its step was recorded.')
+      expect(t).not.toContain('undefined')
+    })
+
+    it('goes without them, as before, when an alert sent again on a later tick no longer has them', () => {
+      expect(text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], resent: true })] })).toContain('The run below shows the values Bidspoke was sending, if its step was recorded.')
+    })
   })
 
   it('unread writes say how many, the oldest, and why they were not read', () => {
