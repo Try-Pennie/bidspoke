@@ -13,7 +13,8 @@
  */
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { archiveHealth, hoursBehindWatermark, ARCHIVE_JOBS } from '../archive-health'
+import { archiveHealth, hoursBehindWatermark, ARCHIVE_JOBS, COVERAGE_HOUR_ROWS_MAX } from '../archive-health'
+import { RETENTION_DAYS } from '../../archive/candidate-days'
 import type { Env } from '../../index'
 
 const NOW = new Date('2026-09-10T12:00:00.000Z')
@@ -38,6 +39,7 @@ function supabaseDouble(tables: Record<string, TableData>, rpcError?: { message:
         select() { return chain },
         eq() { return chain },
         gte() { return chain },
+        lte() { return chain },
         lt() { return chain },
         // PostgREST spells "column IS NOT NULL" as .not(col, 'is', null), and
         // the headroom read uses it (#1294). A double missing it does not answer
@@ -294,5 +296,167 @@ describe('hoursBehindWatermark', () => {
 
     expect(await hoursBehindWatermark(db.client, NOW)).toBeNull()
     expect(logged.mock.calls.flat().join(' ')).toMatch(/statement timeout/)
+  })
+})
+
+/**
+ * The coverage section against tables past PostgREST's row cap (#1437).
+ *
+ * `execution_archive_hours` held 1,531 rows on 2026-10-18 and nothing prunes it,
+ * and `execution_archive_days` gains a row a day for ever. A read of either with
+ * no bound in the query comes back as an arbitrary 1,000 of them, and a coverage
+ * report built from the wrong 1,000 says finished days are missing hours.
+ *
+ * So this double behaves the way PostgREST does on the points that matter: it
+ * applies the filters, the order and the limit the query actually asked for, and
+ * then answers at most 1,000 rows, in storage order when no order was given.
+ * Storage order here is oldest first, the order the rows were written in.
+ */
+const ROW_CAP = 1000
+
+function postgrestDouble(tables: Record<string, Array<Record<string, unknown>>>) {
+  return {
+    rpc: async () => ({ data: [], error: null }),
+    from(table: string) {
+      const filters: Array<(r: Record<string, unknown>) => boolean> = []
+      let order: Array<{ col: string; asc: boolean }> = []
+      let window: { from: number; to: number } | null = null
+      const run = () => {
+        let rows = (tables[table] ?? []).filter((r) => filters.every((f) => f(r)))
+        if (order.length > 0) {
+          rows = [...rows].sort((a, b) => {
+            for (const { col, asc } of order) {
+              const x = String(a[col])
+              const y = String(b[col])
+              if (x !== y) return (x < y ? -1 : 1) * (asc ? 1 : -1)
+            }
+            return 0
+          })
+        }
+        if (window) rows = rows.slice(window.from, window.to + 1)
+        return rows.slice(0, ROW_CAP)
+      }
+      const chain: Record<string, unknown> = {
+        select() { return chain },
+        eq(col: string, v: unknown) { filters.push((r) => r[col] === v); return chain },
+        gte(col: string, v: string) { filters.push((r) => String(r[col]) >= v); return chain },
+        gt(col: string, v: string) { filters.push((r) => String(r[col]) > v); return chain },
+        lte(col: string, v: string) { filters.push((r) => String(r[col]) <= v); return chain },
+        lt(col: string, v: string) { filters.push((r) => String(r[col]) < v); return chain },
+        not(col: string) { filters.push((r) => r[col] !== null && r[col] !== undefined); return chain },
+        order(col: string, opts?: { ascending?: boolean }) {
+          order = [...order, { col, asc: opts?.ascending !== false }]
+          return chain
+        },
+        limit(n: number) { window = { from: 0, to: n - 1 }; return chain },
+        range(from: number, to: number) { window = { from, to }; return chain },
+        maybeSingle() { return Promise.resolve({ data: run()[0] ?? null, error: null }) },
+        then(res: (v: unknown) => unknown) { return Promise.resolve({ data: run(), error: null }).then(res) },
+      }
+      return chain
+    },
+  } as unknown as SupabaseClient
+}
+
+const HOUR_MS = 3_600_000
+const DAY_MS = 86_400_000
+
+/** One row per hour, oldest first, ending with the hour before `end`. */
+function hourRows(count: number, end: Date) {
+  return Array.from({ length: count }, (_, i) => {
+    const hourStart = new Date(end.getTime() - (count - i) * HOUR_MS).toISOString()
+    return { hour_start: hourStart, archive_day: hourStart.slice(0, 10), execution_count: 10, step_count: 100 }
+  })
+}
+
+/** One row per day, oldest first, ending with the day of `end`. */
+function dayRows(count: number, end: Date) {
+  return Array.from({ length: count }, (_, i) => {
+    const day = new Date(end.getTime() - (count - 1 - i) * DAY_MS).toISOString().slice(0, 10)
+    return { archive_day: day, pg_execution_count: 240, sf_execution_count: 240, hours_execution_count: 240 }
+  })
+}
+
+/** An execution on each of the report's days, so Postgres holds all of them. */
+const WINDOW_DAYS = ['2026-09-02', '2026-09-03', '2026-09-04', '2026-09-05', '2026-09-06', '2026-09-07', '2026-09-08', '2026-09-09', '2026-09-10']
+const EXECUTIONS = WINDOW_DAYS.map((d, i) => ({ id: `e${i}`, started_at: `${d}T05:00:00.000Z` }))
+
+describe('archiveHealth coverage past the row cap (#1437)', () => {
+  it('counts the recorded hours of the days it reports when the table holds 1,500 hours', async () => {
+    // 1,500 contiguous hours ending at 11:00 today. The oldest 1,000 of them end
+    // on 2026-08-20, so a read with no bound sees none of the report's days.
+    const db = postgrestDouble({
+      execution_archive_hours: hourRows(1500, NOW),
+      execution_archive_days: dayRows(9, NOW),
+      workflow_executions: EXECUTIONS,
+    })
+
+    const health = await archiveHealth(envWith(null), db, { now: () => NOW })
+
+    if ('error' in health.days) throw new Error(`coverage failed to read: ${health.days.error}`)
+    expect(health.days.map((d) => d.day)).toEqual(WINDOW_DAYS)
+    // Every finished day complete, and today's twelve hours so far.
+    expect(health.days.map((d) => d.hoursRecorded)).toEqual([24, 24, 24, 24, 24, 24, 24, 24, 12])
+    if ('error' in health.backlog) throw new Error('backlog failed to read')
+    expect(health.backlog.hoursOutstanding).toBe(0)
+  })
+
+  it('finds the measurements of the days it reports when the table holds 1,500 days', async () => {
+    // A row a day since mid 2022: the oldest 1,000 end in 2025.
+    const db = postgrestDouble({
+      execution_archive_hours: hourRows(9 * 24, NOW),
+      execution_archive_days: dayRows(1500, NOW),
+      workflow_executions: EXECUTIONS,
+    })
+
+    const health = await archiveHealth(envWith(null), db, { now: () => NOW })
+
+    if ('error' in health.days) throw new Error(`coverage failed to read: ${health.days.error}`)
+    expect(health.days.map((d) => d.pgExecutions)).toEqual(WINDOW_DAYS.map(() => 240))
+    expect(health.days.map((d) => d.sfExecutions)).toEqual(WINDOW_DAYS.map(() => 240))
+  })
+
+  it('refuses a reply holding more hours than its days can, rather than reporting part of it', async () => {
+    // hour_start is the key and an hour's day is its UTC date, so nine days hold
+    // at most 216 hours. More than that means one of those beliefs is wrong, and
+    // a report silently built from the first 216 is the defect this replaced.
+    const real = hourRows(9 * 24, new Date('2026-09-11T00:00:00.000Z'))
+    const extra = { ...real[0], hour_start: '2026-09-02T00:30:00.000Z' }
+    const db = postgrestDouble({
+      execution_archive_hours: [...real, extra],
+      execution_archive_days: dayRows(9, NOW),
+      workflow_executions: EXECUTIONS,
+    })
+
+    const health = await archiveHealth(envWith(null), db, { now: () => NOW })
+
+    expect('error' in health.days).toBe(true)
+    if (!('error' in health.days)) return
+    expect(health.days.error).toMatch(/more than 216/)
+  })
+
+  it('refuses a reply holding more day measurements than its days can, rather than reporting part of it', async () => {
+    // archive_day is the key, so nine days hold at most nine measurements. A
+    // tenth means that belief is wrong, and the report must say so rather than
+    // pick whichever nine came first.
+    const days = dayRows(9, NOW)
+    const db = postgrestDouble({
+      execution_archive_hours: hourRows(9 * 24, NOW),
+      execution_archive_days: [...days, { ...days[4], pg_execution_count: 1 }],
+      workflow_executions: EXECUTIONS,
+    })
+
+    const health = await archiveHealth(envWith(null), db, { now: () => NOW })
+
+    expect('error' in health.days).toBe(true)
+    if (!('error' in health.days)) return
+    expect(health.days.error).toMatch(/reading the day measurements.*more than 9/)
+  })
+
+  it('reads a window whose largest possible reply fits one PostgREST page', () => {
+    // The bound in the query is only a bound while its maximum, plus the one
+    // extra row asked for to detect overflow, stays under the cap.
+    expect(COVERAGE_HOUR_ROWS_MAX + 1).toBeLessThan(ROW_CAP)
+    expect(COVERAGE_HOUR_ROWS_MAX).toBe((RETENTION_DAYS + 2) * 24)
   })
 })
