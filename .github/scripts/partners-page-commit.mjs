@@ -23,6 +23,7 @@ import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { sessionCookieHeader } from '../../apps/web/e2e/session-cookies.ts'
+import { passwordSession } from './e2e-session.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const GATE_HEADER = 'x-bidspoke-gate'
@@ -89,17 +90,7 @@ export async function followPartnersPage(deps) {
 
 /** Sign in as the e2e user through the auth API and answer the Cookie header a browser would send. */
 async function signInWithPassword(supabaseUrl, anonKey, email, password) {
-  const res = await fetch(`${supabaseUrl.replace(/\/+$/, '')}/auth/v1/token?grant_type=password`, {
-    method: 'POST',
-    headers: { apikey: anonKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  })
-  const body = await res.json().catch(() => null)
-  if (!res.ok || !body || typeof body.access_token !== 'string') {
-    throw new Error(`the auth API answered ${res.status}${body && body.error_description ? `: ${body.error_description}` : ''}`)
-  }
-  if (typeof body.expires_at !== 'number' && typeof body.expires_in === 'number') body.expires_at = Math.floor(Date.now() / 1000) + body.expires_in
-  return sessionCookieHeader(supabaseUrl, body)
+  return sessionCookieHeader(supabaseUrl, await passwordSession(fetch, supabaseUrl, anonKey, email, password))
 }
 
 async function main() {

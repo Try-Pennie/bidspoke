@@ -218,3 +218,35 @@ describe('the ops Worker route (#1709)', () => {
     expect(read('docs/disaster-recovery.md')).toContain('Worker route `ops.trypennie.dev/porting/*` to `bidspoke-worker-ops`')
   })
 })
+
+/**
+ * The bidding Worker's one binding to the ops Worker (#2335, PR 9 of phase 5):
+ * OPS_CONNECTIONS, to the NAMED entrypoint OpsConnections, never the ops
+ * Worker's default export (which its public route reaches) and never a second
+ * binding. Cloudflare deploys it green even when the deployed ops Worker lacks
+ * the entrypoint (#2330), so the deploy checks the live script before deploying
+ * and calls through the binding after.
+ */
+describe('the bidding Worker\'s OPS_CONNECTIONS binding (#2335)', () => {
+  const toml = read('apps/worker/wrangler.toml')
+
+  it('holds exactly one service binding: OPS_CONNECTIONS to the ops Worker\'s OpsConnections entrypoint', () => {
+    const services = tables(toml, 'services')
+    expect(services).toHaveLength(1)
+    expect(services[0]).toMatch(/^binding = "OPS_CONNECTIONS"$/m)
+    expect(services[0]).toMatch(/^service = "bidspoke-worker-ops"$/m)
+    expect(services[0]).toMatch(/^entrypoint = "OpsConnections"$/m)
+    expect(read('apps/worker/wrangler.ops.toml')).toMatch(/^name = "bidspoke-worker-ops"$/m)
+  })
+
+  it('binds an entrypoint the ops Worker exports from its main module', () => {
+    expect(read('apps/worker/src/ops/index.ts')).toMatch(/^export \{ OpsConnections \} from '\.\/ops-connections-entrypoint'$/m)
+  })
+
+  it('the Workers test projects stand in for it, since workerd starts no Worker binding a service it does not run', () => {
+    expect(read('apps/worker/vitest.do.config.mts')).toMatch(/serviceBindings: \{ OPS_CONNECTIONS: /)
+    for (const config of ['apps/worker/vitest.money-gate.config.mts', 'apps/worker/vitest.outage-drill.config.mts']) {
+      expect(read(config), config).toContain('serviceBindings: { ...refusingServiceStubs(engineConfig.services), GATE_IO: io.handler }')
+    }
+  })
+})

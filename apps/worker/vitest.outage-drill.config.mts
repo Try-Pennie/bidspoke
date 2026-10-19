@@ -6,6 +6,7 @@ import { unstable_readConfig } from 'wrangler'
 import { createGateIo, refuseRunnerOutbound } from './money-gate/harness/gate-io'
 import { FIXED_TIME_MS } from './money-gate/harness/replay-env'
 import { parseDispatchDelay } from './money-gate/lib/dispatch-delay'
+import { refusingServiceStubs } from './money-gate/lib/service-stubs'
 import { OUTAGE_DRILL_TIMEOUT_MS, isOutageNetworkRejection } from './money-gate/lib/outage'
 
 /**
@@ -31,7 +32,8 @@ const engineWorker = resolve(engineRoot, 'apps', 'worker')
  * namespace added later (the compare namespace of #1708 part B) is faked and
  * recorded without this file changing.
  */
-const dispatchNamespaces = (unstable_readConfig({ config: resolve(engineWorker, 'wrangler.toml') }, { hideWarnings: true }).dispatch_namespaces ?? [])
+const engineConfig = unstable_readConfig({ config: resolve(engineWorker, 'wrangler.toml') }, { hideWarnings: true })
+const dispatchNamespaces = (engineConfig.dispatch_namespaces ?? [])
   // The outbound Worker a namespace names (#1708 part B), so the gate answers its
   // bundles' requests the way that Worker does, not from the stub rules.
   .map((d) => ({ binding: d.binding, namespace: d.namespace, outbound: d.outbound?.service ?? null }))
@@ -54,7 +56,10 @@ export default defineConfig({
       wrangler: { configPath: resolve(engineWorker, 'wrangler.toml') },
       miniflare: {
         outboundService: refuseRunnerOutbound,
-        serviceBindings: { GATE_IO: io.handler },
+        // Every service binding the engine declares (the ops Worker's OpsConnections,
+        // #2335) refuses: workerd starts no Worker whose binding names a service it
+        // does not run, and the engine must never call one.
+        serviceBindings: { ...refusingServiceStubs(engineConfig.services), GATE_IO: io.handler },
         // A plain text binding: the replay's buildEnv passes no text binding on to
         // the engine except the public vars, so the engine never sees it.
         // OUTAGE_DRILL_ONLY rides in as a binding, as the namespaces do: a define of

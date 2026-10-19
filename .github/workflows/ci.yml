@@ -833,6 +833,37 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON .github/scripts/worker-secret-parity.mjs
 
+      # The DEPLOYED ops Worker exports the OpsConnections entrypoint the bidding
+      # Worker's OPS_CONNECTIONS binding names (#2335, PR 9 of phase 5). Cloudflare
+      # deploys a binding to a missing entrypoint green and every call then throws
+      # (spike #2330), and the repo cannot say what is live, so this reads the live
+      # script through the Cloudflare API. Pull requests only, and only those
+      # touching the binding, the ops Worker or the check itself (the script
+      # decides, from the files below; it measures whenever they could not be
+      # read), so the state of the ops Worker never holds up a money hotfix. A fork
+      # or Dependabot pull request has no token and is skipped with a notice;
+      # anywhere else a missing token fails.
+      - name: Deployed ops Worker exports OpsConnections (live)
+        if: ${{ !cancelled() && github.event_name == 'pull_request' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          IS_FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          if [ -z "${CLOUDFLARE_API_TOKEN}" ] && { [ "${IS_FORK}" = "true" ] || [ "${GITHUB_ACTOR}" = "dependabot[bot]" ]; }; then
+            echo "::notice::No CLOUDFLARE_API_TOKEN on a fork or Dependabot PR, so the deployed ops Worker was not read."
+            exit 0
+          fi
+          if CHANGED_FILES=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR}/files" --paginate --jq '.[].filename'); then
+            CHANGED_FILES_READ=true
+          else
+            CHANGED_FILES_READ=false
+            CHANGED_FILES=""
+          fi
+          export CHANGED_FILES CHANGED_FILES_READ
+          node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON .github/scripts/ops-exports-entrypoint.mjs
+
       # EVERY SCANNER BELOW RUNS WITH ITS OWN EXIT CODE DISARMED, ON PURPOSE (#779).
       #
       # This job reported success on every run from 2026-07-27 to 2026-08-14 while
