@@ -40,6 +40,12 @@ async function registryProblems(registry: Readonly<Record<string, string>>, curr
   }
   const bodies = Object.values(registry).map((pem) => pem.replace(/\s|-----[A-Z ]+-----/g, ''))
   if (new Set(bodies).size !== bodies.length) problems.push('one public key is registered under two kids')
+  const kids = Object.keys(registry)
+  for (const shorter of kids) {
+    for (const longer of kids) {
+      if (longer !== shorter && longer.startsWith(shorter)) problems.push(`kid ${shorter} is a prefix of kid ${longer}`)
+    }
+  }
   if (currentKid !== null && !Object.hasOwn(registry, currentKid)) problems.push(`the current kid ${currentKid} is not registered`)
   if (currentKid === null && Object.keys(registry).length > 0) problems.push('keys are registered but no kid is current')
   return problems
@@ -49,10 +55,14 @@ describe('the public key registry', () => {
   let strong: PemPair
   let weak: PemPair
   let ecPublic: string
+  let other: string
 
   beforeAll(async () => {
     ;[strong, weak] = await Promise.all([rsaPair(4096), rsaPair(2048)])
     ecPublic = (await ecPair()).publicPem
+    // A second sound 4096 bit public key that costs no key generation: one
+    // the registry already holds.
+    other = Object.values(OPS_CONNECTION_PUBLIC_KEYS)[0]
   }, KEYGEN_TIMEOUT_MS)
 
   it('holds only RSA-OAEP public keys of at least 4096 bits, under well formed kids', async () => {
@@ -76,6 +86,23 @@ describe('the public key registry', () => {
   ])('flags a planted registry holding %s', async (_label, registry, problem) => {
     const problems = await registryProblems(registry(), 'ops-2026-10')
     expect(problems.join('\n')).toMatch(problem)
+  })
+
+  // A kid that begins another kid lets a test matching a message by the
+  // shorter kid pass against the longer one: ops-2026-10 and ops-2026-10-19
+  // were both registered during the practice rotation, and two tests passed
+  // against the wrong kid (#2509). Two distinct keys, so the duplicate key
+  // check cannot be what fires.
+  it('flags a planted registry where one kid is a prefix of another', async () => {
+    const problems = await registryProblems(
+      { 'ops-2026-10': strong.publicPem, 'ops-2026-10-19': other },
+      'ops-2026-10-19',
+    )
+    expect(problems).toEqual(['kid ops-2026-10 is a prefix of kid ops-2026-10-19'])
+  })
+
+  it('accepts a sound planted registry of two kids where neither is a prefix of the other', async () => {
+    expect(await registryProblems({ 'ops-2026-10-19': other, 'ops-2027-01-05': strong.publicPem }, 'ops-2027-01-05')).toEqual([])
   })
 
   it('flags a current kid that is not registered, and keys with no current kid', async () => {

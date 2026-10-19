@@ -11,31 +11,24 @@
  * can move every envelope there, and removes the old kid once none names it
  * (docs/disaster-recovery.md, rotating the ops private key).
  *
+ * A new kid must not be a prefix of any registered kid, nor have one as its
+ * prefix: name it by the full date it was generated, `ops-YYYY-MM-DD`. With
+ * ops-2026-10 and ops-2026-10-19 both registered, a test matching a message by
+ * the shorter kid passed against the longer one (#2509); keys.test.ts refuses
+ * such a pair.
+ *
  * Only ever a PUBLIC key. The private half lives in the ops Worker secret
  * OPS_CONNECTIONS_PRIVATE_KEY and in the file ops-connections-private.pem
  * attached to the 1Password item "Bidspoke recovery keys", never here; keys.test.ts scans every file in this package for it.
  */
 export const OPS_CONNECTION_PUBLIC_KEYS: Readonly<Record<string, string>> = Object.freeze({
-  // Generated 2026-10-17 (RSA 4096); the private half is escrowed in
-  // "Bidspoke recovery keys", as the attached file ops-connections-private.pem.
-  'ops-2026-10': `-----BEGIN PUBLIC KEY-----
-MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAtDKUKwtVlTjzSR0g5xyc
-gsbQEDz3kfObQ8oyjHdvdiTANpReD1NniLThyj6JPLrYKvjHaB3Xgyo8z3njzdhX
-exAUcLkMusDyBjxLGZjhV0yO/zZHHTQayxabiw3RC2Xpy2oL/PD3UN/Gdd7C7MGu
-5xU67L44oUJ0pxX4A7K4kb/E91fXgZs3xxQlPLbJ7Bk5ON0elqBhti0NvgPeiOuN
-kLSokALR1qM6wYrHV/tz90Hcfbw/hmsHlpO04HF/n7+sxGzKmT86g73f1+eSBKuk
-82aTNIe8jrewa9lInrdbjmToPrCnnPgDVcguylFD6YgtBU32Mh9qbUIf7d6Zc3oV
-wqMQtXO+xS9P/LEkag5RdnyGCXjPAg1874wwexD/9zFUUw/8NxizHGVw0WdTIbSQ
-k8d83WBVtu13J+Ue4B6FxHxPUKth7b4nRJd8q/5Lu7D7zSwrSborQAabZUi5aDr4
-b15JW7nuqo0sJlGHlm9QVaIvl/cvRG2WGsWJ6oTVB8RIKexbiBhZcijygdys+DJx
-J836xg7B2b9OhrCqUDXg3SqExIMYrTMIl38psDHctESEjeGg8BQPb+7pUmM3bH6U
-DKGxIBc2ParQfXu1/SxXeyZKbzgNVHswExwdSlAL0JCC7vtoFPzhva1cifaHnFyP
-zqLtlQU3TW5WZhiq7xUu1q0CAwEAAQ==
------END PUBLIC KEY-----
-`,
-  // Generated 2026-10-19 (RSA 4096) for the practice rotation of #2333; the
-  // private half is escrowed in "Bidspoke recovery keys", as the attached file
-  // ops-connections-private-next.pem.
+  // Generated 2026-10-19 (RSA 4096) for the practice rotation of #2333, and
+  // the only kid since its step 4 (2026-10-19) removed ops-2026-10. The
+  // private half is OPS_CONNECTIONS_PRIVATE_KEY on the ops Worker, escrowed in
+  // "Bidspoke recovery keys" as the attached file ops-connections-private.pem.
+  // The retired ops-2026-10 key is kept there as
+  // ops-connections-private-retired-ops-2026-10.pem until no envelope anywhere
+  // names its kid (none did when it was removed).
   'ops-2026-10-19': `-----BEGIN PUBLIC KEY-----
 MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAp+ve1H5AHhQVLxqqZhbN
 yKr9Vt7lsMOppFTOJtnFJ1FbgWnXvuvQz6c7l3Kd0S7Y+x/MSq0uMt4H451vNKrS

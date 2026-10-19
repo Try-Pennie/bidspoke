@@ -48,6 +48,15 @@ describe('opsConnectionKeyProblems', () => {
     expect(await opsConnectionKeyProblems(env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem, OPS_CONNECTIONS_PRIVATE_KEY_NEXT: other.privatePem }), registryOf(other))).toEqual([])
   })
 
+  it('reports nothing in rotation step 4: the new key in PRIMARY and NEXT unset, before and after the old kid is removed', async () => {
+    const primaryOnly = env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem })
+    // The secrets are changed by hand first, while the old kid is still committed.
+    const before = { currentKid: 'ops-new', publicKeys: { 'ops-old': other.publicPem, 'ops-new': strong.publicPem } }
+    expect(await opsConnectionKeyProblems(primaryOnly, before)).toEqual([])
+    // Then the pull request removing the old kid merges.
+    expect(await opsConnectionKeyProblems(primaryOnly, { currentKid: 'ops-new', publicKeys: { 'ops-new': strong.publicPem } })).toEqual([])
+  })
+
   it('names both secrets when a NEXT key is set and neither opens the current kid', async () => {
     const problems = await opsConnectionKeyProblems(env({ OPS_CONNECTIONS_PRIVATE_KEY: strong.privatePem, OPS_CONNECTIONS_PRIVATE_KEY_NEXT: strong.privatePem }), registryOf(other))
     expect(problems).toEqual([{
