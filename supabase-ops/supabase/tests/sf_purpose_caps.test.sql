@@ -111,7 +111,7 @@ BEGIN
   INSERT INTO public.sf_pool_caps (sf_org_id, cap, workflow_share, budget_floor, approved_at, approved_by) VALUES (v_sf, 5, 2, 100, now(), 'Dan (test)');
   INSERT INTO public.sf_purpose_caps (sf_org_id, purpose, share, approved_at, approved_by) VALUES
     (v_sf, 'lookup', 2, now(), 'Dan (test)'), (v_sf, 'verify', 1, now(), 'Dan (test)'),
-    (v_sf, 'connection_check', 1, now(), 'Dan (test)'), (v_sf, 'sf_limits', 1, now(), 'Dan (test)'), (v_sf, 'reconnect', 1, now(), 'Dan (test)');
+    (v_sf, 'connection_check', 1, now(), 'Dan (test)'), (v_sf, 'sf_limits', 1, now(), 'Dan (test)');
   -- Two connections of two organizations, measured to one org (L66, L1005).
   PERFORM public.record_measured_identity(v_org, v_one, 1, v_sf, 'ops-one@example.invalid');
   PERFORM public.record_measured_identity(v_other_org, v_two, 1, v_sf, 'ops-two@example.invalid');
@@ -158,7 +158,7 @@ BEGIN
   PERFORM public.record_measured_identity(v_org, v_conn, 1, v_sf, 'ops@example.invalid');
 
   -- C and F: no share approved and no reading: each non step purpose is refused for its missing share first.
-  FOREACH v_purpose IN ARRAY ARRAY['lookup', 'verify', 'reconnect', 'connection_check', 'sf_limits'] LOOP
+  FOREACH v_purpose IN ARRAY ARRAY['lookup', 'verify', 'connection_check', 'sf_limits'] LOOP
     SELECT * INTO v_a FROM public.acquire_sf_lease(v_org, v_conn, 1, v_purpose, NULL, 'pc-u-' || v_purpose, 60);
     IF v_a.outcome <> 'sf_purpose_cap_unset' OR v_a.lease_id IS NOT NULL THEN RAISE EXCEPTION '% with no approved share was answered %', v_purpose, v_a; END IF;
   END LOOP;

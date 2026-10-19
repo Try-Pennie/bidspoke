@@ -32,7 +32,9 @@ case "$SQL_SUITE_PROJECT" in
     SUITE_BOOTSTRAP="$HERE/bootstrap-ops.sql"
     SUITE_CONTAINER_DEFAULT="bidspoke-sql-suite-ops"
     SUITE_PORT_DEFAULT="54330"
-    SUITE_FIXTURES=()
+    # The ops migrations themselves (#2336), at /sql-suite-fixtures/supabase/,
+    # so a test can run a migration again against a state it must refuse.
+    SUITE_FIXTURES=("$ROOT/supabase-ops/supabase/migrations")
     ;;
   *)
     echo "SQL SUITE DID NOT RUN: SQL_SUITE_PROJECT is '$SQL_SUITE_PROJECT'; it must be main or ops" >&2
