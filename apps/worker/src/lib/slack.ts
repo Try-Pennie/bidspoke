@@ -19,6 +19,7 @@ import { cloudflareEdgeCodeIn } from './html-error-summary'
 import { listSteps } from '../engine/running-step'
 import { CONTINUATION_UNFINISHED_LABEL, WRITEBACK_HELD_LABEL, WRITEBACK_STORE_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../engine/dead-letter-labels'
 import { describeRepeat, type StandingCondition } from './alert-backoff'
+import { REFRESH_FAILING_PAGE_SPAN_MS, type ConnectionLoginState, type NeedsReauthReason } from './ops-gateway-contract'
 import { RECOVERY_REARM_MINUTES } from './alert-recovery'
 import { describeDuration, measureIncidentSpan } from './incident-span'
 import type { ErrorType } from '../types'
@@ -3531,6 +3532,114 @@ export async function sendWritebackBacklogRecoveryAlert(
     connection,
     connection.default_channel,
     { subject: WRITEBACK_BACKLOG_RECOVERY_SUBJECT, alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, ...writebackBacklogRecoveryWording },
+    now,
+  )
+}
+
+// ── An ops connection whose login needs a person (#2340) ───────────────────────
+
+/**
+ * What the ops connection login page says (#2340): the connection by its name
+ * and service, which state it is in and since when. Never a credential, a
+ * stored cause's text or a customer value: the reason is a name from a closed
+ * set the ops tick read off the cause.
+ */
+export interface OpsConnectionLoginAlert {
+  /** service_connections.name, or null when it could not be read. */
+  name: string | null
+  /** The service key (salesforce, snowflake). */
+  service: string
+  state: ConnectionLoginState
+  reason: NeedsReauthReason | null
+  /** needs_reauth_at, or the start of the refresh streak. */
+  since: string
+  failures: number | null
+  /** The reminder sentence, when this page repeats one already sent. */
+  repeat?: string
+}
+
+/** A service key as a reader says it: `salesforce` is "Salesforce". */
+export function serviceWords(service: string): string {
+  const known: Record<string, string> = { salesforce: 'Salesforce', snowflake: 'Snowflake', google: 'Google', slack: 'Slack', supabase: 'Supabase' }
+  if (Object.hasOwn(known, service)) return known[service]
+  const spaced = service.replace(/_/g, ' ')
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
+}
+
+/** The connection as the page and the incident record name it: its name and its service. */
+export function opsConnectionLabel(name: string | null, service: string): string {
+  return name === null ? `An ops ${serviceWords(service)} connection` : `${name} (${serviceWords(service)})`
+}
+
+/**
+ * The page's title and sentences, separate from the send so the words can be
+ * tested. needs_reauth: a person must reconnect it. refresh_failing: the
+ * service's sign in has failed past Dan's decision 2 bound, and its next
+ * failure will need a reconnect too.
+ */
+export function opsConnectionLoginMessage(alert: OpsConnectionLoginAlert): { title: string; sections: string[] } {
+  const service = serviceWords(alert.service)
+  const who = alert.name === null ? `an ops ${service} connection` : `the ${service} connection named ${slackText(alert.name)}`
+  const since = etTime(alert.since)
+  if (alert.state === 'refresh_failing') {
+    const sections = [
+      `${capitalise(who)} has failed to sign in ${alert.failures ?? 'several'} times in a row since ${since}, because ${service}'s sign in service did not answer. Its next failed sign in will mark it as needing to be reconnected.`,
+      `*Fix:* check whether ${service} is having an outage. If its sign in service is working, reconnect the connection on the Connections page.`,
+    ]
+    if (alert.repeat) sections.push(alert.repeat)
+    return { title: 'An ops connection cannot sign in', sections }
+  }
+  const finding = {
+    login_refused: `${service} refused the login of ${who}, so it cannot sign in until someone reconnects it.`,
+    refused_after_renew: `${service} refused its requests even after a new login, so ${who} cannot be used until someone reconnects it.`,
+    refresh_exhausted: `${service}'s sign in service failed every sign in of ${who} for more than ${REFRESH_FAILING_PAGE_SPAN_MS / 60_000} minutes, so it now needs someone to reconnect it.`,
+    other: `The login of ${who} stopped working, so it cannot be used until someone reconnects it.`,
+  }[alert.reason ?? 'other']
+  const sections = [
+    `${finding} It has needed this since ${since}.`,
+    '*Fix:* reconnect it on the Connections page with a login that works.',
+  ]
+  if (alert.repeat) sections.push(alert.repeat)
+  return { title: 'An ops connection needs to be reconnected', sections }
+}
+
+const capitalise = (text: string) => text.charAt(0).toUpperCase() + text.slice(1)
+
+/**
+ * Pages the connection's own organization (#2340), in its Slack alert channel.
+ * Gated on the configuration alerts toggle, as the other alerts about a
+ * connection's setup are; a muted organization is not delivered to, so nothing
+ * is armed for it.
+ */
+export async function sendOpsConnectionLoginAlert(supabase: SupabaseClient, orgId: string, alert: OpsConnectionLoginAlert): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  const m = opsConnectionLoginMessage(alert)
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
+    ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+}
+
+export const opsConnectionLoginRecoveryWording: RecoveryWording = {
+  signal: 'ops connection login',
+  recoveredPhrase: 'no longer has a failing login',
+}
+
+/** The all clear once the connection's login no longer needs anyone (#2340). Returns whether it reached Slack. */
+export async function sendOpsConnectionLoginRecoveryAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  recovery: { subject: string; alertedAt: string; endedAt: string | null },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  return sendRecoveryAlert(
+    connection,
+    connection.default_channel,
+    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, ...opsConnectionLoginRecoveryWording },
     now,
   )
 }

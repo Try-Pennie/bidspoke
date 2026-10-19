@@ -7,13 +7,15 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  MAX_REPORT_PROBLEMS, OPS_TICK_PROBLEM_RULES, capTickProblems, parseOpsTickReport, problemRuleOf, tickProblem,
+  MAX_REPORT_LOGINS, MAX_REPORT_PROBLEMS, OPS_TICK_PROBLEM_RULES, capTickProblems, parseOpsTickReport, problemRuleOf, tickProblem,
 } from '../ops-gateway-contract'
 
 const THREE_IN_A_ROW = [
   'start_stamp', 'db_clock', 'sweep_claim_failed', 'sweep_failed', 'workflows_fetch_failed', 'workflows_save_failed',
   'copies_read_failed', 'schedule_plan_failed', 'claim_depth_failed', 'probe_failed', 'connections_fetch_failed',
   'connections_save_failed', 'tombstone_record_failed', 'problems_left_out',
+  // The login states (#2340), read every tick, so the next tick asks again.
+  'connection_logins_failed',
 ]
 const AT_ONCE = [
   'db_not_configured', 'not_configured', 'secrets_unchecked', 'agreement_check_failed', 'queue_disagreement', 'workflow_refused',
@@ -22,6 +24,9 @@ const AT_ONCE = [
   'report_unreadable', 'unkeyed',
   // The sf_limits sweep (#2336): it runs every fourth tick, so no kind of its can be reported by three ticks in a row.
   'sf_limits_failed', 'sf_limits_orgs_limit', 'sf_limits_refused', 'sf_limits_unreadable', 'sf_limits_read_failed',
+  // The connection_check sweep (#2340): it runs every fourteenth tick, so the same holds.
+  'connection_check_failed', 'connection_check_limit', 'connection_check_refused', 'connection_check_unreadable', 'connection_check_unavailable',
+  'connection_logins_limit',
 ]
 
 describe('the rule each kind of tick problem pages by', () => {
@@ -105,5 +110,41 @@ describe('the problem keys in a report', () => {
     expect(parsed.problem_keys).toHaveLength(MAX_REPORT_PROBLEMS)
     expect(parsed.problem_keys?.[0]).toBe('schedule_plan_failed:wf0')
     expect(parsed.problem_keys?.at(-1)).toBe('problems_left_out')
+  })
+})
+
+describe('the connection logins in a report (#2340)', () => {
+  const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
+  const CONN = '00000000-0000-4000-8000-0000000c2341'
+  const report = (over: Record<string, unknown>) => ({
+    tick_id: 't', mode: 'observe', scheduled_time: null, started_at: '2026-10-19T18:36:00Z', finished_at: '2026-10-19T18:36:10Z',
+    db_now: '2026-10-19T18:36:00Z', outcome: 'ok', problems: [], problem_keys: [], counts: {}, ...over,
+  })
+  const needs = { organization_id: ORG, connection_id: CONN, service: 'salesforce', state: 'needs_reauth', reason: 'login_refused', since: '2026-10-19T18:30:00Z', failures: null }
+  const failing = { ...needs, state: 'refresh_failing', reason: null, failures: 5 }
+
+  it('reads a report from an ops release before #2340, or one that judged no login, as null: unjudged, never all clear', () => {
+    expect(parseOpsTickReport(report({})).connection_logins).toBeNull()
+    expect(parseOpsTickReport(report({ connection_logins: null })).connection_logins).toBeNull()
+  })
+
+  it('keeps a list of logins due to page, and whether it is complete', () => {
+    expect(parseOpsTickReport(report({ connection_logins: { complete: true, logins: [needs, failing] } })).connection_logins).toEqual({ complete: true, logins: [needs, failing] })
+    expect(parseOpsTickReport(report({ connection_logins: { complete: false, logins: [] } })).connection_logins).toEqual({ complete: false, logins: [] })
+  })
+
+  it.each([
+    ['not an object', 'none'],
+    ['no completeness', { logins: [] }],
+    ['a login naming no connection', { complete: true, logins: [{ ...needs, connection_id: 'any' }] }],
+    ['a login naming no organization', { complete: true, logins: [{ ...needs, organization_id: null }] }],
+    ['a service that is not a service key', { complete: true, logins: [{ ...needs, service: 'Sales Force' }] }],
+    ['a state this Worker does not page on', { complete: true, logins: [{ ...failing, state: 'check_failing' }] }],
+    ['a needs_reauth with a reason outside the closed set', { complete: true, logins: [{ ...needs, reason: 'invalid_grant: expired' }] }],
+    ['a refresh_failing with no failure count', { complete: true, logins: [{ ...failing, failures: null }] }],
+    ['an unreadable time', { complete: true, logins: [{ ...needs, since: 'lately' }] }],
+    ['more logins than a report carries', { complete: false, logins: Array.from({ length: MAX_REPORT_LOGINS + 1 }, () => needs) }],
+  ])('refuses a report whose logins are %s, so it pages as unreadable', (_label, connectionLogins) => {
+    expect(() => parseOpsTickReport(report({ connection_logins: connectionLogins }))).toThrow(/connection login/)
   })
 })

@@ -87,6 +87,10 @@ function opsDb() {
     // The sf_limits sweep stands down with the rest (#2336).
     sfLimitsTargets: async () => { throw new Error('not claimed') },
     recordSfLimitsReading: async () => { throw new Error('not claimed') },
+    // The login states are read every tick (#2340): no connection has one to page about here.
+    connectionCheckTargets: async () => ({ targets: [], reachedLimit: false }),
+    // The connection_check sweep stands down with the rest.
+    recordConnectionCheck: async () => { throw new Error('not claimed') },
   }
   /** connection_copy: not_found, then serve_until on the database's clock, else usable. */
   const readCopy = async (_org: OrganizationId, connectionId: string): Promise<ConnectionCopy> => {
@@ -125,6 +129,7 @@ function ports(db: OpsTickDb, fetchConnections: () => Promise<unknown>): OpsTick
       jobCompleted: async () => {},
     },
     sfLimits: { read: async () => { throw new Error('not claimed') }, sleep: async () => {}, log: () => undefined },
+    connectionCheck: { probe: async () => { throw new Error('not claimed') }, sleep: async () => {}, log: () => undefined },
     dispatch: async () => {},
   }
 }

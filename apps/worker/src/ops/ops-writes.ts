@@ -39,8 +39,9 @@
  * read, the health writers and reader, the measured identity, the pool, the
  * tombstone and the lookup allowance, and since #2336 readMeasuredSfOrg and
  * recordSfBudgetReading, for the budget reading a Salesforce response carries
- * (connections/sf-budget-reading.ts); the rest wait for the tick's new sweeps
- * (Phases 6 and 10 of #1689).
+ * (connections/sf-budget-reading.ts). Since #2340 the tick also calls
+ * readConnectionCheckTargets every minute (the login states) and, from its
+ * connection_check sweep, recordConnectionCheck.
  */
 import {
   CONNECTION_COPY_STATES, DELEGATION_CHECK_OUTCOMES, LEDGER_METHODS, OBSERVATION_OUTCOMES, OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES,
@@ -1130,6 +1131,91 @@ export async function readSfLimitsTargets(
       generation,
       target: row.target ?? null,
       readingMeasuredAt: field(name, row, 'reading_measured_at', isTimeOrNull, 'a time or null'),
+      dbNow: field(name, row, 'db_now', isTime, 'a time'),
+    }
+  })
+  return { targets, reachedLimit: targets.length === limit }
+}
+
+/**
+ * One ops connection as connection_check_targets answers it (#2340, supabase-ops
+ * migration 20261020030000): what the connection_check sweep probes, and the
+ * login state the tick reports to the bidding Worker. Never a login: the copy's
+ * envelope is not read here, connectionFetch reads it for itself.
+ */
+export interface ConnectionCheckTarget {
+  organizationId: OrganizationId
+  connectionId: string
+  service: string
+  generation: number
+  /** The copy's declared target and public config, which the identity probe is given. */
+  target: unknown
+  publicConfig: unknown
+  /** serve_until is still ahead, so connectionFetch would use the copy. */
+  servable: boolean
+  /** connection_status's derived status; one this Worker does not know is kept as text (#1698 R3). */
+  status: string
+  lastCheckOkAt: string | null
+  lastCheckFailedAt: string | null
+  needsReauthAt: string | null
+  needsReauthCause: string | null
+  /** The refresh streak (Dan's decision 2): 0 and null when there is none. */
+  refreshFailures: number
+  refreshFailingSince: string | null
+  /** What verify measured this generation as (Salesforce), or null when nothing was measured. */
+  measuredIdentity: { sfOrgId: string; username: string } | null
+  dbNow: string
+}
+
+/** The most connections one read returns, as connection_check_targets holds it. */
+export const CONNECTION_CHECK_TARGETS_MAX = 500
+
+/**
+ * Every ops connection not withdrawn and not removed, at most `limit`, least
+ * recently checked first. Lane wide. Throws on a failed read or a row of the
+ * wrong shape: an empty list would read as nothing to check and every login
+ * state cleared.
+ */
+export async function readConnectionCheckTargets(
+  client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions,
+): Promise<{ targets: ConnectionCheckTarget[]; reachedLimit: boolean }> {
+  const name = 'connection_check_targets'
+  if (!Number.isInteger(limit) || limit < 1 || limit > CONNECTION_CHECK_TARGETS_MAX) {
+    throw new OpsWriteError(`${name}: the limit must be a whole number from 1 to ${CONNECTION_CHECK_TARGETS_MAX}`)
+  }
+  const all = rows(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  const targets = all.map((row): ConnectionCheckTarget => {
+    let organizationId: OrganizationId
+    try {
+      organizationId = organizationIdFrom(row.organization_id)
+    } catch {
+      throw new OpsWriteError(`${name} returned a connection whose organization is not a uuid`)
+    }
+    const connectionId = field(name, row, 'connection_id', isString, 'an id')
+    if (!UUID_SHAPE.test(connectionId)) throw new OpsWriteError(`${name} returned a connection id that is not a uuid`)
+    const generation = field(name, row, 'generation', isInt, 'a whole number')
+    if (generation < 1) throw new OpsWriteError(`${name} returned a generation below 1`)
+    const refreshFailures = field(name, row, 'refresh_failures', isInt, 'a whole number')
+    if (refreshFailures < 0) throw new OpsWriteError(`${name} returned refresh_failures below 0`)
+    const sfOrgId = field(name, row, 'measured_sf_org_id', isStringOrNull, 'text or null')
+    const username = field(name, row, 'measured_username', isStringOrNull, 'text or null')
+    if ((sfOrgId === null) !== (username === null)) throw new OpsWriteError(`${name} returned half a measured identity`)
+    return {
+      organizationId,
+      connectionId,
+      service: field(name, row, 'service', isString, 'text'),
+      generation,
+      target: row.target ?? null,
+      publicConfig: row.public_config ?? null,
+      servable: field(name, row, 'servable', isBool, 'true or false'),
+      status: field(name, row, 'status', isString, 'text'),
+      lastCheckOkAt: field(name, row, 'last_check_ok_at', isTimeOrNull, 'a time or null'),
+      lastCheckFailedAt: field(name, row, 'last_check_failed_at', isTimeOrNull, 'a time or null'),
+      needsReauthAt: field(name, row, 'needs_reauth_at', isTimeOrNull, 'a time or null'),
+      needsReauthCause: field(name, row, 'needs_reauth_cause', isStringOrNull, 'text or null'),
+      refreshFailures,
+      refreshFailingSince: field(name, row, 'refresh_failing_since', isTimeOrNull, 'a time or null'),
+      measuredIdentity: sfOrgId === null || username === null ? null : { sfOrgId, username },
       dbNow: field(name, row, 'db_now', isTime, 'a time'),
     }
   })

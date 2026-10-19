@@ -30,6 +30,7 @@ import {
   purgeExpiredConnectionTombstones,
   readConnectionCopy,
   readMeasuredSfOrg,
+  readConnectionCheckTargets,
   readSfLimitsTargets,
   readConnectionStatus,
   readWorkflowCopies,
@@ -597,6 +598,58 @@ describe('readMeasuredSfOrg (#2336)', () => {
 
   it('throws a failed read rather than answering unmeasured', async () => {
     await expect(readMeasuredSfOrg(tableFetch({ code: 'XX000', message: 'boom' }, 500).client, ORG, CONN_ID, 2)).rejects.toThrow(/failed/)
+  })
+})
+
+describe('readConnectionCheckTargets (#2340)', () => {
+  const CONN_ID = '33333333-3333-4333-8333-333333333333'
+  const DB_NOW = '2026-10-19T18:00:00.000Z'
+  const row = (over: Record<string, unknown> = {}) => ({
+    organization_id: ORG, connection_id: CONN_ID, service: 'salesforce', generation: 2,
+    target: { instance_url: 'https://example.my.salesforce.com', client_id: 'plain-client' }, public_config: {}, servable: true,
+    status: 'refresh_failing', last_check_ok_at: '2026-10-19T17:45:00.000Z', last_check_failed_at: null,
+    needs_reauth_at: null, needs_reauth_cause: null, refresh_failures: 5, refresh_failing_since: '2026-10-19T17:40:00.000Z',
+    measured_sf_org_id: '00Dst0000000001AAA', measured_username: 'ops-one@example.com', db_now: DB_NOW, ...over,
+  })
+
+  it('reads every listed connection, each under its own organization, and says when the page is full', async () => {
+    const t = rpcFetch([row(), row({ service: 'snowflake', servable: false, status: 'unchecked', last_check_ok_at: null, refresh_failures: 0, refresh_failing_since: null, measured_sf_org_id: null, measured_username: null })])
+    const read = await readConnectionCheckTargets(t.client, 2)
+    expect(t.calls).toEqual([{ path: '/rest/v1/rpc/connection_check_targets', body: { p_limit: 2 } }])
+    expect(read.reachedLimit).toBe(true)
+    expect(read.targets[0]).toEqual({
+      organizationId: ORG, connectionId: CONN_ID, service: 'salesforce', generation: 2, target: row().target, publicConfig: {}, servable: true,
+      status: 'refresh_failing', lastCheckOkAt: '2026-10-19T17:45:00.000Z', lastCheckFailedAt: null, needsReauthAt: null, needsReauthCause: null,
+      refreshFailures: 5, refreshFailingSince: '2026-10-19T17:40:00.000Z',
+      measuredIdentity: { sfOrgId: '00Dst0000000001AAA', username: 'ops-one@example.com' }, dbNow: DB_NOW,
+    })
+    expect(read.targets[1]).toMatchObject({ service: 'snowflake', servable: false, status: 'unchecked', measuredIdentity: null, refreshFailures: 0 })
+    expect((await readConnectionCheckTargets(rpcFetch([row()]).client, 2)).reachedLimit).toBe(false)
+    expect(await readConnectionCheckTargets(rpcFetch([]).client, 2)).toEqual({ targets: [], reachedLimit: false })
+  })
+
+  it.each([
+    ['an organization that is not a uuid', { organization_id: 'everyone' }, /organization/],
+    ['a connection that is not a uuid', { connection_id: 'any' }, /connection/],
+    ['a generation below 1', { generation: 0 }, /generation/],
+    ['a servable flag that is not true or false', { servable: 'yes' }, /servable/],
+    ['a streak count that is not a whole number', { refresh_failures: 'five' }, /refresh_failures/],
+    ['a streak start that is not a time', { refresh_failing_since: 'a while ago' }, /refresh_failing_since/],
+    ['half a measured identity', { measured_username: null }, /measured identity/],
+    ['no database clock', { db_now: null }, /db_now/],
+  ])('refuses a row carrying %s', async (_label, over, message) => {
+    await expect(readConnectionCheckTargets(rpcFetch([row(over)]).client, 2)).rejects.toThrow(message)
+  })
+
+  it('refuses a limit the database would refuse, before calling it', async () => {
+    const t = rpcFetch([])
+    await expect(readConnectionCheckTargets(t.client, 0)).rejects.toThrow(/1 to 500/)
+    await expect(readConnectionCheckTargets(t.client, 501)).rejects.toThrow(/1 to 500/)
+    expect(t.calls).toEqual([])
+  })
+
+  it('throws a failed read rather than answering no connections, which would read as nothing to check and every login cleared', async () => {
+    await expect(readConnectionCheckTargets(rpcFetch({ code: 'XX000', message: 'boom' }, { status: 500 }).client, 2)).rejects.toThrow()
   })
 })
 

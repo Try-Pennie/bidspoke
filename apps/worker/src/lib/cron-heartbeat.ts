@@ -451,6 +451,37 @@ export const CRON_JOBS: CronJob[] = [
       'confirm the ops-tick heartbeat is healthy first (this sweep runs inside it), then search the bidspoke-worker-ops logs for ops_tick lines with sf_limits counts or problems, and check claim_ops_sweep\'s ops_lane_sweeps row for sf_limits in the ops database: a sweep that claims but never stamps reaches this Worker through the same OPS_GATEWAY binding as the tick.',
   },
   {
+    // The connection_check sweep inside the ops minute tick (#2340,
+    // ops/connection-check.ts), watched here as the tick is (L71). It stamps
+    // through the OpsGateway's opsJobStarted and opsJobCompleted each time it
+    // owns its claim, every 14 to 15 minutes (16 with a missed tick). Its trigger
+    // is the tick's: a sweep rides the one ops minute cron and has none of its own.
+    id: 'ops-connection-check',
+    label: 'Ops connection check',
+    triggerCron: '* * * * *',
+    worker: 'bidspoke-worker-ops',
+    // The tick's own 25 minutes plus one sweep interval with a missed tick (16)
+    // is 41, so a tick that is dark pages as ops-tick first, with the tick's
+    // remedy. Rounded up to 50 so it also outlasts the completion drought below:
+    // a sweep that starts and never finishes pages as vanished, with its own
+    // remedy, before it can read as stale.
+    staleMs: 50 * MIN,
+    // One sweep is one read of the connections and one identity probe each,
+    // bounded at 45 s a connection (CONNECTION_CHECK_DEADLINE_MS), the
+    // connections of one Salesforce org one after another and the rest at once.
+    // Below the minute trigger it rides, as every minute job's must be; judged
+    // by the drought below, never by one run.
+    maxRunMs: 50 * 1000,
+    // Three sweeps in a row at their usual 15 minute spacing with no completion
+    // while starts go on, so a completion stamp or two the gateway missed is
+    // never read as a killed sweep.
+    completionDroughtMs: 45 * MIN,
+    dependents:
+      'no ops connection\'s login is proved between workflow runs, so a credential that was revoked or expired is found only when an ops workflow step fails on it (#2340); the login states of the connections are still read and paged every minute by the tick',
+    darkFixHint:
+      'confirm the ops-tick heartbeat is healthy first (this sweep runs inside it), then search the bidspoke-worker-ops logs for ops_tick lines with connection_check counts or problems, and check claim_ops_sweep\'s ops_lane_sweeps row for connection_check in the ops database: a sweep that claims but never stamps reaches this Worker through the same OPS_GATEWAY binding as the tick.',
+  },
+  {
     id: 'engine-script-drift',
     label: 'Engine script drift check',
     triggerCron: '0 * * * *',

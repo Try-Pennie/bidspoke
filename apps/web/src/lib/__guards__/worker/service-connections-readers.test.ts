@@ -37,6 +37,11 @@ import { WORKER_SRC, listTsFiles, sanitizeSource } from '../../__tests__/_scan-u
  *   and of them only the envelope, public config and target. It never reads a
  *   Slack alert row (sealed_for = 'bidding_ring'), drops one if the filter lets
  *   it through, and is not an alert path.
+ * - lib/ops-connection-logins.ts reads the NAME of one ops connection, by its
+ *   organization and id, for the login page that names it (#2340). It reads no
+ *   Slack row and no credential, is bounded at 10 s, and a read that fails or
+ *   hangs still sends the page, naming the service alone, so a stalled
+ *   database delays that page by the bound at most.
  */
 
 /** Each allowed file outside routes/api, with why it may name the table. */
@@ -45,6 +50,7 @@ const ALLOWED_WITH_REASON: Record<string, string> = {
   'lib/alert-fanout.ts': 'the all-org Slack reads (slackOrgIds, forEachSlackOrg, readEverySlackConnection) and the probe read',
   'lib/secret-reencrypt.ts': 're-locks bidding_ring sealed Slack tokens in a key rotation, and reads nothing else (#2331)',
   'lib/ops-gateway.ts': 'serves the ops_key rows (envelope, public config, target) to the ops tick, never a bidding_ring row (#2335)',
+  'lib/ops-connection-logins.ts': 'reads only the name of one ops connection, by organization and id, for its login page, bounded at 10 s (#2340)',
 }
 const ALLOWED = Object.keys(ALLOWED_WITH_REASON)
 const ALLOWED_DIRS = ['routes/api/']
