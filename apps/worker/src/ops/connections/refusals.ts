@@ -85,6 +85,12 @@ export const CONNECTION_REFUSAL_CODES = [
   'connection_timeout',
   /** The token expired on a request whose body cannot be sent twice. */
   'connection_body_not_resendable',
+  /**
+   * The service asked to wait (a 429, or a 503 with Retry-After), answered to a
+   * caller that cannot wait (verify, a lookup) rather than a step's RequeueAt;
+   * retryAt is the time it named (#2335, PR 8).
+   */
+  'connection_rate_limited',
 ] as const
 export type ConnectionRefusalCode = (typeof CONNECTION_REFUSAL_CODES)[number]
 
@@ -92,12 +98,20 @@ export class ConnectionRefusal extends Error {
   readonly code: ConnectionRefusalCode
   /** When the answer can change, where the refusal knows it (a pool's soonest lapse). */
   readonly retryAt: Date | null
+  /**
+   * For a refusal a minter caused, its reason from MINT_FAILURE_REASONS (a name
+   * from a closed set, never a provider's text), so verify can tell a sealed
+   * client id that is not the declared one, or a person bound candidate, from
+   * any other refused login (#2335, PR 8). Null otherwise.
+   */
+  readonly mintReason: MintFailureReason | null
 
-  constructor(code: ConnectionRefusalCode, detail: string, retryAt: Date | null = null) {
+  constructor(code: ConnectionRefusalCode, detail: string, retryAt: Date | null = null, mintReason: MintFailureReason | null = null) {
     super(`${code}: ${detail}`)
     this.name = 'ConnectionRefusal'
     this.code = code
     this.retryAt = retryAt
+    this.mintReason = mintReason
   }
 }
 

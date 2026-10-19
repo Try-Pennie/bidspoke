@@ -184,6 +184,19 @@ describe('wrangler.ops.toml (#1709)', () => {
     expect(toml).toMatch(/^main = "src\/ops\/index\.ts"$/m)
     expect(read('apps/worker/src/ops/index.ts')).toMatch(/^export \{ OpsInternal \} from '\.\/internal'$/m)
   })
+
+  /**
+   * OpsConnections (#2335, PR 8 of phase 5), the entrypoint the bidding Worker's
+   * OPS_CONNECTIONS binding (PR 9) names. Cloudflare accepts a binding to an
+   * entrypoint the deployed Worker does not export, and every call then throws
+   * (Phase 0 spike, #2330), so it must stay exported from the main module, and
+   * the first deploy carrying it is the ops Worker's rollback floor.
+   */
+  it('exports the OpsConnections entrypoint from its main module, and records it as the ops rollback floor', () => {
+    expect(read('apps/worker/src/ops/index.ts')).toMatch(/^export \{ OpsConnections \} from '\.\/ops-connections-entrypoint'$/m)
+    expect(read('apps/worker/src/ops/ops-connections-entrypoint.ts')).toMatch(/^export class OpsConnections extends WorkerEntrypoint<OpsEnv>/m)
+    expect(read('docs/disaster-recovery.md')).toContain('the first deploy exporting `OpsConnections`')
+  })
 })
 
 /**

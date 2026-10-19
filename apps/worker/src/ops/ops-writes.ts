@@ -34,9 +34,11 @@
  * The ops connections' and Salesforce pool's wrappers (#2334, supabase-ops
  * migration 20261017220000) are at the end. Since #2335 the minute tick calls
  * saveConnectionCopies and recordConnectionTombstone every minute, saving what
- * the bidding Worker serves (connection-serve.ts). The rest wait for their
- * callers: the OpsConnections entrypoint, connectionFetch's live wiring and the
- * tick's new sweeps (Phases 5, 6 and 10 of #1689).
+ * the bidding Worker serves (connection-serve.ts). The OpsConnections
+ * entrypoint's live wiring (ops-connections-live.ts, #2335 PR 8) calls the copy
+ * read, the health writers and reader, the measured identity, the pool, the
+ * tombstone and the lookup allowance; the rest wait for the tick's new sweeps
+ * (Phases 6 and 10 of #1689).
  */
 import {
   CONNECTION_COPY_STATES, DELEGATION_CHECK_OUTCOMES, LEDGER_METHODS, OBSERVATION_OUTCOMES, OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES,
@@ -1032,23 +1034,51 @@ export async function readConnectionStatus(
 /** The 18 character org id userinfo answers; the 15 character form of the same org would key a second pool. */
 const SF_ORG_ID = /^00D[A-Za-z0-9]{15}$/
 
+export const MEASURED_IDENTITY_OUTCOMES = ['recorded', 'confirmed', 'replaced', 'identity_changed', 'connection_removed'] as const
+export type MeasuredIdentityOutcome = (typeof MEASURED_IDENTITY_OUTCOMES)[number]
+
 /**
  * Written only by verify, from /services/oauth2/userinfo, never from the
- * declared target (L83). identity_changed writes nothing: the same generation
- * measured another org.
+ * declared target (L83). identity_changed writes nothing: a generation ops
+ * holds as its copy measured another org. replaced (#2335, PR 8): a generation
+ * the copy does not hold yet is a candidate's (F116, F126), and the next
+ * candidate at that generation measures afresh.
  */
 export async function recordMeasuredIdentity(
   client: OpsSupabaseClient, organizationId: OrganizationId, connectionId: string, generation: number,
   identity: { sfOrgId: string; username: string }, options?: OpsRpcOptions,
-): Promise<'recorded' | 'confirmed' | 'identity_changed' | 'connection_removed'> {
+): Promise<MeasuredIdentityOutcome> {
   if (!SF_ORG_ID.test(identity.sfOrgId)) throw new OpsWriteError('record_measured_identity: the measured org id is not an 18 character Salesforce org id')
   const name = 'record_measured_identity'
   const data = await callOpsRpc(client, name, {
     p_organization_id: organizationId, p_connection_id: connectionId, p_generation: generation, p_sf_org_id: identity.sfOrgId, p_username: identity.username,
   }, options)
-  const outcomes = ['recorded', 'confirmed', 'identity_changed', 'connection_removed'] as const
-  if (!oneOf(outcomes)(data)) throw new OpsWriteError(`${name} returned something that is not an identity outcome`)
+  if (!oneOf(MEASURED_IDENTITY_OUTCOMES)(data)) throw new OpsWriteError(`${name} returned something that is not an identity outcome`)
   return data
+}
+
+/** What take_lookup_allowance answers: allowed (used counts this lookup), or rate_limited until retryAt. */
+export type LookupAllowance =
+  | { outcome: 'allowed'; used: number; retryAt: null }
+  | { outcome: 'rate_limited'; used: number; retryAt: string }
+
+/**
+ * One schema lookup's allowance for one organization (#2335, PR 8): at most
+ * perMinute in a one minute window, held under the organization's row lock.
+ * The cap is the caller's stated constant; the database holds it to 1 to 600.
+ */
+export async function takeLookupAllowance(
+  client: OpsSupabaseClient, organizationId: OrganizationId, perMinute: number, options?: OpsRpcOptions,
+): Promise<LookupAllowance> {
+  const name = 'take_lookup_allowance'
+  if (!Number.isInteger(perMinute) || perMinute < 1 || perMinute > 600) throw new OpsWriteError(`${name}: the cap must be a whole number from 1 to 600 a minute`)
+  const row = oneRow(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_per_minute: perMinute }, options))
+  const outcome = field(name, row, 'outcome', oneOf(['allowed', 'rate_limited'] as const), 'an allowance outcome')
+  const used = field(name, row, 'used', isCount, 'a count')
+  const retryAt = field(name, row, 'retry_at', isTimeOrNull, 'a time or null')
+  if (outcome === 'allowed') return { outcome, used, retryAt: null }
+  if (retryAt === null) throw new OpsWriteError(`${name} answered rate_limited with no retry_at`)
+  return { outcome, used, retryAt }
 }
 
 export interface AcquireSfLease {

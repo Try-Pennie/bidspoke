@@ -354,6 +354,22 @@ describe('the login: a refused mint is needs_reauth at once; a failing token end
     expect(d.rec.sent).toEqual([])
   })
 
+  it('a refusal a minter caused carries its reason by name, for each kind; one it did not cause carries none (#2335, PR 8)', async () => {
+    const cases: Array<[LoginMintError, string]> = [
+      [new LoginMintError('refused', 'client_id_mismatch'), 'client_id_mismatch'],
+      [new LoginMintError('not_allowed', 'candidate_not_refreshable'), 'candidate_not_refreshable'],
+      [new LoginMintError('unavailable', 'token_endpoint_5xx'), 'token_endpoint_5xx'],
+      [new LoginMintError('check_unavailable', 'delegation_allowlist_unreadable'), 'delegation_allowlist_unreadable'],
+      [new LoginMintError('token_object_unavailable', 'token_object_failed'), 'token_object_failed'],
+    ]
+    for (const [fail, reason] of cases) {
+      const d = makeDoubles(keys, usableCopy(envelope), minting(fail))
+      expect((await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))).mintReason).toBe(reason)
+    }
+    const host = makeDoubles(keys, usableCopy(envelope), (rec) => [exampleRules(rec)])
+    expect((await refusal(connectionFetch(host.deps, call(host.rec), 'https://elsewhere.example.test/x'))).mintReason).toBeNull()
+  })
+
   it('a rule that could not be checked is its own refusal, and is not a refresh failure', async () => {
     const d = makeDoubles(keys, usableCopy(envelope), minting(new LoginMintError('check_unavailable', 'delegation_allowlist_unreadable')))
     expect((await refusal(connectionFetch(d.deps, call(d.rec), 'https://api.example.test/x'))).code).toBe('connection_auth_check_unavailable')
