@@ -52,11 +52,13 @@ import {
   OPS_LANE_READ_ONLY_RPCS, OPS_LANE_RPCS, OPS_MUTATING_RPCS, OPS_ORGANIZATION_READ_ONLY_RPCS, OPS_ORGANIZATION_RPCS, OPS_READ_ONLY_RPCS,
   type OpsRpcName,
 } from './ops-rpcs'
-import { organizationIdFrom, readOpsRows, type OpsSupabaseClient, type OrganizationId } from './ops-db'
+import {
+  OPS_STATEMENT_DEADLINE_MS, organizationIdFrom, readOpsRows, sendWithinOpsDeadline, type OpsDeadlineOptions, type OpsSupabaseClient, type OrganizationId,
+} from './ops-db'
 import { CONNECTION_SERVE_WINDOW_MS } from '../lib/ops-gateway-contract'
 
-/** Past the ops project's 8 s statement timeout, so the database gives up first. */
-export const OPS_RPC_DEADLINE_MS = 9_000
+/** Past the ops project's 8 s statement timeout, so the database gives up first: the one deadline every ops request has (ops-db.ts). */
+export const OPS_RPC_DEADLINE_MS = OPS_STATEMENT_DEADLINE_MS
 
 /** A refused or failed ops write. Carries the function and the database's code, never a row. */
 export class OpsWriteError extends Error {
@@ -86,10 +88,8 @@ const KNOWN: ReadonlySet<string> = new Set<string>([...OPS_MUTATING_RPCS, ...OPS
 const ORGANIZATION_SCOPED: ReadonlySet<string> = new Set<string>([...OPS_ORGANIZATION_RPCS, ...OPS_ORGANIZATION_READ_ONLY_RPCS])
 const LANE_WIDE: ReadonlySet<string> = new Set<string>([...OPS_LANE_RPCS, ...OPS_LANE_READ_ONLY_RPCS])
 
-export interface OpsRpcOptions {
-  /** Defaults to OPS_RPC_DEADLINE_MS. */
-  deadlineMs?: number
-}
+/** deadlineMs defaults to OPS_RPC_DEADLINE_MS; delay is the timer seam readOpsRows takes too. */
+export type OpsRpcOptions = OpsDeadlineOptions
 
 /**
  * The only call of an ops database function. Throws OpsWriteError on a database
@@ -113,27 +113,17 @@ export async function callOpsRpc(
     throw new OpsWriteError(`${name} is lane wide and takes no organization`)
   }
 
-  const deadlineMs = options.deadlineMs ?? OPS_RPC_DEADLINE_MS
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), deadlineMs)
-  try {
-    const response = await client.rpc(name, args).abortSignal(controller.signal)
-    const data: unknown = response.data
-    const error = response.error
-    if (controller.signal.aborted) {
-      throw new OpsWriteTimeoutError(`${name} passed its ${deadlineMs} ms deadline and may still have committed`)
-    }
-    if (error) throw new OpsWriteError(`${name} failed (${error.code ?? 'no code'}): ${error.message}`)
-    return data
-  } catch (err) {
-    if (err instanceof OpsWriteError) throw err
-    if (controller.signal.aborted) {
-      throw new OpsWriteTimeoutError(`${name} passed its ${deadlineMs} ms deadline and may still have committed`)
-    }
-    throw new OpsWriteError(`${name} could not be called: ${err instanceof Error ? err.message : 'unknown error'}`)
-  } finally {
-    clearTimeout(timer)
+  const sent = await sendWithinOpsDeadline((signal) => client.rpc(name, args).abortSignal(signal), options)
+  if (sent.kind === 'timed_out') {
+    throw new OpsWriteTimeoutError(`${name} passed its ${sent.deadlineMs} ms deadline and may still have committed`)
   }
+  if (sent.kind === 'threw') {
+    throw new OpsWriteError(`${name} could not be called: ${sent.error instanceof Error ? sent.error.message : 'unknown error'}`)
+  }
+  const data: unknown = sent.value.data
+  const error = sent.value.error
+  if (error) throw new OpsWriteError(`${name} failed (${error.code ?? 'no code'}): ${error.message}`)
+  return data
 }
 
 // ── result checking ─────────────────────────────────────────────────────────
@@ -1065,7 +1055,9 @@ export async function recordMeasuredIdentity(
  * has not measured it (#2336). The key a response's budget reading is written
  * under, the same one acquire_sf_lease draws the call's lease from, never the
  * declared target (L83). A read, through readOpsRows, so it is held to the
- * organization by type and at run time.
+ * organization by type and at run time, and to readOpsRows's deadline (#2505).
+ * Its live caller (connectionFetch's recordBudget) still races it against the
+ * tighter SF_BUDGET_READING_DEADLINE_MS.
  */
 export async function readMeasuredSfOrg(
   client: OpsSupabaseClient, organizationId: OrganizationId, connectionId: string, generation: number,

@@ -11,8 +11,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   OPS_READ_ROW_CAP,
+  OPS_STATEMENT_DEADLINE_MS,
   OpsDatabaseConfigError,
   OpsReadError,
+  OpsReadTimeoutError,
   createOpsSupabaseClient,
   organizationIdFrom,
   readOpsRows,
@@ -220,5 +222,90 @@ describe('readOpsRows', () => {
     const db = createOpsSupabaseClient(envWith(), { fetch: f })
     await expect(readOpsRows(db, orgId, { table: ' ', columns: '*', limit: 1 })).rejects.toThrow(/table is required/)
     await expect(readOpsRows(db, orgId, { table: 'ops_runs', columns: '', limit: 1 })).rejects.toThrow(/columns are required/)
+  })
+
+  describe('its deadline (#2505, L110)', () => {
+    /** A fetch that never answers until its request is aborted, counting the requests still open. */
+    function hangingFetch() {
+      let sent = 0
+      let open = 0
+      const f = ((_input: string | URL | Request, init?: RequestInit) => {
+        sent++
+        open++
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            open--
+            reject(new DOMException('The operation was aborted.', 'AbortError'))
+          })
+        })
+      }) as typeof fetch
+      return { f, sent: () => sent, open: () => open }
+    }
+
+    /** The one wait the deadline asks for, ended only when the test says so (L524). */
+    function heldDelay() {
+      const asked: number[] = []
+      let end: () => void = () => { throw new Error('the deadline was never asked for') }
+      const delay = (ms: number) => {
+        asked.push(ms)
+        return new Promise<void>((resolve) => { end = resolve })
+      }
+      return { delay, asked, end: () => end() }
+    }
+
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+    it('refuses a hung read by name once its deadline passes, and leaves no request running', async () => {
+      const hung = hangingFetch()
+      const timer = heldDelay()
+      const db = createOpsSupabaseClient(envWith(), { fetch: hung.f })
+
+      const pending = readOpsRows(db, orgId, { table: 'ops_runs', columns: '*', limit: 10 }, { delay: timer.delay })
+      // Handler attached before the deadline is ended, so the rejection is never unhandled (L749).
+      let outcome: unknown = 'pending'
+      void pending.then(() => { outcome = 'resolved' }, (err: unknown) => { outcome = err })
+      await settle()
+      expect(outcome).toBe('pending')
+      expect(hung.open()).toBe(1)
+      expect(timer.asked).toEqual([OPS_STATEMENT_DEADLINE_MS])
+
+      timer.end()
+      // One turn of the event loop: a read the deadline does not abort is still pending here.
+      await settle()
+      expect(outcome).toBeInstanceOf(OpsReadTimeoutError)
+      expect(outcome).toBeInstanceOf(OpsReadError)
+      expect(String(outcome)).toMatch(/OpsReadTimeoutError: An ops read of ops_runs passed its 9000 ms deadline/)
+      expect(hung.sent()).toBe(1)
+      expect(hung.open()).toBe(0)
+    })
+
+    it('answers a read that comes back in time, and a deadline ending later changes nothing', async () => {
+      const { f } = recordingFetch({ rows: [{ id: 'r1', organization_id: ORG }] })
+      const timer = heldDelay()
+      const db = createOpsSupabaseClient(envWith(), { fetch: f })
+      const result = await readOpsRows(db, orgId, { table: 'ops_runs', columns: '*', limit: 10 }, { delay: timer.delay })
+      timer.end()
+      await settle()
+      expect(result.rows).toEqual([{ id: 'r1', organization_id: ORG }])
+    })
+
+    it('takes the deadline a caller names', async () => {
+      const hung = hangingFetch()
+      const timer = heldDelay()
+      const db = createOpsSupabaseClient(envWith(), { fetch: hung.f })
+      const pending = readOpsRows(db, orgId, { table: 'ops_runs', columns: '*', limit: 10 }, { deadlineMs: 250, delay: timer.delay })
+      let outcome: unknown = 'pending'
+      void pending.then(() => { outcome = 'resolved' }, (err: unknown) => { outcome = err })
+      await settle()
+      expect(timer.asked).toEqual([250])
+      timer.end()
+      await settle()
+      expect(String(outcome)).toMatch(/passed its 250 ms deadline/)
+    })
+
+    it('sets its deadline past the ops project\'s 8 s statement timeout, so the database gives up first', () => {
+      expect(OPS_STATEMENT_DEADLINE_MS).toBeGreaterThan(8_000)
+      expect(OPS_STATEMENT_DEADLINE_MS).toBeLessThan(60_000)
+    })
   })
 })
