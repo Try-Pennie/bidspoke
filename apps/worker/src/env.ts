@@ -5,6 +5,8 @@
  * src/index.ts, so every existing `import type { Env } from '../index'` keeps
  * working.
  */
+import type { OpsConnectionsBinding } from './lib/ops-connections-contract'
+
 export interface Env {
   // KV namespaces
   WORKFLOW_CACHE: KVNamespace
@@ -126,6 +128,15 @@ export interface Env {
    * request. Optional, so a run without it refuses a shadow run by name.
    */
   COMPARE_CODE_LOADER?: DispatchNamespace
+  /**
+   * The ops Worker's OpsConnections entrypoint (#2335, PR 9 of phase 5 of
+   * #1689). Reached ONLY through lib/ops-connections-client.ts, which races
+   * every call against a deadline; never from the engine, a node, a Durable
+   * Object or the webhook routes (Hard Rule 1, guarded by
+   * ops-connections-off-money-path.test.ts). Optional: a deploy without it
+   * answers ops_connections_unavailable by name.
+   */
+  OPS_CONNECTIONS?: OpsConnectionsBinding
 
   // GitHub backup: push workflow definitions on save (PRD Section 3.2)
   // Optional: set via `wrangler secret put GITHUB_TOKEN` and wrangler.toml [vars] GITHUB_REPO

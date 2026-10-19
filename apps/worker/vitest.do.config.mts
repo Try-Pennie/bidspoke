@@ -19,7 +19,15 @@ export default defineConfig({
   test: {
     projects: [
       {
-        plugins: [cloudflareTest({ wrangler: { configPath: './wrangler.toml' } })],
+        // OPS_CONNECTIONS names the ops Worker's OpsConnections entrypoint (#2335),
+        // which this project does not run, and workerd starts no Worker whose
+        // binding names a service it does not run: a stub that answers nothing
+        // stands in (the bidding side's use is proven in Node,
+        // ops-connections-client.test.ts; the entrypoint itself in the ops project).
+        plugins: [cloudflareTest({
+          wrangler: { configPath: './wrangler.toml' },
+          miniflare: { serviceBindings: { OPS_CONNECTIONS: () => new Response('the ops Worker is not run in this project', { status: 503 }) } },
+        })],
         test: { name: 'do', include: ['src/durable-objects/__tests__/*.workers.test.ts'] },
       },
       {

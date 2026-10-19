@@ -521,6 +521,46 @@ jobs:
       - name: Prove ops.trypennie.dev is the ops Worker
         run: bash .github/scripts/prove-ops-host.sh https://ops.trypennie.dev/porting/capture/p_deployproof
 
+  # A real call through the bidding Worker's OPS_CONNECTIONS binding (#2335, PR 9
+  # of phase 5 of #1689). Cloudflare deploys a binding to an entrypoint the
+  # deployed ops Worker does not export green, and every call then throws (spike
+  # #2330), so after either Worker deploys this signs in as the e2e user and asks
+  # the DEPLOYED bidding Worker's GET /api/admin/ops-connections-probe, which
+  # sends OpsConnections.health a request ops refuses by name before reading
+  # anything (it touches nobody's data), and fails the run unless that answer
+  # comes back. After both deploy jobs, so an ops deploy in the same run that
+  # dropped the entrypoint is caught too; the bidding Worker is already live by
+  # then, and nothing on the money path calls the binding (Hard Rule 1), so a
+  # red here never stops a bid. BUDGET_SECONDS covers a new version reaching
+  # every edge; the job's timeout bounds a hang.
+  ops-connections-probe:
+    name: OPS_CONNECTIONS answers through the binding
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [deploy-worker, deploy-ops-worker]
+    if: |
+      always()
+      && needs.deploy-worker.result != 'failure'
+      && needs.deploy-ops-worker.result != 'failure'
+      && (needs.deploy-worker.result == 'success' || needs.deploy-ops-worker.result == 'success')
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: Call OpsConnections through the deployed bidding Worker
+        env:
+          WORKER_URL: ${{ vars.NEXT_PUBLIC_WORKER_URL }}
+          SUPABASE_URL: ${{ vars.NEXT_PUBLIC_SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          E2E_EMAIL: ${{ vars.E2E_EMAIL }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          BUDGET_SECONDS: '120'
+          INTERVAL_SECONDS: '10'
+        run: node .github/scripts/ops-connections-probe.mjs
+
   worker_artifact:
     name: Worker artifact changed
     runs-on: ubuntu-latest

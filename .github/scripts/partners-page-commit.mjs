@@ -23,6 +23,8 @@ import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { sessionCookieHeader } from '../../apps/web/e2e/session-cookies.ts'
+import { passwordSession } from './e2e-session.mjs'
+import { secondsSetting } from './seconds-setting.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const GATE_HEADER = 'x-bidspoke-gate'
@@ -89,17 +91,7 @@ export async function followPartnersPage(deps) {
 
 /** Sign in as the e2e user through the auth API and answer the Cookie header a browser would send. */
 async function signInWithPassword(supabaseUrl, anonKey, email, password) {
-  const res = await fetch(`${supabaseUrl.replace(/\/+$/, '')}/auth/v1/token?grant_type=password`, {
-    method: 'POST',
-    headers: { apikey: anonKey, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password }),
-  })
-  const body = await res.json().catch(() => null)
-  if (!res.ok || !body || typeof body.access_token !== 'string') {
-    throw new Error(`the auth API answered ${res.status}${body && body.error_description ? `: ${body.error_description}` : ''}`)
-  }
-  if (typeof body.expires_at !== 'number' && typeof body.expires_in === 'number') body.expires_at = Math.floor(Date.now() / 1000) + body.expires_in
-  return sessionCookieHeader(supabaseUrl, body)
+  return sessionCookieHeader(supabaseUrl, await passwordSession(fetch, supabaseUrl, anonKey, email, password))
 }
 
 async function main() {
@@ -114,11 +106,19 @@ async function main() {
       process.exit(1)
     }
   }
+  let budgetSeconds, intervalSeconds
+  try {
+    budgetSeconds = secondsSetting(env.BUDGET_SECONDS, 180, 'BUDGET_SECONDS')
+    intervalSeconds = secondsSetting(env.INTERVAL_SECONDS, 15, 'INTERVAL_SECONDS')
+  } catch (err) {
+    console.error(`partners-page-follows: ${err.message}, so nothing was measured.`)
+    process.exit(1)
+  }
   const result = await followPartnersPage({
     siteUrl: env.SITE_URL,
     expectedSha: env.EXPECTED_SHA,
-    budgetSeconds: Number(env.BUDGET_SECONDS ?? '180'),
-    intervalSeconds: Number(env.INTERVAL_SECONDS ?? '15'),
+    budgetSeconds,
+    intervalSeconds,
     signIn: () => signInWithPassword(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, env.E2E_EMAIL, env.E2E_PASSWORD),
     fetchPage: (url, cookie) => fetch(url, { headers: { Cookie: cookie }, redirect: 'manual' }),
     now: () => Date.now(),
