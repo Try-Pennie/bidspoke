@@ -30,6 +30,7 @@ import { getSlackConnection, sendRecoveryAlert } from './slack'
 import type { WorkflowDefinition } from '../types'
 import { sendSlowSpikeAlert } from './slack'
 import { fetchAllPaged } from './paginate'
+import { readActiveWorkflows, type ActiveWorkflowRow } from './active-workflows'
 
 export const COOLDOWN_TTL_SECONDS = 30 * 60
 export const WINDOW_MINUTES = 5
@@ -121,15 +122,14 @@ export async function runSlowExecutionCheck(
   const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'slow-execution-rate', 'measure-from-database'))
   if (orgIds.length === 0) return
 
-  const { data: workflows, error: workflowsError } = await supabase
-    .from('workflows')
-    .select('id, name, organization_id, slack_channel, definition')
-    .in('organization_id', orgIds)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-  logReadFailure('slow-execution-rate', 'workflows', workflowsError)
+  let workflows: Pick<ActiveWorkflowRow, 'id' | 'name' | 'organization_id' | 'slack_channel' | 'definition'>[] = []
+  try {
+    workflows = await readActiveWorkflows<Pick<ActiveWorkflowRow, 'id' | 'name' | 'organization_id' | 'slack_channel' | 'definition'>>(supabase, 'id, name, organization_id, slack_channel, definition', 'slow-execution-rate workflows', orgIds)
+  } catch (error) {
+    logReadFailure('slow-execution-rate', 'workflows', error)
+  }
 
-  if (!workflows?.length) return
+  if (!workflows.length) return
 
   // A workflow only opts into slow alerting by setting duration_alert_ms on its
   // trigger — same opt-in the per-execution alert used. No threshold = no check.
@@ -137,7 +137,7 @@ export async function runSlowExecutionCheck(
   for (const wf of workflows) {
     const def = wf.definition as WorkflowDefinition | null
     const t = def?.trigger?.config?.duration_alert_ms
-    if (typeof t === 'number' && t > 0) thresholds.set(wf.id as string, t)
+    if (typeof t === 'number' && t > 0) thresholds.set(wf.id, t)
   }
   if (thresholds.size === 0) return
 
@@ -205,12 +205,12 @@ export async function runSlowExecutionCheck(
   for (const r of completed) finishedByWorkflow.set(r.workflow_id, (finishedByWorkflow.get(r.workflow_id) ?? 0) + 1)
 
   for (const wf of workflows) {
-    const wfId = wf.id as string
+    const wfId = wf.id
     const threshold = thresholds.get(wfId)
     if (!threshold) continue
 
     const cooldownKey = `slow-spike-cooldown:${wfId}`
-    const incident: IncidentContext = { scope: { kind: 'org', organizationId: wf.organization_id as string }, subjectLabel: wf.name as string }
+    const incident: IncidentContext = { scope: { kind: 'org', organizationId: wf.organization_id }, subjectLabel: wf.name }
 
     const durations = perWorkflow.get(wfId) ?? []
     const spike = detectSlowSpike(durations, threshold)
@@ -230,14 +230,14 @@ export async function runSlowExecutionCheck(
         cooldownKey,
         incident,
         async (alertedAt, endedAt) => {
-          const slack = await getSlackConnection(supabase, wf.organization_id as string)
+          const slack = await getSlackConnection(supabase, wf.organization_id)
           if (!slack) return false
           return sendRecoveryAlert(
             slack,
-            (wf.slack_channel as string | null) ?? slack.default_channel,
+            wf.slack_channel ?? slack.default_channel,
             // Judges the trailing WINDOW_MINUTES, so a one-tick incident has a
             // zero span: name the window it measured, not a gap it did not (#1108).
-            { signal: 'slow execution', subject: wf.name as string, alertedAt, endedAt, measuredWindowMinutes: WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
+            { signal: 'slow execution', subject: wf.name, alertedAt, endedAt, measuredWindowMinutes: WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
           )
         },
         { hasEvidence: () => (finishedByWorkflow.get(wfId) ?? 0) >= MIN_RECOVERY_RUNS, claim: minuteAllClearClaim(claims, 'slow-spike', wfId) },
@@ -259,11 +259,11 @@ export async function runSlowExecutionCheck(
       inCooldown: async () => (await kv.get(cooldownKey)) !== null,
       send: async () => Boolean(await sendSlowSpikeAlert(
         supabase,
-        wf.organization_id as string,
-        (wf.slack_channel as string | null) ?? null,
+        wf.organization_id,
+        wf.slack_channel ?? null,
         {
           workflow_id: wfId,
-          workflow_name: wf.name as string,
+          workflow_name: wf.name,
           slow_count: spike.slowCount,
           total_count: spike.totalCount,
           threshold_ms: threshold,

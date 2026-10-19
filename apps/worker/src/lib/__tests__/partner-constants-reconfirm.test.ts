@@ -113,7 +113,8 @@ describe('the prewarm records a failing reconfirm instead of discarding it (#213
     const idem = fakeKv()
     const notify = vi.fn(async (..._args: unknown[]) => undefined)
     const result = await prewarmKvCaches(fakeSupabase({ workflows: { data: null, error: { message: 'connection reset' } } }), envOf(cache.kv, idem.kv), { notify })
-    expect(result.workflowsReadError).toBe('connection reset')
+    // Named by the read that failed since the read is shared (#1437).
+    expect(result.workflowsReadError).toContain('connection reset')
     expect(errors.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')).toMatch(/could not read the active workflows.*connection reset/)
     const state = await readReconfirmState(idem.kv)
     expect(state[WORKFLOWS_SUBJECT]?.since).toBe(START)

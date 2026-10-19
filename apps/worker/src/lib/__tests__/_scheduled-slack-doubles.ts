@@ -50,7 +50,8 @@ export function fakeClient(answers: Answer[]): { client: SupabaseClient; calls: 
         return Promise.resolve({ data: answer.data ?? null, error: answer.error ?? null, status: answer.error ? 500 : 200 })
       }
       const builder: Record<string, unknown> = {}
-      for (const m of ['select', 'eq', 'or', 'not', 'order', 'limit', 'maybeSingle']) builder[m] = () => builder
+      // `range`: the all organization read pages past the row cap (#1437).
+      for (const m of ['select', 'eq', 'or', 'not', 'order', 'range', 'limit', 'maybeSingle']) builder[m] = () => builder
       builder.retry = (enabled: boolean) => {
         call.retry = enabled
         return builder

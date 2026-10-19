@@ -108,7 +108,7 @@ function incidentTable() {
 /** The org list and an empty job_runs, which is what the heartbeat and the export alerter read. */
 function checkDb(): SupabaseClient {
   const chain: Record<string, unknown> = {}
-  for (const m of ['select', 'eq', 'or', 'not', 'order', 'limit', 'in', 'is']) chain[m] = () => chain
+  for (const m of ['select', 'eq', 'or', 'not', 'order', 'range', 'limit', 'in', 'is']) chain[m] = () => chain
   chain.then = (resolve: (v: unknown) => unknown) => Promise.resolve({ data: [{ organization_id: 'org-1' }], error: null }).then(resolve)
   const runs: Record<string, unknown> = {}
   for (const m of ['select', 'eq', 'not', 'order']) runs[m] = () => runs

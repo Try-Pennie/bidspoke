@@ -78,15 +78,45 @@ function matches(row: Row, params: URLSearchParams): boolean {
     if (RESERVED.has(key)) continue
     if (key === 'or') {
       if (!matchOr(row, value)) return false
+    } else if (key.includes('.')) {
+      // A filter on an embedded resource (`organizations.is_synthetic=eq.false`),
+      // read as an !inner embed: a row whose embed does not match is left out.
+      const dot = key.indexOf('.')
+      const nested = row[key.slice(0, dot)]
+      if (!nested || typeof nested !== 'object' || !matchOne(nested as Row, key.slice(dot + 1), value)) return false
     } else if (!matchOne(row, key, value)) return false
   }
   return true
 }
 
+/** Split a select list on its top level commas, leaving an embed's own list whole. */
+function selectTerms(select: string): string[] {
+  const terms: string[] = []
+  let depth = 0
+  let current = ''
+  for (const ch of select) {
+    if (ch === '(') depth++
+    if (ch === ')') depth--
+    if (ch === ',' && depth === 0) {
+      terms.push(current)
+      current = ''
+    } else current += ch
+  }
+  terms.push(current)
+  return terms.map((t) => t.trim()).filter(Boolean)
+}
+
 function project(row: Row, select: string | null): Row {
   if (!select || select.trim() === '*') return { ...row }
   const out: Row = {}
-  for (const col of select.split(',').map((c) => c.trim()).filter(Boolean)) {
+  for (const col of selectTerms(select)) {
+    const embed = /^([a-z_]+)(![a-z_]+)?\(.*\)$/.exec(col)
+    if (embed) {
+      // An embedded resource comes back as the row holds it, whole: the test
+      // states the embed it expects rather than this double joining tables.
+      out[embed[1]] = row[embed[1]] ?? null
+      continue
+    }
     if (/[()!:]/.test(col)) throw new Error(`postgrest-fake: unsupported select ${col}`)
     out[col] = row[col] ?? null
   }
@@ -99,7 +129,73 @@ function json(body: unknown, status = 200): Response {
 
 let nextId = 1
 
-export function fakePostgrest(tables: Record<string, Row[]>, rpcs: Record<string, RpcHandler> = {}): FakePostgrest {
+/**
+ * Answer list reads as PostgREST's row cap does (#1437): sorted by the `order`
+ * the client sent, then `offset` and `limit` applied, then cut at `rowCap` rows
+ * whatever was asked. Rows that tie on the order come back in a different
+ * order on every request, as Postgres is free to return them, so a reader
+ * paging on an order that is not unique skips and repeats rows here exactly
+ * as it can in production. Applies to rpc answers too.
+ */
+export interface FakePaging {
+  rowCap: number
+}
+
+function compareCells(a: unknown, b: unknown, nullsFirst: boolean): number {
+  const aNull = a === null || a === undefined
+  const bNull = b === null || b === undefined
+  if (aNull || bNull) {
+    if (aNull && bNull) return 0
+    return aNull === nullsFirst ? -1 : 1
+  }
+  if (typeof a === 'number' && typeof b === 'number') return a - b
+  const as = String(a)
+  const bs = String(b)
+  return as < bs ? -1 : as > bs ? 1 : 0
+}
+
+/** A seeded shuffle, so ties land differently per request but each run repeats. */
+function shuffled<T>(rows: T[], seed: number): T[] {
+  const out = [...rows]
+  let s = (seed * 2654435761) >>> 0 || 1
+  for (let i = out.length - 1; i > 0; i--) {
+    s ^= s << 13
+    s >>>= 0
+    s ^= s >>> 17
+    s ^= s << 5
+    s >>>= 0
+    const j = s % (i + 1)
+    ;[out[i], out[j]] = [out[j], out[i]]
+  }
+  return out
+}
+
+function pageAsPostgrest(found: Row[], params: URLSearchParams, paging: FakePaging, seed: number): Row[] {
+  let out = shuffled(found, seed)
+  const order = params.get('order')
+  if (order) {
+    const keys = order.split(',').map((term) => {
+      const [column, ...mods] = term.split('.')
+      const desc = mods.includes('desc')
+      // PostgREST's default puts nulls last ascending and first descending.
+      const nullsFirst = mods.includes('nullsfirst') ? true : mods.includes('nullslast') ? false : desc
+      return { column, desc, nullsFirst }
+    })
+    out.sort((a, b) => {
+      for (const k of keys) {
+        const c = compareCells(a[k.column], b[k.column], k.nullsFirst)
+        if (c !== 0) return k.desc ? -c : c
+      }
+      return 0
+    })
+  }
+  const offset = Number(params.get('offset') ?? 0)
+  const limit = params.get('limit')
+  out = out.slice(offset, limit === null ? undefined : offset + Number(limit))
+  return out.slice(0, paging.rowCap)
+}
+
+export function fakePostgrest(tables: Record<string, Row[]>, rpcs: Record<string, RpcHandler> = {}, paging?: FakePaging): FakePostgrest {
   const requests: RecordedRequest[] = []
   const fetchImpl = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : String(input))
@@ -113,7 +209,9 @@ export function fakePostgrest(tables: Record<string, Row[]>, rpcs: Record<string
       const handler = rpcs[path.slice('rpc/'.length)]
       if (!handler) throw new Error(`postgrest-fake: no handler for ${path}`)
       const out = handler((body ?? {}) as Record<string, unknown>, tables)
-      return 'error' in out ? json(out.error, out.status) : json(out.data, out.status ?? 200)
+      if ('error' in out) return json(out.error, out.status)
+      const data = paging && Array.isArray(out.data) ? pageAsPostgrest(out.data as Row[], url.searchParams, paging, requests.length) : out.data
+      return json(data, out.status ?? 200)
     }
 
     const rows = (tables[path] ??= [])
@@ -128,6 +226,7 @@ export function fakePostgrest(tables: Record<string, Row[]>, rpcs: Record<string
 
     if (method === 'GET' || method === 'HEAD') {
       let found = rows.filter((r) => matches(r, url.searchParams))
+      if (paging) return answer(pageAsPostgrest(found, url.searchParams, paging, requests.length))
       const limit = url.searchParams.get('limit')
       if (limit !== null) found = found.slice(0, Number(limit))
       return answer(found)

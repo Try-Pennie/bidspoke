@@ -16,6 +16,7 @@ import { secretKeys } from './secret-crypto'
 import { checkReconfirmFailures, recordReconfirmOutcomes, type ReconfirmOutcome } from './partner-constants-reconfirm'
 import type { notifyExportFailure } from './export-alerts'
 import { formatErr } from './format-error'
+import { readActiveWorkflows } from './active-workflows'
 
 export interface PrewarmResult {
   /** The read of the active workflows failed, so no organization was warmed or reconfirmed. */
@@ -32,21 +33,19 @@ export interface PrewarmOptions {
 export async function prewarmKvCaches(supabase: SupabaseClient, env: Env, opts: PrewarmOptions = {}): Promise<PrewarmResult> {
   const start = Date.now()
 
-  const { data: workflows, error } = await supabase
-    .from('workflows')
-    .select('id, organization_id')
-    .eq('is_active', true)
-    .is('deleted_at', null)
-
-  if (error) {
+  let workflows: { id: string; organization_id: string }[]
+  try {
+    workflows = await readActiveWorkflows<{ id: string; organization_id: string }>(supabase, 'id, organization_id', 'prewarm active workflows')
+  } catch (error) {
     // Not a quiet return (#2132): no organization's partner constants are
     // reconfirmed while this fails, so the bidding pickup bound stops holding.
-    console.error(`[prewarm] could not read the active workflows, so nothing was warmed or reconfirmed: ${error.message}`)
-    const result: PrewarmResult = { workflowsReadError: error.message, reconfirms: {} }
+    const message = formatErr(error)
+    console.error(`[prewarm] could not read the active workflows, so nothing was warmed or reconfirmed: ${message}`)
+    const result: PrewarmResult = { workflowsReadError: message, reconfirms: {} }
     await recordAndCheck(supabase, env, result, opts)
     return result
   }
-  if (!workflows || workflows.length === 0) {
+  if (workflows.length === 0) {
     console.log('[prewarm] no active workflows found')
     // No organization bids, so none is owed a reconfirm: recording this clears
     // any standing failure and lets its page clear (L152).
@@ -55,7 +54,7 @@ export async function prewarmKvCaches(supabase: SupabaseClient, env: Env, opts: 
     return result
   }
 
-  const orgIds = Array.from(new Set(workflows.map((w) => w.organization_id as string)))
+  const orgIds = Array.from(new Set(workflows.map((w) => w.organization_id)))
   const reconfirms: Record<string, ReconfirmOutcome> = {}
 
   // The comment that stood here said "SF creds are currently CF secrets
@@ -97,7 +96,7 @@ export async function prewarmKvCaches(supabase: SupabaseClient, env: Env, opts: 
   })
 
   const perWorkflow = workflows.map((w) =>
-    loadWorkflowDefinition(w.id as string, env.WORKFLOW_CACHE, supabase).catch(() => undefined)
+    loadWorkflowDefinition(w.id, env.WORKFLOW_CACHE, supabase).catch(() => undefined)
   )
 
   await Promise.all([...perOrg, ...perWorkflow])

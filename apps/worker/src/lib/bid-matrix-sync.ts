@@ -576,6 +576,23 @@ async function notifyMatrixSyncFailures(
   }
 }
 
+/** Every organization's active configs synced from Salesforce. Throws on a failed read, before any sync writes. */
+export async function listSalesforceSyncedConfigs(supabase: SupabaseClient): Promise<{ id: string; organization_id: string; slug: string }[]> {
+  // Paged by the primary key past PostgREST's 1,000 row cap (#1437). A failed
+  // page throws here, before the loop below syncs and writes anything.
+  return fetchAllPaged<{ id: string; organization_id: string; slug: string }>(
+    (from, to) =>
+      supabase
+        .from('partner_bid_configs')
+        .select('id, organization_id, slug')
+        .eq('sync_source', 'salesforce')
+        .eq('is_active', true)
+        .order('id', { ascending: true })
+        .range(from, to),
+    'listing configs',
+  )
+}
+
 /**
  * Cron entry point — sync every active partner_bid_config with sync_source='salesforce'.
  * Errors on one config don't stop the others; they're recorded on the config's
@@ -585,18 +602,12 @@ export async function syncAllSalesforceConfigs(
   env: Env,
   supabase: SupabaseClient
 ): Promise<{ successes: SyncResult[]; failures: MatrixSyncFailure[] }> {
-  const { data: configs, error } = await supabase
-    .from('partner_bid_configs')
-    .select('id, organization_id, slug')
-    .eq('sync_source', 'salesforce')
-    .eq('is_active', true)
-
-  if (error) throw new Error(`failed to list configs: ${error.message}`)
+  const configs = await listSalesforceSyncedConfigs(supabase)
 
   const successes: SyncResult[] = []
   const failures: MatrixSyncFailure[] = []
 
-  for (const c of (configs ?? []) as { id: string; organization_id: string; slug: string }[]) {
+  for (const c of configs) {
     try {
       // No actor: History credits these rows to the hourly sync job.
       const result = await syncBidConfig(c.id, env, supabase)

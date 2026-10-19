@@ -27,6 +27,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type { MutedFailureSignal, WorkflowDefinition } from '../types'
 import { sendFailureSpikeAlert } from './slack'
 import { fetchAllPaged } from './paginate'
+import { readActiveWorkflows, type ActiveWorkflowRow } from './active-workflows'
 import { onlyFailureRateCandidates, signalMatches } from './failure-rate-match'
 export type { MutedFailureSignal }
 
@@ -146,14 +147,13 @@ export async function runFailureRateCheck(
   const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'failure-rate', 'measure-from-database'))
   if (orgIds.length === 0) return
 
-  const { data: workflows, error: workflowsError } = await supabase
-    .from('workflows')
-    .select('id, name, organization_id, slack_channel, definition')
-    .in('organization_id', orgIds)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-  logReadFailure('failure-rate', 'workflows', workflowsError)
-  if (!workflows?.length) return
+  let workflows: Pick<ActiveWorkflowRow, 'id' | 'name' | 'organization_id' | 'slack_channel' | 'definition'>[] = []
+  try {
+    workflows = await readActiveWorkflows<Pick<ActiveWorkflowRow, 'id' | 'name' | 'organization_id' | 'slack_channel' | 'definition'>>(supabase, 'id, name, organization_id, slack_channel, definition', 'failure-rate workflows', orgIds)
+  } catch (error) {
+    logReadFailure('failure-rate', 'workflows', error)
+  }
+  if (!workflows.length) return
 
   // Workflows opt in by configuring muted_failure_signals on the trigger.
   const signalsByWorkflow = new Map<string, MutedFailureSignal[]>()
@@ -162,7 +162,7 @@ export async function runFailureRateCheck(
     const signals = (def?.trigger?.config?.muted_failure_signals ?? []).filter(
       (s) => s && s.match?.trim() && s.count > 0 && s.window_minutes > 0,
     )
-    if (signals.length) signalsByWorkflow.set(wf.id as string, signals)
+    if (signals.length) signalsByWorkflow.set(wf.id, signals)
   }
   if (signalsByWorkflow.size === 0) return
 
@@ -190,7 +190,7 @@ export async function runFailureRateCheck(
   )
 
   for (const wf of workflows) {
-    const wfId = wf.id as string
+    const wfId = wf.id
     const signals = signalsByWorkflow.get(wfId)
     if (!signals) continue
 
@@ -209,8 +209,8 @@ export async function runFailureRateCheck(
       // The incident record's view of this signal (#2099): the workflow's own
       // organization, named by workflow and match, with this signal's window.
       const incident: IncidentContext = {
-        scope: { kind: 'org', organizationId: wf.organization_id as string },
-        subjectLabel: `${wf.name as string}: "${signal.match}"`,
+        scope: { kind: 'org', organizationId: wf.organization_id },
+        subjectLabel: `${wf.name}: "${signal.match}"`,
         windowMinutes: signal.window_minutes,
       }
 
@@ -222,14 +222,14 @@ export async function runFailureRateCheck(
           cooldownKey,
           incident,
           async (alertedAt, endedAt) => {
-            const slack = await getSlackConnection(supabase, wf.organization_id as string)
+            const slack = await getSlackConnection(supabase, wf.organization_id)
             if (!slack) return false
             return sendRecoveryAlert(
               slack,
-              (wf.slack_channel as string | null) ?? slack.default_channel,
+              wf.slack_channel ?? slack.default_channel,
               {
                 signal: `"${signal.match}" failure rate`,
-                subject: wf.name as string,
+                subject: wf.name,
                 alertedAt,
                 endedAt,
                 // This check judges a trailing window, so a one-tick incident
@@ -279,11 +279,11 @@ export async function runFailureRateCheck(
           console.log(`[failure-spike] workflow=${wf.name} workflow_id=${wfId} signal="${signal.match}" count=${count}/${signal.count} window=${signal.window_minutes}m`)
           return Boolean(await sendFailureSpikeAlert(
             supabase,
-            wf.organization_id as string,
-            (wf.slack_channel as string | null) ?? null,
+            wf.organization_id,
+            wf.slack_channel ?? null,
             {
               workflow_id: wfId,
-              workflow_name: wf.name as string,
+              workflow_name: wf.name,
               signal: signal.match,
               failure_count: count,
               window_minutes: signal.window_minutes,

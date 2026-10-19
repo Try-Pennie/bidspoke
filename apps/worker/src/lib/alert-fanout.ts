@@ -52,7 +52,8 @@ import type { AllClearClaim } from './alert-recovery'
 import { logReadFailure } from './scheduled-read'
 import { onlySlackAlertRow, resolveSlackConnection, slackAlertAmbiguityLine, slackAlertRowsByOrg, slackTokenProblemLine, type SlackConnection, type SlackConnectionRow } from './slack-connection'
 import { slackKeyRingFor } from './slack-key-ring'
-import { describeCopyAge, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason } from './scheduled-slack'
+import { describeCopyAge, readEveryPage, scheduledSlackFor, type BoundableQuery, type CopyUnreachableReason } from './scheduled-slack'
+import { fetchAllPaged } from './paginate'
 
 /**
  * The slice of KV this module uses: a get and a cooldown put. Narrower than
@@ -118,7 +119,7 @@ export async function slackOrgIds(supabase: SupabaseClient, logLabel: string, us
 }
 
 /**
- * Every org's Slack connection (#1303), in one read: for a check that belongs to
+ * Every org's Slack connection (#1303), in one paged read: for a check that belongs to
  * no org and posts to all of them. On the scheduled client a database that does
  * not answer is replaced by the saved copy; an empty live answer is an answer.
  */
@@ -159,19 +160,34 @@ type RowsRead<R> =
   | { kind: 'stored'; copy: Map<string, SlackConnection>; ageMs: number | null }
   | { kind: 'unreachable'; reason: SlackListUnreachableReason }
 
+/**
+ * One page of every org's alert row (#1437): paged past PostgREST's 1,000 row
+ * cap, ordered by the primary key so the pages neither skip nor repeat a row.
+ */
+function slackAlertRowsPage(supabase: SupabaseClient, columns: string, from: number, to: number) {
+  return onlySlackAlertRow(supabase.from('service_connections').select(columns).order('id', { ascending: true }).range(from, to))
+}
+
 /** The one all-org read of service_connections behind both lists above, alert rows only, bounded on the scheduled client. */
 async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what: string, columns: string, use: SlackListUse): Promise<RowsRead<R>> {
-  const query = onlySlackAlertRow(supabase.from('service_connections').select(columns))
+  const page = (from: number, to: number) => slackAlertRowsPage(supabase, columns, from, to)
   const scheduled = scheduledSlackFor(supabase)
   if (!scheduled) {
-    // Any other client: one read, as before, with the failure said rather than read as "no orgs".
-    const { data, error } = await query
-    logReadFailure(logLabel, 'slack connections', error)
-    if (error) return { kind: 'unreachable', reason: 'read_failed' }
-    return { kind: 'live', rows: (data ?? []) as unknown as R[] }
+    // Any other client: every page, with the failure said rather than read as "no orgs".
+    try {
+      return { kind: 'live', rows: await fetchAllPaged<R>(page, `${logLabel} slack connections`) }
+    } catch (error) {
+      logReadFailure(logLabel, 'slack connections', error)
+      return { kind: 'unreachable', reason: 'read_failed' }
+    }
   }
   const subject = `${logLabel} ${what}`
-  const live = await scheduled.read<R[]>(subject, query as unknown as BoundableQuery<R[]>)
+  // Each page is one bounded read; a page that does not answer is the database not answering.
+  const live = await readEveryPage<R>(
+    (from, to) => page(from, to) as unknown as BoundableQuery<R[]>,
+    (query) => scheduled.read<R[]>(subject, query),
+    subject,
+  )
   if (live.kind === 'answered') {
     const rows = live.data ?? []
     console.log(`[scheduled-slack] ${subject}: read live (${rows.length} rows)`)
@@ -199,20 +215,29 @@ async function readSlackRows<R>(supabase: SupabaseClient, logLabel: string, what
 }
 
 /**
- * Every Slack connection, straight from the database and never from the copy,
- * for the two readers whose failure is itself the evidence (#2061): the
- * database reachability probe, which bounds it and writes what it reads to the
- * saved copy (database-reachability.ts), and the volume check, which reads its
- * organizations with it under the client's full deadline as before
- * (volume-cliff.ts). Deliberately NOT the bounded read above.
+ * One page of every Slack connection, straight from the database and never
+ * from the copy, for the two readers whose failure is itself the evidence
+ * (#2061): the database reachability probe, which bounds each page and writes
+ * what it reads to the saved copy (database-reachability.ts), and the volume
+ * check, which reads every page with readEverySlackAlertRow under the client's
+ * full deadline as before (volume-cliff.ts). Deliberately NOT the bounded read
+ * above.
  *
  * It takes no SlackListUse because it can only answer from the database: it is
  * 'measure-from-database' by construction. It must never be 'tell-only', since
  * writing the copy from the copy would re-date stale entries as fresh (#2060).
  */
-export function readSlackConnectionRows(supabase: SupabaseClient) {
+export function slackConnectionRowsPage(supabase: SupabaseClient, from: number, to: number) {
   // The alert rows only (#2332): what the saved copy holds and the volume check tells.
-  return onlySlackAlertRow(supabase.from('service_connections').select(SLACK_ROWS_WITH_ORG))
+  return slackAlertRowsPage(supabase, SLACK_ROWS_WITH_ORG, from, to)
+}
+
+/** Every org's alert row, every page straight from the database (#1437). Throws on a failed page. */
+export async function readEverySlackAlertRow(supabase: SupabaseClient): Promise<({ organization_id: string } & SlackConnectionRow)[]> {
+  return fetchAllPaged<{ organization_id: string } & SlackConnectionRow>(
+    (from, to) => slackConnectionRowsPage(supabase, from, to),
+    'slack connections read',
+  )
 }
 
 /**

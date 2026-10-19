@@ -31,6 +31,7 @@ import { createSupabaseClient } from './supabase'
 import { secretKeys, type SecretKeyInput } from './secret-crypto'
 import { readSlackCopy, type SlackCopyRead } from './slack-copy'
 import { formatErr } from './format-error'
+import { fetchAllPaged } from './paginate'
 import { createNobodyToldPager, type NobodyToldPager } from './nobody-told-page'
 import { attachOutageNotice } from './outage-notice'
 
@@ -154,6 +155,37 @@ export async function boundedRead<T>(
   if (outcome.kind === 'threw') return { kind: 'failed', how: 'threw', detail: formatErr(outcome.e) }
   if (outcome.r.error) return { kind: 'failed', how: 'error', detail: formatErr(outcome.r.error) }
   return { kind: 'answered', data: outcome.r.data }
+}
+
+/**
+ * Every page of a read, each asked through `readOne` (one bounded read, under
+ * its own deadline), so a list past PostgREST's 1,000 row cap is read whole
+ * rather than cut at the cap (#1437). `makeQuery` must order on a full key. The
+ * first page that does not answer ends the read with that page's failure, and
+ * the pages before it are dropped: a partial list is never an answer. A throw
+ * from building or asking a page is not the database answering, so it is
+ * rethrown rather than turned into a failed read.
+ */
+export async function readEveryPage<R>(
+  makeQuery: (from: number, to: number) => BoundableQuery<R[]>,
+  readOne: (query: BoundableQuery<R[]>) => Promise<LiveRead<R[]>>,
+  label: string,
+): Promise<LiveRead<R[]>> {
+  let failure: Extract<LiveRead<R[]>, { kind: 'failed' }> | null = null
+  try {
+    const rows = await fetchAllPaged<R>(async (from, to) => {
+      const read = await readOne(makeQuery(from, to))
+      if (read.kind === 'failed') {
+        failure = read
+        return { data: null, error: { message: `${read.how}: ${read.detail}` } }
+      }
+      return { data: read.data ?? [], error: null }
+    }, label)
+    return { kind: 'answered', data: rows }
+  } catch (e) {
+    if (failure) return failure
+    throw e
+  }
 }
 
 /** Mark `client` as this tick's scheduled client. Make one per tick, with the client. */

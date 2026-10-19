@@ -32,8 +32,8 @@
  * finally, so a probe that throws still reads as a run that finished.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { minuteAllClearClaim, postMinutePage, readSlackConnectionRows } from './alert-fanout'
-import { boundedRead, type BoundableQuery, type ScheduledSlack } from './scheduled-slack'
+import { minuteAllClearClaim, postMinutePage, slackConnectionRowsPage } from './alert-fanout'
+import { boundedRead, readEveryPage, type BoundableQuery, type ScheduledSlack } from './scheduled-slack'
 import { readSlackCopy, rememberSlackConnections } from './slack-copy'
 import { resolveSlackConnection, slackAlertAmbiguityLine, slackAlertRowsByOrg, slackTokenProblemLine, type SlackConnection, type SlackConnectionRow } from './slack-connection'
 import { judgeSlackTokens, type SlackTokenSighting } from './slack-token-health'
@@ -403,8 +403,14 @@ export async function runDatabaseReachabilityProbe(deps: ProbeDeps): Promise<Pro
   await deps.stamps.started().catch((e: unknown) => console.error(`[database-reachability] started stamp failed: ${formatErr(e)}`))
   try {
     const nowMs = now()
-    const query = readSlackConnectionRows(deps.supabase) as unknown as BoundableQuery<({ organization_id: string } & SlackConnectionRow)[]>
-    const read = await boundedRead(query, deps.deadlineMs ?? DB_PROBE_DEADLINE_MS, deps.sleep)
+    // Every page (#1437), each one bounded read under the probe's deadline: one
+    // page until 1,000 organizations have a Slack alert row.
+    type ProbeRow = { organization_id: string } & SlackConnectionRow
+    const read = await readEveryPage<ProbeRow>(
+      (from, to) => slackConnectionRowsPage(deps.supabase, from, to) as unknown as BoundableQuery<ProbeRow[]>,
+      (query) => boundedRead(query, deps.deadlineMs ?? DB_PROBE_DEADLINE_MS, deps.sleep),
+      'database reachability slack connections',
+    )
     if (read.kind === 'failed') {
       const detail = `${read.how}: ${read.detail}`
       await reportDatabaseUnreachable(deps, { source: 'probe', what: REACHABILITY_SOURCES.probe.words, error: detail })

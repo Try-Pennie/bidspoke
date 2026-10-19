@@ -3,13 +3,16 @@ import { everyDelivered, slackOrgIds, forEachSlackOrg, rateLimitedOrgAlert } fro
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 // Minimal Supabase double for the one query these helpers make:
-//   .from('service_connections').select('organization_id'), narrowed to the
+//   .from('service_connections').select('organization_id'), paged and narrowed to the
 //   Slack alert row (eq service_type, eq name, or sealed_for, #2332),
 // resolved by awaiting the builder. `rows` is what that query returns; `error`
 // lets a test exercise the read-failure path.
 function supabaseWithOrgs(rows: { organization_id: string }[], error: unknown = null): SupabaseClient {
   const builder: Record<string, unknown> = {}
   builder.select = () => builder
+  // Paged past the row cap (#1437); one page answers it all.
+  builder.order = () => builder
+  builder.range = () => builder
   builder.eq = () => builder
   builder.or = () => builder
   builder.then = (resolve: (v: unknown) => void) => resolve({ data: error ? null : rows, error })

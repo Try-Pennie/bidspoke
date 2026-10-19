@@ -23,7 +23,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { getSlackConnection, lookupSlackConnection, readSlackConnectionForLead } from '../slack'
-import { readEverySlackConnection, readSlackConnectionRows, slackOrgIds } from '../alert-fanout'
+import { readEverySlackAlertRow, readEverySlackConnection, slackOrgIds } from '../alert-fanout'
 import { registerSlackKeyRing } from '../slack-key-ring'
 import { registerScheduledSlack } from '../scheduled-slack'
 import { runDatabaseReachabilityProbe } from '../database-reachability'
@@ -146,11 +146,10 @@ describe('all org reads (alert-fanout)', () => {
     expect(logs.some((l) => l.includes('slack_alert_connection_ambiguous') && l.includes(ORG))).toBe(true)
   })
 
-  it('the probe read (readSlackConnectionRows) returns no ops row', async () => {
+  it('the volume check read (readEverySlackAlertRow) returns no ops row', async () => {
     const { client } = db([opsRow(), legacyAlertRow()])
-    const { data, error } = await readSlackConnectionRows(client)
-    expect(error).toBeNull()
-    expect((data ?? []).map((r) => (r.config as { bot_token: string }).bot_token)).toEqual(['alert-bot-token'])
+    const rows = await readEverySlackAlertRow(client)
+    expect(rows.map((r) => (r.config as { bot_token: string }).bot_token)).toEqual(['alert-bot-token'])
   })
 })
 

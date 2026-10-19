@@ -37,6 +37,8 @@ import type { AlertClaims } from './alert-claim'
 import { logReadFailure } from './scheduled-read'
 import { sendUpstreamOutageAlert, sendFailureSaturationAlert } from './slack'
 import { fetchAllPaged } from './paginate'
+import { readActiveWorkflows, type ActiveWorkflowRow } from './active-workflows'
+import { readExecutionCountsPerMinute, type MinuteCount } from './execution-counts'
 
 export interface OutageCause {
   /** Stable id used in the cooldown key and alert payload. */
@@ -740,19 +742,18 @@ export async function runUpstreamOutageCheck(
   const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'upstream-outage', 'measure-from-database'))
   if (orgIds.length === 0) return
 
-  const { data: workflows, error: workflowsError } = await supabase
-    .from('workflows')
-    .select('id, name, organization_id')
-    .in('organization_id', orgIds)
-    .eq('is_active', true)
-    .is('deleted_at', null)
-  logReadFailure('upstream-outage', 'workflows', workflowsError)
-  if (!workflows?.length) return
+  let workflows: Pick<ActiveWorkflowRow, 'id' | 'name' | 'organization_id'>[] = []
+  try {
+    workflows = await readActiveWorkflows<Pick<ActiveWorkflowRow, 'id' | 'name' | 'organization_id'>>(supabase, 'id, name, organization_id', 'upstream-outage workflows', orgIds)
+  } catch (error) {
+    logReadFailure('upstream-outage', 'workflows', error)
+  }
+  if (!workflows.length) return
 
   const now = Date.now()
-  const workflowIds = workflows.map((w) => w.id as string)
-  const nameById = new Map(workflows.map((w) => [w.id as string, w.name as string]))
-  const orgByWorkflow = new Map(workflows.map((w) => [w.id as string, w.organization_id as string]))
+  const workflowIds = workflows.map((w) => w.id)
+  const nameById = new Map(workflows.map((w) => [w.id, w.name]))
+  const orgByWorkflow = new Map(workflows.map((w) => [w.id, w.organization_id]))
 
   const windowStartMs = now - DEFAULT_OUTAGE_WINDOW_MINUTES * 60 * 1000
   // Saturation judges a wider window than the cause rule (#1100), so ONE fetch
@@ -815,11 +816,12 @@ export async function runUpstreamOutageCheck(
   // every workflow's total zero and therefore unjudged: saturation says nothing
   // rather than accusing a workflow on a denominator it could not read (L215).
   const runTotals = new Map<string, number>()
-  const { data: totalsData, error: totalsError } = await supabase.rpc('execution_counts_per_minute', {
-    p_workflow_ids: workflowIds,
-    p_since: new Date(saturationStartMs).toISOString(),
-  })
-  logReadFailure('failure-saturation', 'execution_counts_per_minute', totalsError)
+  let totalsData: MinuteCount[] = []
+  try {
+    totalsData = await readExecutionCountsPerMinute(supabase, workflowIds, new Date(saturationStartMs).toISOString(), 'execution_counts_per_minute')
+  } catch (totalsError) {
+    logReadFailure('failure-saturation', 'execution_counts_per_minute', totalsError)
+  }
   // A count that will not parse makes the WHOLE workflow unjudgeable, not just
   // that one minute (L50). PostgREST renders a bigint as a string, so these are
   // parsed, and SKIPPING a bad row would understate the denominator, which
@@ -827,7 +829,7 @@ export async function runUpstreamOutageCheck(
   // Refusing is the fail-safe side, and it is logged so a persistent parse
   // problem is visible rather than reading as a quiet workflow.
   const unreadableTotals = new Set<string>()
-  for (const r of (totalsData ?? []) as { workflow_id: string; cnt: number | string }[]) {
+  for (const r of totalsData) {
     const n = Number(r.cnt)
     if (!Number.isFinite(n)) {
       unreadableTotals.add(r.workflow_id)

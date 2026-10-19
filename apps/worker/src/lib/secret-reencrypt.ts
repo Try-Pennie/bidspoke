@@ -30,8 +30,12 @@ import { decryptSecret, encryptSecret, type SecretKeys } from './secret-crypto'
 import { NO_ROW_MATCHED_CODE, requireRowsAffected } from './db-retry'
 import { fetchAllPaged } from './paginate'
 
-/** PostgREST's default row cap. A read that reaches it may be missing rows. */
-const ROW_CAP = 1000
+/**
+ * Every read here pages past PostgREST's 1,000 row cap with a full order
+ * (#1437), and `maxPages` makes one that cannot finish throw rather than re-lock
+ * a part and report the rest current. Every read finishes before any write.
+ */
+const READ_MAX_PAGES = 200
 
 export interface ReencryptTableResult {
   table: 'environment_variables' | 'app_settings' | 'outcome_writeback_deadletters' | 'service_connections'
@@ -110,13 +114,6 @@ async function relockAll(
   return result
 }
 
-function checkRead<T>(table: string, res: { data: T[] | null; error: { message: string } | null }): T[] {
-  if (res.error) throw new Error(`reading ${table} failed: ${res.error.message}`)
-  const rows = res.data ?? []
-  if (rows.length >= ROW_CAP) throw new Error(`reading ${table} returned ${rows.length} rows, the cap, so some may be missing`)
-  return rows
-}
-
 /**
  * How many rows a conditional write changed. Matching no row is expected (the
  * value changed since it was read) and answers 0; a real database error throws,
@@ -135,12 +132,10 @@ export async function reencryptSecrets(
   /** `actorId`: the signed in user running it, named on the service_connections audit row. */
   opts: { dryRun: boolean; actorId?: string },
 ): Promise<ReencryptResult> {
-  const envRows = checkRead(
-    'environment_variables',
-    (await supabase.from('environment_variables').select('id, key, value').eq('is_secret', true)) as {
-      data: { id: string; key: string; value: string | null }[] | null
-      error: { message: string } | null
-    },
+  const envRows = await fetchAllPaged<{ id: string; key: string; value: string | null }>(
+    (from, to) => supabase.from('environment_variables').select('id, key, value').eq('is_secret', true).order('id').range(from, to),
+    'reading environment_variables',
+    { maxPages: READ_MAX_PAGES },
   )
   const envStored: StoredValue[] = envRows
     .filter((r) => r.value)
@@ -164,12 +159,11 @@ export async function reencryptSecrets(
         ),
     }))
 
-  const settingRows = checkRead(
-    'app_settings',
-    (await supabase.from('app_settings').select('organization_id, key, value_encrypted')) as {
-      data: { organization_id: string; key: string; value_encrypted: string | null }[] | null
-      error: { message: string } | null
-    },
+  // The primary key is (organization_id, key), so the two together are a full order.
+  const settingRows = await fetchAllPaged<{ organization_id: string; key: string; value_encrypted: string | null }>(
+    (from, to) => supabase.from('app_settings').select('organization_id, key, value_encrypted').order('organization_id').order('key').range(from, to),
+    'reading app_settings',
+    { maxPages: READ_MAX_PAGES },
   )
   const settingStored: StoredValue[] = settingRows
     .filter((r) => r.value_encrypted)
@@ -199,10 +193,9 @@ export async function reencryptSecrets(
   // replay updating the row meanwhile is never overwritten with an older value.
   const WRITEBACK_COLUMNS = ['body_encrypted', 'error_encrypted', 'last_error_encrypted'] as const
   type WritebackColumn = (typeof WRITEBACK_COLUMNS)[number]
-  // PAGED, unlike the two tables above: an outage can leave thousands of failed
-  // writes here, and refusing at the row cap would stall the rotation with the
-  // old key still needed. maxPages makes a read that cannot finish throw rather
-  // than re-lock a part and report the rest current.
+  // An outage can leave thousands of failed writes here, which is why this read
+  // paged first (#1993); refusing at the row cap would stall the rotation with
+  // the old key still needed.
   const writebackRows = await fetchAllPaged<{ id: string } & Record<WritebackColumn, string | null>>(
     (from, to) =>
       supabase
@@ -211,7 +204,7 @@ export async function reencryptSecrets(
         .order('id')
         .range(from, to),
     'reading outcome_writeback_deadletters',
-    { maxPages: 200 },
+    { maxPages: READ_MAX_PAGES },
   )
   const writebackStored: StoredValue[] = writebackRows.flatMap((r) =>
     WRITEBACK_COLUMNS.filter((col) => r[col]).map((col) => ({
@@ -237,12 +230,10 @@ export async function reencryptSecrets(
 
   // The sealed Slack bot token (#2331). Only bidding_ring rows, stated in the
   // read and again in the write's WHERE, so an ops_key row is never touched.
-  const connectionRows = checkRead(
-    'service_connections',
-    (await supabase.from('service_connections').select('id, credential_enc').eq('sealed_for', 'bidding_ring')) as {
-      data: { id: string; credential_enc: string | null }[] | null
-      error: { message: string } | null
-    },
+  const connectionRows = await fetchAllPaged<{ id: string; credential_enc: string | null }>(
+    (from, to) => supabase.from('service_connections').select('id, credential_enc').eq('sealed_for', 'bidding_ring').order('id').range(from, to),
+    'reading service_connections',
+    { maxPages: READ_MAX_PAGES },
   )
   const connectionStored: StoredValue[] = connectionRows
     .filter((r) => r.credential_enc)

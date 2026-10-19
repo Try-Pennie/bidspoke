@@ -12,6 +12,7 @@
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { formatErr } from './format-error'
+import { fetchAllPaged } from './paginate'
 import { notifyExportFailure, notifyExportRecovery } from './export-alerts'
 import {
   alertsFor,
@@ -877,12 +878,20 @@ export function toRow(
  * can only confirm your own assumption about the real interface).
  */
 export async function loadWorkflowOrganizations(supabase: SupabaseClient): Promise<Map<string, WorkflowOrganization>> {
-  const { data, error } = await supabase
-    .from('workflows')
-    .select('id, organizations!workflows_organization_id_fkey(id, slug)')
-  if (error) throw new Error(`loading workflow organizations failed: ${formatErr(error)}`)
+  // Every workflow of every organization, deleted ones included, paged by the
+  // primary key past PostgREST's 1,000 row cap (#1437): a workflow missing from
+  // this map has its runs refused by the archive as belonging to nobody.
+  const data = await fetchAllPaged<Record<string, unknown>>(
+    (from, to) =>
+      supabase
+        .from('workflows')
+        .select('id, organizations!workflows_organization_id_fkey(id, slug)')
+        .order('id', { ascending: true })
+        .range(from, to),
+    'loading workflow organizations',
+  )
   const map = new Map<string, WorkflowOrganization>()
-  for (const row of (data ?? []) as Array<Record<string, unknown>>) {
+  for (const row of data) {
     const id = row.id
     const org = row.organizations as { id?: string; slug?: string } | null
     // Both halves or neither. A workflow whose organization row came back
