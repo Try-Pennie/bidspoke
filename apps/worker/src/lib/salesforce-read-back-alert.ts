@@ -7,7 +7,10 @@
  * a value appears is the conflict alert (#2264): for each field left out it
  * names the value Salesforce held and the value Bidspoke was sending, so the
  * person can decide without opening the run, and what the field's history
- * said. Those values come from the tick that decided, and are never stored.
+ * said. Values are quoted only for a picklist or checkbox field
+ * (QUOTABLE_FIELD_TYPES, salesforce-field-conflict.ts), since any other field
+ * can hold a lead's personal data, and they come from the tick that decided
+ * and are never stored.
  * Times are in ET.
  *
  * A credit inquiry post (#2172) sets no field by name, so its alerts are worded
@@ -51,10 +54,11 @@ export interface ReadBackAlertWrite {
   conflict_fields?: string[]
   /**
    * conflict: each left out field's value in Salesforce and the value Bidspoke
-   * was sending, and what the field's history says (#2264). Known only on the
-   * tick that decided it, so an alert sent again on a later tick goes without.
+   * was sending (a picklist or checkbox only, absent for any other type), and
+   * what the field's history says (#2264). Known only on the tick that decided
+   * it, so an alert sent again on a later tick goes without.
    */
-  conflict_values?: Array<{ field: string; held: unknown; sending: unknown; history: 'changed' | 'not_kept' | 'unread'; changed_at?: string }>
+  conflict_values?: Array<{ field: string; held?: unknown; sending?: unknown; history: 'changed' | 'not_kept' | 'unread'; changed_at?: string }>
   /** A credit inquiry post (#2172) rather than an update: it sets no field by name, and is worded as a post. */
   inquiry_post?: true
   /** conflict: whether the other fields were written. */
@@ -273,9 +277,14 @@ function changedWhen(changedAt: string, firstAttemptAt: string): string {
   return after ? 'after the update began' : 'within two seconds of when the update began, too close to tell which came first'
 }
 
+/** Whether the read-back quoted this field's values: only for a type that cannot carry a lead's own data. */
+const hasValues = (v: ConflictValue) => Object.hasOwn(v, 'held') && Object.hasOwn(v, 'sending')
+
 /** One sentence per left out field: the two values, and what its history says about who set the one Salesforce holds. */
 function valueSentence(v: ConflictValue, firstAttemptAt: string): string {
-  const values = `${plain(v.field)} held ${quoted(v.held)} where Bidspoke was sending ${quoted(v.sending)}.`
+  const values = hasValues(v)
+    ? `${plain(v.field)} held ${quoted(v.held)} where Bidspoke was sending ${quoted(v.sending)}.`
+    : `${plain(v.field)} held a different value from the one Bidspoke was sending, not quoted here because a field of its kind can hold a lead's personal data.`
   if (v.history === 'changed' && v.changed_at) return `${values} Its Salesforce history shows it was changed at ${clockOnDay(v.changed_at)}, ${changedWhen(v.changed_at, firstAttemptAt)}.`
   if (v.history === 'not_kept') return `${values} Salesforce keeps no history of that field, so whether another writer set it could not be checked.`
   return `${values} Its Salesforce history could not be read, so whether another writer set it could not be checked.`
@@ -305,7 +314,8 @@ function conflict(p: SalesforceReadBackAlert, appUrl: string): ComposedAlert {
     const n = (w.conflict_fields ?? []).length
     const values = valuesOf(w)
     const [only] = w.conflict_values ?? []
-    const fix = !values
+    // The run is the only place an unquoted value can be read, so a fix with any field unquoted points at it.
+    const fix = !values || !(w.conflict_values ?? []).every(hasValues)
       ? `Fix: open that ${objectName(w.sf_object)} in Salesforce and decide whether ${n === 1 ? 'that field should keep its' : 'those fields should keep their'} current ${n === 1 ? 'value' : 'values'}. The run below shows the values Bidspoke was sending, if its step was recorded.`
       : n === 1
         ? `Fix: open that ${objectName(w.sf_object)} in Salesforce and decide whether ${plain(only.field)} should keep ${quoted(only.held)} or be set to ${quoted(only.sending)}.`

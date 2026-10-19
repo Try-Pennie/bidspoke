@@ -120,6 +120,13 @@ describe('composeSalesforceReadBackAlert', () => {
       expect(t).not.toMatch(DASHES)
     })
 
+    it('says a field\'s values are not quoted when the read-back did not quote them, and points at the run for them', () => {
+      const t = text({ kind: 'conflict', writes: [write({ conflict_fields: ['RejectionReason__c'], conflict_values: [{ field: 'RejectionReason__c', history: 'not_kept' }], resent: true })] })
+      expect(t).toContain("RejectionReason__c held a different value from the one Bidspoke was sending, not quoted here because a field of its kind can hold a lead's personal data. Salesforce keeps no history of that field")
+      expect(t).toContain('The run below shows the values Bidspoke was sending, if its step was recorded.')
+      expect(t).not.toContain('undefined')
+    })
+
     it('goes without them, as before, when an alert sent again on a later tick no longer has them', () => {
       expect(text({ kind: 'conflict', writes: [write({ conflict_fields: ['BidStatus__c'], resent: true })] })).toContain('The run below shows the values Bidspoke was sending, if its step was recorded.')
     })

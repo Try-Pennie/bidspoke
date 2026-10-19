@@ -87,11 +87,22 @@ export function sameSalesforceValue(current: unknown, sent: unknown): boolean {
  * history of, and `changes` every recorded change to one of them from the
  * margin before the write began. `not_kept`: the object has no field history
  * this code reads. `unread`: the history could not be read, with why.
+ * `quotable`, when the field definitions were read, are the asked fields whose
+ * values an alert may quote (QUOTABLE_FIELD_TYPES).
  */
 export type FieldHistory =
-  | { kind: 'read'; tracked: string[]; changes: Array<{ field: string; atMs: number }> }
-  | { kind: 'not_kept' }
-  | { kind: 'unread'; why: string }
+  | { kind: 'read'; tracked: string[]; changes: Array<{ field: string; atMs: number }>; quotable: string[] }
+  | { kind: 'not_kept'; quotable?: string[] }
+  | { kind: 'unread'; why: string; quotable?: string[] }
+
+/**
+ * The Salesforce field types whose values the conflict alert quotes (#2264): a
+ * value list the org defines, or a checkbox, which cannot carry what a lead
+ * typed. Every other type (text, email, phone, a number such as an income, a
+ * date such as a birth date) can hold a lead's personal data, and a field whose
+ * type is not known is treated the same: its values never reach Slack.
+ */
+export const QUOTABLE_FIELD_TYPES: readonly string[] = ['Picklist', 'Checkbox']
 
 /** Rows one history query asks for; an answer with more reads as unread, never as complete. */
 export const FIELD_HISTORY_ROW_LIMIT = 200
@@ -130,7 +141,7 @@ export function fieldHistoryQueries(
   const quoted = (names: string[]) => names.map((f) => `'${f}'`).join(',')
   const path = (soql: string) => `/query?q=${encodeURIComponent(soql)}`
   return {
-    tracked: path(`SELECT QualifiedApiName FROM FieldDefinition WHERE EntityDefinition.QualifiedApiName = '${sfObject}' AND IsFieldHistoryTracked = true AND QualifiedApiName IN (${quoted(fields)})`),
+    tracked: path(`SELECT QualifiedApiName, DataType, IsFieldHistoryTracked FROM FieldDefinition WHERE EntityDefinition.QualifiedApiName = '${sfObject}' AND QualifiedApiName IN (${quoted(fields)})`),
     changes: (tracked) =>
       path(
         `SELECT Field, CreatedDate FROM ${history.object} WHERE ${history.parent} = '${recordId}' AND Field IN (${quoted(tracked)}) AND CreatedDate >= ${soqlTime(sinceMs - LAST_MODIFIED_MARGIN_MS)} ORDER BY CreatedDate LIMIT ${FIELD_HISTORY_ROW_LIMIT}`,
@@ -173,20 +184,24 @@ export async function readFieldHistory(
     if (answer.status < 200 || answer.status >= 300) return { kind: 'unread', why: `Salesforce answered ${answer.status} to the ${what} query` }
     return queryRecords(answer.text) ?? { kind: 'unread', why: `the ${what} query's answer was not a complete list` }
   }
-  const trackedRows = await ask(queries.tracked, 'tracked fields')
-  if (!Array.isArray(trackedRows)) return trackedRows
-  const tracked = trackedRows.map((r) => r.QualifiedApiName).filter((f): f is string => typeof f === 'string' && args.fields.includes(f))
-  if (tracked.length === 0) return { kind: 'read', tracked: [], changes: [] }
+  const definitions = await ask(queries.tracked, 'field definitions')
+  if (!Array.isArray(definitions)) return definitions
+  const asked = definitions.filter((r) => typeof r.QualifiedApiName === 'string' && args.fields.includes(r.QualifiedApiName))
+  const names = (rows: Array<Record<string, unknown>>) => rows.map((r) => r.QualifiedApiName as string)
+  // Only an explicit true is tracked, and only a listed type is quotable: anything else is the side that clears and quotes nothing.
+  const tracked = names(asked.filter((r) => r.IsFieldHistoryTracked === true))
+  const quotable = names(asked.filter((r) => typeof r.DataType === 'string' && QUOTABLE_FIELD_TYPES.includes(r.DataType)))
+  if (tracked.length === 0) return { kind: 'read', tracked: [], changes: [], quotable }
   const changeRows = await ask(queries.changes(tracked), 'field history')
-  if (!Array.isArray(changeRows)) return changeRows
+  if (!Array.isArray(changeRows)) return changeRows.kind === 'unread' ? { ...changeRows, quotable } : changeRows
   const changes: Array<{ field: string; atMs: number }> = []
   for (const r of changeRows) {
     const atMs = salesforceTimeMs(r.CreatedDate)
     // A row with no readable field or time is a change nobody can place: it clears nothing.
-    if (typeof r.Field !== 'string' || !Number.isFinite(atMs)) return { kind: 'unread', why: 'a field history row had no readable field or time' }
+    if (typeof r.Field !== 'string' || !Number.isFinite(atMs)) return { kind: 'unread', why: 'a field history row had no readable field or time', quotable }
     changes.push({ field: r.Field, atMs })
   }
-  return { kind: 'read', tracked, changes }
+  return { kind: 'read', tracked, changes, quotable }
 }
 
 /**
@@ -235,11 +250,16 @@ export function fieldsMovedSince(args: {
   })
 }
 
-/** One field left out as moved, for the conflict alert (#2264): what it held, what was being sent, and what its history says. */
+/**
+ * One field left out as moved, for the conflict alert (#2264): what it held and
+ * what was being sent, only when its type is quotable (QUOTABLE_FIELD_TYPES),
+ * and what its history says.
+ */
 export interface MovedFieldValues {
   field: string
-  held: unknown
-  sending: unknown
+  /** Present only for a field of a quotable type: anything else may be a lead's personal data. */
+  held?: unknown
+  sending?: unknown
   /** `changed`: its history records a change since the write began, the latest at `changed_at`. */
   history: 'changed' | 'not_kept' | 'unread'
   changed_at?: string
@@ -256,7 +276,7 @@ export function movedFieldValues(args: {
   const { moved, body, current, sinceMs, history } = args
   const since = sinceMs !== undefined && Number.isFinite(sinceMs) ? sinceMs : Number.NEGATIVE_INFINITY
   return moved.map((field) => {
-    const base = { field, held: current[field] ?? null, sending: body[field] ?? null }
+    const base = history?.quotable?.includes(field) ? { field, held: current[field] ?? null, sending: body[field] ?? null } : { field }
     if (!history || history.kind === 'unread') return { ...base, history: 'unread' as const }
     if (history.kind === 'not_kept' || !history.tracked.includes(field)) return { ...base, history: 'not_kept' as const }
     const latest = Math.max(...history.changes.filter((c) => c.field === field && c.atMs + LAST_MODIFIED_MARGIN_MS > since).map((c) => c.atMs))

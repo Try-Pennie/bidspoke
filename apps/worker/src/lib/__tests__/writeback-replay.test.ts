@@ -19,7 +19,7 @@ import {
   type SalesforcePort,
 } from '../writeback-replay'
 import { isSalesforceBulkheadShed } from '../../engine/nodes/salesforce'
-import { PROSPECT_TRACKED_FIELDS, REJECT_RESEND_RUNS } from './fixtures/reject-patch-resend-2264'
+import { PROSPECT_FIELD_TYPES, PROSPECT_TRACKED_FIELDS, REJECT_RESEND_RUNS } from './fixtures/reject-patch-resend-2264'
 
 const KEY = Buffer.from(new Uint8Array(32).map((_, i) => i + 3)).toString('base64')
 const ORG = '11111111-1111-1111-1111-111111111471'
@@ -510,7 +510,7 @@ describe('the drain and a field still at its value from before the write (#2264)
           const soql = decodeURIComponent(path.slice('/query?q='.length))
           const asked = [...(soql.match(/IN \(([^)]*)\)/)?.[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
           const records = /FROM FieldDefinition /.test(soql)
-            ? PROSPECT_TRACKED_FIELDS.filter((f) => asked.includes(f)).map((f) => ({ QualifiedApiName: f }))
+            ? asked.map((f) => ({ QualifiedApiName: f, DataType: PROSPECT_FIELD_TYPES[f] ?? 'Text(255)', IsFieldHistoryTracked: PROSPECT_TRACKED_FIELDS.includes(f) }))
             : history.filter((h) => asked.includes(h.Field))
           return { status: 200, text: JSON.stringify({ totalSize: records.length, done: true, records }) }
         }

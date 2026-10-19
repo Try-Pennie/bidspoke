@@ -50,6 +50,9 @@ export const PROSPECT_TRACKED_FIELDS = [
   'Cometly_Fingerprint__c',
 ]
 
+/** FieldDefinition.DataType of the reject patch's two fields, read 2026-10-19. */
+export const PROSPECT_FIELD_TYPES: Record<string, string> = { BidStatus__c: 'Picklist', RejectionReason__c: 'Text(255)' }
+
 const CREATE_BODY_FIELDS = [
   'Zip__c', 'City__c', 'Email__c', 'Phone__c', 'State__c', 'Source__c', 'Street__c', 'User_IP__c', 'AptSuite__c', 'LeadUUID__c',
   'BirthDate__c', 'Last_Name__c', 'RentOrOwn__c', 'First_Name__c', 'LoanAmount__c', 'User_Agent__c', 'LoanPurpose__c', 'Middle_Name__c',

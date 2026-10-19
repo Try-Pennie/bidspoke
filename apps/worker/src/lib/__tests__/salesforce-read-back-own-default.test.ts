@@ -19,7 +19,7 @@ import type { SalesforcePort } from '../writeback-replay'
 import type { SalesforceReadBackAlert } from '../salesforce-read-back-alert'
 import { runSalesforceReadBack, type SalesforceReadBackDeps } from '../salesforce-read-back'
 import { readFieldHistory } from '../salesforce-field-conflict'
-import { PROSPECT_TRACKED_FIELDS, REJECT_RESEND_RUNS, type RejectResendRun } from './fixtures/reject-patch-resend-2264'
+import { PROSPECT_FIELD_TYPES, PROSPECT_TRACKED_FIELDS, REJECT_RESEND_RUNS, type RejectResendRun } from './fixtures/reject-patch-resend-2264'
 
 const KEY = Buffer.from(new Uint8Array(32).map((_, i) => i + 7)).toString('base64')
 const ORG = '11111111-1111-1111-1111-111111112264'
@@ -32,8 +32,10 @@ interface SfState {
   record: Record<string, unknown>
   history: Array<{ Field: string; CreatedDate: string }>
   tracked: string[]
+  /** FieldDefinition.DataType per field; one not listed is Text(255). */
+  types: Record<string, string>
   /** How the history queries answer. */
-  historyMode: 'answers' | 'no answer' | 'refused'
+  historyMode: 'answers' | 'no answer' | 'refused' | 'history refused'
 }
 
 function makeSalesforce(id: string, s: SfState) {
@@ -45,9 +47,10 @@ function makeSalesforce(id: string, s: SfState) {
         if (s.historyMode === 'no answer') throw new Error('Salesforce did not answer')
         if (s.historyMode === 'refused') return { status: 400, text: JSON.stringify([{ errorCode: 'INVALID_FIELD', message: 'No such column' }]) }
         const soql = decodeURIComponent(path.slice('/query?q='.length))
+        if (s.historyMode === 'history refused' && !/FROM FieldDefinition /.test(soql)) return { status: 500, text: '[]' }
         const asked = [...(soql.match(/IN \(([^)]*)\)/)?.[1] ?? '').matchAll(/'([^']+)'/g)].map((m) => m[1])
         if (/FROM FieldDefinition /.test(soql)) {
-          const records = s.tracked.filter((f) => asked.includes(f)).map((f) => ({ QualifiedApiName: f }))
+          const records = asked.map((f) => ({ QualifiedApiName: f, DataType: s.types[f] ?? 'Text(255)', IsFieldHistoryTracked: s.tracked.includes(f) }))
           return { status: 200, text: JSON.stringify({ totalSize: records.length, done: true, records }) }
         }
         const history = soql.match(/FROM (\w+) WHERE ParentId = '(\w+)'/)
@@ -72,7 +75,7 @@ function makeSalesforce(id: string, s: SfState) {
 }
 
 async function rigFor(run: RejectResendRun, change?: (s: SfState) => void) {
-  const state: SfState = { record: { ...run.readAtResend }, history: [...run.historyAtResend], tracked: [...PROSPECT_TRACKED_FIELDS], historyMode: 'answers' }
+  const state: SfState = { record: { ...run.readAtResend }, history: [...run.historyAtResend], tracked: [...PROSPECT_TRACKED_FIELDS], types: { ...PROSPECT_FIELD_TYPES }, historyMode: 'answers' }
   change?.(state)
   const sf = makeSalesforce(run.prospectId, state)
   const store = new Map<string, string>()
@@ -153,7 +156,7 @@ describe('a timed out reject patch, resent after the run\'s own trades update to
     await runSalesforceReadBack(r.deps)
     const queries = r.sf.calls.filter((c) => c.path.startsWith('/query?q=')).map((c) => decodeURIComponent(c.path.slice('/query?q='.length)))
     expect(queries).toEqual([
-      "SELECT QualifiedApiName FROM FieldDefinition WHERE EntityDefinition.QualifiedApiName = 'Prospect__c' AND IsFieldHistoryTracked = true AND QualifiedApiName IN ('BidStatus__c')",
+      "SELECT QualifiedApiName, DataType, IsFieldHistoryTracked FROM FieldDefinition WHERE EntityDefinition.QualifiedApiName = 'Prospect__c' AND QualifiedApiName IN ('BidStatus__c')",
       `SELECT Field, CreatedDate FROM Prospect__History WHERE ParentId = '${run.prospectId}' AND Field IN ('BidStatus__c') AND CreatedDate >= 2026-10-16T12:53:54Z ORDER BY CreatedDate LIMIT 200`,
     ])
   })
@@ -210,11 +213,11 @@ describe('the control: another writer really set BidStatus__c after the patch be
 describe('readFieldHistory, the one history read both resenders use', () => {
   const answer = (body: unknown) => ({ kind: 'answer' as const, status: 200, text: JSON.stringify(body) })
   const SINCE = Date.parse('2026-10-19T13:39:06.360Z')
-  const tracked = answer({ totalSize: 1, done: true, records: [{ QualifiedApiName: 'BidStatus__c' }] })
+  const tracked = answer({ totalSize: 1, done: true, records: [{ QualifiedApiName: 'BidStatus__c', DataType: 'Picklist', IsFieldHistoryTracked: true }] })
 
   it('reads Lead history by LeadId, and has none for another standard object', async () => {
     const paths: string[] = []
-    await readFieldHistory(async (p) => { paths.push(decodeURIComponent(p)); return paths.length === 1 ? answer({ totalSize: 1, done: true, records: [{ QualifiedApiName: 'Email' }] }) : answer({ totalSize: 0, done: true, records: [] }) }, { sfObject: 'Lead', recordId: '00QUi00000AbCdEIAV', fields: ['Email'], sinceMs: SINCE })
+    await readFieldHistory(async (p) => { paths.push(decodeURIComponent(p)); return paths.length === 1 ? answer({ totalSize: 1, done: true, records: [{ QualifiedApiName: 'Email', DataType: 'Email', IsFieldHistoryTracked: true }] }) : answer({ totalSize: 0, done: true, records: [] }) }, { sfObject: 'Lead', recordId: '00QUi00000AbCdEIAV', fields: ['Email'], sinceMs: SINCE })
     expect(paths[1]).toContain("FROM LeadHistory WHERE LeadId = '00QUi00000AbCdEIAV'")
     const get = vi.fn()
     expect(await readFieldHistory(get, { sfObject: 'Opportunity', recordId: '006Ui00000AbCdEIAV', fields: ['StageName'], sinceMs: SINCE })).toEqual({ kind: 'not_kept' })
@@ -249,14 +252,14 @@ describe('when the history cannot clear the field, it stays left out', () => {
     expect(r.alerts[0].writes[0].conflict_values).toEqual([{ field: 'BidStatus__c', held: 'No Bid', sending: 'Rejected', history: 'not_kept' }])
   })
 
-  it('a history query Salesforce refuses: left out, and the alert says the history could not be read', async () => {
+  it('a history query Salesforce refuses: left out, and the alert says the history could not be read, quoting no value since the type is unknown', async () => {
     const [run] = REJECT_RESEND_RUNS
     const r = await rigFor(run, (s) => { s.historyMode = 'refused' })
     await runSalesforceReadBack(r.deps)
     expect(patches(r.sf.calls)[0]).not.toHaveProperty('BidStatus__c')
-    expect(r.alerts[0].writes[0].conflict_values).toEqual([{ field: 'BidStatus__c', held: 'No Bid', sending: 'Rejected', history: 'unread' }])
+    expect(r.alerts[0].writes[0].conflict_values).toEqual([{ field: 'BidStatus__c', history: 'unread' }])
+    expect(JSON.stringify(r.alerts[0])).not.toMatch(/No Bid|"Rejected"/)
   })
-
   it('a history query with no answer: nothing is sent, nothing is settled, and the tick stops as on any unanswered call', async () => {
     const [run] = REJECT_RESEND_RUNS
     const r = await rigFor(run, (s) => { s.historyMode = 'no answer' })
@@ -268,4 +271,44 @@ describe('when the history cannot clear the field, it stays left out', () => {
     expect(r.alerts.filter((a) => a.kind === 'conflict')).toEqual([])
     expect([...r.store.keys()].filter((k) => k.startsWith('sf-read-back:state:'))).toEqual([])
   })
+})
+
+describe('which values the conflict alert may quote', () => {
+  it('quotes a picklist, and never a field of a type that can hold a lead\'s own data', async () => {
+    const [run] = REJECT_RESEND_RUNS
+    // RejectionReason__c is Text(255): another writer set it after the patch began, as did BidStatus__c (a picklist).
+    const changedMs = Date.parse(run.patchProspectReject.startedAt) + 90_000
+    const r = await rigFor(run, (s) => {
+      s.record.BidStatus__c = 'Won Bid'
+      s.record.RejectionReason__c = 'typed by a person'
+      s.record.LastModifiedDate = sfTime(changedMs)
+      s.history.push({ Field: 'BidStatus__c', CreatedDate: sfTime(changedMs) })
+    })
+    await runSalesforceReadBack(r.deps)
+    expect(patches(r.sf.calls)).toEqual([])
+    expect(r.alerts[0].writes[0].conflict_values).toEqual([
+      { field: 'BidStatus__c', held: 'Won Bid', sending: 'Rejected', history: 'changed', changed_at: new Date(Math.floor(changedMs / 1000) * 1000).toISOString() },
+      { field: 'RejectionReason__c', history: 'not_kept' },
+    ])
+    expect(JSON.stringify(r.alerts[0])).not.toMatch(/typed by a person|unqualified_lead/)
+  })
+
+  it('still quotes a picklist when its definitions were read but its history query failed', async () => {
+    const [run] = REJECT_RESEND_RUNS
+    const r = await rigFor(run, (s) => { s.historyMode = 'history refused' })
+    await runSalesforceReadBack(r.deps)
+    expect(patches(r.sf.calls)[0]).not.toHaveProperty('BidStatus__c')
+    expect(r.alerts[0].writes[0].conflict_values).toEqual([{ field: 'BidStatus__c', held: 'No Bid', sending: 'Rejected', history: 'unread' }])
+  })
+
+  it('quotes nothing when the field definitions are not an explicit picklist or checkbox', async () => {
+    const [run] = REJECT_RESEND_RUNS
+    const r = await rigFor(run, (s) => {
+      s.types = { BidStatus__c: 'Picklist (Multi-Select)' }
+      s.tracked = []
+    })
+    await runSalesforceReadBack(r.deps)
+    expect(r.alerts[0].writes[0].conflict_values).toEqual([{ field: 'BidStatus__c', history: 'not_kept' }])
+  })
+
 })
