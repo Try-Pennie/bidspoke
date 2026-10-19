@@ -129,7 +129,12 @@ const withClick = (out) => {
 // A sale that was made and not accepted rejects the lead exactly as `qualified === false`
 // did before the node existed.
 const declined = offerSale ? (!offerSale.skipped && offerSale.accepted === false) : false;
-  if (declined) {
+// A sell off lead that no buyer took is rejected the same way, even when no buyer was asked
+// (Dan, 2026-10-19): tripoint_ping refusing a loan under Tripoint's minimum, or buyer_select
+// finding no eligible buyer. Both record a skipped sale, which used to fall through to the
+// Pennie offer at the engine bid. Only a lead that is not a sell off gets the Pennie offer.
+const unsoldSellOff = Boolean(pt.sellOff) && !(offerSale && offerSale.accepted === true);
+  if (declined || unsoldSellOff) {
     return withClick({
       isRejected: true,
       body: {
@@ -158,7 +163,7 @@ const constants = steps.constants.output;
 
 // A sold lead lands where the winner says (#1416); before this a sell off lead was sent to
 // Tripoint's constant whether or not Tripoint had taken it. A sell off lead nobody bought
-// now takes the Pennie pages below, which is where a lead with no sale belongs.
+// is rejected above, so the Pennie pages below are for a lead that is not a sell off.
 const getRedirectUrl = () => {
   if (offerSale && offerSale.accepted && offerSale.click_url) return offerSale.click_url;
   if (expLandingPage)  return constants.pennieExpLandingPage;
