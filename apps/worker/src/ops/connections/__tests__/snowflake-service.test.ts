@@ -43,8 +43,8 @@ interface World {
   moneyAsks: string[]
 }
 
-function world(target: unknown = TARGET): World {
-  const services: Record<string, OpsServiceEntry> = { snowflake: snowflakeServiceEntry({ now: () => T0 }) }
+function world(target: unknown = TARGET, opts: { sleep?: (ms: number) => Promise<void> } = {}): World {
+  const services: Record<string, OpsServiceEntry> = { snowflake: snowflakeServiceEntry({ now: () => T0, ...opts }) }
   const d = makeDoubles(keys, usableCopy(envelope, { service: 'snowflake', target }), () => [services.snowflake.rules])
   const measured: unknown[] = []
   const moneyAsks: string[] = []
@@ -144,6 +144,14 @@ describe('verify of a Snowflake key pair login', () => {
     const jwtRefused = () => Response.json({ code: '390144', message: 'JWT token is invalid.' }, { status: 401 })
     refused.d.respond(jwtRefused, jwtRefused)
     expect(await verify(refused)).toMatchObject({ ok: false, refused: 'connection_needs_reauth' })
+  })
+
+  it('a login refused while polling an identity query gone async is needs_reauth, not unreadable (L11)', async () => {
+    const w = world(TARGET, { sleep: async () => undefined })
+    const jwtRefused = () => Response.json({ code: '390144', message: 'JWT token is invalid.' }, { status: 401 })
+    // Snowflake takes the statement async, then refuses the login on the status poll.
+    w.d.respond(Response.json({ statementHandle: '01b2c3d4-0000-0000-0000-00000000000a' }, { status: 202 }), jwtRefused, jwtRefused)
+    expect(await verify(w)).toMatchObject({ ok: false, refused: 'connection_needs_reauth' })
   })
 
   it('a target that declares no account is refused before anything is sent', async () => {

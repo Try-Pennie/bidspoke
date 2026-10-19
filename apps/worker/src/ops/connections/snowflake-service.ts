@@ -28,6 +28,7 @@
 import { ActionFailure, rowObjects, runSnowflakeStatement, snowflakeHost, snowflakeTargetOf } from '@bidspoke/service-catalogue/runtime'
 import { IdentityMismatch, IdentityUnreadable, type IdentityProbe } from './identity'
 import { snowflakeKeyPairAuth } from './minters/snowflake'
+import { ConnectionRefusal } from './refusals'
 import type { OpsServiceEntry, SchemaTarget } from './ops-connections'
 
 /** Context functions only, which need no warehouse. */
@@ -46,37 +47,57 @@ function nullableText(row: Record<string, unknown>, column: string): string | nu
   return value
 }
 
-/** Asks Snowflake, with the connection's own JWT, which user and account it is. */
-export const snowflakeIdentity: IdentityProbe = {
-  kind: 'snowflake',
-  async measure(fetch, target) {
-    const declared = snowflakeTargetOf(target)
-    let row: Record<string, unknown>
-    try {
-      const rows = rowObjects(await runSnowflakeStatement({ fetch, sleep }, declared, { statement: IDENTITY_STATEMENT }))
-      if (rows.length !== 1) throw new IdentityUnreadable(`Snowflake answered ${rows.length} rows to the identity query`)
-      row = rows[0]
-    } catch (err) {
-      // Its code only: the failure's message quotes Snowflake.
-      if (err instanceof ActionFailure) throw new IdentityUnreadable(`the identity query failed (${err.code})`)
-      throw err
-    }
-    const user = nullableText(row, 'USER_NAME')
-    const accountLocator = nullableText(row, 'ACCOUNT_LOCATOR')
-    if (user === null || accountLocator === null) throw new IdentityUnreadable('Snowflake named no user or no account')
-    const accountName = nullableText(row, 'ACCOUNT_NAME')
-    const organizationName = nullableText(row, 'ORGANIZATION_NAME')
+/**
+ * Asks Snowflake, with the connection's own JWT, which user and account it is.
+ * `wait` is the pause between status polls of a statement gone async.
+ */
+export function snowflakeIdentityProbe(wait: (ms: number) => Promise<void>): IdentityProbe {
+  return {
+    kind: 'snowflake',
+    async measure(fetch, target) {
+      const declared = snowflakeTargetOf(target)
+      // The catalogue client wraps a refusal on a status poll as an unread result,
+      // since an action's statement may have run. The identity query reads only,
+      // so the refusal itself (an expired login, a limit) is the answer (L11).
+      const seen: { refusal: ConnectionRefusal | null } = { refusal: null }
+      const watched: typeof fetch = async (input, init) => {
+        try {
+          return await fetch(input, init)
+        } catch (err) {
+          if (err instanceof ConnectionRefusal) seen.refusal = err
+          throw err
+        }
+      }
+      let row: Record<string, unknown>
+      try {
+        const rows = rowObjects(await runSnowflakeStatement({ fetch: watched, sleep: wait }, declared, { statement: IDENTITY_STATEMENT }))
+        if (rows.length !== 1) throw new IdentityUnreadable(`Snowflake answered ${rows.length} rows to the identity query`)
+        row = rows[0]
+      } catch (err) {
+        if (seen.refusal !== null) throw seen.refusal
+        // Its code only: the failure's message quotes Snowflake.
+        if (err instanceof ActionFailure) throw new IdentityUnreadable(`the identity query failed (${err.code})`)
+        throw err
+      }
+      const user = nullableText(row, 'USER_NAME')
+      const accountLocator = nullableText(row, 'ACCOUNT_LOCATOR')
+      if (user === null || accountLocator === null) throw new IdentityUnreadable('Snowflake named no user or no account')
+      const accountName = nullableText(row, 'ACCOUNT_NAME')
+      const organizationName = nullableText(row, 'ORGANIZATION_NAME')
 
-    if (upper(user) !== upper(declared.user)) throw new IdentityMismatch('the credential authenticates as another Snowflake user than its target declares')
-    // The declared account is a locator (with its region after a dot) or org-account.
-    const label = urlForm(declared.account.split('.')[0])
-    const asNamed = organizationName !== null && accountName !== null ? `${urlForm(organizationName)}-${urlForm(accountName)}` : null
-    if (label !== urlForm(accountLocator) && label !== asNamed) {
-      throw new IdentityMismatch('the credential authenticates in another Snowflake account than its target declares')
-    }
-    return { kind: 'snowflake', accountLocator, organizationName, accountName, user }
-  },
+      if (upper(user) !== upper(declared.user)) throw new IdentityMismatch('the credential authenticates as another Snowflake user than its target declares')
+      // The declared account is a locator (with its region after a dot) or org-account.
+      const label = urlForm(declared.account.split('.')[0])
+      const asNamed = organizationName !== null && accountName !== null ? `${urlForm(organizationName)}-${urlForm(accountName)}` : null
+      if (label !== urlForm(accountLocator) && label !== asNamed) {
+        throw new IdentityMismatch('the credential authenticates in another Snowflake account than its target declares')
+      }
+      return { kind: 'snowflake', accountLocator, organizationName, accountName, user }
+    },
+  }
 }
+
+export const snowflakeIdentity: IdentityProbe = snowflakeIdentityProbe(sleep)
 
 /** Where a Snowflake lookup sends: the declared account, in the declared database, which a lookup needs. */
 export function snowflakeSchemaTarget(target: unknown, _publicConfig?: unknown): SchemaTarget {
@@ -85,14 +106,14 @@ export function snowflakeSchemaTarget(target: unknown, _publicConfig?: unknown):
   return { service: 'snowflake', account: declared.account, database: declared.database, ...(declared.schema !== undefined ? { schema: declared.schema } : {}) }
 }
 
-export function snowflakeServiceEntry(deps: { now(): number }): OpsServiceEntry {
+export function snowflakeServiceEntry(deps: { now(): number; sleep?: (ms: number) => Promise<void> }): OpsServiceEntry {
   return {
     rules: {
       service: 'snowflake',
       declaredHosts: (target) => [snowflakeHost(snowflakeTargetOf(target).account)],
       ...snowflakeKeyPairAuth(deps),
     },
-    identity: snowflakeIdentity,
+    identity: deps.sleep ? snowflakeIdentityProbe(deps.sleep) : snowflakeIdentity,
     schema: snowflakeSchemaTarget,
   }
 }
