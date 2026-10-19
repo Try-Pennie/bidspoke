@@ -142,12 +142,14 @@ run beside the rest of the tick and awaited before its report.
 
 - **Which connections.** `connection_check_targets` (ops migration
   20261020030000, additive): every copy not withdrawn and not covered by a
-  tombstone, across organizations, the ones the sweep probes first (servable and
-  not in `needs_reauth`) and the least recently checked first among them, with its
+  tombstone, across organizations, in three bands (each login state that may
+  page, `needs_reauth` or `refresh_failing`, first; then the other servable
+  copies; then the expired ones), least recently checked first within each, with its
   derived status (connection_status's own rule), its refresh streak, the
-  identity verify measured for its generation, and the database clock. At most
-  50 a sweep. A copy past its serve window, and one in `needs_reauth`, are not
-  probed. With no ops connection, which is today, the sweep claims, finds
+  identity verify measured for its generation, and the database clock. The
+  sweep and the tick's login states read this one list, up to 500. A copy past
+  its serve window, and one in `needs_reauth`, are not probed, and at most 50 of
+  the rest are probed a sweep. With no ops connection, which is today, the sweep claims, finds
   nothing and reports nothing.
 - **The probe.** The service's identity probe, the one verify uses
   (Salesforce `/services/oauth2/userinfo`, which must still be the org and user

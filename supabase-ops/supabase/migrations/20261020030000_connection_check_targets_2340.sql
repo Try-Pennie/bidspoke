@@ -29,11 +29,15 @@
 --              count and start, the identity verify measured for the copy's
 --              generation (Salesforce only; null when none), and the database
 --              clock, so every age is judged on one clock (L736).
--- The ones the sweep probes first (servable and not in needs_reauth, the two it
--- skips, which no check is ever recorded for and so would otherwise stay first
--- for ever), then the least recently checked (never checked before any), then by
--- id, so a sweep held to its limit reaches every connection it can probe in
--- turn. At most p_limit rows, so the caller can tell a full page (L24).
+-- In three bands: first each connection whose login state may page
+-- (needs_reauth or refresh_failing), so a list held to its limit never leaves
+-- one of those out; then the other servable copies; then the copies past their
+-- serve window. Within a band the least recently checked first (never checked
+-- before any), then by id. The sweep skips needs_reauth and expired copies and
+-- counts its own limit only over the ones it probes, so a skipped copy, which no
+-- check is ever recorded for, can never stand in front of the rest for ever,
+-- and a sweep held to its limit reaches every connection it can probe in turn.
+-- At most p_limit rows, so the caller can tell a full page (L24).
 --
 -- Additive only (ADR 0007): one new read only function, nothing else changes.
 -- Nothing calls it until the ops Worker that carries the sweep deploys, and that
@@ -75,8 +79,13 @@ BEGIN
   WHERE c.withdrawn_at IS NULL
     AND (t.connection_id IS NULL OR t.generation < c.generation)
   ORDER BY
-    -- false sorts first: a copy the sweep will probe.
-    (c.serve_until <= now() OR coalesce(h.needs_reauth_at > coalesce(h.reauth_cleared_at, '-infinity'::timestamptz), false)),
+    CASE
+      -- A login state that may page: connection_status's first two rules.
+      WHEN h.needs_reauth_at > coalesce(h.reauth_cleared_at, '-infinity'::timestamptz)
+        OR (h.refresh_failures > 0 AND h.refresh_failing_since > coalesce(h.reauth_cleared_at, '-infinity'::timestamptz)) THEN 0
+      WHEN c.serve_until > now() THEN 1
+      ELSE 2
+    END,
     greatest(h.last_check_ok_at, h.last_check_failed_at) ASC NULLS FIRST,
     c.connection_id
   LIMIT p_limit;

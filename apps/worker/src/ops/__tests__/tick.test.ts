@@ -25,7 +25,7 @@ import { ConnectionRefusal, RequeueAt } from '../connections/refusals'
 import type { ConnectionCheckTarget, SfLimitsTarget } from '../ops-writes'
 import { SF_LIMITS_EVERY_SECONDS } from '../sf-limits'
 import { CONNECTION_CHECK_JOB, SF_LIMITS_JOB } from '../../lib/ops-gateway-contract'
-import { CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_LOGINS_READ_LIMIT, type ProbeAnswer } from '../connection-check'
+import { CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_READ_LIMIT, CONNECTION_LOGINS_READ_LIMIT, type ProbeAnswer } from '../connection-check'
 import { TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
@@ -398,8 +398,7 @@ describe('failure boundaries', () => {
     expect(f.db.calls).not.toContain('sfLimitsTargets')
     // So does the connection_check sweep (#2340): nothing probed, nothing stamped,
     // while the login states are still read, as every tick reads them.
-    expect(f.db.calls).not.toContain(`connectionCheckTargets:50`)
-    expect(f.db.calls).toContain('connectionCheckTargets:500')
+    expect(f.db.calls.filter((c) => c.startsWith('connectionCheckTargets:'))).toEqual([`connectionCheckTargets:${CONNECTION_LOGINS_READ_LIMIT}`])
     expect(f.jobStamps).toEqual([])
     expect(report.counts.sweeps_stood_down).toBe(6)
     expect(report.outcome).toBe('ok')
@@ -804,7 +803,8 @@ describe('the connection_check sweep inside the tick (#2340)', () => {
   it('with no ops connection (today), claims, finds nothing, stamps the job and reports nothing, and the tick reports a complete list of no login', async () => {
     const f = fake()
     const report = await runOpsTick(f.ports)
-    expect(f.db.calls).toContain('connectionCheckTargets:50')
+    // Twice: the login states, and the sweep's own read of the same list.
+    expect(f.db.calls.filter((c) => c === `connectionCheckTargets:${CONNECTION_CHECK_READ_LIMIT}`)).toHaveLength(2)
     expect(f.probes).toEqual([])
     expect(f.db.connectionChecks).toEqual([])
     expect(f.jobStamps).toEqual(expect.arrayContaining([`started:${CONNECTION_CHECK_JOB}`, `completed:${CONNECTION_CHECK_JOB}`]))
@@ -849,7 +849,7 @@ describe('the connection_check sweep inside the tick (#2340)', () => {
   it('reads the login states after saving the served connections, so a withdrawal served this minute is judged', async () => {
     const f = fake()
     await runOpsTick(f.ports)
-    expect(f.db.calls.indexOf('saveConnectionCopies')).toBeLessThan(f.db.calls.indexOf(`connectionCheckTargets:${CONNECTION_LOGINS_READ_LIMIT}`))
+    expect(f.db.calls.indexOf('saveConnectionCopies')).toBeLessThan(f.db.calls.lastIndexOf(`connectionCheckTargets:${CONNECTION_LOGINS_READ_LIMIT}`))
   })
 
   it('reports no login list, never an empty one, when the read fails, and says why', async () => {

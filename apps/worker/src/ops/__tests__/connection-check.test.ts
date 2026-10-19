@@ -26,7 +26,7 @@ import { IdentityMismatch, IdentityUnreadable, type MeasuredIdentity } from '../
 import { organizationIdFrom } from '../ops-db'
 import type { ConnectionCheckTarget } from '../ops-writes'
 import {
-  CONNECTION_CHECK_DEADLINE_MS, CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_HOLD_WHILE_YOUNGER_MS, CONNECTION_CHECK_MAX_CONNECTIONS, CONNECTION_CHECK_START_BUDGET_MS,
+  CONNECTION_CHECK_DEADLINE_MS, CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_HOLD_WHILE_YOUNGER_MS, CONNECTION_CHECK_MAX_CONNECTIONS, CONNECTION_CHECK_READ_LIMIT, CONNECTION_CHECK_START_BUDGET_MS,
   CONNECTION_CHECK_REFUSAL_KINDS, REFRESH_FAILING_PAGE_FAILURES, REFRESH_FAILING_PAGE_SPAN_MS, judgeConnectionLogins, runConnectionCheckSweep,
   type ConnectionCheckSweepDeps, type ProbeAnswer, type ProbeSeen,
 } from '../connection-check'
@@ -104,7 +104,7 @@ function harness(opts: {
   let expired = 0
   const deps: ConnectionCheckSweepDeps = {
     targets: async (limit) => {
-      expect(limit).toBe(CONNECTION_CHECK_MAX_CONNECTIONS)
+      expect(limit).toBe(CONNECTION_CHECK_READ_LIMIT)
       if (opts.targets instanceof Error) throw opts.targets
       return { targets: opts.targets ?? [target()], reachedLimit: opts.reachedLimit ?? false }
     },
@@ -340,11 +340,8 @@ describe('the sweep', () => {
       const out = await runConnectionCheckSweep(h.deps)
       expect(out.problems.map((p) => p.key)).toEqual([`connection_check_unavailable:${CONN_A}`])
       expect(out.problems[0].text).toMatch(/deadline/)
-      expect(h.recorded).toHaveLength(2)
-      expect(h.recorded).toEqual(expect.arrayContaining([
-        { connectionId: CONN_C, result: { ok: true } },
-        { connectionId: CONN_A, result: { ok: false, cause: `deadline of ${CONNECTION_CHECK_DEADLINE_MS / 1000} s` } },
-      ]))
+      // The hung one ends unrecorded: its record is inside the deadline it passed.
+      expect(h.recorded).toEqual([{ connectionId: CONN_C, result: { ok: true } }])
     })
   })
 
@@ -425,6 +422,27 @@ describe('the sweep', () => {
   it('says so when it reads as many connections as its limit, so any past it are named rather than skipped in silence', async () => {
     const out = await runConnectionCheckSweep(harness({ reachedLimit: true }).deps)
     expect(out.problems.map((p) => p.key)).toEqual(['connection_check_limit'])
+  })
+
+  it('probes at most its limit of the connections it can probe, counting the rest as deferred, and says so', async () => {
+    const many = Array.from({ length: CONNECTION_CHECK_MAX_CONNECTIONS + 1 }, (_, i) => target({
+      connectionId: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, measuredIdentity: null,
+    }))
+    // Skipped copies come first in the list (a needs_reauth one), and do not count toward the limit.
+    const h = harness({ targets: [target({ connectionId: CONN_B, status: 'needs_reauth', needsReauthAt: minutesBefore(1), needsReauthCause: 'login_refused: x' }), ...many] })
+    const out = await runConnectionCheckSweep(h.deps)
+    expect(h.probes).toHaveLength(CONNECTION_CHECK_MAX_CONNECTIONS)
+    expect(h.probes).not.toContain(CONN_B)
+    expect(out.counts).toMatchObject({ connection_check_passed: CONNECTION_CHECK_MAX_CONNECTIONS, connection_check_deferred: 1, connection_check_skipped_reauth: 1 })
+    expect(out.problems.map((p) => p.key)).toEqual(['connection_check_limit'])
+  })
+
+  it('bounds the probe and its record together by the one deadline, so a record that hangs ends with the connection\'s deadline', async () => {
+    const h = harness({ targets: [target({ lastCheckOkAt: minutesBefore(30) })], expire: [CONNECTION_CHECK_DEADLINE_MS] })
+    h.deps.record = () => new Promise(() => undefined)
+    const out = await runConnectionCheckSweep(h.deps)
+    expect(out.problems.map((p) => p.key)).toEqual([`connection_check_unavailable:${CONN_A}`])
+    expect(out.problems[0].text).toMatch(/deadline/)
   })
 
   it('goes on when the started stamp fails, and counts it, since the heartbeat is what pages a sweep that stops stamping', async () => {

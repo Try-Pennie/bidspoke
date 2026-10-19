@@ -10,8 +10,8 @@
  * the failure is found and paged before a workflow meets it.
  *
  * WHAT, per connection connection_check_targets lists (every copy not withdrawn
- * and not removed, those it probes first and the least recently checked first among them, supabase-ops migration
- * 20261020030000): ask the service who the credential is, through
+ * and not removed, the login states that may page first and the least recently
+ * checked first within each band, supabase-ops migration 20261020030000): ask the service who the credential is, through
  * connectionFetch with the connection's committed copy, purpose
  * connection_check, by the service's registered identity probe (the one verify
  * uses: Salesforce /services/oauth2/userinfo, Snowflake CURRENT_USER() and the
@@ -50,7 +50,8 @@
  *    a refusal by rule, an identity other than the verified one, an answer that
  *    is not an identity). Recorded as a failed check, paged at once.
  *  - failed: the service did not answer the probe (a timeout, a network error,
- *    a 5xx). Recorded as a failed check.
+ *    a 5xx). Recorded as a failed check, except a check past its own deadline,
+ *    whose record is inside that deadline and so ends unrecorded.
  *  - not_run: the probe could not be made (the pool was busy or below its
  *    budget floor, the service asked to wait, the copy could not be read). Not
  *    a failed check (Dan: a refusal for a full pool is not a failed check), so
@@ -99,11 +100,18 @@ import type { ConnectionCheckTarget } from './ops-writes'
 
 /** claim_ops_sweep's interval for connection_check: see THE INTERVAL above. */
 export const CONNECTION_CHECK_EVERY_SECONDS = 14 * 60
-/** The most connections one sweep reads. None in production today; the ones it probes come first, least recently checked first, so a full sweep rotates. */
+/**
+ * The list one read takes: every ops connection, the login states first, well
+ * inside PostgREST's 1,000 rows (L24). The sweep and the tick's login states
+ * read the same list, so a connection is never judged by one and missed by
+ * the other.
+ */
+export const CONNECTION_CHECK_READ_LIMIT = 500
+/** The most connections one sweep probes. None in production today; the list gives them least recently checked first, so a sweep past it rotates. */
 export const CONNECTION_CHECK_MAX_CONNECTIONS = 50
 /** connectionFetch's own deadline for each request of a probe: an identity read is one small GET or statement. */
 export const CONNECTION_CHECK_PROBE_DEADLINE_MS = 30_000
-/** One connection's whole probe, the copy read, lease, login, identity read and record included. Past it the probe is a failure of that connection alone. */
+/** One connection's whole check, the copy read, lease, login, identity read and the record of its result included. Past it the check is a failure of that connection alone. */
 export const CONNECTION_CHECK_DEADLINE_MS = 45_000
 /**
  * No probe starts once this much of the sweep has passed (on this Worker's
@@ -117,8 +125,8 @@ export const CONNECTION_CHECK_DEADLINE_MS = 45_000
 export const CONNECTION_CHECK_START_BUDGET_MS = 10_000
 /** A failure the next probe may not meet is held while the last passing check is younger than this: one interval with a missed tick (16 minutes), and less than two (28). */
 export const CONNECTION_CHECK_HOLD_WHILE_YOUNGER_MS = 20 * 60_000
-/** The login states one tick reads: every ops connection, well inside PostgREST's 1,000 rows (L24). */
-export const CONNECTION_LOGINS_READ_LIMIT = 500
+/** The login states one tick reads: the same list the sweep reads. */
+export const CONNECTION_LOGINS_READ_LIMIT = CONNECTION_CHECK_READ_LIMIT
 
 /** Dan's decision 2 bound, defined once in the contract both Workers read. */
 export { REFRESH_FAILING_PAGE_FAILURES, REFRESH_FAILING_PAGE_SPAN_MS } from '../lib/ops-gateway-contract'
@@ -244,14 +252,18 @@ async function probeConnection(deps: ConnectionCheckSweepDeps, target: Connectio
   return { kind: 'passed' }
 }
 
-/** The probe and its record. Never throws. */
+/** The probe and its record, under the one deadline. Never throws. */
 async function checkConnection(deps: ConnectionCheckSweepDeps, target: ConnectionCheckTarget, bump: (key: string) => void): Promise<Outcome> {
-  const raced = await raceDeadline(() => probeConnection(deps, target), CONNECTION_CHECK_DEADLINE_MS, (ms) => deps.sleep(ms))
-  const outcome: Outcome = raced.kind === 'ok'
-    ? raced.value
-    : raced.kind === 'timed_out'
-      ? { kind: 'failed', cause: `deadline of ${CONNECTION_CHECK_DEADLINE_MS / 1000} s` }
-      : { kind: 'refused', cause: 'failed without a named refusal' }
+  const raced = await raceDeadline(() => probeAndRecord(deps, target, bump), CONNECTION_CHECK_DEADLINE_MS, (ms) => deps.sleep(ms))
+  if (raced.kind === 'ok') return raced.value
+  // Past the deadline the record may still land; the next sweep's list says.
+  if (raced.kind === 'timed_out') return { kind: 'failed', cause: `deadline of ${CONNECTION_CHECK_DEADLINE_MS / 1000} s` }
+  return { kind: 'refused', cause: 'failed without a named refusal' }
+}
+
+/** The probe, then the record of its result. Never throws. */
+async function probeAndRecord(deps: ConnectionCheckSweepDeps, target: ConnectionCheckTarget, bump: (key: string) => void): Promise<Outcome> {
+  const outcome = await probeConnection(deps, target)
   if (outcome.kind === 'unprobed' || outcome.kind === 'deferred' || outcome.kind === 'not_run' || outcome.kind === 'gone') return outcome
 
   const result = outcome.kind === 'passed' ? { ok: true as const } : { ok: false as const, cause: outcome.cause }
@@ -308,22 +320,29 @@ export async function runConnectionCheckSweep(deps: ConnectionCheckSweepDeps): P
   }
 
   let targets: ConnectionCheckTarget[] = []
+  let readFull = false
   try {
-    const read = await deps.targets(CONNECTION_CHECK_MAX_CONNECTIONS)
+    const read = await deps.targets(CONNECTION_CHECK_READ_LIMIT)
     targets = read.targets
     counts.connection_check_connections = targets.length
-    if (read.reachedLimit) {
-      problems.push(tickProblem('connection_check_limit', `The connection check found ${CONNECTION_CHECK_MAX_CONNECTIONS} ops connections, its limit, so any past them wait for a later sweep; of those it probes, the least recently checked go first.`))
-    }
+    readFull = read.reachedLimit
   } catch (err) {
     problems.push(tickProblem('connection_check_failed', `The connection check could not read which ops connections to check (${formatErr(err)}), so no login was proved; it runs again in ${CONNECTION_CHECK_EVERY_SECONDS / 60} minutes.`))
   }
 
-  const toProbe: ConnectionCheckTarget[] = []
+  const probeable: ConnectionCheckTarget[] = []
   for (const t of targets) {
     if (!t.servable) bump('connection_check_not_servable')
     else if (t.status === 'needs_reauth') bump('connection_check_skipped_reauth')
-    else toProbe.push(t)
+    else probeable.push(t)
+  }
+  // The skipped copies do not count toward the limit; the ones past it wait, least recently checked first next time.
+  const toProbe = probeable.slice(0, CONNECTION_CHECK_MAX_CONNECTIONS)
+  for (let i = toProbe.length; i < probeable.length; i++) bump('connection_check_deferred')
+  if (readFull || probeable.length > toProbe.length) {
+    problems.push(tickProblem('connection_check_limit', readFull
+      ? `The connection check read ${CONNECTION_CHECK_READ_LIMIT} ops connections, its limit, so any past them were not checked.`
+      : `The connection check found ${probeable.length} ops connections to check, more than the ${CONNECTION_CHECK_MAX_CONNECTIONS} one sweep checks, so the rest wait for a later sweep; the least recently checked go first.`))
   }
 
   const outcomes = new Map<ConnectionCheckTarget, Outcome>()
