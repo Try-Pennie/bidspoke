@@ -1,4 +1,4 @@
-// The Connections page as settled in the #2338 design rounds (rounds 1 to 23, 2026-10-20), drawn
+// The Connections page as settled in the #2338 design rounds (rounds 1 to 26, 2026-10-20), drawn
 // into the captured app chrome's #main-content at 1120 wide. Only the settled behaviour is here;
 // every rejected option of the rounds is gone. make-settled.py hands buildScreen one variant per
 // frame, and the variant names the frame's state:
@@ -9,6 +9,8 @@
 //   {state: "google"}                                    Google mailboxes and drives (round 10)
 //   {state: "add", service: null | "Salesforce" | "Google", save: "ready" | "saving" | "failed",
 //    google: "company" | "own"}                          Add connection in the panel (rounds 11 to 17)
+//   {state: "add", service: "Salesforce", save: "ready", org: "new"}   Another org, its address
+//                                                        typed into the Org box (round 25)
 //   {state: "loadfailed"}                                the list did not load (round 23)
 //   extra: true adds the fixture's justSaved connection to the list (rounds 18 and 21).
 //
@@ -217,10 +219,25 @@ function addPanel(variant) {
   var line = null;
   if (variant.service === "Salesforce") {
     var draft = FX().draft.salesforce;
-    var org = FX().salesforceOrgs.filter(function (o) { return o[0] === draft.org; })[0];
-    // Round 15: the org by name from the orgs Bidspoke knows, its address in a grey line under it.
-    g.append(field("Name", input(draft.name)),
-      field("Org", pick(org[0]), el("span", "cx-hint ad-pick-hint", org[1])),
+    var orgField, name = draft.name;
+    if (variant.org === "new") {
+      // Round 25: Another org makes Org a box the new org's address is typed into, and its menu
+      // offers the typed address as a new org.
+      var nw = FX().draft.newOrg;
+      name = nw.name;
+      var typed = input(nw.address);
+      typed.setAttribute("role", "combobox"); typed.setAttribute("aria-expanded", "true"); typed.setAttribute("aria-controls", "org-menu");
+      var menu = el("div", "sv-menu"); menu.id = "org-menu"; menu.setAttribute("role", "listbox");
+      var opt = el("div", "sv-opt", "Use " + nw.address + " as a new org"); opt.setAttribute("role", "option");
+      menu.append(opt);
+      orgField = field("Org", typed, menu);
+    } else {
+      // Round 15: the org by name from the orgs Bidspoke knows, its address in a grey line under it.
+      var org = FX().salesforceOrgs.filter(function (o) { return o[0] === draft.org; })[0];
+      orgField = field("Org", pick(org[0]), el("span", "cx-hint ad-pick-hint", org[1]));
+    }
+    g.append(field("Name", input(name)),
+      orgField,
       field("Client id", input(draft.clientId)),
       field("Client secret", input(MASK, true)));
     var save = el("button", "cx-btn cx-btn-sm", "Save");

@@ -1,12 +1,14 @@
-// A workflow step's Connection field on the canvas, as settled in the #2338 design rounds (rounds 8
-// and 8b, 2026-10-20), drawn into the captured canvas chrome's step panel body (#step-panel-body)
+// A workflow step's Connection field on the canvas, as settled in the #2338 design rounds (rounds 8,
+// 8b and 24, 2026-10-20), drawn into the captured canvas chrome's step panel body (#step-panel-body)
 // at 1120 wide. Display name, Step ID, Operation and Object are drawn as the product draws them
 // today; only the Connection field is the decision. make-settled.py hands buildScreen one variant
 // per frame: {chosen: "<connection name>"}.
 //
 // The field is the app's dropdown with the chosen connection's name, and under it "Acts as <who>"
 // only. Nothing about status shows on a healthy day; a connection with a problem adds one red line,
-// its status in the page's own vocabulary. What a check reads is marked with data-part attributes.
+// its status in the page's own vocabulary and where it is fixed: "Needs reconnecting on the
+// Connections page", the page's name a dark underlined link (round 24). What a check reads is
+// marked with data-part attributes.
 //
 // Regenerate the settled file from the repository root with
 //   python3 ~/.claude/skills/design-rounds/make-settled.py docs/design/connections-step-form/settled.json docs/design/connections-step-form.html
@@ -29,7 +31,14 @@ function buildScreen(variant) {
   body.append(field("Step ID", input(fx.step.stepId), el("p", "mt-1 text-xs text-gray-500", "Unique identifier used to reference this step's output in later steps. E.g. steps.credit_check.score")));
   var under = el("div");
   under.append(part(el("div", "sf-hint", "Acts as " + chosen.actsAs), "acts-as"));
-  if (chosen.status !== "ok") under.append(part(el("div", "sf-hint sf-problem", fx.statusVocabulary[chosen.status]), "connection-problem"));
+  if (chosen.status !== "ok") {
+    // Round 24 drew this line for Needs reconnecting only, the one problem a frame shows. What it
+    // reads for Check failing is not decided; "Check failing on the Connections page" is not it.
+    var bad = part(el("div", "sf-hint sf-problem"), "connection-problem");
+    var where = el("a", null, "Connections page"); where.href = "#";
+    bad.append(document.createTextNode(fx.statusVocabulary[chosen.status] + " on the "), where);
+    under.append(bad);
+  }
   var conn = field("Connection", picker(chosen.name), under);
   conn.setAttribute("data-part", "connection-field");
   var sec = el("section", "space-y-4");
