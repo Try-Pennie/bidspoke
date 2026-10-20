@@ -2,7 +2,9 @@
 // data-part and data-* attributes, layout boxes and computed colours, never a styling class, so it
 // runs the same on the design and on the built canvas.
 (function () {
-  var BLUE = "rgb(27, 114, 186)", RED = "rgb(180, 35, 24)";
+  var BLUE = "rgb(27, 114, 186)", RED = "rgb(180, 35, 24)", NAVY = "rgb(29, 33, 47)";
+  // Round 24: the problem line names where it is fixed, the page's name a link to it.
+  var WHERE = " on the ", PAGE = "Connections page";
   var FRAMES = ["step-healthy", "step-problem"];
   function panel(doc) { return doc.getElementById("step-panel-body") || doc.body; }
   function txt(e) { return e ? e.textContent.replace(/\s+/g, " ").trim() : ""; }
@@ -13,6 +15,8 @@
   function bad(detail) { return { ok: false, detail: detail }; }
   function ownText(e) { return Array.prototype.some.call(e.childNodes, function (n) { return n.nodeType === 3 && n.nodeValue.trim(); }); }
   function field(doc) { return q(panel(doc), '[data-part="connection-field"]'); }
+  function underlined(e) { return css(e).textDecorationLine.indexOf("underline") >= 0; }
+  function weight(e) { return parseInt(css(e).fontWeight, 10); }
   function chosen(ctx) {
     var name = ctx.frame === "step-problem" ? "Achieve Salesforce" : "Pennie Salesforce";
     return ctx.fixture.connections.filter(function (c) { return c.name === name; })[0];
@@ -23,21 +27,28 @@
       if (!f) return bad("no Connection field");
       var dd = q(f, "button, [role='combobox']");
       if (!dd || txt(dd) !== c.name) return bad("the dropdown does not read " + c.name);
-      var lines = qa(f, "*").filter(function (e) { return ownText(e) && !e.closest("button") && txt(e) !== "Connection"; }).map(txt);
+      // Each line as read: a link inside a line is part of that line, not a line of its own.
+      var lines = qa(f, "*").filter(function (e) { return ownText(e) && !e.closest("button") && !e.closest("a") && txt(e) !== "Connection"; }).map(txt);
       var want = ["Acts as " + c.actsAs];
-      if (c.status !== "ok") want.push(ctx.fixture.statusVocabulary[c.status]);
+      if (c.status !== "ok") want.push(ctx.fixture.statusVocabulary[c.status] + WHERE + PAGE);
       if (JSON.stringify(lines) !== JSON.stringify(want)) return bad("under the dropdown: " + JSON.stringify(lines));
       var prob = q(f, '[data-part="connection-problem"]');
-      if (c.status !== "ok" && (!prob || css(prob).color !== RED)) return bad("the problem line is not red");
-      if (c.status === "ok" && prob) return bad("a problem line shows on a working connection");
-      return ok(want.join(" / "));
+      if (c.status === "ok") return prob || q(f, "a") ? bad("a problem line or link shows on a working connection") : ok(want.join(" / "));
+      if (!prob || css(prob).color !== RED || weight(prob) !== 500) return bad("the problem line is not red at weight 500");
+      var links = qa(prob, "a");
+      if (links.length !== 1 || txt(links[0]) !== PAGE || !links[0].getAttribute("href")) return bad("the problem line has no link reading " + PAGE);
+      var a = links[0];
+      if (css(a).color !== NAVY || !underlined(a) || weight(a) !== 400) return bad("the " + PAGE + " link is not dark, underlined and normal weight");
+      return ok(want.join(" / ") + ", " + PAGE + " a dark underlined link");
     } },
     { id: "D24", frames: FRAMES, check: function (doc) {
       var off = qa(field(doc), "*").filter(function (e) {
         if (e.closest("button")) return false;
         var s = css(e); return s.backgroundColor === BLUE || (ownText(e) && s.color === BLUE);
       });
-      return off.length ? bad("blue outside a button: " + txt(off[0])) : ok("no blue outside buttons");
+      if (off.length) return bad("blue outside a button: " + txt(off[0]));
+      var links = qa(field(doc), "a").filter(function (a) { return css(a).color !== NAVY || !underlined(a); });
+      return links.length ? bad("a link is not dark and underlined: " + txt(links[0])) : ok("no blue outside buttons, links dark and underlined");
     } },
     { id: "D25", frames: FRAMES, check: function (doc) {
       var off = qa(panel(doc), "*").filter(function (e) {

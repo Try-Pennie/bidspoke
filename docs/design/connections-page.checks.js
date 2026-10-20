@@ -4,7 +4,9 @@
 // score runs them on the design first (the positive control) and then on the built page.
 (function () {
   var NAVY = "rgb(29, 33, 47)", BLUE = "rgb(27, 114, 186)", RED = "rgb(180, 35, 24)", HINT = "rgb(105, 112, 129)", WHITE = "rgb(255, 255, 255)";
-  var ALL = ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded"];
+  var ALL = ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded"];
+  // Round 26: every dialog's title is one size.
+  var DIALOG_TITLE = "20px";
   var EXTRA = ["saved", "remove"];
   function main(doc) { return doc.getElementById("main-content") || doc.body; }
   function txt(e) { return e ? e.textContent.replace(/\s+/g, " ").trim() : ""; }
@@ -30,6 +32,13 @@
   function disabled(b) { return b.disabled || b.getAttribute("aria-disabled") === "true"; }
   function underlined(e) { return css(e).textDecorationLine.indexOf("underline") >= 0; }
   function same(a, b) { return JSON.stringify(a) === JSON.stringify(b); }
+  // A dialog's title as drawn: its heading reading the title, and why not when it is wrong.
+  function titleProblem(dg, title) {
+    var h = qa(dg, "h1, h2, h3, h4, [role='heading']").filter(function (e) { return txt(e) === title; })[0];
+    if (!h) return "the dialog has no heading reading " + title;
+    if (css(h).fontSize !== DIALOG_TITLE) return "the dialog's title is " + css(h).fontSize + ", not " + DIALOG_TITLE;
+    return null;
+  }
   function connections(ctx) {
     var list = ctx.fixture.connections.slice();
     if (EXTRA.indexOf(ctx.frame) >= 0) list.push(ctx.fixture.justSaved);
@@ -294,21 +303,40 @@
       if (!save || disabled(save)) return bad("Save is not ready again");
       return ok("red line, Save ready");
     } },
-    { id: "D15", frames: ["add-salesforce", "add-saving", "add-failed"], check: function (doc, ctx) {
+    { id: "D15", frames: ["add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org"], check: function (doc, ctx) {
       var form = p(main(doc), "add-form");
       var fields = pa(form, "field"), names = fields.map(function (f) { return f.getAttribute("data-field"); });
       if (!same(names, ["Name", "Org", "Client id", "Client secret"])) return bad("the fields are " + JSON.stringify(names));
-      var org = fields[1], orgName = ctx.fixture.draft.salesforce.org;
-      var addr = ctx.fixture.salesforceOrgs.filter(function (o) { return o[0] === orgName; })[0][1];
-      var dd = q(org, "button, [role='combobox']");
-      if (!dd || txt(dd) !== orgName) return bad("Org is not a dropdown reading " + orgName);
-      var hint = qa(org, "*").filter(function (e) { return txt(e) === addr && e.children.length === 0; })[0];
-      if (!hint || css(hint).color !== HINT || box(hint).top < box(dd).bottom) return bad("the org's address is not a grey line under the dropdown");
+      var org = fields[1], said_ = "";
+      if (ctx.frame === "add-salesforce-new-org") {
+        // Round 25: Another org makes Org a box the address is typed into, its menu offering it.
+        var nw = ctx.fixture.draft.newOrg;
+        var nm = q(fields[0], "input");
+        if (!nm || nm.value !== nw.name) return bad("Name does not read " + nw.name);
+        var typed = q(org, "input");
+        if (!typed || typed.value !== nw.address) return bad("Org is not a box reading " + nw.address);
+        if (typed.getAttribute("role") !== "combobox" || typed.getAttribute("aria-expanded") !== "true") return bad("the Org box is not a combobox with its menu open");
+        if (q(org, "button")) return bad("Org is still a dropdown button");
+        var opts = qa(org, '[role="option"]');
+        var want = "Use " + nw.address + " as a new org";
+        if (!same(opts.map(txt), [want])) return bad("the Org menu offers " + JSON.stringify(opts.map(txt)));
+        var ob = box(opts[0]);
+        if (!ob.height || ob.top < box(typed).bottom) return bad("the Org menu is not open under the box");
+        said_ = "Org typed as " + nw.address + ", its menu offering " + want;
+      } else {
+        var orgName = ctx.fixture.draft.salesforce.org;
+        var addr = ctx.fixture.salesforceOrgs.filter(function (o) { return o[0] === orgName; })[0][1];
+        var dd = q(org, "button, [role='combobox']");
+        if (!dd || txt(dd) !== orgName) return bad("Org is not a dropdown reading " + orgName);
+        var hint = qa(org, "*").filter(function (e) { return txt(e) === addr && e.children.length === 0; })[0];
+        if (!hint || css(hint).color !== HINT || box(hint).top < box(dd).bottom) return bad("the org's address is not a grey line under the dropdown");
+        said_ = "Org (" + orgName + ", " + addr + ")";
+      }
       var secret = q(fields[3], "input");
       if (!secret || secret.type !== "password") return bad("Client secret is not masked");
       var labels = qa(form, "label, [data-field]").map(function (e) { return e.getAttribute("data-field") || txt(e); });
       if (labels.some(function (l) { return /acts as|run as/i.test(l); })) return bad("the form asks who it acts as");
-      return ok("Name, Org (" + orgName + ", " + addr + "), Client id, Client secret");
+      return ok("Name, " + said_ + ", Client id, Client secret");
     } },
     { id: "D16", frames: ["add-google-company", "add-google-own"], check: function (doc, ctx) {
       var form = p(main(doc), "add-form");
@@ -348,6 +376,7 @@
       if (!dg) return bad("no dialog");
       var title = "Reconnect " + c.name;
       if (dg.getAttribute("aria-label") !== title && txt(q(dg, "h1, h2, h3")) !== title) return bad("the dialog is not titled " + title);
+      var tp = titleProblem(dg, title); if (tp) return bad(tp);
       var f = pa(dg, "field"), names = f.map(function (x) { return x.getAttribute("data-field"); });
       if (!same(names, ["Client id", "New client secret"])) return bad("the fields are " + JSON.stringify(names));
       if (q(f[0], "input").value !== ctx.fixture.reconnect.clientId) return bad("the client id is not kept");
@@ -361,6 +390,7 @@
       if (!dg) return bad("no dialog");
       var title = "Replace " + c.name;
       if (dg.getAttribute("aria-label") !== title && txt(q(dg, "h1, h2, h3")) !== title) return bad("the dialog is not titled " + title);
+      var tp = titleProblem(dg, title); if (tp) return bad(tp);
       var rf = pa(dg, "field").filter(function (x) { return x.getAttribute("data-field") === "Replace with"; })[0];
       if (!rf || txt(q(rf, "button, [role='combobox']")) !== w) return bad("Replace with does not read " + w);
       if (txt(dg).indexOf("In these workflows") < 0) return bad("no In these workflows");
@@ -380,6 +410,7 @@
       if (ctx.frame === "remove") {
         var dg = q(doc, '[role="dialog"]'), title = "Remove " + ctx.fixture.justSaved.name + "?";
         if (!dg || (dg.getAttribute("aria-label") !== title && txt(q(dg, "h1, h2, h3")) !== title)) return bad("no dialog titled " + title);
+        var tp = titleProblem(dg, title); if (tp) return bad(tp);
         if (txt(dg).indexOf("Its login is deleted from Bidspoke and cannot be brought back.") < 0) return bad("the dialog does not say what is lost");
         var go = buttons(dg).filter(function (b) { return txt(b) === "Remove"; })[0];
         if (!button(dg, "Cancel") || !go || css(go).backgroundColor !== RED) return bad("the dialog lacks Cancel and a red Remove");
