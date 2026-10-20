@@ -391,6 +391,25 @@ describe('refused before anything is sealed or verified', () => {
     expect((await refused('{not json')).body.error).toBe('connection_request_invalid')
   })
 
+  it('a body over the limit in bytes, though under it in characters', async () => {
+    // Each of these is one UTF-16 unit and three bytes, so 12,000 of them is 36,000 bytes.
+    const r = await refused(salesforce({ name: 'Pennie Salesforce', fields: { instance_url: 'https://trypennie.my.salesforce.com', client_id: OPS_CLIENT_ID, client_secret: '€'.repeat(12_000) } }))
+    expect(r.body).toMatchObject({ error: 'connection_request_invalid', detail: 'the body is over 32768 bytes' })
+  })
+
+  it('a body whose declared length is over the limit, before it is read', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    const { env, binding } = makeEnv()
+    const { default: api } = await import('../index')
+    const res = await api.request('/connections', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok', 'Content-Length': '999999' },
+      body: JSON.stringify(salesforce()),
+    }, env, ctx)
+    expect(await res.json()).toMatchObject({ error: 'connection_request_invalid', detail: 'the body is over 32768 bytes' })
+    expect(binding.verify).not.toHaveBeenCalled()
+  })
+
   it('a name another connection of the service already has in the organization', async () => {
     const db = storeDouble([{ id: 'c1', organization_id: ORG, service_type: 'salesforce', name: 'Pennie Salesforce' }])
     const r = await refused(salesforce(), db)
@@ -558,7 +577,18 @@ describe('two saves of one name', () => {
   it('both verify, one insert wins, and the other is refused as taken: exactly one row', async () => {
     const db = storeDouble()
     vi.mocked(createSupabaseClient).mockReturnValue(db as never)
-    const { env, binding } = makeEnv({ verify: async (r) => { await new Promise((resolve) => setTimeout(resolve, 5)); return verified()(r) } })
+    // Neither verify answers until both have been asked, so both saves pass the
+    // early name read and reach the insert: the unique alone decides.
+    let release: () => void = () => undefined
+    const bothAsked = new Promise<void>((resolve) => { release = resolve })
+    let asked = 0
+    const { env, binding } = makeEnv({
+      verify: async (r) => {
+        if (++asked === 2) release()
+        await bothAsked
+        return verified()(r)
+      },
+    })
     const [a, b] = await Promise.all([post(env, salesforce()), post(env, salesforce())])
     expect([a.status, b.status].sort()).toEqual([201, 409])
     const loser = a.status === 409 ? a : b

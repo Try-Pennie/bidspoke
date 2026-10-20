@@ -35,7 +35,8 @@ import {
   createRefusalSentence, isCreateRefusalCode, type CreateRefusalCode, type CreateRouteRefusalCode, type RefusalContext, type VerifyRefusalCode,
 } from '../../lib/connection-create-refusals'
 import {
-  actsAsOf, AUTH_TYPE_OF, connectionNameOf, declaredService, isReservedName, orgHostOf, readCreateBody, secretLabelOf, unlistedGoogleSubjects,
+  actsAsOf, AUTH_TYPE_OF, connectionNameOf, CREATE_BODY_MAX_BYTES, declaredBodyTooLarge, declaredService, isReservedName, orgHostOf, readCreateBody,
+  secretLabelOf, unlistedGoogleSubjects,
 } from '../../lib/connection-create'
 import { callOpsConnections, callOpsDelegation, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
 import { OpsConnectionsContractError, parseLookupRequest, type HealthRow, type OpsConnectionsRefusalCode } from '../../lib/ops-connections-contract'
@@ -296,6 +297,9 @@ connections.post('/', async (c) => {
   }
 
   // 1. The body and the service.
+  if (declaredBodyTooLarge(c.req.header('content-length'))) {
+    return refuse('connection_request_invalid', { service: 'the service' }, { detail: `the body is over ${CREATE_BODY_MAX_BYTES} bytes` })
+  }
   const body = readCreateBody(await c.req.text())
   if (!body.ok) return refuse('connection_request_invalid', { service: 'the service' }, { detail: body.problem })
   const service = declaredService(catalogue, body.service)

@@ -21,9 +21,22 @@ export type CreateBody = { ok: true; service: string; name: string; fields: Reco
 
 const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v)
 
+const TOO_LARGE = `the body is over ${CREATE_BODY_MAX_BYTES} bytes`
+
+/**
+ * Whether a declared Content-Length already exceeds the limit, so the body is
+ * refused before it is read. A missing or unreadable header is not a refusal:
+ * readCreateBody measures the bytes read either way.
+ */
+export function declaredBodyTooLarge(contentLength: string | undefined): boolean {
+  if (contentLength === undefined || !/^\d{1,12}$/.test(contentLength.trim())) return false
+  return Number(contentLength.trim()) > CREATE_BODY_MAX_BYTES
+}
+
 /** The form's body, or what is wrong with it, by field name only (never a value). */
 export function readCreateBody(text: string): CreateBody {
-  if (text.length > CREATE_BODY_MAX_BYTES) return { ok: false, problem: `the body is over ${CREATE_BODY_MAX_BYTES} bytes` }
+  // Bytes, not UTF-16 code units: a body of multi byte characters is measured as sent.
+  if (text.length > CREATE_BODY_MAX_BYTES || new TextEncoder().encode(text).length > CREATE_BODY_MAX_BYTES) return { ok: false, problem: TOO_LARGE }
   let raw: unknown
   try {
     raw = JSON.parse(text)
