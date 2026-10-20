@@ -44,8 +44,9 @@
  * the heartbeat already pages it.
  *
  * NOTHING PAGES TWICE. Only a throw counts for the slower jobs, never the faults
- * their summaries list, because those already have a page of their own or are
- * bookkeeping the next run repairs: writeback-backlog's failed read pages
+ * their summaries list, apart from the Tripoint ping outcome rate's hours not
+ * recorded above, which page nowhere else, because the others already have a
+ * page of their own or are bookkeeping the next run repairs: writeback-backlog's failed read pages
  * through the export alerter, the incident drain pages its own repeated
  * failures, the partner probe pages a broken probe or control, the memory check
  * a broken feed, the drift check a mirror it could not read, and the sales and
