@@ -34,7 +34,7 @@ import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, writeHeartbeatCompleted, runHeartbeatChecks } from './lib/cron-heartbeat'
 import { runOpsTickReportCheck } from './lib/ops-gateway'
-import { runOpsConnectionLoginCheckForEnv } from './lib/ops-connection-logins'
+import { runOpsConnectionLoginCheckForEnv, runOpsConnectionWriteBackCheckForEnv } from './lib/ops-connection-logins'
 import { runPartnerReachabilityCheck, fetchProbe, liveSenders } from './lib/partner-reachability'
 import { resolveSlackForEveryOrg } from './lib/standing-alert'
 import { runIncidentDrain, INCIDENT_DRAIN_JOB } from './lib/incident-drain'
@@ -1302,6 +1302,15 @@ const scheduledJobs = {
         runOpsConnectionLoginCheckForEnv(supabase, env.IDEMPOTENCY, reachability.claims)
           .then((s) => { if (s.errors.length > 0) console.error(`[ops-connection-login] ${s.errors.length} fault(s): ${s.errors.join('; ')}`) })
           .catch((e) => console.error('[ops-connection-login] check failed:', e))
+      )
+      // The person bound logins whose new login the ops Worker holds and the
+      // row has not taken past its bound (#2340, phase 10 item 4): the tick
+      // judges them with the connection check and this pages each to its
+      // organization and sends the all clear (lib/ops-connection-logins.ts).
+      minuteJob('ops-connection-write-backs',
+        runOpsConnectionWriteBackCheckForEnv(supabase, env.IDEMPOTENCY, reachability.claims)
+          .then((s) => { if (s.errors.length > 0) console.error(`[ops-connection-write-back] ${s.errors.length} fault(s): ${s.errors.join('; ')}`) })
+          .catch((e) => console.error('[ops-connection-write-back] check failed:', e))
       )
       minuteJob('heartbeat-checks',
         runHeartbeatChecks(supabase, env.IDEMPOTENCY, Date.now(), reachability.claims)

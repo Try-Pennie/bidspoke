@@ -53,7 +53,16 @@
  * organization fails in the cipher), and its write back names that
  * organization's row.
  *
- * Who calls it in this deploy: nothing that runs. The person bound minter and
+ * HOW LONG A WRITE BACK HAS WAITED (#2340, phase 10 item 4; the requirement
+ * is #2425's). The stored login records when its write back went pending
+ * (StoredLogin.pendingSince, version 2), kept across retries and cleared when
+ * it lands; one stored as version 1, before that was kept, is read as pending
+ * since an unknown time (stageStoredLoginV1), never as fresh. The ops tick
+ * that owns the connection_check claim reads it through writeBackState, which
+ * writes nothing, and pages one pending past its bound (write-back-check.ts).
+ *
+ * Who calls it in this deploy: the tick's writeBackState, on every connection
+ * the tick lists (none in production today), and otherwise nothing that runs. The person bound minter and
  * exchangeOAuthCode (minters/oauth-user.ts) call it, and they are reached only
  * once a person bound service has rules on this Worker (Phase 7) and the
  * OpsConnections entrypoint exists (PR 8 of this phase).
@@ -65,8 +74,8 @@ import type { OpsEnv } from './index'
 import { LoginMintError, type LoginMintKind, type MintFailureReason } from './connections/refusals'
 import { readAccessToken, requestToken, TOKEN_ENDPOINT_TIMEOUT_MS } from './connections/minters/token-endpoint'
 import {
-  parseAccessTokenRequest, parseExchangeRequest, parseResealLoginRequest, type AccessTokenAnswer, type ExchangeAnswer, type ResealLoginAnswer,
-  type ResealLoginRequest, type TokenObjectFailure, type TokenObjectLogin,
+  parseAccessTokenRequest, parseExchangeRequest, parseResealLoginRequest, parseWriteBackStateRequest, type AccessTokenAnswer, type ExchangeAnswer,
+  type ResealLoginAnswer, type ResealLoginRequest, type TokenObjectFailure, type TokenObjectLogin, type WriteBackStateAnswer, type WriteBackStateRequest,
 } from './connections/token-object-contract'
 
 /** What the fetch handler answers: the object is reached by RPC only. */
@@ -86,8 +95,13 @@ export const WRITE_BACK_RETRY_MAX_MS = 15 * 60_000
 /** Sends whose answers never came back, kept to recognise one that landed. The oldest goes first past this. */
 export const MAX_UNANSWERED_SENDS = 50
 
-/** The login this object holds: a rotated one, sealed to the ops key. */
-export interface StoredLogin {
+/**
+ * The login this object holds, as stored before the write back's pending time
+ * was kept (#2335, #2333): version 1, recognised by having no `v`. FROZEN:
+ * objects in production may hold this shape, so it is never edited (L1010);
+ * a change to what is stored is a new version with a stage from this one.
+ */
+export interface StoredLoginV1 {
   organizationId: string
   connectionId: string
   service: string
@@ -100,6 +114,49 @@ export interface StoredLogin {
   writeBack: 'pending' | 'landed'
   /** Failed write backs in a row. */
   attempts: number
+}
+
+/** The version this release writes. */
+export const STORED_LOGIN_VERSION = 2
+
+/**
+ * The login this object holds, version 2 (#2340, phase 10 item 4 of #1689):
+ * version 1 and the time the write back went pending, so the ops tick can page
+ * on a login the row has not taken for too long, saying since when.
+ */
+export interface StoredLogin extends StoredLoginV1 {
+  v: typeof STORED_LOGIN_VERSION
+  /**
+   * When the write back went pending, on this object's clock: written when a
+   * login first goes pending, kept across failed retries and across a rotation
+   * on top of one still pending (the row has been behind this object since
+   * then), and null once it lands. 'unknown' for a login stored as version 1
+   * while pending, whose start was never recorded: it is never read as fresh.
+   */
+  pendingSince: number | 'unknown' | null
+}
+
+/** The stage from version 1: a pending login's start was never recorded, so it is unknown, never the time of the read. */
+export function stageStoredLoginV1(v1: StoredLoginV1): StoredLogin {
+  return { ...v1, v: STORED_LOGIN_VERSION, pendingSince: v1.writeBack === 'pending' ? 'unknown' : null }
+}
+
+/**
+ * A stored login of any version this release reads, in the current one, or
+ * null when none is stored. A version this release does not know (one written
+ * by a later release, then rolled back) throws: it cannot be read safely, and
+ * reading it as nothing would read the only copy of a login as absent.
+ */
+export function readStoredLogin(raw: unknown): StoredLogin | null {
+  if (raw === undefined || raw === null) return null
+  if (typeof raw !== 'object' || Array.isArray(raw)) throw new Error('the stored login is not an object')
+  const v = (raw as { v?: unknown }).v
+  if (v === undefined) return stageStoredLoginV1(raw as StoredLoginV1)
+  if (v !== STORED_LOGIN_VERSION) throw new Error(`the stored login is of version ${typeof v === 'number' ? v : typeof v}, which this release does not read`)
+  const login = raw as StoredLogin
+  // Held to its rule (L50): a pending login with no readable time is unknown, a landed one has none.
+  if (login.writeBack === 'landed') return login.pendingSince === null ? login : { ...login, pendingSince: null }
+  return typeof login.pendingSince === 'number' && Number.isFinite(login.pendingSince) ? login : { ...login, pendingSince: 'unknown' }
 }
 
 /** A send whose answer never came back: it may have landed. */
@@ -359,6 +416,32 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
     })
   }
 
+  /**
+   * Whether the login this object holds is waiting for its write back, and
+   * since when (#2340, phase 10 item 4): read by the ops minute tick on the
+   * connection_check sweep's interval (ops/write-back-check.ts), which pages a
+   * write back pending past its bound. Reads one key and writes nothing, so a
+   * connection that is not person bound costs one storage read of nothing.
+   * Never throws: a login it cannot read is a failure, never none.
+   */
+  async writeBackState(raw: unknown): Promise<WriteBackStateAnswer> {
+    let request: WriteBackStateRequest
+    try {
+      request = parseWriteBackStateRequest(raw)
+    } catch {
+      return { ok: false, reason: 'refused' }
+    }
+    try {
+      const stored = await this.readLogin()
+      if (!stored) return { ok: true, state: 'none' }
+      if (!this.sameConnection(stored, request)) return { ok: false, reason: 'refused' }
+      if (stored.writeBack === 'landed') return { ok: true, state: 'landed' }
+      return { ok: true, state: 'pending', pendingSinceMs: typeof stored.pendingSince === 'number' ? stored.pendingSince : null, attempts: stored.attempts }
+    } catch {
+      return { ok: false, reason: 'failed' }
+    }
+  }
+
   /** The write back: one compare and set, then retry later, give up, or rest. */
   async alarm(): Promise<void> {
     const login = await this.readLogin()
@@ -398,7 +481,7 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
         // a second login at one generation here. The row then holds this login
         // under the old kid, which resealConnections moves.
         if (current.envelope.iv === login.envelope.iv || current.generation === login.generation) {
-          await this.writeLogin({ ...current, committedGeneration: login.generation, writeBack: 'landed', attempts: 0 })
+          await this.writeLogin({ ...current, committedGeneration: login.generation, writeBack: 'landed', attempts: 0, pendingSince: null })
           return
         }
         // A newer rotation arrived while this one was in flight: the row is at this one's generation now.
@@ -418,7 +501,7 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
           // An earlier send of this same login landed, and a reseal has since given
           // it a new envelope (#2333): the row holds it, under the old kid, which
           // resealConnections moves. Not a Reconnect, so nothing is given up.
-          await this.writeLogin({ ...current, committedGeneration: landed.generation, writeBack: 'landed', attempts: 0 })
+          await this.writeLogin({ ...current, committedGeneration: landed.generation, writeBack: 'landed', attempts: 0, pendingSince: null })
           return
         }
         // The row moved past this object (a Reconnect): the row is the authority, and this login is dead.
@@ -436,8 +519,9 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
     return stored.organizationId === request.organizationId && stored.connectionId === request.connectionId && stored.service === request.service
   }
 
+  /** The stored login in the current version (readStoredLogin stages an older one). Throws on a version this release does not read. */
   private async readLogin(): Promise<StoredLogin | null> {
-    return (await this.ctx.storage.get<StoredLogin>('login')) ?? null
+    return readStoredLogin(await this.ctx.storage.get<unknown>('login'))
   }
 
   private async writeLogin(login: StoredLogin): Promise<void> {
@@ -513,9 +597,16 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
     return { fetch: this.fetchToken, now: () => this.clock(), tokenTimeoutMs: this.tokenTimeoutMs }
   }
 
-  /** Stores a new login before anything is returned, and makes sure an alarm will hand it back. */
-  private async keep(login: StoredLogin, now: number): Promise<void> {
-    await this.writeLogin(login)
+  /**
+   * Stores a new login, pending, before anything is returned, and makes sure an
+   * alarm will hand it back. Its pending time is now, unless the login it
+   * replaces was itself still pending: then the row has been behind this object
+   * since that one's time, which is kept (an unknown one stays unknown).
+   */
+  private async keep(login: Omit<StoredLogin, 'v' | 'pendingSince' | 'writeBack'>, now: number): Promise<void> {
+    const prior = await this.readLogin()
+    const pendingSince = prior !== null && prior.writeBack === 'pending' && prior.pendingSince !== null ? prior.pendingSince : now
+    await this.writeLogin({ ...login, v: STORED_LOGIN_VERSION, writeBack: 'pending', pendingSince })
     const alarm = await this.ctx.storage.getAlarm()
     // An alarm already set is a write back retrying on its own schedule: it sends this newer login then.
     if (alarm === null) await this.ctx.storage.setAlarm(now)
@@ -559,7 +650,6 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
         generation,
         envelope,
         committedGeneration: source.kind === 'stored' ? source.committedGeneration : source.generation,
-        writeBack: 'pending',
         attempts: source.kind === 'stored' ? (await this.readLogin())?.attempts ?? 0 : 0,
       }, asked)
       loginIv = envelope.iv
@@ -611,7 +701,6 @@ export class ConnectionTokenObject extends DurableObject<OpsEnv> {
       generation,
       envelope,
       committedGeneration: request.generation,
-      writeBack: 'pending',
       attempts: 0,
     }, asked)
     const held: HeldToken = { token, id: crypto.randomUUID(), expiresAtMs: expiryOf(json, asked), loginIv: envelope.iv }

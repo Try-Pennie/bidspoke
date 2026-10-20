@@ -10,7 +10,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { completedKey, heartbeatKey } from '../cron-heartbeat'
 import {
   OPS_TICK_JOB, OPS_TICK_REPORT_KEY, OPS_TICK_REPORT_FRESH_MS, OPS_TICK_STREAKS_KEY, OPS_TICK_STREAK_TTL_SECONDS, OPS_TICK_TICKS_IN_A_ROW_TO_PAGE,
-  readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, runOpsTickReportCheck,
+  OPS_TICK_WRITE_BACKS_KEY, readOpsWorkflows, recordOpsTickCompleted, recordOpsTickStarted, runOpsTickReportCheck,
 } from '../ops-gateway'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
@@ -118,6 +118,29 @@ describe('the heartbeat the tick stamps through the gateway', () => {
     const kept = JSON.parse(store.m.get(OPS_TICK_REPORT_KEY)!)
     expect(kept.outcome).toBe('problems')
     expect(kept.problems[0]).toMatch(/could not be read/)
+  })
+
+  // #2340 phase 10 item 4: only the tick that owns the connection check judges
+  // the write backs, so its judgement is kept apart from the report, which the
+  // next minute's tick overwrites.
+  it('keeps the write backs a tick judged apart from its report, and a tick that judged none leaves them as they were', async () => {
+    const store = kv()
+    const base = {
+      tick_id: 't-owner', mode: 'observe', scheduled_time: null, started_at: '2026-10-17T10:02:30Z', finished_at: '2026-10-17T10:02:31Z',
+      db_now: '2026-10-17T10:02:30Z', outcome: 'ok', problems: [], counts: {},
+    }
+    const writeBacks = {
+      complete: true,
+      pending: [{ organization_id: ORG, connection_id: '00000000-0000-4000-8000-0000000c2341', service: 'google_user', since: '2026-10-17T09:20:00.000Z', attempts: 6 }],
+    }
+    await recordOpsTickCompleted(store as unknown as KVNamespace, { ...base, write_backs: writeBacks }, NOW)
+    expect(JSON.parse(store.m.get(OPS_TICK_WRITE_BACKS_KEY)!)).toEqual({ tick_id: 't-owner', received_at: new Date(NOW).toISOString(), write_backs: writeBacks })
+    await recordOpsTickCompleted(store as unknown as KVNamespace, { ...base, tick_id: 't-next' }, NOW + 60_000)
+    await recordOpsTickCompleted(store as unknown as KVNamespace, { ...base, tick_id: 't-after', write_backs: null }, NOW + 120_000)
+    expect(JSON.parse(store.m.get(OPS_TICK_WRITE_BACKS_KEY)!).tick_id).toBe('t-owner')
+    // An unreadable report carries no judgement, so it leaves the kept one too.
+    await recordOpsTickCompleted(store as unknown as KVNamespace, { ...base, write_backs: { complete: 'yes', pending: [] } }, NOW + 180_000)
+    expect(JSON.parse(store.m.get(OPS_TICK_WRITE_BACKS_KEY)!).tick_id).toBe('t-owner')
   })
 
   it('keeps the secrets a not_configured report names', async () => {

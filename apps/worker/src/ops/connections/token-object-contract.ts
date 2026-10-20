@@ -198,6 +198,63 @@ export function parseResealLoginAnswer(raw: unknown): ResealLoginAnswer {
   return { ok: true, state: state as ResealLoginState, fromKid: fromKid as string | null }
 }
 
+/**
+ * The ops minute tick's read of an object's write back (#2340, phase 10 item 4
+ * of #1689): the connection it is asked about. The object answers only about
+ * the login it holds for that connection, and writes nothing.
+ */
+export interface WriteBackStateRequest {
+  readonly organizationId: string
+  readonly connectionId: string
+  readonly service: string
+}
+
+/**
+ * What the object holds, as the tick pages on it:
+ *   none     no login (the connection is not person bound, or its login was handed back and given up)
+ *   landed   the row holds the login this object holds: nothing is at risk
+ *   pending  the row has not taken it, so this object holds the only copy.
+ *            pendingSinceMs is when it went pending on the object's clock, or
+ *            null when the object stored it before that time was kept (read as
+ *            unknown, never as fresh); attempts is the failed write backs in a row.
+ * Refused: the request was malformed or named another connection, organization
+ * or service than the login's. Failed: anything else, the stored login among
+ * them when it is of a version this release does not read.
+ */
+export const WRITE_BACK_STATE_REFUSALS = ['refused', 'failed'] as const
+export type WriteBackStateRefusal = (typeof WRITE_BACK_STATE_REFUSALS)[number]
+
+export type WriteBackStateAnswer =
+  | { readonly ok: true; readonly state: 'none' | 'landed' }
+  | { readonly ok: true; readonly state: 'pending'; readonly pendingSinceMs: number | null; readonly attempts: number }
+  | { readonly ok: false; readonly reason: WriteBackStateRefusal }
+
+export function parseWriteBackStateRequest(raw: unknown): WriteBackStateRequest {
+  if (!isRecord(raw)) throw new TokenObjectContractError('the write back read is not an object')
+  const { organizationId, connectionId, service } = raw
+  if (typeof organizationId !== 'string' || !UUID.test(organizationId)) throw new TokenObjectContractError('the write back read names no organization uuid')
+  if (typeof connectionId !== 'string' || !UUID.test(connectionId)) throw new TokenObjectContractError('the write back read names no connection uuid')
+  if (typeof service !== 'string' || !SERVICE.test(service)) throw new TokenObjectContractError('the write back read names no service')
+  return { organizationId, connectionId, service }
+}
+
+/** The object's answer as the tick received it. Throws on one it cannot read, which the tick reports as unknown, never as nothing pending. */
+export function parseWriteBackStateAnswer(raw: unknown): WriteBackStateAnswer {
+  if (!isRecord(raw)) throw new TokenObjectContractError('the object answered the write back read with something other than an object')
+  if (raw.ok === false) {
+    if (!(WRITE_BACK_STATE_REFUSALS as readonly unknown[]).includes(raw.reason)) throw new TokenObjectContractError('the object refused the write back read for a reason this code does not know')
+    return { ok: false, reason: raw.reason as WriteBackStateRefusal }
+  }
+  if (raw.ok !== true) throw new TokenObjectContractError('the object answered the write back read with neither ok nor a refusal')
+  if (raw.state === 'none' || raw.state === 'landed') return { ok: true, state: raw.state }
+  if (raw.state !== 'pending') throw new TokenObjectContractError('the object answered the write back read with a state this code does not know')
+  const { pendingSinceMs, attempts } = raw
+  if (!(pendingSinceMs === null || (isWhole(pendingSinceMs) && pendingSinceMs > 0)) || !isWhole(attempts) || attempts < 0) {
+    throw new TokenObjectContractError('the object answered a pending write back with an unreadable time or count')
+  }
+  return { ok: true, state: 'pending', pendingSinceMs, attempts }
+}
+
 export function parseExchangeAnswer(raw: unknown): ExchangeAnswer {
   if (!isRecord(raw)) throw new TokenObjectContractError('the object answered something other than an object')
   if (raw.ok === false) return parseFailure(raw)

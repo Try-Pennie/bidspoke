@@ -28,6 +28,28 @@
  * incident's marker is kept alive. A tick that stopped reporting is the ops-tick
  * heartbeat's to page.
  *
+ * THE WRITE BACK PAGE (#2340, phase 10 item 4 of #1689; the requirement is
+ * #2425's), on the same engine. A person bound login's rotated refresh token
+ * is held by its ConnectionTokenObject until service_connections takes it, and
+ * while it waits the object holds the only copy. The ops tick asks each
+ * connection's object on the connection check's interval and lists each write
+ * back pending past its bound (ops/write-back-check.ts says why 30 minutes);
+ * the bidding Worker keeps that list apart from the report
+ * (OPS_TICK_WRITE_BACKS_KEY, recordOpsTickCompleted) and this pages each one
+ * to its organization through the ops-connection-write-back signal, keyed on
+ * the connection id and labelled with its name and service, as the login page
+ * is. It is a signal of its own rather than a third login state, so a
+ * connection whose write back waits while its login also fails has two
+ * incidents, neither silencing nor clearing the other, and each judged on its
+ * own cadence and freshness. Its all clear goes once a complete list no longer
+ * names the connection, the write back having landed (or the connection
+ * having been removed or reconnected), at once: a landed write back is a fact
+ * the row holds, not a sample that can flap, and a later rotation must wait
+ * out the whole bound again before it pages. Unjudged (no judgement kept, one
+ * older than OPS_TICK_WRITE_BACKS_FRESH_MS, or one that cannot be read) is no
+ * page, no all clear and every open incident kept, as for logins; an object
+ * that could not say is the tick's write_back_unreadable problem, which pages.
+ *
  * Each connection is its own failure boundary, and nothing here throws to the
  * minute cron.
  */
@@ -37,12 +59,20 @@ import { minuteAllClearClaim, postMinutePage } from './alert-fanout'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { raceDeadline, type AlertClaims } from './alert-claim'
 import { formatErr } from './format-error'
-import { parseOpsTickReport, type ConnectionLoginAlert, type ConnectionLoginState, type ConnectionLoginsReport } from './ops-gateway-contract'
-import { OPS_TICK_REPORT_FRESH_MS, OPS_TICK_REPORT_KEY } from './ops-gateway'
-import { opsConnectionLabel, sendOpsConnectionLoginAlert, sendOpsConnectionLoginRecoveryAlert, type OpsConnectionLoginAlert } from './slack'
+import {
+  CONNECTION_LOGIN_STATES, parseOpsTickReport, parseWriteBacks, type ConnectionLoginAlert, type ConnectionLoginsReport, type WriteBackAlert, type WriteBacksReport,
+} from './ops-gateway-contract'
+import { OPS_TICK_REPORT_FRESH_MS, OPS_TICK_REPORT_KEY, OPS_TICK_WRITE_BACKS_FRESH_MS, OPS_TICK_WRITE_BACKS_KEY } from './ops-gateway'
+import {
+  opsConnectionLabel, sendOpsConnectionLoginAlert, sendOpsConnectionLoginRecoveryAlert, sendOpsConnectionWriteBackAlert, sendOpsConnectionWriteBackRecoveryAlert,
+  type OpsConnectionLoginAlert, type OpsConnectionWriteBackAlert,
+} from './slack'
 
 /** The incident record's signal (incident-signals.ts) and the prefix of every key below. */
 export const OPS_CONNECTION_LOGIN_SIGNAL = 'ops-connection-login'
+
+/** The write back page's signal (incident-signals.ts) and the prefix of its keys. */
+export const OPS_CONNECTION_WRITE_BACK_SIGNAL = 'ops-connection-write-back'
 
 /**
  * Which connections have an incident open, so an owed all clear is not
@@ -51,16 +81,19 @@ export const OPS_CONNECTION_LOGIN_SIGNAL = 'ops-connection-login'
  */
 export const OPS_CONNECTION_LOGIN_STATE_KEY = 'ops-connection-login:state'
 
-const conditionKey = (connectionId: string) => `${OPS_CONNECTION_LOGIN_SIGNAL}:${connectionId}`
+/** The same for the write back page: its own record, so neither page's bookkeeping can drop the other's incidents. */
+export const OPS_CONNECTION_WRITE_BACK_STATE_KEY = 'ops-connection-write-back:state'
 
-interface OpenLogin {
+type ConnectionSignal = typeof OPS_CONNECTION_LOGIN_SIGNAL | typeof OPS_CONNECTION_WRITE_BACK_SIGNAL
+
+interface OpenEntry {
   organization_id: string
   service: string
-  state: ConnectionLoginState
+  state: string
 }
 
-interface LoginState {
-  open: Record<string, OpenLogin>
+interface OpenState {
+  open: Record<string, OpenEntry>
 }
 
 /**
@@ -71,16 +104,16 @@ interface LoginState {
  * incident's marker lapses at its expiry, and the drain closes it as lapsed,
  * which says truthfully that no all clear was sent. The count is reported.
  */
-function parseState(raw: string | null): { state: LoginState; unreadable: number } {
+function parseState(raw: string | null, states: readonly string[]): { state: OpenState; unreadable: number } {
   if (!raw) return { state: { open: {} }, unreadable: 0 }
   try {
     const v = JSON.parse(raw) as { open?: unknown }
-    const open: Record<string, OpenLogin> = {}
+    const open: Record<string, OpenEntry> = {}
     if (!v.open || typeof v.open !== 'object' || Array.isArray(v.open)) return { state: { open }, unreadable: 1 }
     let unreadable = 0
     for (const [id, e] of Object.entries(v.open as Record<string, unknown>)) {
-      const o = e as Partial<OpenLogin> | null
-      if (o && typeof o.organization_id === 'string' && typeof o.service === 'string' && (o.state === 'needs_reauth' || o.state === 'refresh_failing')) {
+      const o = e as Partial<OpenEntry> | null
+      if (o && typeof o.organization_id === 'string' && typeof o.service === 'string' && typeof o.state === 'string' && states.includes(o.state)) {
         open[id] = { organization_id: o.organization_id, service: o.service, state: o.state }
       } else {
         unreadable++
@@ -122,17 +155,59 @@ export async function readKeptConnectionLogins(kv: Pick<RecoveryKv, 'get'>, nowM
   return { judged: true, report: logins }
 }
 
-export interface OpsConnectionLoginDeps {
+export type KeptWriteBacks = { judged: true; report: WriteBacksReport } | { judged: false; why: string }
+
+/**
+ * The write backs the tick last judged (kept by recordOpsTickCompleted), or
+ * why there is no judgement to act on: none kept, one older than
+ * OPS_TICK_WRITE_BACKS_FRESH_MS, or one that cannot be read. Never throws, and
+ * never answers an empty list for a judgement it could not read.
+ */
+export async function readKeptWriteBacks(kv: Pick<RecoveryKv, 'get'>, nowMs: number): Promise<KeptWriteBacks> {
+  let raw: string | null
+  try {
+    raw = await kv.get(OPS_TICK_WRITE_BACKS_KEY)
+  } catch (err) {
+    return { judged: false, why: `the kept write back judgement could not be read (${formatErr(err)})` }
+  }
+  if (raw === null) return { judged: false, why: 'the ops tick has judged no write back' }
+  let receivedMs: number
+  let report: WriteBacksReport
+  try {
+    const parsed = JSON.parse(raw) as { received_at?: unknown; write_backs?: unknown } | null
+    receivedMs = Date.parse(String(parsed?.received_at))
+    if (!Number.isFinite(receivedMs)) throw new Error('it has no time it was received')
+    report = parseWriteBacks(parsed?.write_backs)
+  } catch (err) {
+    return { judged: false, why: `the kept write back judgement could not be read (${formatErr(err)})` }
+  }
+  if (nowMs - receivedMs > OPS_TICK_WRITE_BACKS_FRESH_MS) return { judged: false, why: `the last write back judgement is ${Math.floor((nowMs - receivedMs) / 60_000)} minutes old` }
+  return { judged: true, report }
+}
+
+/** What either check reads its names, its KV and its clock from. */
+interface ConnectionSignalDeps {
   kv: RecoveryKv
-  readLogins(): Promise<KeptLogins>
   /** service_connections.name of the connection, read inside its organization; null when it has no row. Throws on a failed read. */
   connectionName(organizationId: string, connectionId: string): Promise<string | null>
+  claims?: AlertClaims
+  now(): number
+}
+
+export interface OpsConnectionLoginDeps extends ConnectionSignalDeps {
+  readLogins(): Promise<KeptLogins>
   /** Pages the connection's organization. Returns whether it reached Slack. */
   sendAlert(organizationId: string, alert: OpsConnectionLoginAlert): Promise<boolean>
   /** The all clear. Returns whether it reached Slack. */
   sendRecovery(organizationId: string, recovery: { subject: string; alertedAt: string; endedAt: string | null }): Promise<boolean>
-  claims?: AlertClaims
-  now(): number
+}
+
+export interface OpsConnectionWriteBackDeps extends ConnectionSignalDeps {
+  readWriteBacks(): Promise<KeptWriteBacks>
+  /** Pages the connection's organization. Returns whether it reached Slack. */
+  sendAlert(organizationId: string, alert: OpsConnectionWriteBackAlert): Promise<boolean>
+  /** The all clear. Returns whether it reached Slack. */
+  sendRecovery(organizationId: string, recovery: { subject: string; alertedAt: string; endedAt: string | null }): Promise<boolean>
 }
 
 export interface OpsConnectionLoginSummary {
@@ -144,7 +219,35 @@ export interface OpsConnectionLoginSummary {
   errors: string[]
 }
 
-async function nameOf(deps: OpsConnectionLoginDeps, organizationId: string, connectionId: string, errors: string[]): Promise<string | null> {
+/** One due item of either page: the connection it is about. */
+interface DueItem {
+  organization_id: string
+  connection_id: string
+  service: string
+}
+
+/**
+ * What tells one page from the other: its signal and record, its states, how
+ * it words a page and an all clear, how long an all clear waits, and the
+ * arming of its marker, written per signal with its own constant so the
+ * registry's armed guard (incident-signals-armed.test.ts) sees each one.
+ */
+interface ConnectionSignalRules<I extends DueItem> {
+  signal: ConnectionSignal
+  stateKey: string
+  /** The states its open record may hold, each one a problem a change to which posts at once (#1768). */
+  states: readonly string[]
+  stateOf(item: I): string
+  arm(kv: RecoveryKv, id: string, incident: IncidentContext, nowMs: number): Promise<void>
+  send(organizationId: string, item: I, name: string | null, repeat: string | undefined): Promise<boolean>
+  recover(organizationId: string, recovery: { subject: string; alertedAt: string; endedAt: string | null }): Promise<boolean>
+  /** How long a state must have stayed clear before its all clear goes. */
+  rearmMinutes(state: string): number
+}
+
+type JudgedItems<I> = { judged: true; complete: boolean; items: readonly I[] } | { judged: false; why: string }
+
+async function nameOf(deps: ConnectionSignalDeps, organizationId: string, connectionId: string, errors: string[]): Promise<string | null> {
   try {
     return await deps.connectionName(organizationId, connectionId)
   } catch (err) {
@@ -159,18 +262,19 @@ const incidentFor = (organizationId: string, label: string, errors: string[]): I
   onRecordError: (message) => errors.push(message),
 })
 
-/** One due login: page it unless its reminder interval runs. Returns whether it was paged. */
-async function pageLogin(deps: OpsConnectionLoginDeps, login: ConnectionLoginAlert, nowMs: number, errors: string[]): Promise<boolean> {
+/** One due item: page it unless its reminder interval runs. Returns whether it was paged. */
+async function pageItem<I extends DueItem>(rules: ConnectionSignalRules<I>, deps: ConnectionSignalDeps, item: I, nowMs: number, errors: string[]): Promise<boolean> {
   const { kv } = deps
-  const id = login.connection_id
-  const name = await nameOf(deps, login.organization_id, id, errors)
-  const incident = incidentFor(login.organization_id, opsConnectionLabel(name, login.service), errors)
-  const key = conditionKey(id)
-  await markSpikeSeen(kv, OPS_CONNECTION_LOGIN_SIGNAL, id, nowMs)
-  const marker = await kv.get(recoveryKey(OPS_CONNECTION_LOGIN_SIGNAL, id))
+  const id = item.connection_id
+  const name = await nameOf(deps, item.organization_id, id, errors)
+  const incident = incidentFor(item.organization_id, opsConnectionLabel(name, item.service), errors)
+  const key = `${rules.signal}:${id}`
+  await markSpikeSeen(kv, rules.signal, id, nowMs)
+  const marker = await kv.get(recoveryKey(rules.signal, id))
   const standing = await readCondition(kv, key)
   // The state is the problem: a change of state is a new one and posts at once (#1768).
-  const print = await fingerprintAlert({ title: OPS_CONNECTION_LOGIN_SIGNAL, findings: [login.state], keys: [login.state] })
+  const state = rules.stateOf(item)
+  const print = await fingerprintAlert({ title: rules.signal, findings: [state], keys: [state] })
   const recurrence = recurrenceOf(standing, print)
   const different = recurrence.kind === 'new' && standing !== null
   const reminderOf = recurrence.kind === 'reminder' ? recurrence.standing : null
@@ -178,49 +282,53 @@ async function pageLogin(deps: OpsConnectionLoginDeps, login: ConnectionLoginAle
     claims: deps.claims,
     key,
     inCooldown: async () => !different && (await inCooldown(kv, key)),
-    send: () => deps.sendAlert(login.organization_id, {
-      name, service: login.service, state: login.state, reason: login.reason, since: login.since, failures: login.failures,
-      ...(reminderOf ? { repeat: describeRepeat(reminderOf, nowMs, recurrence.kind === 'reminder' && recurrence.unchanged) ?? undefined } : {}),
-    }),
+    send: () => rules.send(
+      item.organization_id, item, name,
+      reminderOf ? describeRepeat(reminderOf, nowMs, recurrence.kind === 'reminder' && recurrence.unchanged) ?? undefined : undefined,
+    ),
   })
   if (posted !== 'sent') {
     // Armed only on delivery, so a Slack outage does not buy silence, and an all clear never follows an unseen page.
-    if (marker !== null) await refreshAlerted(kv, OPS_CONNECTION_LOGIN_SIGNAL, id)
+    if (marker !== null) await refreshAlerted(kv, rules.signal, id)
     return false
   }
   await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
-  await markAlerted(kv, OPS_CONNECTION_LOGIN_SIGNAL, id, incident, nowMs)
-  await recordPaged(kv, OPS_CONNECTION_LOGIN_SIGNAL, id, incident, nowMs)
+  await rules.arm(kv, id, incident, nowMs)
+  await recordPaged(kv, rules.signal, id, incident, nowMs)
   return true
 }
 
 /** One open incident no longer listed: its all clear. Returns whether its incident is still open afterwards. */
-async function clearLogin(deps: OpsConnectionLoginDeps, id: string, open: OpenLogin, nowMs: number, errors: string[], allClear: string[]): Promise<boolean> {
+async function clearItem<I extends DueItem>(
+  rules: ConnectionSignalRules<I>, deps: ConnectionSignalDeps, id: string, open: OpenEntry, nowMs: number, errors: string[], allClear: string[],
+): Promise<boolean> {
   const { kv } = deps
-  if ((await kv.get(recoveryKey(OPS_CONNECTION_LOGIN_SIGNAL, id))) === null) {
+  if ((await kv.get(recoveryKey(rules.signal, id))) === null) {
     // Never paged (its page did not deliver), or already settled: nothing is owed.
-    await clearCondition(kv, conditionKey(id))
+    await clearCondition(kv, `${rules.signal}:${id}`)
     return false
   }
   const name = await nameOf(deps, open.organization_id, id, errors)
   const label = opsConnectionLabel(name, open.service)
   const delivered = await announceRecovery(
     kv,
-    OPS_CONNECTION_LOGIN_SIGNAL,
+    rules.signal,
     id,
-    backoffCooldownKey(conditionKey(id)),
+    backoffCooldownKey(`${rules.signal}:${id}`),
     incidentFor(open.organization_id, label, errors),
-    (alertedAt, endedAt) => deps.sendRecovery(open.organization_id, { subject: label, alertedAt, endedAt }),
-    // Only a Reconnect clears needs_reauth, so it cannot flap; a refresh streak can.
-    { now: nowMs, rearmMinutes: open.state === 'needs_reauth' ? 0 : RECOVERY_REARM_MINUTES, claim: minuteAllClearClaim(deps.claims, OPS_CONNECTION_LOGIN_SIGNAL, id) },
+    (alertedAt, endedAt) => rules.recover(open.organization_id, { subject: label, alertedAt, endedAt }),
+    { now: nowMs, rearmMinutes: rules.rearmMinutes(open.state), claim: minuteAllClearClaim(deps.claims, rules.signal, id) },
   )
   if (!delivered) return true
-  await clearCondition(kv, conditionKey(id))
+  await clearCondition(kv, `${rules.signal}:${id}`)
   allClear.push(id)
   return false
 }
 
-export async function runOpsConnectionLoginCheck(deps: OpsConnectionLoginDeps): Promise<OpsConnectionLoginSummary> {
+/** Either page's minute check: page what is listed, clear what a complete list no longer names, keep the rest. */
+async function runConnectionSignalCheck<I extends DueItem>(
+  rules: ConnectionSignalRules<I>, deps: ConnectionSignalDeps, read: () => Promise<JudgedItems<I>>,
+): Promise<OpsConnectionLoginSummary> {
   const nowMs = deps.now()
   const errors: string[] = []
   const summary: OpsConnectionLoginSummary = { judged: false, paged: [], allClear: [], errors }
@@ -229,23 +337,23 @@ export async function runOpsConnectionLoginCheck(deps: OpsConnectionLoginDeps): 
   // drop every incident it holds, and with it the all clear each is owed.
   let stateRead = true
   try {
-    rawState = await deps.kv.get(OPS_CONNECTION_LOGIN_STATE_KEY)
+    rawState = await deps.kv.get(rules.stateKey)
   } catch (err) {
     stateRead = false
     errors.push(`the open incidents could not be read, so they are left as stored: ${formatErr(err)}`)
   }
-  const parsed = parseState(rawState)
+  const parsed = parseState(rawState, rules.states)
   const previous = parsed.state
   if (parsed.unreadable > 0) {
     errors.push(`${parsed.unreadable} open incident record${parsed.unreadable === 1 ? '' : 's'} could not be read, so ${parsed.unreadable === 1 ? 'its' : 'their'} all clear cannot be sent; each closes as lapsed when its marker expires`)
   }
-  const read = await deps.readLogins()
+  const judged = await read()
 
-  if (!read.judged) {
-    summary.why = read.why
+  if (!judged.judged) {
+    summary.why = judged.why
     for (const id of Object.keys(previous.open)) {
       try {
-        await refreshAlerted(deps.kv, OPS_CONNECTION_LOGIN_SIGNAL, id)
+        await refreshAlerted(deps.kv, rules.signal, id)
       } catch (err) {
         errors.push(`${id}: the open incident could not be kept: ${formatErr(err)}`)
       }
@@ -254,27 +362,27 @@ export async function runOpsConnectionLoginCheck(deps: OpsConnectionLoginDeps): 
   }
   summary.judged = true
 
-  const next: LoginState = { open: {} }
-  const due = new Map(read.report.logins.map((l) => [l.connection_id, l]))
-  for (const login of due.values()) {
+  const next: OpenState = { open: {} }
+  const due = new Map(judged.items.map((item) => [item.connection_id, item]))
+  for (const item of due.values()) {
     // Listed whatever the page does, so its all clear is asked for once it clears.
-    next.open[login.connection_id] = { organization_id: login.organization_id, service: login.service, state: login.state }
+    next.open[item.connection_id] = { organization_id: item.organization_id, service: item.service, state: rules.stateOf(item) }
     try {
-      if (await pageLogin(deps, login, nowMs, errors)) summary.paged.push(login.connection_id)
+      if (await pageItem(rules, deps, item, nowMs, errors)) summary.paged.push(item.connection_id)
     } catch (err) {
-      errors.push(`${login.connection_id}: the page failed: ${formatErr(err)}`)
+      errors.push(`${item.connection_id}: the page failed: ${formatErr(err)}`)
     }
   }
   for (const [id, open] of Object.entries(previous.open)) {
     if (due.has(id)) continue
     try {
-      if (!read.report.complete) {
-        // Past the list's limit, so unknown, not cleared: keep it.
-        await refreshAlerted(deps.kv, OPS_CONNECTION_LOGIN_SIGNAL, id)
+      if (!judged.complete) {
+        // Past the list's limit, or not answered, so unknown, not cleared: keep it.
+        await refreshAlerted(deps.kv, rules.signal, id)
         next.open[id] = open
         continue
       }
-      if (await clearLogin(deps, id, open, nowMs, errors, summary.allClear)) next.open[id] = open
+      if (await clearItem(rules, deps, id, open, nowMs, errors, summary.allClear)) next.open[id] = open
     } catch (err) {
       errors.push(`${id}: the all clear failed: ${formatErr(err)}`)
       next.open[id] = open
@@ -283,12 +391,55 @@ export async function runOpsConnectionLoginCheck(deps: OpsConnectionLoginDeps): 
 
   if (stateRead && JSON.stringify(next) !== JSON.stringify(previous)) {
     try {
-      await deps.kv.put(OPS_CONNECTION_LOGIN_STATE_KEY, JSON.stringify(next))
+      await deps.kv.put(rules.stateKey, JSON.stringify(next))
     } catch (err) {
       errors.push(`the open incidents could not be kept for the next check: ${formatErr(err)}`)
     }
   }
   return summary
+}
+
+export async function runOpsConnectionLoginCheck(deps: OpsConnectionLoginDeps): Promise<OpsConnectionLoginSummary> {
+  return runConnectionSignalCheck<ConnectionLoginAlert>({
+    signal: OPS_CONNECTION_LOGIN_SIGNAL,
+    stateKey: OPS_CONNECTION_LOGIN_STATE_KEY,
+    states: CONNECTION_LOGIN_STATES,
+    stateOf: (login) => login.state,
+    arm: (kv, id, incident, nowMs) => markAlerted(kv, OPS_CONNECTION_LOGIN_SIGNAL, id, incident, nowMs),
+    send: (organizationId, login, name, repeat) => deps.sendAlert(organizationId, {
+      name, service: login.service, state: login.state, reason: login.reason, since: login.since, failures: login.failures,
+      ...(repeat ? { repeat } : {}),
+    }),
+    recover: (organizationId, recovery) => deps.sendRecovery(organizationId, recovery),
+    // Only a Reconnect clears needs_reauth, so it cannot flap; a refresh streak can (#814).
+    rearmMinutes: (state) => (state === 'needs_reauth' ? 0 : RECOVERY_REARM_MINUTES),
+  }, deps, async () => {
+    const read = await deps.readLogins()
+    return read.judged ? { judged: true, complete: read.report.complete, items: read.report.logins } : read
+  })
+}
+
+/** The one state the write back page records. */
+const WRITE_BACK_PENDING = 'write_back_pending'
+
+export async function runOpsConnectionWriteBackCheck(deps: OpsConnectionWriteBackDeps): Promise<OpsConnectionLoginSummary> {
+  return runConnectionSignalCheck<WriteBackAlert>({
+    signal: OPS_CONNECTION_WRITE_BACK_SIGNAL,
+    stateKey: OPS_CONNECTION_WRITE_BACK_STATE_KEY,
+    states: [WRITE_BACK_PENDING],
+    // One state, whatever the count of tries: a growing count is the same problem, which the reminder schedule repeats.
+    stateOf: () => WRITE_BACK_PENDING,
+    arm: (kv, id, incident, nowMs) => markAlerted(kv, OPS_CONNECTION_WRITE_BACK_SIGNAL, id, incident, nowMs),
+    send: (organizationId, wb, name, repeat) => deps.sendAlert(organizationId, {
+      name, service: wb.service, since: wb.since, attempts: wb.attempts, ...(repeat ? { repeat } : {}),
+    }),
+    recover: (organizationId, recovery) => deps.sendRecovery(organizationId, recovery),
+    // A landed write back is a fact the row holds, and a later rotation waits out the whole bound before it pages again.
+    rearmMinutes: () => 0,
+  }, deps, async () => {
+    const read = await deps.readWriteBacks()
+    return read.judged ? { judged: true, complete: read.report.complete, items: read.report.pending } : read
+  })
 }
 
 // ── Production wiring ───────────────────────────────────────────────────────
@@ -314,6 +465,19 @@ export async function readOpsConnectionName(supabase: SupabaseClient, organizati
   if (!Array.isArray(data)) throw new Error('the connection\'s name read answered no rows')
   const row = data[0] as { name?: unknown } | undefined
   return row && typeof row.name === 'string' && row.name.trim() !== '' ? row.name : null
+}
+
+/** The write back page wired to the bidding Worker: the kept judgement in KV, the names in the bidding database, Slack. */
+export function runOpsConnectionWriteBackCheckForEnv(supabase: SupabaseClient, kv: KVNamespace, claims?: AlertClaims): Promise<OpsConnectionLoginSummary> {
+  return runOpsConnectionWriteBackCheck({
+    kv,
+    readWriteBacks: () => readKeptWriteBacks(kv, Date.now()),
+    connectionName: (organizationId, connectionId) => readOpsConnectionName(supabase, organizationId, connectionId),
+    sendAlert: (organizationId, alert) => sendOpsConnectionWriteBackAlert(supabase, organizationId, alert),
+    sendRecovery: (organizationId, recovery) => sendOpsConnectionWriteBackRecoveryAlert(supabase, organizationId, recovery),
+    claims,
+    now: () => Date.now(),
+  })
 }
 
 /** The minute check wired to the bidding Worker: the kept report in KV, the names in the bidding database, Slack. */

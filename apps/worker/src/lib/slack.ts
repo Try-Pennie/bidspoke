@@ -3644,6 +3644,81 @@ export async function sendOpsConnectionLoginRecoveryAlert(
   )
 }
 
+// ── A person bound login the ops Worker holds and Bidspoke has not saved (#2340) ─
+
+/**
+ * What the write back page says (#2340, phase 10 item 4 of #1689): the
+ * connection by its name and service, since when its new login has waited to
+ * be saved and how many tries failed. Never a credential.
+ */
+export interface OpsConnectionWriteBackAlert {
+  /** service_connections.name, or null when it could not be read. */
+  name: string | null
+  service: string
+  /** When the write back went pending, or null when the ops Worker did not record it (a login it kept before that time was recorded). */
+  since: string | null
+  attempts: number
+  /** The reminder sentence, when this page repeats one already sent. */
+  repeat?: string
+}
+
+/**
+ * The page's title and sentences, separate from the send so the words can be
+ * tested. Says why it matters (the ops Worker holds the only copy), that the
+ * ops Worker keeps trying on its own, where an engineer looks, and that a
+ * reconnect does not help, since a reconnect's new login is saved the same way.
+ */
+export function opsConnectionWriteBackMessage(alert: OpsConnectionWriteBackAlert): { title: string; sections: string[] } {
+  const service = serviceWords(alert.service)
+  const who = alert.name === null ? `an ops ${service} connection` : `the ${service} connection named ${slackText(alert.name)}`
+  const when = alert.since === null ? 'at a time the ops Worker did not record' : `at ${etTime(alert.since)}`
+  const tries = alert.attempts === 1 ? '1 try to save it has failed' : `${alert.attempts} tries to save it have failed`
+  const sections = [
+    `${capitalise(who)} signed in with a new login ${when}, and Bidspoke has not saved it yet: ${tries}. Until it is saved, the ops Worker holds the only copy of that login, so if the copy were lost the connection would have to be reconnected.`,
+    '*Fix:* the ops Worker tries again every 15 minutes, and this clears once a try works. If Bidspoke is up, an engineer should look in the bidspoke-worker logs for errors from store_rotated_envelope, the step that saves the login. Reconnecting it does not help: a new login is saved the same way.',
+  ]
+  if (alert.repeat) sections.push(alert.repeat)
+  return { title: 'A new login of an ops connection is not saved', sections }
+}
+
+/**
+ * Pages the connection's own organization, in its Slack alert channel, gated
+ * on the configuration alerts toggle as the login page is; a muted
+ * organization is not delivered to, so nothing is armed for it.
+ */
+export async function sendOpsConnectionWriteBackAlert(supabase: SupabaseClient, orgId: string, alert: OpsConnectionWriteBackAlert): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  const m = opsConnectionWriteBackMessage(alert)
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
+    ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+}
+
+export const opsConnectionWriteBackRecoveryWording: RecoveryWording = {
+  signal: 'ops connection login not saved',
+  recoveredPhrase: 'has its new login saved',
+}
+
+/** The all clear once the login is saved, or the connection reconnected or removed. Returns whether it reached Slack. */
+export async function sendOpsConnectionWriteBackRecoveryAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  recovery: { subject: string; alertedAt: string; endedAt: string | null },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  return sendRecoveryAlert(
+    connection,
+    connection.default_channel,
+    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, ...opsConnectionWriteBackRecoveryWording },
+    now,
+  )
+}
+
 // ── What the drain of stored Salesforce writes could not finish (#468) ─────────
 
 /**

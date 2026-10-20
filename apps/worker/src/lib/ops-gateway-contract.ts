@@ -297,6 +297,32 @@ export const REFRESH_FAILING_PAGE_SPAN_MS = 15 * 60_000
 /** A report lists at most this many logins; past it the list says it is not complete. */
 export const MAX_REPORT_LOGINS = 50
 
+/**
+ * One person bound connection whose rotated login its ConnectionTokenObject
+ * holds and the row has not taken for longer than the ops tick's bound
+ * (#2340, phase 10 item 4 of #1689; ops/write-back-check.ts): the object holds
+ * the only copy of that login. Names, times and a count only, never a
+ * credential.
+ */
+export interface WriteBackAlert {
+  organization_id: string
+  connection_id: string
+  service: string
+  /** When the write back went pending, on the object's clock; null when the object stored it before that time was kept (unknown, never fresh). */
+  since: string | null
+  /** The failed write backs in a row. */
+  attempts: number
+}
+
+export interface WriteBacksReport {
+  /** Every ops connection's object answered and every one due is listed, so a connection not listed has nothing pending past the bound. */
+  complete: boolean
+  pending: WriteBackAlert[]
+}
+
+/** A report lists at most this many write backs; past it the list says it is not complete. */
+export const MAX_REPORT_WRITE_BACKS = 50
+
 export interface OpsTickReport {
   tick_id: string
   mode: OpsTickMode
@@ -344,6 +370,17 @@ export interface OpsTickReport {
    * before #2340. Null is never read as every login cleared.
    */
   connection_logins: ConnectionLoginsReport | null
+  /**
+   * The person bound logins whose write back has been pending past the bound
+   * (#2340, phase 10 item 4), judged only by the tick that owns the
+   * connection_check sweep's claim, every 14 to 15 minutes, by asking each
+   * connection's ConnectionTokenObject. The bidding Worker keeps the last list
+   * apart from the report and pages each one through the
+   * ops-connection-write-back signal. Null on every other tick, when the
+   * judgement failed, and on a report from an ops release before it: never
+   * read as every write back landed.
+   */
+  write_backs: WriteBacksReport | null
 }
 
 /**
@@ -449,6 +486,15 @@ export const OPS_TICK_PROBLEM_RULES = {
   connection_logins_failed: 'three_in_a_row',
   /** More connections than one read or one report carries, so a login past them was not judged. */
   connection_logins_limit: 'at_once',
+  // The write back check (#2340, phase 10 item 4, ops/write-back-check.ts),
+  // run on the connection_check sweep's interval, so as with that sweep no
+  // kind of its can be reported by three ticks in a row.
+  /** A ConnectionTokenObject that could not say whether it holds a login not yet written back: unreachable, past its deadline, failed, or unread. */
+  write_back_unreadable: 'at_once',
+  /** More connections than one read carries, or more due than one report carries. */
+  write_back_limit: 'at_once',
+  /** The judgement could not be made at all: the list of connections could not be read on the tick that owned the sweep, or the check threw. */
+  write_back_check_failed: 'at_once',
 } as const satisfies Record<string, OpsTickProblemRule>
 
 export type OpsTickProblemKind = keyof typeof OPS_TICK_PROBLEM_RULES
@@ -555,7 +601,7 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
   if (!isRecord(raw)) throw new OpsGatewayContractError('the ops tick sent a report that is not an object')
   const {
     tick_id, mode, scheduled_time, started_at, finished_at, db_now, outcome, problems, counts, not_configured_secrets, start_stamp_failed, problem_keys,
-    connection_logins,
+    connection_logins, write_backs,
   } = raw
   if (typeof tick_id !== 'string' || tick_id === '' || tick_id.length > 200) throw new OpsGatewayContractError('the ops tick report has no tick id')
   if (!(OPS_TICK_MODES as readonly unknown[]).includes(mode)) throw new OpsGatewayContractError(`the ops tick report names a mode this Worker does not know: ${String(mode)}`)
@@ -605,6 +651,8 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
   // Absent before #2340, null once such a report is kept and read back, or when
   // the tick judged no login: all of them mean unjudged, never all clear.
   const logins = connection_logins === undefined || connection_logins === null ? null : parseConnectionLogins(connection_logins)
+  // Absent before #2340 phase 10 item 4, null on a tick that judged none: unjudged, never all landed.
+  const writeBacks = write_backs === undefined || write_backs === null ? null : parseWriteBacks(write_backs)
   return {
     tick_id,
     mode: mode as OpsTickMode,
@@ -619,7 +667,32 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
     start_stamp_failed: stampFailed,
     problem_keys: capped.problem_keys,
     connection_logins: logins,
+    write_backs: writeBacks,
   }
+}
+
+/**
+ * A report's write back list as the bidding Worker received it. Throws on one
+ * it cannot read, so the whole report pages as unreadable rather than a login
+ * at risk going unsaid. Every field is an id, a name, a time or a count.
+ */
+export function parseWriteBacks(raw: unknown): WriteBacksReport {
+  if (!isRecord(raw) || typeof raw.complete !== 'boolean' || !Array.isArray(raw.pending)) {
+    throw new OpsGatewayContractError('the ops tick report\'s write backs are not a list that says whether it is complete')
+  }
+  if (raw.pending.length > MAX_REPORT_WRITE_BACKS) throw new OpsGatewayContractError(`the ops tick report lists ${raw.pending.length} write backs, more than ${MAX_REPORT_WRITE_BACKS}`)
+  const pending = raw.pending.map((row: unknown, i: number): WriteBackAlert => {
+    const bad = (why: string) => new OpsGatewayContractError(`write back ${i} of the ops tick report ${why}`)
+    if (!isRecord(row)) throw bad('is not an object')
+    const { organization_id, connection_id, service, since, attempts } = row
+    if (typeof organization_id !== 'string' || !UUID.test(organization_id)) throw bad('names no organization')
+    if (typeof connection_id !== 'string' || !UUID.test(connection_id)) throw bad('names no connection')
+    if (typeof service !== 'string' || !SERVICE_KEY.test(service)) throw bad('names no service')
+    if (!(since === null || isTime(since))) throw bad('has an unreadable time')
+    if (typeof attempts !== 'number' || !Number.isInteger(attempts) || attempts < 0) throw bad('has an unreadable count of tries')
+    return { organization_id, connection_id, service, since, attempts }
+  })
+  return { complete: raw.complete, pending }
 }
 
 /**

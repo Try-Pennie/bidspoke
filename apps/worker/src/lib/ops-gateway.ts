@@ -65,6 +65,26 @@ export const OPS_TICK_REPORT_KEY = 'ops-tick:last-report'
 /** A report older than this says nothing about now; the heartbeat judges a tick that stopped. */
 export const OPS_TICK_REPORT_FRESH_MS = 10 * 60_000
 
+/**
+ * The write backs the tick last judged (#2340, phase 10 item 4), kept apart
+ * from its report: only the tick that owns the connection check judges them,
+ * every 14 to 15 minutes, and the next minute's report would overwrite them.
+ * Written only by a report that carries a judgement, so a tick that judged
+ * none leaves the last one as it was. Read by the ops-connection-write-back
+ * page (ops-connection-logins.ts).
+ */
+export const OPS_TICK_WRITE_BACKS_KEY = 'ops-tick:write-backs'
+
+/**
+ * How long a kept write back judgement says anything about now: a judgement
+ * arrives every 14 to 16 minutes (the connection check's claim), so one lost
+ * or failed leaves the one before at most 32 minutes old. Past this the page
+ * is unjudged: no page, no all clear, every open incident kept. A check that
+ * stopped is the ops-connection-check heartbeat's to page, and one that could
+ * not judge is its tick's write_back_* problem.
+ */
+export const OPS_TICK_WRITE_BACKS_FRESH_MS = 35 * 60_000
+
 /** Pages of 1,000: five is far past the ops lane (346 workflows in the whole Pipedream export). */
 const MAX_PAGES = 5
 
@@ -544,13 +564,17 @@ export async function recordOpsTickCompleted(kv: KVNamespace, raw: unknown, nowM
   }
   const kept: KeptReport = { ...report, received_at: receivedAt, problem_streaks: judged }
   await kv.put(OPS_TICK_REPORT_KEY, JSON.stringify(kept))
+  // After the report, so a failure here cannot cost the report; it throws to the tick, which logs it.
+  if (report.write_backs !== null) {
+    await kv.put(OPS_TICK_WRITE_BACKS_KEY, JSON.stringify({ tick_id: report.tick_id, received_at: receivedAt, write_backs: report.write_backs }))
+  }
 }
 
 function unreadableReport(why: string, at: string): OpsTickReport {
   return {
     tick_id: 'unreadable', mode: 'observe', scheduled_time: null, started_at: at, finished_at: at, db_now: null,
     outcome: 'problems', problems: [`The ops tick's report could not be read (${why}), so whether the tick worked is not known.`], counts: {},
-    not_configured_secrets: [], start_stamp_failed: null, problem_keys: ['report_unreadable'], connection_logins: null,
+    not_configured_secrets: [], start_stamp_failed: null, problem_keys: ['report_unreadable'], connection_logins: null, write_backs: null,
   }
 }
 

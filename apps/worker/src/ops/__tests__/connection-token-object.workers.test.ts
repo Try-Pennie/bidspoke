@@ -24,9 +24,9 @@ import { open, seal, type SealedEnvelope } from '@bidspoke/connection-seal'
 import { beforeAll, describe, expect, it } from 'vitest'
 import type { StoreRotatedEnvelopeAnswer } from '../../lib/ops-gateway-contract'
 import {
-  CONNECTION_TOKEN_OBJECT_RPC_ONLY, ConnectionTokenObject, WRITE_BACK_RETRY_MAX_MS, WRITE_BACK_RETRY_MIN_MS, type StoredLogin,
+  CONNECTION_TOKEN_OBJECT_RPC_ONLY, ConnectionTokenObject, WRITE_BACK_RETRY_MAX_MS, WRITE_BACK_RETRY_MIN_MS, type StoredLogin, type StoredLoginV1,
 } from '../connection-token-object'
-import type { AccessTokenAnswer, ExchangeAnswer } from '../connections/token-object-contract'
+import type { AccessTokenAnswer, ExchangeAnswer, WriteBackStateAnswer } from '../connections/token-object-contract'
 import { KID, makeKeys, ORG, type TestKeys } from '../connections/__tests__/harness'
 import type { OpsEnv } from '../index'
 
@@ -499,5 +499,124 @@ describe('exchangeOAuthCode inside the object', () => {
     await wire(stub, { endpoint: tokenEndpoint(() => Response.json({ error: 'invalid_grant' }, { status: 400 })) })
     expect(await stub.exchange(exchange(conn, 1, await sealFor(conn, 1, APP)))).toMatchObject({ ok: false, kind: 'refused', reason: 'invalid_grant' })
     expect(await stored(stub)).toBeUndefined()
+  })
+})
+
+describe('when the write back went pending (#2340, phase 10 item 4), and the tick\'s read of it', () => {
+  const ask = (conn: string, over: Record<string, unknown> = {}) => ({ organizationId: ORG, connectionId: conn, service: SERVICE, ...over })
+
+  async function rotatedAt(gw: ReturnType<typeof gateway>, at: number) {
+    const conn = connection()
+    const stub = stubFor(conn)
+    await wire(stub, { endpoint: tokenEndpoint(tokens('access-one', R2, 60), tokens('access-two', R3, 60)), gw, now: () => at })
+    const envelope = await sealFor(conn, 1, { ...APP, refresh_token: R1 })
+    ok(await stub.accessToken(request(conn, 1, envelope)))
+    return { conn, stub, envelope }
+  }
+
+  /** A login as an object stored it before this change: no version and no pending time (the frozen version 1 shape). */
+  async function plantVersionOne(stub: DurableObjectStub<ConnectionTokenObject>, login: StoredLoginV1) {
+    await runInDurableObject(stub, async (_o: ConnectionTokenObject, state: DurableObjectState) => {
+      await state.storage.put('login', login)
+      // Its retry, as that release left it set; in the future, so the runtime does not fire it underneath the test.
+      await state.storage.setAlarm(T + 90 * 60_000)
+    })
+  }
+
+  it('records the time a rotated login first went pending, keeps it across failed retries, and the read answers it with the tries', async () => {
+    const gw = gateway(new Error('bidding is down'))
+    const { conn, stub } = await rotatedAt(gw, T)
+    expect((await stored(stub))!).toMatchObject({ v: 2, writeBack: 'pending', pendingSince: T, attempts: 0 })
+    await runInDurableObject(stub, (o: ConnectionTokenObject) => { o.clock = () => T + 40 * 60_000 })
+    await runDurableObjectAlarm(stub)
+    await runDurableObjectAlarm(stub)
+    expect((await stored(stub))!).toMatchObject({ writeBack: 'pending', pendingSince: T, attempts: 2 })
+    expect(await stub.writeBackState(ask(conn))).toEqual<WriteBackStateAnswer>({ ok: true, state: 'pending', pendingSinceMs: T, attempts: 2 })
+  })
+
+  it('a rotation on top of one still pending keeps the first time: the row has been behind this object since then', async () => {
+    const gw = gateway(new Error('bidding is down'))
+    const { conn, stub, envelope } = await rotatedAt(gw, T)
+    await runInDurableObject(stub, (o: ConnectionTokenObject) => { o.clock = () => T + 10 * 60_000 })
+    ok(await stub.accessToken(request(conn, 1, envelope)))
+    expect((await stored(stub))!).toMatchObject({ generation: 3, writeBack: 'pending', pendingSince: T })
+  })
+
+  it('clears it when the write back lands, and the next rotation starts its own', async () => {
+    const gw = gateway({ outcome: 'stored', current_generation: 2, current_iv: 'x' }, { outcome: 'stored', current_generation: 3, current_iv: 'y' })
+    const { conn, stub } = await rotatedAt(gw, T)
+    await runDurableObjectAlarm(stub)
+    expect((await stored(stub))!).toMatchObject({ writeBack: 'landed', pendingSince: null })
+    expect(await stub.writeBackState(ask(conn))).toEqual<WriteBackStateAnswer>({ ok: true, state: 'landed' })
+    const later = T + 10 * 60_000
+    await runInDurableObject(stub, (o: ConnectionTokenObject) => { o.clock = () => later })
+    ok(await stub.accessToken(request(conn, 2, (await stored(stub))!.envelope)))
+    expect((await stored(stub))!).toMatchObject({ generation: 3, writeBack: 'pending', pendingSince: later })
+  })
+
+  it('a consent records the time it went pending too', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    await wire(stub, { endpoint: tokenEndpoint(tokens('access-from-consent', R1)), now: () => T + 3 * 60_000 })
+    const answer = await stub.exchange({
+      organizationId: ORG, connectionId: conn, service: SERVICE, generation: 1, envelope: await sealFor(conn, 1, APP), tokenUrl: TOKEN_URL,
+      code: 'auth-code-2340', verifier: 'v'.repeat(43), redirectUri: 'https://bidspoke.trypennie.dev/oauth/callback',
+    })
+    expect(answer).toEqual({ ok: true, generation: 2 })
+    expect((await stored(stub))!).toMatchObject({ v: 2, writeBack: 'pending', pendingSince: T + 3 * 60_000 })
+  })
+
+  it('reads a pending login stored before this change as pending since an unknown time, never since now, and keeps it unknown until it lands', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    const gw = gateway(new Error('bidding is down'), { outcome: 'stored', current_generation: 4, current_iv: 'x' })
+    await wire(stub, { endpoint: tokenEndpoint(tokens('not-asked')), gw, now: () => T + 60 * 60_000 })
+    await plantVersionOne(stub, {
+      organizationId: ORG, connectionId: conn, service: SERVICE, generation: 4, envelope: await sealFor(conn, 4, { ...APP, refresh_token: R2 }),
+      committedGeneration: 3, writeBack: 'pending', attempts: 7,
+    })
+    expect(await stub.writeBackState(ask(conn))).toEqual<WriteBackStateAnswer>({ ok: true, state: 'pending', pendingSinceMs: null, attempts: 7 })
+    // A failed retry stores it in the current version, still unknown, not stamped with the retry's time.
+    await runDurableObjectAlarm(stub)
+    expect((await stored(stub))!).toMatchObject({ v: 2, writeBack: 'pending', pendingSince: 'unknown', attempts: 8 })
+    expect(await stub.writeBackState(ask(conn))).toEqual<WriteBackStateAnswer>({ ok: true, state: 'pending', pendingSinceMs: null, attempts: 8 })
+    await runDurableObjectAlarm(stub)
+    expect((await stored(stub))!).toMatchObject({ v: 2, writeBack: 'landed', pendingSince: null })
+  })
+
+  it('reads a landed login stored before this change as landed', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    await wire(stub, { endpoint: tokenEndpoint(tokens('not-asked')) })
+    await plantVersionOne(stub, {
+      organizationId: ORG, connectionId: conn, service: SERVICE, generation: 2, envelope: await sealFor(conn, 2, { ...APP, refresh_token: R2 }),
+      committedGeneration: 2, writeBack: 'landed', attempts: 0,
+    })
+    expect(await stub.writeBackState(ask(conn))).toEqual<WriteBackStateAnswer>({ ok: true, state: 'landed' })
+  })
+
+  it('answers none for an object holding no login, and the read writes nothing', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    expect(await stub.writeBackState(ask(conn))).toEqual<WriteBackStateAnswer>({ ok: true, state: 'none' })
+    expect(await stored(stub)).toBeUndefined()
+    expect(await alarmAt(stub)).toBeNull()
+  })
+
+  it('refuses a request it cannot read, or one naming another connection, organization or service, and never answers none for it', async () => {
+    const gw = gateway(new Error('bidding is down'))
+    const { conn, stub } = await rotatedAt(gw, T)
+    expect(await stub.writeBackState({ connectionId: conn })).toEqual<WriteBackStateAnswer>({ ok: false, reason: 'refused' })
+    expect(await stub.writeBackState(ask(conn, { organizationId: '55555555-5555-4555-8555-555555555555' }))).toEqual<WriteBackStateAnswer>({ ok: false, reason: 'refused' })
+    expect(await stub.writeBackState(ask(conn, { service: 'another_service' }))).toEqual<WriteBackStateAnswer>({ ok: false, reason: 'refused' })
+  })
+
+  it('a stored login of a version this release does not read is a failure, never none and never landed', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    await runInDurableObject(stub, async (_o: ConnectionTokenObject, state: DurableObjectState) => {
+      await state.storage.put('login', { v: 3, organizationId: ORG, connectionId: conn, service: SERVICE, writeBack: 'landed' })
+    })
+    expect(await stub.writeBackState(ask(conn))).toEqual<WriteBackStateAnswer>({ ok: false, reason: 'failed' })
   })
 })

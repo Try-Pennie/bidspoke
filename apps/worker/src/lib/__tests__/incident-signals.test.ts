@@ -23,7 +23,7 @@ import { OPS_CONNECTION_LOGIN_SIGNAL } from '../ops-connection-logins'
  * from without either noticing.
  */
 describe('INCIDENT_SIGNALS', () => {
-  it('names the eighteen signals in use, each once', () => {
+  it('names the nineteen signals in use, each once', () => {
     const names = INCIDENT_SIGNALS.map((s) => s.signal)
     expect(new Set(names).size).toBe(names.length)
     expect([...names].sort()).toEqual([
@@ -35,6 +35,7 @@ describe('INCIDENT_SIGNALS', () => {
       'field-presence-drought',
       'field-presence-wrong-path',
       'ops-connection-login',
+      'ops-connection-write-back',
       'partner-page-live',
       'partner-reachability',
       'pg-cron-watch',

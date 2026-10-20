@@ -102,6 +102,8 @@ interface Fake {
   sfReads: string[]
   /** The connections the connection_check sweep probed (#2340). */
   probes: string[]
+  /** The connections whose ConnectionTokenObject the write back check asked (#2340, phase 10 item 4). */
+  objectReads: string[]
 }
 
 /** One ops connection, as connection_check_targets answers it (#2340). */
@@ -158,6 +160,8 @@ function fake(opts: {
   connTargetsFull?: boolean
   /** What each identity probe answers. */
   probe?: (t: ConnectionCheckTarget) => Promise<ProbeAnswer>
+  /** What each connection's ConnectionTokenObject answers the write back read with; none held by default. */
+  writeBack?: (t: ConnectionCheckTarget) => Promise<unknown>
 } = {}): Fake {
   const calls: string[] = []
   const saved: WorkflowCopyInput[][] = []
@@ -222,6 +226,7 @@ function fake(opts: {
   const jobStamps: string[] = []
   const sfReads: string[] = []
   const probes: string[] = []
+  const objectReads: string[] = []
   const ports: OpsTickPorts = {
     tickId: 'tick-1',
     scheduledTime: Date.parse('2026-10-17T11:02:48.004Z'),
@@ -258,12 +263,19 @@ function fake(opts: {
       sleep: () => new Promise<void>(() => undefined),
       log: () => undefined,
     },
+    writeBacks: {
+      read: async (t) => {
+        objectReads.push(t.connectionId)
+        return (opts.writeBack ?? (async () => ({ ok: true, state: 'none' })))(t)
+      },
+      sleep: () => new Promise<void>(() => undefined),
+    },
     dispatch: async (item) => {
       if (opts.dispatchFails?.(item)) throw new Error('OpsInternal refused: bad_signature')
       dispatched.push(item)
     },
   }
-  return { ports, db, dispatched, stamps, reports, jobStamps, sfReads, probes }
+  return { ports, db, dispatched, stamps, reports, jobStamps, sfReads, probes, objectReads }
 }
 
 describe('a healthy tick', () => {
@@ -681,7 +693,7 @@ describe('problem keys (#2506)', () => {
     ['a connection list that cannot be fetched', { fetchConnections: async () => { throw new Error('the connection list did not answer within 15 s') } }, ['connections_fetch_failed']],
     ['a connection list it cannot read', { fetchConnections: async () => ({ served_at: 'never' }) }, ['connections_list_unreadable']],
     ['a connection save that fails', failsOn('saveConnectionCopies'), ['connections_save_failed']],
-    ['a login state read that fails', failsOn('connectionCheckTargets'), ['connection_logins_failed', 'connection_check_failed']],
+    ['a login state read that fails', failsOn('connectionCheckTargets'), ['connection_logins_failed', 'write_back_check_failed', 'connection_check_failed']],
     ['a removal that cannot be recorded', {
       ...failsOn('recordConnectionTombstone'),
       fetchConnections: async () => ({ ...servedConnections(), tombstones: [{ connection_id: GONE, organization_id: ORG, generation: 1, removed_at: '2026-10-17T10:00:00.000Z' }] }),
@@ -900,5 +912,63 @@ describe('the connection_check sweep inside the tick (#2340)', () => {
     const report = await done
     expect(report.counts.connection_check_passed).toBe(1)
     expect(f.reports).toHaveLength(1)
+  })
+})
+
+describe('the write back check inside the tick (#2340, phase 10 item 4)', () => {
+  const PENDING = (sinceMs: number | null) => async () => ({ ok: true, state: 'pending', pendingSinceMs: sinceMs, attempts: 6 })
+
+  it('with no ops connection (today), the tick owning the sweep asks no object and reports a complete list of nothing pending, and stays ok', async () => {
+    const f = fake()
+    const report = await runOpsTick(f.ports)
+    expect(f.objectReads).toEqual([])
+    expect(report.write_backs).toEqual({ complete: true, pending: [] })
+    expect(report.outcome).toBe('ok')
+  })
+
+  it('asks no object, and judges nothing, on a tick that does not own the sweep: the objects are not woken every minute', async () => {
+    const f = fake({ sweepOwned: false, connTargets: [connTarget()], writeBack: PENDING(WORKER_NOW - 60 * 60_000) })
+    const report = await runOpsTick(f.ports)
+    expect(f.objectReads).toEqual([])
+    expect(report.write_backs).toBeNull()
+  })
+
+  it('asks each listed connection\'s object on the tick that owns the sweep, from the list the tick already read, and lists one pending past the bound', async () => {
+    const f = fake({ connTargets: [connTarget()], writeBack: PENDING(WORKER_NOW - 45 * 60_000) })
+    const report = await runOpsTick(f.ports)
+    expect(f.objectReads).toEqual([CONN])
+    // No read of its own: the login states' read and the sweep's, as before.
+    expect(f.db.calls.filter((c) => c === `connectionCheckTargets:${CONNECTION_CHECK_READ_LIMIT}`)).toHaveLength(2)
+    expect(report.write_backs).toEqual({
+      complete: true,
+      pending: [{ organization_id: ORG, connection_id: CONN, service: 'salesforce', since: new Date(WORKER_NOW - 45 * 60_000).toISOString(), attempts: 6 }],
+    })
+    // The connection's organization is paged through its own signal, by the bidding Worker: the tick stays ok.
+    expect(report.outcome).toBe('ok')
+    expect(report.counts.write_backs_due).toBe(1)
+  })
+
+  it('an object that cannot be reached is a keyed problem paged at once, and the list is not complete', async () => {
+    const f = fake({ connTargets: [connTarget()], writeBack: async () => { throw new Error('the CONNECTION_TOKENS binding is missing from this deploy') } })
+    const report = await runOpsTick(f.ports)
+    expect(report.write_backs).toEqual({ complete: false, pending: [] })
+    expect(report.problem_keys).toEqual([`write_back_unreadable:${CONN}`])
+    expect(OPS_TICK_PROBLEM_RULES.write_back_unreadable).toBe('at_once')
+  })
+
+  it('reports no list, and says so, when the tick owning the sweep could not read the connections', async () => {
+    const f = fake({ failing: { connectionCheckTargets: new Error('connection_check_targets did not answer within 9000 ms') } })
+    const report = await runOpsTick(f.ports)
+    expect(report.write_backs).toBeNull()
+    expect(report.problem_keys).toContain('write_back_check_failed')
+  })
+
+  it('reports a check that throws past its own boundaries as write_back_check_failed, and the rest of the tick still runs', async () => {
+    const f = fake({ connTargets: [connTarget()] })
+    const ports = { ...f.ports, writeBacks: undefined as unknown as OpsTickPorts['writeBacks'] }
+    const report = await runOpsTick(ports)
+    expect(report.write_backs).toBeNull()
+    expect(report.problem_keys).toEqual(['write_back_check_failed'])
+    expect(f.dispatched).toHaveLength(1)
   })
 })

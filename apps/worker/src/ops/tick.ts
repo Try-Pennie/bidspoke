@@ -38,7 +38,12 @@
  *     Then, every tick, the connections' login states (#2340,
  *     connection-check.ts judgeConnectionLogins), read after that save so a
  *     withdrawal served this minute is judged, and carried in the report for the
- *     bidding Worker to page through the ops-connection-login signal.
+ *     bidding Worker to page through the ops-connection-login signal. On the
+ *     tick that owns the connection_check claim, the same list's
+ *     ConnectionTokenObjects are asked whether a rotated login waits for its
+ *     write back (#2340 phase 10 item 4, write-back-check.ts), beside the rest
+ *     of the tick, and those pending past the bound are carried in the report's
+ *     write_backs for the ops-connection-write-back signal.
  *  5. The schedules, each inside its own boundary: planFires (packages/
  *     workflow-definition) with the database clock, the floor and the last slot
  *     observed; each fire recorded in schedule_fire_observations, whose UNIQUE
@@ -64,8 +69,9 @@
 import { planFires, scheduleFloorMs, scheduleFromTrigger, validateSchedule, type MissedReason, type PlannedFire, type ScheduleConfig } from '@bidspoke/workflow-definition'
 import {
   CONNECTION_CHECK_JOB, SF_LIMITS_JOB, capTickProblems, parseServedOpsWorkflows, tickProblem, type ConnectionLoginsReport, type OpsGatewayJob, type OpsJobReport,
-  type OpsTickMode, type OpsTickOutcome, type OpsTickProblemKind, type OpsTickReport, type TickProblem,
+  type OpsTickMode, type OpsTickOutcome, type OpsTickProblemKind, type OpsTickReport, type TickProblem, type WriteBacksReport,
 } from '../lib/ops-gateway-contract'
+import { runWriteBackCheck, type WriteBackCheckDeps } from './write-back-check'
 import { SF_LIMITS_EVERY_SECONDS, SF_LIMITS_MAX_ORGS, runSfLimitsSweep, type SfLimitsSweepDeps, type SfLimitsSweepResult } from './sf-limits'
 import {
   CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_MAX_CONNECTIONS, CONNECTION_LOGINS_READ_LIMIT, judgeConnectionLogins, runConnectionCheckSweep,
@@ -224,6 +230,8 @@ export interface OpsTickPorts {
   sfLimits: Pick<SfLimitsSweepDeps, 'read' | 'sleep' | 'log'>
   /** The connection_check sweep's identity probe of one connection (#2340): connectionFetch, purpose connection_check, in tick-live.ts. */
   connectionCheck: Pick<ConnectionCheckSweepDeps, 'probe' | 'sleep' | 'log'>
+  /** The write back check's read of one connection's ConnectionTokenObject (#2340 phase 10 item 4): the CONNECTION_TOKENS binding, in tick-live.ts. */
+  writeBacks: Pick<WriteBackCheckDeps, 'read' | 'sleep'>
   /** Throws when the call is refused or fails. */
   dispatch(item: DispatchItem): Promise<void>
 }
@@ -295,6 +303,30 @@ function startConnectionCheck(ports: OpsTickPorts, db: OpsTickDb): Promise<Conne
   }))
 }
 
+/** The write back check's result as the tick carries it: a list, or null when nothing was judged. */
+interface WriteBacksRun {
+  report: WriteBacksReport | null
+  problems: TickProblem[]
+  counts: Record<string, number>
+}
+
+/**
+ * The write back check wired to the tick's ports, on the list the tick already
+ * read. Never rejects: a throw past the check's own boundaries is reported as
+ * write_back_check_failed with no list, so it is unjudged, never all landed.
+ */
+function startWriteBacks(ports: OpsTickPorts, list: Parameters<typeof runWriteBackCheck>[1]): Promise<WriteBacksRun> {
+  return (async (): Promise<WriteBacksRun> => {
+    // Read at once, so a port this deploy lacks is this check's failure by name.
+    const { read, sleep } = ports.writeBacks
+    return runWriteBackCheck({ read, sleep, now: ports.now }, list)
+  })().catch((err: unknown) => ({
+    report: null,
+    problems: [tickProblem('write_back_check_failed', `The write back check failed (${formatErr(err)}), so whether a new login of a person bound connection is waiting to be saved back to Bidspoke was not judged; it runs again with the connection check.`)],
+    counts: {},
+  }))
+}
+
 export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   const startedAt = new Date(ports.now()).toISOString()
   // Each problem keyed by its kind (#2506), so the bidding Worker can hold one a
@@ -313,6 +345,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   let sfLimitsRun: Promise<SfLimitsSweepResult> | null = null
   let connectionCheckRun: Promise<ConnectionCheckSweepResult> | null = null
   let connectionLogins: ConnectionLoginsReport | null = null
+  let writeBacksRun: Promise<WriteBacksRun> | null = null
 
   // 1. Started. A miss is reported under start_stamp, which the bidding Worker
   // holds until three ticks in a row miss (#2506), and flagged as before (#2410).
@@ -495,13 +528,21 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   // unjudged, never as every login cleared.
   if (db) {
     try {
-      connectionLogins = judgeConnectionLogins(await db.connectionCheckTargets(CONNECTION_LOGINS_READ_LIMIT))
+      const listed = await db.connectionCheckTargets(CONNECTION_LOGINS_READ_LIMIT)
+      connectionLogins = judgeConnectionLogins(listed)
+      // 4d. The write backs (#2340 phase 10 item 4), only on the tick that owns
+      // the connection_check claim, so each object is asked once an interval,
+      // never every minute; beside the rest of the tick, awaited before the report.
+      if (connectionCheckRun !== null) writeBacksRun = startWriteBacks(ports, listed)
       bump(counts, 'connection_logins_due', connectionLogins.logins.length)
       if (!connectionLogins.complete) {
         problem('connection_logins_limit', `The ops tick read more ops connections, or found more logins to page about, than one report carries (${CONNECTION_LOGINS_READ_LIMIT} connections, ${connectionLogins.logins.length} logins), so a login past them was not judged and no all clear is sent for it.`)
       }
     } catch (err) {
       problem('connection_logins_failed', `The ops tick could not read the ops connections' login states (${formatErr(err)}), so no login was judged this minute.`)
+      if (connectionCheckRun !== null) {
+        problem('write_back_check_failed', `The ops tick could not read the ops connections (${formatErr(err)}) on the minute it owns the connection check, so whether a new login of a person bound connection is waiting to be saved back to Bidspoke was not judged; it is asked again with the next connection check.`)
+      }
     }
   }
 
@@ -608,6 +649,15 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     for (const [key, n] of Object.entries(cc.counts)) bump(counts, key, n)
   }
 
+  // 7d. The write back check, if this tick owns the connection check, the same way.
+  let writeBacks: WriteBacksReport | null = null
+  if (writeBacksRun !== null) {
+    const wb = await writeBacksRun
+    writeBacks = wb.report
+    problems.push(...wb.problems)
+    for (const [key, n] of Object.entries(wb.counts)) bump(counts, key, n)
+  }
+
   // 8. Completed.
   const outcome: OpsTickOutcome = notConfigured ? 'not_configured' : problems.length > 0 ? 'problems' : 'ok'
   const capped = capTickProblems(problems)
@@ -625,6 +675,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     start_stamp_failed: startStampFailed,
     problem_keys: capped.problem_keys,
     connection_logins: connectionLogins,
+    write_backs: writeBacks,
   }
   log('finished', { tick_id: ports.tickId, outcome, problems: problems.length, ...counts })
   for (const p of problems) log('problem', { tick_id: ports.tickId, key: p.key, problem: p.text })

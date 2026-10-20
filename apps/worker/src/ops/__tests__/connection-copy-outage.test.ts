@@ -130,6 +130,7 @@ function ports(db: OpsTickDb, fetchConnections: () => Promise<unknown>): OpsTick
     },
     sfLimits: { read: async () => { throw new Error('not claimed') }, sleep: async () => {}, log: () => undefined },
     connectionCheck: { probe: async () => { throw new Error('not claimed') }, sleep: async () => {}, log: () => undefined },
+    writeBacks: { read: async () => { throw new Error('not claimed') }, sleep: async () => {} },
     dispatch: async () => {},
   }
 }

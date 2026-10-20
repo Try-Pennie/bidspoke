@@ -189,6 +189,22 @@ export const INCIDENT_SIGNALS = [
     windowMinutes: null,
     kinds: ['needs_reauth', 'refresh_failing'],
   },
+  // An ops person bound connection whose new login its ConnectionTokenObject
+  // holds and service_connections has not taken for longer than the ops tick's
+  // bound (#2340, phase 10 item 4), so the object holds the only copy. One
+  // organization's connection, keyed on its id and labelled with its name and
+  // service, apart from the login signal so neither silences the other. It
+  // judges a state, so it has no window. Paged by ops-connection-logins.ts from
+  // the judgement the tick's report carries.
+  {
+    signal: 'ops-connection-write-back',
+    label: 'Ops connection login not saved',
+    scope: 'org',
+    subject: 'connection',
+    startMeans: FIRST_PAGE,
+    windowMinutes: null,
+    kinds: ['write_back_pending'],
+  },
 ] as const satisfies readonly IncidentSignalEntry[]
 
 export type IncidentSignal = (typeof INCIDENT_SIGNALS)[number]['signal']
