@@ -32,6 +32,8 @@ function buildScreen(variant) {
   var under = el("div");
   under.append(part(el("div", "sf-hint", "Acts as " + chosen.actsAs), "acts-as"));
   if (chosen.status !== "ok") {
+    // Round 24 drew this line for Needs reconnecting only, the one problem a frame shows. What it
+    // reads for Check failing is not decided; "Check failing on the Connections page" is not it.
     var bad = part(el("div", "sf-hint sf-problem"), "connection-problem");
     var where = el("a", null, "Connections page"); where.href = "#";
     bad.append(document.createTextNode(fx.statusVocabulary[chosen.status] + " on the "), where);

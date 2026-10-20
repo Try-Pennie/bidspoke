@@ -81,6 +81,43 @@ describe('settled Connections designs (#2338)', () => {
     })
   }
 
+  // Rounds 24 to 26 (Dan, 2026-10-20). A check reads the design through the browser, so it cannot
+  // run here; what can drift silently is the builder and its check each holding their own copy of a
+  // decision's words or size, so the pair is read back from both and compared.
+  describe('rounds 24 to 26: each builder draws what its check expects', () => {
+    const read = (rel: string) => readFileSync(design(rel), 'utf8')
+
+    it('D8: the step form problem line reads "<status> on the Connections page", the page a dark underlined link', () => {
+      const checks = read('connections-step-form.checks.js')
+      const words = /var WHERE = "([^"]+)", PAGE = "([^"]+)"/.exec(checks)
+      expect(words?.slice(1)).toEqual([' on the ', 'Connections page'])
+      const builder = read('connections-step-form/builder.js')
+      expect(builder).toContain(`" on the "`)
+      expect(builder).toContain(`el("a", null, "Connections page")`)
+      const link = /\.sf-problem a \{([^}]*)\}/.exec(read('connections-step-form/screen.css'))?.[1] ?? ''
+      expect(link).toContain('color: #1D212F')
+      expect(link).toContain('text-decoration: underline')
+      expect(link).toContain('font-weight: 400')
+    })
+
+    it('D19 to D21: the dialog title is drawn at the size the checks require, 20px', () => {
+      const size = /var DIALOG_TITLE = "(\d+px)"/.exec(read('connections-page.checks.js'))?.[1]
+      expect(size).toBe('20px')
+      const drawn = /\.cx-dialog h2 \{[^}]*font-size: (\d+px)/.exec(read('connections-page/screen.css'))?.[1]
+      expect(drawn).toBe(size)
+    })
+
+    it('D15: the new org frame is drawn from the fixture its check reads, and every all frame check covers it', () => {
+      const fixture = JSON.parse(read('connections-page.fixture.json')) as { draft: { newOrg?: { name: string; address: string } } }
+      expect(fixture.draft.newOrg).toEqual({ name: 'Lendco Salesforce', address: 'lendco.my.salesforce.com' })
+      const spec = JSON.parse(read('connections-page/settled.json')) as { frames: { id: string; variant: Record<string, unknown> }[] }
+      expect(spec.frames.find((f) => f.id === 'add-salesforce-new-org')?.variant).toEqual({ state: 'add', service: 'Salesforce', save: 'ready', org: 'new' })
+      const map = (jsonBlock(read('connections-page.html'), 'decision-map') as { decisions: Decision[] }).decisions
+      const covering = map.filter((d) => d.frames?.includes('add-salesforce-new-org')).map((d) => d.id)
+      expect(covering).toEqual(['D15', 'D24', 'D25', 'D27'])
+    })
+  })
+
   it('refuses a missing check and a check on the wrong frames (positive control)', () => {
     const decisions: Decision[] = [
       { id: 'D1', frames: ['a', 'b'], requirement: 'R1' },
