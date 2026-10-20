@@ -556,5 +556,49 @@
     },
     "anon": "denied",
     "note": "The compare and set that moves one ops connection's sealed login to the current ops key during a rotation of that key (#2333): the OpsGateway entrypoint's replaceConnectionEnvelope calls it for the ops Worker's resealConnections, which reports each row it could not write, so a missing function leaves every login under the old kid and the rotation cannot finish. A WRITE, service_role only, so anon must be denied. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would write nothing."
+  },
+  {
+    "name": "connection_references",
+    "args": {
+      "p_organization_id": "00000000-0000-0000-0000-000000000000",
+      "p_connection_id": "00000000-0000-0000-0000-000000000000"
+    },
+    "anon": "denied",
+    "note": "The workflows using one connection, by its id, soft deleted ones included (#2338, R5 and R9): the Connections page's Used by tab and its Remove refusal read it, and remove_ops_connection calls it, so a missing function fails both. Read only, but it reads every workflow definition of an organization, so service_role only and anon must be denied. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would read nothing."
+  },
+  {
+    "name": "remove_ops_connection",
+    "args": {
+      "p_organization_id": "00000000-0000-0000-0000-000000000000",
+      "p_connection_id": "00000000-0000-0000-0000-000000000000",
+      "p_actor": "00000000-0000-0000-0000-000000000000"
+    },
+    "anon": "denied",
+    "note": "The removal of one ops connection (#2338, R9 and R21): refused while a workflow uses it, otherwise the tombstone and the delete in one transaction. A WRITE, service_role only, so anon must be denied. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would remove nothing."
+  },
+  {
+    "name": "reconnect_ops_connection",
+    "args": {
+      "p_organization_id": "00000000-0000-0000-0000-000000000000",
+      "p_connection_id": "00000000-0000-0000-0000-000000000000",
+      "p_expected_generation": 1,
+      "p_new_generation": 2,
+      "p_envelope": { "v": 1, "kid": "probe", "wrapped_key": "cHJvYmU=", "iv": "cHJvYmU=", "ct": "cHJvYmU=" },
+      "p_acts_as": null,
+      "p_actor": "00000000-0000-0000-0000-000000000000",
+      "p_actor_email": null
+    },
+    "anon": "denied",
+    "note": "The compare and set on the generation that commits an ops connection's new login (#2338, R19, finding F116): writes nothing and answers stale_generation when the row has moved. A WRITE, service_role only, so anon must be denied. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would write nothing."
+  },
+  {
+    "name": "connection_history",
+    "args": {
+      "p_organization_id": "00000000-0000-0000-0000-000000000000",
+      "p_connection_id": "00000000-0000-0000-0000-000000000000",
+      "p_limit": 50
+    },
+    "anon": "denied",
+    "note": "One connection's audit rows, newest first, never its credential (#2338, R5, the History tab). Read only, but it reads an organization's audit log, so service_role only and anon must be denied. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would read nothing."
   }
 ]
