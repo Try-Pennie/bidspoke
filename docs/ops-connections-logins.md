@@ -31,7 +31,7 @@ these tables hold:
 
 Partner orgs (tpl2, achieve) have no rows: each is approved by a migration of its
 own when the first workflow using that org is ported, with no exemption from the
-pool. An approval is changed only by a new migration; re-running 20261020010000
+pool (the steps are under "Approving a cap for a new Salesforce org" below). An approval is changed only by a new migration; re-running 20261020010000
 over a row holding other values refuses by name and overwrites nothing.
 service_role can only read the three tables. A call without an approved row is
 still refused by name and nothing is asked of Salesforce, not even a token:
@@ -337,10 +337,14 @@ So two things hold the account in:
    `OpsConnections` entrypoint answers them as `addDelegationSubject`,
    `removeDelegationSubject` and `listDelegationSubjects`
    (`src/ops/connections/delegation-list.ts`), each taking the organization and
-   the signed in person from the bidding Worker; the bidding routes that call them
-   arrive with the Connections page (build plan PR 6), and only then do they join
-   the methods the deployed ops check requires. Until someone adds an entry, every
-   Google mint is refused.
+   the signed in person from the bidding Worker. The create route (build plan PR
+   5) reads the list through `callOpsDelegation` in
+   `lib/ops-connections-client.ts` and refuses, before verify is asked, a Google
+   delegation connection naming a mailbox or drive not on it
+   (`google_subject_not_listed`), or any when the list cannot be read
+   (`google_list_unavailable`). The routes that add and remove entries arrive in
+   build plan PR 6, which moves the three into the methods the deployed ops check
+   requires. Until someone adds an entry, every Google mint is refused.
 
 ## Admin hand off
 
@@ -372,6 +376,48 @@ before the first connection of that kind is saved.
    one write the permission set does not grant (for example, create an Account).
    It must fail with an insufficient access error. Success is a finding, filed
    before the connection is used.
+
+### Approving a cap for a new Salesforce org (#2556)
+
+Saving a connection for an org that has no approved cap fails on the Add
+connection form with: "Bidspoke has no approved cap for the Salesforce org
+lendco.my.salesforce.com. Nothing was saved. Dan must approve a cap for this org
+before a connection to it can be saved." That is verify's `sf_cap_unset`
+(`POST /api/connections`, the refusal sentences in
+`apps/worker/src/lib/connection-create-refusals.ts`), and it is the right answer
+until the org is approved: nothing is asked of Salesforce, not even a token. The
+trypennie org is the only one approved so far (table above). To approve another:
+
+1. **Measure the org.** Its address is the host the form named
+   (`lendco.my.salesforce.com`). Its 18 character org id is read from the org
+   itself, never typed from Setup's Company Information page, which shows the 15
+   character form that the tables' CHECK refuses: `sf data query --query "SELECT
+   Id, Name, OrganizationType, IsSandbox FROM Organization" --target-org <alias>`,
+   with a read only login to that org. Record the edition and that it is not a
+   sandbox, as the trypennie approval does.
+2. **Measure its room.** From the org's `/services/data/vXX.X/limits`, its
+   `DailyApiRequests` maximum and what it used on a normal day, and from the
+   partner how many long requests it allows at once, so the numbers below are
+   chosen against the real ceiling (Phase 0 did this for trypennie).
+3. **Dan decides the numbers and records the decision** on the issue that ports
+   the first workflow using the org, as a comment naming the org id, the host and
+   each number: `cap` and `workflow_share` for `sf_pool_caps`, `budget_floor`
+   (remaining daily calls below which ops stops), `cap` 1 for the host's
+   `sf_bootstrap_caps` row, and a `share` for each of `lookup`, `verify`,
+   `connection_check` and `sf_limits` in `sf_purpose_caps`. That comment's time is
+   the approval's `approved_at`.
+4. **A migration of its own writes the rows**, modelled on
+   `supabase-ops/supabase/migrations/20261020010000_sf_lane_approval_2336.sql`:
+   rows only, every one on the nil uuid lane, `approved_by` naming Dan and the
+   decision (`'Dan Wright (<the decision>, #<issue>)'`), safe to re-run and never
+   an overwrite, with a test in `supabase-ops/supabase/tests` like
+   `sf_lane_approval.test.sql`. Prove it with `SQL_SUITE_PROJECT=ops bash
+   scripts/sql-suite/run.sh`. Dan signs the approval by approving that pull
+   request; nobody else's review stands in for it.
+5. **Apply it only after Dan says Apply**: `supabase --workdir supabase-ops db push
+   --linked`, never from the repo root, which is linked to the bidding project.
+6. Save the connection again. Its first verify takes the bootstrap slot of the
+   host, measures the org and records it, and from then on the org's pool caps it.
 
 ### Google Workspace
 

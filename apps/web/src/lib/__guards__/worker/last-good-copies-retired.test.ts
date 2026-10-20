@@ -85,12 +85,14 @@ const KINDS: Kind[] = [
     writeMethods: ['insert', 'upsert', 'update', 'delete'],
     sqlWrites: /\b(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?:public\.)?service_connections\b/i,
     // This guard cannot read a reason, so each is held true by a test.
-    // POST /connections writes nothing since #2331 phase 1a (it refuses as
-    // connections_moving), so it has no exemption: were it to write again it
-    // would have to edit the copy or come back here with a reason. #2338 (build
-    // PR 4) retired DELETE /connections/:service_type and POST
+    // #2338 (build PR 4) retired DELETE /connections/:service_type and POST
     // /connections/:service_type/sync-schema, and their exemptions with them;
     // connections.test.ts holds that both answer 404.
+    //
+    // #2338 (build PR 5): POST /connections inserts a new ops_key row under a
+    // fresh id and never the Slack alert row the copy holds; held true by
+    // connections-create.test.ts, which checks every insert is sealed_for
+    // ops_key, and by the table's service_connections_alert_name_reserved CHECK.
     //
     // #2331: the backfill and the key rotation re-lock change the token's
     // ciphertext, never the token or any setting the copy holds, and the next
@@ -99,6 +101,7 @@ const KINDS: Kind[] = [
     // the same connection (routes/api/__tests__/slack-token-seal.test.ts and
     // lib/__tests__/secret-reencrypt.test.ts).
     exempt: {
+      'apps/worker/src/routes/api/connections.ts POST /': 'inserts a new ops_key connection under a fresh id, never the bidding_ring Slack alert row the copy holds',
       'apps/worker/src/routes/api/slack-token-seal.ts sealSlackTokens': 'seals the token already in config.bot_token into credential_enc: the connection the copy holds is unchanged, and the next probe rewrites the copy from the rows',
       'apps/worker/src/lib/secret-reencrypt.ts reencryptSecrets': 're-locks credential_enc under the next key: the token the copy holds is unchanged, and the next probe rewrites the copy under the ring in force',
       // #2335: held true by supabase/tests/store_rotated_envelope.test.sql case D,

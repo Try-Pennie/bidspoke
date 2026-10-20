@@ -48,7 +48,10 @@ export type OpsConnectionsMethod = (typeof OPS_CONNECTIONS_METHODS)[number]
  * export each of its methods, on every pull request that touches ops. These
  * ship on ops first (DEPLOY ORDER in ops-connections-entrypoint.ts), so the
  * pull request adding them cannot also require them of the deploy it precedes.
- * The bidding routes that call them (PR 6) move them into
+ * The create route (PR 5) reads the list through callOpsDelegation
+ * (ops-connections-client.ts), whose answer when ops does not export the
+ * method is ops_connections_unavailable, refused by name, never a pass. The
+ * routes that add and remove entries (PR 6) move all three into
  * OPS_CONNECTIONS_METHODS, once the ops deploy carries them.
  */
 export const OPS_DELEGATION_METHODS = ['addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects'] as const

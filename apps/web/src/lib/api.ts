@@ -1364,8 +1364,8 @@ export const api = {
 
   connections: {
     list: () => req<ConnectionList>('/api/connections', { timeoutMs: CONNECTIONS_LIST_TIMEOUT_MS }),
-    // No save yet: POST /api/connections refuses as connections_moving (410)
-    // until the create route (#2338, build PR 5).
+    // The save, POST /api/connections (#2338, build PR 5), is called by the
+    // Add connection form, which arrives with build PR 10.
     lookup: (id: string, key: string, parents: string[] = []) =>
       req<{ answer: ConnectionLookupAnswer }>(`/api/connections/${encodeURIComponent(id)}/lookup/${encodeURIComponent(key)}`, {
         method: 'POST',

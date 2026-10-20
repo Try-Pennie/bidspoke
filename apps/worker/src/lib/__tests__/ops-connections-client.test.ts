@@ -15,10 +15,11 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OpsConnectionsContractError, parseHealthRequest, type OpsConnectionsBinding,
+  OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_CEILINGS_MS, OPS_DELEGATION_METHODS, OpsConnectionsContractError, parseHealthRequest,
+  type OpsConnectionsBinding,
 } from '../ops-connections-contract'
 import {
-  callOpsConnections, OPS_CONNECTIONS_DEADLINES_MS, OPS_CONNECTIONS_PROBE_EXPECTED, OPS_CONNECTIONS_PROBE_REQUEST, probeOpsConnections,
+  callOpsConnections, callOpsDelegation, OPS_CONNECTIONS_DEADLINES_MS, OPS_DELEGATION_DEADLINES_MS, OPS_CONNECTIONS_PROBE_EXPECTED, OPS_CONNECTIONS_PROBE_REQUEST, probeOpsConnections,
 } from '../ops-connections-client'
 import { OpsConnections } from '../../ops/ops-connections-entrypoint'
 import type { OpsEnv } from '../../ops/index'
@@ -158,5 +159,39 @@ describe('probeOpsConnections: the post deploy call through the binding', () => 
     captureLogs()
     const { binding: b } = binding(async () => { throw new Error('internal error; reference = 0f0e0d0c0b0a') })
     expect(await probeOpsConnections({ OPS_CONNECTIONS: b })).toMatchObject({ outcome: 'unavailable', method: 'health', cause: 'threw', reference: '0f0e0d0c0b0a' })
+  })
+})
+
+describe('callOpsDelegation: the Google list, read by the create route (#2338, build PR 5)', () => {
+  it('names a deadline for exactly the Google list methods', () => {
+    expect(Object.keys(OPS_DELEGATION_DEADLINES_MS).sort()).toEqual([...OPS_DELEGATION_METHODS].sort())
+  })
+
+  it.each(OPS_DELEGATION_METHODS)('%s: the bidding deadline exceeds the ops ceiling by at least 2 s', (method) => {
+    expect(OPS_DELEGATION_DEADLINES_MS[method]).toBeGreaterThanOrEqual(OPS_DELEGATION_CEILINGS_MS[method] + 2_000)
+  })
+
+  it('passes the request to the named method and returns its answer unchanged', async () => {
+    const list = { ok: true, subjects: [], reached_limit: false }
+    const calls: unknown[] = []
+    const b = { listDelegationSubjects: async (request: unknown) => { calls.push(request); return list } }
+    expect(await callOpsDelegation({ OPS_CONNECTIONS: b as unknown as OpsConnectionsBinding }, 'listDelegationSubjects', { organization_id: ORG })).toEqual(list)
+    expect(calls).toEqual([{ organization_id: ORG }])
+  })
+
+  it('a deployed ops Worker that does not export the method is unavailable by name, never a pass', async () => {
+    captureLogs()
+    const { binding: b } = binding(async () => ({ ok: true }))
+    expect(await callOpsDelegation({ OPS_CONNECTIONS: b }, 'listDelegationSubjects', { organization_id: ORG }))
+      .toMatchObject({ ok: false, refused: 'ops_connections_unavailable', cause: 'threw' })
+  })
+
+  it('a list that never answers is unavailable at its deadline', async () => {
+    captureLogs()
+    const waited: number[] = []
+    const b = { listDelegationSubjects: never }
+    const answer = await callOpsDelegation({ OPS_CONNECTIONS: b as unknown as OpsConnectionsBinding }, 'listDelegationSubjects', { organization_id: ORG }, { delay: async (ms) => { waited.push(ms) } })
+    expect(answer).toMatchObject({ refused: 'ops_connections_unavailable', cause: 'deadline' })
+    expect(waited).toEqual([OPS_DELEGATION_DEADLINES_MS.listDelegationSubjects])
   })
 })
