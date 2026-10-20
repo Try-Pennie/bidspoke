@@ -21,6 +21,7 @@ const SHEETS = 'https://www.googleapis.com/auth/spreadsheets'
 const CATALOGUE: readonly ServiceSchema[] = [{
   key: 'google_sheets', name: 'Sheets',
   actions: [{ key: 'google_sheets.read', name: 'Read', version: 1, arguments: [], sideEffect: false, idempotent: true, idempotentBecause: 'a read', googleScopes: [SHEETS] }],
+  connection: { tile: 'A test Google service', auth: 'service_account_delegation', fields: [] },
 }]
 
 let keys: TestKeys

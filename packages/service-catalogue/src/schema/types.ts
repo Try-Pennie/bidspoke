@@ -4,6 +4,7 @@
  * what the executor reads to decide how a failed send may be retried. Nothing
  * here runs; `run` lives in the runtime entry.
  */
+import type { ConnectionDeclaration } from './connection'
 import type { GoogleDelegationScope } from './google-delegation'
 
 export const ARGUMENT_TYPES = ['text', 'dropdown', 'list', 'code'] as const
@@ -61,6 +62,12 @@ export interface ServiceSchema {
   readonly key: string
   readonly name: string
   readonly actions: readonly ActionSchema[]
+  /**
+   * What a connection to it is made of: its Add connection tile line, how it
+   * signs in, and its login and target fields (connection.ts, #2338). Required,
+   * so a service cannot ship without saying how it is connected.
+   */
+  readonly connection: ConnectionDeclaration
 }
 
 /**

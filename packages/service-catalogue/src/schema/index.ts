@@ -8,6 +8,7 @@
  * never imports runtime directly.
  */
 export * from './types'
+export * from './connection'
 export * from './lookup'
 export * from './google-delegation'
 export { CATALOGUE } from './catalogue'

@@ -29,5 +29,14 @@ export const FIXTURE_ECHO_V2: ActionSchema = {
 }
 
 export const FIXTURE_SERVICES: readonly ServiceSchema[] = [
-  { key: 'fixture', name: 'Fixture (test only)', actions: [FIXTURE_ECHO_V1, FIXTURE_ECHO_V2] },
+  {
+    key: 'fixture',
+    name: 'Fixture (test only)',
+    actions: [FIXTURE_ECHO_V1, FIXTURE_ECHO_V2],
+    connection: {
+      tile: 'A fixture, for the catalogue checks',
+      auth: 'static_key',
+      fields: [{ key: 'api_key', label: 'API key', input: 'secret', required: true, login: 'api_key' }],
+    },
+  },
 ]

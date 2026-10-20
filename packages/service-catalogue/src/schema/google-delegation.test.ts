@@ -14,7 +14,12 @@ function action(key: string, googleScopes?: ActionSchema['googleScopes']): Actio
   return { key, name: key, version: 1, arguments: [], sideEffect: false, idempotent: true, idempotentBecause: 'a read', googleScopes }
 }
 
-const service = (key: string, actions: ActionSchema[]): ServiceSchema => ({ key, name: key, actions })
+const service = (key: string, actions: ActionSchema[]): ServiceSchema => ({
+  key,
+  name: key,
+  actions,
+  connection: { tile: `A test ${key} service`, auth: 'service_account_delegation', fields: [] },
+})
 
 describe('the Google delegation scopes', () => {
   it('the grant is decision 11\'s four broad scopes, each a full scope URL', () => {
