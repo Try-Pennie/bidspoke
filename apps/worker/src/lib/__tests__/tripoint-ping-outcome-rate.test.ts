@@ -29,9 +29,14 @@ import {
   runTripointPingOutcomeRate,
   endingOf,
   productionPingDeps,
+  pingRunFailure,
+  PING_HOURS_NOT_RECORDED_LINE,
+  ROLLUP_LOOKBACK_HOURS,
   type PingCounts,
   type PingDeps,
 } from '../tripoint-ping-outcome-rate'
+import { isFailedRun } from '../minute-job-failures'
+import { minuteJobFailingMessage } from '../slack'
 import { ENGINE_BIDDING_WORKFLOW_ID, KEPT_ENGINE_SCRIPTS } from '../engine-script-drift'
 
 type Row = readonly [hour: string, accepted: number, declined: number, failed: number, sent: number]
@@ -395,6 +400,70 @@ describe('runTripointPingOutcomeRate', () => {
     expect(s.skipped).toBe('local_dev')
     expect(d.notify).not.toHaveBeenCalled()
     expect(endingOf(s).outcome).toBe('skipped')
+  })
+})
+
+/**
+ * #2529: a run with hours it could not record is a failed run of this job for
+ * the failing scheduled job count (minute-job-failures.ts), so three such runs
+ * in a row page. Nothing else pages it: notify carries only the rate's own
+ * lines, and job_runs records the run as unmeasured without paging.
+ */
+describe('pingRunFailure', () => {
+  const quietError = <T>(fn: () => T): { value: T; logged: unknown[][] } => {
+    const logged: unknown[][] = []
+    const original = console.error
+    console.error = (...args: unknown[]) => { logged.push(args) }
+    try {
+      return { value: fn(), logged }
+    } finally {
+      console.error = original
+    }
+  }
+
+  it('is no failure when every finished hour was recorded', async () => {
+    const d = deps({}, () => ({ sent: 120, accepted: 70, declined: 50, failed: 0 }))
+    seedBaseline(d.kv, HEALTHY_HOUR)
+    const s = await runTripointPingOutcomeRate(d)
+    const { value, logged } = quietError(() => pingRunFailure(s))
+    expect(value).toBeUndefined()
+    expect(logged).toEqual([])
+  })
+
+  it('is a failed run, logged under its own line with the hours and their errors, when an hour could not be recorded, even though the hour judged was normal', async () => {
+    const d = deps({}, (from, to) => {
+      if (from % HOUR === 0 && to - from === HOUR) throw new Error('statement timeout')
+      return { sent: 120, accepted: 70, declined: 50, failed: 0 }
+    })
+    seedBaseline(d.kv, HEALTHY_HOUR)
+    const s = await runTripointPingOutcomeRate(d)
+    expect(s.verdict.verdict).toBe('normal')
+    const { value: run, logged } = quietError(() => pingRunFailure(s))
+    expect(isFailedRun(run)).toBe(true)
+    expect(run!.logLine).toBe(PING_HOURS_NOT_RECORDED_LINE)
+    expect(PING_HOURS_NOT_RECORDED_LINE).toBe(`[${TRIPOINT_PING_OUTCOME_RATE_JOB}] hours not recorded:`)
+    expect(logged).toHaveLength(1)
+    expect(String(logged[0][0])).toBe(`${PING_HOURS_NOT_RECORDED_LINE} ${s.rollup_errors.join(' | ')}`)
+    expect(String(logged[0][0])).toMatch(/statement timeout/)
+  })
+
+  it('pages in words that say what failed and what it costs, never the error text, which the log carries', async () => {
+    const d = deps({}, (from, to) => {
+      if (from % HOUR === 0 && to - from === HOUR) throw new Error('statement timeout')
+      return HEALTHY_HOUR
+    })
+    seedBaseline(d.kv, HEALTHY_HOUR)
+    const runSummary = await runTripointPingOutcomeRate(d)
+    const failed = quietError(() => pingRunFailure(runSummary)).value!
+    const m = minuteJobFailingMessage({ label: 'Tripoint outcome rate on tripoint_ping', dependents: 'x', failedRuns: 3, bound: 3, logLine: failed.logLine, countFault: null, copy: failed.copy })
+    const text = m.sections.join('\n')
+    expect(text).toContain('Tripoint outcome rate on tripoint_ping has failed 3 runs in a row.')
+    expect(text).toContain('but in each one, at least one finished hour of Tripoint sends on the Engine tripoint_ping step could not be counted and kept for its baseline.')
+    expect(text).toContain(`the likely effect is that the hours not kept are missing from the ${TRIPOINT_PING_RULE.baselineDays} day baseline the outcome rate is judged against, and an hour still not kept ${ROLLUP_LOOKBACK_HOURS} hours after it ends is left out of it for good.`)
+    expect(text).toContain('`[tripoint-ping-outcome-rate] hours not recorded` to see which hours could not be kept and the error each one met, and fix that.')
+    expect(text).not.toMatch(/statement timeout/)
+    expect(text).not.toMatch(new RegExp(`[\\u2014\\u2013]|\\s${String.fromCharCode(45)}\\s`))
+    expect(m.title).toBe('Tripoint outcome rate on tripoint_ping is failing every run')
   })
 })
 
