@@ -33,6 +33,7 @@ import { runSecretDecryptHealthCheck } from './lib/secret-decrypt-health'
 import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, writeHeartbeatCompleted, runHeartbeatChecks } from './lib/cron-heartbeat'
+import { failedRun, makeCompleteAfter, minuteJobFailingDepsForEnv } from './lib/minute-job-failures'
 import { runOpsTickReportCheck, OPS_TICK_REPORT_JOB } from './lib/ops-gateway'
 import { runOpsConnectionLoginCheckForEnv, runOpsConnectionWriteBackCheckForEnv, OPS_CONNECTION_LOGINS_JOB, OPS_CONNECTION_WRITE_BACKS_JOB } from './lib/ops-connection-logins'
 import { runPartnerReachabilityCheck, fetchProbe, liveSenders } from './lib/partner-reachability'
@@ -257,11 +258,18 @@ const scheduledJobs = {
     // only records that the run reached its end. It is deliberately not chained
     // after that handler, because a failure alert that itself throws would then
     // skip the stamp and read as a vanished run (L514).
-    const completeAfter = (work: Promise<unknown>, jobId: string): Promise<void> =>
-      work
-        .catch((e) => console.error(`[${jobId}] failed past its own handler:`, e))
-        .then(() => writeHeartbeatCompleted(env.IDEMPOTENCY, jobId))
-        .catch((e) => console.error(`[cron-heartbeat] ${jobId} completed write failed:`, e))
+    //
+    // A minute job's runs are then counted (#2523, lib/minute-job-failures.ts),
+    // AFTER the stamp, which is written for every run as before: a minute job
+    // that fails on every run still finishes, so the heartbeat cannot see it,
+    // and past three failed runs in a row it pages. A minute job therefore hands
+    // its throw on rather than swallowing it, with its own failure line as the
+    // third argument, which completeAfter logs; one whose summary lists faults
+    // it caught resolves to failedRun().
+    const completeAfter = makeCompleteAfter({
+      stampCompleted: (jobId) => writeHeartbeatCompleted(env.IDEMPOTENCY, jobId),
+      failures: minuteJobFailingDepsForEnv(supabase, env.IDEMPOTENCY, reachability.claims),
+    })
     if (event.cron === '0 9 * * *') {
       ctx.waitUntil(
         recordExportRun(supabase, EXPORT_JOBS.achieveExport, () => runAchieveExport(supabase, env))
@@ -1215,10 +1223,11 @@ const scheduledJobs = {
               if (pending > 0 || s.errors.length > 0 || s.unmeasured) {
                 console.log(`[${BUYER_SALE_DRAIN_JOB}] buyers=${s.buyers.length} pending=${pending} delivered=${delivered} paged=${s.paged.length}${s.unmeasured ? ` unmeasured=${s.unmeasured}` : ''}`)
               }
+              // Its standing problems page through the drain's own export alert, so not as a failed run too.
               if (s.errors.length) console.error(`[${BUYER_SALE_DRAIN_JOB}] errors=${s.errors.join(' | ')}`)
-            })
-            .catch((e) => console.error(`[${BUYER_SALE_DRAIN_JOB}] drain failed:`, e)),
+            }),
           BUYER_SALE_DRAIN_JOB,
+          `[${BUYER_SALE_DRAIN_JOB}] drain failed:`,
         ),
       )
       // Reads back the post-response writes that only timed out (#1880): drops
@@ -1233,9 +1242,9 @@ const scheduledJobs = {
               if (s.listed > s.young) {
                 console.log(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] listed=${s.listed} landed=${s.landed} lost=${s.lost} unreadable=${s.unreadable} young=${s.young} could_not_confirm=${s.could_not_confirm}`)
               }
-            })
-            .catch((e) => console.error(`[${UNCONFIRMED_WRITE_SWEEP_JOB}] sweep failed:`, e)),
+            }),
           UNCONFIRMED_WRITE_SWEEP_JOB,
+          `[${UNCONFIRMED_WRITE_SWEEP_JOB}] sweep failed:`,
         ),
       )
       // Reads back the post-answer Salesforce updates that were cut off (#2023):
@@ -1251,9 +1260,9 @@ const scheduledJobs = {
               if (s.reads > 0 || s.unread > 0 || s.alerts > 0) {
                 console.log(`[${SF_READ_BACK_JOB}] listed=${s.listed} reads=${s.reads} landed=${s.landed} resent=${s.resent} confirmed=${s.resent_confirmed} unanswered=${s.resend_unanswered} refused=${s.resend_refused} conflicts=${s.conflicts} unread=${s.unread} young=${s.young} alerts=${s.alerts}${s.stopped ? ` stopped=${s.stopped}` : ''}`)
               }
-            })
-            .catch((e) => console.error(`[${SF_READ_BACK_JOB}] read back failed:`, e)),
+            }),
           SF_READ_BACK_JOB,
+          `[${SF_READ_BACK_JOB}] read back failed:`,
         ),
       )
       // Resends the Salesforce writes stored after they failed with an answer
@@ -1269,9 +1278,9 @@ const scheduledJobs = {
               if (s.listed > 0 || s.alerts > 0 || s.alert_failures > 0) {
                 console.log(`[${WRITEBACK_DRAIN_JOB}] listed=${s.listed} replayed=${s.replayed} refused=${s.refused} abandoned=${s.abandoned} moved=${s.moved} retrying=${s.retrying} waiting=${s.waiting} skipped=${s.skipped} deferred=${s.deferred} unread=${s.unread} alerts=${s.alerts} alert_failures=${s.alert_failures}${s.held ? ` held=${s.held}` : ''}${s.stopped ? ` stopped=${s.stopped}` : ''}`)
               }
-            })
-            .catch((e) => console.error(`[${WRITEBACK_DRAIN_JOB}] drain failed:`, e)),
+            }),
           WRITEBACK_DRAIN_JOB,
+          `[${WRITEBACK_DRAIN_JOB}] drain failed:`,
         ),
       )
       // Whether that read back is still finishing runs while writes wait for it.
@@ -1337,9 +1346,9 @@ const scheduledJobs = {
           writeHeartbeat(env.IDEMPOTENCY, OPS_TICK_REPORT_JOB)
             .catch((e) => console.error(`[${OPS_TICK_REPORT_JOB}] heartbeat write failed:`, e))
             .then(() => runOpsTickReportCheck(supabase, env.IDEMPOTENCY, Date.now()))
-            .then((v) => { if (v === 'alerted') console.error('[ops-tick] the ops minute cron reported a problem') })
-            .catch((e) => console.error('[ops-tick] report check failed:', e)),
+            .then((v) => { if (v === 'alerted') console.error('[ops-tick] the ops minute cron reported a problem') }),
           OPS_TICK_REPORT_JOB,
+          '[ops-tick] report check failed:',
         ),
       )
       // The ops connections whose login needs a person (#2340): the tick judges
@@ -1351,9 +1360,14 @@ const scheduledJobs = {
           writeHeartbeat(env.IDEMPOTENCY, OPS_CONNECTION_LOGINS_JOB)
             .catch((e) => console.error(`[${OPS_CONNECTION_LOGINS_JOB}] heartbeat write failed:`, e))
             .then(() => runOpsConnectionLoginCheckForEnv(supabase, env.IDEMPOTENCY, reachability.claims))
-            .then((s) => { if (s.errors.length > 0) console.error(`[ops-connection-login] ${s.errors.length} fault(s): ${s.errors.join('; ')}`) })
-            .catch((e) => console.error('[ops-connection-login] check failed:', e)),
+            .then((s) => {
+              if (s.errors.length === 0) return
+              console.error(`[ops-connection-login] ${s.errors.length} fault(s): ${s.errors.join('; ')}`)
+              // Faults it caught and only logs are a failed run (#2523).
+              return failedRun('[ops-connection-login] fault(s):')
+            }),
           OPS_CONNECTION_LOGINS_JOB,
+          '[ops-connection-login] check failed:',
         ),
       )
       // The person bound logins whose new login the ops Worker holds and the
@@ -1366,9 +1380,14 @@ const scheduledJobs = {
           writeHeartbeat(env.IDEMPOTENCY, OPS_CONNECTION_WRITE_BACKS_JOB)
             .catch((e) => console.error(`[${OPS_CONNECTION_WRITE_BACKS_JOB}] heartbeat write failed:`, e))
             .then(() => runOpsConnectionWriteBackCheckForEnv(supabase, env.IDEMPOTENCY, reachability.claims))
-            .then((s) => { if (s.errors.length > 0) console.error(`[ops-connection-write-back] ${s.errors.length} fault(s): ${s.errors.join('; ')}`) })
-            .catch((e) => console.error('[ops-connection-write-back] check failed:', e)),
+            .then((s) => {
+              if (s.errors.length === 0) return
+              console.error(`[ops-connection-write-back] ${s.errors.length} fault(s): ${s.errors.join('; ')}`)
+              // Faults it caught and only logs are a failed run (#2523).
+              return failedRun('[ops-connection-write-back] fault(s):')
+            }),
           OPS_CONNECTION_WRITE_BACKS_JOB,
+          '[ops-connection-write-back] check failed:',
         ),
       )
       minuteJob('heartbeat-checks',
