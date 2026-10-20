@@ -483,9 +483,9 @@ export const OPS_TICK_PROBLEM_RULES = {
    */
   sf_limits_read_failing: 'three_in_a_row',
   // The connection_check sweep (#2340, ops/connection-check.ts), claimed every
-  // 14 minutes, so as with sf_limits no kind of its can be reported by three
-  // ticks in a row: it holds a failure the next probe may not meet itself, by
-  // the age of the connection's last passing check.
+  // 14 minutes, so no kind of its can be reported by three ticks in a row, and
+  // it is not yet judged by its runs as sf_limits is: it holds a failure the
+  // next probe may not meet itself, by the age of the connection's last passing check.
   /** The read of which connections to check failed, or the sweep threw past its own boundaries. */
   connection_check_failed: 'at_once',
   /** As many connections as one sweep checks: any past them wait for a later sweep. */

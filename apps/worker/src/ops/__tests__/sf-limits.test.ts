@@ -118,7 +118,7 @@ describe('the interval', () => {
     expect(SF_LIMITS_EVERY_SECONDS).toBeLessThanOrEqual(5 * 60)
   })
 
-  it('holds a transient failure only while the reading is younger than one renewal plus a missed tick, so a second failure in a row pages', () => {
+  it('pages a transient failure at once only from a reading older than one renewal plus a missed tick, so with nothing else renewing it a second failure in a row pages', () => {
     // One renewal is at most 5 minutes, 6 with a missed tick; two are at least 8.
     expect(SF_LIMITS_HOLD_WHILE_YOUNGER_MS).toBeGreaterThan(6 * 60_000)
     expect(SF_LIMITS_HOLD_WHILE_YOUNGER_MS).toBeLessThan(2 * SF_LIMITS_EVERY_SECONDS * 1000)
@@ -305,7 +305,7 @@ describe('the sweep', () => {
       expect(out.problems[0].text).toMatch(/has no budget reading/)
     })
 
-    it('holds a reading write the ops database did not take the same way', async () => {
+    it('judges a reading write the ops database did not take the same way: counted by runs while young, at once when old', async () => {
       const young = await runSfLimitsSweep(harness({ recordFails: true }).deps)
       expect(young.counts.sf_limits_held).toBe(1)
       expect(young.problems.map((p) => p.key)).toEqual([`sf_limits_read_failing:${SF_ONE}`])

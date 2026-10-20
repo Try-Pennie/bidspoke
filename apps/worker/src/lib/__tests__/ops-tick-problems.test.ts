@@ -29,7 +29,7 @@ const AT_ONCE = [
   'report_unreadable', 'unkeyed',
   // The sf_limits sweep (#2336), judged by its runs (#2340); its passing failure while the reading is young is sf_limits_read_failing, above.
   'sf_limits_failed', 'sf_limits_orgs_limit', 'sf_limits_refused', 'sf_limits_unreadable', 'sf_limits_read_failed',
-  // The connection_check sweep (#2340): it runs every fourteenth tick, so the same holds.
+  // The connection_check sweep (#2340): it runs every fourteenth tick, so no kind of its can reach three ticks in a row, and it holds a passing failure itself.
   'connection_check_failed', 'connection_check_limit', 'connection_check_refused', 'connection_check_unreadable', 'connection_check_unavailable',
   'connection_logins_limit',
   // The write back check (#2340 phase 10 item 4): it rides the connection_check sweep's interval, so the same holds.
