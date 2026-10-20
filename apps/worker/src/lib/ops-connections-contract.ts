@@ -29,12 +29,40 @@
  * shape, and no public field naming a login).
  */
 import type { ConnectionRefusalCode } from '../ops/connections/refusals'
+import { DELEGATION_KINDS, type DelegationKind } from '../ops/run-vocabulary'
 import type { SchemaLookupCode } from './schema-sync/errors'
 import type { SchemaLookupAnswer } from './schema-sync/lookup'
 import { clearFieldProblem, OpsGatewayContractError, parseSealedEnvelope, type SealedEnvelopeShape } from './ops-gateway-contract'
 
 export const OPS_CONNECTIONS_METHODS = ['verify', 'clearReauth', 'revoke', 'health', 'lookup', 'exchangeOAuthCode'] as const
 export type OpsConnectionsMethod = (typeof OPS_CONNECTIONS_METHODS)[number]
+
+/**
+ * The Google mailboxes and drives list's methods (#2338, PR 2 of its build
+ * plan; R10, finding F129): add, remove and list an organization's
+ * google_delegation_subjects, each change written with who made it and when.
+ *
+ * Kept apart from OPS_CONNECTIONS_METHODS on purpose. That list is what the
+ * bidding Worker calls through OPS_CONNECTIONS, and CI's deployed ops check
+ * (.github/scripts/ops-exports-entrypoint.mjs) requires the LIVE ops Worker to
+ * export each of its methods, on every pull request that touches ops. These
+ * ship on ops first (DEPLOY ORDER in ops-connections-entrypoint.ts), so the
+ * pull request adding them cannot also require them of the deploy it precedes.
+ * The bidding routes that call them (PR 6) move them into
+ * OPS_CONNECTIONS_METHODS, once the ops deploy carries them.
+ */
+export const OPS_DELEGATION_METHODS = ['addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects'] as const
+export type OpsDelegationMethod = (typeof OPS_DELEGATION_METHODS)[number]
+
+/** Each is one ops database call, which stops at the 8 s statement timeout: the same ceiling as revoke and health. */
+export const OPS_DELEGATION_CEILINGS_MS: Readonly<Record<OpsDelegationMethod, number>> = {
+  addDelegationSubject: 10_000,
+  removeDelegationSubject: 10_000,
+  listDelegationSubjects: 10_000,
+}
+
+/** At most this many entries are answered by listDelegationSubjects; reached_limit says so. */
+export const DELEGATION_LIST_LIMIT = 1000
 
 /**
  * How long the entrypoint lets each method run before it answers
@@ -122,6 +150,18 @@ export const OPS_CONNECTIONS_REFUSAL_CODES = [
   'lookup_allowance_unavailable',
   /** The connection's service answers no schema lookups. */
   'lookup_not_supported',
+  /** The Google list (#2338): the address is not one mailbox, or the id not a shared drive's. Nothing was written. */
+  'delegation_subject_invalid',
+  /** A drive's name is longer than 200 characters or holds a control character, or a name was given for a mailbox. Nothing was written. */
+  'delegation_display_name_invalid',
+  /** Another organization's list holds this mailbox or drive. Nothing was written. */
+  'delegation_subject_listed_elsewhere',
+  /** The organization's list holds no such entry, so nothing was removed. */
+  'delegation_subject_not_listed',
+  /** The ops database did not confirm the change: read the list to see whether it was made. */
+  'delegation_change_failed',
+  /** The list could not be read. */
+  'delegation_list_unavailable',
 ] as const
 export type OpsConnectionsOwnRefusal = (typeof OPS_CONNECTIONS_REFUSAL_CODES)[number]
 export type OpsConnectionsRefusalCode = OpsConnectionsOwnRefusal | ConnectionRefusalCode | SchemaLookupCode
@@ -305,6 +345,105 @@ export function parseLookupRequest(raw: unknown): LookupRequest {
     throw new OpsConnectionsContractError(`the lookup's parents are not a list of at most one name of 1 to ${MAX_PARENT} characters`)
   }
   return { organization_id: uuidField(r, 'organization_id'), connection_id: uuidField(r, 'connection_id'), key: r.key, parents: [...(parents as string[])] }
+}
+
+// ── the Google mailboxes and drives list (#2338) ────────────────────────────
+
+/**
+ * The signed in person changing the list, from the bidding Worker's verified
+ * JWT: who the change record names. At least one of a name or an email, since
+ * the entry shows who added it ("Added by <who>", D10).
+ */
+export interface DelegationActorShape {
+  user_id: string
+  email: string | null
+  name: string | null
+}
+
+export interface AddDelegationSubjectRequest {
+  organization_id: string
+  actor: DelegationActorShape
+  kind: DelegationKind
+  /** A mailbox's address or a shared drive's id, as typed: ops trims it, lower cases a mailbox, and judges its shape. */
+  subject: string
+  /** A shared drive's name, shown in place of its id; null for a mailbox. */
+  display_name: string | null
+}
+
+export interface RemoveDelegationSubjectRequest {
+  organization_id: string
+  actor: DelegationActorShape
+  kind: DelegationKind
+  subject: string
+}
+
+export interface ListDelegationSubjectsRequest {
+  organization_id: string
+}
+
+/** One entry of the list, as the page shows it. */
+export interface DelegationSubjectRow {
+  kind: DelegationKind
+  subject: string
+  display_name: string | null
+  added_by: string
+  added_at: string
+}
+
+export type AddDelegationSubjectAnswer = { ok: true; outcome: 'added' | 'already_listed'; entry: DelegationSubjectRow } | OpsConnectionsRefused
+export type RemoveDelegationSubjectAnswer = { ok: true; outcome: 'removed' } | OpsConnectionsRefused
+export type ListDelegationSubjectsAnswer = { ok: true; subjects: DelegationSubjectRow[]; reached_limit: boolean } | OpsConnectionsRefused
+
+/**
+ * Size bounds only, so nothing unbounded crosses: the shape of an address, a
+ * drive id and a drive's name is the table's to judge, its one home (L83), and
+ * ops answers each by name (delegation_subject_invalid, delegation_display_name_invalid).
+ */
+const MAX_SUBJECT = 320
+const MAX_ACTOR_FIELD = 200
+const MAX_ACTOR_EMAIL = 320
+const MAX_DISPLAY_NAME = 400
+
+function actorField(raw: unknown): DelegationActorShape {
+  if (!isRecord(raw)) throw new OpsConnectionsContractError('the request\'s actor is not an object')
+  const { user_id, email, name } = raw
+  if (typeof user_id !== 'string' || !UUID.test(user_id)) throw new OpsConnectionsContractError('the actor\'s user_id is not a uuid')
+  if (email !== null && email !== undefined && (typeof email !== 'string' || email.length > MAX_ACTOR_EMAIL)) {
+    throw new OpsConnectionsContractError(`the actor's email is neither text of at most ${MAX_ACTOR_EMAIL} characters nor null`)
+  }
+  if (name !== null && name !== undefined && (typeof name !== 'string' || name.length > MAX_ACTOR_FIELD)) {
+    throw new OpsConnectionsContractError(`the actor's name is neither text of at most ${MAX_ACTOR_FIELD} characters nor null`)
+  }
+  const shown = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v : null)
+  if (shown(email) === null && shown(name) === null) throw new OpsConnectionsContractError('the actor has neither a name nor an email to say who made the change')
+  return { user_id: user_id.toLowerCase(), email: typeof email === 'string' ? email : null, name: typeof name === 'string' ? name : null }
+}
+
+function entryFields(r: Record<string, unknown>): { kind: DelegationKind; subject: string } {
+  if (typeof r.kind !== 'string' || !(DELEGATION_KINDS as readonly string[]).includes(r.kind)) throw new OpsConnectionsContractError('the entry\'s kind is not mailbox or drive')
+  if (typeof r.subject !== 'string' || r.subject.length > MAX_SUBJECT) throw new OpsConnectionsContractError(`the entry's subject is not text of at most ${MAX_SUBJECT} characters`)
+  return { kind: r.kind as DelegationKind, subject: r.subject }
+}
+
+export function parseAddDelegationSubjectRequest(raw: unknown): AddDelegationSubjectRequest {
+  const r = record(raw)
+  const organization_id = uuidField(r, 'organization_id')
+  const actor = actorField(r.actor)
+  const entry = entryFields(r)
+  const displayName = r.display_name ?? null
+  if (displayName !== null && (typeof displayName !== 'string' || displayName.length > MAX_DISPLAY_NAME)) {
+    throw new OpsConnectionsContractError(`the entry's display_name is neither text of at most ${MAX_DISPLAY_NAME} characters nor null`)
+  }
+  return { organization_id, actor, ...entry, display_name: displayName }
+}
+
+export function parseRemoveDelegationSubjectRequest(raw: unknown): RemoveDelegationSubjectRequest {
+  const r = record(raw)
+  return { organization_id: uuidField(r, 'organization_id'), actor: actorField(r.actor), ...entryFields(r) }
+}
+
+export function parseListDelegationSubjectsRequest(raw: unknown): ListDelegationSubjectsRequest {
+  return { organization_id: uuidField(record(raw), 'organization_id') }
 }
 
 export function parseExchangeOAuthCodeRequest(raw: unknown): ExchangeOAuthCodeRequest {

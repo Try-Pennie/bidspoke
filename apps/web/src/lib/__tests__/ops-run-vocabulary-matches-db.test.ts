@@ -16,7 +16,10 @@ import {
   ALL_OBSERVATION_REASONS,
   CONNECTION_COPY_STATES,
   CONNECTION_STATUSES,
+  DELEGATION_ADD_OUTCOMES,
   DELEGATION_CHECK_OUTCOMES,
+  DELEGATION_KINDS,
+  DELEGATION_REMOVE_OUTCOMES,
   REFRESH_OUTCOMES,
   ALL_STATUS_REASONS,
   ENGINE_FAILED_REASONS,
@@ -97,6 +100,8 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     // Every purpose but step has a share of its own (#2335, F125); a step's is its workflow's.
     ['sf_purpose_caps_purpose_check', SF_LEASE_PURPOSES.filter((p) => p !== 'step')],
     ['sf_budget_readings_source_check', SF_BUDGET_SOURCES],
+    // F129's allowlist (#2335), written through the Google list's functions (#2338).
+    ['google_delegation_subjects_kind_check', DELEGATION_KINDS],
   ] as const)('%s', (name, values) => {
     expect(sorted(constraintValues(SQL, name))).toEqual(sorted(values))
   })
@@ -134,6 +139,9 @@ describe('the run engine vocabularies match the ops database constraints', () =>
     // Decision 2's streak and F129's allowlist (#2335).
     ['record_connection_refresh', /RETURN '([a-z_]+)'/g, REFRESH_OUTCOMES],
     ['google_delegation_check', /RETURN '([a-z_]+)'/g, DELEGATION_CHECK_OUTCOMES],
+    // The Google list's writes (#2338).
+    ['add_google_delegation_subject', /SELECT '([a-z_]+)'::text/g, DELEGATION_ADD_OUTCOMES],
+    ['remove_google_delegation_subject', /SELECT '([a-z_]+)'::text/g, DELEGATION_REMOVE_OUTCOMES],
   ] as const)('%s answers exactly its vocabulary', (name, pattern, values) => {
     expect(sorted([...new Set([...functionBody(SQL, name).matchAll(pattern)].map((m) => m[1]))])).toEqual(sorted(values))
   })

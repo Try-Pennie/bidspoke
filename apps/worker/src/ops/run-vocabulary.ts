@@ -170,6 +170,22 @@ export type RefreshOutcome = (typeof REFRESH_OUTCOMES)[number]
 export const DELEGATION_CHECK_OUTCOMES = ['allowed', 'mailbox_not_allowed', 'drive_not_allowed'] as const
 export type DelegationCheckOutcome = (typeof DELEGATION_CHECK_OUTCOMES)[number]
 
+/** What google_delegation_subjects holds an entry of: a mailbox a connection acts as, or a shared drive it names (F129). */
+export const DELEGATION_KINDS = ['mailbox', 'drive'] as const
+export type DelegationKind = (typeof DELEGATION_KINDS)[number]
+
+/**
+ * What add_google_delegation_subject answers (#2338, ops migration
+ * 20261020190000): added, already_listed (nothing written), or a refusal by
+ * name that wrote nothing.
+ */
+export const DELEGATION_ADD_OUTCOMES = ['added', 'already_listed', 'listed_by_another_organization', 'subject_invalid', 'display_name_invalid'] as const
+export type DelegationAddOutcome = (typeof DELEGATION_ADD_OUTCOMES)[number]
+
+/** What remove_google_delegation_subject answers: removed, or not_listed when the organization holds no such entry. */
+export const DELEGATION_REMOVE_OUTCOMES = ['removed', 'not_listed'] as const
+export type DelegationRemoveOutcome = (typeof DELEGATION_REMOVE_OUTCOMES)[number]
+
 /**
  * Why a Salesforce lease is taken. A step's share is its workflow's; every
  * other purpose has a share of its own. Reconnect takes none of its own: its

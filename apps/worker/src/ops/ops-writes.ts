@@ -44,9 +44,9 @@
  * connection_check sweep, recordConnectionCheck.
  */
 import {
-  CONNECTION_COPY_STATES, DELEGATION_CHECK_OUTCOMES, LEDGER_METHODS, OBSERVATION_OUTCOMES, OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES,
-  REFRESH_OUTCOMES, RESOURCE_WAIT_CAUSES, SF_BUDGET_SOURCES, SF_LEASE_OUTCOMES, SF_LEASE_PURPOSES, TRIGGER_KINDS,
-  type ConnectionCopyState, type DelegationCheckOutcome, type HolderFailedReason, type RefreshOutcome, type LedgerMethod, type ObservationOutcome, type OpsSweep, type OverlapRule,
+  CONNECTION_COPY_STATES, DELEGATION_ADD_OUTCOMES, DELEGATION_CHECK_OUTCOMES, DELEGATION_KINDS, DELEGATION_REMOVE_OUTCOMES, LEDGER_METHODS, OBSERVATION_OUTCOMES,
+  OBSERVATION_REASONS, OPS_SWEEPS, OVERLAP_RULES, REFRESH_OUTCOMES, RESOURCE_WAIT_CAUSES, SF_BUDGET_SOURCES, SF_LEASE_OUTCOMES, SF_LEASE_PURPOSES, TRIGGER_KINDS,
+  type ConnectionCopyState, type DelegationAddOutcome, type DelegationCheckOutcome, type DelegationKind, type DelegationRemoveOutcome, type HolderFailedReason, type RefreshOutcome, type LedgerMethod, type ObservationOutcome, type OpsSweep, type OverlapRule,
   type ResourceWaitCause, type SfBudgetSource, type SfLeaseOutcome, type SfLeasePurpose, type TriggerKind,
 } from './run-vocabulary'
 import {
@@ -57,6 +57,7 @@ import {
   OPS_STATEMENT_DEADLINE_MS, organizationIdFrom, readOpsRows, sendWithinOpsDeadline, type OpsDeadlineOptions, type OpsSupabaseClient, type OrganizationId,
 } from './ops-db'
 import { CONNECTION_SERVE_WINDOW_MS } from '../lib/ops-gateway-contract'
+import { DELEGATION_LIST_LIMIT } from '../lib/ops-connections-contract'
 
 /** Past the ops project's 8 s statement timeout, so the database gives up first: the one deadline every ops request has (ops-db.ts). */
 export const OPS_RPC_DEADLINE_MS = OPS_STATEMENT_DEADLINE_MS
@@ -978,6 +979,90 @@ export async function googleDelegationCheck(
   const data = await callOpsRpc(client, name, { p_organization_id: organizationId, p_mailbox: mailbox, p_drives: [...drives] }, options)
   if (!oneOf(DELEGATION_CHECK_OUTCOMES)(data)) throw new OpsWriteError(`${name} returned something that is not a delegation check outcome`)
   return data
+}
+
+// ── the Google mailboxes and drives list (#2338) ────────────────────────────
+
+/** The signed in person changing the list, as the bidding Worker read them from the JWT: their user id, and a name or an email to show. */
+export interface DelegationActor {
+  id: string
+  email: string | null
+  name: string | null
+}
+
+/** One entry, as the add and the remove name it. The database judges its shape (subject_invalid), so it has one home. */
+export interface DelegationEntry {
+  kind: DelegationKind
+  subject: string
+}
+
+/** One entry of an organization's list, as list_google_delegation_subjects answers it. */
+export interface DelegationSubject {
+  kind: DelegationKind
+  /** A mailbox's address, lower case, or a shared drive's id. */
+  subject: string
+  /** A shared drive's name; null for a mailbox, and for a drive saved without one. */
+  displayName: string | null
+  /** The person's name, or their email when no name was given. */
+  addedBy: string
+  addedAt: string
+}
+
+export type AddDelegationResult =
+  | { outcome: 'added' | 'already_listed'; entry: DelegationSubject }
+  | { outcome: Exclude<DelegationAddOutcome, 'added' | 'already_listed'>; entry: null }
+
+function delegationSubject(name: string, row: Row): DelegationSubject {
+  return {
+    kind: field(name, row, 'kind', oneOf(DELEGATION_KINDS), 'mailbox or drive'),
+    subject: field(name, row, 'subject', isString, 'text'),
+    displayName: field(name, row, 'display_name', isStringOrNull, 'text or null'),
+    addedBy: field(name, row, 'added_by', isString, 'text'),
+    addedAt: field(name, row, 'added_at', isTime, 'a time'),
+  }
+}
+
+function actorArgs(actor: DelegationActor): Record<string, unknown> {
+  return { p_actor_id: actor.id, p_actor_email: actor.email, p_actor_name: actor.name }
+}
+
+/**
+ * Adds one entry to the organization's list, with its change record (who, when,
+ * what) in the same transaction, so a record that cannot be written rolls the
+ * entry back. Throws when the database errors or answers anything else.
+ */
+export async function addGoogleDelegationSubject(
+  client: OpsSupabaseClient, organizationId: OrganizationId, entry: DelegationEntry & { displayName: string | null }, actor: DelegationActor, options?: OpsRpcOptions,
+): Promise<AddDelegationResult> {
+  const name = 'add_google_delegation_subject'
+  const row = oneRow(name, await callOpsRpc(client, name, {
+    p_organization_id: organizationId, p_kind: entry.kind, p_subject: entry.subject, p_display_name: entry.displayName, ...actorArgs(actor),
+  }, options))
+  const outcome = field(name, row, 'outcome', oneOf(DELEGATION_ADD_OUTCOMES), 'an add outcome')
+  if (outcome === 'added' || outcome === 'already_listed') return { outcome, entry: delegationSubject(name, row) }
+  return { outcome, entry: null }
+}
+
+/** Removes one of the organization's own entries, with its change record. not_listed when it holds no such entry. */
+export async function removeGoogleDelegationSubject(
+  client: OpsSupabaseClient, organizationId: OrganizationId, entry: DelegationEntry, actor: DelegationActor, options?: OpsRpcOptions,
+): Promise<DelegationRemoveOutcome> {
+  const name = 'remove_google_delegation_subject'
+  const row = oneRow(name, await callOpsRpc(client, name, {
+    p_organization_id: organizationId, p_kind: entry.kind, p_subject: entry.subject, ...actorArgs(actor),
+  }, options))
+  return field(name, row, 'outcome', oneOf(DELEGATION_REMOVE_OUTCOMES), 'a remove outcome')
+}
+
+/** The organization's list, at most limit entries. Throws on a failed read: an empty list would read as nothing allowed. */
+export async function readGoogleDelegationSubjects(
+  client: OpsSupabaseClient, organizationId: OrganizationId, limit: number, options?: OpsRpcOptions,
+): Promise<{ subjects: DelegationSubject[]; reachedLimit: boolean }> {
+  const name = 'list_google_delegation_subjects'
+  // list_google_delegation_subjects holds the limit to 1 to 1000, the contract's DELEGATION_LIST_LIMIT.
+  if (!Number.isInteger(limit) || limit < 1 || limit > DELEGATION_LIST_LIMIT) throw new OpsWriteError(`${name}: the limit must be a whole number from 1 to ${DELEGATION_LIST_LIMIT}`)
+  const subjects = rows(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_limit: limit }, options)).map((row) => delegationSubject(name, row))
+  return { subjects, reachedLimit: subjects.length === limit }
 }
 
 /** Reconnect's writer, the only one that clears needs_reauth. */

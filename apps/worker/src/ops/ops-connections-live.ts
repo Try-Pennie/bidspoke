@@ -22,9 +22,11 @@ import type { OpsConnectionsDeps } from './connections/ops-connections'
 import { opsServiceEntry } from './connections/services'
 import type { OpsEnv } from './index'
 import { createOpsSupabaseClient } from './ops-db'
+import type { DelegationListDeps } from './connections/delegation-list'
 import {
-  acquireSfLease, readConnectionCopy, readConnectionStatus, readMeasuredSfOrg, recordConnectionNeedsReauth, recordConnectionReauthCleared, recordConnectionRefresh,
-  recordConnectionTombstone, recordMeasuredIdentity, recordSfBudgetReading, releaseSfLease, takeLookupAllowance,
+  acquireSfLease, addGoogleDelegationSubject, readConnectionCopy, readConnectionStatus, readGoogleDelegationSubjects, readMeasuredSfOrg, recordConnectionNeedsReauth,
+  recordConnectionReauthCleared, recordConnectionRefresh, recordConnectionTombstone, recordMeasuredIdentity, recordSfBudgetReading, releaseSfLease,
+  removeGoogleDelegationSubject, takeLookupAllowance,
 } from './ops-writes'
 import { GATEWAY_DEADLINE_MS } from './tick-live'
 
@@ -104,5 +106,20 @@ export function liveOpsConnectionsDeps(env: OpsEnv, options: LiveOpsConnectionsO
     takeLookupAllowance: (organizationId, perMinute) => takeLookupAllowance(client, organizationId, perMinute),
     tokens: env.CONNECTION_TOKENS ? tokenObjectsOf(env.CONNECTION_TOKENS) : noTokenObjects,
     now: () => Date.now(),
+  }
+}
+
+/**
+ * The Google mailboxes and drives list's dependencies (#2338): the ops database
+ * alone, through the organization scoped functions in ops-writes.ts. No login is
+ * opened and no other Worker is asked, so it needs neither the ops private key
+ * nor OPS_GATEWAY. Throws OpsDatabaseConfigError naming the missing secret.
+ */
+export function liveDelegationListDeps(env: OpsEnv, options: { opsFetch?: typeof fetch } = {}): DelegationListDeps {
+  const client = createOpsSupabaseClient(env, options.opsFetch ? { fetch: options.opsFetch } : {})
+  return {
+    add: (organizationId, entry, actor) => addGoogleDelegationSubject(client, organizationId, entry, actor),
+    remove: (organizationId, entry, actor) => removeGoogleDelegationSubject(client, organizationId, entry, actor),
+    list: (organizationId, limit) => readGoogleDelegationSubjects(client, organizationId, limit),
   }
 }
