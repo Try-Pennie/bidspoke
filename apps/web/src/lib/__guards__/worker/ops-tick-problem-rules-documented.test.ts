@@ -49,4 +49,15 @@ describe('the ops tick problem rules are documented as the code applies them', (
   it('lists every kind paged at once, and no other', () => {
     expect(kindsInDoc('| At once').filter((k) => k !== 'start_stamp').sort()).toEqual(rulesInCode().at_once.sort())
   })
+
+  // #2340: the kinds judged by their sweep's runs rather than the tick's, which
+  // the person paged needs to read three in a row as three runs of the sweep.
+  it('lists every kind judged by its sweep\'s runs, and no other', () => {
+    const start = SOURCE.indexOf('export const OPS_TICK_PROBLEM_SWEEPS = {')
+    const end = SOURCE.indexOf('} as const satisfies', start)
+    expect(start, 'OPS_TICK_PROBLEM_SWEEPS is no longer a const object in ops-gateway-contract.ts').toBeGreaterThan(-1)
+    const inCode = [...SOURCE.slice(start, end).matchAll(/^\s+([a-z_]+): '[a-z_]+',$/gm)].map((m) => m[1])
+    expect(inCode.length).toBeGreaterThan(0)
+    expect(kindsInDoc('Kinds judged by their sweep\'s runs').sort()).toEqual(inCode.sort())
+  })
 })

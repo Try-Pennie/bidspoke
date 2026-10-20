@@ -124,12 +124,27 @@ awaited before its report.
   renewed by then; a reading goes stale at 15 minutes, so three renewals in a row
   must fail first. Salesforce says the figures are accurate within five minutes
   and asks not to be polled rapidly, so faster gains nothing.
-- **Failures** page through the tick's report, each at once: a refusal the next
-  read meets again (a 4xx, a refusal by rule or state such as `sf_cap_unset` or
-  `connection_needs_reauth`, an unreadable body) at once; a passing one (a
+- **Failures** page through the tick's report: a refusal the next read meets
+  again (a 4xx, a refusal by rule or state such as `sf_cap_unset` or
+  `connection_needs_reauth`, an unreadable body) at once. A passing one (a
   timeout, a busy pool, a 5xx, a rate limit, a write the ops database missed)
-  only once the org's reading is older than 7 minutes, which only a second
-  failure in a row leaves it. docs/reference/observability.md has the kinds.
+  pages at once once the org's reading is 7 minutes old or more
+  (`sf_limits_read_failed`), which only a second failure in a row leaves it
+  when nothing else renews the reading. While the reading is younger it is
+  `sf_limits_read_failing` (#2340), which pages on the third run of the sweep
+  in a row whatever the reading's age: other ops Salesforce calls renew the
+  reading through `Sforce-Limit-Info` (#2507), so a read that fails every time
+  would otherwise never page. Three failed runs leave the last good read at
+  least 12 minutes old, inside the 15 a reading is fresh for, and a fourth
+  would put it at 16, past the moment the pool would already be refused had no
+  other call kept the reading fresh, so three is the most that still pages
+  first. Two would page on a passing Salesforce blip while the pool is
+  measured and nothing is refused. The count lives on the bidding Worker, in
+  the same record as the tick's three ticks in a row, and counts runs of the
+  sweep, not ticks: a tick that did not run the sweep carries every sf_limits
+  problem as it stood, so the page stands between runs and its all clear goes
+  out once a run no longer reports it. docs/reference/observability.md has the
+  kinds and how the count is kept.
 - **Its heartbeat** is `ops-sf-limits` in the bidding Worker's `CRON_JOBS`,
   stamped through `OpsGateway.opsJobStarted` and `opsJobCompleted` (#2340), which
   accept only the ids in `OPS_GATEWAY_JOBS` and are reached only by the ops

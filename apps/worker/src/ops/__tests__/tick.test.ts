@@ -756,11 +756,27 @@ describe('the sf_limits sweep inside the tick (#2336)', () => {
     expect(report.problems[0]).toMatch(/sf_cap_unset/)
   })
 
-  it('holds a transient failure while the org\'s reading is young, and the tick stays ok', async () => {
+  // #2340: reported under the kind the bidding Worker counts by the sweep's
+  // runs, so a young reading kept fresh by other calls cannot hide it for ever.
+  it('reports a transient failure while the org\'s reading is young, to be counted by the sweep\'s runs', async () => {
     const f = fake({ sfTargets: [sfTarget()], sfRead: async () => new RequeueAt(new Date(WORKER_NOW + 60_000), 'rate_limited') })
     const report = await runOpsTick(f.ports)
-    expect(report.outcome).toBe('ok')
+    expect(report.outcome).toBe('problems')
+    expect(report.problem_keys).toEqual([`sf_limits_read_failing:${SF_ORG}`])
     expect(report.counts.sf_limits_held).toBe(1)
+  })
+
+  // #2340: the bidding Worker judges a sweep's problems by that sweep's runs, so
+  // the report says which sweeps this tick ran: the ones whose claim it owned.
+  it('says which sweeps the tick ran: every one whose claim it owned', async () => {
+    const report = await runOpsTick(fake().ports)
+    expect(report.sweeps_run).toEqual(TICK_SWEEPS.map((s) => s.sweep))
+  })
+
+  it('names no sweep it stood down from or whose claim failed', async () => {
+    expect((await runOpsTick(fake({ sweepOwned: false }).ports)).sweeps_run).toEqual([])
+    const f = fake({ failing: { claimSweep: new OpsWriteTimeoutError('claim_ops_sweep did not answer within 9000 ms') } })
+    expect((await runOpsTick(f.ports)).sweeps_run).toEqual([])
   })
 
   it('goes on, and the tick stays ok, when the job stamps fail: the heartbeat is what pages a sweep that stops stamping', async () => {

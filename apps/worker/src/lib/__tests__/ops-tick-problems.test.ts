@@ -7,8 +7,10 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  MAX_REPORT_LOGINS, MAX_REPORT_PROBLEMS, MAX_REPORT_WRITE_BACKS, OPS_TICK_PROBLEM_RULES, capTickProblems, parseOpsTickReport, problemRuleOf, tickProblem,
+  MAX_REPORT_LOGINS, MAX_REPORT_PROBLEMS, MAX_REPORT_WRITE_BACKS, OPS_TICK_PROBLEM_RULES, OPS_TICK_PROBLEM_SWEEPS, capTickProblems, parseOpsTickReport,
+  problemRuleOf, sweepOfProblemKey, tickProblem,
 } from '../ops-gateway-contract'
+import { OPS_SWEEPS } from '../../ops/run-vocabulary'
 
 const THREE_IN_A_ROW = [
   'start_stamp', 'db_clock', 'sweep_claim_failed', 'sweep_failed', 'workflows_fetch_failed', 'workflows_save_failed',
@@ -16,15 +18,18 @@ const THREE_IN_A_ROW = [
   'connections_save_failed', 'tombstone_record_failed', 'problems_left_out',
   // The login states (#2340), read every tick, so the next tick asks again.
   'connection_logins_failed',
+  // The sf_limits sweep's passing failure while the org's reading is still
+  // young (#2340): three runs of the sweep in a row, not three ticks.
+  'sf_limits_read_failing',
 ]
 const AT_ONCE = [
   'db_not_configured', 'not_configured', 'secrets_unchecked', 'agreement_check_failed', 'queue_disagreement', 'workflow_refused',
   'workflows_too_many', 'copies_read_limit', 'schedule_refused', 'schedule_no_version', 'slot_missed', 'dispatch_failed',
   'connections_list_unreadable', 'connection_refused', 'connections_too_many', 'connection_copies_expired', 'connections_step_failed',
   'report_unreadable', 'unkeyed',
-  // The sf_limits sweep (#2336): it runs every fourth tick, so no kind of its can be reported by three ticks in a row.
+  // The sf_limits sweep (#2336), judged by its runs (#2340); its passing failure while the reading is young is sf_limits_read_failing, above.
   'sf_limits_failed', 'sf_limits_orgs_limit', 'sf_limits_refused', 'sf_limits_unreadable', 'sf_limits_read_failed',
-  // The connection_check sweep (#2340): it runs every fourteenth tick, so the same holds.
+  // The connection_check sweep (#2340): it runs every fourteenth tick, so no kind of its can reach three ticks in a row, and it holds a passing failure itself.
   'connection_check_failed', 'connection_check_limit', 'connection_check_refused', 'connection_check_unreadable', 'connection_check_unavailable',
   'connection_logins_limit',
   // The write back check (#2340 phase 10 item 4): it rides the connection_check sweep's interval, so the same holds.
@@ -56,6 +61,60 @@ describe('the rule each kind of tick problem pages by', () => {
     expect(tickProblem('sweep_failed', 'The run_expiry sweep failed: claim_ops_sweep passed its 9000 ms deadline.', 'run_expiry'))
       .toEqual({ key: 'sweep_failed:run_expiry', text: 'The run_expiry sweep failed: claim_ops_sweep passed its 9000 ms deadline.' })
     expect(tickProblem('db_clock', 'The ops tick could not read the database clock.').key).toBe('db_clock')
+  })
+})
+
+// #2340: the sf_limits sweep runs every fourth tick, so a problem it reports is
+// judged by the sweep's runs. A tick that did not run it neither counts the
+// problem nor ends it, so the problem stands, and is not stood down, between runs.
+describe('the kinds counted by the runs of their sweep (#2340)', () => {
+  it('counts every kind of the sf_limits sweep by that sweep\'s runs, and no other kind', () => {
+    expect(OPS_TICK_PROBLEM_SWEEPS).toEqual({
+      sf_limits_failed: 'sf_limits', sf_limits_orgs_limit: 'sf_limits', sf_limits_refused: 'sf_limits',
+      sf_limits_unreadable: 'sf_limits', sf_limits_read_failed: 'sf_limits', sf_limits_read_failing: 'sf_limits',
+    })
+  })
+
+  it('names only kinds the rules table has and sweeps the tick claims', () => {
+    for (const [kind, sweep] of Object.entries(OPS_TICK_PROBLEM_SWEEPS)) {
+      expect(Object.hasOwn(OPS_TICK_PROBLEM_RULES, kind), kind).toBe(true)
+      expect(OPS_SWEEPS as readonly string[]).toContain(sweep)
+    }
+  })
+
+  it('reads the sweep from a key\'s kind, and null for a kind counted by ticks or one with no rule', () => {
+    expect(sweepOfProblemKey('sf_limits_read_failing:00Dst0000000001AAA')).toBe('sf_limits')
+    expect(sweepOfProblemKey('sf_limits_failed')).toBe('sf_limits')
+    expect(sweepOfProblemKey('sweep_failed:run_expiry')).toBeNull()
+    expect(sweepOfProblemKey('sweep_claim_failed:sf_limits')).toBeNull()
+    expect(sweepOfProblemKey('toString')).toBeNull()
+    expect(sweepOfProblemKey('')).toBeNull()
+  })
+})
+
+describe('the sweeps a report says its tick ran (#2340)', () => {
+  const report = (over: Record<string, unknown>) => ({
+    tick_id: 't', mode: 'observe', scheduled_time: null, started_at: '2026-10-19T18:36:00Z', finished_at: '2026-10-19T18:36:10Z',
+    db_now: null, outcome: 'ok', problems: [], problem_keys: [], counts: {}, ...over,
+  })
+
+  it('reads a report from an ops release before it as null: not known, never read as no sweep run', () => {
+    expect(parseOpsTickReport(report({})).sweeps_run).toBeNull()
+    expect(parseOpsTickReport(report({ sweeps_run: null })).sweeps_run).toBeNull()
+  })
+
+  it('keeps the sweeps named, a name from a newer release among them', () => {
+    expect(parseOpsTickReport(report({ sweeps_run: ['lease_expiry', 'sf_limits', 'a_newer_sweep'] })).sweeps_run).toEqual(['lease_expiry', 'sf_limits', 'a_newer_sweep'])
+    expect(parseOpsTickReport(report({ sweeps_run: [] })).sweeps_run).toEqual([])
+  })
+
+  it.each([
+    ['not a list', { sweeps_run: 'sf_limits' }],
+    ['a name that is not text', { sweeps_run: [7] }],
+    ['a name with a space in it', { sweeps_run: ['sf limits'] }],
+    ['too long a list', { sweeps_run: Array.from({ length: 21 }, (_, i) => `s${i}`) }],
+  ])('refuses a report whose sweeps run are %s, so it pages as unreadable', (_label, over) => {
+    expect(() => parseOpsTickReport(report(over))).toThrow(/sweeps run/)
   })
 })
 

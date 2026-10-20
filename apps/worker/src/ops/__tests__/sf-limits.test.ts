@@ -8,7 +8,9 @@
  * that org's reading, source limits; a body that cannot be read is a named
  * refusal and never a NaN (L50); each org is its own failure boundary; a
  * refusal that a later read will meet again pages at once, while a failure the
- * next read may not meet is held until the org's reading is going stale; and a
+ * next read may not meet pages at once once the org's reading is going stale and,
+ * while it is young, is reported as sf_limits_read_failing, which the bidding
+ * Worker pages on the third run of the sweep in a row (#2340); and a
  * stamp the gateway refuses never stops the sweep (the heartbeat on the bidding
  * Worker is what catches a sweep that stops stamping).
  *
@@ -16,12 +18,13 @@
  * Worker clock is a constant, and the deadlines are a sleep the test controls.
  */
 import { describe, expect, it } from 'vitest'
-import { OPS_TICK_PROBLEM_RULES, problemRuleOf, type OpsJobReport } from '../../lib/ops-gateway-contract'
+import { MAX_PROBLEM_LENGTH, OPS_TICK_PROBLEM_RULES, problemRuleOf, sweepOfProblemKey, type OpsJobReport } from '../../lib/ops-gateway-contract'
+import { OPS_TICK_TICKS_IN_A_ROW_TO_PAGE } from '../../lib/ops-gateway'
 import { ConnectionRefusal, CONNECTION_REFUSAL_CODES, RequeueAt } from '../connections/refusals'
 import { organizationIdFrom } from '../ops-db'
 import type { SfLimitsTarget } from '../ops-writes'
 import {
-  SF_LIMITS_EVERY_SECONDS, SF_LIMITS_HOLD_WHILE_YOUNGER_MS, SF_LIMITS_MAX_ORGS, SF_LIMITS_ORG_DEADLINE_MS, SF_LIMITS_REFUSAL_KINDS,
+  SF_BUDGET_FRESH_MS, SF_LIMITS_EVERY_SECONDS, SF_LIMITS_HOLD_WHILE_YOUNGER_MS, SF_LIMITS_MAX_ORGS, SF_LIMITS_ORG_DEADLINE_MS, SF_LIMITS_REFUSAL_KINDS,
   parseDailyApiRequests, runSfLimitsSweep, sfLimitsUrl, type SfLimitsSweepDeps,
 } from '../sf-limits'
 
@@ -115,10 +118,22 @@ describe('the interval', () => {
     expect(SF_LIMITS_EVERY_SECONDS).toBeLessThanOrEqual(5 * 60)
   })
 
-  it('holds a transient failure only while the reading is younger than one renewal plus a missed tick, so a second failure in a row pages', () => {
+  it('pages a transient failure at once only from a reading older than one renewal plus a missed tick, so with nothing else renewing it a second failure in a row pages', () => {
     // One renewal is at most 5 minutes, 6 with a missed tick; two are at least 8.
     expect(SF_LIMITS_HOLD_WHILE_YOUNGER_MS).toBeGreaterThan(6 * 60_000)
     expect(SF_LIMITS_HOLD_WHILE_YOUNGER_MS).toBeLessThan(2 * SF_LIMITS_EVERY_SECONDS * 1000)
+  })
+
+  // #2340. A failure held by a young reading pages on the third run of the
+  // sweep in a row. Three failed runs leave the last good read at least 12
+  // minutes old, inside the 15 a reading is fresh for; a fourth would put it at
+  // 16, past the moment the pool would already be refused had no other ops call
+  // kept the reading fresh. So three is the most that still pages first.
+  it('pages a failure a young reading holds on the third run in a row, the last before the sweep alone would have let the pool go unmeasured', () => {
+    const lastGoodAtLeastMs = (runs: number) => runs * SF_LIMITS_EVERY_SECONDS * 1000
+    expect(OPS_TICK_TICKS_IN_A_ROW_TO_PAGE).toBe(3)
+    expect(lastGoodAtLeastMs(OPS_TICK_TICKS_IN_A_ROW_TO_PAGE)).toBeLessThanOrEqual(SF_BUDGET_FRESH_MS)
+    expect(lastGoodAtLeastMs(OPS_TICK_TICKS_IN_A_ROW_TO_PAGE + 1)).toBeGreaterThan(SF_BUDGET_FRESH_MS)
   })
 })
 
@@ -239,12 +254,40 @@ describe('the sweep', () => {
       ['was rate limited', async () => new RequeueAt(new Date(WORKER_NOW + 60_000), 'rate_limited')],
     ]
 
-    it.each(transient)('is held, logged and counted when it %s while the reading is still young', async (_label, read) => {
+    // #2340: a young reading no longer silences it. Other ops Salesforce calls
+    // can keep the reading young for ever through Sforce-Limit-Info, so a read
+    // that fails every time would never page. It is reported under its own kind,
+    // which the bidding Worker counts by the sweep's runs and pages on the third.
+    it.each(transient)('is reported to be counted by the sweep\'s runs, logged and counted when it %s while the reading is still young', async (_label, read) => {
       const h = harness({ read })
       const out = await runSfLimitsSweep(h.deps)
-      expect(out.problems).toEqual([])
+      expect(out.problems.map((p) => p.key)).toEqual([`sf_limits_read_failing:${SF_ONE}`])
+      expect(problemRuleOf(out.problems[0].key)).toBe('three_in_a_row')
+      expect(sweepOfProblemKey(out.problems[0].key)).toBe('sf_limits')
       expect(out.counts.sf_limits_held).toBe(1)
       expect(h.logs).toEqual([expect.objectContaining({ event: 'ops_tick', step: 'sf_limits_held', sf_org_id: SF_ONE })])
+    })
+
+    // The alerter reads a different sentence as a different problem and posts it
+    // at once (#1768), so a sentence carrying the cause or the reading's age
+    // would post on every run. The log line carries both.
+    it('says it in the same words whatever the cause and the reading\'s age, within the length a report carries', async () => {
+      const texts = new Set<string>()
+      for (const [, read] of transient) {
+        for (const age of [0, 3, 6]) {
+          const out = await runSfLimitsSweep(harness({ read, targets: [target({ readingMeasuredAt: minutesBefore(age) })] }).deps)
+          texts.add(out.problems[0].text)
+        }
+      }
+      expect(texts.size).toBe(1)
+      const [text] = [...texts]
+      expect(text.length).toBeLessThanOrEqual(MAX_PROBLEM_LENGTH)
+      expect(text).toContain(SF_ONE)
+    })
+
+    it('reports only the at once kind once the reading is old, so one failure is said once', async () => {
+      const out = await runSfLimitsSweep(harness({ read: transient[0][1], targets: [target({ readingMeasuredAt: minutesBefore(8) })] }).deps)
+      expect(out.problems.map((p) => p.key)).toEqual([`sf_limits_read_failed:${SF_ONE}`])
     })
 
     it.each(transient)('pages when it %s again, the reading now older than one renewal', async (_label, read) => {
@@ -262,8 +305,10 @@ describe('the sweep', () => {
       expect(out.problems[0].text).toMatch(/has no budget reading/)
     })
 
-    it('holds a reading write the ops database did not take the same way', async () => {
-      expect((await runSfLimitsSweep(harness({ recordFails: true }).deps)).counts.sf_limits_held).toBe(1)
+    it('judges a reading write the ops database did not take the same way: counted by runs while young, at once when old', async () => {
+      const young = await runSfLimitsSweep(harness({ recordFails: true }).deps)
+      expect(young.counts.sf_limits_held).toBe(1)
+      expect(young.problems.map((p) => p.key)).toEqual([`sf_limits_read_failing:${SF_ONE}`])
       const old = await runSfLimitsSweep(harness({ recordFails: true, targets: [target({ readingMeasuredAt: minutesBefore(9) })] }).deps)
       expect(old.problems.map((p) => p.key)).toEqual([`sf_limits_read_failed:${SF_ONE}`])
       expect(old.problems[0].text).toMatch(/record_failed/)
@@ -319,7 +364,7 @@ describe('the sweep', () => {
   })
 
   it('names each of its problem kinds in the rules table, so none pages by the unknown kind fallback', () => {
-    for (const kind of ['sf_limits_failed', 'sf_limits_orgs_limit', 'sf_limits_refused', 'sf_limits_unreadable', 'sf_limits_read_failed']) {
+    for (const kind of ['sf_limits_failed', 'sf_limits_orgs_limit', 'sf_limits_refused', 'sf_limits_unreadable', 'sf_limits_read_failed', 'sf_limits_read_failing']) {
       expect(Object.hasOwn(OPS_TICK_PROBLEM_RULES, kind), kind).toBe(true)
     }
   })

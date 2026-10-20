@@ -50,7 +50,7 @@ import { writeHeartbeat, writeHeartbeatCompleted } from './cron-heartbeat'
 import { notifyExportFailure, notifyExportRecovery } from './export-alerts'
 import {
   CONNECTION_CHECK_JOB, CONNECTION_SERVE_WINDOW_MS, OpsGatewayContractError, SF_LIMITS_JOB, TOMBSTONE_SERVE_WINDOW_MS, parseOpsJobId, parseOpsJobReport, parseOpsTickReport,
-  parseSealedEnvelope, problemRuleOf,
+  parseSealedEnvelope, problemRuleOf, sweepOfProblemKey,
   parseReplaceConnectionEnvelopeAnswer, parseReplaceConnectionEnvelopeRequest, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
   servedConnectionProblem,
   type OpsGatewayJob, type OpsJobReport, type OpsTickReport, type ReplaceConnectionEnvelopeAnswer, type ServedConnectionTombstone, type ServedOpsConnection, type ServedOpsConnections,
@@ -419,6 +419,8 @@ export async function recordOpsJobCompleted(kv: KVNamespace, rawJobId: unknown, 
  * each paged on one tick and recovered by itself. At one tick a minute, a real
  * outage still pages within about three minutes. This replaces #2410's two
  * missed start stamps in a row, which was the same rule for one kind of problem.
+ * For a kind judged by its sweep's runs (OPS_TICK_PROBLEM_SWEEPS, #2340) it is
+ * three runs of that sweep in a row (sf-limits.ts FAILURES says why three).
  */
 export const OPS_TICK_TICKS_IN_A_ROW_TO_PAGE = 3
 
@@ -444,6 +446,12 @@ interface StreakRecord {
   tick_id: string
   received_at: string
   streaks: Record<string, number>
+  /**
+   * The sentence of each key judged by its sweep's runs (#2340), so a tick that
+   * did not run the sweep can carry the problem in its own words. Absent on a
+   * record from a release before it, whose carried problems are named by key.
+   */
+  texts?: Record<string, string>
 }
 
 /** One problem of a kept report: its key, and how many ticks in a row, this one included, reported it. */
@@ -453,12 +461,23 @@ interface JudgedProblem {
 }
 
 /**
+ * A problem of a sweep that runs less often than the tick, which this tick did
+ * not run, carried from the last tick that did (#2340): its key, its run of
+ * that sweep's runs, and its sentence.
+ */
+interface CarriedProblem extends JudgedProblem {
+  text: string
+}
+
+/**
  * What is kept: the report as the tick sent it, when this Worker received it,
  * and, side by side with its problems, each one's key and run (#2506). The run
  * is counted per report as it arrives, never per check, because the minute
- * check can read one report several times.
+ * check can read one report several times. Beside them, the problems carried
+ * from a sweep this tick did not run (#2340); null when the count could not be
+ * read, so whether one still stands is not known.
  */
-type KeptReport = OpsTickReport & { received_at: string; problem_streaks: JudgedProblem[] | null }
+type KeptReport = OpsTickReport & { received_at: string; problem_streaks: JudgedProblem[] | null; carried_problems: CarriedProblem[] | null }
 
 /**
  * The key each problem is judged by. A report from an ops release before #2506
@@ -489,8 +508,22 @@ function logLine(level: 'warn' | 'error', fields: Record<string, string | number
  * counts once. Two overlapping ticks can both read the record before either
  * writes, which costs at most one tick before a run pages; a KV read that does
  * not yet see the last write, from another location, can cost the same.
+ *
+ * A SWEEP'S PROBLEM (#2340). A key whose kind is judged by its sweep's runs
+ * (OPS_TICK_PROBLEM_SWEEPS) counts only on a tick that ran that sweep, which
+ * is the only tick that can report it. On a tick that did not run the sweep
+ * (the report's sweeps_run does not name it) its run is carried as it stood,
+ * with its sentence, neither counted, ended nor stood down: so three in a row
+ * is three runs of the sweep, and the tick after a sweep's page is not read as
+ * its all clear. A tick that ran the sweep and did not report it ends it. A
+ * report that does not say which sweeps ran (an ops release before this)
+ * carries nothing, as before. With the record unreadable, nothing is known to
+ * be carried, and carried is null.
  */
-async function countRuns(kv: KvLike, tickId: string, keys: readonly string[], nowMs: number): Promise<number[]> {
+async function countRuns(
+  kv: KvLike, report: Pick<OpsTickReport, 'tick_id' | 'problems' | 'sweeps_run'>, keys: readonly string[], nowMs: number,
+): Promise<{ runs: number[]; carried: CarriedProblem[] | null }> {
+  const tickId = report.tick_id
   const unknown = (why: 'read' | 'write', detail: string) => {
     logLine('error', { event: 'ops_tick_count_unknown', tick_id: tickId, why, detail, pages: true })
   }
@@ -512,37 +545,63 @@ async function countRuns(kv: KvLike, tickId: string, keys: readonly string[], no
   // tick, so one failed read pages this tick without making the next ones page
   // as though their problem had already stood for three.
   const streaks: Record<string, number> = {}
-  for (const key of new Set(keys)) {
-    const before = prev !== null && Object.hasOwn(prev.streaks, key) ? prev.streaks[key] : 0
-    streaks[key] = sameTick ? Math.max(before, 1) : before + 1
+  const texts: Record<string, string> = {}
+  keys.forEach((key, i) => {
+    if (!Object.hasOwn(streaks, key)) {
+      const before = prev !== null && Object.hasOwn(prev.streaks, key) ? prev.streaks[key] : 0
+      streaks[key] = sameTick ? Math.max(before, 1) : before + 1
+    }
+    if (sweepOfProblemKey(key) !== null && !Object.hasOwn(texts, key)) texts[key] = report.problems[i]
+  })
+
+  const carried: CarriedProblem[] = []
+  if (prev !== null && report.sweeps_run !== null) {
+    for (const [key, n] of Object.entries(prev.streaks)) {
+      const sweep = sweepOfProblemKey(key)
+      if (sweep === null || Object.hasOwn(streaks, key) || report.sweeps_run.includes(sweep)) continue
+      const text = prev.texts !== undefined && Object.hasOwn(prev.texts, key)
+        ? prev.texts[key]
+        : `A problem the ${sweep} sweep reported on an earlier tick still stands (${key}); the sweep judges it again on its next run, and the ops Worker's logs have its words.`
+      streaks[key] = n
+      texts[key] = text
+      carried.push({ key, in_a_row: n, text })
+    }
   }
 
-  let carried = known
+  let kept = known
   try {
     if (Object.keys(streaks).length === 0) {
       if (prev !== null || !known) await kv.delete(OPS_TICK_STREAKS_KEY)
     } else {
-      const record: StreakRecord = { tick_id: tickId, received_at: new Date(nowMs).toISOString(), streaks }
+      const record: StreakRecord = { tick_id: tickId, received_at: new Date(nowMs).toISOString(), streaks, texts }
       await kv.put(OPS_TICK_STREAKS_KEY, JSON.stringify(record), { expirationTtl: OPS_TICK_STREAK_TTL_SECONDS })
     }
   } catch (err) {
     // The next tick cannot carry this run on, so this one does not hold it.
     unknown('write', formatErr(err))
-    carried = false
+    kept = false
   }
-  return keys.map((key) => (carried ? streaks[key] : Math.max(streaks[key], OPS_TICK_TICKS_IN_A_ROW_TO_PAGE)))
+  return {
+    runs: keys.map((key) => (kept ? streaks[key] : Math.max(streaks[key], OPS_TICK_TICKS_IN_A_ROW_TO_PAGE))),
+    carried: known ? carried : null,
+  }
 }
 
 /** The stored record, or a throw naming why it is not one. */
 function parseStreakRecord(raw: string): StreakRecord {
   const parsed = JSON.parse(raw) as Partial<StreakRecord> | null
   const streaks = parsed?.streaks
+  const texts: unknown = parsed?.texts
   if (
     parsed === null || typeof parsed !== 'object' || typeof parsed.tick_id !== 'string' || typeof parsed.received_at !== 'string' ||
     streaks === null || typeof streaks !== 'object' || Array.isArray(streaks) ||
     Object.values(streaks).some((n) => typeof n !== 'number' || !Number.isInteger(n) || n < 1)
   ) throw new Error('the stored record is not a count of ticks in a row')
-  return { tick_id: parsed.tick_id, received_at: parsed.received_at, streaks }
+  if (texts === undefined) return { tick_id: parsed.tick_id, received_at: parsed.received_at, streaks }
+  if (texts === null || typeof texts !== 'object' || Array.isArray(texts) || Object.values(texts).some((t) => typeof t !== 'string')) {
+    throw new Error('the stored record\'s sentences are not sentences')
+  }
+  return { tick_id: parsed.tick_id, received_at: parsed.received_at, streaks, texts: texts as Record<string, string> }
 }
 
 /**
@@ -561,14 +620,17 @@ export async function recordOpsTickCompleted(kv: KVNamespace, raw: unknown, nowM
   }
   await writeHeartbeatCompleted(kv, OPS_TICK_JOB, nowMs)
   const keys = judgedKeys(report)
-  const runs = await countRuns(kv, report.tick_id, keys, nowMs)
+  const { runs, carried } = await countRuns(kv, report, keys, nowMs)
   const judged = keys.map((key, i) => ({ key, in_a_row: runs[i] }))
   for (const p of judged) {
     if (problemRuleOf(p.key) === 'three_in_a_row' && p.in_a_row < OPS_TICK_TICKS_IN_A_ROW_TO_PAGE) {
-      logLine('warn', { event: 'ops_tick_problem_held', tick_id: report.tick_id, key: p.key, in_a_row: p.in_a_row, pages_at: OPS_TICK_TICKS_IN_A_ROW_TO_PAGE })
+      logLine('warn', {
+        event: 'ops_tick_problem_held', tick_id: report.tick_id, key: p.key, in_a_row: p.in_a_row, pages_at: OPS_TICK_TICKS_IN_A_ROW_TO_PAGE,
+        counted_by: sweepOfProblemKey(p.key) ?? 'tick',
+      })
     }
   }
-  const kept: KeptReport = { ...report, received_at: receivedAt, problem_streaks: judged }
+  const kept: KeptReport = { ...report, received_at: receivedAt, problem_streaks: judged, carried_problems: carried }
   await kv.put(OPS_TICK_REPORT_KEY, JSON.stringify(kept))
   // After the report, so a failure here cannot cost the report; it throws to the tick, which logs it.
   if (report.write_backs !== null) {
@@ -581,6 +643,7 @@ function unreadableReport(why: string, at: string): OpsTickReport {
     tick_id: 'unreadable', mode: 'observe', scheduled_time: null, started_at: at, finished_at: at, db_now: null,
     outcome: 'problems', problems: [`The ops tick's report could not be read (${why}), so whether the tick worked is not known.`], counts: {},
     not_configured_secrets: [], start_stamp_failed: null, problem_keys: ['report_unreadable'], connection_logins: null, write_backs: null,
+    sweeps_run: null,
   }
 }
 
@@ -598,6 +661,31 @@ function keptRuns(raw: unknown, problems: readonly string[]): JudgedProblem[] | 
     runs.push({ key: r.key, in_a_row: r.in_a_row })
   }
   return runs
+}
+
+/**
+ * The problems carried beside a kept report (#2340). A report kept before
+ * #2340 carries none ([]); null, or a list that cannot be read, is not known
+ * (null), which keeps an open incident open rather than reading as clean (L11).
+ */
+function keptCarried(raw: unknown): CarriedProblem[] | null {
+  if (raw === undefined) return []
+  if (!Array.isArray(raw)) return null
+  const carried: CarriedProblem[] = []
+  for (const p of raw as unknown[]) {
+    const c = p as { key?: unknown; in_a_row?: unknown; text?: unknown } | null
+    if (c === null || typeof c !== 'object' || typeof c.key !== 'string' || typeof c.text !== 'string' || typeof c.in_a_row !== 'number' || !Number.isInteger(c.in_a_row) || c.in_a_row < 1) return null
+    carried.push({ key: c.key, in_a_row: c.in_a_row, text: c.text })
+  }
+  return carried
+}
+
+/** The fixed sentence saying a page's problems were each held until they repeated (#1768: never the running count). */
+function repeatedContext(keys: readonly string[]): string {
+  const bySweep = keys.filter((k) => sweepOfProblemKey(k) !== null).length
+  if (bySweep === 0) return `Reported by ${OPS_TICK_TICKS_IN_A_ROW_TO_PAGE} or more ticks in a row.`
+  if (bySweep === keys.length) return `Reported by ${OPS_TICK_TICKS_IN_A_ROW_TO_PAGE} or more runs of its sweep in a row.`
+  return `Reported by ${OPS_TICK_TICKS_IN_A_ROW_TO_PAGE} or more ticks, or runs of its sweep, in a row.`
 }
 
 export interface OpsTickReportCheckDeps {
@@ -672,33 +760,45 @@ export async function runOpsTickReportCheck(
   let kept: KeptReport
   try {
     const parsed: unknown = JSON.parse(raw)
-    const extra = parsed as { received_at?: unknown; problem_streaks?: unknown } | null
+    const extra = parsed as { received_at?: unknown; problem_streaks?: unknown; carried_problems?: unknown } | null
     const receivedAt = extra?.received_at
     const report = parseOpsTickReport(parsed)
     kept = {
       ...report,
       received_at: typeof receivedAt === 'string' ? receivedAt : '',
       problem_streaks: keptRuns(extra?.problem_streaks, report.problems),
+      carried_problems: keptCarried(extra?.carried_problems),
     }
   } catch (err) {
     const at = new Date(nowMs).toISOString()
-    kept = { ...unreadableReport(formatErr(err), at), received_at: at, problem_streaks: null }
+    kept = { ...unreadableReport(formatErr(err), at), received_at: at, problem_streaks: null, carried_problems: [] }
   }
   const receivedMs = Date.parse(kept.received_at)
   // An unreadable time is judged as fresh, the side that pages, never read as an
   // old report and left quiet (L50). Only a readable, old one is the heartbeat's.
   if (Number.isFinite(receivedMs) && nowMs - receivedMs > OPS_TICK_REPORT_FRESH_MS) return 'stale'
-  if (kept.outcome === 'ok') {
+  // A sweep's problem stands until its sweep runs again (#2340), so a tick
+  // carrying one is not clean, and one whose carried problems are not known
+  // (the count could not be read) is neither paged nor read as clean.
+  const carried = kept.carried_problems
+  if (kept.outcome === 'ok' && carried === null) {
+    console.warn(`[ops-tick] held tick ${kept.tick_id}: its count could not be read, so whether a sweep's problem still stands is not known`)
+    return 'held'
+  }
+  if (kept.outcome === 'ok' && carried !== null && carried.length === 0) {
     await deps.notifyRecovery(kv, OPS_TICK_JOB, nowMs)
     return 'healthy'
   }
   // Runs that cannot be matched to the problems page every problem (L50).
   const runs = kept.problem_streaks
-  const due = kept.problems
-    .map((text, i) => ({ text, run: runs === null ? null : runs[i] }))
-    .filter(({ run }) => run === null || problemRuleOf(run.key) === 'at_once' || run.in_a_row >= OPS_TICK_TICKS_IN_A_ROW_TO_PAGE)
+  const isDue = (run: JudgedProblem | null) => run === null || problemRuleOf(run.key) === 'at_once' || run.in_a_row >= OPS_TICK_TICKS_IN_A_ROW_TO_PAGE
+  const due: Array<{ text: string; run: JudgedProblem | null }> = [
+    ...kept.problems.map((text, i) => ({ text, run: runs === null ? null : runs[i] })),
+    ...(carried ?? []).map((c) => ({ text: c.text, run: { key: c.key, in_a_row: c.in_a_row } })),
+  ].filter(({ run }) => isDue(run))
   if (due.length === 0) {
-    console.warn(`[ops-tick] held tick ${kept.tick_id}: each of its ${kept.problems.length} problem${kept.problems.length === 1 ? '' : 's'} has stood for fewer than ${OPS_TICK_TICKS_IN_A_ROW_TO_PAGE} ticks in a row`)
+    const standing = kept.problems.length + (carried?.length ?? 0)
+    console.warn(`[ops-tick] held tick ${kept.tick_id}: each of its ${standing} problem${standing === 1 ? '' : 's'} has stood for fewer than ${OPS_TICK_TICKS_IN_A_ROW_TO_PAGE} ticks, or runs of its sweep, in a row`)
     return 'held'
   }
   const allHeldThree = due.every(({ run }) => run !== null && problemRuleOf(run.key) === 'three_in_a_row')
@@ -708,7 +808,7 @@ export async function runOpsTickReportCheck(
         title: 'The ops minute cron reported a problem',
         // A fixed sentence, never the running count: the alerter would read a
         // new count each minute as a new problem and post it at once (#1768).
-        ...(allHeldThree ? { context: `Reported by ${OPS_TICK_TICKS_IN_A_ROW_TO_PAGE} or more ticks in a row.` } : {}),
+        ...(allHeldThree ? { context: repeatedContext(due.map(({ run }) => (run as JudgedProblem).key)) } : {}),
         fixHint: PROBLEMS_FIX,
       }
   await deps.notifyFailure(supabase, OPS_TICK_JOB, due.map(({ text }) => text), kv, remedy, nowMs, { repeatsHeldByCaller: true })
