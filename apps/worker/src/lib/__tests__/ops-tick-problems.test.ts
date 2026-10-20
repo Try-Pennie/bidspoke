@@ -27,7 +27,7 @@ const AT_ONCE = [
   'workflows_too_many', 'copies_read_limit', 'schedule_refused', 'schedule_no_version', 'slot_missed', 'dispatch_failed',
   'connections_list_unreadable', 'connection_refused', 'connections_too_many', 'connection_copies_expired', 'connections_step_failed',
   'report_unreadable', 'unkeyed',
-  // The sf_limits sweep (#2336): it runs every fourth tick, so no kind of its can be reported by three ticks in a row.
+  // The sf_limits sweep (#2336), judged by its runs (#2340); its passing failure while the reading is young is sf_limits_read_failing, above.
   'sf_limits_failed', 'sf_limits_orgs_limit', 'sf_limits_refused', 'sf_limits_unreadable', 'sf_limits_read_failed',
   // The connection_check sweep (#2340): it runs every fourteenth tick, so the same holds.
   'connection_check_failed', 'connection_check_limit', 'connection_check_refused', 'connection_check_unreadable', 'connection_check_unavailable',

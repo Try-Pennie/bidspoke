@@ -8,7 +8,9 @@
  * that org's reading, source limits; a body that cannot be read is a named
  * refusal and never a NaN (L50); each org is its own failure boundary; a
  * refusal that a later read will meet again pages at once, while a failure the
- * next read may not meet is held until the org's reading is going stale; and a
+ * next read may not meet pages at once once the org's reading is going stale and,
+ * while it is young, is reported as sf_limits_read_failing, which the bidding
+ * Worker pages on the third run of the sweep in a row (#2340); and a
  * stamp the gateway refuses never stops the sweep (the heartbeat on the bidding
  * Worker is what catches a sweep that stops stamping).
  *
