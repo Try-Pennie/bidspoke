@@ -636,8 +636,11 @@ describe('the OpsGateway entrypoint', () => {
       log.mockRestore()
     }
     expect(store.m.has(completedKey('ops-sf-limits'))).toBe(true)
+    // The connection_check sweep's (#2340), under its own id.
+    expect(await gw.opsJobStarted('ops-connection-check')).toEqual({ stamped: 'started', job: 'ops-connection-check' })
+    expect(store.m.has(heartbeatKey('ops-connection-check'))).toBe(true)
     await expect(gw.opsJobStarted(OPS_TICK_JOB)).rejects.toThrow(/not an ops job this Worker stamps/)
-    await expect(gw.opsJobCompleted('ops-connection-check', {})).rejects.toThrow(/not an ops job this Worker stamps/)
+    await expect(gw.opsJobCompleted('ops-owner-check', {})).rejects.toThrow(/not an ops job this Worker stamps/)
     expect(store.m.has(heartbeatKey(OPS_TICK_JOB))).toBe(false)
   })
 

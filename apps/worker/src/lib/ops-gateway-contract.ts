@@ -246,6 +246,57 @@ const MAX_NOT_CONFIGURED_SECRETS = 10
 export const MAX_REPORT_PROBLEMS = 20
 export const MAX_PROBLEM_LENGTH = 400
 
+/**
+ * The two login states that page (#2340, phase 10 of #1689), from
+ * connection_status's derivation: needs_reauth, which a person clears by
+ * reconnecting, and refresh_failing once Dan's decision 2 bound is met.
+ */
+export const CONNECTION_LOGIN_STATES = ['needs_reauth', 'refresh_failing'] as const
+export type ConnectionLoginState = (typeof CONNECTION_LOGIN_STATES)[number]
+
+/**
+ * Why a connection needs a reconnect, from a closed set read off the start of
+ * its stored cause (connection-fetch.ts NEEDS_REAUTH_CAUSES), so the page can
+ * say it in words. The stored cause's own text never crosses to this Worker.
+ */
+export const NEEDS_REAUTH_REASONS = ['login_refused', 'refused_after_renew', 'refresh_exhausted', 'other'] as const
+export type NeedsReauthReason = (typeof NEEDS_REAUTH_REASONS)[number]
+
+/** One ops connection whose login is due to page. Names and times only: never a credential, a cause's text or a customer value. */
+export interface ConnectionLoginAlert {
+  organization_id: string
+  connection_id: string
+  /** The service key, as the copy holds it (salesforce, snowflake). */
+  service: string
+  state: ConnectionLoginState
+  /** needs_reauth: why. Null for refresh_failing. */
+  reason: NeedsReauthReason | null
+  /** needs_reauth_at, or the start of the refresh streak, on the database clock. */
+  since: string
+  /** refresh_failing: the failures in the streak. Null for needs_reauth. */
+  failures: number | null
+}
+
+export interface ConnectionLoginsReport {
+  /** Every ops connection was judged and every one due is listed, so a connection not listed has no login to page about. */
+  complete: boolean
+  logins: ConnectionLoginAlert[]
+}
+
+/**
+ * Dan's decision 2 bound (2026-10-17), as record_connection_refresh holds it
+ * (c_limit and c_span in supabase-ops migration 20261018170000; the guard
+ * apps/web/src/lib/__guards__/worker/refresh-failing-page-bound.test.ts holds
+ * these equal to it): a refresh_failing streak pages once it has this many
+ * failures and the first is at least this old, the same bound its next failure
+ * turns into needs_reauth by.
+ */
+export const REFRESH_FAILING_PAGE_FAILURES = 5
+export const REFRESH_FAILING_PAGE_SPAN_MS = 15 * 60_000
+
+/** A report lists at most this many logins; past it the list says it is not complete. */
+export const MAX_REPORT_LOGINS = 50
+
 export interface OpsTickReport {
   tick_id: string
   mode: OpsTickMode
@@ -284,6 +335,15 @@ export interface OpsTickReport {
    * report from an ops release before #2506, which keyed nothing.
    */
   problem_keys: string[] | null
+  /**
+   * The ops connections whose login is due to page (#2340), judged by the tick
+   * every minute on the database clock. The bidding Worker pages each one
+   * through the ops-connection-login signal, and sends the all clear for one
+   * no longer listed only while the list is complete. Null when the tick judged
+   * no login: no database, a read that failed, or a report from an ops release
+   * before #2340. Null is never read as every login cleared.
+   */
+  connection_logins: ConnectionLoginsReport | null
 }
 
 /**
@@ -370,6 +430,25 @@ export const OPS_TICK_PROBLEM_RULES = {
   sf_limits_unreadable: 'at_once',
   /** A failure the next read may not meet, reported only once the org's reading is older than one renewal. */
   sf_limits_read_failed: 'at_once',
+  // The connection_check sweep (#2340, ops/connection-check.ts), claimed every
+  // 14 minutes, so as with sf_limits no kind of its can be reported by three
+  // ticks in a row: it holds a failure the next probe may not meet itself, by
+  // the age of the connection's last passing check.
+  /** The read of which connections to check failed, or the sweep threw past its own boundaries. */
+  connection_check_failed: 'at_once',
+  /** As many connections as one sweep checks: any past them wait for a later sweep. */
+  connection_check_limit: 'at_once',
+  /** A probe refused in a way the next probe will meet again: a 4xx, a refusal by rule, an identity other than the one verified. */
+  connection_check_refused: 'at_once',
+  /** The service answered the identity probe with something that is not an identity. */
+  connection_check_unreadable: 'at_once',
+  /** A probe that failed or could not run (a timeout, a 5xx, a busy pool), reported only once the last passing check is older than one interval. */
+  connection_check_unavailable: 'at_once',
+  // The login states, read every tick (#2340): the read is asked again on the next tick.
+  /** connection_check_targets did not answer, so no login was judged this tick. */
+  connection_logins_failed: 'three_in_a_row',
+  /** More connections than one read or one report carries, so a login past them was not judged. */
+  connection_logins_limit: 'at_once',
 } as const satisfies Record<string, OpsTickProblemRule>
 
 export type OpsTickProblemKind = keyof typeof OPS_TICK_PROBLEM_RULES
@@ -474,7 +553,10 @@ export function parseServedOpsWorkflows(raw: unknown): { list: ServedOpsWorkflow
 /** The tick's report as the bidding Worker received it. Throws on one it cannot read. */
 export function parseOpsTickReport(raw: unknown): OpsTickReport {
   if (!isRecord(raw)) throw new OpsGatewayContractError('the ops tick sent a report that is not an object')
-  const { tick_id, mode, scheduled_time, started_at, finished_at, db_now, outcome, problems, counts, not_configured_secrets, start_stamp_failed, problem_keys } = raw
+  const {
+    tick_id, mode, scheduled_time, started_at, finished_at, db_now, outcome, problems, counts, not_configured_secrets, start_stamp_failed, problem_keys,
+    connection_logins,
+  } = raw
   if (typeof tick_id !== 'string' || tick_id === '' || tick_id.length > 200) throw new OpsGatewayContractError('the ops tick report has no tick id')
   if (!(OPS_TICK_MODES as readonly unknown[]).includes(mode)) throw new OpsGatewayContractError(`the ops tick report names a mode this Worker does not know: ${String(mode)}`)
   if (!(scheduled_time === null || isTime(scheduled_time))) throw new OpsGatewayContractError('the ops tick report has an unreadable scheduled time')
@@ -520,6 +602,9 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
     }
     capped = capTickProblems((problems as string[]).map((text, i) => ({ key: problem_keys[i] as string, text })))
   }
+  // Absent before #2340, null once such a report is kept and read back, or when
+  // the tick judged no login: all of them mean unjudged, never all clear.
+  const logins = connection_logins === undefined || connection_logins === null ? null : parseConnectionLogins(connection_logins)
   return {
     tick_id,
     mode: mode as OpsTickMode,
@@ -533,7 +618,41 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
     not_configured_secrets: secrets,
     start_stamp_failed: stampFailed,
     problem_keys: capped.problem_keys,
+    connection_logins: logins,
   }
+}
+
+/**
+ * A report's login list as the bidding Worker received it. Throws on one it
+ * cannot read, so the whole report pages as unreadable rather than a login the
+ * page would have named going unsaid. Every field is a name, an id or a time,
+ * so a payload cannot ride it into a page.
+ */
+export function parseConnectionLogins(raw: unknown): ConnectionLoginsReport {
+  if (!isRecord(raw) || typeof raw.complete !== 'boolean' || !Array.isArray(raw.logins)) {
+    throw new OpsGatewayContractError('the ops tick report\'s connection logins are not a list that says whether it is complete')
+  }
+  if (raw.logins.length > MAX_REPORT_LOGINS) throw new OpsGatewayContractError(`the ops tick report lists ${raw.logins.length} connection logins, more than ${MAX_REPORT_LOGINS}`)
+  const logins = raw.logins.map((row: unknown, i: number): ConnectionLoginAlert => {
+    const bad = (why: string) => new OpsGatewayContractError(`connection login ${i} of the ops tick report ${why}`)
+    if (!isRecord(row)) throw bad('is not an object')
+    const { organization_id, connection_id, service, state, reason, since, failures } = row
+    if (typeof organization_id !== 'string' || !UUID.test(organization_id)) throw bad('names no organization')
+    if (typeof connection_id !== 'string' || !UUID.test(connection_id)) throw bad('names no connection')
+    if (typeof service !== 'string' || !SERVICE_KEY.test(service)) throw bad('names no service')
+    if (!(CONNECTION_LOGIN_STATES as readonly unknown[]).includes(state)) throw bad('names a state this Worker does not page on')
+    if (!isTime(since)) throw bad('has an unreadable time')
+    if (state === 'needs_reauth') {
+      if (!(NEEDS_REAUTH_REASONS as readonly unknown[]).includes(reason) || failures !== null) throw bad('is a needs_reauth with no reason, or with a failure count')
+    } else if (reason !== null || typeof failures !== 'number' || !Number.isInteger(failures) || failures < 1) {
+      throw bad('is a refresh_failing with no failure count, or with a reason')
+    }
+    return {
+      organization_id, connection_id, service, state: state as ConnectionLoginState,
+      reason: reason as NeedsReauthReason | null, since, failures,
+    }
+  })
+  return { complete: raw.complete, logins }
 }
 
 /**
@@ -544,11 +663,14 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
  * the bidding Worker (L71) by its own CRON_JOBS entry under the same id. The
  * tick itself is not one: it stamps through opsTickStarted and opsTickCompleted.
  *
- * SF_LIMITS_JOB is the sf_limits sweep (#2336, ops/sf-limits.ts). NEVER rename
- * it: it keys the job's heartbeat state in KV.
+ * SF_LIMITS_JOB is the sf_limits sweep (#2336, ops/sf-limits.ts), and
+ * CONNECTION_CHECK_JOB the connection_check sweep (#2340,
+ * ops/connection-check.ts). NEVER rename either: each keys its job's heartbeat
+ * state in KV.
  */
 export const SF_LIMITS_JOB = 'ops-sf-limits'
-export const OPS_GATEWAY_JOBS = [SF_LIMITS_JOB] as const
+export const CONNECTION_CHECK_JOB = 'ops-connection-check'
+export const OPS_GATEWAY_JOBS = [SF_LIMITS_JOB, CONNECTION_CHECK_JOB] as const
 export type OpsGatewayJob = (typeof OPS_GATEWAY_JOBS)[number]
 
 /** An ops job id as the bidding Worker receives it, refused by name when it stamps none. */

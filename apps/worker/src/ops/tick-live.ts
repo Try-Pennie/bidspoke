@@ -3,7 +3,8 @@
  * the bidding Worker's OpsGateway through the OPS_GATEWAY binding, and
  * OpsInternal through the SELF binding, and since #2336 the sf_limits sweep's
  * /limits read through connectionFetch with the OpsConnections live
- * dependencies. tick.ts holds the rules; this only
+ * dependencies, and since #2340 the connection_check sweep's identity probe the
+ * same way. tick.ts holds the rules; this only
  * connects them, and turns every missing piece into a refusal by name.
  *
  * Not configured is loud, never a quiet fallback: while OPS_SUPABASE_URL or
@@ -22,13 +23,16 @@ import { raceDeadline } from '../lib/alert-claim'
 import { opsConnectionKeyProblems, type SealRegistry } from './connection-key'
 import { createOpsSupabaseClient, OpsDatabaseConfigError, type OpsSupabaseClient } from './ops-db'
 import {
-  claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, readSfLimitsTargets, readWorkflowCopies,
-  recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements, saveConnectionCopies, saveWorkflowCopies,
-  sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions,
+  claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, readConnectionCheckTargets, readSfLimitsTargets,
+  readWorkflowCopies, recordConnectionCheck, recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements,
+  saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions,
 } from './ops-writes'
-import { connectionFetch, type ConnectionFetchDeps } from './connections/connection-fetch'
+import { connectionFetch, type ConnectionCall, type ConnectionFetchDeps } from './connections/connection-fetch'
+import { boundFetch, type OpsServiceEntry } from './connections/ops-connections'
+import { ConnectionRefusal } from './connections/refusals'
 import { liveOpsConnectionsDeps } from './ops-connections-live'
 import { SF_LIMITS_READ_DEADLINE_MS } from './sf-limits'
+import { CONNECTION_CHECK_PROBE_DEADLINE_MS } from './connection-check'
 import { dispatchKey, signDispatch } from './dispatch-auth'
 import type { OpsEnv } from './index'
 import type { DispatchItem, OpsTickDb, OpsTickPorts } from './tick'
@@ -66,6 +70,8 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     recordConnectionTombstone: (org, connectionId, generation, removedAt) => recordConnectionTombstone(client, org, connectionId, generation, removedAt, rpc),
     sfLimitsTargets: (limit) => readSfLimitsTargets(client, limit, rpc),
     recordSfLimitsReading: (sfOrgId, reading) => recordSfBudgetReading(client, sfOrgId, { ...reading, source: 'limits' }, rpc),
+    connectionCheckTargets: (limit) => readConnectionCheckTargets(client, limit, rpc),
+    recordConnectionCheck: (org, connectionId, result) => recordConnectionCheck(client, org, connectionId, result, rpc),
   }
 }
 
@@ -91,6 +97,44 @@ function sfLimitsRead(env: OpsEnv, options: LiveTickOptions): OpsTickPorts['sfLi
       purpose: 'sf_limits',
       record: { recordsNothing: 'the sf_limits read is a GET of the org\'s own limits, made by the tick and no step, so there is no send ledger to record it in' },
     }, url, { method: 'GET', headers: { accept: 'application/json' } })
+  }
+}
+
+/**
+ * The connection_check sweep's probe of one connection (#2340): the service's
+ * registered identity probe (verify's: Salesforce userinfo, Snowflake
+ * CURRENT_USER), every request through connectionFetch with the OpsConnections
+ * live dependencies, purpose connection_check, the committed copy only,
+ * recording nothing. A Salesforce request takes a lease under the
+ * connection_check purpose (connectionFetch's takeLease, which no caller can
+ * omit). Its dependencies are built on the first probe, as the sf_limits read's
+ * are, so a tick with no connection never needs the ops private key. `seen`
+ * gets each response's status, so the sweep can tell a 5xx from a 4xx.
+ */
+function connectionCheckProbe(env: OpsEnv, options: LiveTickOptions): OpsTickPorts['connectionCheck']['probe'] {
+  let live: { deps: ConnectionFetchDeps; services: (service: string) => OpsServiceEntry | undefined } | null = null
+  return async (target, seen) => {
+    if (live === null) {
+      const built = liveOpsConnectionsDeps(env, { opensLogins: true, ...(options.fetch ? { opsFetch: options.fetch } : {}), ...(options.sealRegistry ? { sealRegistry: options.sealRegistry } : {}) })
+      live = { deps: { ...built.connection, rulesFor: (service) => built.services(service)?.rules, deadlineMs: CONNECTION_CHECK_PROBE_DEADLINE_MS }, services: (service) => built.services(service) }
+    }
+    const entry = live.services(target.service)
+    if (entry === undefined) throw new ConnectionRefusal('connection_service_unknown', `no rules for the ${target.service} service on this Worker`)
+    if (entry.identity === undefined) return { kind: 'unprobed' }
+    const call: ConnectionCall = {
+      organizationId: target.organizationId,
+      connectionId: target.connectionId,
+      source: { kind: 'copy' },
+      purpose: 'connection_check',
+      record: { recordsNothing: 'the connection check reads only who the credential is, made by the tick and no step, so there is no send ledger to record it in' },
+    }
+    const fetchThrough = boundFetch(live.deps, call)
+    const watched: typeof fetchThrough = async (url, init) => {
+      const response = await fetchThrough(url, init)
+      seen.lastStatus = response.status
+      return response
+    }
+    return { kind: 'measured', identity: await entry.identity.measure(watched, target.target, target.publicConfig) }
   }
 }
 
@@ -155,6 +199,11 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
     },
     sfLimits: {
       read: sfLimitsRead(env, options),
+      sleep: options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+      log: (fields) => console.log(JSON.stringify(fields)),
+    },
+    connectionCheck: {
+      probe: connectionCheckProbe(env, options),
       sleep: options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
       log: (fields) => console.log(JSON.stringify(fields)),
     },

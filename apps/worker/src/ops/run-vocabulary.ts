@@ -132,8 +132,8 @@ export const ALL_OBSERVATION_REASONS: readonly string[] = Object.values(OBSERVAT
  * The maintenance sweeps the tick may claim, each with one owner per interval
  * (#1698 1.4). tombstone_expiry, connection_check and sf_limits were added by
  * #2334 (supabase-ops migration 20261017220000) for the ops connections; the
- * tick runs only those in TICK_SWEEPS (tick.ts), which since #2334 includes
- * tombstone_expiry. connection_check and sf_limits arrive with their code.
+ * tick runs those in TICK_SWEEPS (tick.ts): tombstone_expiry since #2334,
+ * sf_limits since #2336 and connection_check since #2340, so now every one.
  */
 export const OPS_SWEEPS = ['lease_expiry', 'run_expiry', 'queue_agreement', 'tombstone_expiry', 'connection_check', 'sf_limits'] as const
 export type OpsSweep = (typeof OPS_SWEEPS)[number]

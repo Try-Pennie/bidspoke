@@ -135,6 +135,57 @@ awaited before its report.
   accept only the ids in `OPS_GATEWAY_JOBS` and are reached only by the ops
   Worker's `OPS_GATEWAY` binding.
 
+## The connection_check sweep and the login page (#2340)
+
+Another of the tick's claimed sweeps (`apps/worker/src/ops/connection-check.ts`),
+run beside the rest of the tick and awaited before its report.
+
+- **Which connections.** `connection_check_targets` (ops migration
+  20261020030000, additive): every copy not withdrawn and not covered by a
+  tombstone, across organizations, in three bands (each login state that may
+  page, `needs_reauth` or `refresh_failing`, first; then the other servable
+  copies; then the expired ones), least recently checked first within each, with its
+  derived status (connection_status's own rule), its refresh streak, the
+  identity verify measured for its generation, and the database clock. The
+  sweep and the tick's login states read this one list, up to 500. A copy past
+  its serve window, and one in `needs_reauth`, are not probed, and at most 50 of
+  the rest are probed a sweep. With no ops connection, which is today, the sweep claims, finds
+  nothing and reports nothing.
+- **The probe.** The service's identity probe, the one verify uses
+  (Salesforce `/services/oauth2/userinfo`, which must still be the org and user
+  verify measured; Snowflake `CURRENT_USER()` and the account, which must be the
+  declared ones), through connectionFetch, purpose `connection_check`, the
+  committed copy only, recording nothing. A Salesforce probe takes a lease under
+  the `connection_check` share of 1 (Decision 11), so the connections of one org
+  are probed one after another. Each check, its record included, has its own
+  30 second deadline, and no check starts once 10 seconds have passed since the
+  sweep began (before its stamp and its read), so a whole sweep takes at most 55
+  seconds; a connection not reached is counted as deferred, held or paged as a
+  check that could not be made (cause `sweep_budget`), and goes first next sweep.
+- **What it writes.** `record_connection_check` only, so the `last_check_*`
+  columns: a passing check, or a failed one with a cause that is a name (a
+  refusal code, `http_<status>`, `identity_changed`, `identity_mismatch`), never
+  a message. A busy pool, a budget floor, a rate limit or a copy that could not
+  be read is not a failed check and writes nothing.
+- **How often.** Claimed every 14 minutes, so every 14 or 15 (16 with a missed
+  tick): inside the hourly or slower schedules ops workflows run on, and, since
+  a probe is a sign in whenever no token is held, often enough that a token
+  endpoint outage nothing else meets reaches Dan's decision 2 bound within about
+  an hour rather than standing below it unpaged.
+- **Failures** page through the tick's report: a refusal the next probe meets
+  again at once, a failure it may not meet only once the connection's last
+  passing check is older than 20 minutes (the second in a row). A refused login
+  or a failing token endpoint is recorded and paged by the login page below
+  instead. `docs/reference/observability.md` has the kinds.
+- **Its heartbeat** is `ops-connection-check` in the bidding Worker's
+  `CRON_JOBS`, stamped through `OpsGateway.opsJobStarted` and `opsJobCompleted`.
+- **The login page.** Every tick reads the same list and reports each
+  connection in `needs_reauth`, and each in `refresh_failing` with 5 failures
+  the first at least 15 minutes old (the bound `record_connection_refresh`
+  escalates by). The bidding Worker pages each to the connection's
+  organization through the `ops-connection-login` signal, naming it by its name
+  and service, and sends the all clear once a complete list no longer names it.
+
 ## OpsConnections (`apps/worker/src/ops/ops-connections-entrypoint.ts`)
 
 The ops Worker's named entrypoint for the bidding Worker's `OPS_CONNECTIONS`

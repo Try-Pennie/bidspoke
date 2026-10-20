@@ -23,6 +23,8 @@
  *     the sf_limits sweep too (sf-limits.ts), which reads each measured
  *     Salesforce org's limits beside the rest of the tick and is awaited before
  *     step 8, stamping its own heartbeat (SF_LIMITS_JOB) through the gateway.
+ *     Since #2340 the connection_check sweep (connection-check.ts) the same way,
+ *     which proves each ops connection's login and stamps CONNECTION_CHECK_JOB.
  *  4. The workflows (decision 4, 2026-10-16): fetch the ops workflows' state from
  *     the bidding Worker over the service binding, save it as the last good
  *     copy, then read the copies back. The tick plans from what the database
@@ -33,6 +35,10 @@
  *     Then the ops connections the same way (#2335, connection-serve.ts): saved
  *     through save_connection_copies, each with the serve_until the bidding
  *     Worker set; a failed fetch saves none, so each copy expires on time.
+ *     Then, every tick, the connections' login states (#2340,
+ *     connection-check.ts judgeConnectionLogins), read after that save so a
+ *     withdrawal served this minute is judged, and carried in the report for the
+ *     bidding Worker to page through the ops-connection-login signal.
  *  5. The schedules, each inside its own boundary: planFires (packages/
  *     workflow-definition) with the database clock, the floor and the last slot
  *     observed; each fire recorded in schedule_fire_observations, whose UNIQUE
@@ -57,16 +63,20 @@
  */
 import { planFires, scheduleFloorMs, scheduleFromTrigger, validateSchedule, type MissedReason, type PlannedFire, type ScheduleConfig } from '@bidspoke/workflow-definition'
 import {
-  SF_LIMITS_JOB, capTickProblems, parseServedOpsWorkflows, tickProblem, type OpsGatewayJob, type OpsJobReport, type OpsTickMode, type OpsTickOutcome,
-  type OpsTickProblemKind, type OpsTickReport, type TickProblem,
+  CONNECTION_CHECK_JOB, SF_LIMITS_JOB, capTickProblems, parseServedOpsWorkflows, tickProblem, type ConnectionLoginsReport, type OpsGatewayJob, type OpsJobReport,
+  type OpsTickMode, type OpsTickOutcome, type OpsTickProblemKind, type OpsTickReport, type TickProblem,
 } from '../lib/ops-gateway-contract'
 import { SF_LIMITS_EVERY_SECONDS, SF_LIMITS_MAX_ORGS, runSfLimitsSweep, type SfLimitsSweepDeps, type SfLimitsSweepResult } from './sf-limits'
+import {
+  CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_MAX_CONNECTIONS, CONNECTION_LOGINS_READ_LIMIT, judgeConnectionLogins, runConnectionCheckSweep,
+  type ConnectionCheckSweepDeps, type ConnectionCheckSweepResult,
+} from './connection-check'
 import { formatErr } from '../lib/format-error'
 import { saveServedConnections, type ConnectionServeDb } from './connection-serve'
 import type { OrganizationId } from './ops-db'
 import {
-  MAX_COPIES_PER_SAVE, type QueueDisagreement, type SaveCopiesResult, type ScheduleObservation, type SfLimitsTarget, type SweepClaim, type SweepResult,
-  type WorkflowCopy, type WorkflowCopyInput,
+  MAX_COPIES_PER_SAVE, type ConnectionCheckTarget, type QueueDisagreement, type SaveCopiesResult, type ScheduleObservation, type SfLimitsTarget, type SweepClaim,
+  type SweepResult, type WorkflowCopy, type WorkflowCopyInput,
 } from './ops-writes'
 import { OBSERVATION_REASONS, type OpsSweep } from './run-vocabulary'
 
@@ -81,12 +91,8 @@ export const TICK_CLAIM_LIMIT = 40
 /** The copies one tick reads: every ops workflow, within PostgREST's 1,000 rows (L24). */
 const COPIES_READ_LIMIT = 1000
 
-/**
- * The sweeps the tick claims. connection_check (Phase 10) is claimable but
- * arrives with the code that runs it, so naming it here is a compile error in
- * runOpsTick until it is handled there.
- */
-export type TickSweep = Exclude<OpsSweep, 'connection_check'>
+/** The sweeps the tick claims: every one claim_ops_sweep names (#2340 brought the last, connection_check). */
+export type TickSweep = OpsSweep
 
 /**
  * The sweeps, each with the interval its owner claims. A minute sweep claims 50 s,
@@ -107,6 +113,13 @@ export type TickSweep = Exclude<OpsSweep, 'connection_check'>
  * (SF_LIMITS_JOB) only when it owns the claim, and reports its failures as
  * keyed problems that each page at once, since it can never be reported by
  * three ticks in a row (it holds a transient one itself, by its reading's age).
+ *
+ * connection_check (#2340, connection-check.ts) proves each ops connection's
+ * login every 14 to 15 minutes (connection-check.ts THE INTERVAL says why), and
+ * runs beside the rest of the tick in the same way and for the same reason: its
+ * probes go to the services, bounded at 30 s each and 55 s a sweep. It stamps its own heartbeat
+ * (CONNECTION_CHECK_JOB) only when it owns the claim, and holds a transient
+ * failure itself, by the age of the connection's last passing check.
  */
 export const TICK_SWEEPS: ReadonlyArray<{ sweep: TickSweep; everySeconds: number; pageLimit: number; maxPages: number }> = [
   { sweep: 'lease_expiry', everySeconds: 50, pageLimit: 500, maxPages: 4 },
@@ -114,6 +127,7 @@ export const TICK_SWEEPS: ReadonlyArray<{ sweep: TickSweep; everySeconds: number
   { sweep: 'queue_agreement', everySeconds: 14 * 60, pageLimit: 100, maxPages: 1 },
   { sweep: 'tombstone_expiry', everySeconds: 59 * 60, pageLimit: 500, maxPages: 4 },
   { sweep: 'sf_limits', everySeconds: SF_LIMITS_EVERY_SECONDS, pageLimit: SF_LIMITS_MAX_ORGS, maxPages: 1 },
+  { sweep: 'connection_check', everySeconds: CONNECTION_CHECK_EVERY_SECONDS, pageLimit: CONNECTION_CHECK_MAX_CONNECTIONS, maxPages: 1 },
 ]
 
 /**
@@ -162,6 +176,10 @@ export interface OpsTickDb extends ConnectionServeDb {
   sfLimitsTargets(limit: number): Promise<{ targets: SfLimitsTarget[]; reachedLimit: boolean }>
   /** A measured org's reading from its /limits read (record_sf_budget_reading, source limits). */
   recordSfLimitsReading(sfOrgId: string, reading: { dailyApiMax: number; dailyApiRemaining: number }): Promise<'recorded'>
+  /** Every ops connection with its login state (connection_check_targets, #2340): the sweep's list and the tick's login states. */
+  connectionCheckTargets(limit: number): Promise<{ targets: ConnectionCheckTarget[]; reachedLimit: boolean }>
+  /** A connection check's result (record_connection_check): the last_check_* columns only. */
+  recordConnectionCheck(organizationId: OrganizationId, connectionId: string, result: { ok: true } | { ok: false; cause: string }): Promise<'recorded' | 'connection_removed'>
 }
 
 /**
@@ -204,6 +222,8 @@ export interface OpsTickPorts {
   }
   /** The sf_limits sweep's read of one org's /limits (#2336): connectionFetch, purpose sf_limits, in tick-live.ts. */
   sfLimits: Pick<SfLimitsSweepDeps, 'read' | 'sleep' | 'log'>
+  /** The connection_check sweep's identity probe of one connection (#2340): connectionFetch, purpose connection_check, in tick-live.ts. */
+  connectionCheck: Pick<ConnectionCheckSweepDeps, 'probe' | 'sleep' | 'log'>
   /** Throws when the call is refused or fails. */
   dispatch(item: DispatchItem): Promise<void>
 }
@@ -249,6 +269,32 @@ function startSfLimits(ports: OpsTickPorts, db: OpsTickDb): Promise<SfLimitsSwee
   }))
 }
 
+/**
+ * The connection_check sweep wired to the tick's ports. Never rejects: a throw
+ * past the sweep's own boundaries is reported as connection_check_failed, so the
+ * tick's report still goes.
+ */
+function startConnectionCheck(ports: OpsTickPorts, db: OpsTickDb): Promise<ConnectionCheckSweepResult> {
+  const job: OpsGatewayJob = CONNECTION_CHECK_JOB
+  return (async () => {
+    // Read at once, so a port this deploy lacks is this sweep's failure by name.
+    const { probe, sleep, log } = ports.connectionCheck
+    return runConnectionCheckSweep({
+      targets: (limit) => db.connectionCheckTargets(limit),
+      probe,
+      record: (target, result) => db.recordConnectionCheck(target.organizationId, target.connectionId, result),
+      started: () => ports.gateway.jobStarted(job),
+      completed: (report) => ports.gateway.jobCompleted(job, report),
+      now: ports.now,
+      sleep,
+      log,
+    })
+  })().catch((err: unknown) => ({
+    problems: [tickProblem('connection_check_failed', `The connection check failed: ${formatErr(err)}.`)],
+    counts: {},
+  }))
+}
+
 export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   const startedAt = new Date(ports.now()).toISOString()
   // Each problem keyed by its kind (#2506), so the bidding Worker can hold one a
@@ -265,6 +311,8 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   let dbNow: string | null = null
   const items: DispatchItem[] = []
   let sfLimitsRun: Promise<SfLimitsSweepResult> | null = null
+  let connectionCheckRun: Promise<ConnectionCheckSweepResult> | null = null
+  let connectionLogins: ConnectionLoginsReport | null = null
 
   // 1. Started. A miss is reported under start_stamp, which the bidding Worker
   // holds until three ticks in a row miss (#2506), and flagged as before (#2410).
@@ -324,6 +372,11 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
         if (s.sweep === 'sf_limits') {
           // Beside the rest of the tick, awaited before the report (TICK_SWEEPS says why).
           sfLimitsRun = startSfLimits(ports, db)
+          continue
+        }
+        if (s.sweep === 'connection_check') {
+          // Beside the rest of the tick, awaited before the report, as sf_limits is.
+          connectionCheckRun = startConnectionCheck(ports, db)
           continue
         }
         if (s.sweep === 'queue_agreement') {
@@ -437,6 +490,21 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     }
   }
 
+  // 4c. The connections' login states (#2340), every tick, their own boundary.
+  // A failed read reports no list at all, which the bidding Worker reads as
+  // unjudged, never as every login cleared.
+  if (db) {
+    try {
+      connectionLogins = judgeConnectionLogins(await db.connectionCheckTargets(CONNECTION_LOGINS_READ_LIMIT))
+      bump(counts, 'connection_logins_due', connectionLogins.logins.length)
+      if (!connectionLogins.complete) {
+        problem('connection_logins_limit', `The ops tick read more ops connections, or found more logins to page about, than one report carries (${CONNECTION_LOGINS_READ_LIMIT} connections, ${connectionLogins.logins.length} logins), so a login past them was not judged and no all clear is sent for it.`)
+      }
+    } catch (err) {
+      problem('connection_logins_failed', `The ops tick could not read the ops connections' login states (${formatErr(err)}), so no login was judged this minute.`)
+    }
+  }
+
   // 5. The schedules, each its own boundary.
   if (dbNow !== null && db) {
     const dbNowMs = Date.parse(dbNow)
@@ -533,6 +601,12 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     problems.push(...sf.problems)
     for (const [key, n] of Object.entries(sf.counts)) bump(counts, key, n)
   }
+  // 7c. The connection_check sweep, the same way.
+  if (connectionCheckRun !== null) {
+    const cc = await connectionCheckRun
+    problems.push(...cc.problems)
+    for (const [key, n] of Object.entries(cc.counts)) bump(counts, key, n)
+  }
 
   // 8. Completed.
   const outcome: OpsTickOutcome = notConfigured ? 'not_configured' : problems.length > 0 ? 'problems' : 'ok'
@@ -550,6 +624,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     not_configured_secrets: notConfiguredSecrets,
     start_stamp_failed: startStampFailed,
     problem_keys: capped.problem_keys,
+    connection_logins: connectionLogins,
   }
   log('finished', { tick_id: ports.tickId, outcome, problems: problems.length, ...counts })
   for (const p of problems) log('problem', { tick_id: ports.tickId, key: p.key, problem: p.text })

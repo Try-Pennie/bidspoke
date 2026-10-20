@@ -44,6 +44,9 @@ function opsDatabase() {
     sweep_sf_leases: [{ swept: 2, more: false }],
     // The sf_limits sweep's measured orgs (#2336): none, as today.
     sf_limits_targets: [],
+    // The connection_check sweep's list and the tick's login states (#2340): none, as today.
+    connection_check_targets: [],
+    record_connection_check: 'recorded',
   }
   const fakeFetch: typeof globalThis.fetch = (async (input: string | URL | Request) => {
     const name = new URL(input instanceof Request ? input.url : input.toString()).pathname.replace('/rest/v1/rpc/', '')
@@ -148,9 +151,56 @@ describe('the live tick', () => {
     const { env, g } = configured()
     const report = await runOpsTick(liveTickPorts(env, null, { sealRegistry, now: () => NOW, fetch: db.fetch }))
     expect(db.called).toContain('sf_limits_targets')
-    expect(g.jobStamps).toEqual(['started:ops-sf-limits', 'completed:ops-sf-limits'])
-    expect(g.jobReports).toEqual([{ started_at: new Date(NOW).toISOString(), finished_at: new Date(NOW).toISOString(), counts: { sf_limits_orgs: 0 } }])
+    expect(g.jobStamps.filter((j) => j.endsWith('ops-sf-limits'))).toEqual(['started:ops-sf-limits', 'completed:ops-sf-limits'])
+    expect(g.jobReports).toContainEqual({ started_at: new Date(NOW).toISOString(), finished_at: new Date(NOW).toISOString(), counts: { sf_limits_orgs: 0 } })
     expect(report.outcome).toBe('ok')
+  })
+
+  it('runs the connection_check sweep through its ops function, stamps it under its own job id, and reports a complete list of no login (#2340)', async () => {
+    const db = opsDatabase()
+    const { env, g } = configured()
+    const report = await runOpsTick(liveTickPorts(env, null, { sealRegistry, now: () => NOW, fetch: db.fetch }))
+    // Twice: the sweep's list, and the tick's login states.
+    expect(db.called.filter((n) => n === 'connection_check_targets')).toHaveLength(2)
+    expect(g.jobStamps.filter((j) => j.endsWith('ops-connection-check'))).toEqual(['started:ops-connection-check', 'completed:ops-connection-check'])
+    expect(g.jobReports).toContainEqual({ started_at: new Date(NOW).toISOString(), finished_at: new Date(NOW).toISOString(), counts: { connection_check_connections: 0 } })
+    expect(report.connection_logins).toEqual({ complete: true, logins: [] })
+    expect(report.outcome).toBe('ok')
+  })
+
+  it('probes a connection through connectionFetch, which reads the copy first, and a service with no rules is refused by name (#2340)', async () => {
+    const db = opsDatabase()
+    const base = db.fetch
+    const CONN = '00000000-0000-4000-8000-0000000023c1'
+    const NONESUCH = '00000000-0000-4000-8000-0000000023c2'
+    const row = (connectionId: string, service: string) => ({
+      organization_id: ORG, connection_id: connectionId, service, generation: 1,
+      target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: '3MVG-ops' }, public_config: {}, servable: true,
+      status: 'healthy', last_check_ok_at: '2026-10-17T09:50:00+00:00', last_check_failed_at: null, needs_reauth_at: null, needs_reauth_cause: null,
+      refresh_failures: 0, refresh_failing_since: null, measured_sf_org_id: null, measured_username: null, db_now: '2026-10-17T10:02:30+00:00',
+    })
+    const withTargets: typeof fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const name = new URL(input instanceof Request ? input.url : input.toString()).pathname.replace('/rest/v1/rpc/', '')
+      if (name === 'connection_check_targets') {
+        db.called.push(name)
+        return Response.json([row(CONN, 'salesforce'), row(NONESUCH, 'nonesuch')])
+      }
+      if (name === 'connection_copy') {
+        db.called.push(name)
+        return Response.json([{ state: 'not_found', connection_id: CONN, service: null, generation: null, envelope: null, public_config: null, target: null, served_at: null, serve_until: null, db_now: '2026-10-17T10:02:30+00:00' }])
+      }
+      return base(input, init)
+    }) as typeof fetch
+    const { env } = configured()
+    const report = await runOpsTick(liveTickPorts(env, null, { sealRegistry, now: () => NOW, fetch: withTargets }))
+    // The Salesforce one reached connectionFetch, whose copy read found it gone, so nothing was recorded about it.
+    expect(db.called).toContain('connection_copy')
+    expect(report.counts.connection_check_gone).toBe(1)
+    // The one with no rules on this Worker is refused by name, and that refusal is recorded as its failed check.
+    expect(report.problem_keys).toEqual([`connection_check_refused:${NONESUCH}`])
+    expect(report.problems[0]).toMatch(/connection_service_unknown/)
+    // One record only: the refused one. The one found gone has nothing to record.
+    expect(db.called.filter((n) => n === 'record_connection_check')).toHaveLength(1)
   })
 
   it('reads a measured org through connectionFetch, which refuses by name a copy the ops database does not hold (#2336)', async () => {

@@ -51,7 +51,14 @@ export function stampsFor(source: string, jobId: string, constants: Map<string, 
   const names = [`'${jobId}'`, ...(constants.get(jobId) ?? [])]
   // An optional clock after the id: lib/ops-gateway.ts passes this Worker's own (#1949).
   const started = names.some((n) => new RegExp(`writeHeartbeat\\([^)]*,\\s*${escape(n)}\\s*(,[^)]*)?\\)`).test(source))
-  const completed = names.some((n) => new RegExp(`(completeAfter\\(|writeHeartbeatCompleted\\()[\\s\\S]{0,4000}?${escape(n)}`).test(source))
+  // completeAfter wraps the job's whole promise, so its id can come after a long
+  // argument. writeHeartbeatCompleted names the id as its own second argument,
+  // and is read inside its call only: the ops jobs' stamps sit side by side in
+  // one switch (lib/ops-gateway.ts, #2340), so a window past the call would let
+  // one job's stamp stand in for another's that was removed.
+  const completed = names.some((n) =>
+    new RegExp(`completeAfter\\([\\s\\S]{0,4000}?${escape(n)}`).test(source) ||
+    new RegExp(`writeHeartbeatCompleted\\(\\s*[^,)]+,\\s*${escape(n)}\\s*[,)]`).test(source))
   return { started, completed }
 }
 
@@ -88,5 +95,9 @@ describe('every registered cron job is stamped by the scheduled handler', () => 
     expect(stampsFor(INDEX_SOURCE, 'no-such-job', constants)).toEqual({ started: false, completed: false })
     expect(stampsFor("writeHeartbeat(env.IDEMPOTENCY, 'x-job')\ncompleteAfter(p, 'x-job')", 'x-job', new Map())).toEqual({ started: true, completed: true })
     expect(stampsFor("writeHeartbeat(env.IDEMPOTENCY, X_JOB)\nwriteHeartbeatCompleted(env.IDEMPOTENCY, X_JOB)", 'x-job', new Map([['x-job', ['X_JOB']]]))).toEqual({ started: true, completed: true })
+    // Two jobs stamped side by side: removing one's completed stamp is seen, though the other's sits just above it (#2340).
+    const sideBySide = "case A_JOB:\n  await writeHeartbeatCompleted(kv, A_JOB, nowMs)\n  break\ncase B_JOB:\n  await Promise.resolve()\n  break"
+    expect(stampsFor(sideBySide, 'b-job', new Map([['b-job', ['B_JOB']]])).completed).toBe(false)
+    expect(stampsFor(sideBySide, 'a-job', new Map([['a-job', ['A_JOB']]])).completed).toBe(true)
   })
 })

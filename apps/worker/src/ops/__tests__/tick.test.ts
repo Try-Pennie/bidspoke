@@ -22,9 +22,10 @@ import {
 } from '../ops-writes'
 import type { OpsSweep } from '../run-vocabulary'
 import { ConnectionRefusal, RequeueAt } from '../connections/refusals'
-import type { SfLimitsTarget } from '../ops-writes'
+import type { ConnectionCheckTarget, SfLimitsTarget } from '../ops-writes'
 import { SF_LIMITS_EVERY_SECONDS } from '../sf-limits'
-import { SF_LIMITS_JOB } from '../../lib/ops-gateway-contract'
+import { CONNECTION_CHECK_JOB, SF_LIMITS_JOB } from '../../lib/ops-gateway-contract'
+import { CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_READ_LIMIT, CONNECTION_LOGINS_READ_LIMIT, type ProbeAnswer } from '../connection-check'
 import { TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
@@ -91,6 +92,7 @@ interface Fake {
   db: OpsTickDb & {
     calls: string[]; saved: WorkflowCopyInput[][]; savedConnections: ConnectionCopyInput[][]; observations: ScheduleObservation[]
     sfReadings: Array<{ sfOrgId: string; dailyApiMax: number; dailyApiRemaining: number }>
+    connectionChecks: Array<{ connectionId: string; result: { ok: true } | { ok: false; cause: string } }>
   }
   dispatched: DispatchItem[]
   stamps: string[]
@@ -98,6 +100,19 @@ interface Fake {
   /** The ops jobs' stamps through the gateway (#2340), as `started:<job>` and `completed:<job>`. */
   jobStamps: string[]
   sfReads: string[]
+  /** The connections the connection_check sweep probed (#2340). */
+  probes: string[]
+}
+
+/** One ops connection, as connection_check_targets answers it (#2340). */
+function connTarget(over: Partial<ConnectionCheckTarget> = {}): ConnectionCheckTarget {
+  return {
+    organizationId: ORG, connectionId: CONN, service: 'salesforce', generation: 1,
+    target: { instance_url: 'https://trypennie.my.salesforce.com', client_id: '3MVG-ops' }, publicConfig: {}, servable: true,
+    status: 'healthy', lastCheckOkAt: '2026-10-17T09:48:30.000Z', lastCheckFailedAt: null, needsReauthAt: null, needsReauthCause: null,
+    refreshFailures: 0, refreshFailingSince: null, measuredIdentity: { sfOrgId: '00Dst0000000001AAA', username: 'ops-one@example.com' },
+    dbNow: DB_NOW, ...over,
+  }
 }
 
 const SF_ORG = '00Dst0000000001AAA'
@@ -137,12 +152,19 @@ function fake(opts: {
   sfRead?: (t: SfLimitsTarget) => Promise<Response | RequeueAt>
   /** The ops job stamps fail (#2340). */
   jobStampFails?: boolean
+  /** The ops connections connection_check_targets lists (#2340); none by default, as today. */
+  connTargets?: ConnectionCheckTarget[]
+  /** The read reached its limit. */
+  connTargetsFull?: boolean
+  /** What each identity probe answers. */
+  probe?: (t: ConnectionCheckTarget) => Promise<ProbeAnswer>
 } = {}): Fake {
   const calls: string[] = []
   const saved: WorkflowCopyInput[][] = []
   const savedConnections: ConnectionCopyInput[][] = []
   const observations: ScheduleObservation[] = []
   const sfReadings: Array<{ sfOrgId: string; dailyApiMax: number; dailyApiRemaining: number }> = []
+  const connectionChecks: Fake['db']['connectionChecks'] = []
   const fail = (name: keyof OpsTickDb) => {
     calls.push(name)
     const e = opts.failing?.[name]
@@ -154,6 +176,14 @@ function fake(opts: {
     savedConnections,
     observations,
     sfReadings,
+    connectionChecks,
+    async connectionCheckTargets(limit: number) {
+      fail('connectionCheckTargets'); calls.push(`connectionCheckTargets:${limit}`)
+      return { targets: opts.connTargets ?? [], reachedLimit: opts.connTargetsFull ?? false }
+    },
+    async recordConnectionCheck(_org: unknown, connectionId: string, result: { ok: true } | { ok: false; cause: string }) {
+      fail('recordConnectionCheck'); connectionChecks.push({ connectionId, result }); return 'recorded' as const
+    },
     async now() { fail('now'); return DB_NOW },
     async sfLimitsTargets(limit: number) {
       fail('sfLimitsTargets'); calls.push(`sfLimitsTargets:${limit}`)
@@ -191,6 +221,7 @@ function fake(opts: {
   const reports: unknown[] = []
   const jobStamps: string[] = []
   const sfReads: string[] = []
+  const probes: string[] = []
   const ports: OpsTickPorts = {
     tickId: 'tick-1',
     scheduledTime: Date.parse('2026-10-17T11:02:48.004Z'),
@@ -219,12 +250,20 @@ function fake(opts: {
       sleep: () => new Promise<void>(() => undefined),
       log: () => undefined,
     },
+    connectionCheck: {
+      probe: async (t) => {
+        probes.push(t.connectionId)
+        return (opts.probe ?? (async () => ({ kind: 'measured', identity: { kind: 'salesforce', sfOrgId: '00Dst0000000001AAA', username: 'ops-one@example.com' } }) as const))(t)
+      },
+      sleep: () => new Promise<void>(() => undefined),
+      log: () => undefined,
+    },
     dispatch: async (item) => {
       if (opts.dispatchFails?.(item)) throw new Error('OpsInternal refused: bad_signature')
       dispatched.push(item)
     },
   }
-  return { ports, db, dispatched, stamps, reports, jobStamps, sfReads }
+  return { ports, db, dispatched, stamps, reports, jobStamps, sfReads, probes }
 }
 
 describe('a healthy tick', () => {
@@ -357,8 +396,11 @@ describe('failure boundaries', () => {
     expect(f.db.calls).toContain('sweepSfLeases')
     // The sf_limits sweep stands down too: no orgs read, nothing stamped (#2336).
     expect(f.db.calls).not.toContain('sfLimitsTargets')
+    // So does the connection_check sweep (#2340): nothing probed, nothing stamped,
+    // while the login states are still read, as every tick reads them.
+    expect(f.db.calls.filter((c) => c.startsWith('connectionCheckTargets:'))).toEqual([`connectionCheckTargets:${CONNECTION_LOGINS_READ_LIMIT}`])
     expect(f.jobStamps).toEqual([])
-    expect(report.counts.sweeps_stood_down).toBe(5)
+    expect(report.counts.sweeps_stood_down).toBe(6)
     expect(report.outcome).toBe('ok')
   })
 
@@ -543,7 +585,7 @@ describe('the connection storage sweeps (#2334)', () => {
     expect(f.db.calls.filter((c) => c.startsWith('sweepSfLeases:'))).toEqual([`sweepSfLeases:${500}`])
     // claim_ops_sweep has no name for it and it needs none (TICK_SF_LEASE_SWEEP), so these are every claim a tick makes.
     expect(f.db.calls.filter((c) => /^claim:[a-z_]+$/.test(c))).toEqual([
-      'claim:lease_expiry', 'claim:run_expiry', 'claim:queue_agreement', 'claim:tombstone_expiry', 'claim:sf_limits',
+      'claim:lease_expiry', 'claim:run_expiry', 'claim:queue_agreement', 'claim:tombstone_expiry', 'claim:sf_limits', 'claim:connection_check',
     ])
     expect(report.counts.sf_leases_swept).toBe(2)
     expect(report.outcome).toBe('ok')
@@ -619,7 +661,7 @@ describe('problem keys (#2506)', () => {
     ['an unreadable database clock', failsOn('now'), ['db_clock']],
     ['a sweep claim that fails', failsOn('claimSweep'), [
       'sweep_claim_failed:lease_expiry', 'sweep_claim_failed:run_expiry', 'sweep_claim_failed:queue_agreement', 'sweep_claim_failed:tombstone_expiry',
-      'sweep_claim_failed:sf_limits',
+      'sweep_claim_failed:sf_limits', 'sweep_claim_failed:connection_check',
     ]],
     ['a lease sweep that fails after its claim', failsOn('sweepLeases'), ['sweep_failed:lease_expiry']],
     ['a run expiry sweep that fails after its claim', failsOn('expireRuns'), ['sweep_failed:run_expiry']],
@@ -639,6 +681,7 @@ describe('problem keys (#2506)', () => {
     ['a connection list that cannot be fetched', { fetchConnections: async () => { throw new Error('the connection list did not answer within 15 s') } }, ['connections_fetch_failed']],
     ['a connection list it cannot read', { fetchConnections: async () => ({ served_at: 'never' }) }, ['connections_list_unreadable']],
     ['a connection save that fails', failsOn('saveConnectionCopies'), ['connections_save_failed']],
+    ['a login state read that fails', failsOn('connectionCheckTargets'), ['connection_logins_failed', 'connection_check_failed']],
     ['a removal that cannot be recorded', {
       ...failsOn('recordConnectionTombstone'),
       fetchConnections: async () => ({ ...servedConnections(), tombstones: [{ connection_id: GONE, organization_id: ORG, generation: 1, removed_at: '2026-10-17T10:00:00.000Z' }] }),
@@ -678,7 +721,7 @@ describe('the sf_limits sweep inside the tick (#2336)', () => {
     const report = await runOpsTick(f.ports)
     expect(f.db.calls).toContain('sfLimitsTargets:10')
     expect(f.sfReads).toEqual([])
-    expect(f.jobStamps).toEqual([`started:${SF_LIMITS_JOB}`, `completed:${SF_LIMITS_JOB}`])
+    expect(f.jobStamps.filter((j) => j.endsWith(SF_LIMITS_JOB))).toEqual([`started:${SF_LIMITS_JOB}`, `completed:${SF_LIMITS_JOB}`])
     expect(report.outcome).toBe('ok')
     expect(report.problems).toEqual([])
     expect(report.counts.sf_limits_orgs).toBe(0)
@@ -743,6 +786,119 @@ describe('the sf_limits sweep inside the tick (#2336)', () => {
     release()
     const report = await done
     expect(report.counts.sf_limits_recorded).toBe(1)
+    expect(f.reports).toHaveLength(1)
+  })
+})
+
+describe('the connection_check sweep inside the tick (#2340)', () => {
+  const NEEDS = '00000000-0000-4000-8000-0000000023c7'
+
+  it('is claimed every 14 minutes through claim_ops_sweep, as one of the tick\'s sweeps', async () => {
+    expect(TICK_SWEEPS.find((s) => s.sweep === 'connection_check')?.everySeconds).toBe(CONNECTION_CHECK_EVERY_SECONDS)
+    const f = fake()
+    await runOpsTick(f.ports)
+    expect(f.db.calls).toContain(`claim:connection_check:${CONNECTION_CHECK_EVERY_SECONDS}`)
+  })
+
+  it('with no ops connection (today), claims, finds nothing, stamps the job and reports nothing, and the tick reports a complete list of no login', async () => {
+    const f = fake()
+    const report = await runOpsTick(f.ports)
+    // Twice: the login states, and the sweep's own read of the same list.
+    expect(f.db.calls.filter((c) => c === `connectionCheckTargets:${CONNECTION_CHECK_READ_LIMIT}`)).toHaveLength(2)
+    expect(f.probes).toEqual([])
+    expect(f.db.connectionChecks).toEqual([])
+    expect(f.jobStamps).toEqual(expect.arrayContaining([`started:${CONNECTION_CHECK_JOB}`, `completed:${CONNECTION_CHECK_JOB}`]))
+    expect(report.outcome).toBe('ok')
+    expect(report.problems).toEqual([])
+    expect(report.counts.connection_check_connections).toBe(0)
+    expect(report.connection_logins).toEqual({ complete: true, logins: [] })
+  })
+
+  it('probes a connection\'s identity and records the passing check, the counts in the tick\'s report', async () => {
+    const f = fake({ connTargets: [connTarget()] })
+    const report = await runOpsTick(f.ports)
+    expect(f.probes).toEqual([CONN])
+    expect(f.db.connectionChecks).toEqual([{ connectionId: CONN, result: { ok: true } }])
+    expect(report.counts).toMatchObject({ connection_check_connections: 1, connection_check_passed: 1 })
+    expect(report.outcome).toBe('ok')
+  })
+
+  it('carries the sweep\'s keyed problems into the tick\'s report, each paged at once', async () => {
+    const f = fake({ connTargets: [connTarget()], probe: async () => { throw new ConnectionRefusal('sf_cap_unset', 'the ops Salesforce pool answered sf_cap_unset') } })
+    const report = await runOpsTick(f.ports)
+    expect(report.outcome).toBe('problems')
+    expect(report.problem_keys).toEqual([`connection_check_refused:${CONN}`])
+  })
+
+  it('reads the login states every tick, owning the sweep or not, and lists a connection in needs_reauth', async () => {
+    const f = fake({
+      sweepOwned: false,
+      connTargets: [connTarget({ connectionId: NEEDS, status: 'needs_reauth', needsReauthAt: '2026-10-17T10:01:00.000Z', needsReauthCause: 'login_refused: invalid_grant' })],
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls).toContain(`connectionCheckTargets:${CONNECTION_LOGINS_READ_LIMIT}`)
+    expect(f.probes).toEqual([])
+    expect(report.connection_logins).toEqual({
+      complete: true,
+      logins: [{ organization_id: ORG, connection_id: NEEDS, service: 'salesforce', state: 'needs_reauth', reason: 'login_refused', since: '2026-10-17T10:01:00.000Z', failures: null }],
+    })
+    // A login is the login signal's to page, not the tick's: the tick stays ok.
+    expect(report.outcome).toBe('ok')
+  })
+
+  it('reads the login states after saving the served connections, so a withdrawal served this minute is judged', async () => {
+    const f = fake()
+    await runOpsTick(f.ports)
+    expect(f.db.calls.indexOf('saveConnectionCopies')).toBeLessThan(f.db.calls.lastIndexOf(`connectionCheckTargets:${CONNECTION_LOGINS_READ_LIMIT}`))
+  })
+
+  it('reports no login list, never an empty one, when the read fails, and says why', async () => {
+    const f = fake({ failing: { connectionCheckTargets: new OpsWriteTimeoutError('connection_check_targets did not answer within 9000 ms') } })
+    const report = await runOpsTick(f.ports)
+    expect(report.connection_logins).toBeNull()
+    expect(report.problem_keys).toContain('connection_logins_failed')
+    expect(OPS_TICK_PROBLEM_RULES.connection_logins_failed).toBe('three_in_a_row')
+  })
+
+  it('reports a login list that reached its limit as not complete, and pages that at once', async () => {
+    const f = fake({ connTargetsFull: true, sweepOwned: false })
+    const report = await runOpsTick(f.ports)
+    expect(report.connection_logins?.complete).toBe(false)
+    expect(report.problem_keys).toEqual(['connection_logins_limit'])
+  })
+
+  it('reports no login list with no database', async () => {
+    const report = await runOpsTick(fake({ db: 'not_configured' }).ports)
+    expect(report.connection_logins).toBeNull()
+  })
+
+  it('goes on, and the tick stays ok, when the job stamps fail: the heartbeat is what pages a sweep that stops stamping', async () => {
+    const f = fake({ connTargets: [connTarget()], jobStampFails: true })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.connectionChecks).toHaveLength(1)
+    expect(report.outcome).toBe('ok')
+    expect(report.counts.connection_check_stamps_failed).toBe(2)
+  })
+
+  it('reports a sweep that throws past its own boundaries as connection_check_failed, and the rest of the tick still runs', async () => {
+    const f = fake()
+    const ports = { ...f.ports, connectionCheck: undefined as unknown as OpsTickPorts['connectionCheck'] }
+    const report = await runOpsTick(ports)
+    expect(report.problem_keys).toEqual(['connection_check_failed'])
+    expect(f.dispatched).toHaveLength(1)
+  })
+
+  it('runs beside the rest of the tick, so a slow probe does not hold the schedules back', async () => {
+    let release: () => void = () => undefined
+    const pending = new Promise<ProbeAnswer>((resolve) => { release = () => resolve({ kind: 'measured', identity: { kind: 'salesforce', sfOrgId: '00Dst0000000001AAA', username: 'ops-one@example.com' } }) })
+    const f = fake({ connTargets: [connTarget()], probe: () => pending })
+    const done = runOpsTick(f.ports)
+    for (let i = 0; i < 50 && f.dispatched.length === 0; i++) await Promise.resolve()
+    expect(f.dispatched).toHaveLength(1)
+    expect(f.reports).toEqual([])
+    release()
+    const report = await done
+    expect(report.counts.connection_check_passed).toBe(1)
     expect(f.reports).toHaveLength(1)
   })
 })

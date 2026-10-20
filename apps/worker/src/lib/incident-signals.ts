@@ -30,7 +30,10 @@
  *    alone, failure-rate on `${id}:${match}`, the field presence tiers on
  *    `${id} ${fieldPath}`), `organization` when it is an organization id, and
  *    `name` when the key is itself readable (a host, a job name, a GitHub
- *    workflow file, a fixed id). Required, so a new signal must say.
+ *    workflow file, a fixed id), and `connection` when it is an ops
+ *    connection id (service_connections.id), whose delivering check always
+ *    passes the connection's name and service as the incident's label (#2340).
+ *    Required, so a new signal must say.
  *  - `kinds`: for a signal whose one prefix covers several problems or subjects,
  *    what they are.
  *  - `marker`: where the open incident's KV marker lives, for a signal that keeps
@@ -54,7 +57,7 @@
  */
 
 export type IncidentScopeKind = 'org' | 'platform'
-export type IncidentSubjectKind = 'workflow' | 'organization' | 'name'
+export type IncidentSubjectKind = 'workflow' | 'organization' | 'name' | 'connection'
 
 /**
  * A marker kept in a check's own state: the key is `${keyPrefix}${subject}${keySuffix}`
@@ -171,6 +174,20 @@ export const INCIDENT_SIGNALS = [
     startMeans: FIRST_PAGE,
     windowMinutes: null,
     kinds: ['slack_token_undecryptable', 'slack_key_ring_missing'],
+  },
+  // #2340. An ops connection whose login needs a person: `needs_reauth` (a
+  // person must reconnect it) or `refresh_failing` past Dan's decision 2 bound,
+  // as the ops minute tick judged it. One organization's connection, keyed on
+  // its id and labelled with its name and service. It judges a state, so it has
+  // no window. Paged by ops-connection-logins.ts from the tick's report.
+  {
+    signal: 'ops-connection-login',
+    label: 'Ops connection login',
+    scope: 'org',
+    subject: 'connection',
+    startMeans: FIRST_PAGE,
+    windowMinutes: null,
+    kinds: ['needs_reauth', 'refresh_failing'],
   },
 ] as const satisfies readonly IncidentSignalEntry[]
 

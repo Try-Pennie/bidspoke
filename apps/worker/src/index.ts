@@ -34,6 +34,7 @@ import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, writeHeartbeatCompleted, runHeartbeatChecks } from './lib/cron-heartbeat'
 import { runOpsTickReportCheck } from './lib/ops-gateway'
+import { runOpsConnectionLoginCheckForEnv } from './lib/ops-connection-logins'
 import { runPartnerReachabilityCheck, fetchProbe, liveSenders } from './lib/partner-reachability'
 import { resolveSlackForEveryOrg } from './lib/standing-alert'
 import { runIncidentDrain, INCIDENT_DRAIN_JOB } from './lib/incident-drain'
@@ -1293,6 +1294,14 @@ const scheduledJobs = {
         runOpsTickReportCheck(supabase, env.IDEMPOTENCY, Date.now())
           .then((v) => { if (v === 'alerted') console.error('[ops-tick] the ops minute cron reported a problem') })
           .catch((e) => console.error('[ops-tick] report check failed:', e))
+      )
+      // The ops connections whose login needs a person (#2340): the tick judges
+      // them every minute and its report carries the ones due; this pages each
+      // to its organization and sends the all clear (lib/ops-connection-logins.ts).
+      minuteJob('ops-connection-logins',
+        runOpsConnectionLoginCheckForEnv(supabase, env.IDEMPOTENCY, reachability.claims)
+          .then((s) => { if (s.errors.length > 0) console.error(`[ops-connection-login] ${s.errors.length} fault(s): ${s.errors.join('; ')}`) })
+          .catch((e) => console.error('[ops-connection-login] check failed:', e))
       )
       minuteJob('heartbeat-checks',
         runHeartbeatChecks(supabase, env.IDEMPOTENCY, Date.now(), reachability.claims)

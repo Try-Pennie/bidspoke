@@ -49,7 +49,7 @@ import { fetchAllPaged } from './paginate'
 import { writeHeartbeat, writeHeartbeatCompleted } from './cron-heartbeat'
 import { notifyExportFailure, notifyExportRecovery } from './export-alerts'
 import {
-  CONNECTION_SERVE_WINDOW_MS, OpsGatewayContractError, SF_LIMITS_JOB, TOMBSTONE_SERVE_WINDOW_MS, parseOpsJobId, parseOpsJobReport, parseOpsTickReport,
+  CONNECTION_CHECK_JOB, CONNECTION_SERVE_WINDOW_MS, OpsGatewayContractError, SF_LIMITS_JOB, TOMBSTONE_SERVE_WINDOW_MS, parseOpsJobId, parseOpsJobReport, parseOpsTickReport,
   parseSealedEnvelope, problemRuleOf,
   parseReplaceConnectionEnvelopeAnswer, parseReplaceConnectionEnvelopeRequest, parseStoreRotatedEnvelopeAnswer, parseStoreRotatedEnvelopeRequest,
   servedConnectionProblem,
@@ -327,6 +327,9 @@ export async function recordOpsTickStarted(kv: KVNamespace, nowMs: number): Prom
  */
 export { SF_LIMITS_JOB } from './ops-gateway-contract'
 
+/** The connection_check sweep's id in the heartbeat registry (#2340), stamped below by its own literal calls. */
+export { CONNECTION_CHECK_JOB } from './ops-gateway-contract'
+
 /**
  * An ops job's started stamp (OpsGateway.opsJobStarted, #2340). Only the ids
  * in OPS_GATEWAY_JOBS are accepted, each dispatched to its own literal stamp,
@@ -338,6 +341,9 @@ export async function recordOpsJobStarted(kv: KVNamespace, rawJobId: unknown, no
   switch (job) {
     case SF_LIMITS_JOB:
       await writeHeartbeat(kv, SF_LIMITS_JOB, nowMs)
+      return job
+    case CONNECTION_CHECK_JOB:
+      await writeHeartbeat(kv, CONNECTION_CHECK_JOB, nowMs)
       return job
     default: {
       const unhandled: never = job
@@ -365,6 +371,9 @@ export async function recordOpsJobCompleted(kv: KVNamespace, rawJobId: unknown, 
   switch (job) {
     case SF_LIMITS_JOB:
       await writeHeartbeatCompleted(kv, SF_LIMITS_JOB, nowMs)
+      break
+    case CONNECTION_CHECK_JOB:
+      await writeHeartbeatCompleted(kv, CONNECTION_CHECK_JOB, nowMs)
       break
     default: {
       const unhandled: never = job
@@ -541,7 +550,7 @@ function unreadableReport(why: string, at: string): OpsTickReport {
   return {
     tick_id: 'unreadable', mode: 'observe', scheduled_time: null, started_at: at, finished_at: at, db_now: null,
     outcome: 'problems', problems: [`The ops tick's report could not be read (${why}), so whether the tick worked is not known.`], counts: {},
-    not_configured_secrets: [], start_stamp_failed: null, problem_keys: ['report_unreadable'],
+    not_configured_secrets: [], start_stamp_failed: null, problem_keys: ['report_unreadable'], connection_logins: null,
   }
 }
 

@@ -31,6 +31,9 @@ const MINUTE_CLAIMANTS: Record<string, string[]> = {
   // #2331: the sealed Slack token page, judged by the minute probe from the rows
   // it reads, with the probe's claims.
   'slack-token-health.ts': ['runDatabaseReachabilityProbe'],
+  // #2340: the ops connection login page, judged every minute from the ops
+  // tick's kept report, so two overlapping ticks could both post it.
+  'ops-connection-logins.ts': ['runOpsConnectionLoginCheckForEnv'],
 }
 
 /**
