@@ -51,4 +51,20 @@ export const SNOWFLAKE_SERVICE: ServiceSchema = {
   key: 'snowflake',
   name: 'Snowflake',
   actions: [SNOWFLAKE_EXECUTE_SQL_QUERY_V1, SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1],
+  // The key pair minter reads `private_key` from the login and `account` and
+  // `user` from the target; the catalogue's Snowflake client (snowflakeTargetOf)
+  // reads the four optional session fields.
+  connection: {
+    tile: 'A user and account, signed in by key pair',
+    auth: 'key_pair',
+    fields: [
+      { key: 'account', label: 'Account', input: 'text', required: true, target: 'account' },
+      { key: 'user', label: 'User', input: 'text', required: true, target: 'user' },
+      { key: 'private_key', label: 'Private key', input: 'secret_block', required: true, login: 'private_key' },
+      { key: 'warehouse', label: 'Warehouse', input: 'text', required: false, target: 'warehouse' },
+      { key: 'role', label: 'Role', input: 'text', required: false, target: 'role' },
+      { key: 'database', label: 'Database', input: 'text', required: false, target: 'database' },
+      { key: 'schema', label: 'Schema', input: 'text', required: false, target: 'schema' },
+    ],
+  },
 }
