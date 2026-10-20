@@ -3719,6 +3719,147 @@ export async function sendOpsConnectionWriteBackRecoveryAlert(
   )
 }
 
+// ── A person bound ops connection whose owner left Bidspoke (#2340) ──────────
+
+/**
+ * What the daily owner check pages with (#2340): the connection by its name and
+ * service, its owner by display name when one is recorded (never the email),
+ * and the workflows whose definition names it, a switched off one marked.
+ * `workflows` is null when they could not be read, which the page says,
+ * never as "none".
+ */
+export interface OpsConnectionOwnerAlert {
+  kind: 'owner_removed' | 'owner_missing'
+  name: string
+  service: string
+  ownerName: string | null
+  workflows: { name: string; active: boolean }[] | null
+  firstReportedAt: string | null
+}
+
+/** How many workflows the page names before it counts the rest. */
+export const OPS_CONNECTION_OWNER_WORKFLOWS_NAMED = 10
+
+/** The page's title and sentences, separate from the send so the words can be tested. */
+export function opsConnectionOwnerMessage(alert: OpsConnectionOwnerAlert): { title: string; sections: string[] } {
+  const service = serviceWords(alert.service)
+  const connection = `the ${service} connection named ${slackText(alert.name)}`
+  const finding = alert.kind === 'owner_removed'
+    ? `${capitalise(connection)} signs in as one person, ${alert.ownerName === null ? 'its owner' : slackText(alert.ownerName)}, who is no longer on the Access list. It keeps working until that login is revoked, so the workflows that use it act as someone who no longer has access to Bidspoke.`
+    : `${capitalise(connection)} signs in as one person, but no owner is recorded for it, so nobody can tell whether that person still has access to Bidspoke.`
+  let used: string
+  if (alert.workflows === null) {
+    used = 'The workflows that use it could not be read, so this page cannot name them.'
+  } else if (alert.workflows.length === 0) {
+    used = 'No workflow uses it.'
+  } else {
+    const named = alert.workflows.slice(0, OPS_CONNECTION_OWNER_WORKFLOWS_NAMED).map((w) => `${slackText(w.name)}${w.active ? '' : ' (switched off)'}`)
+    const rest = alert.workflows.length - named.length
+    used = `Workflows that use it: ${named.join(', ')}${rest > 0 ? `, and ${rest} more` : ''}.`
+  }
+  const fix = alert.kind === 'owner_removed'
+    ? '*Fix:* move those workflows onto a connection whose owner still has access, then remove this one on the Connections page. If the owner was removed by mistake, add them back on the Access page.'
+    : '*Fix:* remove it on the Connections page and connect it again as someone who has access, after moving its workflows onto the new connection.'
+  const sections = [finding, used, fix]
+  if (alert.firstReportedAt !== null) sections.push(`First reported ${etTime(alert.firstReportedAt)}.`)
+  return {
+    title: alert.kind === 'owner_removed' ? 'An ops connection belongs to someone who was removed' : 'An ops connection has no owner recorded',
+    sections,
+  }
+}
+
+/** Pages the connection's own organization, under its configuration alerts toggle. Returns whether it reached Slack. */
+export async function sendOpsConnectionOwnerAlert(supabase: SupabaseClient, orgId: string, alert: OpsConnectionOwnerAlert): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  const m = opsConnectionOwnerMessage(alert)
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
+    ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+}
+
+export const opsConnectionOwnerRecoveryWording: RecoveryWording = {
+  signal: 'ops connection owner',
+  recoveredPhrase: 'no longer signs in as someone without access',
+}
+
+/** The all clear once the connection's owner is back on the Access list, or the connection is gone. Returns whether it reached Slack. */
+export async function sendOpsConnectionOwnerRecoveryAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  recovery: { subject: string; alertedAt: string; endedAt: string | null },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  return sendRecoveryAlert(
+    connection,
+    connection.default_channel,
+    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, ...opsConnectionOwnerRecoveryWording },
+    now,
+  )
+}
+
+// ── The Salesforce bulkhead limit the ops lane was sized against (#2336) ──────
+
+/** What the daily bulkhead check pages with: the limit now, the limit the ops lane was sized for, and the first page's time on a repeat. */
+export interface SalesforceBulkheadLimitAlert {
+  limit: number
+  sizedFor: number
+  firstReportedAt: string | null
+}
+
+/**
+ * The page's title and sentences, separate from the send so the words can be
+ * tested. Names the two numbers and the two places to change, and nothing else:
+ * the limit is a Worker setting, not a secret or a customer value.
+ */
+export function salesforceBulkheadLimitMessage(alert: SalesforceBulkheadLimitAlert): { title: string; sections: string[] } {
+  const sections = [
+    `The bidding Worker now lets ${alert.limit} Salesforce calls run at once. The ops Salesforce lane's cap was sized for a limit of ${alert.sizedFor}, so bidding and ops together may now ask Salesforce for more calls at once than the org allows.`,
+    `*Fix:* set \`SALESFORCE_BULKHEAD_LIMIT\` on bidspoke-worker back to ${alert.sizedFor}. To keep ${alert.limit}, first re-check the ops Salesforce cap against the org's limit, then change \`OPS_LANE_SIZED_FOR_BULKHEAD_LIMIT\` in apps/worker/src/lib/salesforce-bulkhead-check.ts to ${alert.limit}.`,
+  ]
+  if (alert.firstReportedAt !== null) sections.push(`First reported ${etTime(alert.firstReportedAt)}.`)
+  return { title: 'The Salesforce bulkhead limit has changed', sections }
+}
+
+/** Pages one organization, under its configuration alerts toggle. Returns whether it reached Slack. */
+export async function sendSalesforceBulkheadLimitAlert(supabase: SupabaseClient, orgId: string, alert: SalesforceBulkheadLimitAlert): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  const m = salesforceBulkheadLimitMessage(alert)
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
+    ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+}
+
+/** The all clear once the limit matches the value the ops lane is sized for again. Returns whether it reached Slack. */
+export async function sendSalesforceBulkheadLimitRecoveryAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  recovery: { sizedFor: number; alertedAt: string; endedAt: string | null },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection || !connection.config_alerts_enabled) return false
+  return sendRecoveryAlert(
+    connection,
+    connection.default_channel,
+    {
+      subject: 'The Salesforce bulkhead limit',
+      alertedAt: recovery.alertedAt,
+      endedAt: recovery.endedAt,
+      signal: 'Salesforce bulkhead limit',
+      recoveredPhrase: `matches the ${recovery.sizedFor} the ops Salesforce lane is sized for again`,
+    },
+    now,
+  )
+}
+
 // ── What the drain of stored Salesforce writes could not finish (#468) ─────────
 
 /**

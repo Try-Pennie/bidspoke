@@ -13,6 +13,8 @@ import { EXPORT_ALERT_SIGNAL } from '../export-alerts'
 import { CRON_HEARTBEAT_RECOVERY_WORDS } from '../slack'
 import { SLACK_TOKEN_SIGNAL } from '../slack-token-health'
 import { OPS_CONNECTION_LOGIN_SIGNAL } from '../ops-connection-logins'
+import { OPS_CONNECTION_OWNER_SIGNAL } from '../ops-connection-owner-check'
+import { SALESFORCE_BULKHEAD_SIGNAL } from '../salesforce-bulkhead-check'
 
 /**
  * The incident registry (#2099, #818): one entry per recovery prefix an alert
@@ -23,7 +25,7 @@ import { OPS_CONNECTION_LOGIN_SIGNAL } from '../ops-connection-logins'
  * from without either noticing.
  */
 describe('INCIDENT_SIGNALS', () => {
-  it('names the nineteen signals in use, each once', () => {
+  it('names the twenty one signals in use, each once', () => {
     const names = INCIDENT_SIGNALS.map((s) => s.signal)
     expect(new Set(names).size).toBe(names.length)
     expect([...names].sort()).toEqual([
@@ -35,10 +37,12 @@ describe('INCIDENT_SIGNALS', () => {
       'field-presence-drought',
       'field-presence-wrong-path',
       'ops-connection-login',
+      'ops-connection-owner',
       'ops-connection-write-back',
       'partner-page-live',
       'partner-reachability',
       'pg-cron-watch',
+      'salesforce-bulkhead-limit',
       'slack-token-undecryptable',
       'slow-spike',
       'stored-copy-serving',
@@ -122,6 +126,19 @@ describe('INCIDENT_SIGNALS', () => {
     expect(incidentSignal(OPS_CONNECTION_LOGIN_SIGNAL).signal).toBe('ops-connection-login')
     expect(incidentSignal('ops-connection-login')).toMatchObject({ scope: 'org', subject: 'connection', windowMinutes: null, label: 'Ops connection login' })
     expect(incidentSignal('ops-connection-login').kinds).toEqual(['needs_reauth', 'refresh_failing'])
+  })
+
+  // #2340: one organization's person bound connection, keyed on its id, a state with no window.
+  it('scopes the ops connection owner signal to the connection\'s organization, keyed on the connection', () => {
+    expect(incidentSignal(OPS_CONNECTION_OWNER_SIGNAL).signal).toBe('ops-connection-owner')
+    expect(incidentSignal('ops-connection-owner')).toMatchObject({ scope: 'org', subject: 'connection', windowMinutes: null, label: 'Ops connection owner' })
+    expect(incidentSignal('ops-connection-owner').kinds).toEqual(['owner_removed', 'owner_missing'])
+  })
+
+  // #2336: one Worker setting every organization's leads share, keyed on the bulkhead's own fixed id.
+  it('scopes the Salesforce bulkhead limit signal to the platform, keyed on a fixed name', () => {
+    expect(incidentSignal(SALESFORCE_BULKHEAD_SIGNAL).signal).toBe('salesforce-bulkhead-limit')
+    expect(incidentSignal('salesforce-bulkhead-limit')).toMatchObject({ scope: 'platform', subject: 'name', windowMinutes: null, label: 'Salesforce bulkhead limit' })
   })
 
   it('lists the partner kinds and the two database memory subjects', () => {

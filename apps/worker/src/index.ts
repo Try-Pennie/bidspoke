@@ -33,8 +33,8 @@ import { runSecretDecryptHealthCheck } from './lib/secret-decrypt-health'
 import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, writeHeartbeatCompleted, runHeartbeatChecks } from './lib/cron-heartbeat'
-import { runOpsTickReportCheck } from './lib/ops-gateway'
-import { runOpsConnectionLoginCheckForEnv, runOpsConnectionWriteBackCheckForEnv } from './lib/ops-connection-logins'
+import { runOpsTickReportCheck, OPS_TICK_REPORT_JOB } from './lib/ops-gateway'
+import { runOpsConnectionLoginCheckForEnv, runOpsConnectionWriteBackCheckForEnv, OPS_CONNECTION_LOGINS_JOB, OPS_CONNECTION_WRITE_BACKS_JOB } from './lib/ops-connection-logins'
 import { runPartnerReachabilityCheck, fetchProbe, liveSenders } from './lib/partner-reachability'
 import { resolveSlackForEveryOrg } from './lib/standing-alert'
 import { runIncidentDrain, INCIDENT_DRAIN_JOB } from './lib/incident-drain'
@@ -623,6 +623,47 @@ const scheduledJobs = {
             )
           }
         })().catch((e) => console.error('[money-identity] failed:', e))
+      )
+      // The owners of person bound ops connections (#2340): pages a connection
+      // whose owner's email is no longer on user_allowlist, naming the workflows
+      // that use it. Its own heartbeat, so a missed day pages, and its own
+      // failure boundary (L71).
+      track(
+        (async () => {
+          const { runOpsConnectionOwnerCheckForEnv, OPS_CONNECTION_OWNER_JOB } = await import('./lib/ops-connection-owner-check')
+          await writeHeartbeat(env.IDEMPOTENCY, OPS_CONNECTION_OWNER_JOB).catch((e) =>
+            console.error('[cron-heartbeat] ops-connection-owner write failed:', e)
+          )
+          try {
+            const s = await runOpsConnectionOwnerCheckForEnv(supabase, env)
+            console.log(`[ops-connection-owner] judged=${s.judged} person_bound=${s.personBound} orphaned=${s.orphaned.length} paged=${s.paged.length} all_clear=${s.allClear.length}${s.unreadable.length ? ` unreadable=${s.unreadable.length}` : ''}`)
+            if (s.errors.length > 0) console.error(`[ops-connection-owner] ${s.errors.length} fault(s): ${s.errors.join('; ')}`)
+          } finally {
+            await writeHeartbeatCompleted(env.IDEMPOTENCY, OPS_CONNECTION_OWNER_JOB).catch((e) =>
+              console.error('[cron-heartbeat] ops-connection-owner completed write failed:', e)
+            )
+          }
+        })().catch((e) => console.error('[ops-connection-owner] failed:', e))
+      )
+      // The Salesforce bulkhead limit the ops Salesforce lane was sized against
+      // (#2336): pages when it resolves to anything else. Its own heartbeat and
+      // failure boundary.
+      track(
+        (async () => {
+          const { runSalesforceBulkheadCheckForEnv, SALESFORCE_BULKHEAD_CHECK_JOB } = await import('./lib/salesforce-bulkhead-check')
+          await writeHeartbeat(env.IDEMPOTENCY, SALESFORCE_BULKHEAD_CHECK_JOB).catch((e) =>
+            console.error('[cron-heartbeat] salesforce-bulkhead-check write failed:', e)
+          )
+          try {
+            const s = await runSalesforceBulkheadCheckForEnv(supabase, env)
+            if (s.verdict !== 'matches' || s.allClear) console.log(`[salesforce-bulkhead-check] limit=${s.limit} sized_for=${s.sizedFor} paged=${s.paged} all_clear=${s.allClear}`)
+            if (s.errors.length > 0) console.error(`[salesforce-bulkhead-check] ${s.errors.length} fault(s): ${s.errors.join('; ')}`)
+          } finally {
+            await writeHeartbeatCompleted(env.IDEMPOTENCY, SALESFORCE_BULKHEAD_CHECK_JOB).catch((e) =>
+              console.error('[cron-heartbeat] salesforce-bulkhead-check completed write failed:', e)
+            )
+          }
+        })().catch((e) => console.error('[salesforce-bulkhead-check] failed:', e))
       )
       // The deletion gate's measurements (#872, Phase A4). SHADOW: it writes
       // numbers to execution_archive_days and nothing reads them to authorise a
@@ -1290,27 +1331,45 @@ const scheduledJobs = {
       // stamps its heartbeat here through OpsGateway; this pages on a tick that
       // ran but reported a problem or is not configured. A tick that stopped is
       // the heartbeat check's, below (L71: the watchdog is not the Worker watched).
-      minuteJob('ops-tick-report',
-        runOpsTickReportCheck(supabase, env.IDEMPOTENCY, Date.now())
-          .then((v) => { if (v === 'alerted') console.error('[ops-tick] the ops minute cron reported a problem') })
-          .catch((e) => console.error('[ops-tick] report check failed:', e))
+      // This job stamps its own heartbeat too (#2519), so one that stops pages as itself.
+      minuteJob(OPS_TICK_REPORT_JOB,
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, OPS_TICK_REPORT_JOB)
+            .catch((e) => console.error(`[${OPS_TICK_REPORT_JOB}] heartbeat write failed:`, e))
+            .then(() => runOpsTickReportCheck(supabase, env.IDEMPOTENCY, Date.now()))
+            .then((v) => { if (v === 'alerted') console.error('[ops-tick] the ops minute cron reported a problem') })
+            .catch((e) => console.error('[ops-tick] report check failed:', e)),
+          OPS_TICK_REPORT_JOB,
+        ),
       )
       // The ops connections whose login needs a person (#2340): the tick judges
       // them every minute and its report carries the ones due; this pages each
       // to its organization and sends the all clear (lib/ops-connection-logins.ts).
-      minuteJob('ops-connection-logins',
-        runOpsConnectionLoginCheckForEnv(supabase, env.IDEMPOTENCY, reachability.claims)
-          .then((s) => { if (s.errors.length > 0) console.error(`[ops-connection-login] ${s.errors.length} fault(s): ${s.errors.join('; ')}`) })
-          .catch((e) => console.error('[ops-connection-login] check failed:', e))
+      // Its own heartbeat (#2519).
+      minuteJob(OPS_CONNECTION_LOGINS_JOB,
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, OPS_CONNECTION_LOGINS_JOB)
+            .catch((e) => console.error(`[${OPS_CONNECTION_LOGINS_JOB}] heartbeat write failed:`, e))
+            .then(() => runOpsConnectionLoginCheckForEnv(supabase, env.IDEMPOTENCY, reachability.claims))
+            .then((s) => { if (s.errors.length > 0) console.error(`[ops-connection-login] ${s.errors.length} fault(s): ${s.errors.join('; ')}`) })
+            .catch((e) => console.error('[ops-connection-login] check failed:', e)),
+          OPS_CONNECTION_LOGINS_JOB,
+        ),
       )
       // The person bound logins whose new login the ops Worker holds and the
       // row has not taken past its bound (#2340, phase 10 item 4): the tick
       // judges them with the connection check and this pages each to its
       // organization and sends the all clear (lib/ops-connection-logins.ts).
-      minuteJob('ops-connection-write-backs',
-        runOpsConnectionWriteBackCheckForEnv(supabase, env.IDEMPOTENCY, reachability.claims)
-          .then((s) => { if (s.errors.length > 0) console.error(`[ops-connection-write-back] ${s.errors.length} fault(s): ${s.errors.join('; ')}`) })
-          .catch((e) => console.error('[ops-connection-write-back] check failed:', e))
+      // Its own heartbeat, as the other two report jobs (#2519).
+      minuteJob(OPS_CONNECTION_WRITE_BACKS_JOB,
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, OPS_CONNECTION_WRITE_BACKS_JOB)
+            .catch((e) => console.error(`[${OPS_CONNECTION_WRITE_BACKS_JOB}] heartbeat write failed:`, e))
+            .then(() => runOpsConnectionWriteBackCheckForEnv(supabase, env.IDEMPOTENCY, reachability.claims))
+            .then((s) => { if (s.errors.length > 0) console.error(`[ops-connection-write-back] ${s.errors.length} fault(s): ${s.errors.join('; ')}`) })
+            .catch((e) => console.error('[ops-connection-write-back] check failed:', e)),
+          OPS_CONNECTION_WRITE_BACKS_JOB,
+        ),
       )
       minuteJob('heartbeat-checks',
         runHeartbeatChecks(supabase, env.IDEMPOTENCY, Date.now(), reachability.claims)

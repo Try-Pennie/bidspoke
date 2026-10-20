@@ -42,6 +42,11 @@ import { WORKER_SRC, listTsFiles, sanitizeSource } from '../../__tests__/_scan-u
  *   Slack row and no credential, is bounded at 10 s, and a read that fails or
  *   hangs still sends the page, naming the service alone, so a stalled
  *   database delays that page by the bound at most.
+ * - lib/ops-connection-owner-check.ts reads the person bound connections'
+ *   id, organization, name, service and owner (#2340), once a day, for the
+ *   owner check. It reads no Slack row and no credential, config or target,
+ *   and is not on an alert path: a read that fails judges nothing and pages
+ *   that the check could not run.
  */
 
 /** Each allowed file outside routes/api, with why it may name the table. */
@@ -51,6 +56,7 @@ const ALLOWED_WITH_REASON: Record<string, string> = {
   'lib/secret-reencrypt.ts': 're-locks bidding_ring sealed Slack tokens in a key rotation, and reads nothing else (#2331)',
   'lib/ops-gateway.ts': 'serves the ops_key rows (envelope, public config, target) to the ops tick, never a bidding_ring row (#2335)',
   'lib/ops-connection-logins.ts': 'reads only the name of one ops connection, by organization and id, for its login page, bounded at 10 s (#2340)',
+  'lib/ops-connection-owner-check.ts': 'reads the person bound connections\' id, organization, name, service and owner once a day for the owner check, never a Slack row or a credential (#2340)',
 }
 const ALLOWED = Object.keys(ALLOWED_WITH_REASON)
 const ALLOWED_DIRS = ['routes/api/']

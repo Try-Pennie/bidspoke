@@ -75,6 +75,14 @@ export const OPS_CONNECTION_LOGIN_SIGNAL = 'ops-connection-login'
 export const OPS_CONNECTION_WRITE_BACK_SIGNAL = 'ops-connection-write-back'
 
 /**
+ * This check's minute job in the heartbeat registry (#2519), so a run that
+ * stops is paged as itself. Never rename it: it keys its KV state.
+ */
+export const OPS_CONNECTION_LOGINS_JOB = 'ops-connection-logins'
+/** The minute job that pages write backs pending past their bound, with its own heartbeat (#2519, #2340). */
+export const OPS_CONNECTION_WRITE_BACKS_JOB = 'ops-connection-write-backs'
+
+/**
  * Which connections have an incident open, so an owed all clear is not
  * forgotten. Written only when it changes, and with no expiry: an entry leaves
  * it only once its incident is settled, so it is bounded by the connections.

@@ -60,6 +60,12 @@ import { formatErr } from './format-error'
 
 /** The tick's id in the heartbeat registry and the export alerter. Never rename it: it keys its KV state. */
 export const OPS_TICK_JOB = 'ops-tick'
+/**
+ * The bidding Worker's minute job that judges the tick's report (runOpsTickReportCheck),
+ * in the heartbeat registry under its own id (#2519): it delivers the tick's
+ * problems, so a run of it that stops is paged as itself. Never rename it: it keys its KV state.
+ */
+export const OPS_TICK_REPORT_JOB = 'ops-tick-report'
 /** The last report the tick sent. */
 export const OPS_TICK_REPORT_KEY = 'ops-tick:last-report'
 /** A report older than this says nothing about now; the heartbeat judges a tick that stopped. */
