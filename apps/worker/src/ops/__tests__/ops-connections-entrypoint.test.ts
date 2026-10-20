@@ -18,8 +18,8 @@ import { describe, expect, it } from 'vitest'
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import * as opsModule from '../index'
 import type { OpsEnv } from '../index'
-import { OpsConnections, opsConnectionsAnswer } from '../ops-connections-entrypoint'
-import { OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, parseHealthRequest } from '../../lib/ops-connections-contract'
+import { OpsConnections, delegationListAnswer, opsConnectionsAnswer } from '../ops-connections-entrypoint'
+import { OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_CEILINGS_MS, OPS_DELEGATION_METHODS, parseHealthRequest } from '../../lib/ops-connections-contract'
 import { KEYGEN_TIMEOUT_MS, opsKeyPair } from './ops-key-fixture'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
@@ -42,10 +42,11 @@ function opsDatabase(answers: Record<string, unknown>) {
 const configured: Partial<OpsEnv> = { LANE: 'ops', OPS_SUPABASE_URL: 'https://zwihpjxouklvkvngkvmw.supabase.co', OPS_SUPABASE_SECRET_KEY: 'sb_secret_test_not_real' }
 
 describe('OpsConnections stays exported from the ops Worker (Phase 0 spike, #2330)', () => {
-  it('is a named export of the main module, a WorkerEntrypoint, with exactly the methods the bidding Worker calls', () => {
+  it('is a named export of the main module, a WorkerEntrypoint, with exactly the methods the bidding Worker calls and the Google list\'s', () => {
     expect(opsModule.OpsConnections).toBe(OpsConnections)
     expect(Object.getPrototypeOf(OpsConnections)).toBe(WorkerEntrypoint)
-    expect(Object.getOwnPropertyNames(OpsConnections.prototype).filter((n) => n !== 'constructor').sort()).toEqual([...OPS_CONNECTIONS_METHODS].sort())
+    expect(Object.getOwnPropertyNames(OpsConnections.prototype).filter((n) => n !== 'constructor').sort())
+      .toEqual([...OPS_CONNECTIONS_METHODS, ...OPS_DELEGATION_METHODS].sort())
   })
 
   it('is not the default export, which the public route reaches', () => {
@@ -56,7 +57,7 @@ describe('OpsConnections stays exported from the ops Worker (Phase 0 spike, #233
 describe('every answer is a value, refused by name', () => {
   it.each([[undefined, 'lane_unset'], ['', 'lane_unset'], ['money', 'lane_not_ops']])('outside the ops lane (LANE %j), every method refuses %s', async (lane, code) => {
     const e = entry({ ...configured, LANE: lane })
-    for (const method of OPS_CONNECTIONS_METHODS) {
+    for (const method of [...OPS_CONNECTIONS_METHODS, ...OPS_DELEGATION_METHODS]) {
       expect(await (e[method] as (r: unknown) => Promise<unknown>)({ organization_id: ORG })).toMatchObject({ ok: false, refused: code })
     }
   })
@@ -102,6 +103,35 @@ describe('every answer is a value, refused by name', () => {
       (await import('../../lib/ops-connections-contract')).parseRevokeRequest, { opsFetch: db.fetch })
     expect(answer).toEqual({ ok: true, outcome: 'recorded', copies_removed: 1 })
     expect(db.calls[0]).toEqual({ rpc: 'record_connection_tombstone', body: { p_organization_id: ORG, p_connection_id: CONN, p_generation: 3, p_removed_at: '2026-10-19T10:00:00.000Z' } })
+  })
+
+  it('the Google list\'s methods reach the ops database through the live wiring, with no ops private key and no gateway', async () => {
+    const actor = { user_id: 'cccccccc-0000-4000-8000-000000002338', email: 'dan@example.invalid', name: 'Dan Wright' }
+    const db = opsDatabase({
+      add_google_delegation_subject: [{ outcome: 'added', kind: 'mailbox', subject: 'ops@example.invalid', display_name: null, added_by: 'Dan Wright', added_at: '2026-10-19T14:00:00+00:00' }],
+      remove_google_delegation_subject: [{ outcome: 'not_listed' }],
+      list_google_delegation_subjects: [],
+    })
+    const e = entry(configured)
+    const answer = (method: (typeof OPS_DELEGATION_METHODS)[number], request: unknown) =>
+      delegationListAnswer(configured as OpsEnv, method, request, { opsFetch: db.fetch })
+    expect(await answer('addDelegationSubject', { organization_id: ORG, actor, kind: 'mailbox', subject: 'Ops@Example.invalid' }))
+      .toEqual({ ok: true, outcome: 'added', entry: { kind: 'mailbox', subject: 'ops@example.invalid', display_name: null, added_by: 'Dan Wright', added_at: '2026-10-19T14:00:00+00:00' } })
+    expect(await answer('removeDelegationSubject', { organization_id: ORG, actor, kind: 'mailbox', subject: 'ops@example.invalid' }))
+      .toMatchObject({ ok: false, refused: 'delegation_subject_not_listed' })
+    expect(await answer('listDelegationSubjects', { organization_id: ORG })).toEqual({ ok: true, subjects: [], reached_limit: false })
+    expect(db.calls.map((c) => c.rpc)).toEqual(['add_google_delegation_subject', 'remove_google_delegation_subject', 'list_google_delegation_subjects'])
+    // The entrypoint's own methods parse the same way: a list with no organization reaches nothing.
+    expect(await e.listDelegationSubjects({})).toMatchObject({ ok: false, refused: 'ops_connections_request_invalid' })
+    expect(db.calls).toHaveLength(3)
+  })
+
+  it('a Google list method past its ceiling answers ops_connections_timeout', async () => {
+    const answer = await delegationListAnswer(configured as OpsEnv, 'listDelegationSubjects', { organization_id: ORG }, {
+      delay: async () => {},
+      run: () => new Promise<never>(() => {}),
+    })
+    expect(answer).toMatchObject({ ok: false, refused: 'ops_connections_timeout', detail: expect.stringContaining(`${OPS_DELEGATION_CEILINGS_MS.listDelegationSubjects / 1000} s`) })
   })
 
   it('a method past its ceiling answers ops_connections_timeout and aborts the work it was doing', async () => {

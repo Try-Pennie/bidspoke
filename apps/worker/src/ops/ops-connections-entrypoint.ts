@@ -1,7 +1,11 @@
 /**
  * OpsConnections: the ops Worker's connections entrypoint (#2335, PR 8 of phase
  * 5 of #1689; plan: discussion #2329, part 2): verify, clearReauth, revoke,
- * health, lookup and exchangeOAuthCode.
+ * health, lookup and exchangeOAuthCode, and the Google mailboxes and drives
+ * list's addDelegationSubject, removeDelegationSubject and listDelegationSubjects
+ * (#2338, PR 2 of its build plan; connections/delegation-list.ts), which ship
+ * here before the bidding routes that call them (PR 6), the same deploy order
+ * as below.
  *
  * WHO MAY CALL IT. Only a Worker holding a service binding to this named
  * entrypoint of bidspoke-worker-ops: the bidding Worker, through the
@@ -37,17 +41,20 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { raceDeadline } from '../lib/alert-claim'
 import {
-  OPS_CONNECTIONS_CEILINGS_MS, OpsConnectionsContractError, parseClearReauthRequest, parseExchangeOAuthCodeRequest, parseHealthRequest, parseLookupRequest,
-  parseRevokeRequest, parseVerifyRequest, type ClearReauthAnswer, type ExchangeOAuthCodeAnswer, type HealthAnswer, type LookupAnswer, type OpsConnectionsMethod,
-  type OpsConnectionsRefused, type RevokeAnswer, type VerifyAnswer,
+  OPS_CONNECTIONS_CEILINGS_MS, OPS_DELEGATION_CEILINGS_MS, OpsConnectionsContractError, parseAddDelegationSubjectRequest, parseClearReauthRequest,
+  parseExchangeOAuthCodeRequest, parseHealthRequest, parseListDelegationSubjectsRequest, parseLookupRequest, parseRemoveDelegationSubjectRequest,
+  parseRevokeRequest, parseVerifyRequest, type AddDelegationSubjectAnswer, type ClearReauthAnswer, type ExchangeOAuthCodeAnswer, type HealthAnswer,
+  type ListDelegationSubjectsAnswer, type LookupAnswer, type OpsConnectionsMethod, type OpsConnectionsRefused, type OpsDelegationMethod,
+  type RemoveDelegationSubjectAnswer, type RevokeAnswer, type VerifyAnswer,
 } from '../lib/ops-connections-contract'
+import { addDelegationSubject, listDelegationSubjects, removeDelegationSubject, type DelegationListDeps } from './connections/delegation-list'
 import {
   clearReauth, connectionHealth, exchangeConnectionCode, lookupConnection, revokeConnection, verifyConnection, type OpsConnectionsDeps,
 } from './connections/ops-connections'
 import type { SealRegistryOf } from './connection-token-object'
 import { OPS_LANE, type OpsEnv } from './index'
 import { OpsDatabaseConfigError } from './ops-db'
-import { liveOpsConnectionsDeps, OpsConnectionsNotConfigured } from './ops-connections-live'
+import { liveDelegationListDeps, liveOpsConnectionsDeps, OpsConnectionsNotConfigured } from './ops-connections-live'
 
 type Runner<Req, Ans> = (deps: OpsConnectionsDeps, request: Req, signal: AbortSignal) => Promise<Ans>
 
@@ -76,7 +83,9 @@ export interface OpsConnectionsAnswerOptions<Req, Ans> {
 
 const refused = (code: OpsConnectionsRefused['refused'], detail: string): OpsConnectionsRefused => ({ ok: false, refused: code, detail, retry_at: null })
 
-function logAnswer(method: OpsConnectionsMethod, answer: { ok: boolean; refused?: string }, organizationId: string | null): void {
+type EntrypointMethod = OpsConnectionsMethod | OpsDelegationMethod
+
+function logAnswer(method: EntrypointMethod, answer: { ok: boolean; refused?: string }, organizationId: string | null): void {
   console.log(JSON.stringify({ event: 'ops_connections', method, outcome: answer.ok ? 'ok' : answer.refused, organization_id: organizationId }))
 }
 
@@ -86,6 +95,47 @@ function logAnswer(method: OpsConnectionsMethod, answer: { ok: boolean; refused?
  */
 export async function opsConnectionsAnswer<Req extends { organization_id: string }, Ans extends { ok: boolean }>(
   env: OpsEnv, method: OpsConnectionsMethod, raw: unknown, parse: (raw: unknown) => Req, options: OpsConnectionsAnswerOptions<Req, Ans> = {},
+): Promise<Ans | OpsConnectionsRefused> {
+  return answerMethod(env, method, raw, parse, OPS_CONNECTIONS_CEILINGS_MS[method],
+    () => liveOpsConnectionsDeps(env, { opsFetch: options.opsFetch, opensLogins: OPENS_LOGINS.has(method), sealRegistry: options.sealRegistry }),
+    options.run ?? (RUNNERS[method] as unknown as Runner<Req, Ans>), options.delay)
+}
+
+type DelegationRunner = (deps: DelegationListDeps, request: never, signal: AbortSignal) => Promise<unknown>
+
+/** The Google list's methods (#2338): each its contract parser and its body in connections/delegation-list.ts. */
+const DELEGATION_METHODS: { readonly [M in OpsDelegationMethod]: { parse: (raw: unknown) => { organization_id: string }; run: DelegationRunner } } = {
+  addDelegationSubject: { parse: parseAddDelegationSubjectRequest, run: (deps, request) => addDelegationSubject(deps, request) },
+  removeDelegationSubject: { parse: parseRemoveDelegationSubjectRequest, run: (deps, request) => removeDelegationSubject(deps, request) },
+  listDelegationSubjects: { parse: parseListDelegationSubjectsRequest, run: (deps, request) => listDelegationSubjects(deps, request) },
+}
+
+export interface DelegationListAnswerOptions {
+  /** For tests: the method body, in place of the real one. */
+  run?: (deps: DelegationListDeps, request: never, signal: AbortSignal) => Promise<{ ok: boolean }>
+  /** For tests: the ops database client's fetch. */
+  opsFetch?: typeof fetch
+  /** For tests: the ceiling's timer. */
+  delay?: (ms: number) => Promise<void>
+}
+
+/**
+ * One call to one of the Google list's methods, answered as the others are: the
+ * lane, the contract's parse, the ops database (its only dependency), then the
+ * method against its ceiling. Exported for the tests.
+ */
+export async function delegationListAnswer(
+  env: OpsEnv, method: OpsDelegationMethod, raw: unknown, options: DelegationListAnswerOptions = {},
+): Promise<{ ok: boolean } | OpsConnectionsRefused> {
+  const { parse, run } = DELEGATION_METHODS[method]
+  return answerMethod(env, method, raw, parse, OPS_DELEGATION_CEILINGS_MS[method],
+    () => liveDelegationListDeps(env, { opsFetch: options.opsFetch }),
+    (options.run ?? run) as (deps: DelegationListDeps, request: { organization_id: string }, signal: AbortSignal) => Promise<{ ok: boolean }>, options.delay)
+}
+
+async function answerMethod<D, Req extends { organization_id: string }, Ans extends { ok: boolean }>(
+  env: OpsEnv, method: EntrypointMethod, raw: unknown, parse: (raw: unknown) => Req, ceilingMs: number,
+  makeDeps: () => D, run: (deps: D, request: Req, signal: AbortSignal) => Promise<Ans>, delay: ((ms: number) => Promise<void>) | undefined,
 ): Promise<Ans | OpsConnectionsRefused> {
   if (env.LANE !== OPS_LANE) {
     const answer = env.LANE ? refused('lane_not_ops', `this Worker serves the ${env.LANE} lane`) : refused('lane_unset', 'LANE is not set on this Worker')
@@ -102,9 +152,9 @@ export async function opsConnectionsAnswer<Req extends { organization_id: string
     return answer
   }
 
-  let deps: OpsConnectionsDeps
+  let deps: D
   try {
-    deps = liveOpsConnectionsDeps(env, { opsFetch: options.opsFetch, opensLogins: OPENS_LOGINS.has(method), sealRegistry: options.sealRegistry })
+    deps = makeDeps()
   } catch (err) {
     const answer = err instanceof OpsDatabaseConfigError || err instanceof OpsConnectionsNotConfigured
       ? refused('ops_connections_not_configured', err.message)
@@ -113,10 +163,8 @@ export async function opsConnectionsAnswer<Req extends { organization_id: string
     return answer
   }
 
-  const run = options.run ?? (RUNNERS[method] as unknown as Runner<Req, Ans>)
-  const ceilingMs = OPS_CONNECTIONS_CEILINGS_MS[method]
   const controller = new AbortController()
-  const raced = await raceDeadline(() => run(deps, request, controller.signal), ceilingMs, options.delay)
+  const raced = await raceDeadline(() => run(deps, request, controller.signal), ceilingMs, delay)
   let answer: Ans | OpsConnectionsRefused
   if (raced.kind === 'timed_out') {
     controller.abort()
@@ -154,5 +202,18 @@ export class OpsConnections extends WorkerEntrypoint<OpsEnv> {
 
   exchangeOAuthCode(request: unknown): Promise<ExchangeOAuthCodeAnswer> {
     return opsConnectionsAnswer(this.env, 'exchangeOAuthCode', request, parseExchangeOAuthCodeRequest)
+  }
+
+  // The Google mailboxes and drives list (#2338). Not in OPS_CONNECTIONS_METHODS until bidding calls them (PR 6): see the contract.
+  addDelegationSubject(request: unknown): Promise<AddDelegationSubjectAnswer> {
+    return delegationListAnswer(this.env, 'addDelegationSubject', request) as Promise<AddDelegationSubjectAnswer>
+  }
+
+  removeDelegationSubject(request: unknown): Promise<RemoveDelegationSubjectAnswer> {
+    return delegationListAnswer(this.env, 'removeDelegationSubject', request) as Promise<RemoveDelegationSubjectAnswer>
+  }
+
+  listDelegationSubjects(request: unknown): Promise<ListDelegationSubjectsAnswer> {
+    return delegationListAnswer(this.env, 'listDelegationSubjects', request) as Promise<ListDelegationSubjectsAnswer>
   }
 }

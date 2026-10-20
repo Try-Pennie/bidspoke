@@ -5,8 +5,9 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  LOOKUP_RATE_PER_MINUTE, OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OpsConnectionsContractError, parseClearReauthRequest,
-  parseExchangeOAuthCodeRequest, parseHealthRequest, parseLookupRequest, parseRevokeRequest, parseVerifyRequest,
+  LOOKUP_RATE_PER_MINUTE, OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_CEILINGS_MS, OPS_DELEGATION_METHODS, OpsConnectionsContractError,
+  parseAddDelegationSubjectRequest, parseClearReauthRequest, parseExchangeOAuthCodeRequest, parseHealthRequest, parseListDelegationSubjectsRequest,
+  parseLookupRequest, parseRemoveDelegationSubjectRequest, parseRevokeRequest, parseVerifyRequest,
 } from '../ops-connections-contract'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
@@ -91,5 +92,44 @@ describe('the OpsConnections contract', () => {
     expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, code: '' }))).toMatch(/code/)
     expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, redirect_uri: 7 }))).toMatch(/redirect_uri/)
     expect(refused(() => parseExchangeOAuthCodeRequest({ ...ok, candidate: null }))).toMatch(/candidate/)
+  })
+})
+
+describe('the Google mailboxes and drives list (#2338, PR 2)', () => {
+  const ACTOR = { user_id: 'cccccccc-0000-4000-8000-000000002338', email: 'dan@example.invalid', name: 'Dan Wright' }
+
+  it('names its own methods, apart from the ones bidding calls today, each with a ceiling', () => {
+    // Bidding binds them in PR 6, once the ops deploy carries them; until then the deployed check must not require them.
+    expect([...OPS_DELEGATION_METHODS].sort()).toEqual(['addDelegationSubject', 'listDelegationSubjects', 'removeDelegationSubject'])
+    expect(OPS_DELEGATION_METHODS.filter((m) => (OPS_CONNECTIONS_METHODS as readonly string[]).includes(m))).toEqual([])
+    expect(Object.keys(OPS_DELEGATION_CEILINGS_MS).sort()).toEqual([...OPS_DELEGATION_METHODS].sort())
+    for (const ms of Object.values(OPS_DELEGATION_CEILINGS_MS)) expect(ms).toBeGreaterThan(0)
+  })
+
+  it('an add names the organization, who is adding, the kind, the entry and a drive\'s name', () => {
+    expect(parseAddDelegationSubjectRequest({ organization_id: ORG.toUpperCase(), actor: ACTOR, kind: 'drive', subject: '0AbCdEfGhIjKlMnOpQ', display_name: 'Partner reports' }))
+      .toEqual({ organization_id: ORG, actor: ACTOR, kind: 'drive', subject: '0AbCdEfGhIjKlMnOpQ', display_name: 'Partner reports' })
+    expect(parseAddDelegationSubjectRequest({ organization_id: ORG, actor: { ...ACTOR, name: null }, kind: 'mailbox', subject: 'Ops@Example.invalid' }))
+      .toEqual({ organization_id: ORG, actor: { ...ACTOR, name: null }, kind: 'mailbox', subject: 'Ops@Example.invalid', display_name: null })
+  })
+
+  it('refuses an add with no actor, an actor with neither a name nor an email, an unknown kind or an entry that is not text, by the field', () => {
+    const ok = { organization_id: ORG, actor: ACTOR, kind: 'mailbox', subject: 'ops@example.invalid' }
+    expect(refused(() => parseAddDelegationSubjectRequest({ ...ok, actor: undefined }))).toMatch(/actor/)
+    expect(refused(() => parseAddDelegationSubjectRequest({ ...ok, actor: { ...ACTOR, user_id: 'dan' } }))).toMatch(/actor/)
+    expect(refused(() => parseAddDelegationSubjectRequest({ ...ok, actor: { user_id: ACTOR.user_id, email: null, name: ' ' } }))).toMatch(/actor/)
+    expect(refused(() => parseAddDelegationSubjectRequest({ ...ok, kind: 'calendar' }))).toMatch(/kind/)
+    expect(refused(() => parseAddDelegationSubjectRequest({ ...ok, subject: 7 }))).toMatch(/subject/)
+    expect(refused(() => parseAddDelegationSubjectRequest({ ...ok, subject: 'x'.repeat(321) }))).toMatch(/subject/)
+    expect(refused(() => parseAddDelegationSubjectRequest({ ...ok, display_name: 7 }))).toMatch(/display_name/)
+    expect(refused(() => parseAddDelegationSubjectRequest({ ...ok, organization_id: 'acme' }))).toMatch(/organization_id/)
+  })
+
+  it('a remove names who is removing, the kind and the entry; a list names only the organization', () => {
+    expect(parseRemoveDelegationSubjectRequest({ organization_id: ORG, actor: ACTOR, kind: 'mailbox', subject: 'ops@example.invalid' }))
+      .toEqual({ organization_id: ORG, actor: ACTOR, kind: 'mailbox', subject: 'ops@example.invalid' })
+    expect(refused(() => parseRemoveDelegationSubjectRequest({ organization_id: ORG, kind: 'mailbox', subject: 'ops@example.invalid' }))).toMatch(/actor/)
+    expect(parseListDelegationSubjectsRequest({ organization_id: ORG.toUpperCase() })).toEqual({ organization_id: ORG })
+    expect(refused(() => parseListDelegationSubjectsRequest({}))).toMatch(/organization_id/)
   })
 })

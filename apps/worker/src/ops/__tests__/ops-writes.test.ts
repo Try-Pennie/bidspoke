@@ -17,6 +17,7 @@ import {
   OpsWriteError,
   OpsWriteTimeoutError,
   acquireSfLease,
+  addGoogleDelegationSubject,
   callOpsRpc,
   chargedAttempts,
   claimOpsSweep,
@@ -33,6 +34,7 @@ import {
   readConnectionCheckTargets,
   readSfLimitsTargets,
   readConnectionStatus,
+  readGoogleDelegationSubjects,
   readWorkflowCopies,
   recordConnectionCheck,
   recordConnectionNeedsReauth,
@@ -45,6 +47,7 @@ import {
   recordSendIntent,
   recordSfBudgetReading,
   releaseSfLease,
+  removeGoogleDelegationSubject,
   saveConnectionCopies,
   saveWorkflowCopies,
   startRunExecution,
@@ -696,5 +699,69 @@ describe('readSfLimitsTargets (#2336)', () => {
 
   it('throws a failed read rather than answering no orgs, which would read as nothing measured', async () => {
     await expect(readSfLimitsTargets(rpcFetch({ code: 'XX000', message: 'boom' }, { status: 500 }).client, 2)).rejects.toThrow()
+  })
+})
+
+describe('the Google mailboxes and drives list (#2338, PR 2)', () => {
+  const ACTOR = { id: 'cccccccc-0000-4000-8000-000000002338', email: 'dan@example.invalid', name: 'Dan Wright' }
+  const ROW = { kind: 'drive', subject: '0AbCdEfGhIjKlMnOpQ', display_name: 'Partner reports', added_by: 'Dan Wright', added_at: '2026-10-19T14:00:00+00:00' }
+
+  it('an add sends the entry and who is adding, and reads back the entry it added', async () => {
+    const t = rpcFetch([{ outcome: 'added', ...ROW }])
+    expect(await addGoogleDelegationSubject(t.client, ORG, { kind: 'drive', subject: '0AbCdEfGhIjKlMnOpQ', displayName: 'Partner reports' }, ACTOR)).toEqual({
+      outcome: 'added',
+      entry: { kind: 'drive', subject: '0AbCdEfGhIjKlMnOpQ', displayName: 'Partner reports', addedBy: 'Dan Wright', addedAt: '2026-10-19T14:00:00+00:00' },
+    })
+    expect(t.calls).toEqual([{
+      path: '/rest/v1/rpc/add_google_delegation_subject',
+      body: {
+        p_organization_id: ORG, p_kind: 'drive', p_subject: '0AbCdEfGhIjKlMnOpQ', p_display_name: 'Partner reports',
+        p_actor_id: ACTOR.id, p_actor_email: 'dan@example.invalid', p_actor_name: 'Dan Wright',
+      },
+    }])
+  })
+
+  it('an add the database refused by name carries no entry; one claiming an entry it did not return is refused', async () => {
+    expect(await addGoogleDelegationSubject(rpcFetch([{ outcome: 'subject_invalid', kind: 'mailbox', subject: null, display_name: null, added_by: null, added_at: null }]).client,
+      ORG, { kind: 'mailbox', subject: 'not a mailbox', displayName: null }, ACTOR)).toEqual({ outcome: 'subject_invalid', entry: null })
+    await expect(addGoogleDelegationSubject(rpcFetch([{ outcome: 'added', kind: 'mailbox', subject: null, display_name: null, added_by: null, added_at: null }]).client,
+      ORG, { kind: 'mailbox', subject: 'ops@example.invalid', displayName: null }, ACTOR)).rejects.toThrow(/subject/)
+    await expect(addGoogleDelegationSubject(rpcFetch([{ outcome: 'maybe', ...ROW }]).client, ORG, { kind: 'drive', subject: ROW.subject, displayName: null }, ACTOR))
+      .rejects.toThrow(/an add outcome/)
+  })
+
+  it('an add the database errored on is thrown, never answered as done', async () => {
+    await expect(addGoogleDelegationSubject(rpcFetch({ code: '23514', message: 'new row violates check constraint' }, { status: 400 }).client,
+      ORG, { kind: 'mailbox', subject: 'ops@example.invalid', displayName: null }, ACTOR)).rejects.toBeInstanceOf(OpsWriteError)
+  })
+
+  it('a remove answers removed or not_listed, and an error is thrown', async () => {
+    const t = rpcFetch([{ outcome: 'not_listed' }])
+    expect(await removeGoogleDelegationSubject(t.client, ORG, { kind: 'mailbox', subject: 'ops@example.invalid' }, ACTOR)).toBe('not_listed')
+    expect(t.calls).toEqual([{
+      path: '/rest/v1/rpc/remove_google_delegation_subject',
+      body: { p_organization_id: ORG, p_kind: 'mailbox', p_subject: 'ops@example.invalid', p_actor_id: ACTOR.id, p_actor_email: 'dan@example.invalid', p_actor_name: 'Dan Wright' },
+    }])
+    expect(await removeGoogleDelegationSubject(rpcFetch([{ outcome: 'removed' }]).client, ORG, { kind: 'mailbox', subject: 'ops@example.invalid' }, ACTOR)).toBe('removed')
+    await expect(removeGoogleDelegationSubject(rpcFetch([{ outcome: 'gone' }]).client, ORG, { kind: 'mailbox', subject: 'ops@example.invalid' }, ACTOR)).rejects.toThrow(/a remove outcome/)
+    await expect(removeGoogleDelegationSubject(rpcFetch({ code: 'XX000', message: 'boom' }, { status: 500 }).client, ORG, { kind: 'mailbox', subject: 'ops@example.invalid' }, ACTOR))
+      .rejects.toBeInstanceOf(OpsWriteError)
+  })
+
+  it('a list reads the organization\'s entries, says when a page was full, and throws a failed read rather than answering none', async () => {
+    const t = rpcFetch([{ ...ROW, kind: 'mailbox', subject: 'ops@example.invalid', display_name: null }, ROW])
+    expect(await readGoogleDelegationSubjects(t.client, ORG, 2)).toEqual({
+      reachedLimit: true,
+      subjects: [
+        { kind: 'mailbox', subject: 'ops@example.invalid', displayName: null, addedBy: 'Dan Wright', addedAt: ROW.added_at },
+        { kind: 'drive', subject: '0AbCdEfGhIjKlMnOpQ', displayName: 'Partner reports', addedBy: 'Dan Wright', addedAt: ROW.added_at },
+      ],
+    })
+    expect(t.calls).toEqual([{ path: '/rest/v1/rpc/list_google_delegation_subjects', body: { p_organization_id: ORG, p_limit: 2 } }])
+    await expect(readGoogleDelegationSubjects(rpcFetch([{ ...ROW, kind: 'calendar' }]).client, ORG, 2)).rejects.toThrow(/kind/)
+    await expect(readGoogleDelegationSubjects(rpcFetch({ code: 'XX000', message: 'boom' }, { status: 500 }).client, ORG, 2)).rejects.toBeInstanceOf(OpsWriteError)
+    const none = rpcFetch([])
+    await expect(readGoogleDelegationSubjects(none.client, ORG, 0)).rejects.toThrow(/1 to 1000/)
+    expect(none.calls).toEqual([])
   })
 })

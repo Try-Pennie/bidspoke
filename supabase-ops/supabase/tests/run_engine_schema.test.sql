@@ -142,6 +142,8 @@ BEGIN
       'record_measured_identity', 'acquire_sf_lease', 'release_sf_lease', 'sweep_sf_leases', 'record_sf_budget_reading'])
     -- The refresh streak and the Google delegation allowlist (#2335), held to the same rules by refresh_failing_and_delegation.test.sql.
     AND p.proname <> ALL (ARRAY['record_connection_refresh', 'google_delegation_check'])
+    -- The Google mailboxes and drives list's write path (#2338), held to the same rules by google_delegation_list.test.sql.
+    AND p.proname <> ALL (ARRAY['add_google_delegation_subject', 'remove_google_delegation_subject', 'list_google_delegation_subjects'])
     -- The lookup allowance behind OpsConnections.lookup (#2335, PR 8), held to the same rules by ops_connections_entrypoint.test.sql.
     AND p.proname <> ALL (ARRAY['take_lookup_allowance'])
     -- The sf_limits sweep's list of measured orgs (#2336), held to the same rules by sf_limits_targets.test.sql.

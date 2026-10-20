@@ -320,9 +320,27 @@ So two things hold the account in:
    checks it again at save (PR 8). Entries are added by signed-in users of the
    organization through the Connections page (#2338, Dan's decision on #2411,
    2026-10-18), every change audited with who made it and when; each row records
-   who added it and when (`added_by`, `added_at`). Until that page exists the
-   table has no write path: the ops Worker only reads it, so every Google mint is
-   refused until the page ships and someone adds an entry.
+   who added it and when (`added_by`, `added_at`), and a shared drive may carry
+   its name (`display_name`), which the page shows in place of its id.
+
+   The write path (#2338, ops migration `20261020190000`). The ops database's
+   `add_google_delegation_subject` and `remove_google_delegation_subject` are its
+   only writers (the ops Worker's `service_role` still only reads the table), and
+   each writes its change record in `ops_audit_log` (the person's id and email,
+   the time, the old and new values) in the same transaction, so a change whose
+   record fails is rolled back. A mailbox is trimmed and stored lower case; a
+   malformed address or drive id is refused by name, and nothing is written. A
+   mailbox or drive is on one organization's list at most, since every
+   organization's connections act through the one service account. A remove of
+   an entry the organization does not hold answers `not_listed`, never a silent
+   success. `list_google_delegation_subjects` reads the list. The ops Worker's
+   `OpsConnections` entrypoint answers them as `addDelegationSubject`,
+   `removeDelegationSubject` and `listDelegationSubjects`
+   (`src/ops/connections/delegation-list.ts`), each taking the organization and
+   the signed in person from the bidding Worker; the bidding routes that call them
+   arrive with the Connections page (build plan PR 6), and only then do they join
+   the methods the deployed ops check requires. Until someone adds an entry, every
+   Google mint is refused.
 
 ## Admin hand off
 
