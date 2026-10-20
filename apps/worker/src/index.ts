@@ -33,8 +33,8 @@ import { runSecretDecryptHealthCheck } from './lib/secret-decrypt-health'
 import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, writeHeartbeatCompleted, runHeartbeatChecks } from './lib/cron-heartbeat'
-import { runOpsTickReportCheck } from './lib/ops-gateway'
-import { runOpsConnectionLoginCheckForEnv } from './lib/ops-connection-logins'
+import { runOpsTickReportCheck, OPS_TICK_REPORT_JOB } from './lib/ops-gateway'
+import { runOpsConnectionLoginCheckForEnv, OPS_CONNECTION_LOGINS_JOB } from './lib/ops-connection-logins'
 import { runPartnerReachabilityCheck, fetchProbe, liveSenders } from './lib/partner-reachability'
 import { resolveSlackForEveryOrg } from './lib/standing-alert'
 import { runIncidentDrain, INCIDENT_DRAIN_JOB } from './lib/incident-drain'
@@ -1290,18 +1290,30 @@ const scheduledJobs = {
       // stamps its heartbeat here through OpsGateway; this pages on a tick that
       // ran but reported a problem or is not configured. A tick that stopped is
       // the heartbeat check's, below (L71: the watchdog is not the Worker watched).
-      minuteJob('ops-tick-report',
-        runOpsTickReportCheck(supabase, env.IDEMPOTENCY, Date.now())
-          .then((v) => { if (v === 'alerted') console.error('[ops-tick] the ops minute cron reported a problem') })
-          .catch((e) => console.error('[ops-tick] report check failed:', e))
+      // This job stamps its own heartbeat too (#2519), so one that stops pages as itself.
+      minuteJob(OPS_TICK_REPORT_JOB,
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, OPS_TICK_REPORT_JOB)
+            .catch((e) => console.error(`[${OPS_TICK_REPORT_JOB}] heartbeat write failed:`, e))
+            .then(() => runOpsTickReportCheck(supabase, env.IDEMPOTENCY, Date.now()))
+            .then((v) => { if (v === 'alerted') console.error('[ops-tick] the ops minute cron reported a problem') })
+            .catch((e) => console.error('[ops-tick] report check failed:', e)),
+          OPS_TICK_REPORT_JOB,
+        ),
       )
       // The ops connections whose login needs a person (#2340): the tick judges
       // them every minute and its report carries the ones due; this pages each
       // to its organization and sends the all clear (lib/ops-connection-logins.ts).
-      minuteJob('ops-connection-logins',
-        runOpsConnectionLoginCheckForEnv(supabase, env.IDEMPOTENCY, reachability.claims)
-          .then((s) => { if (s.errors.length > 0) console.error(`[ops-connection-login] ${s.errors.length} fault(s): ${s.errors.join('; ')}`) })
-          .catch((e) => console.error('[ops-connection-login] check failed:', e))
+      // Its own heartbeat (#2519).
+      minuteJob(OPS_CONNECTION_LOGINS_JOB,
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, OPS_CONNECTION_LOGINS_JOB)
+            .catch((e) => console.error(`[${OPS_CONNECTION_LOGINS_JOB}] heartbeat write failed:`, e))
+            .then(() => runOpsConnectionLoginCheckForEnv(supabase, env.IDEMPOTENCY, reachability.claims))
+            .then((s) => { if (s.errors.length > 0) console.error(`[ops-connection-login] ${s.errors.length} fault(s): ${s.errors.join('; ')}`) })
+            .catch((e) => console.error('[ops-connection-login] check failed:', e)),
+          OPS_CONNECTION_LOGINS_JOB,
+        ),
       )
       minuteJob('heartbeat-checks',
         runHeartbeatChecks(supabase, env.IDEMPOTENCY, Date.now(), reachability.claims)
