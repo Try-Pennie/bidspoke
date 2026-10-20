@@ -16,7 +16,7 @@ import { env } from 'cloudflare:workers'
 import { open, seal, type KeyRing, type SealedEnvelope } from '@bidspoke/connection-seal'
 import { beforeAll, describe, expect, it } from 'vitest'
 import type { StoreRotatedEnvelopeAnswer } from '../../lib/ops-gateway-contract'
-import { ConnectionTokenObject, type SealKeys, type StoredLogin } from '../connection-token-object'
+import { ConnectionTokenObject, type SealKeys, type StoredLogin, type StoredLoginV1 } from '../connection-token-object'
 import type { ResealLoginAnswer } from '../connections/token-object-contract'
 import type { OpsEnv } from '../index'
 import { KEYGEN_TIMEOUT_MS, opsKeyPair, type OpsKeyPair } from './ops-key-fixture'
@@ -92,7 +92,7 @@ async function wire(stub: DurableObjectStub<ConnectionTokenObject>, keys: () => 
 }
 
 /** Plants the login a rotation left in the object's storage. */
-async function plant(stub: DurableObjectStub<ConnectionTokenObject>, login: StoredLogin, unanswered?: Array<{ generation: number; iv: string }>) {
+async function plant(stub: DurableObjectStub<ConnectionTokenObject>, login: StoredLogin | StoredLoginV1, unanswered?: Array<{ generation: number; iv: string }>) {
   await runInDurableObject(stub, async (_o: ConnectionTokenObject, state: DurableObjectState) => {
     await state.storage.put('login', login)
     if (unanswered) await state.storage.put('unanswered', unanswered)
@@ -107,8 +107,8 @@ const ask = (connectionId: string, apply: boolean, over: Record<string, unknown>
 
 async function pendingLogin(connectionId: string, keys: SealKeys): Promise<StoredLogin> {
   return {
-    organizationId: ORG, connectionId, service: SERVICE, generation: 4, envelope: await sealUnder(keys, connectionId, 4),
-    committedGeneration: 3, writeBack: 'pending', attempts: 2,
+    v: 2, organizationId: ORG, connectionId, service: SERVICE, generation: 4, envelope: await sealUnder(keys, connectionId, 4),
+    committedGeneration: 3, writeBack: 'pending', attempts: 2, pendingSince: T - 20 * 60_000,
   }
 }
 
@@ -149,6 +149,20 @@ describe('resealLogin', () => {
     expect(await openWith({ [NEW]: newPair.privatePem }, conn, after)).toEqual(LOGIN)
     expect(await stub.resealLogin(ask(conn, true))).toEqual<ResealLoginAnswer>({ ok: true, state: 'current', fromKid: NEW })
     expect((await storedLogin(stub))!.envelope).toEqual(after.envelope)
+  })
+
+  it('reseals a login stored before the write back\'s pending time was kept (#2340), keeping its fields and reading its pending time as unknown', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    await wire(stub, during)
+    const { v: _v, pendingSince: _p, ...rest } = await pendingLogin(conn, before())
+    const versionOne: StoredLoginV1 = rest
+    await plant(stub, versionOne)
+    expect(await stub.resealLogin(ask(conn, true))).toEqual<ResealLoginAnswer>({ ok: true, state: 'resealed', fromKid: OLD })
+    const { envelope: after, ...kept } = (await storedLogin(stub))!
+    const { envelope: _b, ...was } = versionOne
+    expect(after.kid).toBe(NEW)
+    expect(kept).toEqual({ ...was, v: 2, pendingSince: 'unknown' })
   })
 
   it('names a login whose kid it holds no key for, and changes nothing', async () => {

@@ -7,7 +7,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  MAX_REPORT_LOGINS, MAX_REPORT_PROBLEMS, OPS_TICK_PROBLEM_RULES, capTickProblems, parseOpsTickReport, problemRuleOf, tickProblem,
+  MAX_REPORT_LOGINS, MAX_REPORT_PROBLEMS, MAX_REPORT_WRITE_BACKS, OPS_TICK_PROBLEM_RULES, capTickProblems, parseOpsTickReport, problemRuleOf, tickProblem,
 } from '../ops-gateway-contract'
 
 const THREE_IN_A_ROW = [
@@ -27,6 +27,8 @@ const AT_ONCE = [
   // The connection_check sweep (#2340): it runs every fourteenth tick, so the same holds.
   'connection_check_failed', 'connection_check_limit', 'connection_check_refused', 'connection_check_unreadable', 'connection_check_unavailable',
   'connection_logins_limit',
+  // The write back check (#2340 phase 10 item 4): it rides the connection_check sweep's interval, so the same holds.
+  'write_back_unreadable', 'write_back_limit', 'write_back_check_failed',
 ]
 
 describe('the rule each kind of tick problem pages by', () => {
@@ -146,5 +148,39 @@ describe('the connection logins in a report (#2340)', () => {
     ['more logins than a report carries', { complete: false, logins: Array.from({ length: MAX_REPORT_LOGINS + 1 }, () => needs) }],
   ])('refuses a report whose logins are %s, so it pages as unreadable', (_label, connectionLogins) => {
     expect(() => parseOpsTickReport(report({ connection_logins: connectionLogins }))).toThrow(/connection login/)
+  })
+})
+
+describe('the write backs in a report (#2340 phase 10 item 4)', () => {
+  const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
+  const CONN = '00000000-0000-4000-8000-0000000c2341'
+  const report = (over: Record<string, unknown>) => ({
+    tick_id: 't', mode: 'observe', scheduled_time: null, started_at: '2026-10-19T18:36:00Z', finished_at: '2026-10-19T18:36:10Z',
+    db_now: '2026-10-19T18:36:00Z', outcome: 'ok', problems: [], problem_keys: [], counts: {}, ...over,
+  })
+  const waiting = { organization_id: ORG, connection_id: CONN, service: 'google_user', since: '2026-10-19T18:00:00Z', attempts: 6 }
+
+  it('reads a report from an ops release before it, or from a tick that judged none, as null: unjudged, never all landed', () => {
+    expect(parseOpsTickReport(report({})).write_backs).toBeNull()
+    expect(parseOpsTickReport(report({ write_backs: null })).write_backs).toBeNull()
+  })
+
+  it('keeps a list of write backs due to page, one pending since an unknown time among them, and whether it is complete', () => {
+    const unknown = { ...waiting, since: null }
+    expect(parseOpsTickReport(report({ write_backs: { complete: true, pending: [waiting, unknown] } })).write_backs).toEqual({ complete: true, pending: [waiting, unknown] })
+    expect(parseOpsTickReport(report({ write_backs: { complete: false, pending: [] } })).write_backs).toEqual({ complete: false, pending: [] })
+  })
+
+  it.each([
+    ['not an object', 'none'],
+    ['no completeness', { pending: [] }],
+    ['one naming no connection', { complete: true, pending: [{ ...waiting, connection_id: 'any' }] }],
+    ['one naming no organization', { complete: true, pending: [{ ...waiting, organization_id: null }] }],
+    ['a service that is not a service key', { complete: true, pending: [{ ...waiting, service: 'Google User' }] }],
+    ['an unreadable time', { complete: true, pending: [{ ...waiting, since: 'lately' }] }],
+    ['an unreadable count of tries', { complete: true, pending: [{ ...waiting, attempts: -1 }] }],
+    ['more than a report carries', { complete: false, pending: Array.from({ length: MAX_REPORT_WRITE_BACKS + 1 }, () => waiting) }],
+  ])('refuses a report whose write backs are %s, so it pages as unreadable', (_label, writeBacks) => {
+    expect(() => parseOpsTickReport(report({ write_backs: writeBacks }))).toThrow(/write back/)
   })
 })

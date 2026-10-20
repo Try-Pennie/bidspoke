@@ -90,6 +90,22 @@ function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: num
   return g
 }
 
+/** The ops database answering connection_check_targets with one connection of `service` (one with no rules here is refused by the probe, which these tests do not read). */
+function listing(db: ReturnType<typeof opsDatabase>, connectionId: string, service: string): typeof fetch {
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const name = new URL(input instanceof Request ? input.url : input.toString()).pathname.replace('/rest/v1/rpc/', '')
+    if (name === 'connection_check_targets') {
+      db.called.push(name)
+      return Response.json([{
+        organization_id: ORG, connection_id: connectionId, service, generation: 1, target: null, public_config: {}, servable: true,
+        status: 'healthy', last_check_ok_at: '2026-10-17T09:50:00+00:00', last_check_failed_at: null, needs_reauth_at: null, needs_reauth_cause: null,
+        refresh_failures: 0, refresh_failing_since: null, measured_sf_org_id: null, measured_username: null, db_now: '2026-10-17T10:02:30+00:00',
+      }])
+    }
+    return db.fetch(input, init)
+  }) as typeof fetch
+}
+
 /** OpsInternal as the binding reaches it: it verifies every signature it is handed. */
 function self(): OpsInternalBinding & { observed: string[] } {
   const s = {
@@ -119,13 +135,33 @@ beforeAll(async () => {
   sealRegistry = { currentKid: 'ops-test', publicKeys: { 'ops-test': pair.publicPem } }
 }, KEYGEN_TIMEOUT_MS)
 
-const configured = (g = gateway(), s = self()) => ({
+/**
+ * CONNECTION_TOKENS as the write back check reaches it (#2340 phase 10 item 4):
+ * each object named by its connection id, answering writeBackState; none held
+ * unless a test says otherwise. Records which objects were asked, and about what.
+ */
+function tokenObjects(answer: (connectionId: string) => unknown = () => ({ ok: true, state: 'none' })) {
+  const asked: Array<{ name: string; request: unknown }> = []
+  const binding = {
+    idFromName: (name: string) => ({ name }),
+    get: (id: { name: string }) => ({
+      writeBackState: async (request: unknown) => {
+        asked.push({ name: id.name, request })
+        return answer(id.name)
+      },
+    }),
+  }
+  return { asked, binding }
+}
+
+const configured = (g = gateway(), s = self(), t = tokenObjects()) => ({
   env: {
     LANE: 'ops', OPS_SUPABASE_URL: 'https://zwihpjxouklvkvngkvmw.supabase.co', OPS_SUPABASE_SECRET_KEY: 'sb_secret_test_not_real',
-    PORTING_CAPTURE_MASTER: 'master-secret', OPS_CONNECTIONS_PRIVATE_KEY: opsPrivateKey, OPS_GATEWAY: g, SELF: s,
+    PORTING_CAPTURE_MASTER: 'master-secret', OPS_CONNECTIONS_PRIVATE_KEY: opsPrivateKey, OPS_GATEWAY: g, SELF: s, CONNECTION_TOKENS: t.binding,
   } as unknown as OpsEnv,
   g,
   s,
+  t,
 })
 
 describe('the live tick', () => {
@@ -166,6 +202,39 @@ describe('the live tick', () => {
     expect(g.jobReports).toContainEqual({ started_at: new Date(NOW).toISOString(), finished_at: new Date(NOW).toISOString(), counts: { connection_check_connections: 0 } })
     expect(report.connection_logins).toEqual({ complete: true, logins: [] })
     expect(report.outcome).toBe('ok')
+  })
+
+  it('with no ops connection (today) asks no ConnectionTokenObject, needs no binding to, and reports a complete list of no write back (#2340 phase 10 item 4)', async () => {
+    const db = opsDatabase()
+    const { env, t } = configured()
+    const report = await runOpsTick(liveTickPorts({ ...env, CONNECTION_TOKENS: undefined }, null, { sealRegistry, now: () => NOW, fetch: db.fetch }))
+    expect(t.asked).toEqual([])
+    expect(report.write_backs).toEqual({ complete: true, pending: [] })
+    expect(report.outcome).toBe('ok')
+  })
+
+  it('asks a listed connection\'s ConnectionTokenObject by its connection id, about that connection, and lists one pending past the bound (#2340 phase 10 item 4)', async () => {
+    const db = opsDatabase()
+    const CONN = '00000000-0000-4000-8000-0000000023c1'
+    const withTarget = listing(db, CONN, 'google_user')
+    const t = tokenObjects(() => ({ ok: true, state: 'pending', pendingSinceMs: NOW - 50 * 60_000, attempts: 7 }))
+    const { env } = configured(gateway(), self(), t)
+    const report = await runOpsTick(liveTickPorts(env, null, { sealRegistry, now: () => NOW, fetch: withTarget }))
+    expect(t.asked).toEqual([{ name: CONN, request: { organizationId: ORG, connectionId: CONN, service: 'google_user' } }])
+    expect(report.write_backs).toEqual({
+      complete: true,
+      pending: [{ organization_id: ORG, connection_id: CONN, service: 'google_user', since: new Date(NOW - 50 * 60_000).toISOString(), attempts: 7 }],
+    })
+  })
+
+  it('with a connection listed and the CONNECTION_TOKENS binding missing, says so by name for that connection, never nothing pending (#2340 phase 10 item 4)', async () => {
+    const db = opsDatabase()
+    const CONN = '00000000-0000-4000-8000-0000000023c1'
+    const { env } = configured()
+    const report = await runOpsTick(liveTickPorts({ ...env, CONNECTION_TOKENS: undefined }, null, { sealRegistry, now: () => NOW, fetch: listing(db, CONN, 'google_user') }))
+    expect(report.write_backs).toEqual({ complete: false, pending: [] })
+    expect(report.problem_keys).toContain(`write_back_unreadable:${CONN}`)
+    expect(report.problems.join(' ')).toMatch(/CONNECTION_TOKENS binding is missing/)
   })
 
   it('probes a connection through connectionFetch, which reads the copy first, and a service with no rules is refused by name (#2340)', async () => {

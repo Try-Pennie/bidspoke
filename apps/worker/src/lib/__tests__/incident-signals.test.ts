@@ -25,7 +25,7 @@ import { SALESFORCE_BULKHEAD_SIGNAL } from '../salesforce-bulkhead-check'
  * from without either noticing.
  */
 describe('INCIDENT_SIGNALS', () => {
-  it('names the twenty signals in use, each once', () => {
+  it('names the twenty one signals in use, each once', () => {
     const names = INCIDENT_SIGNALS.map((s) => s.signal)
     expect(new Set(names).size).toBe(names.length)
     expect([...names].sort()).toEqual([
@@ -38,6 +38,7 @@ describe('INCIDENT_SIGNALS', () => {
       'field-presence-wrong-path',
       'ops-connection-login',
       'ops-connection-owner',
+      'ops-connection-write-back',
       'partner-page-live',
       'partner-reachability',
       'pg-cron-watch',

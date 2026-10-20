@@ -4,7 +4,9 @@
  * OpsInternal through the SELF binding, and since #2336 the sf_limits sweep's
  * /limits read through connectionFetch with the OpsConnections live
  * dependencies, and since #2340 the connection_check sweep's identity probe the
- * same way. tick.ts holds the rules; this only
+ * same way, and each connection's ConnectionTokenObject through the
+ * CONNECTION_TOKENS binding for the write back check (#2340 phase 10 item 4),
+ * the way the reseal reaches them (reseal-live.ts). tick.ts holds the rules; this only
  * connects them, and turns every missing piece into a refusal by name.
  *
  * Not configured is loud, never a quiet fallback: while OPS_SUPABASE_URL or
@@ -206,6 +208,17 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
       probe: connectionCheckProbe(env, options),
       sleep: options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
       log: (fields) => console.log(JSON.stringify(fields)),
+    },
+    writeBacks: {
+      // The binding is read on the first read, so a tick with no connection never needs it; its deadline is the check's (write-back-check.ts).
+      read: async (target) => {
+        const tokens = env.CONNECTION_TOKENS
+        if (!tokens) throw new Error('the CONNECTION_TOKENS binding is missing from this deploy')
+        return tokens.get(tokens.idFromName(target.connectionId)).writeBackState({
+          organizationId: target.organizationId, connectionId: target.connectionId, service: target.service,
+        })
+      },
+      sleep: options.delay ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
     },
     dispatch: async (item: DispatchItem) => {
       if (!self) throw new Error('the SELF binding is missing from this deploy')

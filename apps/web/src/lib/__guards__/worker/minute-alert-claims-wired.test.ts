@@ -33,7 +33,9 @@ const MINUTE_CLAIMANTS: Record<string, string[]> = {
   'slack-token-health.ts': ['runDatabaseReachabilityProbe'],
   // #2340: the ops connection login page, judged every minute from the ops
   // tick's kept report, so two overlapping ticks could both post it.
-  'ops-connection-logins.ts': ['runOpsConnectionLoginCheckForEnv'],
+  // #2340 phase 10 item 4: the write back page, judged every minute from the
+  // judgement the bidding Worker keeps, so the same holds.
+  'ops-connection-logins.ts': ['runOpsConnectionLoginCheckForEnv', 'runOpsConnectionWriteBackCheckForEnv'],
 }
 
 /**

@@ -34,7 +34,7 @@ import { notifyExportFailure } from './lib/export-alerts'
 import { formatErr } from './lib/format-error'
 import { writeHeartbeat, writeHeartbeatCompleted, runHeartbeatChecks } from './lib/cron-heartbeat'
 import { runOpsTickReportCheck, OPS_TICK_REPORT_JOB } from './lib/ops-gateway'
-import { runOpsConnectionLoginCheckForEnv, OPS_CONNECTION_LOGINS_JOB } from './lib/ops-connection-logins'
+import { runOpsConnectionLoginCheckForEnv, runOpsConnectionWriteBackCheckForEnv, OPS_CONNECTION_LOGINS_JOB, OPS_CONNECTION_WRITE_BACKS_JOB } from './lib/ops-connection-logins'
 import { runPartnerReachabilityCheck, fetchProbe, liveSenders } from './lib/partner-reachability'
 import { resolveSlackForEveryOrg } from './lib/standing-alert'
 import { runIncidentDrain, INCIDENT_DRAIN_JOB } from './lib/incident-drain'
@@ -1354,6 +1354,21 @@ const scheduledJobs = {
             .then((s) => { if (s.errors.length > 0) console.error(`[ops-connection-login] ${s.errors.length} fault(s): ${s.errors.join('; ')}`) })
             .catch((e) => console.error('[ops-connection-login] check failed:', e)),
           OPS_CONNECTION_LOGINS_JOB,
+        ),
+      )
+      // The person bound logins whose new login the ops Worker holds and the
+      // row has not taken past its bound (#2340, phase 10 item 4): the tick
+      // judges them with the connection check and this pages each to its
+      // organization and sends the all clear (lib/ops-connection-logins.ts).
+      // Its own heartbeat, as the other two report jobs (#2519).
+      minuteJob(OPS_CONNECTION_WRITE_BACKS_JOB,
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, OPS_CONNECTION_WRITE_BACKS_JOB)
+            .catch((e) => console.error(`[${OPS_CONNECTION_WRITE_BACKS_JOB}] heartbeat write failed:`, e))
+            .then(() => runOpsConnectionWriteBackCheckForEnv(supabase, env.IDEMPOTENCY, reachability.claims))
+            .then((s) => { if (s.errors.length > 0) console.error(`[ops-connection-write-back] ${s.errors.length} fault(s): ${s.errors.join('; ')}`) })
+            .catch((e) => console.error('[ops-connection-write-back] check failed:', e)),
+          OPS_CONNECTION_WRITE_BACKS_JOB,
         ),
       )
       minuteJob('heartbeat-checks',

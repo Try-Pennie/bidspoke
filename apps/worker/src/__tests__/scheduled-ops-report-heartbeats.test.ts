@@ -5,8 +5,9 @@ import type { Env } from '../index'
 import { alertRowListAnswer } from './helpers/slack-alert-read'
 
 /**
- * #2519: the two minute jobs that turn the ops tick's report into pages,
- * ops-tick-report and ops-connection-logins, each stamp their own heartbeat
+ * #2519: the three minute jobs that turn the ops tick's report into pages,
+ * ops-tick-report, ops-connection-logins and ops-connection-write-backs
+ * (#2340), each stamp their own heartbeat
  * (started, then completed once the run settles), and each has its own
  * CRON_JOBS entry. Invokes the real scheduled handler with a real KV map, so
  * the stamps are proven to come from the minute cron, and then the real
@@ -14,6 +15,7 @@ import { alertRowListAnswer } from './helpers/slack-alert-read'
  */
 const runOpsTickReportCheck = vi.fn().mockResolvedValue('healthy')
 const runOpsConnectionLoginCheckForEnv = vi.fn().mockResolvedValue({ judged: true, paged: [], allClear: [], errors: [] })
+const runOpsConnectionWriteBackCheckForEnv = vi.fn().mockResolvedValue({ judged: true, paged: [], allClear: [], errors: [] })
 const sendCronHeartbeatAlert = vi.fn(async () => true)
 
 vi.mock('../lib/ops-gateway', async (importOriginal) => ({
@@ -23,6 +25,7 @@ vi.mock('../lib/ops-gateway', async (importOriginal) => ({
 vi.mock('../lib/ops-connection-logins', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/ops-connection-logins')>()),
   runOpsConnectionLoginCheckForEnv: (...args: unknown[]) => runOpsConnectionLoginCheckForEnv(...args),
+  runOpsConnectionWriteBackCheckForEnv: (...args: unknown[]) => runOpsConnectionWriteBackCheckForEnv(...args),
 }))
 vi.mock('../lib/cache-prewarm', () => ({ prewarmKvCaches: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('../lib/cron-heartbeat', async (importOriginal) => ({
@@ -78,11 +81,12 @@ async function fireMinute(kv: ReturnType<typeof memoryKv>) {
   await ctx.settle()
 }
 
-const JOBS = ['ops-tick-report', 'ops-connection-logins'] as const
+const JOBS = ['ops-tick-report', 'ops-connection-logins', 'ops-connection-write-backs'] as const
 
 beforeEach(() => {
   runOpsTickReportCheck.mockClear()
   runOpsConnectionLoginCheckForEnv.mockClear()
+  runOpsConnectionWriteBackCheckForEnv.mockClear()
   sendCronHeartbeatAlert.mockClear()
 })
 
@@ -104,6 +108,7 @@ describe('the ops report minute jobs have their own heartbeat (#2519)', () => {
     await fireMinute(kv)
     expect(runOpsTickReportCheck).toHaveBeenCalledTimes(1)
     expect(runOpsConnectionLoginCheckForEnv).toHaveBeenCalledTimes(1)
+    expect(runOpsConnectionWriteBackCheckForEnv).toHaveBeenCalledTimes(1)
     const started = kv.store.get(heartbeat.heartbeatKey(id))
     const completed = kv.store.get(heartbeat.completedKey(id))
     expect(started, `${id} started stamp`).toBeDefined()

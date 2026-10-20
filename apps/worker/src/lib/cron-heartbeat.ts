@@ -397,6 +397,22 @@ export const CRON_JOBS: CronJob[] = [
       'an ops connection whose login needs a person (needs_reauth, or refresh_failing past its bound) is never paged, and an open one never gets its all clear, though the ops tick still judges the logins every minute (#2519)',
   },
   {
+    // The third report job (#2340, phase 10 item 4), watched for the same
+    // reason as ops-connection-logins: it reads the write backs the tick
+    // reports and pages each to the connection's own organization.
+    id: 'ops-connection-write-backs',
+    label: 'Ops connection write back pages',
+    triggerCron: '* * * * *',
+    // 1 minute cadence, 9 minutes slack, matching the other minute jobs.
+    staleMs: 10 * MIN,
+    // One KV read of the judgement and one of its open incidents, then per due
+    // write back a name read and one Slack post. Judged by the drought below.
+    maxRunMs: 50 * 1000,
+    completionDroughtMs: 10 * MIN,
+    dependents:
+      'a new ops login the ops Worker holds and Bidspoke has not saved is never paged, and an open one never gets its all clear, though the ops tick still finds it with the connection check (#2340)',
+  },
+  {
     id: 'buyer-sales-checks',
     label: 'Buyer sales checks',
     triggerCron: '*/15 * * * *',
