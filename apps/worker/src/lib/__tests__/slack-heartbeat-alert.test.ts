@@ -193,6 +193,18 @@ describe('sendCronHeartbeatAlert', () => {
     expect(text).not.toContain('wrangler.toml `[triggers]` must list')
   })
 
+  it('warns that a gap in the ops tick logs is not a missed tick, since Workers Logs always lose a few percent of lines (#2347)', async () => {
+    // Measured 2026-10-20: the tick ran in all 1,440 minutes of a day while
+    // Workers Logs held a finished line for 1,324 of them. A reader sent to
+    // "check the logs show ops_tick lines" must not read each gap as a miss.
+    const { cronJob } = await import('../cron-heartbeat')
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', cronJob('ops-tick'), 'stale', 30 * 60_000)
+    const text = textOf((await lastPost()))
+    expect(text).toContain('ops_tick')
+    expect(text).toContain('a few percent of its log lines are always missing')
+    expect(text).toContain('a gap in the logs is not a missed tick')
+  })
+
   it('says a never-ran job has not run since it was first observed', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'never_ran', 27 * 3_600_000)
 

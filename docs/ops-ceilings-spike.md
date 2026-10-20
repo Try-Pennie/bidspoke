@@ -333,3 +333,85 @@ What it says for B1 to B3:
    listed no schedules then; since the minute cron (#1949) it lists `* * * * *` alone.
 5. Not run: P9 against the real Micro once B1's tables exist (#1948). That puts load
    on the production ops database and needs its own approval.
+
+## Counting ticks (#2347)
+
+Whether the minute tick (#1949, `src/ops/tick.ts`) ran in a given minute cannot
+be read from any one log. Every source below loses some of what happened, so a
+count from one of them is an estimate and a minute missing from it is not a
+missed tick.
+
+### Measured 2026-10-20
+
+Window 2026-10-19 14:00 to 2026-10-20 14:00 UTC, 1,440 minute slots, Worker
+`bidspoke-worker-ops`. Minutes each source saw:
+
+| Source | Minutes seen |
+|---|---|
+| Workers Logs, the tick's scheduled invocation event | 1,322 |
+| Workers Logs, `ops_tick` `step=finished` line | 1,324 (a `count()` reads 1,459) |
+| Workers Logs, the `ops_observe` jsrpc line each tick dispatches | 1,315 |
+| Supabase ops project `edge_logs`, `POST /rest/v1/rpc/ops_now` (one per tick) | 1,413 |
+| Any of the four | 1,439 |
+
+The one minute in none of them, 2026-10-19 15:01, shows in Cloudflare GraphQL
+`workersInvocationsAdaptive` as 2 invocations, both successful, with 15
+subrequests. So the tick ran in all 1,440 minutes.
+
+An earlier reading of 37% short (901 of 1,440 for 2026-10-16 16:00 to 10-17
+16:00) was not missed ticks either: the tick first ran at 00:55 UTC on 10-17,
+after #2300 merged, and before that nothing wrote a `step=finished` line. The 901
+(a weighted count of finished lines) covers only the 905 minutes the tick existed
+in that window, and no minute of those was missed.
+
+### Why each source is short
+
+- **Workers Logs loses about 8% of events of every kind**, one event at a time.
+  The invocation event and the finished line of the same tick go missing
+  separately (83 minutes had the event and no finished line, 85 the reverse, 33
+  neither), so this is not head sampling, which drops a whole invocation and is
+  set to 1 in both `wrangler.ops.toml` and `wrangler.toml`.
+- **Some Workers Logs rows are stored with `sampleInterval` 10.** 15 finished
+  lines in the window carried a weight of 10 (the raw telemetry API shows
+  `"sampleInterval":10` on their series), so `count()` reads 1,309 x 1 + 15 x 10
+  = 1,459 and OVER reads, while counting distinct `tick_id`s UNDER reads, since a
+  lost line is lost. The "7 tick ids each logged 10 finished lines" seen on
+  2026-10-19 was this: one line each, weighted 10.
+- **Supabase `edge_logs` on the ops project loses about 2%.** 27 ticks made
+  their database calls (Workers Logs shows `sweeps_run` 2, outcome ok) with no
+  `edge_logs` row at all, for example 2026-10-19 14:14, 14:15, 14:29 and 14:48
+  UTC. A count of requests from `edge_logs` is a sample, not a full record.
+
+### Tools that do not work for this
+
+- The Cloudflare observability MCP's events and invocations views fail to parse
+  scheduled events. Its calculations view works, but gives the weighted
+  `count()` and the under reading distinct count above.
+- GraphQL `workersInvocationsScheduled` returns nothing for this account. Use
+  `workersInvocationsAdaptive`.
+
+### How to count exactly
+
+Take the union of three sources, minute by minute:
+
+1. The raw telemetry API (the endpoint the `q()` helper above calls), with
+   `"view": "events"`, `"limit": 2000`, and filters `$metadata.service` equal to
+   `bidspoke-worker-ops` and `$workers.eventType` equal to `scheduled` (or
+   `jsrpc` for the probe each tick dispatches), one hour per call so the limit is
+   never reached. Read each event's minute from its timestamp.
+2. Supabase logs for project `zwihpjxouklvkvngkvmw`, `edge_logs`, requests whose
+   path is `/rest/v1/rpc/ops_now`, by minute. Every tick calls it once.
+3. Cloudflare GraphQL `workersInvocationsAdaptive` for script
+   `bidspoke-worker-ops`, grouped by `datetimeMinute`. It is rate limited, so
+   query it for the minutes the first two sources do not cover.
+
+A minute that none of the three shows is a missed tick.
+
+### Paging stays at 25 minutes
+
+The `ops-tick` cron heartbeat (`apps/worker/src/lib/cron-heartbeat.ts`) pages
+only after 25 minutes with no start (`staleMs`). Dan decided on 2026-10-20 to keep
+it there, because the planner looks back five minutes for due slots, so a single
+skipped minute is recovered by the next tick and costs nothing. Its dark alert's
+fix tells the reader that a few percent of the tick's log lines are always
+missing, so a gap in the logs is not a missed tick.
