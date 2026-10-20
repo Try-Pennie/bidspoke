@@ -14,7 +14,7 @@ import type { PartnerCallResult } from '../../../lib/post-to-partner'
 import type { ClaimBody, ClaimResult } from '../../../durable-objects/lead-sale'
 import type { EntryKey, EntryResult, LedgerEntry, ReserveBody, ReserveResult, SaleOutcomeRecord } from '../../../durable-objects/buyer-ledger'
 import type { LedgerApi, SaleApi } from '../../../lib/buyer-sale-attempt'
-import { canaryBucket } from '@bidspoke/buyer-profile'
+import { canaryBucket, canonicalBodySha256 } from '@bidspoke/buyer-profile'
 import { summariseParityDay } from '../../../lib/buyer-select-parity'
 import { ENGINE_TRIPOINT_SALE_PAYLOAD } from '../buyer-select-payload'
 import { createLeadSupabaseClient, noteLeadWriteUnanswered } from '../../../lib/lead-read-budget'
@@ -1194,5 +1194,87 @@ describe('the buyer_sales copy is bounded (#1849)', () => {
   it('the deadline sits well above the healthy write: record_buyer_sale took at most 488 ms over the 24 hours to 2026-10-07 (p99 403 ms, 50 calls)', () => {
     expect(BUYER_SALE_MIRROR_DEADLINE_MS).toBeGreaterThanOrEqual(2 * 488)
     expect(BUYER_SALE_MIRROR_DEADLINE_MS).toBeLessThanOrEqual(OBJECT_CALL_DEADLINE_MS)
+  })
+})
+
+/**
+ * The parity report compares the node's body hash with tripoint_ping's on the same lead. In live
+ * mode no lead rehearsed, so from Stage B's start every pair was unmeasured (#2543): a lead outside
+ * the live share returned before building a body, and a live attempt recorded none. A lead outside
+ * the share now builds the body it would send, sending nothing, and a live attempt records the hash
+ * of the exact body it posted.
+ */
+describe('the request hash in live mode (#2543)', () => {
+  const share = (percent: string) => ctx({ env: { BUYER_SELECT_LIVE_PERCENT: percent } })
+  const shared = node({ live_percent_env: 'BUYER_SELECT_LIVE_PERCENT' })
+
+  // The hash is of the payload before any buyer's outbound mapping, so it equals the posted body for a
+  // buyer with no mapping, which is Tripoint, the only buyer the parity report compares with.
+  it('a lead outside the live share records the hash of the body a live attempt to an unmapped buyer posts, and sends nothing', async () => {
+    const live = harness()
+    await run(live, share('100'), shared)
+    const posted = await canonicalBodySha256(live.buyerCalls[0].body)
+
+    const h = harness()
+    const r = await run(h, share('0'), shared)
+    expect(out(r)).toMatchObject({ _route: 'deferred', reason: 'canary_out', would_send_body_sha256: posted })
+    expect(h.buyerCalls).toEqual([])
+    expect(h.sales).toEqual([])
+    expect(h.wakes).toEqual([])
+  })
+
+  it('the parity reader compares it with the legacy hash for the same lead, a match and a mismatch', async () => {
+    const o = out(await run(harness(), share('0'), shared))
+    const pair = (id: string, sent: string) => ({ execution_id: id, started_at: new Date(NOW).toISOString(), node: o, node_duration_ms: o.duration_ms, incumbent: { skipped: false, qualified: true, resultCode: 1000, sent_body_sha256: sent } })
+    const counts = summariseParityDay([pair('e1', o.would_send_body_sha256 as string), pair('e2', 'b'.repeat(64))], { accept: [], decline: [] })
+    expect(counts).toMatchObject({ hash_match: 1, hash_mismatch: 1, hash_unmeasured: 0 })
+  })
+
+  it('a body that cannot be built leaves the hash out, says so, and the lead routes canary_out as before', async () => {
+    const h = harness()
+    const r = await run(h, share('0'), node({ live_percent_env: 'BUYER_SELECT_LIVE_PERCENT', sale_payload: { ...ENGINE_TRIPOINT_SALE_PAYLOAD, base: '{{trigger.payload.no_such_field}}' } }))
+    expect(out(r)).toMatchObject({ _route: 'deferred', reason: 'canary_out' })
+    expect(out(r)).not.toHaveProperty('would_send_body_sha256')
+    expect(r.failure).toBeUndefined()
+    expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_body_hash_unmeasured', reason: 'canary_out' }))
+  })
+
+  it('a live attempt records the hash of the exact body it posted, on a sale and on a decline', async () => {
+    const sold = harness()
+    const s = await run(sold)
+    expect(out(s)._route).toBe('sold')
+    expect(s.attempts[0].output.sent_body_sha256).toBe(await canonicalBodySha256(sold.buyerCalls[0].body))
+
+    const declined = harness({ answers: { tripoint: [DUPLICATE] } })
+    const d = await run(declined)
+    expect(out(d)._route).toBe('no_sale')
+    expect(d.attempts[0].output.sent_body_sha256).toBe(await canonicalBodySha256(declined.buyerCalls[0].body))
+  })
+
+  it('the hash is taken after the attempt is timed, so the phase split still sums to the attempt', async () => {
+    const h = harness({ slowReserveMs: 300, advanceOnBuyerCall: 2500, advanceOnBreakerRecord: 40, advanceOnMirror: 200 })
+    const r = await run(h)
+    expect(r.attempts[0].output.timing).toMatchObject({ before_call_ms: 300, call_ms: 2500, after_call_ms: 240 })
+    expect(r.attempts[0].output.sent_body_sha256).toHaveLength(64)
+  })
+
+  it('a hash that cannot be taken after a sale leaves the sale as it is, records no hash, and says so', async () => {
+    const h = harness()
+    const digest = vi.spyOn(crypto.subtle, 'digest').mockRejectedValue(new Error('digest unavailable'))
+    try {
+      const r = await run(h)
+      expect(out(r)._route).toBe('sold')
+      expect(r.failure).toBeUndefined()
+      expect(r.attempts[0].output).not.toHaveProperty('sent_body_sha256')
+      expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_body_hash_unmeasured', reason: 'sent' }))
+    } finally {
+      digest.mockRestore()
+    }
+  })
+
+  it('a rehearsal sends nothing, so its row records no sent hash', async () => {
+    const r = await run(harness(), ctx(), node({ mode: 'decide_only' }))
+    expect(r.attempts[0].output).not.toHaveProperty('sent_body_sha256')
+    expect(out(r).would_send_body_sha256).toHaveLength(64)
   })
 })

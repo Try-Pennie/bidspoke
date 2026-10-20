@@ -436,7 +436,10 @@ class Run {
       if (this.modeEffective === 'live') {
         if (percent === null) return this.done('deferred', 'live_percent_unset', `${this.config.live_percent_env} is unset or not a whole number from 0 to 100`)
         const bucket = canaryBucket(leadKey)
-        if (bucket >= percent) return this.done('deferred', 'canary_out', `bucket ${bucket} is outside the ${percent} percent live share`)
+        if (bucket >= percent) {
+          await this.recordWouldSendHash('canary_out')
+          return this.done('deferred', 'canary_out', `bucket ${bucket} is outside the ${percent} percent live share`)
+        }
       }
     }
 
@@ -493,6 +496,20 @@ class Run {
   }
 
   // ── Steps ────────────────────────────────────────────────────────────────────
+
+  /**
+   * The hash of the body this lead would be sent, built and never posted, so the parity report can
+   * compare it with tripoint_ping's on the same lead (#2543). No buyer is chosen yet, so it is the
+   * payload before any outbound mapping, as report_only records it. A body that cannot be built is
+   * left unmeasured and logged, and never changes the lead's route.
+   */
+  private async recordWouldSendHash(reason: 'canary_out'): Promise<void> {
+    try {
+      this.out.would_send_body_sha256 = await canonicalBodySha256(resolveSalePayload(this.config.sale_payload, this.ctx))
+    } catch (err) {
+      this.deps.log({ event: 'buyer_select_body_hash_unmeasured', step_namespace: this.node.namespace, reason, error_message: messageOf(err) })
+    }
+  }
 
   private applicability(): BuyerSelectResult | null {
     const flag = this.resolveMaybe(this.config.sell_off_when)
@@ -778,6 +795,16 @@ class Run {
     const completedAt = new Date(this.deps.clock())
     const status = lastCall === null ? null : (lastCall as { status: number | null }).status
     const timing = this.timeAttempt(c, startedAt, completedAt, callWindow, landed, result.result === 'sold' ? 'accepted' : result.reason)
+    // What was posted (#2543), hashed once the attempt is timed so it adds nothing to the split.
+    // The buyer has answered by now, so a hash that fails is left unmeasured and never fails the lead.
+    let sentBodySha256: string | null = null
+    if (live && buyerCalled) {
+      try {
+        sentBodySha256 = await canonicalBodySha256(body)
+      } catch (err) {
+        this.deps.log({ event: 'buyer_select_body_hash_unmeasured', step_namespace: this.node.namespace, reason: 'sent', partner_slug: partner.slug, error_message: messageOf(err) })
+      }
+    }
 
     if (result.result === 'sold') {
       // An accepted sale is Success whichever answer produced it, a replayed earlier sale included.
@@ -785,7 +812,7 @@ class Run {
       this.out.mirrored = result.mirrored
       this.out.replay = result.replay
       this.consider(c, live ? 'sold' : 'rehearsed', undefined, result.replay ? 'replay of an earlier sale' : undefined)
-      this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, 'completed', { outcome: 'accepted', replay: result.replay, mirrored: result.mirrored, http_status: status, result_code: result.outcome.result_code }, null, null))
+      this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, sentBodySha256, 'completed', { outcome: 'accepted', replay: result.replay, mirrored: result.mirrored, http_status: status, result_code: result.outcome.result_code }, null, null))
       if (live && buyerCalled) this.logBid(c, startedAt, completedAt, status, 'accept', null)
       return { kind: 'sold', result: this.done(live ? 'sold' : 'deferred', live ? 'sold' : 'decide_only') }
     }
@@ -799,7 +826,7 @@ class Run {
         const answer = lastAnswer as { record: SaleOutcomeRecord; response_class: ResponseClass | null } | null
         this.out.sale = saleOf(false, answer?.record ?? null, answer?.response_class ?? null)
         this.consider(c, reason, reason, detail)
-        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, 'completed', { outcome: reason, detail, http_status: status }, null, null))
+        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, sentBodySha256, 'completed', { outcome: reason, detail, http_status: status }, null, null))
         if (live && buyerCalled) this.logBid(c, startedAt, completedAt, status, 'decline', detail ?? reason)
         return { kind: 'next', reason, detail }
       }
@@ -808,7 +835,7 @@ class Run {
         this.out.sale = saleOf(false, null, null)
         this.consider(c, 'outcome_unknown', 'outcome_unknown', detail)
         const failing = lastCall === null || (lastCall as { thrown: boolean }).thrown || status === null || status >= 500
-        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, failing ? 'failed' : 'completed', { outcome: 'outcome_unknown', detail, http_status: status, held: true }, failing ? detail ?? 'outcome_unknown' : null, failing ? 'transient' : null))
+        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, sentBodySha256, failing ? 'failed' : 'completed', { outcome: 'outcome_unknown', detail, http_status: status, held: true }, failing ? detail ?? 'outcome_unknown' : null, failing ? 'transient' : null))
         if (live && buyerCalled) this.logBid(c, startedAt, completedAt, status, 'transient', detail ?? 'outcome_unknown')
         if (failing) return { kind: 'stop', result: this.refuse('outcome_unknown', detail ?? 'the buyer answer could not be classified', 'transient') }
         return { kind: 'stop', result: this.done(live ? 'no_sale' : 'deferred', 'outcome_unknown', detail) }
@@ -821,7 +848,7 @@ class Run {
       case 'rehearsal_deadline': {
         // The rehearsal budget ran out inside this buyer's attempt; the attempt let go of what it held.
         this.consider(c, 'not_reached', reason, detail)
-        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, 'completed', { outcome: 'not_reached', detail }, null, null))
+        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, sentBodySha256, 'completed', { outcome: 'not_reached', detail }, null, null))
         return { kind: 'stop', result: this.done('deferred', reason, detail) }
       }
       case 'object_deadline': {
@@ -829,7 +856,7 @@ class Run {
         // (#1508): the attempt released and freed what it held, the buyer was never contacted, and the
         // cascade stops because the time is gone for every buyer after this one too.
         this.consider(c, 'skipped', reason, detail)
-        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, 'completed', { outcome: 'skipped', detail }, null, null))
+        this.attempts.push(this.row(c, kind, startedAt, completedAt, timing, sentBodySha256, 'completed', { outcome: 'skipped', detail }, null, null))
         return { kind: 'stop', result: this.done(live ? 'no_sale' : 'deferred', reason, detail) }
       }
       default: {
@@ -877,14 +904,14 @@ class Run {
     return timing
   }
 
-  private row(c: Candidate, kind: LedgerKind, startedAt: Date, completedAt: Date, timing: AttemptTiming | null, status: 'completed' | 'failed', output: Record<string, unknown>, error: string | null, errorType: 'transient' | 'permanent' | null): BuyerAttemptRow {
+  private row(c: Candidate, kind: LedgerKind, startedAt: Date, completedAt: Date, timing: AttemptTiming | null, sentBodySha256: string | null, status: 'completed' | 'failed', output: Record<string, unknown>, error: string | null, errorType: 'transient' | 'permanent' | null): BuyerAttemptRow {
     return {
       partner_slug: c.buyer.partner.slug,
       namespace: `${this.node.namespace}.${c.buyer.partner.slug}`,
       status,
       // Never the payload: it carries the lead's identity (L222).
       input: { partner_slug: c.buyer.partner.slug, kind, lead_key: this.leadKey, payout_cents: c.payoutCents, priority: c.buyer.profile.priority },
-      output: { ...output, partner_slug: c.buyer.partner.slug, payout_cents: c.payoutCents, kind, ...(timing ? { timing } : {}) },
+      output: { ...output, partner_slug: c.buyer.partner.slug, payout_cents: c.payoutCents, kind, ...(timing ? { timing } : {}), ...(sentBodySha256 ? { sent_body_sha256: sentBodySha256 } : {}) },
       error,
       error_type: errorType,
       started_at: startedAt,
