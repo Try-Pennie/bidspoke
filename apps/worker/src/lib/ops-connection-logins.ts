@@ -45,6 +45,12 @@ import { opsConnectionLabel, sendOpsConnectionLoginAlert, sendOpsConnectionLogin
 export const OPS_CONNECTION_LOGIN_SIGNAL = 'ops-connection-login'
 
 /**
+ * This check's minute job in the heartbeat registry (#2519), so a run that
+ * stops is paged as itself. Never rename it: it keys its KV state.
+ */
+export const OPS_CONNECTION_LOGINS_JOB = 'ops-connection-logins'
+
+/**
  * Which connections have an incident open, so an owed all clear is not
  * forgotten. Written only when it changes, and with no expiry: an entry leaves
  * it only once its incident is settled, so it is bounded by the connections.

@@ -197,6 +197,32 @@ export const CRON_JOBS: CronJob[] = [
       'money\'s Salesforce identity is no longer re-measured, so ops verify keeps comparing ops connections against an older reading of it, and refuses every Salesforce connection when it has none (#2335)',
   },
   {
+    // The owners of person bound ops connections (#2340, ops-connection-owner-check.ts).
+    id: 'ops-connection-owner',
+    label: 'Ops connection owner check',
+    triggerCron: '0 13 * * *',
+    // 24h cadence, 2h slack, matching the other daily jobs.
+    staleMs: 26 * H,
+    // One paged read of the person bound connections, one of their owners and
+    // one of the Access list, then a workflows scan per orphaned connection.
+    maxRunMs: 30 * MIN,
+    dependents:
+      'nobody is told when the person a person bound ops connection signs in as is removed from Bidspoke, so its workflows go on acting as someone who no longer has access (#2340)',
+  },
+  {
+    // The bulkhead limit the ops Salesforce lane was sized against (#2336,
+    // salesforce-bulkhead-check.ts).
+    id: 'salesforce-bulkhead-check',
+    label: 'Salesforce bulkhead limit check',
+    triggerCron: '0 13 * * *',
+    // 24h cadence, 2h slack, matching the other daily jobs.
+    staleMs: 26 * H,
+    // One setting read, one Slack organization list read and a post to each.
+    maxRunMs: 30 * MIN,
+    dependents:
+      'nothing notices the bidding Worker\'s Salesforce bulkhead limit moving off the 20 the ops Salesforce lane\'s cap was sized against, so bidding and ops together can ask Salesforce for more calls at once than its org allows (#2336)',
+  },
+  {
     id: 'partner-reachability',
     label: 'Partner reachability probe',
     triggerCron: '*/5 * * * *',
@@ -331,6 +357,44 @@ export const CRON_JOBS: CronJob[] = [
     completionDroughtMs: 10 * MIN,
     dependents:
       'a Salesforce write stored after it failed with an answer is never resent, and every one waits for a person to replay it by hand (#468)',
+  },
+  {
+    // The minute job that judges the ops tick's kept report (#2519,
+    // ops-gateway.ts runOpsTickReportCheck). Its own entry rather than folded
+    // under another minute job, so a dark one names itself and its remedy: the
+    // ops-tick entry watches whether the tick runs, this whether its problems
+    // are delivered, and either can stop while the other goes on (L71).
+    id: 'ops-tick-report',
+    label: 'Ops minute cron report check',
+    triggerCron: '* * * * *',
+    // 1 minute cadence, 9 minutes slack, matching the other minute jobs of this
+    // Worker. No first fire allowance: it rides this Worker's existing minute
+    // trigger, which a deploy does not re-add.
+    staleMs: 10 * MIN,
+    // One KV read of the kept report, then at most one page or one stand down
+    // through the export alerter: seconds.
+    maxRunMs: 50 * 1000,
+    completionDroughtMs: 10 * MIN,
+    dependents:
+      'a problem the ops minute cron reports, or an ops Worker that is not configured, is never paged, though the tick itself goes on running and stamping its own heartbeat (#2519)',
+  },
+  {
+    // The minute job that pages the ops connection logins the tick's report
+    // carries (#2519, ops-connection-logins.ts). Its own entry for the same
+    // reason as ops-tick-report: it reads the same report but pages a different
+    // signal, to each connection's own organization.
+    id: 'ops-connection-logins',
+    label: 'Ops connection login pages',
+    triggerCron: '* * * * *',
+    // 1 minute cadence, 9 minutes slack, matching the other minute jobs.
+    staleMs: 10 * MIN,
+    // One KV read of the report and one of its open incidents, then per due
+    // login a name read bounded at 10 s and one Slack post. Judged by the
+    // drought below, never by one run.
+    maxRunMs: 50 * 1000,
+    completionDroughtMs: 10 * MIN,
+    dependents:
+      'an ops connection whose login needs a person (needs_reauth, or refresh_failing past its bound) is never paged, and an open one never gets its all clear, though the ops tick still judges the logins every minute (#2519)',
   },
   {
     id: 'buyer-sales-checks',
