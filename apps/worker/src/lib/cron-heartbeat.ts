@@ -494,8 +494,11 @@ export const CRON_JOBS: CronJob[] = [
     completionDroughtMs: 20 * MIN,
     dependents:
       'ported ops workflows are not scheduled: nothing works out which of their slots are due, records them or reports a missed one, and the run engine\'s lease and expiry sweeps stop (#1949)',
+    // Workers Logs lose about 8% of the tick's lines (measured 2026-10-20,
+    // #2347), so the hint says a gap in them is not a missed tick. How to count
+    // ticks exactly: docs/ops-ceilings-spike.md, "Counting ticks".
     darkFixHint:
-      'confirm bidspoke-worker-ops deployed with its minute trigger (wrangler.ops.toml `[triggers]`, and the Deploy Ops Worker job checks the deploy listed it), that its logs show `ops_tick` lines, and that its OPS_GATEWAY binding reaches this Worker, since the tick stamps its heartbeat through it.',
+      'confirm bidspoke-worker-ops deployed with its minute trigger (wrangler.ops.toml `[triggers]`, and the Deploy Ops Worker job checks the deploy listed it), that its logs show `ops_tick` lines, and that its OPS_GATEWAY binding reaches this Worker, since the tick stamps its heartbeat through it. When reading those logs, remember that a few percent of its log lines are always missing, so a gap in the logs is not a missed tick: look for the lines stopping altogether.',
   },
   {
     // The sf_limits sweep inside the ops minute tick (#2336, ops/sf-limits.ts),
