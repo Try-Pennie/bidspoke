@@ -88,6 +88,7 @@ import { isCreditInquiryPost, stepRetries } from './inquiry-post'
 import { readRecoveryOrigin, type RecoveryOrigin } from './recovery-origin'
 import { writeMarker, withWriteMarker, ENGINE_ATTEMPT } from './write-marker'
 import { unfinishedWorkPages } from './unfinished-work'
+import { StepFlushCursor, recordLateSteps } from './late-steps'
 import { readBackHoldsStep } from '../lib/salesforce-read-back'
 import type { WorkflowLane } from '@bidspoke/node-types'
 import type { Env } from '../index'
@@ -780,11 +781,16 @@ export async function executeWorkflow(
   // apart. The first is a lost trace and the run fails as before; the second
   // says nothing about whether the rows landed, so the run is degraded and the
   // rows are read back by the minute sweep.
+  //
+  // #2541: each flush takes its entries through one cursor, so the step rows of
+  // work that settles after the cut-off can be written later without writing
+  // any entry twice (`recordLateSteps` below).
+  const stepFlushCursor = new StepFlushCursor()
   const flushPromise: Promise<{ error: string | null; unconfirmed: string | null }> = walkSettled
     .then(() =>
       withinBudget(
         executionRecordPromise.then(() =>
-          flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', { workflowId, isTest: reality.isTest }, beforeFinalizeTiming),
+          flushStepLogs(runDb, stepFlushCursor.take(stepLogQueue), env.PII_REDACTION_FIELDS ?? '', { workflowId, isTest: reality.isTest }, beforeFinalizeTiming),
         ),
         // Stops at finalize's reserve, not the dead letter's: a create or flush
         // that never answers must leave finalize its time (#1860 review).
@@ -811,7 +817,24 @@ export async function executeWorkflow(
     await flushPromise
   } else {
     executionCtx.waitUntil(flushPromise)
-    if (hasContinuation) executionCtx.waitUntil(walkPromiseCaught)
+    if (hasContinuation) {
+      executionCtx.waitUntil(walkPromiseCaught)
+      // #2541: a step still running at the cut-off was never written, even when
+      // it completed or failed seconds later. Its row is written here, in its own
+      // waitUntil, which nothing else waits on: the page and finalize are unchanged.
+      executionCtx.waitUntil(
+        recordLateSteps({
+          walk: walkPromiseCaught,
+          mainFlush: flushPromise,
+          cursor: stepFlushCursor,
+          queue: stepLogQueue,
+          write: (entries) =>
+            flushStepLogs(runDb, entries, env.PII_REDACTION_FIELDS ?? '', { workflowId, isTest: reality.isTest }, writeTiming),
+          timing: writeTiming,
+          executionId,
+        }),
+      )
+    }
     // Also keep idempotencyProcessing alive past the response so it can complete
     executionCtx.waitUntil(idempotencyProcessingPromise.catch(() => {}))
   }
@@ -1204,7 +1227,7 @@ export async function executeWorkflow(
             reflushRan = true
             try {
               const reflushed = await withinBudget(
-                flushStepLogs(runDb, stepLogQueue, env.PII_REDACTION_FIELDS ?? '', {
+                flushStepLogs(runDb, stepFlushCursor.take(stepLogQueue), env.PII_REDACTION_FIELDS ?? '', {
                   workflowId,
                   isTest: reality.isTest,
                 }, beforeFinalizeTiming),
