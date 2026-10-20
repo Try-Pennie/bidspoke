@@ -23,7 +23,9 @@
     "buyer_profile_document",
     "sightings_buffer_lag",
     "partner_delete_check",
-    "db_stall_snapshot"
+    "db_stall_snapshot",
+    "connection_references",
+    "connection_history"
   ],
   "mutating": [
     "record_archive_day_measurement",
@@ -45,6 +47,8 @@
     "monitor_partner_page_ping",
     "delete_service_connection_by_id",
     "store_rotated_envelope",
-    "replace_connection_envelope"
+    "replace_connection_envelope",
+    "remove_ops_connection",
+    "reconnect_ops_connection"
   ]
 }

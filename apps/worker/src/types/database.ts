@@ -2430,6 +2430,7 @@ export type Database = {
       }
       service_connections: {
         Row: {
+          acts_as: string | null
           auth_type: string
           cf_secret_key: string | null
           config: Json | null
@@ -2451,6 +2452,7 @@ export type Database = {
           user_id: string | null
         }
         Insert: {
+          acts_as?: string | null
           auth_type: string
           cf_secret_key?: string | null
           config?: Json | null
@@ -2472,6 +2474,7 @@ export type Database = {
           user_id?: string | null
         }
         Update: {
+          acts_as?: string | null
           auth_type?: string
           cf_secret_key?: string | null
           config?: Json | null
@@ -3164,6 +3167,31 @@ export type Database = {
         Returns: Json
       }
       click_delivery_problem: { Args: { p_delivery: Json }; Returns: string }
+      connection_history: {
+        Args: {
+          p_connection_id: string
+          p_limit?: number
+          p_organization_id: string
+        }
+        Returns: {
+          action: string
+          audit_id: string
+          changed_at: string
+          changed_by: string
+          changed_by_email: string
+          changed_by_name: string
+          changes: Json
+          credential_changed: boolean
+        }[]
+      }
+      connection_references: {
+        Args: { p_connection_id: string; p_organization_id: string }
+        Returns: {
+          deleted: boolean
+          name: string
+          workflow_id: string
+        }[]
+      }
       create_monthly_analytics_partitions: { Args: never; Returns: undefined }
       create_next_month_partitions: { Args: never; Returns: undefined }
       create_upcoming_daily_partitions: {
@@ -3323,6 +3351,22 @@ export type Database = {
           timeout_ms: number
         }[]
       }
+      reconnect_ops_connection: {
+        Args: {
+          p_actor: string
+          p_actor_email: string
+          p_acts_as: string
+          p_connection_id: string
+          p_envelope: Json
+          p_expected_generation: number
+          p_new_generation: number
+          p_organization_id: string
+        }
+        Returns: {
+          current_generation: number
+          outcome: string
+        }[]
+      }
       record_alert_incident_ended: {
         Args: {
           p_ended_at: string
@@ -3416,6 +3460,18 @@ export type Database = {
       refresh_workflow_stats_daily: {
         Args: { p_lookback_days?: number }
         Returns: undefined
+      }
+      remove_ops_connection: {
+        Args: {
+          p_actor: string
+          p_connection_id: string
+          p_organization_id: string
+        }
+        Returns: {
+          outcome: string
+          removed_generation: number
+          workflows: Json
+        }[]
       }
       rename_partner_step_namespace: {
         Args: {

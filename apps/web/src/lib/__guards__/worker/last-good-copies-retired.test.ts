@@ -401,9 +401,14 @@ describe('every handler writing service_connections edits the saved Slack copy (
   // row, and whose one caller is exempted above with that reason. #2333 added
   // replace_connection_envelope, the reseal's write back, which writes only an
   // ops_key row, and whose one caller is exempted above with that reason.
-  it('the only database functions writing the table are the delete by id and the two ops login write backs, whose callers are held to the rule', () => {
+  // #2338 (build PR 3) added remove_ops_connection and reconnect_ops_connection,
+  // which refuse any row not sealed to the ops key (connection_not_ops_key), so
+  // neither can reach the Slack alert row and its saved copy. No route calls
+  // them yet; the routes that will (build PRs 4 to 6) are enumerated through the
+  // rpc like every other caller.
+  it('the only database functions writing the table are the delete by id, the two ops login write backs and the two Connections page ops writers, whose callers are held to the rule', () => {
     expect([...sqlFunctionsWriting(SLACK_COPY, readMigrations())].sort()).toEqual([
-      'delete_service_connection_by_id', 'replace_connection_envelope', 'store_rotated_envelope',
+      'delete_service_connection_by_id', 'reconnect_ops_connection', 'remove_ops_connection', 'replace_connection_envelope', 'store_rotated_envelope',
     ])
     expect(found.handlers).toEqual(expect.arrayContaining(['apps/worker/src/routes/api/integrations.ts DELETE /slack']))
   })
