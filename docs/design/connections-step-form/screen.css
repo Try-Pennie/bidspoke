@@ -1,0 +1,4 @@
+/* A step's Connection field as settled in the #2338 design rounds (rounds 8 and 8b). */
+.sf-hint { margin-top: 4px; font-size: 12px; color: #697081; }
+.sf-problem { color: #B42318; font-weight: 500; }
+.select-trigger { width: 100%; }

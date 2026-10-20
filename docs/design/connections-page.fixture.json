@@ -1,0 +1,284 @@
+{
+ "_about": "The data every frame of docs/design/connections-page.html is drawn from, and that the built Connections page renders in its development only preview, so both sides of the design score draw the same 14 connections (#2338).",
+ "connections": [
+  {
+   "name": "Pennie Salesforce",
+   "service": "Salesforce",
+   "actsAs": "integration@trypennie.com",
+   "kind": "company",
+   "status": "ok",
+   "checked": "4 min ago",
+   "usedBy": 6,
+   "instance": "trypennie.my.salesforce.com",
+   "workflows": [
+    "Achieve report import",
+    "Daily Salesforce cleanup",
+    "Lead Completed sync",
+    "Partner report email",
+    "Reserve My Loan intake",
+    "Tripoint submission"
+   ],
+   "history": [
+    [
+     "Oct 18",
+     "2:14 PM",
+     "Dan Wright",
+     "Reconnected with a new client secret"
+    ],
+    [
+     "Oct 17",
+     "10:02 AM",
+     "Dan Wright",
+     "Added"
+    ]
+   ]
+  },
+  {
+   "name": "TPL2 Salesforce",
+   "service": "Salesforce",
+   "actsAs": "bidspoke@tpl2.example",
+   "kind": "company",
+   "status": "ok",
+   "checked": "6 min ago",
+   "usedBy": 2
+  },
+  {
+   "name": "Achieve Salesforce",
+   "service": "Salesforce",
+   "actsAs": "pennie.api@achieve.example",
+   "kind": "company",
+   "status": "reauth",
+   "checked": "2 hours ago",
+   "usedBy": 1,
+   "instance": "achieve.my.salesforce.com",
+   "workflows": [
+    "Achieve report import"
+   ],
+   "history": [
+    [
+     "Oct 20",
+     "9:52 AM",
+     "Bidspoke",
+     "Salesforce refused the login"
+    ],
+    [
+     "Oct 16",
+     "3:40 PM",
+     "Dan Wright",
+     "Added"
+    ]
+   ],
+   "since": "9:52 AM ET",
+   "cause": "Salesforce has refused its client secret.",
+   "effect": "Achieve report import stops at its Salesforce step.",
+   "fix": "Reconnect with a new client secret from Achieve's Salesforce admin."
+  },
+  {
+   "name": "Reporting warehouse",
+   "service": "Snowflake",
+   "actsAs": "OPS_SERVICE in PENNIE",
+   "kind": "company",
+   "status": "ok",
+   "checked": "9 min ago",
+   "usedBy": 3
+  },
+  {
+   "name": "Ops mailbox",
+   "service": "Google",
+   "actsAs": "ops@trypennie.com",
+   "kind": "company",
+   "status": "ok",
+   "checked": "11 min ago",
+   "usedBy": 4
+  },
+  {
+   "name": "Reports drive",
+   "service": "Google",
+   "actsAs": "reports@trypennie.com",
+   "kind": "company",
+   "status": "ok",
+   "checked": "3 min ago",
+   "usedBy": 2
+  },
+  {
+   "name": "Dan's calendar",
+   "service": "Google",
+   "actsAs": "dwright@trypennie.com",
+   "kind": "person",
+   "owner": "Dan Wright",
+   "status": "ok",
+   "checked": "7 min ago",
+   "usedBy": 1
+  },
+  {
+   "name": "Ops alerts bot",
+   "service": "Slack",
+   "actsAs": "Bidspoke Ops in Pennie",
+   "kind": "company",
+   "status": "ok",
+   "checked": "5 min ago",
+   "usedBy": 9
+  },
+  {
+   "name": "Summaries",
+   "service": "OpenAI",
+   "actsAs": "Project Bidspoke ops",
+   "kind": "company",
+   "status": "ok",
+   "checked": "12 min ago",
+   "usedBy": 2
+  },
+  {
+   "name": "Lead notes",
+   "service": "Anthropic",
+   "actsAs": "Workspace Ops",
+   "kind": "company",
+   "status": "failing",
+   "checked": "1 min ago",
+   "usedBy": 1
+  },
+  {
+   "name": "Forms database",
+   "service": "Supabase",
+   "actsAs": "forms project",
+   "kind": "company",
+   "status": "ok",
+   "checked": "8 min ago",
+   "usedBy": 2
+  },
+  {
+   "name": "Regal webhook",
+   "service": "HTTP",
+   "actsAs": "api.regal.io",
+   "kind": "company",
+   "status": "ok",
+   "checked": "10 min ago",
+   "usedBy": 1
+  },
+  {
+   "name": "Bidspoke Alerts",
+   "service": "Slack",
+   "actsAs": "Bidspoke Alerts in Pennie",
+   "kind": "company",
+   "status": "ok",
+   "checked": "2 min ago",
+   "usedBy": 0
+  },
+  {
+   "name": "Lender API",
+   "service": "HTTP",
+   "actsAs": "api.lender.example",
+   "kind": "company",
+   "status": "ok",
+   "checked": "5 min ago",
+   "usedBy": 1
+  }
+ ],
+ "justSaved": {
+  "name": "Achieve Salesforce 2",
+  "service": "Salesforce",
+  "actsAs": "pennie.api@achieve.example",
+  "kind": "company",
+  "status": "ok",
+  "checked": "just now",
+  "usedBy": 0,
+  "instance": "achieve.my.salesforce.com",
+  "workflows": [],
+  "history": [
+   [
+    "Oct 20",
+    "12:41 PM",
+    "Dan Wright",
+    "Added"
+   ]
+  ]
+ },
+ "statusVocabulary": {
+  "ok": "Working",
+  "reauth": "Needs reconnecting",
+  "failing": "Check failing"
+ },
+ "statusesAsOf": "11:52 AM ET",
+ "delegation": [
+  {
+   "who": "ops@trypennie.com",
+   "kind": "Mailbox",
+   "added": "Dan Wright, Oct 18"
+  },
+  {
+   "who": "reports@trypennie.com",
+   "kind": "Mailbox",
+   "added": "Dan Wright, Oct 18"
+  },
+  {
+   "who": "Partner reports",
+   "kind": "Shared drive",
+   "added": "Dan Wright, Oct 19"
+  }
+ ],
+ "services": [
+  [
+   "Anthropic",
+   "An API key for a workspace"
+  ],
+  [
+   "Google",
+   "A mailbox or shared drive on the company list, or your own login"
+  ],
+  [
+   "HTTP",
+   "Any web API that takes a key"
+  ],
+  [
+   "OpenAI",
+   "An API key for a project"
+  ],
+  [
+   "Salesforce",
+   "An org, signed in as its integration user"
+  ],
+  [
+   "Slack",
+   "A bot in a Slack workspace"
+  ],
+  [
+   "Snowflake",
+   "A user and account, signed in by key pair"
+  ],
+  [
+   "Supabase",
+   "A project's service key"
+  ]
+ ],
+ "salesforceOrgs": [
+  [
+   "Achieve",
+   "achieve.my.salesforce.com"
+  ],
+  [
+   "Pennie",
+   "trypennie.my.salesforce.com"
+  ],
+  [
+   "TPL2",
+   "tpl2.my.salesforce.com"
+  ]
+ ],
+ "draft": {
+  "salesforce": {
+   "name": "Achieve Salesforce 2",
+   "org": "Achieve",
+   "clientId": "3MVG9xk2Q7R1s0p0Lm",
+   "elapsed": "6 s"
+  },
+  "google": {
+   "companyName": "Ops mailbox 2",
+   "ownName": "Dan's drive",
+   "subject": "ops@trypennie.com"
+  }
+ },
+ "reconnect": {
+  "clientId": "3MVG9xk2Q7R1s0p0Lm"
+ },
+ "replaceWith": "TPL2 Salesforce"
+}

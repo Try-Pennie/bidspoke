@@ -1,0 +1,97 @@
+/* The Connections page as settled in the #2338 design rounds (round 1 to 23), with the rejected
+   options' rules taken out. Colours are the app's: navy #1D212F marks a selection, blue #1B72BA is
+   for buttons only, red #B42318 only for something wrong, grey hint text #697081. */
+.cx-page { padding: 32px 32px 48px; max-width: 1072px; position: relative; }
+.cx-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 24px; }
+.cx-head .cx-actions { margin-top: 0; }
+.cx-btn { background: #1B72BA; color: #fff; border: 0; border-radius: 8px; padding: 8px 16px; font: inherit; font-size: 14px; font-weight: 500; }
+.cx-btn[disabled] { opacity: .85; }
+.cx-btn-sm { padding: 6px 12px; font-size: 13px; }
+.cx-btn-quiet { background: #fff; color: #1D212F; border: 1px solid #D9D4CC; border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 13px; }
+.cx-btn-danger { background: #fff; color: #B42318; border: 1px solid #E8B4AE; border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 13px; }
+.cx-btn-danger[disabled] { color: #B9B2A8; border-color: #E5E0D8; }
+.cx-btn-dangerfill { background: #B42318; color: #fff; border: 0; border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 500; }
+.cx-btn-dangerfill, .cx-btn-quiet, .cx-btn { white-space: nowrap; }
+.cx-hint { color: #697081; font-size: 13px; }
+.cx-status { font-size: 13px; color: #1D212F; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.cx-status .dot { width: 8px; height: 8px; border-radius: 50%; background: #9AA1AE; }
+.cx-status.problem { color: #B42318; font-weight: 500; }
+.cx-status.problem .dot { background: #B42318; }
+.cx-card { background: #fff; border: 1px solid #E5E0D8; border-radius: 12px; }
+
+/* Round 1: the list on the left, the chosen connection on the right. */
+.cx-split { display: grid; grid-template-columns: 300px 1fr; gap: 24px; align-items: start; }
+.cx-list { padding: 8px 0; }
+.cx-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 16px; font-size: 14px; color: #1D212F; }
+.cx-item.sel { background: #1D212F; color: #fff; }
+.cx-item.sel .cx-hint { color: #D9D4CC; }
+
+/* Round 4: each section headed dark, normal case, 14px semibold, with a line above. */
+.cx-group { text-transform: none; letter-spacing: 0; font-size: 14px; font-weight: 600; color: #1D212F; padding: 14px 16px 6px; border-top: 1px solid #E5E0D8; margin: 6px 0 0; }
+.cx-group:first-child { border-top: 0; margin-top: 0; }
+
+/* Rounds 5 to 9: the detail panel. */
+.cx-detail { padding: 24px; }
+.cx-detail h2 { font-size: 20px; font-weight: 600; color: #1D212F; margin: 0 0 4px; }
+.cx-rows { margin-top: 20px; border-top: 1px solid #EFEAE3; }
+.cx-row { display: grid; grid-template-columns: 140px 1fr; padding: 12px 0; border-bottom: 1px solid #EFEAE3; font-size: 14px; color: #1D212F; }
+.cx-row > :first-child { color: #697081; }
+.cx-actions { display: flex; gap: 8px; margin-top: 20px; }
+.cx-dtabs { display: flex; gap: 24px; border-bottom: 1px solid #E5E0D8; margin-top: 16px; }
+.cx-dtab { padding: 10px 0; font-size: 14px; color: #697081; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.cx-dtab.on { color: #1D212F; font-weight: 600; border-bottom-color: #1D212F; }
+.cx-notice { margin-top: 16px; border: 1px solid #E8B4AE; background: #FDF3F2; border-radius: 10px; padding: 14px 16px; font-size: 14px; color: #1D212F; }
+.cx-notice p { margin: 0 0 6px; }
+.cx-notice .cx-btn { margin-top: 6px; }
+.cx-danger { margin-top: 28px; padding-top: 16px; border-top: 1px solid #EFEAE3; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+.cx-danger .what { font-size: 14px; color: #1D212F; }
+.cx-inline { margin-top: 12px; padding: 12px 14px; background: #FBF9F6; border: 1px solid #EFEAE3; border-radius: 10px; font-size: 14px; color: #1D212F; }
+.cx-wf { display: block; padding: 8px 0; border-bottom: 1px solid #EFEAE3; font-size: 14px; color: #1D212F; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: #B9B2A8; }
+.cx-inline .cx-wf, .cx-dialog .cx-wf { padding: 6px 0; }
+
+/* Round 10: Google mailboxes and drives, in the panel. */
+.ga-intro { font-size: 14px; color: #1D212F; margin: 6px 0 16px; max-width: 560px; }
+.ga-term { text-decoration: underline dotted; text-underline-offset: 3px; }
+.ga-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; column-gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid #EFEAE3; font-size: 14px; color: #1D212F; }
+.ga-row > * { white-space: nowrap; }
+.ga-row > :first-child { overflow: hidden; text-overflow: ellipsis; }
+.ga-add { display: flex; gap: 8px; margin-top: 16px; }
+.ga-add .input { flex: 1; }
+.ga-add .cx-btn { flex: none; }
+.ga-link { background: none; border: 0; padding: 0; font: inherit; font-size: 13px; color: #1D212F; text-decoration: underline; text-underline-offset: 3px; }
+
+/* Rounds 11 to 18: Add connection, in the right panel. */
+.ad-form { display: grid; gap: 16px; max-width: 460px; margin-top: 16px; }
+.ad-label { display: block; font-size: 13px; font-weight: 500; color: #1D212F; margin-bottom: 6px; }
+.ad-field .input { width: 100%; }
+.ad-pick { width: 100%; display: flex; justify-content: space-between; align-items: center; background: #fff; border: 1px solid #D9D4CC; border-radius: 8px; padding: 8px 12px; font: inherit; font-size: 14px; color: #1D212F; }
+.ad-pick-hint { display: block; margin-top: 4px; }
+.ad-foot { display: flex; gap: 8px; margin-top: 4px; align-items: center; }
+.ad-line { display: flex; align-items: center; gap: 10px; font-size: 14px; color: #1D212F; margin-top: 4px; }
+.ad-line.bad { color: #B42318; align-items: flex-start; }
+.spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #D9D4CC; border-top-color: #1D212F; display: inline-block; flex: none; }
+.sv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.sv-tile { border: 1px solid #E5E0D8; border-radius: 10px; padding: 10px 12px; font-size: 14px; color: #1D212F; background: #fff; }
+.sv-tile .cx-hint { display: block; margin-top: 2px; }
+.sv-on { border-color: #1D212F; box-shadow: inset 0 0 0 1px #1D212F; }
+.gk-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.gk-card { border: 1px solid #E5E0D8; border-radius: 10px; padding: 10px 12px; font-size: 14px; color: #1D212F; background: #fff; }
+.gk-card .cx-hint { display: block; margin-top: 2px; }
+.gk-card.on { border-color: #1D212F; box-shadow: inset 0 0 0 1px #1D212F; }
+.gk-pick { margin-top: 10px; }
+.g-btn { display: inline-flex; align-items: center; gap: 10px; background: #fff; border: 1px solid #747775; border-radius: 4px; padding: 0 12px; height: 40px; font-family: Roboto, Arial, sans-serif; font-size: 14px; font-weight: 500; color: #1F1F1F; }
+.g-btn svg { display: block; }
+
+/* Rounds 19 to 21: dialogs. */
+.cx-scrim { position: fixed; inset: 0; background: rgba(29,33,47,.35); display: grid; place-items: center; z-index: 50; }
+.cx-dialog { width: 440px; background: #fff; border-radius: 12px; padding: 22px 24px; box-shadow: 0 12px 40px rgba(0,0,0,.18); color: #1D212F; font-size: 14px; }
+.cx-dialog h2 { font-size: 17px; font-weight: 600; color: #1D212F; margin: 0 0 8px; }
+.cx-dialog .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.rp-check { display: flex; gap: 8px; align-items: center; padding: 6px 0; font-size: 14px; color: #1D212F; }
+.rp-box { width: 14px; height: 14px; border-radius: 3px; background: #1D212F; display: inline-grid; place-items: center; color: #fff; font-size: 10px; flex: none; }
+
+/* Rounds 22 and 23: statuses unknown, and the list not loaded. */
+.un-strip { margin: -8px 0 16px; border: 1px solid #E5E0D8; background: #FBF9F6; border-radius: 10px; padding: 10px 14px; font-size: 14px; color: #1D212F; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.ld-card { padding: 28px 24px; font-size: 14px; color: #1D212F; }
+.ld-card p { margin: 0 0 6px; }
+.ld-card .cx-btn-quiet { margin-top: 10px; }
