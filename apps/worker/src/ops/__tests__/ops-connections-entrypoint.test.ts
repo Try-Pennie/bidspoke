@@ -6,7 +6,8 @@
  * to an entrypoint the deployed Worker does not export: the binding deploys
  * green and every call throws "internal error; reference = <id>" within 20 to
  * 40 ms. So the first test here is that OpsConnections stays exported from the
- * ops Worker's main module, with exactly the methods bidding will call; a
+ * ops Worker's main module, with exactly the methods bidding calls plus the
+ * Google list's three, which ship on ops before bidding calls them (#2338); a
  * rename or a removal fails here before it can deploy. That a real binding
  * reaches it inside workerd is ops-connections.workers.test.ts.
  *

@@ -105,9 +105,9 @@ type DelegationRunner = (deps: DelegationListDeps, request: never, signal: Abort
 
 /** The Google list's methods (#2338): each its contract parser and its body in connections/delegation-list.ts. */
 const DELEGATION_METHODS: { readonly [M in OpsDelegationMethod]: { parse: (raw: unknown) => { organization_id: string }; run: DelegationRunner } } = {
-  addDelegationSubject: { parse: parseAddDelegationSubjectRequest, run: (deps, request) => addDelegationSubject(deps, request) },
-  removeDelegationSubject: { parse: parseRemoveDelegationSubjectRequest, run: (deps, request) => removeDelegationSubject(deps, request) },
-  listDelegationSubjects: { parse: parseListDelegationSubjectsRequest, run: (deps, request) => listDelegationSubjects(deps, request) },
+  addDelegationSubject: { parse: parseAddDelegationSubjectRequest, run: addDelegationSubject },
+  removeDelegationSubject: { parse: parseRemoveDelegationSubjectRequest, run: removeDelegationSubject },
+  listDelegationSubjects: { parse: parseListDelegationSubjectsRequest, run: listDelegationSubjects },
 }
 
 export interface DelegationListAnswerOptions {
