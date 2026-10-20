@@ -15,6 +15,7 @@ import { SLACK_TOKEN_SIGNAL } from '../slack-token-health'
 import { OPS_CONNECTION_LOGIN_SIGNAL } from '../ops-connection-logins'
 import { OPS_CONNECTION_OWNER_SIGNAL } from '../ops-connection-owner-check'
 import { SALESFORCE_BULKHEAD_SIGNAL } from '../salesforce-bulkhead-check'
+import { MINUTE_JOB_FAILING_SIGNAL } from '../minute-job-failures'
 
 /**
  * The incident registry (#2099, #818): one entry per recovery prefix an alert
@@ -25,7 +26,7 @@ import { SALESFORCE_BULKHEAD_SIGNAL } from '../salesforce-bulkhead-check'
  * from without either noticing.
  */
 describe('INCIDENT_SIGNALS', () => {
-  it('names the twenty one signals in use, each once', () => {
+  it('names the twenty two signals in use, each once', () => {
     const names = INCIDENT_SIGNALS.map((s) => s.signal)
     expect(new Set(names).size).toBe(names.length)
     expect([...names].sort()).toEqual([
@@ -36,6 +37,7 @@ describe('INCIDENT_SIGNALS', () => {
       'field-presence-dead',
       'field-presence-drought',
       'field-presence-wrong-path',
+      'minute-job-failing',
       'ops-connection-login',
       'ops-connection-owner',
       'ops-connection-write-back',
@@ -139,6 +141,14 @@ describe('INCIDENT_SIGNALS', () => {
   it('scopes the Salesforce bulkhead limit signal to the platform, keyed on a fixed name', () => {
     expect(incidentSignal(SALESFORCE_BULKHEAD_SIGNAL).signal).toBe('salesforce-bulkhead-limit')
     expect(incidentSignal('salesforce-bulkhead-limit')).toMatchObject({ scope: 'platform', subject: 'name', windowMinutes: null, label: 'Salesforce bulkhead limit' })
+  })
+
+  // #2523: one of this Worker's minute jobs, the same for every organization, keyed on the job id.
+  it('scopes the failing minute job signal to the platform, keyed on the job, labelled with its all clear\'s words', () => {
+    expect(incidentSignal(MINUTE_JOB_FAILING_SIGNAL).signal).toBe('minute-job-failing')
+    expect(incidentSignal('minute-job-failing')).toMatchObject({ scope: 'platform', subject: 'name', windowMinutes: null })
+    // The words its all clear names the signal by (slack.ts sendMinuteJobFailingRecoveryAlert).
+    expect(incidentSignal('minute-job-failing').label.toLowerCase()).toBe('scheduled job failing')
   })
 
   it('lists the partner kinds and the two database memory subjects', () => {

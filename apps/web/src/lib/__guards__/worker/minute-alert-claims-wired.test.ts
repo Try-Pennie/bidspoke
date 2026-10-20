@@ -36,15 +36,21 @@ const MINUTE_CLAIMANTS: Record<string, string[]> = {
   // #2340 phase 10 item 4: the write back page, judged every minute from the
   // judgement the bidding Worker keeps, so the same holds.
   'ops-connection-logins.ts': ['runOpsConnectionLoginCheckForEnv', 'runOpsConnectionWriteBackCheckForEnv'],
+  // #2523: the failing minute job page, judged as each minute job's run settles
+  // inside completeAfter, so two overlapping ticks could both post it.
+  'minute-job-failures.ts': ['minuteJobFailingDepsForEnv'],
 }
 
 /**
- * The one call allowed outside the minute branch, and why: every scheduled
- * tick's first failed read reports to the database owner (#2061), so the owner
- * is told from any tick. Its page is a minute alert all the same, since the
- * minute probe and the volume check report to it every minute.
+ * The calls allowed outside the minute branch, and why. Every scheduled tick's
+ * first failed read reports to the database owner (#2061), so the owner is
+ * told from any tick; its page is a minute alert all the same, since the minute
+ * probe and the volume check report to it every minute. completeAfter is built
+ * once for every tick with the failing minute job page's deps (#2523), but it
+ * counts only minute jobs (countsFailedRuns), so those claims are taken on
+ * minute ticks only.
  */
-const ANY_TICK = new Set(['reportDatabaseUnreachable'])
+const ANY_TICK = new Set(['reportDatabaseUnreachable', 'minuteJobFailingDepsForEnv'])
 
 const sources = new Map(
   listTsFiles(LIB)

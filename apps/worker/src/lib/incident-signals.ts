@@ -232,6 +232,19 @@ export const INCIDENT_SIGNALS = [
     startMeans: FIRST_PAGE,
     windowMinutes: null,
   },
+  // #2523. A minute job of this Worker (cron-heartbeat.ts CRON_JOBS) whose runs
+  // keep failing while each still finishes, so its heartbeat reads healthy: past
+  // MINUTE_JOB_FAILING_BOUND failed runs in a row. The same job for every
+  // organization, paged to every Slack organization, keyed on the job id. It
+  // judges a run of failures, not a trailing window. Paged by minute-job-failures.ts.
+  {
+    signal: 'minute-job-failing',
+    label: 'Scheduled job failing',
+    scope: 'platform',
+    subject: 'name',
+    startMeans: FIRST_PAGE,
+    windowMinutes: null,
+  },
 ] as const satisfies readonly IncidentSignalEntry[]
 
 export type IncidentSignal = (typeof INCIDENT_SIGNALS)[number]['signal']

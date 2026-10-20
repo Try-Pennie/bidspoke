@@ -3860,6 +3860,75 @@ export async function sendSalesforceBulkheadLimitRecoveryAlert(
   )
 }
 
+// ── A minute job whose runs keep failing while they finish (#2523) ─────────────
+
+/** What the failing minute job page says (minute-job-failures.ts builds it). */
+export interface MinuteJobFailingMessageInput {
+  label: string
+  dependents: string
+  failedRuns: number | null
+  bound: number
+  logLine: string
+  countFault: string | null
+  repeat?: string
+}
+
+/**
+ * The page's title and sentences, separate from the send so the words can be
+ * tested. Names the job, how many runs failed (or that they could not be
+ * counted), the log line to search for and what clears it. Never the error's
+ * own text: it can carry lead data, and the page goes to a shared channel.
+ */
+export function minuteJobFailingMessage(alert: MinuteJobFailingMessageInput): { title: string; sections: string[] } {
+  const search = alert.logLine.replace(/:\s*$/, '')
+  const what = alert.failedRuns !== null && alert.countFault === null
+    ? `${alert.label} has failed ${alert.failedRuns} runs in a row.`
+    : `${alert.label} failed its last run, and ${alert.countFault ?? 'its count of failed runs could not be read'}, so this is sent at once rather than after ${alert.bound} failed runs in a row.`
+  const sections = [
+    `${what} Each run still finishes, so its heartbeat reads healthy, but each one stopped at an error. While it keeps failing, the likely effect is that ${alert.dependents}.`,
+    `*Fix:* search the bidspoke-worker logs for \`${search}\` to see the error each run stops at, and fix that. The all clear is sent once the job has run for ${RECOVERY_REARM_MINUTES} minutes without failing.`,
+  ]
+  if (alert.repeat) sections.push(alert.repeat)
+  const title = alert.countFault === null ? `${alert.label} is failing every run` : `${alert.label} is failing`
+  return { title: alert.repeat ? `${title} (still)` : title, sections }
+}
+
+/** Pages one organization. Returns whether it reached Slack. */
+export async function sendMinuteJobFailingAlert(supabase: SupabaseClient, orgId: string, alert: MinuteJobFailingMessageInput): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  const m = minuteJobFailingMessage(alert)
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: m.title, emoji: false } },
+    ...m.sections.map((text) => ({ type: 'section', text: { type: 'mrkdwn', text } })),
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, m.title)) !== null
+}
+
+/** The all clear once the job has run without failing for the re-arm window. Returns whether it reached Slack. */
+export async function sendMinuteJobFailingRecoveryAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  recovery: { label: string; alertedAt: string; endedAt: string | null },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  return sendRecoveryAlert(
+    connection,
+    connection.default_channel,
+    {
+      // The incident record's label is the same words (incident-signals.ts).
+      signal: 'scheduled job failing',
+      subject: recovery.label,
+      recoveredPhrase: `has run for ${RECOVERY_REARM_MINUTES} minutes without failing`,
+      alertedAt: recovery.alertedAt,
+      endedAt: recovery.endedAt,
+    },
+    now,
+  )
+}
+
 // ── What the drain of stored Salesforce writes could not finish (#468) ─────────
 
 /**
