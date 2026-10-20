@@ -14,7 +14,7 @@ import { runVolumeCliffCheck } from './lib/volume-cliff'
 import { DATABASE_REACHABILITY_JOB, reportDatabaseUnreachable, runDatabaseReachabilityProbe, type ReachabilityDeps } from './lib/database-reachability'
 import { runBuyerSaleDrainForEnv, BUYER_SALE_DRAIN_JOB } from './lib/buyer-sale-drain'
 import { runBuyerSalesChecksForEnv, BUYER_SALES_CHECKS_JOB } from './lib/buyer-sales-checks'
-import { runTripointPingOutcomeRateForEnv, TRIPOINT_PING_OUTCOME_RATE_JOB } from './lib/tripoint-ping-outcome-rate'
+import { pingRunFailure, runTripointPingOutcomeRateForEnv, TRIPOINT_PING_OUTCOME_RATE_JOB } from './lib/tripoint-ping-outcome-rate'
 import { runLiveShareRefusalsForEnv, LIVE_SHARE_REFUSALS_JOB } from './lib/live-share-refusals'
 import { runClickPathChecksForEnv, CLICK_PATH_CHECKS_JOB } from './lib/click-path-checks'
 import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB, EVERY_ORGANIZATION } from './lib/buyer-select-parity'
@@ -759,8 +759,10 @@ const scheduledJobs = {
             .then((s) => {
               if (s.skipped) return
               console.log(`[${BUYER_SELECT_PARITY_JOB}] days=${s.days.join(',')} rows_written=${s.rows_written} kept_final=${s.kept_final.length} errors=${s.errors.length}`)
-              if (s.errors.length) console.error(`[${BUYER_SELECT_PARITY_JOB}] errors=${s.errors.join(' | ')}`)
-            }),
+              // Not a failed run (#2529): these days already page, with their all
+              // clear, through the export alerter inside the refresh
+              // (runParityRefreshAndPage, export-alert:buyer-select-parity).
+              if (s.errors.length) console.error(`[${BUYER_SELECT_PARITY_JOB}] errors=${s.errors.join(' | ')}`)            }),
           BUYER_SELECT_PARITY_JOB,
           `[${BUYER_SELECT_PARITY_JOB}] refresh failed:`,
         ),
@@ -1144,7 +1146,8 @@ const scheduledJobs = {
             .then((s) => {
               if (s.skipped) return
               console.log(`[${TRIPOINT_PING_OUTCOME_RATE_JOB}] verdict=${s.verdict.verdict} sent=${s.window.counts?.sent ?? 'unread'} baseline_hours=${s.baseline?.hours ?? 'unread'} recorded_hours=${s.rolled_up_hours} paged=${s.lines.length}`)
-              if (s.rollup_errors.length) console.error(`[${TRIPOINT_PING_OUTCOME_RATE_JOB}] hours not recorded: ${s.rollup_errors.join(' | ')}`)
+              // Hours it could not record are a failed run, logged there (#2529).
+              return pingRunFailure(s)
             }),
           TRIPOINT_PING_OUTCOME_RATE_JOB,
           `[${TRIPOINT_PING_OUTCOME_RATE_JOB}] check failed:`,

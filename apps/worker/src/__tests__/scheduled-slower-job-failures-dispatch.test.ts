@@ -15,7 +15,20 @@ import { alertRowListAnswer } from './helpers/slack-alert-read'
 const runPartnerReachabilityCheck = vi.fn()
 const runBuyerSalesChecksForEnv = vi.fn()
 const runEngineScriptDriftForEnv = vi.fn()
+const runTripointPingOutcomeRateForEnv = vi.fn()
 const sendMinuteJobFailingAlert = vi.fn(async () => true)
+const sendMinuteJobFailingRecoveryAlert = vi.fn(async () => true)
+const notifyExportFailure = vi.fn(async (..._args: unknown[]) => {})
+
+vi.mock('../lib/tripoint-ping-outcome-rate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/tripoint-ping-outcome-rate')>()),
+  runTripointPingOutcomeRateForEnv: (...args: unknown[]) => runTripointPingOutcomeRateForEnv(...args),
+}))
+// Recorded, so a job's own summary page is seen (buyer-select-parity's, #2529).
+vi.mock('../lib/export-alerts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/export-alerts')>()),
+  notifyExportFailure: (...args: unknown[]) => notifyExportFailure(...args),
+}))
 
 vi.mock('../lib/partner-reachability', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/partner-reachability')>()),
@@ -37,7 +50,7 @@ vi.mock('../lib/cron-heartbeat', async (importOriginal) => ({
 vi.mock('../lib/slack', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/slack')>()),
   sendMinuteJobFailingAlert: (...args: unknown[]) => sendMinuteJobFailingAlert(...(args as [])),
-  sendMinuteJobFailingRecoveryAlert: vi.fn(async () => true),
+  sendMinuteJobFailingRecoveryAlert: (...args: unknown[]) => sendMinuteJobFailingRecoveryAlert(...(args as [])),
 }))
 // One Slack organization for the page's fan out.
 const db = { from: () => ({ select: () => alertRowListAnswer({ data: [{ organization_id: 'org-one' }], error: null }) }) }
@@ -86,8 +99,26 @@ beforeEach(() => {
   runPartnerReachabilityCheck.mockReset()
   runBuyerSalesChecksForEnv.mockReset()
   runEngineScriptDriftForEnv.mockReset()
+  runTripointPingOutcomeRateForEnv.mockReset()
+  runTripointPingOutcomeRateForEnv.mockResolvedValue(pingSummary([]))
   sendMinuteJobFailingAlert.mockClear()
+  sendMinuteJobFailingRecoveryAlert.mockClear()
+  notifyExportFailure.mockClear()
 })
+
+/** A tripoint ping outcome rate run that judged the hour normal, with these hours not recorded. */
+function pingSummary(rollupErrors: string[]) {
+  return {
+    window: { from: '', to: '', counts: { sent: 120, accepted: 70, declined: 50, failed: 0 } },
+    baseline: { attempts: 20_000, hours: 336 },
+    verdict: { verdict: 'normal', detail: 'within its baseline' },
+    rolled_up_hours: 0,
+    rollup_errors: rollupErrors,
+    lines: [],
+  }
+}
+
+const HOUR_LOST = 'the hour from 2026-10-20T12:00:00.000Z: execution_steps tripoint_ping total count: canceling statement due to statement timeout'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -133,5 +164,57 @@ describe('a slower job whose runs keep failing pages at its cadence\'s bound (#2
     await fire(kv, '0 * * * *', T0 + 60 * MIN)
     expect(pagesFor('engine-script-drift')).toMatchObject([{ logLine: '[engine-script-drift] check failed:', failedRuns: 2 }])
     expect(kv.store.get(heartbeat.completedKey('engine-script-drift'))).toBe(new Date(T0 + 60 * MIN).toISOString())
+  })
+})
+
+/**
+ * #2529: the summary faults of two jobs that were only logged. The Tripoint
+ * ping outcome rate's hours not recorded are a failed run of that job, with its
+ * own words. buyer-select-parity's days not summarised already page through the
+ * export alerter, with its all clear, so they are not counted as well.
+ */
+describe('a slower job\'s summary faults that were only logged (#2529)', () => {
+  it('pages the Tripoint ping outcome rate on the third run in a row whose finished hours were not recorded, in its own words', async () => {
+    runTripointPingOutcomeRateForEnv.mockResolvedValue(pingSummary([HOUR_LOST]))
+    const kv = memoryKv()
+    for (let r = 0; r < 2; r++) await fire(kv, '*/15 * * * *', T0 + r * 15 * MIN)
+    expect(pagesFor('tripoint-ping-outcome-rate')).toEqual([])
+    await fire(kv, '*/15 * * * *', T0 + 30 * MIN)
+    const pages = pagesFor('tripoint-ping-outcome-rate') as unknown as Array<{ logLine: string; failedRuns: number; copy?: { fault: string; effect: string } }>
+    expect(pages).toMatchObject([{ logLine: '[tripoint-ping-outcome-rate] hours not recorded:', failedRuns: 3 }])
+    expect(pages[0].copy?.fault).toMatch(/could not be counted and kept for its baseline/)
+    expect(pages[0].copy?.effect).toMatch(/left out of it for good/)
+    expect(console.error).toHaveBeenCalledWith(`[tripoint-ping-outcome-rate] hours not recorded: ${HOUR_LOST}`)
+    expect(kv.store.get(heartbeat.completedKey('tripoint-ping-outcome-rate'))).toBe(new Date(T0 + 30 * MIN).toISOString())
+  })
+
+  it('does not page the Tripoint ping outcome rate for one run whose hours were not recorded, which the next run records', async () => {
+    runTripointPingOutcomeRateForEnv.mockResolvedValueOnce(pingSummary([HOUR_LOST])).mockResolvedValue(pingSummary([]))
+    const kv = memoryKv()
+    for (let r = 0; r < 5; r++) await fire(kv, '*/15 * * * *', T0 + r * 15 * MIN)
+    expect(pagesFor('tripoint-ping-outcome-rate')).toEqual([])
+  })
+
+  it('sends the Tripoint ping outcome rate\'s all clear once it has recorded its hours for 30 minutes', async () => {
+    runTripointPingOutcomeRateForEnv.mockResolvedValue(pingSummary([HOUR_LOST]))
+    const kv = memoryKv()
+    for (let r = 0; r < 3; r++) await fire(kv, '*/15 * * * *', T0 + r * 15 * MIN)
+    expect(pagesFor('tripoint-ping-outcome-rate')).toHaveLength(1)
+    runTripointPingOutcomeRateForEnv.mockResolvedValue(pingSummary([]))
+    for (let r = 3; r < 6; r++) await fire(kv, '*/15 * * * *', T0 + r * 15 * MIN)
+    const clears = sendMinuteJobFailingRecoveryAlert.mock.calls
+      .map((c) => (c as unknown as [unknown, string, { label: string }])[2])
+      .filter((a) => a.label === heartbeat.cronJob('tripoint-ping-outcome-rate').label)
+    expect(clears).toHaveLength(1)
+  })
+
+  it('leaves buyer-select-parity\'s days not summarised to its own export alerter page, and does not count them as failed runs', async () => {
+    // The test double of the database cannot answer the workflow list, so every run's summary lists that fault.
+    const kv = memoryKv()
+    for (let r = 0; r < 3; r++) await fire(kv, '0 * * * *', T0 + r * 60 * MIN)
+    const own = notifyExportFailure.mock.calls.filter((c) => c[1] === 'buyer-select-parity')
+    expect(own).toHaveLength(3)
+    for (const c of own) expect((c[2] as string[]).join(' ')).toMatch(/the workflow list could not be read/)
+    expect(pagesFor('buyer-select-parity')).toEqual([])
   })
 })
