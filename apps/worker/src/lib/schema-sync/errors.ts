@@ -41,7 +41,6 @@ export type SchemaLookupCode = (typeof SCHEMA_LOOKUP_CODES)[number]
 
 /** Which request failed. */
 export type SchemaStep =
-  | 'credentials'
   | 'key'
   | 'object_list'
   | 'object_describe'
@@ -74,7 +73,6 @@ export interface SchemaLookupFailure {
 
 function stepText(step: SchemaStep, subject: string | null): string {
   switch (step) {
-    case 'credentials': return 'read the stored connection login'
     case 'key': return subject ? `look up ${subject}` : 'look up'
     case 'object_list': return 'list its objects'
     case 'object_describe': return subject ? `describe ${subject}` : 'describe an object'
