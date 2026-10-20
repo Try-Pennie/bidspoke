@@ -40,6 +40,7 @@ import type { BackoffKv } from './alert-backoff'
 import { ENGINE_BIDDING_WORKFLOW_ID } from './engine-script-drift'
 import { notifyExportFailure, type AlertRemedy } from './export-alerts'
 import { withJobRun, type JobRunEnding } from './job-run-record'
+import { failedRun, type FailedRun } from './minute-job-failures'
 import { isoDateMinus, judgeOutcomeShares, percent, verdictMovesThePage, type OutcomeBaseline, type OutcomeRateRule, type OutcomeRateVerdict, type BaselineUnreadable } from './outcome-rate-rule'
 import { TRIPOINT_ANSWER_NAMESPACE } from './upstream-outage'
 
@@ -329,6 +330,33 @@ export function endingOf(s: PingSummary): JobRunEnding {
     return { outcome: 'unmeasured', detail: `${s.rollup_errors.length} finished hours could not be recorded for the baseline: ${s.rollup_errors.join('; ')}`, summary }
   }
   return { outcome: 'ok', detail: s.verdict.detail, summary }
+}
+
+/** The line a run with hours it could not record writes, which the failing job page names (#2529). */
+export const PING_HOURS_NOT_RECORDED_LINE = `[${TRIPOINT_PING_OUTCOME_RATE_JOB}] hours not recorded:`
+
+/**
+ * A run with finished hours it could not record, as a failed run for the
+ * failing scheduled job count (minute-job-failures.ts, #2529), with the page's
+ * own words, since the run did not stop at an error and its hour was judged.
+ * Nothing else pages it: notify carries only the rate's own lines, and job_runs
+ * records such a run as unmeasured without paging. Each run retries every hour
+ * of the lookback it has not kept, so one failure the next run repairs is not a
+ * streak, while three in a row (30 minutes) page well before an hour falls out
+ * of the lookback for good. Logs the line it names, with the hours and their
+ * errors; the page carries no error text. Undefined when every hour was kept,
+ * which a skipped run always reports, since it records nothing.
+ */
+export function pingRunFailure(s: PingSummary): FailedRun | undefined {
+  if (s.rollup_errors.length === 0) return undefined
+  console.error(`${PING_HOURS_NOT_RECORDED_LINE} ${s.rollup_errors.join(' | ')}`)
+  return failedRun(PING_HOURS_NOT_RECORDED_LINE, {
+    fault: 'in each one, at least one finished hour of Tripoint sends on the Engine tripoint_ping step could not be counted and kept for its baseline',
+    effect:
+      `the hours not kept are missing from the ${TRIPOINT_PING_RULE.baselineDays} day baseline the outcome rate is judged against, ` +
+      `and an hour still not kept ${ROLLUP_LOOKBACK_HOURS} hours after it ends is left out of it for good`,
+    lookFor: 'which hours could not be kept and the error each one met',
+  })
 }
 
 // ── Production wiring ───────────────────────────────────────────────────────
