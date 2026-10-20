@@ -22,6 +22,8 @@ import {
   DRAIN_BACKOFF_MS,
   DRAIN_MAX_ATTEMPTS,
   DRAIN_OUTBOX_PREFIX,
+  DRAIN_ALERTS_UNDELIVERED_LINE,
+  drainRunFailure,
   type DrainKv,
   type DrainRow,
   type WritebackDrainDeps,
@@ -29,6 +31,7 @@ import {
 import type { WritebackDrainAlert } from '../slack'
 import { readBackHoldsStep } from '../salesforce-read-back'
 import { AT_RISK_WRITE_PREFIX } from '../../engine/at-risk-writes'
+import { isFailedRun } from '../minute-job-failures'
 
 const KEY = Buffer.from(new Uint8Array(32).map((_, i) => i + 7)).toString('base64')
 const ORG = '11111111-1111-1111-1111-111111111468'
@@ -406,5 +409,39 @@ describe('listDrainRows', () => {
 
   it('throws on a database error rather than reading it as nothing pending', async () => {
     await expect(listDrainRows(recordingDb({ data: null, error: { message: 'canceling statement' } }).client)).rejects.toThrow(/canceling statement/)
+  })
+})
+
+/**
+ * #2527: a run whose alerts did not reach Slack is a failed run of the
+ * writeback-drain job for the failing scheduled job count (minute-job-failures.ts),
+ * so three such minutes in a row page every Slack organization.
+ */
+describe('drainRunFailure', () => {
+  const summary = (alert_failures: number) => ({ listed: 0, replayed: 0, refused: 0, abandoned: 0, moved: 0, retrying: 0, waiting: 0, skipped: 0, deferred: 0, unread: 0, alerts: 0, alert_failures })
+
+  it('is no failure when every alert reached Slack', () => {
+    expect(drainRunFailure(summary(0))).toBeUndefined()
+  })
+
+  it('is a failed run, logged under its own line and saying what is at stake, when an alert did not reach Slack', () => {
+    const errors: unknown[][] = []
+    const original = console.error
+    console.error = (...args: unknown[]) => { errors.push(args) }
+    let run: ReturnType<typeof drainRunFailure>
+    try {
+      run = drainRunFailure(summary(2))
+    } finally {
+      console.error = original
+    }
+    expect(isFailedRun(run)).toBe(true)
+    expect(run!.logLine).toBe(DRAIN_ALERTS_UNDELIVERED_LINE)
+    expect(errors.map((a) => String(a[0]))).toEqual([`${DRAIN_ALERTS_UNDELIVERED_LINE} 2 kept in the outbox to be tried again on the next run`])
+    expect(run!.copy?.fault).toMatch(/did not reach Slack/)
+    expect(run!.copy?.effect).toMatch(/refused/)
+    expect(run!.copy?.effect).toMatch(/given up/)
+    expect(run!.copy?.effect).toMatch(/left out/)
+    const words = [run!.copy!.fault, run!.copy!.effect, run!.copy!.lookFor].join(' ')
+    expect(words).not.toMatch(new RegExp(`[\\u2014\\u2013]|\\s${String.fromCharCode(45)}\\s`))
   })
 })

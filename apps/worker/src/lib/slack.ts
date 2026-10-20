@@ -3860,9 +3860,9 @@ export async function sendSalesforceBulkheadLimitRecoveryAlert(
   )
 }
 
-// ── A minute job whose runs keep failing while they finish (#2523) ─────────────
+// ── A scheduled job whose runs keep failing while they finish (#2523, #2526) ───
 
-/** What the failing minute job page says (minute-job-failures.ts builds it). */
+/** What the failing scheduled job page says (minute-job-failures.ts builds it). */
 export interface MinuteJobFailingMessageInput {
   label: string
   dependents: string
@@ -3870,6 +3870,12 @@ export interface MinuteJobFailingMessageInput {
   bound: number
   logLine: string
   countFault: string | null
+  /**
+   * The job's own words for a run that failed without stopping at an error
+   * (minute-job-failures.ts FailedRunCopy, #2527), in place of "each one
+   * stopped at an error", the job's dependents and "the error each run stops at".
+   */
+  copy?: { fault: string; effect: string; lookFor: string }
   repeat?: string
 }
 
@@ -3885,8 +3891,8 @@ export function minuteJobFailingMessage(alert: MinuteJobFailingMessageInput): { 
     ? `${alert.label} has failed ${alert.failedRuns} runs in a row.`
     : `${alert.label} failed its last run, and ${alert.countFault ?? 'its count of failed runs could not be read'}, so this is sent at once rather than after ${alert.bound} failed runs in a row.`
   const sections = [
-    `${what} Each run still finishes, so its heartbeat reads healthy, but each one stopped at an error. While it keeps failing, the likely effect is that ${alert.dependents}.`,
-    `*Fix:* search the bidspoke-worker logs for \`${search}\` to see the error each run stops at, and fix that. The all clear is sent once the job has run for ${RECOVERY_REARM_MINUTES} minutes without failing.`,
+    `${what} Each run still finishes, so its heartbeat reads healthy, but ${alert.copy?.fault ?? 'each one stopped at an error'}. While it keeps failing, the likely effect is that ${alert.copy?.effect ?? alert.dependents}.`,
+    `*Fix:* search the bidspoke-worker logs for \`${search}\` to see ${alert.copy?.lookFor ?? 'the error each run stops at'}, and fix that. The all clear is sent once the job has run for ${RECOVERY_REARM_MINUTES} minutes without failing.`,
   ]
   if (alert.repeat) sections.push(alert.repeat)
   const title = alert.countFault === null ? `${alert.label} is failing every run` : `${alert.label} is failing`

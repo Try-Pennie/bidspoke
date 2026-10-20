@@ -40,8 +40,9 @@ describe('the tripoint_ping outcome rate bridge is wired (#2392)', () => {
     const own = blocks.filter((b) => b.includes('runTripointPingOutcomeRateForEnv(supabase, env)'))
     expect(own, 'the bridge must run inside exactly one completeAfter block of the */15 branch').toHaveLength(1)
     expect(own[0]).toMatch(/^\s*writeHeartbeat\(env\.IDEMPOTENCY, TRIPOINT_PING_OUTCOME_RATE_JOB\)/)
-    // The settled stamp: the job argument that closes this completeAfter call.
-    expect(/(\w+_JOB),\s*\),\s*\)/.exec(own[0])?.[1]).toBe('TRIPOINT_PING_OUTCOME_RATE_JOB')
+    // The settled stamp: the job argument that closes this completeAfter call,
+    // followed only by the job's failure line (#2526).
+    expect(/(\w+_JOB),\s*(?:`[^`]*`,\s*)?\),\s*\)/.exec(own[0])?.[1]).toBe('TRIPOINT_PING_OUTCOME_RATE_JOB')
   })
 
   it('does not accept a stamp from a neighbouring block', () => {

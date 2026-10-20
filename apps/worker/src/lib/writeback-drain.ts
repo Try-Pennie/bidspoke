@@ -45,6 +45,16 @@
  * said on a later tick. Its liveness is the cron heartbeat's (CRON_JOBS
  * 'writeback-drain'), read by a different minute job from KV alone (L71).
  *
+ * WHEN ITS OWN ALERTS DO NOT GET THROUGH (#2527): a run with alert_failures above
+ * zero is a failed run of this job for the failing scheduled job count
+ * (minute-job-failures.ts, drainRunFailure below), so three minutes in a row of
+ * alerts kept back page. That page goes to every Slack organization rather than
+ * only the row's, so it reaches someone when the drain's own post is refused or
+ * the row's organization has no Slack connection. When the database is down and
+ * no saved Slack copy stands in, the Better Stack line (nobody-told-page.ts)
+ * already speaks; when Slack refuses every post of every organization, nothing in
+ * Slack can be heard, and the alerts wait in the outbox until it takes them.
+ *
  * The table has never held a row in production (0 inserts at 2026-10-16), so
  * every behaviour here is proven by tests on built rows.
  */
@@ -57,6 +67,7 @@ import { secretKeys, type SecretKeyInput } from './secret-crypto'
 import { formatErr } from './format-error'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
 import { sendWritebackDrainAlert, type SlackConnection, type WritebackDrainAlert } from './slack'
+import { failedRun, type FailedRun } from './minute-job-failures'
 
 export const WRITEBACK_DRAIN_JOB = 'writeback-drain'
 
@@ -403,6 +414,25 @@ async function deliver(deps: WritebackDrainDeps, fresh: DrainFinding[], s: Drain
       await deps.kv.delete(outboxKey(f.id)).catch((e) => console.error(`[${WRITEBACK_DRAIN_JOB}] could not clear the sent alert for held write ${f.id}:`, formatErr(e)))
     }
   }
+}
+
+/** The line a run whose alerts did not reach Slack writes, which the failing job page names (#2527). */
+export const DRAIN_ALERTS_UNDELIVERED_LINE = `[${WRITEBACK_DRAIN_JOB}] alerts not delivered:`
+
+/**
+ * A run whose alerts did not reach Slack, as a failed run for the failing
+ * scheduled job count (#2527), with the page's own words, since the run did not
+ * stop at an error and its writes were still sent. Logs the line it names.
+ * Undefined when every alert was delivered.
+ */
+export function drainRunFailure(s: DrainSummary): FailedRun | undefined {
+  if (s.alert_failures === 0) return undefined
+  console.error(`${DRAIN_ALERTS_UNDELIVERED_LINE} ${s.alert_failures} kept in the outbox to be tried again on the next run`)
+  return failedRun(DRAIN_ALERTS_UNDELIVERED_LINE, {
+    fault: 'in each one, alerts it owed did not reach Slack and are kept to be tried again',
+    effect: 'nobody is told about a stored Salesforce write that Salesforce refused, that was given up after its last try, or that had a field left out because another writer changed it',
+    lookFor: 'why each alert was not delivered (no Slack connection for the organization, Slack refusing the post, or a connection that could not be read)',
+  })
 }
 
 // ── Production wiring ───────────────────────────────────────────────────────

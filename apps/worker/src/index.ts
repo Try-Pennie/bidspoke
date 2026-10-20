@@ -55,7 +55,7 @@ import { recordAndCheckBranchSkew } from './lib/strand-branch-skew'
 import { runUnconfirmedWriteSweepForEnv, UNCONFIRMED_WRITE_SWEEP_JOB } from './lib/unconfirmed-write-sweep'
 import { runSalesforceReadBackForEnv, checkSalesforceReadBackLivenessForEnv, SF_READ_BACK_JOB } from './lib/salesforce-read-back'
 import { runWritebackBacklogCheckForEnv, WRITEBACK_BACKLOG_JOB } from './lib/writeback-backlog'
-import { runWritebackDrainForEnv, WRITEBACK_DRAIN_JOB } from './lib/writeback-drain'
+import { drainRunFailure, runWritebackDrainForEnv, WRITEBACK_DRAIN_JOB } from './lib/writeback-drain'
 import { readAnswerJournal } from './engine/unconfirmed-writes'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
@@ -259,13 +259,14 @@ const scheduledJobs = {
     // after that handler, because a failure alert that itself throws would then
     // skip the stamp and read as a vanished run (L514).
     //
-    // A minute job's runs are then counted (#2523, lib/minute-job-failures.ts),
-    // AFTER the stamp, which is written for every run as before: a minute job
-    // that fails on every run still finishes, so the heartbeat cannot see it,
-    // and past three failed runs in a row it pages. A minute job therefore hands
-    // its throw on rather than swallowing it, with its own failure line as the
-    // third argument, which completeAfter logs; one whose summary lists faults
-    // it caught resolves to failedRun().
+    // The runs of a job on the minute, five minute, fifteen minute or hourly
+    // cron are then counted (#2523, #2526, lib/minute-job-failures.ts), AFTER
+    // the stamp, which is written for every run as before: a job that fails on
+    // every run still finishes, so the heartbeat cannot see it, and past its
+    // cadence's bound of failed runs in a row (three, or two hourly) it pages.
+    // Such a job therefore hands its throw on rather than swallowing it, with
+    // its own failure line as the third argument, which completeAfter logs; one
+    // whose summary lists faults it only logs resolves to failedRun().
     const completeAfter = makeCompleteAfter({
       stampCompleted: (jobId) => writeHeartbeatCompleted(env.IDEMPOTENCY, jobId),
       failures: minuteJobFailingDepsForEnv(supabase, env.IDEMPOTENCY, reachability.claims),
@@ -759,9 +760,9 @@ const scheduledJobs = {
               if (s.skipped) return
               console.log(`[${BUYER_SELECT_PARITY_JOB}] days=${s.days.join(',')} rows_written=${s.rows_written} kept_final=${s.kept_final.length} errors=${s.errors.length}`)
               if (s.errors.length) console.error(`[${BUYER_SELECT_PARITY_JOB}] errors=${s.errors.join(' | ')}`)
-            })
-            .catch((e) => console.error(`[${BUYER_SELECT_PARITY_JOB}] refresh failed:`, e)),
+            }),
           BUYER_SELECT_PARITY_JOB,
+          `[${BUYER_SELECT_PARITY_JOB}] refresh failed:`,
         ),
       )
       // A buyer_select live share refusing every lead (#2149): pages after 20
@@ -775,9 +776,9 @@ const scheduledJobs = {
             .then((s) => {
               if (s.skipped) return
               console.log(`[${LIVE_SHARE_REFUSALS_JOB}] ${s.subjects.map((x) => `${x.workflow_id}/${x.namespace}:${x.verdict}:${x.count ?? 'na'}`).join(' ')} paged_lines=${s.paged_lines}`)
-            })
-            .catch((e) => console.error(`[${LIVE_SHARE_REFUSALS_JOB}] check failed:`, e)),
+            }),
           LIVE_SHARE_REFUSALS_JOB,
+          `[${LIVE_SHARE_REFUSALS_JOB}] check failed:`,
         ),
       )
       // The kept Engine scripts against the canvas mirror (#1472): pages when a
@@ -793,9 +794,9 @@ const scheduledJobs = {
               if (s.skipped) return
               const states = [...s.verdicts, ...s.configVerdicts].map((v) => `${v.workflow}/${v.namespace}=${v.state}`).join(' ')
               console.log(`[${ENGINE_SCRIPT_DRIFT_JOB}] findings=${s.findings.length}${s.unreadable ? ` unreadable=${s.unreadable}` : ''} ${states}`)
-            })
-            .catch((e) => console.error(`[${ENGINE_SCRIPT_DRIFT_JOB}] check failed:`, e)),
+            }),
           ENGINE_SCRIPT_DRIFT_JOB,
+          `[${ENGINE_SCRIPT_DRIFT_JOB}] check failed:`,
         ),
       )
       // Watched, because the audit failed every hour for at least four months
@@ -952,9 +953,9 @@ const scheduledJobs = {
             .then((s) => {
               console.log(`[partner-reachability] mode=${s.mode} probed=${s.probed} reachable=${s.reachable} blocked=${s.blocked} unreachable=${s.unreachable} unmeasured=${s.unmeasured} alerts=${s.alerts.join(',') || '-'} all_clears=${s.allClears.join(',') || '-'}`)
               if (s.errors.length) console.error(`[partner-reachability] errors=${s.errors.join(' | ')}`)
-            })
-            .catch((e) => console.error('[partner-reachability] check failed:', e)),
+            }),
           'partner-reachability',
+          '[partner-reachability] check failed:',
         ),
       )
       // Database memory (#1928): reads Supabase's metrics feed and alerts once memory has
@@ -989,9 +990,9 @@ const scheduledJobs = {
             .then((s) => {
               console.log(`[database-memory] mode=${s.mode} state=${s.state} alerts=${s.alerts.join(',') || '-'} all_clears=${s.allClears.join(',') || '-'}`)
               if (s.errors.length) console.error(`[database-memory] errors=${s.errors.join(' | ')}`)
-            })
-            .catch((e) => console.error('[database-memory] check failed:', e)),
+            }),
           DATABASE_MEMORY_JOB,
+          '[database-memory] check failed:',
         ),
       )
       // The partners page delivery monitor (#2135, decision 2): signs in as the
@@ -1017,9 +1018,9 @@ const scheduledJobs = {
             .then((s) => {
               console.log(`[partner-page-monitor] mode=${s.mode} outcome=${s.outcome ?? '-'} alerts=${s.alerts.join(',') || '-'} all_clears=${s.allClears.join(',') || '-'}`)
               if (s.errors.length) console.error(`[partner-page-monitor] errors=${s.errors.join(' | ')}`)
-            })
-            .catch((e) => console.error('[partner-page-monitor] check failed:', e)),
+            }),
           PARTNER_PAGE_MONITOR_JOB,
+          '[partner-page-monitor] check failed:',
         ),
       )
       // The incident record drain (#2100): moves the incident outbox's events from
@@ -1050,9 +1051,9 @@ const scheduledJobs = {
               }
               if (s.errors.length) console.error(`[incident-drain] errors=${s.errors.join(' | ')}`)
               if (s.lapseNotices.length) console.error(`[incident-drain] lapse_check=${s.lapseNotices.join(' | ')}`)
-            })
-            .catch((e) => console.error('[incident-drain] drain failed:', e)),
+            }),
           INCIDENT_DRAIN_JOB,
+          '[incident-drain] drain failed:',
         ),
       )
       // The backlog alert on stored Salesforce writes (#468): pages an organization
@@ -1071,9 +1072,9 @@ const scheduledJobs = {
                 console.log(`[${WRITEBACK_BACKLOG_JOB}] pending=${s.pending}${s.partial ? '+' : ''} paged=${s.paged.join(',') || '-'} all_clear=${s.allClear.join(',') || '-'}`)
               }
               if (s.errors.length) console.error(`[${WRITEBACK_BACKLOG_JOB}] errors=${s.errors.join(' | ')}`)
-            })
-            .catch((e) => console.error(`[${WRITEBACK_BACKLOG_JOB}] check failed:`, e)),
+            }),
           WRITEBACK_BACKLOG_JOB,
+          `[${WRITEBACK_BACKLOG_JOB}] check failed:`,
         ),
       )
     } else if (event.cron === '*/15 * * * *') {
@@ -1126,9 +1127,9 @@ const scheduledJobs = {
               if (s.skipped) return
               const verdicts = s.buyers.map((b) => `${b.slug}:${b.completeness.verdict}/${b.consistency.verdict}/${b.independent.verdict}/unresolved=${b.unresolved.count}`).join(' ')
               console.log(`[${BUYER_SALES_CHECKS_JOB}] days=${s.days.join(',')} buyers=${s.buyers.length} paged_mismatches=${s.mismatch_lines.length} paged_unresolved=${s.unresolved_lines.length}${s.unmeasured ? ` unmeasured=${s.unmeasured}` : ''} ${verdicts}`)
-            })
-            .catch((e) => console.error(`[${BUYER_SALES_CHECKS_JOB}] checks failed:`, e)),
+            }),
           BUYER_SALES_CHECKS_JOB,
+          `[${BUYER_SALES_CHECKS_JOB}] checks failed:`,
         ),
       )
       // Tripoint's outcome rate on the Engine tripoint_ping path (#2392): the
@@ -1144,9 +1145,9 @@ const scheduledJobs = {
               if (s.skipped) return
               console.log(`[${TRIPOINT_PING_OUTCOME_RATE_JOB}] verdict=${s.verdict.verdict} sent=${s.window.counts?.sent ?? 'unread'} baseline_hours=${s.baseline?.hours ?? 'unread'} recorded_hours=${s.rolled_up_hours} paged=${s.lines.length}`)
               if (s.rollup_errors.length) console.error(`[${TRIPOINT_PING_OUTCOME_RATE_JOB}] hours not recorded: ${s.rollup_errors.join(' | ')}`)
-            })
-            .catch((e) => console.error(`[${TRIPOINT_PING_OUTCOME_RATE_JOB}] check failed:`, e)),
+            }),
           TRIPOINT_PING_OUTCOME_RATE_JOB,
+          `[${TRIPOINT_PING_OUTCOME_RATE_JOB}] check failed:`,
         ),
       )
       // The click buyer path checks (#1546): the share of buyer_click_check runs
@@ -1162,9 +1163,9 @@ const scheduledJobs = {
               if (s.skipped) return
               const verdicts = s.subjects.map((b) => `${b.slug ?? b.partner_id}:${b.check_errors.verdict}/${b.quiet.verdict}/${b.refusals.verdict}/${b.reconcile.verdict}`).join(' ')
               console.log(`[${CLICK_PATH_CHECKS_JOB}] subjects=${s.subjects.length} paged=${JSON.stringify(s.paged)}${s.unmeasured ? ` unmeasured=${s.unmeasured}` : ''} ${verdicts}`)
-            })
-            .catch((e) => console.error(`[${CLICK_PATH_CHECKS_JOB}] checks failed:`, e)),
+            }),
           CLICK_PATH_CHECKS_JOB,
+          `[${CLICK_PATH_CHECKS_JOB}] checks failed:`,
         ),
       )
     } else if (event.cron === '* * * * *') {
@@ -1278,6 +1279,8 @@ const scheduledJobs = {
               if (s.listed > 0 || s.alerts > 0 || s.alert_failures > 0) {
                 console.log(`[${WRITEBACK_DRAIN_JOB}] listed=${s.listed} replayed=${s.replayed} refused=${s.refused} abandoned=${s.abandoned} moved=${s.moved} retrying=${s.retrying} waiting=${s.waiting} skipped=${s.skipped} deferred=${s.deferred} unread=${s.unread} alerts=${s.alerts} alert_failures=${s.alert_failures}${s.held ? ` held=${s.held}` : ''}${s.stopped ? ` stopped=${s.stopped}` : ''}`)
               }
+              // Its own alerts that did not reach Slack are a failed run (#2527).
+              return drainRunFailure(s)
             }),
           WRITEBACK_DRAIN_JOB,
           `[${WRITEBACK_DRAIN_JOB}] drain failed:`,

@@ -1,21 +1,29 @@
 /**
- * Pages a bidding Worker minute job whose runs keep failing (#2523).
+ * Pages a bidding Worker scheduled job whose runs keep failing (#2523, #2526).
  *
  * WHY. completeAfter stamps a run "completed" once its work has settled, success
  * or failure alike (#985), because the heartbeat asks only whether a run
  * finished: a run the platform killed never stamps, and that is its `vanished`
- * verdict. So a minute job that is up but fails on every run reads healthy to
- * the heartbeat for ever, and its failures reach nothing but a log line (L13,
+ * verdict. So a job that is up but fails on every run reads healthy to the
+ * heartbeat for ever, and its failures reach nothing but a log line (L13,
  * L71). This counts each such job's failed runs in KV and pages past a bound,
  * without changing what completeAfter records: the completion stamp is written
  * first, for every run, exactly as before, and only then is the run counted.
+ * The names (this file, the signal `minute-job-failing`, its KV keys) predate
+ * the slower cadences and are kept, because the signal and the keys hold live
+ * state and incident records.
  *
- * WHICH JOBS. Every job completeAfter stamps whose CRON_JOBS entry runs every
- * minute on this Worker (countsFailedRuns): today buyer-sale-drain,
- * unconfirmed-write-sweep, salesforce-read-back, writeback-drain,
- * ops-tick-report, ops-connection-logins and ops-connection-write-backs. A
- * slower completeAfter job is not counted: a bound in runs means hours or days
- * there, and it is its own decision.
+ * WHICH JOBS. Every job completeAfter stamps whose CRON_JOBS entry runs on this
+ * Worker on a cron in FAILED_RUN_CADENCES (countsFailedRuns): every minute
+ * (buyer-sale-drain, unconfirmed-write-sweep, salesforce-read-back,
+ * writeback-drain, ops-tick-report, ops-connection-logins,
+ * ops-connection-write-backs; #2523), every five minutes (partner-reachability,
+ * database-memory, partner-page-monitor, incident-drain, writeback-backlog),
+ * every fifteen (buyer-sales-checks, tripoint-ping-outcome-rate,
+ * click-path-checks) and on the hour (buyer-select-parity, live-share-refusals,
+ * engine-script-drift; #2526). The daily, two hourly and :23 hourly jobs are not
+ * counted: a bound in runs means a day or more there, and each has its own
+ * outcome alerts (the export alerter, the archive standstill and health checks).
  *
  * WHICH RUNS FAIL. A run fails when its work REJECTS: an error escaped the job,
  * which completeAfter logs with the job's own failure line before counting it,
@@ -25,22 +33,48 @@
  * the two ops connection page jobs return when their summary lists faults: they
  * catch every fault per connection by design and never throw, and those faults
  * (a page that threw, the open incidents that could not be read or kept) were
- * otherwise only logged. A job whose summary faults already page on their own
- * (buyer-sale-drain's, through the export alerter) does not report them here,
- * so one fault is not paged twice. A run the platform kills is not counted: it
- * never reaches completeAfter, and the heartbeat's drought already pages it.
+ * otherwise only logged. The write back drain returns it for a run whose own
+ * alerts did not reach Slack (#2527, writeback-drain.ts drainRunFailure), which
+ * was otherwise only a count in its log line, with words of its own for the
+ * page (FailedRunCopy), since "stopped at an error" would not be true of it. A
+ * run the platform kills is not counted: it never reaches completeAfter, and
+ * the heartbeat already pages it.
  *
- * THE BOUND, three failed runs in a row (MINUTE_JOB_FAILING_BOUND). A single
- * run of these jobs can fail on one transient fault (a dropped connection, a
- * slow PostgREST answer cut at its deadline), and two in a row is still a blip
- * of a minute or so; three consecutive minutes means the failure has outlasted
- * a blip and is the job's ordinary state. It pages about three minutes after
- * the job starts failing, inside the 10 minute completion drought after which
- * the heartbeat would page the same job for not finishing at all, so a failing
- * job is never heard of later than a dead one. Measured before shipping: over
- * the 24 hours to 02:10 UTC on 2026-10-20 none of the seven jobs logged a
- * failure line in Workers Logs (a control query on the same filter found other
- * failure lines), so the bound sits outside anything they do today.
+ * NOTHING PAGES TWICE. Only a throw counts for the slower jobs, never the faults
+ * their summaries list, because those already have a page of their own or are
+ * bookkeeping the next run repairs: writeback-backlog's failed read pages
+ * through the export alerter, the incident drain pages its own repeated
+ * failures, the partner probe pages a broken probe or control, the memory check
+ * a broken feed, the drift check a mirror it could not read, and the sales and
+ * click path checks record what they could not measure in job_runs. A throw is
+ * the one outcome in which the job's own judgement, and so its own page, did not
+ * run at all, so counting it repeats nothing the job said. Likewise
+ * buyer-sale-drain's summary faults, which page through the export alerter. A
+ * page sent while the database owner's outage incident is open carries the
+ * outage line (outage-notice.ts, Dan's decision of 2026-10-14) rather than
+ * being held.
+ *
+ * THE BOUND (FAILED_RUN_CADENCES). Three failed runs in a row on the minute, five
+ * minute and fifteen minute crons; two on the hourly one. A single run can fail
+ * on one transient fault (a dropped connection, a slow PostgREST answer cut at
+ * its deadline), and two in a row a minute apart is still a blip; three
+ * consecutive runs means the failure has outlasted a blip and is the job's
+ * ordinary state. Each bound is also held (a test, against every counted job's
+ * staleMs) to page no later than the heartbeat would page the same job had it
+ * stopped running from that run on: bound times the cadence at most staleMs.
+ * So a failing job is never heard of later than a dead one. On the five minute
+ * cron three runs pages 10 minutes after the first failure, when a dark job's
+ * 15 minute stale page would also go; on the fifteen minute cron 30 minutes,
+ * against 45; on the hourly cron three runs would be two hours, past the two
+ * hour stale page, so it is two, an hour after the first failure. A minute
+ * job's three is far inside its 10 minute completion drought.
+ *
+ * Measured before shipping: over the 24 hours to 02:10 UTC on 2026-10-20 none of
+ * the seven minute jobs logged a failure line in Workers Logs, and over the
+ * three days to 23:00 UTC on 2026-10-19 none of the eleven slower jobs did, and
+ * no write back drain run logged alert_failures above zero (a control query on
+ * the same filter found other failure lines), so the bounds sit outside
+ * anything they do today.
  *
  * THE COUNT is one KV record per job (failedRunsKey), written on every failed
  * run with an expiry renewed each time, so it never lapses while the streak
@@ -62,7 +96,7 @@
  * the job has run without failing for RECOVERY_REARM_MINUTES (#814, L160), so
  * a job that fails by turns is one incident, not a page every few minutes.
  *
- * Who may run it: the bidding Worker's minute cron, through completeAfter.
+ * Who may run it: the bidding Worker's scheduled handler, through completeAfter.
  * Whose data: none; it names a job of this Worker and posts to every Slack
  * organization, never an error's text, which can carry lead data.
  */
@@ -78,8 +112,25 @@ import { sendMinuteJobFailingAlert, sendMinuteJobFailingRecoveryAlert } from './
 /** The incident record's signal (incident-signals.ts) and the prefix of every key below. */
 export const MINUTE_JOB_FAILING_SIGNAL = 'minute-job-failing'
 
-/** Failed runs in a row that page. The module header says why three. */
-export const MINUTE_JOB_FAILING_BOUND = 3
+/**
+ * The crons whose completeAfter jobs are counted, each with its cadence and the
+ * failed runs in a row that page there. The module header says why these
+ * bounds. A guard reads the keys from this source, so a cron added here is held
+ * to handing its failures to completeAfter at once.
+ */
+export const FAILED_RUN_CADENCES = {
+  '* * * * *': { everyMinutes: 1, bound: 3 },
+  '*/5 * * * *': { everyMinutes: 5, bound: 3 },
+  '*/15 * * * *': { everyMinutes: 15, bound: 3 },
+  '0 * * * *': { everyMinutes: 60, bound: 2 },
+} as const satisfies Record<string, { everyMinutes: number; bound: number }>
+
+type CountedCron = keyof typeof FAILED_RUN_CADENCES
+
+const isCountedCron = (cron: string): cron is CountedCron => Object.hasOwn(FAILED_RUN_CADENCES, cron)
+
+/** Failed runs in a row that page a minute job. The module header says why three. */
+export const MINUTE_JOB_FAILING_BOUND = FAILED_RUN_CADENCES['* * * * *'].bound
 
 /**
  * How long a count lives unrenewed: the marker's own lifetime, so a count is
@@ -97,26 +148,47 @@ const backoffKeyOf = (jobId: string) => `${MINUTE_JOB_FAILING_SIGNAL}:${jobId}`
 
 const FAILED_RUN = Symbol('failed run')
 
+/**
+ * The page's own words for a run that failed without stopping at an error, so
+ * it claims only what happened (L11). Each is part of a sentence: `fault`
+ * follows "Each run still finishes, so its heartbeat reads healthy, but",
+ * `effect` follows "the likely effect is that", and `lookFor` follows "search
+ * the logs for the line to see".
+ */
+export interface FailedRunCopy {
+  fault: string
+  effect: string
+  lookFor: string
+}
+
 /** What a job resolves to when its run failed without throwing (its summary listed faults). */
 export interface FailedRun {
   readonly [FAILED_RUN]: true
   /** The log line the job wrote for it, which the page tells the reader to search for. */
   readonly logLine: string
+  /** The page's words for it; absent, the page says each run stopped at an error. */
+  readonly copy?: FailedRunCopy
 }
 
-export const failedRun = (logLine: string): FailedRun => ({ [FAILED_RUN]: true, logLine })
+export const failedRun = (logLine: string, copy?: FailedRunCopy): FailedRun => ({ [FAILED_RUN]: true, logLine, ...(copy ? { copy } : {}) })
 
 export const isFailedRun = (v: unknown): v is FailedRun => typeof v === 'object' && v !== null && FAILED_RUN in v
 
 /** One run's outcome as completeAfter saw it. */
-export type MinuteJobRun = { failed: false } | { failed: true; logLine: string }
+export type MinuteJobRun = { failed: false } | { failed: true; logLine: string; copy?: FailedRunCopy }
 
-const minuteJobOf = (jobId: string): CronJob | undefined =>
-  CRON_JOBS.find((j) => j.id === jobId && j.triggerCron === '* * * * *' && j.worker === undefined)
+const countedJobOf = (jobId: string): (CronJob & { triggerCron: CountedCron }) | undefined =>
+  CRON_JOBS.find((j): j is CronJob & { triggerCron: CountedCron } => j.id === jobId && isCountedCron(j.triggerCron) && j.worker === undefined)
 
-/** Whether completeAfter counts this job's failed runs: a minute job of this Worker in the heartbeat registry. */
+/** Whether completeAfter counts this job's failed runs: a job of this Worker in the heartbeat registry on a counted cron. */
 export function countsFailedRuns(jobId: string): boolean {
-  return minuteJobOf(jobId) !== undefined
+  return countedJobOf(jobId) !== undefined
+}
+
+/** The failed runs in a row that page this job, or null for a job that is not counted. */
+export function failedRunBound(jobId: string): number | null {
+  const job = countedJobOf(jobId)
+  return job ? FAILED_RUN_CADENCES[job.triggerCron].bound : null
 }
 
 /** What the page says. */
@@ -129,6 +201,8 @@ export interface MinuteJobFailingAlert {
   logLine: string
   /** Why the page went before the bound, when the count could not be read or kept; null otherwise. */
   countFault: string | null
+  /** The job's own words for a run that failed without stopping at an error. */
+  copy?: FailedRunCopy
   /** The reminder sentence, on a repeat. */
   repeat?: string
 }
@@ -184,19 +258,19 @@ async function readRuns(kv: RecoveryKv, jobId: string): Promise<ReadRecord> {
 }
 
 /**
- * Count one run of a minute job, page past the bound and send the all clear.
- * Never throws: every fault is in the summary's errors.
+ * Count one run of a counted job, page past its cadence's bound and send the
+ * all clear. Never throws: every fault is in the summary's errors.
  */
 export async function recordMinuteJobRun(deps: MinuteJobFailingDeps, jobId: string, run: MinuteJobRun): Promise<MinuteJobRunSummary> {
   const errors: string[] = []
   const summary: MinuteJobRunSummary = { jobId, failedRuns: null, paged: false, allClear: false, errors }
   try {
-    const job = minuteJobOf(jobId)
+    const job = countedJobOf(jobId)
     if (!job) {
-      errors.push(`${jobId} is not a minute job of this Worker in the heartbeat registry, so its runs are not counted`)
+      errors.push(`${jobId} is not a job of this Worker on a counted cron in the heartbeat registry, so its runs are not counted`)
       return summary
     }
-    if (run.failed) await failed(deps, job, run.logLine, summary)
+    if (run.failed) await failed(deps, job, FAILED_RUN_CADENCES[job.triggerCron].bound, run, summary)
     else await clean(deps, job, summary)
   } catch (err) {
     errors.push(`the run could not be counted: ${formatErr(err)}`)
@@ -210,7 +284,8 @@ const incidentFor = (job: CronJob, errors: string[]): IncidentContext => ({
   onRecordError: (message) => errors.push(message),
 })
 
-async function failed(deps: MinuteJobFailingDeps, job: CronJob, logLine: string, summary: MinuteJobRunSummary): Promise<void> {
+async function failed(deps: MinuteJobFailingDeps, job: CronJob, bound: number, run: { logLine: string; copy?: FailedRunCopy }, summary: MinuteJobRunSummary): Promise<void> {
+  const { logLine, copy } = run
   const { kv } = deps
   const { errors } = summary
   const nowMs = deps.now()
@@ -233,7 +308,7 @@ async function failed(deps: MinuteJobFailingDeps, job: CronJob, logLine: string,
   // runs after it go on paging on the reminder schedule rather than restarting at one.
   if (read.kind !== 'failed') {
     try {
-      await kv.put(failedRunsKey(job.id), JSON.stringify({ count: count ?? MINUTE_JOB_FAILING_BOUND, since }), { expirationTtl: FAILED_RUNS_TTL_SECONDS })
+      await kv.put(failedRunsKey(job.id), JSON.stringify({ count: count ?? bound, since }), { expirationTtl: FAILED_RUNS_TTL_SECONDS })
     } catch (err) {
       countFault = countFault ?? `its count of failed runs could not be kept (${formatErr(err)})`
     }
@@ -245,13 +320,13 @@ async function failed(deps: MinuteJobFailingDeps, job: CronJob, logLine: string,
   } catch (err) {
     errors.push(`the last failed run could not be recorded: ${formatErr(err)}`)
   }
-  if (countFault === null && count !== null && count < MINUTE_JOB_FAILING_BOUND) {
+  if (countFault === null && count !== null && count < bound) {
     // Under the bound. A relapse inside an open incident's re-arm window keeps its marker alive.
     await keepOpen(deps, job, errors)
     return
   }
   if (countFault !== null) errors.push(`${countFault}, so it is paged at once`)
-  summary.paged = await page(deps, job, { label: job.label, dependents: job.dependents, failedRuns: count, bound: MINUTE_JOB_FAILING_BOUND, logLine, countFault }, nowMs, errors)
+  summary.paged = await page(deps, job, { label: job.label, dependents: job.dependents, failedRuns: count, bound, logLine, countFault, ...(copy ? { copy } : {}) }, nowMs, errors)
 }
 
 async function keepOpen(deps: MinuteJobFailingDeps, job: CronJob, errors: string[]): Promise<void> {
@@ -393,7 +468,7 @@ async function clean(deps: MinuteJobFailingDeps, job: CronJob, summary: MinuteJo
 /**
  * The scheduled handler's completeAfter (#985, #2523): stamps a watched job
  * "completed" once its work has SETTLED, whichever way, then counts the run if
- * the job is a counted minute job. The stamp comes first and is written for
+ * the job is counted (countsFailedRuns). The stamp comes first and is written for
  * every run exactly as before, so counting can neither delay nor skip it. A
  * rejection is logged here with `failedLine` (the job's own failure line) and
  * never rejects onward; completeAfter itself never rejects.
@@ -405,7 +480,7 @@ export function makeCompleteAfter(opts: {
   return (work, jobId, failedLine) =>
     work
       .then(
-        (v): MinuteJobRun => (isFailedRun(v) ? { failed: true, logLine: v.logLine } : { failed: false }),
+        (v): MinuteJobRun => (isFailedRun(v) ? { failed: true, logLine: v.logLine, ...(v.copy ? { copy: v.copy } : {}) } : { failed: false }),
         (e): MinuteJobRun => {
           const line = failedLine ?? `[${jobId}] failed past its own handler:`
           console.error(line, e)

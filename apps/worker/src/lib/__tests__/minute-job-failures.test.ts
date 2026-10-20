@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from 'vitest'
 import {
+  FAILED_RUN_CADENCES,
   MINUTE_JOB_FAILING_BOUND,
+  failedRunBound,
   MINUTE_JOB_FAILING_SIGNAL,
   countsFailedRuns,
   failedRun,
@@ -74,14 +76,85 @@ describe('the bound and the signal', () => {
     expect(incidentSignal(MINUTE_JOB_FAILING_SIGNAL)).toMatchObject({ scope: 'platform', subject: 'name', windowMinutes: null, label: 'Scheduled job failing' })
   })
 
-  it('counts every minute job of this Worker in the heartbeat registry, and no other', () => {
+  it('counts every job of this Worker on a counted cadence in the heartbeat registry, and no other', () => {
     for (const job of CRON_JOBS) {
-      expect(countsFailedRuns(job.id), job.id).toBe(job.triggerCron === '* * * * *' && job.worker === undefined)
+      expect(countsFailedRuns(job.id), job.id).toBe(job.triggerCron in FAILED_RUN_CADENCES && job.worker === undefined)
     }
     expect(countsFailedRuns('ops-connection-logins')).toBe(true)
     expect(countsFailedRuns('ops-tick')).toBe(false)
     expect(countsFailedRuns('daily-1300')).toBe(false)
+    expect(countsFailedRuns('execution-archive')).toBe(false)
     expect(countsFailedRuns('no-such-job')).toBe(false)
+  })
+
+  // #2526: the slower completeAfter jobs, and the bound each cadence pages at.
+  it.each([
+    ['partner-reachability', 3], ['database-memory', 3], ['partner-page-monitor', 3], ['incident-drain', 3], ['writeback-backlog', 3],
+    ['buyer-sales-checks', 3], ['tripoint-ping-outcome-rate', 3], ['click-path-checks', 3],
+    ['buyer-select-parity', 2], ['live-share-refusals', 2], ['engine-script-drift', 2],
+    ['ops-connection-logins', 3],
+  ])('counts %s, paging at %i failed runs in a row', (jobId, bound) => {
+    expect(countsFailedRuns(jobId)).toBe(true)
+    expect(failedRunBound(jobId)).toBe(bound)
+  })
+
+  it('has no bound for a job it does not count', () => {
+    expect(failedRunBound('daily-1300')).toBeNull()
+    expect(failedRunBound('ops-tick')).toBeNull()
+    expect(failedRunBound('no-such-job')).toBeNull()
+  })
+
+  it('never pages a counted job later than the heartbeat would page it had it stopped running, and never on one failed run', () => {
+    // A job failing from one run on pages one cadence fewer than its bound later; one that stops
+    // from that run on pages staleMs after its last stamp, one cadence before.
+    for (const job of CRON_JOBS.filter((j) => countsFailedRuns(j.id))) {
+      const cadence = FAILED_RUN_CADENCES[job.triggerCron as keyof typeof FAILED_RUN_CADENCES]
+      expect(cadence.bound, job.id).toBeGreaterThanOrEqual(2)
+      expect(cadence.bound * cadence.everyMinutes * MIN, job.id).toBeLessThanOrEqual(job.staleMs)
+    }
+    expect(FAILED_RUN_CADENCES['* * * * *'].bound).toBe(MINUTE_JOB_FAILING_BOUND)
+  })
+})
+
+describe('the slower cadences (#2526)', () => {
+  it('pages an hourly job on its second failed run, and not on its first', async () => {
+    const h = harness()
+    h.at(T0)
+    expect(await recordMinuteJobRun(h.d, 'engine-script-drift', FAILED)).toMatchObject({ failedRuns: 1, paged: false })
+    h.at(T0 + 60 * MIN)
+    const s = await recordMinuteJobRun(h.d, 'engine-script-drift', FAILED)
+    expect(s).toMatchObject({ failedRuns: 2, paged: true, errors: [] })
+    const alert = h.sendAlert.mock.calls[0][1] as unknown as { label: string; failedRuns: number; bound: number }
+    expect(alert).toMatchObject({ label: cronJob('engine-script-drift').label, failedRuns: 2, bound: 2 })
+  })
+
+  it('pages a five minute job on its third failed run, and not before', async () => {
+    const h = harness()
+    for (let m = 0; m < 2; m++) {
+      h.at(T0 + m * 5 * MIN)
+      expect((await recordMinuteJobRun(h.d, 'partner-reachability', FAILED)).paged).toBe(false)
+    }
+    h.at(T0 + 10 * MIN)
+    expect(await recordMinuteJobRun(h.d, 'partner-reachability', FAILED)).toMatchObject({ failedRuns: 3, paged: true })
+  })
+
+  it('sends an hourly job\'s all clear on its first clean run, an hour on', async () => {
+    const h = harness()
+    h.at(T0)
+    await recordMinuteJobRun(h.d, 'live-share-refusals', FAILED)
+    h.at(T0 + 60 * MIN)
+    await recordMinuteJobRun(h.d, 'live-share-refusals', FAILED)
+    expect(h.sendAlert).toHaveBeenCalled()
+    h.at(T0 + 120 * MIN)
+    expect(await recordMinuteJobRun(h.d, 'live-share-refusals', CLEAN)).toMatchObject({ allClear: true })
+    expect(h.sendRecovery.mock.calls[0][1]).toMatchObject({ label: cronJob('live-share-refusals').label })
+  })
+
+  it('keeps an unparseable count of an hourly job at its own bound, so the next run pages again', async () => {
+    const h = harness()
+    h.kv.store.set(failedRunsKey('buyer-select-parity'), 'not a count')
+    expect((await recordMinuteJobRun(h.d, 'buyer-select-parity', FAILED)).paged).toBe(true)
+    expect(JSON.parse(h.kv.store.get(failedRunsKey('buyer-select-parity'))!)).toMatchObject({ count: 2 })
   })
 })
 
@@ -331,6 +404,29 @@ describe('makeCompleteAfter', () => {
     expect(w.sendAlert).toHaveBeenCalledTimes(2)
   })
 
+  it('hands a failed run\'s own words to the page', async () => {
+    const w = wired()
+    const copy = { fault: 'in each one, its alerts did not reach Slack', effect: 'nobody is told', lookFor: 'why' }
+    for (let m = 0; m < 3; m++) {
+      w.at(T0 + m * MIN)
+      await w.completeAfter(Promise.resolve(failedRun('[writeback-drain] alerts not delivered:', copy)), 'writeback-drain')
+    }
+    expect((w.sendAlert.mock.calls[0][1] as unknown as { copy: unknown; logLine: string })).toMatchObject({ copy, logLine: '[writeback-drain] alerts not delivered:' })
+  })
+
+  it('counts a slower job\'s thrown runs at its own cadence\'s bound (#2526)', async () => {
+    const w = wired()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    w.at(T0)
+    await w.completeAfter(Promise.reject(new Error('every run fails')), 'buyer-select-parity', '[buyer-select-parity] refresh failed:')
+    expect(w.sendAlert).not.toHaveBeenCalled()
+    w.at(T0 + 60 * MIN)
+    await w.completeAfter(Promise.reject(new Error('every run fails')), 'buyer-select-parity', '[buyer-select-parity] refresh failed:')
+    expect(w.stamps).toEqual(['buyer-select-parity', 'buyer-select-parity'])
+    expect(w.sendAlert).toHaveBeenCalledTimes(2)
+    expect(console.error).toHaveBeenCalledWith('[buyer-select-parity] refresh failed:', expect.any(Error))
+  })
+
   it('does not count a run that resolved', async () => {
     const w = wired()
     for (let m = 0; m < 5; m++) {
@@ -372,6 +468,18 @@ describe('the page', () => {
     expect(text).toContain(`${RECOVERY_REARM_MINUTES} minutes`)
     expect(text).not.toMatch(DASH_PUNCTUATION)
     expect(m.title).not.toMatch(DASH_PUNCTUATION)
+  })
+
+  it('says what a run that failed without throwing got wrong, and what that costs, when the job says so (#2527)', () => {
+    const copy = { fault: 'in each one, its alerts did not reach Slack', effect: 'nobody is told about a refused write', lookFor: 'why each alert was not delivered' }
+    const m = minuteJobFailingMessage({ ...alert, logLine: '[writeback-drain] alerts not delivered:', copy })
+    const text = m.sections.join('\n')
+    expect(text).toContain('but in each one, its alerts did not reach Slack.')
+    expect(text).toContain('the likely effect is that nobody is told about a refused write.')
+    expect(text).toContain('`[writeback-drain] alerts not delivered` to see why each alert was not delivered, and fix that.')
+    expect(text).not.toContain('stopped at an error')
+    expect(text).not.toContain(alert.dependents)
+    expect(text).not.toMatch(DASH_PUNCTUATION)
   })
 
   it('says the count could not be kept, rather than a number it does not have', () => {
