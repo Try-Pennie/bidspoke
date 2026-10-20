@@ -12,10 +12,16 @@
  * a lib module (`export const ARCHIVE_EXPIRY_JOB = 'execution-archive-expiry'`),
  * so constants are resolved from the lib sources rather than guessed from the id.
  *
- * Seen to fail with the drain's writeHeartbeat line removed from index.ts.
+ * Seen to fail with the drain's writeHeartbeat line removed from index.ts, and
+ * (#2522) with the completion id of ops-connection-logins removed from, or
+ * swapped for another job's in, its completeAfter call. Each stamp's id is read
+ * from the call's own second argument by parsing the source, so a job's id in
+ * the start stamp inside completeAfter's first argument no longer counts as its
+ * completion.
  */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { WORKER_SRC, listTsFiles } from '../../__tests__/_scan-utils'
 import { STAMPED_IN, jobWorkers } from './_cron-registry'
@@ -44,21 +50,49 @@ function jobConstants(): Map<string, string[]> {
   return out
 }
 
-const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+/** The calls the stamps are made by, each of which names its job as its own SECOND argument. */
+const STAMP_CALLS = ['writeHeartbeat', 'completeAfter', 'writeHeartbeatCompleted'] as const
+type StampCall = (typeof STAMP_CALLS)[number]
+
+/**
+ * The job each stamp call names, read from the call's own second argument by
+ * parsing the source (#2522), never from the text around the call: completeAfter
+ * in the shared minute job style carries the job's START stamp, and so its id,
+ * inside its first argument, which a text match took for the completion. A
+ * literal is kept quoted and a constant by its name, the forms `names` uses.
+ */
+const parsed = new Map<string, Record<StampCall, Set<string>>>()
+function stampIds(source: string): Record<StampCall, Set<string>> {
+  const known = parsed.get(source)
+  if (known) return known
+  const out = { writeHeartbeat: new Set<string>(), completeAfter: new Set<string>(), writeHeartbeatCompleted: new Set<string>() }
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+      const callee = node.expression.text
+      const id = node.arguments[1]
+      if ((STAMP_CALLS as readonly string[]).includes(callee) && id) {
+        if (ts.isStringLiteralLike(id)) out[callee as StampCall].add(`'${id.text}'`)
+        else if (ts.isIdentifier(id)) out[callee as StampCall].add(id.text)
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+  visit(ts.createSourceFile('stamps.ts', source, ts.ScriptTarget.Latest, true))
+  parsed.set(source, out)
+  return out
+}
 
 /** The two calls the handler must make for a job id: the started stamp and the settled stamp. */
 export function stampsFor(source: string, jobId: string, constants: Map<string, string[]>): { started: boolean; completed: boolean } {
   const names = [`'${jobId}'`, ...(constants.get(jobId) ?? [])]
-  // An optional clock after the id: lib/ops-gateway.ts passes this Worker's own (#1949).
-  const started = names.some((n) => new RegExp(`writeHeartbeat\\([^)]*,\\s*${escape(n)}\\s*(,[^)]*)?\\)`).test(source))
-  // completeAfter wraps the job's whole promise, so its id can come after a long
-  // argument. writeHeartbeatCompleted names the id as its own second argument,
-  // and is read inside its call only: the ops jobs' stamps sit side by side in
-  // one switch (lib/ops-gateway.ts, #2340), so a window past the call would let
-  // one job's stamp stand in for another's that was removed.
-  const completed = names.some((n) =>
-    new RegExp(`completeAfter\\([\\s\\S]{0,4000}?${escape(n)}`).test(source) ||
-    new RegExp(`writeHeartbeatCompleted\\(\\s*[^,)]+,\\s*${escape(n)}\\s*[,)]`).test(source))
+  const ids = stampIds(source)
+  // writeHeartbeat may carry a clock after the id: lib/ops-gateway.ts passes
+  // this Worker's own (#1949). writeHeartbeatCompleted is read inside its own
+  // call only, as every stamp now is: the ops jobs' stamps sit side by side in
+  // one switch (lib/ops-gateway.ts, #2340), so one job's stamp must never stand
+  // in for another's that was removed.
+  const started = names.some((n) => ids.writeHeartbeat.has(n))
+  const completed = names.some((n) => ids.completeAfter.has(n) || ids.writeHeartbeatCompleted.has(n))
   return { started, completed }
 }
 
@@ -96,8 +130,35 @@ describe('every registered cron job is stamped by the scheduled handler', () => 
     expect(stampsFor("writeHeartbeat(env.IDEMPOTENCY, 'x-job')\ncompleteAfter(p, 'x-job')", 'x-job', new Map())).toEqual({ started: true, completed: true })
     expect(stampsFor("writeHeartbeat(env.IDEMPOTENCY, X_JOB)\nwriteHeartbeatCompleted(env.IDEMPOTENCY, X_JOB)", 'x-job', new Map([['x-job', ['X_JOB']]]))).toEqual({ started: true, completed: true })
     // Two jobs stamped side by side: removing one's completed stamp is seen, though the other's sits just above it (#2340).
-    const sideBySide = "case A_JOB:\n  await writeHeartbeatCompleted(kv, A_JOB, nowMs)\n  break\ncase B_JOB:\n  await Promise.resolve()\n  break"
+    const sideBySide = "switch (job) {\ncase A_JOB:\n  await writeHeartbeatCompleted(kv, A_JOB, nowMs)\n  break\ncase B_JOB:\n  await Promise.resolve()\n  break\n}"
     expect(stampsFor(sideBySide, 'b-job', new Map([['b-job', ['B_JOB']]])).completed).toBe(false)
     expect(stampsFor(sideBySide, 'a-job', new Map([['a-job', ['A_JOB']]])).completed).toBe(true)
+  })
+
+  // The shared minute job style (#2522): the start stamp sits inside completeAfter's
+  // FIRST argument, so a job's id appears in the call whether or not the completion
+  // names it. Only the second argument is the completion's id.
+  const minuteStyle = (completionId: string) =>
+    `minuteJob(X_JOB, completeAfter(\n  writeHeartbeat(env.IDEMPOTENCY, X_JOB)\n    .then(() => run(X_JOB))\n    .catch((e) => console.error(e)),\n  ${completionId},\n))`
+  const xJob = new Map([['x-job', ['X_JOB']], ['y-job', ['Y_JOB']]])
+
+  it('reads completeAfter\'s id from its own second argument, never from the start stamp inside its first (#2522)', () => {
+    expect(stampsFor(minuteStyle('X_JOB'), 'x-job', xJob)).toEqual({ started: true, completed: true })
+    // The completion swapped to another job: this one has no completion, the other one has.
+    expect(stampsFor(minuteStyle('Y_JOB'), 'x-job', xJob)).toEqual({ started: true, completed: false })
+    expect(stampsFor(minuteStyle('Y_JOB'), 'y-job', xJob).completed).toBe(true)
+    // The completion's id written as a literal of another job.
+    expect(stampsFor(minuteStyle("'other-job'"), 'x-job', xJob).completed).toBe(false)
+    // The completion removed: completeAfter called with the work alone.
+    const removed = 'completeAfter(writeHeartbeat(env.IDEMPOTENCY, X_JOB).then(() => run(X_JOB)))'
+    expect(stampsFor(removed, 'x-job', xJob)).toEqual({ started: true, completed: false })
+    // The id passed as a THIRD argument is not the completion's id either.
+    expect(stampsFor('completeAfter(writeHeartbeat(kv, X_JOB), Y_JOB, X_JOB)', 'x-job', xJob).completed).toBe(false)
+  })
+
+  it('reads writeHeartbeat\'s id from its own second argument too (#2522)', () => {
+    // Another job's start stamp whose third argument names this job is not this job's start.
+    expect(stampsFor('writeHeartbeat(kv, Y_JOB, X_JOB)', 'x-job', xJob).started).toBe(false)
+    expect(stampsFor('writeHeartbeat(kv, X_JOB, nowMs)', 'x-job', xJob).started).toBe(true)
   })
 })
