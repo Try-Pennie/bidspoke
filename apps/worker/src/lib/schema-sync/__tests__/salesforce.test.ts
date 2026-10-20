@@ -1,14 +1,14 @@
 /**
  * Salesforce schema lookups (PRD Section 3.1; #2335 PR 7 of phase 5).
  *
- * The full sync the canvas's Integration node uses (fetchSalesforceSchema) and
- * the two keyed lookups (objects, fields of an object) take an injected fetch and
- * an already minted auth, and a failed describe is a named SchemaLookupError,
- * never an object with an empty field list (L10).
+ * The two keyed lookups (objects, fields of an object) take an injected fetch
+ * and an already minted auth, and a failed describe is a named
+ * SchemaLookupError, never an object with an empty field list (L10). The full
+ * sync the canvas schema browser used went with it in #2338 (build PR 4).
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { fetchSalesforceSchema, listSalesforceObjects, describeSalesforceObject, type SalesforceSource } from '../salesforce'
-import { caught, fetchByUrl, fetchSequence, forbidGlobalFetch, headersOf, json, text, timeoutError, type Answer } from './_fetch'
+import { listSalesforceObjects, describeSalesforceObject, type SalesforceSource } from '../salesforce'
+import { caught, fetchSequence, forbidGlobalFetch, headersOf, json, text, timeoutError, type Answer } from './_fetch'
 
 const AUTH = { Authorization: 'Bearer tok-abc' }
 
@@ -35,45 +35,24 @@ const CONTACT = { fields: [{ name: 'Email', label: 'Email', type: 'email', nilla
 
 afterEach(() => vi.unstubAllGlobals())
 
-describe('fetchSalesforceSchema (the canvas sync), on success exactly as before', () => {
-  it('describes the core objects only, normalised', async () => {
+describe('every request carries the auth it was given, at API v59.0', () => {
+  it('the object list and a describe', async () => {
     forbidGlobalFetch()
-    const { fetch } = fetchByUrl([
-      ['/sobjects/Lead/describe/', json(200, LEAD)],
-      ['/sobjects/Contact/describe/', json(200, CONTACT)],
-      ['/sobjects/', json(200, SOBJECTS)],
-    ])
-    const schema = await fetchSalesforceSchema(source(fetch))
-    // Submission__c is not a core object and LeadShare is not queryable.
-    expect(schema.objects.map((o) => o.name)).toEqual(['Lead', 'Contact'])
-    const lead = schema.objects.find((o) => o.name === 'Lead')!
-    expect(lead.fields).toEqual([
-      { name: 'FirstName', label: 'First Name', type: 'string', nullable: true },
-      { name: 'LastName', label: 'Last Name', type: 'string', nullable: false },
-    ])
-  })
-
-  it('sends the auth it was given to every request, at API v59.0', async () => {
-    const { fetch, calls } = fetchByUrl([
-      ['/sobjects/Lead/describe/', json(200, LEAD)],
-      ['/sobjects/Contact/describe/', json(200, CONTACT)],
-      ['/sobjects/', json(200, SOBJECTS)],
-    ])
-    await fetchSalesforceSchema(source(fetch))
+    const list = fetchSequence(json(200, SOBJECTS))
+    await listSalesforceObjects(source(list.fetch))
+    const one = fetchSequence(json(200, CONTACT))
+    await describeSalesforceObject(source(one.fetch), 'Contact')
+    const calls = [...list.calls, ...one.calls]
     expect(calls.map((c) => c.url)).toEqual([
       'https://test.my.salesforce.com/services/data/v59.0/sobjects/',
-      'https://test.my.salesforce.com/services/data/v59.0/sobjects/Lead/describe/',
       'https://test.my.salesforce.com/services/data/v59.0/sobjects/Contact/describe/',
     ])
     for (const call of calls) expect(headersOf(call.init).authorization).toBe('Bearer tok-abc')
   })
 
-  it('throws by name when the object list is refused', async () => {
-    const { fetch } = fetchSequence(json(401, [{ errorCode: 'INVALID_SESSION_ID' }]))
-    const err = await caught(fetchSalesforceSchema(source(fetch)))
-    expect(err.code).toBe('schema_auth_refused')
-    expect(err.step).toBe('object_list')
-    expect(err.status).toBe(401)
+  it('a refused object list throws by name', async () => {
+    const err = await caught(listSalesforceObjects(source(fetchSequence(json(401, [{ errorCode: 'INVALID_SESSION_ID' }])).fetch)))
+    expect([err.code, err.step, err.status]).toEqual(['schema_auth_refused', 'object_list', 401])
   })
 })
 
@@ -93,13 +72,9 @@ describe('a failed describe is a named error, never an empty field list', () => 
   ]
 
   for (const [label, answer, code, status] of cases) {
-    it(`in the full sync: ${label}`, async () => {
-      const { fetch } = fetchByUrl([
-        ['/sobjects/Lead/describe/', answer],
-        ['/sobjects/Contact/describe/', json(200, CONTACT)],
-        ['/sobjects/', json(200, SOBJECTS)],
-      ])
-      const err = await caught(fetchSalesforceSchema(source(fetch)))
+    it(`in the fields lookup: ${label}`, async () => {
+      const { fetch } = fetchSequence(answer instanceof Response ? answer.clone() : answer)
+      const err = await caught(describeSalesforceObject(source(fetch), 'Lead'))
       expect(err.code).toBe(code)
       expect(err.service).toBe('salesforce')
       expect(err.step).toBe('object_describe')
@@ -107,13 +82,6 @@ describe('a failed describe is a named error, never an empty field list', () => 
       expect(err.status).toBe(status)
       expect(err.message).toContain(code)
       expect(err.message).toContain('Lead')
-    })
-
-    it(`in the fields lookup: ${label}`, async () => {
-      const { fetch } = fetchSequence(answer instanceof Response ? answer.clone() : answer)
-      const err = await caught(describeSalesforceObject(source(fetch), 'Lead'))
-      expect(err.code).toBe(code)
-      expect(err.step).toBe('object_describe')
     })
   }
 })

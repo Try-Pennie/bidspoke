@@ -33,6 +33,7 @@ const BINDING_NAMED_IN = new Set([ENV, CLIENT])
 /** Who may import the client, and why. Never anything the money path loads. */
 const CLIENT_IMPORTERS: Record<string, string> = {
   [path.join(WORKER_SRC, 'routes/api/ops-connections-probe.ts')]: 'the deploy probe: one call ops refuses by name, for a signed in caller',
+  [path.join(WORKER_SRC, 'routes/api/connections.ts')]: 'the Connections routes (#2338): the list asks health and the lookup route asks lookup, for a signed in caller\'s own organization',
 }
 
 /** The money path: every module here, and everything it loads, must never reach the binding. */

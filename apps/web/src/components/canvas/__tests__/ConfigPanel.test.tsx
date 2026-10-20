@@ -27,7 +27,7 @@ vi.mock('next/dynamic', () => ({
 
 vi.mock('@/lib/api', () => ({
   api: {
-    connections: { list: vi.fn().mockResolvedValue([]), syncSchema: vi.fn().mockResolvedValue({}) },
+    connections: { list: vi.fn().mockResolvedValue({ connections: [], statuses: { as_of: null, stale: false, unavailable: null } }) },
     partners: { list: vi.fn().mockResolvedValue([]) },
     servicePresets: { list: vi.fn().mockResolvedValue([]) },
     executions: {
@@ -673,6 +673,21 @@ describe.each(['buyer_click_check', 'buyer_select'])('ConfigPanel: %s collection
     vi.mocked(api.partners.list).mockResolvedValue([])
     renderPanel(nodeOf(type, { population: 'engine', mode: 'live', collections: COLLECTIONS }))
     expect((screen.getByRole('textbox', { name: 'Collections' }) as HTMLInputElement).value).toBe(COLLECTIONS)
+  })
+})
+
+// #2338 (build PR 4): the webhook node's legacy schema browser read only legacy
+// connection rows (a Cloudflare secret login), none of which exists, through the
+// retired sync-schema route. It is deleted rather than wired to ops
+// connections; the step form's Connection field (build PR 11) replaces it.
+describe('ConfigPanel: the webhook node has no legacy schema browser (#2338)', () => {
+  it.each(['salesforce', 'supabase', 'snowflake'])('a %s webhook shows no schema browser and reads no connections', async (service) => {
+    vi.mocked(api.connections.list).mockClear()
+    renderPanel(nodeOf('webhook', { service }))
+    await screen.findByText(/^URL$/)
+    expect(screen.queryByText(/^Schema$/)).toBeNull()
+    expect(screen.queryByText(/Sync schema|No connection configured/)).toBeNull()
+    expect(vi.mocked(api.connections.list)).not.toHaveBeenCalled()
   })
 })
 

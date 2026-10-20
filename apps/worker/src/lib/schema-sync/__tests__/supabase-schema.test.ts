@@ -1,12 +1,12 @@
 /**
  * Supabase schema lookups (PRD Section 3.1; #2335 PR 7 of phase 5).
  *
- * PostgREST's OpenAPI root lists every exposed table. The full sync and the two
- * keyed lookups (tables, columns of a table) take an injected fetch and an
- * already minted auth, and every failure is a named SchemaLookupError.
+ * PostgREST's OpenAPI root lists every exposed table. The two keyed lookups
+ * (tables, columns of a table) take an injected fetch and an already minted
+ * auth, and every failure is a named SchemaLookupError.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
-import { fetchSupabaseSchema, listSupabaseTables, describeSupabaseTable, type SupabaseSource } from '../supabase-schema'
+import { listSupabaseTables, describeSupabaseTable, type SupabaseSource } from '../supabase-schema'
 import { caught, fetchSequence, forbidGlobalFetch, headersOf, json, text, timeoutError, type Answer } from './_fetch'
 
 const AUTH = { apikey: 'eyJfake', Authorization: 'Bearer eyJfake' }
@@ -28,13 +28,11 @@ const SPEC = {
 
 afterEach(() => vi.unstubAllGlobals())
 
-describe('fetchSupabaseSchema (the canvas sync), on success exactly as before', () => {
-  it('normalises every definition, nullability from required', async () => {
+describe('reading the OpenAPI root', () => {
+  it('normalises a table\'s columns, nullability from required', async () => {
     forbidGlobalFetch()
-    const schema = await fetchSupabaseSchema(source(fetchSequence(json(200, SPEC)).fetch))
-    expect(schema.objects.map((o) => o.name)).toEqual(['leads', 'users'])
-    const leads = schema.objects.find((o) => o.name === 'leads')!
-    expect(leads.fields).toEqual([
+    const fields = await describeSupabaseTable(source(fetchSequence(json(200, SPEC)).fetch), 'leads')
+    expect(fields).toEqual([
       { name: 'id', label: 'id', type: 'uuid', nullable: false },
       { name: 'email', label: 'email', type: 'string', nullable: false },
       { name: 'ssn', label: 'ssn', type: 'string', nullable: true },
@@ -42,13 +40,12 @@ describe('fetchSupabaseSchema (the canvas sync), on success exactly as before', 
   })
 
   it('an exposed schema with no tables is an honest empty answer', async () => {
-    const schema = await fetchSupabaseSchema(source(fetchSequence(json(200, { definitions: {} })).fetch))
-    expect(schema.objects).toEqual([])
+    expect(await listSupabaseTables(source(fetchSequence(json(200, { definitions: {} })).fetch))).toEqual([])
   })
 
   it('reads the OpenAPI root with the auth it was given', async () => {
     const { fetch, calls } = fetchSequence(json(200, SPEC))
-    await fetchSupabaseSchema(source(fetch))
+    await listSupabaseTables(source(fetch))
     expect(calls[0].url).toBe('https://fake.supabase.co/rest/v1/')
     expect(headersOf(calls[0].init)).toMatchObject({ apikey: 'eyJfake', authorization: 'Bearer eyJfake' })
   })
@@ -68,7 +65,7 @@ describe('every failure is named, never an empty table list', () => {
   ]
   for (const [label, answer, code] of cases) {
     it(label, async () => {
-      const err = await caught(fetchSupabaseSchema(source(fetchSequence(answer).fetch)))
+      const err = await caught(listSupabaseTables(source(fetchSequence(answer).fetch)))
       expect(err.code).toBe(code)
       expect(err.service).toBe('supabase')
       expect(err.step).toBe('openapi')

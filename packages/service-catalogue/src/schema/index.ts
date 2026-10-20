@@ -9,6 +9,7 @@
  */
 export * from './types'
 export * from './connection'
+export * from './connection-status'
 export * from './lookup'
 export * from './google-delegation'
 export { CATALOGUE } from './catalogue'

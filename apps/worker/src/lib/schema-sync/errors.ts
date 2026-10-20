@@ -6,7 +6,7 @@
  * back as the object with `fields: []`, which the canvas showed as an object with
  * no fields and cached over the last good copy.
  *
- * The message is shown to a person (the sync-schema route answers it) and is
+ * The message is shown to a person (the lookup route answers it) and is
  * what Workers Logs and the tail trace record of an uncaught error, so it is
  * built from names alone: the service, the step, an object or table name that
  * is a plain identifier, an HTTP status, a refusal code. Never a provider's
@@ -16,8 +16,6 @@
 import type { SchemaService } from './types'
 
 export const SCHEMA_LOOKUP_CODES = [
-  /** The legacy route's stored login is not readable JSON, or lacks a field. */
-  'schema_credentials_malformed',
   /** The source names an address or database the lookup will not use. */
   'schema_source_invalid',
   /** A key, or a parent name, the service does not answer. Nothing was sent. */
@@ -43,7 +41,6 @@ export type SchemaLookupCode = (typeof SCHEMA_LOOKUP_CODES)[number]
 
 /** Which request failed. */
 export type SchemaStep =
-  | 'credentials'
   | 'key'
   | 'object_list'
   | 'object_describe'
@@ -76,7 +73,6 @@ export interface SchemaLookupFailure {
 
 function stepText(step: SchemaStep, subject: string | null): string {
   switch (step) {
-    case 'credentials': return 'read the stored connection login'
     case 'key': return subject ? `look up ${subject}` : 'look up'
     case 'object_list': return 'list its objects'
     case 'object_describe': return subject ? `describe ${subject}` : 'describe an object'
@@ -93,8 +89,6 @@ function messageOf(f: SchemaLookupFailure, subject: string | null): string {
   const upstream = f.upstreamCode ? ` (${f.upstreamCode})` : ''
   const detail = f.detail ? `: ${f.detail}` : ''
   switch (f.code) {
-    case 'schema_credentials_malformed':
-      return `the stored ${service} connection login could not be read${detail}`
     case 'schema_source_invalid':
       return `the ${service} connection names an address the lookup will not use${detail}`
     case 'schema_key_invalid':
@@ -113,7 +107,7 @@ function messageOf(f: SchemaLookupFailure, subject: string | null): string {
     case 'schema_response_malformed':
       return `${service} answered the request to ${what} with a body that is not the expected shape`
     case 'schema_query_still_running':
-      return `the ${service} schema query was still running when the wait ended; try Sync again in a moment`
+      return `the ${service} schema query was still running when the wait ended; try again in a moment`
   }
 }
 

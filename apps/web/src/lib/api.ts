@@ -614,29 +614,51 @@ export interface WorkflowTimeoutSuggestions {
   }>
 }
 
-export interface SchemaField {
-  name: string
-  label: string
-  type: string
-  nullable?: boolean
-}
-
-export interface SchemaObject {
-  name: string
-  label: string
-  fields: SchemaField[]
-}
-
-export interface ServiceConnection {
+/**
+ * One connection as GET /api/connections lists it (#2338, build PR 4). The
+ * status keys are CONNECTION_PAGE_STATUSES in @bidspoke/service-catalogue, and
+ * status_word is the word the server read from that one list, so the page shows
+ * it rather than spelling its own. Null status: ops gave none (the Slack alert
+ * login, or no status known while the checks do not answer).
+ */
+export interface ConnectionListRow {
   id: string
-  service_type: 'salesforce' | 'supabase' | 'snowflake'
-  auth_type: string
-  schema_cache: { objects: SchemaObject[] } | null
-  schema_synced_at: string | null
+  name: string
+  /** The service's catalogue key. */
+  service: string
+  acts_as: string | null
+  person_bound: boolean
+  owner: { user_id: string; name: string | null; email: string | null } | null
+  target: Record<string, unknown> | null
+  status: 'ok' | 'reauth' | 'failing' | null
+  status_word: string | null
+  health: {
+    ops_status: string
+    last_check_ok_at: string | null
+    last_check_failed_at: string | null
+    last_check_cause: string | null
+    needs_reauth_at: string | null
+    needs_reauth_cause: string | null
+  } | null
+  /** How many workflows use it, soft deleted ones included (R5). */
+  used_by: number
   created_at: string
   updated_at: string
-  updated_by_email: string | null
 }
+
+export interface ConnectionList {
+  connections: ConnectionListRow[]
+  /**
+   * stale: the login checks did not answer, so each status is the last known
+   * one, as of as_of (null when none is known); unavailable says why (D22).
+   */
+  statuses: { as_of: string | null; stale: boolean; unavailable: { cause: string; detail: string } | null }
+}
+
+/** What POST /api/connections/:id/lookup/:key found. */
+export type ConnectionLookupAnswer =
+  | { key: 'objects' | 'tables'; entries: { name: string; label: string }[] }
+  | { key: 'fields' | 'columns'; parent: string; fields: { name: string; label: string; type: string; nullable?: boolean }[] }
 
 /**
  * An edit route's answer when its change landed but a stored outage copy of the
@@ -722,15 +744,18 @@ function authRejection(status: 401 | 403): Error & { status: 401 | 403 } {
 }
 
 // Default ceiling for a normal request. Long-running operations (test runs,
-// schema syncs, the code-worker migration, replay/resume) pass a higher
-// timeoutMs — see the per-endpoint call sites below.
+// the connections list and lookups, the code-worker migration, replay/resume)
+// pass a higher timeoutMs: see the per-endpoint call sites below.
 const DEFAULT_TIMEOUT_MS = 30_000
 // Operations that hit real partners / redeploy workers / walk a full execution.
 const LONG_TIMEOUT_MS = 120_000
 const MIGRATION_TIMEOUT_MS = 180_000
-// A full schema pull for a large Salesforce org can exceed a minute; give it the
-// same headroom as a test run so it doesn't false-timeout mid-fetch (#492).
-const SCHEMA_SYNC_TIMEOUT_MS = 120_000
+// The Worker waits up to 15 s for the login checks before answering the last
+// known statuses, and a lookup up to 30 s for ops (OPS_CONNECTIONS_DEADLINES_MS
+// in apps/worker/src/lib/ops-connections-client.ts); each gets headroom past
+// that, so the Worker's own named answer arrives before the browser gives up.
+const CONNECTIONS_LIST_TIMEOUT_MS = 45_000
+const CONNECTION_LOOKUP_TIMEOUT_MS = 45_000
 
 type ReqInit = RequestInit & { timeoutMs?: number }
 
@@ -1338,15 +1363,14 @@ export const api = {
   },
 
   connections: {
-    list: () => req<ServiceConnection[]>('/api/connections'),
-    // No save: POST /api/connections refuses as connections_moving (410) since
-    // #2331 phase 1a, and no screen ever called it.
-    delete: (service_type: string) =>
-      req<{ ok: boolean }>(`/api/connections/${service_type}`, { method: 'DELETE' }),
-    syncSchema: (service_type: string) =>
-      req<{ ok: boolean; object_count: number }>(`/api/connections/${service_type}/sync-schema`, {
+    list: () => req<ConnectionList>('/api/connections', { timeoutMs: CONNECTIONS_LIST_TIMEOUT_MS }),
+    // No save yet: POST /api/connections refuses as connections_moving (410)
+    // until the create route (#2338, build PR 5).
+    lookup: (id: string, key: string, parents: string[] = []) =>
+      req<{ answer: ConnectionLookupAnswer }>(`/api/connections/${encodeURIComponent(id)}/lookup/${encodeURIComponent(key)}`, {
         method: 'POST',
-        timeoutMs: SCHEMA_SYNC_TIMEOUT_MS,
+        body: JSON.stringify({ parents }),
+        timeoutMs: CONNECTION_LOOKUP_TIMEOUT_MS,
       }),
   },
 

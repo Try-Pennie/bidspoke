@@ -1,16 +1,15 @@
 /**
  * Snowflake schema lookups (PRD Section 3.1; #2335 PR 7 of phase 5).
  *
- * The full sync groups INFORMATION_SCHEMA.COLUMNS into schema.table objects,
- * polls an async 202 to completion instead of caching empty (#89), and pages
- * every result partition (#151). The keyed lookups (tables, columns of a table)
- * share its statement runner. All of it takes an injected fetch and an already
- * minted auth, an injected sleep and clock for the poll (L524), and fails with a
- * named SchemaLookupError.
+ * The keyed lookups (tables, columns of a table) share one statement runner,
+ * which polls an async 202 to completion instead of answering empty (#89) and
+ * pages every result partition (#151); the runner is driven here through the
+ * columns lookup. All of it takes an injected fetch and an already minted auth,
+ * an injected sleep and clock for the poll (L524), and fails with a named
+ * SchemaLookupError.
  */
 import { describe, it, expect, afterEach, vi } from 'vitest'
 import {
-  fetchSnowflakeSchema,
   listSnowflakeTables,
   describeSnowflakeTable,
   buildSchemaFilter,
@@ -67,34 +66,17 @@ describe('buildSchemaFilter: SQL literal safety', () => {
   })
 })
 
-describe('fetchSnowflakeSchema (the canvas sync), on success exactly as before', () => {
-  it('groups columns into schema.table objects', async () => {
+const LEADS = 'PUBLIC.LEADS'
+
+describe('the statement runner', () => {
+  it('an empty table list is an honest empty answer', async () => {
     forbidGlobalFetch()
-    const { fetch } = fetchSequence(json(200, {
-      data: [
-        ['PUBLIC', 'LEADS', 'ID', 'VARCHAR', 'NO'],
-        ['PUBLIC', 'LEADS', 'EMAIL', 'VARCHAR', 'YES'],
-        ['PUBLIC', 'USERS', 'ID', 'NUMBER', 'NO'],
-        ['STAGING', 'RAW', 'PAYLOAD', 'VARIANT', 'YES'],
-      ],
-    }))
-    const schema = await fetchSnowflakeSchema(source(fetch))
-    expect(schema.objects.map((o) => o.name)).toEqual(['PUBLIC.LEADS', 'PUBLIC.USERS', 'STAGING.RAW'])
-    const leads = schema.objects[0]
-    expect(leads.fields).toEqual([
-      { name: 'ID', label: 'ID', type: 'varchar', nullable: false },
-      { name: 'EMAIL', label: 'EMAIL', type: 'varchar', nullable: true },
-    ])
+    expect(await listSnowflakeTables(source(fetchSequence(json(200, { data: [] })).fetch))).toEqual([])
   })
 
-  it('an empty result is an honest empty answer', async () => {
-    const schema = await fetchSnowflakeSchema(source(fetchSequence(json(200, { data: [] })).fetch))
-    expect(schema.objects).toEqual([])
-  })
-
-  it('sends the auth it was given and the same columns query as before', async () => {
-    const { fetch, calls } = fetchSequence(json(200, { data: [] }))
-    await fetchSnowflakeSchema(source(fetch, { schema: 'public' }))
+  it('sends the auth it was given to the statements endpoint, with a 30 s statement timeout', async () => {
+    const { fetch, calls } = fetchSequence(json(200, { data: [['PUBLIC', 'LEADS', 'ID', 'VARCHAR', 'NO']] }))
+    await describeSnowflakeTable(source(fetch), LEADS)
     expect(calls[0].url).toBe('https://xy12345.us-east-1.snowflakecomputing.com/api/v2/statements')
     expect(calls[0].init.method).toBe('POST')
     expect(headersOf(calls[0].init)).toMatchObject({
@@ -102,9 +84,7 @@ describe('fetchSnowflakeSchema (the canvas sync), on success exactly as before',
       'x-snowflake-authorization-token-type': 'BASIC',
       'content-type': 'application/json',
     })
-    const sql = sentSql(calls[0].init)
-    expect(sql).toContain('FROM TESTDB.INFORMATION_SCHEMA.COLUMNS')
-    expect(sql).toContain("AND TABLE_SCHEMA = 'PUBLIC'")
+    expect(sentSql(calls[0].init)).toContain('FROM TESTDB.INFORMATION_SCHEMA.COLUMNS')
     expect(JSON.parse(String(calls[0].init.body)).timeout).toBe(30)
   })
 
@@ -115,8 +95,8 @@ describe('fetchSnowflakeSchema (the canvas sync), on success exactly as before',
       json(202, { statementHandle: 'h-1', message: 'still running' }),
       json(200, { data: [['PUBLIC', 'LEADS', 'ID', 'VARCHAR', 'NO']] }),
     )
-    const schema = await fetchSnowflakeSchema(source(fetch, { poll: clock.poll }))
-    expect(schema.objects.map((o) => o.name)).toEqual(['PUBLIC.LEADS'])
+    const fields = await describeSnowflakeTable(source(fetch, { poll: clock.poll }), LEADS)
+    expect(fields.map((f) => f.name)).toEqual(['ID'])
     expect(calls[1].url).toContain('/api/v2/statements/h-1')
     expect(clock.slept).toEqual([1500, 1500])
   })
@@ -125,14 +105,14 @@ describe('fetchSnowflakeSchema (the canvas sync), on success exactly as before',
     const { fetch, calls } = fetchSequence(
       json(200, {
         statementHandle: 'h-9',
-        data: [['PUBLIC', 'A', 'ID', 'VARCHAR', 'NO']],
+        data: [['PUBLIC', 'LEADS', 'ID', 'VARCHAR', 'NO']],
         resultSetMetaData: { partitionInfo: [{ rowCount: 1 }, { rowCount: 1 }, { rowCount: 1 }] },
       }),
-      json(200, { data: [['PUBLIC', 'B', 'ID', 'VARCHAR', 'NO']] }),
-      json(200, { data: [['STAGING', 'C', 'ID', 'NUMBER', 'YES']] }),
+      json(200, { data: [['PUBLIC', 'LEADS', 'EMAIL', 'VARCHAR', 'YES']] }),
+      json(200, { data: [['PUBLIC', 'LEADS', 'SCORE', 'NUMBER', 'YES']] }),
     )
-    const schema = await fetchSnowflakeSchema(source(fetch))
-    expect(schema.objects.map((o) => o.name).sort()).toEqual(['PUBLIC.A', 'PUBLIC.B', 'STAGING.C'])
+    const fields = await describeSnowflakeTable(source(fetch), LEADS)
+    expect(fields.map((f) => f.name)).toEqual(['ID', 'EMAIL', 'SCORE'])
     expect(calls[1].url).toContain('/api/v2/statements/h-9?partition=1')
     expect(calls[2].url).toContain('/api/v2/statements/h-9?partition=2')
     expect(calls).toHaveLength(3)
@@ -140,10 +120,10 @@ describe('fetchSnowflakeSchema (the canvas sync), on success exactly as before',
 
   it('does not fetch extra partitions for a single partition result (#151)', async () => {
     const { fetch, calls } = fetchSequence(json(200, {
-      data: [['PUBLIC', 'A', 'ID', 'VARCHAR', 'NO']],
+      data: [['PUBLIC', 'LEADS', 'ID', 'VARCHAR', 'NO']],
       resultSetMetaData: { partitionInfo: [{ rowCount: 1 }] },
     }))
-    await fetchSnowflakeSchema(source(fetch))
+    await describeSnowflakeTable(source(fetch), LEADS)
     expect(calls).toHaveLength(1)
   })
 })
@@ -162,27 +142,27 @@ describe('every failure is named, never an empty table or column list', () => {
   ]
   for (const [label, answer, code, status] of statementCases) {
     it(`the statement: ${label}`, async () => {
-      const err = await caught(fetchSnowflakeSchema(source(fetchSequence(answer).fetch)))
+      const err = await caught(describeSnowflakeTable(source(fetchSequence(answer).fetch), LEADS))
       expect([err.code, err.service, err.step, err.status]).toEqual([code, 'snowflake', 'statement', status])
     })
   }
 
   it('a poll that answers 500', async () => {
     const { fetch } = fetchSequence(json(202, { statementHandle: 'h-3' }), text(500, 'internal error'))
-    const err = await caught(fetchSnowflakeSchema(source(fetch)))
+    const err = await caught(describeSnowflakeTable(source(fetch), LEADS))
     expect([err.code, err.step, err.status]).toEqual(['schema_service_error', 'statement_poll', 500])
   })
 
   it('a poll that times out', async () => {
     const { fetch } = fetchSequence(json(202, { statementHandle: 'h-3' }), timeoutError())
-    const err = await caught(fetchSnowflakeSchema(source(fetch)))
+    const err = await caught(describeSnowflakeTable(source(fetch), LEADS))
     expect([err.code, err.step]).toEqual(['schema_request_timeout', 'statement_poll'])
   })
 
   it('a query still running when the wait ends, on the injected clock', async () => {
     const clock = fakeClock()
     const { fetch } = fetchSequence(json(202, { statementHandle: 'h-2' }))
-    const err = await caught(fetchSnowflakeSchema(source(fetch, { poll: clock.poll })))
+    const err = await caught(describeSnowflakeTable(source(fetch, { poll: clock.poll }), LEADS))
     expect([err.code, err.step]).toEqual(['schema_query_still_running', 'statement_poll'])
     expect(err.message).toMatch(/still running/)
     // 20 s of waiting at 1.5 s a poll, slept on the fake clock, not for real.
@@ -198,7 +178,7 @@ describe('every failure is named, never an empty table or column list', () => {
       }),
       text(500, 'partition gone'),
     )
-    const err = await caught(fetchSnowflakeSchema(source(fetch)))
+    const err = await caught(describeSnowflakeTable(source(fetch), LEADS))
     expect([err.code, err.step, err.subject, err.status]).toEqual(['schema_service_error', 'statement_partition', '1', 500])
   })
 
@@ -207,7 +187,7 @@ describe('every failure is named, never an empty table or column list', () => {
       data: [['PUBLIC', 'A', 'ID', 'VARCHAR', 'NO']],
       resultSetMetaData: { partitionInfo: [{ rowCount: 1 }, { rowCount: 1 }] },
     }))
-    const err = await caught(fetchSnowflakeSchema(source(fetch)))
+    const err = await caught(describeSnowflakeTable(source(fetch), LEADS))
     expect([err.code, err.step]).toEqual(['schema_response_malformed', 'statement'])
   })
 })

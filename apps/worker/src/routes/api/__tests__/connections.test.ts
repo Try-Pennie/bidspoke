@@ -1,615 +1,495 @@
 /**
- * Connections routes — PRD Section 3.1
- * Covers: list returns connections without credentials, create refuses as
- * connections_moving with no Cloudflare call (#2331), delete removes the row with
- * no Cloudflare call (#2331), sync-schema calls the correct fetcher and updates
- * the cache, sync-schema returns 500 when credentials are not in env, and
- * (#2335 PR 7) a failed lookup answers its named code and writes nothing.
+ * The Connections routes (#2338, build PR 4: R1, R3, R5, R22, R23).
+ *
+ * GET /connections lists the caller's organization's connections with their
+ * status from OpsConnections.health, the last known statuses when health does
+ * not answer, and how many workflows use each. POST /connections/:id/lookup/:key
+ * runs one lookup through OpsConnections.lookup. POST /connections still refuses
+ * as connections_moving (#2331), and the legacy service type routes are gone.
+ *
+ * The database double here applies the filters a route sends (eq, in, is), so
+ * an organization scope left out of a query shows as another organization's
+ * row in the answer rather than passing unseen.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
+import type { HealthRow } from '../../../lib/ops-connections-contract'
+import { connectionStatusesCopyKey, forgetConnectionStatusesMemory, rememberConnectionStatuses } from '../../../lib/connection-statuses'
 
 vi.mock('../../../lib/jwt')
 vi.mock('../../../lib/supabase')
 vi.mock('../../../lib/audit')
-vi.mock('../../../lib/cf-secrets')
-vi.mock('../../../lib/schema-sync/salesforce')
-vi.mock('../../../lib/schema-sync/supabase-schema')
-vi.mock('../../../lib/schema-sync/snowflake')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
-import { setCfSecret, deleteCfSecret } from '../../../lib/cf-secrets'
-import { fetchSalesforceSchema } from '../../../lib/schema-sync/salesforce'
-import { fetchSupabaseSchema } from '../../../lib/schema-sync/supabase-schema'
-import { fetchSnowflakeSchema } from '../../../lib/schema-sync/snowflake'
-import { makeSupabase } from './_supabase-mock'
-import { SchemaLookupError } from '../../../lib/schema-sync/errors'
 import { CONNECTIONS_LIST_MAX } from '../connections'
 
-// ── Supabase mock ─────────────────────────────────────────────────────────────
+const ORG = '0a000000-0000-4000-8000-000000000001'
+const OTHER_ORG = '0b000000-0000-4000-8000-000000000002'
+const USER = 'aa000000-0000-4000-8000-000000000001'
+const OWNER = 'aa000000-0000-4000-8000-000000000002'
+const SF = 'c1000000-0000-4000-8000-000000000001'
+const GOOGLE = 'c2000000-0000-4000-8000-000000000002'
+const ALERTS = 'c3000000-0000-4000-8000-000000000003'
+const THEIRS = 'c9000000-0000-4000-8000-000000000009'
 
-// ── Fixtures ──────────────────────────────────────────────────────────────────
+type Row = Record<string, unknown>
 
-const USER_ORG = 'org-abc'
-const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
-const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
-
-const existingConn = {
-  id: 'conn-1',
+const connRow = (over: Row): Row => ({
+  organization_id: ORG,
+  name: 'x',
   service_type: 'salesforce',
-  auth_type: 'oauth',
-  cf_secret_key: 'CONN_EXISTING',
-  schema_cache: null,
-  schema_synced_at: null,
-  created_at: '2026-01-01T00:00:00Z',
-  updated_at: '2026-01-01T00:00:00Z',
-  updated_by_email: 'dan@pennie.com',
+  acts_as: null,
+  person_bound: false,
+  user_id: null,
+  target: null,
+  sealed_for: 'ops_key',
+  cf_secret_key: null,
+  credential_enc: '{"v":1,"kid":"k","wrapped_key":"w","iv":"i","ct":"SECRET-CIPHERTEXT"}',
+  config: { bot_token: 'xoxb-SECRET' },
+  created_at: '2026-10-17T14:02:00Z',
+  updated_at: '2026-10-18T18:14:00Z',
+  ...over,
+})
+
+const ROWS: Row[] = [
+  connRow({ id: SF, name: 'Pennie Salesforce', acts_as: 'integration@trypennie.com', target: { instance_url: 'https://trypennie.my.salesforce.com' } }),
+  connRow({ id: GOOGLE, name: "Dan's calendar", service_type: 'google', acts_as: 'dwright@trypennie.com', person_bound: true, user_id: OWNER }),
+  connRow({ id: ALERTS, name: 'slack', service_type: 'slack', sealed_for: 'bidding_ring' }),
+  connRow({ id: THEIRS, organization_id: OTHER_ORG, name: 'Their Salesforce' }),
+]
+
+const USERS: Row[] = [
+  { id: USER, organization_id: ORG, email: 'dan@pennie.com', display_name: 'Dan Wright', allowed: true },
+  { id: OWNER, organization_id: ORG, email: 'dwright@trypennie.com', display_name: 'Dan Wright' },
+]
+
+/** Workflows by the connection they reference, as connection_references answers them; deleted ones included. */
+type Refs = Record<string, Array<{ workflow_id: string; name: string; deleted: boolean }>>
+
+interface StoreOptions {
+  listError?: { code: string; message: string }
+  usersError?: { code: string; message: string }
+  refs?: Refs
+  refsError?: { code: string; message: string }
 }
 
-const upsertedConn = {
-  id: 'conn-1',
-  service_type: 'salesforce',
-  auth_type: 'oauth',
-  schema_cache: null,
-  schema_synced_at: null,
-  created_at: '2026-01-01T00:00:00Z',
-  updated_at: '2026-01-02T00:00:00Z',
-  updated_by_email: 'dan@pennie.com',
+/** A database double that applies eq, in and is filters and projects the selected columns. */
+function storeDouble(rows: Row[], opts: StoreOptions = {}) {
+  const tables: Record<string, Row[]> = { service_connections: rows, users: USERS }
+  const selects: Record<string, string[]> = {}
+  const rpcCalls: Array<[string, Record<string, unknown>]> = []
+  const from = (table: string) => {
+    const filters: Array<(r: Row) => boolean> = []
+    let columns: string[] | null = null
+    let limit = Infinity
+    const answer = () => {
+      if (table === 'service_connections' && opts.listError) return { data: null, error: opts.listError }
+      if (table === 'users' && opts.usersError) return { data: null, error: opts.usersError }
+      const found = (tables[table] ?? []).filter((r) => filters.every((f) => f(r))).slice(0, limit)
+      return { data: found.map((r) => (columns ? Object.fromEntries(columns.map((c) => [c, r[c]])) : r)), error: null }
+    }
+    const b = {
+      select(cols: string) {
+        columns = cols.split(',').map((c) => c.trim())
+        ;(selects[table] ??= []).push(cols)
+        return b
+      },
+      eq(col: string, v: unknown) { filters.push((r) => r[col] === v); return b },
+      in(col: string, vs: unknown[]) { filters.push((r) => vs.includes(r[col])); return b },
+      is(col: string, v: unknown) { filters.push((r) => r[col] === v); return b },
+      order() { return b },
+      limit(n: number) { limit = n; return b },
+      maybeSingle() {
+        const a = answer()
+        return Promise.resolve(a.error ? a : { data: (a.data as Row[])[0] ?? null, error: null })
+      },
+      then(resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) { return Promise.resolve(answer()).then(resolve, reject) },
+    }
+    return b
+  }
+  const rpc = (name: string, args: Record<string, unknown>) => {
+    if (name === 'auth_user_with_allowlist') return Promise.resolve({ data: [USERS[0]], error: null })
+    rpcCalls.push([name, args])
+    if (name === 'connection_references') {
+      if (opts.refsError) return Promise.resolve({ data: null, error: opts.refsError })
+      // As the function does: a connection not of the named organization raises connection_not_found.
+      const ok = rows.some((r) => r.id === args.p_connection_id && r.organization_id === args.p_organization_id)
+      if (!ok) return Promise.resolve({ data: null, error: { code: 'P0002', message: 'connection_not_found' } })
+      return Promise.resolve({ data: opts.refs?.[args.p_connection_id as string] ?? [], error: null })
+    }
+    return Promise.resolve({ data: null, error: { code: '42883', message: `no function ${name}` } })
+  }
+  return { from, rpc, selects, rpcCalls }
 }
 
-const baseEnv = {
-  SUPABASE_JWKS_URL: 'https://fake.jwks',
-  WORKFLOW_CACHE: {},
-  CLOUDFLARE_ACCOUNT_ID: 'acct-123',
-  CLOUDFLARE_API_TOKEN: 'tok-abc',
-} as unknown as Env
+const healthRow = (connection_id: string, status: string, over: Partial<HealthRow> = {}): HealthRow => ({
+  connection_id,
+  service: 'salesforce',
+  generation: 1,
+  status,
+  last_check_ok_at: '2026-10-20T15:48:00Z',
+  last_check_failed_at: null,
+  last_check_cause: null,
+  needs_reauth_at: null,
+  needs_reauth_cause: null,
+  reauth_cleared_at: null,
+  ...over,
+})
 
-// env with credentials pre-loaded (simulates CF secret available at runtime)
-const envWithCreds = {
-  ...baseEnv,
-  CONN_EXISTING: JSON.stringify({ access_token: 'sf-token', instance_url: 'https://sf.example.com' }),
-} as unknown as Env
+function memoryKv() {
+  const store = new Map<string, string>()
+  return {
+    store,
+    async get(key: string) { return store.get(key) ?? null },
+    async put(key: string, value: string) { store.set(key, value) },
+  }
+}
 
-const envWithSupabaseCreds = {
-  ...baseEnv,
-  CONN_EXISTING: JSON.stringify({ url: 'https://proj.supabase.co', service_role_key: 'sb-key' }),
-} as unknown as Env
-
-const envWithSnowflakeCreds = {
-  ...baseEnv,
-  CONN_EXISTING: JSON.stringify({ account: 'xy1.us-east-1', username: 'user', password: 'pass', database: 'DB' }),
-} as unknown as Env
+function makeEnv(ops: Partial<Record<'health' | 'lookup', (req: unknown) => Promise<unknown>>>, kv = memoryKv()) {
+  const binding = {
+    verify: vi.fn(), clearReauth: vi.fn(), revoke: vi.fn(), exchangeOAuthCode: vi.fn(),
+    health: vi.fn(ops.health ?? (async () => ({ ok: true, connections: [], reached_limit: false }))),
+    lookup: vi.fn(ops.lookup ?? (async () => ({ ok: false, refused: 'lookup_not_supported', detail: 'x', retry_at: null }))),
+  }
+  const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: kv, OPS_CONNECTIONS: binding } as unknown as Env
+  return { env, binding, kv }
+}
 
 async function makeApp() {
   const { default: api } = await import('../index')
   return api
 }
 
-const mockCtx = recordingContext()
+const ctx = recordingContext()
 
-function request(
-  app: { request: Function },
-  method: string,
-  path: string,
-  opts: { body?: unknown; env?: Env } = {}
-) {
+function request(app: Awaited<ReturnType<typeof makeApp>>, method: string, path: string, env: Env, body?: unknown) {
   return app.request(path, {
     method,
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  }, opts.env ?? baseEnv, mockCtx)
+    body: body === undefined ? undefined : JSON.stringify(body),
+  }, env, ctx)
 }
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+interface ListAnswer {
+  connections: Array<{
+    id: string; name: string; service: string; acts_as: string | null; person_bound: boolean
+    owner: { user_id: string; name: string | null; email: string | null } | null
+    status: string | null; status_word: string | null; used_by: number
+    health: Record<string, unknown> | null
+  }>
+  statuses: { as_of: string | null; stale: boolean; unavailable: { cause: string; detail: string } | null }
+}
+
+let app: Awaited<ReturnType<typeof makeApp>>
+
+beforeEach(async () => {
+  vi.clearAllMocks()
+  forgetConnectionStatusesMemory()
+  vi.mocked(verifyJwt).mockResolvedValue({ sub: USER, email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' })
+  vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+  app = await makeApp()
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
 
 describe('GET /connections', () => {
-  let app: Awaited<ReturnType<typeof makeApp>>
-
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
-    app = await makeApp()
-  })
-
-  it('returns list of connections without credentials', async () => {
-    // Simulate what Supabase returns after the select() — cf_secret_key is not in the column list
-    const { cf_secret_key: _omit, ...connWithoutCreds } = existingConn
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { list: [connWithoutCreds] } }) as never
-    )
-    const res = await request(app, 'GET', '/connections')
+  it("lists only the caller's organization's connections, and never another's", async () => {
+    const db = storeDouble(ROWS)
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env, binding } = makeEnv({})
+    const res = await request(app, 'GET', '/connections', env)
     expect(res.status).toBe(200)
-    const body = await res.json() as typeof connWithoutCreds[]
-    expect(body).toHaveLength(1)
-    expect(body[0].service_type).toBe('salesforce')
-    expect(Object.keys(body[0])).not.toContain('cf_secret_key')
+    const body = (await res.json()) as ListAnswer
+    expect(body.connections.map((c) => c.id).sort()).toEqual([ALERTS, GOOGLE, SF].sort())
+    // Health and the reference counts are asked for the caller's organization alone.
+    expect(binding.health).toHaveBeenCalledWith({ organization_id: ORG })
+    expect(db.rpcCalls.every(([, a]) => a.p_organization_id === ORG)).toBe(true)
+    expect(db.rpcCalls.map(([, a]) => a.p_connection_id)).not.toContain(THEIRS)
   })
 
-  it('asks for one row past its bound, and answers a full answer as a failure rather than a cut list (#1437)', async () => {
-    // A cut list would show the page as if some connections did not exist.
-    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {})
-    const { cf_secret_key: _omit, ...row } = existingConn
-    const full = Array.from({ length: CONNECTIONS_LIST_MAX + 1 }, (_, i) => ({ ...row, id: `conn-${i}` }))
-    const supabase = makeSupabase({ users: { single: testUser }, service_connections: { list: full } })
-    vi.mocked(createSupabaseClient).mockReturnValue(supabase as never)
-    const res = await request(app, 'GET', '/connections')
-    expect(res.status).toBe(500)
-    expect(supabase.calls.service_connections).toContainEqual(['limit', [CONNECTIONS_LIST_MAX + 1]])
-    expect(errorLog.mock.calls.flat().join(' ')).toContain('more than 100')
-
-    // At the bound itself the list is whole.
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { list: full.slice(0, CONNECTIONS_LIST_MAX) } }) as never
-    )
-    const whole = await request(app, 'GET', '/connections')
-    expect(whole.status).toBe(200)
-    expect(await whole.json()).toHaveLength(CONNECTIONS_LIST_MAX)
-  })
-})
-
-// #2331 phase 1a: no salesforce, supabase or snowflake connection exists, and
-// each CONN_ secret this route put created and deployed a new version of the
-// bidding Worker. So it refuses by name, before reading the body or the table.
-describe('POST /connections refuses: connections are moving (#2331)', () => {
-  let app: Awaited<ReturnType<typeof makeApp>>
-
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
-    vi.mocked(setCfSecret).mockResolvedValue(undefined)
-    app = await makeApp()
+  it('names each connection, its service, who it acts as and its person bound owner, and carries no credential', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+    const { env } = makeEnv({})
+    const res = await request(app, 'GET', '/connections', env)
+    const raw = await res.text()
+    expect(raw).not.toContain('SECRET')
+    const body = JSON.parse(raw) as ListAnswer
+    const sf = body.connections.find((c) => c.id === SF)!
+    expect(sf).toMatchObject({ name: 'Pennie Salesforce', service: 'salesforce', acts_as: 'integration@trypennie.com', person_bound: false, owner: null })
+    const google = body.connections.find((c) => c.id === GOOGLE)!
+    expect(google).toMatchObject({ person_bound: true, owner: { user_id: OWNER, name: 'Dan Wright', email: 'dwright@trypennie.com' } })
   })
 
-  it('answers 410 connections_moving, puts no Cloudflare secret and writes no row', async () => {
-    const sb = makeSupabase({ users: { single: testUser }, service_connections: { single: null, upsertResult: upsertedConn } })
-    const from = vi.spyOn(sb, 'from')
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
-    const res = await request(app, 'POST', '/connections', {
-      body: { service_type: 'salesforce', credentials: { access_token: 'tok', instance_url: 'https://sf.test' } },
+  it("gives each connection its ops status in the page's word, with the time it is as of", async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+    const { env } = makeEnv({
+      health: async () => ({
+        ok: true,
+        reached_limit: false,
+        connections: [
+          healthRow(SF, 'needs_reauth', { needs_reauth_at: '2026-10-20T13:52:00Z', needs_reauth_cause: 'invalid_client' }),
+          healthRow(GOOGLE, 'refresh_failing'),
+          // Another organization's connection in ops's answer is never matched to ours.
+          healthRow(THEIRS, 'healthy'),
+        ],
+      }),
     })
-    expect(res.status).toBe(410)
-    const body = await res.json() as { error: string; message: string }
-    expect(body.error).toBe('connections_moving')
-    expect(body.message).toEqual(expect.any(String))
-    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
-    expect(from.mock.calls.filter(([t]) => t === 'service_connections')).toEqual([])
-    expect(sb.calls.service_connections ?? []).toEqual([])
-    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    const before = Date.now()
+    const body = (await (await request(app, 'GET', '/connections', env)).json()) as ListAnswer
+    const by = (id: string) => body.connections.find((c) => c.id === id)!
+    expect(by(SF)).toMatchObject({ status: 'reauth', status_word: 'Needs reconnecting' })
+    expect(by(SF).health).toMatchObject({ ops_status: 'needs_reauth', needs_reauth_at: '2026-10-20T13:52:00Z', needs_reauth_cause: 'invalid_client' })
+    expect(by(GOOGLE)).toMatchObject({ status: 'failing', status_word: 'Check failing' })
+    // The Slack alert login is not an ops connection, so ops gives it no status, and none is made up.
+    expect(by(ALERTS)).toMatchObject({ status: null, status_word: null, health: null })
+    expect(body.statuses.stale).toBe(false)
+    expect(body.statuses.unavailable).toBeNull()
+    expect(Date.parse(body.statuses.as_of!)).toBeGreaterThanOrEqual(before - 1000)
   })
 
-  it('refuses the same way when the organization already has a connection of that type', async () => {
-    const sb = makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn, upsertResult: upsertedConn } })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
-    const res = await request(app, 'POST', '/connections', {
-      body: { service_type: 'salesforce', credentials: { access_token: 'new-tok', instance_url: 'https://sf.test' } },
+  it('counts every workflow using a connection, a soft deleted one included', async () => {
+    const db = storeDouble(ROWS, {
+      refs: { [SF]: [{ workflow_id: 'w1', name: 'Lead Completed sync', deleted: false }, { workflow_id: 'w2', name: 'Old import', deleted: true }] },
     })
-    expect(res.status).toBe(410)
-    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
-    expect(sb.calls.service_connections ?? []).toEqual([])
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env } = makeEnv({})
+    const body = (await (await request(app, 'GET', '/connections', env)).json()) as ListAnswer
+    expect(body.connections.find((c) => c.id === SF)!.used_by).toBe(2)
+    expect(body.connections.find((c) => c.id === GOOGLE)!.used_by).toBe(0)
+    // Counted by the one predicate the Remove refusal reads, never by name.
+    expect(db.rpcCalls.filter(([n]) => n === 'connection_references')).toHaveLength(3)
   })
 
-  it('refuses before reading the body, so a malformed or Slack body is refused the same way', async () => {
-    const sb = makeSupabase({ users: { single: testUser } })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
-    for (const body of [{ service_type: 'slack', credentials: { bot_token: 'x' } }, { service_type: 'salesforce' }]) {
-      const res = await request(app, 'POST', '/connections', { body })
-      expect(res.status).toBe(410)
-      expect((await res.json() as { error: string }).error).toBe('connections_moving')
+  describe('when the login checks do not answer (R22, D22)', () => {
+    async function seedCopy(kv: ReturnType<typeof memoryKv>, at: number) {
+      await rememberConnectionStatuses(kv as unknown as KVNamespace, ORG, [healthRow(SF, 'check_failing'), healthRow(GOOGLE, 'healthy')], at)
+      forgetConnectionStatusesMemory()
     }
-    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
-    expect(sb.calls.service_connections ?? []).toEqual([])
+
+    it('answers the last known statuses, flagged stale, with the time they are as of, when health does not answer in time', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+      const kv = memoryKv()
+      const at = Date.parse('2026-10-20T15:52:00Z')
+      await seedCopy(kv, at)
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const { env } = makeEnv({ health: () => new Promise(() => {}) }, kv)
+      const pending = request(app, 'GET', '/connections', env)
+      await vi.advanceTimersByTimeAsync(15_000)
+      const res = await pending
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as ListAnswer
+      expect(body.statuses).toMatchObject({ stale: true, as_of: new Date(at).toISOString(), unavailable: { cause: 'deadline' } })
+      expect(body.connections.find((c) => c.id === SF)).toMatchObject({ status: 'failing', status_word: 'Check failing' })
+      expect(body.connections.find((c) => c.id === GOOGLE)).toMatchObject({ status: 'ok' })
+      // The list is whole: no connection is dropped for want of a status.
+      expect(body.connections).toHaveLength(3)
+    })
+
+    it('does the same when health answers a refusal, and names the refusal', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+      const kv = memoryKv()
+      await seedCopy(kv, Date.parse('2026-10-20T15:52:00Z'))
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const { env } = makeEnv({ health: async () => ({ ok: false, refused: 'health_unavailable', detail: 'the statuses could not be read', retry_at: null }) }, kv)
+      const body = (await (await request(app, 'GET', '/connections', env)).json()) as ListAnswer
+      expect(body.statuses).toMatchObject({ stale: true, unavailable: { cause: 'health_unavailable' } })
+      expect(body.connections.find((c) => c.id === SF)!.status).toBe('failing')
+    })
+
+    it('with no last known copy, lists every connection with no status and no time, rather than an empty list or a made up status', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+      const { env } = makeEnv({ health: async () => { throw new Error('internal error; reference = abc123') } })
+      const body = (await (await request(app, 'GET', '/connections', env)).json()) as ListAnswer
+      expect(body.connections).toHaveLength(3)
+      expect(body.connections.every((c) => c.status === null && c.status_word === null)).toBe(true)
+      expect(body.statuses).toMatchObject({ stale: true, as_of: null, unavailable: { cause: 'threw' } })
+    })
+
+    it('a healthy answer keeps the copy the next failed answer reads', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+      const kv = memoryKv()
+      const healthy = makeEnv({ health: async () => ({ ok: true, reached_limit: false, connections: [healthRow(SF, 'needs_reauth'), healthRow(THEIRS, 'healthy')] }) }, kv)
+      await request(app, 'GET', '/connections', healthy.env)
+      // Only this organization's own connections are kept.
+      expect(kv.store.get(connectionStatusesCopyKey(ORG))).not.toContain(THEIRS)
+      const down = makeEnv({ health: async () => ({ ok: false, refused: 'health_unavailable', detail: 'x', retry_at: null }) }, kv)
+      const body = (await (await request(app, 'GET', '/connections', down.env)).json()) as ListAnswer
+      expect(body.statuses.stale).toBe(true)
+      expect(body.connections.find((c) => c.id === SF)!.status).toBe('reauth')
+    })
+  })
+
+  describe('when the list itself cannot be read (R23, D23)', () => {
+    it('answers an error by name, never an empty list, and asks ops nothing', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS, { listError: { code: '57014', message: 'canceling statement due to statement timeout' } }) as never)
+      const { env, binding } = makeEnv({})
+      const res = await request(app, 'GET', '/connections', env)
+      expect(res.status).toBe(503)
+      expect(await res.json()).toMatchObject({ error: 'connections_unavailable' })
+      expect(binding.health).not.toHaveBeenCalled()
+    })
+
+    it('answers the same error when the use counts cannot be read, rather than a list whose Used by is wrong', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS, { refsError: { code: '57014', message: 'timeout' } }) as never)
+      const { env } = makeEnv({})
+      const res = await request(app, 'GET', '/connections', env)
+      expect(res.status).toBe(503)
+      expect(await res.json()).toMatchObject({ error: 'connections_unavailable' })
+    })
+
+    it('answers the same error when the owners cannot be read', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS, { usersError: { code: '57014', message: 'timeout' } }) as never)
+      const { env } = makeEnv({})
+      expect((await request(app, 'GET', '/connections', env)).status).toBe(503)
+    })
+
+    it('drops a connection removed between the list read and its count, rather than failing the list', async () => {
+      // connection_references raises connection_not_found for a row gone since the read.
+      const db = storeDouble(ROWS)
+      const gone = { ...db, rpc: (name: string, args: Record<string, unknown>) =>
+        name === 'connection_references' && args.p_connection_id === GOOGLE
+          ? Promise.resolve({ data: null, error: { code: 'P0002', message: 'connection_not_found' } })
+          : db.rpc(name, args) }
+      vi.mocked(createSupabaseClient).mockReturnValue(gone as never)
+      const { env } = makeEnv({})
+      const res = await request(app, 'GET', '/connections', env)
+      expect(res.status).toBe(200)
+      expect(((await res.json()) as ListAnswer).connections.map((c) => c.id)).not.toContain(GOOGLE)
+    })
+
+    it('asks for one row past its bound, and refuses a full answer rather than cutting it (#1437)', async () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const many = Array.from({ length: CONNECTIONS_LIST_MAX + 1 }, (_, i) => connRow({ id: `d${String(i).padStart(7, '0')}-0000-4000-8000-000000000000`, name: `c${i}` }))
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(many) as never)
+      const { env } = makeEnv({})
+      const res = await request(app, 'GET', '/connections', env)
+      expect(res.status).toBe(500)
+      expect(await res.json()).toMatchObject({ error: 'connections_list_too_long' })
+    })
   })
 })
 
-describe('DELETE /connections/:service_type', () => {
-  let app: Awaited<ReturnType<typeof makeApp>>
-
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
-    vi.mocked(deleteCfSecret).mockResolvedValue(undefined)
-    app = await makeApp()
+describe('POST /connections/:id/lookup/:key', () => {
+  it('runs the lookup through ops for a connection of the caller\'s organization, and answers what it found', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+    const answer = { key: 'objects', entries: [{ name: 'Lead', label: 'Lead' }] }
+    const { env, binding } = makeEnv({ lookup: async () => ({ ok: true, answer }) })
+    const res = await request(app, 'POST', `/connections/${SF}/lookup/objects`, env, { parents: [] })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ answer })
+    expect(binding.lookup).toHaveBeenCalledWith({ organization_id: ORG, connection_id: SF, key: 'objects', parents: [] })
   })
 
-  it('returns 404 when connection does not exist', async () => {
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { single: null } }) as never
-    )
-    const res = await request(app, 'DELETE', '/connections/salesforce')
+  it("refuses another organization's connection by id, and never asks ops", async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+    const { env, binding } = makeEnv({ lookup: async () => ({ ok: true, answer: {} }) })
+    const res = await request(app, 'POST', `/connections/${THEIRS}/lookup/objects`, env, {})
     expect(res.status).toBe(404)
+    expect(await res.json()).toMatchObject({ error: 'connection_not_found' })
+    expect(binding.lookup).not.toHaveBeenCalled()
   })
 
-  // #2331 phase 1a: a secret delete is a secret change on the bidding Worker,
-  // like a put, so the row goes and any CONN_ secret is left for the Phase 9
-  // sign off path that removes orphans.
-  it('returns 200, deletes the row, and makes no Cloudflare secret call', async () => {
-    const rpc = vi.fn(async () => ({ data: [{ id: 'conn-1' }], error: null }))
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn } }, { rpc }) as never
-    )
-    const res = await request(app, 'DELETE', '/connections/salesforce')
-    expect(res.status).toBe(200)
-    expect(rpc).toHaveBeenCalledWith('delete_service_connection_by_id', expect.objectContaining({ p_connection_id: 'conn-1' }))
-    expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
-    expect(vi.mocked(setCfSecret)).not.toHaveBeenCalled()
-  })
-
-  // #2331, F119: the table's trigger audits every change once, naming the user
-  // through the delete function's actor, so the route writes none. #2332: it
-  // deletes the row it read by id, never every row of the type, so once release
-  // 2 allows a second row of a service that one survives.
-  it('deletes the row it read by id with the caller as actor, never by service type, and writes no route audit row', async () => {
-    const rpc = vi.fn(async () => ({ data: [{ id: 'conn-1' }], error: null }))
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn } }, { rpc }) as never
-    )
-    const res = await request(app, 'DELETE', '/connections/salesforce')
-    expect(res.status).toBe(200)
-    expect(rpc).toHaveBeenCalledWith('delete_service_connection_by_id', { p_organization_id: testUser.organization_id, p_connection_id: 'conn-1', p_actor: testUser.id })
-    expect(rpc).not.toHaveBeenCalledWith('delete_service_connection', expect.anything())
-    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
-  })
-
-  it('refuses a service type it does not manage, so the Slack connection is removed only by its own route (#2060)', async () => {
-    // DELETE /api/integrations/slack also removes the org from the saved Slack
-    // copy alerts post from in an outage; a Slack delete through here would not.
-    const sb = makeSupabase({ users: { single: testUser }, service_connections: [{ single: { id: 'sc-slack', cf_secret_key: '' } }, { writeRows: [{ id: 'sc-slack' }] }] })
-    const from = vi.spyOn(sb, 'from')
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
-    const res = await request(app, 'DELETE', '/connections/slack')
-    expect(res.status).toBe(400)
-    expect(from.mock.calls.filter(([t]) => t === 'service_connections')).toEqual([])
-    expect(vi.mocked(deleteCfSecret)).not.toHaveBeenCalled()
-  })
-})
-
-describe('POST /connections/:service_type/sync-schema', () => {
-  let app: Awaited<ReturnType<typeof makeApp>>
-
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
-    app = await makeApp()
-  })
-
-  afterEach(() => vi.unstubAllGlobals())
-
-  it('returns 404 when no connection exists', async () => {
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { single: null } }) as never
-    )
-    const res = await request(app, 'POST', '/connections/salesforce/sync-schema')
-    expect(res.status).toBe(404)
-  })
-
-  it('refuses a service type it does not manage before touching the table, so it never writes a Slack row (#2060)', async () => {
-    const sb = makeSupabase({ users: { single: testUser }, service_connections: { single: { id: 'sc-slack', cf_secret_key: '', service_type: 'slack' } } })
-    const from = vi.spyOn(sb, 'from')
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
-    const res = await request(app, 'POST', '/connections/slack/sync-schema')
-    expect(res.status).toBe(400)
-    expect(from.mock.calls.filter(([t]) => t === 'service_connections')).toEqual([])
-  })
-
-  it('returns 500 when CF secret is not in env', async () => {
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn } }) as never
-    )
-    // baseEnv does not have CONN_EXISTING
-    const res = await request(app, 'POST', '/connections/salesforce/sync-schema')
-    expect(res.status).toBe(500)
-    // #2331 phase 1a: POST refuses, so the message must not send anyone to
-    // re-save the connection (L111).
-    const body = await res.json() as { error: string }
-    expect(body.error).not.toMatch(/re-?save/i)
-    expect(body.error).toMatch(/credentials/i)
-  })
-
-  it('calls fetchSalesforceSchema and updates schema_cache', async () => {
-    const mockSchema = { objects: [{ name: 'Lead', label: 'Lead', fields: [] }] }
-    vi.mocked(fetchSalesforceSchema).mockResolvedValue(mockSchema)
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        // Lookup, then the schema UPDATE, whose .select('id') reports the row.
-        service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }],
-      }) as never
-    )
-    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
-    expect(res.status).toBe(200)
-    const body = await res.json() as { ok: boolean; object_count: number }
-    expect(body.ok).toBe(true)
-    expect(body.object_count).toBe(1)
-    // The plain fetch and the auth the legacy login builds (#2335 PR 7).
-    expect(vi.mocked(fetchSalesforceSchema)).toHaveBeenCalledWith({
-      service: 'salesforce',
-      fetch: expect.any(Function),
-      auth: { Authorization: 'Bearer sf-token' },
-      instanceUrl: 'https://sf.example.com',
-    })
-  })
-
-  it('hands the lookups the plain fetch', async () => {
-    const globalFetch = vi.fn(async () => new Response('{}'))
-    vi.stubGlobal('fetch', globalFetch)
-    vi.mocked(fetchSalesforceSchema).mockImplementation(async (source) => {
-      await source.fetch('https://sf.example.com/services/data/v59.0/sobjects/', { headers: { ...source.auth } })
-      return { objects: [] }
-    })
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }] }) as never
-    )
-    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
-    expect(res.status).toBe(200)
-    expect(globalFetch).toHaveBeenCalledWith('https://sf.example.com/services/data/v59.0/sobjects/', { headers: { Authorization: 'Bearer sf-token' } })
-  })
-
-  // #2331, F119: the schema write names its user through updated_by, so the
-  // table trigger's one audit row names them and is not labelled direct SQL.
-  it('sets updated_by on the schema write and writes no route audit row', async () => {
-    vi.mocked(fetchSalesforceSchema).mockResolvedValue({ objects: [{ name: 'Lead', label: 'Lead', fields: [] }] })
-    const sb = makeSupabase({ users: { single: testUser }, service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }] })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
-    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
-    expect(res.status).toBe(200)
-    const update = (sb.calls.service_connections ?? []).find(([m]) => m === 'update')
-    expect((update?.[1][0] as Record<string, unknown>).updated_by).toBe(testUser.id)
-    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
-  })
-
-  it('calls fetchSupabaseSchema for supabase connections', async () => {
-    const supabaseConn = { ...existingConn, service_type: 'supabase', cf_secret_key: 'CONN_EXISTING' }
-    const mockSchema = { objects: [{ name: 'leads', label: 'leads', fields: [] }] }
-    vi.mocked(fetchSupabaseSchema).mockResolvedValue(mockSchema)
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        service_connections: [{ single: supabaseConn }, { writeRows: [{ id: 'conn-1' }] }],
-      }) as never
-    )
-    const res = await request(app, 'POST', '/connections/supabase/sync-schema', { env: envWithSupabaseCreds })
-    expect(res.status).toBe(200)
-    expect(vi.mocked(fetchSupabaseSchema)).toHaveBeenCalledWith({
-      service: 'supabase',
-      fetch: expect.any(Function),
-      auth: { apikey: 'sb-key', Authorization: 'Bearer sb-key' },
-      url: 'https://proj.supabase.co',
-    })
-    expect(vi.mocked(fetchSalesforceSchema)).not.toHaveBeenCalled()
-  })
-
-  it('calls fetchSnowflakeSchema for snowflake connections', async () => {
-    const snowflakeConn = { ...existingConn, service_type: 'snowflake', cf_secret_key: 'CONN_EXISTING' }
-    const mockSchema = { objects: [] }
-    vi.mocked(fetchSnowflakeSchema).mockResolvedValue(mockSchema)
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        service_connections: [{ single: snowflakeConn }, { writeRows: [{ id: 'conn-1' }] }],
-      }) as never
-    )
-    const res = await request(app, 'POST', '/connections/snowflake/sync-schema', { env: envWithSnowflakeCreds })
-    expect(res.status).toBe(200)
-    expect(vi.mocked(fetchSnowflakeSchema)).toHaveBeenCalledWith({
-      service: 'snowflake',
-      fetch: expect.any(Function),
-      auth: { Authorization: `Basic ${btoa('user:pass')}`, 'X-Snowflake-Authorization-Token-Type': 'BASIC' },
-      account: 'xy1.us-east-1',
-      database: 'DB',
-    })
-  })
-
-  it('returns 502 with the named code when a lookup fails', async () => {
-    vi.mocked(fetchSalesforceSchema).mockRejectedValue(
-      new SchemaLookupError({ code: 'schema_auth_refused', service: 'salesforce', step: 'object_list', status: 401 }),
-    )
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        // Lookup, then the schema UPDATE, whose .select('id') reports the row.
-        service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }],
-      }) as never
-    )
-    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
+  it('answers a failed lookup by its name, with what ops said', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+    const { env } = makeEnv({ lookup: async () => ({ ok: false, refused: 'schema_auth_refused', detail: 'salesforce refused the login listing objects (401)', retry_at: null }) })
+    const res = await request(app, 'POST', `/connections/${SF}/lookup/objects`, env, {})
     expect(res.status).toBe(502)
-    const body = await res.json() as { error: string; code: string }
-    expect(body.error).toMatch(/401/)
-    expect(body.code).toBe('schema_auth_refused')
+    expect(await res.json()).toEqual({ error: 'schema_auth_refused', message: 'salesforce refused the login listing objects (401)', retry_at: null })
   })
 
-  // L10: a describe that failed used to come back as the object with no
-  // fields, which this route cached over the last good schema.
-  it('a failed describe answers its name and leaves the cached schema alone', async () => {
-    vi.mocked(fetchSalesforceSchema).mockRejectedValue(
-      new SchemaLookupError({ code: 'schema_service_error', service: 'salesforce', step: 'object_describe', subject: 'Lead', status: 503 }),
-    )
-    const sb = makeSupabase({ users: { single: testUser }, service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }] })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
-    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
-    expect(res.status).toBe(502)
-    const body = await res.json() as { error: string; code: string }
-    expect(body.code).toBe('schema_service_error')
-    expect(body.error).toContain('describe Lead')
-    expect((sb.calls.service_connections ?? []).filter(([m]) => m === 'update')).toEqual([])
+  it('answers a rate limited lookup as 429 with when to try again', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+    const { env } = makeEnv({ lookup: async () => ({ ok: false, refused: 'lookup_rate_limited', detail: '60 a minute', retry_at: '2026-10-20T16:01:00Z' }) })
+    const res = await request(app, 'POST', `/connections/${SF}/lookup/objects`, env, {})
+    expect(res.status).toBe(429)
+    expect(await res.json()).toMatchObject({ error: 'lookup_rate_limited', retry_at: '2026-10-20T16:01:00Z' })
   })
 
-  it('a stored login that is not readable is a 500 by name, and none of it is repeated', async () => {
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn } }) as never
-    )
-    const env = { ...baseEnv, CONN_EXISTING: 'sf-secret-999' } as unknown as Env
-    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env })
-    expect(res.status).toBe(500)
-    const raw = await res.text()
-    expect(raw).toContain('schema_credentials_malformed')
-    expect(raw).not.toContain('sf-secret-999')
-    expect(vi.mocked(fetchSalesforceSchema)).not.toHaveBeenCalled()
+  it('answers ops not answering as 503 ops_connections_unavailable, never an empty answer', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+    const { env } = makeEnv({ lookup: async () => { throw new Error('internal error; reference = r1') } })
+    const res = await request(app, 'POST', `/connections/${SF}/lookup/objects`, env, {})
+    expect(res.status).toBe(503)
+    expect(await res.json()).toMatchObject({ error: 'ops_connections_unavailable', cause: 'threw' })
   })
 
-  it('a stored login naming a database the lookups refuse is ours, a 500, and nothing is sent', async () => {
-    const snowflakeConn = { ...existingConn, service_type: 'snowflake', cf_secret_key: 'CONN_EXISTING' }
-    const globalFetch = vi.fn(async () => new Response('{}'))
-    vi.stubGlobal('fetch', globalFetch)
-    const real = await vi.importActual<typeof import('../../../lib/schema-sync/snowflake')>('../../../lib/schema-sync/snowflake')
-    vi.mocked(fetchSnowflakeSchema).mockImplementationOnce(real.fetchSnowflakeSchema)
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: [{ single: snowflakeConn }, { writeRows: [{ id: 'conn-1' }] }] }) as never
-    )
-    const env = {
-      ...baseEnv,
-      CONN_EXISTING: JSON.stringify({ account: 'xy1', username: 'u', password: 'p', database: 'DB; DROP TABLE X' }),
-    } as unknown as Env
-    const res = await request(app, 'POST', '/connections/snowflake/sync-schema', { env })
-    expect(res.status).toBe(500)
-    expect((await res.json() as { code: string }).code).toBe('schema_source_invalid')
-    expect(globalFetch).not.toHaveBeenCalled()
+  it('refuses the Slack alert login, which ops does not serve, by name', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+    const { env, binding } = makeEnv({})
+    const res = await request(app, 'POST', `/connections/${ALERTS}/lookup/objects`, env, {})
+    expect(res.status).toBe(422)
+    expect(await res.json()).toMatchObject({ error: 'lookup_not_supported' })
+    expect(binding.lookup).not.toHaveBeenCalled()
   })
 
-  it('an unexpected error is not repeated to the browser (F120)', async () => {
+  it('refuses a malformed request before reading anything: an id that is not a uuid, a bad key, bad parents', async () => {
+    const db = storeDouble(ROWS)
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env, binding } = makeEnv({})
+    expect((await request(app, 'POST', '/connections/not-a-uuid/lookup/objects', env, {})).status).toBe(404)
+    const badKey = await request(app, 'POST', `/connections/${SF}/lookup/Objects!`, env, {})
+    expect(badKey.status).toBe(400)
+    expect(await badKey.json()).toMatchObject({ error: 'lookup_request_invalid' })
+    const badParents = await request(app, 'POST', `/connections/${SF}/lookup/fields`, env, { parents: ['a', 'b'] })
+    expect(badParents.status).toBe(400)
+    expect(binding.lookup).not.toHaveBeenCalled()
+  })
+
+  it('answers a failed connection read as an error, not as not found', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    vi.mocked(fetchSalesforceSchema).mockRejectedValue(new Error('boom with sf-token inside'))
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }] }) as never
-    )
-    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
-    expect(res.status).toBe(500)
-    const raw = await res.text()
-    expect(raw).toContain('schema_sync_failed')
-    expect(raw).not.toContain('sf-token')
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS, { listError: { code: '57014', message: 'timeout' } }) as never)
+    const { env, binding } = makeEnv({})
+    const res = await request(app, 'POST', `/connections/${SF}/lookup/objects`, env, {})
+    expect(res.status).toBe(503)
+    expect(binding.lookup).not.toHaveBeenCalled()
   })
 })
 
-describe('DELETE /connections/:service_type: zero-row + DB error (#588)', () => {
-  let app: Awaited<ReturnType<typeof makeApp>>
-
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
-    vi.mocked(deleteCfSecret).mockResolvedValue(undefined)
-    app = await makeApp()
-  })
-
-  it('returns 404 and writes no audit log when the delete matches zero rows', async () => {
-    // #588: the connection existed at the read but the DELETE removed nothing, so
-    // it must surface as a 404 rather than a success that audits a phantom delete.
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase(
-        { users: { single: testUser }, service_connections: { single: existingConn } },
-        { rpcs: { delete_service_connection_by_id: [] } },
-      ) as never
-    )
-    const res = await request(app, 'DELETE', '/connections/salesforce')
-    expect(res.status).toBe(404)
-    expect(await res.json()).toEqual({ error: 'Connection not found' })
-    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
-  })
-
-  it('returns 500 (not a false 404) when the delete hits a real DB error', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase(
-        { users: { single: testUser }, service_connections: { single: existingConn } },
-        { rpc: async () => ({ data: null, error: { code: '42P01', message: 'relation missing' } }) },
-      ) as never
-    )
-    const res = await request(app, 'DELETE', '/connections/salesforce')
-    expect(res.status).toBe(500)
+// #2331 phase 1a: each CONN_ secret this route put deployed a new version of
+// the bidding Worker, so it refuses by name before reading the body or the table.
+describe('POST /connections refuses: connections are moving (#2331)', () => {
+  it('answers 410 connections_moving and reads no table', async () => {
+    const db = storeDouble(ROWS)
+    const from = vi.spyOn(db, 'from')
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env } = makeEnv({})
+    const res = await request(app, 'POST', '/connections', env, { service_type: 'salesforce', credentials: { access_token: 'tok' } })
+    expect(res.status).toBe(410)
+    expect(await res.json()).toMatchObject({ error: 'connections_moving' })
+    expect(from).not.toHaveBeenCalled()
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })
 
-describe('POST /connections/:service_type/sync-schema: zero-row update (#588)', () => {
-  let app: Awaited<ReturnType<typeof makeApp>>
-
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
-    app = await makeApp()
-  })
-
-  it('returns 404 and writes no audit log when the schema update matches zero rows', async () => {
-    // #588: the schema fetch succeeds but the UPDATE that stores it touches no
-    // row (connection deleted mid-request), so we must not report a synced schema.
-    vi.mocked(fetchSalesforceSchema).mockResolvedValue({ objects: [{ name: 'Lead', label: 'Lead', fields: [] }] })
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        service_connections: [{ single: existingConn }, { writeRows: [] }],
-      }) as never
-    )
-    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
+// #2338 build PR 4: the legacy service type routes are retired. DELETE
+// /:service_type had the same path shape as the id routes to come, and
+// sync-schema read a Cloudflare secret no connection has.
+describe('the legacy service type routes are gone', () => {
+  it.each([
+    ['DELETE', '/connections/salesforce'],
+    ['POST', '/connections/salesforce/sync-schema'],
+    ['POST', '/connections/snowflake/sync-schema'],
+  ])('%s %s answers 404 and touches nothing', async (method, path) => {
+    const db = storeDouble(ROWS)
+    const from = vi.spyOn(db, 'from')
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env } = makeEnv({})
+    const res = await request(app, method, path, env)
     expect(res.status).toBe(404)
-    expect(await res.json()).toEqual({ error: 'Connection not found' })
-    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
-  })
-})
-
-// #2332, F124. DELETE and sync-schema act on a row found by service type alone,
-// so each reads only a LEGACY row (sealed_for null, cf_secret_key set). An ops
-// connection (sealed_for ops_key, cf_secret_key null) is removed only by Phase
-// 8's delete, which refuses a referenced connection, writes the tombstone and
-// revokes. With two rows of a type, `.single()` answers PGRST116, which these
-// routes read as not found: a 404, never a 500. The store refuses the same way
-// (delete_service_connection_by_id spares ops_key rows), proven against
-// Postgres in supabase/tests/service_connections_delete_by_id.test.sql case D.
-describe('legacy routes never reach an ops connection (#2332, F124)', () => {
-  let app: Awaited<ReturnType<typeof makeApp>>
-  const opsRow = { id: 'conn-ops', service_type: 'salesforce', cf_secret_key: null, sealed_for: 'ops_key' }
-
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    app = await makeApp()
-  })
-
-  const legacyFilters = (sb: ReturnType<typeof makeSupabase>) =>
-    (sb.calls.service_connections ?? []).filter(([m]) => m === 'is' || m === 'not').map(([m, args]) => [m, ...args])
-
-  it('DELETE reads only a legacy row of the type', async () => {
-    const rpc = vi.fn(async () => ({ data: [{ id: 'conn-1' }], error: null }))
-    const sb = makeSupabase({ users: { single: testUser }, service_connections: { single: existingConn } }, { rpc })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
-    const res = await request(app, 'DELETE', '/connections/salesforce')
-    expect(res.status).toBe(200)
-    expect(legacyFilters(sb)).toEqual([['is', 'sealed_for', null], ['not', 'cf_secret_key', 'is', null]])
-  })
-
-  it('DELETE with exactly one ops_key row of the type (none legacy) answers 404 and calls no delete', async () => {
-    // The read is scoped to legacy rows, so with only an ops row it finds none.
-    const rpc = vi.fn(async () => ({ data: [{ id: 'conn-ops' }], error: null }))
-    const sb = makeSupabase({ users: { single: testUser }, service_connections: { single: null } }, { rpc })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
-    const res = await request(app, 'DELETE', '/connections/salesforce')
-    expect(res.status).toBe(404)
-    expect(rpc).not.toHaveBeenCalled()
-  })
-
-  it('sync-schema reads only a legacy row of the type', async () => {
-    vi.mocked(fetchSalesforceSchema).mockResolvedValue({ objects: [] })
-    const sb = makeSupabase({ users: { single: testUser }, service_connections: [{ single: existingConn }, { writeRows: [{ id: 'conn-1' }] }] })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
-    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
-    expect(res.status).toBe(200)
-    expect(legacyFilters(sb)).toEqual([['is', 'sealed_for', null], ['not', 'cf_secret_key', 'is', null]])
-  })
-
-  it('sync-schema answers 404, not the missing credentials message, for a row with no cf_secret_key', async () => {
-    // Defence beside the filter: a row with no Cloudflare secret name is not a
-    // legacy connection, so it is not found here.
-    const sb = makeSupabase({ users: { single: testUser }, service_connections: { single: opsRow } })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as never)
-    const res = await request(app, 'POST', '/connections/salesforce/sync-schema', { env: envWithCreds })
-    expect(res.status).toBe(404)
-    expect(await res.json()).toEqual({ error: 'Connection not found' })
-    expect(vi.mocked(fetchSalesforceSchema)).not.toHaveBeenCalled()
+    expect(from).not.toHaveBeenCalled()
+    expect(db.rpcCalls).toEqual([])
   })
 })

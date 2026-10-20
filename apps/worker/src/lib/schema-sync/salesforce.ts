@@ -8,14 +8,11 @@
  */
 import { SchemaLookupError } from './errors'
 import { isHttpsBase, isRecord, readBody, requireOk, send, type RequestContext } from './request'
-import type { SalesforceSource, SchemaCache, SchemaField, SchemaObject, SchemaObjectSummary } from './types'
+import type { SalesforceSource, SchemaField, SchemaObjectSummary } from './types'
 
 export type { SalesforceSource } from './types'
 
 const API_VERSION = 'v59.0'
-
-// The canvas sync describes these objects only: fetching all would be too slow and noisy.
-const CORE_OBJECTS = ['Lead', 'Contact', 'Account', 'Opportunity', 'Case', 'Task', 'Event']
 
 /** A Salesforce API name: letters, digits and underscores (custom objects end __c). */
 const API_NAME = /^[A-Za-z][A-Za-z0-9_]{0,79}$/
@@ -77,19 +74,4 @@ export async function describeSalesforceObject(source: SalesforceSource, objectN
   requireOk(ctx, res)
   const desc = await readBody(ctx, res, isDescribe)
   return desc.fields.map((f) => ({ name: f.name, label: f.label, type: f.type, nullable: f.nillable }))
-}
-
-/**
- * The canvas sync (POST /api/connections/salesforce/sync-schema): the core
- * objects, each described. Any describe that fails fails the sync by name, so
- * the route keeps the last good schema_cache rather than caching an object with
- * no fields.
- */
-export async function fetchSalesforceSchema(source: SalesforceSource): Promise<SchemaCache> {
-  const list = await sobjectList(source)
-  const targets = list.filter((o) => o.queryable && CORE_OBJECTS.includes(o.name))
-  const objects: SchemaObject[] = await Promise.all(
-    targets.map(async (obj) => ({ name: obj.name, label: obj.label, fields: await describeSalesforceObject(source, obj.name) })),
-  )
-  return { objects }
 }

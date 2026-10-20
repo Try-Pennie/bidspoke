@@ -5,16 +5,6 @@ export interface SchemaField {
   nullable?: boolean
 }
 
-export interface SchemaObject {
-  name: string
-  label: string
-  fields: SchemaField[]
-}
-
-export interface SchemaCache {
-  objects: SchemaObject[]
-}
-
 /** One entry of an object or table list: a keyed lookup's first level. */
 export interface SchemaObjectSummary {
   name: string
@@ -24,9 +14,8 @@ export interface SchemaObjectSummary {
 export type SchemaService = 'salesforce' | 'supabase' | 'snowflake'
 
 /**
- * How a lookup sends a request (#2335, PR 7 of phase 5). Injected so the same
- * lookups serve both callers: the sync-schema route passes the plain fetch, and
- * the ops lookups pass connectionFetch, which holds the host allowlist, the
+ * How a lookup sends a request (#2335, PR 7 of phase 5). Injected: the ops
+ * lookups pass connectionFetch, which holds the host allowlist, the
  * Salesforce lease, the deadline and the auth. It may throw; the lookup turns
  * any throw into a named SchemaLookupError.
  */

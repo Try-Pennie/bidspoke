@@ -338,18 +338,17 @@ Response `201` (the only time the key is shown in full):
 | PATCH | `/api/integrations/slack/settings` | Update alert toggles (volume, matrix-change, config warnings, etc.). |
 | DELETE | `/api/integrations/slack` | Disconnect Slack. |
 
-## Service connections (schema sync)
+## Connections
 
-`/api/connections`. Connections to Salesforce, Supabase, and Snowflake, used to sync schema metadata for autocomplete in the Integration node.
+`/api/connections`. The organization's connections: the ops lane's sealed logins (#1689, #2338) and the Slack alert login. Every route acts on the caller's own organization only.
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| GET | `/api/connections` | List connections (no credentials returned). |
-| POST | `/api/connections` | Refused: `410` with `error: "connections_moving"` (#2331). It stored credentials as a Worker secret, and every secret change deploys a new version of the bidding Worker. |
-| DELETE | `/api/connections/:service_type` | Remove a connection. It leaves the connection's Worker secret in place (#2331). |
-| POST | `/api/connections/:service_type/sync-schema` | Trigger a schema refresh. |
+| GET | `/api/connections` | Every connection with who it acts as, its person bound owner, its status (`ok`, `reauth` or `failing`, with its word) from the ops login checks, and how many workflows use it, soft deleted ones included. No credential is returned. When the login checks do not answer, the last known statuses come back with `statuses.stale: true` and the time they are as of. When the list cannot be read it answers `503` `connections_unavailable`, never an empty list. |
+| POST | `/api/connections/:id/lookup/:key` | One schema lookup (`objects`, `fields`, `tables` or `columns`, body `{ "parents": [...] }`) through the ops Worker. A failed lookup answers its code by name (`429` `lookup_rate_limited` with `retry_at`, `503` `ops_connections_unavailable`, the service's own code otherwise). Another organization's connection is `404` `connection_not_found`. |
+| POST | `/api/connections` | Refused: `410` with `error: "connections_moving"` (#2331), until the create route (#2338). |
 
-`:service_type` is one of `salesforce`, `supabase`, `snowflake`.
+The legacy `DELETE /api/connections/:service_type` and `POST /api/connections/:service_type/sync-schema` were retired in #2338 and answer `404`.
 
 ## Partners
 

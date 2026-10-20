@@ -31,7 +31,8 @@ const KEPT: Record<string, string> = {
   'src/engine/response-contracts.ts:undeclaredReported': 'only stops a log line repeating',
   'src/engine/nodes/code.ts:bundlesWithoutCapture': 'only stops a log line repeating',
   'src/lib/secret-crypto.ts:imported': 'an imported key decrypts exactly as one imported again; only saves the import (#2090)',
-  'src/lib/incident-outbox.ts:seq': 'only orders two incident outbox keys written in one millisecond; no run reads it, and the drain does not depend on it (#2099)',
+  'src/lib/connection-statuses.ts:lastWritten': 'only spaces out the Connections page\'s last known statuses writes; read by the list route alone, never by a run (#2338)',
+  'src/lib/incident-outbox.ts:seq':'only orders two incident outbox keys written in one millisecond; no run reads it, and the drain does not depend on it (#2099)',
 }
 
 function filesUnder(dir: string): string[] {
