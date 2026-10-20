@@ -16,8 +16,6 @@
 import type { SchemaService } from './types'
 
 export const SCHEMA_LOOKUP_CODES = [
-  /** The legacy route's stored login is not readable JSON, or lacks a field. */
-  'schema_credentials_malformed',
   /** The source names an address or database the lookup will not use. */
   'schema_source_invalid',
   /** A key, or a parent name, the service does not answer. Nothing was sent. */
@@ -93,8 +91,6 @@ function messageOf(f: SchemaLookupFailure, subject: string | null): string {
   const upstream = f.upstreamCode ? ` (${f.upstreamCode})` : ''
   const detail = f.detail ? `: ${f.detail}` : ''
   switch (f.code) {
-    case 'schema_credentials_malformed':
-      return `the stored ${service} connection login could not be read${detail}`
     case 'schema_source_invalid':
       return `the ${service} connection names an address the lookup will not use${detail}`
     case 'schema_key_invalid':
@@ -113,7 +109,7 @@ function messageOf(f: SchemaLookupFailure, subject: string | null): string {
     case 'schema_response_malformed':
       return `${service} answered the request to ${what} with a body that is not the expected shape`
     case 'schema_query_still_running':
-      return `the ${service} schema query was still running when the wait ended; try Sync again in a moment`
+      return `the ${service} schema query was still running when the wait ended; try again in a moment`
   }
 }
 

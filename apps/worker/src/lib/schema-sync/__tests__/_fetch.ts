@@ -38,21 +38,6 @@ export function fetchSequence(...answers: Answer[]) {
   return { fetch: fn, calls }
 }
 
-/** Answers by URL: the first matcher the URL contains wins. */
-export function fetchByUrl(routes: Array<[string, Answer]>) {
-  const calls: Array<{ url: string; init: RequestInit }> = []
-  const fn = vi.fn<SchemaFetch>(async (url, init) => {
-    calls.push({ url, init })
-    const route = routes.find(([part]) => url.includes(part))
-    if (!route) throw new Error(`test double has no answer for ${url}`)
-    const answer = typeof route[1] === 'function' ? route[1]() : route[1]
-    if (answer instanceof Error) throw answer
-    // A Response body can be read once; hand out a copy so a route can answer twice.
-    return answer.clone()
-  })
-  return { fetch: fn, calls }
-}
-
 export function headersOf(init: RequestInit): Record<string, string> {
   return Object.fromEntries(new Headers(init.headers).entries())
 }

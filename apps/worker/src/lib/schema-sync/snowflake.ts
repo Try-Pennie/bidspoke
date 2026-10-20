@@ -2,13 +2,13 @@
  * Snowflake schema lookups (PRD Section 2.8; keyed lookups #2335, PR 7 of
  * phase 5), through the SQL API's /statements endpoint against the database's
  * INFORMATION_SCHEMA. Each lookup takes an injected fetch and an already minted
- * auth (the legacy route's Basic login, or on ops the key pair JWT
- * connectionFetch applies), and every failure is a named SchemaLookupError.
+ * auth (on ops, the key pair JWT connectionFetch applies), and every failure
+ * is a named SchemaLookupError.
  */
 import { escapeSqlLiteral } from '../snowflake'
 import { SchemaLookupError } from './errors'
 import { failedBeforeAnswer, isRecord, malformed, readBody, requireOk, send, statusFailure, type RequestContext } from './request'
-import type { SchemaCache, SchemaField, SchemaObject, SchemaObjectSummary, SnowflakePoll, SnowflakeSource } from './types'
+import type { SchemaField, SchemaObjectSummary, SnowflakePoll, SnowflakeSource } from './types'
 
 export type { SnowflakeSource } from './types'
 
@@ -209,30 +209,4 @@ export async function describeSnowflakeTable(source: SnowflakeSource, table: str
   const rows = await runStatement(source, endpoint, sqlText, 5)
   if (rows.length === 0) throw new SchemaLookupError({ service: 'snowflake', step: 'statement', subject: table, code: 'schema_not_found' })
   return rows.map(([, , columnName, dataType, isNullable]) => fieldOf(columnName, dataType, isNullable))
-}
-
-/** Every column, grouped into SCHEMA.TABLE objects. Its one caller, the sync-schema route, was retired in #2338 (build PR 4); the lookups use listSnowflakeTables and describeSnowflakeTable. */
-export async function fetchSnowflakeSchema(source: SnowflakeSource): Promise<SchemaCache> {
-  const endpoint = endpointOf(source)
-  const sqlText = `
-    SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE
-    FROM ${source.database}.INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_SCHEMA != 'INFORMATION_SCHEMA'
-    ${buildSchemaFilter(source.schema)}
-    ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
-  `.trim()
-  const rows = await runStatement(source, endpoint, sqlText, 5)
-
-  // Group rows by TABLE_SCHEMA.TABLE_NAME
-  const byTable = new Map<string, SchemaObject>()
-  for (const [tableSchema, tableName, columnName, dataType, isNullable] of rows) {
-    const key = `${tableSchema}.${tableName}`
-    let object = byTable.get(key)
-    if (!object) {
-      object = { name: key, label: key, fields: [] }
-      byTable.set(key, object)
-    }
-    object.fields.push(fieldOf(columnName, dataType, isNullable))
-  }
-  return { objects: Array.from(byTable.values()) }
 }

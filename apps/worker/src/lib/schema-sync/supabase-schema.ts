@@ -7,7 +7,7 @@
  */
 import { SchemaLookupError } from './errors'
 import { isHttpsBase, isRecord, readBody, requireOk, send, type RequestContext } from './request'
-import type { SchemaCache, SchemaField, SchemaObject, SchemaObjectSummary, SupabaseSource } from './types'
+import type { SchemaField, SchemaObjectSummary, SupabaseSource } from './types'
 
 export type { SupabaseSource } from './types'
 
@@ -74,11 +74,4 @@ export async function describeSupabaseTable(source: SupabaseSource, table: strin
   const def = Object.hasOwn(spec.definitions, table) ? spec.definitions[table] : undefined
   if (!def) throw new SchemaLookupError({ service: 'supabase', step: 'openapi', subject: table, code: 'schema_not_found' })
   return fieldsOf(def)
-}
-
-/** Every table with its columns. Its one caller, the sync-schema route, was retired in #2338 (build PR 4); the lookups use listSupabaseTables and describeSupabaseTable. */
-export async function fetchSupabaseSchema(source: SupabaseSource): Promise<SchemaCache> {
-  const spec = await readSpec(source, null)
-  const objects: SchemaObject[] = Object.entries(spec.definitions).map(([name, def]) => ({ name, label: name, fields: fieldsOf(def) }))
-  return { objects }
 }

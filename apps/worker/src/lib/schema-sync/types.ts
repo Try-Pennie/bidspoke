@@ -5,16 +5,6 @@ export interface SchemaField {
   nullable?: boolean
 }
 
-export interface SchemaObject {
-  name: string
-  label: string
-  fields: SchemaField[]
-}
-
-export interface SchemaCache {
-  objects: SchemaObject[]
-}
-
 /** One entry of an object or table list: a keyed lookup's first level. */
 export interface SchemaObjectSummary {
   name: string
