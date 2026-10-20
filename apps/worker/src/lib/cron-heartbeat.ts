@@ -197,6 +197,32 @@ export const CRON_JOBS: CronJob[] = [
       'money\'s Salesforce identity is no longer re-measured, so ops verify keeps comparing ops connections against an older reading of it, and refuses every Salesforce connection when it has none (#2335)',
   },
   {
+    // The owners of person bound ops connections (#2340, ops-connection-owner-check.ts).
+    id: 'ops-connection-owner',
+    label: 'Ops connection owner check',
+    triggerCron: '0 13 * * *',
+    // 24h cadence, 2h slack, matching the other daily jobs.
+    staleMs: 26 * H,
+    // One paged read of the person bound connections, one of their owners and
+    // one of the Access list, then a workflows scan per orphaned connection.
+    maxRunMs: 30 * MIN,
+    dependents:
+      'nobody is told when the person a person bound ops connection signs in as is removed from Bidspoke, so its workflows go on acting as someone who no longer has access (#2340)',
+  },
+  {
+    // The bulkhead limit the ops Salesforce lane was sized against (#2336,
+    // salesforce-bulkhead-check.ts).
+    id: 'salesforce-bulkhead-check',
+    label: 'Salesforce bulkhead limit check',
+    triggerCron: '0 13 * * *',
+    // 24h cadence, 2h slack, matching the other daily jobs.
+    staleMs: 26 * H,
+    // One setting read, one Slack organization list read and a post to each.
+    maxRunMs: 30 * MIN,
+    dependents:
+      'nothing notices the bidding Worker\'s Salesforce bulkhead limit moving off the 20 the ops Salesforce lane\'s cap was sized against, so bidding and ops together can ask Salesforce for more calls at once than its org allows (#2336)',
+  },
+  {
     id: 'partner-reachability',
     label: 'Partner reachability probe',
     triggerCron: '*/5 * * * *',

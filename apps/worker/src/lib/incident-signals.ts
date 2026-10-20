@@ -189,6 +189,33 @@ export const INCIDENT_SIGNALS = [
     windowMinutes: null,
     kinds: ['needs_reauth', 'refresh_failing'],
   },
+  // #2340. A person bound ops connection whose owner's email is no longer on
+  // user_allowlist (`owner_removed`), or that records no owner at all
+  // (`owner_missing`), as the daily owner check judged it. One organization's
+  // connection, keyed on its id and labelled with its name and service. It
+  // judges a state, so it has no window. Paged by ops-connection-owner-check.ts.
+  {
+    signal: 'ops-connection-owner',
+    label: 'Ops connection owner',
+    scope: 'org',
+    subject: 'connection',
+    startMeans: FIRST_PAGE,
+    windowMinutes: null,
+    kinds: ['owner_removed', 'owner_missing'],
+  },
+  // #2336. The bidding Worker's Salesforce bulkhead limit resolving to anything
+  // other than the value the ops Salesforce lane's cap was sized against. One
+  // Worker setting shared by every organization's leads, so the platform's,
+  // keyed on the fixed id `salesforce` (the bulkhead's own key). It judges a
+  // state, once a day, so it has no window. Paged by salesforce-bulkhead-check.ts.
+  {
+    signal: 'salesforce-bulkhead-limit',
+    label: 'Salesforce bulkhead limit',
+    scope: 'platform',
+    subject: 'name',
+    startMeans: FIRST_PAGE,
+    windowMinutes: null,
+  },
 ] as const satisfies readonly IncidentSignalEntry[]
 
 export type IncidentSignal = (typeof INCIDENT_SIGNALS)[number]['signal']

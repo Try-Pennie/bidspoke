@@ -624,6 +624,47 @@ const scheduledJobs = {
           }
         })().catch((e) => console.error('[money-identity] failed:', e))
       )
+      // The owners of person bound ops connections (#2340): pages a connection
+      // whose owner's email is no longer on user_allowlist, naming the workflows
+      // that use it. Its own heartbeat, so a missed day pages, and its own
+      // failure boundary (L71).
+      track(
+        (async () => {
+          const { runOpsConnectionOwnerCheckForEnv, OPS_CONNECTION_OWNER_JOB } = await import('./lib/ops-connection-owner-check')
+          await writeHeartbeat(env.IDEMPOTENCY, OPS_CONNECTION_OWNER_JOB).catch((e) =>
+            console.error('[cron-heartbeat] ops-connection-owner write failed:', e)
+          )
+          try {
+            const s = await runOpsConnectionOwnerCheckForEnv(supabase, env)
+            console.log(`[ops-connection-owner] judged=${s.judged} person_bound=${s.personBound} orphaned=${s.orphaned.length} paged=${s.paged.length} all_clear=${s.allClear.length}${s.unreadable.length ? ` unreadable=${s.unreadable.length}` : ''}`)
+            if (s.errors.length > 0) console.error(`[ops-connection-owner] ${s.errors.length} fault(s): ${s.errors.join('; ')}`)
+          } finally {
+            await writeHeartbeatCompleted(env.IDEMPOTENCY, OPS_CONNECTION_OWNER_JOB).catch((e) =>
+              console.error('[cron-heartbeat] ops-connection-owner completed write failed:', e)
+            )
+          }
+        })().catch((e) => console.error('[ops-connection-owner] failed:', e))
+      )
+      // The Salesforce bulkhead limit the ops Salesforce lane was sized against
+      // (#2336): pages when it resolves to anything else. Its own heartbeat and
+      // failure boundary.
+      track(
+        (async () => {
+          const { runSalesforceBulkheadCheckForEnv, SALESFORCE_BULKHEAD_CHECK_JOB } = await import('./lib/salesforce-bulkhead-check')
+          await writeHeartbeat(env.IDEMPOTENCY, SALESFORCE_BULKHEAD_CHECK_JOB).catch((e) =>
+            console.error('[cron-heartbeat] salesforce-bulkhead-check write failed:', e)
+          )
+          try {
+            const s = await runSalesforceBulkheadCheckForEnv(supabase, env)
+            if (s.verdict !== 'matches' || s.allClear) console.log(`[salesforce-bulkhead-check] limit=${s.limit} sized_for=${s.sizedFor} paged=${s.paged} all_clear=${s.allClear}`)
+            if (s.errors.length > 0) console.error(`[salesforce-bulkhead-check] ${s.errors.length} fault(s): ${s.errors.join('; ')}`)
+          } finally {
+            await writeHeartbeatCompleted(env.IDEMPOTENCY, SALESFORCE_BULKHEAD_CHECK_JOB).catch((e) =>
+              console.error('[cron-heartbeat] salesforce-bulkhead-check completed write failed:', e)
+            )
+          }
+        })().catch((e) => console.error('[salesforce-bulkhead-check] failed:', e))
+      )
       // The deletion gate's measurements (#872, Phase A4). SHADOW: it writes
       // numbers to execution_archive_days and nothing reads them to authorise a
       // deletion until A5 (#873). Daily, because it re-measures every day still
