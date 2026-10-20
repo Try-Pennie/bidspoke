@@ -1334,6 +1334,18 @@ later (relay posts, Achieve calls, code nodes, unstamped writes), so the label
 now pages on the first, like every other (it was three, #1942), and its copy
 says nothing confirmed the work rather than that it may have finished.
 
+**What the run shows (#2541).** The step rows are written at the cut-off, and a
+step still running then used to be missing from the run for good, even when it
+completed or failed seconds later (0 of 48 such runs held a row for the step
+they named, measured 2026-10-20). Such a step is now written once it settles,
+with the status, times and retries the walk recorded, while the request is still
+alive (`apps/worker/src/engine/late-steps.ts`). It waits for the walk until 20 s
+after the answer and starts no write after that, so the dead letter's last 3 s
+stay free, and the page and finalize never wait on it: the alert still sends at
+the cut-off, as before. A step that has not settled by 20 s is not in the run,
+and the run's reason names it as still running. Each entry is handed to one
+write only, so nothing is written twice.
+
 ## Open questions (consolidated)
 
 All answered on 2026-10-15, read only; each answer is in its section. Two

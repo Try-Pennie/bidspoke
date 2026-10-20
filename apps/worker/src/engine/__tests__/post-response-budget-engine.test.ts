@@ -65,6 +65,7 @@ import { UNCONFIRMED_WRITE_PREFIX, ANSWER_JOURNAL_PREFIX } from '../unconfirmed-
 import { runUnconfirmedWriteSweep } from '../../lib/unconfirmed-write-sweep'
 import { StallSnapshotGate, STALL_SNAPSHOT_PREFIX, STALL_SNAPSHOT_DEADLINE_MS, type StallSnapshotRecord } from '../../lib/db-stall-snapshot'
 import { WRITEBACK_HELD_LABEL, WRITEBACK_UNCAPTURABLE_LABEL } from '../writeback-deadletter'
+import { LATE_STEP_RESERVE_MS } from '../late-steps'
 
 const WF_ID = 'wf-budget'
 const RESPONSE = { status: 200, headers: {}, body: { accepted: true } }
@@ -1290,6 +1291,137 @@ describe('a continuation that never finishes after the answer (#1860)', () => {
     expect(reason).not.toContain('under_10000_sf_post')
     const alert = vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.find(([, p]) => p.label === 'continuation_unfinished')?.[1]
     expect(alert?.run?.still_running).toEqual(['Achieve under 10k (achieve_under_10k)'])
+  })
+})
+
+/**
+ * #2541, measured 2026-10-20: in 0 of 48 runs degraded as unfinished over 7 days
+ * did the step the run names have a row, including 6 LendSwift runs whose patch
+ * step logged step_complete 12.4 to 24.5 s after it started. The step rows were
+ * written once, at the cut-off, so a step that settled later was never recorded
+ * and the alert's "open the run" led to a run without the step. A step that
+ * settles after the cut-off is now written while the invocation is still alive,
+ * and nothing about the page changes.
+ */
+describe('steps that settle after the continuation window closes (#2541)', () => {
+  const lateDefinition = {
+    trigger: { id: 'trigger', type: 'trigger', config: {} },
+    nodes: [
+      { id: 'r', namespace: 'offer_response', type: 'response', config: { continue_after_response: true, retries: 0 } },
+      { id: 'p', namespace: 'patch_sf', type: 'code', config: { retries: 0 } },
+      { id: 'n', namespace: 'after_patch', type: 'code', config: { retries: 0 } },
+    ],
+    edges: [
+      { id: 'e0', source: 'r', target: 'p' },
+      { id: 'e1', source: 'p', target: 'n' },
+    ],
+  } as unknown as WorkflowDefinition
+
+  /** Runs the definition with patch_sf settling `settleAfterMs` after the answer, by `settle`. */
+  async function runLate(settleAfterMs: number, settle: 'complete' | 'fail') {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: lateDefinition,
+      workflow_version_id: 'v1',
+      workflow_name: 'Budget Test',
+      org_id: 'org-1',
+      slack_channel: null,
+      lane: 'money',
+    })
+    let late: () => Promise<{ output: unknown }> = () => Promise.reject(new Error('the late step ran before the clock was wired'))
+    vi.mocked(executeNode).mockImplementation(async (node) => {
+      if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+      if (node.namespace === 'after_patch') return { output: { after: true } }
+      return late()
+    })
+    const out = await run((c) => {
+      late = () =>
+        c.sleep(settleAfterMs).then(() => {
+          if (settle === 'fail') throw new Error('Salesforce update failed: 503 Service Unavailable')
+          return { output: { patched: true } }
+        })
+      return 'up'
+    })
+    const stepInserts = out.db.calls.filter((c) => c.table === 'execution_steps' && c.op === 'insert')
+    const rowsOf = (ns: string) => out.db.steps.filter((s) => s.step_namespace === ns)
+    const pagedAt = out.deadLetters('continuation_unfinished').map((p) => p.at)
+    return { ...out, stepInserts, rowsOf, pagedAt }
+  }
+
+  it('writes a step that completes after the cut-off, and the step after it, once each, as the walk recorded them', async () => {
+    const { rowsOf, stepInserts, result } = await runLate(16_000, 'complete')
+    const patch = rowsOf('patch_sf')
+    expect(patch, 'the step that completed after the cut-off has no row').toHaveLength(1)
+    expect(patch[0]).toMatchObject({ status: 'completed', retries_used: 0, execution_id: result.executionId })
+    // The step's own record, as the walk logged it (its times are wall clock, not
+    // the test's virtual clock).
+    expect(typeof patch[0].started_at).toBe('string')
+    expect(typeof patch[0].completed_at).toBe('string')
+    expect(rowsOf('after_patch')).toHaveLength(1)
+    expect(rowsOf('offer_response')).toHaveLength(1)
+    // One write at the cut-off, as today, and one for what settled after it.
+    expect(stepInserts).toHaveLength(2)
+    expect(stepInserts[1].at).toBeGreaterThanOrEqual(16_000)
+    expect(stepInserts[1].at).toBeLessThanOrEqual(CUTOFF)
+  })
+
+  it('writes a step that fails after the cut-off as failed', async () => {
+    const { rowsOf } = await runLate(16_000, 'fail')
+    const patch = rowsOf('patch_sf')
+    expect(patch).toHaveLength(1)
+    expect(patch[0]).toMatchObject({ status: 'failed' })
+    expect(String(patch[0].error_message)).toContain('503 Service Unavailable')
+    // The walk stopped at the failure, so nothing after it ran or was written.
+    expect(rowsOf('after_patch')).toEqual([])
+  })
+
+  it('still pages at the cut-off, before the late step settles, exactly as it did', async () => {
+    const { pagedAt } = await runLate(16_000, 'complete')
+    expect(pagedAt).toHaveLength(1)
+    expect(pagedAt[0]).toBeLessThan(CONTINUATION_WINDOW_MS + 1_000)
+    expect(vi.mocked(sendOutcomeDeadLetterAlert).mock.calls.map(([, p]) => p.label)).toEqual(['continuation_unfinished'])
+  })
+
+  it('writes nothing for a step that never settles, and the run still names it as still running', async () => {
+    const { rowsOf, stepInserts, db, result, pagedAt } = await runLate(60_000, 'complete')
+    expect(rowsOf('patch_sf')).toEqual([])
+    expect(stepInserts).toHaveLength(1)
+    expect(String(db.executions.get(result.executionId)?.error_message)).toContain('Still running then: patch_sf')
+    expect(pagedAt).toHaveLength(1)
+  })
+
+  it('writes no step twice when the execution row was still being created at the cut-off', async () => {
+    vi.mocked(loadWorkflowDefinition).mockResolvedValue({
+      definition: lateDefinition,
+      workflow_version_id: 'v1',
+      workflow_name: 'Budget Test',
+      org_id: 'org-1',
+      slack_channel: null,
+      lane: 'money',
+    })
+    let late: () => Promise<{ output: unknown }> = () => Promise.reject(new Error('the late step ran before the clock was wired'))
+    vi.mocked(executeNode).mockImplementation(async (node) => {
+      if (node.namespace === 'offer_response') return { output: RESPONSE, earlyResponse: RESPONSE, continueAfterResponse: true }
+      if (node.namespace === 'after_patch') return { output: { after: true } }
+      return late()
+    })
+    let creates = 0
+    const { db } = await run((c, table, op) => {
+      late = () => c.sleep(16_000).then(() => ({ output: { patched: true } }))
+      if (table === 'workflow_executions' && op === 'insert' && creates++ === 0) return 'late'
+      return 'up'
+    })
+    // The create lands after the budget, and the cut-off flush behind it then
+    // writes every step once; the late write took none of them first.
+    for (const ns of ['offer_response', 'patch_sf', 'after_patch']) {
+      expect(db.steps.filter((s) => s.step_namespace === ns).length, `${ns} was not written exactly once`).toBe(1)
+    }
+  })
+
+  it('starts no step write in the dead letter\'s reserve: a step settling after the late cut-off is not written', async () => {
+    const lateCutOff = POST_RESPONSE_BUDGET_MS - LATE_STEP_RESERVE_MS
+    const { rowsOf, stepInserts } = await runLate(lateCutOff + 500, 'complete')
+    expect(rowsOf('patch_sf')).toEqual([])
+    expect(stepInserts.every((c) => c.at <= lateCutOff)).toBe(true)
   })
 })
 
