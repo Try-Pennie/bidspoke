@@ -377,7 +377,7 @@ export function liveOwnerCheckReads(supabase: SupabaseClient): OwnerCheckReads {
       try {
         workflows = await readOrgWorkflows(supabase, organizationId)
       } catch (err) {
-        throw new Error(`the workflows could not be read: ${formatErr(err)}`)
+        throw new Error(`the workflows could not be read: ${formatErr(err)}`, { cause: err })
       }
       return workflows
         .filter((w) => definitionNames(w.definition, connectionId))
