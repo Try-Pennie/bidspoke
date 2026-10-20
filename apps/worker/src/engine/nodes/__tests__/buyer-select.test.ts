@@ -1208,7 +1208,9 @@ describe('the request hash in live mode (#2543)', () => {
   const share = (percent: string) => ctx({ env: { BUYER_SELECT_LIVE_PERCENT: percent } })
   const shared = node({ live_percent_env: 'BUYER_SELECT_LIVE_PERCENT' })
 
-  it('a lead outside the live share records the hash of the body a live attempt posts, and sends nothing', async () => {
+  // The hash is of the payload before any buyer's outbound mapping, so it equals the posted body for a
+  // buyer with no mapping, which is Tripoint, the only buyer the parity report compares with.
+  it('a lead outside the live share records the hash of the body a live attempt to an unmapped buyer posts, and sends nothing', async () => {
     const live = harness()
     await run(live, share('100'), shared)
     const posted = await canonicalBodySha256(live.buyerCalls[0].body)
@@ -1254,6 +1256,20 @@ describe('the request hash in live mode (#2543)', () => {
     const r = await run(h)
     expect(r.attempts[0].output.timing).toMatchObject({ before_call_ms: 300, call_ms: 2500, after_call_ms: 240 })
     expect(r.attempts[0].output.sent_body_sha256).toHaveLength(64)
+  })
+
+  it('a hash that cannot be taken after a sale leaves the sale as it is, records no hash, and says so', async () => {
+    const h = harness()
+    const digest = vi.spyOn(crypto.subtle, 'digest').mockRejectedValue(new Error('digest unavailable'))
+    try {
+      const r = await run(h)
+      expect(out(r)._route).toBe('sold')
+      expect(r.failure).toBeUndefined()
+      expect(r.attempts[0].output).not.toHaveProperty('sent_body_sha256')
+      expect(h.logs).toContainEqual(expect.objectContaining({ event: 'buyer_select_body_hash_unmeasured', reason: 'sent' }))
+    } finally {
+      digest.mockRestore()
+    }
   })
 
   it('a rehearsal sends nothing, so its row records no sent hash', async () => {

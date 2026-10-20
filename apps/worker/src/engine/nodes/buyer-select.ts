@@ -503,7 +503,7 @@ class Run {
    * payload before any outbound mapping, as report_only records it. A body that cannot be built is
    * left unmeasured and logged, and never changes the lead's route.
    */
-  private async recordWouldSendHash(reason: BuyerSelectReason): Promise<void> {
+  private async recordWouldSendHash(reason: 'canary_out'): Promise<void> {
     try {
       this.out.would_send_body_sha256 = await canonicalBodySha256(resolveSalePayload(this.config.sale_payload, this.ctx))
     } catch (err) {
@@ -796,7 +796,15 @@ class Run {
     const status = lastCall === null ? null : (lastCall as { status: number | null }).status
     const timing = this.timeAttempt(c, startedAt, completedAt, callWindow, landed, result.result === 'sold' ? 'accepted' : result.reason)
     // What was posted (#2543), hashed once the attempt is timed so it adds nothing to the split.
-    const sentBodySha256 = live && buyerCalled ? await canonicalBodySha256(body) : null
+    // The buyer has answered by now, so a hash that fails is left unmeasured and never fails the lead.
+    let sentBodySha256: string | null = null
+    if (live && buyerCalled) {
+      try {
+        sentBodySha256 = await canonicalBodySha256(body)
+      } catch (err) {
+        this.deps.log({ event: 'buyer_select_body_hash_unmeasured', step_namespace: this.node.namespace, reason: 'sent', partner_slug: partner.slug, error_message: messageOf(err) })
+      }
+    }
 
     if (result.result === 'sold') {
       // An accepted sale is Success whichever answer produced it, a replayed earlier sale included.
