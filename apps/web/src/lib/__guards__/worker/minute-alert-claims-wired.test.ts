@@ -46,9 +46,12 @@ const MINUTE_CLAIMANTS: Record<string, string[]> = {
  * first failed read reports to the database owner (#2061), so the owner is
  * told from any tick; its page is a minute alert all the same, since the minute
  * probe and the volume check report to it every minute. completeAfter is built
- * once for every tick with the failing minute job page's deps (#2523), but it
- * counts only minute jobs (countsFailedRuns), so those claims are taken on
- * minute ticks only.
+ * once for every tick with the failing scheduled job page's deps (#2523). It
+ * counts the minute jobs and, since #2526, the five minute, fifteen minute and
+ * hourly ones too (countsFailedRuns), so its claims are also taken on those
+ * ticks, but only when a page or an all clear is about to be sent, never on an
+ * ordinary run, and a duplicate delivery of one of those ticks (#1904) is the
+ * race they stop.
  */
 const ANY_TICK = new Set(['reportDatabaseUnreachable', 'minuteJobFailingDepsForEnv'])
 
