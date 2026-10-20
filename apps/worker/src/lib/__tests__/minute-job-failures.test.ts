@@ -437,7 +437,7 @@ describe('makeCompleteAfter', () => {
     expect(w.sendAlert).not.toHaveBeenCalled()
   })
 
-  it('stamps and counts nothing for a job that is not a counted minute job', async () => {
+  it('stamps but counts nothing for a job that is not counted', async () => {
     const w = wired()
     vi.spyOn(console, 'error').mockImplementation(() => {})
     for (let m = 0; m < 5; m++) await w.completeAfter(Promise.reject(new Error('x')), 'daily-1300')
