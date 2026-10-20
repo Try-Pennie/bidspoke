@@ -212,7 +212,7 @@ describe.each(PACKAGES)('$name caught-error stringification guard (#606, #687)',
   })
 
   it('does NOT fire on an instanceof ternary with a static user-facing fallback', () => {
-    // routes/api/{sources.ts:131, connections.ts:169, env.ts:278}
+    // routes/api/{sources.ts:131, env.ts:278}
     expect(guardHits("const m = err instanceof Error ? err.message : 'Schema fetch failed'")).toBe(0)
   })
 

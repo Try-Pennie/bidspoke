@@ -211,7 +211,7 @@ export async function describeSnowflakeTable(source: SnowflakeSource, table: str
   return rows.map(([, , columnName, dataType, isNullable]) => fieldOf(columnName, dataType, isNullable))
 }
 
-/** The canvas sync (POST /api/connections/snowflake/sync-schema): every column, grouped into SCHEMA.TABLE objects. */
+/** Every column, grouped into SCHEMA.TABLE objects. Its one caller, the sync-schema route, was retired in #2338 (build PR 4); the lookups use listSnowflakeTables and describeSnowflakeTable. */
 export async function fetchSnowflakeSchema(source: SnowflakeSource): Promise<SchemaCache> {
   const endpoint = endpointOf(source)
   const sqlText = `

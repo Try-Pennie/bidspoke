@@ -12,7 +12,7 @@ import FieldAutocomplete from '@/components/rule-builder/FieldAutocomplete'
 import TemplateTextarea from './TemplateTextarea'
 import { X, Trash2, Plus, CheckCircle, ChevronDown, ChevronUp, ArrowRight, Copy, RotateCcw, Loader2, Play } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { ServicePreset, ServiceConnection, SchemaObject, Partner } from '@/lib/api'
+import type { ServicePreset, Partner } from '@/lib/api'
 import RailResizeHandle from './RailResizeHandle'
 import { timeoutFloorMs, timeoutFloorReason } from '@/lib/timeout-floor'
 import { nextBranchLabel, armEdgeIds } from '@/lib/branch-arms'
@@ -2010,40 +2010,10 @@ function IntegrationConfig({
     useKeyValueRows<string>(initialHeaders, persistHeaders, '', reportValidity)
 
   const [userPresets, setUserPresets] = useState<ServicePreset[]>([])
-  const [connections, setConnections] = useState<ServiceConnection[]>([])
-  const [selectedObject, setSelectedObject] = useState<string>('')
-  const [syncingSchema, setSyncingSchema] = useState(false)
-  const schemaSyncElapsed = useElapsed(syncingSchema)
-  const [schemaError, setSchemaError] = useState<string | null>(null)
 
   useEffect(() => {
     api.servicePresets.list().then(setUserPresets).catch(() => {})
-    api.connections.list().then(setConnections).catch(() => {})
   }, [])
-
-  const SCHEMA_SERVICES = new Set(['salesforce', 'supabase', 'snowflake'])
-  const activeConnection = SCHEMA_SERVICES.has(service)
-    ? connections.find((c) => c.service_type === service) ?? null
-    : null
-  const schemaObjects: SchemaObject[] = activeConnection?.schema_cache?.objects ?? []
-  const currentObject = schemaObjects.find((o) => o.name === selectedObject) ?? null
-
-  async function handleSyncSchema() {
-    if (!activeConnection) return
-    setSyncingSchema(true)
-    setSchemaError(null)
-    try {
-      const result = await api.connections.syncSchema(service)
-      const updated = await api.connections.list()
-      setConnections(updated)
-      setSchemaError(null)
-      console.info(`[schema] synced ${result.object_count} objects`)
-    } catch (err) {
-      setSchemaError(err instanceof Error ? err.message : 'Sync failed')
-    } finally {
-      setSyncingSchema(false)
-    }
-  }
 
   const allOptions = [
     ...BUILTIN_SERVICE_OPTIONS,
@@ -2089,76 +2059,6 @@ function IntegrationConfig({
           <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
         </div>
       </Field>
-
-      {/* Schema browser — visible when a schema-aware service is selected */}
-      {SCHEMA_SERVICES.has(service) && (
-        <section className="rounded-md border border-gray-200 bg-beige p-3 space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-medium uppercase tracking-wide text-gray-500">Schema</span>
-            {activeConnection ? (
-              <button
-                onClick={handleSyncSchema}
-                disabled={syncingSchema}
-                className="text-xs text-p-blue-dark hover:text-navy disabled:opacity-50"
-              >
-                {syncingSchema ? `Syncing… ${schemaSyncElapsed}s` : activeConnection.schema_synced_at ? 'Re-sync' : 'Sync schema'}
-              </button>
-            ) : (
-              <span className="text-xs text-amber-500">No connection configured</span>
-            )}
-          </div>
-
-          {schemaError && (
-            <p className="text-xs text-red-500">{schemaError}</p>
-          )}
-
-          {schemaObjects.length > 0 && (
-            <>
-              {/* Object selector */}
-              <div className="relative">
-                <select
-                  value={selectedObject}
-                  onChange={(e) => setSelectedObject(e.target.value)}
-                  className="w-full appearance-none rounded-md border border-gray-200 bg-white py-1.5 pl-3 pr-8 text-xs text-gray-700 focus:border-gray-400 focus:outline-none"
-                >
-                  <option value="">Select an object…</option>
-                  {schemaObjects.map((o) => (
-                    <option key={o.name} value={o.name}>{o.label}</option>
-                  ))}
-                </select>
-                <ChevronDown className="pointer-events-none absolute right-2 top-2 h-3.5 w-3.5 text-gray-500" />
-              </div>
-
-              {/* Field list */}
-              {currentObject && (
-                <div className="max-h-40 overflow-y-auto rounded border border-gray-200 bg-white">
-                  {currentObject.fields.map((f) => (
-                    <button
-                      key={f.name}
-                      title={`Type: ${f.type}${f.nullable ? '' : ' (required)'}`}
-                      onClick={() => navigator.clipboard?.writeText(f.name).catch(() => {})}
-                      className="flex w-full items-center justify-between px-2.5 py-1 text-left text-xs hover:bg-p-blue-light"
-                    >
-                      <span className="font-mono text-gray-800">{f.name}</span>
-                      <span className="text-gray-500">{f.type}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-
-              {activeConnection?.schema_synced_at && (
-                <p className="text-xs text-gray-500">
-                  Last synced {new Date(activeConnection.schema_synced_at).toLocaleDateString()}
-                </p>
-              )}
-            </>
-          )}
-
-          {activeConnection && schemaObjects.length === 0 && !syncingSchema && (
-            <p className="text-xs text-gray-500">Click &quot;Sync schema&quot; to load available fields.</p>
-          )}
-        </section>
-      )}
 
       {/* Custom service name */}
       {service === 'custom' && (

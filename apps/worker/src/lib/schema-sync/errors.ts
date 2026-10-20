@@ -6,7 +6,7 @@
  * back as the object with `fields: []`, which the canvas showed as an object with
  * no fields and cached over the last good copy.
  *
- * The message is shown to a person (the sync-schema route answers it) and is
+ * The message is shown to a person (the lookup route answers it) and is
  * what Workers Logs and the tail trace record of an uncaught error, so it is
  * built from names alone: the service, the step, an object or table name that
  * is a plain identifier, an HTTP status, a refusal code. Never a provider's

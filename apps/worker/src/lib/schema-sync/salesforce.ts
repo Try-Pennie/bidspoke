@@ -80,10 +80,10 @@ export async function describeSalesforceObject(source: SalesforceSource, objectN
 }
 
 /**
- * The canvas sync (POST /api/connections/salesforce/sync-schema): the core
- * objects, each described. Any describe that fails fails the sync by name, so
- * the route keeps the last good schema_cache rather than caching an object with
- * no fields.
+ * The core objects, each described. Any describe that fails fails the whole
+ * by name, never an object with no fields. Its one caller, the sync-schema
+ * route, was retired in #2338 (build PR 4); the lookups use
+ * listSalesforceObjects and describeSalesforceObject.
  */
 export async function fetchSalesforceSchema(source: SalesforceSource): Promise<SchemaCache> {
   const list = await sobjectList(source)

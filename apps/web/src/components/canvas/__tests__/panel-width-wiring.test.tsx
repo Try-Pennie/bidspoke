@@ -25,7 +25,6 @@ vi.mock('next/dynamic', () => ({
 
 vi.mock('@/lib/api', () => ({
   api: {
-    connections: { list: vi.fn().mockResolvedValue([]), syncSchema: vi.fn().mockResolvedValue({}) },
     partners: { list: vi.fn().mockResolvedValue([]) },
     servicePresets: { list: vi.fn().mockResolvedValue([]) },
     executions: {

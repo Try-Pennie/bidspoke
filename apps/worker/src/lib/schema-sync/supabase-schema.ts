@@ -76,7 +76,7 @@ export async function describeSupabaseTable(source: SupabaseSource, table: strin
   return fieldsOf(def)
 }
 
-/** The canvas sync (POST /api/connections/supabase/sync-schema): every table with its columns. */
+/** Every table with its columns. Its one caller, the sync-schema route, was retired in #2338 (build PR 4); the lookups use listSupabaseTables and describeSupabaseTable. */
 export async function fetchSupabaseSchema(source: SupabaseSource): Promise<SchemaCache> {
   const spec = await readSpec(source, null)
   const objects: SchemaObject[] = Object.entries(spec.definitions).map(([name, def]) => ({ name, label: name, fields: fieldsOf(def) }))
