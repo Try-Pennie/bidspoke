@@ -512,10 +512,12 @@ export const CRON_JOBS: CronJob[] = [
     worker: 'bidspoke-worker-ops',
     // The tick's own 25 minutes plus one sweep interval with a missed tick (5),
     // so a tick that is dark pages as ops-tick first, with the tick's remedy,
-    // and a sweep that stopped while the tick runs pages as itself. The tick
-    // logs about a seventh to a third fewer runs than a minute cron should
-    // (#2347: 308 distinct ticks finished in the 360 minutes from 13:00 to 19:00
-    // UTC on 2026-10-19), which moves one sweep by a minute or two, far inside
+    // and a sweep that stopped while the tick runs pages as itself. The tick's
+    // logs once read as a seventh to a third fewer runs than a minute cron
+    // should make (308 distinct ticks in 360 minutes on 2026-10-19), but #2347
+    // measured the tick running in every minute of a day: Workers Logs lose
+    // lines, not ticks (docs/ops-ceilings-spike.md, "Counting ticks"). A tick
+    // that does skip a minute moves one sweep by a minute or two, far inside
     // this. Past it the org's reading is long stale (15 minutes), and every ops
     // Salesforce call to it is refused sf_budget_unmeasured, which the sweep's
     // own problems report before this does.
