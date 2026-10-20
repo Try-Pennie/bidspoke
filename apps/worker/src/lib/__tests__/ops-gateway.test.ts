@@ -624,6 +624,154 @@ describe('three ticks in a row (#2506)', () => {
       expect(await tick(kv(), deps(), 1, older(1, [STAMP, SWEEP], true))).toBe('alerted')
     })
   })
+
+  // #2340. The sf_limits sweep runs every fourth tick, so its problems are on
+  // one report in four. Its passing failure while the org's reading is young
+  // (sf_limits_read_failing) is counted by the sweep's runs, and every problem of
+  // that sweep stands between its runs: a tick that did not run the sweep
+  // neither counts it, ends it, nor stands it down. Before this, the clean tick
+  // after a sweep's page read as an all clear, and the next run paged it anew.
+  describe('a problem of a sweep that runs less often than the tick (#2340)', () => {
+    const SF_ORG = '00Dst0000000001AAA'
+    const FAILING = `The /limits read of Salesforce org ${SF_ORG} failed with a failure the next read may not meet.`
+    const REFUSED = `The /limits read of Salesforce org ${SF_ORG} was refused (sf_cap_unset), and the next read will meet the same.`
+    const failing: [string, string] = [`sf_limits_read_failing:${SF_ORG}`, FAILING]
+    const refused: [string, string] = [`sf_limits_refused:${SF_ORG}`, REFUSED]
+    /** Ticks 1, 5, 9, ... run the sweep, as a 240 s claim does with one tick a minute. */
+    const ran = (n: number) => ((n - 1) % 4 === 0 ? ['lease_expiry', 'run_expiry', 'sf_limits'] : ['lease_expiry', 'run_expiry'])
+    /** Tick n: the sweep's problems on the ticks that run it, and nothing on the others. */
+    const at = (n: number, sweepProblems: Array<[string, string]>) =>
+      ran(n).includes('sf_limits') && sweepProblems.length > 0
+        ? bad(n, sweepProblems, { sweeps_run: ran(n) })
+        : report(n, { sweeps_run: ran(n) })
+
+    it('counts a passing failure by the runs of its sweep, and pages on the third run in a row, saying so', async () => {
+      const store = kv()
+      const d = deps()
+      const verdicts: string[] = []
+      for (let n = 1; n <= 9; n++) verdicts.push(await tick(store, d, n, at(n, [failing])))
+      expect(verdicts).toEqual(['held', 'held', 'held', 'held', 'held', 'held', 'held', 'held', 'alerted'])
+      expect(d.recovered).toEqual([])
+      expect(d.sent).toEqual([{
+        errors: [FAILING], title: 'The ops minute cron reported a problem',
+        context: `Reported by ${OPS_TICK_TICKS_IN_A_ROW_TO_PAGE} or more runs of its sweep in a row.`,
+        options: { repeatsHeldByCaller: true },
+      }])
+    })
+
+    it('keeps paging it in the same words on the ticks between runs, and never sends the all clear there', async () => {
+      const store = kv()
+      const d = deps()
+      for (let n = 1; n <= 9; n++) await tick(store, d, n, at(n, [failing]))
+      const between = [await tick(store, d, 10, at(10, [failing])), await tick(store, d, 11, at(11, [failing])), await tick(store, d, 12, at(12, [failing]))]
+      expect(between).toEqual(['alerted', 'alerted', 'alerted'])
+      expect(d.recovered).toEqual([])
+      expect(new Set(d.sent.map((s) => JSON.stringify(s))).size).toBe(1)
+    })
+
+    it('sends the all clear once a run of the sweep no longer reports it', async () => {
+      const store = kv()
+      const d = deps()
+      for (let n = 1; n <= 12; n++) await tick(store, d, n, at(n, [failing]))
+      expect(await tick(store, d, 13, at(13, []))).toBe('healthy')
+      expect(d.recovered).toEqual([OPS_TICK_JOB])
+      expect(store.m.has(OPS_TICK_STREAKS_KEY)).toBe(false)
+    })
+
+    it('ends the count on a run of the sweep without it: failed, read, failed, failed pages nothing', async () => {
+      const store = kv()
+      const d = deps()
+      const runs: Array<Array<[string, string]>> = [[failing], [], [failing], [failing]]
+      for (let n = 1; n <= 13; n++) await tick(store, d, n, at(n, runs[Math.floor((n - 1) / 4)] ?? []))
+      expect(d.sent).toEqual([])
+    })
+
+    it('stands a problem the sweep pages at once until the sweep runs again, rather than reading the next tick as an all clear', async () => {
+      const store = kv()
+      const d = deps()
+      expect(await tick(store, d, 1, at(1, [refused]))).toBe('alerted')
+      for (let n = 2; n <= 4; n++) expect(await tick(store, d, n, at(n, [refused]))).toBe('alerted')
+      expect(d.recovered).toEqual([])
+      expect(d.sent.every((s) => JSON.stringify(s.errors) === JSON.stringify([REFUSED]))).toBe(true)
+      // Paged at once, so no context says it was held.
+      expect(d.sent[0].context).toBeUndefined()
+      expect(await tick(store, d, 5, at(5, []))).toBe('healthy')
+      expect(d.recovered).toEqual([OPS_TICK_JOB])
+    })
+
+    it('carries the sweep\'s problem beside another tick\'s own, paging the one that is due', async () => {
+      const store = kv()
+      const d = deps()
+      await tick(store, d, 1, at(1, [refused]))
+      expect(await tick(store, d, 2, bad(2, [sweep], { sweeps_run: ran(2) }))).toBe('alerted')
+      expect(d.sent.at(-1)?.errors).toEqual([REFUSED])
+    })
+
+    it('carries a sweep\'s problem through a tick whose claim of that sweep failed, since the sweep did not run', async () => {
+      const store = kv()
+      const d = deps()
+      for (let n = 1; n <= 9; n++) await tick(store, d, n, at(n, [failing]))
+      const claimFailed = bad(10, [['sweep_claim_failed:sf_limits', 'The sf_limits sweep failed: claim_ops_sweep did not answer within 9000 ms.']], { sweeps_run: [] })
+      expect(await tick(store, d, 10, claimFailed)).toBe('alerted')
+      expect(d.sent.at(-1)?.errors).toEqual([FAILING])
+    })
+
+    it('carries nothing for a report from an ops release that does not say which sweeps ran, as before', async () => {
+      const store = kv()
+      const d = deps()
+      expect(await tick(store, d, 1, bad(1, [refused]))).toBe('alerted')
+      expect(await tick(store, d, 2, report(2))).toBe('healthy')
+    })
+
+    // Fail toward keeping the incident open: with the count unreadable, whether
+    // a sweep's problem still stands is not known, so a clean tick is neither
+    // paged nor read as an all clear (L11).
+    it('sends no all clear on a clean tick whose count cannot be read, since a sweep\'s problem may still stand', async () => {
+      const store = kv()
+      const d = deps()
+      await tick(store, d, 1, at(1, [refused]))
+      const failingRead = { ...store, get: async (k: string) => { if (k === OPS_TICK_STREAKS_KEY) throw new Error('KV GET failed: 503'); return store.get(k) } }
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const warns = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      try {
+        expect(await tick(failingRead, d, 2, at(2, [refused]))).toBe('held')
+        // Says why it held, rather than counting a held problem it does not have.
+        expect(warns.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/count could not be read/)
+      } finally {
+        errors.mockRestore()
+        warns.mockRestore()
+      }
+      expect(d.recovered).toEqual([])
+    })
+
+    it('pages a carried problem whose sentence the count does not hold, in words of its own, rather than dropping it', async () => {
+      const store = kv()
+      const d = deps()
+      await tick(store, d, 1, at(1, [refused]))
+      // A count written by a bidding release before this one keeps no sentences.
+      const rec = JSON.parse(store.m.get(OPS_TICK_STREAKS_KEY)!) as Record<string, unknown>
+      delete rec.texts
+      store.m.set(OPS_TICK_STREAKS_KEY, JSON.stringify(rec))
+      expect(await tick(store, d, 2, at(2, []))).toBe('alerted')
+      expect(d.sent.at(-1)?.errors[0]).toMatch(new RegExp(`sf_limits_refused:${SF_ORG}`))
+      expect(d.sent.at(-1)?.errors[0]).toMatch(/sf_limits sweep/)
+    })
+
+    it('pages when the sentences kept with the count are unreadable, as with an unreadable count', async () => {
+      const store = kv()
+      const d = deps()
+      await tick(store, d, 1, at(1, [refused]))
+      const rec = JSON.parse(store.m.get(OPS_TICK_STREAKS_KEY)!) as Record<string, unknown>
+      store.m.set(OPS_TICK_STREAKS_KEY, JSON.stringify({ ...rec, texts: { [refused[0]]: 7 } }))
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        expect(await tick(store, d, 5, bad(5, [failing], { sweeps_run: ran(5) }))).toBe('alerted')
+        expect(errors.mock.calls.map((c) => String(c[0])).join('\n')).toMatch(/ops_tick_count_unknown/)
+      } finally {
+        errors.mockRestore()
+      }
+    })
+  })
 })
 
 type KvShape = { get: (k: string) => Promise<string | null>; put: (k: string, v: string, o?: { expirationTtl?: number }) => Promise<void>; delete: (k: string) => Promise<void> }

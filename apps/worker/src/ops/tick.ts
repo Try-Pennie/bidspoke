@@ -117,8 +117,9 @@ export type TickSweep = OpsSweep
  * awaited before the report: its reads go to Salesforce and are bounded at 45 s
  * each, which must not hold the schedules back. It stamps its own heartbeat
  * (SF_LIMITS_JOB) only when it owns the claim, and reports its failures as
- * keyed problems that each page at once, since it can never be reported by
- * three ticks in a row (it holds a transient one itself, by its reading's age).
+ * keyed problems the bidding Worker judges by this sweep's runs, not the
+ * tick's (OPS_TICK_PROBLEM_SWEEPS, #2340), which is why the report names the
+ * sweeps each tick ran (sweeps_run).
  *
  * connection_check (#2340, connection-check.ts) proves each ops connection's
  * login every 14 to 15 minutes (connection-check.ts THE INTERVAL says why), and
@@ -343,6 +344,8 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   let dbNow: string | null = null
   const items: DispatchItem[] = []
   let sfLimitsRun: Promise<SfLimitsSweepResult> | null = null
+  /** Each sweep whose claim this tick owned, for the report (#2340: the bidding Worker judges a sweep's problems by its runs). */
+  const sweepsRun: TickSweep[] = []
   let connectionCheckRun: Promise<ConnectionCheckSweepResult> | null = null
   let connectionLogins: ConnectionLoginsReport | null = null
   let writeBacksRun: Promise<WriteBacksRun> | null = null
@@ -402,6 +405,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
           continue
         }
         bump(counts, 'sweeps_run')
+        sweepsRun.push(s.sweep)
         if (s.sweep === 'sf_limits') {
           // Beside the rest of the tick, awaited before the report (TICK_SWEEPS says why).
           sfLimitsRun = startSfLimits(ports, db)
@@ -676,6 +680,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     problem_keys: capped.problem_keys,
     connection_logins: connectionLogins,
     write_backs: writeBacks,
+    sweeps_run: sweepsRun,
   }
   log('finished', { tick_id: ports.tickId, outcome, problems: problems.length, ...counts })
   for (const p of problems) log('problem', { tick_id: ports.tickId, key: p.key, problem: p.text })
