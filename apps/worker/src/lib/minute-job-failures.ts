@@ -36,20 +36,27 @@
  * otherwise only logged. The write back drain returns it for a run whose own
  * alerts did not reach Slack (#2527, writeback-drain.ts drainRunFailure), which
  * was otherwise only a count in its log line, with words of its own for the
- * page (FailedRunCopy), since "stopped at an error" would not be true of it. A
+ * page (FailedRunCopy), since "stopped at an error" would not be true of it.
+ * The Tripoint ping outcome rate returns it for a run with finished hours it
+ * could not record for its baseline (#2529, tripoint-ping-outcome-rate.ts
+ * pingRunFailure), which reached only a log line and job_runs. A
  * run the platform kills is not counted: it never reaches completeAfter, and
  * the heartbeat already pages it.
  *
  * NOTHING PAGES TWICE. Only a throw counts for the slower jobs, never the faults
- * their summaries list, because those already have a page of their own or are
- * bookkeeping the next run repairs: writeback-backlog's failed read pages
+ * their summaries list, apart from the Tripoint ping outcome rate's hours not
+ * recorded above, which page nowhere else, because the others already have a
+ * page of their own or are bookkeeping the next run repairs: writeback-backlog's failed read pages
  * through the export alerter, the incident drain pages its own repeated
  * failures, the partner probe pages a broken probe or control, the memory check
  * a broken feed, the drift check a mirror it could not read, and the sales and
  * click path checks record what they could not measure in job_runs. A throw is
  * the one outcome in which the job's own judgement, and so its own page, did not
  * run at all, so counting it repeats nothing the job said. Likewise
- * buyer-sale-drain's summary faults, which page through the export alerter. A
+ * buyer-sale-drain's summary faults, which page through the export alerter, and
+ * buyer-select-parity's days it could not summarise, which page through the
+ * export alerter inside its refresh with their all clear (runParityRefreshAndPage,
+ * read for #2529), so neither is returned as a failed run. A
  * page sent while the database owner's outage incident is open carries the
  * outage line (outage-notice.ts, Dan's decision of 2026-10-14) rather than
  * being held.
@@ -74,7 +81,11 @@
  * three days to 23:00 UTC on 2026-10-19 none of the eleven slower jobs did, and
  * no write back drain run logged alert_failures above zero (a control query on
  * the same filter found other failure lines), so the bounds sit outside
- * anything they do today.
+ * anything they do today. For #2529, over the three days to 14:18 UTC on
+ * 2026-10-20, no `[tripoint-ping-outcome-rate] hours not recorded` line was
+ * logged, against 179 of its `verdict=` lines (every run since it shipped on
+ * 2026-10-18), and no `[buyer-select-parity] errors=` line, against 77 of its
+ * `days=` lines.
  *
  * THE COUNT is one KV record per job (failedRunsKey), written on every failed
  * run with an expiry renewed each time, so it never lapses while the streak
