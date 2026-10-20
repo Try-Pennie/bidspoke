@@ -49,20 +49,34 @@
  * pool goes unmeasured. Faster gains nothing: Salesforce's figures are only
  * accurate within five minutes, and it asks not to be polled rapidly.
  *
- * FAILURES are keyed tick problems (OPS_TICK_PROBLEM_RULES), each at once,
- * because a sweep that runs every fourth tick can never be reported by three
- * ticks in a row (#2506): a held kind would be held for ever. So the hold is
- * done here instead, by the reading's age on the database clock. A failure the
- * next read may well not meet (a timeout, a busy pool, a 5xx, a rate limit, a
- * write the ops database did not take) is held, logged and counted while the
- * org's reading is younger than SF_LIMITS_HOLD_WHILE_YOUNGER_MS, which only the
- * last renewal (at most 6 minutes ago with a missed tick) can be; one older
- * than that means this is at least the second failure in a row, and it pages,
- * still minutes before the 15 minute mark. A reading kept fresh by other ops
- * traffic's Sforce-Limit-Info holds it too, which is right: the pool is
- * measured. A refusal the next read will meet again (a 4xx, a body that cannot
- * be read, a refusal by rule or state such as sf_cap_unset or needs_reauth)
- * pages at once.
+ * FAILURES are keyed tick problems (OPS_TICK_PROBLEM_RULES), which the bidding
+ * Worker judges by this sweep's runs rather than the tick's
+ * (OPS_TICK_PROBLEM_SWEEPS, #2340): a tick that did not run the sweep carries
+ * each as it stood. A refusal the next read will meet again (a 4xx, a body
+ * that cannot be read, a refusal by rule or state such as sf_cap_unset or
+ * needs_reauth) pages at once. A failure the next read may well not meet (a
+ * timeout, a busy pool, a 5xx, a rate limit, a write the ops database did not
+ * take) is judged by the reading's age on the database clock:
+ *   - Once the reading is SF_LIMITS_HOLD_WHILE_YOUNGER_MS old or more, which
+ *     only the last renewal (at most 6 minutes ago with a missed tick) is not,
+ *     this is at least the second failure in a row with nothing else renewing
+ *     the reading, and sf_limits_read_failed pages at once, still minutes
+ *     before the 15 minute mark.
+ *   - While it is younger, sf_limits_read_failing, logged and counted as
+ *     sf_limits_held, pages on the third run of the sweep in a row (#2340),
+ *     whatever the reading's age. Other ops traffic's Sforce-Limit-Info
+ *     (#2507) can keep the reading young for ever, and the pool is then
+ *     measured, so this is not urgent; but a /limits read that fails every
+ *     time would otherwise never page, and the floor under the pool is gone
+ *     the moment that traffic stops. Why three: three failed runs leave the
+ *     last good read at least 12 minutes old, inside SF_BUDGET_FRESH_MS, and a
+ *     fourth puts it at 16, past the moment the pool would already be refused
+ *     had no other call kept the reading fresh, so three is the most that
+ *     still pages first; two would page on a passing Salesforce blip while
+ *     nothing is refused. It is the tick's own three in a row (#2506), counted
+ *     in the same record. Its sentence carries neither the cause nor the age,
+ *     which the log line does, so the alerter reads every run's failure as one
+ *     standing problem (#1768) rather than posting each run anew.
  *
  * Each org is its own failure boundary with its own deadline, and the sweep
  * never throws. It stamps start and completion with the bidding Worker
@@ -87,7 +101,7 @@ export const SF_LIMITS_MAX_ORGS = 10
 export const SF_LIMITS_READ_DEADLINE_MS = 30_000
 /** One org's whole read, the copy read, lease, login and write included. Past it the org's read is a failure of that org alone. */
 export const SF_LIMITS_ORG_DEADLINE_MS = 45_000
-/** A transient failure is held while the org's reading is younger than this: see FAILURES above. */
+/** A transient failure is sf_limits_read_failing, judged by runs, while the org's reading is younger than this, and sf_limits_read_failed, at once, from this age: see FAILURES above. */
 export const SF_LIMITS_HOLD_WHILE_YOUNGER_MS = 7 * 60_000
 /** acquire_sf_lease's freshness bound, named in the page. */
 export const SF_BUDGET_FRESH_MS = 15 * 60_000
@@ -308,6 +322,8 @@ export async function runSfLimitsSweep(deps: SfLimitsSweepDeps): Promise<SfLimit
         if (age !== null && age < SF_LIMITS_HOLD_WHILE_YOUNGER_MS) {
           bump('sf_limits_held')
           deps.log({ event: 'ops_tick', step: 'sf_limits_held', sf_org_id: org, cause: outcome.cause, reading_age_ms: age })
+          // In the same words whatever the cause and age (#1768), which the log line carries.
+          problems.push(tickProblem('sf_limits_read_failing', `The /limits read of Salesforce org ${org} failed with a failure the next read may not meet (the sf_limits_held log line names it). Its budget reading is under ${minutes(SF_LIMITS_HOLD_WHILE_YOUNGER_MS)} old, so ops Salesforce calls to it go on, but only while other ops calls keep that reading fresh: if they stop, every call to that org is refused once it is ${minutes(SF_BUDGET_FRESH_MS)} old.`, org))
           return
         }
         const state = age === null ? 'it has no budget reading, so every ops Salesforce call to it is already refused sf_budget_unmeasured'

@@ -38,6 +38,7 @@
  * bidding Worker watches under its own id (OPS_GATEWAY_JOBS, below).
  */
 import { CURRENT_OPS_KID, KID_PATTERN } from '@bidspoke/connection-seal'
+import type { OpsSweep } from '../ops/run-vocabulary'
 
 /** One ops workflow's state, as the bidding database holds it. */
 export interface ServedOpsWorkflow {
@@ -381,6 +382,14 @@ export interface OpsTickReport {
    * read as every write back landed.
    */
   write_backs: WriteBacksReport | null
+  /**
+   * The sweeps this tick ran: each whose claim it owned (#2340). The bidding
+   * Worker judges a problem of a sweep that runs less often than the tick
+   * (OPS_TICK_PROBLEM_SWEEPS) by that sweep's runs, so a tick that did not run
+   * the sweep neither counts its problem, ends it, nor stands it down. Null on a
+   * report from an ops release before it: not known, never read as none run.
+   */
+  sweeps_run: string[] | null
 }
 
 /**
@@ -453,10 +462,9 @@ export const OPS_TICK_PROBLEM_RULES = {
   report_unreadable: 'at_once',
   /** A sentence from an ops release before #2506, which says nothing of its kind. */
   unkeyed: 'at_once',
-  // The sf_limits sweep (#2336, ops/sf-limits.ts), claimed every 4 minutes, so
-  // no kind of its can be reported by three ticks in a row: the sweep holds a
-  // failure the next read may not meet itself, by its reading's age, and
-  // reports only what is due to page.
+  // The sf_limits sweep (#2336, ops/sf-limits.ts), claimed every 4 minutes.
+  // Each of its kinds is judged by the sweep's runs, not the tick's
+  // (OPS_TICK_PROBLEM_SWEEPS, #2340), so three in a row is three runs of it.
   /** The read of which orgs are measured failed, or the sweep threw past its own boundaries. */
   sf_limits_failed: 'at_once',
   /** As many measured orgs as one sweep reads: any past them had no reading renewed. */
@@ -465,12 +473,19 @@ export const OPS_TICK_PROBLEM_RULES = {
   sf_limits_refused: 'at_once',
   /** A body whose DailyApiRequests cannot be read: a named refusal, never a NaN (L50). */
   sf_limits_unreadable: 'at_once',
-  /** A failure the next read may not meet, reported only once the org's reading is older than one renewal. */
+  /** A failure the next read may not meet, once the org's reading is older than one renewal: the pool is going stale. */
   sf_limits_read_failed: 'at_once',
+  /**
+   * The same failure while the org's reading is still young (#2340), which
+   * other ops Salesforce calls can keep young for ever through
+   * Sforce-Limit-Info: three runs of the sweep in a row (sf-limits.ts THE
+   * FAILURES says why three).
+   */
+  sf_limits_read_failing: 'three_in_a_row',
   // The connection_check sweep (#2340, ops/connection-check.ts), claimed every
-  // 14 minutes, so as with sf_limits no kind of its can be reported by three
-  // ticks in a row: it holds a failure the next probe may not meet itself, by
-  // the age of the connection's last passing check.
+  // 14 minutes, so no kind of its can be reported by three ticks in a row, and
+  // it is not yet judged by its runs as sf_limits is: it holds a failure the
+  // next probe may not meet itself, by the age of the connection's last passing check.
   /** The read of which connections to check failed, or the sweep threw past its own boundaries. */
   connection_check_failed: 'at_once',
   /** As many connections as one sweep checks: any past them wait for a later sweep. */
@@ -514,6 +529,41 @@ export function problemRuleOf(key: string): OpsTickProblemRule {
   const kind = key.split(':')[0]
   return Object.hasOwn(OPS_TICK_PROBLEM_RULES, kind) ? OPS_TICK_PROBLEM_RULES[kind as OpsTickProblemKind] : 'at_once'
 }
+
+/**
+ * The kinds a sweep that runs less often than the tick reports, each with the
+ * sweep whose runs judge it (#2340). The tick reports such a problem only on a
+ * tick that runs the sweep, one tick in four for sf_limits, so judged by
+ * ticks, the next tick (clean) read as its all clear and the next run paged it
+ * anew, and a three_in_a_row kind could never reach three. Judged by the
+ * sweep's runs, a tick that did not run the sweep (its report's sweeps_run does
+ * not name it) neither counts the problem, ends its run, nor stands it down:
+ * the bidding Worker carries it, sentence and count, until the sweep runs
+ * again (ops-gateway.ts countRuns). A kind not listed is judged by ticks.
+ *
+ * Only the sf_limits sweep's kinds are listed. The connection_check sweep and
+ * the write back check that rides it, and the queue_agreement sweep, report in
+ * the same way and are not yet listed (spooled on #2340).
+ */
+export const OPS_TICK_PROBLEM_SWEEPS = {
+  sf_limits_failed: 'sf_limits',
+  sf_limits_orgs_limit: 'sf_limits',
+  sf_limits_refused: 'sf_limits',
+  sf_limits_unreadable: 'sf_limits',
+  sf_limits_read_failed: 'sf_limits',
+  sf_limits_read_failing: 'sf_limits',
+} as const satisfies Partial<Record<OpsTickProblemKind, OpsSweep>>
+
+/** The sweep whose runs judge a problem's key, read from its kind; null for a kind judged by ticks. */
+export function sweepOfProblemKey(key: string): OpsSweep | null {
+  const kind = key.split(':')[0]
+  return Object.hasOwn(OPS_TICK_PROBLEM_SWEEPS, kind) ? OPS_TICK_PROBLEM_SWEEPS[kind as keyof typeof OPS_TICK_PROBLEM_SWEEPS] : null
+}
+
+/** A sweep's name, as claim_ops_sweep's vocabulary writes it; one from a newer ops release is kept as named. */
+const SWEEP_NAME = /^[a-z][a-z0-9_]{0,63}$/
+/** More than every sweep the tick claims, so a list past it is not one. */
+const MAX_SWEEPS_RUN = 20
 
 /** A key's shape: a kind in lower case, and an optional subject (a sweep, an id, a secret's name). */
 const PROBLEM_KEY = /^[a-z][a-z0-9_]{0,63}(?::[A-Za-z0-9_.-]{1,128})?$/
@@ -601,7 +651,7 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
   if (!isRecord(raw)) throw new OpsGatewayContractError('the ops tick sent a report that is not an object')
   const {
     tick_id, mode, scheduled_time, started_at, finished_at, db_now, outcome, problems, counts, not_configured_secrets, start_stamp_failed, problem_keys,
-    connection_logins, write_backs,
+    connection_logins, write_backs, sweeps_run,
   } = raw
   if (typeof tick_id !== 'string' || tick_id === '' || tick_id.length > 200) throw new OpsGatewayContractError('the ops tick report has no tick id')
   if (!(OPS_TICK_MODES as readonly unknown[]).includes(mode)) throw new OpsGatewayContractError(`the ops tick report names a mode this Worker does not know: ${String(mode)}`)
@@ -653,6 +703,15 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
   const logins = connection_logins === undefined || connection_logins === null ? null : parseConnectionLogins(connection_logins)
   // Absent before #2340 phase 10 item 4, null on a tick that judged none: unjudged, never all landed.
   const writeBacks = write_backs === undefined || write_backs === null ? null : parseWriteBacks(write_backs)
+  // Absent before #2340's sweep runs, null once such a report is kept and read
+  // back: not known, so nothing is carried, never read as no sweep run.
+  let sweepsRun: string[] | null = null
+  if (sweeps_run !== undefined && sweeps_run !== null) {
+    if (!Array.isArray(sweeps_run) || sweeps_run.length > MAX_SWEEPS_RUN || sweeps_run.some((s) => typeof s !== 'string' || !SWEEP_NAME.test(s))) {
+      throw new OpsGatewayContractError('the ops tick report\'s sweeps run are not a list of sweep names')
+    }
+    sweepsRun = [...(sweeps_run as string[])]
+  }
   return {
     tick_id,
     mode: mode as OpsTickMode,
@@ -668,6 +727,7 @@ export function parseOpsTickReport(raw: unknown): OpsTickReport {
     problem_keys: capped.problem_keys,
     connection_logins: logins,
     write_backs: writeBacks,
+    sweeps_run: sweepsRun,
   }
 }
 
