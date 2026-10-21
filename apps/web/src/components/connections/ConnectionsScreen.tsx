@@ -125,8 +125,11 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
   }, [source, clock])
 
   // The first load, and the company list beside it, so both are there when chosen (L610).
+  // Once per mount: a new `source` or `clock` (the preview rebuilds them) never sends attempt 1 again.
+  const loadedOnce = useRef(false)
   useEffect(() => {
-    if (noInitialLoad) return
+    if (noInitialLoad || loadedOnce.current) return
+    loadedOnce.current = true
     loadList(1)
     loadGoogle()
   }, [loadList, loadGoogle, noInitialLoad])

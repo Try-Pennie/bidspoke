@@ -511,14 +511,25 @@ describe('GET /connections: what the page draws each connection from (build PR 9
       expect(body.statuses.stale).toBe(true)
     })
 
-    it('reads Needs reconnecting, without asking Slack, when the stored token cannot be read', async () => {
-      const rows = ROWS.map((r) => (r.id === ALERTS ? { ...r, credential_enc: null, config: { default_channel: 'C0ALERTS' } } : r))
+    it('reads Needs reconnecting, without asking Slack, when the sealed token opens with no key and there is no plaintext copy', async () => {
+      const rows = ROWS.map((r) => (r.id === ALERTS ? { ...r, credential_enc: 'v1:not-a-real-ciphertext', config: { default_channel: 'C0ALERTS' } } : r))
       vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(rows) as never)
       vi.spyOn(console, 'error').mockImplementation(() => {})
       const { env } = makeEnv({})
       const body = await shown(env)
       expect(vi.mocked(verifySlackToken)).not.toHaveBeenCalled()
       expect(body.connections.find((c) => c.id === ALERTS)!).toMatchObject({ status: 'reauth', status_word: 'Needs reconnecting' })
+    })
+
+    it('calls a row with no usable token unchecked, not refused: no status unless one is kept, under the stale strip', async () => {
+      const rows = ROWS.map((r) => (r.id === ALERTS ? { ...r, credential_enc: null, config: { bot_token: 'xoxb-SECRET' } } : r))
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(rows) as never)
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const { env } = makeEnv({})
+      const body = await shown(env)
+      expect(vi.mocked(verifySlackToken)).not.toHaveBeenCalled()
+      expect(body.connections.find((c) => c.id === ALERTS)!).toMatchObject({ status: null, status_word: null })
+      expect(body.statuses).toMatchObject({ stale: true, unavailable: { cause: 'slack_unanswered' } })
     })
 
     it('never asks Slack about an ops Slack connection, whose status is health\'s', async () => {

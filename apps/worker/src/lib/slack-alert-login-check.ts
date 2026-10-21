@@ -11,8 +11,9 @@
  *
  *   Slack accepts the token        ok (Working), acting as the bot Slack names
  *   Slack refuses it               reauth (Needs reconnecting): only a new token fixes it
- *   the stored token cannot be read reauth too, and Slack is not asked: the alerts cannot
- *                                  post with it either, and saving the token again is the fix
+ *   a sealed token no key opens  reauth too, and Slack is not asked: the alerts cannot
+ *   (and no plaintext copy)       post with it either, and saving the token again is the fix
+ *   a row with no usable token    unanswered: nothing about a token was measured
  *   no answer by the deadline      unanswered: the route shows the last known status
  *                                  under the stale strip, as for an ops login, or no
  *                                  status when none is stored (never a made up one)
@@ -71,9 +72,17 @@ export async function checkSlackAlertLogin(
         keys = undefined
       }
       const resolved = await resolveSlackConnection(picked.row, keys)
-      if (resolved.kind !== 'connection') {
-        console.error(JSON.stringify({ event: 'slack_alert_login_unreadable', organization_id: orgId, reason: resolved.kind === 'unreadable' ? resolved.reason : 'no_token' }))
+      // Only a sealed token no key opens, with no plaintext copy, is known to be
+      // unusable. A row that reads as no connection (no token, no channel, or
+      // gone since the list read) measured nothing about a token, so it is not
+      // called refused: it falls back to the last known status like no answer.
+      if (resolved.kind === 'unreadable') {
+        console.error(JSON.stringify({ event: 'slack_alert_login_unreadable', organization_id: orgId, reason: resolved.reason }))
         return { kind: 'answered', status: 'reauth', acts_as: null }
+      }
+      if (resolved.kind !== 'connection') {
+        console.warn(JSON.stringify({ event: 'slack_alert_login_unchecked', organization_id: orgId, reason: picked.row ? 'no_usable_token' : 'row_gone' }))
+        return { kind: 'unanswered', detail: picked.row ? 'the alert row holds no usable token and channel' : 'the alert row is gone' }
       }
       const check = await verifySlackToken(resolved.connection.bot_token)
       if (check.kind === 'refused') {
