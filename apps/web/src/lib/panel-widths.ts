@@ -25,7 +25,8 @@ export const PANEL_MAX_WIDTH = 1000
 
 /**
  * Opening width per kind. Panels showing code or a JSON payload start wide;
- * the two-column forms and the version list start narrow.
+ * the two-column forms and the version list start narrow; the lead validation
+ * checks panel sits between, at the width its design was drawn at.
  */
 export const PANEL_WIDTH_DEFAULTS: Record<PanelKind, number> = {
   form: 320,

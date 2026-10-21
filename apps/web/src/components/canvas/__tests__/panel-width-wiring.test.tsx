@@ -61,7 +61,6 @@ function CanvasStandIn({ initialType = 'code' }: { initialType?: string }) {
     <div>
       <button onClick={() => setType('code')}>select code node</button>
       <button onClick={() => setType('salesforce')}>select form node</button>
-      <button onClick={() => setType('lead_validation')}>select lead validation node</button>
       <ConfigPanel
         node={nodeOf(type)}
         onClose={vi.fn()}
@@ -95,7 +94,7 @@ describe('the width a canvas actually gives an open node panel', () => {
   // check rows and rule builder truncate at the 320 form width.
   it('opens a lead validation step at the width its design was drawn at, and moves no other step', () => {
     render(<CanvasStandIn initialType="lead_validation" />)
-    expect(renderedWidth()).toBe(469)
+    expect(renderedWidth()).toBe(PANEL_WIDTH_DEFAULTS.checks)
 
     fireEvent.click(screen.getByText('select form node'))
     expect(renderedWidth()).toBe(PANEL_WIDTH_DEFAULTS.form)
