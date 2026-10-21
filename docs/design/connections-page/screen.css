@@ -1,4 +1,4 @@
-/* The Connections page as settled in the #2338 design rounds (round 1 to 26), with the rejected
+/* The Connections page as settled in the #2338 design rounds (round 1 to 27), with the rejected
    options' rules taken out. Colours are the app's: navy #1D212F marks a selection, blue #1B72BA is
    for buttons only, red #B42318 only for something wrong, grey hint text #697081. */
 .cx-page { padding: 32px 32px 48px; max-width: 1072px; position: relative; }
@@ -69,6 +69,8 @@
 /* Round 25: Another org, its address typed into the Org box, the box's menu open under it. */
 .sv-menu { margin-top: 4px; background: #fff; border: 1px solid #D9D4CC; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.08); padding: 4px 0; }
 .sv-opt { padding: 7px 12px; font-size: 14px; color: #1D212F; }
+/* Round 27: an open dropdown's highlighted row is pale grey behind dark text, in every dropdown. */
+.sv-opt[aria-selected="true"] { background: #F1EFEA; color: #343434; }
 .ad-foot { display: flex; gap: 8px; margin-top: 4px; align-items: center; }
 .ad-line { display: flex; align-items: center; gap: 10px; font-size: 14px; color: #1D212F; margin-top: 4px; }
 .ad-line.bad { color: #B42318; align-items: flex-start; }

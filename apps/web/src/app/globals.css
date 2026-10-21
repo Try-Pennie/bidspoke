@@ -340,7 +340,7 @@ html {
     @apply p-1;
   }
   .select-item {
-    @apply relative flex cursor-default select-none items-center rounded py-1.5 pl-7 pr-3 text-sm text-graphite outline-none data-[disabled]:text-gray-500 data-[highlighted]:bg-p-blue-light data-[highlighted]:text-graphite;
+    @apply relative flex cursor-default select-none items-center rounded py-1.5 pl-7 pr-3 text-sm text-graphite outline-none data-[disabled]:text-gray-500 data-[highlighted]:bg-highlight data-[highlighted]:text-graphite;
   }
   .select-item-missing {
     @apply italic text-gray-600;
@@ -356,8 +356,72 @@ html {
   .suggest-item {
     @apply cursor-default select-none truncate rounded px-2.5 py-1.5 text-[13px] text-graphite;
   }
+  /* The highlighted row of every dropdown is the pale grey highlight behind dark
+     text (#2338 round 27, Dan 2026-10-21). */
   .suggest-item-active {
-    @apply bg-p-blue-light;
+    @apply bg-highlight;
+  }
+  /* The rule builder's field list and the canvas reference list (FieldAutocomplete,
+     TemplateTextarea): a monospace row whose padding each list sets, highlighted
+     like every dropdown (round 27), under the keys or the mouse. */
+  .autocomplete-item {
+    @apply cursor-pointer font-mono text-graphite;
+  }
+  .autocomplete-item-idle {
+    @apply hover:bg-highlight;
+  }
+  .autocomplete-item-active {
+    @apply bg-highlight;
+  }
+  /* The Combobox (#2338, components/ui/Combobox.tsx): a looked up list. Closed it
+     is the Select's trigger (or, for a typed new value, the plain box); open, a
+     menu as wide as the control. The highlighted row (under the mouse or the
+     arrow keys) is the pale grey highlight behind dark text, as in every dropdown
+     (round 27), the chosen one carries a navy check, and an option's grey second
+     line sits under its label. Blue stays for buttons (.impeccable.md). */
+  .combobox {
+    @apply w-full;
+  }
+  .combobox-placeholder {
+    @apply text-hint;
+  }
+  .combobox-hint {
+    @apply mt-1 block text-xs [overflow-wrap:anywhere];
+  }
+  .combobox-content {
+    @apply z-50 w-[var(--radix-popover-trigger-width)] min-w-[12rem] overflow-y-auto rounded-lg border border-gray-200 bg-white p-1 shadow-lg;
+    max-height: min(var(--radix-popover-content-available-height), 20rem);
+  }
+  .combobox-item {
+    @apply flex cursor-default select-none items-start gap-1.5 rounded px-2 py-1.5 text-sm text-graphite;
+  }
+  .combobox-item-active {
+    @apply bg-highlight;
+  }
+  .combobox-item-check {
+    @apply mt-0.5 inline-flex h-3.5 w-3.5 shrink-0 text-navy;
+  }
+  /* Pretty wrapping keeps a wrapped label or "Use <typed> as a new org" from
+     ending on a lone word. */
+  .combobox-item-text {
+    @apply min-w-0 flex-1 text-pretty [overflow-wrap:anywhere];
+  }
+  .combobox-item-label {
+    @apply block;
+  }
+  .combobox-item-hint {
+    @apply block text-xs text-hint;
+  }
+  /* On the highlighted row the hint grey measures 4.31 to 1, so the second line
+     takes the darker grey there (round 28); every other hint is unchanged. */
+  .combobox-item-active .combobox-item-hint {
+    @apply text-hint-on-highlight;
+  }
+  .combobox-note {
+    @apply flex items-center gap-2 px-2 py-1.5 text-sm text-hint text-pretty;
+  }
+  .combobox-failed {
+    @apply flex flex-col items-start gap-2 px-2 py-1.5;
   }
   /* A choice whose options each need a sentence (#2137): one per line, a dot
      that fills when chosen, the hint under the label. */

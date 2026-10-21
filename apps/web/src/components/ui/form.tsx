@@ -24,7 +24,8 @@ import { Loader2 } from 'lucide-react'
 export function Field({ id, label, labelHidden, hint, error, children }: { id: string; label: string; labelHidden?: boolean; hint?: string; error?: string | null; children: ReactNode }) {
   return (
     <div className="field">
-      <label htmlFor={id} className={labelHidden ? 'sr-only' : 'mb-1 block text-xs font-medium text-gray-600'}>{label}</label>
+      {/* The id lets a control's popup list be named by this label too (the Combobox, #2338). */}
+      <label id={`${id}-label`} htmlFor={id} className={labelHidden ? 'sr-only' : 'mb-1 block text-xs font-medium text-gray-600'}>{label}</label>
       {children}
       {hint && <p id={`${id}-hint`} className="mt-1 text-xs text-hint">{hint}</p>}
       {error && <FieldError id={`${id}-error`} alert size="xs" className="mt-1">{error}</FieldError>}

@@ -81,10 +81,10 @@ describe('settled Connections designs (#2338)', () => {
     })
   }
 
-  // Rounds 24 to 26 (Dan, 2026-10-20). A check reads the design through the browser, so it cannot
+  // Rounds 24 to 27 (Dan, 2026-10-20 and 21). A check reads the design through the browser, so it cannot
   // run here; what can drift silently is the builder and its check each holding their own copy of a
   // decision's words or size, so the pair is read back from both and compared.
-  describe('rounds 24 to 26: each builder draws what its check expects', () => {
+  describe('rounds 24 to 27: each builder draws what its check expects', () => {
     const read = (rel: string) => readFileSync(design(rel), 'utf8')
 
     it('D8: the step form problem line reads "<status> on the Connections page", the page a dark underlined link', () => {
@@ -114,7 +114,8 @@ describe('settled Connections designs (#2338)', () => {
       expect(spec.frames.find((f) => f.id === 'add-salesforce-new-org')?.variant).toEqual({ state: 'add', service: 'Salesforce', save: 'ready', org: 'new' })
       const map = (jsonBlock(read('connections-page.html'), 'decision-map') as { decisions: Decision[] }).decisions
       const covering = map.filter((d) => d.frames?.includes('add-salesforce-new-org')).map((d) => d.id)
-      expect(covering).toEqual(['D15', 'D24', 'D25', 'D27'])
+      // D28 (round 27, 2026-10-21): the frame's open menu is the one drawing a highlighted row.
+      expect(covering).toEqual(['D15', 'D24', 'D25', 'D27', 'D28'])
     })
   })
 

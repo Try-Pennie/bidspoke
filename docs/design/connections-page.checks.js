@@ -469,6 +469,20 @@
       var lone = lineBlocks(main(doc)).filter(function (b) { return b.lines.length > 1 && b.lines[b.lines.length - 1].words.length === 1; });
       if (lone.length) return bad("ends on a lone word: " + lone.slice(0, 3).map(function (b) { return "\"" + txt(b.el).slice(0, 80) + "\""; }).join(" | "));
       return ok("no line ends on a lone word");
+    } },
+    // Round 27: an open dropdown's highlighted row is pale grey behind dark text, in every dropdown.
+    { id: "D28", frames: ["add-salesforce-new-org"], check: function (doc) {
+      var HIGHLIGHT = "rgb(241, 239, 234)", GRAPHITE = "rgb(52, 52, 52)";
+      var opt = qa(doc, '[role="listbox"] [role="option"][aria-selected="true"]')[0];
+      if (!opt) return bad("the open menu has no highlighted option");
+      var s = css(opt);
+      if (s.backgroundColor !== HIGHLIGHT) return bad("the highlighted option's background is " + s.backgroundColor + ", not " + HIGHLIGHT);
+      var words = [opt].concat(qa(opt, "*")).filter(function (e) {
+        return Array.prototype.some.call(e.childNodes, function (n) { return n.nodeType === 3 && n.nodeValue.trim(); });
+      })[0];
+      var colour = words ? css(words).color : s.color;
+      if (colour !== GRAPHITE) return bad("the highlighted option's text is " + colour + ", not " + GRAPHITE);
+      return ok("highlighted option pale grey behind graphite text");
     } }
   ];
 })();

@@ -1,4 +1,4 @@
-// The Connections page as settled in the #2338 design rounds (rounds 1 to 26, 2026-10-20), drawn
+// The Connections page as settled in the #2338 design rounds (rounds 1 to 27, 2026-10-20 and 21), drawn
 // into the captured app chrome's #main-content at 1120 wide. Only the settled behaviour is here;
 // every rejected option of the rounds is gone. make-settled.py hands buildScreen one variant per
 // frame, and the variant names the frame's state:
@@ -229,6 +229,8 @@ function addPanel(variant) {
       typed.setAttribute("role", "combobox"); typed.setAttribute("aria-expanded", "true"); typed.setAttribute("aria-controls", "org-menu");
       var menu = el("div", "sv-menu"); menu.id = "org-menu"; menu.setAttribute("role", "listbox");
       var opt = el("div", "sv-opt", "Use " + nw.address + " as a new org"); opt.setAttribute("role", "option");
+      // Round 27: the only option is the highlighted one, as the box marks it while an address is typed.
+      opt.setAttribute("aria-selected", "true");
       menu.append(opt);
       orgField = field("Org", typed, menu);
     } else {

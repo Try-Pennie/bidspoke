@@ -136,6 +136,15 @@
   says so as `// paginate-ok .eq(column): <why>`, naming a row selecting filter that is on the
   query. Reads unbounded today are listed in `worker-unbounded-reads-baseline.json`, which may
   only shrink: converting one means lowering its count in the same change.
+- A workflow definition names a connection only by its id, and only a live connection of
+  its own organization (#2338). The trigger `workflows_refuse_missing_connections` refuses
+  any other definition write, holding the named connections FOR KEY SHARE so a save and
+  `remove_ops_connection` cannot pass each other's check. Every definition writer in
+  `routes/api/workflows.ts` asks `definition_connection_problems` first
+  (`lib/workflow-connection-check.ts`), so it refuses by name and writes nothing;
+  `__guards__/worker/workflow-connection-check-guard.test.ts` fails on one that does not.
+  What counts as naming a connection is the one database predicate
+  `definition_connection_ids`, which `connection_references` reads too.
 - Partner saves are versioned (#2132). The partner edit route (`PUT /api/partners/:id`)
   writes through the `save_partner_config` function, which writes just the fields a save
   names and refuses one made from a version that is no longer stored (409 `stale_version`,
