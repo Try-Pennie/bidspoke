@@ -18,6 +18,12 @@
    "service": "Salesforce",
    "actsAs": "pennie.api@achieve.example",
    "status": "reauth"
+  },
+  {
+   "name": "Lendco Salesforce",
+   "service": "Salesforce",
+   "actsAs": "api@lendco.example",
+   "status": "failing"
   }
  ],
  "statusVocabulary": {

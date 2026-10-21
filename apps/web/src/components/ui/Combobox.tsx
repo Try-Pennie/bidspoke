@@ -62,79 +62,49 @@ export interface ComboboxNewValue {
   placeholder?: string
 }
 
-interface ComboboxProps {
-  id: string
-  value: string
-  /** Called with the chosen value; `isNew` when it was typed rather than chosen from the list. */
-  onChange: (value: string, choice: { isNew: boolean }) => void
-  /**
-   * Loads the options, once when the control mounts and again on Try again.
-   * A rejection's message is shown as the error, so throw a sentence a person
-   * can act on ("Salesforce did not answer."), never a raw fetch error.
-   */
-  loadOptions: (signal: AbortSignal) => Promise<readonly ComboboxOption[]>
-  placeholder?: string
-  /** Shown when the load answers with nothing to choose from. */
-  emptyMessage?: string
-  /** Allows a typed value as a new option (round 25). Left out, only the list's values can be chosen. */
-  newValue?: ComboboxNewValue
-  /** The value was typed as a new one when this control last held it, so it opens as the box to type into. */
-  valueIsNew?: boolean
-  disabled?: boolean
-  describedBy?: string
-  'aria-label'?: string
-  /** After this long a load shows its elapsed seconds. */
-  slowAfterMs?: number
+/** A list loaded while the page is open: waiting since startedAt, read, or failed with a sentence. */
+export type ListLoad<T> =
+  | { kind: 'loading'; startedAt: number }
+  | { kind: 'ready'; options: readonly T[] }
+  | { kind: 'failed'; message: string }
+
+/** One load as its holder sees it: the state, the clock's last reading while it waits, and Try again. */
+export interface ListLoadHandle<T> {
+  load: ListLoad<T>
+  /** The clock's reading at the last heartbeat, so elapsed time is `now - load.startedAt`. */
+  now: number
+  retry: () => void
+}
+
+export interface ListLoadOptions {
   /** After this long a load that has not answered is the error, with Try again. */
   deadlineMs?: number
+  /** What the error says at the deadline; left out, it says how long it waited. */
+  stalledMessage?: string
   clock?: ComboboxClock
 }
 
-type LoadState =
-  | { kind: 'loading'; startedAt: number }
-  | { kind: 'ready'; options: readonly ComboboxOption[] }
-  | { kind: 'failed'; message: string }
-
-type Item =
-  | { kind: 'option'; option: ComboboxOption }
-  | { kind: 'another'; label: string }
-  | { kind: 'use'; typed: string; label: string }
-
-/** Letters typed within this long of each other are one type ahead search. */
-const TYPE_AHEAD_MS = 500
-
-function messageOf(err: unknown): string {
-  return err instanceof Error && err.message.trim() ? err.message : 'The list could not be loaded.'
-}
-
-const lower = (s: string | undefined) => (s ?? '').toLowerCase()
-
-export function Combobox({
-  id, value, onChange, loadOptions, placeholder, emptyMessage = 'Nothing to choose from.', newValue, valueIsNew,
-  disabled, describedBy: db, 'aria-label': ariaLabel, slowAfterMs = 2000, deadlineMs = 15_000, clock = realClock,
-}: ComboboxProps) {
-  const base = useId()
-  const menuId = `${base}-menu`
-  const listId = `${base}-list`
-  const hintId = `${base}-hint`
-  const optionId = (i: number) => `${base}-option-${i}`
-
-  const triggerRef = useRef<HTMLButtonElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
-  const anchorRef = useRef<HTMLDivElement>(null)
-  const contentRef = useRef<HTMLDivElement>(null)
-
-  // ── The load ────────────────────────────────────────────────────────────────
-  const loaderRef = useRef(loadOptions)
+/**
+ * Loads a list once when the component mounts and again on retry, with a
+ * heartbeat each second while it waits and the deadline after which the wait
+ * is the error (working, still alive and failed look different, Dan
+ * 2026-06-28). A late answer, from a load the deadline or a retry has
+ * superseded, is never taken. Held by the Combobox for its own list, or by a
+ * caller that also reads the list outside the menu (the step form's Connection
+ * field, #2338 R8), which hands it to ComboboxControl so there is one load.
+ */
+export function useListLoad<T>(loader: (signal: AbortSignal) => Promise<readonly T[]>, { deadlineMs = 15_000, stalledMessage, clock = realClock }: ListLoadOptions = {}): ListLoadHandle<T> {
+  const loaderRef = useRef(loader)
   const clockRef = useRef(clock)
-  useEffect(() => { loaderRef.current = loadOptions; clockRef.current = clock })
-  const [load, setLoad] = useState<LoadState>(() => ({ kind: 'loading', startedAt: clock.now() }))
+  const stalledRef = useRef(stalledMessage)
+  useEffect(() => { loaderRef.current = loader; clockRef.current = clock; stalledRef.current = stalledMessage })
+  const [load, setLoad] = useState<ListLoad<T>>(() => ({ kind: 'loading', startedAt: clock.now() }))
   const [now, setNow] = useState(() => clock.now())
   /** Bumped by every new load and by the deadline, so a late answer is never taken. */
   const generation = useRef(0)
   const stopCurrent = useRef<() => void>(() => {})
 
-  const startLoad = useCallback(() => {
+  const retry = useCallback(() => {
     stopCurrent.current()
     const g = ++generation.current
     const c = clockRef.current
@@ -151,7 +121,7 @@ export function Combobox({
       generation.current += 1
       stop()
       controller.abort()
-      setLoad({ kind: 'failed', message: `The list did not load within ${Math.round(deadlineMs / 1000)} seconds.` })
+      setLoad({ kind: 'failed', message: stalledRef.current ?? `The list did not load within ${Math.round(deadlineMs / 1000)} seconds.` })
     }, deadlineMs)
     stopCurrent.current = () => { stop(); controller.abort() }
     loaderRef.current(controller.signal).then(
@@ -161,9 +131,92 @@ export function Combobox({
   }, [deadlineMs])
 
   useEffect(() => {
-    startLoad()
+    retry()
     return () => { generation.current += 1; stopCurrent.current() }
-  }, [startLoad])
+  }, [retry])
+
+  return useMemo(() => ({ load, now, retry }), [load, now, retry])
+}
+
+interface ComboboxControlProps {
+  id: string
+  value: string
+  /** Called with the chosen value; `isNew` when it was typed rather than chosen from the list. */
+  onChange: (value: string, choice: { isNew: boolean }) => void
+  placeholder?: string
+  /** Shown when the load answers with nothing to choose from. */
+  emptyMessage?: string
+  /** Allows a typed value as a new option (round 25). Left out, only the list's values can be chosen. */
+  newValue?: ComboboxNewValue
+  /** The value was typed as a new one when this control last held it, so it opens as the box to type into. */
+  valueIsNew?: boolean
+  disabled?: boolean
+  describedBy?: string
+  'aria-label'?: string
+  /** After this long a load shows its elapsed seconds. */
+  slowAfterMs?: number
+  clock?: ComboboxClock
+  /**
+   * The value is an id, never fit to show (a connection's, #2338 R8): until the
+   * list holds it the box reads nothing, and once the list is read without it
+   * the box reads the placeholder, so the caller says what happened to it.
+   */
+  hideUnlistedValue?: boolean
+}
+
+interface ComboboxProps extends ComboboxControlProps {
+  /**
+   * Loads the options, once when the control mounts and again on Try again.
+   * A rejection's message is shown as the error, so throw a sentence a person
+   * can act on ("Salesforce did not answer."), never a raw fetch error.
+   */
+  loadOptions: (signal: AbortSignal) => Promise<readonly ComboboxOption[]>
+  /** After this long a load that has not answered is the error, with Try again. */
+  deadlineMs?: number
+}
+
+type Item =
+  | { kind: 'option'; option: ComboboxOption }
+  | { kind: 'another'; label: string }
+  | { kind: 'use'; typed: string; label: string }
+
+/** Letters typed within this long of each other are one type ahead search. */
+const TYPE_AHEAD_MS = 500
+
+function messageOf(err: unknown): string {
+  return err instanceof Error && err.message.trim() ? err.message : 'The list could not be loaded.'
+}
+
+const lower = (s: string | undefined) => (s ?? '').toLowerCase()
+
+/** The dropdown with its own load (useListLoad), started when it mounts. */
+export function Combobox({ loadOptions, deadlineMs, clock = realClock, ...control }: ComboboxProps) {
+  const list = useListLoad(loadOptions, { deadlineMs, clock })
+  return <ComboboxControl {...control} clock={clock} list={list} />
+}
+
+/**
+ * The dropdown drawing a load its caller holds (useListLoad), for a caller that
+ * reads the same list outside the menu too, so the list is loaded once and Try
+ * again in the menu retries that one load.
+ */
+export function ComboboxControl({
+  id, value, onChange, list, placeholder, emptyMessage = 'Nothing to choose from.', newValue, valueIsNew,
+  disabled, describedBy: db, 'aria-label': ariaLabel, slowAfterMs = 2000, clock = realClock, hideUnlistedValue,
+}: ComboboxControlProps & { list: ListLoadHandle<ComboboxOption> }) {
+  const base = useId()
+  const menuId = `${base}-menu`
+  const listId = `${base}-list`
+  const hintId = `${base}-hint`
+  const optionId = (i: number) => `${base}-option-${i}`
+
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const anchorRef = useRef<HTMLDivElement>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
+  const clockRef = useRef(clock)
+  useEffect(() => { clockRef.current = clock })
+  const { load, now, retry: startLoad } = list
 
   // ── What the menu offers ────────────────────────────────────────────────────
   const [open, setOpen] = useState(false)
@@ -199,8 +252,11 @@ export function Combobox({
   const shown = open && !disabled
 
   const chosen = known.find((o) => o.value === value)
+  // An id is never shown: blank until the list is read, then the placeholder, the caller saying what became of it.
+  const shownValue = hideUnlistedValue && !chosen ? (load.kind === 'ready' ? '' : null) : value
   const boxText = chosen ? chosen.label
-    : value === '' ? (placeholder ?? '')
+    : shownValue === null ? ''
+    : shownValue === '' ? (placeholder ?? '')
     // Only a list that was read can say a value has gone from it (L11).
     : load.kind === 'ready' ? `${value} (no longer available)`
     : value
@@ -414,7 +470,7 @@ export function Combobox({
                 onKeyDown={onTriggerKeyDown}
                 className="select-trigger"
               >
-                <span className={`select-trigger-text ${chosen || value !== '' ? '' : 'combobox-placeholder'}`.trim()}>{boxText}</span>
+                <span className={`select-trigger-text ${chosen || (shownValue !== null && shownValue !== '') ? '' : 'combobox-placeholder'}`.trim()}>{boxText}</span>
                 <ChevronDown className="select-trigger-icon h-3.5 w-3.5" aria-hidden="true" />
               </button>
             )}

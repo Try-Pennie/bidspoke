@@ -727,3 +727,15 @@ describe('ConfigPanel: the Filter condition dropdown reads the shared operator l
     expect(Boolean(screen.queryByPlaceholderText('Value…'))).toBe(!VALUE_LESS_OPERATORS.has(operator))
   })
 })
+
+// The settled step form design (docs/design/connections-step-form.html, #2338) reads a step's
+// fields inside #step-panel-body, so the real panel names its body the same way: the design's
+// checks then run on the canvas once the Connection field is mounted on a step (#2339).
+describe('the step panel body', () => {
+  it('carries the id the settled step form checks read', () => {
+    renderPanel(nodeOf('salesforce'))
+    const body = document.getElementById('step-panel-body')
+    expect(body).not.toBeNull()
+    expect(within(body as HTMLElement).getByText('Display name')).toBeInTheDocument()
+  })
+})

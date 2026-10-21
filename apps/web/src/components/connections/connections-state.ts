@@ -15,11 +15,11 @@
  * answer cannot replace the card or a newer list. The clock is the `tick`
  * event's, never the machine's, so tests move time by hand.
  */
-import { addRequestOf, draftReady, EMPTY_DRAFT, firstConnection, listGroups, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry, type UsingWorkflow } from './connection-model'
+import { addRequestOf, draftReady, EMPTY_DRAFT, firstConnection, LIST_NO_ANSWER, listGroups, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry, type UsingWorkflow } from './connection-model'
 import { draftDirty, EMPTY_ADD_DRAFT, type AddDraft, type GoogleWay } from './add-form-model'
 
-/** What the could not load card says when Bidspoke's server gave no answer (D23). */
-export const LIST_NO_ANSWER = "Bidspoke's server did not answer."
+/** What the could not load card says when Bidspoke's server gave no answer (D23); one copy, in connection-model. */
+export { LIST_NO_ANSWER }
 
 export interface LoadedList {
   connections: ConnectionView[]

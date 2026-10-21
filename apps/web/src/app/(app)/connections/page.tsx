@@ -2,6 +2,8 @@
 
 export const runtime = 'edge'
 
+import { Suspense } from 'react'
+import { useSearchParams } from 'next/navigation'
 import NavLayout from '@/components/NavLayout'
 import { api } from '@/lib/api'
 import { ConnectionsScreen, type ConnectionsSource } from '@/components/connections/ConnectionsScreen'
@@ -23,10 +25,22 @@ const live: ConnectionsSource = {
   remove: (id) => api.connections.remove(id),
 }
 
+/**
+ * ?connection=<id> opens that connection: a step's problem line links here to
+ * where it is fixed (build PR 11, R8). An id the list does not hold opens the
+ * first connection, as a page with none named does.
+ */
+function Screen() {
+  const named = useSearchParams()?.get('connection')
+  return <ConnectionsScreen source={live} initialChosen={named ? { kind: 'connection', id: named } : undefined} />
+}
+
 export default function ConnectionsPage() {
   return (
     <NavLayout>
-      <ConnectionsScreen source={live} />
+      <Suspense fallback={null}>
+        <Screen />
+      </Suspense>
     </NavLayout>
   )
 }

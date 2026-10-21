@@ -724,8 +724,19 @@ async function authHeaders(): Promise<HeadersInit> {
 // draft or a save not yet confirmed, the redirect is not made and the page
 // says why instead, so an expired session never takes unsaved work with it.
 function redirectToLogin() {
-  if (typeof window === 'undefined' || holdAuthRedirect(401)) return
+  if (typeof window === 'undefined' || onDevPreview() || holdAuthRedirect(401)) return
   window.location.href = '/login'
+}
+
+/**
+ * A development preview (/dev/..., which answers 404 in a production build)
+ * draws real components with no session by design, the canvas around a step's
+ * Connection field among them (#2338): a call one of them makes still fails as
+ * a 401, but the preview is not sent to sign in. Never true in a production
+ * build, where the check is compiled out.
+ */
+function onDevPreview(): boolean {
+  return process.env.NODE_ENV !== 'production' && typeof window.location?.pathname === 'string' && window.location.pathname.startsWith('/dev/')
 }
 
 // Handle an auth-level rejection from the Worker API. 401 = not authenticated

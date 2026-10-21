@@ -16,7 +16,7 @@ import path from 'node:path'
 import { useState } from 'react'
 import { act, render, screen, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { Combobox, type ComboboxClock, type ComboboxOption } from '../Combobox'
+import { Combobox, ComboboxControl, useListLoad, type ComboboxClock, type ComboboxOption } from '../Combobox'
 import { Field } from '../form'
 
 const ORGS: ComboboxOption[] = [
@@ -411,5 +411,62 @@ describe('Combobox', () => {
     await screen.findAllByRole('option')
     expect(document.querySelector('select, datalist, option')).toBeNull()
     expect(screen.getByRole('combobox', { name: 'Org' })).not.toHaveAttribute('list')
+  })
+})
+
+// The step form's Connection field (#2338 build PR 11, R8) reads the same load the
+// menu shows: the facts under the field (who it acts as, its status) come from the
+// list, so the list is loaded once, by useListLoad, and handed to the control.
+describe('ComboboxControl with a load its caller holds', () => {
+  function Shared({ load, clock, value = '', hideUnlistedValue }: {
+    load: (signal: AbortSignal) => Promise<readonly ComboboxOption[]>
+    clock?: ComboboxClock
+    value?: string
+    hideUnlistedValue?: boolean
+  }) {
+    const list = useListLoad(load, { clock, deadlineMs: 15_000, stalledMessage: 'The orgs did not load in time.' })
+    return (
+      <>
+        <label htmlFor="org">Org</label>
+        <ComboboxControl id="org" value={value} onChange={() => {}} list={list} placeholder="Choose an org" hideUnlistedValue={hideUnlistedValue} />
+        <output data-testid="outside">{list.load.kind === 'failed' ? list.load.message : list.load.kind}</output>
+        <button type="button" onClick={list.retry}>Outside retry</button>
+      </>
+    )
+  }
+
+  it('shows the one load its caller holds: one call, the same failure inside the menu and out, and one retry for both', async () => {
+    let calls = 0
+    const load = async () => { calls += 1; if (calls === 1) throw new Error('Salesforce did not answer.'); return ORGS }
+    render(<Shared load={load} />)
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Org' }), { key: 'ArrowDown' })
+    expect(await within(menu()).findByRole('alert')).toHaveTextContent('Salesforce did not answer.')
+    expect(screen.getByTestId('outside')).toHaveTextContent('Salesforce did not answer.')
+    expect(calls).toBe(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Outside retry' }))
+    expect(await screen.findAllByRole('option')).toHaveLength(3)
+    expect(screen.getByTestId('outside')).toHaveTextContent('ready')
+    expect(calls).toBe(2)
+  })
+
+  it("says its caller's words when the load stalls at the deadline", () => {
+    const clock = new ManualClock()
+    render(<Shared load={() => new Promise(() => {})} clock={clock} />)
+    clock.advance(15_000)
+    expect(screen.getByTestId('outside')).toHaveTextContent('The orgs did not load in time.')
+  })
+
+  it('never shows a value that is an id: blank while the list loads or failed, the placeholder once it is read without it', async () => {
+    const clock = new ManualClock()
+    const { unmount } = render(<Shared load={() => new Promise(() => {})} clock={clock} value="7b0c1d2e-id" hideUnlistedValue />)
+    expect(screen.getByRole('combobox', { name: 'Org' })).toHaveTextContent(/^$/)
+    clock.advance(15_000)
+    expect(screen.getByRole('combobox', { name: 'Org' })).toHaveTextContent(/^$/)
+    unmount()
+    render(<Shared load={async () => ORGS} value="7b0c1d2e-id" hideUnlistedValue />)
+    await act(async () => {})
+    const box = screen.getByRole('combobox', { name: 'Org' })
+    expect(box).toHaveTextContent('Choose an org')
+    expect(box).not.toHaveTextContent('7b0c1d2e-id')
   })
 })

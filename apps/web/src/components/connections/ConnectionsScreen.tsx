@@ -31,11 +31,11 @@ import { errorSentence, requestFailureCause } from '@/lib/error-sentence'
 import { Button, ChoiceGroup, FieldError, Outcome, TextInput } from '@/components/ui/form'
 import { Tabs, TabPanel } from '@/components/ui/Tabs'
 import {
-  addRequestOf, agoText, delegationAdded, delegationShown, draftReady, DELEGATION_KIND_WORDS, etClock, etDay, etMoment, GOOGLE_LIST_ENTRY, historyWhat, isProblem, listGroups,
-  problemNotice, secretWordOf, statusWord, viewOf, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry,
+  addRequestOf, agoText, delegationAdded, delegationShown, draftReady, DELEGATION_KIND_WORDS, etClock, etDay, etMoment, GOOGLE_LIST_ENTRY, historyWhat, isProblem, listFailureCause, listGroups,
+  loadFailedSentence, problemNotice, secretWordOf, statusWord, viewOf, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry,
 } from './connection-model'
 import {
-  chosenConnection, connectionsReducer, initialConnectionsState, LIST_NO_ANSWER, unsavedWork, type Chosen, type ConnectionsEvent, type ConnectionsState, type DetailTab, type LoadedList,
+  chosenConnection, connectionsReducer, initialConnectionsState, unsavedWork, type Chosen, type ConnectionsEvent, type ConnectionsState, type DetailTab, type LoadedList,
 } from './connections-state'
 import {
   catalogueServices, createBodyOf, createdView, knownOrgs, reconnectBodyOf, saveFailureSentence, stalledSentence, type CreateBody, type CreatedConnection, type FormService,
@@ -75,19 +75,6 @@ export const browserClock: ConnectionsClock = {
 
 /** The explanation the term "domain wide delegation" carries (D10). */
 const DELEGATION_EXPLAINED = 'A Google Workspace grant that lets one service account act as anyone in the company.'
-
-/** What the could not load card says: the design's sentence when the server gave no answer, else the route's own. */
-export function loadFailedSentence(cause: string): string {
-  return cause === LIST_NO_ANSWER ? `The connections could not be loaded: ${LIST_NO_ANSWER}` : cause
-}
-
-/** Why a list load failed: no answer, or the route's own sentence; never a raw fetch error or a status code. */
-function listFailureCause(err: unknown): string {
-  const e = (err ?? {}) as { body?: unknown; timedOut?: unknown }
-  const sentence = e.body && typeof e.body === 'object' ? (e.body as { message?: unknown }).message : undefined
-  if (typeof sentence === 'string' && sentence.trim() !== '') return sentence
-  return LIST_NO_ANSWER
-}
 
 /** A refused change or read, as a plain sentence: the route's, or what failed and the cause measured. */
 function changeSentence(err: unknown, what: string): string {

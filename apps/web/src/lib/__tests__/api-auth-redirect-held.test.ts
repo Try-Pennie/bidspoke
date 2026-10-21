@@ -46,6 +46,31 @@ describe('auth redirects consult the leave guard (#2138)', () => {
     })
   }
 
+  // A development preview (/dev/..., 404 in a production build) draws real components with no
+  // session by design, such as the canvas around a step's Connection field (#2338 build PR 11):
+  // a call one of them makes still fails as a 401, but the preview is never sent to sign in.
+  it('a development preview is not sent to sign in, and the call still fails as a 401', async () => {
+    session = null
+    const loc = { href: 'http://localhost:3111/dev/connection-field?frame=step-healthy', pathname: '/dev/connection-field' }
+    vi.stubGlobal('window', { location: loc })
+    const fetch = vi.fn()
+    vi.stubGlobal('fetch', fetch)
+    vi.mocked(holdAuthRedirect).mockReturnValue(false)
+    const err = await api.partners.versions('p1').catch((e: unknown) => e)
+    expect(fetch).not.toHaveBeenCalled()
+    expect(loc.href).toBe('http://localhost:3111/dev/connection-field?frame=step-healthy')
+    expect((err as { status?: number }).status).toBe(401)
+  })
+
+  it('a page outside the previews is still sent to sign in', async () => {
+    session = null
+    const loc = { href: '/developers', pathname: '/developers' }
+    vi.stubGlobal('window', { location: loc })
+    vi.mocked(holdAuthRedirect).mockReturnValue(false)
+    await api.partners.versions('p1').catch(() => {})
+    expect(loc.href).toBe('/login')
+  })
+
   it('no session at all is a 401 too: held, and never mistaken for a request with no answer', async () => {
     session = null
     const loc = { href: '/partners' }

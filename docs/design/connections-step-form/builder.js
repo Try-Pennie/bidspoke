@@ -1,5 +1,5 @@
 // A workflow step's Connection field on the canvas, as settled in the #2338 design rounds (rounds 8,
-// 8b and 24, 2026-10-20), drawn into the captured canvas chrome's step panel body (#step-panel-body)
+// 8b and 24, 2026-10-20, and the Check failing follow up the same day), drawn into the captured canvas chrome's step panel body (#step-panel-body)
 // at 1120 wide. Display name, Step ID, Operation and Object are drawn as the product draws them
 // today; only the Connection field is the decision. make-settled.py hands buildScreen one variant
 // per frame: {chosen: "<connection name>"}.
@@ -32,9 +32,11 @@ function buildScreen(variant) {
   var under = el("div");
   under.append(part(el("div", "sf-hint", "Acts as " + chosen.actsAs), "acts-as"));
   if (chosen.status !== "ok") {
-    // Round 24 drew this line for Needs reconnecting only, the one problem a frame shows. What it
-    // reads for Check failing is not decided; "Check failing on the Connections page" is not it.
-    var bad = part(el("div", "sf-hint sf-problem"), "connection-problem");
+    // Round 24 drew this line for Needs reconnecting; Dan settled Check failing the same way on
+    // 2026-10-20 (#2338, the R8 follow up): "Check failing on the Connections page". The line is
+    // drawn through the app's failure class (field-error, FieldError's red), the build's one red
+    // for a sentence saying something is wrong, which no eye tells from the status red #B42318.
+    var bad = part(el("div", "sf-hint sf-problem field-error"), "connection-problem");
     var where = el("a", null, "Connections page"); where.href = "#";
     bad.append(document.createTextNode(fx.statusVocabulary[chosen.status] + " on the "), where);
     under.append(bad);

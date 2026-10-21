@@ -427,6 +427,23 @@ html {
   .combobox-failed {
     @apply flex flex-col items-start gap-2 px-2 py-1.5;
   }
+  /* A step's Connection field (#2338 R8, D8, components/connections/
+     ConnectionField.tsx): each line under the dropdown sits where the dropdown's
+     own "Acts as" line does, 12px, wrapped so none ends on a lone word (D27).
+     The problem line is FieldError's red at weight 500; the page it names is a
+     dark underlined link of normal weight, as every link (round 24). */
+  .connection-field-line {
+    @apply mt-1 block text-xs text-pretty;
+  }
+  .connection-field-problem {
+    @apply font-medium;
+  }
+  .connection-field-line a {
+    @apply font-normal text-navy underline;
+  }
+  .connection-field-failed {
+    @apply flex flex-col items-start gap-2;
+  }
   /* A choice of two or three ways, each a card with its hint under it (#2338
      R16: a company mailbox or drive, or your own Google account). Navy marks
      the chosen card, as every selection is; at rest each card has its line, so

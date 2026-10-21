@@ -5,8 +5,17 @@
   var BLUE = "rgb(27, 114, 186)", RED = "rgb(180, 35, 24)", NAVY = "rgb(29, 33, 47)";
   // Round 24: the problem line names where it is fixed, the page's name a link to it.
   var WHERE = " on the ", PAGE = "Connections page";
-  var FRAMES = ["step-healthy", "step-problem"];
+  var FRAMES = ["step-healthy", "step-problem", "step-failing"];
+  var CHOSEN = { "step-healthy": "Pennie Salesforce", "step-problem": "Achieve Salesforce", "step-failing": "Lendco Salesforce" };
   function panel(doc) { return doc.getElementById("step-panel-body") || doc.body; }
+  // The app's red for a sentence saying something is wrong, read from the colour FieldError's class draws
+  // on this side, beside the status red; a line in grey or any other colour is refused, never passed.
+  function failureRed(doc) {
+    var p = panel(doc), probe = doc.createElement("span"); probe.className = "field-error"; probe.textContent = "x";
+    p.append(probe); var c = css(probe).color; probe.remove();
+    return c;
+  }
+  function reds(doc) { var f = failureRed(doc); return f && f !== css(panel(doc)).color ? [f, RED] : [RED]; }
   function txt(e) { return e ? e.textContent.replace(/\s+/g, " ").trim() : ""; }
   function q(root, sel) { return root.querySelector(sel); }
   function qa(root, sel) { return Array.prototype.slice.call(root.querySelectorAll(sel)); }
@@ -18,7 +27,7 @@
   function underlined(e) { return css(e).textDecorationLine.indexOf("underline") >= 0; }
   function weight(e) { return parseInt(css(e).fontWeight, 10); }
   function chosen(ctx) {
-    var name = ctx.frame === "step-problem" ? "Achieve Salesforce" : "Pennie Salesforce";
+    var name = CHOSEN[ctx.frame];
     return ctx.fixture.connections.filter(function (c) { return c.name === name; })[0];
   }
   window.DESIGN_CHECKS = [
@@ -34,7 +43,7 @@
       if (JSON.stringify(lines) !== JSON.stringify(want)) return bad("under the dropdown: " + JSON.stringify(lines));
       var prob = q(f, '[data-part="connection-problem"]');
       if (c.status === "ok") return prob || q(f, "a") ? bad("a problem line or link shows on a working connection") : ok(want.join(" / "));
-      if (!prob || css(prob).color !== RED || weight(prob) !== 500) return bad("the problem line is not red at weight 500");
+      if (!prob || reds(doc).indexOf(css(prob).color) < 0 || weight(prob) !== 500) return bad("the problem line is not red at weight 500");
       var links = qa(prob, "a");
       if (links.length !== 1 || txt(links[0]) !== PAGE || !links[0].getAttribute("href")) return bad("the problem line has no link reading " + PAGE);
       var a = links[0];
@@ -51,9 +60,10 @@
       return links.length ? bad("a link is not dark and underlined: " + txt(links[0])) : ok("no blue outside buttons, links dark and underlined");
     } },
     { id: "D25", frames: FRAMES, check: function (doc) {
+      var red = reds(doc);
       var off = qa(panel(doc), "*").filter(function (e) {
         var s = css(e);
-        if (!(s.backgroundColor === RED || (ownText(e) && s.color === RED))) return false;
+        if (!(red.indexOf(s.backgroundColor) >= 0 || (ownText(e) && red.indexOf(s.color) >= 0))) return false;
         return !e.closest('[data-part="connection-problem"]');
       });
       return off.length ? bad("red on something not wrong: " + txt(off[0])) : ok("red only on the problem line");

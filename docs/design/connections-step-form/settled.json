@@ -11,20 +11,21 @@
  "fixture": "../connections-step-form.fixture.json",
  "frames": [
   {"id": "step-healthy", "title": "A Salesforce step on a working connection: Pennie Salesforce", "width": 1120, "variant": {"chosen": "Pennie Salesforce"}},
-  {"id": "step-problem", "title": "A Salesforce step on a connection with a problem: Achieve Salesforce", "width": 1120, "variant": {"chosen": "Achieve Salesforce"}}
+  {"id": "step-problem", "title": "A Salesforce step on a connection with a problem: Achieve Salesforce", "width": 1120, "variant": {"chosen": "Achieve Salesforce"}},
+  {"id": "step-failing", "title": "A Salesforce step on a connection whose login check is failing: Lendco Salesforce", "width": 1120, "variant": {"chosen": "Lendco Salesforce"}}
  ],
  "decisions": [
-  {"id": "D8", "decision": "On the canvas, a step's Connection field is the app's dropdown with the chosen connection's name, with only \"Acts as <who>\" under it; nothing about status on a healthy day. A connection with a problem adds one red line saying what is wrong and where it is fixed, \"Needs reconnecting on the Connections page\", its last two words a dark underlined link to that page.", "why": "Rounds 8 and 8b: who the step acts as is the fact a builder needs; a healthy status is noise. Round 24: the problem is fixed on the Connections page, so the line says so and links there.", "requirement": "R8",
-   "frames": ["step-healthy", "step-problem"],
-   "check": "The Connection field is a dropdown reading the chosen connection's name with \"Acts as <who>\" under it and nothing else on a working connection; on a connection with a problem one more line reads \"Needs reconnecting on the Connections page\" in red (#B42318) at weight 500, holding one link reading Connections page that is dark (#1D212F), underlined and of normal weight (400)."},
+  {"id": "D8", "decision": "On the canvas, a step's Connection field is the app's dropdown with the chosen connection's name, with only \"Acts as <who>\" under it; nothing about status on a healthy day. A connection with a problem adds one red line saying what is wrong and where it is fixed, \"Needs reconnecting on the Connections page\", or \"Check failing on the Connections page\" when its login check is failing, its last two words a dark underlined link to that page.", "why": "Rounds 8 and 8b: who the step acts as is the fact a builder needs; a healthy status is noise. Round 24: the problem is fixed on the Connections page, so the line says so and links there. Dan, 2026-10-20 (the R8 follow up on #2338): a failing check reads the same way.", "requirement": "R8",
+   "frames": ["step-healthy", "step-problem", "step-failing"],
+   "check": "The Connection field is a dropdown reading the chosen connection's name with \"Acts as <who>\" under it and nothing else on a working connection; on a connection with a problem one more line reads \"<status> on the Connections page\" (Needs reconnecting, or Check failing) in red (FieldError's red, or #B42318) at weight 500, holding one link reading Connections page that is dark (#1D212F), underlined and of normal weight (400)."},
   {"id": "D24", "decision": "Blue is for buttons only; links are dark and underlined.", "why": "The app's colour rule (.impeccable.md, #2114).", "requirement": "R24",
-   "frames": ["step-healthy", "step-problem"],
+   "frames": ["step-healthy", "step-problem", "step-failing"],
    "check": "Nothing in the Connection field is coloured blue (#1B72BA) in its text or background outside a button, and every link in it is dark (#1D212F) and underlined."},
   {"id": "D25", "decision": "Red is only for something genuinely wrong.", "why": "The app's colour rule (.impeccable.md, #2114).", "requirement": "R24",
-   "frames": ["step-healthy", "step-problem"],
-   "check": "Red (#B42318) appears in the step panel only on the line saying the connection has a problem."},
+   "frames": ["step-healthy", "step-problem", "step-failing"],
+   "check": "Red (FieldError's red, or #B42318) appears in the step panel only on the line saying the connection has a problem."},
   {"id": "D27", "decision": "No line of text ends with a single word on its own line. A rule for all of Bidspoke's copy, made by Dan on 2026-10-20 in these rounds.", "why": "Dan, 2026-10-20, #2338 design rounds.", "requirement": "R25",
-   "frames": ["step-healthy", "step-problem"],
+   "frames": ["step-healthy", "step-problem", "step-failing"],
    "check": "No block of text in the Connection field wraps so that its last line holds a single word (the other fields are the product's copy as it is today, not decided here)."}
  ],
  "exceptions": [],
