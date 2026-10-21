@@ -249,7 +249,15 @@ export const KEPT_LEAD_ECONOMY_SCRIPTS: readonly KeptScript[] = [
  * drift. No settings are committed for these workflows, so none are judged.
  */
 export const KEPT_RML_LENDSWIFT_SCRIPTS: readonly KeptScript[] = [
-  { namespace: 'build_response', file: 'build_response.js', script: RML_LENDSWIFT_BUILD_RESPONSE, canvasBaselineSha256: null, baselineReadOn: null },
+  {
+    namespace: 'build_response',
+    file: 'build_response.js',
+    script: RML_LENDSWIFT_BUILD_RESPONSE,
+    // Version 22's script, read from the live definition on 2026-10-21, before a
+    // LendSwift failure was answered as partner_error (#2582); clear it once the paste reads as agree.
+    canvasBaselineSha256: '090e39f89df498ce9bdfa4be158868c67567da40ff12607f97b82d200ff6c920',
+    baselineReadOn: '2026-10-21',
+  },
   {
     namespace: 'ping_lendswift',
     file: 'ping_lendswift.js',

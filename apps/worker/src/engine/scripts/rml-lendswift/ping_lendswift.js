@@ -81,14 +81,26 @@ async function transformToLendSwift(body, refId, leadAffiliate, leadProvider, le
   };
 }
 
+// The lead is sent to LendSwift ONCE, and its answer is waited for up to 60 seconds
+// (#2582, Dan 2026-10-21). There is no resend: a failed or slow call may already
+// have reached LendSwift, and a second send can come back as their duplicate_lead.
+// The node runs with retries 0 and a 65 second timeout, so the engine does not
+// resend it either.
+const LENDSWIFT_DEADLINE_MS = 60000;
+
 async function makeLendSwiftRequest(reqPayload, url, apiKey) {
+  const controller = new AbortController();
+  let timedOut = false;
+  const deadline = setTimeout(() => { timedOut = true; controller.abort(); }, LENDSWIFT_DEADLINE_MS);
   try {
     const response = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
       body: JSON.stringify(reqPayload),
+      signal: controller.signal,
     });
     const respData = await response.json().catch(() => null);
+    if (timedOut) return lendswiftTimeout();
     if (!response.ok) {
       return { error: true, kind: 'http_error', statusCode: response.status, body: respData };
     }
@@ -98,8 +110,15 @@ async function makeLendSwiftRequest(reqPayload, url, apiKey) {
     }
     return { error: false, statusCode: 200, data: respData };
   } catch (error) {
-    return { error: true, kind: 'network_error', statusCode: 500, message: error && error.message };
+    if (timedOut) return lendswiftTimeout();
+    return { error: true, kind: 'network_error', statusCode: null, message: error && error.message };
+  } finally {
+    clearTimeout(deadline);
   }
+}
+
+function lendswiftTimeout() {
+  return { error: true, kind: 'timeout', statusCode: null, message: `no answer from LendSwift within ${LENDSWIFT_DEADLINE_MS / 1000} seconds` };
 }
 
 // LendSwift's own reason for an error, small enough to keep on the step output (#2582).
@@ -125,22 +144,13 @@ function describeLendSwiftError(result) {
   }
   return {
     kind: result.kind,
-    http_status: result.kind === 'network_error' ? null : result.statusCode,
+    http_status: typeof result.statusCode === 'number' ? result.statusCode : null,
     status: typeof body.status === 'string' ? body.status : null,
     exc_type: typeof detail.exc_type === 'string' ? detail.exc_type : null,
     provider_error: providerType,
     message: maskDigits(message),
     decision_id: body.metadata && typeof body.metadata.decision_id === 'string' ? maskDigits(body.metadata.decision_id) : null,
   };
-}
-
-async function makeLendSwiftRequestWithRetry(reqPayload, url, apiKey) {
-  let result = await makeLendSwiftRequest(reqPayload, url, apiKey);
-  if (result.error && result.statusCode >= 500 && result.statusCode < 600) {
-    await new Promise((r) => setTimeout(r, 250));
-    result = await makeLendSwiftRequest(reqPayload, url, apiKey);
-  }
-  return result;
 }
 
 // --- Credential lookup (folded in) ---
@@ -169,12 +179,14 @@ const formattedBody = await transformToLendSwift(
   subAccountBids
 );
 
-const result = await makeLendSwiftRequestWithRetry(formattedBody, ENDPOINT_URL, apiKey);
+const result = await makeLendSwiftRequest(formattedBody, ENDPOINT_URL, apiKey);
 
 if (result.error) {
-  // A LendSwift failure ends the lead as no bid (#2582, Dan 2026-10-21): this answer has
-  // the shape build_response reads, with no bid amount and rejection_reason set, so the
-  // flow takes its normal no bid path (patch_applicant_no_bid and the rejected answer).
+  // A LendSwift failure ends the lead as no bid (#2582, Dan 2026-10-21). This answer
+  // carries lendswift_error, which build_response answers as partner_error, and it
+  // also has the shape of a rejection (no bid amount, rejection_reason set), so an
+  // older build_response still takes the no bid path. Either way the flow patches
+  // the Applicant through patch_applicant_no_bid and answers the source normally.
   // LendSwift's own reason stays on this step's output as lendswift_error.
   const lendswiftError = describeLendSwiftError(result);
   console.error('LendSwift failed, so the lead is answered as no bid (#2582):', JSON.stringify(lendswiftError));
