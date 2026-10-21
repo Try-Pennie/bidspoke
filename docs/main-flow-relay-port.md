@@ -135,11 +135,13 @@ version 172 (#2173), after an earlier apply (version 170) and its rollback
    from `apps/worker`) and require the refreshed Main Flow to be exactly the
    version the apply answered as `after`. Set `LIVE_STAGE` in
    `src/lib/main-flow-port/__tests__/gate-fixture.test.ts` to the stage just
-   applied, in the same pull request. That test requires the gate's Main Flow to
-   equal the transform of version 169 (the port tests' own copy,
-   `__tests__/fixtures/main-flow-v169.json`) at that stage. If it fails,
-   something other than the port changed Main Flow, most likely a canvas save,
-   and that save is looked at before anything here changes.
+   applied, in the same pull request. That test requires running that stage's
+   transform over the gate's Main Flow to change nothing, with exactly the
+   stage's posts native. A canvas save elsewhere in Main Flow passes (since
+   2026-10-21, when version 173's edits made the old "equals the transform of
+   version 169" check fail on an ordinary save). If it fails, a canvas save
+   undid part of the port, and that save is looked at before anything here
+   changes.
 
    The refresh pull request needs no `money-gate/expected-changes.json` entry.
    The gate replays the head's fixtures through both engines, the merge base's
