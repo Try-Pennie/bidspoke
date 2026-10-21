@@ -26,7 +26,7 @@ import { compareTranscripts, formatDifferences, type FixtureRecord, type Transcr
 import type { WorkflowShape } from '../lib/shape'
 import { fixtureId } from '../lib/run-kinds'
 import { FIXED_TIME_MS, runPlan } from './replay-env'
-import { armsOf, definitions, hostBundles, recordFixture, runOnce, shapes, variantFiles, type GateEnv } from './replay-core'
+import { AB_MODE, armsOf, definitions, hostBundles, recordFixture, runOnce, shapes, variantFiles, type GateEnv } from './replay-core'
 
 it('replays every fixture through the engine under test and writes the transcript', async () => {
   const e = env as unknown as GateEnv
@@ -101,7 +101,9 @@ async function replayAll(e: GateEnv): Promise<void> {
  * buyer. It runs on both sides, so each engine is shown to answer the same under
  * the harness the gate compares them with.
  */
-it('gives the same record however slow the database is', async () => {
+// Engine Bidding's fixture, which an A/B run of another workflow does not load;
+// the engine is the same on both sides of an A/B run, so this proves nothing new there.
+it.skipIf(AB_MODE !== null)('gives the same record however slow the database is', async () => {
   const e = env as unknown as GateEnv
   const workflow = 'Engine Bidding Workflow'
   const variantName = 'tripoint_declined_click_eligible'

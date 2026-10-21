@@ -13,11 +13,12 @@
  * - The worker's switch ends in `assertNever`, so an operator added here without
  *   a case does not compile either.
  * - `RULE_BUILDER_OPERATORS`, `SIMPLE_FILTER_OPERATORS` and the spec labels are
- *   the dropdown and card lists. The canvas files that still hold their own
- *   copies (RuleBuilder.tsx, ConfigPanel.tsx's FILTER_OPERATORS, the card label
- *   map in filter-condition.ts) move onto these in the second half of #2588,
- *   which changes what the dropdown offers and so waits on a design decision.
- *   Until then the rule builder does not offer `has_letter` or `not_blank`.
+ *   the dropdown and card lists: the rule builder (RuleBuilder.tsx), the simple
+ *   Filter condition (ConfigPanel.tsx) and the Filter card's summary
+ *   (filter-condition.ts) all read them, and hold no copy of their own.
+ *   A label is one vocabulary: the rule builder dropdown and every condition
+ *   summary show the same words (Dan, 2026-10-21, settled in
+ *   docs/design/lead-validation-node.html, decisions D9 to D11).
  *
  * Every live definition stores one of these spellings, so an operator is never
  * renamed or removed, only added.
@@ -91,8 +92,8 @@ export const CONDITION_OPERATOR_SPECS: Readonly<Record<ConditionOperator, Condit
   is_not_null: { label: 'is not null', words: 'is not null', valueKind: 'none', simpleFilter: false },
   exists: { label: 'exists', words: 'exists', valueKind: 'none', simpleFilter: true },
   not_exists: { label: 'not exists', words: 'does not exist', valueKind: 'none', simpleFilter: true },
-  has_letter: { label: 'has a letter', words: 'has a letter', valueKind: 'none', simpleFilter: false },
-  not_blank: { label: 'not blank', words: 'is not blank', valueKind: 'none', simpleFilter: false },
+  has_letter: { label: 'contains a letter', words: 'contains a letter', valueKind: 'none', simpleFilter: false },
+  not_blank: { label: 'is not empty', words: 'is not empty', valueKind: 'none', simpleFilter: false },
 }
 
 const OPERATOR_SET: ReadonlySet<string> = new Set(CONDITION_OPERATORS)

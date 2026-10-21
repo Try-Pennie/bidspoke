@@ -2,7 +2,7 @@
 
 import type { NodeType } from '@/types/workflow'
 import { nodeIconClass } from './nodes/node-colors'
-import { Filter, GitBranch, Code, ArrowRight, LogOut, ArrowLeftRight, Plug, GitFork, Package, Cloud, Layers, Database, Timer, HandCoins, BadgeDollarSign, MousePointerClick, ShieldCheck } from 'lucide-react'
+import { Filter, GitBranch, Code, ArrowRight, LogOut, ArrowLeftRight, Plug, GitFork, Package, Cloud, Layers, Database, Timer, HandCoins, BadgeDollarSign, MousePointerClick, ShieldCheck, SquareCheckBig } from 'lucide-react'
 
 interface PaletteNode {
   type: NodeType
@@ -115,6 +115,12 @@ const NODES: PaletteNode[] = [
     description: 'May a click buyer be offered this lead',
     icon: ShieldCheck,
   },
+  {
+    type: 'lead_validation',
+    label: 'Lead Validation',
+    description: 'Reject leads that fail a check',
+    icon: SquareCheckBig,
+  },
 ]
 
 /** The types a person can drag on, for the coverage test beside this file. */
@@ -129,7 +135,6 @@ export const PALETTE_HIDDEN: Readonly<Partial<Record<NodeType, string>>> = {
   partner_bid: 'retired (#645): Bid Group replaced it; the engine still executes saved ones',
   branch_end: 'created by the canvas when a branch is dropped, never placed by hand',
   parallel_end: 'created by the canvas when a parallel is dropped, never placed by hand',
-  lead_validation: 'engine only: it ships and soaks before the canvas offers it, with its card in phase 3 (#2590)',
 }
 
 interface Props {

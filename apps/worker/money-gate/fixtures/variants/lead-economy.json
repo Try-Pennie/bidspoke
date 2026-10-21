@@ -27,6 +27,10 @@
     { "name": "ineligible_state", "purpose": "a state outside the list", "set": { "personalInformation.state": "ZZ" } },
     { "name": "unqualified_income", "purpose": "income under the floor: unqualified_lead", "set": { "financialInformation.annualIncome": 1000 } },
     { "name": "unqualified_purpose", "purpose": "a purpose outside the allowed list", "set": { "loanInformation.purpose": "vacation" } },
-    { "name": "missing_phone", "purpose": "no phone: rejected", "set": { "personalInformation.primaryPhone": "" } }
+    { "name": "missing_phone", "purpose": "no phone: rejected", "set": { "personalInformation.primaryPhone": "" } },
+    { "name": "loan_between_minimums", "purpose": "between the Constants minimum 1000 and the script's 2000: unqualified_lead before and after the swap (#2591)", "set": { "loanInformation.loanAmount": 1500 } },
+    { "name": "loan_at_minimum", "purpose": "exactly 2000 still bids (#2591)", "set": { "loanInformation.loanAmount": 2000 } },
+    { "name": "invalid_name", "purpose": "a blank first name (#2591)", "set": { "personalInformation.firstName": "" } },
+    { "name": "unqualified_employment", "purpose": "an employment status outside the allowed list (#2591)", "set": { "financialInformation.employmentStatus": "retired" } }
   ]
 }

@@ -11,12 +11,11 @@ import type { NodeType } from '@/types/workflow'
 export const PREVIEW_TYPES = [
   'trigger', 'filter', 'branch', 'code', 'webhook', 'transform',
   'parallel', 'bid_group', 'constants', 'salesforce', 'data_store', 'latency_gate',
-  'achieve_offers', 'buyer_select', 'buyer_click_send', 'buyer_click_check', 'response', 'exit', 'branch_end', 'parallel_end',
+  'achieve_offers', 'buyer_select', 'buyer_click_send', 'buyer_click_check', 'lead_validation', 'response', 'exit', 'branch_end', 'parallel_end',
 ] as const satisfies readonly (NodeType | 'trigger')[]
 
 export const PREVIEW_OMITTED: Readonly<Partial<Record<NodeType, string>>> = {
   partner_bid: 'retired (#645): it renders as the generic card, which the preview shows through no type of its own',
-  lead_validation: 'engine only until its card is designed in phase 3 (#2590); it renders as the generic card meanwhile',
 }
 
 export const PREVIEW_STATES = ['default', 'unconfigured', 'timeout', 'failed', 'completed'] as const

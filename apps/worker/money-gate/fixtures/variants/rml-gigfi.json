@@ -22,6 +22,9 @@
     { "name": "not_self_employed", "purpose": "GigFi takes only self employed leads", "set": { "financialInformation.employmentStatus": "employed_full_time" } },
     { "name": "military", "purpose": "the military exclusion", "set": { "financialInformation.employmentStatus": "military" } },
     { "name": "ineligible_state", "purpose": "a state GigFi does not take", "set": { "personalInformation.state": "NY" } },
-    { "name": "loan_over_maximum", "purpose": "loan amount over the maximum", "set": { "loanInformation.loanAmount": 9000 } }
+    { "name": "loan_over_maximum", "purpose": "loan amount over the maximum", "set": { "loanInformation.loanAmount": 9000 } },
+    { "name": "loan_at_maximum", "purpose": "exactly the maximum still bids (#2591)", "set": { "loanInformation.loanAmount": 5000 } },
+    { "name": "invalid_name", "purpose": "a name with no letters (#2591)", "set": { "personalInformation.firstName": "1", "personalInformation.lastName": "2" } },
+    { "name": "employment_missing", "purpose": "no employment status: unqualified (#2591)", "unset": ["financialInformation.employmentStatus"] }
   ]
 }

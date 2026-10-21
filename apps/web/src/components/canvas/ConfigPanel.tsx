@@ -10,6 +10,7 @@ import { formatLogTime } from '@/lib/dates'
 import RuleBuilder from '@/components/rule-builder/RuleBuilder'
 import FieldAutocomplete from '@/components/rule-builder/FieldAutocomplete'
 import TemplateTextarea from './TemplateTextarea'
+import LeadValidationConfig from './LeadValidationConfig'
 import { X, Trash2, Plus, CheckCircle, ChevronDown, ChevronUp, ArrowRight, Copy, RotateCcw, Loader2, Play } from 'lucide-react'
 import { api } from '@/lib/api'
 import type { ServicePreset, Partner } from '@/lib/api'
@@ -21,6 +22,7 @@ import { isHardCoded4xx } from '@/lib/response-status'
 import { isBuyerPartner } from '@/lib/partner-roles'
 import { CLICK_CHECK_BUDGET_MS, DEFAULT_ALERT_OVER_PERCENT, PAYLOAD_NORMALISERS, POPULATIONS, WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
 import { POPULATION_LABELS } from '@/components/partners/buyer-profile/labels'
+import { SIMPLE_FILTER_OPERATORS, VALUE_LESS_OPERATORS } from '@bidspoke/workflow-definition'
 import { useKeyValueRows } from './useKeyValueRows'
 import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
@@ -92,6 +94,13 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
   const isCode = type === 'code'
 
   const [showAdvanced, setShowAdvanced] = useState(true)
+  // A lead validation step opens with Advanced collapsed (Dan, 2026-10-21,
+  // #2590 D15): the checks are what its panel is for. Its own state, so every
+  // other step's panel keeps Advanced as it was.
+  const [leadAdvancedOpen, setLeadAdvancedOpen] = useState(false)
+  useEffect(() => { setLeadAdvancedOpen(false) }, [node.id])
+  const advancedOpen = type === 'lead_validation' ? leadAdvancedOpen : showAdvanced
+  const toggleAdvanced = () => (type === 'lead_validation' ? setLeadAdvancedOpen((s) => !s) : setShowAdvanced((s: boolean) => !s))
   const [showMeta, setShowMeta] = useState(true)
   // Notes default to expanded if the node already has one, collapsed otherwise.
   // Re-init when the user clicks a different node so each node gets its own
@@ -424,6 +433,7 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
         {type === 'buyer_select' && <BuyerSelectConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'buyer_click_send' && <BuyerClickSendConfig key={node.id} config={data.config} onChange={updateConfig} />}
         {type === 'buyer_click_check' && <BuyerClickCheckConfig key={node.id} config={data.config} onChange={updateConfig} />}
+        {type === 'lead_validation' && <LeadValidationConfig key={node.id} config={data.config} onChange={updateConfig} refs={refs} />}
         {type === 'parallel' && <ParallelConfig config={data.config} onChange={updateConfig} currentNodeId={node.id} edges={edges} onEdgesChange={onEdgesChange} />}
         {type === 'parallel_end' && <ParallelEndConfig />}
         {type === 'branch_end' && <BranchEndConfig />}
@@ -432,13 +442,14 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
             those nodes are passive join markers, all retry/error config sits on the start. */}
         {type !== 'parallel_end' && type !== 'branch_end' && <div>
           <button
-            onClick={() => setShowAdvanced((s: boolean) => !s)}
+            onClick={toggleAdvanced}
+            aria-expanded={advancedOpen}
             className="pointer-events-auto flex items-center gap-1 text-xs font-medium uppercase tracking-wide text-gray-500 hover:text-gray-600"
           >
-            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showAdvanced ? '' : '-rotate-90'}`} />
+            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${advancedOpen ? '' : '-rotate-90'}`} />
             Advanced
           </button>
-          {showAdvanced && <div className="mt-3 space-y-3">
+          {advancedOpen && <div className="mt-3 space-y-3">
             <TimeoutField config={data.config} updateConfig={updateConfig} workflowId={workflowId} namespace={data.namespace} nodeType={type} />
             <Field label="Retries" hint="How many times to retry on temporary failures (network errors, 429, 502–504). Max 5.">
               <input
@@ -751,21 +762,8 @@ function StepInputView({ input, namespace }: { input: unknown; namespace: string
 
 // ── Type-specific sections ────────────────────────────────────────────────────
 
-const FILTER_OPERATORS: { value: EdgeCondition['operator']; label: string }[] = [
-  { value: 'eq', label: 'equals' },
-  { value: 'neq', label: 'does not equal' },
-  { value: 'gt', label: 'greater than' },
-  { value: 'gte', label: 'greater than or equal' },
-  { value: 'lt', label: 'less than' },
-  { value: 'lte', label: 'less than or equal' },
-  { value: 'contains', label: 'contains' },
-  { value: 'not_contains', label: 'does not contain' },
-  { value: 'exists', label: 'exists' },
-  { value: 'not_exists', label: 'does not exist' },
-]
-
-const VALUE_LESS = new Set<EdgeCondition['operator']>(['exists', 'not_exists'])
-
+// The simple Filter condition offers the shared list's simple operators in their
+// spelled out words (#2588); which of them takes a value is the shared list's too.
 function FilterConfig({
   config,
   onChange,
@@ -831,14 +829,14 @@ function FilterConfig({
               onChange={(e) => setCondition({ operator: e.target.value as EdgeCondition['operator'] })}
               className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
             >
-              {FILTER_OPERATORS.map((op) => (
+              {SIMPLE_FILTER_OPERATORS.map((op) => (
                 <option key={op.value} value={op.value}>{op.label}</option>
               ))}
             </select>
             <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
           </div>
           {/* Value */}
-          {!VALUE_LESS.has(operator) && (
+          {!VALUE_LESS_OPERATORS.has(operator) && (
             <input
               type="text"
               value={value}

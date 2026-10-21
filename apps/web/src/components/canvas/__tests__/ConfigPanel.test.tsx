@@ -3,6 +3,7 @@ import { render, screen, fireEvent, within } from '@testing-library/react'
 import ConfigPanel from '../ConfigPanel'
 import { api } from '@/lib/api'
 import { CLICK_CHECK_BUDGET_MS } from '@bidspoke/buyer-profile'
+import { SIMPLE_FILTER_OPERATORS, VALUE_LESS_OPERATORS } from '@bidspoke/workflow-definition'
 
 // Characterization tests (#239): every node type's config form mounts via the
 // public ConfigPanel (the per-type sub-forms are internal, not exported), so a
@@ -697,5 +698,32 @@ describe('ConfigPanel: buyer_click_send notify percent hint (#1557)', () => {
     renderPanel(nodeOf('buyer_click_send', {}))
     expect(screen.queryByText(/Of the clicks per day on the buyer profile/)).toBeNull()
     expect(screen.getByText(/once a Pacific day/)).toBeInTheDocument()
+  })
+})
+
+// #2588's editor half: the simple Filter condition reads the shared list, so it
+// offers the same ten operators in their spelled out words, as before.
+describe('ConfigPanel: the Filter condition dropdown reads the shared operator list (#2588)', () => {
+  function operatorSelect(): HTMLSelectElement {
+    const selects = Array.from(document.querySelectorAll('select')) as HTMLSelectElement[]
+    const op = selects.find((s) => Array.from(s.options).some((o) => o.value === 'eq'))
+    if (!op) throw new Error('no operator dropdown')
+    return op
+  }
+
+  it('offers exactly the shared simple Filter operators, with their words', () => {
+    renderPanel(nodeOf('filter', { condition: { field: 'state', operator: 'eq', value: 'CA' } }))
+    const options = Array.from(operatorSelect().options)
+    expect(options.map((o) => o.value)).toEqual(SIMPLE_FILTER_OPERATORS.map((o) => o.value))
+    expect(options.map((o) => o.textContent)).toEqual(SIMPLE_FILTER_OPERATORS.map((o) => o.label))
+    expect(options.map((o) => o.textContent)).toEqual([
+      'equals', 'does not equal', 'greater than', 'greater than or equal', 'less than', 'less than or equal',
+      'contains', 'does not contain', 'exists', 'does not exist',
+    ])
+  })
+
+  it.each(SIMPLE_FILTER_OPERATORS.map((o) => o.value))('shows a value box for %s exactly when it takes a value', (operator) => {
+    renderPanel(nodeOf('filter', { condition: { field: 'state', operator, value: 'CA' } }))
+    expect(Boolean(screen.queryByPlaceholderText('Value…'))).toBe(!VALUE_LESS_OPERATORS.has(operator))
   })
 })

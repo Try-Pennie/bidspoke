@@ -11,9 +11,10 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
-export function loadDevVars(): Record<string, string> {
+/** `path` names another .dev.vars, for a script run from a worktree that has none of its own. */
+export function loadDevVars(path?: string): Record<string, string> {
   const here = dirname(fileURLToPath(import.meta.url))
-  const raw = readFileSync(resolve(here, '..', '..', '.dev.vars'), 'utf8')
+  const raw = readFileSync(path ?? resolve(here, '..', '..', '.dev.vars'), 'utf8')
   const out: Record<string, string> = {}
   for (const line of raw.split('\n')) {
     const t = line.trim()

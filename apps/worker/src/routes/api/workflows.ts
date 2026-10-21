@@ -7,7 +7,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { refreshWorkflowCaches } from '../../engine/definition-loader'
-import { findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems } from '@bidspoke/workflow-definition'
+import { findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems, findLeadValidationPlacementProblems } from '@bidspoke/workflow-definition'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
 import { writeAuditLog } from '../../lib/audit'
@@ -87,19 +87,28 @@ function salesforceOptionRefusal(definition: unknown): string | null {
 }
 
 /**
- * A lead validation step its executor could not run (#2589): no checks, a half
- * filled row, an empty value, a reason outside the one list, no lead id field,
- * or a reference to a step that does not run before it or to a Constants key its
- * Constants step does not hold. Judged where each step sits, by the rule the
- * canvas shows (packages/workflow-definition), and asked by every route a
- * definition enters by, so one PUT from a file meets what the canvas does.
+ * A lead validation step that may not be written (#2589, #2590), or null.
+ *
+ * Its placement is judged at every write: one inside a parallel block is
+ * refused live or not, like a loop, because a lead it rejects there cannot be
+ * answered (Dan's decision on #2590).
+ *
+ * Its configuration, the rules its executor needs (no checks, a half filled
+ * row, an empty value, a reason outside the one list, no lead id field, a
+ * reference to a step that does not run before it or to a Constants key its
+ * Constants step does not hold), is judged only when the write makes the
+ * definition live (`live`): a save of a switched on workflow, the switch on,
+ * and a restore onto a switched on workflow. Like every other unconfigured step
+ * (the canvas's liveSaveBlocker), a switched off draft with a half built check
+ * saves (Dan's decision on #2590). Both rules are the canvas's own
+ * (packages/workflow-definition), so one PUT from a file meets what the canvas does.
  */
-function leadValidationRefusal(definition: unknown): string | null {
+function leadValidationRefusal(definition: unknown, live: boolean): string | null {
   const def = definition as { nodes?: unknown; edges?: unknown } | null | undefined
   if (!Array.isArray(def?.nodes)) return null
   const nodes = (def.nodes as unknown[]).filter((n): n is WorkflowDefinition['nodes'][number] => typeof n === 'object' && n !== null)
   const edges = Array.isArray(def.edges) ? (def.edges as WorkflowDefinition['edges']) : []
-  const problem = findLeadValidationProblems(nodes, edges)[0]
+  const problem = findLeadValidationPlacementProblems(nodes, edges)[0] ?? (live ? findLeadValidationProblems(nodes, edges)[0] : undefined)
   return problem ? `${problem.namespace}: ${problem.message}` : null
 }
 
@@ -196,7 +205,8 @@ workflows.post('/', async (c) => {
   // Salesforce write option rule the save route applies (#2170).
   const sfProblem = salesforceOptionRefusal(body.definition)
   if (sfProblem) return c.json({ error: sfProblem }, 400)
-  const validationProblem = leadValidationRefusal(body.definition)
+  // A created workflow is switched off (below), so only the placement rule applies.
+  const validationProblem = leadValidationRefusal(body.definition, false)
   if (validationProblem) return c.json({ error: validationProblem }, 400)
 
   if (body.folder_id) {
@@ -505,7 +515,7 @@ workflows.put('/:id', async (c) => {
     // applies, so a definition PUT from a file is held to what the canvas is.
     const sfProblem = salesforceOptionRefusal(def)
     if (sfProblem) return c.json({ error: sfProblem }, 400)
-    const validationProblem = leadValidationRefusal(def)
+    const validationProblem = leadValidationRefusal(def, existing.is_active === true)
     if (validationProblem) return c.json({ error: validationProblem }, 400)
     // A live workflow's buyer steps must read every rule they judge (#2149).
     if (existing.is_active === true) {
@@ -786,6 +796,10 @@ workflows.patch('/:id', async (c) => {
 
   // Switching on makes the definition live: its buyer steps must read every rule they judge (#2149).
   if (body.is_active === true) {
+    // And its lead validation steps must be ones the executor can run (#2590),
+    // since a switched off draft may have been saved half built.
+    const validationProblem = leadValidationRefusal(owner.definition, true)
+    if (validationProblem) return c.json({ error: validationProblem }, 400)
     const unread = await unreadBuyerRuleRefusal(c, supabase, orgId, { id, name: owner.name, definition: owner.definition })
     if (unread) return unread
     // And every connection it names must still be a live one of this
@@ -1000,6 +1014,11 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   const blocked = dbErrorUnlessNotFound(c, versionError)
   if (blocked) return blocked
   if (!version) return c.json({ error: 'Version not found' }, 404)
+
+  // A restored definition meets the lead validation rules (#2590): the placement
+  // always, the configuration when the restore makes it live at once.
+  const restoreProblem = leadValidationRefusal(version.definition, owner.is_active === true)
+  if (restoreProblem) return c.json({ error: restoreProblem }, 400)
 
   // A restore onto a live workflow makes the old definition live at once (#2149).
   if (owner.is_active === true) {
