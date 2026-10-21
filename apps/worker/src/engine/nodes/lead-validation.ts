@@ -55,15 +55,16 @@ export type LeadValidationEvent =
   | { kind: 'evaluated'; namespace: string }
   | { kind: 'config_fault'; namespace: string; faults: ConfigFault[] }
 
-const PROBLEM_WORDS: Record<Exclude<ConfigFaultProblem, 'config_invalid'>, string> = {
-  missing: 'which is missing',
-  not_a_number: 'which is not a number',
-  not_a_list: 'which is not a list',
+/** What each setting fault says about the setting: the one wording the failure message and the page share. */
+export const CONFIG_FAULT_WORDS: Record<Exclude<ConfigFaultProblem, 'config_invalid'>, string> = {
+  missing: 'is missing',
+  not_a_number: 'is not a number',
+  not_a_list: 'is not a list',
 }
 
 function describeFault(f: ConfigFault): string {
   if (f.problem === 'config_invalid') return `the node config is not runnable: ${f.detail ?? 'unreadable'}`
-  return `check ${f.check_id ?? '?'} reads ${f.reference ?? '?'}, ${PROBLEM_WORDS[f.problem]}`
+  return `check ${f.check_id ?? '?'} reads ${f.reference ?? '?'}, which ${CONFIG_FAULT_WORDS[f.problem]}`
 }
 
 /**
@@ -86,11 +87,8 @@ export class LeadValidationConfigFault extends Error {
 /** Why a lead's value could not be judged. */
 export type UnevaluableCause = 'missing' | 'not_a_number' | 'not_a_list'
 
-const CAUSE_WORDS: Record<UnevaluableCause, string> = {
-  missing: 'is missing',
-  not_a_number: 'is not a number',
-  not_a_list: 'is not a list',
-}
+/** The same words a setting fault uses: a lead value and a setting fail to be read the same three ways. */
+const CAUSE_WORDS: Record<UnevaluableCause, string> = CONFIG_FAULT_WORDS
 
 /**
  * A check set to fail the run met a lead it could not judge. Permanent, and

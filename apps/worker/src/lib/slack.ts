@@ -2,6 +2,7 @@
 // The bot token is sealed in service_connections.credential_enc, with the plaintext copy in
 // config.bot_token until the contract release of #2331 (slack-connection.ts resolves both)
 
+import { CONFIG_FAULT_WORDS } from '../engine/nodes/lead-validation'
 import { scheduleInWords } from './schedule-words'
 import { DRAIN_STALL_SCHEDULES } from './strand-schedules'
 import { listWithOverflow, MAX_LISTED_LINES } from './list-overflow'
@@ -534,12 +535,6 @@ export interface LeadValidationConfigAlertPayload {
   app_url: string
 }
 
-const LEAD_VALIDATION_PROBLEM_WORDS: Record<string, string> = {
-  missing: 'is missing',
-  not_a_number: 'is not a number',
-  not_a_list: 'is not a list',
-}
-
 /**
  * A lead validation step cannot read a setting its checks need (#2589): every
  * lead reaching it fails the run the same way, so this is paged once per
@@ -554,7 +549,7 @@ export async function sendLeadValidationConfigAlert(
   const lines = payload.faults.map((f) =>
     f.problem === 'config_invalid'
       ? `• The step's settings cannot be run: ${f.detail ?? 'unreadable'}`
-      : `• Check \`${f.check_id ?? '?'}\` reads \`${f.reference ?? '?'}\`, which ${LEAD_VALIDATION_PROBLEM_WORDS[f.problem] ?? f.problem}`,
+      : `• Check \`${f.check_id ?? '?'}\` reads \`${f.reference ?? '?'}\`, which ${CONFIG_FAULT_WORDS[f.problem]}`,
   )
   const blocks = [
     { type: 'header', text: { type: 'plain_text', text: 'Lead Validation Setting Missing', emoji: false } },

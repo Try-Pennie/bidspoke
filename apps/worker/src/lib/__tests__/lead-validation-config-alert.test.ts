@@ -20,7 +20,7 @@ import { activeKey, recoveryKey, RECOVERY_REARM_MINUTES } from '../alert-recover
 import { INCIDENT_OUTBOX_PREFIX } from '../incident-outbox'
 import { incidentSignal } from '../incident-signals'
 import type { AlertClaims } from '../alert-claim'
-import type { LeadValidationEvent } from '../../engine/nodes/lead-validation'
+import { CONFIG_FAULT_WORDS, LeadValidationConfigFault, LeadValidationMissingValue, type LeadValidationEvent } from '../../engine/nodes/lead-validation'
 import { sendLeadValidationConfigAlert } from '../slack'
 import { slackOk, slackPostOf } from '../../__tests__/helpers/slack-fetch'
 
@@ -259,6 +259,23 @@ describe('the page', () => {
     expect(text).toContain('Check `amount` reads `steps.constants.output.maximumLoanAmount`, which is not a number')
     expect(text).toContain("The step's settings cannot be run: No checks set")
     expect(text).toContain(`https://app.test/workflows/${WF}`)
+  })
+})
+
+describe('one wording for a fault, wherever it is read', () => {
+  it('the page, the run\'s failure message and a lead value that cannot be judged say each problem the same way', async () => {
+    for (const problem of ['missing', 'not_a_number', 'not_a_list'] as const) {
+      const words = CONFIG_FAULT_WORDS[problem]
+      const fault = { check_id: 'c', reference: 'steps.constants.output.k', problem }
+      expect(new LeadValidationConfigFault('v', [fault]).message).toBe(`Lead validation setting missing: check c reads steps.constants.output.k, which ${words}`)
+      expect(new LeadValidationMissingValue('c', 'trigger.payload.x', problem).message).toBe(`Lead validation check c could not be judged: trigger.payload.x ${words}`)
+
+      const fetchMock = vi.fn().mockImplementation(async () => slackOk({ ts: '1.2' }))
+      vi.stubGlobal('fetch', fetchMock)
+      await sendLeadValidationConfigAlert({ bot_token: 'xoxb' }, '#rml', { workflow_id: WF, workflow_name: 'W', namespace: 'v', faults: [fault], app_url: 'https://app.test' })
+      expect(JSON.stringify((await slackPostOf(fetchMock.mock.calls[0])).blocks)).toContain(`Check \`c\` reads \`steps.constants.output.k\`, which ${words}`)
+      vi.unstubAllGlobals()
+    }
   })
 })
 

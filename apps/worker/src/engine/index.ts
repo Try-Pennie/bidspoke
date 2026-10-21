@@ -111,15 +111,6 @@ function extractResolvedInput(err: unknown): ResolvedStepInput | null {
   return tagged?.resolvedInput ?? null
 }
 
-// Carries step context through the throw so the alert can report which step failed.
-// `resolvedInput` is the request the failed step sent, as its executor attached it
-// (#1992): a post-answer Salesforce write that fails is replayed from it (#1993,
-// #471), and nothing else the run keeps can rebuild the exact patch. Same field
-// name as the executors' own errors, so `extractResolvedInput` reads either.
-// `heldUntil` is set when the watch kept the write's at-risk record and either
-// that request came from the watch because the failure carried none (a timeout,
-// #2163) or the Salesforce read-back owns the record (#468): the write's outcome
-// is unknown, KV holds it until then, and the capture stores no second copy.
 /**
  * Whether a step's thrown error opts out of the per run failure page. A partner
  * error says so itself; a lead validation setting fault always does, because it
@@ -131,6 +122,15 @@ function suppressAlertOf(err: unknown): boolean {
   return err instanceof LeadValidationConfigFault
 }
 
+// Carries step context through the throw so the alert can report which step failed.
+// `resolvedInput` is the request the failed step sent, as its executor attached it
+// (#1992): a post-answer Salesforce write that fails is replayed from it (#1993,
+// #471), and nothing else the run keeps can rebuild the exact patch. Same field
+// name as the executors' own errors, so `extractResolvedInput` reads either.
+// `heldUntil` is set when the watch kept the write's at-risk record and either
+// that request came from the watch because the failure carried none (a timeout,
+// #2163) or the Salesforce read-back owns the record (#468): the write's outcome
+// is unknown, KV holds it until then, and the capture stores no second copy.
 class StepFailureError extends Error {
   constructor(
     message: string,
