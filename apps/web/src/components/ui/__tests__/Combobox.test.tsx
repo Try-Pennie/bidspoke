@@ -17,6 +17,7 @@ import { useState } from 'react'
 import { act, render, screen, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { Combobox, type ComboboxClock, type ComboboxOption } from '../Combobox'
+import { Field } from '../form'
 
 const ORGS: ComboboxOption[] = [
   { value: 'achieve', label: 'Achieve', hint: 'achieve.my.salesforce.com' },
@@ -95,6 +96,24 @@ describe('Combobox', () => {
     expect(box).toHaveAttribute('aria-controls', list.id)
     const achieve = within(list).getByRole('option', { name: /Achieve/ })
     expect(within(achieve).getByText('achieve.my.salesforce.com')).toHaveClass('combobox-item-hint')
+  })
+
+  it('names its open list by the field label, not by the chosen value', async () => {
+    render(
+      <Field id="org2" label="Org">
+        <Combobox id="org2" value="pennie" onChange={() => {}} loadOptions={async () => ORGS} />
+      </Field>
+    )
+    screen.getByRole('combobox', { name: 'Org' }).focus()
+    await userEvent.keyboard('{ArrowDown}')
+    // jsdom names a list labelled by the combobox "Org" through the combobox's
+    // label, but Chromium does not (measured 2026-10-21: no name for the button,
+    // the typed text for the box), so the list must point at the label itself.
+    const list = await screen.findByRole('listbox')
+    const by = list.getAttribute('aria-labelledby')
+    expect(by).not.toBe('org2')
+    expect(document.getElementById(by ?? '')).toHaveTextContent('Org')
+    expect(document.getElementById(by ?? '')?.tagName).toBe('LABEL')
   })
 
   it('arrows move through the list, Enter chooses without submitting the form, and the trigger then reads the choice with its address under it', async () => {

@@ -217,6 +217,15 @@ export function Combobox({
     if (markedId) document.getElementById(markedId)?.scrollIntoView?.({ block: 'nearest' })
   }, [markedId])
 
+  // The open list is named by the field's label (Field gives it the id
+  // `<id>-label`). Pointing at the combobox instead names the list by the
+  // chosen value or the typed text in Chromium (measured 2026-10-21), so with
+  // no such label the list is left unnamed rather than misnamed.
+  const [fieldLabelId, setFieldLabelId] = useState<string | undefined>(undefined)
+  useEffect(() => {
+    if (shown) setFieldLabelId(document.getElementById(`${id}-label`) ? `${id}-label` : undefined)
+  }, [shown, id])
+
   const close = () => { setOpen(false); setActive(-1) }
   const openMenu = () => { if (!disabled) { setOpen(true); setActive(-1) } }
   const retry = () => { startLoad(); setActive(-1) }
@@ -430,7 +439,7 @@ export function Combobox({
             )}
             {showEmpty && <p className="combobox-note">{emptyMessage}</p>}
             {items.length > 0 && (
-              <ul id={listId} role="listbox" aria-label={ariaLabel} aria-labelledby={ariaLabel ? undefined : id} className="combobox-list">
+              <ul id={listId} role="listbox" aria-label={ariaLabel} aria-labelledby={ariaLabel ? undefined : fieldLabelId} className="combobox-list">
                 {items.map((item, i) => {
                   const isChosen = item.kind === 'option' && item.option.value === value
                   const classes = ['combobox-item', i === marked ? 'combobox-item-active' : '', isChosen ? 'combobox-item-chosen' : ''].filter(Boolean).join(' ')
