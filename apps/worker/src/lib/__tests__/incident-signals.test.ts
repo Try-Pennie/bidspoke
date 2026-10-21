@@ -17,6 +17,7 @@ import { OPS_CONNECTION_OWNER_SIGNAL } from '../ops-connection-owner-check'
 import { SALESFORCE_BULKHEAD_SIGNAL } from '../salesforce-bulkhead-check'
 import { MINUTE_JOB_FAILING_SIGNAL } from '../minute-job-failures'
 import { PARTNER_ERROR_RATE_SIGNAL, PARTNER_ERROR_RECOVERY_WORDS, WINDOW_MINUTES as PARTNER_ERROR_WINDOW_MINUTES } from '../partner-error-rate'
+import { LEAD_VALIDATION_REJECTION_RECOVERY_WORDS, LEAD_VALIDATION_REJECTION_SIGNAL, WINDOW_MINUTES as LEAD_VALIDATION_REJECTION_WINDOW_MINUTES } from '../lead-validation-rejection-watch'
 
 /**
  * The incident registry (#2099, #818): one entry per recovery prefix an alert
@@ -27,7 +28,7 @@ import { PARTNER_ERROR_RATE_SIGNAL, PARTNER_ERROR_RECOVERY_WORDS, WINDOW_MINUTES
  * from without either noticing.
  */
 describe('INCIDENT_SIGNALS', () => {
-  it('names the twenty four signals in use, each once', () => {
+  it('names the twenty five signals in use, each once', () => {
     const names = INCIDENT_SIGNALS.map((s) => s.signal)
     expect(new Set(names).size).toBe(names.length)
     expect([...names].sort()).toEqual([
@@ -39,6 +40,7 @@ describe('INCIDENT_SIGNALS', () => {
       'field-presence-drought',
       'field-presence-wrong-path',
       'lead-validation-config',
+      'lead-validation-rejection-rate',
       'minute-job-failing',
       'ops-connection-login',
       'ops-connection-owner',
@@ -88,6 +90,8 @@ describe('INCIDENT_SIGNALS', () => {
     expect(incidentSignal('volume-cliff').windowMinutes).toBe(RECENT_WINDOW_MINUTES)
     expect(PARTNER_ERROR_RATE_SIGNAL).toBe('partner-error-rate')
     expect(incidentSignal('partner-error-rate').windowMinutes).toBe(PARTNER_ERROR_WINDOW_MINUTES)
+    expect(LEAD_VALIDATION_REJECTION_SIGNAL).toBe('lead-validation-rejection-rate')
+    expect(incidentSignal('lead-validation-rejection-rate').windowMinutes).toBe(LEAD_VALIDATION_REJECTION_WINDOW_MINUTES)
     expect(incidentSignal('field-presence-drought').windowMinutes).toBe(DROUGHT_WINDOW_MINUTES)
     expect(incidentSignal('field-presence-dead').windowMinutes).toBe(DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES)
     expect(incidentSignal('field-presence-wrong-path').windowMinutes).toBe(DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES)
@@ -155,6 +159,7 @@ describe('INCIDENT_SIGNALS', () => {
     // The words its all clear names the signal by (slack.ts sendMinuteJobFailingRecoveryAlert).
     expect(incidentSignal('minute-job-failing').label.toLowerCase()).toBe('scheduled job failing')
     expect(incidentSignal('partner-error-rate').label.toLowerCase()).toBe(PARTNER_ERROR_RECOVERY_WORDS)
+    expect(incidentSignal('lead-validation-rejection-rate').label.toLowerCase()).toBe(LEAD_VALIDATION_REJECTION_RECOVERY_WORDS)
   })
 
   it('lists the partner kinds and the two database memory subjects', () => {
@@ -170,7 +175,7 @@ describe('INCIDENT_SIGNALS', () => {
     // organization; the rest key on a readable name (a host, a job, a GitHub
     // workflow file, or a fixed id).
     const byWorkflow = INCIDENT_SIGNALS.filter((s) => s.subject === 'workflow').map((s) => s.signal).sort()
-    expect(byWorkflow).toEqual(['failure-rate', 'field-presence-dead', 'field-presence-drought', 'field-presence-wrong-path', 'lead-validation-config', 'partner-error-rate', 'slow-spike', 'volume-cliff'])
+    expect(byWorkflow).toEqual(['failure-rate', 'field-presence-dead', 'field-presence-drought', 'field-presence-wrong-path', 'lead-validation-config', 'lead-validation-rejection-rate', 'partner-error-rate', 'slow-spike', 'volume-cliff'])
     expect(incidentSignal('db-unreachable').subject).toBe('organization')
     expect(incidentSignal('writeback-backlog').subject).toBe('organization')
     for (const s of ['partner-reachability', 'supabase-memory', 'pg-cron-watch', 'stored-copy-serving', 'workflow-schedule', 'cron-heartbeat', 'export-alert', 'partner-page-live'] as const) {

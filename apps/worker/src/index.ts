@@ -60,6 +60,7 @@ import { readAnswerJournal } from './engine/unconfirmed-writes'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
 import { PARTNER_ERROR_RATE_JOB, runPartnerErrorRateCheck } from './lib/partner-error-rate'
+import { LEAD_VALIDATION_REJECTION_JOB, runLeadValidationRejectionWatchForEnv } from './lib/lead-validation-rejection-watch'
 import { runSightingsExport, notifySetAsideRows } from './lib/sightings-export'
 import { runDeadLetterBuildTriggerCheck } from './lib/deadletter-volume'
 import { runAtRiskGapReportForEnv } from './lib/at-risk-gap-report'
@@ -782,6 +783,21 @@ const scheduledJobs = {
             }),
           LIVE_SHARE_REFUSALS_JOB,
           `[${LIVE_SHARE_REFUSALS_JOB}] check failed:`,
+        ),
+      )
+      // Each watched lead validation step's rejection reasons against the week
+      // before (#2592): the rollback trigger after a swap. Under a job run
+      // record (L557); both heartbeat stamps (L514).
+      ctx.waitUntil(
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, LEAD_VALIDATION_REJECTION_JOB)
+            .catch((e) => console.error(`[${LEAD_VALIDATION_REJECTION_JOB}] heartbeat write failed:`, e))
+            .then(() => runLeadValidationRejectionWatchForEnv(supabase, env.IDEMPOTENCY, env.APP_URL))
+            .then((s) => {
+              console.log(`[${LEAD_VALIDATION_REJECTION_JOB}] ${s.judged.map((j) => `${j.workflowId}:${j.state}:${j.runs}`).join(' ')} paged=${s.paged.length} all_clear=${s.allClear.length}`)
+            }),
+          LEAD_VALIDATION_REJECTION_JOB,
+          `[${LEAD_VALIDATION_REJECTION_JOB}] check failed:`,
         ),
       )
       // The kept Engine scripts against the canvas mirror (#1472): pages when a

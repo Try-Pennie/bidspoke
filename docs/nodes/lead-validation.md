@@ -108,6 +108,13 @@ Before a workflow's `validate_bidding_and_state` script is replaced, three instr
 
 The grid compares a rejection body as the JSON text the source reads, so the same keys in another order are a difference (`body key order`). The replay cannot: it reads the script's answer back from `execution_steps.output`, a jsonb column, which stores keys in its own order, so it compares keys and values only.
 
+## After a swap is saved
+
+The canvas gives a pasted step a new id, so a swap saved through the canvas changes the step's id and the ids of its two edges, and the layout may move cards. Nothing else may change (#2592).
+
+- **Save check**: `npx tsx scripts/lead-validation-swap-verify.ts <candidate> [--version <n>] [--dev-vars <path>]` from `apps/worker`, read only. It compares the newest version (or version `n`) with the one before it: the version before must hold the pinned script, the saved step must be byte for byte the candidate's type, label, config and variables, every other step must be unchanged apart from its position, every edge unchanged once the old step id is read as the new one, and the live workflow must be the saved version. The step id, the remade edges and any moved cards are printed as notes; anything else fails (`apps/worker/money-gate/swap/verify-save.ts`). Before the swap it prints NOT SAVED YET.
+- **Rejection rate watch**: every hour, each watched workflow's rejection reasons over the last two hours against the week before (`apps/worker/src/lib/lead-validation-rejection-watch.ts`, signal `lead-validation-rejection-rate`). A reason holding at least 2% of the week pages when its share halves or doubles; a rarer one when it reaches 10 leads and 3 points above its share. Its page, "Lead Rejections Changed", is the rollback trigger: restore the version before the swap from Version history. An all clear follows when the shares are back.
+
 ## See also
 
 - [Filter node](filter.md) for the shared operators

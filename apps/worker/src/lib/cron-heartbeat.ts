@@ -501,6 +501,20 @@ export const CRON_JOBS: CronJob[] = [
       'a buyer_select live share that refuses every lead (a buyer profile rule its step cannot read, say) sells nothing and pages nobody, as for 45 hours from 2026-10-13 (#2149)',
   },
   {
+    // The rejection rate watch after a lead validation swap (#2592,
+    // lead-validation-rejection-watch.ts): its page is the swap's rollback trigger.
+    id: 'lead-validation-rejection-watch',
+    label: 'Lead validation rejection watch',
+    triggerCron: '0 * * * *',
+    // 1h cadence, 1h slack, matching the other hourly jobs.
+    staleMs: 2 * H,
+    // Twenty four head counts on the (workflow_id, started_at) index per watched
+    // workflow, about 50 ms each warm: seconds.
+    maxRunMs: 10 * MIN,
+    dependents:
+      'a lead validation step that starts rejecting leads at different shares after its swap (a check letting through what the script rejected, or rejecting what it took) pages nobody, so the swap is never rolled back (#2592)',
+  },
+  {
     // The ops Worker's minute cron (#1949), watched from here because the
     // watchdog must not depend on the Worker it watches (L71). Its stamps arrive
     // through the OpsGateway entrypoint (lib/ops-gateway.ts); a tick that cannot
