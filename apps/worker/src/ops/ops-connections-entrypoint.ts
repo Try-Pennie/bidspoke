@@ -3,9 +3,9 @@
  * 5 of #1689; plan: discussion #2329, part 2): verify, clearReauth, revoke,
  * health, lookup and exchangeOAuthCode, and the Google mailboxes and drives
  * list's addDelegationSubject, removeDelegationSubject and listDelegationSubjects
- * (#2338, PR 2 of its build plan; connections/delegation-list.ts), which ship
- * here before the bidding routes that call them (PR 6), the same deploy order
- * as below.
+ * (#2338, PR 2 of its build plan; connections/delegation-list.ts), which shipped
+ * here before the bidding routes that call them (build PR 6), the same deploy
+ * order as below.
  *
  * WHO MAY CALL IT. Only a Worker holding a service binding to this named
  * entrypoint of bidspoke-worker-ops: the bidding Worker, through the
@@ -41,10 +41,10 @@
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import { raceDeadline } from '../lib/alert-claim'
 import {
-  OPS_CONNECTIONS_CEILINGS_MS, OPS_DELEGATION_CEILINGS_MS, OpsConnectionsContractError, parseAddDelegationSubjectRequest, parseClearReauthRequest,
+  OPS_CONNECTIONS_CEILINGS_MS, OpsConnectionsContractError, parseAddDelegationSubjectRequest, parseClearReauthRequest,
   parseExchangeOAuthCodeRequest, parseHealthRequest, parseListDelegationSubjectsRequest, parseLookupRequest, parseRemoveDelegationSubjectRequest,
   parseRevokeRequest, parseVerifyRequest, type AddDelegationSubjectAnswer, type ClearReauthAnswer, type ExchangeOAuthCodeAnswer, type HealthAnswer,
-  type ListDelegationSubjectsAnswer, type LookupAnswer, type OpsConnectionsMethod, type OpsConnectionsRefused, type OpsDelegationMethod,
+  type ListDelegationSubjectsAnswer, type LookupAnswer, type OpsConnectionsCoreMethod, type OpsConnectionsMethod, type OpsConnectionsRefused, type OpsDelegationMethod,
   type RemoveDelegationSubjectAnswer, type RevokeAnswer, type VerifyAnswer,
 } from '../lib/ops-connections-contract'
 import { addDelegationSubject, listDelegationSubjects, removeDelegationSubject, type DelegationListDeps } from './connections/delegation-list'
@@ -59,9 +59,9 @@ import { liveDelegationListDeps, liveOpsConnectionsDeps, OpsConnectionsNotConfig
 type Runner<Req, Ans> = (deps: OpsConnectionsDeps, request: Req, signal: AbortSignal) => Promise<Ans>
 
 /** The methods that open a sealed login, and so need the ops private key. */
-const OPENS_LOGINS: ReadonlySet<OpsConnectionsMethod> = new Set(['verify', 'clearReauth', 'lookup'])
+const OPENS_LOGINS: ReadonlySet<OpsConnectionsCoreMethod> = new Set(['verify', 'clearReauth', 'lookup'])
 
-const RUNNERS: { readonly [M in OpsConnectionsMethod]: Runner<never, unknown> } = {
+const RUNNERS: { readonly [M in OpsConnectionsCoreMethod]: Runner<never, unknown> } = {
   verify: verifyConnection,
   clearReauth,
   revoke: (deps, request) => revokeConnection(deps, request),
@@ -83,9 +83,7 @@ export interface OpsConnectionsAnswerOptions<Req, Ans> {
 
 const refused = (code: OpsConnectionsRefused['refused'], detail: string): OpsConnectionsRefused => ({ ok: false, refused: code, detail, retry_at: null })
 
-type EntrypointMethod = OpsConnectionsMethod | OpsDelegationMethod
-
-function logAnswer(method: EntrypointMethod, answer: { ok: boolean; refused?: string }, organizationId: string | null): void {
+function logAnswer(method: OpsConnectionsMethod, answer: { ok: boolean; refused?: string }, organizationId: string | null): void {
   console.log(JSON.stringify({ event: 'ops_connections', method, outcome: answer.ok ? 'ok' : answer.refused, organization_id: organizationId }))
 }
 
@@ -94,7 +92,7 @@ function logAnswer(method: EntrypointMethod, answer: { ok: boolean; refused?: st
  * tests, which drive it with doubles; the entrypoint passes nothing but the env.
  */
 export async function opsConnectionsAnswer<Req extends { organization_id: string }, Ans extends { ok: boolean }>(
-  env: OpsEnv, method: OpsConnectionsMethod, raw: unknown, parse: (raw: unknown) => Req, options: OpsConnectionsAnswerOptions<Req, Ans> = {},
+  env: OpsEnv, method: OpsConnectionsCoreMethod, raw: unknown, parse: (raw: unknown) => Req, options: OpsConnectionsAnswerOptions<Req, Ans> = {},
 ): Promise<Ans | OpsConnectionsRefused> {
   return answerMethod(env, method, raw, parse, OPS_CONNECTIONS_CEILINGS_MS[method],
     () => liveOpsConnectionsDeps(env, { opsFetch: options.opsFetch, opensLogins: OPENS_LOGINS.has(method), sealRegistry: options.sealRegistry }),
@@ -128,13 +126,13 @@ export async function delegationListAnswer(
   env: OpsEnv, method: OpsDelegationMethod, raw: unknown, options: DelegationListAnswerOptions = {},
 ): Promise<{ ok: boolean } | OpsConnectionsRefused> {
   const { parse, run } = DELEGATION_METHODS[method]
-  return answerMethod(env, method, raw, parse, OPS_DELEGATION_CEILINGS_MS[method],
+  return answerMethod(env, method, raw, parse, OPS_CONNECTIONS_CEILINGS_MS[method],
     () => liveDelegationListDeps(env, { opsFetch: options.opsFetch }),
     (options.run ?? run) as (deps: DelegationListDeps, request: { organization_id: string }, signal: AbortSignal) => Promise<{ ok: boolean }>, options.delay)
 }
 
 async function answerMethod<D, Req extends { organization_id: string }, Ans extends { ok: boolean }>(
-  env: OpsEnv, method: EntrypointMethod, raw: unknown, parse: (raw: unknown) => Req, ceilingMs: number,
+  env: OpsEnv, method: OpsConnectionsMethod, raw: unknown, parse: (raw: unknown) => Req, ceilingMs: number,
   makeDeps: () => D, run: (deps: D, request: Req, signal: AbortSignal) => Promise<Ans>, delay: ((ms: number) => Promise<void>) | undefined,
 ): Promise<Ans | OpsConnectionsRefused> {
   if (env.LANE !== OPS_LANE) {
@@ -204,7 +202,7 @@ export class OpsConnections extends WorkerEntrypoint<OpsEnv> {
     return opsConnectionsAnswer(this.env, 'exchangeOAuthCode', request, parseExchangeOAuthCodeRequest)
   }
 
-  // The Google mailboxes and drives list (#2338). Not in OPS_CONNECTIONS_METHODS until bidding calls them (PR 6): see the contract.
+  // The Google mailboxes and drives list (#2338): called by the bidding Worker's Connections routes since build PR 6.
   addDelegationSubject(request: unknown): Promise<AddDelegationSubjectAnswer> {
     return delegationListAnswer(this.env, 'addDelegationSubject', request) as Promise<AddDelegationSubjectAnswer>
   }

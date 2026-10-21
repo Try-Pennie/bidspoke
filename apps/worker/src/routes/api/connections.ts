@@ -7,6 +7,14 @@
 // POST /api/connections/:id/lookup/:key  one lookup through OpsConnections.lookup
 // POST /api/connections                  adds a connection: seal, verify, then
 //      insert (build PR 5; R13, R14, #2556), described above its handler
+// POST /api/connections/:id/reconnect    a new login, or the stored one checked
+//      again (build PR 6; R19, finding F116)
+// DELETE /api/connections/:id            removes one no workflow uses, then
+//      revokes it on ops (build PR 6; R9, R21)
+// GET, POST /api/connections/google/subjects, and
+// DELETE /api/connections/google/subjects/:kind/:subject  the Google
+//      mailboxes and drives list (build PR 6; R10)
+// Each is described above its handler.
 //
 // Who may call these: any signed in user of the organization (jwtAuth). Whose
 // data: only the caller's organization's rows, scoped by organization_id from
@@ -32,14 +40,20 @@ import { mapWithConcurrency } from '../../lib/timeout-audit'
 import { resolveSalesforceCredsFor } from '../../lib/salesforce-creds'
 import { moneyTargetIn, readMoneyTargets } from '../../lib/connection-money-targets'
 import {
-  createRefusalSentence, isCreateRefusalCode, type CreateRefusalCode, type CreateRouteRefusalCode, type RefusalContext, type VerifyRefusalCode,
+  connectionRouteSentence, createRefusalSentence, isCreateRefusalCode, type ConnectionRouteRefusalCode, type CreateRefusalCode, type CreateRouteRefusalCode,
+  type RefusalContext, type RouteRefusalContext, type VerifyRefusalCode,
 } from '../../lib/connection-create-refusals'
+import { readDelegationEntryBody, readReconnectBody, reconnectValues } from '../../lib/connection-reconnect'
+import { writeAuditLog } from '../../lib/audit'
+import { DELEGATION_KINDS, type DelegationKind } from '../../ops/run-vocabulary'
 import {
   actsAsOf, AUTH_TYPE_OF, connectionNameOf, CREATE_BODY_MAX_BYTES, declaredBodyTooLarge, declaredService, isReservedName, orgHostOf, readCreateBody,
   secretLabelOf, unlistedGoogleSubjects,
 } from '../../lib/connection-create'
-import { callOpsConnections, callOpsDelegation, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
-import { OpsConnectionsContractError, parseLookupRequest, type HealthRow, type OpsConnectionsRefusalCode } from '../../lib/ops-connections-contract'
+import { callOpsConnections, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
+import {
+  DELEGATION_DISPLAY_NAME_MAX, DELEGATION_SUBJECT_MAX, OpsConnectionsContractError, parseLookupRequest, type HealthRow, type OpsConnectionsRefusalCode,
+} from '../../lib/ops-connections-contract'
 import { pageStatusOf, readConnectionStatuses, rememberConnectionStatuses } from '../../lib/connection-statuses'
 
 type Variables = AuthVariables
@@ -270,6 +284,13 @@ const CREATED_COLUMNS = 'id, name, service_type, acts_as, target, created_at'
 //      that verified too loses on the unique and is refused as taken, which is
 //      then true. A failed verify wrote nothing, so a retry under the same name
 //      is not refused as taken.
+//   8. an insert that fails after verify passed (build PR 6) leaves ops holding
+//      what verify recorded under an id bidding never stored, so revoke is
+//      called for that id before the error is answered; a failed revoke is
+//      logged by the id (connection_create_left_on_ops) and the answer is the
+//      save's error still. An error that is not the database's refusal may
+//      have landed, so the id is read back first, and a row that landed is
+//      answered as saved and never revoked.
 //
 // Who may call it: any signed in user of the organization (jwtAuth). Whose
 // data: the caller's organization only, from the verified token; the body may
@@ -345,7 +366,7 @@ connections.post('/', async (c) => {
 
   // 5. A Google delegation login names only mailboxes and drives on the organization's list (F129).
   if (service.connection.auth === 'service_account_delegation') {
-    const list = await callOpsDelegation(c.env, 'listDelegationSubjects', { organization_id: orgId })
+    const list = await callOpsConnections(c.env, 'listDelegationSubjects', { organization_id: orgId })
     if (!list.ok) {
       console.error(JSON.stringify({ event: 'connection_google_list_unavailable', organization_id: orgId, refused: list.refused }))
       return refuse('google_list_unavailable', words)
@@ -407,17 +428,431 @@ connections.post('/', async (c) => {
     })
     .select(CREATED_COLUMNS)
     .single()
+  let stored = created
   if (insertError) {
-    if (insertError.code === '23505') return refuse('connection_name_taken', words)
-    if (insertError.code === '23514' && /alert_name_reserved/.test(insertError.message)) return refuse('connection_name_reserved', words)
-    console.error(JSON.stringify({ event: 'connection_create_insert_failed', organization_id: orgId, connection_id: connectionId, error: formatErr(insertError) }))
-    return refuse('connection_store_failed', words)
+    // A refusal by the database wrote nothing. Any other error may have landed
+    // (a call that timed out or lost its answer), so the id is read back first:
+    // revoking a row that did land would leave ops refusing it for 7 hours.
+    const refused = insertError.code === '23505' || insertError.code === '23514'
+    if (!refused) {
+      console.error(JSON.stringify({ event: 'connection_create_insert_failed', organization_id: orgId, connection_id: connectionId, error: formatErr(insertError) }))
+      const { data: landed, error: readBackError } = await supabase
+        .from('service_connections')
+        .select(CREATED_COLUMNS)
+        .eq('id', connectionId)
+        .eq('organization_id', orgId)
+        .maybeSingle()
+      if (readBackError) {
+        // Unknown either way: nothing is revoked, and the id is named so the leftover can be found.
+        console.error(JSON.stringify({ event: 'connection_create_left_on_ops', organization_id: orgId, connection_id: connectionId, why: 'the insert failed and could not be read back, so whether it landed is unknown' }))
+        return refuse('connection_store_failed', words)
+      }
+      if (landed) stored = landed
+    }
+    if (!stored) {
+      // Verify passed, so ops holds a record (the measured identity) under an id
+      // bidding never stored: withdraw it before answering, so nothing is left
+      // behind. A failed revoke does not change the save's answer, and is named.
+      const revoked = await callOpsConnections(c.env, 'revoke', { organization_id: orgId, connection_id: connectionId, generation, removed_at: new Date().toISOString() })
+      if (!revoked.ok) {
+        console.error(JSON.stringify({ event: 'connection_create_left_on_ops', organization_id: orgId, connection_id: connectionId, refused: revoked.refused, why: 'verify passed, the insert failed, and the revoke of the verified id failed' }))
+      }
+      if (insertError.code === '23505') return refuse('connection_name_taken', words)
+      if (insertError.code === '23514' && /alert_name_reserved/.test(insertError.message)) return refuse('connection_name_reserved', words)
+      if (refused) console.error(JSON.stringify({ event: 'connection_create_insert_failed', organization_id: orgId, connection_id: connectionId, error: formatErr(insertError) }))
+      return refuse('connection_store_failed', words)
+    }
   }
-  const row = created as { id: string; name: string; service_type: string; acts_as: string | null; target: unknown; created_at: string }
+  const row = stored as { id: string; name: string; service_type: string; acts_as: string | null; target: unknown; created_at: string }
   console.log(JSON.stringify({ event: 'connection_created', organization_id: orgId, connection_id: row.id, service: row.service_type }))
   return c.json({
     connection: { id: row.id, name: row.name, service: row.service_type, acts_as: row.acts_as, target: row.target ?? null, created_at: row.created_at },
   }, 201)
+})
+
+// ── Reconnect, Remove and the Google list (build PR 6; R9, R10, R19, R21) ───
+
+/** How each of these routes' own refusals is answered. */
+const ROUTE_STATUS: Readonly<Record<ConnectionRouteRefusalCode, 200 | 400 | 404 | 409 | 422 | 502 | 503>> = {
+  connection_not_found: 404,
+  connection_not_reconnectable: 422,
+  connection_not_removable: 422,
+  reconnect_target_changed: 422,
+  reconnect_target_unreadable: 422,
+  reconnect_login_unreadable: 422,
+  reconnect_stale: 409,
+  reconnect_unconfirmed: 503,
+  reconnect_saved_check_not_cleared: 502,
+  reauth_clear_unrecorded: 502,
+  connection_in_use: 409,
+  connection_remove_unconfirmed: 503,
+  connection_removed_ops_not_told: 200,
+  delegation_subject_invalid: 422,
+  delegation_display_name_invalid: 422,
+  delegation_subject_listed_elsewhere: 409,
+  delegation_subject_not_listed: 404,
+  delegation_change_failed: 503,
+  delegation_list_unavailable: 503,
+  delegation_change_refused: 502,
+}
+
+/** The columns a Reconnect reads, of an ops_key row only: never the Slack alert row's config, which holds its token. */
+const RECONNECT_COLUMNS = 'id, name, service_type, sealed_for, credential_generation, credential_enc, config, target, acts_as'
+
+interface ReconnectRow {
+  id: string
+  name: string
+  service_type: string
+  sealed_for: string
+  credential_generation: number
+  credential_enc: string | null
+  config: unknown
+  target: unknown
+  acts_as: string | null
+}
+
+const isRecordValue = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v)
+
+/** The connection is gone or another organization's, or it is not an ops connection at all: told apart without reading the alert row's columns. */
+async function rowMissing(supabase: ReturnType<typeof createSupabaseClient>, orgId: string, id: string): Promise<'not_found' | 'not_ops' | 'unreadable'> {
+  const { data, error } = await supabase.from('service_connections').select('id').eq('id', id).eq('organization_id', orgId).maybeSingle()
+  if (error) {
+    console.error(JSON.stringify({ event: 'connection_reconnect_read_failed', organization_id: orgId, error: formatErr(error) }))
+    return 'unreadable'
+  }
+  return data ? 'not_ops' : 'not_found'
+}
+
+/** A refusal from verify or clearReauth, answered as the save form answers it (the same check, the same sentence). */
+function opsCheckRefusal(answer: { ok: false; refused: string; detail: string; retry_at: string | null } & Partial<{ cause: string }>): { code: CreateRefusalCode; extra: Record<string, unknown> } {
+  if (isOpsConnectionsUnavailable(answer)) {
+    return answer.cause === 'deadline' ? { code: 'verify_timed_out', extra: {} } : { code: 'ops_connections_unavailable', extra: { detail: answer.detail } }
+  }
+  const code: CreateRefusalCode = isCreateRefusalCode(answer.refused) ? answer.refused : 'verify_refused_unknown'
+  return { code, extra: { detail: answer.detail, retry_at: answer.retry_at } }
+}
+
+// POST /api/connections/:id/reconnect   body {} | { fields: { <field key>: <value> } }
+//   200 { outcome: 'reconnected' | 'checked', connection: { id, generation, acts_as } }
+//   otherwise { error, message, ... }: the code and the sentence the Reconnect
+//   dialog shows (lib/connection-create-refusals.ts)
+//
+// With a new login (finding F116; the ops half is in
+// ops/connections/__tests__/reconnect-candidate.test.ts), in order:
+//   1. the row, an ops_key row of the caller's organization, read with its
+//      generation N
+//   2. the login rebuilt from the row's target and the new fields
+//      (lib/connection-reconnect.ts): what the connection names cannot change
+//   3. sealed under the row's own id at generation N+1, and verify asked with
+//      that envelope passed in the call, which ops uses for that call alone and
+//      saves nowhere
+//   4. only when verify passes, reconnect_ops_connection: the compare and set on
+//      N. A row that moved on answers 409 reconnect_stale; a call that did not
+//      answer is reconnect_unconfirmed. Neither calls clearReauth, so ops never
+//      clears a flag for a generation the one home did not commit.
+//   5. then clearReauth with the committed envelope. If that fails the login is
+//      still saved (it is the one home, and the next minute's serve carries it to
+//      ops), and the answer says so: reconnect_saved_check_not_cleared.
+// Without a new login: clearReauth alone, with the row's own envelope and
+// generation, which writes reauth_cleared_at on ops only when its check passes.
+//
+// Who may call it: any signed in user of the organization (jwtAuth). Whose
+// data: the caller's organization only, from the verified token; every read
+// and the compare and set are scoped to it, and the envelope's AAD binds it.
+// Audit: a new login's commit is audited by the store's trigger under the actor
+// (reconnect_ops_connection sets updated_by), with credential_enc kept out; a
+// check without one changes no bidding row, so the route writes its audit row,
+// naming the generation checked and nothing of the login.
+connections.post('/:id/reconnect', async (c) => {
+  const { orgId, userId, email } = c.get('user')
+  const id = c.req.param('id')
+  const words = { service: 'the service', secret: 'login' }
+  const ownRefusal = (code: ConnectionRouteRefusalCode, ctx: Partial<RouteRefusalContext> = {}, extra: Record<string, unknown> = {}) => {
+    console.warn(JSON.stringify({ event: 'connection_reconnect_refused', code, organization_id: orgId, connection_id: UUID.test(id) ? id : null }))
+    return c.json({ error: code, message: connectionRouteSentence(code, { ...words, names: [], deleted: false, ...ctx }), ...extra }, ROUTE_STATUS[code])
+  }
+  const createRefusal = (code: CreateRefusalCode, ctx: Partial<RefusalContext> = {}, extra: Record<string, unknown> = {}) => {
+    console.warn(JSON.stringify({ event: 'connection_reconnect_refused', code, organization_id: orgId, connection_id: UUID.test(id) ? id : null }))
+    const status = (CREATE_STATUS as Partial<Record<CreateRefusalCode, number>>)[code] ?? (VERIFY_STATUS as Partial<Record<CreateRefusalCode, number>>)[code] ?? 422
+    return c.json({ error: code, message: createRefusalSentence(code, { org: null, names: [], money: null, ...words, ...ctx }), ...extra }, status as 400)
+  }
+
+  if (!UUID.test(id)) return ownRefusal('connection_not_found')
+  if (declaredBodyTooLarge(c.req.header('content-length'))) return createRefusal('connection_request_invalid', {}, { detail: `the body is over ${CREATE_BODY_MAX_BYTES} bytes` })
+  const body = readReconnectBody(await c.req.text())
+  if (!body.ok) return createRefusal('connection_request_invalid', {}, { detail: body.problem })
+
+  // 1. The row.
+  const supabase = createSupabaseClient(c.env)
+  const { data, error } = await supabase
+    .from('service_connections')
+    .select(RECONNECT_COLUMNS)
+    .eq('id', id)
+    .eq('organization_id', orgId)
+    .eq('sealed_for', 'ops_key')
+    .maybeSingle()
+  if (error) {
+    console.error(JSON.stringify({ event: 'connection_reconnect_read_failed', organization_id: orgId, error: formatErr(error) }))
+    return createRefusal('connections_unavailable')
+  }
+  if (!data) {
+    const missing = await rowMissing(supabase, orgId, id)
+    if (missing === 'unreadable') return createRefusal('connections_unavailable')
+    return ownRefusal(missing === 'not_ops' ? 'connection_not_reconnectable' : 'connection_not_found')
+  }
+  const row = data as ReconnectRow
+  const service = declaredService(CATALOGUE, row.service_type)
+  if (!service) return createRefusal('connection_service_undeclared', { service: row.service_type })
+  Object.assign(words, { service: service.name, secret: secretLabelOf(service) })
+  const target = isRecordValue(row.target) ? row.target : null
+  const publicConfig = isRecordValue(row.config) ? row.config : {}
+
+  // Without a new login: check the stored one again.
+  if (body.fields === null) {
+    let envelope: unknown
+    try {
+      envelope = JSON.parse(row.credential_enc ?? '')
+    } catch {
+      envelope = null
+    }
+    if (!isRecordValue(envelope)) return ownRefusal('reconnect_login_unreadable')
+    const answer = await callOpsConnections(c.env, 'clearReauth', {
+      organization_id: orgId,
+      connection_id: row.id,
+      candidate: { service: row.service_type, generation: row.credential_generation, envelope: envelope as unknown as SealedEnvelope, target, public_config: publicConfig },
+    })
+    if (!answer.ok) {
+      if (answer.refused === 'reauth_clear_unrecorded') return ownRefusal('reauth_clear_unrecorded', {}, { detail: answer.detail })
+      const { code, extra } = opsCheckRefusal(answer)
+      return createRefusal(code, { org: target ? orgHostOf(target) : null }, extra)
+    }
+    await writeAuditLog(supabase, orgId, 'service_connection', row.id, 'connection_rechecked', userId, { generation: row.credential_generation })
+    console.log(JSON.stringify({ event: 'connection_rechecked', organization_id: orgId, connection_id: row.id, generation: row.credential_generation }))
+    return c.json({ outcome: 'checked', connection: { id: row.id, generation: row.credential_generation, acts_as: row.acts_as } })
+  }
+
+  // 2. The login, from the row's target and the new fields.
+  const labelOf = (key: string) => service.connection.fields.find((f) => f.key === key)?.label ?? key
+  const values = reconnectValues(service.connection, row.target, body.fields)
+  if (!values.ok) {
+    if (values.code === 'connection_fields_undeclared') return createRefusal(values.code, { names: values.fields }, { fields: values.fields })
+    return ownRefusal(values.code, { names: values.fields.map(labelOf) }, { fields: values.fields })
+  }
+  const parts = connectionParts(service.connection, values.values)
+  if (!parts.ok) {
+    if (parts.unknown.length > 0) return createRefusal('connection_fields_undeclared', { names: parts.unknown }, { fields: parts.unknown })
+    return createRefusal('connection_fields_missing', { names: parts.missing.map(labelOf) }, { fields: parts.missing })
+  }
+  const org = target ? orgHostOf(target) : null
+
+  // 3. Sealed under the row's id at the next generation, and verified.
+  const generation = row.credential_generation + 1
+  const kid = CURRENT_OPS_KID
+  let envelope: SealedEnvelope
+  try {
+    if (kid === null) throw new Error('no current ops kid is committed')
+    envelope = await seal(OPS_CONNECTION_PUBLIC_KEYS, JSON.stringify(parts.login), {
+      organization_id: orgId, connection_id: row.id, service: row.service_type, generation, kid,
+    })
+  } catch (err) {
+    console.error(JSON.stringify({ event: 'connection_seal_failed', organization_id: orgId, error: err instanceof SealError ? err.code : err instanceof Error ? err.name : 'error' }))
+    return createRefusal('connection_seal_failed')
+  }
+  const candidate = { service: row.service_type, generation, envelope, target, public_config: publicConfig }
+  const verified = await callOpsConnections(c.env, 'verify', { organization_id: orgId, connection_id: row.id, candidate })
+  if (!verified.ok) {
+    const { code, extra } = opsCheckRefusal(verified)
+    return createRefusal(code, { org }, extra)
+  }
+  const actsAs = actsAsOf(verified.identity)
+
+  // 4. The compare and set on the generation read.
+  const { data: committed, error: casError } = await supabase.rpc('reconnect_ops_connection', {
+    p_organization_id: orgId,
+    p_connection_id: row.id,
+    p_expected_generation: row.credential_generation,
+    p_new_generation: generation,
+    p_envelope: envelope as unknown as Record<string, string | number>,
+    // The generated types call every argument text; a null acts_as is passed as SQL NULL, which the nullable column takes.
+    p_acts_as: actsAs as string,
+    p_actor: userId,
+    p_actor_email: email,
+  })
+  if (casError) {
+    if (casError.code === 'P0002' && /connection_not_found/.test(casError.message)) return ownRefusal('connection_not_found')
+    if (casError.code === 'BP422') return ownRefusal('connection_not_reconnectable')
+    // A refusal by name wrote nothing; anything else (a timeout, a dropped connection) may have.
+    if (casError.code === '22023') {
+      console.error(JSON.stringify({ event: 'connection_reconnect_refused_by_database', organization_id: orgId, connection_id: row.id, error: formatErr(casError) }))
+      return createRefusal('connection_store_failed')
+    }
+    console.error(JSON.stringify({ event: 'connection_reconnect_unconfirmed', organization_id: orgId, connection_id: row.id, generation, error: formatErr(casError) }))
+    return ownRefusal('reconnect_unconfirmed')
+  }
+  const outcome = Array.isArray(committed) ? (committed[0] as { outcome?: unknown; current_generation?: unknown } | undefined) : undefined
+  if (outcome?.outcome === 'stale_generation') {
+    return ownRefusal('reconnect_stale', {}, { current_generation: outcome.current_generation ?? null })
+  }
+  if (outcome?.outcome !== 'reconnected') {
+    console.error(JSON.stringify({ event: 'connection_reconnect_unconfirmed', organization_id: orgId, connection_id: row.id, generation, error: 'the compare and set answered no outcome this route reads' }))
+    return ownRefusal('reconnect_unconfirmed')
+  }
+
+  // 5. Committed: only now is ops asked to clear the flag, for the committed generation.
+  const cleared = await callOpsConnections(c.env, 'clearReauth', { organization_id: orgId, connection_id: row.id, candidate })
+  if (!cleared.ok) {
+    console.error(JSON.stringify({ event: 'connection_reconnect_not_cleared', organization_id: orgId, connection_id: row.id, generation, refused: cleared.refused }))
+    return ownRefusal('reconnect_saved_check_not_cleared', {}, { saved: { generation }, cause: cleared.refused })
+  }
+  console.log(JSON.stringify({ event: 'connection_reconnected', organization_id: orgId, connection_id: row.id, generation }))
+  return c.json({ outcome: 'reconnected', connection: { id: row.id, generation, acts_as: actsAs } })
+})
+
+interface UsingWorkflow { id: string; name: string; deleted: boolean }
+
+// DELETE /api/connections/:id
+//   200 { outcome: 'removed', connection: { id, generation }, ops: { told: true } }
+//   200 { ..., ops: { told: false, cause, message } }  removed, and revoke did
+//       not reach ops: the removal stands, and the message says when ops stops
+//       using the login (its next minute check carries the bidding tombstone,
+//       which the gateway serves for 7 hours, and a copy ops cannot refresh
+//       expires at its serve_until, 6 hours after its last serve; ops-gateway.ts)
+//   409 connection_in_use { workflows: [{ id, name, deleted }] }  every
+//       workflow using it, soft deleted ones included and marked (D9)
+//   otherwise { error, message }
+//
+// remove_ops_connection writes the tombstone and deletes the row in one
+// transaction while nothing references it, audited by the store's trigger
+// under the actor. revoke is called after it and never before, so ops is never
+// told of a removal the one home did not make.
+// Who may call it: any signed in user of the organization. Whose data: the
+// function refuses a connection of any other organization as not found.
+connections.delete('/:id', async (c) => {
+  const { orgId, userId } = c.get('user')
+  const id = c.req.param('id')
+  const refuse = (code: ConnectionRouteRefusalCode, ctx: Partial<RouteRefusalContext> = {}, extra: Record<string, unknown> = {}) => {
+    console.warn(JSON.stringify({ event: 'connection_remove_refused', code, organization_id: orgId, connection_id: UUID.test(id) ? id : null }))
+    return c.json({ error: code, message: connectionRouteSentence(code, { service: 'the service', secret: 'login', names: [], deleted: false, ...ctx }), ...extra }, ROUTE_STATUS[code])
+  }
+  if (!UUID.test(id)) return refuse('connection_not_found')
+
+  const supabase = createSupabaseClient(c.env)
+  const { data, error } = await supabase.rpc('remove_ops_connection', { p_organization_id: orgId, p_connection_id: id, p_actor: userId })
+  if (error) {
+    if (error.code === 'P0002' && /connection_not_found/.test(error.message)) return refuse('connection_not_found')
+    if (error.code === 'BP422') return refuse('connection_not_removable')
+    console.error(JSON.stringify({ event: 'connection_remove_unconfirmed', organization_id: orgId, connection_id: id, error: formatErr(error) }))
+    return refuse('connection_remove_unconfirmed')
+  }
+  const result = Array.isArray(data) ? (data[0] as { outcome?: unknown; removed_generation?: unknown; workflows?: unknown } | undefined) : undefined
+  if (result?.outcome === 'connection_in_use') {
+    const workflows = (Array.isArray(result.workflows) ? result.workflows : []) as UsingWorkflow[]
+    const names = workflows.map((w) => (w.deleted ? `${w.name} (deleted)` : w.name))
+    return refuse('connection_in_use', { names, deleted: workflows.some((w) => w.deleted) }, { workflows })
+  }
+  if (result?.outcome !== 'removed' || typeof result.removed_generation !== 'number') {
+    console.error(JSON.stringify({ event: 'connection_remove_unconfirmed', organization_id: orgId, connection_id: id, error: 'the removal answered no outcome this route reads' }))
+    return refuse('connection_remove_unconfirmed')
+  }
+  const generation = result.removed_generation
+  console.log(JSON.stringify({ event: 'connection_removed', organization_id: orgId, connection_id: id, generation }))
+
+  const revoked = await callOpsConnections(c.env, 'revoke', { organization_id: orgId, connection_id: id, generation, removed_at: new Date().toISOString() })
+  const removed = { outcome: 'removed', connection: { id, generation } }
+  if (!revoked.ok) {
+    // The removal stands; the bidding tombstone reaches ops by the serve (above).
+    console.error(JSON.stringify({ event: 'connection_revoke_failed', organization_id: orgId, connection_id: id, generation, refused: revoked.refused }))
+    const notice = 'connection_removed_ops_not_told'
+    return c.json({ ...removed, ops: { told: false, cause: revoked.refused, message: connectionRouteSentence(notice, { service: 'the service', secret: 'login', names: [], deleted: false }) } }, ROUTE_STATUS[notice])
+  }
+  return c.json({ ...removed, ops: { told: true } })
+})
+
+/** What a Google list refusal from ops is answered as: unconfirmed when the change may have been made, refused when it is Bidspoke's fault. */
+const DELEGATION_UNCONFIRMED: ReadonlySet<string> = new Set(['ops_connections_unavailable', 'ops_connections_timeout', 'ops_connections_failed', 'delegation_change_failed'])
+const DELEGATION_OWN: ReadonlySet<string> = new Set([
+  'delegation_subject_invalid', 'delegation_display_name_invalid', 'delegation_subject_listed_elsewhere', 'delegation_subject_not_listed',
+])
+
+function delegationRefusalCode(refused: string): ConnectionRouteRefusalCode {
+  if (DELEGATION_OWN.has(refused)) return refused as ConnectionRouteRefusalCode
+  if (DELEGATION_UNCONFIRMED.has(refused)) return 'delegation_change_failed'
+  return 'delegation_change_refused'
+}
+
+// The Google mailboxes and drives list (R10, D10; finding F129): the
+// mailboxes and shared drives an ops Google connection may act as, held on ops
+// (google_delegation_subjects) and changed only through these routes.
+//   GET    /api/connections/google/subjects                 200 { subjects, reached_limit }
+//   POST   /api/connections/google/subjects                 body { kind, subject, display_name? }
+//          201 { outcome: 'added', entry }  200 { outcome: 'already_listed', entry }
+//   DELETE /api/connections/google/subjects/:kind/:subject  200 { outcome: 'removed' }
+//
+// Who may call them: any signed in user of the organization may read, add and
+// remove (Dan, 2026-10-18). Whose data: the caller's organization's list only,
+// from the verified token; the body may not name one. Audit: ops writes each
+// change's record in the same transaction as the change, naming the signed in
+// person passed as the actor and when (ops migration 20261020190000), so the
+// route writes none of its own. Whether a text is one mailbox address or one
+// drive id is the ops table's to judge (L83); ops answers it by name.
+const delegationRefuse = (c: Context, orgId: string, code: ConnectionRouteRefusalCode, names: string[] = [], extra: Record<string, unknown> = {}) => {
+  console.warn(JSON.stringify({ event: 'google_list_refused', code, organization_id: orgId }))
+  return c.json({ error: code, message: connectionRouteSentence(code, { service: 'Google', secret: 'login', names, deleted: false }), ...extra }, ROUTE_STATUS[code])
+}
+
+connections.get('/google/subjects', async (c) => {
+  const { orgId } = c.get('user')
+  const answer = await callOpsConnections(c.env, 'listDelegationSubjects', { organization_id: orgId })
+  if (!answer.ok) {
+    // Never an empty list (L10): the page shows that the list could not be read.
+    console.error(JSON.stringify({ event: 'google_list_unavailable', organization_id: orgId, refused: answer.refused }))
+    return delegationRefuse(c, orgId, 'delegation_list_unavailable', [], { cause: answer.refused })
+  }
+  return c.json({ subjects: answer.subjects, reached_limit: answer.reached_limit })
+})
+
+connections.post('/google/subjects', async (c) => {
+  const { orgId, userId, email, name } = c.get('user')
+  if (declaredBodyTooLarge(c.req.header('content-length'))) {
+    return c.json({ error: 'connection_request_invalid', message: createRefusalSentence('connection_request_invalid', { service: 'Google', secret: 'login', org: null, names: [], money: null }) }, 400)
+  }
+  const body = readDelegationEntryBody(await c.req.text())
+  if (!body.ok) {
+    return c.json({ error: 'connection_request_invalid', message: createRefusalSentence('connection_request_invalid', { service: 'Google', secret: 'login', org: null, names: [], money: null }), detail: body.problem }, 400)
+  }
+  const shown = body.subject.trim() === '' ? 'An empty entry' : body.subject.trim()
+  if (body.subject.trim() === '' || body.subject.length > DELEGATION_SUBJECT_MAX) return delegationRefuse(c, orgId, 'delegation_subject_invalid', [shown.slice(0, 80)])
+  if (body.display_name !== null && body.display_name.length > DELEGATION_DISPLAY_NAME_MAX) return delegationRefuse(c, orgId, 'delegation_display_name_invalid')
+
+  const answer = await callOpsConnections(c.env, 'addDelegationSubject', {
+    organization_id: orgId,
+    actor: { user_id: userId, email, name },
+    kind: body.kind,
+    subject: body.subject,
+    display_name: body.display_name,
+  })
+  if (!answer.ok) return delegationRefuse(c, orgId, delegationRefusalCode(answer.refused), [shown], { cause: answer.refused })
+  console.log(JSON.stringify({ event: 'google_list_added', organization_id: orgId, kind: answer.entry.kind, outcome: answer.outcome }))
+  return c.json({ outcome: answer.outcome, entry: answer.entry }, answer.outcome === 'added' ? 201 : 200)
+})
+
+connections.delete('/google/subjects/:kind/:subject', async (c) => {
+  const { orgId, userId, email, name } = c.get('user')
+  const kind = c.req.param('kind')
+  const subject = c.req.param('subject')
+  if (!(DELEGATION_KINDS as readonly string[]).includes(kind)) {
+    return c.json({ error: 'connection_request_invalid', message: createRefusalSentence('connection_request_invalid', { service: 'Google', secret: 'login', org: null, names: [], money: null }), detail: 'kind is not mailbox or drive' }, 400)
+  }
+  if (subject.trim() === '' || subject.length > DELEGATION_SUBJECT_MAX) return delegationRefuse(c, orgId, 'delegation_subject_not_listed', ['That entry'])
+  const answer = await callOpsConnections(c.env, 'removeDelegationSubject', {
+    organization_id: orgId,
+    actor: { user_id: userId, email, name },
+    kind: kind as DelegationKind,
+    subject,
+  })
+  if (!answer.ok) return delegationRefuse(c, orgId, delegationRefusalCode(answer.refused), [subject], { cause: answer.refused })
+  console.log(JSON.stringify({ event: 'google_list_removed', organization_id: orgId, kind }))
+  return c.json({ outcome: answer.outcome })
 })
 
 /** The HTTP status a lookup refusal answers with; any other is the service's or ops's refusal, a 502. */

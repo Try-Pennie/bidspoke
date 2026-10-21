@@ -14,6 +14,12 @@
  * list is one `export { ... }` at the end, followed by the source map comment
  * (split in two here, or Vite would try to load the map). The same read taken at 01:38 UTC,
  * before that deploy, held no OpsConnections at all, which is the red case.
+ *
+ * Since #2338 build PR 6 the check also requires the Google list's three
+ * methods. The class below is the one the API answered on 2026-10-21 for the
+ * 01:05 UTC deploy (version f575481b, the merge of #2569), read before that
+ * pull request moved them into the required list; the #2456 class, which lacks
+ * them, is now a red case.
  */
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
@@ -47,8 +53,20 @@ const CLASS = `var OpsConnections = class extends WorkerEntrypoint2 {
   exchangeOAuthCode(request) {
     return opsConnectionsAnswer(this.env, "exchangeOAuthCode", request, parseExchangeOAuthCodeRequest);
   }
+  // The Google mailboxes and drives list (#2338). Not in OPS_CONNECTIONS_METHODS until bidding calls them (PR 6): see the contract.
+  addDelegationSubject(request) {
+    return delegationListAnswer(this.env, "addDelegationSubject", request);
+  }
+  removeDelegationSubject(request) {
+    return delegationListAnswer(this.env, "removeDelegationSubject", request);
+  }
+  listDelegationSubjects(request) {
+    return delegationListAnswer(this.env, "listDelegationSubjects", request);
+  }
 };
 `
+/** The class as the #2456 deploy had it, before the Google list's methods shipped. */
+const CLASS_2456 = CLASS.replace(/ {2}\/\/ The Google mailboxes[\s\S]*(?=\};\n$)/, '')
 const EXPORTS_WITH = `export {
   ConnectionTokenObject,
   MAX_BODY_BYTES,
@@ -75,6 +93,7 @@ var OpsInternal = class extends WorkerEntrypoint {
 };
 `
 const DEPLOYED = `${PRELUDE}${CLASS}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${EXPORTS_WITH}`
+const DEPLOYED_2456 = `${PRELUDE}${CLASS_2456}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${EXPORTS_WITH}`
 const BEFORE_2456 = `${PRELUDE}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${EXPORTS_WITHOUT}`
 
 const multipart = (module: string, boundary = 'd28ee68c2356ba3b54c8674af8f8084af5ffdf75bf0f37cbd1d477c97e5d') =>
@@ -98,8 +117,17 @@ describe('mainModuleOf', () => {
 })
 
 describe('entrypointVerdict', () => {
-  it('passes the script as deployed by #2456', () => {
-    expect(entrypointVerdict(DEPLOYED)).toEqual({ ok: true, lines: [expect.stringContaining('exports OpsConnections, a WorkerEntrypoint, with verify, clearReauth, revoke, health, lookup, exchangeOAuthCode')] })
+  it('passes the script as deployed by #2569, which carries the Google list\'s methods', () => {
+    expect(entrypointVerdict(DEPLOYED)).toEqual({ ok: true, lines: [expect.stringContaining(
+      'exports OpsConnections, a WorkerEntrypoint, with verify, clearReauth, revoke, health, lookup, exchangeOAuthCode, addDelegationSubject, removeDelegationSubject, listDelegationSubjects',
+    )] })
+  })
+
+  it('fails the script as deployed by #2456, naming the Google list\'s methods it lacks (#2338 build PR 6)', () => {
+    expect(CLASS_2456).not.toContain('Delegation')
+    const verdict = entrypointVerdict(DEPLOYED_2456)
+    expect(verdict.ok).toBe(false)
+    expect(verdict.lines.join('\n')).toMatch(/lacks addDelegationSubject, removeDelegationSubject, listDelegationSubjects/)
   })
 
   it('fails the script as deployed before #2456, which exported no OpsConnections', () => {

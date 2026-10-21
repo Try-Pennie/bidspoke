@@ -34,35 +34,33 @@ import type { SchemaLookupCode } from './schema-sync/errors'
 import type { SchemaLookupAnswer } from './schema-sync/lookup'
 import { clearFieldProblem, OpsGatewayContractError, parseSealedEnvelope, type SealedEnvelopeShape } from './ops-gateway-contract'
 
-export const OPS_CONNECTIONS_METHODS = ['verify', 'clearReauth', 'revoke', 'health', 'lookup', 'exchangeOAuthCode'] as const
+/**
+ * Every method the bidding Worker calls through OPS_CONNECTIONS, and so every
+ * method CI's deployed ops check (.github/scripts/ops-exports-entrypoint.mjs)
+ * requires the LIVE ops Worker to export.
+ *
+ * The last three are the Google mailboxes and drives list's (#2338, R10,
+ * finding F129): add, remove and list an organization's
+ * google_delegation_subjects, each change written on ops with who made it and
+ * when. They shipped on ops first, in build PR 2, kept out of this list so that
+ * pull request did not require them of the deploy it preceded; build PR 6 moved
+ * them here once the ops deploy carried them (Deploy Ops Worker, 2026-10-20),
+ * with the bidding routes that call them.
+ */
+export const OPS_CONNECTIONS_METHODS = [
+  'verify', 'clearReauth', 'revoke', 'health', 'lookup', 'exchangeOAuthCode', 'addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects',
+] as const
 export type OpsConnectionsMethod = (typeof OPS_CONNECTIONS_METHODS)[number]
 
 /**
- * The Google mailboxes and drives list's methods (#2338, PR 2 of its build
- * plan; R10, finding F129): add, remove and list an organization's
- * google_delegation_subjects, each change written with who made it and when.
- *
- * Kept apart from OPS_CONNECTIONS_METHODS on purpose. That list is what the
- * bidding Worker calls through OPS_CONNECTIONS, and CI's deployed ops check
- * (.github/scripts/ops-exports-entrypoint.mjs) requires the LIVE ops Worker to
- * export each of its methods, on every pull request that touches ops. These
- * ship on ops first (DEPLOY ORDER in ops-connections-entrypoint.ts), so the
- * pull request adding them cannot also require them of the deploy it precedes.
- * The create route (PR 5) reads the list through callOpsDelegation
- * (ops-connections-client.ts), whose answer when ops does not export the
- * method is ops_connections_unavailable, refused by name, never a pass. The
- * routes that add and remove entries (PR 6) move all three into
- * OPS_CONNECTIONS_METHODS, once the ops deploy carries them.
+ * The Google list's methods among them. The entrypoint runs these with the ops
+ * database alone (connections/delegation-list.ts), never the connections'
+ * dependencies, so it never needs the ops private key or the gateway for them.
  */
-export const OPS_DELEGATION_METHODS = ['addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects'] as const
+export const OPS_DELEGATION_METHODS = ['addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects'] as const satisfies readonly OpsConnectionsMethod[]
 export type OpsDelegationMethod = (typeof OPS_DELEGATION_METHODS)[number]
-
-/** Each is one ops database call, which stops at the 8 s statement timeout: the same ceiling as revoke and health. */
-export const OPS_DELEGATION_CEILINGS_MS: Readonly<Record<OpsDelegationMethod, number>> = {
-  addDelegationSubject: 10_000,
-  removeDelegationSubject: 10_000,
-  listDelegationSubjects: 10_000,
-}
+/** The methods the entrypoint runs with the connections' dependencies (connections/ops-connections.ts). */
+export type OpsConnectionsCoreMethod = Exclude<OpsConnectionsMethod, OpsDelegationMethod>
 
 /** At most this many entries are answered by listDelegationSubjects; reached_limit says so. */
 export const DELEGATION_LIST_LIMIT = 1000
@@ -82,6 +80,8 @@ export const DELEGATION_LIST_LIMIT = 1000
  *   exchangeOAuthCode    one token request in the token object (10 s) and its write
  *   lookup               the allowance, the copy read and one to three requests
  *   revoke, health       one ops database call (9 s at most)
+ *   the Google list's    one ops database call each, which stops at the 8 s
+ *                        statement timeout
  */
 export const OPS_CONNECTIONS_CEILINGS_MS: Readonly<Record<OpsConnectionsMethod, number>> = {
   verify: 45_000,
@@ -90,6 +90,9 @@ export const OPS_CONNECTIONS_CEILINGS_MS: Readonly<Record<OpsConnectionsMethod, 
   lookup: 25_000,
   revoke: 10_000,
   health: 10_000,
+  addDelegationSubject: 10_000,
+  removeDelegationSubject: 10_000,
+  listDelegationSubjects: 10_000,
 }
 
 /**
@@ -402,10 +405,10 @@ export type ListDelegationSubjectsAnswer = { ok: true; subjects: DelegationSubje
  * drive id and a drive's name is the table's to judge, its one home (L83), and
  * ops answers each by name (delegation_subject_invalid, delegation_display_name_invalid).
  */
-const MAX_SUBJECT = 320
+export const DELEGATION_SUBJECT_MAX = 320
 const MAX_ACTOR_FIELD = 200
 const MAX_ACTOR_EMAIL = 320
-const MAX_DISPLAY_NAME = 400
+export const DELEGATION_DISPLAY_NAME_MAX = 400
 
 function actorField(raw: unknown): DelegationActorShape {
   if (!isRecord(raw)) throw new OpsConnectionsContractError('the request\'s actor is not an object')
@@ -424,7 +427,7 @@ function actorField(raw: unknown): DelegationActorShape {
 
 function entryFields(r: Record<string, unknown>): { kind: DelegationKind; subject: string } {
   if (typeof r.kind !== 'string' || !(DELEGATION_KINDS as readonly string[]).includes(r.kind)) throw new OpsConnectionsContractError('the entry\'s kind is not mailbox or drive')
-  if (typeof r.subject !== 'string' || r.subject.length > MAX_SUBJECT) throw new OpsConnectionsContractError(`the entry's subject is not text of at most ${MAX_SUBJECT} characters`)
+  if (typeof r.subject !== 'string' || r.subject.length > DELEGATION_SUBJECT_MAX) throw new OpsConnectionsContractError(`the entry's subject is not text of at most ${DELEGATION_SUBJECT_MAX} characters`)
   return { kind: r.kind as DelegationKind, subject: r.subject }
 }
 
@@ -434,8 +437,8 @@ export function parseAddDelegationSubjectRequest(raw: unknown): AddDelegationSub
   const actor = actorField(r.actor)
   const entry = entryFields(r)
   const displayName = r.display_name ?? null
-  if (displayName !== null && (typeof displayName !== 'string' || displayName.length > MAX_DISPLAY_NAME)) {
-    throw new OpsConnectionsContractError(`the entry's display_name is neither text of at most ${MAX_DISPLAY_NAME} characters nor null`)
+  if (displayName !== null && (typeof displayName !== 'string' || displayName.length > DELEGATION_DISPLAY_NAME_MAX)) {
+    throw new OpsConnectionsContractError(`the entry's display_name is neither text of at most ${DELEGATION_DISPLAY_NAME_MAX} characters nor null`)
   }
   return { organization_id, actor, ...entry, display_name: displayName }
 }

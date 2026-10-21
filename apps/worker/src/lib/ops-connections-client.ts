@@ -10,8 +10,9 @@
  * fails on a direct or an indirect import from any of them, and on the binding
  * named anywhere but here and env.ts.
  *
- * WHO CALLS IT. Bidding code serving a signed in person (today the deploy probe,
- * routes/api/ops-connections-probe.ts; the Connections routes in Phase 8). Each
+ * WHO CALLS IT. Bidding code serving a signed in person: the deploy probe
+ * (routes/api/ops-connections-probe.ts) and the Connections routes
+ * (routes/api/connections.ts, #2338). Each
  * request names the caller's organization, derived from the verified JWT, and
  * ops acts on that organization's connections alone (ops-connections-contract.ts).
  *
@@ -34,7 +35,7 @@ import { raceDeadline } from './alert-claim'
 import type {
   AddDelegationSubjectAnswer, AddDelegationSubjectRequest, ClearReauthAnswer, ClearReauthRequest, ExchangeOAuthCodeAnswer, ExchangeOAuthCodeRequest,
   HealthAnswer, HealthRequest, ListDelegationSubjectsAnswer, ListDelegationSubjectsRequest, LookupAnswer, LookupRequest, OpsConnectionsBinding,
-  OpsConnectionsMethod, OpsDelegationMethod, RemoveDelegationSubjectAnswer, RemoveDelegationSubjectRequest, RevokeAnswer, RevokeRequest, VerifyAnswer,
+  OpsConnectionsMethod, RemoveDelegationSubjectAnswer, RemoveDelegationSubjectRequest, RevokeAnswer, RevokeRequest, VerifyAnswer,
   VerifyRequest,
 } from './ops-connections-contract'
 
@@ -53,37 +54,12 @@ export const OPS_CONNECTIONS_DEADLINES_MS: Readonly<Record<OpsConnectionsMethod,
   lookup: 30_000,
   revoke: 15_000,
   health: 15_000,
-}
-
-/**
- * The Google list's methods (#2338), on the same rule: each its ops ceiling
- * (OPS_DELEGATION_CEILINGS_MS, one database call, 10 s) plus 5 s. They are
- * called through the same binding, and kept out of OPS_CONNECTIONS_DEADLINES_MS
- * while they are out of OPS_CONNECTIONS_METHODS (the contract says why). The
- * create route (build PR 5) reads the list; PR 6 adds and removes entries.
- */
-export const OPS_DELEGATION_DEADLINES_MS: Readonly<Record<OpsDelegationMethod, number>> = {
   addDelegationSubject: 15_000,
   removeDelegationSubject: 15_000,
   listDelegationSubjects: 15_000,
 }
 
-interface DelegationRequests {
-  addDelegationSubject: AddDelegationSubjectRequest
-  removeDelegationSubject: RemoveDelegationSubjectRequest
-  listDelegationSubjects: ListDelegationSubjectsRequest
-}
-
-interface DelegationAnswers {
-  addDelegationSubject: AddDelegationSubjectAnswer
-  removeDelegationSubject: RemoveDelegationSubjectAnswer
-  listDelegationSubjects: ListDelegationSubjectsAnswer
-}
-
-type AnyMethod = OpsConnectionsMethod | OpsDelegationMethod
-
-const deadlineOf = (method: AnyMethod): number =>
-  Object.hasOwn(OPS_CONNECTIONS_DEADLINES_MS, method) ? OPS_CONNECTIONS_DEADLINES_MS[method as OpsConnectionsMethod] : OPS_DELEGATION_DEADLINES_MS[method as OpsDelegationMethod]
+const deadlineOf = (method: OpsConnectionsMethod): number => OPS_CONNECTIONS_DEADLINES_MS[method]
 
 interface Requests {
   verify: VerifyRequest
@@ -92,6 +68,9 @@ interface Requests {
   health: HealthRequest
   lookup: LookupRequest
   exchangeOAuthCode: ExchangeOAuthCodeRequest
+  addDelegationSubject: AddDelegationSubjectRequest
+  removeDelegationSubject: RemoveDelegationSubjectRequest
+  listDelegationSubjects: ListDelegationSubjectsRequest
 }
 
 interface Answers {
@@ -101,6 +80,9 @@ interface Answers {
   health: HealthAnswer
   lookup: LookupAnswer
   exchangeOAuthCode: ExchangeOAuthCodeAnswer
+  addDelegationSubject: AddDelegationSubjectAnswer
+  removeDelegationSubject: RemoveDelegationSubjectAnswer
+  listDelegationSubjects: ListDelegationSubjectsAnswer
 }
 
 /** Why the call gave no answer this contract reads. */
@@ -139,7 +121,7 @@ function referenceOf(error: unknown): string | null {
   return REFERENCE.exec(message)?.[1] ?? null
 }
 
-function causeSentence(method: AnyMethod, cause: OpsConnectionsUnavailableCause, reference: string | null, errorKind: string | null): string {
+function causeSentence(method: OpsConnectionsMethod, cause: OpsConnectionsUnavailableCause, reference: string | null, errorKind: string | null): string {
   switch (cause) {
     case 'binding_absent':
       return 'this deploy of the bidding Worker has no OPS_CONNECTIONS binding'
@@ -153,7 +135,7 @@ function causeSentence(method: AnyMethod, cause: OpsConnectionsUnavailableCause,
 }
 
 function unavailable(
-  method: AnyMethod, organizationId: string | null, cause: OpsConnectionsUnavailableCause, reference: string | null = null, errorKind: string | null = null,
+  method: OpsConnectionsMethod, organizationId: string | null, cause: OpsConnectionsUnavailableCause, reference: string | null = null, errorKind: string | null = null,
 ): OpsConnectionsUnavailable {
   // One line of names: never the request, never the error's message.
   console.warn(JSON.stringify({
@@ -175,17 +157,17 @@ function organizationOf(request: unknown): string | null {
   return typeof org === 'string' ? org : null
 }
 
-async function callMethod(env: OpsConnectionsEnv, method: AnyMethod, request: unknown, options: OpsConnectionsCallOptions): Promise<unknown> {
+async function callMethod(env: OpsConnectionsEnv, method: OpsConnectionsMethod, request: unknown, options: OpsConnectionsCallOptions): Promise<unknown> {
   const organizationId = organizationOf(request)
   const bound = env.OPS_CONNECTIONS
   if (!bound) return unavailable(method, organizationId, 'binding_absent')
-  // A Google list method the deployed ops Worker does not export throws (a
-  // double lacking it throws TypeError), which is answered as a throw.
+  // A method the deployed ops Worker does not export throws (a double lacking
+  // it throws TypeError), which is answered as a throw, never a pass.
   // Called as a method of the binding itself, never read off it and invoked
   // through .call or .apply: on a real RPC stub every property read is another
   // remote method, so `.call` names a method ops does not export and every call
   // throws (shipped that way in #2569, caught only by the post deploy probe).
-  const methods = bound as unknown as Record<AnyMethod, (request: unknown) => Promise<unknown>>
+  const methods = bound as unknown as Record<OpsConnectionsMethod, (request: unknown) => Promise<unknown>>
   const raced = await raceDeadline(() => methods[method](request), deadlineOf(method), options.delay)
   if (raced.kind === 'timed_out') return unavailable(method, organizationId, 'deadline')
   if (raced.kind === 'threw') {
@@ -200,13 +182,6 @@ export async function callOpsConnections<M extends OpsConnectionsMethod>(
   env: OpsConnectionsEnv, method: M, request: Requests[M], options: OpsConnectionsCallOptions = {},
 ): Promise<Answers[M] | OpsConnectionsUnavailable> {
   return (await callMethod(env, method, request, options)) as Answers[M] | OpsConnectionsUnavailable
-}
-
-/** One call to a Google list method (#2338), on the same rules as callOpsConnections. Never throws. */
-export async function callOpsDelegation<M extends OpsDelegationMethod>(
-  env: OpsConnectionsEnv, method: M, request: DelegationRequests[M], options: OpsConnectionsCallOptions = {},
-): Promise<DelegationAnswers[M] | OpsConnectionsUnavailable> {
-  return (await callMethod(env, method, request, options)) as DelegationAnswers[M] | OpsConnectionsUnavailable
 }
 
 export function isOpsConnectionsUnavailable(answer: unknown): answer is OpsConnectionsUnavailable {
