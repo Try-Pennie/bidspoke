@@ -276,6 +276,8 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
   const unsaved = unsavedWork(state)
   const blocking = unsaved !== null
   useLeaveGuard({ blocking, onAsk: (request) => setLeaveAsk((open) => open ?? request) })
+  // The question goes once there is nothing left to lose (a save landed while it was asked); the person can go again.
+  useEffect(() => { if (!blocking) setLeaveAsk(null) }, [blocking])
   const choose = useCallback((c: Chosen, name: string) => {
     leaveThen({ kind: 'page', name }, () => { setLeaveAsk(null); dispatch({ type: 'choose', chosen: c }) })
   }, [])

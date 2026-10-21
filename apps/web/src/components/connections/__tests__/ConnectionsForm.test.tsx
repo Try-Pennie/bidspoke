@@ -219,6 +219,18 @@ describe('leaving with something unsaved (L608)', () => {
     expect(part('detail')!.querySelector('h2')!.textContent).toBe('Spare Salesforce')
   })
 
+  it('the question goes once there is nothing left to lose: a save that lands while it is asked', async () => {
+    let finish: (v: { connection: CreatedConnection }) => void = () => {}
+    await openForm({ create: vi.fn(() => new Promise<{ connection: CreatedConnection }>((r) => { finish = r })) })
+    await fillSalesforce()
+    fireEvent.click(within(part('add-form')!).getByRole('button', { name: 'Save' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Spare Salesforce' }))
+    expect(screen.getByRole('alertdialog', { name: 'The login is still being checked' })).toBeTruthy()
+    await act(async () => finish({ connection: CREATED }))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(part('detail')!.querySelector('h2')!.textContent).toBe('Achieve Salesforce 2')
+  })
+
   it('opens another connection straight away when nothing was typed', async () => {
     await openForm()
     fireEvent.click(within(part('add-form')!).getByRole('button', { name: /^Salesforce/ }))
