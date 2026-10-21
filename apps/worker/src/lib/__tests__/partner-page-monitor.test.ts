@@ -403,24 +403,28 @@ describe('runPartnerPageMonitor', () => {
     ])
   })
 
-  // #2580, the 2026-10-21 timings: the only failed run paged at 08:01:08 UTC and
-  // the next run, at 08:05:34, received its notice. The all-clear must carry that
-  // run as the first healthy check, so it never names the page as the clearing.
-  it('hands the all-clear the first run that received its notice after the miss (#2580)', async () => {
+  // #2580. On 2026-10-21 the all-clear named the page (4:01 AM) as the clearing,
+  // while the first run to receive its notice was 4:05. Since #2579 one miss no
+  // longer pages, so this incident is two misses in a row; the all-clear must
+  // carry the run that received after the last miss as the first healthy check.
+  it('hands the all-clear the first run that received its notice after the last miss (#2580)', async () => {
     const h = monitorHarness()
+    const miss: Outcome = { kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 4, rounds: 2 }
+    h.set(miss)
     h.clock.now = Date.parse('2026-10-21T08:01:08.000Z')
-    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 4, rounds: 2 })
     await h.run()
+    h.clock.now = Date.parse('2026-10-21T08:06:08.000Z')
+    expect((await h.run()).alerts).toEqual(['channel'])
     h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
-    h.clock.now = Date.parse('2026-10-21T08:05:34.000Z')
+    h.clock.now = Date.parse('2026-10-21T08:10:34.000Z')
     await h.every5(RECOVERY_REARM_MINUTES + 5)
     const recoveries = h.sent.filter((s) => s.kind === 'recovery' && s.payload.signal === 'partners page live updates')
     expect(recoveries).toHaveLength(1)
     expect((recoveries[0].payload.items as unknown[])[0]).toEqual({
       subject: 'The partners page channel',
       alertedAt: '2026-10-21T08:01:08.000Z',
-      endedAt: '2026-10-21T08:01:08.000Z',
-      firstHealthyAt: '2026-10-21T08:05:34.000Z',
+      endedAt: '2026-10-21T08:06:08.000Z',
+      firstHealthyAt: '2026-10-21T08:10:34.000Z',
     })
   })
 
