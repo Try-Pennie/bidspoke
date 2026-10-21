@@ -1,6 +1,0 @@
-packages:
-  - 'apps/*'
-  # Shared code both apps import, so there is one implementation rather than a
-  # copy per app (#869 added the first: the UUIDv7 execution id helper, which the
-  # Worker and the browser both mint ids with).
-  - 'packages/*'

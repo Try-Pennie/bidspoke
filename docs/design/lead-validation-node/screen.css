@@ -1,3 +1,0 @@
-/* The captured page sizes itself to the window (h-screen); inside a frame that has no
-   window height of its own, so pin it to the laptop window height the round is drawn at. */
-.h-screen { height: 1000px !important; }
