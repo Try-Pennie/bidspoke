@@ -78,12 +78,18 @@ describe('the Connection field preview', () => {
     })
   }
 
-  it('the loading frame stands still at 6 seconds', async () => {
-    render(<Frame frame="loading" />)
+  it('the loading frame stands still at 6 seconds: no later heartbeat and no deadline is ever scheduled to run', async () => {
+    const clock = stillClock(6000)
+    const ran: number[] = []
+    const watched = { ...clock, setTimeout: (fn: () => void, ms: number) => { ran.push(ms); return clock.setTimeout(fn, ms) } }
+    render(<ConnectionField id="step-connection" service="salesforce" value={chosenIdOf('loading')} onChange={() => {}} loadList={previewLoadList('loading')} clock={watched} />)
+    await act(async () => {})
     await act(async () => {})
     expect(within(screen.getByRole('status')).getByText(/6 s/)).toBeInTheDocument()
-    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
     expect(screen.getByRole('status')).toHaveTextContent('Loading the connections, 6 s')
+    // The clock was asked for heartbeats and the deadline, and only the first heartbeats ran: the frame cannot move on.
+    expect(ran).toContain(1000)
+    expect(clock.now() - Date.parse('2026-10-20T16:00:00Z')).toBe(6000)
   })
 
   it('the page answers 404 in a production build', async () => {
