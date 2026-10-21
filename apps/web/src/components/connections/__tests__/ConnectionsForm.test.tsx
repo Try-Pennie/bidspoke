@@ -295,6 +295,22 @@ describe('Reconnect (R19, D19)', () => {
     expect(part('detail')!.textContent).toContain('pennie.api@achieve.example')
   })
 
+  it('opens for a connection of a service the catalogue does not declare, asks nothing, and says why the check is refused', async () => {
+    const undeclared = Object.assign(new Error('connection_service_undeclared'), { status: 422, body: { error: 'connection_service_undeclared', message: 'Bidspoke cannot connect to Anthropic yet. Nothing was saved. Choose one of the services the form offers.' } })
+    const list: ConnectionList = { ...LIST, connections: [row({ id: 'notes', name: 'Lead notes', service: 'anthropic', service_name: 'Anthropic', org: null, target: null })] }
+    const s = source({ list: vi.fn(async () => list), reconnect: vi.fn(async () => { throw undeclared }) })
+    render(<ConnectionsScreen source={s} clock={manualClock().clock} initialChosen={{ kind: 'connection', id: 'notes' }} />)
+    await waitFor(() => expect(part('actions')).not.toBeNull())
+    fireEvent.click(within(part('actions')!).getByRole('button', { name: 'Reconnect' }))
+    const dialog = screen.getByRole('dialog', { name: 'Reconnect Lead notes' })
+    expect(within(dialog).queryAllByRole('textbox')).toEqual([])
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))
+    expect(s.reconnect).toHaveBeenCalledWith('notes', {})
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toContain('Bidspoke cannot connect to Anthropic yet.'))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
   it('with nothing typed, asks to check the stored login again', async () => {
     const { s, dialog } = await openReconnect()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }))

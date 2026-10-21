@@ -46,14 +46,15 @@ function Labelled({ id, label, children }: { id: string; label: string; children
 export function ReconnectDialog({ dialog, connection, service, now, onField, onSave, onClose }: {
   dialog: Open<'reconnect'>
   connection: ConnectionView
-  service: FormService
+  /** Its catalogue entry; null for a service the catalogue does not declare, which has nothing to ask. */
+  service: FormService | null
   now: number
   onField: (field: string, text: string) => void
   onSave: () => void
   onClose: () => void
 }) {
   const base = useId()
-  const { kept, asked } = reconnectFieldsOf(service.connection, connection.target)
+  const { kept, asked } = service ? reconnectFieldsOf(service.connection, connection.target) : { kept: [], asked: [] }
   const saving = dialog.save.kind === 'saving'
   const typed = Object.values(dialog.values).some((v) => v.trim() !== '')
   return (
@@ -66,7 +67,7 @@ export function ReconnectDialog({ dialog, connection, service, now, onField, onS
         <>
           <Button variant="primary" className="cx-btn cx-btn-sm" onClick={onSave} disabled={saving}>Save</Button>
           <Button variant="secondary" className="cx-btn-quiet" onClick={onClose}>Cancel</Button>
-          <SaveLine save={dialog.save} now={now} label={workingLabel(service.name)} />
+          <SaveLine save={dialog.save} now={now} label={workingLabel(service?.name ?? connection.serviceName)} />
         </>
       }
     >

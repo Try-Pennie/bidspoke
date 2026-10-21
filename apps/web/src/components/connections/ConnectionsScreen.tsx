@@ -243,15 +243,16 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     const d = s.dialog
     if (d?.kind !== 'reconnect' || d.save.kind === 'saving' || s.list.kind !== 'loaded') return
     const c = s.list.data.connections.find((x) => x.id === d.id)
-    const service = services.find((x) => x.key === c?.service)
-    if (!c || !service) return
+    if (!c) return
+    // A service the catalogue does not declare has no fields to ask; the route says why it refuses the check.
+    const serviceName = services.find((x) => x.key === c.service)?.name ?? c.serviceName
     const attempt = ++changeNumber.current.reconnect
     if (attempt <= s.lastChange.reconnect) return
     const ms = s.deadlines.saveDeadlineMs
-    dispatch({ type: 'reconnect_requested', attempt, at: clock.now(), stalled: stalledSentence(service.name, ms, 'reconnected') })
+    dispatch({ type: 'reconnect_requested', attempt, at: clock.now(), stalled: stalledSentence(serviceName, ms, 'reconnected') })
     source.reconnect(c.id, reconnectBodyOf(d.values)).then(
       (a) => dispatch({ type: 'reconnect_answered', attempt, id: c.id, actsAs: a.connection.acts_as, at: clock.now() }),
-      (err: unknown) => dispatch({ type: 'reconnect_refused', attempt, sentence: saveFailureSentence(err, service.name, ms, 'reconnected') }),
+      (err: unknown) => dispatch({ type: 'reconnect_refused', attempt, sentence: saveFailureSentence(err, serviceName, ms, 'reconnected') }),
     )
   }, [source, clock, services])
 
@@ -390,7 +391,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
         </>
       )}
 
-      {dialog?.kind === 'reconnect' && dialogConnection && dialogService && (
+      {dialog?.kind === 'reconnect' && dialogConnection && (
         <ReconnectDialog
           dialog={dialog}
           connection={dialogConnection}
