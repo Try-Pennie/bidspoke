@@ -3578,7 +3578,8 @@ export async function sendCronHeartbeatGroupRecoveryAlert(
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
   if (!connection) return false
-  const wording: RecoveryWording = { signal: CRON_HEARTBEAT_RECOVERY_WORDS }
+  // The end is the last completion: a clearing observed, not a last sighting (#2580).
+  const wording: RecoveryWording = { signal: CRON_HEARTBEAT_RECOVERY_WORDS, endedAtIsClearing: true }
   const timing = recoveryTiming({ subject: '', alertedAt: recovery.alertedAt, endedAt: recovery.endedAt }, wording, now)
   const lines = recovery.jobs.map((j) => `*${j.label}* ${heartbeatRecoveredPhrase(j.sameRun)}.`)
   // The timing sentence and its blank line share the section, so the list is held to the budget less them.
