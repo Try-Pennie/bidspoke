@@ -103,4 +103,19 @@ describe('compareOutcomes', () => {
     expect(compareOutcomes({ kind: 'threw', error: 'TypeError' }, { kind: 'pass' }, config).difference?.kind).toBe('passes_after_throw')
     expect(compareOutcomes(reject('invalid name'), { kind: 'threw', error: 'x' }, config).bucket).toBe('node_threw')
   })
+
+  it('compares the body as the JSON text the source reads, so the same keys in another order differ (#2594)', () => {
+    const reordered: ValidationOutcome = { kind: 'reject', status: 200, headers: { 'Content-Type': 'application/json' }, body: { status: 'rejected', lead_id: 'l', reason: 'invalid name' }, check_id: 'name' }
+    expect(compareOutcomes(reject('invalid name'), reordered, config)).toEqual({
+      bucket: 'response_differs',
+      difference: { kind: 'answer', script_check: 'name', node_check: 'name', fields: ['body key order'] },
+    })
+    expect(compareOutcomes(reject('invalid name', null, { requestId: 'x' }), reject('invalid name', 'name', { requestId: 'x' }), config)).toEqual({ bucket: 'agree', difference: null })
+  })
+
+  it('sets key order aside when the script\'s answer was read back from a store that does not keep it', () => {
+    const reordered: ValidationOutcome = { kind: 'reject', status: 200, headers: { 'Content-Type': 'application/json' }, body: { status: 'rejected', lead_id: 'l', reason: 'invalid name' }, check_id: 'name' }
+    expect(compareOutcomes(reject('invalid name'), reordered, config, { keyOrder: false })).toEqual({ bucket: 'agree', difference: null })
+    expect(compareOutcomes(reject('invalid name', null, { requestId: 'x' }), reordered, config, { keyOrder: false }).difference).toMatchObject({ kind: 'answer', fields: ['body.requestId'] })
+  })
 })

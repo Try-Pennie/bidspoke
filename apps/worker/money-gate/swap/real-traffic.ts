@@ -237,7 +237,9 @@ export async function replayRealTraffic(candidate: SwapCandidate, window: Replay
       }
       const lead = withConstantsData({ payload: run.trigger_payload, steps: upstream, trace_id: run.trace_id ?? '' }, constantsNs, candidate.constants_data)
       const node = runNode(config, candidate.replaces.namespace, version.constantsNamespaces, lead)
-      const { bucket, difference } = compareOutcomes(script, node, config)
+      // The script's answer is read back from jsonb, which does not keep key
+      // order, so the order is the grid's to compare (#2594).
+      const { bucket, difference } = compareOutcomes(script, node, config, { keyOrder: false })
       report.buckets[bucket]++
       if (script.kind === 'reject') bump(report.scriptReasons, String((script.body as { reason?: unknown } | null)?.reason))
       if (node.kind === 'reject' && node.check_id) bump(report.nodeChecks, node.check_id)

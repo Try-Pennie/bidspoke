@@ -113,6 +113,15 @@ describe('replayRealTraffic', () => {
     expect(r.noValidateStep).toEqual({ 'no step row': 1 })
   })
 
+  it('reads a recorded answer\'s keys in any order: the step output is jsonb, which stores keys in its own order (#2594)', async () => {
+    const tables = world()
+    const military = tables.execution_steps.find((s) => s.step_namespace === NS && s.execution_id === 'run-2')!
+    // Postgres jsonb orders keys shorter first: reason, status, lead_id.
+    military.output = { response: { status: 200, headers: { 'Content-Type': 'application/json' }, body: { reason: 'military status ineligible', status: 'rejected', lead_id: SECRET.lead } } }
+    const r = await replayRealTraffic(candidate, window, { client: fakeClient(tables), log: () => {} })
+    expect(r.buckets).toEqual({ agree: 2, response_differs: 0, script_threw: 1, node_threw: 0, no_validate_step: 1 })
+  })
+
   it('names a seeded defect by its check, and prints no payload value or id', async () => {
     const log: string[] = []
     const seeded = seedDefect(candidate, 'military', 'lenient')
