@@ -172,6 +172,8 @@ export function Combobox({
   const [typing, setTyping] = useState(Boolean(newValue && valueIsNew && value))
   const [typed, setTyped] = useState(newValue && valueIsNew ? value : '')
   const focusNext = useRef<'trigger' | 'input' | null>(null)
+  /** The value this control took as typed, the only one an emptied box may clear. */
+  const typedNew = useRef<string | null>(newValue && valueIsNew && value ? value : null)
 
   const known = useMemo(() => (load.kind === 'ready' ? load.options : []), [load])
   const query = typed.trim()
@@ -239,6 +241,7 @@ export function Combobox({
       return
     }
     if (item.kind === 'use') {
+      typedNew.current = item.typed
       onChange(item.typed, { isNew: true })
       setTyped(item.typed)
       close()
@@ -260,7 +263,7 @@ export function Combobox({
     close()
     if (query === '') {
       // An emptied box that held a typed new value no longer holds it; a known value stays.
-      if (value !== '' && !known.some((o) => o.value === value)) onChange('', { isNew: false })
+      if (value !== '' && typedNew.current === value) { typedNew.current = null; onChange('', { isNew: false }) }
       setTyping(false)
       return
     }
@@ -272,6 +275,7 @@ export function Combobox({
       setTyped('')
       return
     }
+    typedNew.current = query
     if (query !== value) onChange(query, { isNew: true })
     setTyped(query)
   }

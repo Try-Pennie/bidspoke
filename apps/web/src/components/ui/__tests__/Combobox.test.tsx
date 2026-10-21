@@ -324,6 +324,25 @@ describe('Combobox', () => {
     expect(box).not.toHaveTextContent('no longer available')
   })
 
+  it('leaving the box empty keeps a stored org even when the list could not be read', async () => {
+    const onChange = vi.fn()
+    render(
+      <>
+        <Combobox id="org" aria-label="Org" value="achieve" onChange={onChange} newValue={NEW_ORG} loadOptions={async () => { throw new Error('Salesforce did not answer.') }} />
+        <button type="button">Next</button>
+      </>
+    )
+    const box = screen.getByRole('combobox', { name: 'Org' })
+    box.focus()
+    await userEvent.keyboard('{ArrowDown}')
+    await within(menu()).findByRole('alert')
+    await userEvent.click(screen.getByRole('option', { name: 'Another org' }))
+    expect(screen.getByRole('combobox', { name: 'Org' }).tagName).toBe('INPUT')
+    await userEvent.tab()
+    expect(onChange).not.toHaveBeenCalled()
+    expect(screen.getByRole('combobox', { name: 'Org' })).toHaveTextContent('achieve')
+  })
+
   it('a stored value is never called no longer available when the list could not be read', async () => {
     render(
       <Combobox id="org" aria-label="Org" value="achieve" onChange={() => {}} loadOptions={async () => { throw new Error('Salesforce did not answer.') }} />
