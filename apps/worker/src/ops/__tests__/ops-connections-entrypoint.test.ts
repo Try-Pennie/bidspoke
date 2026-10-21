@@ -6,9 +6,9 @@
  * to an entrypoint the deployed Worker does not export: the binding deploys
  * green and every call throws "internal error; reference = <id>" within 20 to
  * 40 ms. So the first test here is that OpsConnections stays exported from the
- * ops Worker's main module, with exactly the methods bidding calls plus the
- * Google list's three, which ship on ops before bidding calls them (#2338); a
- * rename or a removal fails here before it can deploy. That a real binding
+ * ops Worker's main module, with exactly the methods bidding calls
+ * (OPS_CONNECTIONS_METHODS, the Google list's three among them since #2338
+ * build PR 6); a rename or a removal fails here before it can deploy. That a real binding
  * reaches it inside workerd is ops-connections.workers.test.ts.
  *
  * The rest: every answer is a value (a rejection across an RPC call reads as a
@@ -20,7 +20,7 @@ import { WorkerEntrypoint } from 'cloudflare:workers'
 import * as opsModule from '../index'
 import type { OpsEnv } from '../index'
 import { OpsConnections, delegationListAnswer, opsConnectionsAnswer } from '../ops-connections-entrypoint'
-import { OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_CEILINGS_MS, OPS_DELEGATION_METHODS, parseHealthRequest } from '../../lib/ops-connections-contract'
+import { OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_METHODS, parseHealthRequest } from '../../lib/ops-connections-contract'
 import { KEYGEN_TIMEOUT_MS, opsKeyPair } from './ops-key-fixture'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
@@ -43,11 +43,11 @@ function opsDatabase(answers: Record<string, unknown>) {
 const configured: Partial<OpsEnv> = { LANE: 'ops', OPS_SUPABASE_URL: 'https://zwihpjxouklvkvngkvmw.supabase.co', OPS_SUPABASE_SECRET_KEY: 'sb_secret_test_not_real' }
 
 describe('OpsConnections stays exported from the ops Worker (Phase 0 spike, #2330)', () => {
-  it('is a named export of the main module, a WorkerEntrypoint, with exactly the methods the bidding Worker calls and the Google list\'s', () => {
+  it('is a named export of the main module, a WorkerEntrypoint, with exactly OPS_CONNECTIONS_METHODS, the methods the bidding Worker calls', () => {
     expect(opsModule.OpsConnections).toBe(OpsConnections)
     expect(Object.getPrototypeOf(OpsConnections)).toBe(WorkerEntrypoint)
     expect(Object.getOwnPropertyNames(OpsConnections.prototype).filter((n) => n !== 'constructor').sort())
-      .toEqual([...OPS_CONNECTIONS_METHODS, ...OPS_DELEGATION_METHODS].sort())
+      .toEqual([...OPS_CONNECTIONS_METHODS].sort())
   })
 
   it('is not the default export, which the public route reaches', () => {
@@ -58,7 +58,7 @@ describe('OpsConnections stays exported from the ops Worker (Phase 0 spike, #233
 describe('every answer is a value, refused by name', () => {
   it.each([[undefined, 'lane_unset'], ['', 'lane_unset'], ['money', 'lane_not_ops']])('outside the ops lane (LANE %j), every method refuses %s', async (lane, code) => {
     const e = entry({ ...configured, LANE: lane })
-    for (const method of [...OPS_CONNECTIONS_METHODS, ...OPS_DELEGATION_METHODS]) {
+    for (const method of OPS_CONNECTIONS_METHODS) {
       expect(await (e[method] as (r: unknown) => Promise<unknown>)({ organization_id: ORG })).toMatchObject({ ok: false, refused: code })
     }
   })
@@ -132,7 +132,7 @@ describe('every answer is a value, refused by name', () => {
       delay: async () => {},
       run: () => new Promise<never>(() => {}),
     })
-    expect(answer).toMatchObject({ ok: false, refused: 'ops_connections_timeout', detail: expect.stringContaining(`${OPS_DELEGATION_CEILINGS_MS.listDelegationSubjects / 1000} s`) })
+    expect(answer).toMatchObject({ ok: false, refused: 'ops_connections_timeout', detail: expect.stringContaining(`${OPS_CONNECTIONS_CEILINGS_MS.listDelegationSubjects / 1000} s`) })
   })
 
   it('a method past its ceiling answers ops_connections_timeout and aborts the work it was doing', async () => {

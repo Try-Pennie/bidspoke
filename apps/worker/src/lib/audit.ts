@@ -84,6 +84,10 @@ export type AuditAction =
   // A person asked for one buyer sale to be copied again from the ledger
   // (#2422). Nothing about the sale changed, so it is never 'updated'.
   | 'buyer_sale_recopy_requested'
+  // A Reconnect without a new login (#2338, build PR 6): ops checked the stored
+  // login again and cleared its Needs reconnecting flag. No bidding row changed,
+  // so the store's trigger writes nothing; changes names the generation checked.
+  | 'connection_rechecked'
 
 /**
  * How long to wait between audit-write attempts (#277).

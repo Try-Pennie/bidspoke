@@ -21,7 +21,8 @@ function contractMethods(): string[] {
 describe('the deployed ops check requires the contract\'s methods', () => {
   it('names OpsConnections and exactly OPS_CONNECTIONS_METHODS', () => {
     expect(ENTRYPOINT).toBe('OpsConnections')
-    expect(contractMethods()).toHaveLength(6)
+    // The Google list's three joined the six in #2338 build PR 6, once the ops deploy carried them.
+    expect(contractMethods()).toHaveLength(9)
     expect([...METHODS].sort()).toEqual(contractMethods().sort())
   })
 })

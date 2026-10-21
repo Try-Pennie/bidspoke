@@ -20,10 +20,11 @@ import { open } from '@bidspoke/connection-seal'
 import type { ServiceSchema } from '@bidspoke/service-catalogue/schema'
 import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
-import { parseVerifyRequest, type VerifyRequest } from '../../../lib/ops-connections-contract'
+import { parseRevokeRequest, parseVerifyRequest, type VerifyRequest } from '../../../lib/ops-connections-contract'
 import { makeKeys, type TestKeys } from '../../../ops/connections/__tests__/harness'
 import { makeSigningKey } from '../../../ops/connections/minters/__tests__/minter-harness'
 import { opsServiceEntry } from '../../../ops/connections/services'
+import { rpcStub } from '../../../test-setup/rpc-stub'
 import type { AuthorizeInput } from '../../../ops/connections/service-rules'
 
 const fixtures = vi.hoisted(() => {
@@ -103,6 +104,8 @@ type Row = Record<string, unknown>
 interface StoreOptions {
   readError?: { code: string; message: string }
   insertError?: { code: string; message: string }
+  /** The insert committed and its answer was lost on the way back (a dropped connection). */
+  insertLandedThenFailed?: boolean
 }
 
 /** The table as the database holds it: the unique per organization, service and name, and the alert name CHECK. */
@@ -124,6 +127,10 @@ function storeDouble(rows: Row[] = [], opts: StoreOptions = {}) {
         if (table !== 'service_connections' || inserted === null) return { data: null, error: { code: 'XX000', message: 'unexpected single' } }
         const row = inserted
         inserts.push(row)
+        if (opts.insertLandedThenFailed) {
+          rows.push({ created_at: '2026-10-20T22:00:00Z', ...row })
+          return { data: null, error: { code: '', message: 'TypeError: fetch failed' } }
+        }
         if (opts.insertError) return { data: null, error: opts.insertError }
         if (row.service_type === 'slack' && row.name === 'slack' && row.sealed_for === 'ops_key') {
           return { data: null, error: { code: '23514', message: 'new row for relation "service_connections" violates check constraint "service_connections_alert_name_reserved"' } }
@@ -168,13 +175,15 @@ const WORKER_ENV = {
   ARCHIVE_ERASER_USER: 'ARCHIVE_ERASER',
 }
 
-function makeEnv(ops: { verify?: Verify; list?: () => Promise<unknown> } = {}) {
+function makeEnv(ops: { verify?: Verify; list?: () => Promise<unknown>; revoke?: (r: unknown) => Promise<unknown> } = {}) {
   const binding = {
     verify: vi.fn((r: unknown) => (ops.verify ?? verified())(r as VerifyRequest)),
     listDelegationSubjects: vi.fn(ops.list ?? listed([])),
-    clearReauth: vi.fn(), revoke: vi.fn(), health: vi.fn(), lookup: vi.fn(), exchangeOAuthCode: vi.fn(),
+    revoke: vi.fn(ops.revoke ?? (async () => ({ ok: true, outcome: 'recorded', copies_removed: 0 }))),
+    clearReauth: vi.fn(), health: vi.fn(), lookup: vi.fn(), exchangeOAuthCode: vi.fn(),
   }
-  const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {}, OPS_CONNECTIONS: binding, ...WORKER_ENV } as unknown as Env
+  // Shaped like the real RPC stub, so a call it would refuse fails here too (#2570).
+  const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {}, OPS_CONNECTIONS: rpcStub(binding), ...WORKER_ENV } as unknown as Env
   return { env, binding }
 }
 
@@ -603,5 +612,67 @@ describe('two saves of one name', () => {
     const res = await post(env, salesforce())
     expect(res.status).toBe(503)
     expect(((await res.json()) as Refusal).error).toBe('connection_store_failed')
+  })
+
+  it('the loser of a name race is also withdrawn from ops: revoke is called for its own id', async () => {
+    const db = storeDouble([{ organization_id: ORG, service_type: 'salesforce', name: 'Pennie Salesforce', id: 'held' }])
+    // The early name read passes (a race the read could not see), and the unique then refuses the insert.
+    db.from = ((orig) => (table: string) => {
+      const b = orig(table) as { maybeSingle: () => Promise<unknown> }
+      b.maybeSingle = async () => ({ data: null, error: null })
+      return b
+    })(db.from) as typeof db.from
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env, binding } = makeEnv()
+    const res = await post(env, salesforce())
+    expect(res.status).toBe(409)
+    const verifiedId = parseVerifyRequest(binding.verify.mock.calls[0][0]).connection_id
+    expect(binding.revoke).toHaveBeenCalledTimes(1)
+    expect(parseRevokeRequest(binding.revoke.mock.calls[0][0])).toMatchObject({ organization_id: ORG, connection_id: verifiedId, generation: 1 })
+  })
+})
+
+describe('a verify that passed, then an insert that failed: nothing is left behind on ops', () => {
+  it('revokes the verified id at generation 1 before answering the save\'s error', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble([], { insertError: { code: '57014', message: 'canceling statement due to statement timeout' } }) as never)
+    const order: string[] = []
+    const { env, binding } = makeEnv({
+      verify: async (r) => { order.push('verify'); return verified()(r) },
+      revoke: async () => { order.push('revoke'); return { ok: true, outcome: 'recorded', copies_removed: 0 } },
+    })
+    const res = await post(env, salesforce())
+    expect(res.status).toBe(503)
+    expect(((await res.json()) as Refusal).error).toBe('connection_store_failed')
+    expect(order).toEqual(['verify', 'revoke'])
+    const revoke = parseRevokeRequest(binding.revoke.mock.calls[0][0])
+    expect(revoke).toMatchObject({ organization_id: ORG, connection_id: parseVerifyRequest(binding.verify.mock.calls[0][0]).connection_id, generation: 1 })
+    expect(Math.abs(Date.parse(revoke.removed_at) - Date.now())).toBeLessThan(60_000)
+  })
+
+  it.each([
+    ['ops refused the tombstone', async () => ({ ok: false, refused: 'revoke_unrecorded', detail: 'x', retry_at: null })],
+    ['ops did not answer', async () => { throw new Error('internal error; reference = 0a0b0c') }],
+  ])('a revoke that fails (%s) still answers the save\'s error, and logs the leftover id by name', async (_why, revoke) => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble([], { insertError: { code: '57014', message: 'canceling statement due to statement timeout' } }) as never)
+    const errors: string[] = []
+    vi.mocked(console.error).mockImplementation((...args: unknown[]) => { errors.push(args.map(String).join(' ')) })
+    const { env, binding } = makeEnv({ revoke })
+    const res = await post(env, salesforce())
+    expect(res.status).toBe(503)
+    expect(((await res.json()) as Refusal).error).toBe('connection_store_failed')
+    const id = parseVerifyRequest(binding.verify.mock.calls[0][0]).connection_id
+    expect(errors.some((l) => l.includes('connection_create_left_on_ops') && l.includes(id))).toBe(true)
+  })
+
+  it('an insert whose answer was lost but which landed is read back and answered as saved, and nothing is revoked', async () => {
+    const db = storeDouble([], { insertLandedThenFailed: true })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env, binding } = makeEnv()
+    const res = await post(env, salesforce())
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as { connection: { id: string } }
+    expect(body.connection.id).toBe(parseVerifyRequest(binding.verify.mock.calls[0][0]).connection_id)
+    expect(binding.revoke).not.toHaveBeenCalled()
+    expect(db.rows).toHaveLength(1)
   })
 })

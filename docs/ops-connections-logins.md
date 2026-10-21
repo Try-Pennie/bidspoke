@@ -338,13 +338,19 @@ So two things hold the account in:
    `removeDelegationSubject` and `listDelegationSubjects`
    (`src/ops/connections/delegation-list.ts`), each taking the organization and
    the signed in person from the bidding Worker. The create route (build plan PR
-   5) reads the list through `callOpsDelegation` in
+   5) reads the list through `callOpsConnections` in
    `lib/ops-connections-client.ts` and refuses, before verify is asked, a Google
    delegation connection naming a mailbox or drive not on it
    (`google_subject_not_listed`), or any when the list cannot be read
-   (`google_list_unavailable`). The routes that add and remove entries arrive in
-   build plan PR 6, which moves the three into the methods the deployed ops check
-   requires. Until someone adds an entry, every Google mint is refused.
+   (`google_list_unavailable`). Any signed in user of the organization reads,
+   adds and removes entries through `GET`, `POST` and `DELETE`
+   `/api/connections/google/subjects` (build plan PR 6), which pass that person
+   to ops as the actor its change record names; the three are among the methods
+   the deployed ops check requires since then. Until someone adds an entry,
+   every Google mint is refused. An entry a saved connection acts as (its
+   target names the mailbox, or the drive among its drives) cannot be removed
+   until that connection is (`delegation_subject_in_use`, Dan's decision of
+   2026-10-20).
 
 ## Admin hand off
 

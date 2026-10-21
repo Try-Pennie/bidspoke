@@ -15,14 +15,15 @@
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
-  OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_CEILINGS_MS, OPS_DELEGATION_METHODS, OpsConnectionsContractError, parseHealthRequest,
+  OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OpsConnectionsContractError, parseHealthRequest,
   type OpsConnectionsBinding,
 } from '../ops-connections-contract'
 import {
-  callOpsConnections, callOpsDelegation, OPS_CONNECTIONS_DEADLINES_MS, OPS_DELEGATION_DEADLINES_MS, OPS_CONNECTIONS_PROBE_EXPECTED, OPS_CONNECTIONS_PROBE_REQUEST, probeOpsConnections,
+  callOpsConnections, OPS_CONNECTIONS_DEADLINES_MS, OPS_CONNECTIONS_PROBE_EXPECTED, OPS_CONNECTIONS_PROBE_REQUEST, probeOpsConnections,
 } from '../ops-connections-client'
 import { OpsConnections } from '../../ops/ops-connections-entrypoint'
 import type { OpsEnv } from '../../ops/index'
+import { rpcStub } from '../../test-setup/rpc-stub'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
 
@@ -34,25 +35,6 @@ function binding(answer: (method: string, request: unknown) => Promise<unknown>)
     return answer(m, request)
   }]))
   return { binding: methods as unknown as OpsConnectionsBinding, calls }
-}
-
-/**
- * A binding double shaped like a real Cloudflare RPC stub: EVERY property read,
- * on the stub or on one of its methods, is another remote method, so `.call`,
- * `.apply` or `.bind` read off a method names a method ops does not export, and
- * calling it throws the way the deployed binding does. A plain object double
- * lets `.call` work, which is how PR 5 (#2569) shipped a client that threw on
- * every call through the real binding.
- */
-function rpcStub(handlers: Record<string, (request: unknown) => Promise<unknown>>) {
-  const remote = (name: string): unknown => new Proxy(() => {}, {
-    apply: (_target, _this, args: unknown[]) => {
-      const handler = handlers[name]
-      return handler ? handler(args[0]) : Promise.reject(new Error('internal error; reference = 0a1b2c3d4e5f'))
-    },
-    get: (_target, sub) => remote(`${name}.${String(sub)}`),
-  })
-  return new Proxy({}, { get: (_target, name) => remote(String(name)) }) as unknown as OpsConnectionsBinding
 }
 
 const never = () => new Promise<never>(() => {})
@@ -77,21 +59,20 @@ describe('each per method deadline is longer than the ceiling ops answers by nam
   })
 
   it('holds the stated values', () => {
-    expect(OPS_CONNECTIONS_DEADLINES_MS).toEqual({ verify: 50_000, clearReauth: 50_000, exchangeOAuthCode: 35_000, lookup: 30_000, revoke: 15_000, health: 15_000 })
+    expect(OPS_CONNECTIONS_DEADLINES_MS).toEqual({
+      verify: 50_000, clearReauth: 50_000, exchangeOAuthCode: 35_000, lookup: 30_000, revoke: 15_000, health: 15_000,
+      addDelegationSubject: 15_000, removeDelegationSubject: 15_000, listDelegationSubjects: 15_000,
+    })
   })
 })
 
 describe('through a binding shaped like the real RPC stub', () => {
   const refusal = { ok: false, refused: 'connection_not_found', detail: 'no copy', retry_at: null }
 
+  // The Google list's three are among OPS_CONNECTIONS_METHODS since #2338 build PR 6.
   it.each(OPS_CONNECTIONS_METHODS)('%s is called as the method itself, never through .call or .apply', async (method) => {
     const stub = rpcStub({ [method]: async () => refusal })
     expect(await callOpsConnections({ OPS_CONNECTIONS: stub }, method, { organization_id: ORG } as never)).toEqual(refusal)
-  })
-
-  it.each(OPS_DELEGATION_METHODS)('%s is called as the method itself, never through .call or .apply', async (method) => {
-    const stub = rpcStub({ [method]: async () => refusal })
-    expect(await callOpsDelegation({ OPS_CONNECTIONS: stub }, method, { organization_id: ORG } as never)).toEqual(refusal)
   })
 
   it('the deploy probe answers through it', async () => {
@@ -200,36 +181,28 @@ describe('probeOpsConnections: the post deploy call through the binding', () => 
   })
 })
 
-describe('callOpsDelegation: the Google list, read by the create route (#2338, build PR 5)', () => {
-  it('names a deadline for exactly the Google list methods', () => {
-    expect(Object.keys(OPS_DELEGATION_DEADLINES_MS).sort()).toEqual([...OPS_DELEGATION_METHODS].sort())
-  })
-
-  it.each(OPS_DELEGATION_METHODS)('%s: the bidding deadline exceeds the ops ceiling by at least 2 s', (method) => {
-    expect(OPS_DELEGATION_DEADLINES_MS[method]).toBeGreaterThanOrEqual(OPS_DELEGATION_CEILINGS_MS[method] + 2_000)
-  })
-
+describe('the Google list methods, called like every other method since build PR 6 (#2338)', () => {
   it('passes the request to the named method and returns its answer unchanged', async () => {
     const list = { ok: true, subjects: [], reached_limit: false }
-    const calls: unknown[] = []
-    const b = { listDelegationSubjects: async (request: unknown) => { calls.push(request); return list } }
-    expect(await callOpsDelegation({ OPS_CONNECTIONS: b as unknown as OpsConnectionsBinding }, 'listDelegationSubjects', { organization_id: ORG })).toEqual(list)
-    expect(calls).toEqual([{ organization_id: ORG }])
+    const { binding: b, calls } = binding(async () => list)
+    expect(await callOpsConnections({ OPS_CONNECTIONS: b }, 'listDelegationSubjects', { organization_id: ORG })).toEqual(list)
+    expect(calls).toEqual([{ method: 'listDelegationSubjects', request: { organization_id: ORG } }])
   })
 
   it('a deployed ops Worker that does not export the method is unavailable by name, never a pass', async () => {
     captureLogs()
-    const { binding: b } = binding(async () => ({ ok: true }))
-    expect(await callOpsDelegation({ OPS_CONNECTIONS: b }, 'listDelegationSubjects', { organization_id: ORG }))
-      .toMatchObject({ ok: false, refused: 'ops_connections_unavailable', cause: 'threw' })
+    const b = { health: async () => ({ ok: true }) }
+    expect(await callOpsConnections({ OPS_CONNECTIONS: b as unknown as OpsConnectionsBinding }, 'addDelegationSubject', {
+      organization_id: ORG, actor: { user_id: ORG, email: 'dan@example.invalid', name: null }, kind: 'mailbox', subject: 'ops@example.invalid', display_name: null,
+    })).toMatchObject({ ok: false, refused: 'ops_connections_unavailable', cause: 'threw' })
   })
 
   it('a list that never answers is unavailable at its deadline', async () => {
     captureLogs()
     const waited: number[] = []
-    const b = { listDelegationSubjects: never }
-    const answer = await callOpsDelegation({ OPS_CONNECTIONS: b as unknown as OpsConnectionsBinding }, 'listDelegationSubjects', { organization_id: ORG }, { delay: async (ms) => { waited.push(ms) } })
+    const { binding: b } = binding(never)
+    const answer = await callOpsConnections({ OPS_CONNECTIONS: b }, 'listDelegationSubjects', { organization_id: ORG }, { delay: async (ms) => { waited.push(ms) } })
     expect(answer).toMatchObject({ refused: 'ops_connections_unavailable', cause: 'deadline' })
-    expect(waited).toEqual([OPS_DELEGATION_DEADLINES_MS.listDelegationSubjects])
+    expect(waited).toEqual([OPS_CONNECTIONS_DEADLINES_MS.listDelegationSubjects])
   })
 })

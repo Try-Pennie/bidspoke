@@ -34,7 +34,7 @@ import { accountIdFrom } from './worker-secret-parity.mjs'
 export const OPS = 'bidspoke-worker-ops'
 export const ENTRYPOINT = 'OpsConnections'
 /** OPS_CONNECTIONS_METHODS in apps/worker/src/lib/ops-connections-contract.ts; a test holds the two equal. */
-export const METHODS = ['verify', 'clearReauth', 'revoke', 'health', 'lookup', 'exchangeOAuthCode']
+export const METHODS = ['verify', 'clearReauth', 'revoke', 'health', 'lookup', 'exchangeOAuthCode', 'addDelegationSubject', 'removeDelegationSubject', 'listDelegationSubjects']
 
 const API = 'https://api.cloudflare.com/client/v4'
 

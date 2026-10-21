@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest'
 import {
-  LOOKUP_RATE_PER_MINUTE, OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_CEILINGS_MS, OPS_DELEGATION_METHODS, OpsConnectionsContractError,
+  LOOKUP_RATE_PER_MINUTE, OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_METHODS, OpsConnectionsContractError,
   parseAddDelegationSubjectRequest, parseClearReauthRequest, parseExchangeOAuthCodeRequest, parseHealthRequest, parseListDelegationSubjectsRequest,
   parseLookupRequest, parseRemoveDelegationSubjectRequest, parseRevokeRequest, parseVerifyRequest,
 } from '../ops-connections-contract'
@@ -30,7 +30,9 @@ function refused(fn: () => unknown): string {
 
 describe('the OpsConnections contract', () => {
   it('names the methods the entrypoint answers, and a ceiling for each', () => {
-    expect([...OPS_CONNECTIONS_METHODS].sort()).toEqual(['clearReauth', 'exchangeOAuthCode', 'health', 'lookup', 'revoke', 'verify'])
+    expect([...OPS_CONNECTIONS_METHODS].sort()).toEqual([
+      'addDelegationSubject', 'clearReauth', 'exchangeOAuthCode', 'health', 'listDelegationSubjects', 'lookup', 'removeDelegationSubject', 'revoke', 'verify',
+    ])
     expect(Object.keys(OPS_CONNECTIONS_CEILINGS_MS).sort()).toEqual([...OPS_CONNECTIONS_METHODS].sort())
     for (const ms of Object.values(OPS_CONNECTIONS_CEILINGS_MS)) expect(ms).toBeGreaterThan(0)
     expect(LOOKUP_RATE_PER_MINUTE).toBeGreaterThanOrEqual(1)
@@ -98,12 +100,10 @@ describe('the OpsConnections contract', () => {
 describe('the Google mailboxes and drives list (#2338, PR 2)', () => {
   const ACTOR = { user_id: 'cccccccc-0000-4000-8000-000000002338', email: 'dan@example.invalid', name: 'Dan Wright' }
 
-  it('names its own methods, apart from the ones bidding calls today, each with a ceiling', () => {
-    // Bidding binds them in PR 6, once the ops deploy carries them; until then the deployed check must not require them.
+  it('its three methods are OpsConnections methods bidding calls, each with a ceiling, now that the ops deploy carries them (build PR 6)', () => {
+    expect(OPS_DELEGATION_METHODS.filter((m) => !(OPS_CONNECTIONS_METHODS as readonly string[]).includes(m))).toEqual([])
     expect([...OPS_DELEGATION_METHODS].sort()).toEqual(['addDelegationSubject', 'listDelegationSubjects', 'removeDelegationSubject'])
-    expect(OPS_DELEGATION_METHODS.filter((m) => (OPS_CONNECTIONS_METHODS as readonly string[]).includes(m))).toEqual([])
-    expect(Object.keys(OPS_DELEGATION_CEILINGS_MS).sort()).toEqual([...OPS_DELEGATION_METHODS].sort())
-    for (const ms of Object.values(OPS_DELEGATION_CEILINGS_MS)) expect(ms).toBeGreaterThan(0)
+    for (const m of OPS_DELEGATION_METHODS) expect(OPS_CONNECTIONS_CEILINGS_MS[m]).toBe(10_000)
   })
 
   it('an add names the organization, who is adding, the kind, the entry and a drive\'s name', () => {

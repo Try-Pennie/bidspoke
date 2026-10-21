@@ -213,3 +213,109 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
 export function createRefusalSentence(code: CreateRefusalCode, ctx: RefusalContext): string {
   return SENTENCES[code](ctx)
 }
+
+// ── the Reconnect, Remove and Google list routes (#2338, build PR 6) ──────────
+
+/**
+ * The refusals, and the one notice, of POST /:id/reconnect, DELETE /:id and the
+ * Google mailboxes and drives list routes (R9, R10, R19, R21), in this same
+ * module so every sentence the Connections page shows has one home. A
+ * Reconnect that sends a new login is checked by verify exactly as a save is,
+ * so its verify refusals are the create's and read through
+ * createRefusalSentence; these are the codes only these routes answer, and the
+ * ops refusals they pass on that verify never answers (NOT_VERIFY_REFUSALS but
+ * health's, the lookups' and revoke's, whose failure is the notice below).
+ */
+export const CONNECTION_ROUTE_REFUSAL_CODES = [
+  /** No connection of that id in the caller's organization: another organization's reads the same. */
+  'connection_not_found',
+  /** The Slack alert login (not an ops connection), which the Integrations page reconnects and removes. */
+  'connection_not_reconnectable',
+  'connection_not_removable',
+  /** A Reconnect sent a value for what the connection names (an org, a client id, an account). */
+  'reconnect_target_changed',
+  /** What the stored row names cannot be read back into the form's fields. */
+  'reconnect_target_unreadable',
+  /** The stored login could not be read, so a Reconnect without a new one has nothing to check. */
+  'reconnect_login_unreadable',
+  /** The compare and set lost: the row moved on while the new login was checked (F116). */
+  'reconnect_stale',
+  /** The compare and set did not answer, so whether it wrote is unknown. */
+  'reconnect_unconfirmed',
+  /** The new login is committed, and clearReauth then failed. */
+  'reconnect_saved_check_not_cleared',
+  /** A Reconnect without a new login passed its check, and ops could not record the clearing. */
+  'reauth_clear_unrecorded',
+  /** A workflow references the connection (connection_references, deleted ones included). */
+  'connection_in_use',
+  /** The removal did not answer, so whether it wrote is unknown. */
+  'connection_remove_unconfirmed',
+  /** Not a refusal: the removal stands, and revoke did not reach ops. */
+  'connection_removed_ops_not_told',
+  'delegation_subject_invalid',
+  'delegation_display_name_invalid',
+  'delegation_subject_listed_elsewhere',
+  'delegation_subject_not_listed',
+  /** A saved connection of the organization names the entry, so it stays on the list (Dan, 2026-10-20). */
+  'delegation_subject_in_use',
+  /** The connections could not be read, so whether one names the entry is unknown: nothing is removed. */
+  'delegation_use_unreadable',
+  'delegation_change_failed',
+  'delegation_list_unavailable',
+  /** Ops refused the change for a reason that is a fault in Bidspoke (its lane, its settings, the request's shape). */
+  'delegation_change_refused',
+] as const
+export type ConnectionRouteRefusalCode = (typeof CONNECTION_ROUTE_REFUSAL_CODES)[number]
+
+export interface RouteRefusalContext {
+  /** The service's name, as the catalogue gives it, or "the service". */
+  service: string
+  /** Its secret field's label in lower case, or "login". */
+  secret: string
+  /** The workflows, field labels or list entries the sentence is about. */
+  names: readonly string[]
+  /** Whether a workflow named is soft deleted (connection_in_use). */
+  deleted: boolean
+  /** The list entry the sentence is about (delegation_subject_in_use). */
+  subject?: string
+}
+
+const one = (c: RouteRefusalContext, fallback: string) => c.names[0] ?? fallback
+
+const ROUTE_SENTENCES: { readonly [C in ConnectionRouteRefusalCode]: (ctx: RouteRefusalContext) => string } = {
+  connection_not_found: () => 'There is no such connection in your organization. Nothing was changed. Reload the page.',
+  connection_not_reconnectable: () => 'This is Bidspoke\'s own Slack alert login, which is reconnected on the Integrations page, not here. Nothing was changed.',
+  connection_not_removable: () => 'This is Bidspoke\'s own Slack alert login, which is disconnected on the Integrations page, not here. Nothing was removed.',
+  reconnect_target_changed: (c) => `A Reconnect keeps what the connection names, so ${listed(c.names)} cannot change here. Nothing was saved. To use another, add a new connection.`,
+  reconnect_target_unreadable: () => 'Bidspoke cannot read back what this connection names, so it cannot be reconnected. Nothing was saved. Tell Dan.',
+  reconnect_login_unreadable: (c) => `Bidspoke cannot read this connection's stored login, so there is nothing to check. Nothing was changed. Reconnect with a new ${c.secret}.`,
+  reconnect_stale: () => 'Someone else changed this connection\'s login while yours was being checked. Nothing was saved. Reload the page, and reconnect again if it still needs it.',
+  reconnect_unconfirmed: (c) => `Bidspoke could not confirm whether the new ${c.secret} was saved. Reload the page to see, and reconnect again if it still needs it.`,
+  reconnect_saved_check_not_cleared: (c) =>
+    `The new ${c.secret} is saved, and workflows use it within a minute, but the workflows server could not record that its check passed, so a Needs reconnecting status stays until it does. Reconnect again to clear it.`,
+  reauth_clear_unrecorded: () => 'The login check passed, but the workflows server could not record it, so the connection keeps its status. Nothing was changed. Reconnect again in a minute.',
+  connection_in_use: (c) => {
+    const many = c.names.length > 1
+    return `${listed(c.names)} ${many ? 'use' : 'uses'} this connection, so it cannot be removed. Nothing was removed. Take it out of ${many ? 'each of them' : 'that workflow'} first${c.deleted ? ', and ask Dan about a deleted one' : ''}.`
+  },
+  connection_remove_unconfirmed: () => 'Bidspoke could not confirm whether the connection was removed. Reload the page to see, and remove it again if it is still there.',
+  connection_removed_ops_not_told: () =>
+    'The connection is removed. The workflows server could not be told straight away, so it stops using the login at its next minute check, and within 6 hours at the latest if it cannot reach Bidspoke.',
+  delegation_subject_invalid: (c) => `${one(c, 'That entry')} is not one mailbox address or one shared drive id. Nothing was added. Check it and add it again.`,
+  delegation_display_name_invalid: () => 'A shared drive\'s name must be 1 to 200 characters, and a mailbox takes none. Nothing was added. Check the name and add it again.',
+  delegation_subject_listed_elsewhere: (c) => `${one(c, 'That entry')} is on another organization's list. Nothing was added. Tell Dan if this organization should use it.`,
+  delegation_subject_not_listed: (c) => `${one(c, 'That entry')} is not on the list. Nothing was removed. Reload the list.`,
+  delegation_subject_in_use: (c) => {
+    const many = c.names.length > 1
+    return `${listed(c.names)} ${many ? 'act' : 'acts'} as ${c.subject ?? 'it'}, so it cannot be taken off the list. Nothing was removed. Remove ${many ? 'those connections' : 'that connection'} first.`
+  },
+  delegation_use_unreadable: () => 'Bidspoke could not read which connections act as it, so it stays on the list. Nothing was removed. Try again in a minute.',
+  delegation_change_failed: () => 'Bidspoke could not confirm the change to the list. Reload the list to see whether it was made.',
+  delegation_list_unavailable: () => 'The company list of mailboxes and drives could not be read. Nothing was changed. Try again in a minute.',
+  delegation_change_refused: () => 'The workflows server would not make the change to the list. Nothing was changed. Tell Dan, since this is a fault in Bidspoke.',
+}
+
+/** The page's sentence for one of the Reconnect, Remove or Google list routes' own refusals. */
+export function connectionRouteSentence(code: ConnectionRouteRefusalCode, ctx: RouteRefusalContext): string {
+  return ROUTE_SENTENCES[code](ctx)
+}
