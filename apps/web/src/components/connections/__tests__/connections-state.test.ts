@@ -77,6 +77,13 @@ describe("the stale strip's Try again", () => {
     expect(run([{ type: 'tick', at: T0 + 5_000 + DEADLINE }], retrying).list).toMatchObject({ kind: 'loaded', data: stale, refresh: { kind: 'failed', cause: LIST_NO_ANSWER } })
   })
 
+  it('a second Try again after a failed one gets a number of its own, so the failed one answering late counts for nothing', () => {
+    const failed = run([{ type: 'list_requested', at: T0 + 5_000 }, { type: 'list_refused', attempt: 2, cause: 'x' }], shown())
+    const again = run([{ type: 'list_requested', at: T0 + 9_000 }], failed)
+    expect(again.list).toMatchObject({ refresh: { kind: 'loading', attempt: 3 } })
+    expect(run([{ type: 'list_answered', attempt: 2, data: LIST }], again).list).toMatchObject({ data: stale, refresh: { kind: 'loading', attempt: 3 } })
+  })
+
   it('a chosen connection gone from the fresh list gives way to the first one', () => {
     const retrying = run([{ type: 'list_requested', at: T0 + 5_000 }], shown())
     const fresh = run([{ type: 'list_answered', attempt: 2, data: { ...LIST, connections: [LIST.connections[1]] } }], retrying)

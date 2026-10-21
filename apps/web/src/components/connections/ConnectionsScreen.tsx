@@ -32,7 +32,7 @@ import {
   problemNotice, secretWordOf, statusWord, viewOf, type ConnectionView, type DelegationEntry, type HistoryEntry,
 } from './connection-model'
 import {
-  chosenConnection, connectionsReducer, currentListAttempt, initialConnectionsState, LIST_NO_ANSWER, type Chosen, type ConnectionsState, type DetailTab, type LoadedList,
+  chosenConnection, connectionsReducer, initialConnectionsState, LIST_NO_ANSWER, type Chosen, type ConnectionsState, type DetailTab, type LoadedList,
 } from './connections-state'
 
 /** What the page calls: the Worker's routes live, the fixture in the preview. Each refusal throws as api.ts's req() does. */
@@ -122,7 +122,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
   }, [loadList, loadGoogle])
 
   const tryAgain = useCallback(() => {
-    const attempt = (currentListAttempt(latest.current) ?? latest.current.list.attempt) + 1
+    const attempt = latest.current.attempts + 1
     dispatch({ type: 'list_requested', at: clock.now() })
     loadList(attempt)
   }, [clock, loadList])

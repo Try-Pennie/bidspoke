@@ -55,6 +55,8 @@ export interface ConnectionsState {
   now: number
   /** How long a load of the list may take before the card says it did not answer. */
   deadlineMs: number
+  /** The last load of the list started, so each new one gets a number no earlier load had. */
+  attempts: number
   list: ListState
   chosen: Chosen
   tab: DetailTab
@@ -89,6 +91,7 @@ export function initialConnectionsState(now: number, deadlineMs: number, chosen:
   return {
     now,
     deadlineMs,
+    attempts: 1,
     list: { kind: 'loading', attempt: 1, startedAt: now },
     chosen,
     tab: 'connection',
@@ -119,9 +122,9 @@ const sameEntry = (a: Pick<DelegationEntry, 'kind' | 'subject'>, b: Pick<Delegat
 export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): ConnectionsState {
   switch (e.type) {
     case 'list_requested': {
-      const attempt = (currentListAttempt(s) ?? s.list.attempt) + 1
-      if (s.list.kind === 'loaded') return { ...s, now: e.at, list: { ...s.list, refresh: { kind: 'loading', attempt, startedAt: e.at } } }
-      return { ...s, now: e.at, list: { kind: 'loading', attempt, startedAt: e.at } }
+      const attempt = s.attempts + 1
+      if (s.list.kind === 'loaded') return { ...s, now: e.at, attempts: attempt, list: { ...s.list, refresh: { kind: 'loading', attempt, startedAt: e.at } } }
+      return { ...s, now: e.at, attempts: attempt, list: { kind: 'loading', attempt, startedAt: e.at } }
     }
     case 'list_answered': {
       if (currentListAttempt(s) !== e.attempt) return s
