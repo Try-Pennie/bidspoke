@@ -57,6 +57,18 @@ const MINUTE_CLAIMANTS: Record<string, string[]> = {
  */
 const ANY_TICK = new Set(['reportDatabaseUnreachable', 'minuteJobFailingDepsForEnv'])
 
+/**
+ * Modules outside the scheduled handler that hand announceRecovery a claim, and
+ * why. Their all clear is decided inside lead runs, which arrive at the lead rate
+ * in many isolates at once, so two runs judging the same incident over is the
+ * ordinary case, not a stalled tick. The claim is still asked only once an all
+ * clear is owed (announceRecovery's own order), so a quiet run makes no call.
+ */
+const LEAD_RUN_CLAIMANTS: Record<string, string> = {
+  // #2589: a lead validation step reading its settings whole again.
+  'lead-validation-config-alert.ts': 'reported from every lead run that passes a lead validation step',
+}
+
 const sources = new Map(
   listTsFiles(LIB)
     .filter((f) => !f.replace(/\\/g, '/').includes('/__tests__/'))
@@ -115,7 +127,7 @@ describe('the minute alert claims are wired to the minute alerts only (#2062)', 
     // Every announceRecovery call outside the minute alerts, read by its own
     // arguments, so a claim built in a variable is caught as well as a literal.
     const claimingCalls = [...sources.entries()]
-      .filter(([file]) => !(file in MINUTE_CLAIMANTS) && file !== 'alert-recovery.ts')
+      .filter(([file]) => !(file in MINUTE_CLAIMANTS) && !(file in LEAD_RUN_CLAIMANTS) && file !== 'alert-recovery.ts')
       .flatMap(([file, src]) => callsOf(src, 'announceRecovery').filter((c) => /\bclaim\s*:/.test(c.args)).map(() => file))
     expect(claimingCalls).toEqual([])
   })

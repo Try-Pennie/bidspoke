@@ -16,6 +16,7 @@ export const PREVIEW_TYPES = [
 
 export const PREVIEW_OMITTED: Readonly<Partial<Record<NodeType, string>>> = {
   partner_bid: 'retired (#645): it renders as the generic card, which the preview shows through no type of its own',
+  lead_validation: 'engine only until its card is designed in phase 3 (#2590); it renders as the generic card meanwhile',
 }
 
 export const PREVIEW_STATES = ['default', 'unconfigured', 'timeout', 'failed', 'completed'] as const

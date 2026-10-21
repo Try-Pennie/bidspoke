@@ -31,6 +31,7 @@ export const NODE_TYPES = [
   'buyer_select',
   'buyer_click_send',
   'buyer_click_check',
+  'lead_validation',
 ] as const
 
 export type NodeType = (typeof NODE_TYPES)[number]
@@ -217,6 +218,12 @@ export const NODE_TRAITS: Record<NodeType, NodeTraits> = {
     staticHandles: ['eligible', 'not_eligible'],
     executorFile: 'buyer-click-check',
   }),
+  // An ordered list of checks a lead must pass, each with the reason a partner
+  // is told when it does not (#934, #2589). It reads the lead, the Constants
+  // output and env, and answers a rejection itself, so it makes no outside call.
+  // Money only: its reasons are what a lead source is told, and it reads the
+  // Constants node, which is money only too.
+  lead_validation: inMemory({ lane: 'money', shadowRun: SENDS_NOTHING, executorFile: 'lead-validation' }),
 }
 
 const NODE_TYPES_BY_LANE: Record<WorkflowLane, readonly NodeType[]> = {

@@ -9,14 +9,14 @@ import { NODE_TRAITS, NODE_TYPES, WORKFLOW_LANES, assertNever, isNodeType, isWor
 
 const SORTED = [
   'achieve_offers', 'bid_group', 'branch', 'branch_end', 'buyer_click_check', 'buyer_click_send', 'buyer_select', 'code', 'constants', 'data_store', 'exit', 'filter',
-  'latency_gate', 'parallel', 'parallel_end', 'partner_bid', 'response', 'salesforce', 'transform', 'webhook',
+  'latency_gate', 'lead_validation', 'parallel', 'parallel_end', 'partner_bid', 'response', 'salesforce', 'transform', 'webhook',
 ]
 
 const withTrait = (pick: (t: (typeof NODE_TRAITS)[NodeType]) => boolean): string[] =>
   NODE_TYPES.filter((t) => pick(NODE_TRAITS[t])).sort()
 
 describe('NODE_TYPES', () => {
-  it('lists the twenty node types a saved definition can carry, once each', () => {
+  it('lists the twenty one node types a saved definition can carry, once each', () => {
     expect([...NODE_TYPES].sort()).toEqual(SORTED)
     expect(new Set(NODE_TYPES).size).toBe(NODE_TYPES.length)
   })
@@ -118,6 +118,7 @@ describe('NODE_TRAITS', () => {
       exit: null,
       filter: 'filter',
       latency_gate: 'latency-gate',
+      lead_validation: 'lead-validation',
       parallel: 'parallel',
       parallel_end: null,
       partner_bid: 'partner-bid',
@@ -139,7 +140,7 @@ describe('NODE_TRAITS', () => {
 // or the bid matrix, and an ops workflow must never reach one.
 const MONEY_ONLY = [
   'achieve_offers', 'bid_group', 'buyer_click_check', 'buyer_click_send', 'buyer_select', 'constants', 'data_store',
-  'latency_gate', 'partner_bid', 'salesforce',
+  'latency_gate', 'lead_validation', 'partner_bid', 'salesforce',
 ]
 
 describe('lanes', () => {

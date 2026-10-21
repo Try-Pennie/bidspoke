@@ -957,3 +957,47 @@ describe('a field is gated on its readers only when every reader is an ending st
     }
   })
 })
+
+// #2589: the lead validation node reads lead fields and settings through its
+// checks' condition paths. Its lead reads are watched, written with or without
+// `.output`; its settings are guaranteed constants and are not; nothing it
+// holds as words (a label, a reason, a header) is read as a reference; and a
+// field it judges steers the run, so it is never gated behind an ending step.
+describe('the lead validation node (#2589)', () => {
+  const condition = (field: string, operator: string, value?: string) => ({ logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field, operator, ...(value ? { value } : {}) }] }] })
+  const d = def({
+    nodes: [
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { id: 'c', namespace: 'constants', type: 'constants', config: { data: { states: ['TX'], maximumLoanAmount: 50000 } } } as any,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { id: 'p', namespace: 'parse_name', type: 'code', config: { script: 'return { firstName: "a", lastName: "b" }' } } as any,
+      {
+        id: 'v',
+        namespace: 'validate_bidding_and_state',
+        type: 'lead_validation',
+        config: {
+          lead_id_field: 'trigger.payload.leadUuid',
+          checks: [
+            { id: 'state', label: 'steps.prose.output.not_a_read', condition: condition('trigger.payload.state', 'in_array', 'steps.constants.output.states'), reason: 'ineligible state', on_missing: 'reject' },
+            { id: 'first', label: 'First name', condition: condition('steps.parse_name.output.firstName', 'has_letter'), reason: 'invalid name', on_missing: 'reject' },
+            { id: 'last', label: 'Last name', condition: condition('steps.parse_name.lastName', 'has_letter'), reason: 'invalid name', on_missing: 'pass' },
+            { id: 'amount', label: 'Amount', condition: condition('trigger.payload.loanAmount', 'lte', 'steps.constants.output.maximumLoanAmount'), reason: 'loan amount exceeds maximum', on_missing: 'reject' },
+          ],
+          response_headers: { 'Content-Type': 'application/json' },
+        },
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      { id: 'r', namespace: 'respond', type: 'response', config: { body: '{{steps.parse_name.output.firstName}}' } } as any,
+    ],
+  })
+
+  it('watches the lead fields its checks read, with or without .output, and nothing else from it', () => {
+    expect(deriveWatchedFields(d)).toEqual(['parse_name.firstName', 'parse_name.lastName'])
+  })
+
+  it('names the node as a reader and never gates its fields behind an ending step', () => {
+    const fields = deriveWatchedFieldMap(d).fields
+    expect(fields.find((f) => f.path === 'parse_name.lastName')).toEqual({ path: 'parse_name.lastName', source: 'structured', readers: ['validate_bidding_and_state'], gate: null })
+    expect(fields.find((f) => f.path === 'parse_name.firstName')?.gate).toBeNull()
+  })
+})

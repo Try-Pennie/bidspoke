@@ -7,7 +7,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { refreshWorkflowCaches } from '../../engine/definition-loader'
-import { findWorkflowCycle, findSalesforceConfigProblems } from '@bidspoke/workflow-definition'
+import { findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems } from '@bidspoke/workflow-definition'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
 import { writeAuditLog } from '../../lib/audit'
@@ -83,6 +83,23 @@ function salesforceOptionRefusal(definition: unknown): string | null {
   const nodes = (definition as { nodes?: unknown } | null | undefined)?.nodes
   if (!Array.isArray(nodes)) return null
   const problem = findSalesforceConfigProblems(nodes as WorkflowDefinition['nodes'])[0]
+  return problem ? `${problem.namespace}: ${problem.message}` : null
+}
+
+/**
+ * A lead validation step its executor could not run (#2589): no checks, a half
+ * filled row, an empty value, a reason outside the one list, no lead id field,
+ * or a reference to a step that does not run before it or to a Constants key its
+ * Constants step does not hold. Judged where each step sits, by the rule the
+ * canvas shows (packages/workflow-definition), and asked by every route a
+ * definition enters by, so one PUT from a file meets what the canvas does.
+ */
+function leadValidationRefusal(definition: unknown): string | null {
+  const def = definition as { nodes?: unknown; edges?: unknown } | null | undefined
+  if (!Array.isArray(def?.nodes)) return null
+  const nodes = (def.nodes as unknown[]).filter((n): n is WorkflowDefinition['nodes'][number] => typeof n === 'object' && n !== null)
+  const edges = Array.isArray(def.edges) ? (def.edges as WorkflowDefinition['edges']) : []
+  const problem = findLeadValidationProblems(nodes, edges)[0]
   return problem ? `${problem.namespace}: ${problem.message}` : null
 }
 
@@ -177,6 +194,8 @@ workflows.post('/', async (c) => {
   // Salesforce write option rule the save route applies (#2170).
   const sfProblem = salesforceOptionRefusal(body.definition)
   if (sfProblem) return c.json({ error: sfProblem }, 400)
+  const validationProblem = leadValidationRefusal(body.definition)
+  if (validationProblem) return c.json({ error: validationProblem }, 400)
 
   if (body.folder_id) {
     const { data: folder, error: folderError } = await supabase
@@ -484,6 +503,8 @@ workflows.put('/:id', async (c) => {
     // applies, so a definition PUT from a file is held to what the canvas is.
     const sfProblem = salesforceOptionRefusal(def)
     if (sfProblem) return c.json({ error: sfProblem }, 400)
+    const validationProblem = leadValidationRefusal(def)
+    if (validationProblem) return c.json({ error: validationProblem }, 400)
     // A live workflow's buyer steps must read every rule they judge (#2149).
     if (existing.is_active === true) {
       const unread = await unreadBuyerRuleRefusal(c, supabase, orgId, { id, name: body.name ?? existing.name, definition: body.definition })

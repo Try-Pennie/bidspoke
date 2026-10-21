@@ -75,6 +75,28 @@ describe('computeSightingFinalize (#353)', () => {
     expect(out.outcome).toBe('completed')
   })
 
+  it('records a lead validation rejection as the run\'s reject_reason (#2589)', () => {
+    const steps: Record<string, StepOutput> = {
+      constants: { status: 'completed', output: { states: ['TX'] } },
+      validate_bidding_and_state: {
+        status: 'completed',
+        output: { valid: false, check_id: 'state', field: 'trigger.payload.personalInformation.state', reason: 'ineligible state' },
+      },
+    }
+    const nodes = [node('n-c', 'constants', 'constants'), node('n-v', 'validate_bidding_and_state', 'lead_validation')]
+
+    const out = computeSightingFinalize(steps, nodes, {
+      lastCompletedNamespace: 'validate_bidding_and_state',
+      walkStatus: 200,
+      executionStatus: 'completed',
+      successNamespaces: [],
+    })
+
+    expect(out.reject_reason).toBe('lead_validation:ineligible state')
+    expect(out.terminal_node_label).toBe('validate_bidding_and_state')
+    expect(out.outcome).toBe('completed')
+  })
+
   it('marks a failed execution outcome regardless of steps', () => {
     const out = computeSightingFinalize({}, [], {
       lastCompletedNamespace: null,

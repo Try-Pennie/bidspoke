@@ -88,6 +88,11 @@ export const INCIDENT_SIGNALS = [
   { signal: 'failure-rate', label: 'Failure rate', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 'per_call' },
   { signal: 'slow-spike', label: 'Slow execution', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 5 },
   { signal: 'volume-cliff', label: 'Volume cliff', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 4 },
+  // A lead validation step whose Constants or env setting is missing, so every
+  // lead reaching it fails the run (#2589, lead-validation-config-alert.ts). One
+  // workflow's step, keyed on `${workflowId}:${namespace}`. It judges a state,
+  // so it has no window. Paged from the engine's run, once per incident.
+  { signal: 'lead-validation-config', label: 'Lead validation setting', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: null },
   // A partner ping failing while each lead still ends as a no bid (#2582, partner-error-rate.ts).
   { signal: 'partner-error-rate', label: 'Partner error', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 5 },
   { signal: 'db-unreachable', label: 'Database unreachable', scope: 'org', subject: 'organization', startMeans: FIRST_PAGE, windowMinutes: null },
