@@ -15,7 +15,7 @@ import type { ExecutionContext, NodeDefinition, NodeType } from '../../../types'
 
 const MONEY_ONLY: NodeType[] = [
   'achieve_offers', 'bid_group', 'buyer_click_check', 'buyer_click_send', 'buyer_select', 'constants', 'data_store',
-  'latency_gate', 'partner_bid', 'salesforce',
+  'latency_gate', 'lead_validation', 'partner_bid', 'salesforce',
 ]
 
 const ctx = (): ExecutionContext => ({

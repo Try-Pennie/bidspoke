@@ -129,6 +129,7 @@ export const PALETTE_HIDDEN: Readonly<Partial<Record<NodeType, string>>> = {
   partner_bid: 'retired (#645): Bid Group replaced it; the engine still executes saved ones',
   branch_end: 'created by the canvas when a branch is dropped, never placed by hand',
   parallel_end: 'created by the canvas when a parallel is dropped, never placed by hand',
+  lead_validation: 'engine only: it ships and soaks before the canvas offers it, with its card in phase 3 (#2590)',
 }
 
 interface Props {

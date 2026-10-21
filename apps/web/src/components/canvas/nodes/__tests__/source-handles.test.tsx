@@ -46,6 +46,7 @@ const CONFIG: Record<NodeType, Record<string, unknown>> = {
   buyer_select: { mode: 'live', population: 'engine' },
   buyer_click_send: { partner_id: 'p' },
   buyer_click_check: { partner_id: 'p' },
+  lead_validation: {},
 }
 
 /** trigger -> N, with every output of N wired to a child of its own. */

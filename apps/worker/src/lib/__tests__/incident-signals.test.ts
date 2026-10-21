@@ -27,7 +27,7 @@ import { PARTNER_ERROR_RATE_SIGNAL, PARTNER_ERROR_RECOVERY_WORDS, WINDOW_MINUTES
  * from without either noticing.
  */
 describe('INCIDENT_SIGNALS', () => {
-  it('names the twenty three signals in use, each once', () => {
+  it('names the twenty four signals in use, each once', () => {
     const names = INCIDENT_SIGNALS.map((s) => s.signal)
     expect(new Set(names).size).toBe(names.length)
     expect([...names].sort()).toEqual([
@@ -38,6 +38,7 @@ describe('INCIDENT_SIGNALS', () => {
       'field-presence-dead',
       'field-presence-drought',
       'field-presence-wrong-path',
+      'lead-validation-config',
       'minute-job-failing',
       'ops-connection-login',
       'ops-connection-owner',
@@ -169,7 +170,7 @@ describe('INCIDENT_SIGNALS', () => {
     // organization; the rest key on a readable name (a host, a job, a GitHub
     // workflow file, or a fixed id).
     const byWorkflow = INCIDENT_SIGNALS.filter((s) => s.subject === 'workflow').map((s) => s.signal).sort()
-    expect(byWorkflow).toEqual(['failure-rate', 'field-presence-dead', 'field-presence-drought', 'field-presence-wrong-path', 'partner-error-rate', 'slow-spike', 'volume-cliff'])
+    expect(byWorkflow).toEqual(['failure-rate', 'field-presence-dead', 'field-presence-drought', 'field-presence-wrong-path', 'lead-validation-config', 'partner-error-rate', 'slow-spike', 'volume-cliff'])
     expect(incidentSignal('db-unreachable').subject).toBe('organization')
     expect(incidentSignal('writeback-backlog').subject).toBe('organization')
     for (const s of ['partner-reachability', 'supabase-memory', 'pg-cron-watch', 'stored-copy-serving', 'workflow-schedule', 'cron-heartbeat', 'export-alert', 'partner-page-live'] as const) {

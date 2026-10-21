@@ -342,6 +342,14 @@ export function deriveRejectReason(input: {
     const reason = (input.terminal_step_output as { reason?: unknown } | undefined)?.reason
     return typeof reason === 'string' && reason ? `buyer_select:${reason}` : 'buyer_select:no_sale'
   }
+  if (input.terminal_node_type === 'lead_validation') {
+    // The node rejected the lead with a reason from the one list (#2589); a
+    // lead that passed every check went on, so a validation node is terminal
+    // with valid true only when nothing follows it, which is no rejection.
+    const out = input.terminal_step_output as { valid?: unknown; reason?: unknown } | undefined
+    if (out?.valid === false) return typeof out.reason === 'string' && out.reason ? `lead_validation:${out.reason}` : 'lead_validation:rejected'
+    return null
+  }
   if (input.terminal_node_type === 'code') {
     // Code nodes that throw or return an error sentinel surface their namespace as
     // the reason. This one IS determined: the sentinel is the engine observing a
