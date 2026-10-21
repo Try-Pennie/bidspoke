@@ -11,6 +11,7 @@
 //      again (build PR 6; R19, finding F116)
 // DELETE /api/connections/:id            removes one no workflow uses, then
 //      revokes it on ops (build PR 6; R9, R21)
+// GET  /api/connections/:id/history  the History tab (build PR 9; R5)
 // GET, POST /api/connections/google/subjects, and
 // DELETE /api/connections/google/subjects/:kind/:subject  the Google
 //      mailboxes and drives list (build PR 6; R10)
@@ -20,7 +21,9 @@
 // data: only the caller's organization's rows, scoped by organization_id from
 // the verified token in every query, and every ops call names that
 // organization alone, which ops scopes again (ops-connections-contract.ts).
-// The list and the lookup write no row, so neither writes an audit row.
+// The list, the history and the lookup write no row, so none writes an audit
+// row. The list also asks Slack about the Slack alert login's stored token
+// (lib/slack-alert-login-check.ts), which goes to auth.test and nowhere else.
 //
 // Retired here: DELETE /:service_type and POST /:service_type/sync-schema,
 // which acted on a legacy row (a Cloudflare secret login) found by service type
@@ -31,7 +34,9 @@
 
 import { Hono, type Context } from 'hono'
 import { CURRENT_OPS_KID, OPS_CONNECTION_PUBLIC_KEYS, seal, SealError, type SealedEnvelope } from '@bidspoke/connection-seal'
-import { CATALOGUE, CONNECTION_STATUS_WORDS, connectionParts, type ConnectionPageStatus } from '@bidspoke/service-catalogue/schema'
+import {
+  CATALOGUE, CONNECTION_STATUS_WORDS, connectionParts, SLACK_ALERT_LOGIN_NAME, SLACK_SERVICE_NAME, type ConnectionPageStatus,
+} from '@bidspoke/service-catalogue/schema'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -54,7 +59,9 @@ import { callOpsConnections, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAI
 import {
   DELEGATION_DISPLAY_NAME_MAX, DELEGATION_SUBJECT_MAX, OpsConnectionsContractError, parseLookupRequest, type HealthRow, type OpsConnectionsRefusalCode,
 } from '../../lib/ops-connections-contract'
-import { pageStatusOf, readConnectionStatuses, rememberConnectionStatuses } from '../../lib/connection-statuses'
+import { pageStatusOf, readConnectionStatuses, readSlackAlertStatus, rememberConnectionStatuses, rememberSlackAlertStatus } from '../../lib/connection-statuses'
+import { checkSlackAlertLogin, isSlackAlertRow } from '../../lib/slack-alert-login-check'
+import { OPS_CONNECTIONS_DEADLINES_MS } from '../../lib/ops-connections-client'
 
 type Variables = AuthVariables
 
@@ -79,7 +86,7 @@ export const CONNECTIONS_LIST_MAX = 100
 export const CONNECTION_REFERENCES_CONCURRENCY = 4
 
 /** The columns the list reads: never credential_enc, config (the Slack row's token) or cf_secret_key. */
-const LIST_COLUMNS = 'id, name, service_type, acts_as, person_bound, user_id, target, created_at, updated_at'
+const LIST_COLUMNS = 'id, name, service_type, sealed_for, acts_as, person_bound, user_id, target, created_at, updated_at'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -93,6 +100,7 @@ interface ListedRow {
   id: string
   name: string
   service_type: string
+  sealed_for: string | null
   acts_as: string | null
   person_bound: boolean
   user_id: string | null
@@ -118,11 +126,33 @@ function healthOf(row: HealthRow | undefined) {
   }
 }
 
+/** A service's name as the page shows it: the catalogue's, or Slack's for the alert login, or its key for a row the catalogue does not declare. */
+function serviceNameOf(key: string): string {
+  return declaredService(CATALOGUE, key)?.name ?? (key === 'slack' ? SLACK_SERVICE_NAME : key)
+}
+
+/** The earliest of the times given, or null when none is. */
+function earliest(times: Array<string | null>): string | null {
+  const known = times.filter((t): t is string => t !== null)
+  if (known.length === 0) return null
+  return known.reduce((a, b) => (Date.parse(a) <= Date.parse(b) ? a : b))
+}
+
 // GET /api/connections
 //   200 { connections, statuses: { as_of, stale, unavailable } }
-//       statuses.stale: health did not answer, so each status is the last known
-//       one, as of statuses.as_of (null when none is known), and
-//       statuses.unavailable names why (the stale strip, D22)
+//       each connection: id, name, service (the catalogue key), service_name,
+//       alert_login, acts_as, person_bound, owner, target, org (a Salesforce
+//       target's host), status, status_word, health, used_by, workflows (each
+//       using it: id, name, deleted), created_at, updated_at
+//       statuses.stale: a login check did not answer, so its statuses are the
+//       last known ones, as of statuses.as_of (the earliest such time, null
+//       when none is known), and statuses.unavailable names why (the stale
+//       strip, D22): ops's refusal or cause, or slack_unanswered
+//
+// The Slack alert login (build PR 9) is listed as SLACK_ALERT_LOGIN_NAME under
+// Slack, and its status is Slack's own answer about its stored token, asked
+// inside the same deadline as ops health (lib/slack-alert-login-check.ts): ops
+// never holds that login, so health cannot give it one.
 //   503 connections_unavailable  the list, the owners or the use counts could
 //       not be read (the could not load card, D23)
 //   500 connections_list_too_long  more than CONNECTIONS_LIST_MAX connections
@@ -147,6 +177,8 @@ connections.get('/', async (c) => {
   // Health is asked while the database reads run: it can take up to its
   // deadline, and nothing it answers changes what they read.
   const health = callOpsConnections(c.env, 'health', { organization_id: orgId })
+  const alertRow = listed.find(isSlackAlertRow)
+  const slack = alertRow ? checkSlackAlertLogin(supabase, c.env, orgId, OPS_CONNECTIONS_DEADLINES_MS.health) : null
 
   const ownerIds = [...new Set(listed.filter((r) => r.person_bound && r.user_id).map((r) => r.user_id as string))]
   const owners = new Map<string, { name: string | null; email: string | null }>()
@@ -166,7 +198,8 @@ connections.get('/', async (c) => {
   // Used by (R5): connection_references, the one predicate the Remove refusal
   // reads too, soft deleted workflows included and never by name. A connection
   // removed since the read above answers connection_not_found and is dropped.
-  let counts: Array<number | 'gone'>
+  type Using = { id: string; name: string; deleted: boolean }
+  let counts: Array<Using[] | 'gone'>
   try {
     counts = await mapWithConcurrency(listed, CONNECTION_REFERENCES_CONCURRENCY, async (row) => {
       const { data: refs, error: refsError } = await supabase.rpc('connection_references', { p_organization_id: orgId, p_connection_id: row.id })
@@ -174,7 +207,7 @@ connections.get('/', async (c) => {
         if (refsError.code === 'P0002' && /connection_not_found/.test(refsError.message)) return 'gone' as const
         throw refsError
       }
-      return Array.isArray(refs) ? refs.length : 0
+      return (Array.isArray(refs) ? refs : []).map((r: { workflow_id: string; name: string; deleted: boolean }) => ({ id: r.workflow_id, name: r.name, deleted: r.deleted === true }))
     })
   } catch (err) {
     return listUnavailable(c, 'the use counts read', err)
@@ -206,29 +239,95 @@ connections.get('/', async (c) => {
   }
   const byId = new Map(statusRows.map((r) => [r.connection_id, r]))
 
+  // The alert login: Slack's answer, or its last known one when Slack did not answer.
+  let alertStatus: { status: ConnectionPageStatus | null; acts_as: string | null } | null = null
+  if (slack) {
+    const checked = await slack
+    if (checked.kind === 'answered') {
+      alertStatus = { status: checked.status, acts_as: checked.acts_as }
+      await rememberSlackAlertStatus(c.env.WORKFLOW_CACHE, orgId, { status: checked.status, acts_as: checked.acts_as }, Date.now())
+    } else {
+      const copy = await readSlackAlertStatus(c.env.WORKFLOW_CACHE, orgId)
+      alertStatus = copy.kind === 'read' ? copy.value : { status: null, acts_as: null }
+      const slackAsOf = copy.kind === 'read' ? copy.as_of : null
+      asOf = stale ? earliest([asOf, slackAsOf]) : slackAsOf
+      if (!stale) unavailable = { cause: 'slack_unanswered', detail: checked.detail }
+      stale = true
+      console.warn(JSON.stringify({ event: 'slack_alert_status_stale', organization_id: orgId, copy: copy.kind, as_of: slackAsOf }))
+    }
+  }
+
   const rows = listed.flatMap((row, i) => {
-    const count = counts[i]
-    if (count === 'gone') return []
+    const using = counts[i]
+    if (using === 'gone') return []
     const owner = row.person_bound && row.user_id ? { user_id: row.user_id, ...(owners.get(row.user_id) ?? { name: null, email: null }) } : null
-    const { status, health: h } = healthOf(byId.get(row.id))
+    const alert = row === alertRow
+    const fromHealth = healthOf(byId.get(row.id))
+    const status = alert ? (alertStatus?.status ?? null) : fromHealth.status
+    const h = alert ? null : fromHealth.health
+    const target = row.target !== null && typeof row.target === 'object' && !Array.isArray(row.target) ? (row.target as Record<string, unknown>) : null
     return [{
       id: row.id,
-      name: row.name,
+      name: alert ? SLACK_ALERT_LOGIN_NAME : row.name,
       service: row.service_type,
-      acts_as: row.acts_as,
+      service_name: serviceNameOf(row.service_type),
+      alert_login: alert,
+      acts_as: alert ? (alertStatus?.acts_as ?? null) : row.acts_as,
       person_bound: row.person_bound,
       owner,
       target: row.target ?? null,
+      org: target ? orgHostOf(target) : null,
       status,
       status_word: status ? CONNECTION_STATUS_WORDS[status] : null,
       health: h,
-      used_by: count,
+      used_by: using.length,
+      workflows: using,
       created_at: row.created_at,
       updated_at: row.updated_at,
     }]
   })
 
   return c.json({ connections: rows, statuses: { as_of: asOf, stale, unavailable } })
+})
+
+/** The most audit rows the History tab shows of one connection. */
+export const CONNECTION_HISTORY_LIMIT = 50
+
+// GET /api/connections/:id/history   (build PR 9; R5, the History tab)
+//   200 { entries: [{ id, action, at, by, credential_changed, changes }] }
+//       newest first, as connection_history answers them: by is who made the
+//       change (their name, else their email, else null), and changes never
+//       holds a login (the function drops credential_enc and bot_token and
+//       says credential_changed instead)
+//   404 connection_not_found   503 connection_history_unavailable
+//
+// Who may call it: any signed in user of the organization. Whose data: the
+// one connection named, of the caller's organization only, which the function
+// refuses for any other as connection_not_found. Read only, so no audit row.
+connections.get('/:id/history', async (c) => {
+  const { orgId } = c.get('user')
+  const id = c.req.param('id')
+  if (!UUID.test(id)) return c.json({ error: 'connection_not_found', message: 'There is no such connection.' }, 404)
+  const supabase = createSupabaseClient(c.env)
+  const { data, error } = await supabase.rpc('connection_history', { p_organization_id: orgId, p_connection_id: id, p_limit: CONNECTION_HISTORY_LIMIT })
+  if (error) {
+    if (error.code === 'P0002' && /connection_not_found/.test(error.message)) return c.json({ error: 'connection_not_found', message: 'There is no such connection.' }, 404)
+    console.error(JSON.stringify({ event: 'connection_history_unavailable', organization_id: orgId, connection_id: id, error: formatErr(error) }))
+    return c.json({ error: 'connection_history_unavailable', message: "The connection's history could not be read." }, 503)
+  }
+  const rows = (Array.isArray(data) ? data : []) as Array<{
+    audit_id: string; action: string; changed_at: string; changed_by_name: string | null; changed_by_email: string | null; changes: unknown; credential_changed: boolean
+  }>
+  return c.json({
+    entries: rows.map((r) => ({
+      id: r.audit_id,
+      action: r.action,
+      at: r.changed_at,
+      by: r.changed_by_name ?? r.changed_by_email ?? null,
+      credential_changed: r.credential_changed === true,
+      changes: r.changes ?? null,
+    })),
+  })
 })
 
 /** How each of the route's own refusals is answered. Every verify refusal is a 422 unless VERIFY_STATUS says otherwise. */

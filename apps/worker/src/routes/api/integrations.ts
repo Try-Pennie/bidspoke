@@ -56,7 +56,8 @@
 
 import { Hono, type Context } from 'hono'
 import { dbError, dbErrorUnlessNotFound, requireRowOr404, rowsTouched } from '../../lib/api-error'
-import { createSlackClient, slackBodyOf, slackCallFailure, slackNetworkCause } from '@bidspoke/slack-client'
+import { createSlackClient, slackBodyOf } from '@bidspoke/slack-client'
+import { verifySlackToken } from '../../lib/slack-token-check'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
@@ -129,30 +130,8 @@ function slackTokenRefusedMessage(slackError: string | null): string {
     : 'Slack did not accept this token, so nothing was saved.'
 }
 
-/**
- * Ask Slack whether the token works before it is sealed (#2331): auth.test
- * through the one client. `ok` for a token Slack accepts; `refused` with
- * Slack's code for one it rejects. Anything that is not an answer about the
- * token (a 429, a 5xx, a body that is not JSON, no answer at all) throws, so
- * the save answers the generic 500 and writes nothing: a token Slack could
- * not be asked about is neither saved nor called invalid. A 429 is never
- * waited for.
- */
-async function verifySlackToken(token: string): Promise<{ kind: 'ok' } | { kind: 'refused'; slackError: string | null }> {
-  try {
-    const answer = await createSlackClient({ bot_token: token }).auth.test()
-    // The library throws only for ok:false WITH a code; without one it returns.
-    if (answer.ok) return { kind: 'ok' }
-    return { kind: 'refused', slackError: answer.error ?? null }
-  } catch (e) {
-    const failure = slackCallFailure(e)
-    if (failure?.kind === 'api') return { kind: 'refused', slackError: failure.error }
-    if (failure?.kind === 'http') {
-      throw new Error(`auth.test answered HTTP ${failure.status}${failure.retryAfter ? ` (Retry-After ${failure.retryAfter} s, not waited for)` : ''}, so the token could not be checked`, { cause: e })
-    }
-    throw slackNetworkCause(e)
-  }
-}
+// The token check before a save (#2331) is verifySlackToken in
+// lib/slack-token-check.ts, which the Connections list asks too (#2338).
 
 integrations.post('/slack', async (c) => {
   const { orgId, userId, email } = c.get('user')

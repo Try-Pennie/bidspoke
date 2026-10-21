@@ -29,9 +29,10 @@
  * Callers, all in the Worker: deliverMessage in lib/slack.ts (every alert),
  * sendThreadReply beside it (the summary under an alert), and in
  * routes/api/integrations.ts POST /slack/resolve (auth.test and the first
- * conversations.list), POST /slack's token check (auth.test) and GET
- * /slack/channels (conversations.list, paged). Nothing else calls Slack
- * (#2331).
+ * conversations.list) and GET /slack/channels (conversations.list, paged), and
+ * lib/slack-token-check.ts's auth.test, which POST /slack's token check and
+ * the Connections list's status of the alert login (#2338) both ask. Nothing
+ * else calls Slack (#2331).
  */
 import { SlackAPIClient, SlackAPIConnectionError, SlackAPIError } from 'slack-web-api-client'
 

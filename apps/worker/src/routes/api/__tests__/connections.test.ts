@@ -16,15 +16,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 import type { HealthRow } from '../../../lib/ops-connections-contract'
-import { connectionStatusesCopyKey, forgetConnectionStatusesMemory, rememberConnectionStatuses } from '../../../lib/connection-statuses'
+import {
+  connectionStatusesCopyKey, forgetConnectionStatusesMemory, forgetSlackAlertStatusMemory, rememberConnectionStatuses, rememberSlackAlertStatus, slackAlertStatusCopyKey,
+} from '../../../lib/connection-statuses'
 
 vi.mock('../../../lib/jwt')
 vi.mock('../../../lib/supabase')
 vi.mock('../../../lib/audit')
+vi.mock('../../../lib/slack-token-check', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../lib/slack-token-check')>()),
+  verifySlackToken: vi.fn(),
+}))
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
+import { verifySlackToken } from '../../../lib/slack-token-check'
 import { CONNECTIONS_LIST_MAX } from '../connections'
 
 const ORG = '0a000000-0000-4000-8000-000000000001'
@@ -58,7 +65,8 @@ const connRow = (over: Row): Row => ({
 const ROWS: Row[] = [
   connRow({ id: SF, name: 'Pennie Salesforce', acts_as: 'integration@trypennie.com', target: { instance_url: 'https://trypennie.my.salesforce.com' } }),
   connRow({ id: GOOGLE, name: "Dan's calendar", service_type: 'google', acts_as: 'dwright@trypennie.com', person_bound: true, user_id: OWNER }),
-  connRow({ id: ALERTS, name: 'slack', service_type: 'slack', sealed_for: 'bidding_ring' }),
+  // The alert row's token is its plaintext copy here (no sealed copy), which the list reads only to ask Slack about it.
+  connRow({ id: ALERTS, name: 'slack', service_type: 'slack', sealed_for: 'bidding_ring', credential_enc: null, config: { bot_token: 'xoxb-SECRET', default_channel: 'C0ALERTS' } }),
   connRow({ id: THEIRS, organization_id: OTHER_ORG, name: 'Their Salesforce' }),
 ]
 
@@ -75,6 +83,8 @@ interface StoreOptions {
   usersError?: { code: string; message: string }
   refs?: Refs
   refsError?: { code: string; message: string }
+  history?: Record<string, Row[]>
+  historyError?: { code: string; message: string }
 }
 
 /** A database double that applies eq, in and is filters and projects the selected columns. */
@@ -101,6 +111,15 @@ function storeDouble(rows: Row[], opts: StoreOptions = {}) {
       eq(col: string, v: unknown) { filters.push((r) => r[col] === v); return b },
       in(col: string, vs: unknown[]) { filters.push((r) => vs.includes(r[col])); return b },
       is(col: string, v: unknown) { filters.push((r) => r[col] === v); return b },
+      // PostgREST's or, in the two forms the alert row filter sends: <col>.eq.<v> and <col>.is.null.
+      or(expr: string) {
+        const alts = expr.split(',').map((a) => {
+          const [col, op, v] = a.split('.')
+          return (r: Row) => (op === 'is' && v === 'null' ? r[col] === null || r[col] === undefined : op === 'eq' && r[col] === v)
+        })
+        filters.push((r) => alts.some((f) => f(r)))
+        return b
+      },
       order() { return b },
       limit(n: number) { limit = n; return b },
       maybeSingle() {
@@ -114,6 +133,12 @@ function storeDouble(rows: Row[], opts: StoreOptions = {}) {
   const rpc = (name: string, args: Record<string, unknown>) => {
     if (name === 'auth_user_with_allowlist') return Promise.resolve({ data: [USERS[0]], error: null })
     rpcCalls.push([name, args])
+    if (name === 'connection_history') {
+      if (opts.historyError) return Promise.resolve({ data: null, error: opts.historyError })
+      const ok = rows.some((r) => r.id === args.p_connection_id && r.organization_id === args.p_organization_id)
+      if (!ok) return Promise.resolve({ data: null, error: { code: 'P0002', message: 'connection_not_found' } })
+      return Promise.resolve({ data: opts.history?.[args.p_connection_id as string] ?? [], error: null })
+    }
     if (name === 'connection_references') {
       if (opts.refsError) return Promise.resolve({ data: null, error: opts.refsError })
       // As the function does: a connection not of the named organization raises connection_not_found.
@@ -189,6 +214,8 @@ let app: Awaited<ReturnType<typeof makeApp>>
 beforeEach(async () => {
   vi.clearAllMocks()
   forgetConnectionStatusesMemory()
+  forgetSlackAlertStatusMemory()
+  vi.mocked(verifySlackToken).mockResolvedValue({ kind: 'ok', user: 'bidspoke_alerts', team: 'Pennie' })
   vi.mocked(verifyJwt).mockResolvedValue({ sub: USER, email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' })
   vi.mocked(writeAuditLog).mockResolvedValue(undefined)
   app = await makeApp()
@@ -247,8 +274,8 @@ describe('GET /connections', () => {
     expect(by(SF)).toMatchObject({ status: 'reauth', status_word: 'Needs reconnecting' })
     expect(by(SF).health).toMatchObject({ ops_status: 'needs_reauth', needs_reauth_at: '2026-10-20T13:52:00Z', needs_reauth_cause: 'invalid_client' })
     expect(by(GOOGLE)).toMatchObject({ status: 'failing', status_word: 'Check failing' })
-    // The Slack alert login is not an ops connection, so ops gives it no status, and none is made up.
-    expect(by(ALERTS)).toMatchObject({ status: null, status_word: null, health: null })
+    // The Slack alert login is not an ops connection: ops gives it no health, and its status is Slack's own answer (below).
+    expect(by(ALERTS)).toMatchObject({ status: 'ok', status_word: 'Working', health: null })
     expect(body.statuses.stale).toBe(false)
     expect(body.statuses.unavailable).toBeNull()
     expect(Date.parse(body.statuses.as_of!)).toBeGreaterThanOrEqual(before - 1000)
@@ -310,7 +337,9 @@ describe('GET /connections', () => {
       const { env } = makeEnv({ health: async () => { throw new Error('internal error; reference = abc123') } })
       const body = (await (await request(app, 'GET', '/connections', env)).json()) as ListAnswer
       expect(body.connections).toHaveLength(3)
-      expect(body.connections.every((c) => c.status === null && c.status_word === null)).toBe(true)
+      // Every ops login has no status; the alert login's is Slack's own answer, which came.
+      expect(body.connections.filter((c) => c.id !== ALERTS).every((c) => c.status === null && c.status_word === null)).toBe(true)
+      expect(body.connections.find((c) => c.id === ALERTS)!.status).toBe('ok')
       expect(body.statuses).toMatchObject({ stale: true, as_of: null, unavailable: { cause: 'threw' } })
     })
 
@@ -379,6 +408,167 @@ describe('GET /connections', () => {
       expect(res.status).toBe(500)
       expect(await res.json()).toMatchObject({ error: 'connections_list_too_long' })
     })
+  })
+})
+
+describe('GET /connections: what the page draws each connection from (build PR 9)', () => {
+  type Shown = ListAnswer['connections'][number] & { service_name: string; alert_login: boolean; org: string | null; workflows: Array<{ id: string; name: string; deleted: boolean }> }
+  const shown = async (env: Env) => {
+    const res = await request(app, 'GET', '/connections', env)
+    const raw = await res.text()
+    expect(raw).not.toContain('SECRET')
+    return JSON.parse(raw) as Omit<ListAnswer, 'connections'> & { connections: Shown[] }
+  }
+
+  it('names the workflows using each connection (deleted ones marked), the org a Salesforce connection signs in to, and each service by its catalogue name', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS, {
+      refs: { [SF]: [{ workflow_id: 'w1', name: 'Lead Completed sync', deleted: false }, { workflow_id: 'w2', name: 'Old import', deleted: true }] },
+    }) as never)
+    const { env } = makeEnv({})
+    const body = await shown(env)
+    const sf = body.connections.find((c) => c.id === SF)!
+    expect(sf).toMatchObject({ service: 'salesforce', service_name: 'Salesforce', org: 'trypennie.my.salesforce.com', alert_login: false, used_by: 2 })
+    expect(sf.workflows).toEqual([{ id: 'w1', name: 'Lead Completed sync', deleted: false }, { id: 'w2', name: 'Old import', deleted: true }])
+    expect(body.connections.find((c) => c.id === GOOGLE)!).toMatchObject({ org: null, workflows: [] })
+  })
+
+  describe('the Slack alert login, whose status Slack itself is asked for', () => {
+    it("asks Slack about the stored token and lists it as Bidspoke Alerts under Slack, Working, acting as the bot Slack names", async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+      const { env } = makeEnv({})
+      const body = await shown(env)
+      expect(vi.mocked(verifySlackToken)).toHaveBeenCalledTimes(1)
+      expect(vi.mocked(verifySlackToken)).toHaveBeenCalledWith('xoxb-SECRET')
+      expect(body.connections.find((c) => c.id === ALERTS)!).toMatchObject({
+        name: 'Bidspoke Alerts', service: 'slack', service_name: 'Slack', alert_login: true, acts_as: 'bidspoke_alerts in Pennie', status: 'ok', status_word: 'Working', health: null,
+      })
+      expect(body.statuses.stale).toBe(false)
+    })
+
+    it('reads Needs reconnecting when Slack refuses the token', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+      vi.mocked(verifySlackToken).mockResolvedValue({ kind: 'refused', slackError: 'token_revoked' })
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const { env } = makeEnv({})
+      const body = await shown(env)
+      expect(body.connections.find((c) => c.id === ALERTS)!).toMatchObject({ status: 'reauth', status_word: 'Needs reconnecting' })
+      // A refusal is an answer: nothing is stale.
+      expect(body.statuses).toMatchObject({ stale: false, unavailable: null })
+    })
+
+    it('when Slack does not answer, shows the last known status under the stale strip, with the time it is as of', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+      vi.mocked(verifySlackToken).mockRejectedValue(new Error('auth.test answered HTTP 503, so the token could not be checked'))
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const kv = memoryKv()
+      const at = Date.parse('2026-10-20T15:52:00Z')
+      await rememberSlackAlertStatus(kv as unknown as KVNamespace, ORG, { status: 'reauth', acts_as: 'bidspoke_alerts in Pennie' }, at)
+      forgetSlackAlertStatusMemory()
+      const { env } = makeEnv({}, kv)
+      const body = await shown(env)
+      expect(body.connections.find((c) => c.id === ALERTS)!).toMatchObject({ status: 'reauth', status_word: 'Needs reconnecting', acts_as: 'bidspoke_alerts in Pennie' })
+      expect(body.statuses).toMatchObject({ stale: true, as_of: new Date(at).toISOString(), unavailable: { cause: 'slack_unanswered' } })
+    })
+
+    it('with no answer and no last known status, shows no status rather than a made up one', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+      vi.mocked(verifySlackToken).mockRejectedValue(new TypeError('fetch failed'))
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const { env } = makeEnv({})
+      const body = await shown(env)
+      expect(body.connections.find((c) => c.id === ALERTS)!).toMatchObject({ status: null, status_word: null, acts_as: null })
+      expect(body.statuses).toMatchObject({ stale: true, as_of: null, unavailable: { cause: 'slack_unanswered' } })
+    })
+
+    it('gives up on a Slack that hangs at the health deadline, so the list still answers inside the same 15 s', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+      vi.mocked(verifySlackToken).mockReturnValue(new Promise(() => {}))
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      const { env } = makeEnv({})
+      const pending = request(app, 'GET', '/connections', env)
+      await vi.advanceTimersByTimeAsync(15_000)
+      const res = await pending
+      expect(res.status).toBe(200)
+      const body = (await res.json()) as { connections: Shown[]; statuses: ListAnswer['statuses'] }
+      expect(body.connections.find((c) => c.id === ALERTS)!.status).toBeNull()
+      expect(body.statuses).toMatchObject({ stale: true, unavailable: { cause: 'slack_unanswered' } })
+    })
+
+    it("keeps a measured answer as the last known status the next unanswered list reads", async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+      const kv = memoryKv()
+      await shown(makeEnv({}, kv).env)
+      expect(JSON.parse(kv.store.get(slackAlertStatusCopyKey(ORG))!)).toMatchObject({ organization_id: ORG, status: 'ok', acts_as: 'bidspoke_alerts in Pennie' })
+      vi.mocked(verifySlackToken).mockRejectedValue(new Error('no answer'))
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const body = await shown(makeEnv({}, kv).env)
+      expect(body.connections.find((c) => c.id === ALERTS)!).toMatchObject({ status: 'ok', acts_as: 'bidspoke_alerts in Pennie' })
+      expect(body.statuses.stale).toBe(true)
+    })
+
+    it('reads Needs reconnecting, without asking Slack, when the stored token cannot be read', async () => {
+      const rows = ROWS.map((r) => (r.id === ALERTS ? { ...r, credential_enc: null, config: { default_channel: 'C0ALERTS' } } : r))
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(rows) as never)
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      const { env } = makeEnv({})
+      const body = await shown(env)
+      expect(vi.mocked(verifySlackToken)).not.toHaveBeenCalled()
+      expect(body.connections.find((c) => c.id === ALERTS)!).toMatchObject({ status: 'reauth', status_word: 'Needs reconnecting' })
+    })
+
+    it('never asks Slack about an ops Slack connection, whose status is health\'s', async () => {
+      const opsSlack = connRow({ id: 'c4000000-0000-4000-8000-000000000004', name: 'Ops alerts bot', service_type: 'slack', sealed_for: 'ops_key' })
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble([...ROWS, opsSlack]) as never)
+      const { env } = makeEnv({ health: async () => ({ ok: true, reached_limit: false, connections: [healthRow(opsSlack.id as string, 'healthy')] }) })
+      const body = await shown(env)
+      expect(vi.mocked(verifySlackToken)).toHaveBeenCalledTimes(1)
+      expect(body.connections.find((c) => c.id === opsSlack.id)!).toMatchObject({ name: 'Ops alerts bot', alert_login: false, status: 'ok' })
+    })
+  })
+})
+
+describe('GET /connections/:id/history (the History tab, R5)', () => {
+  const entry = (over: Row): Row => ({
+    audit_id: 'a1000000-0000-4000-8000-000000000001', action: 'UPDATE', changed_at: '2026-10-18T18:14:00Z', changed_by: USER,
+    changed_by_name: 'Dan Wright', changed_by_email: 'dan@pennie.com', changes: { credential_generation: { old: 1, new: 2 } }, credential_changed: true, ...over,
+  })
+
+  it("answers the connection's audit rows, newest first as the function gives them, each naming who and when, for the caller's organization", async () => {
+    const db = storeDouble(ROWS, { history: { [SF]: [entry({}), entry({ audit_id: 'a2', action: 'INSERT', changed_at: '2026-10-17T14:02:00Z', credential_changed: false, changes: {} })] } })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const { env } = makeEnv({})
+    const res = await request(app, 'GET', `/connections/${SF}/history`, env)
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { entries: Array<Record<string, unknown>> }
+    expect(body.entries).toEqual([
+      { id: 'a1000000-0000-4000-8000-000000000001', action: 'UPDATE', at: '2026-10-18T18:14:00Z', by: 'Dan Wright', credential_changed: true, changes: { credential_generation: { old: 1, new: 2 } } },
+      { id: 'a2', action: 'INSERT', at: '2026-10-17T14:02:00Z', by: 'Dan Wright', credential_changed: false, changes: {} },
+    ])
+    expect(db.rpcCalls).toContainEqual(['connection_history', { p_organization_id: ORG, p_connection_id: SF, p_limit: 50 }])
+  })
+
+  it('names who by email when the person has no name, and by nothing when the change had no person', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS, { history: { [SF]: [entry({ changed_by_name: null }), entry({ changed_by: null, changed_by_name: null, changed_by_email: null })] } }) as never)
+    const { env } = makeEnv({})
+    const body = (await (await request(app, 'GET', `/connections/${SF}/history`, env)).json()) as { entries: Array<{ by: string | null }> }
+    expect(body.entries.map((e) => e.by)).toEqual(['dan@pennie.com', null])
+  })
+
+  it("refuses another organization's connection, or an id that is not one, as not found", async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS) as never)
+    const { env } = makeEnv({})
+    expect((await request(app, 'GET', `/connections/${THEIRS}/history`, env)).status).toBe(404)
+    expect((await request(app, 'GET', '/connections/not-an-id/history', env)).status).toBe(404)
+  })
+
+  it('answers a history that could not be read as an error by name with its sentence, never an empty history', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble(ROWS, { historyError: { code: '57014', message: 'canceling statement due to statement timeout' } }) as never)
+    const { env } = makeEnv({})
+    const res = await request(app, 'GET', `/connections/${SF}/history`, env)
+    expect(res.status).toBe(503)
+    expect(await res.json()).toEqual({ error: 'connection_history_unavailable', message: "The connection's history could not be read." })
   })
 })
 
