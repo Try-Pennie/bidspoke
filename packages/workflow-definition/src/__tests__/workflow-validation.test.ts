@@ -8,6 +8,8 @@ import {
   buyerSelectRequiredHandles,
   filterHasCondition,
   filterConditionSummary,
+  CONDITION_OPERATORS,
+  CONDITION_OPERATOR_SPECS,
   type CanvasNodeLike,
   type CanvasEdgeLike,
   type NodeDefLike,
@@ -49,6 +51,18 @@ describe('filterConditionSummary', () => {
     // so the summary is just the field and value, never a stringified function.
     const summary = filterConditionSummary({ condition: { field: 'x', operator: 'constructor', value: 1 } })
     expect(summary).toBe('x 1')
+  })
+
+  it('reads every operator in the rule builder dropdown\'s own words (#2590, design round 3)', () => {
+    // One vocabulary for the dropdown and the card: CONDITION_OPERATOR_SPECS' label.
+    for (const op of CONDITION_OPERATORS) {
+      const summary = filterConditionSummary({ condition: { field: 'state', operator: op } })
+      expect(summary).toBe(`state ${CONDITION_OPERATOR_SPECS[op].label}`)
+    }
+    expect(filterConditionSummary({ condition: { field: 'state', operator: 'eq', value: 'x' } })).toBe('state = x')
+    expect(filterConditionSummary({ condition: { field: 'state', operator: 'in_array', value: 'CA,NY' } }))
+      .toBe('state in list CA,NY')
+    expect(filterConditionSummary({ condition: { field: 'name', operator: 'has_letter' } })).toBe('name contains a letter')
   })
 })
 

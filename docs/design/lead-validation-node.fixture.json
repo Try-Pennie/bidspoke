@@ -1,0 +1,44 @@
+{
+ "about": "The data both settled lead validation designs are drawn from (#2590, #2588): RML GigFi's six real checks plus Lead Economy's phone check, as drawn in the 2026-10-21 design rounds. Operators are the shared list's ids (CONDITION_OPERATORS); reasons are LEAD_REJECTION_REASONS in its order.",
+ "node": {
+  "title": "Validate bidding and state",
+  "id": "validate_bidding_and_state",
+  "leadIdField": "trigger.payload.leadUuid"
+ },
+ "chosen": 2,
+ "reasons": [
+  "bidding not active",
+  "ineligible state",
+  "invalid name",
+  "loan amount exceeds maximum",
+  "military status ineligible",
+  "unqualified",
+  "employment status missing",
+  "missing phone",
+  "unqualified_lead"
+ ],
+ "missing": [
+  {"value": "reject", "label": "Reject with this reason"},
+  {"value": "pass", "label": "Let it through"},
+  {"value": "fail", "label": "Fail the run"}
+ ],
+ "checks": [
+  {"label": "Bidding is on", "match": "AND", "reason": "bidding not active", "missing": "reject",
+   "rows": [{"field": "steps.constants.output.biddingActive", "operator": "is_true", "value": ""}]},
+  {"label": "State is allowed", "match": "AND", "reason": "ineligible state", "missing": "reject",
+   "rows": [{"field": "trigger.payload.personalInformation.state", "operator": "in_array", "value": "steps.constants.output.states"}]},
+  {"label": "Name has letters", "match": "AND", "reason": "invalid name", "missing": "reject",
+   "rows": [
+    {"field": "steps.parsed_name.output.firstName", "operator": "has_letter", "value": ""},
+    {"field": "steps.parsed_name.output.lastName", "operator": "has_letter", "value": ""}
+   ]},
+  {"label": "Loan within maximum", "match": "AND", "reason": "loan amount exceeds maximum", "missing": "reject",
+   "rows": [{"field": "trigger.payload.loanInformation.loanAmount", "operator": "lte", "value": "steps.constants.output.maximumLoanAmount"}]},
+  {"label": "Not military", "match": "AND", "reason": "military status ineligible", "missing": "reject",
+   "rows": [{"field": "trigger.payload.financialInformation.employmentStatus", "operator": "neq", "value": "military"}]},
+  {"label": "Self employed", "match": "AND", "reason": "unqualified", "missing": "reject",
+   "rows": [{"field": "trigger.payload.financialInformation.employmentStatus", "operator": "eq", "value": "self_employed"}]},
+  {"label": "Phone given", "match": "AND", "reason": "missing phone", "missing": "reject",
+   "rows": [{"field": "trigger.payload.personalInformation.primaryPhone", "operator": "not_blank", "value": ""}]}
+ ]
+}

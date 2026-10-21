@@ -42,7 +42,14 @@ describe('filterConditionSummary', () => {
   })
 
   it('summarizes a single-rule rule-builder filter instead of claiming there is none', () => {
-    expect(filterConditionSummary({ rules: RULES('state') })).toBe('state equals x')
+    expect(filterConditionSummary({ rules: RULES('state') })).toBe('state = x')
+  })
+
+  it('names the operator in the rule builder dropdown\'s own words, one vocabulary (#2590, design round 3)', () => {
+    expect(filterConditionSummary({ condition: { field: 'state', operator: 'in_array', value: 'CA,NY' } })).toBe('state in list CA,NY')
+    expect(filterConditionSummary({ condition: { field: 'active', operator: 'is_true' } })).toBe('active is true')
+    expect(filterConditionSummary({ condition: { field: 'note', operator: 'not_contains', value: 'x' } })).toBe('note not contains x')
+    expect(filterConditionSummary({ condition: { field: 'phone', operator: 'not_blank' } })).toBe('phone is not empty')
   })
 
   it('counts the conditions when a rule-builder filter has several', () => {
@@ -65,6 +72,6 @@ describe('filterConditionSummary', () => {
       condition: { field: 'simple', operator: 'eq', value: 'yes' },
       rules: RULES('legacy'),
     })
-    expect(summary).toBe('simple equals yes')
+    expect(summary).toBe('simple = yes')
   })
 })
