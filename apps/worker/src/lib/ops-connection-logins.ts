@@ -207,7 +207,7 @@ export interface OpsConnectionLoginDeps extends ConnectionSignalDeps {
   /** Pages the connection's organization. Returns whether it reached Slack. */
   sendAlert(organizationId: string, alert: OpsConnectionLoginAlert): Promise<boolean>
   /** The all clear. Returns whether it reached Slack. */
-  sendRecovery(organizationId: string, recovery: { subject: string; alertedAt: string; endedAt: string | null }): Promise<boolean>
+  sendRecovery(organizationId: string, recovery: { subject: string; alertedAt: string; endedAt: string | null; firstHealthyAt: string | null }): Promise<boolean>
 }
 
 export interface OpsConnectionWriteBackDeps extends ConnectionSignalDeps {
@@ -215,7 +215,7 @@ export interface OpsConnectionWriteBackDeps extends ConnectionSignalDeps {
   /** Pages the connection's organization. Returns whether it reached Slack. */
   sendAlert(organizationId: string, alert: OpsConnectionWriteBackAlert): Promise<boolean>
   /** The all clear. Returns whether it reached Slack. */
-  sendRecovery(organizationId: string, recovery: { subject: string; alertedAt: string; endedAt: string | null }): Promise<boolean>
+  sendRecovery(organizationId: string, recovery: { subject: string; alertedAt: string; endedAt: string | null; firstHealthyAt: string | null }): Promise<boolean>
 }
 
 export interface OpsConnectionLoginSummary {
@@ -248,7 +248,7 @@ interface ConnectionSignalRules<I extends DueItem> {
   stateOf(item: I): string
   arm(kv: RecoveryKv, id: string, incident: IncidentContext, nowMs: number): Promise<void>
   send(organizationId: string, item: I, name: string | null, repeat: string | undefined): Promise<boolean>
-  recover(organizationId: string, recovery: { subject: string; alertedAt: string; endedAt: string | null }): Promise<boolean>
+  recover(organizationId: string, recovery: { subject: string; alertedAt: string; endedAt: string | null; firstHealthyAt: string | null }): Promise<boolean>
   /** How long a state must have stayed clear before its all clear goes. */
   rearmMinutes(state: string): number
 }
@@ -324,7 +324,7 @@ async function clearItem<I extends DueItem>(
     id,
     backoffCooldownKey(`${rules.signal}:${id}`),
     incidentFor(open.organization_id, label, errors),
-    (alertedAt, endedAt) => rules.recover(open.organization_id, { subject: label, alertedAt, endedAt }),
+    (alertedAt, endedAt, firstHealthyAt) => rules.recover(open.organization_id, { subject: label, alertedAt, endedAt, firstHealthyAt }),
     { now: nowMs, rearmMinutes: rules.rearmMinutes(open.state), claim: minuteAllClearClaim(deps.claims, rules.signal, id) },
   )
   if (!delivered) return true

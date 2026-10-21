@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureSaturationAlert, sendPartnerErrorRateAlert, sendFailureAlert, sendDurationAlert, sendRecoveryAlert, sendGroupedRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, sendQueryTimeoutAlert, getSlackConnection, sendPgCronRecoveryAlert, sendWorkflowScheduleRecoveryAlert } from '../slack'
+import { sendFailureSaturationAlert, sendPartnerErrorRateAlert, sendFailureAlert, sendDurationAlert, sendRecoveryAlert, sendGroupedRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, sendQueryTimeoutAlert, getSlackConnection, sendPgCronRecoveryAlert, sendWorkflowScheduleRecoveryAlert, sendCronHeartbeatRecoveryAlert } from '../slack'
 import type { QueryTimeoutOffender } from '../slack'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
@@ -1733,7 +1733,7 @@ describe('the scheduled job all-clears (#851)', () => {
     const text = JSON.stringify(body.blocks)
     expect(text).toContain('refresh-field-presence-daily')
     expect(text).toContain('is running and succeeding again')
-    expect(text).toContain('lasted 1 hour 32 minutes')
+    expect(text).toContain('last seen 1 hour 32 minutes later')
   })
 
   it('names the scheduled workflow by its label', async () => {
@@ -1741,6 +1741,20 @@ describe('the scheduled job all-clears (#851)', () => {
     const text = JSON.stringify((await sent()).blocks)
     expect(text).toContain('Nightly backup')
     expect(text).toContain('is running on schedule again')
+  })
+
+  it('carries the first healthy check through to the sentence (#2580)', async () => {
+    await sendPgCronRecoveryAlert(connected(), 'org-1', { jobname: 'refresh-field-presence-daily', alertedAt: ALERTED, endedAt: ENDED, firstHealthyAt: '2026-08-15T03:05:00.000Z' }, NOW)
+    expect(JSON.stringify((await sent()).blocks)).toContain('The first check to find it clear was at Aug 14, 11:05 PM EDT.')
+  })
+
+  // #2580. The heartbeat's end is the completion that showed the job finished: a
+  // clearing it observed, not a last sighting, so it is still named as one.
+  it('names the heartbeat completion as the clearing time, since the job was seen finished then', async () => {
+    await sendCronHeartbeatRecoveryAlert(connected(), 'org-1', { label: 'Execution archive', status: 'vanished', alertedAt: ALERTED, endedAt: ENDED, sameRun: true }, NOW)
+    const text = JSON.stringify((await sent()).blocks)
+    expect(text).toContain('lasted 1 hour 32 minutes, clearing at Aug 14, 11:04 PM EDT.')
+    expect(text).not.toContain('last seen')
   })
 })
 
@@ -1763,10 +1777,10 @@ describe('sendRecoveryAlert (#253, #814)', () => {
     // Announced 30 minutes after it cleared. The outage lasted 1h 32m, and the
     // reader must not be told 2 hours because we waited to be sure.
     await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: ENDED }, Date.parse('2026-08-15T03:34:00.000Z'))
-    expect((await sentText())).toContain('lasted 1 hour 32 minutes')
+    expect((await sentText())).toContain('last seen 1 hour 32 minutes later')
   })
 
-  it('names when it cleared, since the all-clear arrives after a re-arm delay', async () => {
+  it('names the last sighting, since the all-clear arrives after a re-arm delay', async () => {
     await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: ENDED }, Date.parse('2026-08-15T03:34:00.000Z'))
     expect((await sentText())).toContain('11:04 PM EDT')
   })
@@ -1795,8 +1809,128 @@ describe('sendRecoveryAlert (#253, #814)', () => {
       Date.parse('2026-10-14T22:20:00.000Z'),
     )
     const text = (await sentText())
-    expect(text).toContain('lasted under a minute, clearing at Oct 14, 5:48 PM EDT')
+    expect(text).toContain('fired at Oct 14, 5:48 PM EDT, when the problem was last seen.')
+    expect(text).not.toContain('clearing at')
     expect(text).not.toContain('-')
+  })
+})
+
+/**
+ * #2580. The partners page live updates all-clear of 2026-10-21 said the alert
+ * "fired at Oct 21, 4:01 AM EDT and lasted under a minute, clearing at Oct 21,
+ * 4:01 AM EDT". Its only failed run paged at 4:01, the next run received its
+ * notice at 4:05, and the all-clear went out at 4:35. Nothing was observed clear
+ * at 4:01: that is the moment it fired. The notice names what was observed on each
+ * side, the last sighting and the first healthy check after it, and where that
+ * check is not known, that it had cleared by the tick announcing it (#1268).
+ */
+describe('sendRecoveryAlert names what was observed on each side of the end (#2580)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1.23' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const slack = { bot_token: '[REDACTED]' }
+  const sectionText = async () => (await slackPostOf(fetchMock.mock.calls[0])).blocks[1].text.text as string
+  const PAGED = '2026-10-21T08:01:08.000Z'
+  const FIRST_RECEIVED = '2026-10-21T08:05:34.000Z'
+  const ANNOUNCED = Date.parse('2026-10-21T08:35:40.000Z')
+  const partnersPage = {
+    signal: 'partners page live updates',
+    subject: 'The partners page channel',
+    recoveredPhrase: "has delivered the delivery check's notice for 30 minutes",
+    alertedAt: PAGED,
+    endedAt: PAGED,
+  }
+
+  it('a one run incident names the first healthy check, never a clearing time equal to the fire time', async () => {
+    await sendRecoveryAlert(slack, 'C1', { ...partnersPage, firstHealthyAt: FIRST_RECEIVED }, ANNOUNCED)
+    const text = await sectionText()
+    expect(text).toBe(
+      "*The partners page channel* has delivered the delivery check's notice for 30 minutes. " +
+        'The partners page live updates alert fired at Oct 21, 4:01 AM EDT, when the problem was last seen. ' +
+        'The first check to find it clear was at Oct 21, 4:05 AM EDT.',
+    )
+    // The fire time is said once, as the fire time, and nowhere as an end.
+    expect(text.match(/4:01 AM/g)).toHaveLength(1)
+    expect(text).not.toContain('clearing at')
+    expect(text).not.toContain('lasted')
+  })
+
+  it('a one run incident whose first healthy check is not known says it had cleared by the announcing tick', async () => {
+    await sendRecoveryAlert(slack, 'C1', partnersPage, ANNOUNCED)
+    const text = await sectionText()
+    expect(text).toContain('fired at Oct 21, 4:01 AM EDT, when the problem was last seen. It had cleared by Oct 21, 4:35 AM EDT.')
+    expect(text.match(/4:01 AM/g)).toHaveLength(1)
+  })
+
+  it('a first healthy check at or before the last sighting is not one, so it falls back to "had cleared by"', async () => {
+    await sendRecoveryAlert(slack, 'C1', { ...partnersPage, firstHealthyAt: PAGED }, ANNOUNCED)
+    const text = await sectionText()
+    expect(text).toContain('It had cleared by Oct 21, 4:35 AM EDT.')
+    expect(text).not.toContain('first check')
+  })
+
+  it('a multi run incident names the last sighting, how long after the page it was, and the first healthy check', async () => {
+    // The Aug 14 ACRO_GATEWAY incident: paged 9:32 PM, last failure 11:04 PM EDT.
+    await sendRecoveryAlert(
+      slack,
+      'C1',
+      {
+        signal: '"ACRO_GATEWAY" failure rate',
+        subject: 'Engine Bidding Workflow',
+        alertedAt: '2026-08-15T01:32:00.000Z',
+        endedAt: '2026-08-15T03:04:00.000Z',
+        firstHealthyAt: '2026-08-15T03:05:00.000Z',
+      },
+      Date.parse('2026-08-15T03:35:00.000Z'),
+    )
+    expect(await sectionText()).toBe(
+      '*Engine Bidding Workflow* is back within normal range. ' +
+        'The "ACRO_GATEWAY" failure rate alert fired at Aug 14, 9:32 PM EDT. ' +
+        'The problem was last seen 1 hour 32 minutes later, at Aug 14, 11:04 PM EDT. ' +
+        'The first check to find it clear was at Aug 14, 11:05 PM EDT.',
+    )
+  })
+
+  it('leaves the windowed wording (#1268) exactly as it was, whatever first healthy check is passed', async () => {
+    const windowed = {
+      signal: 'output field stopped',
+      subject: 'RML - Bidding Workflow (LendSwift) ping_lendswift.data.data',
+      alertedAt: '2026-09-10T10:01:15Z',
+      endedAt: '2026-09-10T10:01:15Z',
+      measuredWindowMinutes: 60,
+    }
+    await sendRecoveryAlert(slack, 'C1', { ...windowed, firstHealthyAt: '2026-09-10T11:00:05Z' }, Date.parse('2026-09-10T11:00:05Z'))
+    expect(await sectionText()).toBe(
+      '*RML - Bidding Workflow (LendSwift) ping_lendswift.data.data* is back within normal range. ' +
+        'The output field stopped alert fired at Sep 10, 6:01 AM EDT and covered the 1 hour before it, which is as precisely as this check measures. ' +
+        'It had passed by Sep 10, 7:00 AM EDT.',
+    )
+  })
+
+  it('makes no claim about the span or the end when the marker is unreadable', async () => {
+    await sendRecoveryAlert(slack, 'C1', { ...partnersPage, alertedAt: 'garbage', firstHealthyAt: FIRST_RECEIVED }, ANNOUNCED)
+    const text = await sectionText()
+    expect(text).not.toContain('last seen')
+    expect(text).not.toContain('first check')
+    expect(text).not.toContain('cleared by')
+    expect(text).not.toContain('lasted')
+    expect(text).not.toContain('NaN')
+  })
+
+  it('keeps per subject sentences in a group when only their first healthy checks differ', async () => {
+    const items = [
+      { subject: 'a', alertedAt: PAGED, endedAt: PAGED, firstHealthyAt: FIRST_RECEIVED },
+      { subject: 'b', alertedAt: PAGED, endedAt: PAGED, firstHealthyAt: '2026-10-21T08:10:31.000Z' },
+    ]
+    await sendGroupedRecoveryAlert(slack, 'C1', { signal: 'partners page live updates', items }, ANNOUNCED)
+    const text = await sectionText()
+    expect(text.match(/alert fired at/g)).toHaveLength(2)
+    expect(text).toContain('4:05 AM EDT')
+    expect(text).toContain('4:10 AM EDT')
   })
 })
 

@@ -229,7 +229,7 @@ export async function runSlowExecutionCheck(
         wfId,
         cooldownKey,
         incident,
-        async (alertedAt, endedAt) => {
+        async (alertedAt, endedAt, firstHealthyAt) => {
           const slack = await getSlackConnection(supabase, wf.organization_id)
           if (!slack) return false
           return sendRecoveryAlert(
@@ -237,7 +237,7 @@ export async function runSlowExecutionCheck(
             wf.slack_channel ?? slack.default_channel,
             // Judges the trailing WINDOW_MINUTES, so a one-tick incident has a
             // zero span: name the window it measured, not a gap it did not (#1108).
-            { signal: 'slow execution', subject: wf.name, alertedAt, endedAt, measuredWindowMinutes: WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
+            { signal: 'slow execution', subject: wf.name, alertedAt, endedAt, firstHealthyAt, measuredWindowMinutes: WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
           )
         },
         { hasEvidence: () => (finishedByWorkflow.get(wfId) ?? 0) >= MIN_RECOVERY_RUNS, claim: minuteAllClearClaim(claims, 'slow-spike', wfId) },

@@ -82,6 +82,73 @@ export function activeKey(prefix: RecoveryMarkerSignal, id: string): string {
 }
 
 /**
+ * Key holding the first HEALTHY observation after the last sighting (#2580).
+ *
+ * The running end is the last time the condition was seen, which is not when it
+ * cleared: for a check that runs every five minutes, a one run incident's last
+ * sighting is the very tick that paged. The first check after it to find the
+ * condition gone is the other side of the end, and the only time anything was
+ * observed clear. It is stored with the sighting it came after, so a relapse
+ * (which moves the running end) makes it stale without anyone deleting it.
+ */
+export function healthyKey(prefix: RecoveryMarkerSignal, id: string): string {
+  return `${prefix}-healthy:${id}`
+}
+
+/** The stored first healthy observation: the sighting it followed and when it was made. */
+interface HealthyRecord {
+  after: string
+  at: string
+}
+
+function readHealthyRecord(raw: string | null): HealthyRecord | null {
+  if (raw === null) return null
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const { after, at } = parsed as Record<string, unknown>
+    if (typeof after !== 'string' || typeof at !== 'string' || !Number.isFinite(Date.parse(at))) return null
+    return { after, at }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The first healthy observation after the running end `active`, recording `now`
+ * as that observation when none is stored for it yet (#2580). Called only from
+ * recoveryDue, which every check calls on a HEALTHY tick and only there, so the
+ * first call after a sighting is the first healthy check after it.
+ *
+ * Null when there is no running end to come after, when `now` is not after it
+ * (the same tick, or another isolate's clock behind: no healthy observation), or
+ * when the record cannot be read or written. Never throws: an all-clear that
+ * cannot name its first healthy check says it had cleared by the announcing tick
+ * instead, and must never be held for want of this (L345).
+ */
+async function firstHealthyAfter(
+  kv: RecoveryKv,
+  prefix: RecoveryMarkerSignal,
+  id: string,
+  active: string | null,
+  lastSpike: number,
+  now: number,
+): Promise<string | null> {
+  if (active === null || !Number.isFinite(lastSpike) || now <= lastSpike) return null
+  const key = healthyKey(prefix, id)
+  try {
+    const stored = readHealthyRecord(await kv.get(key))
+    if (stored && stored.after === active && Date.parse(stored.at) > lastSpike) return stored.at
+    const at = new Date(now).toISOString()
+    await kv.put(key, JSON.stringify({ after: active, at } satisfies HealthyRecord), { expirationTtl: RECOVERY_TTL_SECONDS })
+    return at
+  } catch (err) {
+    console.error(`[alert-recovery] ${prefix} first healthy check for ${id} could not be read or recorded, so the all-clear will say only when it had cleared by: ${formatErr(err)}`)
+    return null
+  }
+}
+
+/**
  * Keep the recovery marker alive from a KNOWN start, on every sighting (#1274).
  *
  * `markAlerted` pins the start from the time it is first called and is called only
@@ -209,18 +276,25 @@ export interface AllClearClaim {
   ttlSeconds: number
 }
 
-/** What an all-clear has to say: when the incident was first paged and when it was last seen. */
+/**
+ * What an all-clear has to say: when the incident was first paged, when it was
+ * last seen, and the first healthy check after that (#2580), each null when it
+ * was not recorded.
+ */
 export interface RecoveryDue {
   alertedAt: string
   endedAt: string | null
+  firstHealthyAt: string | null
 }
 
 /**
  * Whether an all-clear is OWED for `id` right now, and if so what it says.
  *
  * Null when nothing was paged, or while the condition is still inside its
- * re-arm window: one quiet tick is not an ended incident (#814). Reads only,
- * never writes, because the caller has not delivered anything yet. It is one
+ * re-arm window: one quiet tick is not an ended incident (#814). It settles
+ * nothing, because the caller has not delivered anything yet: its one write is
+ * the first healthy observation after the last sighting (#2580), made on the
+ * first healthy tick that asks, so CALL IT ONLY ON A HEALTHY TICK. It is one
  * half of `announceRecovery`, split out (#1267) so a check that sends ONE
  * all-clear covering several ids can ask this per id and settle them together
  * once that one message lands.
@@ -229,7 +303,7 @@ export async function recoveryDue(
   kv: RecoveryKv,
   prefix: RecoveryMarkerSignal,
   id: string,
-  opts: { now?: number; rearmMinutes?: number } = {},
+  opts: { now?: number; rearmMinutes?: number; recordFirstHealthy?: boolean } = {},
 ): Promise<RecoveryDue | null> {
   const alertedAt = await kv.get(recoveryKey(prefix, id))
   if (!alertedAt) return null
@@ -238,6 +312,13 @@ export async function recoveryDue(
   const rearmMs = (opts.rearmMinutes ?? RECOVERY_REARM_MINUTES) * 60 * 1000
   const active = await kv.get(activeKey(prefix, id))
   const lastSpike = active ? Date.parse(active) : NaN
+
+  // This tick is healthy: if it is the first since the last sighting, it is the
+  // first check to find the condition clear, which the all-clear names (#2580).
+  // Not for a caller whose quiet tick is not yet evidence of health (the
+  // hasEvidence checks of announceRecovery, #817): a tick with no traffic reads
+  // as quiet too, and must not be named as the first one to find it clear.
+  const firstHealthyAt = opts.recordFirstHealthy === false ? null : await firstHealthyAfter(kv, prefix, id, active, lastSpike, now)
 
   // Still inside the re-arm window: the condition is quiet, not over. Hold BOTH
   // keys, so a relapse continues this incident instead of opening a new one, and
@@ -248,12 +329,13 @@ export async function recoveryDue(
   // (a marker written by an older deploy has no companion key), and must not be
   // guessed at either: say nothing about when it cleared (LESSONS L11).
   const endedAt = Number.isFinite(lastSpike) ? new Date(lastSpike).toISOString() : null
-  return { alertedAt, endedAt }
+  return { alertedAt, endedAt, firstHealthyAt }
 }
 
 /**
  * Close the incident for `id` once its all-clear has DELIVERED: the marker, the
- * running end and the cooldown all go, so the next genuine spike pages at once.
+ * running end, the first healthy check (#2580) and the cooldown all go, so the
+ * next genuine spike pages at once.
  * The other half of `announceRecovery` (#1267). Never call it on a failed send.
  *
  * `end` says why it ended (#2099). The ended event goes to the outbox BEFORE the
@@ -291,6 +373,7 @@ export async function settleRecovery(
   }
   await kv.delete(recoveryKey(prefix, id))
   await kv.delete(activeKey(prefix, id))
+  await kv.delete(healthyKey(prefix, id))
   // Null for a check with no per-id cooldown to clear (the schedule watch's is
   // keyed on a whole signature, and lets a relapse through by this marker instead).
   if (cooldownKey !== null) await kv.delete(cooldownKey)
@@ -298,12 +381,15 @@ export async function settleRecovery(
 
 /**
  * Call on a HEALTHY check. If we previously paged for `id`, send the all-clear
- * and clear both keys. Returns whether an all-clear was delivered.
+ * and clear its keys (settleRecovery). Returns whether an all-clear was delivered.
  *
- * `send` receives the ISO time of the first page and the ISO time of the last
+ * `send` receives the ISO time of the first page, the ISO time of the last
  * observed failure (null when that was never recorded), so the message can say
- * how long the OUTAGE lasted rather than how long ago we last spoke about it. It
- * returns whether it actually reached Slack.
+ * how long the OUTAGE lasted rather than how long ago we last spoke about it,
+ * and the first healthy check after that failure (null when not recorded), so it
+ * can say when the condition was first seen clear rather than presenting the
+ * last failure as the clearing time (#2580). It returns whether it actually
+ * reached Slack.
  *
  * Returns false without sending while the condition is inside its re-arm window:
  * one quiet tick is not an ended incident (#814).
@@ -319,12 +405,16 @@ export async function announceRecovery(
   id: string,
   cooldownKey: string | null,
   incident: IncidentContext,
-  send: (alertedAt: string, endedAt: string | null) => Promise<boolean>,
+  send: (alertedAt: string, endedAt: string | null, firstHealthyAt: string | null) => Promise<boolean>,
   opts: { now?: number; rearmMinutes?: number; hasEvidence?: () => boolean | Promise<boolean>; claim?: AllClearClaim } = {},
 ): Promise<boolean> {
   // One reading for the whole all-clear: judging it due and recording its end.
+  // A check that needs evidence of recovery records no first healthy check: its
+  // quiet ticks are not judged for evidence until the all-clear is owed, so the
+  // first one may be a dead pipe (#817). Its all-clear says it had cleared by the
+  // tick that found the evidence, which is what was observed (#2580).
   const now = opts.now ?? Date.now()
-  const due = await recoveryDue(kv, prefix, id, { ...opts, now })
+  const due = await recoveryDue(kv, prefix, id, { now, rearmMinutes: opts.rearmMinutes, recordFirstHealthy: !opts.hasEvidence })
   if (!due) return false
 
   // #817: a check that recovers on the ABSENCE of its condition (the three rate
@@ -371,7 +461,7 @@ export async function announceRecovery(
 
   let delivered: boolean
   try {
-    delivered = await send(due.alertedAt, due.endedAt)
+    delivered = await send(due.alertedAt, due.endedAt, due.firstHealthyAt)
   } catch (err) {
     console.error(`[alert-recovery] ${prefix} all-clear failed for ${id}:`, err)
     // A throw cannot say whether Slack took it (a timeout, a connection lost

@@ -1588,6 +1588,7 @@ async function alertOnStates(
         subject: `${i.wf.name} ${i.state.field_path}`,
         alertedAt: i.due.alertedAt,
         endedAt: i.due.endedAt,
+        firstHealthyAt: i.due.firstHealthyAt,
         url: `${appUrl}/workflows/${i.wf.id}`,
       })),
     })

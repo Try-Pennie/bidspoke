@@ -355,9 +355,9 @@ async function announceDatabaseReadable(deps: ReachabilityDeps, connections: Map
       orgId,
       backoffCooldownKey(backoff),
       incident(orgId),
-      async (alertedAt, endedAt) => {
+      async (alertedAt, endedAt, firstHealthyAt) => {
         if (!conn.volume_alerts_enabled || sentence === null) return false
-        return sendDatabaseRecoveredAlert(conn, conn.default_channel, { alertedAt, endedAt, measured: sentence, appUrl: deps.appUrl }, nowMs)
+        return sendDatabaseRecoveredAlert(conn, conn.default_channel, { alertedAt, endedAt, firstHealthyAt, measured: sentence, appUrl: deps.appUrl }, nowMs)
       },
       {
         now: nowMs,

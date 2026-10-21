@@ -13,11 +13,11 @@ const NOW = Date.parse(at(600))
 
 describe('measureIncidentSpan', () => {
   it('measures from the start to the recorded end', () => {
-    expect(measureIncidentSpan(START, at(92), null, NOW)).toEqual({ kind: 'measured', ms: 92 * 60_000, clearedAt: Date.parse(at(92)) })
+    expect(measureIncidentSpan(START, at(92), null, NOW)).toEqual({ kind: 'measured', ms: 92 * 60_000, lastSeenAt: Date.parse(at(92)) })
   })
 
   it('measures to now when no end was recorded, and claims no clearing time', () => {
-    expect(measureIncidentSpan(START, null, null, NOW)).toEqual({ kind: 'measured', ms: 600 * 60_000, clearedAt: null })
+    expect(measureIncidentSpan(START, null, null, NOW)).toEqual({ kind: 'measured', ms: 600 * 60_000, lastSeenAt: null })
   })
 
   it('reports the window instead of a span shorter than the window the check judges', () => {
@@ -26,7 +26,7 @@ describe('measureIncidentSpan', () => {
   })
 
   it('measures a span of at least one window', () => {
-    expect(measureIncidentSpan(START, at(60), 60, NOW)).toEqual({ kind: 'measured', ms: 60 * 60_000, clearedAt: Date.parse(at(60)) })
+    expect(measureIncidentSpan(START, at(60), 60, NOW)).toEqual({ kind: 'measured', ms: 60 * 60_000, lastSeenAt: Date.parse(at(60)) })
   })
 
   it('says nothing about an unreadable start', () => {
@@ -50,7 +50,7 @@ describe('an end recorded before the start', () => {
   const ENDED = '2026-10-14T21:48:01.000Z'
 
   it('is a zero length span ending at the start', () => {
-    expect(measureIncidentSpan(STARTED, ENDED, null, NOW)).toEqual({ kind: 'measured', ms: 0, clearedAt: Date.parse(STARTED) })
+    expect(measureIncidentSpan(STARTED, ENDED, null, NOW)).toEqual({ kind: 'measured', ms: 0, lastSeenAt: Date.parse(STARTED) })
     expect(incidentDurationText(measureIncidentSpan(STARTED, ENDED, null, NOW))).toBe('under a minute')
   })
 

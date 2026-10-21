@@ -135,7 +135,7 @@ describe('the all clear', () => {
     await h.run(judged(list([waiting()])))
     const out = await h.run(judged(list([])), NOW + 15 * MIN)
     expect(h.sendRecovery).toHaveBeenCalledTimes(1)
-    expect(h.sendRecovery.mock.calls[0]).toEqual([ORG_A, { subject: 'Shared inbox (Google user)', alertedAt: iso(NOW), endedAt: iso(NOW) }])
+    expect(h.sendRecovery.mock.calls[0]).toEqual([ORG_A, { subject: 'Shared inbox (Google user)', alertedAt: iso(NOW), endedAt: iso(NOW), firstHealthyAt: iso(NOW + 15 * MIN) }])
     expect(out.allClear).toEqual([CONN_A])
     expect(transitions(h.kv.store).at(-1)).toBe(`ended ${CONN_A} all_clear`)
     expect(JSON.parse(h.kv.store.get(OPS_CONNECTION_WRITE_BACK_STATE_KEY)!)).toEqual({ open: {} })

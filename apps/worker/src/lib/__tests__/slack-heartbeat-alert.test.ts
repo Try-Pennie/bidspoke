@@ -386,4 +386,13 @@ describe('sendCronHeartbeatGroupRecoveryAlert (#2117)', () => {
     expect(text.match(/alert fired at/g)).toHaveLength(1)
     expect(post.text).toBe('Recovered: Buyer sales checks, Click buyer path checks')
   })
+
+  // #2580: the end here is the last completion, a clearing the check observed, so
+  // it is named as the clearing, never as a last sighting of the problem.
+  it('names the last completion as the clearing time', async () => {
+    await sendCronHeartbeatGroupRecoveryAlert(makeSupabase(connection), 'org-1', recovery, Date.parse('2026-10-21T04:16:05Z'))
+    const text = textOf(await lastPost())
+    expect(text).toContain('lasted 4 minutes, clearing at Oct 21, 12:15 AM EDT.')
+    expect(text).not.toContain('last seen')
+  })
 })

@@ -226,7 +226,7 @@ export interface MinuteJobFailingDeps {
   /** Pages one organization. Returns whether it reached Slack. */
   sendAlert(orgId: string, alert: MinuteJobFailingAlert): Promise<boolean>
   /** The all clear to one organization. Returns whether it reached Slack. */
-  sendRecovery(orgId: string, recovery: { label: string; alertedAt: string; endedAt: string | null }): Promise<boolean>
+  sendRecovery(orgId: string, recovery: { label: string; alertedAt: string; endedAt: string | null; firstHealthyAt: string | null }): Promise<boolean>
   now(): number
 }
 
@@ -451,7 +451,7 @@ async function clean(deps: MinuteJobFailingDeps, job: CronJob, summary: MinuteJo
       job.id,
       backoffCooldownKey(key),
       incidentFor(job, errors),
-      async (alertedAt, endedAt) => {
+      async (alertedAt, endedAt, firstHealthyAt) => {
         const orgs = await deps.orgsToTell()
         if (orgs === null) {
           errors.push(`${job.label} has stopped failing, but nobody could be told: the Slack organizations could not be read, so the all clear is tried on the next run`)
@@ -460,7 +460,7 @@ async function clean(deps: MinuteJobFailingDeps, job: CronJob, summary: MinuteJo
         let any = false
         for (const orgId of orgs) {
           try {
-            if (await deps.sendRecovery(orgId, { label: job.label, alertedAt, endedAt })) any = true
+            if (await deps.sendRecovery(orgId, { label: job.label, alertedAt, endedAt, firstHealthyAt })) any = true
           } catch (err) {
             errors.push(`the all clear to org ${orgId} failed, the others go on: ${formatErr(err)}`)
           }

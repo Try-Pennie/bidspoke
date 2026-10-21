@@ -148,7 +148,7 @@ export interface BacklogDeps {
   /** Pages one organization. Returns whether it reached Slack. */
   sendAlert: (orgId: string, alert: WritebackBacklogAlert) => Promise<boolean>
   /** The all-clear for one organization. Returns whether it reached Slack. */
-  sendRecovery: (orgId: string, recovery: { alertedAt: string; endedAt: string | null }) => Promise<boolean>
+  sendRecovery: (orgId: string, recovery: { alertedAt: string; endedAt: string | null; firstHealthyAt: string | null }) => Promise<boolean>
   /** Pages that the table could not be read. */
   notifyReadFailure: (errors: string[]) => Promise<void>
   /** A clean read: stands a read failure page down. */
@@ -275,7 +275,7 @@ async function checkOrg(
       orgId,
       backoffCooldownKey(key),
       incident,
-      (alertedAt, endedAt) => deps.sendRecovery(orgId, { alertedAt, endedAt }),
+      (alertedAt, endedAt, firstHealthyAt) => deps.sendRecovery(orgId, { alertedAt, endedAt, firstHealthyAt }),
       { now: nowMs, rearmMinutes: 0 },
     )
     if (!delivered) return true

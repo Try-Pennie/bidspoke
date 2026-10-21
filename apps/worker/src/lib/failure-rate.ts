@@ -221,7 +221,7 @@ export async function runFailureRateCheck(
           recoveryId,
           cooldownKey,
           incident,
-          async (alertedAt, endedAt) => {
+          async (alertedAt, endedAt, firstHealthyAt) => {
             const slack = await getSlackConnection(supabase, wf.organization_id)
             if (!slack) return false
             return sendRecoveryAlert(
@@ -232,6 +232,7 @@ export async function runFailureRateCheck(
                 subject: wf.name,
                 alertedAt,
                 endedAt,
+                firstHealthyAt,
                 // This check judges a trailing window, so a one-tick incident
                 // has a zero span: name the window it measured rather than a
                 // gap it did not (#1108).
