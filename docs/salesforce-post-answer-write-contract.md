@@ -335,7 +335,7 @@ is not one of them; a later writer flips the exchange status to Completed.
 | `invalid_state_sf_post` | state not allowed, Engine fallback | Engine, routing 1, exchange Pending | `fallback_invalid_state.output.sfBody` (code) | `UUID`, `leadUUID`, credit fields conditional on eligibility |
 | `debt_missing_sf_post` | no debt computed (credit pull failed / no debt), Engine fallback | Engine, routing 1, exchange Pending | `fallback_engine_debt_missing.output.sfBody` (code) | `UUID`, `leadUUID`, `Credit_Pull_Result_ES__c` = Fail, `EQXCreditPullStatus__c` = Fail, no ADV/XBC/debt fields |
 | `send_salesforce` | over-threshold, internal debt routing (after `return_response_20k`) | none (not sold externally) | literal JSON | `InternalDebtRouting__c` = `calculate_internal_debt.output`, `CreditFreeze__c`, no partner / routing / exchange fields |
-| `send_fallback_salesforce` | internal routing fallback (after `return_fallback_adv`) | none | literal JSON | `InternalDebtRouting__c` = `20000` (literal), `CreditFreeze__c`, ADV/XBC from `return_fallback_adv` |
+| `send_fallback_salesforce` | internal routing fallback (after `return_fallback_adv`) | none | literal JSON | `InternalDebtRouting__c` = `null` (literal; `20000` until Main Flow version 174, 2026-10-21, left blank so a fallback lead is not read as verified at 20k, Try-Pennie/slate#3987), `CreditFreeze__c`, ADV/XBC from `return_fallback_adv` |
 | `send_fallback_salesforce_1` | debt-not-present fallback (after `debt_not_present_response`) | Engine, routing 1, exchange Pending | literal JSON | `UUID`, `leadUUID` from `fallback_engine_debt_not_present`, `LeadSaleType__c` = Offer Wall, `CreditFreeze__c` |
 
 Common fields across the outcome posts (present unless noted otherwise above):
