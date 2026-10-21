@@ -55,6 +55,15 @@ describe('generated design files are marked for review (#2553)', () => {
     expect(unmarked).toEqual([])
   })
 
+  // The review only leaves out a file marked generated on the base branch as well as the head, so a
+  // settled page's mark lands on main before the page does (#2590): marked here, the next change can
+  // carry the page itself.
+  it('marks the lead validation settled pages before they land (#2590)', () => {
+    for (const p of ['docs/design/lead-validation-node.html', 'docs/design/lead-validation-node-card.html']) {
+      expect(generatedAttr(p), p).toBe('set')
+    }
+  })
+
   it('leaves the hand written design pages and the regeneration sources unmarked', () => {
     const handWritten = [
       'docs/design/bid-matrix-alert.html',
