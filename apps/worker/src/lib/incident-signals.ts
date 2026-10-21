@@ -88,6 +88,8 @@ export const INCIDENT_SIGNALS = [
   { signal: 'failure-rate', label: 'Failure rate', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 'per_call' },
   { signal: 'slow-spike', label: 'Slow execution', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 5 },
   { signal: 'volume-cliff', label: 'Volume cliff', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 4 },
+  // A partner ping failing while each lead still ends as a no bid (#2582, partner-error-rate.ts).
+  { signal: 'partner-error-rate', label: 'Partner error', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 5 },
   { signal: 'db-unreachable', label: 'Database unreachable', scope: 'org', subject: 'organization', startMeans: FIRST_PAGE, windowMinutes: null },
   { signal: 'field-presence-drought', label: 'Output field stopped', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 60 },
   { signal: 'field-presence-dead', label: 'Output field not resolving', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 7 * 1440 },

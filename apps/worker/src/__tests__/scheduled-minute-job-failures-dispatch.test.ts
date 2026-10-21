@@ -43,6 +43,10 @@ vi.mock('../lib/writeback-drain', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/writeback-drain')>()),
   runWritebackDrainForEnv: (...args: unknown[]) => runWritebackDrainForEnv(...args),
 }))
+vi.mock('../lib/partner-error-rate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/partner-error-rate')>()),
+  runPartnerErrorRateCheck: vi.fn().mockResolvedValue({ judged: [], paged: [], allClear: [] }),
+}))
 vi.mock('../lib/cache-prewarm', () => ({ prewarmKvCaches: vi.fn().mockResolvedValue(undefined) }))
 vi.mock('../lib/cron-heartbeat', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/cron-heartbeat')>()),
