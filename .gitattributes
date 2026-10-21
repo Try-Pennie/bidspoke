@@ -12,3 +12,5 @@ docs/design/*/chrome.html linguist-generated
 # Settled design pages written by the design rounds' make-settled.py.
 docs/design/connections-page.html linguist-generated
 docs/design/connections-step-form.html linguist-generated
+docs/design/lead-validation-node.html linguist-generated
+docs/design/lead-validation-node-card.html linguist-generated
