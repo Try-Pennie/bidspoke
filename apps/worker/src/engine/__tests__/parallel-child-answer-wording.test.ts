@@ -10,7 +10,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 
 vi.mock('../../lib/lead-validation-config-alert', () => ({ reportLeadValidationEvent: vi.fn().mockResolvedValue('nothing_due') }))
 
-import { runParallelChild } from '../index'
+import { parallelChildExitMessage, runParallelChild } from '../index'
 import type { Env } from '../../index'
 import type { ExecutionContext, NodeDefinition } from '../../types'
 import type { StepLogEntry } from '../step-logger'
@@ -54,5 +54,12 @@ describe('a step answering the lead inside a parallel block', () => {
     expect(error).toMatch(/^The lead validation step validate_bidding_and_state answered the lead inside a parallel block/)
     expect(error).toContain('Move it before the parallel block.')
     expect(error).not.toMatch(/\bCode\b/)
+  })
+
+  // A Salesforce step can end a run too (nodes/salesforce.ts); its failure there
+  // is worded by this helper, which the walk throws for any step but Code.
+  it('names a step ending the run there by its own type too', () => {
+    const message = parallelChildExitMessage({ type: 'salesforce', namespace: 'create_prospect' })
+    expect(message).toBe('The salesforce step create_prospect ended the run inside a parallel block, which cannot end it while the other slots run. Move it before the parallel block.')
   })
 })
