@@ -232,8 +232,9 @@ In `apps/worker/src/lib/main-flow-port/__tests__/`:
 
 - `transform.test.ts`: what the transform builds from the version 169 copy,
   each stage, idempotence, and every refusal.
-- `gate-fixture.test.ts`: the money gate's Main Flow fixture equals the
-  transform of the version 169 copy at `LIVE_STAGE`, the stage last applied.
+- `gate-fixture.test.ts`: the money gate's Main Flow fixture is unchanged by
+  the transform at `LIVE_STAGE`, the stage last applied, with exactly that
+  stage's posts native, and an unported definition fails the same check.
 - `ported-definition.test.ts`: walks the ported graph. Every Submission write
   after the answer on the `trades_present` route is followed by the Apex call;
   the worst case from each answer to its Apex call fits 12 s by the engine's own
