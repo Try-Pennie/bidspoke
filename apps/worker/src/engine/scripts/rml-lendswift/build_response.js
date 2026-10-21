@@ -16,6 +16,20 @@ const patch = {
   ts: new Date().toISOString(),
 };
 
+// --- LendSwift failed (#2582) ---
+// ping_lendswift answers a LendSwift failure (an error answer, no answer within 60
+// seconds, a failed call, or no decision in the answer) with lendswift_error. The
+// lead ends as no bid with its own reason, partner_error, so the source and
+// Salesforce can tell it from LendSwift rejecting the lead (Dan, 2026-10-21).
+if (steps.ping_lendswift.output.lendswift_error) {
+  const reason = "partner_error";
+  return {
+    body: { lead_id: payload.leadUuid, status: "rejected", reason },
+    ...patch,
+    lsRejectionReason: "lendswift_error",
+  };
+}
+
 // --- unqualified ---
 if (!Number(lendswiftBid) || Number(lendswiftBid) <= 0 || lendswiftResult !== "ACCEPTED") {
   const reason = "unqualified_lead";

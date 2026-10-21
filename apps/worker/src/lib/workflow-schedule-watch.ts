@@ -889,10 +889,10 @@ export async function runWorkflowScheduleWatch(
           // marker the cooldown check consults.
           null,
           scheduleIncident(wf.label),
-          async (alertedAt, endedAt) => {
+          async (alertedAt, endedAt, firstHealthyAt) => {
             let delivered = false
             for (const orgId of orgIds) {
-              if (await sendWorkflowScheduleRecoveryAlert(supabase, orgId, { label: wf.label, alertedAt, endedAt }, nowMs)) {
+              if (await sendWorkflowScheduleRecoveryAlert(supabase, orgId, { label: wf.label, alertedAt, endedAt, firstHealthyAt }, nowMs)) {
                 delivered = true
               }
             }

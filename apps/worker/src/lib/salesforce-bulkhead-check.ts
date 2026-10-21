@@ -69,7 +69,7 @@ export interface SalesforceBulkheadCheckDeps {
   /** Pages one organization. Returns whether it reached Slack. */
   sendAlert(orgId: string, alert: SalesforceBulkheadLimitAlert): Promise<boolean>
   /** The all clear to one organization. Returns whether it reached Slack. */
-  sendRecovery(orgId: string, recovery: { sizedFor: number; alertedAt: string; endedAt: string | null }): Promise<boolean>
+  sendRecovery(orgId: string, recovery: { sizedFor: number; alertedAt: string; endedAt: string | null; firstHealthyAt: string | null }): Promise<boolean>
   now(): number
 }
 
@@ -107,7 +107,7 @@ export async function runSalesforceBulkheadCheck(deps: SalesforceBulkheadCheckDe
       SALESFORCE_BULKHEAD_SUBJECT,
       null,
       incident(errors),
-      async (alertedAt, endedAt) => {
+      async (alertedAt, endedAt, firstHealthyAt) => {
         const orgs = await deps.orgsToTell()
         if (orgs === null) {
           console.error(`${LOG} the limit matches ${sizedFor} again, but nobody could be told: the Slack organizations could not be read, so the all clear is tried tomorrow`)
@@ -116,7 +116,7 @@ export async function runSalesforceBulkheadCheck(deps: SalesforceBulkheadCheckDe
         let any = false
         for (const orgId of orgs) {
           try {
-            if (await deps.sendRecovery(orgId, { sizedFor, alertedAt, endedAt })) any = true
+            if (await deps.sendRecovery(orgId, { sizedFor, alertedAt, endedAt, firstHealthyAt })) any = true
           } catch (err) {
             console.error(`${LOG} the all clear to org ${orgId} failed, the others go on: ${formatErr(err)}`)
           }

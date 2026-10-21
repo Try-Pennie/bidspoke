@@ -59,6 +59,7 @@ import { drainRunFailure, runWritebackDrainForEnv, WRITEBACK_DRAIN_JOB } from '.
 import { readAnswerJournal } from './engine/unconfirmed-writes'
 import { runFailureRateCheck } from './lib/failure-rate'
 import { runUpstreamOutageCheck } from './lib/upstream-outage'
+import { PARTNER_ERROR_RATE_JOB, runPartnerErrorRateCheck } from './lib/partner-error-rate'
 import { runSightingsExport, notifySetAsideRows } from './lib/sightings-export'
 import { runDeadLetterBuildTriggerCheck } from './lib/deadletter-volume'
 import { runAtRiskGapReportForEnv } from './lib/at-risk-gap-report'
@@ -1341,6 +1342,18 @@ const scheduledJobs = {
       minuteJob('upstream-outage-check',
         runUpstreamOutageCheck(supabase, env.IDEMPOTENCY, env.APP_URL, reachability.claims)
           .catch((e) => console.error('[upstream-outage] check failed:', e))
+      )
+      // A partner ping failing while each lead still ends as a no bid (#2582): the
+      // run succeeds, so only this sees a LendSwift outage. Its own heartbeat, and a
+      // read it cannot make is a failed run of the job.
+      minuteJob(PARTNER_ERROR_RATE_JOB,
+        completeAfter(
+          writeHeartbeat(env.IDEMPOTENCY, PARTNER_ERROR_RATE_JOB)
+            .catch((e) => console.error(`[${PARTNER_ERROR_RATE_JOB}] heartbeat write failed:`, e))
+            .then(() => runPartnerErrorRateCheck(supabase, env.IDEMPOTENCY, env.APP_URL, reachability.claims)),
+          PARTNER_ERROR_RATE_JOB,
+          `[${PARTNER_ERROR_RATE_JOB}] check failed:`,
+        ),
       )
       // The ops minute cron's report (#1949): the tick runs in the ops Worker and
       // stamps its heartbeat here through OpsGateway; this pages on a tick that

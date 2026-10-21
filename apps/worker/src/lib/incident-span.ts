@@ -11,6 +11,10 @@
  *    arm window first, and measuring to it would add that quiet window to every
  *    outage. With no recorded end the span runs to `now` and claims no clearing
  *    time.
+ *  - That end is when the problem was last SEEN (`lastSeenAt`), never when it
+ *    cleared (#2580): for a per run check a one run incident's last sighting is
+ *    the tick that paged. The all-clear names the first healthy check after it
+ *    alongside, which the dashboard record does not hold.
  *  - A check that judges a TRAILING WINDOW sees the condition once per tick, so a
  *    span shorter than one window is not a measurement: a one tick incident has a
  *    span of zero (#1101). Such a span reports the window instead (L11).
@@ -25,7 +29,7 @@
 export type IncidentSpan =
   | { kind: 'unknown' }
   | { kind: 'within_window'; windowMs: number }
-  | { kind: 'measured'; ms: number; clearedAt: number | null }
+  | { kind: 'measured'; ms: number; lastSeenAt: number | null }
 
 export function measureIncidentSpan(
   startedAt: string,
@@ -36,11 +40,11 @@ export function measureIncidentSpan(
   const started = Date.parse(startedAt)
   if (!Number.isFinite(started)) return { kind: 'unknown' }
   const ended = endedAt ? Date.parse(endedAt) : NaN
-  const clearedAt = Number.isFinite(ended) ? Math.max(ended, started) : null
-  const spanMs = Math.max(0, (clearedAt ?? now) - started)
+  const lastSeenAt = Number.isFinite(ended) ? Math.max(ended, started) : null
+  const spanMs = Math.max(0, (lastSeenAt ?? now) - started)
   const windowMs = (windowMinutes ?? 0) * 60 * 1000
   if (windowMs > 0 && spanMs < windowMs) return { kind: 'within_window', windowMs }
-  return { kind: 'measured', ms: spanMs, clearedAt }
+  return { kind: 'measured', ms: spanMs, lastSeenAt }
 }
 
 /** A duration in plain words. Rounded, because nobody acts on the seconds. */

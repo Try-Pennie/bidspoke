@@ -45,16 +45,27 @@
  * pass's one clock reading, and a recorder fault is counted in the result and
  * never stops a page or an all-clear.
  *
+ * ONE PAGE PER CAUSE (#2117). Every job is looked at before any is posted about.
+ * When every watched job on one schedule is stale together the schedule did not
+ * run, and that is one page listing them (2026-10-14: three pages for one missed
+ * `*\/5` schedule); the jobs of one scheduled run that started and never
+ * finished are one page and, once they finish, one all-clear (2026-10-21: two of
+ * each for the stopped 04:00 UTC `*\/15` run). Each job keeps its own claim,
+ * cooldown, reminder schedule, paged record and incident: only the post is
+ * shared. Two overlapping ticks whose claim object is unreachable can still both
+ * post, since every claim then fails open and the KV cooldown is read before it
+ * is written; that is #2117's part B, left for a decision.
+ *
  * Limitation (unchanged): this lives in the same worker as the crons it watches,
  * so it catches a watched cron going dark while the minute cron still runs.
  * Total worker death would also silence this check -- that case needs an
  * external uptime monitor.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
-import { MINUTE_ALERT_CLAIM_TTL_SECONDS, minuteAlertClaimKey, orgIdsToTell, postMinutePage, slackOrgIds } from './alert-fanout'
+import { MINUTE_ALERT_CLAIM_TTL_SECONDS, claimMinutePage, minuteAlertClaimKey, orgIdsToTell, postMinutePage, slackOrgIds } from './alert-fanout'
 import { logReadFailure } from './scheduled-read'
 import { scheduledSlackFor } from './scheduled-slack'
-import { sendCronHeartbeatAlert, sendCronHeartbeatRecoveryAlert } from './slack'
+import { sendCronHeartbeatAlert, sendCronHeartbeatGroupAlert, sendCronHeartbeatGroupRecoveryAlert, sendCronHeartbeatRecoveryAlert } from './slack'
 import { BACKOFF_STEPS_SECONDS, clearCondition, fingerprintAlert, inCooldown, nextFingerprint, readCondition, recordAlert, recurrenceOf, type Recurrence, type StandingCondition } from './alert-backoff'
 import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
 import { reportRecordError, writeIncidentEvent, type IncidentContext } from './incident-outbox'
@@ -413,6 +424,23 @@ export const CRON_JOBS: CronJob[] = [
       'a new ops login the ops Worker holds and Bidspoke has not saved is never paged, and an open one never gets its all clear, though the ops tick still finds it with the connection check (#2340)',
   },
   {
+    // The partner ping failure page (#2582, partner-error-rate.ts). Since #2582 a
+    // failed LendSwift ping ends the lead as a completed no bid, so the failure
+    // saturation page cannot see a LendSwift outage and this job is the only one
+    // that does: watched on its own so a dark one names itself.
+    id: 'partner-error-rate',
+    label: 'Partner error rate check',
+    triggerCron: '* * * * *',
+    // 1 minute cadence, 9 minutes slack, matching the other minute jobs.
+    staleMs: 10 * MIN,
+    // Two small reads and at most one Slack post per watched workflow: seconds.
+    // Judged by the drought below, never by one run.
+    maxRunMs: 50 * 1000,
+    completionDroughtMs: 10 * MIN,
+    dependents:
+      'a LendSwift outage on RML - Bidding Workflow (LendSwift) is never paged, because each failed ping ends as a completed no bid that no other alert counts, and an open one never gets its all clear (#2582)',
+  },
+  {
     id: 'buyer-sales-checks',
     label: 'Buyer sales checks',
     triggerCron: '*/15 * * * *',
@@ -640,6 +668,14 @@ interface AlertedStatus {
   incidentStartedAt?: string
   /** When the record's expiry was last renewed, so a quiet check renews it at most hourly. */
   renewedAt?: string
+  /**
+   * The grouped page this job was paged in (#2117), DarkGroup.key, so the
+   * all-clears of one stopped run go out as one too. Absent for a job paged on
+   * its own.
+   */
+  group?: string
+  /** Every job that grouped page named, this one included. */
+  groupJobs?: string[]
 }
 
 function parseAlertedStatus(raw: string | null): AlertedStatus | null {
@@ -656,6 +692,8 @@ function parseAlertedStatus(raw: string | null): AlertedStatus | null {
       attempts: typeof v.attempts === 'number' && Number.isFinite(v.attempts) ? v.attempts : 0,
       ...(typeof v.incidentStartedAt === 'string' ? { incidentStartedAt: v.incidentStartedAt } : {}),
       ...(typeof v.renewedAt === 'string' ? { renewedAt: v.renewedAt } : {}),
+      ...(typeof v.group === 'string' ? { group: v.group } : {}),
+      ...(Array.isArray(v.groupJobs) ? { groupJobs: v.groupJobs.filter((x): x is string => typeof x === 'string') } : {}),
     }
   } catch {
     return null
@@ -838,33 +876,24 @@ export async function lastFinishedRun(supabase: SupabaseClient, jobId: string): 
   }
 }
 
-/** Evaluate one job's freshness, seed its first-seen marker, alert on cooldown. */
-async function checkJob(
-  supabase: SupabaseClient,
-  kv: KVNamespace,
-  job: CronJob,
-  nowMs: number,
-  orgIds: string[],
-  claims: AlertClaims | undefined,
-): Promise<HeartbeatCheckResult> {
-  const recordErrors: string[] = []
-  const incident: IncidentContext = {
-    scope: { kind: 'platform' },
-    subjectLabel: job.label,
-    onRecordError: (message) => recordErrors.push(message),
-  }
-  const result = (status: HeartbeatStatus, alerted: boolean, ageMs: number | null): HeartbeatCheckResult =>
-    ({ jobId: job.id, status, alerted, ageMs, recordErrors })
-  // The incident is still open: keep its marker from expiring. Never in the way
-  // of the check, and never stopping the jobs after this one.
-  const keepOpen = async (known?: AlertedStatus | null) => {
-    try {
-      const record = known !== undefined ? known : parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
-      if (record) await renewAlertedStatusIfDue(kv, job.id, record, nowMs)
-    } catch (e) {
-      reportRecordError(incident, `${CRON_HEARTBEAT_SIGNAL} ${job.id}: the paged status record could not be renewed: ${formatErr(e)}`)
-    }
-  }
+/** What one look at a job's stamps found, before anything is posted (#2117). */
+interface JobLook {
+  job: CronJob
+  lastRan: string | null
+  firstSeen: string | null
+  lastCompleted: string | null
+  watchingSince: string
+  verdict: HeartbeatVerdict
+  /** The status acted on: the verdict, or unstamped for a dark job `job_runs` shows finishing runs (#1332). */
+  status: HeartbeatStatus
+}
+
+/**
+ * Read one job's stamps and judge them. Every job is looked at before any is
+ * posted about, so jobs dark for one reason can be told apart from a job dark
+ * on its own (#2117).
+ */
+async function lookAt(supabase: SupabaseClient, kv: KVNamespace, job: CronJob, nowMs: number): Promise<JobLook> {
   const lastRan = await kv.get(heartbeatKey(job.id))
   const firstSeen = await kv.get(firstSeenKey(job.id))
   const lastCompleted = await kv.get(completedKey(job.id))
@@ -878,102 +907,6 @@ async function checkJob(
   const verdict = evaluateHeartbeat(
     lastRan, firstSeen, nowMs, job.staleMs, lastCompleted, job.maxRunMs, watchingSince, job.completionDroughtMs ?? null,
   )
-  const key = backoffKey(job.id)
-
-  if (verdict.status === 'pending') {
-    if (!lastRan && !firstSeen) await kv.put(firstSeenKey(job.id), new Date(nowMs).toISOString())
-    return result('pending', false, verdict.ageMs)
-  }
-  if (verdict.status === 'healthy') {
-    // Recovery resets the reminder schedule, so the next occurrence of this
-    // condition is reported at once rather than throttled by its history. Only
-    // when there is something to clear: this runs every minute for every job,
-    // and an unconditional delete would be two KV WRITES a minute per job for
-    // the healthy case, which is almost all of them almost all of the time.
-    if (await readCondition(kv, key)) {
-      // A "never finished" page whose job has now finished gets one all-clear
-      // (#2057): on 2026-10-14 the run had only finished late, and the channel
-      // was left holding an accusation. Stood down only once it is delivered.
-      let reported = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
-      // How the incident ends: a dark job that came back gets no all-clear, by
-      // design (#2057 closes only a never finished page), and its record has no
-      // end time, since nothing reported one (L11).
-      let end: { reason: IncidentEndReason; endedAt: string | null } = { reason: 'stood_down_by_design', endedAt: null }
-      if (reported?.status === 'vanished') {
-        // Only a completion shows the job finished: for a slower job the next
-        // run's start alone also reads healthy, and says nothing about a finish.
-        const completedMs = lastCompleted ? Date.parse(lastCompleted) : NaN
-        const sinceMs = reported.since ? Date.parse(reported.since) : NaN
-        if (!Number.isFinite(completedMs) || !Number.isFinite(sinceMs) || completedMs < sinceMs) {
-          // Still owed its all-clear: the incident is open until the job finishes.
-          await keepOpen(reported)
-          return result('healthy', false, verdict.ageMs)
-        }
-        // Owed and shown: claim it (#2062), then read the record again, so a
-        // tick that judged it owed before another tick's claim lapsed cannot
-        // send an all-clear that tick already stood down (L157).
-        const clearKey = minuteAlertClaimKey('all-clear', CRON_HEARTBEAT_SIGNAL, job.id)
-        if (claims) {
-          if (!(await claims.claim(clearKey, MINUTE_ALERT_CLAIM_TTL_SECONDS))) {
-            console.log(`[cron-heartbeat] ${job.id}: the never finished all-clear is claimed by another tick`)
-            return result('healthy', false, verdict.ageMs)
-          }
-          const fresh = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
-          if (fresh?.status !== 'vanished') {
-            await releaseClaimQuietly(claims, clearKey)
-            return result('healthy', false, verdict.ageMs)
-          }
-          reported = fresh
-        }
-        const owed = reported
-        // The reported run finished only if no later run has started since.
-        const sameRun = owed.startedAt !== null && lastRan === owed.startedAt && !job.completionDroughtMs
-        const pending = orgIds.filter((o) => !owed.deliveredTo.includes(o))
-        for (const orgId of pending) {
-          const sent = await sendCronHeartbeatRecoveryAlert(
-            supabase,
-            orgId,
-            { label: job.label, status: 'vanished', alertedAt: owed.at, endedAt: lastCompleted, sameRun },
-            nowMs,
-          )
-          if (sent) owed.deliveredTo.push(orgId)
-        }
-        owed.attempts += 1
-        const missed = orgIds.filter((o) => !owed.deliveredTo.includes(o))
-        if (missed.length > 0) {
-          if (owed.attempts < ALL_CLEAR_MAX_ATTEMPTS) {
-            await writeAlertedStatus(kv, job.id, owed, nowMs)
-            // Freed so the next tick can retry the organizations it missed.
-            await releaseClaimQuietly(claims, clearKey)
-            return result('healthy', false, verdict.ageMs)
-          }
-          console.error(
-            `[cron-heartbeat] ${job.id}: standing down without the all-clear for ${missed.join(', ')} after ${reported.attempts} tries; Slack refused it each time`,
-          )
-        }
-        // An all-clear that reached any organization is a delivered all-clear,
-        // as alert-recovery counts one; only a stand down that reached nobody is
-        // not. The end is the completion the all-clear reported.
-        end = { reason: reported.deliveredTo.length > 0 ? 'all_clear' : 'stood_down_by_design', endedAt: lastCompleted }
-      }
-      // Written before the record is deleted, from the record already read, and
-      // never throwing: the all-clear has gone out whatever happens here.
-      if (reported) {
-        await writeIncidentEvent(kv, {
-          type: 'ended',
-          signal: CRON_HEARTBEAT_SIGNAL,
-          subject: job.id,
-          startedAt: incidentStartOf(reported),
-          endedAt: end.endedAt,
-          reason: end.reason,
-        }, incident, nowMs)
-      }
-      await clearCondition(kv, key)
-      await kv.delete(alertedStatusKey(job.id))
-    }
-    return result('healthy', false, verdict.ageMs)
-  }
-
   // Before accusing a job of being dark, ask the one source that would know
   // otherwise (#1332). A job that is demonstrably finishing runs while its stamp
   // is absent has a different problem, with a different remedy, and saying "it
@@ -984,7 +917,157 @@ async function checkJob(
     const finishedMs = finished ? Date.parse(finished) : NaN
     if (Number.isFinite(finishedMs) && nowMs - finishedMs <= job.staleMs) status = 'unstamped'
   }
+  return { job, lastRan, firstSeen, lastCompleted, watchingSince, verdict, status }
+}
 
+/**
+ * The scheduled time a run that started at `atMs` belongs to: the latest minute
+ * at or before it on which the cron expression fires (#2117). Cloudflare starts
+ * a run late (the 04:00 UTC `*\/15` run of 2026-10-21 started at 04:00:51), so
+ * the start alone does not name the run, while every job one invocation starts
+ * floors to the same minute. Reads only the shapes CRON_JOBS uses: `*`, a number
+ * or `*\/N` in the minute and hour fields and `*` in the rest. Anything else, or
+ * an unreadable time, is null, and the caller then judges the job on its own
+ * rather than guess which run it was.
+ */
+export function scheduledSlot(cron: string, atMs: number): number | null {
+  if (!Number.isFinite(atMs)) return null
+  const parts = cron.trim().split(/\s+/)
+  if (parts.length !== 5) return null
+  const [minute, hour, ...rest] = parts
+  if (rest.some((f) => f !== '*')) return null
+  const field = (f: string, max: number): ((v: number) => boolean) | null => {
+    if (f === '*') return () => true
+    if (/^\d+$/.test(f)) {
+      const n = Number(f)
+      return n <= max ? (v) => v === n : null
+    }
+    const step = /^\*\/(\d+)$/.exec(f)
+    if (!step) return null
+    const n = Number(step[1])
+    return n >= 1 && n <= max ? (v) => v % n === 0 : null
+  }
+  const minuteFires = field(minute, 59)
+  const hourFires = field(hour, 23)
+  if (!minuteFires || !hourFires) return null
+  // These shapes fire at least once a day, so the run is at most a day back.
+  const first = Math.floor(atMs / MIN) * MIN
+  for (let t = first; t > first - 24 * H; t -= MIN) {
+    const at = new Date(t)
+    if (minuteFires(at.getUTCMinutes()) && hourFires(at.getUTCHours())) return t
+  }
+  return null
+}
+
+/** A schedule: one cron expression on one Worker. */
+const scheduleOf = (job: CronJob): string => `${job.worker ?? 'bidspoke-worker'} ${job.triggerCron}`
+
+/**
+ * Watched jobs that went dark for one reason, paged as one (#2117).
+ *
+ * stale: every watched job on one schedule is stale together, so the schedule
+ * did not run, and saying so once per job sent three pages for one missed tick
+ * on 2026-10-14. A job not yet watched (pending, a fresh deploy) says nothing
+ * either way and does not keep the rest apart.
+ *
+ * vanished: the jobs of one scheduled run that started and never finished, as
+ * the 04:00 UTC `*\/15` run of 2026-10-21 left two. A minute job is judged on a
+ * drought of finished runs rather than on one run (#2057), so it has no run to
+ * share and is paged on its own.
+ */
+export interface DarkGroup {
+  status: 'stale' | 'vanished'
+  /** The schedule, and for an unfinished run the run, recorded on each member's paged record. */
+  key: string
+  triggerCron: string
+  worker?: 'bidspoke-worker-ops'
+  /** stale: the latest start of any member. vanished: the run's scheduled time. */
+  runAt: string | null
+  jobIds: string[]
+}
+
+export function darkGroupsOf(looks: readonly Pick<JobLook, 'job' | 'status' | 'lastRan'>[]): DarkGroup[] {
+  const bySchedule = new Map<string, Pick<JobLook, 'job' | 'status' | 'lastRan'>[]>()
+  for (const look of looks) bySchedule.set(scheduleOf(look.job), [...(bySchedule.get(scheduleOf(look.job)) ?? []), look])
+  const groups: DarkGroup[] = []
+  for (const [schedule, members] of bySchedule) {
+    const { triggerCron, worker } = members[0].job
+    const where = { triggerCron, ...(worker ? { worker } : {}) }
+    const watched = members.filter((m) => m.status !== 'pending')
+    if (watched.length >= 2 && watched.every((m) => m.status === 'stale')) {
+      const starts = watched.map((m) => (m.lastRan ? Date.parse(m.lastRan) : NaN)).filter((ms) => Number.isFinite(ms))
+      const runAt = starts.length ? new Date(Math.max(...starts)).toISOString() : null
+      groups.push({ status: 'stale', key: `stale ${schedule}`, ...where, runAt, jobIds: watched.map((m) => m.job.id) })
+      continue
+    }
+    const byRun = new Map<number, string[]>()
+    for (const m of members) {
+      if (m.status !== 'vanished' || m.job.completionDroughtMs || !m.lastRan) continue
+      const slot = scheduledSlot(triggerCron, Date.parse(m.lastRan))
+      if (slot !== null) byRun.set(slot, [...(byRun.get(slot) ?? []), m.job.id])
+    }
+    for (const [slot, jobIds] of byRun) {
+      if (jobIds.length < 2) continue
+      const runAt = new Date(slot).toISOString()
+      groups.push({ status: 'vanished', key: `vanished ${schedule} ${runAt}`, ...where, runAt, jobIds })
+    }
+  }
+  return groups
+}
+
+/** One job's part of a pass: what was found, its incident context, and the result it reports. */
+interface JobCheck {
+  look: JobLook
+  /** The pass's one clock reading. */
+  nowMs: number
+  incident: IncidentContext
+  recordErrors: string[]
+  result(status: HeartbeatStatus, alerted: boolean): HeartbeatCheckResult
+  /** The incident is still open: keep its marker from expiring. Never in the way of the check. */
+  keepOpen(known?: AlertedStatus | null): Promise<void>
+}
+
+function jobCheck(kv: KVNamespace, look: JobLook, nowMs: number): JobCheck {
+  const { job } = look
+  const recordErrors: string[] = []
+  const incident: IncidentContext = {
+    scope: { kind: 'platform' },
+    subjectLabel: job.label,
+    onRecordError: (message) => recordErrors.push(message),
+  }
+  return {
+    look,
+    nowMs,
+    incident,
+    recordErrors,
+    result: (status, alerted) => ({ jobId: job.id, status, alerted, ageMs: look.verdict.ageMs, recordErrors }),
+    keepOpen: async (known) => {
+      try {
+        const record = known !== undefined ? known : parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
+        if (record) await renewAlertedStatusIfDue(kv, job.id, record, nowMs)
+      } catch (e) {
+        reportRecordError(incident, `${CRON_HEARTBEAT_SIGNAL} ${job.id}: the paged status record could not be renewed: ${formatErr(e)}`)
+      }
+    },
+  }
+}
+
+/** The page half of a dark job's check, apart from the post so several jobs can share one (#2117). */
+interface DarkPage {
+  check: JobCheck
+  claimKey: string
+  /** Reads the standing condition and the cooldown; the last reading is the one acted on (L157). */
+  inCooldown: () => Promise<boolean>
+  /** The standing condition when this page is a reminder, and whether it is word for word the last. */
+  reminder: () => { standing: StandingCondition; unchanged: boolean } | null
+  /** After the post: on a delivery arm the next interval and record the incident, otherwise keep it open. */
+  settle: (alerted: boolean, group: DarkGroup | null) => Promise<void>
+}
+
+async function darkPageOf(kv: KVNamespace, check: JobCheck, nowMs: number): Promise<DarkPage> {
+  const { job, status, lastRan, lastCompleted, watchingSince } = check.look
+  const { incident } = check
+  const key = backoffKey(job.id)
   // Alert once per interval, and the interval GROWS while the condition stands.
   // The record is keyed on the job, while the header and the fix depend on the
   // status, so the status is what the alert is about (#1768): one not posted
@@ -992,88 +1075,414 @@ async function checkJob(
   // Each status can do that once per stretch, so a status that flaps between two
   // values cannot post every minute.
   const print = await fingerprintAlert({ title: job.id, findings: [status] })
-  // The judgement, read again after the claim (L157): the last reading is the one acted on.
   let judged: { standing: StandingCondition | null; recurrence: Recurrence } = { standing: null, recurrence: recurrenceOf(null, print) }
-  const inThisCooldown = async (): Promise<boolean> => {
-    const standing = await readCondition(kv, key)
-    judged = { standing, recurrence: recurrenceOf(standing, print) }
-    const different = judged.recurrence.kind === 'new' && standing !== null
-    return !different && (await inCooldown(kv, key))
-  }
   const reminder = () => (judged.recurrence.kind === 'reminder' ? judged.recurrence : null)
+  return {
+    check,
+    claimKey: minuteAlertClaimKey('page', CRON_HEARTBEAT_SIGNAL, job.id),
+    inCooldown: async () => {
+      const standing = await readCondition(kv, key)
+      judged = { standing, recurrence: recurrenceOf(standing, print) }
+      const different = judged.recurrence.kind === 'new' && standing !== null
+      return !different && (await inCooldown(kv, key))
+    },
+    reminder: () => {
+      const r = reminder()
+      return r ? { standing: r.standing, unchanged: r.unchanged } : null
+    },
+    settle: async (alerted, group) => {
+      // Only arm the next interval once something actually delivered, so a Slack
+      // outage does not silence the condition for a day.
+      if (!alerted) {
+        // A page nobody received: the job is still dark, so its incident stays open.
+        await check.keepOpen()
+        return
+      }
+      const { standing } = judged
+      const reminderOf = reminder()?.standing ?? null
+      await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
+      // The incident this page belongs to, if one is open: read only on a delivered
+      // page, which is rare. A failed read loses the record's continuity, never the page.
+      let open: AlertedStatus | null = null
+      try {
+        open = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
+      } catch (e) {
+        reportRecordError(incident, `paged ${CRON_HEARTBEAT_SIGNAL} ${job.id} not recorded: the paged status record could not be read: ${formatErr(e)}`)
+      }
+      let startedAt = open ? incidentStartOf(open) : null
+      // Which status was paged, and when, so the healthy side knows an all-clear is owed (#2057).
+      if (reminderOf === null) {
+        const since = job.completionDroughtMs ? (lastCompleted ?? watchingSince) : lastRan
+        const at = new Date(nowMs).toISOString()
+        // A new status while the condition stands is the same incident paged again: the start is kept.
+        startedAt = startedAt ?? at
+        const record: AlertedStatus = {
+          status, at, startedAt: lastRan, since, deliveredTo: [], attempts: 0, incidentStartedAt: startedAt,
+          // Paged with others (#2117): its all-clear goes out with theirs.
+          ...(group ? { group: group.key, groupJobs: group.jobIds } : {}),
+        }
+        await writeAlertedStatus(kv, job.id, record, nowMs)
+        if (open === null) {
+          await writeIncidentEvent(kv, { type: 'opened', signal: CRON_HEARTBEAT_SIGNAL, subject: job.id, startedAt }, incident, nowMs)
+        }
+      }
+      // A reminder page round renews the open incident's marker, whenever it was last renewed.
+      if (reminderOf !== null && open !== null) {
+        try {
+          await writeAlertedStatus(kv, job.id, open, nowMs)
+        } catch (e) {
+          reportRecordError(incident, `${CRON_HEARTBEAT_SIGNAL} ${job.id}: the paged status record could not be renewed: ${formatErr(e)}`)
+        }
+      }
+      // One page per delivered round, about the open incident. A reminder with no
+      // paged status record (a condition standing from before #2057) has no
+      // incident to count it against.
+      if (startedAt !== null) {
+        await writeIncidentEvent(kv, { type: 'paged', signal: CRON_HEARTBEAT_SIGNAL, subject: job.id, startedAt }, incident, nowMs)
+      } else {
+        reportRecordError(incident, `paged ${CRON_HEARTBEAT_SIGNAL} ${job.id} not recorded: no open incident to page about`)
+      }
+    },
+  }
+}
+
+/** Page one dark job on its own: claim, then read the cooldown, then post (#2062, L157). */
+async function pageOne(
+  supabase: SupabaseClient,
+  kv: KVNamespace,
+  check: JobCheck,
+  nowMs: number,
+  orgIds: string[],
+  claims: AlertClaims | undefined,
+): Promise<HeartbeatCheckResult> {
+  const { job, status, verdict } = check.look
+  const page = await darkPageOf(kv, check, nowMs)
   let alerted = false
-  // Claim, then read the cooldown, then post (#2062, L157).
   const outcome = await postMinutePage({
     claims,
-    key: minuteAlertClaimKey('page', CRON_HEARTBEAT_SIGNAL, job.id),
-    inCooldown: inThisCooldown,
+    key: page.claimKey,
+    inCooldown: page.inCooldown,
     send: async () => {
-      const r = reminder()
+      const r = page.reminder()
       for (const orgId of orgIds) {
-        if (await sendCronHeartbeatAlert(supabase, orgId, job, status, verdict.ageMs, r?.standing ?? null, nowMs, r?.unchanged ?? false)) alerted = true
+        if (await sendCronHeartbeatAlert(supabase, orgId, job, status as 'stale' | 'never_ran' | 'vanished' | 'unstamped', verdict.ageMs, r?.standing ?? null, nowMs, r?.unchanged ?? false)) alerted = true
       }
       return alerted
     },
   })
   if (outcome === 'in_cooldown' || outcome === 'claimed_elsewhere') {
-    await keepOpen()
-    return result(status, false, verdict.ageMs)
+    await check.keepOpen()
+    return check.result(status, false)
   }
-  const { standing } = judged
-  const reminderOf = reminder()?.standing ?? null
-  // Only arm the next interval once something actually delivered, so a Slack
-  // outage does not silence the condition for a day.
-  if (alerted) {
-    await recordAlert(kv, key, reminderOf, nowMs, { fingerprint: nextFingerprint(standing, print) })
-    // The incident this page belongs to, if one is open: read only on a delivered
-    // page, which is rare. A failed read loses the record's continuity, never the page.
-    let open: AlertedStatus | null = null
-    try {
-      open = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
-    } catch (e) {
-      reportRecordError(incident, `paged ${CRON_HEARTBEAT_SIGNAL} ${job.id} not recorded: the paged status record could not be read: ${formatErr(e)}`)
-    }
-    let startedAt = open ? incidentStartOf(open) : null
-    // Which status was paged, and when, so the healthy side knows an all-clear is owed (#2057).
-    if (reminderOf === null) {
-      const since = job.completionDroughtMs ? (lastCompleted ?? watchingSince) : lastRan
-      const at = new Date(nowMs).toISOString()
-      // A new status while the condition stands is the same incident paged again: the start is kept.
-      startedAt = startedAt ?? at
-      const record: AlertedStatus = { status, at, startedAt: lastRan, since, deliveredTo: [], attempts: 0, incidentStartedAt: startedAt }
-      await writeAlertedStatus(kv, job.id, record, nowMs)
-      if (open === null) {
-        await writeIncidentEvent(kv, { type: 'opened', signal: CRON_HEARTBEAT_SIGNAL, subject: job.id, startedAt }, incident, nowMs)
-      }
-    }
-    // A reminder page round renews the open incident's marker, whenever it was last renewed.
-    if (reminderOf !== null && open !== null) {
-      try {
-        await writeAlertedStatus(kv, job.id, open, nowMs)
-      } catch (e) {
-        reportRecordError(incident, `${CRON_HEARTBEAT_SIGNAL} ${job.id}: the paged status record could not be renewed: ${formatErr(e)}`)
-      }
-    }
-    // One page per delivered round, about the open incident. A reminder with no
-    // paged status record (a condition standing from before #2057) has no
-    // incident to count it against.
-    if (startedAt !== null) {
-      await writeIncidentEvent(kv, { type: 'paged', signal: CRON_HEARTBEAT_SIGNAL, subject: job.id, startedAt }, incident, nowMs)
-    } else {
-      reportRecordError(incident, `paged ${CRON_HEARTBEAT_SIGNAL} ${job.id} not recorded: no open incident to page about`)
-    }
-  } else {
-    // A page nobody received: the job is still dark, so its incident stays open.
-    await keepOpen()
-  }
-  return result(status, alerted, verdict.ageMs)
+  await page.settle(alerted, null)
+  return check.result(status, alerted)
 }
 
 /**
- * Called by the every-minute cron. Checks every registered job's freshness and
- * alerts each Slack org (once per per-job cooldown) for any that are stale or
- * have never run. The org lookup is shared across jobs so a multi-job outage
- * costs one query, not one per job.
+ * Page several dark jobs that went dark for one reason as one post (#2117).
+ *
+ * Each job keeps its own claim, cooldown, reminder schedule, paged record and
+ * incident, exactly as on its own: only the post is shared. A job inside its
+ * cooldown or claimed by another tick is left out; the rest are the page. When
+ * one is left it gets its own page, since a group of one is just that job.
+ * The claims are kept after a delivered post or one that threw (it may have
+ * reached Slack), and freed when Slack definitely took nothing.
+ */
+async function pageGroup(
+  supabase: SupabaseClient,
+  kv: KVNamespace,
+  group: DarkGroup,
+  checks: JobCheck[],
+  nowMs: number,
+  orgIds: string[],
+  claims: AlertClaims | undefined,
+): Promise<HeartbeatCheckResult[]> {
+  const results: HeartbeatCheckResult[] = []
+  const pages: DarkPage[] = []
+  for (const check of checks) pages.push(await darkPageOf(kv, check, nowMs))
+  const due: DarkPage[] = []
+  const notDue = async (page: DarkPage) => {
+    await page.check.keepOpen()
+    results.push(page.check.result(page.check.look.status, false))
+  }
+  // Inside every job's cooldown nothing is posted, so no claim is asked for.
+  const cooling: boolean[] = []
+  for (const page of pages) cooling.push(await page.inCooldown())
+  if (cooling.every(Boolean)) {
+    for (const page of pages) await notDue(page)
+    return results
+  }
+  // One tick at a time takes the jobs' claims (#2062): two overlapping ticks
+  // claiming job by job could split one group between them and post it as two
+  // partial pages. Held only while the claims are taken.
+  const takingKey = minuteAlertClaimKey('page', CRON_HEARTBEAT_SIGNAL, group.key)
+  if (claims && !(await claims.claim(takingKey, MINUTE_ALERT_CLAIM_TTL_SECONDS))) {
+    console.log(`[cron-heartbeat] the page for ${group.key} is claimed by another tick`)
+    for (const page of pages) await notDue(page)
+    return results
+  }
+  try {
+    for (const page of pages) {
+      if ((await claimMinutePage({ claims, key: page.claimKey, inCooldown: page.inCooldown })) === 'claimed') due.push(page)
+      else await notDue(page)
+    }
+  } finally {
+    await releaseClaimQuietly(claims, takingKey)
+  }
+  if (due.length === 0) return results
+  const reminders = due.map((p) => p.reminder())
+  // A reminder only when every job in it is one; its age is the first's, since they were paged together.
+  const [first] = reminders
+  const standing = first && reminders.every((r) => r !== null) ? first.standing : null
+  const unchanged = standing !== null && reminders.every((r) => r?.unchanged === true)
+  let alerted = false
+  for (const orgId of orgIds) {
+    const sent = due.length === 1
+      ? await sendCronHeartbeatAlert(
+        supabase, orgId, due[0].check.look.job, group.status, due[0].check.look.verdict.ageMs,
+        reminders[0]?.standing ?? null, nowMs, reminders[0]?.unchanged ?? false,
+      )
+      : await sendCronHeartbeatGroupAlert(
+        supabase,
+        orgId,
+        {
+          status: group.status,
+          triggerCron: group.triggerCron,
+          ...(group.worker ? { worker: group.worker } : {}),
+          runAt: group.runAt,
+          jobs: due.map((p) => ({ label: p.check.look.job.label, dependents: p.check.look.job.dependents, ageMs: p.check.look.verdict.ageMs })),
+        },
+        standing,
+        nowMs,
+        unchanged,
+      )
+    if (sent) alerted = true
+  }
+  // Nothing reached Slack, so the next tick may retry every one of them.
+  if (!alerted) for (const p of due) await releaseClaimQuietly(claims, p.claimKey)
+  const paged = due.length > 1 ? { ...group, jobIds: due.map((p) => p.check.look.job.id) } : null
+  for (const p of due) {
+    await p.settle(alerted, paged)
+    results.push(p.check.result(p.check.look.status, alerted))
+  }
+  return results
+}
+
+/** What the healthy side found for a job with a standing condition. */
+type Standing =
+  | { kind: 'clear' }
+  /** Paged as never finished, and no completion since: the all-clear waits. */
+  | { kind: 'waiting'; reported: AlertedStatus }
+  /** Paged as never finished, and a completion since shows it finished: the all-clear is owed. */
+  | { kind: 'owed'; reported: AlertedStatus }
+
+/**
+ * The healthy side of one job's check. Recovery resets the reminder schedule, so
+ * the next occurrence of this condition is reported at once rather than
+ * throttled by its history. Only when there is something to clear: this runs
+ * every minute for every job, and an unconditional delete would be two KV
+ * WRITES a minute per job for the healthy case, which is almost all of them
+ * almost all of the time.
+ */
+async function judgeHealthy(kv: KVNamespace, check: JobCheck): Promise<Standing> {
+  const { job, lastCompleted } = check.look
+  if (!(await readCondition(kv, backoffKey(job.id)))) return { kind: 'clear' }
+  // A "never finished" page whose job has now finished gets one all-clear
+  // (#2057): on 2026-10-14 the run had only finished late, and the channel was
+  // left holding an accusation. Stood down only once it is delivered.
+  const reported = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
+  if (reported?.status === 'vanished') {
+    // Only a completion shows the job finished: for a slower job the next
+    // run's start alone also reads healthy, and says nothing about a finish.
+    const completedMs = lastCompleted ? Date.parse(lastCompleted) : NaN
+    const sinceMs = reported.since ? Date.parse(reported.since) : NaN
+    if (!Number.isFinite(completedMs) || !Number.isFinite(sinceMs) || completedMs < sinceMs) {
+      // Still owed its all-clear: the incident is open until the job finishes.
+      await check.keepOpen(reported)
+      return { kind: 'waiting', reported }
+    }
+    return { kind: 'owed', reported }
+  }
+  // A dark job that came back gets no all-clear, by design (#2057 closes only a
+  // never finished page), and its record has no end time, since nothing
+  // reported one (L11).
+  await standDown(kv, check, reported, { reason: 'stood_down_by_design', endedAt: null })
+  return { kind: 'clear' }
+}
+
+/** End the incident and clear the condition and the paged record. */
+async function standDown(
+  kv: KVNamespace,
+  check: JobCheck,
+  reported: AlertedStatus | null,
+  end: { reason: IncidentEndReason; endedAt: string | null },
+): Promise<void> {
+  const { job } = check.look
+  // Written before the record is deleted, from the record already read, and
+  // never throwing: the all-clear has gone out whatever happens here.
+  if (reported) {
+    await writeIncidentEvent(kv, {
+      type: 'ended',
+      signal: CRON_HEARTBEAT_SIGNAL,
+      subject: job.id,
+      startedAt: incidentStartOf(reported),
+      endedAt: end.endedAt,
+      reason: end.reason,
+    }, check.incident, check.nowMs)
+  }
+  await clearCondition(kv, backoffKey(job.id))
+  await kv.delete(alertedStatusKey(job.id))
+}
+
+/** A job owed its never finished all-clear, with the paged record that says so. */
+interface Owed {
+  check: JobCheck
+  reported: AlertedStatus
+}
+
+const earliestOf = (isos: string[]): string => isos.reduce((a, b) => (Date.parse(b) < Date.parse(a) ? b : a))
+
+/** The latest readable time, or null when there is none. */
+function latestOf(isos: (string | null)[]): string | null {
+  const readable = isos.filter((s): s is string => s !== null && Number.isFinite(Date.parse(s)))
+  return readable.length ? readable.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a)) : null
+}
+
+/**
+ * Batches the owed all-clears so the jobs of one run paged together share one
+ * (#2117), and holds a batch while another job of that run is still running a
+ * later run inside its allowance and has not finished it. On 2026-10-21 both
+ * jobs recovered from the 04:15 run; an all-clear sent the minute the first of
+ * them finished would be the second message for one run. The hold is bounded by
+ * that run's allowance: past it the job is unfinished again, not running, and
+ * the rest go without it.
+ */
+function allClearBatches(owed: Owed[], waiting: Map<string, Owed>): { send: Owed[][]; hold: Owed[] } {
+  const send: Owed[][] = []
+  const byGroup = new Map<string, Owed[]>()
+  for (const o of owed) {
+    const g = o.reported.group
+    if (g) byGroup.set(g, [...(byGroup.get(g) ?? []), o])
+    else send.push([o])
+  }
+  const hold: Owed[] = []
+  for (const [group, batch] of byGroup) {
+    const stillRunning = (batch[0].reported.groupJobs ?? []).some((id) => {
+      const w = waiting.get(id)
+      if (!w || w.reported.group !== group || w.check.look.job.completionDroughtMs) return false
+      const startedMs = w.check.look.lastRan ? Date.parse(w.check.look.lastRan) : NaN
+      const pagedMs = w.reported.startedAt ? Date.parse(w.reported.startedAt) : NaN
+      return Number.isFinite(startedMs) && Number.isFinite(pagedMs) && startedMs > pagedMs && w.check.nowMs - startedMs <= w.check.look.job.maxRunMs
+    })
+    if (stillRunning) hold.push(...batch)
+    else send.push(batch)
+  }
+  return { send, hold }
+}
+
+/**
+ * Send the never finished all-clear for one job, or one for the jobs of one run
+ * paged together (#2117), and stand each down once it is delivered. Each job
+ * keeps its own claim (#2062) and its own list of the organizations that have
+ * it, so a retry reaches only the ones that missed it.
+ */
+async function sendAllClears(
+  supabase: SupabaseClient,
+  kv: KVNamespace,
+  owed: Owed[],
+  nowMs: number,
+  orgIds: string[],
+  claims: AlertClaims | undefined,
+): Promise<void> {
+  // Owed and shown: claim each (#2062), then read its record again, so a tick
+  // that judged it owed before another tick's claim lapsed cannot send an
+  // all-clear that tick already stood down (L157).
+  const claimed: (Owed & { clearKey: string })[] = []
+  // As for a grouped page: one tick at a time takes a run's claims, so two
+  // overlapping ticks cannot split its all-clear into two. Held only while they are taken.
+  const group = owed.length > 1 ? owed[0].reported.group : undefined
+  const takingKey = group ? minuteAlertClaimKey('all-clear', CRON_HEARTBEAT_SIGNAL, group) : null
+  if (claims && takingKey && !(await claims.claim(takingKey, MINUTE_ALERT_CLAIM_TTL_SECONDS))) {
+    console.log(`[cron-heartbeat] the all-clear for ${group} is claimed by another tick`)
+    return
+  }
+  try {
+    for (const o of owed) {
+      const { job } = o.check.look
+      const clearKey = minuteAlertClaimKey('all-clear', CRON_HEARTBEAT_SIGNAL, job.id)
+      if (!claims) {
+        claimed.push({ ...o, clearKey })
+        continue
+      }
+      if (!(await claims.claim(clearKey, MINUTE_ALERT_CLAIM_TTL_SECONDS))) {
+        console.log(`[cron-heartbeat] ${job.id}: the never finished all-clear is claimed by another tick`)
+        continue
+      }
+      const fresh = parseAlertedStatus(await kv.get(alertedStatusKey(job.id)))
+      if (fresh?.status !== 'vanished') {
+        await releaseClaimQuietly(claims, clearKey)
+        continue
+      }
+      claimed.push({ ...o, reported: fresh, clearKey })
+    }
+  } finally {
+    if (takingKey) await releaseClaimQuietly(claims, takingKey)
+  }
+  // The reported run finished only if no later run has started since.
+  const sameRun = (o: Owed) =>
+    o.reported.startedAt !== null && o.check.look.lastRan === o.reported.startedAt && !o.check.look.job.completionDroughtMs
+  for (const orgId of orgIds) {
+    const pending = claimed.filter((o) => !o.reported.deliveredTo.includes(orgId))
+    if (pending.length === 0) continue
+    const [only] = pending
+    const sent = pending.length === 1
+      ? await sendCronHeartbeatRecoveryAlert(
+        supabase,
+        orgId,
+        { label: only.check.look.job.label, status: 'vanished', alertedAt: only.reported.at, endedAt: only.check.look.lastCompleted, sameRun: sameRun(only) },
+        nowMs,
+      )
+      : await sendCronHeartbeatGroupRecoveryAlert(
+        supabase,
+        orgId,
+        {
+          alertedAt: earliestOf(pending.map((o) => o.reported.at)),
+          endedAt: latestOf(pending.map((o) => o.check.look.lastCompleted)),
+          jobs: pending.map((o) => ({ label: o.check.look.job.label, sameRun: sameRun(o) })),
+        },
+        nowMs,
+      )
+    if (sent) for (const o of pending) o.reported.deliveredTo.push(orgId)
+  }
+  for (const o of claimed) {
+    const { job, lastCompleted } = o.check.look
+    const record = o.reported
+    record.attempts += 1
+    const missed = orgIds.filter((org) => !record.deliveredTo.includes(org))
+    if (missed.length > 0) {
+      if (record.attempts < ALL_CLEAR_MAX_ATTEMPTS) {
+        await writeAlertedStatus(kv, job.id, record, nowMs)
+        // Freed so the next tick can retry the organizations it missed.
+        await releaseClaimQuietly(claims, o.clearKey)
+        continue
+      }
+      console.error(
+        `[cron-heartbeat] ${job.id}: standing down without the all-clear for ${missed.join(', ')} after ${record.attempts} tries; Slack refused it each time`,
+      )
+    }
+    // An all-clear that reached any organization is a delivered all-clear, as
+    // alert-recovery counts one; only a stand down that reached nobody is not.
+    // The end is the completion the all-clear reported.
+    await standDown(kv, o.check, record, { reason: record.deliveredTo.length > 0 ? 'all_clear' : 'stood_down_by_design', endedAt: lastCompleted })
+  }
+}
+
+/**
+ * Called by the every-minute cron. Looks at every registered job, then pages
+ * each one that is dark and sends each owed never finished all-clear, once per
+ * per-job cooldown. Jobs dark for one reason share one page, and the jobs of
+ * one run paged together share one all-clear (#2117). The org lookup is shared
+ * across jobs so a multi-job outage costs one query, not one per job.
  *
  * `claims` makes a stalled tick overlapping the next minute's post each page
  * and each never finished all-clear once (#2062, alert-fanout.ts); the
@@ -1087,9 +1496,38 @@ export async function runHeartbeatChecks(
 ): Promise<HeartbeatCheckResult[]> {
   const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'cron-heartbeat', 'tell-only'))
 
-  const results: HeartbeatCheckResult[] = []
-  for (const job of CRON_JOBS) {
-    results.push(await checkJob(supabase, kv, job, nowMs, orgIds, claims))
+  const checks: JobCheck[] = []
+  for (const job of CRON_JOBS) checks.push(jobCheck(kv, await lookAt(supabase, kv, job, nowMs), nowMs))
+  const byId = new Map(checks.map((c) => [c.look.job.id, c]))
+
+  const results = new Map<string, HeartbeatCheckResult>()
+  for (const group of darkGroupsOf(checks.map((c) => c.look))) {
+    const members = group.jobIds.map((id) => byId.get(id)!)
+    for (const r of await pageGroup(supabase, kv, group, members, nowMs, orgIds, claims)) results.set(r.jobId, r)
   }
-  return results
+
+  const owed: Owed[] = []
+  const waiting = new Map<string, Owed>()
+  for (const check of checks) {
+    const { job, status, lastRan, firstSeen } = check.look
+    if (results.has(job.id)) continue
+    if (status === 'pending') {
+      if (!lastRan && !firstSeen) await kv.put(firstSeenKey(job.id), new Date(nowMs).toISOString())
+      results.set(job.id, check.result('pending', false))
+    } else if (status === 'healthy') {
+      const standing = await judgeHealthy(kv, check)
+      if (standing.kind === 'owed') owed.push({ check, reported: standing.reported })
+      if (standing.kind === 'waiting') waiting.set(job.id, { check, reported: standing.reported })
+      results.set(job.id, check.result('healthy', false))
+    } else {
+      results.set(job.id, await pageOne(supabase, kv, check, nowMs, orgIds, claims))
+    }
+  }
+
+  const { send, hold } = allClearBatches(owed, waiting)
+  // Held for the rest of its run: still owed, so the incident stays open.
+  for (const o of hold) await o.check.keepOpen(o.reported)
+  for (const batch of send) await sendAllClears(supabase, kv, batch, nowMs, orgIds, claims)
+  return CRON_JOBS.map((j) => results.get(j.id)!)
 }
+

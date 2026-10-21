@@ -243,7 +243,7 @@ describe('recordMinuteJobRun', () => {
     const s = await recordMinuteJobRun(h.d, JOB, CLEAN)
     expect(s).toMatchObject({ allClear: true, errors: [] })
     expect(h.sendRecovery).toHaveBeenCalledTimes(2)
-    expect(h.sendRecovery.mock.calls[0]).toEqual(['org-one', { label: cronJob(JOB).label, alertedAt: new Date(T0 + 2 * MIN).toISOString(), endedAt: new Date(T0 + 2 * MIN).toISOString() }])
+    expect(h.sendRecovery.mock.calls[0]).toEqual(['org-one', { label: cronJob(JOB).label, alertedAt: new Date(T0 + 2 * MIN).toISOString(), endedAt: new Date(T0 + 2 * MIN).toISOString(), firstHealthyAt: new Date(T0 + 3 * MIN).toISOString() }])
     expect(marker(h.kv)).toBeUndefined()
     expect(h.kv.store.has(failedRunsKey(JOB))).toBe(false)
     expect(outbox(h.kv).map((e) => e.type).sort()).toEqual(['ended', 'opened', 'paged'])

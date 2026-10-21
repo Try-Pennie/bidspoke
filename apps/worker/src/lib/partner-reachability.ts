@@ -292,7 +292,7 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
   const claim = async (key: string): Promise<boolean> => (deps.claims ? deps.claims.claim(key, ALERT_CLAIM_TTL_SECONDS) : true)
   const release = async (key: string): Promise<void> => { if (deps.claims) await deps.claims.release(key) }
 
-  const dueForAllClear: Array<{ host: string; alertedAt: string; endedAt: string | null }> = []
+  const dueForAllClear: Array<{ host: string; alertedAt: string; endedAt: string | null; firstHealthyAt: string | null }> = []
 
   // The incident record (#2099): platform scoped, a failed recording reported in this
   // run's errors. A page is recorded only when the sender really posts: observe mode
@@ -350,7 +350,7 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
             const delivered = await deliverAll(targetsSlack, (s) => senders.recovery(s, s.default_channel, {
               signal: 'probe control',
               recoveredPhrase: 'reading the block page again',
-              items: [{ subject: host, alertedAt: due.alertedAt, endedAt: due.endedAt }],
+              items: [{ subject: host, alertedAt: due.alertedAt, endedAt: due.endedAt, firstHealthyAt: due.firstHealthyAt }],
             }, nowMs))
             if (delivered) {
               await settleRecovery(deps.kv, RECOVERY_PREFIX, host, backoffCooldownKey(PROBE_CONTROL_KEY), { ...incident(host), reason: 'all_clear' }, nowMs)
@@ -406,7 +406,7 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
       }
     } else {
       const due = await recoveryDue(deps.kv, RECOVERY_PREFIX, host, { now: nowMs })
-      if (due) dueForAllClear.push({ host, alertedAt: due.alertedAt, endedAt: due.endedAt })
+      if (due) dueForAllClear.push({ host, alertedAt: due.alertedAt, endedAt: due.endedAt, firstHealthyAt: due.firstHealthyAt })
     }
 
     if (dirty) {
@@ -424,7 +424,7 @@ export async function runPartnerReachabilityCheck(deps: ReachabilityDeps): Promi
       const delivered = await deliverAll(targetsSlack, (s) => senders.recovery(s, s.default_channel, {
         signal: 'partner reachability',
         recoveredPhrase: 'answering a GET without a Cloudflare block page for 30 minutes, with no lead sighting one in that time',
-        items: dueForAllClear.map((d) => ({ subject: d.host, alertedAt: d.alertedAt, endedAt: d.endedAt })),
+        items: dueForAllClear.map((d) => ({ subject: d.host, alertedAt: d.alertedAt, endedAt: d.endedAt, firstHealthyAt: d.firstHealthyAt })),
       }, nowMs))
       if (delivered) {
         for (const d of dueForAllClear) {

@@ -162,7 +162,7 @@ describe('runWritebackBacklogCheck', () => {
     await h.run(reading({ [ORG_A]: org(1, 40 * MIN) }))
     const s = await h.run(reading({}), NOW + 5 * MIN)
     expect(h.sendRecovery).toHaveBeenCalledTimes(1)
-    expect(h.sendRecovery.mock.calls[0]).toEqual([ORG_A, { alertedAt: iso(NOW), endedAt: iso(NOW) }])
+    expect(h.sendRecovery.mock.calls[0]).toEqual([ORG_A, { alertedAt: iso(NOW), endedAt: iso(NOW), firstHealthyAt: iso(NOW + 5 * MIN) }])
     expect(s.allClear).toEqual([ORG_A])
     expect(transitions(h.kv.store)).toEqual([`opened ${ORG_A}`, `paged ${ORG_A}`, `ended ${ORG_A} all_clear`])
     expect(h.kv.store.has(recoveryKey(WRITEBACK_BACKLOG_SIGNAL, ORG_A))).toBe(false)

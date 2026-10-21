@@ -125,6 +125,8 @@ describe('a counted job stamped through completeAfter hands its failures to it (
       'ops-connection-logins',
       'ops-connection-write-backs',
       'ops-tick-report',
+      // #2582: the partner ping failure page.
+      'partner-error-rate',
       'salesforce-read-back',
       'unconfirmed-write-sweep',
       'writeback-drain',

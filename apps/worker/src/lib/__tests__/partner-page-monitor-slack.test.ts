@@ -41,6 +41,31 @@ describe('the partners page live alert', () => {
     expect((await text())).not.toMatch(/has not received/)
   })
 
+  // #2579: the alert pages on two misses in a row. When it paged on one because
+  // the check could not tell whether the run before also missed, it says so,
+  // rather than read as the rule having changed.
+  it('says it paged on one miss because the record of the run before could not be read', async () => {
+    await sendPartnerPageLiveAlert({ bot_token: 't' }, '#ops', {
+      problem: 'channel', reason: 'no notice arrived within 10 seconds', since: '2026-10-21T08:00:38.000Z', checks: { runs: 1, misses: 1 }, firstMissOnly: 'unread', repeat: null, at: Date.parse('2026-10-21T08:00:38Z'),
+    })
+    expect((await text())).toMatch(/This check pages after two misses in a row, but it could not read whether the run before this one missed, so it paged on this one\./)
+  })
+
+  it('says it paged on one miss because this miss could not be saved for the next run', async () => {
+    await sendPartnerPageLiveAlert({ bot_token: 't' }, '#ops', {
+      problem: 'channel', reason: 'no notice arrived within 10 seconds', since: '2026-10-21T08:00:38.000Z', checks: { runs: 1, misses: 1 }, firstMissOnly: 'unsaved', repeat: null, at: Date.parse('2026-10-21T08:00:38Z'),
+    })
+    expect((await text())).toMatch(/This check pages after two misses in a row, but it could not save this miss for the next run to see, so it paged on this one\./)
+  })
+
+  it('says nothing about the rule when it paged on two misses in a row', async () => {
+    await sendPartnerPageLiveAlert({ bot_token: 't' }, '#ops', {
+      problem: 'channel', reason: 'no notice arrived within 10 seconds', since: '2026-10-21T08:00:38.000Z', checks: { runs: 2, misses: 2 }, repeat: null, at: Date.parse('2026-10-21T08:05:38Z'),
+    })
+    expect((await text())).toMatch(/The delivery check failed in 2 of 2 runs since Oct 21, 4:00 AM EDT/)
+    expect((await text())).not.toMatch(/two misses in a row/)
+  })
+
   it('says what Realtime\'s pool size wording means here, so nobody goes to change a pool setting', async () => {
     await sendPartnerPageLiveAlert({ bot_token: 't' }, '#ops', {
       problem: 'channel', reason: 'the monitor could not join the channel: IncreaseConnectionPool: Please increase your connection pool size',

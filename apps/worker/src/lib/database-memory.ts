@@ -412,7 +412,7 @@ export async function runDatabaseMemoryCheck(deps: DatabaseMemoryDeps): Promise<
     const delivered = await deliverAll(await targets(), (s) => deps.senders.recovery(s, s.default_channel, {
       signal,
       recoveredPhrase,
-      items: [{ subject, alertedAt: due.alertedAt, endedAt: due.endedAt }],
+      items: [{ subject, alertedAt: due.alertedAt, endedAt: due.endedAt, firstHealthyAt: due.firstHealthyAt }],
     }, nowMs))
     if (!delivered) {
       await release(claimKey)

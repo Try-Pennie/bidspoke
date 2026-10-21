@@ -445,6 +445,86 @@ export async function sendSlowSpikeAlert(
   )
 }
 
+export interface PartnerErrorRateAlertPayload {
+  workflow_id: string
+  workflow_name: string
+  /** The partner, in the page's words ("LendSwift"). */
+  partner: string
+  /** Pings in the window that carry the partner error marker. */
+  error_count: number
+  /** Every ping that completed in the window: the denominator. */
+  ping_count: number
+  /** The marker's kinds and how many of each (http_error, timeout, network_error, unreadable_answer). */
+  kinds: Record<string, number>
+  window_minutes: number
+  timestamp: string
+}
+
+/** The words the page uses for each kind a partner ping script records. */
+const PARTNER_ERROR_KIND_WORDS: Record<string, string> = {
+  http_error: 'answered with an error',
+  timeout: 'did not answer in time',
+  network_error: 'could not be reached',
+  unreadable_answer: 'answered without a decision',
+}
+
+/**
+ * The partner ping failure page (#2582). Since #2582 a failed LendSwift ping ends
+ * the lead as a no bid, so the run succeeds and the failure saturation page no
+ * longer fires during a LendSwift outage; this is what says so instead.
+ */
+export async function sendPartnerErrorRateAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  channelOverride: string | null,
+  payload: PartnerErrorRateAlertPayload,
+  appUrl: string,
+): Promise<string | null> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return null
+
+  const channel = channelOverride || connection.default_channel
+  const sharePct = payload.ping_count > 0 ? Math.round((payload.error_count / payload.ping_count) * 100) : 0
+  const kinds = Object.entries(payload.kinds)
+    .sort((a, b) => b[1] - a[1])
+    .map(([kind, n]) => `${n} ${PARTNER_ERROR_KIND_WORDS[kind] ?? kind}`)
+    .join(', ')
+  const when = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))
+
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: `${payload.partner} Failing`, emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${payload.workflow_name}*: ${payload.error_count} of ${payload.ping_count} ${payload.partner} pings (${sharePct}%) failed in the last ${payload.window_minutes} minutes. Each of those leads was answered as no bid, with the reason partner_error.`,
+      },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*What happened:* ${kinds}` },
+        { type: 'mrkdwn', text: `*Time:* ${when}` },
+      ],
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*What to do:* tell ${payload.partner} their service is failing. Nothing in Bidspoke needs changing: each run's ping step shows ${payload.partner}'s own error, and an all clear follows when pings are answered again.`,
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/workflows/${payload.workflow_id}|Open workflow →>` } },
+  ]
+
+  return postMessage(
+    connection.bot_token,
+    channel,
+    blocks,
+    `${payload.partner} failing: ${payload.error_count} of ${payload.ping_count} pings failed in ${payload.window_minutes} minutes on ${payload.workflow_name}`,
+  )
+}
+
 export interface FailureSpikeAlertPayload {
   workflow_id: string
   workflow_name: string
@@ -2177,13 +2257,7 @@ export async function sendCronHeartbeatAlert(
             : `A run started ~${minutes} minutes ago and has not finished. Until a run completes: ${job.dependents}.`,
         },
       },
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*How to fix:* nothing yet. The next scheduled run tries again on its own${words ? ` (${words})` : ''}, and this one may have completed part of its work before it stopped. If the next run stops too, read this run's own outcome, which Cloudflare records for each invocation alongside the wall time and CPU time it used: a run stopped for exceeding a resource limit needs its work bounded or split, one the platform simply cancelled was inside every limit and needs no change to anything here, and if its outcome is ok the run finished after this check looked, so nothing needs changing at all.`,
-        },
-      },
+      { type: 'section', text: { type: 'mrkdwn', text: vanishedFixLine(words, 'one') } },
       lastLine(
         job.completionDroughtMs
           ? 'Seen because no run has stamped a completion for that long; why they stop is not visible from here.'
@@ -2228,6 +2302,131 @@ export async function sendCronHeartbeatAlert(
     blocks,
     `${job.label} is${again} dark (${status})`,
   )) !== null
+}
+
+/**
+ * The fix line of a "started and never finished" page, for one job or for the
+ * unfinished jobs of one run (#2578).
+ *
+ * It used to send the reader to "this run's own outcome, which Cloudflare
+ * records for each invocation" and say an ok outcome meant the run had only
+ * finished late. On 2026-10-21 the 04:00 UTC `*\/15` run was killed and left no
+ * outcome record at all, and the only records under its scheduled time were two
+ * retries, both `ok`, one of them half an hour later. A reader following the old
+ * line read the retry's `ok` as the original finishing. Neither claim had been
+ * measured (L11, L460). What does settle it is whether the next run finishes,
+ * which the all-clear reports, and the tick guard's takeover line, which names
+ * a retry and how long before it the stopped run began.
+ */
+function vanishedFixLine(words: string | null, jobs: 'one' | 'several'): string {
+  const subject = jobs === 'one' ? 'this job' : 'these jobs'
+  const when = jobs === 'one' ? 'when one does' : 'when they do'
+  return (
+    `*How to fix:* nothing yet. The next scheduled run tries again on its own${words ? ` (${words})` : ''}, ` +
+    `and this run may have completed part of its work before it stopped. ` +
+    `What shows whether anything needs changing is whether the next run of ${subject} finishes: an all-clear is posted here ${when}. ` +
+    `Cloudflare's own record of this run cannot settle it alone: a run Cloudflare cancels can leave no outcome record at all, ` +
+    'and Cloudflare may then retry it under the same scheduled time. The retry logs `[cron-once] took over` with `previous_age_ms`, ' +
+    "how long before the retry the stopped run began, so an `ok` outcome at that scheduled time can be the retry's rather than this run's. " +
+    "Only an outcome that is this run's own and says it went over a CPU, memory or wall time limit means the work needs bounding or splitting."
+  )
+}
+
+/** One job in a grouped heartbeat page (#2117). */
+export interface CronHeartbeatGroupJob {
+  label: string
+  dependents: string
+  ageMs: number | null
+}
+
+/**
+ * A grouped heartbeat page (#2117): every watched job of one schedule dark
+ * together, or the unfinished jobs of one scheduled run.
+ */
+export interface CronHeartbeatGroup {
+  status: 'stale' | 'vanished'
+  triggerCron: string
+  /** The Worker whose cron this is, when it is not this one (#1949). */
+  worker?: 'bidspoke-worker-ops'
+  /** stale: the latest start of any of the jobs. vanished: the run's scheduled time. */
+  runAt: string | null
+  jobs: CronHeartbeatGroupJob[]
+}
+
+/** An age as a reader says it: minutes under two hours, hours past that. */
+function agoInWords(ms: number): string {
+  return ms < 2 * 3_600_000 ? `~${Math.round(ms / 60_000)} minutes` : `~${Math.round(ms / 3_600_000)}h`
+}
+
+/**
+ * One page for several watched jobs that went dark for one reason (#2117). On
+ * 2026-10-14 Cloudflare did not run the five minute schedule for fifteen
+ * minutes and three "is dark" pages went out, one per job on it; on 2026-10-21
+ * one stopped `*\/15` run sent two "started and never finished" pages. The
+ * reader needs the cause once and the list of what is paused, and the remedy for
+ * a whole schedule is the schedule, never any one job.
+ */
+export async function sendCronHeartbeatGroupAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  group: CronHeartbeatGroup,
+  standing: StandingCondition | null = null,
+  nowMs: number = Date.now(),
+  // True only when the caller measured that every job's status is the one already posted (#1768).
+  unchanged: boolean = false,
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  const repeat = describeRepeat(standing, nowMs, unchanged)
+  const again = repeat ? ' still' : ''
+  const words = scheduleInWords(group.triggerCron, new Date(nowMs))
+  const schedule = words ? `${words} (\`${group.triggerCron}\`)` : `\`${group.triggerCron}\``
+  const labels = group.jobs.map((j) => j.label).join(', ')
+  const runAtMs = group.runAt ? Date.parse(group.runAt) : NaN
+  const lines = group.jobs.map((j) => `• *${j.label}*: ${j.dependents}.`)
+
+  let header: string
+  let opening: string
+  let fix: string
+  let how: string
+  let fallback: string
+  if (group.status === 'stale') {
+    header = `Every job that ${words ? `runs ${words}` : 'runs on one schedule'} is${again} dark`
+    const since = Number.isFinite(runAtMs)
+      ? ` since ${etTime(runAtMs)} (${agoInWords(nowMs - runAtMs)} ago)`
+      : ' inside its expected interval'
+    opening = `None of the ${group.jobs.length} jobs that ${words ? `run ${words}` : 'run on this schedule'} has started a run${since}, so every one of them is paused. While they are:`
+    const where = group.worker
+      ? `${group.worker} deployed with wrangler.ops.toml \`[triggers]\``
+      : 'the worker deployed with wrangler.toml `[triggers]`'
+    fix =
+      '*How to fix:* every job on this schedule stopped at once, so look at what they share rather than at any one of them: ' +
+      'either Cloudflare did not run the schedule, or the scheduled handler stopped before it started them. ' +
+      `Check <https://www.cloudflarestatus.com|cloudflarestatus.com> for an incident affecting Workers cron triggers, then confirm ${where} listing this schedule, ` +
+      "and that the worker's logs at this schedule's times show no error before the jobs start."
+    how = 'Seen because none of these jobs has stamped a run inside its expected cadence.'
+    fallback = `Every job that ${words ? `runs ${words}` : 'runs on one schedule'} is${again} dark (stale): ${labels}`
+  } else {
+    header = `${group.jobs.length} jobs of one scheduled run${again} started and never finished`
+    const ages = group.jobs.map((j) => j.ageMs).filter((a): a is number => a !== null)
+    const started = ages.length ? ` ${agoInWords(Math.max(...ages))} ago` : ''
+    const run = Number.isFinite(runAtMs) ? `The run scheduled for ${etTime(runAtMs)}` : 'One scheduled run'
+    opening = `${run} started these jobs${started} and none of them has finished. Until a run of each completes:`
+    fix = vanishedFixLine(words, 'several')
+    how = 'Seen because each of these jobs stamped its start in this run and no completion inside its allowance; why the run stopped is not visible from here.'
+    fallback = `${labels} started and never finished (vanished)`
+  }
+  // The list is held to the section budget less the opening it shares a section with.
+  const body = `${opening}\n${listWithOverflow(lines, lines.length, MAX_LISTED_LINES, opening.length + 1)}`
+  const blocks: object[] = [
+    { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: body } },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+    ...(repeat ? [{ type: 'section', text: { type: 'mrkdwn', text: repeat } }] : []),
+    // The schedule string and how the check saw it come last, in one line (#1300).
+    { type: 'section', text: { type: 'mrkdwn', text: `_${how} Schedule: ${schedule}._` } },
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback)) !== null
 }
 
 /**
@@ -3003,6 +3202,8 @@ export interface RecoveredSubject {
   subject: string
   alertedAt: string
   endedAt?: string | null
+  /** The first healthy check after the last sighting (#2580), from recoveryDue; absent when not recorded. */
+  firstHealthyAt?: string | null
   url?: string
 }
 
@@ -3033,6 +3234,13 @@ export interface RecoveryWording {
    * that really does judge a range keeps the default unchanged.
    */
   recoveredPhrase?: string
+  /**
+   * The subject's `endedAt` is an observed CLEARING, not the last sighting of the
+   * problem (#2580). Only the scheduled job heartbeat passes it: its end is the
+   * completion that showed the job finished. Every other check's end is the last
+   * tick the condition was seen, which the sentence must never call the clearing.
+   */
+  endedAtIsClearing?: boolean
 }
 
 /** The Slack link appended to a recovered subject, or nothing. */
@@ -3047,7 +3255,11 @@ function recoveredStatus(item: RecoveredSubject, wording: RecoveryWording): stri
 }
 
 /**
- * The timing clause: when the alert fired and how long it lasted.
+ * The timing clause: when the alert fired, then when the problem was last seen
+ * and the first check to find it clear, or that it had cleared by now (#2580).
+ * A one tick windowed incident gives the window it covered instead (#1268), and
+ * an incident with no recorded end, or whose end is an observed clearing (the
+ * heartbeat), says how long it lasted.
  *
  * Depends only on the alert ticks and the wording, never on the subject, so a
  * group that all paged and cleared on the same tick shares one of these (#1270).
@@ -3065,17 +3277,40 @@ function recoveryTiming(item: RecoveredSubject, wording: RecoveryWording, now: n
   // told the reader a LendSwift outage cleared at 6:01 AM while the ping API
   // went on failing until 6:52. What the check DID observe is that the condition
   // had passed by the tick that announced this, so that is what it says.
+  const firedAt = etTime(Date.parse(item.alertedAt))
   let howLong = '.'
   if (span.kind === 'within_window') {
     howLong =
       ` and covered the ${describeDuration(span.windowMs)} before it, which is as precisely as this check measures. ` +
       `It had passed by ${etTime(now)}.`
-  } else if (span.kind === 'measured') {
+  } else if (span.kind === 'measured' && (span.lastSeenAt === null || wording.endedAtIsClearing)) {
+    // No end recorded: the span runs to now and claims no end. Or the end is a
+    // clearing the check observed (the heartbeat's completion), so it is named.
     const lasted = describeDuration(span.ms)
-    if (lasted) howLong = ` and lasted ${lasted}${span.clearedAt !== null ? `, clearing at ${etTime(span.clearedAt)}` : ''}.`
+    if (lasted) howLong = ` and lasted ${lasted}${span.lastSeenAt !== null ? `, clearing at ${etTime(span.lastSeenAt)}` : ''}.`
+  } else if (span.kind === 'measured' && span.lastSeenAt !== null) {
+    // The last sighting is when the problem was last SEEN, never when it cleared
+    // (#2580): for a per run check, a one run incident's last sighting is the
+    // tick that paged, so "clearing at" repeated the fire time. On 2026-10-21 the
+    // partners page all-clear said it cleared at 4:01 AM, the moment it fired,
+    // while the first run to find it clear was 4:05. So the sentence names what
+    // was observed on each side of the end: the last sighting, and the first
+    // healthy check after it, or where that is not known, that it had cleared by
+    // the tick announcing this, as the windowed sentence does (#1268).
+    const lastSeenAt = span.lastSeenAt
+    const lastSeen = etTime(lastSeenAt)
+    const lasted = describeDuration(span.ms)
+    const seen = lastSeen === firedAt || !lasted
+      ? `${firedAt}, when the problem was last seen.`
+      : `${firedAt}. The problem was last seen ${lasted} later, at ${lastSeen}.`
+    const healthy = item.firstHealthyAt ? Date.parse(item.firstHealthyAt) : NaN
+    const clear = Number.isFinite(healthy) && healthy > lastSeenAt
+      ? `The first check to find it clear was at ${etTime(healthy)}.`
+      : `It had cleared by ${etTime(now)}.`
+    return `The ${wording.signal} alert fired at ${seen} ${clear}`
   }
 
-  return `The ${wording.signal} alert fired at ${etTime(Date.parse(item.alertedAt))}${howLong}`
+  return `The ${wording.signal} alert fired at ${firedAt}${howLong}`
 }
 
 /**
@@ -3093,7 +3328,10 @@ function sameRecoveryTick(items: readonly RecoveredSubject[]): boolean {
   const first = items[0]
   return (
     Number.isFinite(Date.parse(first.alertedAt)) &&
-    items.every((i) => i.alertedAt === first.alertedAt && (i.endedAt ?? null) === (first.endedAt ?? null))
+    items.every((i) =>
+      i.alertedAt === first.alertedAt &&
+      (i.endedAt ?? null) === (first.endedAt ?? null) &&
+      (i.firstHealthyAt ?? null) === (first.firstHealthyAt ?? null))
   )
 }
 
@@ -3256,10 +3494,10 @@ export async function sendRecoveryAlert(
 export async function sendDatabaseRecoveredAlert(
   slack: { bot_token: string },
   channel: string,
-  payload: { alertedAt: string; endedAt: string | null; measured: string; appUrl: string },
+  payload: { alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null; measured: string; appUrl: string },
   now: number = Date.now(),
 ): Promise<boolean> {
-  const item: RecoveredSubject = { subject: 'Bidspoke', alertedAt: payload.alertedAt, endedAt: payload.endedAt }
+  const item: RecoveredSubject = { subject: 'Bidspoke', alertedAt: payload.alertedAt, endedAt: payload.endedAt, firstHealthyAt: payload.firstHealthyAt }
   const wording: RecoveryWording = { signal: 'database unreachable', recoveredPhrase: 'can read its database again' }
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
@@ -3310,10 +3548,10 @@ export async function sendSlackTokenUnreadableAlert(
 export async function sendSlackTokenReadableAlert(
   slack: { bot_token: string },
   channel: string,
-  payload: { alertedAt: string; endedAt: string | null; appUrl: string },
+  payload: { alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null; appUrl: string },
   now: number = Date.now(),
 ): Promise<boolean> {
-  const item: RecoveredSubject = { subject: 'The Slack token', alertedAt: payload.alertedAt, endedAt: payload.endedAt }
+  const item: RecoveredSubject = { subject: 'The Slack token', alertedAt: payload.alertedAt, endedAt: payload.endedAt, firstHealthyAt: payload.firstHealthyAt }
   const wording: RecoveryWording = { signal: 'Slack token', recoveredPhrase: 'can be read again' }
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
@@ -3389,15 +3627,49 @@ export async function sendCronHeartbeatRecoveryAlert(
     {
       signal: CRON_HEARTBEAT_RECOVERY_WORDS,
       subject: recovery.label,
-      // Only what the completion shows: the reported run itself, late, or a later one.
-      recoveredPhrase: recovery.sameRun
-        ? 'finished the run reported as never finished, late'
-        : 'has finished a run since, so it is running again',
+      recoveredPhrase: heartbeatRecoveredPhrase(recovery.sameRun),
       alertedAt: recovery.alertedAt,
+      // The completion this reports: when the job was seen finished, so a clearing
+      // the check observed rather than a last sighting of the problem (#2580).
       endedAt: recovery.endedAt,
+      endedAtIsClearing: true,
     },
     now,
   )
+}
+
+/** Only what the completion shows: the reported run itself, late, or a later one. */
+function heartbeatRecoveredPhrase(sameRun: boolean): string {
+  return sameRun ? 'finished the run reported as never finished, late' : 'has finished a run since, so it is running again'
+}
+
+/**
+ * The one all-clear for the unfinished jobs of one run that were paged together
+ * (#2117). On 2026-10-21 the two jobs of the stopped 04:00 UTC run recovered in
+ * two separate messages at 04:16. One line per job, each saying what its own
+ * completion shows, and the timing once: they were paged on one tick, and the
+ * end is the last of their completions. Returns whether it reached Slack.
+ */
+export async function sendCronHeartbeatGroupRecoveryAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  recovery: { alertedAt: string; endedAt: string | null; jobs: { label: string; sameRun: boolean }[] },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  // The end is the last completion: a clearing observed, not a last sighting (#2580).
+  const wording: RecoveryWording = { signal: CRON_HEARTBEAT_RECOVERY_WORDS, endedAtIsClearing: true }
+  const timing = recoveryTiming({ subject: '', alertedAt: recovery.alertedAt, endedAt: recovery.endedAt }, wording, now)
+  const lines = recovery.jobs.map((j) => `*${j.label}* ${heartbeatRecoveredPhrase(j.sameRun)}.`)
+  // The timing sentence and its blank line share the section, so the list is held to the budget less them.
+  const text = `${listWithOverflow(lines, lines.length, MAX_LISTED_LINES, timing.length + 2)}\n\n${timing}`
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text } },
+  ]
+  const fallback = `Recovered: ${recovery.jobs.map((j) => j.label).join(', ')}`
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback)) !== null
 }
 
 /**
@@ -3414,7 +3686,7 @@ export async function sendCronHeartbeatRecoveryAlert(
 export async function sendPgCronRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { jobname: string; alertedAt: string; endedAt: string | null },
+  recovery: { jobname: string; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -3428,6 +3700,7 @@ export async function sendPgCronRecoveryAlert(
       recoveredPhrase: 'is running and succeeding again',
       alertedAt: recovery.alertedAt,
       endedAt: recovery.endedAt,
+      firstHealthyAt: recovery.firstHealthyAt,
     },
     now,
   )
@@ -3523,7 +3796,7 @@ export const writebackBacklogRecoveryWording: RecoveryWording = {
 export async function sendWritebackBacklogRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { alertedAt: string; endedAt: string | null },
+  recovery: { alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -3531,7 +3804,7 @@ export async function sendWritebackBacklogRecoveryAlert(
   return sendRecoveryAlert(
     connection,
     connection.default_channel,
-    { subject: WRITEBACK_BACKLOG_RECOVERY_SUBJECT, alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, ...writebackBacklogRecoveryWording },
+    { subject: WRITEBACK_BACKLOG_RECOVERY_SUBJECT, alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...writebackBacklogRecoveryWording },
     now,
   )
 }
@@ -3631,7 +3904,7 @@ export const opsConnectionLoginRecoveryWording: RecoveryWording = {
 export async function sendOpsConnectionLoginRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { subject: string; alertedAt: string; endedAt: string | null },
+  recovery: { subject: string; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -3639,7 +3912,7 @@ export async function sendOpsConnectionLoginRecoveryAlert(
   return sendRecoveryAlert(
     connection,
     connection.default_channel,
-    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, ...opsConnectionLoginRecoveryWording },
+    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...opsConnectionLoginRecoveryWording },
     now,
   )
 }
@@ -3706,7 +3979,7 @@ export const opsConnectionWriteBackRecoveryWording: RecoveryWording = {
 export async function sendOpsConnectionWriteBackRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { subject: string; alertedAt: string; endedAt: string | null },
+  recovery: { subject: string; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -3714,7 +3987,7 @@ export async function sendOpsConnectionWriteBackRecoveryAlert(
   return sendRecoveryAlert(
     connection,
     connection.default_channel,
-    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, ...opsConnectionWriteBackRecoveryWording },
+    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...opsConnectionWriteBackRecoveryWording },
     now,
   )
 }
@@ -3789,7 +4062,7 @@ export const opsConnectionOwnerRecoveryWording: RecoveryWording = {
 export async function sendOpsConnectionOwnerRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { subject: string; alertedAt: string; endedAt: string | null },
+  recovery: { subject: string; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -3797,7 +4070,7 @@ export async function sendOpsConnectionOwnerRecoveryAlert(
   return sendRecoveryAlert(
     connection,
     connection.default_channel,
-    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, ...opsConnectionOwnerRecoveryWording },
+    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...opsConnectionOwnerRecoveryWording },
     now,
   )
 }
@@ -3841,7 +4114,7 @@ export async function sendSalesforceBulkheadLimitAlert(supabase: SupabaseClient,
 export async function sendSalesforceBulkheadLimitRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { sizedFor: number; alertedAt: string; endedAt: string | null },
+  recovery: { sizedFor: number; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -3853,6 +4126,7 @@ export async function sendSalesforceBulkheadLimitRecoveryAlert(
       subject: 'The Salesforce bulkhead limit',
       alertedAt: recovery.alertedAt,
       endedAt: recovery.endedAt,
+      firstHealthyAt: recovery.firstHealthyAt,
       signal: 'Salesforce bulkhead limit',
       recoveredPhrase: `matches the ${recovery.sizedFor} the ops Salesforce lane is sized for again`,
     },
@@ -3915,7 +4189,7 @@ export async function sendMinuteJobFailingAlert(supabase: SupabaseClient, orgId:
 export async function sendMinuteJobFailingRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { label: string; alertedAt: string; endedAt: string | null },
+  recovery: { label: string; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -3930,6 +4204,7 @@ export async function sendMinuteJobFailingRecoveryAlert(
       recoveredPhrase: `has run for ${RECOVERY_REARM_MINUTES} minutes without failing`,
       alertedAt: recovery.alertedAt,
       endedAt: recovery.endedAt,
+      firstHealthyAt: recovery.firstHealthyAt,
     },
     now,
   )
@@ -4025,7 +4300,7 @@ export async function sendWritebackDrainAlert(connection: { bot_token: string; d
 export async function sendWorkflowScheduleRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { label: string; alertedAt: string; endedAt: string | null },
+  recovery: { label: string; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -4039,6 +4314,7 @@ export async function sendWorkflowScheduleRecoveryAlert(
       recoveredPhrase: 'is running on schedule again',
       alertedAt: recovery.alertedAt,
       endedAt: recovery.endedAt,
+      firstHealthyAt: recovery.firstHealthyAt,
     },
     now,
   )
@@ -4069,6 +4345,12 @@ export interface PartnerPageLivePayload {
   since: string
   /** For `channel`: the runs that measured the channel since `since`, and how many missed (#2263). */
   checks?: { runs: number; misses: number }
+  /**
+   * For `channel`: it paged on one miss rather than two in a row (#2579), because
+   * the record of the run before could not be read (`unread`) or this miss could
+   * not be saved for the next run (`unsaved`).
+   */
+  firstMissOnly?: 'unread' | 'unsaved'
   repeat: string | null
   at: number
 }
@@ -4101,6 +4383,9 @@ export async function sendPartnerPageLiveAlert(
           (isIdleShutdownRefusal(payload.reason)
             ? " Realtime words a join this way when it arrives while Realtime is closing this project's idle connection, so it is not a pool size setting in Bidspoke. " +
               'The check retries that refusal, so here every retry was refused too: look in the Realtime logs for a shutdown or a connection error at this time.'
+            : '') +
+          (payload.firstMissOnly
+            ? ` This check pages after two misses in a row, but it could not ${payload.firstMissOnly === 'unread' ? 'read whether the run before this one missed' : 'save this miss for the next run to see'}, so it paged on this one.`
             : ''),
       ]
     : [
