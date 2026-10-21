@@ -308,16 +308,17 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
       return { ...s, now: e.at, lastChange: { ...s.lastChange, save: e.attempt }, add: { ...s.add, started: e.attempt, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
     }
     case 'save_answered': {
-      // The connection exists once its save answered, however late (R18), so it is listed; it takes the
-      // panel only from the form that started it, never from one opened since a Cancel.
-      if (e.attempt !== s.lastChange.save || s.list.kind !== 'loaded') return s
+      // The connection exists once any save answered, however late or superseded (R18), so it is listed;
+      // it takes the panel only from the form that started it, never from one opened since a Cancel.
+      if (s.list.kind !== 'loaded') return s
       const connections = [...s.list.data.connections.filter((c) => c.id !== e.connection.id), e.connection]
       const list = { ...s.list, data: { ...s.list.data, connections } }
       if (!s.add || s.add.started !== e.attempt) return { ...s, list }
       return { ...s, list, add: null, chosen: { kind: 'connection', id: e.connection.id }, tab: 'connection' }
     }
     case 'save_refused': {
-      if (e.attempt !== s.lastChange.save || !s.add || s.add.started !== e.attempt || !awaiting(s.add.save)) return s
+      // Only the latest save's refusal counts, and only while a form still waits for it.
+      if (e.attempt !== s.lastChange.save || !s.add || !awaiting(s.add.save)) return s
       return { ...s, add: { ...s.add, save: { kind: 'failed', sentence: e.sentence, unconfirmed: false } } }
     }
 
@@ -359,8 +360,8 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
       return { ...s, now: e.at, lastChange: { ...s.lastChange, reconnect: e.attempt }, dialog: { ...d, started: e.attempt, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
     }
     case 'reconnect_answered': {
-      // The new login is saved once this answers, however late: the connection reads working, checked now.
-      if (e.attempt !== s.lastChange.reconnect || s.list.kind !== 'loaded') return s
+      // The new login is saved once any check answers, however late: the connection reads working, checked now.
+      if (s.list.kind !== 'loaded') return s
       const connections = s.list.data.connections.map((c) => (c.id === e.id
         ? { ...c, status: 'ok' as const, problemSince: null, problemCause: null, actsAs: e.actsAs ?? c.actsAs, lastCheckedAt: new Date(e.at).toISOString() }
         : c))
@@ -371,7 +372,7 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
     }
     case 'reconnect_refused': {
       const d = s.dialog
-      if (e.attempt !== s.lastChange.reconnect || d?.kind !== 'reconnect' || d.started !== e.attempt || !awaiting(d.save)) return s
+      if (e.attempt !== s.lastChange.reconnect || d?.kind !== 'reconnect' || !awaiting(d.save)) return s
       return { ...s, dialog: { ...d, save: { kind: 'failed', sentence: e.sentence, unconfirmed: false } } }
     }
     case 'connection_remove_requested': {
@@ -380,7 +381,8 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
       return { ...s, now: e.at, lastChange: { ...s.lastChange, remove: e.attempt }, dialog: { ...d, started: e.attempt, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
     }
     case 'connection_remove_answered': {
-      if (e.attempt !== s.lastChange.remove || s.list.kind !== 'loaded') return s
+      // The connection is gone once any removal answered, however late.
+      if (s.list.kind !== 'loaded') return s
       const gone = s.list.data.connections.find((c) => c.id === e.id)
       const data = { ...s.list.data, connections: s.list.data.connections.filter((c) => c.id !== e.id) }
       const history = Object.fromEntries(Object.entries(s.history).filter(([id]) => id !== e.id))
@@ -392,7 +394,7 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
     }
     case 'connection_remove_refused': {
       const d = s.dialog
-      if (e.attempt !== s.lastChange.remove || d?.kind !== 'remove' || d.started !== e.attempt || !awaiting(d.save) || s.list.kind !== 'loaded') return s
+      if (e.attempt !== s.lastChange.remove || d?.kind !== 'remove' || !awaiting(d.save) || s.list.kind !== 'loaded') return s
       const workflows = e.workflows
       const list = workflows
         ? { ...s.list, data: { ...s.list.data, connections: s.list.data.connections.map((c) => (c.id === d.id ? { ...c, workflows } : c)) } }

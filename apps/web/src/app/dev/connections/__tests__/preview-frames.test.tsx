@@ -1,8 +1,9 @@
 /**
- * The development preview's frames for the states the settled design never
- * drew (#2338, build PR 9): each, reached by its id alone, draws its state
- * through the real component and reducer, holds a counting state at 4 s, and
- * fetches nothing.
+ * The development preview's frames drawn by their events (#2338): the states
+ * the settled design never drew (build PRs 9 and 10), and the settled add,
+ * saved, Reconnect, Replace and Remove frames (build PR 10). Each, reached by
+ * its id alone, draws its state through the real component and reducer, holds
+ * a counting state still, and fetches nothing.
  */
 import { render, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'

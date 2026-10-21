@@ -125,11 +125,15 @@ describe('a save (R13, R14, R18)', () => {
     expect(run([{ type: 'save_refused', attempt: 1, sentence: 'Another Salesforce connection already has that name. Nothing was saved. Choose another name and save again.' }], stalled).add!.save).toMatchObject({ kind: 'failed', unconfirmed: false })
   })
 
-  it("ignores an earlier save's answer once a later one has started", () => {
-    const refused = run([{ type: 'save_refused', attempt: 1, sentence: 'x. Nothing was saved. y.' }, { type: 'save_requested', attempt: 2, at: T0 + 5_000, stalled: STALLED }], saving())
-    const s = run([{ type: 'save_answered', attempt: 1, connection: SAVED }], refused)
+  it("an earlier save's answer, arriving while a later one runs, is listed but never takes the form from the later one", () => {
+    // The first save stalled, and Save was pressed again: the first may still land, and if it does the connection exists.
+    const again = run([{ type: 'tick', at: T0 + SAVE_DEADLINE }, { type: 'save_requested', attempt: 2, at: T0 + SAVE_DEADLINE + 1_000, stalled: STALLED }], saving())
+    const s = run([{ type: 'save_answered', attempt: 1, connection: SAVED }], again)
     expect(s.add!.save).toMatchObject({ kind: 'saving', attempt: 2 })
-    expect(s.list.kind === 'loaded' && s.list.data.connections.some((c) => c.id === 'new1')).toBe(false)
+    expect(s.chosen).toEqual({ kind: 'add' })
+    expect(s.list.kind === 'loaded' && s.list.data.connections.some((c) => c.id === 'new1')).toBe(true)
+    // An earlier refusal says nothing about the later save.
+    expect(run([{ type: 'save_refused', attempt: 1, sentence: 'x. Nothing was saved. y.' }], again).add!.save).toMatchObject({ kind: 'saving', attempt: 2 })
   })
 
   it('a save that answers after the form was left is still listed, without taking the panel', () => {
@@ -214,6 +218,15 @@ describe('Reconnect (R19)', () => {
 })
 
 describe('Remove (R21)', () => {
+  it("a cancelled removal's late answer takes the connection off and closes a Remove opened since, its notice shown only to its own press", () => {
+    const reopened = run([{ type: 'dialog_opened', dialog: 'remove', id: 'c3' }, { type: 'connection_remove_requested', attempt: 1, at: T0, stalled: 's' }, { type: 'dialog_closed' }, { type: 'dialog_opened', dialog: 'remove', id: 'c3' }], loaded())
+    const s = run([{ type: 'connection_remove_answered', attempt: 1, id: 'c3', notice: 'The connection is removed. The workflows server could not be told straight away.' }], reopened)
+    expect(s.dialog).toBeNull()
+    expect(s.list.kind === 'loaded' && s.list.data.connections.some((c) => c.id === 'c3')).toBe(false)
+    // Its late refusal does not fail the Remove opened since.
+    expect(run([{ type: 'connection_remove_refused', attempt: 1, sentence: 'x. Nothing was removed. y.' }], reopened).dialog).toMatchObject({ kind: 'remove', save: { kind: 'editing' } })
+  })
+
   it('opens only for a connection no workflow uses', () => {
     expect(run([{ type: 'dialog_opened', dialog: 'remove', id: 'c1' }], loaded()).dialog).toBeNull()
     expect(run([{ type: 'dialog_opened', dialog: 'remove', id: 'c3' }], loaded()).dialog).toEqual({ kind: 'remove', id: 'c3', values: {}, save: { kind: 'editing' }, started: null })
