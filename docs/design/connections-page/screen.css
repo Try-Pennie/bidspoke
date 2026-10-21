@@ -1,4 +1,4 @@
-/* The Connections page as settled in the #2338 design rounds (round 1 to 27), with the rejected
+/* The Connections page as settled in the #2338 design rounds (rounds 1 to 32), with the rejected
    options' rules taken out. Colours are the app's: navy #1D212F marks a selection, blue #1B72BA is
    for buttons only, red #B42318 only for something wrong, grey hint text #697081. */
 .cx-page { padding: 32px 32px 48px; max-width: 1072px; position: relative; }
