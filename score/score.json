@@ -1,0 +1,127 @@
+{
+ "format": "design-score",
+ "version": 1,
+ "verdict": "not-matched",
+ "unmeasured": [],
+ "scoredAt": "2026-10-21T22:29:54Z",
+ "tolerance": 8,
+ "platform": "web",
+ "build": "http://localhost:3111/dev/connection-field",
+ "commit": "c39e6038cccc81c7cf65a7aa35919896ed664353",
+ "dirty": false,
+ "capturedAt": "2026-10-21T22:29:54Z",
+ "design": "docs/design/connections-step-form.html",
+ "designFile": "/Users/danhankins-wright/Documents/Documents - Dan\u2019s MacBook Pro/Bidspoke/.claude/worktrees/agent-ac24203f6a2933667/docs/design/connections-step-form.html",
+ "designSha256": "427849e4c67263514c40d47bbc8f97384e5ede68289d671fab337a2cf01f4043",
+ "kind": null,
+ "decisions": {
+  "met": 4,
+  "of": 4,
+  "rows": [
+   {
+    "id": "D8",
+    "decision": "On the canvas, a step's Connection field is the app's dropdown with the chosen connection's name, with only \"Acts as <who>\" under it; nothing about status on a healthy day. A connection with a problem adds one red line saying what is wrong and where it is fixed, \"Needs reconnecting on the Connections page\", or \"Check failing on the Connections page\" when its login check is failing, its last two words a dark underlined link to that page.",
+    "frames": [
+     "step-healthy",
+     "step-problem",
+     "step-failing"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D24",
+    "decision": "Blue is for buttons only; links are dark and underlined.",
+    "frames": [
+     "step-healthy",
+     "step-problem",
+     "step-failing"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D25",
+    "decision": "Red is only for something genuinely wrong.",
+    "frames": [
+     "step-healthy",
+     "step-problem",
+     "step-failing"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D27",
+    "decision": "No line of text ends with a single word on its own line. A rule for all of Bidspoke's copy, made by Dan on 2026-10-20 in these rounds.",
+    "frames": [
+     "step-healthy",
+     "step-problem",
+     "step-failing"
+    ],
+    "status": "met"
+   }
+  ]
+ },
+ "pictures": {
+  "score": 0.9749067460317461,
+  "frames": [
+   {
+    "id": "step-healthy",
+    "title": "A Salesforce step on a working connection: Pennie Salesforce",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1008000,
+    "matched": 984042,
+    "score": 0.9762321428571429,
+    "diff": "step-healthy-diff.png",
+    "builtSize": [
+     1120,
+     900
+    ],
+    "designSize": [
+     1120,
+     900
+    ]
+   },
+   {
+    "id": "step-problem",
+    "title": "A Salesforce step on a connection with a problem: Achieve Salesforce",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1008000,
+    "matched": 981785,
+    "score": 0.9739930555555556,
+    "diff": "step-problem-diff.png",
+    "builtSize": [
+     1120,
+     900
+    ],
+    "designSize": [
+     1120,
+     900
+    ]
+   },
+   {
+    "id": "step-failing",
+    "title": "A Salesforce step on a connection whose login check is failing: Lendco Salesforce",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1008000,
+    "matched": 982291,
+    "score": 0.9744950396825397,
+    "diff": "step-failing-diff.png",
+    "builtSize": [
+     1120,
+     900
+    ],
+    "designSize": [
+     1120,
+     900
+    ]
+   }
+  ]
+ },
+ "exceptions": [],
+ "notes": []
+}

@@ -1,0 +1,42 @@
+[
+ {
+  "frame": "step-healthy",
+  "serious": []
+ },
+ {
+  "frame": "step-problem",
+  "serious": []
+ },
+ {
+  "frame": "step-failing",
+  "serious": []
+ },
+ {
+  "frame": "none-chosen",
+  "serious": []
+ },
+ {
+  "frame": "menu-open",
+  "serious": []
+ },
+ {
+  "frame": "loading",
+  "serious": []
+ },
+ {
+  "frame": "failed",
+  "serious": []
+ },
+ {
+  "frame": "refused",
+  "serious": []
+ },
+ {
+  "frame": "empty",
+  "serious": []
+ },
+ {
+  "frame": "gone",
+  "serious": []
+ }
+]
