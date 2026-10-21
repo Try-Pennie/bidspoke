@@ -28,6 +28,8 @@
     { "name": "military", "purpose": "the military exclusion (#926)", "set": { "financialInformation.employmentStatus": "military" } },
     { "name": "employment_missing", "purpose": "no employment status: fails closed", "unset": ["financialInformation.employmentStatus"] },
     { "name": "invalid_name", "purpose": "a name with no letters", "set": { "personalInformation.firstName": "1", "personalInformation.lastName": "2" } },
-    { "name": "applicant_create_blocked", "purpose": "Salesforce refuses the applicant", "stubs": { "salesforce_create": "blocked" } }
+    { "name": "applicant_create_blocked", "purpose": "Salesforce refuses the applicant", "stubs": { "salesforce_create": "blocked" } },
+    { "name": "loan_at_maximum", "purpose": "exactly the maximum still bids (#2591)", "set": { "loanInformation.loanAmount": 5001 } },
+    { "name": "state_lower_case", "purpose": "an allowed state in lower case is not in the list (#2591)", "set": { "personalInformation.state": "tx" } }
   ]
 }

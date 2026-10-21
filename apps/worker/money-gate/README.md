@@ -143,6 +143,33 @@ so a definition changed in production (a canvas save, a Main Flow port stage) is
 replayed through the merge base's engine and the head's alike. An entry for it
 would match nothing and fail the gate.
 
+## Definition A/B mode: proving a lead validation swap
+
+```
+.github/scripts/money-gate-swap.sh <candidate> [<check>:<lenient|strict>]
+```
+
+Instrument 2 of a lead validation swap (#2591, part of #934). It replays one
+workflow's fixtures twice through the HEAD engine, once with the committed
+definition and once with the candidate in `swap/candidates/<candidate>.json`
+swapped in, and compares the two with this gate's comparator. Same engine on both
+sides, so no `expected-changes.json` entry is read or needed.
+
+What differs by construction is set aside and listed rather than compared: the
+replaced step's own step row, the code bundle names, the run's estimated cost (a
+code step is priced, a lead validation step is not) and the cached definition in
+KV. Every other difference fails unless the candidate's `gate_accepted` names it
+(same shape as an `expected-changes.json` entry), and an accepted entry that
+matches nothing fails too. Each differing fixture is printed with what the
+validation step decided on each side and the check behind it.
+
+The optional second argument seeds a defect in one check, to see the mode name
+it. The mode reaches the replay as text bindings (`MONEY_GATE_CANDIDATE`,
+`MONEY_GATE_CANDIDATE_SIDE`, `MONEY_GATE_CANDIDATE_SEED`) set in
+`vitest.money-gate.config.mts`; unset, the gate replays as always. The logic is
+`swap/ab.ts`; the grid (instrument 1) and the real traffic replay (instrument 3)
+are described in `docs/nodes/lead-validation.md`.
+
 ## The base on a dispatched Deploy
 
 A Deploy that was DISPATCHED rather than pushed (the Dependabot auto-merge starts
