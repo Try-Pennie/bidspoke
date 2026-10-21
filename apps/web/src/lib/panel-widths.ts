@@ -14,9 +14,9 @@
  * required prop, so the compiler now enforces the single source.
  */
 
-export type PanelKind = 'form' | 'code' | 'test' | 'execution' | 'versions'
+export type PanelKind = 'form' | 'code' | 'checks' | 'test' | 'execution' | 'versions'
 
-export const PANEL_KINDS: readonly PanelKind[] = ['form', 'code', 'test', 'execution', 'versions']
+export const PANEL_KINDS: readonly PanelKind[] = ['form', 'code', 'checks', 'test', 'execution', 'versions']
 
 export const PANEL_MIN_WIDTH = 280
 // Raised from 800: a code panel wide enough for a long line is worth allowing
@@ -30,6 +30,10 @@ export const PANEL_MAX_WIDTH = 1000
 export const PANEL_WIDTH_DEFAULTS: Record<PanelKind, number> = {
   form: 320,
   code: 540,
+  // The lead validation step's ordered checks and their rule builder (#2595).
+  // Its settled design (docs/design/lead-validation-node.html) was drawn with
+  // the panel at 469; at the form width the check rows and conditions truncate.
+  checks: 469,
   test: 540,
   execution: 420,
   versions: 340,
@@ -55,13 +59,16 @@ export function clampPanelWidth(value: number): number | null {
 
 /** Which panel kind a ConfigPanel is, given the node type it is configuring. */
 export function configPanelKind(nodeType: string | undefined): PanelKind {
-  return nodeType === 'code' ? 'code' : 'form'
+  if (nodeType === 'code') return 'code'
+  if (nodeType === 'lead_validation') return 'checks'
+  return 'form'
 }
 
 // Kinds that inherit the single width saved before this split. Carrying it onto
 // the form-shaped panels keeps an existing arrangement intact; carrying it onto
 // the code and payload panels would re-apply the narrow width that made a
-// script unreadable, which is the complaint this exists to fix.
+// script unreadable, which is the complaint this exists to fix. The checks panel
+// postdates that width and truncates at it, so it does not inherit it either.
 const KINDS_INHERITING_LEGACY_WIDTH: readonly PanelKind[] = ['form', 'versions']
 
 /**
