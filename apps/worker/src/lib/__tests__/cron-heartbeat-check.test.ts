@@ -4,6 +4,9 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 vi.mock('../slack', () => ({
   sendCronHeartbeatAlert: vi.fn(async () => true),
   sendCronHeartbeatRecoveryAlert: vi.fn(async () => true),
+  // A long run of checks lets the jobs this file does not touch go dark together (#2117).
+  sendCronHeartbeatGroupAlert: vi.fn(async () => true),
+  sendCronHeartbeatGroupRecoveryAlert: vi.fn(async () => true),
 }))
 
 import { sendCronHeartbeatAlert, sendCronHeartbeatRecoveryAlert } from '../slack'

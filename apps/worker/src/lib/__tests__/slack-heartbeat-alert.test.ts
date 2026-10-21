@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendCronHeartbeatAlert } from '../slack'
+import { sendCronHeartbeatAlert, sendCronHeartbeatGroupAlert, sendCronHeartbeatGroupRecoveryAlert } from '../slack'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
 
@@ -76,9 +76,8 @@ describe('sendCronHeartbeatAlert', () => {
     const text = textOf(post)
     expect(text).toContain('~90 minutes ago')
     expect(text).toContain(job.dependents)
-    // The outcome, recorded per invocation, is the fact that decides the remedy.
-    expect(text).toContain("this run's own outcome")
-    expect(text).toContain('Cloudflare records for each invocation')
+    // Whether the next run finishes is the fact that decides the remedy (#2578).
+    expect(text).toContain('whether the next run of this job finishes')
     expect(text).toContain('next scheduled run tries again on its own')
     // The remedy for a dark trigger would send the reader to the wrong place.
     expect(text).not.toContain('is dark')
@@ -107,9 +106,36 @@ describe('sendCronHeartbeatAlert', () => {
     expect(text).not.toContain('inside its allowance')
   })
 
-  it('tells the reader what an ok outcome means: the run finished late', async () => {
+  // #2578. On 2026-10-21 the 04:00 UTC `*/15` run was killed and left NO
+  // outcome record, while Cloudflare's retry half an hour later, carrying the
+  // same scheduled time, ended `ok`. The old fix line said Cloudflare records an
+  // outcome for each invocation and that an ok outcome means the run finished
+  // late, so a reader following it found the retry's `ok` and concluded the
+  // original had finished. Neither half was ever measured (L11, L460).
+  it('does not claim Cloudflare records an outcome for every run, and says a killed run can leave none', async () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
-    expect(textOf((await lastPost()))).toMatch(/outcome is ok.*finished after this check looked/i)
+    const text = textOf((await lastPost()))
+    expect(text).not.toMatch(/records? (an outcome )?for (each|every) invocation/i)
+    expect(text).not.toContain("this run's own outcome, which Cloudflare records")
+    expect(text).toContain('can leave no outcome record at all')
+  })
+
+  it('does not let an ok outcome under the run\'s scheduled time stand in for the run itself, since a retry carries it too', async () => {
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
+    const text = textOf((await lastPost()))
+    expect(text).not.toMatch(/outcome is ok the run finished after this check looked/i)
+    expect(text).not.toContain('nothing needs changing at all')
+    expect(text).toContain('under the same scheduled time')
+    expect(text).toMatch(/`ok` outcome at that scheduled time can be the retry's rather than this run's/)
+  })
+
+  it('names what to read instead: whether the next run finishes, and the takeover line with its previous_age_ms', async () => {
+    await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
+    const fix = (await lastPost()).blocks.map((b: { text: { text: string } }) => b.text.text).find((t: string) => t.startsWith('*How to fix:*'))
+    expect(fix).toContain('whether the next run of this job finishes')
+    expect(fix).toContain('an all-clear is posted here when one does')
+    expect(fix).toContain('`[cron-once] took over`')
+    expect(fix).toContain('`previous_age_ms`')
   })
 
   it('names no likely cause, and no resource outcome, for a vanished run', async () => {
@@ -181,7 +207,7 @@ describe('sendCronHeartbeatAlert', () => {
     expect(text).toContain('has not run in ~3h')
     expect(text).toContain('wrangler.toml')
     expect(text).not.toContain('never finished')
-    expect(text).not.toContain("this run's own outcome")
+    expect(text).not.toContain('took over')
   })
 
   it('points a cron of another Worker at that Worker, not at this one\'s wrangler.toml (#1949)', async () => {
@@ -235,5 +261,129 @@ describe('sendCronHeartbeatAlert', () => {
     await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'stale', 3 * 3_600_000, standing, now)
     expect(textOf((await lastPost()))).not.toContain('nothing about it has changed')
     expect(textOf((await lastPost()))).toContain('same problem as before')
+  })
+})
+
+// #2117 A. One page for a schedule whose jobs are all dark together, and one for
+// the unfinished jobs of one run, each listing the jobs it is about.
+describe('sendCronHeartbeatGroupAlert (#2117)', () => {
+  const five = [
+    { label: 'Partner reachability probe', dependents: 'a partner firewall block is no longer noticed', ageMs: 18 * 60_000 },
+    { label: 'Incident record drain', dependents: 'alert incidents stop reaching the incident record', ageMs: 18 * 60_000 },
+    { label: 'Database memory check', dependents: 'the database running short of memory goes unreported', ageMs: 18 * 60_000 },
+  ]
+  // 21:30 UTC on 2026-10-14 is 5:30 PM EDT.
+  const missed = { status: 'stale' as const, triggerCron: '*/5 * * * *', runAt: '2026-10-14T21:30:00.400Z', jobs: five }
+  const NOW = Date.parse('2026-10-14T21:48:35Z')
+
+  it('posts nothing and reports false when the org has no Slack connection', async () => {
+    expect(await sendCronHeartbeatGroupAlert(makeSupabase(null), 'org-1', missed, null, NOW)).toBe(false)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('says the schedule is dark, when its jobs last started, and lists every job with what stops', async () => {
+    expect(await sendCronHeartbeatGroupAlert(makeSupabase(connection), 'org-1', missed, null, NOW)).toBe(true)
+    const post = await lastPost()
+    expect(post.blocks[0].text.text).toBe('Every job that runs every 5 minutes is dark')
+    const text = textOf(post)
+    expect(text).toContain('None of the 3 jobs that run every 5 minutes has started a run since Oct 14, 5:30 PM EDT (~19 minutes ago)')
+    for (const j of five) {
+      expect(text).toContain(`*${j.label}*`)
+      expect(text).toContain(j.dependents)
+    }
+    // The fallback names every job, so a reader of the notification knows what is paused.
+    for (const j of five) expect(post.text).toContain(j.label)
+  })
+
+  it('sends the reader to what the jobs share: the schedule and Cloudflare, not one job', async () => {
+    await sendCronHeartbeatGroupAlert(makeSupabase(connection), 'org-1', missed, null, NOW)
+    const fix = (await lastPost()).blocks.map((b: { text: { text: string } }) => b.text.text).find((t: string) => t.startsWith('*How to fix:*'))
+    expect(fix).toContain('cloudflarestatus.com')
+    expect(fix).toContain('wrangler.toml `[triggers]`')
+    expect(fix).not.toContain('took over')
+  })
+
+  it('keeps the schedule string to its last line', async () => {
+    await sendCronHeartbeatGroupAlert(makeSupabase(connection), 'org-1', missed, null, NOW)
+    const sections = (await lastPost()).blocks.slice(1).map((b: { text: { text: string } }) => b.text.text)
+    expect(sections.slice(0, -1).join('\n')).not.toContain('*/5 * * * *')
+    expect(sections.at(-1)).toContain('*/5 * * * *')
+  })
+
+  it('says still, and that it is a reminder, on a reminder', async () => {
+    const standing = { since: new Date(NOW - 6 * 3_600_000).toISOString(), alerts: 1 }
+    await sendCronHeartbeatGroupAlert(makeSupabase(connection), 'org-1', missed, standing, NOW)
+    const post = await lastPost()
+    expect(post.blocks[0].text.text).toBe('Every job that runs every 5 minutes is still dark')
+    expect(textOf(post)).toContain('reminder 2')
+  })
+
+  it('names another Worker\'s trigger file for its own schedule (#1949)', async () => {
+    await sendCronHeartbeatGroupAlert(makeSupabase(connection), 'org-1', { ...missed, triggerCron: '* * * * *', worker: 'bidspoke-worker-ops' }, null, NOW)
+    const text = textOf(await lastPost())
+    expect(text).toContain('wrangler.ops.toml')
+    expect(text).not.toContain('wrangler.toml `[triggers]`')
+  })
+
+  // The 2026-10-21 04:00 UTC `*/15` run, 12:00 AM EDT.
+  const run = {
+    status: 'vanished' as const,
+    triggerCron: '*/15 * * * *',
+    runAt: '2026-10-21T04:00:00.000Z',
+    jobs: [
+      { label: 'Buyer sales checks', dependents: 'nothing is comparing the buyer ledgers', ageMs: 11 * 60_000 },
+      { label: 'Click buyer path checks', dependents: 'nothing notices a click buyer check that cannot answer', ageMs: 11 * 60_000 },
+    ],
+  }
+  const RUN_NOW = Date.parse('2026-10-21T04:12:05Z')
+
+  it('says the jobs of one run started and never finished, naming the run and every job', async () => {
+    await sendCronHeartbeatGroupAlert(makeSupabase(connection), 'org-1', run, null, RUN_NOW)
+    const post = await lastPost()
+    expect(post.blocks[0].text.text).toBe('2 jobs of one scheduled run started and never finished')
+    const text = textOf(post)
+    expect(text).toContain('The run scheduled for Oct 21, 12:00 AM EDT started these jobs ~11 minutes ago and none of them has finished')
+    for (const j of run.jobs) {
+      expect(text).toContain(`*${j.label}*`)
+      expect(text).toContain(j.dependents)
+      expect(post.text).toContain(j.label)
+    }
+    expect(text).not.toContain('is dark')
+  })
+
+  it('gives the run the same advice as one job, about these jobs, and no claim that every invocation has an outcome (#2578)', async () => {
+    await sendCronHeartbeatGroupAlert(makeSupabase(connection), 'org-1', run, null, RUN_NOW)
+    const fix = (await lastPost()).blocks.map((b: { text: { text: string } }) => b.text.text).find((t: string) => t.startsWith('*How to fix:*'))
+    expect(fix).toContain('whether the next run of these jobs finishes')
+    expect(fix).toContain('can leave no outcome record at all')
+    expect(fix).toContain('`[cron-once] took over`')
+    expect(fix).not.toMatch(/for (each|every) invocation/)
+  })
+})
+
+describe('sendCronHeartbeatGroupRecoveryAlert (#2117)', () => {
+  const recovery = {
+    alertedAt: '2026-10-21T04:12:05.000Z',
+    endedAt: '2026-10-21T04:15:58.000Z',
+    jobs: [
+      { label: 'Buyer sales checks', sameRun: false },
+      { label: 'Click buyer path checks', sameRun: true },
+    ],
+  }
+
+  it('posts nothing and reports false when the org has no Slack connection', async () => {
+    expect(await sendCronHeartbeatGroupRecoveryAlert(makeSupabase(null), 'org-1', recovery, Date.parse('2026-10-21T04:16:05Z'))).toBe(false)
+    expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('is one Recovered message naming each job with what its completion shows, and the timing once', async () => {
+    expect(await sendCronHeartbeatGroupRecoveryAlert(makeSupabase(connection), 'org-1', recovery, Date.parse('2026-10-21T04:16:05Z'))).toBe(true)
+    const post = await lastPost()
+    expect(post.blocks[0].text.text).toBe('Recovered')
+    const text = textOf(post)
+    expect(text).toContain('*Buyer sales checks* has finished a run since, so it is running again.')
+    expect(text).toContain('*Click buyer path checks* finished the run reported as never finished, late.')
+    expect(text.match(/alert fired at/g)).toHaveLength(1)
+    expect(post.text).toBe('Recovered: Buyer sales checks, Click buyer path checks')
   })
 })
