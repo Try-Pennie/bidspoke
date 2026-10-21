@@ -4069,6 +4069,12 @@ export interface PartnerPageLivePayload {
   since: string
   /** For `channel`: the runs that measured the channel since `since`, and how many missed (#2263). */
   checks?: { runs: number; misses: number }
+  /**
+   * For `channel`: it paged on one miss rather than two in a row (#2579), because
+   * the record of the run before could not be read (`unread`) or this miss could
+   * not be saved for the next run (`unsaved`).
+   */
+  firstMissOnly?: 'unread' | 'unsaved'
   repeat: string | null
   at: number
 }
@@ -4101,6 +4107,9 @@ export async function sendPartnerPageLiveAlert(
           (isIdleShutdownRefusal(payload.reason)
             ? " Realtime words a join this way when it arrives while Realtime is closing this project's idle connection, so it is not a pool size setting in Bidspoke. " +
               'The check retries that refusal, so here every retry was refused too: look in the Realtime logs for a shutdown or a connection error at this time.'
+            : '') +
+          (payload.firstMissOnly
+            ? ` This check pages after two misses in a row, but it could not ${payload.firstMissOnly === 'unread' ? 'read whether the run before this one missed' : 'save this miss for the next run to see'}, so it paged on this one.`
             : ''),
       ]
     : [
