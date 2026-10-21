@@ -108,7 +108,9 @@
    "check": "No block of text in the main content wraps so that its last line holds a single word."},
   {"id": "D28", "decision": "An open dropdown's highlighted row is pale grey (#F1EFEA) behind dark text; a rule for every dropdown.", "why": "Round 27, Dan 2026-10-21.", "requirement": "R24",
    "frames": ["add-salesforce-new-org"],
-   "check": "In the open Org menu, the highlighted option (aria-selected true) has a #F1EFEA background and graphite #343434 text, never navy, blue or white."}
+   "check": "In the open Org menu, the highlighted option (aria-selected true) has a #F1EFEA background and graphite #343434 text, never navy, blue or white."},
+  {"id": "D29", "decision": "On a highlighted row, an option's grey second line is a darker grey (#666D7E) so it stays readable; every other grey hint is unchanged.", "why": "Round 28, Dan 2026-10-21.", "requirement": "R24",
+   "verify": "elsewhere", "provenBy": "apps/web/src/lib/__guards__/dropdown-highlight-guard.test.ts, which holds the second line on every dropdown's highlighted row to #666D7E and measures it at 4.5 to 1 or more on the highlight. No frame draws a highlighted option with a second line: the one open menu, on add-salesforce-new-org, offers only Use <address> as a new org."}
  ],
  "exceptions": [],
  "idioms": [

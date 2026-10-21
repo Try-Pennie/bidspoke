@@ -27,6 +27,9 @@ const config: Config = {
         hint: '#697081',
         // An open dropdown's highlighted row, every dropdown (#2338 round 27, Dan 2026-10-21).
         highlight: '#F1EFEA',
+        // A grey second line on that highlighted row, where `hint` measures 4.31 to 1:
+        // this measures 4.51 to 1 on the highlight (#2338 round 28, Dan 2026-10-21).
+        'hint-on-highlight': '#666D7E',
         // The partners page's thin beige lines (#2317, the settled design): `line`
         // around a control box, `line-soft` between sections.
         line: '#DDD6CA',

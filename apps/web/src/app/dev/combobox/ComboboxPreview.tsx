@@ -3,6 +3,8 @@
 import { useState } from 'react'
 import { Combobox, type ComboboxOption } from '@/components/ui/Combobox'
 import { Field } from '@/components/ui/form'
+import FieldAutocomplete from '@/components/rule-builder/FieldAutocomplete'
+import TemplateTextarea from '@/components/canvas/TemplateTextarea'
 
 const ORGS: ComboboxOption[] = [
   { value: 'achieve', label: 'Achieve', hint: 'achieve.my.salesforce.com' },
@@ -52,10 +54,25 @@ function Frame({ name, label, initial = '', load, newValue, emptyMessage, placeh
   )
 }
 
+const REFS = ['steps.credit.output.score', 'steps.credit.output.tradelines', 'steps.enrich.output.state', 'trigger.payload.email', 'env.ACHIEVE_UTM_SOURCE']
+
+/** The rule builder's field list and the canvas reference list, the two other dropdowns (round 27). */
+function ListFrame({ name }: { name: 'rules' | 'canvas' }) {
+  const [value, setValue] = useState('')
+  return (
+    <section data-frame={name} className="h-[26rem] rounded-xl border border-line bg-white p-4">
+      <p className="mb-1 text-xs font-medium text-gray-600">{name === 'rules' ? 'Rule builder field' : 'Canvas template'}</p>
+      {name === 'rules'
+        ? <FieldAutocomplete value={value} onChange={setValue} suggestions={REFS} className="input font-mono" />
+        : <TemplateTextarea value={value} onChange={setValue} refs={REFS} className="textarea font-mono" />}
+    </section>
+  )
+}
+
 export function ComboboxPreview() {
   return (
     <main className="min-h-screen bg-beige px-4 py-6 text-graphite sm:px-8">
-      <h1 className="mb-4 text-lg font-semibold">Combobox preview</h1>
+      <h1 className="mb-4 text-lg font-semibold">Dropdown preview</h1>
       <div className="grid max-w-5xl grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <Frame name="chosen" label="Org" initial="achieve" load={loaders.orgs} newValue={NEW_ORG} />
         <Frame name="open" label="Org" initial="pennie" load={loaders.orgs} newValue={NEW_ORG} />
@@ -65,6 +82,8 @@ export function ComboboxPreview() {
         <Frame name="slow" label="Org" load={loaders.hanging} />
         <Frame name="stalled" label="Org" load={loaders.hanging} />
         <Frame name="many" label="Folder" load={loaders.many} placeholder="Choose a folder" />
+        <ListFrame name="rules" />
+        <ListFrame name="canvas" />
       </div>
     </main>
   )

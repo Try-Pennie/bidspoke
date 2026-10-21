@@ -83,9 +83,8 @@ export default function FieldAutocomplete({ value, onChange, suggestions, placeh
               role="option"
               aria-selected={i === activeIdx}
               onMouseDown={(e) => { e.preventDefault(); select(s) }}
-              className={`cursor-pointer px-2 py-1 font-mono ${
-                i === activeIdx ? 'bg-p-blue-light text-p-blue-dark' : 'text-gray-700 hover:bg-beige'
-              }`}
+              // The row colours are every dropdown's (globals.css, #2338 round 27).
+              className={`autocomplete-item px-2 py-1 ${i === activeIdx ? 'autocomplete-item-active' : 'autocomplete-item-idle'}`}
             >
               {s}
             </li>

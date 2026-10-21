@@ -361,6 +361,18 @@ html {
   .suggest-item-active {
     @apply bg-highlight;
   }
+  /* The rule builder's field list and the canvas reference list (FieldAutocomplete,
+     TemplateTextarea): a monospace row whose padding each list sets, highlighted
+     like every dropdown (round 27), under the keys or the mouse. */
+  .autocomplete-item {
+    @apply cursor-pointer font-mono text-graphite;
+  }
+  .autocomplete-item-idle {
+    @apply hover:bg-highlight;
+  }
+  .autocomplete-item-active {
+    @apply bg-highlight;
+  }
   /* The Combobox (#2338, components/ui/Combobox.tsx): a looked up list. Closed it
      is the Select's trigger (or, for a typed new value, the plain box); open, a
      menu as wide as the control. The highlighted row (under the mouse or the
@@ -399,6 +411,11 @@ html {
   }
   .combobox-item-hint {
     @apply block text-xs text-hint;
+  }
+  /* On the highlighted row the hint grey measures 4.31 to 1, so the second line
+     takes the darker grey there (round 28); every other hint is unchanged. */
+  .combobox-item-active .combobox-item-hint {
+    @apply text-hint-on-highlight;
   }
   .combobox-note {
     @apply flex items-center gap-2 px-2 py-1.5 text-sm text-hint text-pretty;
