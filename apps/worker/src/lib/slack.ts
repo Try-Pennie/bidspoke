@@ -573,6 +573,63 @@ export async function sendLeadValidationConfigAlert(
   return (await postMessage(slack.bot_token, channel, blocks, `Lead validation setting missing on ${payload.workflow_name}: ${payload.namespace}`)) !== null
 }
 
+export interface LeadValidationRejectionAlertPayload {
+  workflow_id: string
+  workflow_name: string
+  /** The validation step. */
+  namespace: string
+  /** Finished live runs in the judged window, and in the baseline before it. */
+  runs: number
+  baseline_runs: number
+  baseline_days: number
+  shifts: import('./lead-validation-rejection-watch').RejectionShift[]
+  window_minutes: number
+  /** When the judged window ended. */
+  window_end: string
+  app_url: string
+}
+
+const pct = (share: number) => `${(share * 100).toFixed(1)}%`
+
+/**
+ * A rejection reason's share of a workflow's leads moved against the week
+ * before (#2592, lead-validation-rejection-watch.ts). Sent after a lead
+ * validation swap, and its page is the swap's rollback trigger, so it says how
+ * to roll back. Counts and shares only, never a lead. Returns whether it
+ * reached Slack.
+ */
+export async function sendLeadValidationRejectionAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: LeadValidationRejectionAlertPayload,
+): Promise<boolean> {
+  const n = (v: number) => v.toLocaleString('en-US')
+  const lines = payload.shifts.map((s) =>
+    `• ${s.bucket}: ${n(s.count)} of ${n(payload.runs)} (${pct(s.share)}), against ${pct(s.baselineShare)} (${n(s.baselineCount)} of ${n(payload.baseline_runs)}) in the ${payload.baseline_days} days before. It ${s.direction}.`,
+  )
+  const hours = payload.window_minutes / 60
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Lead Rejections Changed', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${payload.workflow_name}*: in the ${hours} hours to ${etTime(payload.window_end)}, the \`${payload.namespace}\` step rejected leads at different shares than in the week before.`,
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*What to do:* if this step was changed recently, roll it back: open the workflow, open Version history, and restore the version saved before the change. If nothing changed in the workflow, the leads this source sends have changed. An all clear follows when the shares are back to the week before.`,
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${payload.app_url}/workflows/${payload.workflow_id}|Open workflow →>` } },
+  ]
+  return (await postMessage(slack.bot_token, channel, blocks, `Lead rejections changed on ${payload.workflow_name}`)) !== null
+}
+
 export interface FailureSpikeAlertPayload {
   workflow_id: string
   workflow_name: string
