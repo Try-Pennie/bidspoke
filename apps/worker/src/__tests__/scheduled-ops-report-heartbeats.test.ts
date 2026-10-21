@@ -122,6 +122,12 @@ describe('the ops report minute jobs have their own heartbeat (#2519)', () => {
     await fireMinute(kv)
     // The job stops: no tick stamps it again, and the check looks 11 minutes on.
     const later = Date.now() + 11 * MIN
+    // The other minute jobs go on running. Were they all to stop too, the minute
+    // schedule itself would have stopped, which is one page for the schedule (#2117).
+    for (const other of heartbeat.CRON_JOBS.filter((j) => j.triggerCron === '* * * * *' && !j.worker && j.id !== id)) {
+      await heartbeat.writeHeartbeat(kv as unknown as KVNamespace, other.id, later - 1_000)
+      await heartbeat.writeHeartbeatCompleted(kv as unknown as KVNamespace, other.id, later - 500)
+    }
     const results = await heartbeat.runHeartbeatChecks(heartbeatSupabase(), kv as unknown as KVNamespace, later)
     const mine = results.find((r) => r.jobId === id)
     expect(mine?.status, id).toBe('stale')
