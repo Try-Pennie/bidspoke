@@ -16,8 +16,12 @@
  *    RECEIPT_DEADLINE_MS of its first ping (re-sent every PING_RETRY_MS, since
  *    Realtime starting up can lose the first, ADR 0012) in each of the
  *    MEASURE_ROUNDS rounds, or the join was refused on every attempt it
- *    retries. That is a broken channel for every organization, not a threshold
- *    judgement, so it pages on the run that sees it.
+ *    retries, on CONSECUTIVE_MISSES_TO_PAGE measured runs in a row (#2579). One
+ *    such run is recorded and pages nothing: a Realtime wake up that took 44
+ *    seconds outlasted both rounds once in 1,361 runs (2026-10-21 08:00 UTC),
+ *    and the next run received. Dan decided on 2026-10-21: two misses in a
+ *    row, at any hour. A state that cannot be read or saved pages on the one
+ *    miss, since the streak it would wait on cannot be kept.
  *  - `monitor`: the check could not run (no secret, no monitor organization,
  *    sign in or the ping failing) for UNMEASURED_ALERT_AFTER_MS on the clock, so
  *    a dead check is never silence (L557, L98). It never counts as a working
@@ -79,6 +83,14 @@ export const JOIN_ATTEMPTS = 3
  * connection wakes it again.
  */
 export const MEASURE_ROUNDS = 2
+/**
+ * Measured runs in a row that must miss before the channel pages (#2579, Dan,
+ * 2026-10-21). A not_received and a join_refused both count: a refusal that
+ * lasts is in every run, and the one seen to page alone (#2263) was a single
+ * run landing on Realtime's idle shutdown. A run that could not measure, or
+ * sent while today's partition was absent, neither counts nor breaks the streak.
+ */
+export const CONSECUTIVE_MISSES_TO_PAGE = 2
 /** The wait between those joins: the live run saw the partition 0 ms after the first refusal. */
 export const JOIN_RETRY_MS = 3_000
 /** A check that cannot run for this long, on the clock, pages. */
@@ -239,6 +251,17 @@ interface ChannelWindow {
   lastMissAt: string
   runs: number
   misses: number
+  /** Measured runs in a row, ending with the latest, that missed (#2579). */
+  consecutive: number
+  /** The first miss of that streak, the incident's start when it pages (FIRST_SEEN). Present while `consecutive` is above 0. */
+  consecutiveSince?: string
+  /**
+   * The window reached CONSECUTIVE_MISSES_TO_PAGE, so it is an incident's and is
+   * kept until the all-clear, muted or not. A window that never reached it is
+   * dropped by the next receipt, so a lone miss is never counted into a later
+   * alert's "since".
+   */
+  confirmed?: true
 }
 
 /** A window with no miss for this long has lapsed, the same span a standing record outlives its last run. */
@@ -246,15 +269,29 @@ const CHANNEL_WINDOW_LAPSE_MS = CONDITION_TTL_SECONDS * 1000
 
 const count = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0
 
-/** A stored state, with any field that does not read as its type dropped rather than trusted. */
+const isTime = (v: unknown): v is string => typeof v === 'string' && Number.isFinite(Date.parse(v))
+
+/**
+ * A stored state. A field that does not read as its type is dropped rather than
+ * trusted, except the channel window: it carries the miss streak, and a streak
+ * read as zero because it was garbled would let a second miss in a row pass
+ * unpaged, so a window present but unreadable throws like unparseable JSON.
+ * A window written before #2579 has no streak, and reads as none.
+ */
 function readState(raw: string): MonitorState {
   const parsed = JSON.parse(raw) as Record<string, unknown>
   const state: MonitorState = {}
-  if (typeof parsed.unmeasuredSince === 'string' && Number.isFinite(Date.parse(parsed.unmeasuredSince))) state.unmeasuredSince = parsed.unmeasuredSince
-  const w = parsed.channelWindow as Record<string, unknown> | undefined
-  if (w && typeof w.since === 'string' && Number.isFinite(Date.parse(w.since)) && typeof w.lastMissAt === 'string' && Number.isFinite(Date.parse(w.lastMissAt)) && count(w.runs) && count(w.misses)) {
-    state.channelWindow = { since: w.since, lastMissAt: w.lastMissAt, runs: w.runs, misses: w.misses }
+  if (isTime(parsed.unmeasuredSince)) state.unmeasuredSince = parsed.unmeasuredSince
+  if (parsed.channelWindow === undefined) return state
+  const w = parsed.channelWindow as Record<string, unknown> | null
+  const consecutive = w?.consecutive ?? 0
+  if (!w || !isTime(w.since) || !isTime(w.lastMissAt) || !count(w.runs) || !count(w.misses) || !count(consecutive) ||
+    (consecutive > 0 && !isTime(w.consecutiveSince)) || (w.confirmed !== undefined && w.confirmed !== true)) {
+    throw new Error('the stored channel window does not read as one')
   }
+  state.channelWindow = { since: w.since, lastMissAt: w.lastMissAt, runs: w.runs, misses: w.misses, consecutive }
+  if (consecutive > 0) state.channelWindow.consecutiveSince = w.consecutiveSince as string
+  if (w.confirmed === true) state.channelWindow.confirmed = true
   return state
 }
 
@@ -325,10 +362,13 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
   const nowMs = deps.now()
   let state: MonitorState = {}
   let storedState: string | null = null
+  // Whether the miss streak is known. Unknown is never read as zero (#2579).
+  let stateRead = true
   try {
     storedState = await deps.kv.get(PARTNER_PAGE_MONITOR_STATE_KEY)
     if (storedState) state = readState(storedState)
   } catch (e) {
+    stateRead = false
     summary.errors.push(`state unreadable: ${formatErr(e)}`)
   }
   // A window whose last miss has lapsed is not carried into this run, on any branch.
@@ -381,11 +421,14 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
     summary.allClears.push(id)
     return true
   }
-  const saveState = async (next: MonitorState) => {
+  /** True once the state is stored. */
+  const saveState = async (next: MonitorState): Promise<boolean> => {
     try {
       await deps.kv.put(PARTNER_PAGE_MONITOR_STATE_KEY, JSON.stringify(next))
+      return true
     } catch (e) {
       summary.errors.push(`state write failed: ${formatErr(e)}`)
+      return false
     }
   }
 
@@ -419,29 +462,55 @@ export async function runPartnerPageMonitor(deps: MonitorDeps): Promise<MonitorS
   const missed = outcome.kind === 'not_received' || outcome.kind === 'join_refused'
   let window = state.channelWindow
   if (missed) {
-    window = { since: window?.since ?? iso(nowMs), lastMissAt: iso(nowMs), runs: (window?.runs ?? 0) + 1, misses: (window?.misses ?? 0) + 1 }
-  } else if (window) {
-    window = { ...window, runs: window.runs + 1 }
+    const consecutive = (window?.consecutive ?? 0) + 1
+    window = {
+      since: window?.since ?? iso(nowMs),
+      lastMissAt: iso(nowMs),
+      runs: (window?.runs ?? 0) + 1,
+      misses: (window?.misses ?? 0) + 1,
+      consecutive,
+      consecutiveSince: window?.consecutive ? window.consecutiveSince : iso(nowMs),
+    }
+    // An unreadable streak pages on this miss below, so the window is an incident's.
+    if (consecutive >= CONSECUTIVE_MISSES_TO_PAGE || state.channelWindow?.confirmed || !stateRead) window.confirmed = true
+  } else if (window?.confirmed) {
+    window = { since: window.since, lastMissAt: window.lastMissAt, runs: window.runs + 1, misses: window.misses, consecutive: 0, confirmed: true }
+  } else {
+    // A lone miss that opened no incident ends with this receipt; job_runs keeps it.
+    window = undefined
   }
   const next: MonitorState = { channelWindow: window }
   // Compared with what is stored, so a window that lapsed above is written away too.
-  if (JSON.stringify(next) !== (storedState ?? '{}')) await saveState(next)
+  const saved = JSON.stringify(next) === (storedState ?? '{}') || (await saveState(next))
   await allClear(MONITOR_ID, PARTNER_PAGE_MONITOR_UNMEASURED_KEY, 'The partners page delivery check', 'partners page delivery check',
     `has run for ${RECOVERY_REARM_MINUTES} minutes`)
 
-  if (outcome.kind === 'not_received' || outcome.kind === 'join_refused') {
-    const checks = { runs: window?.runs ?? 1, misses: window?.misses ?? 1 }
+  // A miss always leaves a window (set above); the second test narrows it.
+  if ((outcome.kind === 'not_received' || outcome.kind === 'join_refused') && window) {
+    const streak = window
+    // Every miss is a sighting: a standing incident's all-clear waits the rearm
+    // window from it, whether or not this run pages.
+    await markSpikeSeen(deps.kv, RECOVERY_PREFIX, CHANNEL_ID, nowMs)
+    const since = (await deps.kv.get(recoveryKey(RECOVERY_PREFIX, CHANNEL_ID))) ?? streak.consecutiveSince ?? iso(nowMs)
+    // Pages on the second miss in a row. When the streak could not be read, or
+    // this miss could not be stored for the next run to count, it pages on this
+    // one: waiting for a second miss it cannot see would swallow an outage.
+    const firstMissOnly = streak.consecutive >= CONSECUTIVE_MISSES_TO_PAGE ? undefined : !stateRead ? 'unread' as const : !saved ? 'unsaved' as const : undefined
+    if (streak.consecutive < CONSECUTIVE_MISSES_TO_PAGE && !firstMissOnly) {
+      deps.log(`[partner-page-monitor] miss ${streak.consecutive} in a row, pages if the next run misses too`)
+      await keepIfAlerted(CHANNEL_ID, false, since)
+      return summary
+    }
+    const checks = { runs: streak.runs, misses: streak.misses }
     const reason = outcome.kind === 'join_refused'
       ? `the monitor could not join the channel: ${outcome.reason}`
       : `no notice arrived within ${RECEIPT_DEADLINE_MS / 1000} seconds of the first ping, after ${outcome.pings} ${outcome.pings === 1 ? 'ping' : 'pings'}` +
         (outcome.rounds > 1 ? ', on a fresh connection as on the first' : '')
-    await markSpikeSeen(deps.kv, RECOVERY_PREFIX, CHANNEL_ID, nowMs)
-    const since = (await deps.kv.get(recoveryKey(RECOVERY_PREFIX, CHANNEL_ID))) ?? iso(nowMs)
     const posted = await postStanding({
       kv: deps.kv, key: PARTNER_PAGE_LIVE_KEY, claim, release, targets, nowMs,
       alert: { problem: `channel-${outcome.kind}`, details: [reason] },
       conditionTtlSeconds: CONDITION_TTL_SECONDS, logPrefix: '[partner-page-monitor]', log: deps.log,
-      send: (s, repeat) => deps.senders.live(s, s.default_channel, { problem: 'channel', reason, since: window?.since ?? since, checks, repeat, at: nowMs }),
+      send: (s, repeat) => deps.senders.live(s, s.default_channel, { problem: 'channel', reason, since: streak.since, checks, ...(firstMissOnly ? { firstMissOnly } : {}), repeat, at: nowMs }),
     })
     if (posted) summary.alerts.push(CHANNEL_ID)
     await keepIfAlerted(CHANNEL_ID, posted, since)

@@ -8,8 +8,11 @@
  * waits on a real timer or reaches a network (L524).
  *
  * What it must get right:
- *  - a notice that does not arrive is a broken channel and pages at once; it is
- *    the only thing that pages at launch, and no miss threshold ships;
+ *  - a notice that does not arrive is a broken channel; it pages when the run
+ *    before also missed (#2579, Dan 2026-10-21: two misses in a row, at any
+ *    hour), so one slow Realtime wake up clears on its own while every miss is
+ *    still recorded; a state that cannot be read or saved pages on the one miss
+ *    rather than lose the streak;
  *  - a day can start with no realtime.messages partition (ADR 0012): a join
  *    refused as MissingPartition is retried, and a send made while today's
  *    partition is absent is recorded as not judged, never as a failure;
@@ -40,7 +43,7 @@ import {
 } from '../partner-page-monitor'
 import { readCondition } from '../alert-backoff'
 import { RECOVERY_REARM_MINUTES } from '../alert-recovery'
-import { transitions } from './_incident-events'
+import { outboxEvents, transitions } from './_incident-events'
 
 const MIN = 60 * 1000
 const ORG = '11111111-1111-1111-1111-000000000099'
@@ -377,14 +380,19 @@ describe('runPartnerPageMonitor', () => {
     expect(h.sent).toEqual([])
   })
 
-  it('pages at once when its notice does not arrive, keeps the incident, then sends one all-clear once it has arrived for the rearm window', async () => {
+  it('pages when its notice does not arrive on two runs in a row, keeps the incident, then sends one all-clear once it has arrived for the rearm window', async () => {
     const h = monitorHarness()
     h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
-    const first = await h.run()
-    expect(first.alerts).toEqual(['channel'])
+    expect((await h.run()).alerts).toEqual([])
+    h.clock.now += 5 * MIN
+    const second = await h.run()
+    expect(second.alerts).toEqual(['channel'])
     expect(h.sent.map((s) => s.kind)).toEqual(['live'])
-    expect(h.sent[0].payload).toMatchObject({ problem: 'channel' })
+    expect(h.sent[0].payload).toMatchObject({ problem: 'channel', since: '2026-10-15T17:00:00.000Z', checks: { runs: 2, misses: 2 } })
     expect((await readCondition(h.kv, PARTNER_PAGE_LIVE_KEY))?.alerts).toBe(1)
+    // The incident starts when the condition was first seen (FIRST_SEEN), the
+    // first of the two misses, not the run that paged.
+    expect(outboxEvents(h.kv.store as unknown as Map<string, { value: string }>).find((e) => e.type === 'opened')).toMatchObject({ startedAt: '2026-10-15T17:00:00.000Z' })
 
     h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
     await h.every5(RECOVERY_REARM_MINUTES + 5)
@@ -424,11 +432,12 @@ describe('runPartnerPageMonitor', () => {
     expect(h.sent).toEqual([])
   })
 
-  it('control: when no ping is ever delivered the run still records not_received with every ping counted, and pages', async () => {
+  it('control: when no ping is ever delivered every run records not_received with every ping counted, and the second in a row pages', async () => {
     const h = monitorHarness({ measure: () => measurePartnerPageDelivery(measureDeps(world({ delivers: null })).deps) })
-    const summary = await h.run()
-    expect(summary.alerts).toEqual(['channel'])
-    expect(h.records).toEqual([{ outcome: 'not_received', summary: expect.objectContaining({ pings: RECEIPT_DEADLINE_MS / PING_RETRY_MS, deadline_ms: RECEIPT_DEADLINE_MS, rounds: MEASURE_ROUNDS }) }])
+    const runs = await h.every5(5)
+    expect(runs.map((r) => r.alerts)).toEqual([[], ['channel']])
+    const missed = { outcome: 'not_received', summary: expect.objectContaining({ pings: RECEIPT_DEADLINE_MS / PING_RETRY_MS, deadline_ms: RECEIPT_DEADLINE_MS, rounds: MEASURE_ROUNDS }) }
+    expect(h.records).toEqual([missed, missed])
     expect(h.sent.map((s) => s.kind)).toEqual(['live'])
     expect(h.sent[0].payload).toMatchObject({ problem: 'channel', reason: 'no notice arrived within 10 seconds of the first ping, after 4 pings, on a fresh connection as on the first' })
   })
@@ -440,11 +449,12 @@ describe('runPartnerPageMonitor', () => {
     expect(h.sent).toEqual([])
   })
 
-  it('control: a join refused during an idle shutdown on every attempt still pages', async () => {
+  it('control: a join refused during an idle shutdown on every attempt of two runs in a row still pages', async () => {
     const reason = 'IncreaseConnectionPool: Please increase your connection pool size'
     const h = monitorHarness({ measure: () => measurePartnerPageDelivery(measureDeps(world({ joins: [{ ok: false, reason, missingPartition: false }] })).deps) })
-    expect((await h.run()).alerts).toEqual(['channel'])
-    expect(h.records).toEqual([{ outcome: 'join_refused', summary: { reason, join_attempts: JOIN_ATTEMPTS, rounds: 1 } }])
+    expect((await h.every5(5)).map((r) => r.alerts)).toEqual([[], ['channel']])
+    const refused = { outcome: 'join_refused', summary: { reason, join_attempts: JOIN_ATTEMPTS, rounds: 1 } }
+    expect(h.records).toEqual([refused, refused])
   })
 
   it('the alert counts the runs that missed out of the runs since the first miss, and the count ends with the all-clear', async () => {
@@ -453,19 +463,21 @@ describe('runPartnerPageMonitor', () => {
     const hit: Outcome = { kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 }
     const window = async () => (JSON.parse((await h.kv.get(PARTNER_PAGE_MONITOR_STATE_KEY)) ?? '{}') as { channelWindow?: unknown }).channelWindow
     h.set(miss)
-    await h.run()
-    expect(h.sent[0].payload).toMatchObject({ problem: 'channel', since: '2026-10-15T17:00:00.000Z', checks: { runs: 1, misses: 1 } })
+    await h.every5(5)
+    expect(h.sent[0].payload).toMatchObject({ problem: 'channel', since: '2026-10-15T17:00:00.000Z', checks: { runs: 2, misses: 2 } })
     for (const o of [hit, hit, miss]) {
       h.clock.now += 5 * MIN
       h.set(o)
       await h.run()
     }
-    expect(await window()).toEqual({ since: '2026-10-15T17:00:00.000Z', lastMissAt: '2026-10-15T17:15:00.000Z', runs: 4, misses: 2 })
+    // The lone miss inside the incident counts, and pages nothing on its own.
+    expect(h.sent.map((s) => s.kind)).toEqual(['live'])
+    expect(await window()).toEqual({ since: '2026-10-15T17:00:00.000Z', lastMissAt: '2026-10-15T17:20:00.000Z', runs: 5, misses: 3, consecutive: 1, consecutiveSince: '2026-10-15T17:20:00.000Z', confirmed: true })
     // A run that could not measure is neither a run nor a miss.
     h.clock.now += 5 * MIN
     h.set({ kind: 'unmeasured', reason: 'the ping could not be sent: timeout' })
     await h.run()
-    expect(await window()).toEqual({ since: '2026-10-15T17:00:00.000Z', lastMissAt: '2026-10-15T17:15:00.000Z', runs: 4, misses: 2 })
+    expect(await window()).toEqual({ since: '2026-10-15T17:00:00.000Z', lastMissAt: '2026-10-15T17:20:00.000Z', runs: 5, misses: 3, consecutive: 1, consecutiveSince: '2026-10-15T17:20:00.000Z', confirmed: true })
     h.set(hit)
     await h.every5(RECOVERY_REARM_MINUTES + 10)
     expect(h.sent.filter((s) => s.kind === 'recovery')).toHaveLength(1)
@@ -481,7 +493,13 @@ describe('runPartnerPageMonitor', () => {
     h.clock.now += 5 * MIN
     await h.run()
     const state = JSON.parse((await h.kv.get(PARTNER_PAGE_MONITOR_STATE_KEY)) ?? '{}') as { channelWindow?: unknown }
-    expect(state.channelWindow).toEqual({ since: '2026-10-15T17:00:00.000Z', lastMissAt: '2026-10-15T17:05:00.000Z', runs: 2, misses: 2 })
+    expect(state.channelWindow).toEqual({ since: '2026-10-15T17:00:00.000Z', lastMissAt: '2026-10-15T17:05:00.000Z', runs: 2, misses: 2, consecutive: 2, consecutiveSince: '2026-10-15T17:00:00.000Z', confirmed: true })
+    // Kept through receipts while muted, so the alert after the mute still counts these.
+    h.clock.now += 5 * MIN
+    h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
+    await h.run()
+    const after = JSON.parse((await h.kv.get(PARTNER_PAGE_MONITOR_STATE_KEY)) ?? '{}') as { channelWindow?: unknown }
+    expect(after.channelWindow).toMatchObject({ runs: 3, misses: 2, consecutive: 0 })
   })
 
   it('a window left behind by an incident that lapsed is not carried into the next miss', async () => {
@@ -489,25 +507,26 @@ describe('runPartnerPageMonitor', () => {
     // Its last miss is more than 25 hours before this run.
     await h.kv.put(PARTNER_PAGE_MONITOR_STATE_KEY, JSON.stringify({ channelWindow: { since: '2026-10-14T09:00:00.000Z', lastMissAt: '2026-10-14T15:59:00.000Z', runs: 40, misses: 9 } }))
     h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 4, rounds: 2 })
-    await h.run()
-    expect(h.sent[0].payload).toMatchObject({ since: '2026-10-15T17:00:00.000Z', checks: { runs: 1, misses: 1 } })
+    await h.every5(5)
+    expect(h.sent[0].payload).toMatchObject({ since: '2026-10-15T17:00:00.000Z', checks: { runs: 2, misses: 2 } })
   })
 
-  it('a join refused pages as a broken channel too, naming the refusal', async () => {
+  it('a join refused on two runs in a row pages as a broken channel too, naming the refusal', async () => {
     const h = monitorHarness()
     h.set({ kind: 'join_refused', reason: 'Unauthorized: You do not have permissions', joinAttempts: 1, rounds: 1 })
-    expect((await h.run()).alerts).toEqual(['channel'])
+    expect((await h.every5(5)).map((r) => r.alerts)).toEqual([[], ['channel']])
     expect(h.sent[0].payload).toMatchObject({ problem: 'channel', reason: 'the monitor could not join the channel: Unauthorized: You do not have permissions' })
   })
 
   it('a send while the partition is absent neither pages nor counts toward an all-clear', async () => {
     const h = monitorHarness()
     h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
-    await h.run()
+    await h.every5(5)
+    h.clock.now += 5 * MIN
     h.set({ kind: 'partition_missing_at_send', partitionTomorrow: true, joinAttempts: 1 })
     await h.every5(RECOVERY_REARM_MINUTES + 10)
     expect(h.sent.map((s) => s.kind)).toEqual(['live'])
-    expect(h.records.slice(1).every((r) => r.outcome === 'partition_missing_at_send')).toBe(true)
+    expect(h.records.slice(2).every((r) => r.outcome === 'partition_missing_at_send')).toBe(true)
   })
 
   it('a check that cannot run pages only after 30 minutes on the clock, as its own problem, and stands down when it runs again', async () => {
@@ -529,7 +548,8 @@ describe('runPartnerPageMonitor', () => {
   it('a check that cannot run is never read as a working channel: a standing channel incident gets no all-clear from it', async () => {
     const h = monitorHarness()
     h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
-    await h.run()
+    expect((await h.every5(5)).at(-1)?.alerts).toEqual(['channel'])
+    h.clock.now += 5 * MIN
     h.set({ kind: 'unmeasured', reason: 'the ping could not be sent: timeout' })
     await h.every5(RECOVERY_REARM_MINUTES + 10)
     expect(h.sent.filter((s) => s.kind === 'recovery')).toHaveLength(0)
@@ -554,6 +574,149 @@ describe('runPartnerPageMonitor', () => {
     expect(summary.mode).toBe('silent')
     expect(h.records).toEqual([])
     expect(h.kv.store.size).toBe(0)
+  })
+})
+
+// #2579: on 2026-10-21 at 08:00:38 UTC one run missed after both rounds (a
+// Realtime wake up that took 44 seconds), the 08:05 run received, and the alert
+// paged at 4:01 AM ET. Dan decided it pages only on two misses in a row, at any
+// hour; every miss is still recorded, so the rate stays measurable (L77).
+describe('runPartnerPageMonitor: two misses in a row (#2579)', () => {
+  /** The 08:00:38 UTC run as job_runs recorded it: rounds 2, pings 3, one join. */
+  const MISS_2026_10_21: Outcome = { kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 3, rounds: 2 }
+  const hit: Outcome = { kind: 'received', latencyMs: 180, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 }
+  const refused: Outcome = { kind: 'join_refused', reason: 'Unauthorized: You do not have permissions', joinAttempts: 1, rounds: 1 }
+  const at = (h: ReturnType<typeof monitorHarness>, isoTime: string, o: Outcome) => { h.clock.now = Date.parse(isoTime); h.set(o); return h.run() }
+  const stored = async (h: ReturnType<typeof monitorHarness>) => JSON.parse((await h.kv.get(PARTNER_PAGE_MONITOR_STATE_KEY)) ?? '{}') as { channelWindow?: unknown }
+  const events = (h: ReturnType<typeof monitorHarness>) => transitions(h.kv.store as unknown as Map<string, { value: string }>)
+  const live = (h: ReturnType<typeof monitorHarness>) => h.sent.filter((s) => s.kind === 'live')
+
+  it('the 2026-10-21 08:00 UTC miss followed by a receipt at 08:05 posts nothing, and both runs are recorded', async () => {
+    const h = monitorHarness()
+    const first = await at(h, '2026-10-21T08:00:38Z', MISS_2026_10_21)
+    const second = await at(h, '2026-10-21T08:05:38Z', hit)
+    expect([first.alerts, second.alerts]).toEqual([[], []])
+    expect(h.sent).toEqual([])
+    expect(h.records).toEqual([
+      { outcome: 'not_received', summary: { partition_today: true, partition_tomorrow: true, join_attempts: 1, pings: 3, deadline_ms: RECEIPT_DEADLINE_MS, rounds: 2 } },
+      { outcome: 'received', summary: expect.objectContaining({ latency_ms: 180, rounds: 1 }) },
+    ])
+    expect(await readCondition(h.kv, PARTNER_PAGE_LIVE_KEY)).toBeNull()
+    expect(events(h)).toEqual([])
+    // The lone miss opened no incident, so the receipt drops the window it began.
+    expect((await stored(h)).channelWindow).toBeUndefined()
+    // Nothing was paged, so no all-clear follows either.
+    await h.every5(RECOVERY_REARM_MINUTES + 10)
+    expect(h.sent).toEqual([])
+  })
+
+  it('a later pair counts from its own first miss, never from the lone miss before it', async () => {
+    const h = monitorHarness()
+    await at(h, '2026-10-21T08:00:38Z', MISS_2026_10_21)
+    await at(h, '2026-10-21T08:05:38Z', hit)
+    expect((await at(h, '2026-10-21T09:00:38Z', MISS_2026_10_21)).alerts).toEqual([])
+    expect((await at(h, '2026-10-21T09:05:38Z', MISS_2026_10_21)).alerts).toEqual(['channel'])
+    expect(live(h)).toHaveLength(1)
+    expect(live(h)[0].payload).toMatchObject({ problem: 'channel', since: '2026-10-21T09:00:38.000Z', checks: { runs: 2, misses: 2 } })
+    expect(live(h)[0].payload.firstMissOnly).toBeUndefined()
+    expect(outboxEvents(h.kv.store as unknown as Map<string, { value: string }>).find((e) => e.type === 'opened')).toMatchObject({ startedAt: '2026-10-21T09:00:38.000Z' })
+  })
+
+  it('control: when every run misses it pages on the second run, once, as one incident', async () => {
+    const h = monitorHarness()
+    h.set(MISS_2026_10_21)
+    const runs = await h.every5(30)
+    expect(runs.map((r) => r.alerts)).toEqual([[], ['channel'], [], [], [], [], []])
+    expect(h.records.every((r) => r.outcome === 'not_received')).toBe(true)
+    expect(live(h)).toHaveLength(1)
+    expect(events(h)).toEqual(['opened channel', 'paged channel'])
+  })
+
+  it('a join refused and a notice that does not arrive are two misses in a row', async () => {
+    const h = monitorHarness()
+    expect((await at(h, '2026-10-21T08:00:38Z', refused)).alerts).toEqual([])
+    expect((await at(h, '2026-10-21T08:05:38Z', MISS_2026_10_21)).alerts).toEqual(['channel'])
+  })
+
+  it('a lone join refused followed by a receipt posts nothing, and is recorded', async () => {
+    const h = monitorHarness()
+    await at(h, '2026-10-21T08:00:38Z', refused)
+    await at(h, '2026-10-21T08:05:38Z', hit)
+    expect(h.sent).toEqual([])
+    expect(h.records.map((r) => r.outcome)).toEqual(['join_refused', 'received'])
+  })
+
+  it('a run that could not measure, or sent while the partition was absent, between two misses does not break the streak', async () => {
+    for (const between of [
+      { kind: 'unmeasured', reason: 'the ping could not be sent: timeout' },
+      { kind: 'partition_missing_at_send', partitionTomorrow: true, joinAttempts: 1 },
+    ] satisfies Outcome[]) {
+      const h = monitorHarness()
+      await at(h, '2026-10-21T08:00:38Z', MISS_2026_10_21)
+      expect((await at(h, '2026-10-21T08:05:38Z', between)).alerts).toEqual([])
+      expect((await at(h, '2026-10-21T08:10:38Z', MISS_2026_10_21)).alerts).toEqual(['channel'])
+    }
+  })
+
+  it('inside a standing incident a lone miss posts nothing but holds the all-clear back for the rearm window', async () => {
+    const h = monitorHarness()
+    await at(h, '2026-10-21T08:00:00Z', MISS_2026_10_21)
+    await at(h, '2026-10-21T08:05:00Z', MISS_2026_10_21)
+    await at(h, '2026-10-21T08:10:00Z', hit)
+    expect((await at(h, '2026-10-21T08:15:00Z', MISS_2026_10_21)).alerts).toEqual([])
+    // Receipts from 08:20: without the lone miss the all-clear would be due at 08:35.
+    h.clock.now = Date.parse('2026-10-21T08:20:00Z')
+    h.set(hit)
+    await h.every5(RECOVERY_REARM_MINUTES - 10)
+    expect(h.sent.filter((s) => s.kind === 'recovery')).toHaveLength(0)
+    await h.every5(15)
+    expect(h.sent.filter((s) => s.kind === 'recovery')).toHaveLength(1)
+    expect(live(h)).toHaveLength(1)
+  })
+
+  describe('when the streak cannot be read or kept, a miss pages rather than wait for a second it could not see', () => {
+    it('a state read that fails pages on the one miss, and says why it did not wait', async () => {
+      const h = monitorHarness()
+      const get = h.kv.get
+      h.kv.get = async (k: string) => { if (k === PARTNER_PAGE_MONITOR_STATE_KEY) throw new Error('KV GET failed: 503'); return get(k) }
+      const summary = await at(h, '2026-10-21T08:00:38Z', MISS_2026_10_21)
+      expect(summary.alerts).toEqual(['channel'])
+      expect(summary.errors).toContain('state unreadable: KV GET failed: 503')
+      expect(live(h)[0].payload).toMatchObject({ problem: 'channel', firstMissOnly: 'unread' })
+      expect(h.records.map((r) => r.outcome)).toEqual(['not_received'])
+    })
+
+    it('control: a state read that fails on a run that receives posts nothing', async () => {
+      const h = monitorHarness()
+      const get = h.kv.get
+      h.kv.get = async (k: string) => { if (k === PARTNER_PAGE_MONITOR_STATE_KEY) throw new Error('KV GET failed: 503'); return get(k) }
+      expect((await at(h, '2026-10-21T08:05:38Z', hit)).alerts).toEqual([])
+      expect(h.sent).toEqual([])
+    })
+
+    it('a stored state that does not parse pages on the one miss too', async () => {
+      const h = monitorHarness()
+      await h.kv.put(PARTNER_PAGE_MONITOR_STATE_KEY, '{"channelWindow":')
+      expect((await at(h, '2026-10-21T08:00:38Z', MISS_2026_10_21)).alerts).toEqual(['channel'])
+      expect(live(h)[0].payload).toMatchObject({ firstMissOnly: 'unread' })
+    })
+
+    it('a stored streak that is not a count is unreadable, never read as zero', async () => {
+      const h = monitorHarness()
+      await h.kv.put(PARTNER_PAGE_MONITOR_STATE_KEY, JSON.stringify({ channelWindow: { since: '2026-10-21T07:55:38.000Z', lastMissAt: '2026-10-21T07:55:38.000Z', runs: 1, misses: 1, consecutive: 'one', consecutiveSince: '2026-10-21T07:55:38.000Z' } }))
+      expect((await at(h, '2026-10-21T08:00:38Z', MISS_2026_10_21)).alerts).toEqual(['channel'])
+      expect(live(h)[0].payload).toMatchObject({ firstMissOnly: 'unread' })
+    })
+
+    it('a miss whose streak cannot be saved pages on that miss, since the next run could not see it', async () => {
+      const h = monitorHarness()
+      const put = h.kv.put
+      h.kv.put = async (k: string, v: string, o?: { expirationTtl?: number }) => { if (k === PARTNER_PAGE_MONITOR_STATE_KEY) throw new Error('KV PUT failed: 503'); return put(k, v, o) }
+      const summary = await at(h, '2026-10-21T08:00:38Z', MISS_2026_10_21)
+      expect(summary.alerts).toEqual(['channel'])
+      expect(summary.errors).toContain('state write failed: KV PUT failed: 503')
+      expect(live(h)[0].payload).toMatchObject({ firstMissOnly: 'unsaved' })
+    })
   })
 })
 
