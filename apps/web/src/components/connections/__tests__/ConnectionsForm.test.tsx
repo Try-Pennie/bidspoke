@@ -289,6 +289,16 @@ describe('Reconnect (R19, D19)', () => {
     expect(s.reconnect).toHaveBeenCalledWith('achieve', {})
   })
 
+  it('a Back with a login typed asks first, naming the login, and keeps Reconnect open', async () => {
+    const { dialog } = await openReconnect()
+    fireEvent.change(within(dialog).getByLabelText('New client secret'), { target: { value: 'typed' } })
+    act(() => { window.dispatchEvent(new PopStateEvent('popstate')) })
+    const ask = screen.getByRole('alertdialog', { name: 'The new login is not saved' })
+    expect(ask).toHaveAccessibleDescription('Leaving discards the login typed into Reconnect.')
+    fireEvent.click(within(ask).getByRole('button', { name: 'Keep editing' }))
+    expect(screen.getByRole('dialog', { name: 'Reconnect Achieve Salesforce' })).toBeTruthy()
+  })
+
   it("shows a refusal's sentence in the dialog and keeps it open, Save ready again", async () => {
     const { dialog } = await openReconnect({ reconnect: vi.fn(async () => { throw REFUSED }) })
     fireEvent.change(within(dialog).getByLabelText('New client secret'), { target: { value: 'wrong' } })

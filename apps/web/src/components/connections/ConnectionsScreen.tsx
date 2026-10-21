@@ -273,7 +273,8 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
 
   // Leaving with something unsaved asks first, whichever way: a link, Back, a refresh, or another item in the list (L608).
   const [leaveAsk, setLeaveAsk] = useState<LeaveRequest | null>(null)
-  const blocking = unsavedWork(state)
+  const unsaved = unsavedWork(state)
+  const blocking = unsaved !== null
   useLeaveGuard({ blocking, onAsk: (request) => setLeaveAsk((open) => open ?? request) })
   const choose = useCallback((c: Chosen, name: string) => {
     leaveThen({ kind: 'page', name }, () => { setLeaveAsk(null); dispatch({ type: 'choose', chosen: c }) })
@@ -302,7 +303,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     <div className="cx-page">
       <div className="cx-head">
         <h1 className="text-3xl font-bold text-graphite" data-part="page-title">Connections</h1>
-        {/* Round 23: hidden until the list loads; round 11b: then always there. Its form is build PR 10's. */}
+        {/* Round 23: hidden until the list loads; round 11b: then always there. It opens the form in the right panel (D11). */}
         {loaded && (
           <div className="cx-head-actions">
             <Button variant="primary" className="cx-btn" part="add-connection" onClick={() => dispatch({ type: 'add_opened' })}>Add connection</Button>
@@ -415,7 +416,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
       {leaveAsk && (
         <LeaveConnectionDialog
           request={leaveAsk}
-          saving={state.add?.save.kind === 'saving' || ((state.dialog?.kind === 'reconnect' || state.dialog?.kind === 'remove') && state.dialog.save.kind === 'saving')}
+          unsaved={unsaved ?? 'form'}
           onKeepEditing={() => setLeaveAsk(null)}
         />
       )}

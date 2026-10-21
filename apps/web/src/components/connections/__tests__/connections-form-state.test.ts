@@ -146,15 +146,17 @@ describe('a save (R13, R14, R18)', () => {
 })
 
 describe('unsaved work, which the leave guard asks about (L608)', () => {
-  it('is a form with something typed, a save running, a Reconnect with a secret typed, or a change running', () => {
-    expect(unsavedWork(loaded())).toBe(false)
-    expect(unsavedWork(run([{ type: 'add_opened' }, { type: 'add_service', service: 'salesforce' }], loaded()))).toBe(false)
-    expect(unsavedWork(run(filled, loaded()))).toBe(true)
-    expect(unsavedWork(saving())).toBe(true)
+  it('names what leaving would lose: a form with something typed or its save running, a login typed into Reconnect or its check running, a removal running', () => {
+    expect(unsavedWork(loaded())).toBeNull()
+    expect(unsavedWork(run([{ type: 'add_opened' }, { type: 'add_service', service: 'salesforce' }], loaded()))).toBeNull()
+    expect(unsavedWork(run(filled, loaded()))).toBe('form')
+    expect(unsavedWork(saving())).toBe('form_checking')
     const reconnect = run([{ type: 'dialog_opened', dialog: 'reconnect', id: 'c2' }], loaded())
-    expect(unsavedWork(reconnect)).toBe(false)
-    expect(unsavedWork(run([{ type: 'dialog_field', field: 'client_secret', text: 'x' }], reconnect))).toBe(true)
-    expect(unsavedWork(run([{ type: 'dialog_opened', dialog: 'remove', id: 'c3' }, { type: 'connection_remove_requested', attempt: 1, at: T0, stalled: 's' }], loaded()))).toBe(true)
+    expect(unsavedWork(reconnect)).toBeNull()
+    const typed = run([{ type: 'dialog_field', field: 'client_secret', text: 'x' }], reconnect)
+    expect(unsavedWork(typed)).toBe('login')
+    expect(unsavedWork(run([{ type: 'reconnect_requested', attempt: 1, at: T0, stalled: 's' }], reconnect))).toBe('login_checking')
+    expect(unsavedWork(run([{ type: 'dialog_opened', dialog: 'remove', id: 'c3' }, { type: 'connection_remove_requested', attempt: 1, at: T0, stalled: 's' }], loaded()))).toBe('removing')
   })
 })
 

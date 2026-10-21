@@ -29,7 +29,7 @@ import type { LeaveRequest } from '@/lib/leave-guard'
 import { reconnectFieldsOf, workingLabel, type FormService } from './add-form-model'
 import { SaveLine } from './AddConnectionPanel'
 import type { ConnectionView } from './connection-model'
-import type { DialogState } from './connections-state'
+import type { DialogState, UnsavedWork } from './connections-state'
 
 type Open<K> = Extract<NonNullable<DialogState>, { kind: K }>
 
@@ -174,24 +174,31 @@ export function ReplaceDialog({ dialog, connection, candidates, onWith, onTick, 
   )
 }
 
-/** Leaving the form or a Reconnect with something unsaved (L608): Keep editing, or Discard and go. */
-export function LeaveConnectionDialog({ request, saving, onKeepEditing }: { request: LeaveRequest; saving: boolean; onKeepEditing: () => void }) {
+/** What the leave question says, by what leaving would lose (L608). */
+export const LEAVE_WORDS: Readonly<Record<UnsavedWork, { title: string; description: string; leave: string }>> = {
+  form: { title: 'The new connection is not saved', description: 'Leaving discards what is typed into its form.', leave: 'Discard' },
+  form_checking: { title: 'The login is still being checked', description: 'Leaving now means not seeing whether the connection was saved.', leave: 'Leave' },
+  login: { title: 'The new login is not saved', description: 'Leaving discards the login typed into Reconnect.', leave: 'Discard' },
+  login_checking: { title: 'The new login is still being checked', description: 'Leaving now means not seeing whether it was saved.', leave: 'Leave' },
+  removing: { title: 'The connection is still being removed', description: 'Leaving now means not seeing whether it was removed.', leave: 'Leave' },
+}
+
+/** Leaving with something unsaved (L608): Keep editing, or Discard and go. */
+export function LeaveConnectionDialog({ request, unsaved, onKeepEditing }: { request: LeaveRequest; unsaved: UnsavedWork; onKeepEditing: () => void }) {
+  const words = LEAVE_WORDS[unsaved]
   return (
     <Dialog
       warning
-      title={saving ? 'The login is still being checked' : 'The new connection is not saved'}
-      description={saving
-        ? 'Leaving now means not seeing whether it was saved.'
-        : 'Leaving discards what is typed into its form.'}
+      title={words.title}
+      description={words.description}
       className="cx-dialog"
       onDismiss={onKeepEditing}
       actions={
         <>
           <Button variant="secondary" className="cx-btn-quiet" onClick={onKeepEditing}>Keep editing</Button>
-          <Button variant="destructive" className="cx-btn-dangerfill" onClick={request.proceed}>{saving ? 'Leave' : 'Discard'}</Button>
+          <Button variant="destructive" className="cx-btn-dangerfill" onClick={request.proceed}>{words.leave}</Button>
         </>
       }
     />
   )
 }
-

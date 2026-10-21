@@ -419,21 +419,26 @@ function editDraft(s: ConnectionsState, change: (d: AddDraft) => AddDraft): Conn
   return { ...s, add: { ...s.add, draft: change(s.add.draft), save: s.add.save.kind === 'failed' ? { kind: 'editing' } : s.add.save } }
 }
 
-/**
- * Whether leaving now would lose something (L608): the form with something
- * typed or its save running, a Reconnect with a login typed or its check
- * running, or a Remove running. The leave guard asks first while it is true.
- */
-export function unsavedWork(s: ConnectionsState): boolean {
-  if (s.add && (draftDirty(s.add.draft) || s.add.save.kind === 'saving')) return true
-  const d = s.dialog
-  if (d && (d.kind === 'reconnect' || d.kind === 'remove')) {
-    if (d.save.kind === 'saving') return true
-    if (Object.values(d.values).some((v) => v.trim() !== '')) return true
-  }
-  return false
-}
+/** What leaving now would lose, so the leave question can name it (L608). */
+export type UnsavedWork = 'form' | 'form_checking' | 'login' | 'login_checking' | 'removing'
 
+/**
+ * What leaving now would lose (L608): the form with something typed or its
+ * save running, a Reconnect with a login typed or its check running, or a
+ * Remove running; null when nothing. The leave guard asks first while it is
+ * not null, and the question names which.
+ */
+export function unsavedWork(s: ConnectionsState): UnsavedWork | null {
+  const d = s.dialog
+  if (d?.kind === 'remove' && d.save.kind === 'saving') return 'removing'
+  if (d?.kind === 'reconnect') {
+    if (d.save.kind === 'saving') return 'login_checking'
+    if (Object.values(d.values).some((v) => v.trim() !== '')) return 'login'
+  }
+  if (s.add?.save.kind === 'saving') return 'form_checking'
+  if (s.add && draftDirty(s.add.draft)) return 'form'
+  return null
+}
 
 /** The chosen connection, when one is chosen and the list holds it. */
 export function chosenConnection(s: ConnectionsState): ConnectionView | null {
