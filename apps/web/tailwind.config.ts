@@ -25,6 +25,8 @@ const config: Config = {
         // 4.60 to 1 on beige, 4.51 on gray-100 and 4.96 on white. text-gray-500
         // fails on beige (4.48). partner-page-colour-guard.test.ts measures it.
         hint: '#697081',
+        // An open dropdown's highlighted row, every dropdown (#2338 round 27, Dan 2026-10-21).
+        highlight: '#F1EFEA',
         // The partners page's thin beige lines (#2317, the settled design): `line`
         // around a control box, `line-soft` between sections.
         line: '#DDD6CA',

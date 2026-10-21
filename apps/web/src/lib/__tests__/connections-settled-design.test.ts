@@ -114,7 +114,8 @@ describe('settled Connections designs (#2338)', () => {
       expect(spec.frames.find((f) => f.id === 'add-salesforce-new-org')?.variant).toEqual({ state: 'add', service: 'Salesforce', save: 'ready', org: 'new' })
       const map = (jsonBlock(read('connections-page.html'), 'decision-map') as { decisions: Decision[] }).decisions
       const covering = map.filter((d) => d.frames?.includes('add-salesforce-new-org')).map((d) => d.id)
-      expect(covering).toEqual(['D15', 'D24', 'D25', 'D27'])
+      // D28 (round 27, 2026-10-21): the frame's open menu is the one drawing a highlighted row.
+      expect(covering).toEqual(['D15', 'D24', 'D25', 'D27', 'D28'])
     })
   })
 

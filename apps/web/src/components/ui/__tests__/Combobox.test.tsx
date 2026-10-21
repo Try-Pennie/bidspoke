@@ -149,7 +149,7 @@ describe('Combobox', () => {
     }
   })
 
-  it('the chosen option is marked in navy, never blue, and the marked row is navy too', async () => {
+  it('the chosen option is checked in navy, and the marked row is the pale grey highlight, neither navy nor blue (round 27)', async () => {
     render(<Harness load={async () => ORGS} />)
     const box = screen.getByRole('combobox', { name: 'Org' })
     box.focus()
@@ -169,8 +169,14 @@ describe('Combobox', () => {
       const withoutFocus = body.replace(/\bfocus(?:-visible)?:\S+/g, '')
       expect(withoutFocus, name).not.toMatch(/p-blue/)
     }
-    const active = rules.find(([, name]) => name === 'combobox-item-active')
-    expect(active?.[2]).toMatch(/bg-navy/)
+    // Every rule drawing the marked row, nested ones included, paints the
+    // highlight token behind dark text: never navy, never blue, never white text.
+    const active = rules.filter(([whole]) => whole.includes('.combobox-item-active'))
+    expect(active.length).toBeGreaterThan(0)
+    expect(active[0][2]).toMatch(/\bbg-highlight\b/)
+    for (const [whole, , body] of active) {
+      expect(body, whole).not.toMatch(/navy|p-blue|text-white/)
+    }
     const mark = rules.find(([, name]) => name === 'combobox-item-check')
     expect(mark?.[2]).toMatch(/text-navy/)
   })

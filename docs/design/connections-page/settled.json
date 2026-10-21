@@ -105,7 +105,10 @@
   {"id": "D26", "decision": "Every fact once per screen.", "why": "Bidspoke's standing rule (L605).", "noCode": "A review rule for the copy, kept by reading each frame; there is nothing to build for it.", "verify": "picture"},
   {"id": "D27", "decision": "No line of text ends with a single word on its own line; reword or rebalance it. A rule for all of Bidspoke's copy, made by Dan on 2026-10-20 in these rounds.", "why": "Dan, 2026-10-20, #2338 design rounds.", "requirement": "R25",
    "frames": ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded"],
-   "check": "No block of text in the main content wraps so that its last line holds a single word."}
+   "check": "No block of text in the main content wraps so that its last line holds a single word."},
+  {"id": "D28", "decision": "An open dropdown's highlighted row is pale grey (#F1EFEA) behind dark text; a rule for every dropdown.", "why": "Round 27, Dan 2026-10-21.", "requirement": "R24",
+   "frames": ["add-salesforce-new-org"],
+   "check": "In the open Org menu, the highlighted option (aria-selected true) has a #F1EFEA background and graphite #343434 text, never navy, blue or white."}
  ],
  "exceptions": [],
  "idioms": [

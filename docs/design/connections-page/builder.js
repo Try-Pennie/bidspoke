@@ -229,6 +229,8 @@ function addPanel(variant) {
       typed.setAttribute("role", "combobox"); typed.setAttribute("aria-expanded", "true"); typed.setAttribute("aria-controls", "org-menu");
       var menu = el("div", "sv-menu"); menu.id = "org-menu"; menu.setAttribute("role", "listbox");
       var opt = el("div", "sv-opt", "Use " + nw.address + " as a new org"); opt.setAttribute("role", "option");
+      // Round 27: the only option is the highlighted one, as the box marks it while an address is typed.
+      opt.setAttribute("aria-selected", "true");
       menu.append(opt);
       orgField = field("Org", typed, menu);
     } else {

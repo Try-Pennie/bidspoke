@@ -340,7 +340,7 @@ html {
     @apply p-1;
   }
   .select-item {
-    @apply relative flex cursor-default select-none items-center rounded py-1.5 pl-7 pr-3 text-sm text-graphite outline-none data-[disabled]:text-gray-500 data-[highlighted]:bg-p-blue-light data-[highlighted]:text-graphite;
+    @apply relative flex cursor-default select-none items-center rounded py-1.5 pl-7 pr-3 text-sm text-graphite outline-none data-[disabled]:text-gray-500 data-[highlighted]:bg-highlight data-[highlighted]:text-graphite;
   }
   .select-item-missing {
     @apply italic text-gray-600;
@@ -356,14 +356,17 @@ html {
   .suggest-item {
     @apply cursor-default select-none truncate rounded px-2.5 py-1.5 text-[13px] text-graphite;
   }
+  /* The highlighted row of every dropdown is the pale grey highlight behind dark
+     text (#2338 round 27, Dan 2026-10-21). */
   .suggest-item-active {
-    @apply bg-p-blue-light;
+    @apply bg-highlight;
   }
   /* The Combobox (#2338, components/ui/Combobox.tsx): a looked up list. Closed it
      is the Select's trigger (or, for a typed new value, the plain box); open, a
-     menu as wide as the control. The marked row is navy, as every selection is,
-     the chosen one carries a check, and an option's grey second line sits under
-     its label. Blue stays for buttons (.impeccable.md). */
+     menu as wide as the control. The highlighted row (under the mouse or the
+     arrow keys) is the pale grey highlight behind dark text, as in every dropdown
+     (round 27), the chosen one carries a navy check, and an option's grey second
+     line sits under its label. Blue stays for buttons (.impeccable.md). */
   .combobox {
     @apply w-full;
   }
@@ -381,13 +384,10 @@ html {
     @apply flex cursor-default select-none items-start gap-1.5 rounded px-2 py-1.5 text-sm text-graphite;
   }
   .combobox-item-active {
-    @apply bg-navy text-white;
+    @apply bg-highlight;
   }
   .combobox-item-check {
     @apply mt-0.5 inline-flex h-3.5 w-3.5 shrink-0 text-navy;
-  }
-  .combobox-item-active .combobox-item-check {
-    @apply text-white;
   }
   /* Pretty wrapping keeps a wrapped label or "Use <typed> as a new org" from
      ending on a lone word. */
@@ -399,9 +399,6 @@ html {
   }
   .combobox-item-hint {
     @apply block text-xs text-hint;
-  }
-  .combobox-item-active .combobox-item-hint {
-    @apply text-line;
   }
   .combobox-note {
     @apply flex items-center gap-2 px-2 py-1.5 text-sm text-hint text-pretty;
