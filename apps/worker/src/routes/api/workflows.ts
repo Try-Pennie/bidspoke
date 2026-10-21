@@ -35,7 +35,7 @@ import { workflowsUsingPartner as workflowsUsingPartnerShared } from '../../lib/
 import { readOrgWorkflows } from '../../lib/org-workflows'
 import { secretKeys } from '../../lib/secret-crypto'
 import { retirePartnerLastGood } from '../../lib/partner-last-good'
-import { checkDefinitionConnections, connectionRefusalOfWriteError, type ConnectionCheckRefusal } from '../../lib/workflow-connection-check'
+import { checkDefinitionConnections, connectionRefusalOfWriteError, type ConnectionCheckedAction, type ConnectionCheckRefusal } from '../../lib/workflow-connection-check'
 
 type Variables = AuthVariables
 
@@ -126,15 +126,17 @@ async function unreadBuyerRuleRefusal(
  * too (lib/workflow-connection-check.ts). The database trigger
  * workflows_refuse_missing_connections enforces the same answer at the write
  * itself; __guards__/worker/workflow-connection-check-guard.test.ts fails on a
- * definition writer that does not ask.
+ * definition writer that does not ask. The switch on (PATCH, #2576) asks it
+ * too, about the stored definition it makes live, worded as a switch on.
  */
 async function connectionRefusal(
   c: Context<{ Bindings: Env; Variables: Variables }>,
   supabase: ReturnType<typeof createSupabaseClient>,
   orgId: string,
   definition: unknown,
+  action: ConnectionCheckedAction = 'save',
 ): Promise<Response | null> {
-  const refusal = await checkDefinitionConnections(supabase, orgId, definition)
+  const refusal = await checkDefinitionConnections(supabase, orgId, definition, action)
   return refusal ? c.json(refusal.body, refusal.status) : null
 }
 
@@ -765,6 +767,14 @@ workflows.patch('/:id', async (c) => {
   if (body.is_active === true) {
     const unread = await unreadBuyerRuleRefusal(c, supabase, orgId, { id, name: owner.name, definition: owner.definition })
     if (unread) return unread
+    // And every connection it names must still be a live one of this
+    // organization (#2576). The trigger fires only on a write of the
+    // definition, which a switch on is not, so this check is what refuses it,
+    // by name, writing nothing. A removal racing this switch on cannot leave
+    // it naming a removed connection: remove_ops_connection refuses while any
+    // workflow's definition names the connection, switched on or off.
+    const missing = await connectionRefusal(c, supabase, orgId, owner.definition, 'switch_on')
+    if (missing) return missing
   }
 
   const updates: Database['public']['Tables']['workflows']['Update'] = { updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name }
