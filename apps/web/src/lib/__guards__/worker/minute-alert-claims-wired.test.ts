@@ -14,7 +14,7 @@ import { WORKER_SRC, consumeParens, listTsFiles, sanitizeSource } from '../../__
  * ticks never overlap; alert-fanout.ts records why.
  *
  * The claiming modules are DERIVED from the worker's source (whoever calls
- * postMinutePage or minuteAllClearClaim), and compared both ways with the list
+ * postMinutePage, claimMinutePage or minuteAllClearClaim), and compared both ways with the list
  * below, so a new claimant cannot be added without saying which run function it
  * is started by (L96).
  */
@@ -102,7 +102,8 @@ const reachabilityHasClaims = /\bclaims:\s*env\.ALERT_CLAIM\s*\?\s*makeAlertClai
 describe('the minute alert claims are wired to the minute alerts only (#2062)', () => {
   it('the modules that claim are exactly the minute alerts listed here', () => {
     const claiming = [...sources.entries()]
-      .filter(([file, src]) => file !== 'alert-fanout.ts' && /\b(?:postMinutePage|minuteAllClearClaim)\s*\(/.test(src))
+      // claimMinutePage is postMinutePage's claim half, for a page several jobs share (#2117).
+      .filter(([file, src]) => file !== 'alert-fanout.ts' && /\b(?:postMinutePage|claimMinutePage|minuteAllClearClaim)\s*\(/.test(src))
       .map(([file]) => file)
       .sort()
     expect(claiming).toEqual(Object.keys(MINUTE_CLAIMANTS).sort())

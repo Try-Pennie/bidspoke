@@ -344,6 +344,43 @@ export function minuteAllClearClaim(claims: AlertClaims | undefined, signal: str
 
 export type MinutePageOutcome = 'sent' | 'not_sent' | 'in_cooldown' | 'claimed_elsewhere'
 
+/** What claiming a minute page decided: this tick posts it, or another tick or the cooldown already has it. */
+export type MinutePageClaim = 'claimed' | 'in_cooldown' | 'claimed_elsewhere'
+
+/**
+ * The claim half of postMinutePage (#2062), for a caller that posts several
+ * pages as one message (the heartbeat's grouped page, #2117): claim, THEN read
+ * the cooldown that decides (L157). On 'claimed' the caller holds the claim and
+ * owes what postMinutePage does after its post: keep the claim when the post
+ * was delivered or threw, free it when the post definitely did not reach Slack.
+ */
+export async function claimMinutePage(opts: {
+  claims: AlertClaims | undefined
+  key: string
+  inCooldown: () => Promise<boolean>
+}): Promise<MinutePageClaim> {
+  const { claims, key } = opts
+  if (await opts.inCooldown()) return 'in_cooldown'
+  if (claims && !(await claims.claim(key, MINUTE_ALERT_CLAIM_TTL_SECONDS))) {
+    console.log(`[alert-claim] ${key} claimed by another tick`)
+    return 'claimed_elsewhere'
+  }
+  const release = () => releaseClaimQuietly(claims, key)
+  let cooling: boolean
+  try {
+    cooling = await opts.inCooldown()
+  } catch (e) {
+    // Nothing was posted, so the claim is freed for the next tick.
+    await release()
+    throw e
+  }
+  if (cooling) {
+    await release()
+    return 'in_cooldown'
+  }
+  return 'claimed'
+}
+
 /**
  * Post a minute alert's page under a claim (#2062): claim, THEN read the
  * cooldown that decides, then post (L157). Reading the cooldown first and
@@ -369,24 +406,9 @@ export async function postMinutePage(opts: {
   send: () => Promise<boolean>
 }): Promise<MinutePageOutcome> {
   const { claims, key } = opts
-  if (await opts.inCooldown()) return 'in_cooldown'
-  if (claims && !(await claims.claim(key, MINUTE_ALERT_CLAIM_TTL_SECONDS))) {
-    console.log(`[alert-claim] ${key} claimed by another tick`)
-    return 'claimed_elsewhere'
-  }
+  const taken = await claimMinutePage(opts)
+  if (taken !== 'claimed') return taken
   const release = () => releaseClaimQuietly(claims, key)
-  let cooling: boolean
-  try {
-    cooling = await opts.inCooldown()
-  } catch (e) {
-    // Nothing was posted, so the claim is freed for the next tick.
-    await release()
-    throw e
-  }
-  if (cooling) {
-    await release()
-    return 'in_cooldown'
-  }
   let sent: boolean
   try {
     sent = await opts.send()
