@@ -16,6 +16,7 @@ import { OPS_CONNECTION_LOGIN_SIGNAL } from '../ops-connection-logins'
 import { OPS_CONNECTION_OWNER_SIGNAL } from '../ops-connection-owner-check'
 import { SALESFORCE_BULKHEAD_SIGNAL } from '../salesforce-bulkhead-check'
 import { MINUTE_JOB_FAILING_SIGNAL } from '../minute-job-failures'
+import { PARTNER_ERROR_RATE_SIGNAL, PARTNER_ERROR_RECOVERY_WORDS, WINDOW_MINUTES as PARTNER_ERROR_WINDOW_MINUTES } from '../partner-error-rate'
 
 /**
  * The incident registry (#2099, #818): one entry per recovery prefix an alert
@@ -41,6 +42,7 @@ describe('INCIDENT_SIGNALS', () => {
       'ops-connection-login',
       'ops-connection-owner',
       'ops-connection-write-back',
+      'partner-error-rate',
       'partner-page-live',
       'partner-reachability',
       'pg-cron-watch',
@@ -57,7 +59,7 @@ describe('INCIDENT_SIGNALS', () => {
 
   it('scopes the workflow signals to their organization and the shared ones to the platform', () => {
     const scope = (s: IncidentSignal) => incidentSignal(s).scope
-    for (const s of ['failure-rate', 'slow-spike', 'volume-cliff', 'db-unreachable', 'field-presence-drought', 'field-presence-dead', 'field-presence-wrong-path'] as const) {
+    for (const s of ['failure-rate', 'slow-spike', 'volume-cliff', 'db-unreachable', 'field-presence-drought', 'field-presence-dead', 'field-presence-wrong-path', 'partner-error-rate'] as const) {
       expect(scope(s), s).toBe('org')
     }
     // #468: a stored Salesforce write belongs to one organization, and only its
@@ -83,6 +85,8 @@ describe('INCIDENT_SIGNALS', () => {
   it('takes each window from the check that measures it', () => {
     expect(incidentSignal('slow-spike').windowMinutes).toBe(SLOW_WINDOW_MINUTES)
     expect(incidentSignal('volume-cliff').windowMinutes).toBe(RECENT_WINDOW_MINUTES)
+    expect(PARTNER_ERROR_RATE_SIGNAL).toBe('partner-error-rate')
+    expect(incidentSignal('partner-error-rate').windowMinutes).toBe(PARTNER_ERROR_WINDOW_MINUTES)
     expect(incidentSignal('field-presence-drought').windowMinutes).toBe(DROUGHT_WINDOW_MINUTES)
     expect(incidentSignal('field-presence-dead').windowMinutes).toBe(DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES)
     expect(incidentSignal('field-presence-wrong-path').windowMinutes).toBe(DEAD_WINDOW_DAYS * DAY_WINDOW_MINUTES)
@@ -149,6 +153,7 @@ describe('INCIDENT_SIGNALS', () => {
     expect(incidentSignal('minute-job-failing')).toMatchObject({ scope: 'platform', subject: 'name', windowMinutes: null })
     // The words its all clear names the signal by (slack.ts sendMinuteJobFailingRecoveryAlert).
     expect(incidentSignal('minute-job-failing').label.toLowerCase()).toBe('scheduled job failing')
+    expect(incidentSignal('partner-error-rate').label.toLowerCase()).toBe(PARTNER_ERROR_RECOVERY_WORDS)
   })
 
   it('lists the partner kinds and the two database memory subjects', () => {
@@ -164,7 +169,7 @@ describe('INCIDENT_SIGNALS', () => {
     // organization; the rest key on a readable name (a host, a job, a GitHub
     // workflow file, or a fixed id).
     const byWorkflow = INCIDENT_SIGNALS.filter((s) => s.subject === 'workflow').map((s) => s.signal).sort()
-    expect(byWorkflow).toEqual(['failure-rate', 'field-presence-dead', 'field-presence-drought', 'field-presence-wrong-path', 'slow-spike', 'volume-cliff'])
+    expect(byWorkflow).toEqual(['failure-rate', 'field-presence-dead', 'field-presence-drought', 'field-presence-wrong-path', 'partner-error-rate', 'slow-spike', 'volume-cliff'])
     expect(incidentSignal('db-unreachable').subject).toBe('organization')
     expect(incidentSignal('writeback-backlog').subject).toBe('organization')
     for (const s of ['partner-reachability', 'supabase-memory', 'pg-cron-watch', 'stored-copy-serving', 'workflow-schedule', 'cron-heartbeat', 'export-alert', 'partner-page-live'] as const) {
