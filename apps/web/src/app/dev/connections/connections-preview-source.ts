@@ -92,19 +92,19 @@ function rowOf(c: FixtureConnection): ConnectionListRow {
 }
 
 /** The frames loaded through the page's own calls, and what each chooses. The add, dialog and saved frames are drawn by their events (previewScript). */
-export function previewFrame(frame: string | undefined): { list: 'loaded' | 'stale' | 'failed' | 'loading'; extra: boolean; chosen: Chosen } {
+export function previewFrame(frame: string | undefined): { list: 'loaded' | 'stale' | 'failed' | 'loading'; chosen: Chosen } {
   const chosen = (name: string): Chosen => ({ kind: 'connection', id: idOf(name) })
   switch (frame) {
     case 'problem':
-      return { list: 'loaded', extra: false, chosen: chosen('Achieve Salesforce') }
+      return { list: 'loaded', chosen: chosen('Achieve Salesforce') }
     case 'google-list':
-      return { list: 'loaded', extra: false, chosen: { kind: 'google' } }
+      return { list: 'loaded', chosen: { kind: 'google' } }
     case 'stale':
-      return { list: 'stale', extra: false, chosen: chosen('Pennie Salesforce') }
+      return { list: 'stale', chosen: chosen('Pennie Salesforce') }
     case 'not-loaded':
-      return { list: 'failed', extra: false, chosen: { kind: 'none' } }
+      return { list: 'failed', chosen: { kind: 'none' } }
     default:
-      return { list: 'loaded', extra: false, chosen: chosen('Pennie Salesforce') }
+      return { list: 'loaded', chosen: chosen('Pennie Salesforce') }
   }
 }
 
@@ -167,7 +167,7 @@ export const PREVIEW_ORG_NAMES: Readonly<Record<string, string>> = Object.fromEn
 
 export function previewSource(frame: string | undefined, moreGoogle = 0): ConnectionsSource {
   const shape = previewFrame(frame)
-  const all: FixtureConnection[] = [...fixture.connections, ...(shape.extra ? [fixture.justSaved] : [])]
+  const all: FixtureConnection[] = fixture.connections
   let subjects = delegationOf(moreGoogle)
   const answer: ConnectionList = {
     connections: all.map(rowOf),
