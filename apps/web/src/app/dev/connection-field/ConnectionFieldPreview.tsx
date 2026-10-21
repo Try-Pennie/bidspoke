@@ -36,10 +36,11 @@ export function ConnectionFieldPreview({ frame }: { frame: PreviewFrame }) {
       if (el) setBody(el)
       return el !== null
     }
-    if (find()) return
+    const stopClick = () => { if (clickAt !== null) clearTimeout(clickAt) }
+    if (find()) return stopClick
     const watch = new MutationObserver(() => { if (find()) watch.disconnect() })
     watch.observe(document.body, { childList: true, subtree: true })
-    return () => { watch.disconnect(); if (clickAt !== null) clearTimeout(clickAt) }
+    return () => { watch.disconnect(); stopClick() }
   }, [])
 
   return (
