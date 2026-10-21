@@ -1,5 +1,7 @@
 import type { NodeDefinition, EdgeDefinition, ExecutionContext, ConditionGroup } from '../types'
 import { coerceString } from '../lib/coerce'
+import { assertNever } from '@bidspoke/node-types'
+import { isConditionOperator, isConditionValueReference } from '@bidspoke/workflow-definition'
 
 // Find the entry node: follow the trigger edge if present, otherwise find the node with no incoming edges from other nodes
 export function findEntryNode(nodes: NodeDefinition[], edges: EdgeDefinition[]): NodeDefinition {
@@ -110,21 +112,52 @@ function numericCompare(actual: unknown, expected: unknown, cmp: (a: number, b: 
   return cmp(a, b)
 }
 
+// has_letter: ASCII [a-zA-Z] exactly, the test the lead validation scripts'
+// isBlank applies to a name (#2588). Only a string can have a letter: RegExp.test
+// stringifies its argument, so `true` would otherwise read as a name.
+const ASCII_LETTER = /[a-zA-Z]/
+
+function hasLetter(actual: unknown): boolean {
+  return typeof actual === 'string' && ASCII_LETTER.test(actual)
+}
+
+// not_blank: a string with something left after JS trim (which also strips
+// Unicode spaces such as U+00A0 and U+FEFF). Every non-string is blank, numbers
+// and booleans included: the scripts this replaces throw on those, and a check
+// built on this operator should fail closed on a value of the wrong shape (#2588).
+function notBlank(actual: unknown): boolean {
+  return typeof actual === 'string' && actual.trim() !== ''
+}
+
 function evaluateCondition(
   condition: { field: string; operator: string; value?: unknown },
   ctx: ExecutionContext
 ): boolean {
-  const actual = resolveField(condition.field, ctx)
-  // A missing operator defaults to equality — the config UI shows 'equals' as
+  // A missing operator defaults to equality: the config UI shows 'equals' as
   // the default in its dropdown, so an un-touched condition (operator never
   // written) must behave as equals rather than throw. Matches the UI default.
-  switch (condition.operator || 'eq') {
+  const op = condition.operator || 'eq'
+  // The operator comes from stored config, so it is checked against the one list
+  // (packages/workflow-definition) before the switch. An unknown one throws
+  // rather than quietly evaluating false: branches would just stop firing and
+  // nobody would know why.
+  if (!isConditionOperator(op)) {
+    throw new Error(`Unknown condition operator: ${JSON.stringify(op)}`)
+  }
+  const actual = resolveField(condition.field, ctx)
+  // Exhaustive over ConditionOperator: an operator added to the list without a
+  // case here fails to compile at assertNever (#2588).
+  switch (op) {
     case 'eq':       return valuesEqual(actual, condition.value)
     case 'neq':      return !valuesEqual(actual, condition.value)
-    case 'gt':       return numericCompare(actual, condition.value, (a, b) => a > b)
-    case 'gte':      return numericCompare(actual, condition.value, (a, b) => a >= b)
-    case 'lt':       return numericCompare(actual, condition.value, (a, b) => a < b)
-    case 'lte':      return numericCompare(actual, condition.value, (a, b) => a <= b)
+    // The value side of a numeric comparison may name a reference, as in_array's
+    // does (#2588), so a limit can live in Constants. No committed or live
+    // definition held a reference-looking numeric value when this shipped; the
+    // web guard numeric-condition-values-are-literals keeps that measured.
+    case 'gt':       return numericCompare(actual, resolveValueOrLiteral(condition.value, ctx), (a, b) => a > b)
+    case 'gte':      return numericCompare(actual, resolveValueOrLiteral(condition.value, ctx), (a, b) => a >= b)
+    case 'lt':       return numericCompare(actual, resolveValueOrLiteral(condition.value, ctx), (a, b) => a < b)
+    case 'lte':      return numericCompare(actual, resolveValueOrLiteral(condition.value, ctx), (a, b) => a <= b)
     case 'contains': return String(actual).includes(String(condition.value))
     case 'not_contains': return !String(actual).includes(String(condition.value))
     case 'is_true':  return actual === true
@@ -141,25 +174,20 @@ function evaluateCondition(
       const arr = resolveValueOrLiteral(condition.value, ctx)
       return Array.isArray(arr) && !arr.some((el) => valuesEqual(actual, el))
     }
-    default: {
-      // Surface unhandled operators instead of silently returning false.
-      // A new operator added to the type union but not to this switch would
-      // otherwise quietly evaluate every condition as false — branches just
-      // wouldn't fire and the user would have no idea why.
-      const op = (condition as { operator: string }).operator
-      throw new Error(`Unknown condition operator: ${JSON.stringify(op)}`)
-    }
+    case 'has_letter': return hasLetter(actual)
+    case 'not_blank':  return notBlank(actual)
+    default:
+      return assertNever(op, 'condition operator')
   }
 }
 
 // For value sides that can either be a literal or a path reference
 // (e.g. in_array operator pointing at `steps.constants.output.states`).
-// Resolves as a path when the string starts with steps./trigger./env.;
-// otherwise returns the value unchanged so JSON literals still work.
+// Resolves as a path when the string starts with a root the condition resolver
+// reads (CONDITION_REFERENCE_ROOTS in packages/workflow-definition: steps.,
+// trigger., env.); otherwise returns the value unchanged so literals still work.
 function resolveValueOrLiteral(value: unknown, ctx: ExecutionContext): unknown {
-  if (typeof value !== 'string') return value
-  if (/^(steps\.|trigger\.|env\.)/.test(value)) return resolveField(value, ctx)
-  return value
+  return isConditionValueReference(value) ? resolveField(value, ctx) : value
 }
 
 export function resolveField(field: string, ctx: ExecutionContext): unknown {
