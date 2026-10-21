@@ -449,21 +449,36 @@
       if (links.length) return bad("a link is not dark and underlined: " + txt(links[0]));
       return ok("blue only on buttons");
     } },
+    // Red is the app's red for a failure, read from the colour FieldError draws on this side (the
+    // one class every failed line is drawn with), beside the problem status's and the destroying
+    // button's red. Every element in either red must be one that is wrong or destroys, and every
+    // failed line must be drawn in one of them, so a failed line in grey is refused, not passed.
     { id: "D25", frames: ALL, check: function (doc) {
       var m = main(doc);
-      var off = qa(m, "*").filter(function (e) {
+      var probe = doc.createElement("span"); probe.className = "field-error"; probe.textContent = "x";
+      m.append(probe); var fieldRed = css(probe).color; probe.remove();
+      if (!fieldRed || fieldRed === css(m).color) return bad("no red could be read from the failure colour on this side");
+      var reds = [fieldRed, RED];
+      var isRed = function (c) { return reds.indexOf(c) >= 0; };
+      var ownText = function (e) { return Array.prototype.some.call(e.childNodes, function (n) { return n.nodeType === 3 && n.nodeValue.trim(); }); };
+      // A failed line: a save that failed, or a Try again that did not work.
+      var failed = function (e) { return !!e.closest('[data-part="save-line"][data-state="failed"]') || /^Trying again did not work/.test(txt(e)); };
+      var all = qa(m, "*");
+      var off = all.filter(function (e) {
         var s = css(e);
-        var ownText = Array.prototype.some.call(e.childNodes, function (n) { return n.nodeType === 3 && n.nodeValue.trim(); });
-        if (!(s.backgroundColor === RED || (ownText && s.color === RED))) return false;
+        if (!(isRed(s.backgroundColor) || (ownText(e) && isRed(s.color)))) return false;
         var st = e.closest('[data-part="status"]');
         if (st && st.getAttribute("data-status") !== "ok") return false;
-        if (e.closest('[data-part="save-line"][data-state="failed"]')) return false;
+        if (failed(e)) return false;
         var b = e.closest("button");
         if (b && !disabled(b) && (txt(b) === "Remove" || txt(b).indexOf("Replace in ") === 0)) return false;
         return true;
       });
       if (off.length) return bad("red on something not wrong: " + off.slice(0, 3).map(txt).join(" | "));
-      return ok("red only where something is wrong or destroys");
+      var grey = all.filter(function (e) { return ownText(e) && failed(e) && !isRed(css(e).color); });
+      if (grey.length) return bad("a failed line is not red: " + txt(grey[0]) + " (" + css(grey[0]).color + ")");
+      var lines = all.filter(function (e) { return ownText(e) && failed(e); }).length;
+      return ok("red only where something is wrong or destroys; " + lines + " failed line(s), each in " + fieldRed + " or " + RED);
     } },
     { id: "D27", frames: ALL, check: function (doc) {
       var lone = lineBlocks(main(doc)).filter(function (b) { return b.lines.length > 1 && b.lines[b.lines.length - 1].words.length === 1; });
