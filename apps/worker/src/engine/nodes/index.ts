@@ -19,6 +19,7 @@ import { executeSalesforceNode } from './salesforce'
 import { executeDataStoreNode } from './data-store'
 import { executeLatencyGateNode } from './latency-gate'
 import { executeAchieveOffersNode } from './achieve-offers'
+import { executeLeadValidationNode } from './lead-validation'
 
 /** Everything an executor may need; each one reads only what it uses. */
 interface ExecutorArgs {
@@ -78,6 +79,7 @@ const EXECUTORS: Record<NodeType, NodeExecutor> = {
   data_store: ({ node, ctx, env }) => executeDataStoreNode(node, ctx, env),
   latency_gate: ({ node, ctx, env, supabase }) => executeLatencyGateNode(node, ctx, env, supabase),
   achieve_offers: ({ node, ctx, signal }) => executeAchieveOffersNode(node, ctx, signal),
+  lead_validation: ({ node, ctx }) => executeLeadValidationNode(node, ctx),
 }
 
 /** The registry for one lane: a filter on EXECUTORS by each type's lane trait. */

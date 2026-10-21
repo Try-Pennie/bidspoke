@@ -127,4 +127,28 @@ describe('deriveRejectReason: the terminal node label is not a reason (#375)', (
       deriveRejectReason({ terminal_node_type: 'bid_group', terminal_node_handle: 'winner', terminal_node_label: 'engine_bids' }),
     ).toBeNull()
   })
+
+  // #2589: the lead validation node rejects with a reason from the one list
+  // (LEAD_REJECTION_REASONS). A validate SCRIPT's rejection recorded null here,
+  // because a code node ending cleanly carries no sentinel; the node's output
+  // names the reason, so the column records it.
+  it('records a lead validation rejection by the reason the partner was told', () => {
+    expect(
+      deriveRejectReason({
+        terminal_node_type: 'lead_validation',
+        terminal_node_label: 'validate_bidding_and_state',
+        terminal_step_output: { valid: false, check_id: 'state', field: 'trigger.payload.state', reason: 'ineligible state' },
+      }),
+    ).toBe('lead_validation:ineligible state')
+  })
+
+  it('records nothing for a lead that passed validation and ended there', () => {
+    expect(
+      deriveRejectReason({ terminal_node_type: 'lead_validation', terminal_step_output: { valid: true } }),
+    ).toBeNull()
+  })
+
+  it('does not invent a reason for a validation output that names none', () => {
+    expect(deriveRejectReason({ terminal_node_type: 'lead_validation', terminal_step_output: { valid: false } })).toBe('lead_validation:rejected')
+  })
 })

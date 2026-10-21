@@ -19,6 +19,11 @@ export const SHADOW_EXEMPT_NODES = [
   'response',
   'parallel',
   'bid-group',
+  // Pure (#2589): judges the lead and the settings already in the context and
+  // answers a rejection through the walk; it reaches nothing outside the
+  // isolate. What it reports goes to the engine, which pages nothing on a test
+  // or shadow run.
+  'lead-validation',
   // Pure helpers for the achieve_offers node rather than executors of their own. Both only
   // read from the execution context (the lead payload and the already-pulled credit report)
   // and reach nothing outside the isolate, so a shadow dry-run may run them freely. The

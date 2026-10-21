@@ -277,3 +277,47 @@ describe('the live definitions (measured fixture, scripts/measure-workflow-value
     expect(readersOf('liberty1', 'Liberty1ClickUrl')).toEqual([])
   })
 })
+
+// #2589: a lead validation node reads Constants through its checks' condition
+// paths, which the condition resolver accepts with or without `.output`. The
+// partner delete check and the Workflow values panel must still see such a read.
+describe('a lead validation node reads Constants through its checks', () => {
+  const validation = (field: string, value?: string, operator = 'is_true') => ({
+    id: 'n-v',
+    namespace: 'validate_bidding_and_state',
+    label: 'Validate',
+    type: 'lead_validation',
+    config: {
+      lead_id_field: 'trigger.payload.leadUuid',
+      checks: [{
+        id: 'active',
+        label: 'Partner bidding',
+        condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field, operator, ...(value ? { value } : {}) }] }] },
+        reason: 'bidding not active',
+        on_missing: 'reject',
+      }],
+    },
+  })
+  const scanNode = (n: unknown, partner: ScanPartner = TRIPOINT) => scanPartnerValueReaders([wf('w', [constantsNode(), n])], partner)
+
+  it('finds a partner entry read through the full output path', () => {
+    const scan = scanNode(validation('steps.constants.output.activeBidding.tripoint'))
+    expect(readsOf(scan, 'activeBidding')).toEqual(['by_name'])
+    expect(value(scan, 'activeBidding').readers[0].places[0]).toMatchObject({ namespace: 'validate_bidding_and_state', node_type: 'lead_validation' })
+    expect(readsOf(scanNode(validation('steps.constants.output.activeBidding.tripoint'), SOFI), 'activeBidding')).toEqual([])
+  })
+
+  it('finds the same read written without .output, as the condition resolver reads it', () => {
+    expect(readsOf(scanNode(validation('steps.constants.activeBidding.tripoint')), 'activeBidding')).toEqual(['by_name'])
+    expect(readsOf(scanNode(validation('steps.constants.TripointClickUrl', undefined, 'not_blank')), 'TripointClickUrl')).toEqual(['by_name'])
+  })
+
+  it('finds a whole map read on the value side as a read for every partner', () => {
+    expect(readsOf(scanNode(validation('trigger.payload.sub', 'steps.constants.subAccountIdsMap', 'in_array')), 'subAccountIdsMap')).toEqual(['every_partner'])
+  })
+
+  it('reads a config the parser refuses the generic way, so a half built node is still searched', () => {
+    const broken = { ...validation('x'), config: { checks: [{ condition: { groups: [{ conditions: [{ field: 'steps.constants.output.activeBidding.tripoint' }] }] } }] } }
+    expect(readsOf(scanNode(broken), 'activeBidding')).toEqual(['by_name'])
+  })
+})

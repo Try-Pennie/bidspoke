@@ -40,6 +40,7 @@ Each link points to a raw markdown page. Append nothing; the .md URLs are self-c
 - [Achieve Offers](https://bidspoke.trypennie.dev/docs/nodes/achieve-offers.md): send the lead to Achieve (FDR) and log the offers returned.
 - [Buyer Select](https://bidspoke.trypennie.dev/docs/nodes/buyer-select.md): sell a sell off lead to the highest ranked eligible buyer, from buyer profiles.
 - [Buyer Click Check](https://bidspoke.trypennie.dev/docs/nodes/buyer-click-check.md): decide on Engine's response path whether a click sold buyer may be offered this lead, against its profile and today's clicks.
+- [Lead Validation](https://bidspoke.trypennie.dev/docs/nodes/lead-validation.md): ordered checks a lead must pass, each with the rejection reason the source is told.
 - [Buyer Click Send](https://bidspoke.trypennie.dev/docs/nodes/buyer-click-send.md): send a clicked prospect to a click sold buyer once, and count it once.
 
 ## Guides

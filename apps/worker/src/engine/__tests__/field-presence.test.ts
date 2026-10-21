@@ -148,6 +148,34 @@ describe('computeFieldPresence with $return_value paths', () => {
   })
 })
 
+describe('field presence for a lead validation node (#2589)', () => {
+  // The node judges the lead fields its checks read, so a run records whether
+  // each carried a value, as for any reader; its settings are guaranteed
+  // constants and are not recorded.
+  it('records the lead fields a run\'s checks read, and not the settings', () => {
+    const definition = {
+      nodes: [
+        { id: 'c', namespace: 'constants', type: 'constants', config: { data: { states: ['TX'] } } },
+        {
+          id: 'v',
+          namespace: 'validate',
+          type: 'lead_validation',
+          config: {
+            lead_id_field: 'trigger.payload.leadUuid',
+            checks: [
+              { id: 'state', label: 'State', condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'steps.parse.output.state', operator: 'in_array', value: 'steps.constants.output.states' }] }] }, reason: 'ineligible state', on_missing: 'reject' },
+              { id: 'name', label: 'Name', condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'steps.parse.firstName', operator: 'has_letter' }] }] }, reason: 'invalid name', on_missing: 'pass' },
+            ],
+          },
+        },
+      ],
+      edges: [],
+    } as unknown as WorkflowDefinition
+    const steps = { constants: step({ states: ['TX'] }), parse: step({ state: 'TX' }), validate: step({ valid: true }) }
+    expect(fieldPresenceForCapture('true', steps, definition)).toEqual({ 'parse.state': true, 'parse.firstName': false })
+  })
+})
+
 describe('deriveWatchedFields (wired through field-presence)', () => {
   it('derives real fields from a definition (no longer a stub)', () => {
     const definition: WorkflowDefinition = {

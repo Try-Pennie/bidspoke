@@ -193,6 +193,22 @@ export interface ExecutionContext {
    *  prod runs (code.ts falls back to the stable codeBundleName). */
   codeBundleName?: string
   /**
+   * The namespaces of the definition's Constants nodes, set by walkGraph from the
+   * definition it walks (#2589). The lead validation node reads them to tell a
+   * configuration value (Constants, env) from a lead value, since a missing one
+   * is the workflow's fault and a missing other is the lead's. The node refuses
+   * to run without it rather than guess.
+   */
+  constantsNamespaces?: ReadonlySet<string>
+  /**
+   * Told what each lead validation step found (#2589): that it read its
+   * configuration whole, or which configuration values were missing. Set by the
+   * engine on a run, which turns a missing value into one page per incident
+   * and an all clear once the node reads its configuration whole again
+   * (lib/lead-validation-config-alert.ts). Absent on paths that page nothing.
+   */
+  reportLeadValidation?: (event: import('./engine/nodes/lead-validation').LeadValidationEvent) => void
+  /**
    * Per-BidGroup context map. Set by walkGraph before evaluating partner attempts
    * and cleared after the group resolves. Exposed to partner formulas as
    * `context.<key>` so partners can stay workflow-agnostic (the BidGroup author

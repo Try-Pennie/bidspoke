@@ -525,6 +525,59 @@ export async function sendPartnerErrorRateAlert(
   )
 }
 
+export interface LeadValidationConfigAlertPayload {
+  workflow_id: string
+  workflow_name: string
+  /** The lead validation step. */
+  namespace: string
+  faults: import('../engine/nodes/lead-validation').ConfigFault[]
+  app_url: string
+}
+
+const LEAD_VALIDATION_PROBLEM_WORDS: Record<string, string> = {
+  missing: 'is missing',
+  not_a_number: 'is not a number',
+  not_a_list: 'is not a list',
+}
+
+/**
+ * A lead validation step cannot read a setting its checks need (#2589): every
+ * lead reaching it fails the run the same way, so this is paged once per
+ * incident instead of once per lead. Names the check and the setting, never a
+ * value. Returns whether it reached Slack.
+ */
+export async function sendLeadValidationConfigAlert(
+  slack: { bot_token: string },
+  channel: string,
+  payload: LeadValidationConfigAlertPayload,
+): Promise<boolean> {
+  const lines = payload.faults.map((f) =>
+    f.problem === 'config_invalid'
+      ? `• The step's settings cannot be run: ${f.detail ?? 'unreadable'}`
+      : `• Check \`${f.check_id ?? '?'}\` reads \`${f.reference ?? '?'}\`, which ${LEAD_VALIDATION_PROBLEM_WORDS[f.problem] ?? f.problem}`,
+  )
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: 'Lead Validation Setting Missing', emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${payload.workflow_name}*: the \`${payload.namespace}\` step cannot read a setting it checks leads against, so every lead reaching it fails.`,
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '*What to do:* put the value back in the Constants step or the environment variable, or change the check. This is sent once; an all clear follows when the step reads its settings again.',
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${payload.app_url}/workflows/${payload.workflow_id}|Open workflow →>` } },
+  ]
+  return (await postMessage(slack.bot_token, channel, blocks, `Lead validation setting missing on ${payload.workflow_name}: ${payload.namespace}`)) !== null
+}
+
 export interface FailureSpikeAlertPayload {
   workflow_id: string
   workflow_name: string

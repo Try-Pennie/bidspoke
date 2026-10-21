@@ -14,6 +14,8 @@ import { CLICK_CHECK_BUDGET_MS } from '@bidspoke/buyer-profile'
 /** Duration is consistent enough across workflows for the aggregate to mean something. */
 export const SIMILAR_FALLBACK_STABLE: ReadonlySet<NodeType> = new Set<NodeType>([
   'constants', 'transform', 'branch', 'filter', 'exit', 'response', 'parallel', 'parallel_end',
+  // In memory over its own checks, like filter and branch (#2589).
+  'lead_validation',
 ])
 
 /** Stable only within one operation, so the aggregate is keyed by subtype too. */

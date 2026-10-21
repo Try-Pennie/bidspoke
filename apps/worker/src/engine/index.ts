@@ -25,6 +25,9 @@ import { salesforceAnswerOf, type SalesforceAnswer } from './nodes/salesforce'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
 import { PartnerApiError } from './nodes/partner-bid'
+import { LeadValidationConfigFault } from './nodes/lead-validation'
+import { reportLeadValidationEvent, type LeadValidationAlertDeps } from '../lib/lead-validation-config-alert'
+import { constantsNamespacesOf } from '@bidspoke/workflow-definition'
 import { withRetry } from './retry'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
 import { fieldPresenceColumns, fieldPresenceForCapture, shouldLogCapture } from './field-presence'
@@ -117,6 +120,17 @@ function extractResolvedInput(err: unknown): ResolvedStepInput | null {
 // that request came from the watch because the failure carried none (a timeout,
 // #2163) or the Salesforce read-back owns the record (#468): the write's outcome
 // is unknown, KV holds it until then, and the capture stores no second copy.
+/**
+ * Whether a step's thrown error opts out of the per run failure page. A partner
+ * error says so itself; a lead validation setting fault always does, because it
+ * fails every lead the same way and is paged once per incident instead
+ * (lib/lead-validation-config-alert.ts, #2589).
+ */
+function suppressAlertOf(err: unknown): boolean {
+  if (err instanceof PartnerApiError) return err.suppressAlert
+  return err instanceof LeadValidationConfigFault
+}
+
 class StepFailureError extends Error {
   constructor(
     message: string,
@@ -656,6 +670,28 @@ export async function executeWorkflow(
     silent: reality.silentAlerts,
     appUrl: env.APP_URL,
   }
+  // A lead validation step tells the run whether it read its settings whole
+  // (#2589). A missing setting fails every lead the same way, so it is paged
+  // once per incident from here, never per run; a whole read stands the
+  // incident down. Test runs and local dev log and page nothing (#547).
+  const leadValidationDeps: LeadValidationAlertDeps = {
+    kv: env.IDEMPOTENCY,
+    claims: blockDeps.claims,
+    resolveSlack: () => resolveSlackForBlockAlert(
+      org_id,
+      () => getSlackConnection(configDb, org_id),
+      () => readLastGoodSlackConnections(env.IDEMPOTENCY, secretKeys(env)),
+    ),
+    silent: reality.silentAlerts,
+    appUrl: env.APP_URL,
+  }
+  ctx.reportLeadValidation = (event) => {
+    executionCtx.waitUntil(
+      reportLeadValidationEvent(leadValidationDeps, { orgId: org_id, workflowId, workflowName: workflow_name, slackChannel: slack_channel }, event)
+        .catch((e: unknown) => console.error(`[lead-validation] report failed trace=${ctx.trigger.trace_id}: ${formatErr(e)}`)),
+    )
+  }
+
   const onBlockSighting = (sighting: PartnerBlockSighting): void => {
     executionCtx.waitUntil(
       reportPartnerBlock(blockDeps, { orgId: org_id, workflowId, workflowName: workflow_name, traceId: ctx.trigger.trace_id }, sighting)
@@ -1627,6 +1663,8 @@ export async function walkGraph(
     }
   }
   const runNode = nodeExecutorForLane(lane)
+  // The lead validation node tells a setting from a lead value by these (#2589).
+  ctx.constantsNamespaces = constantsNamespacesOf(definition.nodes)
   let current: NodeDefinition | undefined = findEntryNode(definition.nodes, definition.edges)
   let stepOrder = 0
   let lastOutput: unknown = null
@@ -2467,7 +2505,7 @@ export async function walkGraph(
       // failure was typed differently depending on where the node sat. One shared
       // helper, one behavior.
       errorType = classifyStepError(err)
-      suppressAlert = err instanceof PartnerApiError ? err.suppressAlert : false
+      suppressAlert = suppressAlertOf(err)
 
       errorMessage = formatErr(err)
       const onError = node.config.on_error ?? 'fail'
@@ -2767,7 +2805,7 @@ export async function runParallelChild(
       // retry ladder above already used this helper; only the recorded type
       // disagreed.
       errorType = classifyStepError(err)
-      suppressAlert = err instanceof PartnerApiError ? err.suppressAlert : false
+      suppressAlert = suppressAlertOf(err)
       const errLogs = (err as { logs?: import('../types').StepLogEntry[] }).logs
       if (errLogs) stepLogs = errLogs
       const errResolvedInput = extractResolvedInput(err)
