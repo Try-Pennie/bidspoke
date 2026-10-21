@@ -3056,7 +3056,11 @@ function recoveredStatus(item: RecoveredSubject, wording: RecoveryWording): stri
 }
 
 /**
- * The timing clause: when the alert fired and how long it lasted.
+ * The timing clause: when the alert fired, then when the problem was last seen
+ * and the first check to find it clear, or that it had cleared by now (#2580).
+ * A one tick windowed incident gives the window it covered instead (#1268), and
+ * an incident with no recorded end, or whose end is an observed clearing (the
+ * heartbeat), says how long it lasted.
  *
  * Depends only on the alert ticks and the wording, never on the subject, so a
  * group that all paged and cleared on the same tick shares one of these (#1270).

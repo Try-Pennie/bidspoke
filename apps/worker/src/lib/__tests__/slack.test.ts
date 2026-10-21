@@ -1735,7 +1735,7 @@ describe('sendRecoveryAlert (#253, #814)', () => {
     expect((await sentText())).toContain('last seen 1 hour 32 minutes later')
   })
 
-  it('names when it cleared, since the all-clear arrives after a re-arm delay', async () => {
+  it('names the last sighting, since the all-clear arrives after a re-arm delay', async () => {
     await sendRecoveryAlert(slack, '#alerts', { ...base, endedAt: ENDED }, Date.parse('2026-08-15T03:34:00.000Z'))
     expect((await sentText())).toContain('11:04 PM EDT')
   })
