@@ -256,6 +256,10 @@ export const CONNECTION_ROUTE_REFUSAL_CODES = [
   'delegation_display_name_invalid',
   'delegation_subject_listed_elsewhere',
   'delegation_subject_not_listed',
+  /** A saved connection of the organization names the entry, so it stays on the list (Dan, 2026-10-20). */
+  'delegation_subject_in_use',
+  /** The connections could not be read, so whether one names the entry is unknown: nothing is removed. */
+  'delegation_use_unreadable',
   'delegation_change_failed',
   'delegation_list_unavailable',
   /** Ops refused the change for a reason that is a fault in Bidspoke (its lane, its settings, the request's shape). */
@@ -272,6 +276,8 @@ export interface RouteRefusalContext {
   names: readonly string[]
   /** Whether a workflow named is soft deleted (connection_in_use). */
   deleted: boolean
+  /** The list entry the sentence is about (delegation_subject_in_use). */
+  subject?: string
 }
 
 const one = (c: RouteRefusalContext, fallback: string) => c.names[0] ?? fallback
@@ -299,6 +305,11 @@ const ROUTE_SENTENCES: { readonly [C in ConnectionRouteRefusalCode]: (ctx: Route
   delegation_display_name_invalid: () => 'A shared drive\'s name must be 1 to 200 characters, and a mailbox takes none. Nothing was added. Check the name and add it again.',
   delegation_subject_listed_elsewhere: (c) => `${one(c, 'That entry')} is on another organization's list. Nothing was added. Tell Dan if this organization should use it.`,
   delegation_subject_not_listed: (c) => `${one(c, 'That entry')} is not on the list. Nothing was removed. Reload the list.`,
+  delegation_subject_in_use: (c) => {
+    const many = c.names.length > 1
+    return `${listed(c.names)} ${many ? 'act' : 'acts'} as ${c.subject ?? 'it'}, so it cannot be taken off the list. Nothing was removed. Remove ${many ? 'those connections' : 'that connection'} first.`
+  },
+  delegation_use_unreadable: () => 'Bidspoke could not read which connections act as it, so it stays on the list. Nothing was removed. Try again in a minute.',
   delegation_change_failed: () => 'Bidspoke could not confirm the change to the list. Reload the list to see whether it was made.',
   delegation_list_unavailable: () => 'The company list of mailboxes and drives could not be read. Nothing was changed. Try again in a minute.',
   delegation_change_refused: () => 'The workflows server would not make the change to the list. Nothing was changed. Tell Dan, since this is a fault in Bidspoke.',

@@ -124,19 +124,51 @@ export function orgHostOf(target: Readonly<Record<string, unknown>>): string | n
  * save, by name, before verify is asked (L667).
  */
 export function unlistedGoogleSubjects(target: Readonly<Record<string, unknown>>, list: readonly DelegationSubjectRow[]): string[] {
-  const subject = Object.hasOwn(target, 'subject') ? target.subject : undefined
-  const mailbox = typeof subject === 'string' ? subject.trim().toLowerCase() : ''
-  const rawDrives = Object.hasOwn(target, 'drives') ? target.drives : undefined
-  const drives = (Array.isArray(rawDrives) ? rawDrives : typeof rawDrives === 'string' ? [rawDrives] : [])
-    .filter((d): d is string => typeof d === 'string')
-    .map((d) => d.trim())
-    .filter((d) => d !== '')
+  const { mailbox, drives } = googleTargetSubjects(target)
   const mailboxes = new Set(list.filter((e) => e.kind === 'mailbox').map((e) => e.subject.toLowerCase()))
   const listedDrives = new Set(list.filter((e) => e.kind === 'drive').map((e) => e.subject))
   return [
     ...(mailboxes.has(mailbox) ? [] : [mailbox === '' ? 'The mailbox' : mailbox]),
     ...drives.filter((d) => !listedDrives.has(d)),
   ]
+}
+
+/**
+ * The mailbox and drives a Google target names, read as the ops minter reads
+ * them (a mailbox trimmed and lower cased, a drive id trimmed): the one reading
+ * both the save's list check above and the list's removal check below use.
+ * A target naming no mailbox names an empty one.
+ */
+export function googleTargetSubjects(target: unknown): { mailbox: string; drives: string[] } {
+  const t = target !== null && typeof target === 'object' && !Array.isArray(target) ? (target as Record<string, unknown>) : {}
+  const subject = Object.hasOwn(t, 'subject') ? t.subject : undefined
+  const mailbox = typeof subject === 'string' ? subject.trim().toLowerCase() : ''
+  const rawDrives = Object.hasOwn(t, 'drives') ? t.drives : undefined
+  const drives = (Array.isArray(rawDrives) ? rawDrives : typeof rawDrives === 'string' ? [rawDrives] : [])
+    .filter((d): d is string => typeof d === 'string')
+    .map((d) => d.trim())
+    .filter((d) => d !== '')
+  return { mailbox, drives }
+}
+
+/**
+ * The connections whose target names one list entry (Dan, 2026-10-20): a
+ * mailbox as the connection's subject, a drive among its drives. Read from the
+ * target, the connection's declaration of whom it acts as, which the Google
+ * minter mints from and checks against the list (minters/google.ts); acts_as
+ * holds nothing for a Google connection (actsAsOf measures Salesforce and
+ * Snowflake only). Any service's row is read, so a target of this shape under
+ * another service key refuses too, the harmless side (L648). Ordered by name.
+ */
+export function connectionsNamingSubject<R extends { name: string; target: unknown }>(rows: readonly R[], kind: 'mailbox' | 'drive', subject: string): R[] {
+  const wanted = kind === 'mailbox' ? subject.trim().toLowerCase() : subject.trim()
+  if (wanted === '') return []
+  return rows
+    .filter((r) => {
+      const named = googleTargetSubjects(r.target)
+      return kind === 'mailbox' ? named.mailbox === wanted : named.drives.includes(wanted)
+    })
+    .sort((a, b) => a.name.localeCompare(b.name))
 }
 
 /** Who a verified login acts as, as the acts_as column holds it (1 to 320 characters), or null. */

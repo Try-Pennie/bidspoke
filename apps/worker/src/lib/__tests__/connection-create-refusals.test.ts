@@ -108,6 +108,11 @@ describe('the Reconnect, Remove and Google list refusals (build PR 6)', () => {
     expect(connectionRouteSentence('connection_in_use', ROUTE_CTX)).toBe('Achieve report import uses this connection, so it cannot be removed. Nothing was removed. Take it out of that workflow first.')
   })
 
+  it('names every connection that acts as a list entry, so it cannot be taken off', () => {
+    expect(connectionRouteSentence('delegation_subject_in_use', { ...ROUTE_CTX, names: ['Ops mailbox'], subject: 'ops@trypennie.com' }))
+      .toBe('Ops mailbox acts as ops@trypennie.com, so it cannot be taken off the list. Nothing was removed. Remove that connection first.')
+  })
+
   it('says a login saved by a Reconnect whose check did not clear is saved, and what happens next', () => {
     const sentence = connectionRouteSentence('reconnect_saved_check_not_cleared', ROUTE_CTX)
     expect(sentence).toMatch(/^The new client secret is saved/)

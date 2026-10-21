@@ -84,17 +84,44 @@ async function call(env: Env, method: string, path: string, body?: unknown) {
 
 interface Answer { error?: string; message?: string; [k: string]: unknown }
 
+type Row = Record<string, unknown>
+
+/** The bidding connections the removal check reads, by organization, as the table holds them. */
+let connectionRows: Row[] = []
+let connectionsReadFails = false
+const connectionReads: string[] = []
+
+function supabaseDouble() {
+  return {
+    rpc: (name: string) => Promise.resolve(name === 'auth_user_with_allowlist'
+      ? { data: [{ id: USER, organization_id: ORG, email: 'dan@pennie.com', display_name: 'Dan Wright', allowed: true }], error: null }
+      : { data: null, error: { code: '42883', message: `no function ${name}` } }),
+    from: (table: string) => {
+      const filters: Array<(r: Row) => boolean> = []
+      const b = {
+        select(cols: string) { connectionReads.push(`${table}: ${cols}`); return b },
+        eq(col: string, v: unknown) { filters.push((r) => r[col] === v); return b },
+        order() { return b },
+        async limit(n: number) {
+          if (connectionsReadFails) return { data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } }
+          return { data: connectionRows.filter((r) => filters.every((f) => f(r))).slice(0, n), error: null }
+        },
+      }
+      return b
+    },
+  }
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  connectionRows = []
+  connectionsReadFails = false
+  connectionReads.length = 0
   vi.spyOn(console, 'log').mockImplementation(() => undefined)
   vi.spyOn(console, 'warn').mockImplementation(() => undefined)
   vi.spyOn(console, 'error').mockImplementation(() => undefined)
   vi.mocked(verifyJwt).mockResolvedValue({ sub: USER, email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated', user_metadata: { full_name: 'Dan Wright' } })
-  vi.mocked(createSupabaseClient).mockReturnValue({
-    rpc: (name: string) => Promise.resolve(name === 'auth_user_with_allowlist'
-      ? { data: [{ id: USER, organization_id: ORG, email: 'dan@pennie.com', display_name: 'Dan Wright', allowed: true }], error: null }
-      : { data: null, error: { code: '42883', message: `no function ${name}` } }),
-  } as never)
+  vi.mocked(createSupabaseClient).mockReturnValue(supabaseDouble() as never)
 })
 
 afterEach(() => {
@@ -215,5 +242,62 @@ describe('DELETE /connections/google/subjects/:kind/:subject', () => {
     expect(res.status).toBe(404)
     expect(((await res.json()) as Answer).error).toBe('delegation_subject_not_listed')
     expect(ops.entries.some((e) => e.subject === 'theirs@lendco.example')).toBe(true)
+  })
+})
+
+describe('removing an entry a saved connection names is refused, naming each such connection (Dan, 2026-10-20)', () => {
+  const ops = () => opsList()
+  const del = (env: Env, kind: string, subject: string) => call(env, 'DELETE', `/connections/google/subjects/${kind}/${encodeURIComponent(subject)}`)
+
+  it('a mailbox a connection acts as: 409 naming the connection, and ops is asked nothing', async () => {
+    connectionRows = [
+      { id: 'c1', organization_id: ORG, name: 'Ops mailbox', service_type: 'google', target: { subject: ' OPS@trypennie.com ' } },
+      { id: 'c2', organization_id: ORG, name: 'Reports drive', service_type: 'google', target: { subject: 'reports@trypennie.com', drives: ['0AbCdEf'] } },
+    ]
+    const o = ops()
+    const res = await del(makeEnv(o.handlers), 'mailbox', 'ops@trypennie.com')
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({
+      error: 'delegation_subject_in_use',
+      message: 'Ops mailbox acts as ops@trypennie.com, so it cannot be taken off the list. Nothing was removed. Remove that connection first.',
+      connections: [{ id: 'c1', name: 'Ops mailbox', service: 'google' }],
+    })
+    expect(o.calls).toEqual([])
+    expect(o.entries.some((e) => e.subject === 'ops@trypennie.com')).toBe(true)
+  })
+
+  it('a shared drive a connection names, by its id, names every such connection', async () => {
+    connectionRows = [
+      { id: 'c2', organization_id: ORG, name: 'Reports drive', service_type: 'google', target: { subject: 'reports@trypennie.com', drives: ['0AbCdEf'] } },
+      { id: 'c3', organization_id: ORG, name: 'Partner drive', service_type: 'google', target: { subject: 'ops@trypennie.com', drives: '0AbCdEf' } },
+    ]
+    const res = await del(makeEnv(ops().handlers), 'drive', '0AbCdEf')
+    expect(res.status).toBe(409)
+    const body = (await res.json()) as Answer
+    expect(body.connections).toEqual([{ id: 'c3', name: 'Partner drive', service: 'google' }, { id: 'c2', name: 'Reports drive', service: 'google' }])
+    expect(body.message).toBe('Partner drive and Reports drive act as 0AbCdEf, so it cannot be taken off the list. Nothing was removed. Remove those connections first.')
+  })
+
+  it('is allowed once no connection names it: another mailbox, another kind, or another organization\'s connection', async () => {
+    connectionRows = [
+      { id: 'c2', organization_id: ORG, name: 'Reports drive', service_type: 'google', target: { subject: 'reports@trypennie.com', drives: ['ops@trypennie.com'] } },
+      { id: 'c9', organization_id: OTHER_ORG, name: 'Their mailbox', service_type: 'google', target: { subject: 'ops@trypennie.com' } },
+      { id: 'c5', organization_id: ORG, name: 'slack', service_type: 'slack', target: null },
+    ]
+    const o = ops()
+    const res = await del(makeEnv(o.handlers), 'mailbox', 'ops@trypennie.com')
+    expect(res.status).toBe(200)
+    expect(o.calls.map((c) => c.method)).toEqual(['removeDelegationSubject'])
+    // Only names and targets are read, never a login.
+    expect(connectionReads.every((r) => !/credential_enc|config/.test(r))).toBe(true)
+  })
+
+  it('when the connections cannot be read, nothing is removed: never a pass', async () => {
+    connectionsReadFails = true
+    const o = ops()
+    const res = await del(makeEnv(o.handlers), 'mailbox', 'ops@trypennie.com')
+    expect(res.status).toBe(503)
+    expect(((await res.json()) as Answer).error).toBe('delegation_use_unreadable')
+    expect(o.calls).toEqual([])
   })
 })

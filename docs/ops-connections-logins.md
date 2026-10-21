@@ -347,8 +347,10 @@ So two things hold the account in:
    `/api/connections/google/subjects` (build plan PR 6), which pass that person
    to ops as the actor its change record names; the three are among the methods
    the deployed ops check requires since then. Until someone adds an entry,
-   every Google mint is refused. Removing an entry does not remove the
-   connections that act as it: their next mint is refused.
+   every Google mint is refused. An entry a saved connection acts as (its
+   target names the mailbox, or the drive among its drives) cannot be removed
+   until that connection is (`delegation_subject_in_use`, Dan's decision of
+   2026-10-20).
 
 ## Admin hand off
 

@@ -47,7 +47,7 @@ import { readDelegationEntryBody, readReconnectBody, reconnectValues } from '../
 import { writeAuditLog } from '../../lib/audit'
 import { DELEGATION_KINDS, type DelegationKind } from '../../ops/run-vocabulary'
 import {
-  actsAsOf, AUTH_TYPE_OF, connectionNameOf, CREATE_BODY_MAX_BYTES, declaredBodyTooLarge, declaredService, isReservedName, orgHostOf, readCreateBody,
+  actsAsOf, AUTH_TYPE_OF, connectionNameOf, connectionsNamingSubject, CREATE_BODY_MAX_BYTES, declaredBodyTooLarge, declaredService, isReservedName, orgHostOf, readCreateBody,
   secretLabelOf, unlistedGoogleSubjects,
 } from '../../lib/connection-create'
 import { callOpsConnections, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
@@ -491,6 +491,8 @@ const ROUTE_STATUS: Readonly<Record<ConnectionRouteRefusalCode, 200 | 400 | 404 
   delegation_display_name_invalid: 422,
   delegation_subject_listed_elsewhere: 409,
   delegation_subject_not_listed: 404,
+  delegation_subject_in_use: 409,
+  delegation_use_unreadable: 503,
   delegation_change_failed: 503,
   delegation_list_unavailable: 503,
   delegation_change_refused: 502,
@@ -787,6 +789,8 @@ function delegationRefusalCode(refused: string): ConnectionRouteRefusalCode {
 //   POST   /api/connections/google/subjects                 body { kind, subject, display_name? }
 //          201 { outcome: 'added', entry }  200 { outcome: 'already_listed', entry }
 //   DELETE /api/connections/google/subjects/:kind/:subject  200 { outcome: 'removed' }
+//          409 delegation_subject_in_use { connections: [{ id, name, service }] }
+//          while a saved connection names the entry
 //
 // Who may call them: any signed in user of the organization may read, add and
 // remove (Dan, 2026-10-18). Whose data: the caller's organization's list only,
@@ -795,9 +799,11 @@ function delegationRefusalCode(refused: string): ConnectionRouteRefusalCode {
 // person passed as the actor and when (ops migration 20261020190000), so the
 // route writes none of its own. Whether a text is one mailbox address or one
 // drive id is the ops table's to judge (L83); ops answers it by name.
-const delegationRefuse = (c: Context, orgId: string, code: ConnectionRouteRefusalCode, names: string[] = [], extra: Record<string, unknown> = {}) => {
+const delegationRefuse = (
+  c: Context, orgId: string, code: ConnectionRouteRefusalCode, names: string[] = [], extra: Record<string, unknown> = {}, subject?: string,
+) => {
   console.warn(JSON.stringify({ event: 'google_list_refused', code, organization_id: orgId }))
-  return c.json({ error: code, message: connectionRouteSentence(code, { service: 'Google', secret: 'login', names, deleted: false }), ...extra }, ROUTE_STATUS[code])
+  return c.json({ error: code, message: connectionRouteSentence(code, { service: 'Google', secret: 'login', names, deleted: false, subject }), ...extra }, ROUTE_STATUS[code])
 }
 
 connections.get('/google/subjects', async (c) => {
@@ -844,6 +850,32 @@ connections.delete('/google/subjects/:kind/:subject', async (c) => {
     return c.json({ error: 'connection_request_invalid', message: createRefusalSentence('connection_request_invalid', { service: 'Google', secret: 'login', org: null, names: [], money: null }), detail: 'kind is not mailbox or drive' }, 400)
   }
   if (subject.trim() === '' || subject.length > DELEGATION_SUBJECT_MAX) return delegationRefuse(c, orgId, 'delegation_subject_not_listed', ['That entry'])
+
+  // Refused while a saved connection of the organization names it (Dan,
+  // 2026-10-20), as a connection is while a workflow uses it (D9): read from
+  // each connection's target, whom the Google minter acts as. A read that
+  // fails, or a list too long to read whole, removes nothing. A connection
+  // saved in the instant between this read and the removal is still refused at
+  // its every mint, since the minter checks the list (F129).
+  const supabase = createSupabaseClient(c.env)
+  const { data: rows, error } = await supabase
+    .from('service_connections')
+    .select('id, name, service_type, target')
+    .eq('organization_id', orgId)
+    .order('name')
+    .limit(CONNECTIONS_LIST_MAX + 1)
+  const listed = (rows ?? []) as Array<{ id: string; name: string; service_type: string; target: unknown }>
+  if (error || listed.length > CONNECTIONS_LIST_MAX) {
+    console.error(JSON.stringify({ event: 'google_list_use_unreadable', organization_id: orgId, error: error ? formatErr(error) : `more than ${CONNECTIONS_LIST_MAX} connections` }))
+    return delegationRefuse(c, orgId, 'delegation_use_unreadable')
+  }
+  const naming = connectionsNamingSubject(listed, kind as DelegationKind, subject)
+  if (naming.length > 0) {
+    return delegationRefuse(c, orgId, 'delegation_subject_in_use', naming.map((r) => r.name), {
+      connections: naming.map((r) => ({ id: r.id, name: r.name, service: r.service_type })),
+    }, subject.trim())
+  }
+
   const answer = await callOpsConnections(c.env, 'removeDelegationSubject', {
     organization_id: orgId,
     actor: { user_id: userId, email, name },
