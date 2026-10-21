@@ -12,7 +12,7 @@ const T0 = Date.parse('2026-10-20T16:00:00Z')
 const DEADLINE = 45_000
 
 const conn = (over: Partial<ConnectionView>): ConnectionView => ({
-  id: 'c1', name: 'Pennie Salesforce', service: 'salesforce', serviceName: 'Salesforce', actsAs: 'integration@trypennie.com', status: 'ok', org: null,
+  id: 'c1', name: 'Pennie Salesforce', service: 'salesforce', serviceName: 'Salesforce', actsAs: 'integration@trypennie.com', status: 'ok', org: null, target: null,
   workflows: [], lastCheckedAt: null, problemSince: null, problemCause: null, alertLogin: false, ...over,
 })
 

@@ -766,6 +766,13 @@ const MIGRATION_TIMEOUT_MS = 180_000
 // that, so the Worker's own named answer arrives before the browser gives up.
 export const CONNECTIONS_LIST_TIMEOUT_MS = 45_000
 const CONNECTION_LOOKUP_TIMEOUT_MS = 45_000
+// A save and a Reconnect wait for verify (50 s), a Google save for the company
+// list first (15 s), then the write (the database's 30 s) and, when the write
+// fails after verify passed, a revoke (15 s); a Remove for its function and
+// then revoke (15 s). Each gets the route's whole worst case, so the page says
+// the check stalled only when the route can no longer answer (#2338 R13).
+export const CONNECTION_SAVE_TIMEOUT_MS = 120_000
+export const CONNECTION_REMOVE_TIMEOUT_MS = 50_000
 
 type ReqInit = RequestInit & { timeoutMs?: number }
 
@@ -1374,8 +1381,26 @@ export const api = {
 
   connections: {
     list: () => req<ConnectionList>('/api/connections', { timeoutMs: CONNECTIONS_LIST_TIMEOUT_MS }),
-    // The save, POST /api/connections (#2338, build PR 5), is called by the
-    // Add connection form, which arrives with build PR 10.
+    // The Add connection form's save, Reconnect and Remove (build PR 10). Each
+    // refusal throws carrying the route's sentence in body.message; a Remove
+    // refused because workflows use it carries them in body.workflows.
+    create: (body: { service: string; name: string; fields: Record<string, string> }) =>
+      req<{ connection: { id: string; name: string; service: string; acts_as: string | null; target: Record<string, unknown> | null; created_at: string } }>('/api/connections', {
+        method: 'POST',
+        body: JSON.stringify(body),
+        timeoutMs: CONNECTION_SAVE_TIMEOUT_MS,
+      }),
+    reconnect: (id: string, body: { fields?: Record<string, string> }) =>
+      req<{ outcome: 'reconnected' | 'checked'; connection: { id: string; generation: number; acts_as: string | null } }>(`/api/connections/${encodeURIComponent(id)}/reconnect`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+        timeoutMs: CONNECTION_SAVE_TIMEOUT_MS,
+      }),
+    remove: (id: string) =>
+      req<{ outcome: 'removed'; connection: { id: string; generation: number }; ops: { told: true } | { told: false; cause: string; message: string } }>(`/api/connections/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        timeoutMs: CONNECTION_REMOVE_TIMEOUT_MS,
+      }),
     // The History tab (build PR 9): newest first, each naming who made it.
     history: (id: string) =>
       req<{ entries: Array<{ id: string; action: string; at: string; by: string | null; credential_changed: boolean; changes: unknown }> }>(`/api/connections/${encodeURIComponent(id)}/history`),

@@ -29,6 +29,8 @@ export interface ConnectionView {
   status: ConnectionPageStatus | null
   /** A Salesforce connection's org host, its Org fact. */
   org: string | null
+  /** What the connection declares it signs in to (its public half): Reconnect shows the parts it keeps (build PR 10). */
+  target: Readonly<Record<string, unknown>> | null
   workflows: UsingWorkflow[]
   /** When the last check answered, either way; null when never checked. */
   lastCheckedAt: string | null
@@ -52,6 +54,7 @@ export function viewOf(row: ConnectionListRow): ConnectionView {
     actsAs: row.acts_as,
     status: row.status,
     org: row.org ?? null,
+    target: row.target ?? null,
     workflows: row.workflows ?? [],
     lastCheckedAt,
     problemSince: since,

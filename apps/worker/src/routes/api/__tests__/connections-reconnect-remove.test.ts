@@ -278,7 +278,7 @@ describe('Reconnect with a new client secret: verify, then compare and set, then
 
     const res = await reconnect(env, CONN, { fields: { client_secret: NEW_SECRET } })
     expect(res.status).toBe(422)
-    expect(await res.json()).toMatchObject({ error: 'connection_needs_reauth', message: 'Salesforce refused the client secret. Nothing was saved. Check the client secret and save again.' })
+    expect(await res.json()).toMatchObject({ error: 'connection_needs_reauth', message: 'Salesforce refused the client secret. Nothing was saved. Check the secret and save again.' })
     expect(db.rpcs).toEqual([])
     expect(binding.clearReauth).not.toHaveBeenCalled()
   })

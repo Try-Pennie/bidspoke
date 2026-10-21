@@ -1,4 +1,4 @@
-// The Connections page as settled in the #2338 design rounds (rounds 1 to 32, 2026-10-20 and 21, and the states passed in review), drawn
+// The Connections page as settled in the #2338 design rounds (rounds 1 to 35, 2026-10-20 and 21, and the states passed in review), drawn
 // into the captured app chrome's #main-content at 1120 wide. Only the settled behaviour is here;
 // every rejected option of the rounds is gone. make-settled.py hands buildScreen one variant per
 // frame, and the variant names the frame's state:
@@ -10,7 +10,14 @@
 //   {state: "add", service: null | "Salesforce" | "Google", save: "ready" | "saving" | "failed",
 //    google: "company" | "own"}                          Add connection in the panel (rounds 11 to 17)
 //   {state: "add", service: "Salesforce", save: "ready", org: "new"}   Another org, its address
-//                                                        typed into the Org box (round 25)
+//                                                        typed into the Org box (round 25), its menu
+//                                                        open over the fields below (round 34)
+//   {state: "add", ..., save: "stalled"}                 the check did not answer (passed in review)
+//   {state: "add", ..., save: "failed", org: "new", menu: "closed", cause: "nocap"}
+//                                                        the org has no call limit set (round 33)
+//   {state: "detail", chosen, dialog: "reconnect", reconnect: "failed"}   Reconnect refused (review)
+//   {state: "detail", chosen, extra: true, inUse: [<workflow>], dialog: "remove", remove: "refused"}
+//                                                        Remove refused, a workflow now uses it (review)
 //   {state: "loadfailed"}                                the list did not load (round 23)
 //   {state: "loadfailed", cause: "refused"}              the server answered a refusal (passed in review, 2026-10-21)
 //   {state: "detail", chosen, statuses: "stale", retry: "failed"}   the strip's Try again failed (review)
@@ -36,6 +43,18 @@ var SPIN = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewB
 // The shared drive the add drive frame pastes and names, as Dan saw it in review.
 var DRIVE_URL = "https://drive.google.com/drive/u/0/folders/0AbCdEfGhIjKlMnOpQrS?usp=sharing";
 var DRIVE_NAME = "Partner invoices";
+// The sentences the frames Dan passed in review draw, word for word as the build says them.
+var SECRET_REFUSED = "Salesforce refused the client secret. Nothing was saved. Check the secret and save again.";
+var STALLED = "The login check with Salesforce did not answer within 120 seconds, so Bidspoke cannot tell whether the connection was saved. Reload the page to see before saving again.";
+// Round 33 (Dan, 2026-10-21): what is missing, in his words, and what happens next.
+function noCap(address) { return "Bidspoke has no limit set yet on how many Salesforce calls its workflows may make to " + address + ", so it cannot connect to that org. Nothing was saved. Ask Dan to set a limit for this org, then save again."; }
+function inUseRefusal(name) { return name + " uses this connection, so it cannot be removed. Nothing was removed. Take it out of that workflow first."; }
+// The app's working line and failed line, as the build draws them.
+function failedLine(text) {
+  var line = part(el("p", "field-error text-sm ad-line"), "save-line"); line.setAttribute("data-state", "failed"); line.setAttribute("role", "alert");
+  line.append(document.createTextNode(text));
+  return line;
+}
 var GLOGO = '<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.5l6.7-6.7C35.6 2.4 30.2 0 24 0 14.6 0 6.6 5.4 2.6 13.3l7.8 6C12.3 13.6 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.5 5.8c4.4-4 7.1-10 7.1-17.5z"/><path fill="#FBBC05" d="M10.4 28.7c-.5-1.4-.8-3-.8-4.7s.3-3.3.8-4.7l-7.8-6C1 16.6 0 20.2 0 24s1 7.4 2.6 10.7l7.8-6z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.5-5.8c-2.1 1.4-4.9 2.3-8.4 2.3-6.3 0-11.7-4.1-13.6-9.8l-7.8 6C6.6 42.6 14.6 48 24 48z"/></svg>';
 
 // Round 2: Integrations is renamed Connections, with a plug icon.
@@ -301,13 +320,23 @@ function addPanel(variant) {
       var nw = FX().draft.newOrg;
       name = nw.name;
       var typed = input(nw.address);
-      typed.setAttribute("role", "combobox"); typed.setAttribute("aria-expanded", "true"); typed.setAttribute("aria-controls", "org-menu");
-      var menu = el("div", "sv-menu"); menu.id = "org-menu"; menu.setAttribute("role", "listbox");
-      var opt = el("div", "sv-opt", "Use " + nw.address + " as a new org"); opt.setAttribute("role", "option");
-      // Round 27: the only option is the highlighted one, as the box marks it while an address is typed.
-      opt.setAttribute("aria-selected", "true");
-      menu.append(opt);
-      orgField = field("Org", typed, menu);
+      typed.setAttribute("role", "combobox");
+      if (variant.menu === "closed") {
+        typed.setAttribute("aria-expanded", "false");
+        orgField = field("Org", typed);
+      } else {
+        // Round 34: the open menu sits over the fields below it, as every dropdown's does; the box has the focus.
+        typed.classList.add("sv-typed");
+        typed.setAttribute("aria-expanded", "true"); typed.setAttribute("aria-controls", "org-menu");
+        var menu = el("div", "sv-menu"); menu.id = "org-menu"; menu.setAttribute("role", "listbox");
+        var opt = el("div", "sv-opt"); opt.setAttribute("role", "option");
+        var chk = el("span", "sv-opt-check"); chk.setAttribute("aria-hidden", "true");
+        opt.append(chk, el("span", null, "Use " + nw.address + " as a new org"));
+        // Round 27: the only option is the highlighted one, as the box marks it while an address is typed.
+        opt.setAttribute("aria-selected", "true");
+        menu.append(opt);
+        orgField = field("Org", typed, menu);
+      }
     } else {
       // Round 15: the org by name from the orgs Bidspoke knows, its address in a grey line under it.
       var org = FX().salesforceOrgs.filter(function (o) { return o[0] === draft.org; })[0];
@@ -318,18 +347,21 @@ function addPanel(variant) {
       field("Client id", input(draft.clientId)),
       field("Client secret", input(MASK, true)));
     var save = el("button", "cx-btn cx-btn-sm", "Save");
-    // Round 13: Save greys out, and a line under the buttons says what is happening and counts.
+    // Round 13: Save greys out, and a line under the buttons says what is happening and counts. It is
+    // the app's working line, its spinner level with the capitals (round 32).
     if (variant.save === "saving") {
       save.disabled = true;
-      line = part(el("div", "ad-line"), "save-line"); line.setAttribute("data-state", "saving"); line.setAttribute("role", "status");
-      var spin = part(el("span", "spin"), "spinner"); spin.setAttribute("aria-hidden", "true");
-      line.append(spin, document.createTextNode("Checking the login with Salesforce, " + draft.elapsed));
+      line = part(el("div", "ad-line"), "save-line"); line.setAttribute("data-state", "saving");
+      var working = el("p", "outcome outcome-working"); working.setAttribute("role", "status");
+      working.innerHTML = SPIN; working.firstChild.setAttribute("data-part", "spinner");
+      working.append(document.createTextNode("Checking the login with Salesforce, " + draft.elapsed));
+      line.append(working);
     }
-    // Round 14: the same line turns red, and Save is ready again.
-    if (variant.save === "failed") {
-      line = part(el("div", "ad-line bad"), "save-line"); line.setAttribute("data-state", "failed"); line.setAttribute("role", "alert");
-      line.append(document.createTextNode("Salesforce refused the client secret. Nothing was saved. Check the secret and save again."));
-    }
+    // Round 14: the same line turns red, and Save is ready again. Red text is FieldError's
+    // (.impeccable.md), so the line is drawn in its class (build PR 10, 2026-10-21). A check that
+    // never answered says so (passed in review); an org with no call limit says round 33's sentence.
+    if (variant.save === "failed") line = failedLine(variant.cause === "nocap" ? noCap(FX().draft.newOrg.address) : SECRET_REFUSED);
+    if (variant.save === "stalled") line = failedLine(STALLED);
     foot.append(save, el("button", "cx-btn-quiet", "Cancel"));
   } else if (variant.service === "Google") {
     var gd = FX().draft.google;
@@ -366,12 +398,16 @@ function dialog(title, width) {
   return { scrim: scrim, box: dg };
 }
 // Round 19: Reconnect keeps the client id and asks for a new client secret.
-function reconnectDialog(c) {
+function reconnectDialog(c, variant) {
   var dl = dialog("Reconnect " + c.name, 480);
   var g = el("div", "ad-form");
-  g.append(field("Client id", input(FX().reconnect.clientId)), field("New client secret", input("", true)));
+  var failed = variant.reconnect === "failed";
+  // Passed in review: a refused Reconnect keeps the secret typed and says why under the buttons.
+  g.append(field("Client id", input(FX().reconnect.clientId)), field("New client secret", input(failed ? MASK : "", true)));
   var ft = el("div", "ad-foot"); ft.append(el("button", "cx-btn cx-btn-sm", "Save"), el("button", "cx-btn-quiet", "Cancel"));
-  g.append(ft); dl.box.append(g);
+  g.append(ft);
+  if (failed) g.append(failedLine(SECRET_REFUSED));
+  dl.box.append(g);
   return dl.scrim;
 }
 // Round 20: Replace names the connection to use instead and lists the workflows, each ticked.
@@ -391,11 +427,14 @@ function replaceDialog(c) {
   return dl.scrim;
 }
 // Round 21: removing one no workflow uses asks once, with what cannot be undone.
-function removeDialog(c) {
+function removeDialog(c, variant) {
   var dl = dialog("Remove " + c.name + "?", 460);
   dl.box.append(el("div", null, "Its login is deleted from Bidspoke and cannot be brought back."));
-  var ft = el("div", "foot"); ft.append(el("button", "cx-btn-quiet", "Cancel"), el("button", "cx-btn-dangerfill", "Remove"));
+  var go = el("button", "cx-btn-dangerfill", "Remove");
+  var ft = el("div", "foot"); ft.append(el("button", "cx-btn-quiet", "Cancel"), go);
   dl.box.append(ft);
+  // Passed in review: refused because a workflow now uses it, the dialog names it and Remove is held.
+  if (variant.remove === "refused") { go.disabled = true; dl.box.append(failedLine(inUseRefusal(variant.inUse[0]))); }
   return dl.scrim;
 }
 
@@ -423,6 +462,8 @@ function buildScreen(variant) {
     page.append(st);
   }
   var chosen = all(variant).filter(function (c) { return c.name === variant.chosen; })[0];
+  // A workflow that has come to use the chosen connection since the list was read (the refused Remove).
+  if (chosen && variant.inUse) chosen = Object.assign({}, chosen, { workflows: variant.inUse });
   var split = el("div", "cx-split");
   var right;
   if (variant.state === "google") right = googlePanel(variant);
@@ -430,8 +471,8 @@ function buildScreen(variant) {
   else right = detailPanel(chosen);
   split.append(listColumn(variant), right);
   page.append(split);
-  if (variant.dialog === "reconnect") page.append(reconnectDialog(chosen));
+  if (variant.dialog === "reconnect") page.append(reconnectDialog(chosen, variant));
   if (variant.dialog === "replace") page.append(replaceDialog(chosen));
-  if (variant.dialog === "remove") page.append(removeDialog(chosen));
+  if (variant.dialog === "remove") page.append(removeDialog(chosen, variant));
   return page;
 }

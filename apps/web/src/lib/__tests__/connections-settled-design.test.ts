@@ -62,6 +62,14 @@ describe('settled Connections designs (#2338)', () => {
       expect(link).toContain('font-weight: 400')
     })
 
+    // The Worker's own test (connection-create-refusals.test.ts) holds it to the same words.
+    it("D34: the no-cap frame and its check hold round 33's sentence, word for word", () => {
+      const before = 'Bidspoke has no limit set yet on how many Salesforce calls its workflows may make to '
+      const after = ', so it cannot connect to that org. Nothing was saved. Ask Dan to set a limit for this org, then save again.'
+      expect(read('connections-page/builder.js')).toContain(`${before}" + address + "${after}`)
+      expect(read('connections-page.checks.js')).toContain(`${before}" + org + "${after}`)
+    })
+
     it('D19 to D21: the dialog title is drawn at the size the checks require, 20px', () => {
       const size = /var DIALOG_TITLE = "(\d+px)"/.exec(read('connections-page.checks.js'))?.[1]
       expect(size).toBe('20px')
@@ -77,7 +85,8 @@ describe('settled Connections designs (#2338)', () => {
       const map = (jsonBlock(read('connections-page.html'), 'decision-map') as { decisions: Decision[] }).decisions
       const covering = map.filter((d) => d.frames?.includes('add-salesforce-new-org')).map((d) => d.id)
       // D28 (round 27, 2026-10-21): the frame's open menu is the one drawing a highlighted row.
-      expect(covering).toEqual(['D15', 'D24', 'D25', 'D27', 'D28'])
+      // D35 (round 34, 2026-10-21): that menu sits over the fields below it.
+      expect(covering).toEqual(['D15', 'D24', 'D25', 'D27', 'D28', 'D35'])
     })
   })
 

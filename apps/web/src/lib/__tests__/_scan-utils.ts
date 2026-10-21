@@ -587,3 +587,34 @@ export function workflowFiles(): string[] {
     .sort()
     .map((f) => `.github/workflows/${f}`)
 }
+
+// ── Stylesheets ──
+
+export interface CssRule { selector: string; body: string }
+
+/** Every rule of a stylesheet, nested blocks (@layer, @media) opened, comments dropped. */
+export function cssRules(css: string): CssRule[] {
+  const src = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  const out: CssRule[] = []
+  const walk = (text: string) => {
+    let i = 0
+    while (i < text.length) {
+      const open = text.indexOf('{', i)
+      if (open < 0) break
+      const selector = text.slice(i, open).trim()
+      let depth = 1
+      let j = open + 1
+      while (j < text.length && depth > 0) {
+        if (text[j] === '{') depth++
+        else if (text[j] === '}') depth--
+        j++
+      }
+      const body = text.slice(open + 1, j - 1)
+      if (selector.startsWith('@') || body.includes('{')) walk(body)
+      else out.push({ selector: selector.split(/[;}]/).pop()!.trim(), body })
+      i = j
+    }
+  }
+  walk(src)
+  return out
+}

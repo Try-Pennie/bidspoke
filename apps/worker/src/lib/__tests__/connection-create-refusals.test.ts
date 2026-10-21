@@ -56,12 +56,16 @@ describe('the create refusals', () => {
   })
 
   it('says the design\'s own sentence when Salesforce refuses the client secret (D14)', () => {
-    expect(createRefusalSentence('connection_needs_reauth', CTX)).toBe('Salesforce refused the client secret. Nothing was saved. Check the client secret and save again.')
+    // Word for word as docs/design/connections-page.checks.js D14 reads it: the secret is named once (L605).
+    expect(createRefusalSentence('connection_needs_reauth', CTX)).toBe('Salesforce refused the client secret. Nothing was saved. Check the secret and save again.')
+    expect(createRefusalSentence('connection_needs_reauth', { ...CTX, service: 'Snowflake', secret: 'private key' })).toBe('Snowflake refused the private key. Nothing was saved. Check the secret and save again.')
+    expect(createRefusalSentence('connection_needs_reauth', { ...CTX, service: 'Lender API', secret: 'login' })).toBe('Lender API refused the login. Nothing was saved. Check the login and save again.')
   })
 
-  it('names the org and that Dan must approve a cap for it when it has none (#2556)', () => {
+  // Word for word as Dan settled it in design round 33 (2026-10-21), the org's address filled in.
+  it('says no limit is set yet on the calls to the org, and to ask Dan to set one (#2556, round 33)', () => {
     expect(createRefusalSentence('sf_cap_unset', CTX)).toBe(
-      'Bidspoke has no approved cap for the Salesforce org lendco.my.salesforce.com. Nothing was saved. Dan must approve a cap for this org before a connection to it can be saved.',
+      'Bidspoke has no limit set yet on how many Salesforce calls its workflows may make to lendco.my.salesforce.com, so it cannot connect to that org. Nothing was saved. Ask Dan to set a limit for this org, then save again.',
     )
   })
 

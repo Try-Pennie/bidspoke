@@ -1,4 +1,4 @@
-/* The Connections page as settled in the #2338 design rounds (rounds 1 to 32), with the rejected
+/* The Connections page as settled in the #2338 design rounds (rounds 1 to 35), with the rejected
    options' rules taken out. Colours are the app's: navy #1D212F marks a selection, blue #1B72BA is
    for buttons only, red #B42318 only for something wrong, grey hint text #697081. */
 .cx-page { padding: 32px 32px 48px; max-width: 1072px; position: relative; }
@@ -12,6 +12,8 @@
 .cx-btn-danger[disabled] { color: #B9B2A8; border-color: #E5E0D8; }
 .cx-btn-dangerfill { background: #B42318; color: #fff; border: 0; border-radius: 8px; padding: 6px 12px; font: inherit; font-size: 13px; font-weight: 500; }
 .cx-btn-dangerfill, .cx-btn-quiet, .cx-btn { white-space: nowrap; }
+/* A destroying button held in its dialog is faded, as the app's held buttons are (a refused Remove). */
+.cx-btn-dangerfill[disabled] { opacity: .5; }
 .cx-hint { color: #697081; font-size: 13px; }
 .cx-status { font-size: 13px; color: #1D212F; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .cx-status .dot { width: 8px; height: 8px; border-radius: 50%; background: #9AA1AE; }
@@ -70,18 +72,25 @@
 /* Rounds 11 to 18: Add connection, in the right panel. */
 .ad-form { display: grid; gap: 16px; max-width: 460px; margin-top: 16px; }
 .ad-label { display: block; font-size: 13px; font-weight: 500; color: #1D212F; margin-bottom: 6px; }
+.ad-field { position: relative; }
 .ad-field .input { width: 100%; }
 .ad-pick { width: 100%; display: flex; justify-content: space-between; align-items: center; background: #fff; border: 1px solid #D9D4CC; border-radius: 8px; padding: 8px 12px; font: inherit; font-size: 14px; color: #1D212F; }
 .ad-pick-hint { display: block; margin-top: 4px; }
 /* Round 25: Another org, its address typed into the Org box, the box's menu open under it. */
-.sv-menu { margin-top: 4px; background: #fff; border: 1px solid #D9D4CC; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.08); padding: 4px 0; }
-.sv-opt { padding: 7px 12px; font-size: 14px; color: #1D212F; }
+/* Round 34: the menu sits over the fields below it, never pushing them down, drawn as the app's
+   dropdown draws its menu: 4px under the box, as wide as it, its option after a check column. */
+.sv-menu { position: absolute; left: 0; right: 0; z-index: 10; margin-top: 4px; background: #fff; border: 1px solid #E5E7EB; border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0,0,0,.1), 0 4px 6px -4px rgba(0,0,0,.1); padding: 4px; }
+.sv-opt { display: flex; align-items: flex-start; gap: 6px; padding: 6px 8px; border-radius: 4px; font-size: 14px; line-height: 20px; color: #1D212F; }
+.sv-opt-check { width: 14px; height: 14px; margin-top: 2px; flex: none; }
+/* The box holds the focus while its menu is open, ringed as the app rings a focused box. */
+.input.sv-typed { border-color: #1B72BA; box-shadow: 0 0 0 2px #1B72BA; outline: none; }
 /* Round 27: an open dropdown's highlighted row is pale grey behind dark text, in every dropdown. */
 .sv-opt[aria-selected="true"] { background: #F1EFEA; color: #343434; }
 .ad-foot { display: flex; gap: 8px; margin-top: 4px; align-items: center; }
-.ad-line { display: flex; align-items: center; gap: 10px; font-size: 14px; color: #1D212F; margin-top: 4px; }
-.ad-line.bad { color: #B42318; align-items: flex-start; }
-.spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #D9D4CC; border-top-color: #1D212F; display: inline-block; flex: none; }
+/* The line under the buttons has no colour of its own: a saving line is the app's working line,
+   a failed one FieldError's red (build PR 10). */
+.ad-line { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; margin-top: 4px; text-wrap: pretty; }
+.ad-line .outcome { font-size: 14px; color: #1D212F; }
 .sv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .sv-tile { border: 1px solid #E5E0D8; border-radius: 10px; padding: 10px 12px; font-size: 14px; color: #1D212F; background: #fff; }
 .sv-tile .cx-hint { display: block; margin-top: 2px; }
@@ -95,9 +104,11 @@
 .g-btn svg { display: block; }
 
 /* Rounds 19 to 21: dialogs. Round 26: every dialog's title is 20px. */
-.cx-scrim { position: fixed; inset: 0; background: rgba(29,33,47,.35); display: grid; place-items: center; z-index: 50; }
+/* The dim is the app's Dialog shell's own (bg-navy/40), not a decision (the idioms say so). */
+.cx-scrim { position: fixed; inset: 0; background: rgba(29,33,47,.4); display: grid; place-items: center; z-index: 50; }
 .cx-dialog { width: 440px; background: #fff; border-radius: 12px; padding: 22px 24px; box-shadow: 0 12px 40px rgba(0,0,0,.18); color: #1D212F; font-size: 14px; }
-.cx-dialog h2 { font-size: 20px; font-weight: 600; color: #1D212F; margin: 0 0 8px; }
+/* Round 35: every dialog's title is 20px, drawn by the app's one title rule, in its weight and colour. */
+.cx-dialog h2 { font-size: 20px; font-weight: 600; color: #343434; margin: 0 0 8px; line-height: 1.5; }
 .cx-dialog .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .rp-check { display: flex; gap: 8px; align-items: center; padding: 6px 0; font-size: 14px; color: #1D212F; }
 .rp-box { width: 14px; height: 14px; border-radius: 3px; background: #1D212F; display: inline-grid; place-items: center; color: #fff; font-size: 10px; flex: none; }

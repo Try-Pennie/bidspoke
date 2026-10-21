@@ -1,5 +1,5 @@
 /**
- * The development preview's data for the Connections page (#2338, build PR 9):
+ * The development preview's data for the Connections page (#2338, build PRs 9 and 10):
  * the settled design's own fixture (docs/design/connections-page.fixture.json),
  * turned into what the Worker's routes answer, so the page draws exactly what
  * the design's frames draw and the design score can compare the two. No
@@ -8,8 +8,9 @@
 import type { ConnectionList, ConnectionListRow } from '@/lib/api'
 import fixture from '../../../../../../docs/design/connections-page.fixture.json'
 import { loadedOf, type ConnectionsSource } from '@/components/connections/ConnectionsScreen'
-import { LIST_NO_ANSWER, type Chosen, type ConnectionsEvent } from '@/components/connections/connections-state'
+import { CHANGE_DEADLINES, LIST_NO_ANSWER, type Chosen, type ConnectionsEvent } from '@/components/connections/connections-state'
 import type { DelegationEntry, HistoryEntry } from '@/components/connections/connection-model'
+import { catalogueServices, createdView, stalledSentence, type FormService } from '@/components/connections/add-form-model'
 
 /** The moment every frame is drawn at: 12:00 PM ET on the day the design was settled. */
 export const PREVIEW_NOW = Date.parse('2026-10-20T16:00:00Z')
@@ -50,6 +51,11 @@ function etDayTimeToIso(day: string, clock: string): string {
   return new Date(Date.UTC(2026, 9, Number(d[1]), hour + 4, Number(t[2]))).toISOString()
 }
 
+/** A Salesforce connection's client id: Achieve's is the design's own (its Reconnect frame shows it kept). */
+function clientIdOf(name: string): string {
+  return name.startsWith('Achieve Salesforce') ? fixture.reconnect.clientId : `client-id-of-${slug(name)}`
+}
+
 function rowOf(c: FixtureConnection): ConnectionListRow {
   const checked = agoToIso(c.checked)
   const status = c.status as ConnectionListRow['status']
@@ -65,7 +71,7 @@ function rowOf(c: FixtureConnection): ConnectionListRow {
     acts_as: c.actsAs,
     person_bound: c.kind === 'person',
     owner: null,
-    target: c.instance ? { instance_url: `https://${c.instance}` } : null,
+    target: c.instance ? { instance_url: `https://${c.instance}`, client_id: clientIdOf(c.name) } : null,
     org: c.instance ?? null,
     status,
     status_word: fixture.statusVocabulary[c.status as keyof typeof fixture.statusVocabulary] ?? null,
@@ -85,25 +91,41 @@ function rowOf(c: FixtureConnection): ConnectionListRow {
   }
 }
 
-/** The frames this build draws, and what each chooses. The add, dialog and saved frames are build PR 10's. */
-export function previewFrame(frame: string | undefined): { list: 'loaded' | 'stale' | 'failed' | 'loading'; extra: boolean; chosen: Chosen } {
+/** The frames loaded through the page's own calls, and what each chooses. The add, dialog and saved frames are drawn by their events (previewScript). */
+export function previewFrame(frame: string | undefined): { list: 'loaded' | 'stale' | 'failed' | 'loading'; chosen: Chosen } {
   const chosen = (name: string): Chosen => ({ kind: 'connection', id: idOf(name) })
   switch (frame) {
     case 'problem':
-    case 'reconnect':
-      return { list: 'loaded', extra: false, chosen: chosen('Achieve Salesforce') }
+      return { list: 'loaded', chosen: chosen('Achieve Salesforce') }
     case 'google-list':
-      return { list: 'loaded', extra: false, chosen: { kind: 'google' } }
+      return { list: 'loaded', chosen: { kind: 'google' } }
     case 'stale':
-      return { list: 'stale', extra: false, chosen: chosen('Pennie Salesforce') }
+      return { list: 'stale', chosen: chosen('Pennie Salesforce') }
     case 'not-loaded':
-      return { list: 'failed', extra: false, chosen: { kind: 'none' } }
-    case 'saved':
-    case 'remove':
-      return { list: 'loaded', extra: true, chosen: chosen(fixture.justSaved.name) }
+      return { list: 'failed', chosen: { kind: 'none' } }
     default:
-      return { list: 'loaded', extra: false, chosen: chosen('Pennie Salesforce') }
+      return { list: 'loaded', chosen: chosen('Pennie Salesforce') }
   }
+}
+
+/**
+ * The services the form offers in the preview: the design's eight tiles, in its
+ * order (D12). Salesforce and Snowflake are the catalogue's own entries. Google's
+ * is a stand in until its catalogue entry ships with #2337, which settles its
+ * field names; the other five are drawn so the grid holds the design's tiles,
+ * each with one secret field, and are never offered by the live page.
+ */
+export function previewServices(): FormService[] {
+  const shipped = new Map(catalogueServices().map((s) => [s.name, s]))
+  return fixture.services.map(([name, tile]): FormService => {
+    const real = shipped.get(name)
+    if (real) return real
+    const key = slug(name)
+    if (name === 'Google') {
+      return { key, name, tile, connection: { tile, auth: 'service_account_delegation', fields: [{ key: 'subject', label: 'Acts as', input: 'google_subject', required: true, target: 'subject' }] } }
+    }
+    return { key, name, tile, connection: { tile, auth: 'static_key', fields: [{ key: 'api_key', label: 'API key', input: 'secret', required: true, login: 'api_key' }] } }
+  })
 }
 
 /** The design's mailboxes and drives, and `more` made up ones after them for a list at production length. */
@@ -145,7 +167,7 @@ export const PREVIEW_ORG_NAMES: Readonly<Record<string, string>> = Object.fromEn
 
 export function previewSource(frame: string | undefined, moreGoogle = 0): ConnectionsSource {
   const shape = previewFrame(frame)
-  const all: FixtureConnection[] = [...fixture.connections, ...(shape.extra ? [fixture.justSaved] : [])]
+  const all: FixtureConnection[] = fixture.connections
   let subjects = delegationOf(moreGoogle)
   const answer: ConnectionList = {
     connections: all.map(rowOf),
@@ -153,7 +175,17 @@ export function previewSource(frame: string | undefined, moreGoogle = 0): Connec
       ? { stale: true, as_of: etTodayToIso(fixture.statusesAsOf), unavailable: { cause: 'deadline', detail: 'the preview draws the stale frame' } }
       : { stale: false, as_of: new Date(PREVIEW_NOW).toISOString(), unavailable: null },
   }
+  const services = previewServices()
   return {
+    create: (body) => {
+      const host = typeof body.fields.instance_url === 'string' ? body.fields.instance_url.replace(/^https:\/\//, '') : null
+      const actsAs = host === 'achieve.my.salesforce.com' ? fixture.justSaved.actsAs : host ? `integration@${host}` : null
+      const created = { id: idOf(body.name), name: body.name, service: body.service, acts_as: actsAs, target: host ? { instance_url: `https://${host}`, client_id: body.fields.client_id ?? '' } : null, created_at: new Date(PREVIEW_NOW).toISOString() }
+      if (!services.some((s) => s.key === body.service)) return Promise.reject(new Error('the preview offers no such service'))
+      return Promise.resolve({ connection: created })
+    },
+    reconnect: (id) => Promise.resolve({ outcome: 'reconnected' as const, connection: { id, acts_as: null } }),
+    remove: () => Promise.resolve({ outcome: 'removed' as const, ops: { told: true as const } }),
     list: () => {
       if (shape.list === 'loading') return new Promise(() => {})
       if (shape.list === 'failed') return Promise.reject(Object.assign(new Error('Timed out'), { timedOut: true, timeoutMs: 45_000 }))
@@ -185,6 +217,10 @@ export const ELAPSED_MS = 4_000
 
 /** The refusals the Worker's routes answer, worded as they word them (lib/connection-create-refusals.ts). */
 const LIST_REFUSED = 'The connections could not be read: the use counts read failed.'
+const SECRET_REFUSED = 'Salesforce refused the client secret. Nothing was saved. Check the secret and save again.'
+const NO_CAP = 'Bidspoke has no limit set yet on how many Salesforce calls its workflows may make to lendco.my.salesforce.com, so it cannot connect to that org. Nothing was saved. Ask Dan to set a limit for this org, then save again.'
+const IN_USE = 'Daily Salesforce cleanup uses this connection, so it cannot be removed. Nothing was removed. Take it out of that workflow first.'
+const OPS_NOT_TOLD = 'The connection is removed. The workflows server could not be told straight away, so it stops using the login at its next minute check, and within 6 hours at the latest if it cannot reach Bidspoke.'
 const ADD_REFUSED = 'ops@trypennie is not one mailbox address or one shared drive id. Nothing was added. Check it and add it again.'
 const REMOVE_REFUSED = 'Ops mailbox acts as ops@trypennie.com, so it cannot be taken off the list. Nothing was removed. Remove that connection first.'
 
@@ -192,6 +228,10 @@ export interface PreviewScript {
   events: ConnectionsEvent[]
   /** The org names the frame knows; empty draws an org by its address. */
   orgNames: Readonly<Record<string, string>>
+  /** A control focused once drawn (an open menu), by selector. */
+  focus?: string
+  /** A list item chosen once drawn, by name (the leave question it asks). */
+  leaveTo?: string
 }
 
 /** Every frame drawn this way, by id: the URL is /dev/connections?frame=<id>. */
@@ -199,6 +239,12 @@ export const SCRIPTED_FRAMES = [
   'loading', 'stale-retrying', 'stale-retry-failed', 'stale-no-earlier-time', 'not-loaded-refused',
   'google-adding', 'google-add-refused', 'google-removing', 'google-remove-refused', 'google-bad-address', 'google-add-drive',
   'notice-earlier-day', 'notice-many-workflows', 'notice-org-by-address', 'used-by-tab', 'history-tab', 'alert-login',
+  // Build PR 10: the settled frames of the form and the dialogs, drawn by their events.
+  'add-choose', 'add-salesforce', 'add-saving', 'add-failed', 'add-salesforce-new-org', 'add-google-company', 'add-google-own', 'saved', 'reconnect', 'replace', 'remove',
+  // Build PR 10: the states of the form and the dialogs the settled design never drew.
+  'add-stalled', 'add-failed-no-cap', 'add-snowflake', 'add-leave-ask', 'add-saving-leave-ask',
+  'reconnect-saving', 'reconnect-failed', 'reconnect-stalled', 'reconnect-snowflake',
+  'remove-removing', 'remove-refused-in-use', 'remove-ops-not-told',
 ] as const
 
 export function previewScript(frame: string | undefined): PreviewScript | null {
@@ -259,6 +305,90 @@ export function previewScript(frame: string | undefined): PreviewScript | null {
     }
     case 'alert-login':
       return script([listed(), choose('Bidspoke Alerts')])
+  }
+  return formScript(frame)
+}
+
+/** The form's and the dialogs' frames (build PR 10), each drawn by the events a person's presses would send. */
+function formScript(frame: string): PreviewScript | null {
+  const T = PREVIEW_NOW
+  const known = PREVIEW_ORG_NAMES
+  const rows = fixture.connections.map((c) => rowOf(c as FixtureConnection))
+  const justSaved = rowOf(fixture.justSaved as FixtureConnection)
+  const statuses: ConnectionList['statuses'] = { stale: false, as_of: new Date(T).toISOString(), unavailable: null }
+  const listed = (extra: ConnectionListRow[] = []): ConnectionsEvent => ({ type: 'list_answered', attempt: 1, data: loadedOf({ connections: [...rows, ...extra], statuses }) })
+  const google: ConnectionsEvent = { type: 'google_answered', subjects: delegationOf(0), reachedLimit: false }
+  const choose = (name: string): ConnectionsEvent => ({ type: 'choose', chosen: { kind: 'connection', id: idOf(name) } })
+  const sf = fixture.draft.salesforce
+  const elapsed = Number.parseInt(sf.elapsed, 10) * 1000
+  const deadline = CHANGE_DEADLINES.saveDeadlineMs
+  const stalled = stalledSentence('Salesforce', deadline, 'saved')
+  const opened: ConnectionsEvent[] = [listed(), google, choose('Pennie Salesforce'), { type: 'add_opened' }]
+  const salesforce = (name = sf.name, org = 'https://achieve.my.salesforce.com', typedNew = false): ConnectionsEvent[] => [
+    ...opened,
+    { type: 'add_service', service: 'salesforce' },
+    { type: 'add_name', text: name },
+    { type: 'add_field', field: 'instance_url', text: org, typedNew },
+    { type: 'add_field', field: 'client_id', text: sf.clientId },
+    // A plain word, twelve letters, so the masked box shows the design's twelve dots.
+    { type: 'add_field', field: 'client_secret', text: 'plainsecrets' },
+  ]
+  const saveAt = (at: number): ConnectionsEvent => ({ type: 'save_requested', attempt: 1, at, stalled })
+  const reconnectOf = (name: string): ConnectionsEvent[] => [listed(), google, choose(name), { type: 'dialog_opened', dialog: 'reconnect', id: idOf(name) }]
+  const removeOf = (): ConnectionsEvent[] => [listed([justSaved]), google, choose(fixture.justSaved.name), { type: 'dialog_opened', dialog: 'remove', id: idOf(fixture.justSaved.name) }]
+  const typedSecret: ConnectionsEvent = { type: 'dialog_field', field: 'client_secret', text: 'plainsecrets' }
+  const script = (events: ConnectionsEvent[], more: Partial<PreviewScript> = {}): PreviewScript => ({ events, orgNames: known, ...more })
+  const S = T - ELAPSED_MS
+  switch (frame) {
+    case 'add-choose':
+      return script(opened)
+    case 'add-salesforce':
+      return script(salesforce())
+    case 'add-saving':
+      return script([...salesforce(), saveAt(T - elapsed), { type: 'tick', at: T }])
+    case 'add-failed':
+      return script([...salesforce(), saveAt(T - elapsed), { type: 'save_refused', attempt: 1, sentence: SECRET_REFUSED }])
+    case 'add-salesforce-new-org':
+      return script(salesforce(fixture.draft.newOrg.name, fixture.draft.newOrg.address, true), { focus: '[data-part="add-form"] [data-field="Org"] input' })
+    case 'add-google-company':
+      return script([...opened, { type: 'add_service', service: 'google' }, { type: 'add_name', text: fixture.draft.google.companyName }, { type: 'add_field', field: 'subject', text: fixture.draft.google.subject }])
+    case 'add-google-own':
+      return script([...opened, { type: 'add_service', service: 'google' }, { type: 'add_google', way: 'own' }, { type: 'add_name', text: fixture.draft.google.ownName }])
+    case 'saved': {
+      const service = catalogueServices().find((x) => x.key === 'salesforce')!
+      const answer = { id: idOf(fixture.justSaved.name), name: fixture.justSaved.name, service: 'salesforce', acts_as: fixture.justSaved.actsAs, target: { instance_url: `https://${fixture.justSaved.instance}`, client_id: sf.clientId }, created_at: new Date(T).toISOString() }
+      return script([...salesforce(), saveAt(T - elapsed), { type: 'save_answered', attempt: 1, connection: createdView(answer, service, T) }])
+    }
+    case 'reconnect':
+      return script(reconnectOf('Achieve Salesforce'))
+    case 'replace':
+      return script([listed(), google, choose('Pennie Salesforce'), { type: 'dialog_opened', dialog: 'replace', id: idOf('Pennie Salesforce') }])
+    case 'remove':
+      return script(removeOf())
+    case 'add-stalled':
+      return script([...salesforce(), saveAt(T - deadline), { type: 'tick', at: T }])
+    case 'add-failed-no-cap':
+      return script([...salesforce(fixture.draft.newOrg.name, fixture.draft.newOrg.address, true), saveAt(T - elapsed), { type: 'save_refused', attempt: 1, sentence: NO_CAP }])
+    case 'add-snowflake':
+      return script([...opened, { type: 'add_service', service: 'snowflake' }, { type: 'add_name', text: 'Reporting warehouse 2' }, { type: 'add_field', field: 'account', text: 'PENNIE' }, { type: 'add_field', field: 'user', text: 'OPS_SERVICE' }, { type: 'add_field', field: 'private_key', text: 'preview key line one\npreview key line two\npreview key line three' }])
+    case 'add-leave-ask':
+      return script(salesforce(), { leaveTo: 'TPL2 Salesforce' })
+    case 'add-saving-leave-ask':
+      return script([...salesforce(), saveAt(S), { type: 'tick', at: T }], { leaveTo: 'TPL2 Salesforce' })
+    case 'reconnect-saving':
+      return script([...reconnectOf('Achieve Salesforce'), typedSecret, { type: 'reconnect_requested', attempt: 1, at: S, stalled: stalledSentence('Salesforce', deadline, 'reconnected') }, { type: 'tick', at: T }])
+    case 'reconnect-failed':
+      return script([...reconnectOf('Achieve Salesforce'), typedSecret, { type: 'reconnect_requested', attempt: 1, at: S, stalled: '' }, { type: 'reconnect_refused', attempt: 1, sentence: SECRET_REFUSED }])
+    case 'reconnect-stalled':
+      return script([...reconnectOf('Achieve Salesforce'), typedSecret, { type: 'reconnect_requested', attempt: 1, at: T - deadline, stalled: stalledSentence('Salesforce', deadline, 'reconnected') }, { type: 'tick', at: T }])
+    case 'reconnect-snowflake':
+      return script(reconnectOf('Reporting warehouse'))
+    case 'remove-removing':
+      return script([...removeOf(), { type: 'connection_remove_requested', attempt: 1, at: S, stalled: stalledSentence('Salesforce', CHANGE_DEADLINES.removeDeadlineMs, 'removed') }, { type: 'tick', at: T }])
+    case 'remove-refused-in-use':
+      return script([...removeOf(), { type: 'connection_remove_requested', attempt: 1, at: S, stalled: '' }, { type: 'connection_remove_refused', attempt: 1, sentence: IN_USE, workflows: [{ id: idOf('Daily Salesforce cleanup'), name: 'Daily Salesforce cleanup', deleted: false }] }])
+    case 'remove-ops-not-told':
+      return script([...removeOf(), { type: 'connection_remove_requested', attempt: 1, at: S, stalled: '' }, { type: 'connection_remove_answered', attempt: 1, id: idOf(fixture.justSaved.name), notice: OPS_NOT_TOLD }])
   }
   return null
 }

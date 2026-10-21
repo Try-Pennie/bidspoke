@@ -17,12 +17,15 @@
  * The data-part attributes are what the settled design's checks read
  * (docs/design/connections-page.checks.js), never a styling hook.
  *
- * Left for build PR 10: the Add connection form, and the Reconnect, Replace and
- * Remove dialogs. Their buttons are drawn where the design puts them and do
- * nothing yet.
+ * Part 2 (build PR 10; R12 to R16, R18, R19, R21): Add connection opens the
+ * form in the right panel (AddConnectionPanel.tsx), a save lists the new
+ * connection and opens it, Reconnect and Remove open their dialogs
+ * (ConnectionDialogs.tsx), and leaving with something unsaved asks first
+ * (lib/leave-guard.ts). Replace is drawn and inert until build PR 12, and Sign
+ * in with Google until build PR 13.
  */
 import Link from 'next/link'
-import { useCallback, useEffect, useId, useMemo, useReducer, useRef } from 'react'
+import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react'
 import type { ConnectionList } from '@/lib/api'
 import { errorSentence, requestFailureCause } from '@/lib/error-sentence'
 import { Button, ChoiceGroup, FieldError, Outcome, TextInput } from '@/components/ui/form'
@@ -32,8 +35,14 @@ import {
   problemNotice, secretWordOf, statusWord, viewOf, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry,
 } from './connection-model'
 import {
-  chosenConnection, connectionsReducer, initialConnectionsState, LIST_NO_ANSWER, type Chosen, type ConnectionsEvent, type ConnectionsState, type DetailTab, type LoadedList,
+  chosenConnection, connectionsReducer, initialConnectionsState, LIST_NO_ANSWER, unsavedWork, type Chosen, type ConnectionsEvent, type ConnectionsState, type DetailTab, type LoadedList,
 } from './connections-state'
+import {
+  catalogueServices, createBodyOf, createdView, knownOrgs, reconnectBodyOf, saveFailureSentence, stalledSentence, type CreateBody, type CreatedConnection, type FormService,
+} from './add-form-model'
+import { AddConnectionPanel } from './AddConnectionPanel'
+import { LeaveConnectionDialog, ReconnectDialog, RemoveDialog, RemovedDialog, ReplaceDialog } from './ConnectionDialogs'
+import { leaveThen, useLeaveGuard, type LeaveRequest } from '@/lib/leave-guard'
 
 /** What the page calls: the Worker's routes live, the fixture in the preview. Each refusal throws as api.ts's req() does. */
 export interface ConnectionsSource {
@@ -42,6 +51,12 @@ export interface ConnectionsSource {
   googleSubjects(): Promise<{ subjects: DelegationEntry[]; reached_limit: boolean }>
   addGoogleSubject(body: { kind: DelegationEntry['kind']; subject: string; display_name: string | null }): Promise<{ outcome: 'added' | 'already_listed'; entry: DelegationEntry }>
   removeGoogleSubject(kind: DelegationEntry['kind'], subject: string): Promise<{ outcome: 'removed' }>
+  /** POST /api/connections: verify, then the one insert (build PR 5). */
+  create(body: CreateBody): Promise<{ connection: CreatedConnection }>
+  /** POST /api/connections/:id/reconnect: a new login, or none to check the stored one again (build PR 6). */
+  reconnect(id: string, body: { fields?: Record<string, string> }): Promise<{ outcome: 'reconnected' | 'checked'; connection: { id: string; acts_as: string | null } }>
+  /** DELETE /api/connections/:id: refused while a workflow uses it (build PR 6). */
+  remove(id: string): Promise<{ outcome: 'removed'; ops: { told: true } | { told: false; message: string } }>
 }
 
 /** What time it is, and a repeating timer; the preview's stands still. */
@@ -85,11 +100,22 @@ export function loadedOf(answer: ConnectionList): LoadedList {
   return { connections: answer.connections.map(viewOf), statuses: { stale: answer.statuses.stale, asOf: answer.statuses.as_of } }
 }
 
-export function ConnectionsScreen({ source, clock = browserClock, orgNames = {}, initialChosen, initialTab, initialEvents, noInitialLoad }: {
+/** The workflows a Remove refused for naming them (connection_in_use), read off the refusal's body. */
+function workflowsOfRefusal(err: unknown): ConnectionView['workflows'] | undefined {
+  const body = (err as { body?: unknown } | null)?.body as { error?: unknown; workflows?: unknown } | undefined
+  if (!body || body.error !== 'connection_in_use' || !Array.isArray(body.workflows)) return undefined
+  return body.workflows.filter((w): w is ConnectionView['workflows'][number] =>
+    typeof w === 'object' && w !== null && typeof (w as { id?: unknown }).id === 'string' && typeof (w as { name?: unknown }).name === 'string')
+    .map((w) => ({ id: w.id, name: w.name, deleted: w.deleted === true }))
+}
+
+export function ConnectionsScreen({ source, clock = browserClock, orgNames = {}, services: servicesProp, initialChosen, initialTab, initialEvents, noInitialLoad, initialFocus, initialLeaveTo }: {
   source: ConnectionsSource
   clock?: ConnectionsClock
-  /** Salesforce orgs Bidspoke knows by name, by host: the notice names an org by it. */
+  /** Salesforce orgs Bidspoke knows by name, by host: the notice names an org by it, and the form offers it. */
   orgNames?: Readonly<Record<string, string>>
+  /** The services the form offers; the catalogue's unless the development preview draws the design's own list. */
+  services?: readonly FormService[]
   initialChosen?: Chosen
   initialTab?: DetailTab
   /**
@@ -99,7 +125,12 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
    */
   initialEvents?: readonly ConnectionsEvent[]
   noInitialLoad?: boolean
+  /** A control the preview focuses once drawn, to show an open menu (the new org's), by selector. */
+  initialFocus?: string
+  /** A list item the preview chooses once drawn, by name, to show the leave question it asks. */
+  initialLeaveTo?: string
 }) {
+  const services = useMemo(() => servicesProp ?? catalogueServices(), [servicesProp])
   const [state, dispatch] = useReducer(connectionsReducer, undefined, () => (initialEvents ?? []).reduce(connectionsReducer, {
     ...initialConnectionsState(clock.now(), LIST_DEADLINE_MS, initialChosen),
     tab: initialTab ?? 'connection',
@@ -146,6 +177,8 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     || state.google?.kind === 'loading'
     || state.edit.kind === 'adding' || state.edit.kind === 'removing'
     || Object.values(state.history).some((h) => h.kind === 'loading')
+    || state.add?.save.kind === 'saving'
+    || ((state.dialog?.kind === 'reconnect' || state.dialog?.kind === 'remove') && state.dialog.save.kind === 'saving')
   useEffect(() => clock.every(waiting ? 1000 : 30_000, () => dispatch({ type: 'tick', at: clock.now() })), [clock, waiting])
 
   const chosen = chosenConnection(state)
@@ -187,17 +220,96 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     )
   }, [source, clock])
 
+  // ── The Add connection form, Reconnect and Remove (build PR 10) ──
+  // Each change's number, taken at the press, so a late answer to an earlier one is never taken for it.
+  const changeNumber = useRef({ ...state.lastChange })
+
+  const save = useCallback(() => {
+    const s = latest.current
+    const service = services.find((x) => x.key === s.add?.draft.service)
+    if (!s.add || !service || s.add.save.kind === 'saving' || s.list.kind !== 'loaded') return
+    const attempt = ++changeNumber.current.save
+    if (attempt <= s.lastChange.save) return
+    const ms = s.deadlines.saveDeadlineMs
+    dispatch({ type: 'save_requested', attempt, at: clock.now(), stalled: stalledSentence(service.name, ms, 'saved') })
+    source.create(createBodyOf(service, s.add.draft)).then(
+      (a) => dispatch({ type: 'save_answered', attempt, connection: createdView(a.connection, service, clock.now()) }),
+      (err: unknown) => dispatch({ type: 'save_refused', attempt, sentence: saveFailureSentence(err, service.name, ms, 'saved') }),
+    )
+  }, [source, clock, services])
+
+  const reconnect = useCallback(() => {
+    const s = latest.current
+    const d = s.dialog
+    if (d?.kind !== 'reconnect' || d.save.kind === 'saving' || s.list.kind !== 'loaded') return
+    const c = s.list.data.connections.find((x) => x.id === d.id)
+    if (!c) return
+    // A service the catalogue does not declare has no fields to ask; the route says why it refuses the check.
+    const serviceName = services.find((x) => x.key === c.service)?.name ?? c.serviceName
+    const attempt = ++changeNumber.current.reconnect
+    if (attempt <= s.lastChange.reconnect) return
+    const ms = s.deadlines.saveDeadlineMs
+    dispatch({ type: 'reconnect_requested', attempt, at: clock.now(), stalled: stalledSentence(serviceName, ms, 'reconnected') })
+    source.reconnect(c.id, reconnectBodyOf(d.values)).then(
+      (a) => dispatch({ type: 'reconnect_answered', attempt, id: c.id, actsAs: a.connection.acts_as, at: clock.now() }),
+      (err: unknown) => dispatch({ type: 'reconnect_refused', attempt, sentence: saveFailureSentence(err, serviceName, ms, 'reconnected') }),
+    )
+  }, [source, clock, services])
+
+  const remove = useCallback(() => {
+    const s = latest.current
+    const d = s.dialog
+    if (d?.kind !== 'remove' || d.save.kind === 'saving' || s.list.kind !== 'loaded') return
+    const c = s.list.data.connections.find((x) => x.id === d.id)
+    if (!c) return
+    const attempt = ++changeNumber.current.remove
+    if (attempt <= s.lastChange.remove) return
+    const ms = s.deadlines.removeDeadlineMs
+    dispatch({ type: 'connection_remove_requested', attempt, at: clock.now(), stalled: stalledSentence(c.serviceName, ms, 'removed') })
+    source.remove(c.id).then(
+      (a) => dispatch({ type: 'connection_remove_answered', attempt, id: c.id, notice: a.ops.told ? null : a.ops.message }),
+      (err: unknown) => dispatch({ type: 'connection_remove_refused', attempt, sentence: saveFailureSentence(err, c.serviceName, ms, 'removed'), workflows: workflowsOfRefusal(err) }),
+    )
+  }, [source, clock])
+
+  // Leaving with something unsaved asks first, whichever way: a link, Back, a refresh, or another item in the list (L608).
+  const [leaveAsk, setLeaveAsk] = useState<LeaveRequest | null>(null)
+  const unsaved = unsavedWork(state)
+  const blocking = unsaved !== null
+  useLeaveGuard({ blocking, onAsk: (request) => setLeaveAsk((open) => open ?? request) })
+  // The question goes once there is nothing left to lose (a save landed while it was asked); the person can go again.
+  useEffect(() => { if (!blocking) setLeaveAsk(null) }, [blocking])
+  const choose = useCallback((c: Chosen, name: string) => {
+    leaveThen({ kind: 'page', name }, () => { setLeaveAsk(null); dispatch({ type: 'choose', chosen: c }) })
+  }, [])
+
+  // The preview's open menu and leave question: a control focused, or a list item chosen, once drawn.
+  useEffect(() => {
+    if (!initialFocus && !initialLeaveTo) return
+    const id = setTimeout(() => {
+      if (initialFocus) (document.querySelector(initialFocus) as HTMLElement | null)?.focus()
+      const s = latest.current
+      const to = initialLeaveTo && s.list.kind === 'loaded' ? s.list.data.connections.find((c) => c.name === initialLeaveTo) : undefined
+      if (to) choose({ kind: 'connection', id: to.id }, to.name)
+    }, 0)
+    return () => clearTimeout(id)
+  }, [initialFocus, initialLeaveTo, choose])
+
   const loaded = state.list.kind === 'loaded' ? state.list : null
   const groups = useMemo(() => (loaded ? listGroups(loaded.data.connections) : []), [loaded])
+  const orgs = useMemo(() => knownOrgs(loaded ? loaded.data.connections : [], orgNames), [loaded, orgNames])
+  const dialog = state.dialog
+  const dialogConnection = loaded && dialog && dialog.kind !== 'removed' ? loaded.data.connections.find((c) => c.id === dialog.id) ?? null : null
+  const dialogService = dialogConnection ? services.find((x) => x.key === dialogConnection.service) ?? null : null
 
   return (
     <div className="cx-page">
       <div className="cx-head">
         <h1 className="text-3xl font-bold text-graphite" data-part="page-title">Connections</h1>
-        {/* Round 23: hidden until the list loads; round 11b: then always there. Its form is build PR 10's. */}
+        {/* Round 23: hidden until the list loads; round 11b: then always there. It opens the form in the right panel (D11). */}
         {loaded && (
           <div className="cx-head-actions">
-            <Button variant="primary" className="cx-btn" part="add-connection">Add connection</Button>
+            <Button variant="primary" className="cx-btn" part="add-connection" onClick={() => dispatch({ type: 'add_opened' })}>Add connection</Button>
           </div>
         )}
       </div>
@@ -233,8 +345,25 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
             </div>
           )}
           <div className="cx-split">
-            <ConnectionList groups={groups} chosen={state.chosen} onChoose={(c) => dispatch({ type: 'choose', chosen: c })} />
-            {state.chosen.kind === 'google'
+            <ConnectionList groups={groups} chosen={state.chosen} onChoose={choose} />
+            {state.chosen.kind === 'add' && state.add
+              ? (
+                <AddConnectionPanel
+                  add={state.add}
+                  now={state.now}
+                  services={services}
+                  orgs={orgs}
+                  google={state.google}
+                  onService={(service) => dispatch({ type: 'add_service', service })}
+                  onName={(text) => dispatch({ type: 'add_name', text })}
+                  onField={(field, text, typedNew) => dispatch({ type: 'add_field', field, text, typedNew })}
+                  onGoogle={(way) => dispatch({ type: 'add_google', way })}
+                  onSave={save}
+                  onCancel={() => dispatch({ type: 'add_closed' })}
+                  onGoogleRetry={loadGoogle}
+                />
+              )
+              : state.chosen.kind === 'google'
               ? (
                 <GooglePanel
                   state={state}
@@ -246,10 +375,53 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
                 />
               )
               : chosen
-                ? <DetailPanel c={chosen} state={state} orgNames={orgNames} onTab={(tab) => dispatch({ type: 'tab', tab })} onHistoryRetry={() => loadHistory(chosen.id)} />
+                ? (
+                  <DetailPanel
+                    c={chosen}
+                    state={state}
+                    orgNames={orgNames}
+                    onTab={(tab) => dispatch({ type: 'tab', tab })}
+                    onHistoryRetry={() => loadHistory(chosen.id)}
+                    onReconnect={() => dispatch({ type: 'dialog_opened', dialog: 'reconnect', id: chosen.id })}
+                    onRemove={() => dispatch({ type: 'dialog_opened', dialog: 'remove', id: chosen.id })}
+                  />
+                )
                 : null}
           </div>
         </>
+      )}
+
+      {dialog?.kind === 'reconnect' && dialogConnection && (
+        <ReconnectDialog
+          dialog={dialog}
+          connection={dialogConnection}
+          service={dialogService}
+          now={state.now}
+          onField={(field, text) => dispatch({ type: 'dialog_field', field, text })}
+          onSave={reconnect}
+          onClose={() => dispatch({ type: 'dialog_closed' })}
+        />
+      )}
+      {dialog?.kind === 'remove' && dialogConnection && (
+        <RemoveDialog dialog={dialog} connection={dialogConnection} now={state.now} onRemove={remove} onClose={() => dispatch({ type: 'dialog_closed' })} />
+      )}
+      {dialog?.kind === 'removed' && <RemovedDialog dialog={dialog} onClose={() => dispatch({ type: 'dialog_closed' })} />}
+      {dialog?.kind === 'replace' && dialogConnection && loaded && (
+        <ReplaceDialog
+          dialog={dialog}
+          connection={dialogConnection}
+          candidates={loaded.data.connections.filter((c) => c.service === dialogConnection.service && c.id !== dialogConnection.id && !c.alertLogin)}
+          onWith={(id) => dispatch({ type: 'replace_with', id })}
+          onTick={(workflow) => dispatch({ type: 'replace_tick', workflow })}
+          onClose={() => dispatch({ type: 'dialog_closed' })}
+        />
+      )}
+      {leaveAsk && (
+        <LeaveConnectionDialog
+          request={leaveAsk}
+          unsaved={unsaved ?? 'form'}
+          onKeepEditing={() => setLeaveAsk(null)}
+        />
       )}
     </div>
   )
@@ -258,7 +430,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
 /** How long the page waits for the list before saying the server did not answer: the client's own ceiling for the call (api.ts). */
 export const LIST_DEADLINE_MS = 45_000
 
-function ConnectionList({ groups, chosen, onChoose }: { groups: ReturnType<typeof listGroups>; chosen: Chosen; onChoose: (c: Chosen) => void }) {
+function ConnectionList({ groups, chosen, onChoose }: { groups: ReturnType<typeof listGroups>; chosen: Chosen; onChoose: (c: Chosen, name: string) => void }) {
   return (
     <nav className="cx-card cx-list" data-part="connection-list" aria-label="Connections">
       {groups.map((g) => (
@@ -266,14 +438,14 @@ function ConnectionList({ groups, chosen, onChoose }: { groups: ReturnType<typeo
           <h3 className="cx-group" data-part="group-heading">{g.heading}</h3>
           {g.googleEntry && (
             <div className={`cx-item${chosen.kind === 'google' ? ' sel' : ''}`} data-part="list-item" data-entry="google-subjects" data-selected={chosen.kind === 'google' ? 'true' : undefined}>
-              <Button variant="row" className="cx-item-btn" current={chosen.kind === 'google'} onClick={() => onChoose({ kind: 'google' })}>{GOOGLE_LIST_ENTRY}</Button>
+              <Button variant="row" className="cx-item-btn" current={chosen.kind === 'google'} onClick={() => onChoose({ kind: 'google' }, GOOGLE_LIST_ENTRY)}>{GOOGLE_LIST_ENTRY}</Button>
             </div>
           )}
           {g.items.map((c) => {
             const on = chosen.kind === 'connection' && chosen.id === c.id
             return (
               <div key={c.id} className={`cx-item${on ? ' sel' : ''}`} data-part="list-item" data-name={c.name} data-selected={on ? 'true' : undefined}>
-                <Button variant="row" className="cx-item-btn" current={on} onClick={() => onChoose({ kind: 'connection', id: c.id })}>
+                <Button variant="row" className="cx-item-btn" current={on} onClick={() => onChoose({ kind: 'connection', id: c.id }, c.name)}>
                   {g.attention
                     ? (
                       <span className="cx-item-two">
@@ -312,12 +484,14 @@ function WorkflowLinks({ workflows }: { workflows: ConnectionView['workflows'] }
   )
 }
 
-function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry }: {
+function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry, onReconnect, onRemove }: {
   c: ConnectionView
   state: ConnectionsState
   orgNames: Readonly<Record<string, string>>
   onTab: (t: DetailTab) => void
   onHistoryRetry: () => void
+  onReconnect: () => void
+  onRemove: () => void
 }) {
   const notice = problemNotice(c, state.now, orgNames)
   const n = c.workflows.length
@@ -345,7 +519,7 @@ function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry }: {
               <p>{notice.cause}</p>
               {notice.effect && <p>{notice.effect}</p>}
               <p className="cx-hint">{notice.fix}</p>
-              {!c.alertLogin && <Button variant="primary" className="cx-btn cx-btn-sm">Reconnect</Button>}
+              {!c.alertLogin && <Button variant="primary" className="cx-btn cx-btn-sm" onClick={onReconnect}>Reconnect</Button>}
             </div>
           )}
           <div className="cx-rows">
@@ -364,14 +538,14 @@ function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry }: {
             )
             : (
               <>
-                {/* Rounds 6 and 9c. Reconnect, Replace and Remove open dialogs that build PR 10 adds. */}
+                {/* Rounds 6 and 9c. Replace is drawn and does nothing until build PR 12 (#1947). */}
                 <div className="cx-actions" data-part="actions">
-                  {!notice && <Button variant="secondary" className="cx-btn-quiet">Reconnect</Button>}
+                  {!notice && <Button variant="secondary" className="cx-btn-quiet" onClick={onReconnect}>Reconnect</Button>}
                   <Button variant="secondary" className="cx-btn-quiet">Replace</Button>
                 </div>
                 <div className="cx-danger" data-part="remove-row">
                   {n > 0 && <div className="what">Cannot be removed while a workflow uses it.</div>}
-                  <Button variant="danger" className="cx-btn-danger" disabled={n > 0}>Remove</Button>
+                  <Button variant="danger" className="cx-btn-danger" disabled={n > 0} onClick={onRemove}>Remove</Button>
                 </div>
                 {n > 0 && (
                   <div className="cx-inline" data-part="used-by">

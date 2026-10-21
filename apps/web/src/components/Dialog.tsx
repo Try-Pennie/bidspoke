@@ -37,6 +37,14 @@ interface DialogBase {
    * (#2322), lg for a wider comparison.
    */
   size?: 'sm' | 'md' | 'wide' | 'lg'
+  /**
+   * A page's own class on the panel, beside the shell's, for a page whose
+   * settled design draws its dialogs to its own geometry (the Connections
+   * page's widths and padding, #2338). Never a second dialog: the shell's
+   * semantics, focus and dismissal stay the same, and the title's size is the
+   * shared `.dialog-title` rule's alone (round 35, dialog-title-guard.test.ts).
+   */
+  className?: string
   children?: ReactNode
 }
 
@@ -51,7 +59,7 @@ export type DialogProps = DialogBase & (
 )
 
 export function Dialog(props: DialogProps) {
-  const { title, description, onDismiss, actions, warning = false, size = 'sm', children } = props
+  const { title, description, onDismiss, actions, warning = false, size = 'sm', className, children } = props
   const onDismissRef = useRef(onDismiss)
   onDismissRef.current = onDismiss
   // What had focus before the dialog took it. Radix gives focus back to a
@@ -80,7 +88,7 @@ export function Dialog(props: DialogProps) {
         <RadixDialog.Content
           role={warning ? 'alertdialog' : 'dialog'}
           aria-modal="true"
-          className={`dialog dialog-${size}`}
+          className={`dialog dialog-${size} ${className ?? ''}`.trim()}
           onCloseAutoFocus={(e) => { e.preventDefault(); if (returnFocusTo.current?.isConnected) returnFocusTo.current.focus() }}
           {...(description ? {} : { 'aria-describedby': undefined })}
         >

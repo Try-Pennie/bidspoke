@@ -386,9 +386,10 @@ before the first connection of that kind is saved.
 ### Approving a cap for a new Salesforce org (#2556)
 
 Saving a connection for an org that has no approved cap fails on the Add
-connection form with: "Bidspoke has no approved cap for the Salesforce org
-lendco.my.salesforce.com. Nothing was saved. Dan must approve a cap for this org
-before a connection to it can be saved." That is verify's `sf_cap_unset`
+connection form with (design round 33, 2026-10-21): "Bidspoke has no limit set
+yet on how many Salesforce calls its workflows may make to
+lendco.my.salesforce.com, so it cannot connect to that org. Nothing was saved.
+Ask Dan to set a limit for this org, then save again." That is verify's `sf_cap_unset`
 (`POST /api/connections`, the refusal sentences in
 `apps/worker/src/lib/connection-create-refusals.ts`), and it is the right answer
 until the org is approved: nothing is asked of Salesforce, not even a token. The

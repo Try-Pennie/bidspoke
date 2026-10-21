@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { useState, type ReactNode } from 'react'
 import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { Field, FieldError, TextInput, NumberInput, Checkbox, Button, Outcome, ChoiceGroup, type OutcomeState } from '../form'
+import { Field, FieldError, TextInput, NumberInput, Checkbox, Button, Outcome, ChoiceGroup, SecretBlock, SecretInput, TickRow, type OutcomeState } from '../form'
 import { Toggle } from '../Toggle'
 import { Select } from '../Select'
 import { SuggestInput } from '../SuggestInput'
@@ -66,6 +66,79 @@ describe('FieldError (#2144)', () => {
     const loud = screen.getByRole('alert')
     expect(loud.tagName).toBe('DIV')
     expect(loud).toHaveClass('field-error', 'text-sm', 'field-error-box', 'mb-4')
+  })
+
+  // #2338 build PR 10: a failed save line is read by the settled design's checks by its part and state.
+  it('carries the part and state a settled design reads it by, and none when not given', () => {
+    render(<FieldError alert part="save-line" partState="failed">Salesforce refused the client secret.</FieldError>)
+    const line = screen.getByRole('alert')
+    expect(line).toHaveAttribute('data-part', 'save-line')
+    expect(line).toHaveAttribute('data-state', 'failed')
+    render(<FieldError>Plain</FieldError>)
+    expect(screen.getByText('Plain')).not.toHaveAttribute('data-part')
+  })
+})
+
+describe('a kept value and a ticked row (#2338 build PR 10)', () => {
+  it('a read only box shows a value that cannot change here, still reachable and read by its label', () => {
+    const onChange = vi.fn()
+    render(<TextInput id="cid" value="3MVG9xk2Q7R1s0p0Lm" onChange={onChange} readOnly aria-label="Client id" />)
+    const box = screen.getByLabelText('Client id') as HTMLInputElement
+    expect(box.readOnly).toBe(true)
+    expect(box.disabled).toBe(false)
+    expect(box).toHaveClass('input', 'input-readonly')
+    expect(box.value).toBe('3MVG9xk2Q7R1s0p0Lm')
+  })
+
+  it('a ticked row is a checkbox named by its words, toggled by a click or Space, and never submits a form', async () => {
+    const onSubmit = vi.fn()
+    function Row() {
+      const [on, setOn] = useState(true)
+      return <form onSubmit={(e) => { e.preventDefault(); onSubmit() }}><TickRow checked={on} onChange={setOn} label="Lead Completed sync" /><button type="submit">Go</button></form>
+    }
+    render(<Row />)
+    const row = screen.getByRole('checkbox', { name: 'Lead Completed sync' })
+    expect(row).toHaveAttribute('aria-checked', 'true')
+    expect(row).toHaveAttribute('type', 'button')
+    fireEvent.click(row)
+    expect(row).toHaveAttribute('aria-checked', 'false')
+    row.focus()
+    await userEvent.keyboard(' ')
+    expect(row).toHaveAttribute('aria-checked', 'true')
+    await userEvent.keyboard('{Enter}')
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+})
+
+describe('SecretInput and SecretBlock (#2338 build PR 10)', () => {
+  it('a secret is a masked box the browser never fills from a saved password, and Enter in it is kept from the form', async () => {
+    const onSubmit = vi.fn()
+    const onChange = vi.fn()
+    render(
+      <form onSubmit={(e) => { e.preventDefault(); onSubmit() }}>
+        <SecretInput id="sec" value="" onChange={onChange} aria-label="Client secret" />
+        <button type="submit">Save</button>
+      </form>,
+    )
+    const box = screen.getByLabelText('Client secret')
+    expect(box).toHaveAttribute('type', 'password')
+    expect(box).toHaveAttribute('autocomplete', 'new-password')
+    expect(box).toHaveClass('input')
+    await userEvent.type(box, 'shh{Enter}')
+    expect(onChange).toHaveBeenLastCalledWith('h')
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('a multi line secret is its own masked box, keeping its line breaks', () => {
+    const onChange = vi.fn()
+    render(<SecretBlock id="pem" value="" onChange={onChange} aria-label="Private key" />)
+    const box = screen.getByLabelText('Private key')
+    expect(box.tagName).toBe('TEXTAREA')
+    expect(box).toHaveClass('textarea', 'secret-block')
+    expect(box).toHaveAttribute('spellcheck', 'false')
+    expect(box).toHaveAttribute('autocomplete', 'off')
+    fireEvent.change(box, { target: { value: 'line one\nline two' } })
+    expect(onChange).toHaveBeenCalledWith('line one\nline two')
   })
 })
 
@@ -313,6 +386,14 @@ describe('Outcome: working, still alive and failed are distinct (Dan, 2026-06-28
     const { container } = at({ kind: 'idle' })
     expect(container).toBeEmptyDOMElement()
   })
+
+  // A settled design's checks find a working line's spinner by its part (#2338 D13), on every working line.
+  it("names its spinner as the spinner, so a check can find it without a styling class", () => {
+    at({ kind: 'working', label: 'Checking the login with Salesforce', startedAt: 0, now: 6_000 })
+    const line = screen.getByRole('status')
+    expect(line.querySelector('[data-part="spinner"]')?.tagName.toLowerCase()).toBe('svg')
+    expect(line).toHaveTextContent('Checking the login with Salesforce, 6 s')
+  })
 })
 
 // #1541: a choice between a few named answers, where no answer may be
@@ -386,6 +467,24 @@ describe('ChoiceGroup', () => {
     expect(screen.getByRole('radiogroup')).toHaveClass('choice-stack')
     expect(screen.getByRole('radio', { name: 'The API response' })).toHaveAccessibleDescription('Read from the reply.')
     expect(screen.getByRole('radio', { name: /The API response/ })).toHaveClass('choice-row-on')
+  })
+
+  // #2338 R16, D16: two choice cards side by side, each a label with a grey line under it.
+  it('as cards, each option is a card with its line under its label, carrying the part and chosen mark a design reads', () => {
+    const onChange = vi.fn()
+    render(
+      <ChoiceGroup id="acts" label="Acts as" value="company" layout="cards" optionPart="choice-card" onChange={onChange}
+        options={[{ value: 'company', label: 'A company mailbox or drive', hint: 'From the company list' }, { value: 'own', label: 'My own Google account', hint: 'Signed in as you' }]} />,
+    )
+    expect(screen.getByRole('radiogroup', { name: 'Acts as' })).toHaveClass('choice-cards')
+    const cards = screen.getAllByRole('radio')
+    expect(cards.map((c) => c.getAttribute('data-part'))).toEqual(['choice-card', 'choice-card'])
+    expect(cards.map((c) => c.getAttribute('data-chosen'))).toEqual(['true', null])
+    expect(cards[0]).toHaveClass('choice-card', 'choice-card-on')
+    expect(cards[1]).toHaveAccessibleName('My own Google account')
+    expect(cards[1]).toHaveAccessibleDescription('Signed in as you')
+    fireEvent.click(cards[1])
+    expect(onChange).toHaveBeenCalledWith('own')
   })
 })
 

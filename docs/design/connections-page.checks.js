@@ -4,10 +4,10 @@
 // score runs them on the design first (the positive control) and then on the built page.
 (function () {
   var NAVY = "rgb(29, 33, 47)", BLUE = "rgb(27, 114, 186)", RED = "rgb(180, 35, 24)", HINT = "rgb(105, 112, 129)", WHITE = "rgb(255, 255, 255)";
-  var ALL = ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded", "google-add-drive", "google-removing", "stale-retry-failed", "not-loaded-refused", "alert-login"];
+  var ALL = ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded", "google-add-drive", "google-removing", "stale-retry-failed", "not-loaded-refused", "alert-login", "add-stalled", "add-failed-no-cap", "reconnect-failed", "remove-refused-in-use"];
   // Round 26: every dialog's title is one size.
   var DIALOG_TITLE = "20px";
-  var EXTRA = ["saved", "remove"];
+  var EXTRA = ["saved", "remove", "remove-refused-in-use"];
   function main(doc) { return doc.getElementById("main-content") || doc.body; }
   function txt(e) { return e ? e.textContent.replace(/\s+/g, " ").trim() : ""; }
   // Text as read, with blocks apart and anything hidden from a screen reader left out.
@@ -39,6 +39,14 @@
     if (css(h).fontSize !== DIALOG_TITLE) return "the dialog's title is " + css(h).fontSize + ", not " + DIALOG_TITLE;
     return null;
   }
+  // The app's red for a failure, read from the colour FieldError draws on this side (its one class).
+  function failureRed(doc) {
+    var m = main(doc), probe = doc.createElement("span"); probe.className = "field-error"; probe.textContent = "x";
+    m.append(probe); var c = css(probe).color; probe.remove();
+    return c;
+  }
+  // A dialog, or an alert dialog (one whose answer destroys something, announced by what it says).
+  function dialogOf(doc) { return q(doc, '[role="dialog"], [role="alertdialog"]'); }
   function connections(ctx) {
     var list = ctx.fixture.connections.slice();
     if (EXTRA.indexOf(ctx.frame) >= 0) list.push(ctx.fixture.justSaved);
@@ -104,7 +112,7 @@
   }
 
   window.DESIGN_CHECKS = [
-    { id: "D1", frames: ["healthy", "problem", "saved", "stale", "stale-retry-failed", "alert-login"], check: function (doc) {
+    { id: "D1", frames: ["healthy", "problem", "saved", "stale", "stale-retry-failed", "alert-login", "reconnect-failed", "remove-refused-in-use"], check: function (doc) {
       var list = p(main(doc), "connection-list"), panel = p(main(doc), "detail");
       if (!list || !panel) return bad("no connection list or no detail panel");
       var l = box(list), r = box(panel);
@@ -126,7 +134,7 @@
       if (!under("HTTP", ["Lender API", "Regal webhook"])) return bad("Lender API and Regal webhook are not under HTTP");
       return ok("nav reads Connections with a plug; the alert login and HTTP services are listed");
     } },
-    { id: "D3", frames: ["healthy", "problem", "google-list", "add-choose", "saved", "stale", "stale-retry-failed", "alert-login", "google-add-drive", "google-removing"], check: function (doc, ctx) {
+    { id: "D3", frames: ["healthy", "problem", "google-list", "add-choose", "saved", "stale", "stale-retry-failed", "alert-login", "google-add-drive", "google-removing", "add-stalled", "add-failed-no-cap", "reconnect-failed", "remove-refused-in-use"], check: function (doc, ctx) {
       var list = p(main(doc), "connection-list");
       if (!list) return bad("no connection list");
       var got = groupsOf(list).map(function (g) {
@@ -257,7 +265,7 @@
       if (!add || !q(add, "input") || !button(add, "Add")) return bad("no add box with Add");
       return ok(rows.length + " entries on one line each, with an add box");
     } },
-    { id: "D11", frames: ["healthy", "problem", "google-list", "stale", "add-choose", "add-salesforce", "add-google-company"], check: function (doc, ctx) {
+    { id: "D11", frames: ["healthy", "problem", "google-list", "stale", "add-choose", "add-salesforce", "add-google-company", "add-stalled", "add-failed-no-cap"], check: function (doc, ctx) {
       var m = main(doc), b = p(m, "add-connection"), title = p(m, "page-title");
       if (!b || txt(b) !== "Add connection") return bad("no Add connection button");
       if (css(b).backgroundColor !== BLUE) return bad("Add connection is " + css(b).backgroundColor + ", not blue");
@@ -299,7 +307,8 @@
       var want = "Salesforce refused the client secret. Nothing was saved. Check the secret and save again.";
       if (!line || line.getAttribute("data-state") !== "failed") return bad("no failed line");
       if (txt(line) !== want) return bad("the line reads \"" + txt(line) + "\"");
-      if (css(line).color !== RED) return bad("the line is " + css(line).color + ", not red");
+      // Red is FieldError's (.impeccable.md), or the problem status's red on a side that has no FieldError.
+      if ([failureRed(doc), RED].indexOf(css(line).color) < 0) return bad("the line is " + css(line).color + ", not red");
       if (!save || disabled(save)) return bad("Save is not ready again");
       return ok("red line, Save ready");
     } },
@@ -317,7 +326,10 @@
         if (!typed || typed.value !== nw.address) return bad("Org is not a box reading " + nw.address);
         if (typed.getAttribute("role") !== "combobox" || typed.getAttribute("aria-expanded") !== "true") return bad("the Org box is not a combobox with its menu open");
         if (q(org, "button")) return bad("Org is still a dropdown button");
-        var opts = qa(org, '[role="option"]');
+        // The menu the box controls, wherever it is drawn: it floats over the fields below (round 34),
+        // and the app draws it at the end of the page, so it is found by the box's aria-controls.
+        var menu = typed.getAttribute("aria-controls") && doc.getElementById(typed.getAttribute("aria-controls"));
+        var opts = qa(menu || org, '[role="option"]');
         var want = "Use " + nw.address + " as a new org";
         if (!same(opts.map(txt), [want])) return bad("the Org menu offers " + JSON.stringify(opts.map(txt)));
         var ob = box(opts[0]);
@@ -358,7 +370,8 @@
       if (css(g).backgroundColor !== WHITE) return bad("the Google button is " + css(g).backgroundColor);
       if (!q(g, "svg, img")) return bad("the Google button has no logo");
       if (button(form, "Save")) return bad("Save is still there");
-      var first = buttons(form)[0];
+      // The form's first action: a tile that chooses the service and a card that chooses a way are choices, not actions.
+      var first = buttons(form).filter(function (b) { return !b.closest('[data-part="service-tile"]') && b.getAttribute("role") !== "radio"; })[0];
       if (first !== g) return bad("the first button is " + txt(first));
       return ok("Google's button in place of Save");
     } },
@@ -372,7 +385,7 @@
       return ok(name + " chosen and open, no message");
     } },
     { id: "D19", frames: ["reconnect"], check: function (doc, ctx) {
-      var dg = q(doc, '[role="dialog"]'), c = chosen(doc, ctx);
+      var dg = dialogOf(doc), c = chosen(doc, ctx);
       if (!dg) return bad("no dialog");
       var title = "Reconnect " + c.name;
       if (dg.getAttribute("aria-label") !== title && txt(q(dg, "h1, h2, h3")) !== title) return bad("the dialog is not titled " + title);
@@ -386,7 +399,7 @@
       return ok(title);
     } },
     { id: "D20", frames: ["replace"], check: function (doc, ctx) {
-      var dg = q(doc, '[role="dialog"]'), c = chosen(doc, ctx), w = ctx.fixture.replaceWith;
+      var dg = dialogOf(doc), c = chosen(doc, ctx), w = ctx.fixture.replaceWith;
       if (!dg) return bad("no dialog");
       var title = "Replace " + c.name;
       if (dg.getAttribute("aria-label") !== title && txt(q(dg, "h1, h2, h3")) !== title) return bad("the dialog is not titled " + title);
@@ -408,7 +421,7 @@
       if (css(rb).color !== RED) return bad("Remove is " + css(rb).color + ", not red");
       if (txt(row) !== "Remove") return bad("the Remove row reads \"" + txt(row) + "\"");
       if (ctx.frame === "remove") {
-        var dg = q(doc, '[role="dialog"]'), title = "Remove " + ctx.fixture.justSaved.name + "?";
+        var dg = dialogOf(doc), title = "Remove " + ctx.fixture.justSaved.name + "?";
         if (!dg || (dg.getAttribute("aria-label") !== title && txt(q(dg, "h1, h2, h3")) !== title)) return bad("no dialog titled " + title);
         var tp = titleProblem(dg, title); if (tp) return bad(tp);
         if (txt(dg).indexOf("Its login is deleted from Bidspoke and cannot be brought back.") < 0) return bad("the dialog does not say what is lost");
@@ -471,7 +484,9 @@
         if (st && st.getAttribute("data-status") !== "ok") return false;
         if (failed(e)) return false;
         var b = e.closest("button");
-        if (b && !disabled(b) && (txt(b) === "Remove" || txt(b).indexOf("Replace in ") === 0)) return false;
+        var destroys = b && (txt(b) === "Remove" || txt(b).indexOf("Replace in ") === 0);
+        // The button that destroys: red when ready, and faded red while held inside its dialog (a refused Remove).
+        if (destroys && (!disabled(b) || b.closest('[role="dialog"], [role="alertdialog"]'))) return false;
         return true;
       });
       if (off.length) return bad("red on something not wrong: " + off.slice(0, 3).map(txt).join(" | "));
@@ -540,6 +555,45 @@
       if (!near(s.width, 0.95 * fs) || !near(s.height, 0.95 * fs)) return bad("the spinner is " + s.width + " by " + s.height + " on a " + fs + "px line, not 0.95em");
       if (s.position !== "relative" || !near(s.top, -0.1 * fs)) return bad("the spinner is not raised 0.1em (" + s.position + ", top " + s.top + ")");
       return ok("spinner 0.95em, raised 0.1em, on a " + fs + "px line");
+    } },
+    // Round 33: an org with no call limit set is refused in Dan's words.
+    { id: "D34", frames: ["add-failed-no-cap"], check: function (doc, ctx) {
+      var form = p(main(doc), "add-form"), save = button(form, "Save"), line = p(form, "save-line");
+      var org = ctx.fixture.draft.newOrg.address;
+      var want = "Bidspoke has no limit set yet on how many Salesforce calls its workflows may make to " + org + ", so it cannot connect to that org. Nothing was saved. Ask Dan to set a limit for this org, then save again.";
+      if (!line || line.getAttribute("data-state") !== "failed") return bad("no failed line");
+      if (txt(line) !== want) return bad("the line reads \"" + txt(line) + "\"");
+      if ([failureRed(doc), RED].indexOf(css(line).color) < 0) return bad("the line is " + css(line).color + ", not red");
+      if (!save || disabled(save)) return bad("Save is not ready again");
+      return ok("round 33's sentence, in red, Save ready");
+    } },
+    // Round 34: a dropdown's open menu sits over what is below it, never pushing the page down.
+    { id: "D35", frames: ["add-salesforce-new-org"], check: function (doc) {
+      var form = p(main(doc), "add-form");
+      var org = qa(form, '[data-part="field"]').filter(function (f) { return f.getAttribute("data-field") === "Org"; })[0];
+      var below = qa(form, '[data-part="field"]').filter(function (f) { return f.getAttribute("data-field") === "Client id"; })[0];
+      var boxEl = org && q(org, '[role="combobox"]');
+      var id = boxEl && boxEl.getAttribute("aria-controls");
+      var menu = id && doc.getElementById(id);
+      if (!menu || !below) return bad("no open Org menu, or no Client id field under it");
+      var floats = false;
+      for (var e = menu; e && e !== doc.body; e = e.parentElement) { var pos = css(e).position; if (pos === "absolute" || pos === "fixed") { floats = true; break; } }
+      if (!floats) return bad("the menu is in the page's flow, so it pushes the page down");
+      var mb = box(menu), bb = box(boxEl), cb = box(below);
+      if (mb.top < bb.bottom) return bad("the menu does not start under the box");
+      if (!(mb.bottom > cb.top && mb.top < cb.bottom)) return bad("the menu does not lie over the field below it");
+      return ok("the menu floats over Client id");
+    } },
+    // Round 35: every dialog's title is 20px, drawn by the app's one title rule.
+    { id: "D36", frames: ["reconnect", "replace", "remove", "reconnect-failed", "remove-refused-in-use"], check: function (doc) {
+      var dgs = qa(doc, '[role="dialog"], [role="alertdialog"]');
+      if (!dgs.length) return bad("no dialog");
+      for (var i = 0; i < dgs.length; i++) {
+        var named = dgs[i].getAttribute("aria-label") || txt(q(dgs[i], "h1, h2, h3, h4, [role='heading']"));
+        var tp = titleProblem(dgs[i], named);
+        if (tp) return bad(tp);
+      }
+      return ok(dgs.length + " dialog title(s) at " + DIALOG_TITLE);
     } },
     // Round 27: an open dropdown's highlighted row is pale grey behind dark text, in every dropdown.
     { id: "D28", frames: ["add-salesforce-new-org"], check: function (doc) {
