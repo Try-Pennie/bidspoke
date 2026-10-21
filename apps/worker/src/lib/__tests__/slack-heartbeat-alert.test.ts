@@ -9,8 +9,9 @@ import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
  * Three verdicts, three messages. A trigger that stopped firing (stale), a job
  * that has never fired since it was first seen (never_ran), and a run that
  * started and never finished (vanished) send the reader to different places:
- * the first two to the trigger configuration, the third to the per invocation
- * record of how that run ended. Saying "is dark" about a run the platform killed
+ * the first two to the trigger configuration, the third to whether the next run
+ * finishes, since a run Cloudflare cancels can leave no outcome record at all
+ * (#2578). Saying "is dark" about a run the platform killed
  * sends the reader to check triggers that are fine while the same run keeps
  * dying (LESSONS L11).
  *
@@ -67,7 +68,7 @@ describe('sendCronHeartbeatAlert', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
-  it('says a vanished run started and never finished, and sends the reader to where the outcome is recorded', async () => {
+  it('says a vanished run started and never finished, and sends the reader to whether the next run finishes', async () => {
     const sent = await sendCronHeartbeatAlert(makeSupabase(connection), 'org-1', job, 'vanished', 90 * 60_000)
 
     expect(sent).toBe(true)
