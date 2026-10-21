@@ -44,6 +44,7 @@
  * one on makes it read the value again.
  */
 import { PARTNER_CONSTANT_KINDS, PARTNER_CONSTANT_MAPS, partnerConstantName } from '../engine/nodes/constants'
+import { leadValidationReferences, parseLeadValidationConfig, withOutputSegment } from '@bidspoke/workflow-definition'
 import type { PartnerValueName, PartnerValueReaders, ReadHow, ReadingPlace } from './workflow-values-shape'
 
 export type { PartnerValueKind, PartnerValueName, PartnerValueReaders, ReadHow, ReadingPlace, ReadingWorkflow, ShadowedDataKey } from './workflow-values-shape'
@@ -125,6 +126,19 @@ export function carriesConstantsNode(w: ScannableWorkflow): boolean {
   return constantsNodesOf(definitionOf(w).nodes).length > 0
 }
 
+/**
+ * A lead validation node's references in the `steps.<ns>.output.<key>` form
+ * (#2589). Its checks are condition paths, which the resolver reads with or
+ * without `output`, while every match below looks for `output`. One per line,
+ * so a path's tail cannot run into the next one. A config the parser refuses
+ * adds nothing here and is still searched through its raw strings above.
+ */
+function leadValidationPaths(n: DefNode): string[] {
+  if (n.type !== 'lead_validation') return []
+  const parsed = parseLeadValidationConfig(n.config)
+  return parsed.ok ? leadValidationReferences(parsed.config).map((r) => withOutputSegment(r.path)) : []
+}
+
 /** Every place in a definition that can read the Constants output, with its text. The Constants node's own data is not a read. */
 function textPlaces(nodes: DefNode[], edges: DefEdge[]): TextPlace[] {
   const out: TextPlace[] = []
@@ -132,6 +146,7 @@ function textPlaces(nodes: DefNode[], edges: DefEdge[]): TextPlace[] {
     const texts: string[] = []
     stringsIn(n.config, texts, n.type === 'constants' ? 'data' : undefined)
     stringsIn(n.variables, texts)
+    texts.push(...leadValidationPaths(n))
     if (texts.length === 0) continue
     out.push({
       place: { node_id: str(n.id), namespace: str(n.namespace), label: str(n.label), node_type: str(n.type), edge_id: null },

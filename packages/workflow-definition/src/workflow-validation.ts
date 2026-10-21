@@ -3,6 +3,7 @@ import { normalizeHandle } from './handles'
 import { filterHasCondition } from './filter-condition'
 import { alertOverPercentOf, partnerIdOf, POPULATIONS } from '@bidspoke/buyer-profile'
 import { salesforceConfigProblem } from './salesforce-write-options'
+import { leadValidationConfigProblem } from './lead-validation'
 
 export interface ValidationError {
   nodeId: string
@@ -186,6 +187,11 @@ function validateNodeConfig(type: string, config: Record<string, unknown>): stri
       if (!(POPULATIONS as readonly unknown[]).includes(config.population)) return `${String(config.population)} is not a population Bidspoke knows`
       return null
     }
+    case 'lead_validation':
+      // The shape the executor can run (#2589): checks, reasons from the one
+      // list, no half filled row. Whether each reference runs before the node is
+      // findLeadValidationProblems's, which needs the graph.
+      return leadValidationConfigProblem(config)
     case 'salesforce':
       // Its required fields have working defaults, but the relay port's write
       // options (#2170) are refused when malformed, by the rule the executor uses.

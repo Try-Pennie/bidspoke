@@ -50,6 +50,7 @@ const STATUS_CONTRACT: Record<NodeType, 'emits-status' | 'no-http-status'> = {
   constants: 'no-http-status',
   data_store: 'no-http-status',
   latency_gate: 'no-http-status',
+  lead_validation: 'no-http-status', // calls nothing; its rejection is an answer it sends, not one it received
 }
 
 /** Node types exercised by a behavioral test in this file. */

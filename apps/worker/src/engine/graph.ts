@@ -88,7 +88,7 @@ function evaluateGroup(group: ConditionGroup, ctx: ExecutionContext): boolean {
 // evaluated true and fired the arm. Coerce the string config by the actual
 // value's type, then fall back to a string compare so same-typed values and
 // plain strings still work.
-function valuesEqual(actual: unknown, expected: unknown): boolean {
+export function valuesEqual(actual: unknown, expected: unknown): boolean {
   if (actual === expected) return true
   if (typeof actual === 'number' && typeof expected === 'string' && expected.trim() !== '') {
     return actual === Number(expected)
@@ -117,7 +117,7 @@ function numericCompare(actual: unknown, expected: unknown, cmp: (a: number, b: 
 // stringifies its argument, so `true` would otherwise read as a name.
 const ASCII_LETTER = /[a-zA-Z]/
 
-function hasLetter(actual: unknown): boolean {
+export function hasLetter(actual: unknown): boolean {
   return typeof actual === 'string' && ASCII_LETTER.test(actual)
 }
 
@@ -125,7 +125,7 @@ function hasLetter(actual: unknown): boolean {
 // Unicode spaces such as U+00A0 and U+FEFF). Every non-string is blank, numbers
 // and booleans included: the scripts this replaces throw on those, and a check
 // built on this operator should fail closed on a value of the wrong shape (#2588).
-function notBlank(actual: unknown): boolean {
+export function notBlank(actual: unknown): boolean {
   return typeof actual === 'string' && actual.trim() !== ''
 }
 

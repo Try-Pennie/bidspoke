@@ -7,7 +7,7 @@ import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { refreshWorkflowCaches } from '../../engine/definition-loader'
-import { findWorkflowCycle, findSalesforceConfigProblems } from '@bidspoke/workflow-definition'
+import { findWorkflowCycle, findSalesforceConfigProblems, findLeadValidationProblems } from '@bidspoke/workflow-definition'
 import { pushWorkflowToGitHub } from '../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../lib/github-backup-alert'
 import { writeAuditLog } from '../../lib/audit'
@@ -35,7 +35,7 @@ import { workflowsUsingPartner as workflowsUsingPartnerShared } from '../../lib/
 import { readOrgWorkflows } from '../../lib/org-workflows'
 import { secretKeys } from '../../lib/secret-crypto'
 import { retirePartnerLastGood } from '../../lib/partner-last-good'
-import { checkDefinitionConnections, connectionRefusalOfWriteError, type ConnectionCheckRefusal } from '../../lib/workflow-connection-check'
+import { checkDefinitionConnections, connectionRefusalOfWriteError, type ConnectionCheckedAction, type ConnectionCheckRefusal } from '../../lib/workflow-connection-check'
 
 type Variables = AuthVariables
 
@@ -87,6 +87,23 @@ function salesforceOptionRefusal(definition: unknown): string | null {
 }
 
 /**
+ * A lead validation step its executor could not run (#2589): no checks, a half
+ * filled row, an empty value, a reason outside the one list, no lead id field,
+ * or a reference to a step that does not run before it or to a Constants key its
+ * Constants step does not hold. Judged where each step sits, by the rule the
+ * canvas shows (packages/workflow-definition), and asked by every route a
+ * definition enters by, so one PUT from a file meets what the canvas does.
+ */
+function leadValidationRefusal(definition: unknown): string | null {
+  const def = definition as { nodes?: unknown; edges?: unknown } | null | undefined
+  if (!Array.isArray(def?.nodes)) return null
+  const nodes = (def.nodes as unknown[]).filter((n): n is WorkflowDefinition['nodes'][number] => typeof n === 'object' && n !== null)
+  const edges = Array.isArray(def.edges) ? (def.edges as WorkflowDefinition['edges']) : []
+  const problem = findLeadValidationProblems(nodes, edges)[0]
+  return problem ? `${problem.namespace}: ${problem.message}` : null
+}
+
+/**
  * A live workflow whose buyer steps cannot read a rule of an enabled buyer
  * profile they judge (#2149) is refused, naming the step, the buyer and the
  * rule: saved, the step would refuse every lead that buyer is offered as
@@ -126,15 +143,17 @@ async function unreadBuyerRuleRefusal(
  * too (lib/workflow-connection-check.ts). The database trigger
  * workflows_refuse_missing_connections enforces the same answer at the write
  * itself; __guards__/worker/workflow-connection-check-guard.test.ts fails on a
- * definition writer that does not ask.
+ * definition writer that does not ask. The switch on (PATCH, #2576) asks it
+ * too, about the stored definition it makes live, worded as a switch on.
  */
 async function connectionRefusal(
   c: Context<{ Bindings: Env; Variables: Variables }>,
   supabase: ReturnType<typeof createSupabaseClient>,
   orgId: string,
   definition: unknown,
+  action: ConnectionCheckedAction = 'save',
 ): Promise<Response | null> {
-  const refusal = await checkDefinitionConnections(supabase, orgId, definition)
+  const refusal = await checkDefinitionConnections(supabase, orgId, definition, action)
   return refusal ? c.json(refusal.body, refusal.status) : null
 }
 
@@ -177,6 +196,8 @@ workflows.post('/', async (c) => {
   // Salesforce write option rule the save route applies (#2170).
   const sfProblem = salesforceOptionRefusal(body.definition)
   if (sfProblem) return c.json({ error: sfProblem }, 400)
+  const validationProblem = leadValidationRefusal(body.definition)
+  if (validationProblem) return c.json({ error: validationProblem }, 400)
 
   if (body.folder_id) {
     const { data: folder, error: folderError } = await supabase
@@ -484,6 +505,8 @@ workflows.put('/:id', async (c) => {
     // applies, so a definition PUT from a file is held to what the canvas is.
     const sfProblem = salesforceOptionRefusal(def)
     if (sfProblem) return c.json({ error: sfProblem }, 400)
+    const validationProblem = leadValidationRefusal(def)
+    if (validationProblem) return c.json({ error: validationProblem }, 400)
     // A live workflow's buyer steps must read every rule they judge (#2149).
     if (existing.is_active === true) {
       const unread = await unreadBuyerRuleRefusal(c, supabase, orgId, { id, name: body.name ?? existing.name, definition: body.definition })
@@ -765,6 +788,14 @@ workflows.patch('/:id', async (c) => {
   if (body.is_active === true) {
     const unread = await unreadBuyerRuleRefusal(c, supabase, orgId, { id, name: owner.name, definition: owner.definition })
     if (unread) return unread
+    // And every connection it names must still be a live one of this
+    // organization (#2576). The trigger fires only on a write of the
+    // definition, which a switch on is not, so this check is what refuses it,
+    // by name, writing nothing. A removal racing this switch on cannot leave
+    // it naming a removed connection: remove_ops_connection refuses while any
+    // workflow's definition names the connection, switched on or off.
+    const missing = await connectionRefusal(c, supabase, orgId, owner.definition, 'switch_on')
+    if (missing) return missing
   }
 
   const updates: Database['public']['Tables']['workflows']['Update'] = { updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name }

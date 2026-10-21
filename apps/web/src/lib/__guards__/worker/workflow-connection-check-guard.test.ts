@@ -15,6 +15,13 @@
  * itself) before its first write to workflows or workflow_versions. A
  * definition write outside any route handler fails too, since no request is
  * there to answer by name.
+ *
+ * Switching a workflow on (#2576, build PR 9) writes no definition, so the
+ * trigger, which fires on a write of the definition, never judges it: a
+ * workflow switched on while it names a connection that is gone would fail on
+ * every run. So a handler that switches a workflow on (assigns is_active onto
+ * what it writes, or writes is_active as anything but false) must ask the same
+ * check first, about the definition it makes live.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -25,6 +32,8 @@ const WRITES = new Set(['insert', 'update', 'upsert', 'delete'])
 const DEFINITION_WRITES = new Set(['insert', 'update', 'upsert'])
 const CHECK_CALL = /\bawait\s+(?:connectionRefusal|checkDefinitionConnections)\s*\(/g
 const ASSIGNS_DEFINITION = /\.definition\s*=(?!=)/
+/** Writes is_active from something other than the literal false: an assignment, or a key whose value is not false. */
+const SWITCHES_ON = /\.is_active\s*=(?!=)|\bis_active\s*:(?!\s*false\b)/
 
 interface Write { at: number; table: string; writesDefinitionArg: boolean }
 
@@ -43,7 +52,7 @@ function writesOf(src: string): Write[] {
   return out
 }
 
-interface Scan { definitionWriters: RouteHandler[]; unchecked: string[]; orphans: number[] }
+interface Scan { definitionWriters: RouteHandler[]; switchers: RouteHandler[]; unchecked: string[]; orphans: number[] }
 
 function scanSource(file: string, raw: string): Scan {
   const src = sanitizeSource(raw, { blankStrings: false })
@@ -51,6 +60,7 @@ function scanSource(file: string, raw: string): Scan {
   const writes = writesOf(src)
   const inHandler = (at: number) => handlers.find((h) => at >= h.start && at < h.end)
   const definitionWriters: RouteHandler[] = []
+  const switchers: RouteHandler[] = []
   const unchecked: string[] = []
   const orphans = writes.filter((w) => w.writesDefinitionArg && !inHandler(w.at)).map((w) => w.at)
   for (const h of handlers) {
@@ -59,27 +69,31 @@ function scanSource(file: string, raw: string): Scan {
     if (workflowsWrites.length === 0) continue
     const body = src.slice(h.start, h.end)
     const writesDefinition = workflowsWrites.some((w) => w.writesDefinitionArg) || ASSIGNS_DEFINITION.test(body)
-    if (!writesDefinition) continue
-    definitionWriters.push(h)
+    const switchesOn = SWITCHES_ON.test(body)
+    if (!writesDefinition && !switchesOn) continue
+    if (writesDefinition) definitionWriters.push(h)
+    if (switchesOn) switchers.push(h)
     const firstWrite = Math.min(...own.map((w) => w.at))
     const checks = [...body.matchAll(CHECK_CALL)].map((m) => h.start + (m.index ?? 0))
     if (!checks.some((at) => at < firstWrite)) unchecked.push(`${h.file} ${h.label}`)
   }
-  return { definitionWriters, unchecked, orphans }
+  return { definitionWriters, switchers, unchecked, orphans }
 }
 
-function scan(): { labels: string[]; unchecked: string[]; orphans: string[] } {
+function scan(): { labels: string[]; switchers: string[]; unchecked: string[]; orphans: string[] } {
   const labels: string[] = []
+  const switchers: string[] = []
   const unchecked: string[] = []
   const orphans: string[] = []
   for (const full of listTsFiles(WORKER_SRC)) {
     const file = path.relative(WORKER_SRC, full)
     const one = scanSource(file, readFileSync(full, 'utf8'))
     labels.push(...one.definitionWriters.map((h) => `${h.file} ${h.label}`))
+    switchers.push(...one.switchers.map((h) => `${h.file} ${h.label}`))
     unchecked.push(...one.unchecked)
     orphans.push(...one.orphans.map((at) => `${file} @${at}`))
   }
-  return { labels, unchecked, orphans }
+  return { labels, switchers, unchecked, orphans }
 }
 
 describe('every workflow definition writer asks the connection check first (#2338)', () => {
@@ -100,11 +114,16 @@ describe('every workflow definition writer asks the connection check first (#233
     }
   })
 
+  it('finds the switch on writer (#2576), and not the delete, which only switches a workflow off', () => {
+    expect(result.switchers).toContain('routes/api/workflows.ts PATCH /:id')
+    expect(result.switchers).not.toContain('routes/api/workflows.ts DELETE /:id')
+  })
+
   it('has no definition write outside a route handler', () => {
     expect(result.orphans).toEqual([])
   })
 
-  it('awaits the check before the first write in every handler that writes a definition', () => {
+  it('awaits the check before the first write in every handler that writes a definition or switches a workflow on', () => {
     expect(result.unchecked).toEqual([])
   })
 })
@@ -117,8 +136,8 @@ describe('the scanner', () => {
     ...lines,
     '  return c.json({ ok: true })',
     '})',
-    "workflows.patch('/:id', async (c) => {",
-    "  await supabase.from('workflows').update({ is_active: true }).eq('id', id)",
+    "workflows.patch('/:id/folder', async (c) => {",
+    "  await supabase.from('workflows').update({ folder_id: f }).eq('id', id)",
     '})',
     '',
   ].join('\n')
@@ -146,6 +165,21 @@ describe('the scanner', () => {
   it('does not count a write naming no definition, nor a comparison', () => {
     const lines = ["  if (row.definition === def) return", "  await supabase.from('workflows').update({ name }).eq('id', id)"]
     expect(scanSource('p.ts', planted(lines)).definitionWriters).toEqual([])
+  })
+
+  it('fails a handler that switches a workflow on and never asks (#2576)', () => {
+    const src = planted(['  updates.is_active = body.is_active', "  await supabase.from('workflows').update(updates).eq('id', id)"])
+    expect(scanSource('p.ts', src).switchers.map((h) => h.label)).toEqual(['PUT /:id'])
+    expect(scanSource('p.ts', src).unchecked).toEqual(['p.ts PUT /:id'])
+    const literal = planted(["  await supabase.from('workflows').update({ is_active: true }).eq('id', id)"])
+    expect(scanSource('p.ts', literal).unchecked).toEqual(['p.ts PUT /:id'])
+  })
+
+  it('passes a switch on that asks before its write, and does not count a switch off', () => {
+    const asked = planted([check, '  updates.is_active = body.is_active', "  await supabase.from('workflows').update(updates).eq('id', id)"])
+    expect(scanSource('p.ts', asked).unchecked).toEqual([])
+    const off = planted(["  await supabase.from('workflows').update({ deleted_at: now, is_active: false }).eq('id', id)"])
+    expect(scanSource('p.ts', off).switchers).toEqual([])
   })
 
   it('does not count a check that sits only in a comment', () => {

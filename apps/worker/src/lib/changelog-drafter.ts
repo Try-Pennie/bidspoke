@@ -189,6 +189,7 @@ Common node types and what they do:
 - buyer_select: sell the lead to the highest ranked eligible buyer
 - buyer_click_send: send one clicked prospect to a click buyer once, and count it
 - buyer_click_check: decide whether a click buyer may be offered this lead, against its profile and today's clicks
+- lead_validation: ordered checks a lead must pass; the first it fails answers the source with that check's rejection reason
 - response/exit: terminate with HTTP response
 - salesforce: SF object create/update
 - webhook: outbound HTTP call

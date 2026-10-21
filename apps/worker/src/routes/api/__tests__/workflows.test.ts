@@ -216,6 +216,72 @@ describe('PUT /workflows/:id', () => {
     expect(res.status).toBe(200)
   })
 
+  // #2589: a lead validation step is held at save to what its executor can run,
+  // judged where it sits: every reference runs before it, and a Constants key it
+  // names is one its Constants step holds. The rules themselves are tested in
+  // packages/workflow-definition; these prove the route asks them.
+  describe('lead validation steps (#2589)', () => {
+    const validationDefinition = (validationConfig: Record<string, unknown>) => ({
+      nodes: [
+        { id: 'c', namespace: 'constants', type: 'constants', config: { data: { states: ['TX'], maximumLoanAmount: 50000 } } },
+        { id: 'v', namespace: 'validate_bidding_and_state', type: 'lead_validation', config: validationConfig },
+      ],
+      edges: [{ id: 'e0', source: 'trigger', target: 'c' }, { id: 'e1', source: 'c', target: 'v' }],
+      trigger: { type: 'http_webhook', config: {} },
+    })
+    const goodConfig = (conditionValue = 'steps.constants.output.states', reason = 'ineligible state') => ({
+      lead_id_field: 'trigger.payload.leadUuid',
+      checks: [{
+        id: 'state',
+        label: 'State',
+        condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'trigger.payload.state', operator: 'in_array', value: conditionValue }] }] },
+        reason,
+        on_missing: 'reject',
+      }],
+    })
+    const refused = async (validationConfig: Record<string, unknown>) => {
+      vi.mocked(createSupabaseClient).mockReturnValue(
+        makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow } }) as unknown as ReturnType<typeof createSupabaseClient>
+      )
+      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: validationDefinition(validationConfig) } })
+      return { status: res.status, error: (await res.json() as { error?: string }).error }
+    }
+
+    it('refuses a step with no checks, naming it', async () => {
+      expect(await refused({ lead_id_field: 'trigger.payload.leadUuid', checks: [] })).toEqual({ status: 400, error: 'validate_bidding_and_state: No checks set' })
+    })
+
+    it('refuses a reason outside the one list', async () => {
+      expect(await refused(goodConfig(undefined, 'out of area'))).toEqual({ status: 400, error: 'validate_bidding_and_state: Check "State": "out of area" is not a rejection reason Bidspoke knows' })
+    })
+
+    it('refuses a Constants key the Constants step does not hold', async () => {
+      expect(await refused(goodConfig('steps.constants.output.stateList'))).toEqual({
+        status: 400,
+        error: 'validate_bidding_and_state: Check "State": steps.constants.output.stateList names stateList, which the constants step does not hold',
+      })
+    })
+
+    it('refuses a step that does not run before it', async () => {
+      expect(await refused(goodConfig('steps.later.output.states'))).toEqual({
+        status: 400,
+        error: 'validate_bidding_and_state: Check "State": steps.later.output.states reads later, which does not run before this step',
+      })
+    })
+
+    it('saves a step whose every reference is sound', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(
+        makeSupabase({
+          users: { single: testUser },
+          workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
+          workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
+        }) as unknown as ReturnType<typeof createSupabaseClient>
+      )
+      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: validationDefinition(goodConfig()) } })
+      expect(res.status).toBe(200)
+    })
+  })
+
   it('aborts the save when the version-number lookup hits a real DB error (#303)', async () => {
     // A dropped error here defaulted nextVersion to 1, risking a clobber of the
     // existing version chain. A real (non-PGRST116) error must abort.
@@ -1905,6 +1971,24 @@ describe('new and duplicated workflows start inactive (#1706)', () => {
     expect(activeFlagsInserted(sb)).toEqual([])
   })
 
+  // #2589: create holds a lead validation step to the save rule too.
+  it('POST refuses a lead validation step the save would refuse, and inserts nothing', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { insertResult: { id: 'wf-new', name: 'New', is_active: false } },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const definition = {
+      nodes: [{ id: 'v', namespace: 'validate', type: 'lead_validation', config: { lead_id_field: '', checks: [] } }],
+      edges: [{ id: 'e0', source: 'trigger', target: 'v' }],
+      trigger: { type: 'http_webhook', config: {} },
+    }
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition } })
+    expect(res.status).toBe(400)
+    expect((await res.json() as { error: string }).error).toBe('validate: No lead id field set')
+    expect(activeFlagsInserted(sb)).toEqual([])
+  })
+
   it('POST ignores an is_active true sent in the body', async () => {
     const sb = makeSupabase({
       users: { single: testUser },
@@ -2350,5 +2434,62 @@ describe('workflow definition writers re-check connection ids (#2338)', () => {
     expect(res.status).toBe(201)
     const inserted = (sb.calls.workflows ?? []).filter(([k]) => k === 'insert').map(([, args]) => JSON.stringify((args[0] as { definition: unknown }).definition))
     expect(inserted).toEqual([expected])
+  })
+
+  // #2576: switching a workflow on writes no definition, so the trigger never
+  // judges it; the route asks the same check about the definition it makes live.
+  describe('PATCH /:id switching a workflow on (#2576)', () => {
+    const live = { id: 'wf-1', name: 'Achieve report import', is_active: false, definition: naming(REMOVED) }
+    const patchTables = (): Tables => ({ workflows: [{ single: live }, { single: { id: 'wf-1', name: live.name, is_active: true, folder_id: null, updated_at: '2026-10-21T15:00:00Z' } }] })
+
+    it('refuses to switch on a workflow naming a removed connection, by name, and writes nothing', async () => {
+      const sb = makeSupabase({ users: { single: testUser }, ...patchTables() }, { rpc: checkAnswering({ data: [removedRow], error: null }) })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+      expect(res.status).toBe(409)
+      const body = await res.json() as { error: string; code: string; missing_connections: unknown[] }
+      expect(body.code).toBe('workflow_connection_missing')
+      expect(body.error).toBe('The workflow was not switched on. The step sf_import names the connection "Pennie Salesforce", which was removed. Give the step a replacement connection and save it, then switch the workflow on.')
+      expect(body.missing_connections).toEqual([{ id: REMOVED, problem: 'removed', name: 'Pennie Salesforce', steps: ['sf_import'] }])
+      expect(writes(sb).workflows).toEqual([])
+      expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+      expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+    })
+
+    it('asks the check with the caller\'s organization and the stored definition, then switches it on', async () => {
+      const rpc = checkAnswering({ data: [], error: null })
+      const sb = makeSupabase({ users: { single: testUser }, ...patchTables() }, { rpc })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+      expect(res.status).toBe(200)
+      expect(rpc).toHaveBeenCalledWith('definition_connection_problems', { p_organization_id: USER_ORG, p_definition: naming(REMOVED) })
+      expect(writes(sb).workflows).toHaveLength(1)
+    })
+
+    it.each([
+      { what: 'a lookup that failed', error: { code: '57014', message: 'canceling statement due to statement timeout' }, code: 'workflow_connection_check_failed' },
+      { what: 'a check that does not exist yet', error: { code: 'PGRST202', message: 'Could not find the function' }, code: 'workflow_connection_check_unavailable' },
+    ])('answers $what with a named 503 and never switches on unchecked', async ({ error, code }) => {
+      const sb = makeSupabase({ users: { single: testUser }, ...patchTables() }, { rpc: checkAnswering({ data: null, error }) })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+      expect(res.status).toBe(503)
+      const body = (await res.json()) as { code: string; error: string }
+      expect(body.code).toBe(code)
+      expect(body.error.startsWith('The workflow was not switched on.')).toBe(true)
+      expect(writes(sb).workflows).toEqual([])
+    })
+
+    it.each([
+      { what: 'switching off', body: { is_active: false } },
+      { what: 'moving it to a folder', body: { folder_id: null } },
+    ])('asks no check when $what, which makes nothing live', async ({ body }) => {
+      const rpc = checkAnswering({ data: [removedRow], error: null })
+      const sb = makeSupabase({ users: { single: testUser }, ...patchTables() }, { rpc })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body })
+      expect(res.status).toBe(200)
+      expect(rpc).not.toHaveBeenCalledWith('definition_connection_problems', expect.anything())
+    })
   })
 })

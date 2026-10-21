@@ -20,6 +20,7 @@ import { WEB_SRC, sanitizeSource } from './_scan-utils'
 /** Types the config panel deliberately offers no type specific section for. */
 const CONFIG_PANEL_NO_SECTION: Partial<Record<(typeof NODE_TYPES)[number], string>> = {
   partner_bid: 'retired (#645): the generic card has no configuration to offer',
+  lead_validation: 'engine only until its config panel is designed in phase 3 (#2590)',
 }
 
 function placed(surface: readonly string[], excluded: Readonly<Partial<Record<string, string>>>): string[] {

@@ -1,4 +1,4 @@
-// The Connections page as settled in the #2338 design rounds (rounds 1 to 27, 2026-10-20 and 21), drawn
+// The Connections page as settled in the #2338 design rounds (rounds 1 to 32, 2026-10-20 and 21, and the states passed in review), drawn
 // into the captured app chrome's #main-content at 1120 wide. Only the settled behaviour is here;
 // every rejected option of the rounds is gone. make-settled.py hands buildScreen one variant per
 // frame, and the variant names the frame's state:
@@ -12,6 +12,11 @@
 //   {state: "add", service: "Salesforce", save: "ready", org: "new"}   Another org, its address
 //                                                        typed into the Org box (round 25)
 //   {state: "loadfailed"}                                the list did not load (round 23)
+//   {state: "loadfailed", cause: "refused"}              the server answered a refusal (passed in review, 2026-10-21)
+//   {state: "detail", chosen, statuses: "stale", retry: "failed"}   the strip's Try again failed (review)
+//   {state: "detail", chosen: "Bidspoke Alerts"}         the Slack alert login's panel (review)
+//   {state: "google", add: "drive"}                      a shared drive pasted and named, ready to add (rounds 29 to 31)
+//   {state: "google", edit: "removing"}                  an entry being removed, 4 s in (review, round 32)
 //   extra: true adds the fixture's justSaved connection to the list (rounds 18 and 21).
 //
 // What a check reads is marked with data-part attributes (and roles for tabs and dialogs), never a
@@ -26,6 +31,11 @@ var TICK = String.fromCharCode(0x2713);
 var MASK = new Array(13).join(String.fromCharCode(0x2022));
 var CHEV = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>';
 var PLUG = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" data-icon="plug"><path d="M12 22v-5"/><path d="M9 8V2"/><path d="M15 8V2"/><path d="M18 8v5a4 4 0 0 1-4 4h-4a4 4 0 0 1-4-4V8Z"/></svg>';
+// Lucide's loader, as the app's working line draws it; drawn still (the idioms say so).
+var SPIN = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="animate-spin" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg>';
+// The shared drive the add drive frame pastes and names, as Dan saw it in review.
+var DRIVE_URL = "https://drive.google.com/drive/u/0/folders/0AbCdEfGhIjKlMnOpQrS?usp=sharing";
+var DRIVE_NAME = "Partner invoices";
 var GLOGO = '<svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9 3.5l6.7-6.7C35.6 2.4 30.2 0 24 0 14.6 0 6.6 5.4 2.6 13.3l7.8 6C12.3 13.6 17.7 9.5 24 9.5z"/><path fill="#4285F4" d="M46.5 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.7c-.6 3-2.3 5.5-4.8 7.2l7.5 5.8c4.4-4 7.1-10 7.1-17.5z"/><path fill="#FBBC05" d="M10.4 28.7c-.5-1.4-.8-3-.8-4.7s.3-3.3.8-4.7l-7.8-6C1 16.6 0 20.2 0 24s1 7.4 2.6 10.7l7.8-6z"/><path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.5-5.8c-2.1 1.4-4.9 2.3-8.4 2.3-6.3 0-11.7-4.1-13.6-9.8l-7.8 6C6.6 42.6 14.6 48 24 48z"/></svg>';
 
 // Round 2: Integrations is renamed Connections, with a plug icon.
@@ -110,7 +120,33 @@ function listColumn(variant) {
 
 function workflowLink(name) { var a = part(el("a", "cx-wf", name), "workflow-link"); a.href = "#"; return a; }
 
+function alertPanel(c) {
+  // The Slack alert login: no Reconnect, Replace or Remove, since the routes refuse all three for it,
+  // and its settings named where they live.
+  var d = part(el("div", "cx-card cx-detail"), "detail");
+  d.append(el("h2", null, c.name), statusEl(c));
+  var tabs = el("div", "cx-dtabs"); tabs.setAttribute("role", "tablist");
+  ["Connection", "Used by (0)", "History"].forEach(function (t, k) {
+    var tab = el("div", "cx-dtab" + (k === 0 ? " on" : ""), t);
+    tab.setAttribute("role", "tab"); tab.setAttribute("aria-selected", k === 0 ? "true" : "false");
+    tabs.append(tab);
+  });
+  d.append(tabs);
+  var rows = el("div", "cx-rows");
+  [["Service", c.service], ["Acts as", c.actsAs], ["Last checked", c.checked]].forEach(function (r) {
+    var row = part(el("div", "cx-row"), "fact"); row.setAttribute("data-fact", r[0]);
+    row.append(el("div", null, r[0]), el("div", null, r[1])); rows.append(row);
+  });
+  d.append(rows);
+  var aside = el("p", "cx-aside");
+  var link = el("a", "cx-link", "Integrations page"); link.href = "#";
+  aside.append(document.createTextNode("Its token and the alerts it posts are set on the "), link, document.createTextNode("."));
+  d.append(aside);
+  return d;
+}
+
 function detailPanel(c) {
+  if (c.name === "Bidspoke Alerts") return alertPanel(c);
   var d = part(el("div", "cx-card cx-detail"), "detail");
   var problem = c.status !== "ok";
   var n = c.workflows.length;
@@ -159,8 +195,30 @@ function detailPanel(c) {
   return d;
 }
 
+// Round 29: Mailbox or Shared drive is chosen first, with the app's own choice group.
+function kindChoice(on, disabled) {
+  var g = el("div", "choice-group"); g.setAttribute("role", "radiogroup"); g.setAttribute("aria-label", "Add a mailbox or a shared drive");
+  if (disabled) g.setAttribute("aria-disabled", "true");
+  ["Mailbox", "Shared drive"].forEach(function (l) {
+    var b = el("button", l === on ? "choice choice-on" : "choice", l); b.type = "button";
+    b.setAttribute("role", "radio"); b.setAttribute("aria-checked", String(l === on));
+    if (disabled) b.disabled = true;
+    g.append(b);
+  });
+  var k = el("div", "ga-kind"); k.append(g);
+  return k;
+}
+function box(placeholder, value, disabled) {
+  var i = el("input", "input"); i.type = "text"; i.placeholder = placeholder; i.setAttribute("aria-label", placeholder);
+  i.value = value; i.setAttribute("value", value);
+  if (disabled) i.disabled = true;
+  return i;
+}
+function addLine(children) { var l = el("div", "ga-add-line"); children.forEach(function (c) { l.append(c); }); return l; }
+
 // Round 10: the company list of mailboxes and shared drives Google connections may act as.
-function googlePanel() {
+function googlePanel(variant) {
+  var removing = variant.edit === "removing";
   var d = part(el("div", "cx-card cx-detail"), "google-subjects");
   d.append(el("h2", null, "Google mailboxes and drives"));
   var p = el("p", "ga-intro");
@@ -171,13 +229,30 @@ function googlePanel() {
   d.append(p);
   FX().delegation.forEach(function (r) {
     var row = part(el("div", "ga-row"), "subject-row");
-    row.append(el("div", null, r.who), el("div", "cx-hint", r.kind), el("div", "cx-hint", "Added by " + r.added), el("button", "ga-link", "Remove"));
+    var rm = el("button", "ga-link", "Remove"); if (removing) rm.disabled = true;
+    row.append(el("div", null, r.who), el("div", "cx-hint", r.kind), el("div", "cx-hint", "Added by " + r.added), rm);
     d.append(row);
   });
+  // Rounds 29 to 31: the choice, then a mailbox's one box with Add beside it; or a shared drive's
+  // whole address on a line of its own, and its name with Add on the line under it. The drive's ID
+  // is read out of the address and never shown back.
   var add = part(el("div", "ga-add"), "subject-add");
-  var inp = el("input", "input"); inp.placeholder = "Mailbox address or shared drive name"; inp.setAttribute("aria-label", "Mailbox address or shared drive name");
-  add.append(inp, el("button", "cx-btn cx-btn-sm", "Add"));
+  var addBtn = el("button", "cx-btn cx-btn-sm", "Add"); if (removing) addBtn.disabled = true;
+  if (variant.add === "drive") {
+    add.append(kindChoice("Shared drive", false),
+      addLine([box("Shared drive address, from Google Drive", DRIVE_URL, false)]),
+      addLine([box("Drive name, shown on this list", DRIVE_NAME, false), addBtn]));
+  } else {
+    add.append(kindChoice("Mailbox", removing), addLine([box("Mailbox address", "", removing), addBtn]));
+  }
   d.append(add);
+  // Round 32: a working line's spinner is as tall as the capitals and level with them.
+  if (removing) {
+    var edit = el("div", "ga-edit");
+    var line = el("p", "outcome outcome-working"); line.setAttribute("role", "status");
+    line.innerHTML = SPIN; line.append(document.createTextNode("Removing " + FX().delegation[0].who + ", 4 s"));
+    edit.append(line); d.append(edit);
+  }
   return d;
 }
 
@@ -331,20 +406,26 @@ function buildScreen(variant) {
   // Round 23: one card across the page, and nothing else.
   if (variant.state === "loadfailed") {
     var card = part(el("div", "cx-card ld-card"), "load-failed"); card.setAttribute("role", "alert");
-    card.append(el("p", null, "The connections could not be loaded: Bidspoke's server did not answer."), el("button", "cx-btn-quiet", "Try again"));
+    card.append(el("p", null, variant.cause === "refused"
+      ? "The connections could not be read: the use counts read failed."
+      : "The connections could not be loaded: Bidspoke's server did not answer."), el("button", "cx-btn-quiet", "Try again"));
     page.append(card);
     return page;
   }
   // Round 22: the last known statuses stay, under a strip saying when they are from.
   if (variant.statuses === "stale") {
     var st = part(el("div", "un-strip"), "stale-strip"); st.setAttribute("role", "status");
-    st.append(el("span", null, "Login checks are not answering. Statuses are as of " + FX().statusesAsOf + "."), el("button", "cx-btn-quiet", "Try again"));
+    var said = el("div", "un-strip-text");
+    said.append(el("span", null, "Login checks are not answering. Statuses are as of " + FX().statusesAsOf + "."));
+    // Passed in review: a Try again that failed says so, in red, under the strip's sentence.
+    if (variant.retry === "failed") said.append(el("span", "field-error text-sm", "Trying again did not work: Bidspoke's server did not answer."));
+    st.append(said, el("button", "cx-btn-quiet", "Try again"));
     page.append(st);
   }
   var chosen = all(variant).filter(function (c) { return c.name === variant.chosen; })[0];
   var split = el("div", "cx-split");
   var right;
-  if (variant.state === "google") right = googlePanel();
+  if (variant.state === "google") right = googlePanel(variant);
   else if (variant.state === "add") right = addPanel(variant);
   else right = detailPanel(chosen);
   split.append(listColumn(variant), right);

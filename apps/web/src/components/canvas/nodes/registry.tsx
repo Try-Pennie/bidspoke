@@ -63,6 +63,9 @@ const baseNodeTypesInternal = {
   buyer_select: BuyerSelectNode,
   buyer_click_send: BuyerClickSendNode,
   buyer_click_check: BuyerClickCheckNode,
+  // Engine only for now (#2589): not in the palette, drawn by the generic card
+  // so a definition holding one still renders. Its own card is phase 3 (#2590).
+  lead_validation: GenericNode,
   region: RegionNode,
   // `satisfies` over every NodeType plus the two canvas only entries (#1411):
   // a type added to @bidspoke/node-types with no card here is a compile error,
