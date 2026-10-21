@@ -244,9 +244,11 @@ export const KEPT_LEAD_ECONOMY_SCRIPTS: readonly KeptScript[] = [
  * link, `<pennieClickUrl>/<Applicant id>`, in its build_response code node and
  * returns it only in the bid response. Each script was copied from the mirror on
  * 2026-10-15 and the signed link token added here. All three were saved to the
- * canvas that day (10:14 to 10:16 AM ET) and the hourly check read each as agree, so
- * none carries a baseline: a canvas put back to the unsigned script pages as a
- * drift. No settings are committed for these workflows, so none are judged.
+ * canvas that day (10:14 to 10:16 AM ET) and the hourly check read each as agree: a
+ * canvas put back to the unsigned script pages as a drift. RML LendSwift's two
+ * scripts were changed again for #2582 (ping_lendswift kept from then on), and each
+ * carries version 22's script as its baseline until that paste lands. No settings are
+ * committed for these workflows, so none are judged.
  */
 export const KEPT_RML_LENDSWIFT_SCRIPTS: readonly KeptScript[] = [
   {

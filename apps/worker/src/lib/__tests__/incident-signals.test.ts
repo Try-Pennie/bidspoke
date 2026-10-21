@@ -27,7 +27,7 @@ import { PARTNER_ERROR_RATE_SIGNAL, PARTNER_ERROR_RECOVERY_WORDS, WINDOW_MINUTES
  * from without either noticing.
  */
 describe('INCIDENT_SIGNALS', () => {
-  it('names the twenty two signals in use, each once', () => {
+  it('names the twenty three signals in use, each once', () => {
     const names = INCIDENT_SIGNALS.map((s) => s.signal)
     expect(new Set(names).size).toBe(names.length)
     expect([...names].sort()).toEqual([
