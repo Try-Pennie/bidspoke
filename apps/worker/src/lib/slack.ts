@@ -2177,13 +2177,7 @@ export async function sendCronHeartbeatAlert(
             : `A run started ~${minutes} minutes ago and has not finished. Until a run completes: ${job.dependents}.`,
         },
       },
-      {
-        type: 'section',
-        text: {
-          type: 'mrkdwn',
-          text: `*How to fix:* nothing yet. The next scheduled run tries again on its own${words ? ` (${words})` : ''}, and this one may have completed part of its work before it stopped. If the next run stops too, read this run's own outcome, which Cloudflare records for each invocation alongside the wall time and CPU time it used: a run stopped for exceeding a resource limit needs its work bounded or split, one the platform simply cancelled was inside every limit and needs no change to anything here, and if its outcome is ok the run finished after this check looked, so nothing needs changing at all.`,
-        },
-      },
+      { type: 'section', text: { type: 'mrkdwn', text: vanishedFixLine(words, 'one') } },
       lastLine(
         job.completionDroughtMs
           ? 'Seen because no run has stamped a completion for that long; why they stop is not visible from here.'
@@ -2228,6 +2222,131 @@ export async function sendCronHeartbeatAlert(
     blocks,
     `${job.label} is${again} dark (${status})`,
   )) !== null
+}
+
+/**
+ * The fix line of a "started and never finished" page, for one job or for the
+ * unfinished jobs of one run (#2578).
+ *
+ * It used to send the reader to "this run's own outcome, which Cloudflare
+ * records for each invocation" and say an ok outcome meant the run had only
+ * finished late. On 2026-10-21 the 04:00 UTC `*\/15` run was killed and left no
+ * outcome record at all, and the only records under its scheduled time were two
+ * retries, both `ok`, one of them half an hour later. A reader following the old
+ * line read the retry's `ok` as the original finishing. Neither claim had been
+ * measured (L11, L460). What does settle it is whether the next run finishes,
+ * which the all-clear reports, and the tick guard's takeover line, which names
+ * a retry and how long before it the stopped run began.
+ */
+function vanishedFixLine(words: string | null, jobs: 'one' | 'several'): string {
+  const subject = jobs === 'one' ? 'this job' : 'these jobs'
+  const when = jobs === 'one' ? 'when one does' : 'when they do'
+  return (
+    `*How to fix:* nothing yet. The next scheduled run tries again on its own${words ? ` (${words})` : ''}, ` +
+    `and this run may have completed part of its work before it stopped. ` +
+    `What shows whether anything needs changing is whether the next run of ${subject} finishes: an all-clear is posted here ${when}. ` +
+    `Cloudflare's own record of this run cannot settle it alone: a run Cloudflare cancels can leave no outcome record at all, ` +
+    'and Cloudflare may then retry it under the same scheduled time. The retry logs `[cron-once] took over` with `previous_age_ms`, ' +
+    "how long before the retry the stopped run began, so an `ok` outcome at that scheduled time can be the retry's rather than this run's. " +
+    "Only an outcome that is this run's own and says it went over a CPU, memory or wall time limit means the work needs bounding or splitting."
+  )
+}
+
+/** One job in a grouped heartbeat page (#2117). */
+export interface CronHeartbeatGroupJob {
+  label: string
+  dependents: string
+  ageMs: number | null
+}
+
+/**
+ * A grouped heartbeat page (#2117): every watched job of one schedule dark
+ * together, or the unfinished jobs of one scheduled run.
+ */
+export interface CronHeartbeatGroup {
+  status: 'stale' | 'vanished'
+  triggerCron: string
+  /** The Worker whose cron this is, when it is not this one (#1949). */
+  worker?: 'bidspoke-worker-ops'
+  /** stale: the latest start of any of the jobs. vanished: the run's scheduled time. */
+  runAt: string | null
+  jobs: CronHeartbeatGroupJob[]
+}
+
+/** An age as a reader says it: minutes under two hours, hours past that. */
+function agoInWords(ms: number): string {
+  return ms < 2 * 3_600_000 ? `~${Math.round(ms / 60_000)} minutes` : `~${Math.round(ms / 3_600_000)}h`
+}
+
+/**
+ * One page for several watched jobs that went dark for one reason (#2117). On
+ * 2026-10-14 Cloudflare did not run the five minute schedule for fifteen
+ * minutes and three "is dark" pages went out, one per job on it; on 2026-10-21
+ * one stopped `*\/15` run sent two "started and never finished" pages. The
+ * reader needs the cause once and the list of what is paused, and the remedy for
+ * a whole schedule is the schedule, never any one job.
+ */
+export async function sendCronHeartbeatGroupAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  group: CronHeartbeatGroup,
+  standing: StandingCondition | null = null,
+  nowMs: number = Date.now(),
+  // True only when the caller measured that every job's status is the one already posted (#1768).
+  unchanged: boolean = false,
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  const repeat = describeRepeat(standing, nowMs, unchanged)
+  const again = repeat ? ' still' : ''
+  const words = scheduleInWords(group.triggerCron, new Date(nowMs))
+  const schedule = words ? `${words} (\`${group.triggerCron}\`)` : `\`${group.triggerCron}\``
+  const labels = group.jobs.map((j) => j.label).join(', ')
+  const runAtMs = group.runAt ? Date.parse(group.runAt) : NaN
+  const lines = group.jobs.map((j) => `• *${j.label}*: ${j.dependents}.`)
+
+  let header: string
+  let opening: string
+  let fix: string
+  let how: string
+  let fallback: string
+  if (group.status === 'stale') {
+    header = `Every job that ${words ? `runs ${words}` : 'runs on one schedule'} is${again} dark`
+    const since = Number.isFinite(runAtMs)
+      ? ` since ${etTime(runAtMs)} (${agoInWords(nowMs - runAtMs)} ago)`
+      : ' inside its expected interval'
+    opening = `None of the ${group.jobs.length} jobs that ${words ? `run ${words}` : 'run on this schedule'} has started a run${since}, so every one of them is paused. While they are:`
+    const where = group.worker
+      ? `${group.worker} deployed with wrangler.ops.toml \`[triggers]\``
+      : 'the worker deployed with wrangler.toml `[triggers]`'
+    fix =
+      '*How to fix:* every job on this schedule stopped at once, so look at what they share rather than at any one of them: ' +
+      'either Cloudflare did not run the schedule, or the scheduled handler stopped before it started them. ' +
+      `Check <https://www.cloudflarestatus.com|cloudflarestatus.com> for an incident affecting Workers cron triggers, then confirm ${where} listing this schedule, ` +
+      "and that the worker's logs at this schedule's times show no error before the jobs start."
+    how = 'Seen because none of these jobs has stamped a run inside its expected cadence.'
+    fallback = `Every job that ${words ? `runs ${words}` : 'runs on one schedule'} is${again} dark (stale): ${labels}`
+  } else {
+    header = `${group.jobs.length} jobs of one scheduled run${again} started and never finished`
+    const ages = group.jobs.map((j) => j.ageMs).filter((a): a is number => a !== null)
+    const started = ages.length ? ` ${agoInWords(Math.max(...ages))} ago` : ''
+    const run = Number.isFinite(runAtMs) ? `The run scheduled for ${etTime(runAtMs)}` : 'One scheduled run'
+    opening = `${run} started these jobs${started} and none of them has finished. Until a run of each completes:`
+    fix = vanishedFixLine(words, 'several')
+    how = 'Seen because each of these jobs stamped its start in this run and no completion inside its allowance; why the run stopped is not visible from here.'
+    fallback = `${labels} started and never finished (vanished)`
+  }
+  // The list is held to the section budget less the opening it shares a section with.
+  const body = `${opening}\n${listWithOverflow(lines, lines.length, MAX_LISTED_LINES, opening.length + 1)}`
+  const blocks: object[] = [
+    { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: body } },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+    ...(repeat ? [{ type: 'section', text: { type: 'mrkdwn', text: repeat } }] : []),
+    // The schedule string and how the check saw it come last, in one line (#1300).
+    { type: 'section', text: { type: 'mrkdwn', text: `_${how} Schedule: ${schedule}._` } },
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback)) !== null
 }
 
 /**
@@ -3389,15 +3508,45 @@ export async function sendCronHeartbeatRecoveryAlert(
     {
       signal: CRON_HEARTBEAT_RECOVERY_WORDS,
       subject: recovery.label,
-      // Only what the completion shows: the reported run itself, late, or a later one.
-      recoveredPhrase: recovery.sameRun
-        ? 'finished the run reported as never finished, late'
-        : 'has finished a run since, so it is running again',
+      recoveredPhrase: heartbeatRecoveredPhrase(recovery.sameRun),
       alertedAt: recovery.alertedAt,
       endedAt: recovery.endedAt,
     },
     now,
   )
+}
+
+/** Only what the completion shows: the reported run itself, late, or a later one. */
+function heartbeatRecoveredPhrase(sameRun: boolean): string {
+  return sameRun ? 'finished the run reported as never finished, late' : 'has finished a run since, so it is running again'
+}
+
+/**
+ * The one all-clear for the unfinished jobs of one run that were paged together
+ * (#2117). On 2026-10-21 the two jobs of the stopped 04:00 UTC run recovered in
+ * two separate messages at 04:16. One line per job, each saying what its own
+ * completion shows, and the timing once: they were paged on one tick, and the
+ * end is the last of their completions. Returns whether it reached Slack.
+ */
+export async function sendCronHeartbeatGroupRecoveryAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  recovery: { alertedAt: string; endedAt: string | null; jobs: { label: string; sameRun: boolean }[] },
+  now: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  const wording: RecoveryWording = { signal: CRON_HEARTBEAT_RECOVERY_WORDS }
+  const timing = recoveryTiming({ subject: '', alertedAt: recovery.alertedAt, endedAt: recovery.endedAt }, wording, now)
+  const lines = recovery.jobs.map((j) => `*${j.label}* ${heartbeatRecoveredPhrase(j.sameRun)}.`)
+  // The timing sentence and its blank line share the section, so the list is held to the budget less them.
+  const text = `${listWithOverflow(lines, lines.length, MAX_LISTED_LINES, timing.length + 2)}\n\n${timing}`
+  const blocks: unknown[] = [
+    { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text } },
+  ]
+  const fallback = `Recovered: ${recovery.jobs.map((j) => j.label).join(', ')}`
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback)) !== null
 }
 
 /**

@@ -107,6 +107,8 @@ let supabaseRequests: number
 /** Every page sent to the Better Stack source the "nobody can be told" alert reads. */
 let betterStackPages: { message: string; organization_id: string | null; reason: string }[]
 let idempotency: ReturnType<typeof memoryKv>
+/** When set, how Supabase answers every request, in place of the stall. */
+let supabaseAnswer: (() => Response) | null
 
 /**
  * Every request: Supabase is accepted and never answered (it ends only when its
@@ -129,6 +131,7 @@ function stubNetwork() {
     }
     if (url.includes('.supabase.co')) {
       supabaseRequests++
+      if (supabaseAnswer) return Promise.resolve(supabaseAnswer())
       const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined)
       return new Promise<Response>((_, reject) => {
         signal?.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')), { once: true })
@@ -227,6 +230,7 @@ beforeEach(async () => {
   cutPosts = []
   supabaseRequests = 0
   betterStackPages = []
+  supabaseAnswer = null
   idempotency = memoryKv()
   await seedCopy(idempotency)
   stubNetwork()
@@ -314,5 +318,49 @@ describe('a stalled database through the real scheduled handler (#2061)', () => 
 
     expect(posts).toEqual([])
     expect(betterStackPages).toEqual([{ message: NOBODY_TOLD_LINE, organization_id: null, reason: 'no_copy', dt: expect.any(String) }])
+  })
+})
+
+/**
+ * The 2026-10-14 blip replayed (#2117). From about 21:33 to 21:49 UTC Cloudflare
+ * did not run the `*\/5` schedule at 21:35, 21:40 or 21:45, Durable Object calls
+ * failed (the minute ticks' claims failed open), and every Supabase read got
+ * Cloudflare's own `error code: 1016` page before reaching Supabase. It put eight
+ * alerts into the channel within 15 seconds: three "is dark" pages (each twice)
+ * for the one missed schedule, and a database page telling the reader to check
+ * Supabase.
+ */
+describe('the 2026-10-14 Cloudflare blip through the real scheduled handler (#2117)', () => {
+  const FIVE = CRON_JOBS.filter((j) => j.triggerCron === '*/5 * * * *' && !j.worker)
+
+  /** The claim object unreachable, as on the night: every call fails, so every claim fails open. */
+  function unreachableClaims(): DurableObjectNamespace {
+    return {
+      idFromName: (n: string) => n,
+      get: () => ({ fetch: () => Promise.reject(new Error('Network connection lost.')) }),
+    } as unknown as DurableObjectNamespace
+  }
+
+  it('posts one page for the missed five minute schedule and one database page that names Cloudflare', async () => {
+    // Every job healthy, except the five minute ones, last started 16 minutes ago.
+    seedHeartbeats(idempotency, T0 + 10 * MIN)
+    for (const job of FIVE) {
+      idempotency.store.set(heartbeatKey(job.id), new Date(T0 - 16 * MIN).toISOString())
+      idempotency.store.set(completedKey(job.id), new Date(T0 - 16 * MIN + SEC).toISOString())
+    }
+    supabaseAnswer = () => new Response('error code: 1016', { status: 530, headers: { 'content-type': 'text/plain' } })
+    await runStalledMinutes({ ...env(), ALERT_CLAIM: unreachableClaims() } as Env, 4)
+
+    // The replay was real: Supabase was asked, and the schedule has several jobs.
+    expect(supabaseRequests).toBeGreaterThan(0)
+    expect(FIVE.length).toBeGreaterThanOrEqual(3)
+
+    const aboutFive = posts.filter((p) => FIVE.some((j) => p.text.includes(j.label)))
+    expect(aboutFive.map((p) => p.text), 'every post naming a five minute job').toHaveLength(1)
+    expect(aboutFive[0].text).toMatch(/^Every job that runs every 5 minutes is dark/)
+    for (const job of FIVE) expect(aboutFive[0].text).toContain(job.label)
+
+    const database = posts.filter((p) => /cannot (read|reach) its database/.test(p.text))
+    expect(database.map((p) => p.text)).toEqual(['Bidspoke cannot reach its database through Cloudflare'])
   })
 })
