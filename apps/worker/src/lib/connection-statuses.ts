@@ -142,3 +142,77 @@ export async function readConnectionStatuses(kv: Pick<CopyKv, 'get'> | undefined
   if (rows.some((r) => r === null)) return unreadable(organizationId, 'a row of the copy is not a status')
   return { kind: 'read', as_of: parsed.as_of, rows: rows as HealthRow[] }
 }
+
+// ── The Slack alert login's last known status (build PR 9) ──────────────────
+//
+// Ops never holds the Slack alert login, so health gives it no status. The list
+// route asks Slack itself (lib/slack-token-check.ts), inside the same deadline
+// as health, and keeps what it measured here, one key per organization, so a
+// Slack that does not answer shows the last known status under the same stale
+// strip, as an ops login does. Its own key, never folded into the ops copy:
+// the two are measured apart, and a copy whose one time covered both would
+// claim one side was as fresh as the other. Written and read like the ops
+// copy: changed or due to be confirmed, tracked per isolate; never throws.
+
+/** The KV key holding an organization's Slack alert login's last known status. */
+export const slackAlertStatusCopyKey = (organizationId: string): string => `slack-alert-status-lastgood:${organizationId}`
+
+export interface SlackAlertStatus {
+  status: ConnectionPageStatus
+  /** Who the bot is, as Slack last named it ("<bot> in <workspace>"). */
+  acts_as: string | null
+}
+
+export type SlackAlertStatusRead =
+  | { kind: 'read'; as_of: string; value: SlackAlertStatus }
+  | { kind: 'absent' }
+  | { kind: 'unreadable'; detail: string }
+
+const lastSlackWritten = new Map<string, { fingerprint: string; atMs: number }>()
+
+/** For tests: forget what this isolate wrote of the Slack alert status. */
+export function forgetSlackAlertStatusMemory(): void {
+  lastSlackWritten.clear()
+}
+
+export async function rememberSlackAlertStatus(kv: CopyKv | undefined, organizationId: string, value: SlackAlertStatus, nowMs: number): Promise<void> {
+  if (!kv) return
+  const fingerprint = JSON.stringify([value.status, value.acts_as])
+  const written = lastSlackWritten.get(organizationId)
+  if (written && written.fingerprint === fingerprint && nowMs - written.atMs < STORED_COPY_RECONFIRM_AFTER_MS) return
+  try {
+    await kv.put(slackAlertStatusCopyKey(organizationId), JSON.stringify({ organization_id: organizationId, as_of: new Date(nowMs).toISOString(), status: value.status, acts_as: value.acts_as }))
+    lastSlackWritten.set(organizationId, { fingerprint, atMs: nowMs })
+  } catch (err) {
+    console.error(JSON.stringify({ event: 'slack_alert_status_copy_unwritten', organization_id: organizationId, error: formatErr(err) }))
+  }
+}
+
+const PAGE_STATUSES: ReadonlySet<string> = new Set(Object.values(OPS_TO_PAGE))
+
+export async function readSlackAlertStatus(kv: Pick<CopyKv, 'get'> | undefined, organizationId: string): Promise<SlackAlertStatusRead> {
+  if (!kv) return { kind: 'absent' }
+  const fail = (detail: string): SlackAlertStatusRead => {
+    console.error(JSON.stringify({ event: 'slack_alert_status_copy_unreadable', organization_id: organizationId, detail }))
+    return { kind: 'unreadable', detail }
+  }
+  let raw: string | null
+  try {
+    raw = await kv.get(slackAlertStatusCopyKey(organizationId))
+  } catch (err) {
+    return fail(`the KV read failed: ${formatErr(err)}`)
+  }
+  if (raw === null) return { kind: 'absent' }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return fail('the copy is not JSON')
+  }
+  if (!isRecord(parsed)) return fail('the copy is not an object')
+  if (parsed.organization_id !== organizationId) return fail('the copy names another organization')
+  if (typeof parsed.as_of !== 'string' || !Number.isFinite(Date.parse(parsed.as_of))) return fail('the copy carries no readable time')
+  if (typeof parsed.status !== 'string' || !PAGE_STATUSES.has(parsed.status)) return fail('the copy carries no status the page shows')
+  if (parsed.acts_as !== null && typeof parsed.acts_as !== 'string') return fail('the copy carries no readable acts as')
+  return { kind: 'read', as_of: parsed.as_of, value: { status: parsed.status as ConnectionPageStatus, acts_as: parsed.acts_as as string | null } }
+}
