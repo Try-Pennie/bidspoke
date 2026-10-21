@@ -55,7 +55,7 @@ describe('the Add connection form (R11, D11)', () => {
     const s = run([{ type: 'add_opened' }], loaded())
     expect(s.chosen).toEqual({ kind: 'add' })
     expect(chosenConnection(s)).toBeNull()
-    expect(s.add).toEqual({ draft: EMPTY_ADD_DRAFT, save: { kind: 'editing' }, before: { kind: 'connection', id: 'c1' } })
+    expect(s.add).toEqual({ draft: EMPTY_ADD_DRAFT, save: { kind: 'editing' }, before: { kind: 'connection', id: 'c1' }, started: null })
   })
 
   it('keeps what each service was given when the service is changed, and Cancel goes back to what was chosen', () => {
@@ -143,6 +143,16 @@ describe('a save (R13, R14, R18)', () => {
     expect([cancelled.add, cancelled.chosen]).toEqual([null, { kind: 'connection', id: 'c1' }])
     expect(run([{ type: 'save_answered', attempt: 1, connection: SAVED }], cancelled).list).toMatchObject({ data: { connections: expect.arrayContaining([expect.objectContaining({ id: 'new1' })]) } })
   })
+
+  it("a cancelled save's late answer never takes a form opened since: it is listed, and the new draft stays", () => {
+    const reopened = run([{ type: 'add_closed' }, { type: 'add_opened' }, { type: 'add_service', service: 'snowflake' }, { type: 'add_name', text: 'Warehouse 2' }], saving())
+    const s = run([{ type: 'save_answered', attempt: 1, connection: SAVED }], reopened)
+    expect(s.chosen).toEqual({ kind: 'add' })
+    expect(s.add!.draft.name).toBe('Warehouse 2')
+    expect(s.list.kind === 'loaded' && s.list.data.connections.some((c) => c.id === 'new1')).toBe(true)
+    // Nor does its late refusal touch the new form.
+    expect(run([{ type: 'save_refused', attempt: 1, sentence: 'x. Nothing was saved. y.' }], reopened).add!.save).toEqual({ kind: 'editing' })
+  })
 })
 
 describe('unsaved work, which the leave guard asks about (L608)', () => {
@@ -164,7 +174,7 @@ describe('Reconnect (R19)', () => {
   const open = (): ConnectionsState => run([{ type: 'dialog_opened', dialog: 'reconnect', id: 'c2' }], loaded())
 
   it('opens for an ops connection, never for the Slack alert login, whose routes refuse it', () => {
-    expect(open().dialog).toEqual({ kind: 'reconnect', id: 'c2', values: {}, save: { kind: 'editing' } })
+    expect(open().dialog).toEqual({ kind: 'reconnect', id: 'c2', values: {}, save: { kind: 'editing' }, started: null })
     const alert = run([{ type: 'list_answered', attempt: 1, data: { ...LIST, connections: [conn({ id: 'a1', alertLogin: true })] } }, { type: 'dialog_opened', dialog: 'reconnect', id: 'a1' }])
     expect(alert.dialog).toBeNull()
   })
@@ -183,6 +193,14 @@ describe('Reconnect (R19)', () => {
     expect(s.history.c2).toBeUndefined()
   })
 
+  it("a cancelled check's late answer lands on the list but never closes a Reconnect opened since", () => {
+    const reopened = run([{ type: 'reconnect_requested', attempt: 1, at: T0, stalled: 's' }, { type: 'dialog_closed' }, { type: 'dialog_opened', dialog: 'reconnect', id: 'c2' }, { type: 'dialog_field', field: 'client_secret', text: 'again' }], open())
+    const s = run([{ type: 'reconnect_answered', attempt: 1, id: 'c2', actsAs: null, at: T0 }], reopened)
+    expect(s.dialog).toMatchObject({ kind: 'reconnect', values: { client_secret: 'again' } })
+    expect(s.list.kind === 'loaded' && s.list.data.connections.find((c) => c.id === 'c2')?.status).toBe('ok')
+    expect(run([{ type: 'reconnect_refused', attempt: 1, sentence: 'x. Nothing was saved. y.' }], reopened).dialog).toMatchObject({ save: { kind: 'editing' } })
+  })
+
   it('a refusal keeps the dialog open with its sentence; a stall says it is not known; Cancel closes it while it checks', () => {
     const running = run([{ type: 'reconnect_requested', attempt: 1, at: T0, stalled: 'stalled sentence' }], open())
     const closed = run([{ type: 'dialog_closed' }], running)
@@ -198,7 +216,7 @@ describe('Reconnect (R19)', () => {
 describe('Remove (R21)', () => {
   it('opens only for a connection no workflow uses', () => {
     expect(run([{ type: 'dialog_opened', dialog: 'remove', id: 'c1' }], loaded()).dialog).toBeNull()
-    expect(run([{ type: 'dialog_opened', dialog: 'remove', id: 'c3' }], loaded()).dialog).toEqual({ kind: 'remove', id: 'c3', values: {}, save: { kind: 'editing' } })
+    expect(run([{ type: 'dialog_opened', dialog: 'remove', id: 'c3' }], loaded()).dialog).toEqual({ kind: 'remove', id: 'c3', values: {}, save: { kind: 'editing' }, started: null })
   })
 
   it('a removed connection leaves the list, and the panel opens the first one as the list reads', () => {

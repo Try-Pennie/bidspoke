@@ -71,12 +71,15 @@ export interface AddState {
   draft: AddDraft
   save: SaveState
   before: Chosen
+  /** The save this form started last: only that one's answer may take the panel or fail the form. */
+  started: number | null
 }
 
 export type DialogState =
   | null
-  | { kind: 'reconnect'; id: string; values: Readonly<Record<string, string>>; save: SaveState }
-  | { kind: 'remove'; id: string; values: Readonly<Record<string, string>>; save: SaveState }
+  /** `started`: the change this dialog started last, the only one whose answer may close or fail it. */
+  | { kind: 'reconnect'; id: string; values: Readonly<Record<string, string>>; save: SaveState; started: number | null }
+  | { kind: 'remove'; id: string; values: Readonly<Record<string, string>>; save: SaveState; started: number | null }
   /** The removal stands, and the workflows server could not be told at once: its notice, until closed. */
   | { kind: 'removed'; name: string; notice: string }
   /** Replace, drawn as the design draws it and inert until build PR 12 (R20). */
@@ -280,7 +283,7 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
     case 'add_opened': {
       if (s.list.kind !== 'loaded' || s.dialog) return s
       if (s.add) return { ...s, chosen: { kind: 'add' } }
-      return { ...s, chosen: { kind: 'add' }, add: { draft: EMPTY_ADD_DRAFT, save: { kind: 'editing' }, before: s.chosen } }
+      return { ...s, chosen: { kind: 'add' }, add: { draft: EMPTY_ADD_DRAFT, save: { kind: 'editing' }, before: s.chosen, started: null } }
     }
     case 'add_service':
       return editDraft(s, (d) => ({ ...d, service: e.service }))
@@ -302,18 +305,19 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
     }
     case 'save_requested': {
       if (!s.add || !s.add.draft.service || s.add.save.kind === 'saving' || e.attempt <= s.lastChange.save || s.list.kind !== 'loaded') return s
-      return { ...s, now: e.at, lastChange: { ...s.lastChange, save: e.attempt }, add: { ...s.add, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
+      return { ...s, now: e.at, lastChange: { ...s.lastChange, save: e.attempt }, add: { ...s.add, started: e.attempt, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
     }
     case 'save_answered': {
-      // The connection exists once its save answered, however late (R18), so it is listed; it takes the panel while the form is still open.
+      // The connection exists once its save answered, however late (R18), so it is listed; it takes the
+      // panel only from the form that started it, never from one opened since a Cancel.
       if (e.attempt !== s.lastChange.save || s.list.kind !== 'loaded') return s
       const connections = [...s.list.data.connections.filter((c) => c.id !== e.connection.id), e.connection]
       const list = { ...s.list, data: { ...s.list.data, connections } }
-      if (!s.add) return { ...s, list }
+      if (!s.add || s.add.started !== e.attempt) return { ...s, list }
       return { ...s, list, add: null, chosen: { kind: 'connection', id: e.connection.id }, tab: 'connection' }
     }
     case 'save_refused': {
-      if (e.attempt !== s.lastChange.save || !s.add || !awaiting(s.add.save)) return s
+      if (e.attempt !== s.lastChange.save || !s.add || s.add.started !== e.attempt || !awaiting(s.add.save)) return s
       return { ...s, add: { ...s.add, save: { kind: 'failed', sentence: e.sentence, unconfirmed: false } } }
     }
 
@@ -330,7 +334,7 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
           .sort((a, b) => Number(a.status !== 'ok') - Number(b.status !== 'ok') || a.name.localeCompare(b.name))
         return { ...s, dialog: { kind: 'replace', id: c.id, with: others[0]?.id ?? null, ticked: c.workflows.map((w) => w.id) } }
       }
-      return { ...s, dialog: { kind: e.dialog, id: c.id, values: {}, save: { kind: 'editing' } } }
+      return { ...s, dialog: { kind: e.dialog, id: c.id, values: {}, save: { kind: 'editing' }, started: null } }
     }
     case 'dialog_field': {
       const d = s.dialog
@@ -352,7 +356,7 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
     case 'reconnect_requested': {
       const d = s.dialog
       if (d?.kind !== 'reconnect' || d.save.kind === 'saving' || e.attempt <= s.lastChange.reconnect) return s
-      return { ...s, now: e.at, lastChange: { ...s.lastChange, reconnect: e.attempt }, dialog: { ...d, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
+      return { ...s, now: e.at, lastChange: { ...s.lastChange, reconnect: e.attempt }, dialog: { ...d, started: e.attempt, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
     }
     case 'reconnect_answered': {
       // The new login is saved once this answers, however late: the connection reads working, checked now.
@@ -362,31 +366,33 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
         : c))
       // Its history has a new entry now, so it is read again when its tab next opens.
       const history = Object.fromEntries(Object.entries(s.history).filter(([id]) => id !== e.id))
-      const dialog = s.dialog?.kind === 'reconnect' && s.dialog.id === e.id ? null : s.dialog
+      const dialog = s.dialog?.kind === 'reconnect' && s.dialog.id === e.id && s.dialog.started === e.attempt ? null : s.dialog
       return { ...s, list: { ...s.list, data: { ...s.list.data, connections } }, history, dialog }
     }
     case 'reconnect_refused': {
       const d = s.dialog
-      if (e.attempt !== s.lastChange.reconnect || d?.kind !== 'reconnect' || !awaiting(d.save)) return s
+      if (e.attempt !== s.lastChange.reconnect || d?.kind !== 'reconnect' || d.started !== e.attempt || !awaiting(d.save)) return s
       return { ...s, dialog: { ...d, save: { kind: 'failed', sentence: e.sentence, unconfirmed: false } } }
     }
     case 'connection_remove_requested': {
       const d = s.dialog
       if (d?.kind !== 'remove' || d.save.kind === 'saving' || e.attempt <= s.lastChange.remove) return s
-      return { ...s, now: e.at, lastChange: { ...s.lastChange, remove: e.attempt }, dialog: { ...d, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
+      return { ...s, now: e.at, lastChange: { ...s.lastChange, remove: e.attempt }, dialog: { ...d, started: e.attempt, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
     }
     case 'connection_remove_answered': {
       if (e.attempt !== s.lastChange.remove || s.list.kind !== 'loaded') return s
       const gone = s.list.data.connections.find((c) => c.id === e.id)
       const data = { ...s.list.data, connections: s.list.data.connections.filter((c) => c.id !== e.id) }
       const history = Object.fromEntries(Object.entries(s.history).filter(([id]) => id !== e.id))
+      // A Remove of the connection that is gone closes, whichever press started it; only its own press shows the notice.
       const open = s.dialog?.kind === 'remove' && s.dialog.id === e.id
-      const dialog: DialogState = open ? (e.notice ? { kind: 'removed', name: gone?.name ?? 'The connection', notice: e.notice } : null) : s.dialog
+      const own = open && s.dialog?.kind === 'remove' && s.dialog.started === e.attempt
+      const dialog: DialogState = open ? (own && e.notice ? { kind: 'removed', name: gone?.name ?? 'The connection', notice: e.notice } : null) : s.dialog
       return { ...s, list: { ...s.list, data }, history, dialog, chosen: keepChosen(s.chosen, data) }
     }
     case 'connection_remove_refused': {
       const d = s.dialog
-      if (e.attempt !== s.lastChange.remove || d?.kind !== 'remove' || !awaiting(d.save) || s.list.kind !== 'loaded') return s
+      if (e.attempt !== s.lastChange.remove || d?.kind !== 'remove' || d.started !== e.attempt || !awaiting(d.save) || s.list.kind !== 'loaded') return s
       const workflows = e.workflows
       const list = workflows
         ? { ...s.list, data: { ...s.list.data, connections: s.list.data.connections.map((c) => (c.id === d.id ? { ...c, workflows } : c)) } }
