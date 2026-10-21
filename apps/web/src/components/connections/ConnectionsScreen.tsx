@@ -98,6 +98,8 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     tab: initialTab ?? 'connection',
   }))
   const latest = useRef<ConnectionsState>(state)
+  // Each load's number, taken at the press, so two presses before a render still get two numbers.
+  const lastAttempt = useRef(1)
   latest.current = state
 
   const loadList = useCallback((attempt: number) => {
@@ -122,8 +124,8 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
   }, [loadList, loadGoogle])
 
   const tryAgain = useCallback(() => {
-    const attempt = latest.current.attempts + 1
-    dispatch({ type: 'list_requested', at: clock.now() })
+    const attempt = ++lastAttempt.current
+    dispatch({ type: 'list_requested', at: clock.now(), attempt })
     loadList(attempt)
   }, [clock, loadList])
 

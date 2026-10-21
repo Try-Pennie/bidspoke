@@ -479,7 +479,9 @@ describe('GET /connections: what the page draws each connection from (build PR 9
       const { env } = makeEnv({})
       const body = await shown(env)
       expect(body.connections.find((c) => c.id === ALERTS)!).toMatchObject({ status: null, status_word: null, acts_as: null })
-      expect(body.statuses).toMatchObject({ stale: true, as_of: null, unavailable: { cause: 'slack_unanswered' } })
+      // The statuses shown are ops's, just measured, so their time stands; Slack's adds none.
+      expect(body.statuses).toMatchObject({ stale: true, unavailable: { cause: 'slack_unanswered' } })
+      expect(Date.now() - Date.parse(body.statuses.as_of!)).toBeLessThan(60_000)
     })
 
     it('gives up on a Slack that hangs at the health deadline, so the list still answers inside the same 15 s', async () => {

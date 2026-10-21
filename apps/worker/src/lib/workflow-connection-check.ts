@@ -26,7 +26,8 @@
  *
  * Never unchecked: a function that is missing (this code deployed before its
  * migration was applied, L640), a lookup that failed, or an answer this module
- * cannot read each refuse the save with their own named code, never pass it.
+ * cannot read each refuse the save (or the switch on) with their own named
+ * code, never pass it.
  */
 import type { createSupabaseClient } from './supabase'
 import { formatErr } from './format-error'

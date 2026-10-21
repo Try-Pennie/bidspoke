@@ -67,7 +67,8 @@ export interface ConnectionsState {
 }
 
 export type ConnectionsEvent =
-  | { type: 'list_requested'; at: number }
+  /** A new load of the list, numbered by the caller above every earlier one; a number not above them is ignored. */
+  | { type: 'list_requested'; at: number; attempt: number }
   | { type: 'list_answered'; attempt: number; data: LoadedList }
   | { type: 'list_refused'; attempt: number; cause: string }
   | { type: 'tick'; at: number }
@@ -122,7 +123,8 @@ const sameEntry = (a: Pick<DelegationEntry, 'kind' | 'subject'>, b: Pick<Delegat
 export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): ConnectionsState {
   switch (e.type) {
     case 'list_requested': {
-      const attempt = s.attempts + 1
+      const attempt = e.attempt
+      if (attempt <= s.attempts) return s
       if (s.list.kind === 'loaded') return { ...s, now: e.at, attempts: attempt, list: { ...s.list, refresh: { kind: 'loading', attempt, startedAt: e.at } } }
       return { ...s, now: e.at, attempts: attempt, list: { kind: 'loading', attempt, startedAt: e.at } }
     }

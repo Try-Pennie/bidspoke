@@ -51,7 +51,7 @@ describe('the list load', () => {
   it('a refused load is the card with its own cause, and Try again loads afresh and can then succeed', () => {
     const failed = run([{ type: 'list_refused', attempt: 1, cause: 'The connections could not be read: the use counts read failed.' }])
     expect(failed.list).toMatchObject({ kind: 'failed', cause: 'The connections could not be read: the use counts read failed.' })
-    const again = run([{ type: 'list_requested', at: T0 + 10_000 }], failed)
+    const again = run([{ type: 'list_requested', at: T0 + 10_000, attempt: 2 }], failed)
     expect(again.list).toEqual({ kind: 'loading', attempt: 2, startedAt: T0 + 10_000 })
     // The first load's answer, arriving now, is not this load's.
     expect(run([{ type: 'list_answered', attempt: 1, data: LIST }], again).list.kind).toBe('loading')
@@ -64,7 +64,7 @@ describe("the stale strip's Try again", () => {
   const shown = () => run([{ type: 'list_answered', attempt: 1, data: stale }, { type: 'choose', chosen: { kind: 'connection', id: 'c1' } }])
 
   it('loads again while the last known list stays shown, then shows the fresh one, keeping the chosen connection', () => {
-    const retrying = run([{ type: 'list_requested', at: T0 + 5_000 }], shown())
+    const retrying = run([{ type: 'list_requested', at: T0 + 5_000, attempt: 2 }], shown())
     expect(retrying.list).toMatchObject({ kind: 'loaded', data: stale, refresh: { kind: 'loading', attempt: 2, startedAt: T0 + 5_000 } })
     const fresh = run([{ type: 'list_answered', attempt: 2, data: LIST }], retrying)
     expect(fresh.list).toMatchObject({ kind: 'loaded', data: LIST, refresh: { kind: 'idle' } })
@@ -72,20 +72,25 @@ describe("the stale strip's Try again", () => {
   })
 
   it('a Try again that fails or passes the deadline says so and keeps the list it had', () => {
-    const retrying = run([{ type: 'list_requested', at: T0 + 5_000 }], shown())
+    const retrying = run([{ type: 'list_requested', at: T0 + 5_000, attempt: 2 }], shown())
     expect(run([{ type: 'list_refused', attempt: 2, cause: 'x' }], retrying).list).toMatchObject({ kind: 'loaded', data: stale, refresh: { kind: 'failed', cause: 'x' } })
     expect(run([{ type: 'tick', at: T0 + 5_000 + DEADLINE }], retrying).list).toMatchObject({ kind: 'loaded', data: stale, refresh: { kind: 'failed', cause: LIST_NO_ANSWER } })
   })
 
   it('a second Try again after a failed one gets a number of its own, so the failed one answering late counts for nothing', () => {
-    const failed = run([{ type: 'list_requested', at: T0 + 5_000 }, { type: 'list_refused', attempt: 2, cause: 'x' }], shown())
-    const again = run([{ type: 'list_requested', at: T0 + 9_000 }], failed)
+    const failed = run([{ type: 'list_requested', at: T0 + 5_000, attempt: 2 }, { type: 'list_refused', attempt: 2, cause: 'x' }], shown())
+    const again = run([{ type: 'list_requested', at: T0 + 9_000, attempt: 3 }], failed)
     expect(again.list).toMatchObject({ refresh: { kind: 'loading', attempt: 3 } })
     expect(run([{ type: 'list_answered', attempt: 2, data: LIST }], again).list).toMatchObject({ data: stale, refresh: { kind: 'loading', attempt: 3 } })
   })
 
+  it('ignores a request numbered no higher than an earlier one, so no two loads share a number', () => {
+    const retrying = run([{ type: 'list_requested', at: T0 + 5_000, attempt: 2 }], shown())
+    expect(run([{ type: 'list_requested', at: T0 + 6_000, attempt: 2 }], retrying)).toBe(retrying)
+  })
+
   it('a chosen connection gone from the fresh list gives way to the first one', () => {
-    const retrying = run([{ type: 'list_requested', at: T0 + 5_000 }], shown())
+    const retrying = run([{ type: 'list_requested', at: T0 + 5_000, attempt: 2 }], shown())
     const fresh = run([{ type: 'list_answered', attempt: 2, data: { ...LIST, connections: [LIST.connections[1]] } }], retrying)
     expect(chosenConnection(fresh)?.id).toBe('c2')
   })

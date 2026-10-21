@@ -264,7 +264,8 @@ connections.get('/', async (c) => {
       const copy = await readSlackAlertStatus(c.env.WORKFLOW_CACHE, orgId)
       alertStatus = copy.kind === 'read' ? { ...copy.value, checked_at: copy.as_of } : { status: null, acts_as: null, checked_at: null }
       const slackAsOf = copy.kind === 'read' ? copy.as_of : null
-      asOf = stale ? earliest([asOf, slackAsOf]) : slackAsOf
+      // The earliest time any shown status is from: a fresh ops answer's, or the copies'.
+      asOf = earliest([asOf, slackAsOf])
       if (!stale) unavailable = { cause: 'slack_unanswered', detail: checked.detail }
       stale = true
       console.warn(JSON.stringify({ event: 'slack_alert_status_stale', organization_id: orgId, copy: copy.kind, as_of: slackAsOf }))
