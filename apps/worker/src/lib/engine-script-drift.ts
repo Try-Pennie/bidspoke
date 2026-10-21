@@ -246,28 +246,25 @@ export const KEPT_LEAD_ECONOMY_SCRIPTS: readonly KeptScript[] = [
  * 2026-10-15 and the signed link token added here. All three were saved to the
  * canvas that day (10:14 to 10:16 AM ET) and the hourly check read each as agree: a
  * canvas put back to the unsigned script pages as a drift. RML LendSwift's two
- * scripts were changed again for #2582 (ping_lendswift kept from then on), and each
- * carries version 22's script as its baseline until that paste lands. No settings are
- * committed for these workflows, so none are judged.
+ * scripts were changed again for #2582 (ping_lendswift kept from then on); both were
+ * pasted on 2026-10-21 (version 24, 2:10 PM ET) and the hourly check read each as
+ * agree at 3:00 PM ET, so neither carries a baseline: a canvas put back to version 22 pages as a
+ * drift. No settings are committed for these workflows, so none are judged.
  */
 export const KEPT_RML_LENDSWIFT_SCRIPTS: readonly KeptScript[] = [
   {
     namespace: 'build_response',
     file: 'build_response.js',
     script: RML_LENDSWIFT_BUILD_RESPONSE,
-    // Version 22's script, read from the live definition on 2026-10-21, before a
-    // LendSwift failure was answered as partner_error (#2582); clear it once the paste reads as agree.
-    canvasBaselineSha256: '090e39f89df498ce9bdfa4be158868c67567da40ff12607f97b82d200ff6c920',
-    baselineReadOn: '2026-10-21',
+    canvasBaselineSha256: null,
+    baselineReadOn: null,
   },
   {
     namespace: 'ping_lendswift',
     file: 'ping_lendswift.js',
     script: RML_LENDSWIFT_PING,
-    // Version 22's script, read from the live definition on 2026-10-21, before a
-    // LendSwift failure ended the lead as no bid (#2582); clear it once the paste reads as agree.
-    canvasBaselineSha256: '28f45ff6539c4192973daee58fd22d9566cd83149a9fd596b5bf34601dc0d061',
-    baselineReadOn: '2026-10-21',
+    canvasBaselineSha256: null,
+    baselineReadOn: null,
   },
 ]
 export const KEPT_RML_GIGFI_SCRIPTS: readonly KeptScript[] = [

@@ -18,8 +18,11 @@ lead, a second time. A single dispatched code node already runs this long in
 production: Main Flow's `fallback_engine_under_10000` (`timeout_ms` 50000) completed
 single calls of up to 47.7 seconds in the 7 days to 2026-10-21.
 
-Both scripts carry a drift baseline (version 22's script) until their paste lands
-and the hourly check reads them as agree; then the baselines are cleared.
+Both scripts were pasted on 2026-10-21 (version 24, saved 2:10 PM ET) and the hourly
+check read them as agree, so neither carries a drift baseline: a canvas put back to
+version 22's scripts pages as a drift. Roll back by pasting the version 22 scripts
+and settings, never by version history Restore (#2598), and put the kept copies here
+back in a PR, or the hourly check pages until they match.
 
 A LendSwift failure is a completed no bid, so the failure saturation page cannot see
 a LendSwift outage. `lib/partner-error-rate.ts` pages on the share of pings carrying
