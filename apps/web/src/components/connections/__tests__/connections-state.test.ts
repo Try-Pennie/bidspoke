@@ -5,7 +5,7 @@
  * and removes. Time moves only by the tick event, by hand.
  */
 import { describe, expect, it } from 'vitest'
-import type { ConnectionView, DelegationEntry } from '../connection-model'
+import { NOT_A_DRIVE_ADDRESS, type ConnectionView, type DelegationEntry } from '../connection-model'
 import { chosenConnection, connectionsReducer, initialConnectionsState, LIST_NO_ANSWER, type ConnectionsEvent, type ConnectionsState, type LoadedList } from '../connections-state'
 
 const T0 = Date.parse('2026-10-20T16:00:00Z')
@@ -129,31 +129,59 @@ describe('the Google list', () => {
     expect(run([{ type: 'google_requested', at: T0 }, { type: 'google_refused', sentence: 'The list could not be read.' }]).google).toEqual({ kind: 'failed', sentence: 'The list could not be read.' })
   })
 
-  it('adds what was typed: adding with its start, then the entry listed and the box cleared', () => {
-    const adding = run([{ type: 'draft', text: '  reports@trypennie.com ' }, { type: 'add_requested', at: T0 + 1_000 }], loaded())
-    expect(adding.edit).toEqual({ kind: 'adding', text: 'reports@trypennie.com', startedAt: T0 + 1_000 })
+  const mailbox = (text: string): ConnectionsEvent => ({ type: 'draft', field: 'mailbox', text })
+
+  it('adds a typed mailbox: adding with its start, then the entry listed and the box cleared', () => {
+    const adding = run([mailbox('  reports@trypennie.com '), { type: 'add_requested', at: T0 + 1_000 }], loaded())
+    expect(adding.edit).toEqual({ kind: 'adding', shown: 'reports@trypennie.com', startedAt: T0 + 1_000 })
     const added = run([{ type: 'add_answered', entry: entry('reports@trypennie.com') }], adding)
     expect(added.edit).toEqual({ kind: 'idle' })
-    expect(added.draft).toBe('')
+    expect(added.draft).toEqual({ kind: 'mailbox', mailbox: '', driveAddress: '', driveName: '' })
     expect(added.google).toMatchObject({ subjects: [entry('ops@trypennie.com'), entry('reports@trypennie.com')] })
   })
 
+  it('adds a shared drive by its pasted address and a name, shown by the name, and keeps Shared drive chosen after', () => {
+    const adding = run([
+      { type: 'draft_kind', kind: 'drive' },
+      { type: 'draft', field: 'driveAddress', text: 'https://drive.google.com/drive/u/0/folders/0AbCdEfGhIjKlMnOpQ?usp=sharing' },
+      { type: 'draft', field: 'driveName', text: 'Partner reports' },
+      { type: 'add_requested', at: T0 },
+    ], loaded())
+    expect(adding.edit).toEqual({ kind: 'adding', shown: 'Partner reports', startedAt: T0 })
+    const added = run([{ type: 'add_answered', entry: { ...entry('0AbCdEfGhIjKlMnOpQ', 'drive'), display_name: 'Partner reports' } }], adding)
+    expect(added.draft).toEqual({ kind: 'drive', mailbox: '', driveAddress: '', driveName: '' })
+  })
+
+  it('refuses a drive address with no drive in it before anything is sent, keeping what was typed', () => {
+    const refused = run([
+      { type: 'draft_kind', kind: 'drive' },
+      { type: 'draft', field: 'driveAddress', text: 'https://example.com/folders/0AbCdEfGhIjKlMnOpQ' },
+      { type: 'draft', field: 'driveName', text: 'Partner reports' },
+      { type: 'add_requested', at: T0 },
+    ], loaded())
+    expect(refused.edit).toEqual({ kind: 'failed', sentence: NOT_A_DRIVE_ADDRESS })
+    expect(refused.draft.driveAddress).toBe('https://example.com/folders/0AbCdEfGhIjKlMnOpQ')
+  })
+
   it('an entry already listed is not listed twice', () => {
-    const s = run([{ type: 'draft', text: 'ops@trypennie.com' }, { type: 'add_requested', at: T0 }, { type: 'add_answered', entry: entry('ops@trypennie.com') }], loaded())
+    const s = run([mailbox('ops@trypennie.com'), { type: 'add_requested', at: T0 }, { type: 'add_answered', entry: entry('ops@trypennie.com') }], loaded())
     expect(s.google).toMatchObject({ subjects: [entry('ops@trypennie.com')] })
   })
 
-  it('a refused add keeps what was typed and says why; typing again clears the sentence', () => {
-    const refused = run([{ type: 'draft', text: 'Partner reports' }, { type: 'add_requested', at: T0 }, { type: 'add_refused', sentence: 'That is not a mailbox address or a shared drive id.' }], loaded())
-    expect(refused.edit).toEqual({ kind: 'failed', sentence: 'That is not a mailbox address or a shared drive id.' })
-    expect(refused.draft).toBe('Partner reports')
-    expect(run([{ type: 'draft', text: 'Partner reports 2' }], refused).edit).toEqual({ kind: 'idle' })
+  it("a refused add keeps what was typed and says why; typing again, or choosing the other kind, clears the sentence", () => {
+    const refused = run([mailbox('ops@trypennie'), { type: 'add_requested', at: T0 }, { type: 'add_refused', sentence: 'ops@trypennie is not one mailbox address or one shared drive id.' }], loaded())
+    expect(refused.edit).toEqual({ kind: 'failed', sentence: 'ops@trypennie is not one mailbox address or one shared drive id.' })
+    expect(refused.draft.mailbox).toBe('ops@trypennie')
+    expect(run([mailbox('ops@trypennie.com')], refused).edit).toEqual({ kind: 'idle' })
+    expect(run([{ type: 'draft_kind', kind: 'drive' }], refused).edit).toEqual({ kind: 'idle' })
   })
 
-  it('adds nothing for an empty box, or while another change is in flight', () => {
-    expect(run([{ type: 'draft', text: '   ' }, { type: 'add_requested', at: T0 }], loaded()).edit).toEqual({ kind: 'idle' })
+  it('adds nothing for an empty box, a drive with no name, or while another change is in flight', () => {
+    expect(run([mailbox('   '), { type: 'add_requested', at: T0 }], loaded()).edit).toEqual({ kind: 'idle' })
+    const noName = run([{ type: 'draft_kind', kind: 'drive' }, { type: 'draft', field: 'driveAddress', text: '0AbCdEfGhIjKlMnOpQ' }, { type: 'add_requested', at: T0 }], loaded())
+    expect(noName.edit).toEqual({ kind: 'idle' })
     const removing = run([{ type: 'remove_requested', entry: { kind: 'mailbox', subject: 'ops@trypennie.com' }, shown: 'ops@trypennie.com', at: T0 }], loaded())
-    expect(run([{ type: 'draft', text: 'x@y.z' }, { type: 'add_requested', at: T0 }], removing).edit.kind).toBe('removing')
+    expect(run([mailbox('x@y.z'), { type: 'add_requested', at: T0 }], removing).edit.kind).toBe('removing')
   })
 
   it('removes an entry only once the server says so, and a refusal (one a connection names) is said by its sentence and removes nothing', () => {

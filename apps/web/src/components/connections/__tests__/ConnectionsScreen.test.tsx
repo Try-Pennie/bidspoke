@@ -189,13 +189,27 @@ describe('the Google list (R10)', () => {
     let finish: (v: { outcome: 'added'; entry: DelegationEntry }) => void = () => {}
     const addGoogleSubject = vi.fn(() => new Promise<{ outcome: 'added'; entry: DelegationEntry }>((r) => { finish = r }))
     const { advance } = await openGoogle({ addGoogleSubject })
-    fireEvent.change(screen.getByLabelText('Mailbox address or shared drive name'), { target: { value: 'reports@trypennie.com' } })
+    fireEvent.change(screen.getByLabelText('Mailbox address'), { target: { value: 'reports@trypennie.com' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
     expect(addGoogleSubject).toHaveBeenCalledWith({ kind: 'mailbox', subject: 'reports@trypennie.com', display_name: null })
     advance(2_000)
     expect(screen.getByText('Adding reports@trypennie.com, 2 s')).toBeTruthy()
     await act(async () => finish({ outcome: 'added', entry: { ...ENTRY, subject: 'reports@trypennie.com' } }))
     expect(document.querySelectorAll('[data-part="subject-row"]')).toHaveLength(2)
+  })
+
+  it('adds a shared drive from its pasted address and a name, and refuses an address with no drive in it without calling the route', async () => {
+    const { s } = await openGoogle()
+    fireEvent.click(screen.getByRole('radio', { name: 'Shared drive' }))
+    expect(screen.queryByLabelText('Mailbox address')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Shared drive address, from Google Drive'), { target: { value: 'https://drive.google.com/file/d/0AbCdEfGhIjKlMnOpQ/view' } })
+    fireEvent.change(screen.getByLabelText('Drive name, shown on this list'), { target: { value: 'Partner reports' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(screen.getByRole('alert').textContent).toBe('That is not a Google Drive shared drive address.')
+    expect(s.addGoogleSubject).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText('Shared drive address, from Google Drive'), { target: { value: 'https://drive.google.com/drive/u/0/folders/0AbCdEfGhIjKlMnOpQ?usp=sharing' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(s.addGoogleSubject).toHaveBeenCalledWith({ kind: 'drive', subject: '0AbCdEfGhIjKlMnOpQ', display_name: 'Partner reports' })
   })
 
   it("shows a refused removal's sentence, naming what uses the entry, and keeps the entry", async () => {

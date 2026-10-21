@@ -241,7 +241,73 @@ export function delegationAdded(e: DelegationEntry): string {
   return `Added by ${e.added_by}, ${etDay(e.added_at)}`
 }
 
-/** What the add box's text is: an address is a mailbox, anything else a shared drive's id. */
-export function delegationKindOf(text: string): DelegationEntry['kind'] {
-  return text.includes('@') ? 'mailbox' : 'drive'
+/**
+ * A shared drive's id as the ops list judges it (google_delegation_subjects,
+ * ops migration 20261018170000): 10 to 128 letters, digits, dashes and
+ * underscores.
+ */
+const DRIVE_ID = /^[A-Za-z0-9_-]{10,128}$/
+
+export type DriveAddressReading =
+  | { ok: true; id: string }
+  | { ok: false; why: 'empty' | 'not_drive' | 'not_a_folder' }
+
+/** The one sentence the add box shows when a pasted text holds no shared drive (Dan, round 30). */
+export const NOT_A_DRIVE_ADDRESS = 'That is not a Google Drive shared drive address.'
+
+/**
+ * The drive id in whatever a person copies from Google Drive (Dan, rounds 29
+ * to 31, 2026-10-21: a box that needs an id from another tool takes what that
+ * tool gives and pulls the id out itself). Read: the folder address
+ * https://drive.google.com/drive/folders/<id>, the signed in form
+ * /drive/u/<n>/folders/<id>, either with a query string or a fragment, with
+ * or without https://, and a bare id pasted on its own. Refused: an empty
+ * box, any other site's address, and a Drive address that is not a folder's
+ * (a single file's /file/d/<id>/view, a Docs link, the Drive home page).
+ */
+export function readDriveAddress(text: string): DriveAddressReading {
+  const t = text.trim()
+  if (t === '') return { ok: false, why: 'empty' }
+  if (DRIVE_ID.test(t)) return { ok: true, id: t }
+  let url: URL
+  try {
+    url = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(t) ? t : `https://${t}`)
+  } catch {
+    return { ok: false, why: 'not_drive' }
+  }
+  if (url.hostname.toLowerCase() !== 'drive.google.com' || !/^https?:$/.test(url.protocol)) return { ok: false, why: 'not_drive' }
+  const folder = /^\/drive\/(?:u\/\d+\/)?folders\/([^/]+)\/?$/.exec(url.pathname)
+  if (!folder) return { ok: false, why: 'not_a_folder' }
+  return DRIVE_ID.test(folder[1]) ? { ok: true, id: folder[1] } : { ok: false, why: 'not_a_folder' }
+}
+
+/** What the add box holds: which kind is chosen, and each kind's own boxes. */
+export interface DelegationDraft {
+  kind: DelegationEntry['kind']
+  mailbox: string
+  driveAddress: string
+  driveName: string
+}
+
+export const EMPTY_DRAFT: DelegationDraft = { kind: 'mailbox', mailbox: '', driveAddress: '', driveName: '' }
+
+/** Whether the chosen kind's boxes hold enough to try adding: an address, and for a drive its name too. */
+export function draftReady(d: DelegationDraft): boolean {
+  return d.kind === 'mailbox' ? d.mailbox.trim() !== '' : d.driveAddress.trim() !== '' && d.driveName.trim() !== ''
+}
+
+export type AddRequest =
+  | { ok: true; body: { kind: DelegationEntry['kind']; subject: string; display_name: string | null }; shown: string }
+  | { ok: false; sentence: string }
+
+/** What adding the draft sends, and the name it is shown by while it goes; or the sentence refusing it before anything is sent. */
+export function addRequestOf(d: DelegationDraft): AddRequest {
+  if (d.kind === 'mailbox') {
+    const address = d.mailbox.trim()
+    return { ok: true, body: { kind: 'mailbox', subject: address, display_name: null }, shown: address }
+  }
+  const reading = readDriveAddress(d.driveAddress)
+  if (!reading.ok) return { ok: false, sentence: NOT_A_DRIVE_ADDRESS }
+  const name = d.driveName.trim()
+  return { ok: true, body: { kind: 'drive', subject: reading.id, display_name: name === '' ? null : name }, shown: name === '' ? 'the shared drive' : name }
 }

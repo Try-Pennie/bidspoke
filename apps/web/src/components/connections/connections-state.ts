@@ -13,7 +13,7 @@
  * answer cannot replace the card or a newer list. The clock is the `tick`
  * event's, never the machine's, so tests move time by hand.
  */
-import { firstConnection, listGroups, type ConnectionView, type DelegationEntry, type HistoryEntry } from './connection-model'
+import { addRequestOf, draftReady, EMPTY_DRAFT, firstConnection, listGroups, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry } from './connection-model'
 
 /** What the could not load card says when Bidspoke's server gave no answer (D23). */
 export const LIST_NO_ANSWER = "Bidspoke's server did not answer."
@@ -47,7 +47,8 @@ export type GoogleState =
 
 export type GoogleEdit =
   | { kind: 'idle' }
-  | { kind: 'adding'; text: string; startedAt: number }
+  /** The entry being added, by the name it is shown by (a mailbox's address, a drive's name). */
+  | { kind: 'adding'; shown: string; startedAt: number }
   | { kind: 'removing'; entry: Pick<DelegationEntry, 'kind' | 'subject'>; shown: string; startedAt: number }
   | { kind: 'failed'; sentence: string }
 
@@ -62,7 +63,7 @@ export interface ConnectionsState {
   tab: DetailTab
   history: Readonly<Record<string, HistoryState>>
   google: GoogleState | null
-  draft: string
+  draft: DelegationDraft
   edit: GoogleEdit
 }
 
@@ -80,7 +81,9 @@ export type ConnectionsEvent =
   | { type: 'google_requested'; at: number }
   | { type: 'google_answered'; subjects: DelegationEntry[]; reachedLimit: boolean }
   | { type: 'google_refused'; sentence: string }
-  | { type: 'draft'; text: string }
+  /** Which kind the add box adds (Mailbox or Shared drive), or one of its boxes typed in. */
+  | { type: 'draft_kind'; kind: DelegationDraft['kind'] }
+  | { type: 'draft'; field: 'mailbox' | 'driveAddress' | 'driveName'; text: string }
   | { type: 'add_requested'; at: number }
   | { type: 'add_answered'; entry: DelegationEntry }
   | { type: 'add_refused'; sentence: string }
@@ -98,7 +101,7 @@ export function initialConnectionsState(now: number, deadlineMs: number, chosen:
     tab: 'connection',
     history: {},
     google: null,
-    draft: '',
+    draft: EMPTY_DRAFT,
     edit: { kind: 'idle' },
   }
 }
@@ -162,17 +165,23 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
       return { ...s, google: { kind: 'loaded', subjects: e.subjects, reachedLimit: e.reachedLimit } }
     case 'google_refused':
       return { ...s, google: { kind: 'failed', sentence: e.sentence } }
+    case 'draft_kind':
+      return { ...s, draft: { ...s.draft, kind: e.kind }, edit: s.edit.kind === 'failed' ? { kind: 'idle' } : s.edit }
     case 'draft':
-      return { ...s, draft: e.text, edit: s.edit.kind === 'failed' ? { kind: 'idle' } : s.edit }
+      return { ...s, draft: { ...s.draft, [e.field]: e.text }, edit: s.edit.kind === 'failed' ? { kind: 'idle' } : s.edit }
     case 'add_requested': {
-      const text = s.draft.trim()
-      if (text === '' || s.edit.kind === 'adding' || s.edit.kind === 'removing' || s.google?.kind !== 'loaded') return s
-      return { ...s, edit: { kind: 'adding', text, startedAt: e.at } }
+      if (!draftReady(s.draft) || s.edit.kind === 'adding' || s.edit.kind === 'removing' || s.google?.kind !== 'loaded') return s
+      // A drive address with no drive in it is refused here, before anything is sent (round 30).
+      const request = addRequestOf(s.draft)
+      if (!request.ok) return { ...s, edit: { kind: 'failed', sentence: request.sentence } }
+      return { ...s, edit: { kind: 'adding', shown: request.shown, startedAt: e.at } }
     }
     case 'add_answered': {
       if (s.edit.kind !== 'adding' || s.google?.kind !== 'loaded') return s
       const subjects = s.google.subjects.some((x) => sameEntry(x, e.entry)) ? s.google.subjects : [...s.google.subjects, e.entry]
-      return { ...s, draft: '', edit: { kind: 'idle' }, google: { ...s.google, subjects } }
+      // The boxes of the kind just added are emptied; the kind stays chosen.
+      const draft: DelegationDraft = s.draft.kind === 'mailbox' ? { ...s.draft, mailbox: '' } : { ...s.draft, driveAddress: '', driveName: '' }
+      return { ...s, draft, edit: { kind: 'idle' }, google: { ...s.google, subjects } }
     }
     case 'add_refused':
       return s.edit.kind === 'adding' ? { ...s, edit: { kind: 'failed', sentence: e.sentence } } : s

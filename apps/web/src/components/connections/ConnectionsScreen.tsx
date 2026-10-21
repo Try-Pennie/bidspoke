@@ -25,14 +25,14 @@ import Link from 'next/link'
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef } from 'react'
 import type { ConnectionList } from '@/lib/api'
 import { errorSentence, requestFailureCause } from '@/lib/error-sentence'
-import { Button, FieldError, Outcome, TextInput } from '@/components/ui/form'
+import { Button, ChoiceGroup, FieldError, Outcome, TextInput } from '@/components/ui/form'
 import { Tabs, TabPanel } from '@/components/ui/Tabs'
 import {
-  agoText, delegationAdded, delegationKindOf, delegationShown, DELEGATION_KIND_WORDS, etClock, etDay, etMoment, GOOGLE_LIST_ENTRY, historyWhat, isProblem, listGroups,
-  problemNotice, secretWordOf, statusWord, viewOf, type ConnectionView, type DelegationEntry, type HistoryEntry,
+  addRequestOf, agoText, delegationAdded, delegationShown, draftReady, DELEGATION_KIND_WORDS, etClock, etDay, etMoment, GOOGLE_LIST_ENTRY, historyWhat, isProblem, listGroups,
+  problemNotice, secretWordOf, statusWord, viewOf, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry,
 } from './connection-model'
 import {
-  chosenConnection, connectionsReducer, initialConnectionsState, LIST_NO_ANSWER, type Chosen, type ConnectionsState, type DetailTab, type LoadedList,
+  chosenConnection, connectionsReducer, initialConnectionsState, LIST_NO_ANSWER, type Chosen, type ConnectionsEvent, type ConnectionsState, type DetailTab, type LoadedList,
 } from './connections-state'
 
 /** What the page calls: the Worker's routes live, the fixture in the preview. Each refusal throws as api.ts's req() does. */
@@ -81,25 +81,32 @@ function changeSentence(err: unknown, what: string): string {
   return `${what}: ${requestFailureCause(err)}.`
 }
 
-function loadedOf(answer: ConnectionList): LoadedList {
+export function loadedOf(answer: ConnectionList): LoadedList {
   return { connections: answer.connections.map(viewOf), statuses: { stale: answer.statuses.stale, asOf: answer.statuses.as_of } }
 }
 
-export function ConnectionsScreen({ source, clock = browserClock, orgNames = {}, initialChosen, initialTab }: {
+export function ConnectionsScreen({ source, clock = browserClock, orgNames = {}, initialChosen, initialTab, initialEvents, noInitialLoad }: {
   source: ConnectionsSource
   clock?: ConnectionsClock
   /** Salesforce orgs Bidspoke knows by name, by host: the notice names an org by it. */
   orgNames?: Readonly<Record<string, string>>
   initialChosen?: Chosen
   initialTab?: DetailTab
+  /**
+   * Events the reducer applies before the first paint, and `noInitialLoad`
+   * to make no call on mounting: only the development preview passes them, to
+   * draw a state that otherwise takes presses and waits (/dev/connections).
+   */
+  initialEvents?: readonly ConnectionsEvent[]
+  noInitialLoad?: boolean
 }) {
-  const [state, dispatch] = useReducer(connectionsReducer, undefined, () => ({
+  const [state, dispatch] = useReducer(connectionsReducer, undefined, () => (initialEvents ?? []).reduce(connectionsReducer, {
     ...initialConnectionsState(clock.now(), LIST_DEADLINE_MS, initialChosen),
     tab: initialTab ?? 'connection',
   }))
   const latest = useRef<ConnectionsState>(state)
   // Each load's number, taken at the press, so two presses before a render still get two numbers.
-  const lastAttempt = useRef(1)
+  const lastAttempt = useRef(state.attempts)
   latest.current = state
 
   const loadList = useCallback((attempt: number) => {
@@ -119,9 +126,10 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
 
   // The first load, and the company list beside it, so both are there when chosen (L610).
   useEffect(() => {
+    if (noInitialLoad) return
     loadList(1)
     loadGoogle()
-  }, [loadList, loadGoogle])
+  }, [loadList, loadGoogle, noInitialLoad])
 
   const tryAgain = useCallback(() => {
     const attempt = ++lastAttempt.current
@@ -151,12 +159,14 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
 
   const addEntry = useCallback(() => {
     const s = latest.current
-    const text = s.draft.trim()
-    if (text === '' || s.edit.kind === 'adding' || s.edit.kind === 'removing' || s.google?.kind !== 'loaded') return
+    if (!draftReady(s.draft) || s.edit.kind === 'adding' || s.edit.kind === 'removing' || s.google?.kind !== 'loaded') return
     dispatch({ type: 'add_requested', at: clock.now() })
-    source.addGoogleSubject({ kind: delegationKindOf(text), subject: text, display_name: null }).then(
+    // The reducer refuses an address with no drive in it by the same reading; nothing is sent then.
+    const request = addRequestOf(s.draft)
+    if (!request.ok) return
+    source.addGoogleSubject(request.body).then(
       (a) => dispatch({ type: 'add_answered', entry: a.entry }),
-      (err: unknown) => dispatch({ type: 'add_refused', sentence: changeSentence(err, `${text} was not added`) }),
+      (err: unknown) => dispatch({ type: 'add_refused', sentence: changeSentence(err, `${request.shown} was not added`) }),
     )
   }, [source, clock])
 
@@ -219,7 +229,16 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
           <div className="cx-split">
             <ConnectionList groups={groups} chosen={state.chosen} onChoose={(c) => dispatch({ type: 'choose', chosen: c })} />
             {state.chosen.kind === 'google'
-              ? <GooglePanel state={state} onDraft={(text) => dispatch({ type: 'draft', text })} onAdd={addEntry} onRemove={removeEntry} onRetry={loadGoogle} />
+              ? (
+                <GooglePanel
+                  state={state}
+                  onKind={(kind) => dispatch({ type: 'draft_kind', kind })}
+                  onDraft={(field, text) => dispatch({ type: 'draft', field, text })}
+                  onAdd={addEntry}
+                  onRemove={removeEntry}
+                  onRetry={loadGoogle}
+                />
+              )
               : chosen
                 ? <DetailPanel c={chosen} state={state} orgNames={orgNames} onTab={(tab) => dispatch({ type: 'tab', tab })} />
                 : null}
@@ -384,15 +403,20 @@ function HistoryList({ state, now, secret }: { state: ConnectionsState['history'
   )
 }
 
-function GooglePanel({ state, onDraft, onAdd, onRemove, onRetry }: {
+function GooglePanel({ state, onKind, onDraft, onAdd, onRemove, onRetry }: {
   state: ConnectionsState
-  onDraft: (text: string) => void
+  onKind: (kind: DelegationDraft['kind']) => void
+  onDraft: (field: 'mailbox' | 'driveAddress' | 'driveName', text: string) => void
   onAdd: () => void
   onRemove: (e: DelegationEntry) => void
   onRetry: () => void
 }) {
-  const inputId = useId()
+  const kindId = useId()
+  const mailboxId = useId()
+  const addressId = useId()
+  const nameId = useId()
   const termId = useId()
+  const draft = state.draft
   const g = state.google
   const edit = state.edit
   const busy = edit.kind === 'adding' || edit.kind === 'removing'
@@ -412,7 +436,7 @@ function GooglePanel({ state, onDraft, onAdd, onRemove, onRetry }: {
       )}
       {g?.kind === 'failed' && (
         <div className="ga-failed">
-          <FieldError alert>{g.sentence}</FieldError>
+          <FieldError alert size="sm">{g.sentence}</FieldError>
           <Button variant="secondary" className="cx-btn-quiet" onClick={onRetry}>Try again</Button>
         </div>
       )}
@@ -428,21 +452,41 @@ function GooglePanel({ state, onDraft, onAdd, onRemove, onRetry }: {
             </div>
           ))}
           {g.reachedLimit && <p className="cx-hint ga-limit">The list holds more entries than are shown here.</p>}
+          {/* Rounds 29 to 31: Mailbox or Shared drive first; a drive is added by its address and a name. */}
           <div className="ga-add" data-part="subject-add">
-            <TextInput
-              id={inputId}
-              value={state.draft}
-              onChange={onDraft}
-              onEnter={onAdd}
-              disabled={busy}
-              placeholder="Mailbox address or shared drive name"
-              aria-label="Mailbox address or shared drive name"
-            />
-            <Button variant="primary" className="cx-btn cx-btn-sm" onClick={onAdd} disabled={busy || state.draft.trim() === ''}>Add</Button>
+            <div className="ga-kind">
+              <ChoiceGroup
+                id={kindId}
+                label="Add a mailbox or a shared drive"
+                visibleLabel=""
+                value={draft.kind}
+                options={[{ value: 'mailbox', label: 'Mailbox' }, { value: 'drive', label: 'Shared drive' }]}
+                onChange={onKind}
+                disabled={busy}
+              />
+            </div>
+            {draft.kind === 'mailbox'
+              ? (
+                <div className="ga-add-line">
+                  <TextInput id={mailboxId} value={draft.mailbox} onChange={(t) => onDraft('mailbox', t)} onEnter={onAdd} disabled={busy} placeholder="Mailbox address" aria-label="Mailbox address" />
+                  <Button variant="primary" className="cx-btn cx-btn-sm" onClick={onAdd} disabled={busy || !draftReady(draft)}>Add</Button>
+                </div>
+              )
+              : (
+                <>
+                  <div className="ga-add-line">
+                    <TextInput id={addressId} value={draft.driveAddress} onChange={(t) => onDraft('driveAddress', t)} onEnter={onAdd} disabled={busy} placeholder="Shared drive address, from Google Drive" aria-label="Shared drive address, from Google Drive" />
+                  </div>
+                  <div className="ga-add-line">
+                    <TextInput id={nameId} value={draft.driveName} onChange={(t) => onDraft('driveName', t)} onEnter={onAdd} disabled={busy} placeholder="Drive name, shown on this list" aria-label="Drive name, shown on this list" />
+                    <Button variant="primary" className="cx-btn cx-btn-sm" onClick={onAdd} disabled={busy || !draftReady(draft)}>Add</Button>
+                  </div>
+                </>
+              )}
           </div>
-          {edit.kind === 'adding' && <div className="ga-edit"><Outcome state={{ kind: 'working', label: `Adding ${edit.text}`, startedAt: edit.startedAt, now: state.now }} /></div>}
+          {edit.kind === 'adding' && <div className="ga-edit"><Outcome state={{ kind: 'working', label: `Adding ${edit.shown}`, startedAt: edit.startedAt, now: state.now }} /></div>}
           {edit.kind === 'removing' && <div className="ga-edit"><Outcome state={{ kind: 'working', label: `Removing ${edit.shown}`, startedAt: edit.startedAt, now: state.now }} /></div>}
-          {edit.kind === 'failed' && <FieldError alert className="ga-edit">{edit.sentence}</FieldError>}
+          {edit.kind === 'failed' && <FieldError alert size="sm" className="ga-edit">{edit.sentence}</FieldError>}
         </>
       )}
     </section>

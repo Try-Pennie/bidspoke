@@ -9,7 +9,7 @@ import { CONNECTION_STATUS_WORDS } from '@bidspoke/service-catalogue/schema'
 import type { ConnectionListRow } from '@/lib/api'
 import fixture from '../../../../../../docs/design/connections-page.fixture.json'
 import {
-  agoText, delegationAdded, delegationKindOf, delegationShown, etMoment, historyWhat, listGroups, problemNotice, statusWord, viewOf, type ConnectionView,
+  addRequestOf, agoText, delegationAdded, delegationShown, NOT_A_DRIVE_ADDRESS, readDriveAddress, etMoment, historyWhat, listGroups, problemNotice, statusWord, viewOf, type ConnectionView,
 } from '../connection-model'
 
 const NOW = Date.parse('2026-10-20T16:00:00Z') // 12:00 PM ET
@@ -153,7 +153,53 @@ describe('history and the Google list words', () => {
     expect(delegationShown(drive)).toBe('Partner reports')
     expect(delegationShown({ ...drive, display_name: null })).toBe('0ABCdefGHIjklMNOpq')
     expect(delegationAdded(drive)).toBe('Added by Dan Wright, Oct 19')
-    expect(delegationKindOf('ops@trypennie.com')).toBe('mailbox')
-    expect(delegationKindOf('0ABCdefGHIjklMNOpq')).toBe('drive')
+  })
+})
+
+describe('readDriveAddress: the drive id out of whatever Google Drive gives (rounds 29 to 31)', () => {
+  const ID = '0AbCdEfGhIjKlMnOpQrS'
+
+  it.each([
+    ['the folder address', `https://drive.google.com/drive/folders/${ID}`],
+    ['the signed in folder address', `https://drive.google.com/drive/u/0/folders/${ID}`],
+    ['another signed in account', `https://drive.google.com/drive/u/3/folders/${ID}`],
+    ['with a query string', `https://drive.google.com/drive/folders/${ID}?usp=sharing`],
+    ['signed in, with a query string', `https://drive.google.com/drive/u/1/folders/${ID}?usp=drive_link&resourcekey=x`],
+    ['with a fragment', `https://drive.google.com/drive/folders/${ID}#grid`],
+    ['signed in, with a fragment', `https://drive.google.com/drive/u/0/folders/${ID}#list`],
+    ['with a trailing slash', `https://drive.google.com/drive/folders/${ID}/`],
+    ['without https://', `drive.google.com/drive/u/0/folders/${ID}`],
+    ['over http', `http://drive.google.com/drive/folders/${ID}`],
+    ['with spaces around it', `  https://drive.google.com/drive/folders/${ID}  `],
+    ['a bare id', ID],
+    ['a bare id with spaces around it', `  ${ID}\n`],
+  ])('reads %s', (_, text) => {
+    expect(readDriveAddress(text)).toEqual({ ok: true, id: ID })
+  })
+
+  it.each([
+    ['an empty box', '', 'empty'],
+    ['a box of spaces', '   ', 'empty'],
+    ["another site's address", `https://example.com/drive/folders/${ID}`, 'not_drive'],
+    ['a look alike host', `https://drive.google.com.example.com/drive/folders/${ID}`, 'not_drive'],
+    ['a Docs address', `https://docs.google.com/document/d/${ID}/edit`, 'not_drive'],
+    ['a single file', `https://drive.google.com/file/d/${ID}/view?usp=sharing`, 'not_a_folder'],
+    ['the Drive home page', 'https://drive.google.com/drive/my-drive', 'not_a_folder'],
+    ['a folder id too short to be one', 'https://drive.google.com/drive/folders/abc', 'not_a_folder'],
+    ['a drive name typed in its place', 'Partner reports', 'not_drive'],
+    ['a mailbox address', 'ops@trypennie.com', 'not_drive'],
+  ])('refuses %s', (_, text, why) => {
+    expect(readDriveAddress(text)).toEqual({ ok: false, why })
+  })
+
+  it('sends a drive by its id and name, and refuses one with no drive in it by one plain sentence', () => {
+    expect(addRequestOf({ kind: 'drive', mailbox: '', driveAddress: `https://drive.google.com/drive/folders/${ID}`, driveName: ' Partner reports ' })).toEqual({
+      ok: true, body: { kind: 'drive', subject: ID, display_name: 'Partner reports' }, shown: 'Partner reports',
+    })
+    expect(addRequestOf({ kind: 'drive', mailbox: '', driveAddress: `https://drive.google.com/file/d/${ID}/view`, driveName: 'x' })).toEqual({ ok: false, sentence: NOT_A_DRIVE_ADDRESS })
+    expect(NOT_A_DRIVE_ADDRESS).toBe('That is not a Google Drive shared drive address.')
+    expect(addRequestOf({ kind: 'mailbox', mailbox: ' ops@trypennie.com ', driveAddress: 'ignored', driveName: '' })).toEqual({
+      ok: true, body: { kind: 'mailbox', subject: 'ops@trypennie.com', display_name: null }, shown: 'ops@trypennie.com',
+    })
   })
 })
