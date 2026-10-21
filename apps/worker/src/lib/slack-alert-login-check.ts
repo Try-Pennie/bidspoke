@@ -22,8 +22,7 @@
  * or answers it.
  */
 import type { ConnectionPageStatus } from '@bidspoke/service-catalogue/schema'
-import type { createSupabaseClient } from './supabase'
-import { onlySlackAlertRow, pickSlackAlertRow, resolveSlackConnection, SLACK_ALERT_CONNECTION_NAME, SLACK_ALERT_READ_LIMIT, SLACK_ROW_COLUMNS, slackAlertAmbiguityLine, type SlackConnectionRow } from './slack-connection'
+import { pickSlackAlertRow, resolveSlackConnection, SLACK_ALERT_CONNECTION_NAME, slackAlertAmbiguityLine, type SlackConnectionRow } from './slack-connection'
 import { secretKeys, type SecretKeys } from './secret-crypto'
 import { slackActsAs, verifySlackToken } from './slack-token-check'
 import { formatErr } from './format-error'
@@ -37,8 +36,6 @@ export function isSlackAlertRow(row: { service_type: string; name: string; seale
   return row.service_type === 'slack' && row.name === SLACK_ALERT_CONNECTION_NAME && (row.sealed_for === 'bidding_ring' || row.sealed_for === null)
 }
 
-type Supabase = ReturnType<typeof createSupabaseClient>
-
 /** Resolves to `undefined` once `ms` have passed; the timer is cleared by `done`. */
 function deadline(ms: number): { reached: Promise<undefined>; done: () => void } {
   let timer: ReturnType<typeof setTimeout> | null = null
@@ -46,8 +43,13 @@ function deadline(ms: number): { reached: Promise<undefined>; done: () => void }
   return { reached, done: () => { if (timer !== null) clearTimeout(timer) } }
 }
 
+/**
+ * `readRow` reads the organization's alert row's token columns (the route
+ * passes its read through onlySlackAlertRow, SLACK_ROW_COLUMNS, at most
+ * SLACK_ALERT_READ_LIMIT rows), so the table stays read only in its homes.
+ */
 export async function checkSlackAlertLogin(
-  supabase: Supabase,
+  readRow: () => PromiseLike<{ data: unknown; error: unknown }>,
   env: { SECRET_ENCRYPTION_KEY: string; SECRET_ENCRYPTION_KEY_NEXT?: string },
   orgId: string,
   deadlineMs: number,
@@ -55,7 +57,7 @@ export async function checkSlackAlertLogin(
   const limit = deadline(deadlineMs)
   try {
     const asked = (async (): Promise<SlackAlertLoginCheck> => {
-      const { data, error } = await onlySlackAlertRow(supabase.from('service_connections').select(SLACK_ROW_COLUMNS).eq('organization_id', orgId)).limit(SLACK_ALERT_READ_LIMIT)
+      const { data, error } = await readRow()
       if (error) return { kind: 'unanswered', detail: `the alert login's token could not be read: ${formatErr(error)}` }
       const picked = pickSlackAlertRow(data as unknown as SlackConnectionRow[] | null)
       if (picked.kind === 'ambiguous') {

@@ -7,7 +7,7 @@
  * The login and target are never built here: the catalogue's connectionParts
  * is the one builder (L613), the same the ops minter contract test holds.
  */
-import type { ConnectionAuthKind, ServiceSchema } from '@bidspoke/service-catalogue/schema'
+import { connectionSecretLabel, type ConnectionAuthKind, type ServiceSchema } from '@bidspoke/service-catalogue/schema'
 import type { DelegationSubjectRow, MeasuredIdentityAnswer } from './ops-connections-contract'
 import { CONNECTION_NAME_MAX } from './connection-create-refusals'
 
@@ -98,10 +98,9 @@ export const AUTH_TYPE_OF: Readonly<Record<ConnectionAuthKind, string>> = {
   oauth_user: 'oauth_user',
 }
 
-/** The service's secret field's label in lower case, for the page's sentence ("refused the client secret"). */
+/** The service's secret field's label in lower case, for the page's sentence ("refused the client secret"): the catalogue's one rule. */
 export function secretLabelOf(service: ServiceSchema): string {
-  const secret = service.connection.fields.find((f) => f.input === 'secret' || f.input === 'secret_block')
-  return secret ? secret.label.toLowerCase() : 'login'
+  return connectionSecretLabel(service.connection)
 }
 
 /** The Salesforce org a target declares, by its host, for the sentences that name it (#2556). */

@@ -61,6 +61,7 @@ import {
 } from '../../lib/ops-connections-contract'
 import { pageStatusOf, readConnectionStatuses, readSlackAlertStatus, rememberConnectionStatuses, rememberSlackAlertStatus } from '../../lib/connection-statuses'
 import { checkSlackAlertLogin, isSlackAlertRow } from '../../lib/slack-alert-login-check'
+import { onlySlackAlertRow, SLACK_ALERT_READ_LIMIT, SLACK_ROW_COLUMNS } from '../../lib/slack-connection'
 import { OPS_CONNECTIONS_DEADLINES_MS } from '../../lib/ops-connections-client'
 
 type Variables = AuthVariables
@@ -131,6 +132,13 @@ function serviceNameOf(key: string): string {
   return declaredService(CATALOGUE, key)?.name ?? (key === 'slack' ? SLACK_SERVICE_NAME : key)
 }
 
+/** The latest of the times given, or null when none is. */
+function latest(times: Array<string | null>): string | null {
+  const known = times.filter((t): t is string => t !== null)
+  if (known.length === 0) return null
+  return known.reduce((a, b) => (Date.parse(a) >= Date.parse(b) ? a : b))
+}
+
 /** The earliest of the times given, or null when none is. */
 function earliest(times: Array<string | null>): string | null {
   const known = times.filter((t): t is string => t !== null)
@@ -142,7 +150,7 @@ function earliest(times: Array<string | null>): string | null {
 //   200 { connections, statuses: { as_of, stale, unavailable } }
 //       each connection: id, name, service (the catalogue key), service_name,
 //       alert_login, acts_as, person_bound, owner, target, org (a Salesforce
-//       target's host), status, status_word, health, used_by, workflows (each
+//       target's host), status, status_word, health, checked_at, used_by, workflows (each
 //       using it: id, name, deleted), created_at, updated_at
 //       statuses.stale: a login check did not answer, so its statuses are the
 //       last known ones, as of statuses.as_of (the earliest such time, null
@@ -178,7 +186,12 @@ connections.get('/', async (c) => {
   // deadline, and nothing it answers changes what they read.
   const health = callOpsConnections(c.env, 'health', { organization_id: orgId })
   const alertRow = listed.find(isSlackAlertRow)
-  const slack = alertRow ? checkSlackAlertLogin(supabase, c.env, orgId, OPS_CONNECTIONS_DEADLINES_MS.health) : null
+  const slack = alertRow
+    ? checkSlackAlertLogin(
+      () => onlySlackAlertRow(supabase.from('service_connections').select(SLACK_ROW_COLUMNS).eq('organization_id', orgId)).limit(SLACK_ALERT_READ_LIMIT),
+      c.env, orgId, OPS_CONNECTIONS_DEADLINES_MS.health,
+    )
+    : null
 
   const ownerIds = [...new Set(listed.filter((r) => r.person_bound && r.user_id).map((r) => r.user_id as string))]
   const owners = new Map<string, { name: string | null; email: string | null }>()
@@ -240,15 +253,16 @@ connections.get('/', async (c) => {
   const byId = new Map(statusRows.map((r) => [r.connection_id, r]))
 
   // The alert login: Slack's answer, or its last known one when Slack did not answer.
-  let alertStatus: { status: ConnectionPageStatus | null; acts_as: string | null } | null = null
+  let alertStatus: { status: ConnectionPageStatus | null; acts_as: string | null; checked_at: string | null } | null = null
   if (slack) {
     const checked = await slack
     if (checked.kind === 'answered') {
-      alertStatus = { status: checked.status, acts_as: checked.acts_as }
-      await rememberSlackAlertStatus(c.env.WORKFLOW_CACHE, orgId, { status: checked.status, acts_as: checked.acts_as }, Date.now())
+      const at = Date.now()
+      alertStatus = { status: checked.status, acts_as: checked.acts_as, checked_at: new Date(at).toISOString() }
+      await rememberSlackAlertStatus(c.env.WORKFLOW_CACHE, orgId, { status: checked.status, acts_as: checked.acts_as }, at)
     } else {
       const copy = await readSlackAlertStatus(c.env.WORKFLOW_CACHE, orgId)
-      alertStatus = copy.kind === 'read' ? copy.value : { status: null, acts_as: null }
+      alertStatus = copy.kind === 'read' ? { ...copy.value, checked_at: copy.as_of } : { status: null, acts_as: null, checked_at: null }
       const slackAsOf = copy.kind === 'read' ? copy.as_of : null
       asOf = stale ? earliest([asOf, slackAsOf]) : slackAsOf
       if (!stale) unavailable = { cause: 'slack_unanswered', detail: checked.detail }
@@ -280,6 +294,8 @@ connections.get('/', async (c) => {
       status,
       status_word: status ? CONNECTION_STATUS_WORDS[status] : null,
       health: h,
+      // When its login was last checked, either way: ops's latest check, or when Slack last answered.
+      checked_at: alert ? (alertStatus?.checked_at ?? null) : latest([h?.last_check_ok_at ?? null, h?.last_check_failed_at ?? null]),
       used_by: using.length,
       workflows: using,
       created_at: row.created_at,
@@ -304,14 +320,17 @@ export const CONNECTION_HISTORY_LIMIT = 50
 // Who may call it: any signed in user of the organization. Whose data: the
 // one connection named, of the caller's organization only, which the function
 // refuses for any other as connection_not_found. Read only, so no audit row.
+const noSuchConnection = (c: Context) => c.json({ error: 'connection_not_found', message: 'There is no such connection.' }, 404)
+
 connections.get('/:id/history', async (c) => {
   const { orgId } = c.get('user')
   const id = c.req.param('id')
-  if (!UUID.test(id)) return c.json({ error: 'connection_not_found', message: 'There is no such connection.' }, 404)
+  if (!UUID.test(id)) return noSuchConnection(c)
   const supabase = createSupabaseClient(c.env)
   const { data, error } = await supabase.rpc('connection_history', { p_organization_id: orgId, p_connection_id: id, p_limit: CONNECTION_HISTORY_LIMIT })
   if (error) {
-    if (error.code === 'P0002' && /connection_not_found/.test(error.message)) return c.json({ error: 'connection_not_found', message: 'There is no such connection.' }, 404)
+    // Only the function's own refusal by name is a missing connection; any other error is the read failing.
+    if (error.code === 'P0002' && /connection_not_found/.test(error.message)) return noSuchConnection(c)
     console.error(JSON.stringify({ event: 'connection_history_unavailable', organization_id: orgId, connection_id: id, error: formatErr(error) }))
     return c.json({ error: 'connection_history_unavailable', message: "The connection's history could not be read." }, 503)
   }

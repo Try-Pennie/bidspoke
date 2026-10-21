@@ -63,6 +63,16 @@ export function connectionFormLabels(connection: ConnectionDeclaration): string[
   return [CONNECTION_NAME_LABEL, ...connection.fields.map((f) => f.label)]
 }
 
+/**
+ * What a sentence calls the service's secret ("client secret"), or "login"
+ * when it declares none. The save route's refusals and the Connections page's
+ * problem notice both word it from here (#2338), so they cannot disagree.
+ */
+export function connectionSecretLabel(connection: ConnectionDeclaration): string {
+  const secret = connection.fields.find((f) => SECRET_INPUTS.has(f.input))
+  return secret ? secret.label.toLowerCase() : 'login'
+}
+
 /** The login's field names, in form order. */
 export function loginFieldNames(connection: ConnectionDeclaration): string[] {
   return connection.fields.flatMap((f) => (f.login === undefined ? [] : [f.login]))

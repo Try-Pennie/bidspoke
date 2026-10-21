@@ -273,6 +273,8 @@ describe('GET /connections', () => {
     const by = (id: string) => body.connections.find((c) => c.id === id)!
     expect(by(SF)).toMatchObject({ status: 'reauth', status_word: 'Needs reconnecting' })
     expect(by(SF).health).toMatchObject({ ops_status: 'needs_reauth', needs_reauth_at: '2026-10-20T13:52:00Z', needs_reauth_cause: 'invalid_client' })
+    // When the login was last checked, either way.
+    expect((by(SF) as unknown as { checked_at: string | null }).checked_at).toBe('2026-10-20T15:48:00Z')
     expect(by(GOOGLE)).toMatchObject({ status: 'failing', status_word: 'Check failing' })
     // The Slack alert login is not an ops connection: ops gives it no health, and its status is Slack's own answer (below).
     expect(by(ALERTS)).toMatchObject({ status: 'ok', status_word: 'Working', health: null })
@@ -412,7 +414,7 @@ describe('GET /connections', () => {
 })
 
 describe('GET /connections: what the page draws each connection from (build PR 9)', () => {
-  type Shown = ListAnswer['connections'][number] & { service_name: string; alert_login: boolean; org: string | null; workflows: Array<{ id: string; name: string; deleted: boolean }> }
+  type Shown = ListAnswer['connections'][number] & { service_name: string; alert_login: boolean; org: string | null; checked_at: string | null; workflows: Array<{ id: string; name: string; deleted: boolean }> }
   const shown = async (env: Env) => {
     const res = await request(app, 'GET', '/connections', env)
     const raw = await res.text()
@@ -466,7 +468,7 @@ describe('GET /connections: what the page draws each connection from (build PR 9
       forgetSlackAlertStatusMemory()
       const { env } = makeEnv({}, kv)
       const body = await shown(env)
-      expect(body.connections.find((c) => c.id === ALERTS)!).toMatchObject({ status: 'reauth', status_word: 'Needs reconnecting', acts_as: 'bidspoke_alerts in Pennie' })
+      expect(body.connections.find((c) => c.id === ALERTS)!).toMatchObject({ status: 'reauth', status_word: 'Needs reconnecting', acts_as: 'bidspoke_alerts in Pennie', checked_at: new Date(at).toISOString() })
       expect(body.statuses).toMatchObject({ stale: true, as_of: new Date(at).toISOString(), unavailable: { cause: 'slack_unanswered' } })
     })
 

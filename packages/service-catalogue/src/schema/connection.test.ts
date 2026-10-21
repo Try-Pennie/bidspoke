@@ -9,6 +9,7 @@ import {
   connectionFormLabels,
   connectionParts,
   connectionProblems,
+  connectionSecretLabel,
   loginFieldNames,
   targetFieldNames,
   type ServiceSchema,
@@ -169,5 +170,13 @@ describe('connectionParts: the login and target a form makes', () => {
   it('leaves an optional field out when it is blank, and keeps the value exactly as given otherwise', () => {
     const parts = connectionParts(service('snowflake').connection, { account: 'ab1.us-east-1', user: 'OPS', private_key: 'PEM\n', warehouse: '', role: 'R' })
     expect(parts).toEqual({ ok: true, login: { private_key: 'PEM\n' }, target: { account: 'ab1.us-east-1', user: 'OPS', role: 'R' } })
+  })
+})
+
+describe('connectionSecretLabel (#2338)', () => {
+  it("words each service's secret as its sentences name it, and a service with none as its login", () => {
+    expect(connectionSecretLabel(service('salesforce').connection)).toBe('client secret')
+    expect(connectionSecretLabel(service('snowflake').connection)).toBe('private key')
+    expect(connectionSecretLabel({ tile: 't', auth: 'static_key', fields: [{ key: 'host', label: 'Host', input: 'text', required: true, target: 'host' }] })).toBe('login')
   })
 })
