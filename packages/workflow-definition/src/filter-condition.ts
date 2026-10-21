@@ -16,7 +16,7 @@ import { CONDITION_OPERATORS, CONDITION_OPERATOR_SPECS } from './condition-opera
 
 // The card names an operator in the rule builder dropdown's own words, one
 // vocabulary for both (Dan, 2026-10-21, docs/design/lead-validation-node.html
-// D3), so the labels are CONDITION_OPERATOR_SPECS' and never a copy. A Map, not a
+// D9 and D10), so the labels are CONDITION_OPERATOR_SPECS' and never a copy. A Map, not a
 // plain object, because the operator comes from stored config: a bracket lookup
 // on an object finds inherited members like `constructor` or `toString` for those
 // keys and returns a truthy value, so the summary would show one instead of no

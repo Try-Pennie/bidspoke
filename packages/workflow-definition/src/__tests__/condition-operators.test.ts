@@ -14,8 +14,8 @@ import {
 
 // #2588: the one list of condition operators both apps read. Both apps'
 // EdgeCondition types and the worker's switch derive from it, and the derived
-// dropdown views below are what the canvas moves onto in #2588's second half, so
-// these tests pin the list itself and what each derived view may contain.
+// dropdown views below are what the canvas reads (the rule builder, the simple
+// Filter condition and the Filter card's summary), so these tests pin the list itself and what each derived view may contain.
 
 describe('CONDITION_OPERATORS', () => {
   it('holds every operator the engine evaluated before #2588, plus the two the validation scripts need', () => {
@@ -62,7 +62,7 @@ describe('derived operator views', () => {
   })
 
   it('names the two lead validation operators as Dan settled them (#2590, design round 4)', () => {
-    // docs/design/lead-validation-node.html, decision D4: worded like the existing
+    // docs/design/lead-validation-node.html, decision D11: worded like the existing
     // choices (contains, is null), so the dropdown reads as one family.
     expect(CONDITION_OPERATOR_SPECS.has_letter.label).toBe('contains a letter')
     expect(CONDITION_OPERATOR_SPECS.has_letter.words).toBe('contains a letter')

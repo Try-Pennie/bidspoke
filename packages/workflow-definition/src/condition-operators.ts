@@ -18,7 +18,7 @@
  *   (filter-condition.ts) all read them, and hold no copy of their own.
  *   A label is one vocabulary: the rule builder dropdown and every condition
  *   summary show the same words (Dan, 2026-10-21, settled in
- *   docs/design/lead-validation-node.html, decisions D3 and D4).
+ *   docs/design/lead-validation-node.html, decisions D9 to D11).
  *
  * Every live definition stores one of these spellings, so an operator is never
  * renamed or removed, only added.
