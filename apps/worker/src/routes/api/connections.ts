@@ -5,14 +5,14 @@
 //      with who it acts as, its person bound owner, its status and how many
 //      workflows use it
 // POST /api/connections/:id/lookup/:key  one lookup through OpsConnections.lookup
-// POST /api/connections                  refused: connections_moving, 410 (#2331),
-//      until the create route (build PR 5)
+// POST /api/connections                  adds a connection: seal, verify, then
+//      insert (build PR 5; R13, R14, #2556), described above its handler
 //
 // Who may call these: any signed in user of the organization (jwtAuth). Whose
 // data: only the caller's organization's rows, scoped by organization_id from
 // the verified token in every query, and every ops call names that
 // organization alone, which ops scopes again (ops-connections-contract.ts).
-// Neither route writes a row, so neither writes an audit row.
+// The list and the lookup write no row, so neither writes an audit row.
 //
 // Retired here: DELETE /:service_type and POST /:service_type/sync-schema,
 // which acted on a legacy row (a Cloudflare secret login) found by service type
@@ -22,13 +22,23 @@
 // requests. The canvas schema browser that called sync-schema went with them.
 
 import { Hono, type Context } from 'hono'
-import { CONNECTION_STATUS_WORDS, type ConnectionPageStatus } from '@bidspoke/service-catalogue/schema'
+import { CURRENT_OPS_KID, OPS_CONNECTION_PUBLIC_KEYS, seal, SealError, type SealedEnvelope } from '@bidspoke/connection-seal'
+import { CATALOGUE, CONNECTION_STATUS_WORDS, connectionParts, type ConnectionPageStatus } from '@bidspoke/service-catalogue/schema'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { formatErr } from '../../lib/format-error'
 import { mapWithConcurrency } from '../../lib/timeout-audit'
-import { callOpsConnections, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
+import { resolveSalesforceCredsFor } from '../../lib/salesforce-creds'
+import { moneyTargetIn, readMoneyTargets } from '../../lib/connection-money-targets'
+import {
+  createRefusalSentence, isCreateRefusalCode, type CreateRefusalCode, type CreateRouteRefusalCode, type RefusalContext, type VerifyRefusalCode,
+} from '../../lib/connection-create-refusals'
+import {
+  actsAsOf, AUTH_TYPE_OF, connectionNameOf, CREATE_BODY_MAX_BYTES, declaredBodyTooLarge, declaredService, isReservedName, orgHostOf, readCreateBody,
+  secretLabelOf, unlistedGoogleSubjects,
+} from '../../lib/connection-create'
+import { callOpsConnections, callOpsDelegation, isOpsConnectionsUnavailable, OPS_CONNECTIONS_UNAVAILABLE_STATUS } from '../../lib/ops-connections-client'
 import { OpsConnectionsContractError, parseLookupRequest, type HealthRow, type OpsConnectionsRefusalCode } from '../../lib/ops-connections-contract'
 import { pageStatusOf, readConnectionStatuses, rememberConnectionStatuses } from '../../lib/connection-statuses'
 
@@ -207,16 +217,208 @@ connections.get('/', async (c) => {
   return c.json({ connections: rows, statuses: { as_of: asOf, stale, unavailable } })
 })
 
-// POST /api/connections: refused (#2331, phase 1a). It stored the credentials
-// as a CONN_ secret on the bidding Worker, and every secret put creates and
-// deploys a new version of that Worker. The sealed create of build PR 5
-// replaces it. Refused before the body or the table is read.
-const CONNECTIONS_MOVING_MESSAGE =
-  'Salesforce, Supabase and Snowflake connections can no longer be saved here while they move to sealed connections.'
+/** How each of the route's own refusals is answered. Every verify refusal is a 422 unless VERIFY_STATUS says otherwise. */
+const CREATE_STATUS: Readonly<Record<CreateRouteRefusalCode, 400 | 409 | 422 | 500 | 502 | 503 | 504>> = {
+  connection_request_invalid: 400,
+  connection_service_undeclared: 422,
+  connection_name_missing: 422,
+  connection_name_invalid: 422,
+  connection_fields_missing: 422,
+  connection_fields_undeclared: 422,
+  connection_name_reserved: 409,
+  connection_name_taken: 409,
+  connection_money_identity: 422,
+  connection_money_targets_unreadable: 503,
+  google_subject_not_listed: 422,
+  google_list_unavailable: 503,
+  connection_seal_failed: 500,
+  connections_unavailable: 503,
+  connection_store_failed: 503,
+  verify_timed_out: 504,
+  verify_refused_unknown: 502,
+}
 
-connections.post('/', (c) =>
-  c.json({ error: 'connections_moving', message: CONNECTIONS_MOVING_MESSAGE }, 410),
-)
+const VERIFY_STATUS: Partial<Record<VerifyRefusalCode, 503 | 504>> = {
+  ops_connections_unavailable: 503,
+  ops_connections_timeout: 504,
+}
+
+/** The columns the create answers with: never credential_enc or config. */
+const CREATED_COLUMNS = 'id, name, service_type, acts_as, target, created_at'
+
+// POST /api/connections   body { service, name, fields: { <field key>: <value> } }
+//   201 { connection: { id, name, service, acts_as, target, created_at } }
+//   otherwise { error, message, ... }: the code, and the sentence the page
+//   shows (lib/connection-create-refusals.ts), with the names it is about
+//
+// In order, each refusal at the first step that can answer it (L667):
+//   1. the body, and a service the catalogue declares: the database accepts
+//      any well formed key (20261020200000), so this is where a service must
+//      be declared
+//   2. the name, and the login and target built by the catalogue's
+//      connectionParts, the one builder the ops minters are tested against
+//   3. a reserved name, then a name taken in the organization (a read that
+//      answers early; the table's unique decides, at step 7)
+//   4. a money identity in the target (lib/connection-money-targets.ts)
+//   5. for a Google delegation login, a mailbox or drive not on the
+//      organization's list
+//   6. the login sealed to the ops key under a fresh uuid, and verify asked
+//      with that envelope, generation 1 and the target (ciphertext and the
+//      public half only)
+//   7. only when verify passes, ONE plain INSERT, never an upsert, carrying who
+//      verify measured the login acts as. A concurrent save of the same name
+//      that verified too loses on the unique and is refused as taken, which is
+//      then true. A failed verify wrote nothing, so a retry under the same name
+//      is not refused as taken.
+//
+// Who may call it: any signed in user of the organization (jwtAuth). Whose
+// data: the caller's organization only, from the verified token; the body may
+// not name one. Every read and the insert are scoped to it, verify and the
+// Google list are asked for it alone, and the sealed envelope's AAD binds it,
+// so the login opens for no other.
+//
+// Audit: the store's trigger writes the insert's audit row under updated_by,
+// the caller (20261018191000), and connection_history reads it for the History
+// tab. The route writes none of its own, so a creation is recorded once. Its
+// changes hold no login: credential_enc is excluded by the trigger, and the
+// target and acts_as hold none.
+//
+// Not money facing: nothing here is reached from the engine, and the ops calls
+// go through lib/ops-connections-client.ts, which the money path never imports.
+connections.post('/', async (c) => {
+  const { orgId, userId, email } = c.get('user')
+  const catalogue = CATALOGUE
+
+  const refuse = (code: CreateRefusalCode, ctx: Partial<RefusalContext> & { service: string }, extra: Record<string, unknown> = {}) => {
+    const context: RefusalContext = { secret: 'login', org: null, names: [], money: null, ...ctx }
+    console.warn(JSON.stringify({ event: 'connection_create_refused', code, organization_id: orgId, service: ctx.service }))
+    const status = (CREATE_STATUS as Partial<Record<CreateRefusalCode, number>>)[code] ?? (VERIFY_STATUS as Partial<Record<CreateRefusalCode, number>>)[code] ?? 422
+    return c.json({ error: code, message: createRefusalSentence(code, context), ...extra }, status as 400)
+  }
+
+  // 1. The body and the service.
+  if (declaredBodyTooLarge(c.req.header('content-length'))) {
+    return refuse('connection_request_invalid', { service: 'the service' }, { detail: `the body is over ${CREATE_BODY_MAX_BYTES} bytes` })
+  }
+  const body = readCreateBody(await c.req.text())
+  if (!body.ok) return refuse('connection_request_invalid', { service: 'the service' }, { detail: body.problem })
+  const service = declaredService(catalogue, body.service)
+  if (!service) return refuse('connection_service_undeclared', { service: /^[a-z][a-z0-9_]{0,63}$/.test(body.service) ? body.service : 'that service' })
+  const words: Pick<RefusalContext, 'service' | 'secret'> = { service: service.name, secret: secretLabelOf(service) }
+
+  // 2. The name, the login and the target.
+  const named = connectionNameOf(body.name)
+  if (!named.ok) return refuse(named.code, words)
+  const parts = connectionParts(service.connection, body.fields)
+  if (!parts.ok) {
+    const labelOf = (key: string) => service.connection.fields.find((f) => f.key === key)?.label ?? key
+    if (parts.unknown.length > 0) return refuse('connection_fields_undeclared', { ...words, names: parts.unknown }, { fields: parts.unknown })
+    return refuse('connection_fields_missing', { ...words, names: parts.missing.map(labelOf) }, { fields: parts.missing })
+  }
+  const { login, target } = parts
+  const org = orgHostOf(target)
+
+  // 3. Reserved, then taken (read early; the unique decides at the insert).
+  if (isReservedName(service.key, named.name)) return refuse('connection_name_reserved', words)
+  const supabase = createSupabaseClient(c.env)
+  const { data: existing, error: existingError } = await supabase
+    .from('service_connections')
+    .select('id')
+    .eq('organization_id', orgId)
+    .eq('service_type', service.key)
+    .eq('name', named.name)
+    .maybeSingle()
+  if (existingError) {
+    console.error(JSON.stringify({ event: 'connection_create_name_read_failed', organization_id: orgId, error: formatErr(existingError) }))
+    return refuse('connections_unavailable', words)
+  }
+  if (existing) return refuse('connection_name_taken', words)
+
+  // 4. Money identities, read by name now, never printed.
+  const money = await readMoneyTargets(c.env as unknown as Record<string, unknown>, orgId, (organizationId) => resolveSalesforceCredsFor(c.env, supabase, organizationId))
+  if (!money.ok) {
+    console.error(JSON.stringify({ event: 'connection_money_targets_unreadable', organization_id: orgId, detail: money.detail }))
+    return refuse('connection_money_targets_unreadable', words)
+  }
+  const found = moneyTargetIn(target, money.targets)
+  if (found) return refuse('connection_money_identity', { ...words, money: found.kind }, { money: found.kind, matched: found.source })
+
+  // 5. A Google delegation login names only mailboxes and drives on the organization's list (F129).
+  if (service.connection.auth === 'service_account_delegation') {
+    const list = await callOpsDelegation(c.env, 'listDelegationSubjects', { organization_id: orgId })
+    if (!list.ok) {
+      console.error(JSON.stringify({ event: 'connection_google_list_unavailable', organization_id: orgId, refused: list.refused }))
+      return refuse('google_list_unavailable', words)
+    }
+    const unlisted = unlistedGoogleSubjects(target, list.subjects)
+    if (unlisted.length > 0) return refuse('google_subject_not_listed', { ...words, names: unlisted }, { subjects: unlisted })
+  }
+
+  // 6. Seal under a fresh uuid, and verify.
+  const connectionId = crypto.randomUUID()
+  const generation = 1
+  const kid = CURRENT_OPS_KID
+  let envelope: SealedEnvelope
+  try {
+    if (kid === null) throw new Error('no current ops kid is committed')
+    envelope = await seal(OPS_CONNECTION_PUBLIC_KEYS, JSON.stringify(login), {
+      organization_id: orgId, connection_id: connectionId, service: service.key, generation, kid,
+    })
+  } catch (err) {
+    // A SealError's code names the cause; its message names no key material. Nothing of the login.
+    console.error(JSON.stringify({ event: 'connection_seal_failed', organization_id: orgId, error: err instanceof SealError ? err.code : err instanceof Error ? err.name : 'error' }))
+    return refuse('connection_seal_failed', words)
+  }
+
+  const answer = await callOpsConnections(c.env, 'verify', {
+    organization_id: orgId,
+    connection_id: connectionId,
+    candidate: { service: service.key, generation, envelope, target, public_config: {} },
+  })
+  if (!answer.ok) {
+    if (isOpsConnectionsUnavailable(answer)) {
+      if (answer.cause === 'deadline') return refuse('verify_timed_out', { ...words, org })
+      return refuse('ops_connections_unavailable', { ...words, org }, { detail: answer.detail })
+    }
+    const code: CreateRefusalCode = isCreateRefusalCode(answer.refused) ? answer.refused : 'verify_refused_unknown'
+    // The detail is built from names on ops (finding F120).
+    return refuse(code, { ...words, org }, { detail: answer.detail, retry_at: answer.retry_at })
+  }
+
+  // 7. The one insert.
+  const { data: created, error: insertError } = await supabase
+    .from('service_connections')
+    .insert({
+      id: connectionId,
+      organization_id: orgId,
+      service_type: service.key,
+      name: named.name,
+      auth_type: AUTH_TYPE_OF[service.connection.auth],
+      sealed_for: 'ops_key',
+      credential_enc: JSON.stringify(envelope),
+      credential_generation: generation,
+      target,
+      acts_as: actsAsOf(answer.identity),
+      person_bound: false,
+      user_id: null,
+      cf_secret_key: null,
+      updated_by: userId,
+      updated_by_email: email,
+    })
+    .select(CREATED_COLUMNS)
+    .single()
+  if (insertError) {
+    if (insertError.code === '23505') return refuse('connection_name_taken', words)
+    if (insertError.code === '23514' && /alert_name_reserved/.test(insertError.message)) return refuse('connection_name_reserved', words)
+    console.error(JSON.stringify({ event: 'connection_create_insert_failed', organization_id: orgId, connection_id: connectionId, error: formatErr(insertError) }))
+    return refuse('connection_store_failed', words)
+  }
+  const row = created as { id: string; name: string; service_type: string; acts_as: string | null; target: unknown; created_at: string }
+  console.log(JSON.stringify({ event: 'connection_created', organization_id: orgId, connection_id: row.id, service: row.service_type }))
+  return c.json({
+    connection: { id: row.id, name: row.name, service: row.service_type, acts_as: row.acts_as, target: row.target ?? null, created_at: row.created_at },
+  }, 201)
+})
 
 /** The HTTP status a lookup refusal answers with; any other is the service's or ops's refusal, a 502. */
 const LOOKUP_REFUSAL_STATUS: Partial<Record<OpsConnectionsRefusalCode, 400 | 422 | 429 | 504>> = {

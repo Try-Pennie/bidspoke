@@ -89,8 +89,9 @@ describe('every writer of service_connections sends a name (#2332 release 2)', (
     expect(workerWrites.filter((w) => !sendsName(w)).map((w) => `${w.file}:${w.line} ${w.op}`)).toEqual([])
   })
 
-  it('finds the Slack save, so an empty offender list is a measurement (L1)', () => {
-    expect(workerWrites.map((w) => `${w.file} ${w.op}`)).toEqual(['routes/api/integrations.ts upsert'])
+  it('finds the Slack save and the connection create, so an empty offender list is a measurement (L1)', () => {
+    // The create (#2338, build PR 5) is a plain insert of an ops_key row, never an upsert.
+    expect(workerWrites.map((w) => `${w.file} ${w.op}`)).toEqual(['routes/api/connections.ts insert', 'routes/api/integrations.ts upsert'])
   })
 
   it('no database function inserts into the table, so no writer is hidden behind an rpc', () => {

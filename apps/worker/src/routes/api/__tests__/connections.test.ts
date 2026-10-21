@@ -4,8 +4,9 @@
  * GET /connections lists the caller's organization's connections with their
  * status from OpsConnections.health, the last known statuses when health does
  * not answer, and how many workflows use each. POST /connections/:id/lookup/:key
- * runs one lookup through OpsConnections.lookup. POST /connections still refuses
- * as connections_moving (#2331), and the legacy service type routes are gone.
+ * runs one lookup through OpsConnections.lookup. POST /connections, the create,
+ * is connections-create.test.ts's (build PR 5); here only its refusal of the
+ * old #2331 body. The legacy service type routes are gone.
  *
  * The database double here applies the filters a route sends (eq, in, is), so
  * an organization scope left out of a query shows as another organization's
@@ -458,18 +459,21 @@ describe('POST /connections/:id/lookup/:key', () => {
   })
 })
 
-// #2331 phase 1a: each CONN_ secret this route put deployed a new version of
-// the bidding Worker, so it refuses by name before reading the body or the table.
-describe('POST /connections refuses: connections are moving (#2331)', () => {
-  it('answers 410 connections_moving and reads no table', async () => {
+// #2331 phase 1a: the old body put a CONN_ secret, and each put deployed a new
+// version of the bidding Worker. The sealed create (build PR 5,
+// connections-create.test.ts) reads no such body: it is refused by name before
+// any table is read.
+describe('POST /connections refuses the old service_type and credentials body (#2331)', () => {
+  it('answers connection_request_invalid and reads no table', async () => {
     const db = storeDouble(ROWS)
     const from = vi.spyOn(db, 'from')
     vi.mocked(createSupabaseClient).mockReturnValue(db as never)
-    const { env } = makeEnv({})
+    const { env, binding } = makeEnv({})
     const res = await request(app, 'POST', '/connections', env, { service_type: 'salesforce', credentials: { access_token: 'tok' } })
-    expect(res.status).toBe(410)
-    expect(await res.json()).toMatchObject({ error: 'connections_moving' })
+    expect(res.status).toBe(400)
+    expect(await res.json()).toMatchObject({ error: 'connection_request_invalid' })
     expect(from).not.toHaveBeenCalled()
+    expect(binding.verify).not.toHaveBeenCalled()
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 })
