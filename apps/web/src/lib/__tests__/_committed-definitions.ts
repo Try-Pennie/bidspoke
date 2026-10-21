@@ -55,28 +55,45 @@ export function definitionsIn(value: unknown, file: string): CommittedDefinition
   return found
 }
 
-let cache: CommittedDefinition[] | null = null
+interface Scan {
+  definitions: CommittedDefinition[]
+  /** Files naming "nodes" that did not parse, so were not scanned. */
+  unparsed: string[]
+}
 
-export function committedDefinitions(): CommittedDefinition[] {
+let cache: Scan | null = null
+
+function scan(): Scan {
   if (cache) return cache
-  const out: CommittedDefinition[] = []
+  const definitions: CommittedDefinition[] = []
+  const unparsed: string[] = []
   for (const root of ROOTS) {
     const dir = path.join(REPO_ROOT, root)
     for (const full of listFiles(dir, { exts: ['.json'], skipDirs: SKIP_DIRS, includeTests: true })) {
       const text = readFileSync(full, 'utf8')
       // Cheap pre-filter: a file with no "nodes" key holds no definition.
       if (!text.includes('"nodes"')) continue
+      const file = path.relative(REPO_ROOT, full).replace(/\\/g, '/')
       let parsed: unknown
       try {
         parsed = JSON.parse(text)
       } catch {
-        // A JSON file that does not parse is not a definition anything loads;
-        // tsconfig-style files with comments land here.
+        // Recorded, never skipped quietly: the guards assert this list is empty,
+        // so a definition that cannot be read fails them instead of passing unseen.
+        unparsed.push(file)
         continue
       }
-      out.push(...definitionsIn(parsed, path.relative(REPO_ROOT, full).replace(/\\/g, '/')))
+      definitions.push(...definitionsIn(parsed, file))
     }
   }
-  cache = out
-  return out
+  cache = { definitions, unparsed }
+  return cache
+}
+
+export function committedDefinitions(): CommittedDefinition[] {
+  return scan().definitions
+}
+
+export function unparsedDefinitionFiles(): string[] {
+  return scan().unparsed
 }

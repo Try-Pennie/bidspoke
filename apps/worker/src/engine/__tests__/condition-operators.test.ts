@@ -87,7 +87,7 @@ describe('not_blank', () => {
 })
 
 describe('numeric operators resolve a reference on the value side', () => {
-  const steps = { constants: { maximumLoanAmount: 5000, asText: '5000', blank: '' } }
+  const steps = { constants: { maximumLoanAmount: 5000, asText: '5000', blank: '', spaces: '  ', unset: null, flag: true } }
 
   it('reads a steps. reference, as in_array already does', () => {
     const c = (amount: unknown) => ctx({ x: amount }, steps)
@@ -110,10 +110,19 @@ describe('numeric operators resolve a reference on the value side', () => {
     expect(check('gte', 1, 'steps.absent.output.n', ctx({ x: 1 }, steps))).toBe(false)
   })
 
-  it('keeps the blank-as-zero reading a resolved empty string gets from Number()', () => {
-    // Number('') is 0, the evaluator's existing rule for a blank operand; the
-    // validation node will not rely on it (it evaluates missing data itself).
-    expect(check('gte', 0, 'steps.constants.output.blank', ctx({ x: 0 }, steps))).toBe(true)
+  it('is false, in every direction, when the reference resolves to null, blank or a non-number', () => {
+    // Number(null), Number('') and Number(true) are 0, 0 and 1, so without this
+    // an unset Constants floor would read as a limit of 0 and `gte` would pass
+    // every lead. A limit that is not a number is no limit, exactly as a missing
+    // one is. (A literal value keeps the evaluator's older reading.)
+    for (const ref of ['blank', 'spaces', 'unset', 'flag']) {
+      for (const op of ['gt', 'gte', 'lt', 'lte'] as const) {
+        for (const amount of [-1, 0, 1, 5000]) {
+          expect({ ref, op, amount, v: check(op, amount, `steps.constants.output.${ref}`, ctx({ x: amount }, steps)) })
+            .toEqual({ ref, op, amount, v: false })
+        }
+      }
+    }
   })
 
   it('compares literals exactly as before', () => {

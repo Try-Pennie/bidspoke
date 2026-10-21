@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { isConditionValueReference } from '@bidspoke/workflow-definition'
-import { committedDefinitions, definitionsIn, type CommittedDefinition } from './_committed-definitions'
+import { committedDefinitions, definitionsIn, unparsedDefinitionFiles, type CommittedDefinition } from './_committed-definitions'
 
 /**
  * #2588 taught gt, gte, lt and lte to resolve a `steps.`, `trigger.` or `env.`
@@ -53,6 +53,12 @@ describe('numeric conditions in committed definitions hold literal values (#2588
       expect([...files].some((f) => f.includes(`money-gate/fixtures/definitions/${id}`)), id).toBe(true)
     }
     expect(conditions.length, 'no numeric conditions found in any committed definition').toBeGreaterThan(0)
+  })
+
+  it('every committed JSON file naming "nodes" parsed, so none was skipped unread', () => {
+    // A file that fails to parse is not scanned, and skipping it quietly would
+    // let a definition with a reference value pass unseen.
+    expect(unparsedDefinitionFiles()).toEqual([])
   })
 
   it('no numeric condition has a value that now resolves as a reference', () => {

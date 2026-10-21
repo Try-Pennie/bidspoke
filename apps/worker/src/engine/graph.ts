@@ -154,10 +154,10 @@ function evaluateCondition(
     // does (#2588), so a limit can live in Constants. No committed or live
     // definition held a reference-looking numeric value when this shipped; the
     // web guard numeric-condition-values-are-literals keeps that measured.
-    case 'gt':       return numericCompare(actual, resolveValueOrLiteral(condition.value, ctx), (a, b) => a > b)
-    case 'gte':      return numericCompare(actual, resolveValueOrLiteral(condition.value, ctx), (a, b) => a >= b)
-    case 'lt':       return numericCompare(actual, resolveValueOrLiteral(condition.value, ctx), (a, b) => a < b)
-    case 'lte':      return numericCompare(actual, resolveValueOrLiteral(condition.value, ctx), (a, b) => a <= b)
+    case 'gt':       return numericCompare(actual, numericLimit(condition.value, ctx), (a, b) => a > b)
+    case 'gte':      return numericCompare(actual, numericLimit(condition.value, ctx), (a, b) => a >= b)
+    case 'lt':       return numericCompare(actual, numericLimit(condition.value, ctx), (a, b) => a < b)
+    case 'lte':      return numericCompare(actual, numericLimit(condition.value, ctx), (a, b) => a <= b)
     case 'contains': return String(actual).includes(String(condition.value))
     case 'not_contains': return !String(actual).includes(String(condition.value))
     case 'is_true':  return actual === true
@@ -188,6 +188,20 @@ function evaluateCondition(
 // trigger., env.); otherwise returns the value unchanged so literals still work.
 function resolveValueOrLiteral(value: unknown, ctx: ExecutionContext): unknown {
   return isConditionValueReference(value) ? resolveField(value, ctx) : value
+}
+
+// The limit side of gt/gte/lt/lte. A literal passes through unchanged, keeping
+// the evaluator's older reading of it. A reference must resolve to a number or
+// to a non-blank string; anything else (missing, null, '', a boolean, an object)
+// is NaN, so the comparison is false in every direction. Without this, Number()
+// reads null and '' as 0 and true as 1, and an unset floor in Constants would
+// let `gte` pass every lead (#2588).
+function numericLimit(value: unknown, ctx: ExecutionContext): unknown {
+  if (!isConditionValueReference(value)) return value
+  const resolved = resolveField(value, ctx)
+  if (typeof resolved === 'number') return resolved
+  if (typeof resolved === 'string' && resolved.trim() !== '') return resolved
+  return NaN
 }
 
 export function resolveField(field: string, ctx: ExecutionContext): unknown {
