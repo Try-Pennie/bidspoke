@@ -43,7 +43,6 @@ const NODE_H: Record<NodeType | 'trigger' | 'default', number> = {
   buyer_select:   STANDARD_NODE_H,
   buyer_click_send: STANDARD_NODE_H,
   buyer_click_check: STANDARD_NODE_H,
-  // No card of its own until phase 3 (#2590): standard height meanwhile.
   lead_validation: STANDARD_NODE_H,
   default:        STANDARD_NODE_H,
 }

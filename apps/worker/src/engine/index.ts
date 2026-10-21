@@ -2698,6 +2698,15 @@ function deriveStepSubtype(node: NodeDefinition): string | undefined {
   return undefined
 }
 
+/**
+ * The failure of a step other than Code that ends the run inside a parallel
+ * block, where the run cannot end while the other slots run (#2590). Named by
+ * the step's own type and step id, never as a Code node.
+ */
+export function parallelChildExitMessage(node: Pick<NodeDefinition, 'type' | 'namespace'>): string {
+  return `The ${node.type.replace(/_/g, ' ')} step ${node.namespace} ended the run inside a parallel block, which cannot end it while the other slots run. Move it before the parallel block.`
+}
+
 // Execute a single child node within a parallel group — simplified version of
 // the main walkGraph step loop: retries + logging, but no on_error branching
 // (parallel children always contribute their result, fulfilled or rejected).
@@ -2786,10 +2795,18 @@ export async function runParallelChild(
       if (result.earlyResponse) {
         const r = result.earlyResponse
         const bodyStr = typeof r.body === 'string' ? r.body : JSON.stringify(r.body)
+        // Named by the step's own type (#2590): a lead validation step answers
+        // too, and reading as a Code node sent people looking for a script.
+        if (node.type !== 'code') {
+          const body = bodyStr.length > 300 ? `${bodyStr.slice(0, 300)}...` : bodyStr
+          throw new Error(`The ${node.type.replace(/_/g, ' ')} step ${node.namespace} answered the lead inside a parallel block (status ${r.status}), which cannot answer it while the other slots run. Move it before the parallel block. Body: ${body}`)
+        }
         const preview = bodyStr.length > 300 ? bodyStr.slice(0, 300) + '…' : bodyStr
         throw new Error(`Code returned a respond sentinel (status ${r.status}). Inside a parallel block, respond-and-exit is not meaningful — throw an error instead. Body: ${preview}`)
       }
       if (result.earlyExit) {
+        // Named by the step's own type (#2590): a Salesforce step ends a run too.
+        if (node.type !== 'code') throw new Error(parallelChildExitMessage(node))
         throw new Error('Code returned an exit sentinel inside a parallel block. Early-exit is not supported for parallel children — throw an error instead.')
       }
     } catch (err) {

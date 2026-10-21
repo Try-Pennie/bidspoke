@@ -239,13 +239,56 @@ describe('PUT /workflows/:id', () => {
         on_missing: 'reject',
       }],
     })
+    // A live workflow: a half built step blocks only a live save (#2590).
+    const liveWorkflow = { ...existingWorkflow, is_active: true }
     const refused = async (validationConfig: Record<string, unknown>) => {
       vi.mocked(createSupabaseClient).mockReturnValue(
-        makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow } }) as unknown as ReturnType<typeof createSupabaseClient>
+        makeSupabase({ users: { single: testUser }, workflows: { single: liveWorkflow } }) as unknown as ReturnType<typeof createSupabaseClient>
       )
       const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: validationDefinition(validationConfig) } })
       return { status: res.status, error: (await res.json() as { error?: string }).error }
     }
+    const savingSb = (workflow: Record<string, unknown>) => makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: workflow }, { single: workflow }],
+      workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
+    })
+
+    // #2590, Dan's decision: like every other unconfigured step, a half built
+    // check blocks only a live workflow, so a switched off draft can be saved
+    // while it is being built.
+    it('saves a half built step on a switched off workflow', async () => {
+      const sb = savingSb(existingWorkflow)
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: validationDefinition({ lead_id_field: '', checks: [] }) } })
+      expect(res.status).toBe(200)
+    })
+
+    // #2590, Dan's decision: a rejection inside a parallel block cannot answer
+    // the lead, so the placement is refused at every save, live or not.
+    it('refuses a step inside a parallel block, even on a switched off workflow', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(
+        makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow } }) as unknown as ReturnType<typeof createSupabaseClient>
+      )
+      const definition = {
+        nodes: [
+          { id: 'p', namespace: 'fan_out', type: 'parallel', config: {} },
+          { id: 'v', namespace: 'validate_bidding_and_state', type: 'lead_validation', config: goodConfig() },
+          { id: 'end', namespace: 'join', type: 'parallel_end', config: {} },
+        ],
+        edges: [
+          { id: 'e0', source: 'trigger', target: 'p' },
+          { id: 'e1', source: 'p', target: 'v', source_handle: 'child-0' },
+          { id: 'e2', source: 'v', target: 'end' },
+        ],
+        trigger: { type: 'http_webhook', config: {} },
+      }
+      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
+      expect(res.status).toBe(400)
+      expect((await res.json() as { error: string }).error).toBe(
+        'validate_bidding_and_state: A lead validation step cannot run inside a parallel block: a lead it rejects there cannot be answered. Move it before the parallel block.',
+      )
+    })
 
     it('refuses a step with no checks, naming it', async () => {
       expect(await refused({ lead_id_field: 'trigger.payload.leadUuid', checks: [] })).toEqual({ status: 400, error: 'validate_bidding_and_state: No checks set' })
@@ -270,15 +313,37 @@ describe('PUT /workflows/:id', () => {
     })
 
     it('saves a step whose every reference is sound', async () => {
+      vi.mocked(createSupabaseClient).mockReturnValue(savingSb(liveWorkflow) as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: validationDefinition(goodConfig()) } })
+      expect(res.status).toBe(200)
+    })
+
+    // Switching on and restoring onto a live workflow make a definition live
+    // without a save, so they ask the live rule too.
+    it('refuses to switch on a workflow whose stored step is half built, and switches nothing', async () => {
+      const sb = makeSupabase({
+        users: { single: testUser },
+        workflows: [{ single: { ...existingWorkflow, is_active: false, definition: validationDefinition({ lead_id_field: 'trigger.payload.leadUuid', checks: [] }) } }],
+      })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+      expect(res.status).toBe(400)
+      expect((await res.json() as { error: string }).error).toBe('validate_bidding_and_state: No checks set')
+      expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+    })
+
+    it('refuses to restore a half built step onto a live workflow', async () => {
       vi.mocked(createSupabaseClient).mockReturnValue(
         makeSupabase({
           users: { single: testUser },
-          workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
-          workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
+          workflows: [{ single: liveWorkflow }],
+          workflow_versions: [{ single: { id: 'ver-1', definition: validationDefinition({ lead_id_field: '', checks: [goodConfig().checks[0]] }), version_number: 1 } }],
         }) as unknown as ReturnType<typeof createSupabaseClient>
       )
-      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: validationDefinition(goodConfig()) } })
-      expect(res.status).toBe(200)
+      const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+      expect(res.status).toBe(400)
+      expect((await res.json() as { error: string }).error).toBe('validate_bidding_and_state: No lead id field set')
+      expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
     })
   })
 
@@ -1971,8 +2036,9 @@ describe('new and duplicated workflows start inactive (#1706)', () => {
     expect(activeFlagsInserted(sb)).toEqual([])
   })
 
-  // #2589: create holds a lead validation step to the save rule too.
-  it('POST refuses a lead validation step the save would refuse, and inserts nothing', async () => {
+  // #2590: a created workflow is switched off, so a half built lead validation
+  // step is saved, as it would be on a switched off workflow's save.
+  it('POST creates a workflow holding a half built lead validation step, switched off', async () => {
     const sb = makeSupabase({
       users: { single: testUser },
       workflows: { insertResult: { id: 'wf-new', name: 'New', is_active: false } },
@@ -1984,8 +2050,29 @@ describe('new and duplicated workflows start inactive (#1706)', () => {
       trigger: { type: 'http_webhook', config: {} },
     }
     const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition } })
+    expect(res.status).toBe(201)
+    expect(activeFlagsInserted(sb)).toEqual([false])
+  })
+
+  // #2590: the placement rule holds at create too, and nothing is inserted.
+  it('POST refuses a lead validation step inside a parallel block, and inserts nothing', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: { insertResult: { id: 'wf-new', name: 'New', is_active: false } },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const definition = {
+      nodes: [
+        { id: 'p', namespace: 'fan_out', type: 'parallel', config: {} },
+        { id: 'v', namespace: 'validate', type: 'lead_validation', config: {} },
+        { id: 'end', namespace: 'join', type: 'parallel_end', config: {} },
+      ],
+      edges: [{ id: 'e1', source: 'p', target: 'v', source_handle: 'child-0' }, { id: 'e2', source: 'v', target: 'end' }],
+      trigger: { type: 'http_webhook', config: {} },
+    }
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition } })
     expect(res.status).toBe(400)
-    expect((await res.json() as { error: string }).error).toBe('validate: No lead id field set')
+    expect((await res.json() as { error: string }).error).toMatch(/^validate: A lead validation step cannot run inside a parallel block/)
     expect(activeFlagsInserted(sb)).toEqual([])
   })
 
