@@ -46,6 +46,7 @@ import LIBERTY1_CLICK_PATCH from '../engine/scripts/liberty1-click/liberty1_clic
 import PICK_CLICK_RECORD from '../engine/scripts/liberty1-click/pick_click_record.js'
 import LEAD_ECONOMY_RETURN_RESPONSE from '../engine/scripts/lead-economy/return_response.js'
 import RML_LENDSWIFT_BUILD_RESPONSE from '../engine/scripts/rml-lendswift/build_response.js'
+import RML_LENDSWIFT_PING from '../engine/scripts/rml-lendswift/ping_lendswift.js'
 import RML_GIGFI_BUILD_RESPONSE from '../engine/scripts/rml-gigfi/build_response.js'
 import BIDDING_LENDSWIFT_BUILD_RESPONSE from '../engine/scripts/bidding-lendswift/build_response.js'
 import FORMS_SIGN_SUBMISSION_LINK from '../engine/scripts/forms-engine/sign_submission_link.js'
@@ -249,6 +250,15 @@ export const KEPT_LEAD_ECONOMY_SCRIPTS: readonly KeptScript[] = [
  */
 export const KEPT_RML_LENDSWIFT_SCRIPTS: readonly KeptScript[] = [
   { namespace: 'build_response', file: 'build_response.js', script: RML_LENDSWIFT_BUILD_RESPONSE, canvasBaselineSha256: null, baselineReadOn: null },
+  {
+    namespace: 'ping_lendswift',
+    file: 'ping_lendswift.js',
+    script: RML_LENDSWIFT_PING,
+    // Version 22's script, read from the live definition on 2026-10-21, before a
+    // LendSwift failure ended the lead as no bid (#2582); clear it once the paste reads as agree.
+    canvasBaselineSha256: '28f45ff6539c4192973daee58fd22d9566cd83149a9fd596b5bf34601dc0d061',
+    baselineReadOn: '2026-10-21',
+  },
 ]
 export const KEPT_RML_GIGFI_SCRIPTS: readonly KeptScript[] = [
   { namespace: 'build_response', file: 'build_response.js', script: RML_GIGFI_BUILD_RESPONSE, canvasBaselineSha256: null, baselineReadOn: null },
