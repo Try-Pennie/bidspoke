@@ -502,7 +502,8 @@ export function Outcome({ state }: { state: OutcomeState }) {
     }
     return (
       <p role="status" className="outcome outcome-working">
-        <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+        {/* Sized by the one .outcome svg rule in globals.css: as tall as the capitals, level with them (round 32). */}
+        <Loader2 className="animate-spin" aria-hidden="true" />
         {state.label}, {seconds} s
       </p>
     )

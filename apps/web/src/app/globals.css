@@ -481,6 +481,11 @@ html {
   .outcome {
     @apply inline-flex items-center gap-1.5 text-xs;
   }
+  /* A working line's spinner is as tall as the capital letters and level with
+     them (#2338 round 32, Dan 2026-10-21). The one rule that sizes it, for
+     every working line in the app; outcome-spinner-guard.test.ts refuses any
+     other. */
+  .outcome svg { width: 0.95em; height: 0.95em; flex: none; position: relative; top: -0.1em }
   .outcome-working {
     @apply text-gray-600;
   }
