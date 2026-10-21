@@ -26,6 +26,14 @@ Exactly what the validate scripts send through their response sentinel: HTTP 200
 
 The run ends there and records as completed. A lead id field that resolves to nothing is left out of the body, as the scripts left it out.
 
+A check with `include_request_id: true` also sends the run's trace id as `requestId`, last, after `reason` (#2594):
+
+```json
+{ "lead_id": "<the lead id field's value>", "status": "rejected", "reason": "<the check's reason>", "requestId": "<the run's trace id>" }
+```
+
+That is what Lead Economy's script sent on its `unqualified_lead` rejection, and only there; Dan decided on 2026-10-21 to keep sending it. The trace id is read where a code node's script reads `execution.trace_id`. It goes in the answer only, never in the step output or its logged input. The setting is off unless a check sets it, so the RML workflows answer without it. It is set in the config (the swap pastes it with the node); the settings panel draws no control for it but carries it through every edit, so a save from the panel keeps it.
+
 ## Config schema
 
 | Field | Type | Required | Description |
@@ -43,6 +51,7 @@ Each check:
 | `condition` | `{ groups: ConditionGroup[], logic: 'AND' \| 'OR' }` | What a lead that may go on looks like, as Branch stores a condition. |
 | `reason` | one of `LEAD_REJECTION_REASONS` | The reason sent with a rejection, spelled exactly as partners see it (`packages/workflow-definition/src/lead-rejection-reasons.ts`). |
 | `on_missing` | `'reject'` \| `'pass'` \| `'fail_run'` | What a lead the check cannot judge does (below). |
+| `include_request_id` | boolean, optional | When true, a rejection by this check also sends `requestId`, the run's trace id (above). Absent, null or false is off; anything else is refused. |
 
 A condition's `field` and any reference on its value side start with `trigger.`, `steps.` or `env.`. `steps.<namespace>.output.<field>` and `steps.<namespace>.<field>` read the same value. Number comparisons (`gt`, `gte`, `lt`, `lte`) and list comparisons (`in_array`, `not_in_array`) may name a value, such as a Constants key; the other operators compare against what is written.
 
@@ -85,7 +94,7 @@ A Lead Validation node inside a parallel block (a slot of a Parallel node, or an
 
 The rules below block only a write that makes a definition live, as every other unconfigured step does: a save of a switched on workflow, switching one on, and restoring a version onto a switched on workflow. A switched off draft with a half built check saves.
 
-A live save is refused when an attached Lead Validation node has: no checks; no lead id field; a check with no label, no id, or the id of another check; a group with no conditions; a condition with no field or no operator; an operator outside the shared list; an empty value on an operator that reads one; a literal that is not a number on a number comparison, or not a list on a list comparison; a reference on an operator that compares text; a reason outside the list; an `on_missing` outside the three; a header with no name or value; a reference to a step that does not run before the node; or a Constants key the Constants step does not hold. The rule is `findLeadValidationProblems` in `packages/workflow-definition/src/lead-validation.ts`; the canvas reads the same parser.
+A live save is refused when an attached Lead Validation node has: no checks; no lead id field; a check with no label, no id, or the id of another check; a group with no conditions; a condition with no field or no operator; an operator outside the shared list; an empty value on an operator that reads one; a literal that is not a number on a number comparison, or not a list on a list comparison; a reference on an operator that compares text; a reason outside the list; an `on_missing` outside the three; an `include_request_id` that is neither true nor false; a header with no name or value; a reference to a step that does not run before the node; or a Constants key the Constants step does not hold. The rule is `findLeadValidationProblems` in `packages/workflow-definition/src/lead-validation.ts`; the canvas reads the same parser.
 
 Partner values the Constants node adds from the database (`activeBidding`, `subAccountIdsMap`, `<Slug>ClickUrl` and the rest) are not in its own data, so a check cannot name them yet. A partner lookup check is its own issue.
 
@@ -96,6 +105,8 @@ Before a workflow's `validate_bidding_and_state` script is replaced, three instr
 1. **Script against node grid**, in CI (`apps/worker/money-gate/swap/__tests__/grid.test.ts`): the script from the committed money gate definition, refused unless its md5 is the pinned one, and the node, run side by side over a generated grid of synthetic leads (every reason, every field missing, null, blank or of the wrong kind, non-ASCII names, the amounts either side of each limit, and pairs of rejections for the order). Every difference the candidate does not accept fails, by arm and check; a defect seeded in each check, in both directions, must be named.
 2. **Money gate definition A/B mode**: `.github/scripts/money-gate-swap.sh <candidate> [<check>:<lenient|strict>]` replays the workflow's money gate fixtures through one engine with the committed definition and with the candidate in place, and compares response, outbound requests, writes, routes and the final node. See `apps/worker/money-gate/README.md`.
 3. **Real traffic replay**: `npx tsx scripts/lead-validation-replay.ts <candidate> [--hours 24] [--to <time>] [--seed <check>:<lenient|strict>] [--dev-vars <path>]` from `apps/worker`, read only, counts only (`apps/worker/money-gate/swap/real-traffic.ts`).
+
+The grid compares a rejection body as the JSON text the source reads, so the same keys in another order are a difference (`body key order`). The replay cannot: it reads the script's answer back from `execution_steps.output`, a jsonb column, which stores keys in its own order, so it compares keys and values only.
 
 ## See also
 

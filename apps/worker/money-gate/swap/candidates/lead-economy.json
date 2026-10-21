@@ -137,7 +137,8 @@
             ]
           },
           "reason": "unqualified_lead",
-          "on_missing": "reject"
+          "on_missing": "reject",
+          "include_request_id": true
         }
       ],
       "response_headers": {
@@ -150,15 +151,6 @@
     "minimumLoanAmount": 2000
   },
   "grid_accepted": [
-    {
-      "arm": "*",
-      "kind": "answer",
-      "check": "qualified",
-      "fields": [
-        "body.requestId"
-      ],
-      "reason": "The script's unqualified_lead answer also carries requestId, the run's trace id; the node answers lead_id, status and reason only. OPEN for Dan before the Lead Economy swap: confirm Lead Economy does not read requestId, or the node needs a way to send it."
-    },
     {
       "arm": "loanAmount=[limit]",
       "kind": "node_rejects",
@@ -190,24 +182,6 @@
       "check": "kv_state",
       "field": "kv_state.IDEMPOTENCY.answer-journal:*.sighting_finalize.reject_reason",
       "reason": "Intended by #934 (plan item 6, shipped in #2589): deriveRejectReason records a lead validation rejection on the sighting as lead_validation:<reason>, where a script rejection recorded none."
-    },
-    {
-      "workflow": "Lead Economy - Bidding Workflow",
-      "check": "response",
-      "field": "response.body.requestId",
-      "reason": "OPEN for Dan before the Lead Economy swap: the script's unqualified_lead answer carries requestId (the run's trace id) and the node answers lead_id, status and reason only. Confirm Lead Economy does not read requestId, or the node needs a way to send it."
-    },
-    {
-      "workflow": "Lead Economy - Bidding Workflow",
-      "check": "supabase_write",
-      "field": "update workflow_executions values.response_body.requestId",
-      "reason": "OPEN for Dan before the Lead Economy swap: the script's unqualified_lead answer carries requestId (the run's trace id) and the node answers lead_id, status and reason only. Confirm Lead Economy does not read requestId, or the node needs a way to send it."
-    },
-    {
-      "workflow": "Lead Economy - Bidding Workflow",
-      "check": "kv_state",
-      "field": "kv_state.IDEMPOTENCY.answer-journal:*.response_body.requestId",
-      "reason": "OPEN for Dan before the Lead Economy swap: the script's unqualified_lead answer carries requestId (the run's trace id) and the node answers lead_id, status and reason only. Confirm Lead Economy does not read requestId, or the node needs a way to send it."
     },
     {
       "workflow": "Lead Economy - Bidding Workflow",

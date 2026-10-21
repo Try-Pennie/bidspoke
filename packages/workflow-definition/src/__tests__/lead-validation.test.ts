@@ -166,6 +166,45 @@ describe('parseLeadValidationConfig: the shape a saved node must have', () => {
   })
 })
 
+describe('include_request_id: a check that also answers the run trace id as requestId (#2594)', () => {
+  const parsedCheck = (over: Record<string, unknown>) => {
+    const parsed = parseLeadValidationConfig(config({ checks: [{ ...stateCheck(), ...over }] }))
+    if (!parsed.ok) throw new Error(parsed.problems.join('; '))
+    return parsed.config.checks[0]
+  }
+
+  it('is off when a check does not set it, so a config saved before it answers as it did', () => {
+    expect(parsedCheck({})).not.toHaveProperty('include_request_id')
+    expect(parsedCheck({ include_request_id: false })).not.toHaveProperty('include_request_id')
+    expect(parsedCheck({ include_request_id: null })).not.toHaveProperty('include_request_id')
+  })
+
+  it('is kept on the check that turns it on, and on no other', () => {
+    const parsed = parseLeadValidationConfig(config({ checks: [stateCheck(), { ...stateCheck(), id: 'qualified', label: 'Qualified', reason: 'unqualified_lead', include_request_id: true }] }))
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(parsed.config.checks[0]).not.toHaveProperty('include_request_id')
+    expect(parsed.config.checks[1].include_request_id).toBe(true)
+  })
+
+  it('refuses anything but on or off, naming the check', () => {
+    for (const value of ['true', 1, 'yes', {}]) {
+      expect(leadValidationConfigProblem(config({ checks: [{ ...stateCheck(), include_request_id: value }] })), JSON.stringify(value)).toBe(
+        'Check "Eligible state": include_request_id is neither true nor false',
+      )
+    }
+  })
+
+  it('is accepted by the save check on a live workflow', () => {
+    const nodes = [
+      { id: 'c', type: 'constants', namespace: 'constants', config: { data: { states: ['NY'] } } },
+      { id: 'v', type: 'lead_validation', namespace: 'validate', label: 'Validate', config: config({ checks: [{ ...stateCheck(), include_request_id: true }] }) },
+    ]
+    const edges = [{ source: 'trigger', target: 'c' }, { source: 'c', target: 'v' }]
+    expect(findLeadValidationProblems(nodes, edges)).toEqual([])
+  })
+})
+
 describe('parseNodeReference', () => {
   it('reads a step reference with or without .output, as the condition resolver does', () => {
     expect(parseNodeReference('steps.constants.output.states')).toEqual({ root: 'steps', namespace: 'constants', key: 'states' })

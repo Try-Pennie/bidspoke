@@ -107,6 +107,38 @@ describe('a rejection answers exactly as the validate script does', () => {
   })
 })
 
+describe('include_request_id: the run trace id answered as requestId, as Lead Economy\'s script does (#2594)', () => {
+  // Lead Economy's script answers its unqualified_lead rejection as
+  // { lead_id, status, reason, requestId: execution.trace_id } and every other
+  // rejection without requestId. The source reads JSON text, so the key order is
+  // part of the answer and is compared as text here.
+  const QUALIFIED = check('qualified', 'unqualified_lead', [{ field: 'trigger.payload.loanInformation.loanAmount', operator: 'gte', value: 2000 }], { include_request_id: true })
+  const CHECKS = [...RML_CHECKS.slice(0, 2), QUALIFIED]
+
+  it('answers requestId last, after reason, on the check that turns it on', () => {
+    const { ctx } = makeCtx(lead({ loanInformation: { loanAmount: 1500 } }))
+    ctx.execution = { workflow_id: 'wf-1', trace_id: 'trace-abc', execution_id: 'e-1', bidspoke_link: '' }
+    const result = executeLeadValidationNode(node(CHECKS), ctx)
+    expect(JSON.stringify(result.earlyResponse?.body)).toBe('{"lead_id":"lead-1","status":"rejected","reason":"unqualified_lead","requestId":"trace-abc"}')
+  })
+
+  it('reads the trace id where a code node reads execution.trace_id, the trigger\'s when the run has no execution block', () => {
+    const { result } = run(CHECKS, lead({ loanInformation: { loanAmount: 1500 } }))
+    expect(result.earlyResponse?.body).toEqual({ lead_id: 'lead-1', status: 'rejected', reason: 'unqualified_lead', requestId: 't-1' })
+  })
+
+  it('leaves requestId off every check that does not turn it on', () => {
+    const { result } = run(CHECKS, lead({ personalInformation: { state: 'NY' } }))
+    expect(JSON.stringify(result.earlyResponse?.body)).toBe('{"lead_id":"lead-1","status":"rejected","reason":"ineligible state"}')
+  })
+
+  it('never records the trace id in the step output or its logged input', () => {
+    const { result } = run(CHECKS, lead({ loanInformation: { loanAmount: 1500 } }))
+    expect(result.output).toEqual({ valid: false, check_id: 'qualified', field: 'trigger.payload.loanInformation.loanAmount', reason: 'unqualified_lead' })
+    expect(JSON.stringify(result.resolvedInput)).not.toContain('t-1')
+  })
+})
+
 describe('order: the first check a lead does not pass names the reason', () => {
   it('rejects on the earlier check when two fail', () => {
     const { result } = run(RML_CHECKS, lead({ personalInformation: { state: 'NY' }, loanInformation: { loanAmount: 90000 } }))
