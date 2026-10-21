@@ -19,6 +19,9 @@ import { refusingServiceStubs } from './money-gate/lib/service-stubs'
  *   MONEY_GATE_SIDE         base or head, recorded in the transcript
  *   MONEY_GATE_DISPATCH_DELAY_MS  holds every code dispatch this long (default 0),
  *                           to prove a replay does not depend on how fast it runs (#1796)
+ *   MONEY_GATE_CANDIDATE, MONEY_GATE_CANDIDATE_SIDE, MONEY_GATE_CANDIDATE_SEED
+ *                           the definition A/B mode of a validation swap (#2591,
+ *                           money-gate/swap/ab.ts, .github/scripts/money-gate-swap.sh)
  *
  * .github/scripts/money-gate.sh runs it twice and compares; see money-gate/README.md.
  */
@@ -59,7 +62,16 @@ export default defineConfig({
         serviceBindings: { ...refusingServiceStubs(engineConfig.services), GATE_IO: io.handler },
         // A plain text binding: the replay's buildEnv passes no text binding on to
         // the engine except the public vars, so the engine never sees it.
-        bindings: { MONEY_GATE_DISPATCH_NAMESPACES: JSON.stringify(dispatchNamespaces) },
+        bindings: {
+          MONEY_GATE_DISPATCH_NAMESPACES: JSON.stringify(dispatchNamespaces),
+          // The definition A/B mode of a validation swap (#2591): set only by
+          // .github/scripts/money-gate-swap.sh; empty, the gate replays as always.
+          // Bindings rather than a define, because an import.meta.env define does
+          // not reach the replay in workerd.
+          MONEY_GATE_CANDIDATE: process.env.MONEY_GATE_CANDIDATE ?? '',
+          MONEY_GATE_CANDIDATE_SIDE: process.env.MONEY_GATE_CANDIDATE_SIDE ?? '',
+          MONEY_GATE_CANDIDATE_SEED: process.env.MONEY_GATE_CANDIDATE_SEED ?? '',
+        },
       },
     }),
   ],

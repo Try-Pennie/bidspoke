@@ -24,6 +24,7 @@ import type { HostedBundle } from '../lib/hosted-bundle'
 import { liftStepDeadlines } from '../lib/step-deadlines'
 import { liftEngineTimers, type FiredTimer, type LiftedTimers, type TimerHost } from '../lib/engine-timers'
 import { waitAtMost } from '../lib/wait-at-most'
+import { abDefinitions, abModeOf } from '../swap/ab'
 import shapesFile from '../fixtures/shapes.json'
 import snapshotFile from '../fixtures/config-snapshot.json'
 
@@ -32,9 +33,29 @@ const harnessSetTimeout = globalThis.setTimeout
 
 export interface DefinitionFile { id: string; name: string; definition: { nodes: Array<{ id: string; namespace: string; type: string; config?: Record<string, unknown> }>; edges: Array<{ source: string; target: string; source_handle?: string }> } }
 
+/**
+ * The definition A/B mode of a validation swap (#2591, money-gate/swap/ab.ts), or
+ * null for the ordinary gate. Set only by .github/scripts/money-gate-swap.sh,
+ * through vitest.money-gate.config.mts.
+ */
+const textBinding = (name: string): string | undefined => {
+  const v = (env as Record<string, unknown>)[name]
+  return typeof v === 'string' && v !== '' ? v : undefined
+}
+export const AB_MODE = abModeOf({
+  candidate: textBinding('MONEY_GATE_CANDIDATE'),
+  side: textBinding('MONEY_GATE_CANDIDATE_SIDE'),
+  seed: textBinding('MONEY_GATE_CANDIDATE_SEED'),
+})
+
 // Every timer a definition sets is lifted far above any real step, on both sides
-// alike, so a slow runner can never time a step out on one side only (#1796).
-export const definitions = Object.values(import.meta.glob<DefinitionFile>('../fixtures/definitions/*.json', { eager: true, import: 'default' })).map(liftStepDeadlines)
+// alike, so a slow runner can never time a step out on one side only (#1796). In
+// A/B mode, only the candidate's workflow, with the candidate in place on its side.
+export const definitions = abDefinitions(
+  Object.values(import.meta.glob<DefinitionFile>('../fixtures/definitions/*.json', { eager: true, import: 'default' })).map(liftStepDeadlines),
+  import.meta.glob<unknown>('../swap/candidates/*.json', { eager: true, import: 'default' }),
+  AB_MODE,
+)
 export const variantFiles = Object.values(import.meta.glob<VariantFile>('../fixtures/variants/*.json', { eager: true, import: 'default' }))
 export const shapes = shapesFile as unknown as ShapesFile
 export const snapshot = snapshotFile as unknown as ConfigSnapshot

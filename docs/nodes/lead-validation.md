@@ -73,6 +73,14 @@ A save (and a create) is refused when an attached Lead Validation node has: no c
 
 Partner values the Constants node adds from the database (`activeBidding`, `subAccountIdsMap`, `<Slug>ClickUrl` and the rest) are not in its own data, so a check cannot name them yet. A partner lookup check is its own issue.
 
+## Proving a swap
+
+Before a workflow's `validate_bidding_and_state` script is replaced, three instruments compare the script with the node that replaces it (#2591). Each candidate node lives in `apps/worker/money-gate/swap/candidates/<workflow>.json`, the node exactly as it is pasted (same id, namespace and label as the step it replaces), with the md5 of the script it replaces, any Constants data the swap sets, and the differences each instrument finds that are an accepted change, each with its reason.
+
+1. **Script against node grid**, in CI (`apps/worker/money-gate/swap/__tests__/grid.test.ts`): the script from the committed money gate definition, refused unless its md5 is the pinned one, and the node, run side by side over a generated grid of synthetic leads (every reason, every field missing, null, blank or of the wrong kind, non-ASCII names, the amounts either side of each limit, and pairs of rejections for the order). Every difference the candidate does not accept fails, by arm and check; a defect seeded in each check, in both directions, must be named.
+2. **Money gate definition A/B mode**: `.github/scripts/money-gate-swap.sh <candidate> [<check>:<lenient|strict>]` replays the workflow's money gate fixtures through one engine with the committed definition and with the candidate in place, and compares response, outbound requests, writes, routes and the final node. See `apps/worker/money-gate/README.md`.
+3. **Real traffic replay**: `npx tsx scripts/lead-validation-replay.ts <candidate> [--hours 24] [--to <time>] [--seed <check>:<lenient|strict>] [--dev-vars <path>]` from `apps/worker`, read only, counts only (`apps/worker/money-gate/swap/real-traffic.ts`).
+
 ## See also
 
 - [Filter node](filter.md) for the shared operators
