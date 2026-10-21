@@ -1,0 +1,787 @@
+{
+ "format": "design-score",
+ "version": 1,
+ "verdict": "not-matched",
+ "unmeasured": [],
+ "scoredAt": "2026-10-21T20:05:41Z",
+ "tolerance": 8,
+ "platform": "web",
+ "build": "http://localhost:3110/dev/connections",
+ "commit": "d1792abc3fc1dd77d13458056105949b4d1bbe57",
+ "dirty": false,
+ "capturedAt": "2026-10-21T20:05:41Z",
+ "design": "docs/design/connections-page.html",
+ "designFile": "/Users/danhankins-wright/Documents/Documents - Dan\u2019s MacBook Pro/Bidspoke/.claude/worktrees/agent-aaecc0ececb93fc0f/docs/design/connections-page.html",
+ "designSha256": "d2ed9d054205170f4654698b2650258d6c4ba06c71a3c70050c8acaddbf99d63",
+ "kind": null,
+ "decisions": {
+  "met": 30,
+  "of": 30,
+  "rows": [
+   {
+    "id": "D1",
+    "decision": "The page is a list on the left, grouped by service, and the chosen connection's details on the right.",
+    "frames": [
+     "healthy",
+     "problem",
+     "saved",
+     "stale",
+     "stale-retry-failed",
+     "alert-login"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D2",
+    "decision": "Integrations is renamed Connections in the nav, with a plug icon, and the Slack alert login (Bidspoke Alerts) and the HTTP services are listed as connections.",
+    "frames": [
+     "healthy",
+     "google-list",
+     "add-choose",
+     "not-loaded"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D3",
+    "decision": "A Needs attention group comes first, holding every connection with a problem, each with its service and what is wrong under its name; the rest are grouped by service, alphabetical.",
+    "frames": [
+     "healthy",
+     "problem",
+     "google-list",
+     "add-choose",
+     "saved",
+     "stale",
+     "google-add-drive",
+     "google-removing",
+     "stale-retry-failed",
+     "alert-login"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D4",
+    "decision": "Section headings in the list are dark, normal case, 14px semibold, with a line above each section. This is for the Connections page only, not a rule for other lists.",
+    "frames": [
+     "healthy"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D5",
+    "decision": "The detail panel has three tabs: Connection, Used by (n), History.",
+    "frames": [
+     "healthy",
+     "problem",
+     "saved"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D6",
+    "decision": "Reconnect and Replace are quiet buttons under the facts; Remove is set apart in its own row at the bottom of the panel.",
+    "frames": [
+     "healthy",
+     "problem",
+     "saved"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D7",
+    "decision": "A problem shows as a shaded notice at the top of the Connection tab: when it began and its cause, its effect, a grey fix line, and a blue Reconnect inside it; the status under the name reads in red.",
+    "frames": [
+     "problem"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D8",
+    "decision": "On the canvas, a step's Connection field is the app's dropdown with the chosen connection's name, with only \"Acts as <who>\" under it; nothing about status on a healthy day. A connection with a problem adds one red line, \"Needs reconnecting on the Connections page\", its last two words a dark underlined link to that page.",
+    "frames": [],
+    "status": "elsewhere",
+    "detail": "docs/design/connections-step-form.html and its checks (connections-step-form.checks.js), which hold the step form frames"
+   },
+   {
+    "id": "D9",
+    "decision": "While a workflow uses the connection, Remove is greyed out, its row reads \"Cannot be removed while a workflow uses it.\", and a plain \"Used by:\" list of the workflows sits under the row, with no button.",
+    "frames": [
+     "healthy",
+     "problem"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D10",
+    "decision": "Google mailboxes and drives: an entry at the top of the Google section; choosing it shows in the panel the heading, a sentence whose term \"domain wide delegation\" carries its one sentence explanation, one row per entry with address, kind, \"Added by <who>, <date>\" and Remove on one line, and an add box with Add.",
+    "frames": [
+     "google-list",
+     "google-add-drive",
+     "google-removing"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D11",
+    "decision": "Add connection is the blue button at the top right of the page, always there once the list has loaded; it opens the form in the right panel in place of the details, with nothing chosen in the list.",
+    "frames": [
+     "healthy",
+     "problem",
+     "google-list",
+     "add-choose",
+     "add-salesforce",
+     "add-google-company",
+     "stale"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D12",
+    "decision": "The service is chosen from a grid of tiles in two columns, each the service's name and one line of what it connects. The tiles come from the service catalogue, so a service appears once its catalogue entry ships.",
+    "frames": [
+     "add-choose"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D13",
+    "decision": "While saving, Save greys out and a line under the buttons shows a spinner, what is happening and the seconds counting.",
+    "frames": [
+     "add-saving"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D14",
+    "decision": "A failed save turns the same line red: what failed, that nothing was saved, and what to do; Save is ready again.",
+    "frames": [
+     "add-failed"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D15",
+    "decision": "Salesforce's fields are Name, Org, Client id and Client secret (masked). Org is a dropdown of the orgs Bidspoke knows, by name, with the address in a grey line under it, and Another org last. Choosing Another org makes Org a box the new org's address is typed into, and its menu offers \"Use <address> as a new org\". Who it acts as is read from Salesforce when the login is checked, never typed.",
+    "frames": [
+     "add-salesforce",
+     "add-saving",
+     "add-failed",
+     "add-salesforce-new-org"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D16",
+    "decision": "Google's fields are Name, then two choice cards, \"A company mailbox or drive\" (From the company list) and \"My own Google account\" (Signed in as you); the company card shows a dropdown of the company list.",
+    "frames": [
+     "add-google-company",
+     "add-google-own"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D17",
+    "decision": "For your own Google account, Google's own white Sign in with Google button, with its logo, replaces Save.",
+    "frames": [
+     "add-google-own"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D18",
+    "decision": "After a save, the new connection opens in the panel and is chosen in the list, with no message.",
+    "frames": [
+     "saved"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D19",
+    "decision": "Reconnect opens a dialog \"Reconnect <name>\" with the client id kept and a New client secret field, Save and Cancel. Its title is 20px, the size of every dialog's title.",
+    "frames": [
+     "reconnect"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D20",
+    "decision": "Replace opens a dialog \"Replace <name>\" with a Replace with dropdown, the workflows listed and ticked under \"In these workflows\", \"Each ticked workflow gets a new version with <replacement>.\", and a red \"Replace in <n> workflows\" and Cancel. Its title is 20px, the size of every dialog's title.",
+    "frames": [
+     "replace"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D21",
+    "decision": "Removing a connection no workflow uses: Remove is ready, and it opens a dialog \"Remove <name>?\" saying \"Its login is deleted from Bidspoke and cannot be brought back.\", with Cancel and a red Remove. Its title is 20px, the size of every dialog's title.",
+    "frames": [
+     "saved",
+     "remove"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D22",
+    "decision": "When login checks are not answering, a strip at the top says so and gives the time of the last statuses, with Try again; the last known statuses stay shown, Needs attention included.",
+    "frames": [
+     "stale",
+     "stale-retry-failed"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D23",
+    "decision": "When the list did not load, one card across the page says so, with Try again, and Add connection is hidden until it loads.",
+    "frames": [
+     "not-loaded"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D24",
+    "decision": "Blue is for buttons only; links are dark and underlined.",
+    "frames": [
+     "healthy",
+     "problem",
+     "google-list",
+     "add-choose",
+     "add-salesforce",
+     "add-saving",
+     "add-failed",
+     "add-salesforce-new-org",
+     "add-google-company",
+     "add-google-own",
+     "saved",
+     "reconnect",
+     "replace",
+     "remove",
+     "stale",
+     "not-loaded",
+     "google-add-drive",
+     "google-removing",
+     "stale-retry-failed",
+     "not-loaded-refused",
+     "alert-login"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D25",
+    "decision": "Red is only for something genuinely wrong, or for the button that destroys.",
+    "frames": [
+     "healthy",
+     "problem",
+     "google-list",
+     "add-choose",
+     "add-salesforce",
+     "add-saving",
+     "add-failed",
+     "add-salesforce-new-org",
+     "add-google-company",
+     "add-google-own",
+     "saved",
+     "reconnect",
+     "replace",
+     "remove",
+     "stale",
+     "not-loaded",
+     "google-add-drive",
+     "google-removing",
+     "stale-retry-failed",
+     "not-loaded-refused",
+     "alert-login"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D26",
+    "decision": "Every fact once per screen.",
+    "frames": [],
+    "status": "picture"
+   },
+   {
+    "id": "D27",
+    "decision": "No line of text ends with a single word on its own line; reword or rebalance it. A rule for all of Bidspoke's copy, made by Dan on 2026-10-20 in these rounds.",
+    "frames": [
+     "healthy",
+     "problem",
+     "google-list",
+     "add-choose",
+     "add-salesforce",
+     "add-saving",
+     "add-failed",
+     "add-salesforce-new-org",
+     "add-google-company",
+     "add-google-own",
+     "saved",
+     "reconnect",
+     "replace",
+     "remove",
+     "stale",
+     "not-loaded",
+     "google-add-drive",
+     "google-removing",
+     "stale-retry-failed",
+     "not-loaded-refused",
+     "alert-login"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D28",
+    "decision": "An open dropdown's highlighted row is pale grey (#F1EFEA) behind dark text; a rule for every dropdown.",
+    "frames": [
+     "add-salesforce-new-org"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D30",
+    "decision": "Adding to the Google list starts with a choice between Mailbox and Shared drive, the app's own choice group, Mailbox chosen; a mailbox is then one box, Mailbox address, with Add beside it.",
+    "frames": [
+     "google-list",
+     "google-add-drive",
+     "google-removing"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D31",
+    "decision": "A shared drive is added by pasting its whole Google Drive address; the page reads the drive's ID out of it and never shows the ID back.",
+    "frames": [
+     "google-add-drive"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D32",
+    "decision": "The drive's address has a line of its own, and its name, Drive name, shown on this list, sits on the line under it with Add at the end.",
+    "frames": [
+     "google-add-drive"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D33",
+    "decision": "A working line's spinner is as tall as the capital letters and level with them, in every working line in the app.",
+    "frames": [
+     "google-removing"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D29",
+    "decision": "On a highlighted row, an option's grey second line is a darker grey (#666D7E) so it stays readable; every other grey hint is unchanged.",
+    "frames": [],
+    "status": "elsewhere",
+    "detail": "apps/web/src/lib/__guards__/dropdown-highlight-guard.test.ts, which holds the second line on every dropdown's highlighted row to #666D7E and measures it at 4.5 to 1 or more on the highlight. No frame draws a highlighted option with a second line: the one open menu, on add-salesforce-new-org, offers only Use <address> as a new org."
+   }
+  ]
+ },
+ "pictures": {
+  "score": 0.9856229083369942,
+  "frames": [
+   {
+    "id": "healthy",
+    "title": "A working connection open: Pennie Salesforce",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1251520,
+    "score": 0.9888748419721871,
+    "diff": "healthy-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "problem",
+    "title": "A connection with a problem open: Achieve Salesforce",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1251511,
+    "score": 0.9888677307206069,
+    "diff": "problem-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "google-list",
+    "title": "Google mailboxes and drives",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1250030,
+    "score": 0.9876975347661189,
+    "diff": "google-list-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "add-choose",
+    "title": "Add connection: choosing the service",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1249999,
+    "score": 0.98767304045512,
+    "diff": "add-choose-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "add-salesforce",
+    "title": "Add connection: the Salesforce fields",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1251573,
+    "score": 0.9889167193426043,
+    "diff": "add-salesforce-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "add-saving",
+    "title": "Add connection: saving, the login being checked",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1251538,
+    "score": 0.9888890644753476,
+    "diff": "add-saving-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "add-failed",
+    "title": "Add connection: the save failed",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1251573,
+    "score": 0.9889167193426043,
+    "diff": "add-failed-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "add-salesforce-new-org",
+    "title": "Add connection: an org Bidspoke does not know",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1207540,
+    "score": 0.9541245259165613,
+    "diff": "add-salesforce-new-org-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "add-google-company",
+    "title": "Add connection: Google, a company mailbox or drive",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1251573,
+    "score": 0.9889167193426043,
+    "diff": "add-google-company-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "add-google-own",
+    "title": "Add connection: Google, your own account",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1250952,
+    "score": 0.9884260429835651,
+    "diff": "add-google-own-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "saved",
+    "title": "The new connection, just saved",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1307040,
+    "matched": 1292960,
+    "score": 0.9892275676337373,
+    "diff": "saved-diff.png",
+    "builtSize": [
+     1120,
+     1167
+    ],
+    "designSize": [
+     1120,
+     1167
+    ]
+   },
+   {
+    "id": "reconnect",
+    "title": "Reconnect",
+    "width": 1120,
+    "height": 1130,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1241622,
+    "score": 0.9810540455120101,
+    "diff": "reconnect-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "replace",
+    "title": "Replace",
+    "width": 1120,
+    "height": 1130,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1233022,
+    "score": 0.9742588495575222,
+    "diff": "replace-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "remove",
+    "title": "Remove a connection no workflow uses",
+    "width": 1120,
+    "height": 1167,
+    "status": "measured",
+    "compared": 1307040,
+    "matched": 1286606,
+    "score": 0.9843662014934509,
+    "diff": "remove-diff.png",
+    "builtSize": [
+     1120,
+     1167
+    ],
+    "designSize": [
+     1120,
+     1167
+    ]
+   },
+   {
+    "id": "stale",
+    "title": "Login checks not answering: statuses as last known",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1337280,
+    "matched": 1323200,
+    "score": 0.9894711653505623,
+    "diff": "stale-diff.png",
+    "builtSize": [
+     1120,
+     1194
+    ],
+    "designSize": [
+     1120,
+     1194
+    ]
+   },
+   {
+    "id": "not-loaded",
+    "title": "The connections could not be loaded",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1008000,
+    "matched": 994040,
+    "score": 0.9861507936507936,
+    "diff": "not-loaded-diff.png",
+    "builtSize": [
+     1120,
+     900
+    ],
+    "designSize": [
+     1120,
+     900
+    ]
+   },
+   {
+    "id": "google-add-drive",
+    "title": "Google mailboxes and drives: a shared drive pasted and named, ready to add",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1251597,
+    "score": 0.9889356826801518,
+    "diff": "google-add-drive-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "google-removing",
+    "title": "Google mailboxes and drives: an entry being removed, 4 s in",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1251597,
+    "score": 0.9889356826801518,
+    "diff": "google-removing-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "stale-retry-failed",
+    "title": "Login checks not answering, and Try again failed",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1347360,
+    "matched": 1333014,
+    "score": 0.9893525115781974,
+    "diff": "stale-retry-failed-diff.png",
+    "builtSize": [
+     1120,
+     1203
+    ],
+    "designSize": [
+     1120,
+     1203
+    ]
+   },
+   {
+    "id": "not-loaded-refused",
+    "title": "The connections could not be loaded: the server answered a refusal",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1008000,
+    "matched": 994040,
+    "score": 0.9861507936507936,
+    "diff": "not-loaded-refused-diff.png",
+    "builtSize": [
+     1120,
+     900
+    ],
+    "designSize": [
+     1120,
+     900
+    ]
+   },
+   {
+    "id": "alert-login",
+    "title": "The Slack alert login open",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1251520,
+    "score": 0.9888748419721871,
+    "diff": "alert-login-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   }
+  ]
+ },
+ "exceptions": [],
+ "notes": []
+}
