@@ -1,0 +1,9 @@
+/* The captured page sizes itself to the window (h-screen); inside a frame that has no
+   window height of its own, so pin it to the laptop window height the round is drawn at. */
+.h-screen { height: 1000px !important; }
+/* The capture was taken with the browser automation running, which draws its own glow and cursor over
+   the page; neither is the product, so neither is drawn. */
+#claude-agent-glow-border, #claude-agent-glow-border-inner, #claude-phantom-cursor, #claude-phantom-cursor-plain, #claude-phantom-cursor-styled { display: none !important; }
+/* Captured 1911 wide and drawn at 1120: the CSS translate property adds to the canvas transform the page
+   set, moving the canvas so the card sits in the middle of the narrower pane. */
+.react-flow__viewport { translate: -397px -148px; }
