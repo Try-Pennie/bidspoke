@@ -92,9 +92,8 @@ describe('sendCronHeartbeatAlert', () => {
   // memory or CPU and the platform had recorded `canceled` after 16.8s with 69ms
   // of CPU, so a reader following the remedy went looking for two statuses that
   // were not there (L11, L440).
-  // #2057: the measured outcome on 2026-10-14 was ok, a run that finished after
-  // the check looked. The fix text named only limit and cancel, so a reader
-  // following it found neither.
+  // #2057 then added that an ok outcome meant the run finished late, and #2578
+  // removed it again: an ok under the run's scheduled time can be a retry's.
   // A minute job is judged on a drought of finished runs (#2057), so its age is
   // how long nothing has finished, not how long ago one run started.
   it('says how long nothing has finished for a minute job, not when a run started', async () => {
