@@ -181,8 +181,12 @@ async function callMethod(env: OpsConnectionsEnv, method: AnyMethod, request: un
   if (!bound) return unavailable(method, organizationId, 'binding_absent')
   // A Google list method the deployed ops Worker does not export throws (a
   // double lacking it throws TypeError), which is answered as a throw.
-  const call = (bound as Partial<Record<AnyMethod, (request: unknown) => Promise<unknown>>>)[method]
-  const raced = await raceDeadline(() => (call as (request: unknown) => Promise<unknown>).call(bound, request), deadlineOf(method), options.delay)
+  // Called as a method of the binding itself, never read off it and invoked
+  // through .call or .apply: on a real RPC stub every property read is another
+  // remote method, so `.call` names a method ops does not export and every call
+  // throws (shipped that way in #2569, caught only by the post deploy probe).
+  const methods = bound as unknown as Record<AnyMethod, (request: unknown) => Promise<unknown>>
+  const raced = await raceDeadline(() => methods[method](request), deadlineOf(method), options.delay)
   if (raced.kind === 'timed_out') return unavailable(method, organizationId, 'deadline')
   if (raced.kind === 'threw') {
     return unavailable(method, organizationId, 'threw', referenceOf(raced.error), raced.error instanceof Error ? raced.error.name : null)

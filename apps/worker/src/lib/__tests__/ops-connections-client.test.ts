@@ -36,6 +36,25 @@ function binding(answer: (method: string, request: unknown) => Promise<unknown>)
   return { binding: methods as unknown as OpsConnectionsBinding, calls }
 }
 
+/**
+ * A binding double shaped like a real Cloudflare RPC stub: EVERY property read,
+ * on the stub or on one of its methods, is another remote method, so `.call`,
+ * `.apply` or `.bind` read off a method names a method ops does not export, and
+ * calling it throws the way the deployed binding does. A plain object double
+ * lets `.call` work, which is how PR 5 (#2569) shipped a client that threw on
+ * every call through the real binding.
+ */
+function rpcStub(handlers: Record<string, (request: unknown) => Promise<unknown>>) {
+  const remote = (name: string): unknown => new Proxy(() => {}, {
+    apply: (_target, _this, args: unknown[]) => {
+      const handler = handlers[name]
+      return handler ? handler(args[0]) : Promise.reject(new Error('internal error; reference = 0a1b2c3d4e5f'))
+    },
+    get: (_target, sub) => remote(`${name}.${String(sub)}`),
+  })
+  return new Proxy({}, { get: (_target, name) => remote(String(name)) }) as unknown as OpsConnectionsBinding
+}
+
 const never = () => new Promise<never>(() => {})
 
 function captureLogs() {
@@ -59,6 +78,25 @@ describe('each per method deadline is longer than the ceiling ops answers by nam
 
   it('holds the stated values', () => {
     expect(OPS_CONNECTIONS_DEADLINES_MS).toEqual({ verify: 50_000, clearReauth: 50_000, exchangeOAuthCode: 35_000, lookup: 30_000, revoke: 15_000, health: 15_000 })
+  })
+})
+
+describe('through a binding shaped like the real RPC stub', () => {
+  const refusal = { ok: false, refused: 'connection_not_found', detail: 'no copy', retry_at: null }
+
+  it.each(OPS_CONNECTIONS_METHODS)('%s is called as the method itself, never through .call or .apply', async (method) => {
+    const stub = rpcStub({ [method]: async () => refusal })
+    expect(await callOpsConnections({ OPS_CONNECTIONS: stub }, method, { organization_id: ORG } as never)).toEqual(refusal)
+  })
+
+  it.each(OPS_DELEGATION_METHODS)('%s is called as the method itself, never through .call or .apply', async (method) => {
+    const stub = rpcStub({ [method]: async () => refusal })
+    expect(await callOpsDelegation({ OPS_CONNECTIONS: stub }, method, { organization_id: ORG } as never)).toEqual(refusal)
+  })
+
+  it('the deploy probe answers through it', async () => {
+    const stub = rpcStub({ health: async () => ({ ok: false, refused: OPS_CONNECTIONS_PROBE_EXPECTED, detail: 'probe', retry_at: null }) })
+    expect(await probeOpsConnections({ OPS_CONNECTIONS: stub })).toMatchObject({ outcome: 'answered', method: 'health' })
   })
 })
 
