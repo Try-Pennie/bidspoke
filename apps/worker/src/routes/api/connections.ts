@@ -43,7 +43,7 @@ import {
   connectionRouteSentence, createRefusalSentence, isCreateRefusalCode, type ConnectionRouteRefusalCode, type CreateRefusalCode, type CreateRouteRefusalCode,
   type RefusalContext, type RouteRefusalContext, type VerifyRefusalCode,
 } from '../../lib/connection-create-refusals'
-import { readDelegationEntryBody, readReconnectBody, reconnectValues } from '../../lib/connection-reconnect'
+import { readDelegationEntryBody, readReconnectBody, reconnectLogin, reconnectValues } from '../../lib/connection-reconnect'
 import { writeAuditLog } from '../../lib/audit'
 import { DELEGATION_KINDS, type DelegationKind } from '../../ops/run-vocabulary'
 import {
@@ -640,7 +640,7 @@ connections.post('/:id/reconnect', async (c) => {
     if (values.code === 'connection_fields_undeclared') return createRefusal(values.code, { names: values.fields }, { fields: values.fields })
     return ownRefusal(values.code, { names: values.fields.map(labelOf) }, { fields: values.fields })
   }
-  const parts = connectionParts(service.connection, values.values)
+  const parts = connectionParts(reconnectLogin(service.connection), values.values)
   if (!parts.ok) {
     if (parts.unknown.length > 0) return createRefusal('connection_fields_undeclared', { names: parts.unknown }, { fields: parts.unknown })
     return createRefusal('connection_fields_missing', { names: parts.missing.map(labelOf) }, { fields: parts.missing })

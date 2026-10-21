@@ -6,9 +6,13 @@
  *
  * A Reconnect keeps what the connection names (D19: "keeping the client id and
  * asking for a new client secret"): its target is the row's, never the body's,
- * so the login is rebuilt by the catalogue's one builder, connectionParts, from
- * the row's target values and the new login fields. A body value for a target
- * field is accepted only when it is the row's own.
+ * so only the login is rebuilt, by the catalogue's one builder connectionParts
+ * over the login's fields (reconnectLogin), from the new login fields and the
+ * row's values of the fields that are both (Salesforce's client id). A target
+ * only field is never read into the form, so a target value the form cannot
+ * hold (a Google target's drives, an array as the minter reads it) never
+ * blocks a Reconnect. A body value for a target field is accepted only when it
+ * is the row's own.
  */
 import type { ConnectionDeclaration } from '@bidspoke/service-catalogue/schema'
 import { CREATE_BODY_MAX_BYTES } from './connection-create'
@@ -63,40 +67,52 @@ export type ReconnectValues =
   | { ok: false; code: 'connection_fields_undeclared'; fields: string[] }
   /** A body value for a target field that is not the row's own. */
   | { ok: false; code: 'reconnect_target_changed'; fields: string[] }
-  /** The row names a target field with a value the form cannot hold. */
+  /** The row names a field the login is built from with a value the form cannot hold. */
   | { ok: false; code: 'reconnect_target_unreadable'; fields: string[] }
 
+/** The declaration of the login alone: the fields whose value goes into the sealed login. */
+export function reconnectLogin(connection: ConnectionDeclaration): ConnectionDeclaration {
+  return { ...connection, fields: connection.fields.filter((f) => f.login !== undefined) }
+}
+
 /**
- * The form values a Reconnect's login is built from: every target field the
- * row names, as it names it, then the body's login fields. Fields the service
- * declares as both (Salesforce's client id) come from the row.
+ * The values reconnectLogin's fields are built from: the body's login fields,
+ * and the row's value of each field that is both login and target. A body
+ * value for a target field must be the row's own, and is then dropped.
  */
 export function reconnectValues(connection: ConnectionDeclaration, rowTarget: unknown, body: Readonly<Record<string, string>>): ReconnectValues {
   const target = isRecord(rowTarget) ? rowTarget : {}
+  const declared = new Map(connection.fields.map((f) => [f.key, f]))
+  const rowValue = (key: string): unknown => {
+    const f = declared.get(key)
+    return f?.target !== undefined && Object.hasOwn(target, f.target) ? target[f.target] : undefined
+  }
+  const unknown = Object.keys(body).filter((k) => !declared.has(k))
+  if (unknown.length > 0) return { ok: false, code: 'connection_fields_undeclared', fields: unknown.map((k) => keyName(k, 'a field')) }
+
+  const changed = Object.entries(body)
+    .filter(([key]) => declared.get(key)!.target !== undefined)
+    .filter(([key, value]) => {
+      const held = rowValue(key)
+      return typeof held !== 'string' || held.trim() !== value.trim()
+    })
+    .map(([key]) => key)
+  if (changed.length > 0) return { ok: false, code: 'reconnect_target_changed', fields: changed }
+
   const values: Record<string, string> = {}
   const unreadable: string[] = []
   for (const f of connection.fields) {
-    if (f.target === undefined || !Object.hasOwn(target, f.target)) continue
-    const v = target[f.target]
-    if (v === null || v === undefined) continue
-    if (typeof v !== 'string') unreadable.push(f.key)
-    else values[f.key] = v
+    if (f.login === undefined) continue
+    if (f.target !== undefined) {
+      const held = rowValue(f.key)
+      if (held === undefined || held === null) continue
+      if (typeof held !== 'string') unreadable.push(f.key)
+      else values[f.key] = held
+    } else if (Object.hasOwn(body, f.key)) {
+      values[f.key] = body[f.key]
+    }
   }
   if (unreadable.length > 0) return { ok: false, code: 'reconnect_target_unreadable', fields: unreadable }
-
-  const declared = new Map(connection.fields.map((f) => [f.key, f]))
-  const unknown = Object.keys(body).filter((k) => !declared.has(k))
-  if (unknown.length > 0) return { ok: false, code: 'connection_fields_undeclared', fields: unknown.map((k) => keyName(k, 'a field')) }
-  const changed: string[] = []
-  for (const [key, value] of Object.entries(body)) {
-    const f = declared.get(key)!
-    if (f.target !== undefined) {
-      if (value.trim() !== (values[key] ?? '').trim()) changed.push(key)
-      continue
-    }
-    values[key] = value
-  }
-  if (changed.length > 0) return { ok: false, code: 'reconnect_target_changed', fields: changed }
   return { ok: true, values }
 }
 
