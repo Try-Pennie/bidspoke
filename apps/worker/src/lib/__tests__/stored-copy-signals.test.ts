@@ -349,6 +349,9 @@ describe('while leads are being served from stored copies', () => {
       expect((await runStoredCopyChecks(h.deps())).serving).not.toBe('recovered')
     }
     expect(h.recoveries).toEqual([])
+    // A tick below the threshold still saw a copy used, so it is no first healthy
+    // check, and none is recorded for the all-clear to name (#2580).
+    expect(await h.kv.get('stored-copy-serving-healthy:all')).toBeNull()
 
     // The all-clear comes the re-arm window after the last use, and not before.
     h.clock.now = lastUseAt + (RECOVERY_REARM_MINUTES - 1) * MINUTE

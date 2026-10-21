@@ -276,7 +276,7 @@ async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, 
     // the incident's running end, so the all-clear waits the re-arm window from
     // the last use rather than from the last tick that met the threshold.
     if (reading.lastActiveMs !== null) await markSpikeSeen(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, reading.lastActiveMs)
-    const due = await recoveryDue(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, { now: nowMs })
+    const due = await recoveryDue(kv, STORED_COPY_SERVING_KEY, SERVING_SUBJECT, { now: nowMs, recordFirstHealthy: false })
     if (!due) return reading.activeMinutes > 0 ? 'below_threshold' : 'quiet'
     const targets = await servingAlertTargets(deps.supabase)
     const send = deps.postRecovery ?? sendRecoveryAlert
@@ -288,10 +288,10 @@ async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, 
         recoveredPhrase: 'has stopped',
         alertedAt: due.alertedAt,
         endedAt: due.endedAt,
-        // due.firstHealthyAt is deliberately not passed (#2580): this check asks
-        // recoveryDue on a tick that still saw a copy used below the threshold,
-        // which is not over, so the tick it records is not one that found the
-        // condition clear. The notice says it had cleared by this tick instead.
+        // No first healthy check is recorded or passed (#2580): this check asks
+        // recoveryDue on a tick that may still see a copy used below the
+        // threshold, which is not over, so that tick did not find the condition
+        // clear. The notice says it had cleared by this tick instead.
         measuredWindowMinutes: STORED_COPY_SERVING_WINDOW_MINUTES,
         url: `${deps.appUrl}/dashboard`,
       }, nowMs).catch((e: unknown) => {
