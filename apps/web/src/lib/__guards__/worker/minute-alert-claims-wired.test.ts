@@ -26,6 +26,8 @@ const MINUTE_CLAIMANTS: Record<string, string[]> = {
   'failure-rate.ts': ['runFailureRateCheck'],
   'slow-execution-rate.ts': ['runSlowExecutionCheck'],
   'upstream-outage.ts': ['runUpstreamOutageCheck'],
+  // #2582: the partner ping failure page, judged every minute like the rate checks above.
+  'partner-error-rate.ts': ['runPartnerErrorRateCheck'],
   'cron-heartbeat.ts': ['runHeartbeatChecks'],
   'database-reachability.ts': ['runDatabaseReachabilityProbe', 'reportDatabaseUnreachable'],
   // #2331: the sealed Slack token page, judged by the minute probe from the rows

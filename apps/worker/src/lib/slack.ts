@@ -445,6 +445,86 @@ export async function sendSlowSpikeAlert(
   )
 }
 
+export interface PartnerErrorRateAlertPayload {
+  workflow_id: string
+  workflow_name: string
+  /** The partner, in the page's words ("LendSwift"). */
+  partner: string
+  /** Pings in the window that carry the partner error marker. */
+  error_count: number
+  /** Every ping that completed in the window: the denominator. */
+  ping_count: number
+  /** The marker's kinds and how many of each (http_error, timeout, network_error, unreadable_answer). */
+  kinds: Record<string, number>
+  window_minutes: number
+  timestamp: string
+}
+
+/** The words the page uses for each kind a partner ping script records. */
+const PARTNER_ERROR_KIND_WORDS: Record<string, string> = {
+  http_error: 'answered with an error',
+  timeout: 'did not answer in time',
+  network_error: 'could not be reached',
+  unreadable_answer: 'answered without a decision',
+}
+
+/**
+ * The partner ping failure page (#2582). Since #2582 a failed LendSwift ping ends
+ * the lead as a no bid, so the run succeeds and the failure saturation page no
+ * longer fires during a LendSwift outage; this is what says so instead.
+ */
+export async function sendPartnerErrorRateAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  channelOverride: string | null,
+  payload: PartnerErrorRateAlertPayload,
+  appUrl: string,
+): Promise<string | null> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return null
+
+  const channel = channelOverride || connection.default_channel
+  const sharePct = payload.ping_count > 0 ? Math.round((payload.error_count / payload.ping_count) * 100) : 0
+  const kinds = Object.entries(payload.kinds)
+    .sort((a, b) => b[1] - a[1])
+    .map(([kind, n]) => `${n} ${PARTNER_ERROR_KIND_WORDS[kind] ?? kind}`)
+    .join(', ')
+  const when = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short' }).format(new Date(payload.timestamp))
+
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: `${payload.partner} Failing`, emoji: false } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${payload.workflow_name}*: ${payload.error_count} of ${payload.ping_count} ${payload.partner} pings (${sharePct}%) failed in the last ${payload.window_minutes} minutes. Each of those leads was answered as no bid, with the reason partner_error.`,
+      },
+    },
+    {
+      type: 'section',
+      fields: [
+        { type: 'mrkdwn', text: `*What happened:* ${kinds}` },
+        { type: 'mrkdwn', text: `*Time:* ${when}` },
+      ],
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*What to do:* tell ${payload.partner} their service is failing. Nothing in Bidspoke needs changing: each run's ping step shows ${payload.partner}'s own error, and an all clear follows when pings are answered again.`,
+      },
+    },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${appUrl}/workflows/${payload.workflow_id}|Open workflow →>` } },
+  ]
+
+  return postMessage(
+    connection.bot_token,
+    channel,
+    blocks,
+    `${payload.partner} failing: ${payload.error_count} of ${payload.ping_count} pings failed in ${payload.window_minutes} minutes on ${payload.workflow_name}`,
+  )
+}
+
 export interface FailureSpikeAlertPayload {
   workflow_id: string
   workflow_name: string
