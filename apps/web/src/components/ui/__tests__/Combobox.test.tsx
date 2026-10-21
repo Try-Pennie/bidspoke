@@ -249,6 +249,50 @@ describe('Combobox', () => {
     expect(screen.getByRole('combobox', { name: 'Org' })).toHaveValue('lendco.my.salesforce.com')
   })
 
+  it('leaving the box keeps what it shows: a typed address is taken as the new org, a known one as that org', async () => {
+    const onPicked = vi.fn()
+    render(<><Harness load={async () => ORGS} newValue={NEW_ORG} onPicked={onPicked} /><button type="button">Next</button></>)
+    screen.getByRole('combobox', { name: 'Org' }).focus()
+    await userEvent.keyboard('{ArrowDown}')
+    await userEvent.click((await screen.findAllByRole('option')).at(-1) as HTMLElement)
+    await userEvent.type(screen.getByRole('combobox', { name: 'Org' }), 'lendco.my.salesforce.com')
+    await userEvent.tab()
+    expect(onPicked).toHaveBeenLastCalledWith('lendco.my.salesforce.com', true)
+    expect(screen.getByRole('combobox', { name: 'Org' })).toHaveValue('lendco.my.salesforce.com')
+    await userEvent.clear(screen.getByRole('combobox', { name: 'Org' }))
+    await userEvent.type(screen.getByRole('combobox', { name: 'Org' }), 'achieve.my.salesforce.com')
+    await userEvent.tab()
+    expect(onPicked).toHaveBeenLastCalledWith('achieve', false)
+    expect(screen.getByRole('combobox', { name: 'Org' })).toHaveTextContent('Achieve')
+  })
+
+  it('leaving the box with nothing typed goes back to the list, showing the value it still holds', async () => {
+    const onPicked = vi.fn()
+    render(<><Harness load={async () => ORGS} newValue={NEW_ORG} onPicked={onPicked} /><button type="button">Next</button></>)
+    screen.getByRole('combobox', { name: 'Org' }).focus()
+    await userEvent.keyboard('{ArrowDown}')
+    await screen.findAllByRole('option')
+    await userEvent.keyboard('{Enter}')
+    await userEvent.keyboard('{ArrowDown}{End}{Enter}')
+    expect(screen.getByRole('combobox', { name: 'Org' }).tagName).toBe('INPUT')
+    await userEvent.tab()
+    const box = screen.getByRole('combobox', { name: 'Org' })
+    expect(box.tagName).toBe('BUTTON')
+    expect(box).toHaveTextContent('Achieve')
+    expect(onPicked).toHaveBeenCalledTimes(1)
+  })
+
+  it('a stored value is never called no longer available when the list could not be read', async () => {
+    render(
+      <Combobox id="org" aria-label="Org" value="achieve" onChange={() => {}} loadOptions={async () => { throw new Error('Salesforce did not answer.') }} />
+    )
+    const box = screen.getByRole('combobox', { name: 'Org' })
+    fireEvent.keyDown(box, { key: 'ArrowDown' })
+    await within(menu()).findByRole('alert')
+    expect(box).toHaveTextContent('achieve')
+    expect(box).not.toHaveTextContent('no longer available')
+  })
+
   it('a typed address Bidspoke already knows offers that org, not a new one', async () => {
     render(<Harness load={async () => ORGS} newValue={NEW_ORG} />)
     screen.getByRole('combobox', { name: 'Org' }).focus()

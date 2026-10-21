@@ -199,8 +199,9 @@ export function Combobox({
   const chosen = known.find((o) => o.value === value)
   const boxText = chosen ? chosen.label
     : value === '' ? (placeholder ?? '')
-    : load.kind === 'loading' ? value
-    : `${value} (no longer available)`
+    // Only a list that was read can say a value has gone from it (L11).
+    : load.kind === 'ready' ? `${value} (no longer available)`
+    : value
   const showHint = !typing && Boolean(chosen?.hint)
   const describedByIds = [db, showHint ? hintId : null].filter(Boolean).join(' ') || undefined
 
@@ -237,6 +238,27 @@ export function Combobox({
     onChange(item.option.value, { isNew: false })
     if (typing) { focusNext.current = 'trigger'; setTyping(false); setTyped('') }
     close()
+  }
+
+  /**
+   * Leaving the typing box keeps what it shows as the value, so the box never
+   * reads as chosen while holding something else: a known org typed in full is
+   * that org, anything else typed is the new value, and an empty box goes back
+   * to the list, which shows the value still held.
+   */
+  const leaveTyping = () => {
+    close()
+    if (query === '') { setTyping(false); return }
+    const q = query.toLowerCase()
+    const knownMatch = known.find((o) => [o.label, o.hint, o.value].some((s) => lower(s) === q))
+    if (knownMatch) {
+      if (knownMatch.value !== value) onChange(knownMatch.value, { isNew: false })
+      setTyping(false)
+      setTyped('')
+      return
+    }
+    if (query !== value) onChange(query, { isNew: true })
+    setTyped(query)
   }
 
   const move = (step: number) => {
@@ -351,7 +373,7 @@ export function Combobox({
                 disabled={disabled}
                 onChange={(e) => { setTyped(e.target.value); setOpen(true); setActive(-1) }}
                 onFocus={() => setOpen(true)}
-                onBlur={(e) => { if (leaves(e.relatedTarget)) close() }}
+                onBlur={(e) => { if (leaves(e.relatedTarget)) leaveTyping() }}
                 onKeyDown={onInputKeyDown}
                 className="input"
               />
