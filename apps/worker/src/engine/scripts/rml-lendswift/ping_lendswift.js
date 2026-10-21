@@ -130,7 +130,8 @@ const maskDigits = (text) => String(text == null ? '' : text).replace(/\d{3}-\d{
 function describeLendSwiftError(result) {
   const body = result.body && typeof result.body === 'object' ? result.body : {};
   const detail = body.detail && typeof body.detail === 'object' ? body.detail : {};
-  let message = typeof detail.msg === 'string' ? detail.msg : (body.message || body.status || result.message || '');
+  // The first of these that is text; anything else is left out rather than stringified.
+  let message = [detail.msg, body.message, body.status, result.message].find((m) => typeof m === 'string' && m) || '';
   let providerType = null;
   // A provider failure arrives as "<summary> Details: <json>"; keep the summary and the
   // first inner message, and drop the provider's raw response and headers.

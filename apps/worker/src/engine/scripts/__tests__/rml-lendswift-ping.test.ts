@@ -203,6 +203,14 @@ describe('a LendSwift failure ends the lead as no bid with partner_error (#2582)
     expect((await buildResponse(out)).body).toEqual(PARTNER_ERROR_ANSWER)
   })
 
+  it('never stringifies an error body that is not text into its message', async () => {
+    const out = await ping(decide({ status: 500, body: { message: { nested: 'not text' }, status: { code: 1 } } }).fetch)
+    const err = out.lendswift_error as Record<string, unknown>
+    expect(err.message).toBe('')
+    expect(err.status).toBeNull()
+    expect(JSON.stringify(out)).not.toContain('[object Object]')
+  })
+
   it('ends a 4xx as no bid, sent once', async () => {
     const d = decide({ status: 422, body: { status: 'error', detail: { msg: 'validation failed' } } })
     const out = await ping(d.fetch)

@@ -106,7 +106,12 @@ export interface PartnerErrorRateSummary {
   allClear: string[]
 }
 
-/** The completed pings of one watch in the window. Throws when they cannot be read. */
+/**
+ * The completed pings of one watch in the window. Throws when they cannot be read.
+ * A ping still waiting on the partner has no completed_at and is not counted yet;
+ * the script ends it at 60 s with a timeout marker, so a hung partner shows up here
+ * at most a minute after the ping started.
+ */
 async function readPings(supabase: SupabaseClient, watch: PartnerErrorWatch, windowStartMs: number): Promise<PingRow[]> {
   // The marker's kind only: the step output also carries what the partner said,
   // which this check has no use for.
@@ -172,8 +177,11 @@ export async function runPartnerErrorRateCheck(
 
     if (verdict.state === 'healthy') {
       // Stood down only once the partner is seen answering again: a window with
-      // no answered ping is not a recovery (#817).
+      // no answered ping is not a recovery (#817), and nor is one still failing at
+      // the bar's share but under its count (four of ten), which would stand the
+      // incident down and then page it again.
       const answered = verdict.pings - verdict.errors
+      const belowShare = verdict.errors / verdict.pings < ERROR_SHARE
       const cleared = await announceRecovery(
         kv,
         PARTNER_ERROR_RATE_SIGNAL,
@@ -193,7 +201,7 @@ export async function runPartnerErrorRateCheck(
             url: `${appUrl}/workflows/${wf.id}`,
           })
         },
-        { hasEvidence: () => answered >= 1, claim: minuteAllClearClaim(claims, PARTNER_ERROR_RATE_SIGNAL, wf.id) },
+        { hasEvidence: () => answered >= 1 && belowShare, claim: minuteAllClearClaim(claims, PARTNER_ERROR_RATE_SIGNAL, wf.id) },
       )
       if (cleared) summary.allClear.push(wf.id)
       continue

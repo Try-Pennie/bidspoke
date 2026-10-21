@@ -166,6 +166,16 @@ describe('runPartnerErrorRateCheck', () => {
     expect(kv.store.has(`partner-error-rate-cooldown:${WF}`)).toBe(false)
   })
 
+  it('holds the all-clear while the share of failures is still at the bar, even under MIN_ERRORS', async () => {
+    const alertedAt = new Date(Date.now() - 90 * 60_000).toISOString()
+    const kv = makeKv({ [`partner-error-rate-recovery:${WF}`]: alertedAt })
+    // 4 of 10 failed: under MIN_ERRORS, so it does not page again, but 40% is no recovery.
+    const out = await runPartnerErrorRateCheck(db([...failed(4), ...answered(6)]) as never, kv as never, URL)
+    expect(out.judged).toEqual([{ workflowId: WF, state: 'healthy', pings: 10, errors: 4 }])
+    expect(sendRecoveryAlert).not.toHaveBeenCalled()
+    expect(kv.store.get(`partner-error-rate-recovery:${WF}`)).toBe(alertedAt)
+  })
+
   it('holds the all-clear while too few pings arrive to judge, and keeps the incident open', async () => {
     const alertedAt = new Date(Date.now() - 90 * 60_000).toISOString()
     const kv = makeKv({ [`partner-error-rate-recovery:${WF}`]: alertedAt })
