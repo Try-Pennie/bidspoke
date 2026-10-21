@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "exported_at": "2026-10-21T15:44:52.595Z",
+  "exported_at": "2026-10-21T18:14:39.664Z",
   "tables": {
     "workflows": [
       {
@@ -76,9 +76,9 @@
     ],
     "workflow_versions": [
       {
-        "id": "313d28da-eef0-4c0e-969f-1c23180b1439",
+        "id": "0df4ffc9-082b-4077-88d2-0ab52022c84d",
         "workflow_id": "e1b810da-16c0-49eb-bf12-ba1c9b67c914",
-        "version_number": 22
+        "version_number": 24
       },
       {
         "id": "426604bc-a24d-4398-aa00-8cdbd5cbb28d",
