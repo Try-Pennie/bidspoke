@@ -1,4 +1,4 @@
-// The Connections page as settled in the #2338 design rounds (rounds 1 to 26, 2026-10-20), drawn
+// The Connections page as settled in the #2338 design rounds (rounds 1 to 27, 2026-10-20 and 21), drawn
 // into the captured app chrome's #main-content at 1120 wide. Only the settled behaviour is here;
 // every rejected option of the rounds is gone. make-settled.py hands buildScreen one variant per
 // frame, and the variant names the frame's state:
