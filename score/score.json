@@ -3,20 +3,20 @@
  "version": 1,
  "verdict": "not-matched",
  "unmeasured": [],
- "scoredAt": "2026-10-21T20:05:41Z",
+ "scoredAt": "2026-10-21T21:12:39Z",
  "tolerance": 8,
  "platform": "web",
  "build": "http://localhost:3110/dev/connections",
- "commit": "d1792abc3fc1dd77d13458056105949b4d1bbe57",
- "dirty": false,
- "capturedAt": "2026-10-21T20:05:41Z",
+ "commit": "205b4defcb50309fb84e13c9692219e5f945f4e1",
+ "dirty": true,
+ "capturedAt": "2026-10-21T21:12:39Z",
  "design": "docs/design/connections-page.html",
  "designFile": "/Users/danhankins-wright/Documents/Documents - Dan\u2019s MacBook Pro/Bidspoke/.claude/worktrees/agent-aaecc0ececb93fc0f/docs/design/connections-page.html",
- "designSha256": "d2ed9d054205170f4654698b2650258d6c4ba06c71a3c70050c8acaddbf99d63",
+ "designSha256": "e3534e3b1d86461231bf09273021877dd2ae93467fa2b77c69007f0062da83d7",
  "kind": null,
  "decisions": {
-  "met": 30,
-  "of": 30,
+  "met": 33,
+  "of": 33,
   "rows": [
    {
     "id": "D1",
@@ -27,7 +27,9 @@
      "saved",
      "stale",
      "stale-retry-failed",
-     "alert-login"
+     "alert-login",
+     "reconnect-failed",
+     "remove-refused-in-use"
     ],
     "status": "met"
    },
@@ -55,7 +57,11 @@
      "google-add-drive",
      "google-removing",
      "stale-retry-failed",
-     "alert-login"
+     "alert-login",
+     "add-stalled",
+     "add-failed-no-cap",
+     "reconnect-failed",
+     "remove-refused-in-use"
     ],
     "status": "met"
    },
@@ -131,7 +137,9 @@
      "add-choose",
      "add-salesforce",
      "add-google-company",
-     "stale"
+     "stale",
+     "add-stalled",
+     "add-failed-no-cap"
     ],
     "status": "met"
    },
@@ -261,7 +269,11 @@
      "google-removing",
      "stale-retry-failed",
      "not-loaded-refused",
-     "alert-login"
+     "alert-login",
+     "add-stalled",
+     "add-failed-no-cap",
+     "reconnect-failed",
+     "remove-refused-in-use"
     ],
     "status": "met"
    },
@@ -289,7 +301,11 @@
      "google-removing",
      "stale-retry-failed",
      "not-loaded-refused",
-     "alert-login"
+     "alert-login",
+     "add-stalled",
+     "add-failed-no-cap",
+     "reconnect-failed",
+     "remove-refused-in-use"
     ],
     "status": "met"
    },
@@ -323,7 +339,11 @@
      "google-removing",
      "stale-retry-failed",
      "not-loaded-refused",
-     "alert-login"
+     "alert-login",
+     "add-stalled",
+     "add-failed-no-cap",
+     "reconnect-failed",
+     "remove-refused-in-use"
     ],
     "status": "met"
    },
@@ -370,6 +390,34 @@
     "status": "met"
    },
    {
+    "id": "D34",
+    "decision": "An org with no limit set on its Salesforce calls is refused in Dan's words: \"Bidspoke has no limit set yet on how many Salesforce calls its workflows may make to <org address>, so it cannot connect to that org. Nothing was saved. Ask Dan to set a limit for this org, then save again.\"",
+    "frames": [
+     "add-failed-no-cap"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D35",
+    "decision": "A dropdown's open menu sits over what is below it, never pushing the page down; the Org menu as every other.",
+    "frames": [
+     "add-salesforce-new-org"
+    ],
+    "status": "met"
+   },
+   {
+    "id": "D36",
+    "decision": "Every dialog's title is 20px, drawn by the app's one title rule.",
+    "frames": [
+     "reconnect",
+     "replace",
+     "remove",
+     "reconnect-failed",
+     "remove-refused-in-use"
+    ],
+    "status": "met"
+   },
+   {
     "id": "D29",
     "decision": "On a highlighted row, an option's grey second line is a darker grey (#666D7E) so it stays readable; every other grey hint is unchanged.",
     "frames": [],
@@ -379,7 +427,7 @@
   ]
  },
  "pictures": {
-  "score": 0.9856229083369942,
+  "score": 0.9869464066305161,
   "frames": [
    {
     "id": "healthy",
@@ -388,8 +436,8 @@
     "height": null,
     "status": "measured",
     "compared": 1265600,
-    "matched": 1251520,
-    "score": 0.9888748419721871,
+    "matched": 1252621,
+    "score": 0.9897447850821744,
     "diff": "healthy-diff.png",
     "builtSize": [
      1120,
@@ -521,8 +569,8 @@
     "height": null,
     "status": "measured",
     "compared": 1265600,
-    "matched": 1207540,
-    "score": 0.9541245259165613,
+    "matched": 1251597,
+    "score": 0.9889356826801518,
     "diff": "add-salesforce-new-org-diff.png",
     "builtSize": [
      1120,
@@ -597,8 +645,8 @@
     "height": 1130,
     "status": "measured",
     "compared": 1265600,
-    "matched": 1241622,
-    "score": 0.9810540455120101,
+    "matched": 1241639,
+    "score": 0.9810674778761062,
     "diff": "reconnect-diff.png",
     "builtSize": [
      1120,
@@ -616,8 +664,8 @@
     "height": 1130,
     "status": "measured",
     "compared": 1265600,
-    "matched": 1233022,
-    "score": 0.9742588495575222,
+    "matched": 1233029,
+    "score": 0.9742643805309734,
     "diff": "replace-diff.png",
     "builtSize": [
      1120,
@@ -635,8 +683,8 @@
     "height": 1167,
     "status": "measured",
     "compared": 1307040,
-    "matched": 1286606,
-    "score": 0.9843662014934509,
+    "matched": 1286623,
+    "score": 0.9843792079813931,
     "diff": "remove-diff.png",
     "builtSize": [
      1120,
@@ -778,6 +826,82 @@
     "designSize": [
      1120,
      1130
+    ]
+   },
+   {
+    "id": "add-stalled",
+    "title": "Add connection: the login check did not answer in time",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1251573,
+    "score": 0.9889167193426043,
+    "diff": "add-stalled-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "add-failed-no-cap",
+    "title": "Add connection: an org with no call limit set",
+    "width": 1120,
+    "height": null,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1251597,
+    "score": 0.9889356826801518,
+    "diff": "add-failed-no-cap-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "reconnect-failed",
+    "title": "Reconnect refused",
+    "width": 1120,
+    "height": 1130,
+    "status": "measured",
+    "compared": 1265600,
+    "matched": 1241451,
+    "score": 0.9809189317319849,
+    "diff": "reconnect-failed-diff.png",
+    "builtSize": [
+     1120,
+     1130
+    ],
+    "designSize": [
+     1120,
+     1130
+    ]
+   },
+   {
+    "id": "remove-refused-in-use",
+    "title": "Remove refused: a workflow now uses the connection",
+    "width": 1120,
+    "height": 1167,
+    "status": "measured",
+    "compared": 1307040,
+    "matched": 1282330,
+    "score": 0.9810946872322194,
+    "diff": "remove-refused-in-use-diff.png",
+    "builtSize": [
+     1120,
+     1167
+    ],
+    "designSize": [
+     1120,
+     1167
     ]
    }
   ]
