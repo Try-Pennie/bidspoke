@@ -4,7 +4,7 @@
 // score runs them on the design first (the positive control) and then on the built page.
 (function () {
   var NAVY = "rgb(29, 33, 47)", BLUE = "rgb(27, 114, 186)", RED = "rgb(180, 35, 24)", HINT = "rgb(105, 112, 129)", WHITE = "rgb(255, 255, 255)";
-  var ALL = ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded"];
+  var ALL = ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded", "google-add-drive", "google-removing", "stale-retry-failed", "not-loaded-refused", "alert-login"];
   // Round 26: every dialog's title is one size.
   var DIALOG_TITLE = "20px";
   var EXTRA = ["saved", "remove"];
@@ -104,7 +104,7 @@
   }
 
   window.DESIGN_CHECKS = [
-    { id: "D1", frames: ["healthy", "problem", "saved", "stale"], check: function (doc) {
+    { id: "D1", frames: ["healthy", "problem", "saved", "stale", "stale-retry-failed", "alert-login"], check: function (doc) {
       var list = p(main(doc), "connection-list"), panel = p(main(doc), "detail");
       if (!list || !panel) return bad("no connection list or no detail panel");
       var l = box(list), r = box(panel);
@@ -126,7 +126,7 @@
       if (!under("HTTP", ["Lender API", "Regal webhook"])) return bad("Lender API and Regal webhook are not under HTTP");
       return ok("nav reads Connections with a plug; the alert login and HTTP services are listed");
     } },
-    { id: "D3", frames: ["healthy", "problem", "google-list", "add-choose", "saved", "stale"], check: function (doc, ctx) {
+    { id: "D3", frames: ["healthy", "problem", "google-list", "add-choose", "saved", "stale", "stale-retry-failed", "alert-login", "google-add-drive", "google-removing"], check: function (doc, ctx) {
       var list = p(main(doc), "connection-list");
       if (!list) return bad("no connection list");
       var got = groupsOf(list).map(function (g) {
@@ -220,7 +220,7 @@
       if (buttons(used).length) return bad("the Used by list holds a button");
       return ok(c.workflows.length + " workflows listed, Remove greyed");
     } },
-    { id: "D10", frames: ["google-list"], check: function (doc, ctx) {
+    { id: "D10", frames: ["google-list", "google-add-drive", "google-removing"], check: function (doc, ctx) {
       var list = p(main(doc), "connection-list");
       var g = groupsOf(list).filter(function (x) { return x.heading === "Google"; })[0];
       if (!g || !g.items.length || g.items[0].getAttribute("data-entry") !== "google-subjects") return bad("Mailboxes and drives is not the first Google entry");
@@ -417,7 +417,7 @@
       }
       return ok("Remove ready" + (ctx.frame === "remove" ? ", dialog asks once" : ""));
     } },
-    { id: "D22", frames: ["stale"], check: function (doc, ctx) {
+    { id: "D22", frames: ["stale", "stale-retry-failed"], check: function (doc, ctx) {
       var m = main(doc), st = p(m, "stale-strip"), list = p(m, "connection-list");
       var want = "Login checks are not answering. Statuses are as of " + ctx.fixture.statusesAsOf + ".";
       if (!st || txt(st).indexOf(want) !== 0) return bad("no strip reading " + want);
@@ -469,6 +469,62 @@
       var lone = lineBlocks(main(doc)).filter(function (b) { return b.lines.length > 1 && b.lines[b.lines.length - 1].words.length === 1; });
       if (lone.length) return bad("ends on a lone word: " + lone.slice(0, 3).map(function (b) { return "\"" + txt(b.el).slice(0, 80) + "\""; }).join(" | "));
       return ok("no line ends on a lone word");
+    } },
+    // Round 29: Mailbox or Shared drive is chosen first.
+    { id: "D30", frames: ["google-list", "google-add-drive", "google-removing"], check: function (doc, ctx) {
+      var add = p(p(main(doc), "google-subjects"), "subject-add");
+      if (!add) return bad("no add row");
+      var group = q(add, '[role="radiogroup"]');
+      if (!group) return bad("no choice above the boxes");
+      var radios = qa(group, '[role="radio"]');
+      if (!same(radios.map(txt), ["Mailbox", "Shared drive"])) return bad("the choice reads " + JSON.stringify(radios.map(txt)));
+      var inputs = qa(add, "input");
+      if (!inputs.length || box(group).bottom > box(inputs[0]).top) return bad("the choice is not above the boxes");
+      if (ctx.frame === "google-list") {
+        if (radios[0].getAttribute("aria-checked") !== "true") return bad("Mailbox is not the one chosen");
+        if (inputs.length !== 1 || inputs[0].placeholder !== "Mailbox address") return bad("the mailbox row holds " + JSON.stringify(inputs.map(function (i) { return i.placeholder; })));
+        var add_ = button(add, "Add"), ib = box(inputs[0]), ab = add_ && box(add_);
+        if (!ab || !(ab.top < ib.bottom && ib.top < ab.bottom) || ab.left < ib.right) return bad("Add is not beside the mailbox box");
+      }
+      return ok("Mailbox or Shared drive first");
+    } },
+    // Rounds 29 and 30: the whole address is pasted; the ID is never shown back.
+    { id: "D31", frames: ["google-add-drive"], check: function (doc) {
+      var panel = p(main(doc), "google-subjects"), add = p(panel, "subject-add");
+      var addr = qa(add, "input").filter(function (i) { return /address/i.test(i.placeholder); })[0];
+      if (!addr) return bad("no address box");
+      var m = /^https:\/\/drive\.google\.com\/drive\/(?:u\/\d+\/)?folders\/([A-Za-z0-9_-]{10,128})(?:[/?#]|$)/.exec(addr.value);
+      if (!m) return bad("the address box holds " + JSON.stringify(addr.value) + ", not a whole Drive folder address");
+      if (txt(panel).indexOf(m[1]) >= 0) return bad("the drive's ID is shown on the panel");
+      var other = qa(panel, "input").filter(function (i) { return i !== addr && i.value.indexOf(m[1]) >= 0; });
+      if (other.length) return bad("another box shows the ID");
+      return ok("the whole address pasted; its ID shown nowhere else");
+    } },
+    // Round 31: the address on a line of its own, the name and Add under it.
+    { id: "D32", frames: ["google-add-drive"], check: function (doc) {
+      var add = p(p(main(doc), "google-subjects"), "subject-add");
+      var addr = qa(add, "input").filter(function (i) { return i.placeholder === "Shared drive address, from Google Drive"; })[0];
+      var name = qa(add, "input").filter(function (i) { return i.placeholder === "Drive name, shown on this list"; })[0];
+      var go = button(add, "Add");
+      if (!addr || !name || !go) return bad("the drive row lacks its address, its name or Add");
+      var a = box(addr), n = box(name), g = box(go);
+      var level = function (x, y) { return x.top < y.bottom && y.top < x.bottom; };
+      var sharing = qa(add, "input, button").filter(function (e) { return e !== addr && level(box(e), a); });
+      if (sharing.length) return bad("something shares the address's line: " + txt(sharing[0]));
+      if (n.top < a.bottom) return bad("the name is not under the address");
+      if (!level(g, n) || g.left < n.right) return bad("Add is not at the end of the name's line");
+      return ok("address alone; name and Add under it");
+    } },
+    // Round 32: a working line's spinner is as tall as the capitals and level with them.
+    { id: "D33", frames: ["google-removing"], check: function (doc) {
+      var line = qa(main(doc), '[role="status"]').filter(function (e) { return /Removing /.test(txt(e)); })[0];
+      var svg = line && q(line, "svg");
+      if (!svg) return bad("no working line with a spinner");
+      var fs = parseFloat(css(line).fontSize), s = css(svg);
+      var near = function (v, want) { return Math.abs(parseFloat(v) - want) <= 0.25; };
+      if (!near(s.width, 0.95 * fs) || !near(s.height, 0.95 * fs)) return bad("the spinner is " + s.width + " by " + s.height + " on a " + fs + "px line, not 0.95em");
+      if (s.position !== "relative" || !near(s.top, -0.1 * fs)) return bad("the spinner is not raised 0.1em (" + s.position + ", top " + s.top + ")");
+      return ok("spinner 0.95em, raised 0.1em, on a " + fs + "px line");
     } },
     // Round 27: an open dropdown's highlighted row is pale grey behind dark text, in every dropdown.
     { id: "D28", frames: ["add-salesforce-new-org"], check: function (doc) {
