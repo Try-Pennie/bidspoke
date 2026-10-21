@@ -303,7 +303,7 @@ export async function recoveryDue(
   kv: RecoveryKv,
   prefix: RecoveryMarkerSignal,
   id: string,
-  opts: { now?: number; rearmMinutes?: number } = {},
+  opts: { now?: number; rearmMinutes?: number; recordFirstHealthy?: boolean } = {},
 ): Promise<RecoveryDue | null> {
   const alertedAt = await kv.get(recoveryKey(prefix, id))
   if (!alertedAt) return null
@@ -315,7 +315,10 @@ export async function recoveryDue(
 
   // This tick is healthy: if it is the first since the last sighting, it is the
   // first check to find the condition clear, which the all-clear names (#2580).
-  const firstHealthyAt = await firstHealthyAfter(kv, prefix, id, active, lastSpike, now)
+  // Not for a caller whose quiet tick is not yet evidence of health (the
+  // hasEvidence checks of announceRecovery, #817): a tick with no traffic reads
+  // as quiet too, and must not be named as the first one to find it clear.
+  const firstHealthyAt = opts.recordFirstHealthy === false ? null : await firstHealthyAfter(kv, prefix, id, active, lastSpike, now)
 
   // Still inside the re-arm window: the condition is quiet, not over. Hold BOTH
   // keys, so a relapse continues this incident instead of opening a new one, and
@@ -331,7 +334,8 @@ export async function recoveryDue(
 
 /**
  * Close the incident for `id` once its all-clear has DELIVERED: the marker, the
- * running end and the cooldown all go, so the next genuine spike pages at once.
+ * running end, the first healthy check (#2580) and the cooldown all go, so the
+ * next genuine spike pages at once.
  * The other half of `announceRecovery` (#1267). Never call it on a failed send.
  *
  * `end` says why it ended (#2099). The ended event goes to the outbox BEFORE the
@@ -377,7 +381,7 @@ export async function settleRecovery(
 
 /**
  * Call on a HEALTHY check. If we previously paged for `id`, send the all-clear
- * and clear both keys. Returns whether an all-clear was delivered.
+ * and clear its keys (settleRecovery). Returns whether an all-clear was delivered.
  *
  * `send` receives the ISO time of the first page, the ISO time of the last
  * observed failure (null when that was never recorded), so the message can say
@@ -405,8 +409,12 @@ export async function announceRecovery(
   opts: { now?: number; rearmMinutes?: number; hasEvidence?: () => boolean | Promise<boolean>; claim?: AllClearClaim } = {},
 ): Promise<boolean> {
   // One reading for the whole all-clear: judging it due and recording its end.
+  // A check that needs evidence of recovery records no first healthy check: its
+  // quiet ticks are not judged for evidence until the all-clear is owed, so the
+  // first one may be a dead pipe (#817). Its all-clear says it had cleared by the
+  // tick that found the evidence, which is what was observed (#2580).
   const now = opts.now ?? Date.now()
-  const due = await recoveryDue(kv, prefix, id, { ...opts, now })
+  const due = await recoveryDue(kv, prefix, id, { now, rearmMinutes: opts.rearmMinutes, recordFirstHealthy: !opts.hasEvidence })
   if (!due) return false
 
   // #817: a check that recovers on the ABSENCE of its condition (the three rate

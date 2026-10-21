@@ -572,6 +572,20 @@ describe('the first healthy observation after the last sighting (#2580)', () => 
     expect(send).toHaveBeenCalledWith(PAGED, PAGED, FIRST_RECEIVED)
   })
 
+  // A check that needs evidence of recovery (#817) does not judge its quiet ticks
+  // for evidence until the all-clear is owed, so its first quiet tick may be a
+  // pipe with no traffic. It must not be named as the first check to find it clear.
+  it('records none for a check that needs evidence of recovery, which says it had cleared by the tick that found it', async () => {
+    const kv = seeded()
+    const send = vi.fn().mockResolvedValue(true)
+    const hasEvidence = vi.fn().mockReturnValue(true)
+    const call = (now: string) => announceRecovery(kv, 'partner-page-live', 'channel', null, PLATFORM, send, { now: Date.parse(now), hasEvidence })
+    expect(await call(FIRST_RECEIVED)).toBe(false)
+    expect(kv.store.has(healthyKey('partner-page-live', 'channel'))).toBe(false)
+    expect(await call(ANNOUNCED)).toBe(true)
+    expect(send).toHaveBeenCalledWith(PAGED, PAGED, null)
+  })
+
   it('settleRecovery removes it with the other markers', async () => {
     const kv = seeded()
     await due(kv, FIRST_RECEIVED)
