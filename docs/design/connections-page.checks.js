@@ -481,7 +481,7 @@
         return Array.prototype.some.call(e.childNodes, function (n) { return n.nodeType === 3 && n.nodeValue.trim(); });
       })[0];
       var colour = words ? css(words).color : s.color;
-      if (colour === WHITE || colour === NAVY || colour === BLUE || colour !== GRAPHITE) return bad("the highlighted option's text is " + colour + ", not " + GRAPHITE);
+      if (colour !== GRAPHITE) return bad("the highlighted option's text is " + colour + ", not " + GRAPHITE);
       return ok("highlighted option pale grey behind graphite text");
     } }
   ];

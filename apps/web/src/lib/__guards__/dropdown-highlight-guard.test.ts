@@ -29,7 +29,9 @@ export function highlightViolations(css: string): string[] {
   const found: string[] = []
   let selectHighlights = 0
   let activeRules = 0
-  for (const m of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+  // Comments go first, or the comment above a rule reads as part of its selector.
+  const code = css.replace(/\/\*[\s\S]*?\*\//g, '')
+  for (const m of code.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     const selector = m[1].trim()
     const tokens = m[2].split(/[\s;]+/).filter(Boolean)
     if (/^\.select-item$/.test(selector)) {
@@ -89,6 +91,12 @@ describe('an open dropdown highlights its row in pale grey (#2338 round 27)', ()
       '.combobox-item-active: text-white',
       '.combobox-item-active: no bg-highlight',
     ])
+    // A comment above a rule that paints no background is still read as that rule.
+    expect(highlightViolations([
+      '.select-item { @apply data-[highlighted]:bg-highlight; }',
+      '/* The highlighted row. */\n.suggest-item-active { @apply text-graphite; }',
+      '.combobox-item-active { @apply bg-highlight; }',
+    ].join('\n'))).toEqual(['.suggest-item-active: no bg-highlight'])
     expect(highlightViolations('.suggest-item-active { @apply bg-highlight; }')).toEqual([
       '.select-item draws no highlighted row',
       'a dropdown highlight rule is missing from globals.css',
