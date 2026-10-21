@@ -55,9 +55,9 @@ export const NODE_TYPE_COLOR: Record<ColoredNodeType, NodeColor> = {
   // Retired (#645), still executable and still in NODE_TYPES, so it still has to
   // draw. Matches the GenericNode card it falls back to.
   partner_bid:    { icon: 'text-slate-400',   hex: '#94a3b8' },
-  // Engine only for now (#2589): no palette offers it, and its colour is chosen
-  // with its card in phase 3 (#2590). Until then it draws as the generic card.
-  lead_validation: { icon: 'text-slate-400',  hex: '#94a3b8' },
+  // The card header's label colour, slate 700 (Dan, 2026-10-21, #2590 C2): a
+  // quiet grey blue that reads as a gate, distinct from Parallel's slate 500.
+  lead_validation: { icon: 'text-slate-700',  hex: '#334155' },
 }
 
 /** Gray for a type we do not know. A stray or future node still draws. */

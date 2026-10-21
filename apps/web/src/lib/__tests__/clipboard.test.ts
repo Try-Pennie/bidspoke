@@ -5,8 +5,10 @@
  * returns null for an empty / corrupt store, and that the localStorage key
  * is stable across workflow navigations.
  */
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { writeClipboard, readClipboard, CLIPBOARD_KEY } from '../clipboard'
+import { writeClipboard, readClipboard, pasteIdentity, CLIPBOARD_KEY } from '../clipboard'
 
 // Minimal localStorage mock — vitest/node has no DOM APIs
 const store: Record<string, string> = {}
@@ -84,5 +86,48 @@ describe('readClipboard', () => {
     ;(first.config.deep as Record<string, unknown>).value = 0
     const second = readClipboard()!
     expect((second.config.deep as Record<string, unknown>).value).toBe(42)
+  })
+})
+
+// #2590: a lead validation swap pastes the proven node rather than retyping it,
+// and lead sightings and Snowflake record the step by its namespace and label,
+// so a paste keeps both whenever the namespace is free in the workflow.
+describe('a pasted node keeps its namespace and label', () => {
+  const proven = {
+    type: 'lead_validation' as const,
+    namespace: 'validate_bidding_and_state',
+    label: 'Validate bidding and state',
+    config: { lead_id_field: 'trigger.payload.leadUuid', checks: [] },
+    variables: {},
+    position: { x: 0, y: 0 },
+  }
+
+  it('carries them through the clipboard', () => {
+    writeClipboard(proven)
+    expect(readClipboard()).toMatchObject({ namespace: 'validate_bidding_and_state', label: 'Validate bidding and state' })
+  })
+
+  it('pastes under them when the namespace is free', () => {
+    expect(pasteIdentity(proven, ['constants', 'parse_name'])).toEqual({ namespace: 'validate_bidding_and_state', label: 'Validate bidding and state' })
+  })
+
+  it('falls back to the type default, as before, when the namespace is taken, so a copy never shares one', () => {
+    expect(pasteIdentity(proven, ['validate_bidding_and_state'])).toEqual({})
+  })
+
+  it('falls back to the type default for an entry copied before names were carried', () => {
+    expect(pasteIdentity({ type: 'filter', config: {}, variables: {}, position: { x: 0, y: 0 } }, [])).toEqual({})
+  })
+
+  // WorkflowCanvas cannot be mounted in jsdom (#737), so its two halves are read
+  // from source: the copy writes the names, and the paste key asks pasteIdentity.
+  it('is wired into the canvas copy and paste keys', () => {
+    const src = readFileSync(path.join(__dirname, '..', '..', 'components', 'canvas', 'WorkflowCanvas.tsx'), 'utf8')
+    const copyAt = src.indexOf('function copyNode')
+    const copy = src.slice(copyAt, src.indexOf('\n  }\n', copyAt))
+    expect(copy).toMatch(/namespace: d\.namespace/)
+    expect(copy).toMatch(/label: d\.label/)
+    const pasteKey = src.slice(src.indexOf('// Cmd+V'), src.indexOf('// Cmd+D'))
+    expect(pasteKey).toMatch(/pasteIdentity\(cb, nodeNamespaces\)/)
   })
 })

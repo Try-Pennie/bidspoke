@@ -2786,6 +2786,12 @@ export async function runParallelChild(
       if (result.earlyResponse) {
         const r = result.earlyResponse
         const bodyStr = typeof r.body === 'string' ? r.body : JSON.stringify(r.body)
+        // Named by the step's own type (#2590): a lead validation step answers
+        // too, and reading as a Code node sent people looking for a script.
+        if (node.type !== 'code') {
+          const body = bodyStr.length > 300 ? `${bodyStr.slice(0, 300)}...` : bodyStr
+          throw new Error(`The ${node.type.replace(/_/g, ' ')} step ${node.namespace} answered the lead inside a parallel block (status ${r.status}), which cannot answer it while the other slots run. Move it before the parallel block. Body: ${body}`)
+        }
         const preview = bodyStr.length > 300 ? bodyStr.slice(0, 300) + '…' : bodyStr
         throw new Error(`Code returned a respond sentinel (status ${r.status}). Inside a parallel block, respond-and-exit is not meaningful — throw an error instead. Body: ${preview}`)
       }

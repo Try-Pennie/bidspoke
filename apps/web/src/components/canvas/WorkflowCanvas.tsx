@@ -64,7 +64,7 @@ import TriggerConfigPanel from './TriggerConfigPanel'
 import { nodeTypes } from './nodes/registry'
 import VersionHistoryPanel from './VersionHistoryPanel'
 import type { ExecutionStep } from '@/types/workflow'
-import { writeClipboard, readClipboard } from '@/lib/clipboard'
+import { writeClipboard, readClipboard, pasteIdentity } from '@/lib/clipboard'
 import { computeEdgesAfterDelete } from '@/lib/splice-edges'
 import { onBeforeNodeDelete } from '@/lib/delete-routing'
 import { resolvePostSaveStateBySignature, computeEditSignature, deriveDirty, deriveDraggingState } from '@/lib/save-dirty-guard'
@@ -86,6 +86,7 @@ import WorkflowActiveBadge from '@/components/WorkflowActiveBadge'
 import { noChangesMessage, saveFinished, saveOutcomeMessage } from '@/lib/save-outcome'
 import { restoreVersion } from '@/lib/version-restore'
 import { applyFormulaRenames } from '@/lib/formula-renames'
+import { newLeadValidationConfig } from '@/lib/lead-validation-checks'
 
 
 const edgeTypes = {
@@ -608,6 +609,11 @@ function defaultNodeConfig(type: NodeType): Record<string, unknown> {
     // either: it is the partner's own, and a default would confirm the wrong buyer.
     return { ...base, retries: 0, alert_over_percent: DEFAULT_ALERT_OVER_PERCENT }
   }
+  if (type === 'lead_validation') {
+    // One blank check open to fill in (#2590). Retries 0: the step reads only
+    // the run's own data, so a retry would judge the same lead the same way.
+    return { ...base, retries: 0, ...newLeadValidationConfig() }
+  }
   if (type === 'buyer_click_check') {
     // No retries: the walker runs it once under its own budget (#1543). The lead
     // templates are the Engine flow's; a person picks the buyer.
@@ -995,7 +1001,7 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
   // Copy/paste clipboard — persisted to localStorage so it works across workflows
   function copyNode(node: Node) {
     const d = node.data as unknown as CanvasNodeData
-    writeClipboard({ type: node.type as NodeType, config: d.config ?? {}, variables: d.variables ?? {}, position: node.position })
+    writeClipboard({ type: node.type as NodeType, config: d.config ?? {}, variables: d.variables ?? {}, position: node.position, namespace: d.namespace, label: d.label })
   }
 
   const triggerRef = useRef<WorkflowDef['trigger']>(
@@ -1782,7 +1788,9 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
         const cb = readClipboard()
         if (cb) {
           e.preventDefault()
-          pasteNode(cb)
+          // Keeps the copied step id and name when they are free here (#2590).
+          const { namespace, label } = pasteIdentity(cb, nodeNamespaces)
+          pasteNode({ type: cb.type, config: cb.config, variables: cb.variables, position: cb.position, namespace, label })
         }
       }
 
