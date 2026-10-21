@@ -424,6 +424,23 @@ export const CRON_JOBS: CronJob[] = [
       'a new ops login the ops Worker holds and Bidspoke has not saved is never paged, and an open one never gets its all clear, though the ops tick still finds it with the connection check (#2340)',
   },
   {
+    // The partner ping failure page (#2582, partner-error-rate.ts). Since #2582 a
+    // failed LendSwift ping ends the lead as a completed no bid, so the failure
+    // saturation page cannot see a LendSwift outage and this job is the only one
+    // that does: watched on its own so a dark one names itself.
+    id: 'partner-error-rate',
+    label: 'Partner error rate check',
+    triggerCron: '* * * * *',
+    // 1 minute cadence, 9 minutes slack, matching the other minute jobs.
+    staleMs: 10 * MIN,
+    // Two small reads and at most one Slack post per watched workflow: seconds.
+    // Judged by the drought below, never by one run.
+    maxRunMs: 50 * 1000,
+    completionDroughtMs: 10 * MIN,
+    dependents:
+      'a LendSwift outage on RML - Bidding Workflow (LendSwift) is never paged, because each failed ping ends as a completed no bid that no other alert counts, and an open one never gets its all clear (#2582)',
+  },
+  {
     id: 'buyer-sales-checks',
     label: 'Buyer sales checks',
     triggerCron: '*/15 * * * *',

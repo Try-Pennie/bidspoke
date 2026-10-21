@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureSaturationAlert, sendFailureAlert, sendDurationAlert, sendRecoveryAlert, sendGroupedRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, sendQueryTimeoutAlert, getSlackConnection, sendPgCronRecoveryAlert, sendWorkflowScheduleRecoveryAlert, sendCronHeartbeatRecoveryAlert } from '../slack'
+import { sendFailureSaturationAlert, sendPartnerErrorRateAlert, sendFailureAlert, sendDurationAlert, sendRecoveryAlert, sendGroupedRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, sendQueryTimeoutAlert, getSlackConnection, sendPgCronRecoveryAlert, sendWorkflowScheduleRecoveryAlert, sendCronHeartbeatRecoveryAlert } from '../slack'
 import type { QueryTimeoutOffender } from '../slack'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
@@ -1422,6 +1422,51 @@ describe('sendFailureSpikeAlert (#248)', () => {
   it('honors a channel override', async () => {
     await sendFailureSpikeAlert(makeSupabase(slackConnection) as never, 'org-1', '#outages', spikePayload, 'https://app.example.com')
     expect((await slackPostOf(fetchMock.mock.calls[0])).channel).toBe('#outages')
+  })
+})
+
+describe('sendPartnerErrorRateAlert (#2582)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '4.56' }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const payload = {
+    workflow_id: 'wf-1',
+    workflow_name: 'RML - Bidding Workflow (LendSwift)',
+    partner: 'LendSwift',
+    error_count: 20,
+    ping_count: 27,
+    kinds: { timeout: 2, http_error: 18 },
+    window_minutes: 5,
+    timestamp: '2026-10-21T10:25:00.000Z',
+  }
+
+  it('no-ops when Slack is not connected', async () => {
+    expect(await sendPartnerErrorRateAlert(makeSupabase(null) as never, 'org-1', null, payload, 'https://app.example.com')).toBeNull()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('says how many pings failed, how, what the leads got, and what to do', async () => {
+    const ts = await sendPartnerErrorRateAlert(makeSupabase(slackConnection) as never, 'org-1', null, payload, 'https://app.example.com')
+    expect(ts).toBe('4.56')
+    const body = await slackPostOf(fetchMock.mock.calls[0])
+    const text = JSON.stringify(body.blocks)
+    expect(text).toContain('LendSwift Failing')
+    expect(text).toContain('20 of 27 LendSwift pings (74%) failed in the last 5 minutes')
+    expect(text).toContain('partner_error')
+    // Busiest kind first, in words.
+    expect(text).toContain('18 answered with an error, 2 did not answer in time')
+    expect(text).toContain('6:25 AM EDT')
+    expect(text).toContain('https://app.example.com/workflows/wf-1')
+    expect(body.channel).toBe('#alerts')
+  })
+
+  it('honors a channel override', async () => {
+    await sendPartnerErrorRateAlert(makeSupabase(slackConnection) as never, 'org-1', '#rml', payload, 'https://app.example.com')
+    expect((await slackPostOf(fetchMock.mock.calls[0])).channel).toBe('#rml')
   })
 })
 

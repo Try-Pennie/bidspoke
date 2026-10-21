@@ -369,9 +369,30 @@ export const RULES: Rule[] = [
       low_bid: () => json({ data: { status: 'ACCEPTED', bid_amount: 0.5, min_bid_value: null, redirect_url: 'https://example.com/accepted', rejection_reason: null } }),
       rejected: () => json({ data: { status: 'REJECTED', bid_amount: 0, min_bid_value: null, redirect_url: null, rejection_reason: 'credit_policy' } }),
       outage: () => json({ message: 'money gate: decide unavailable' }, 503),
+      // The two error shapes LendSwift's decide answered on 2026-10-21 (#2582), with
+      // synthetic ids. The provider message embeds a provider URL, which for one of
+      // their providers ends in the applicant's SSN; nine zeros stand in for it here.
+      decide_error: () => taktileError('AttributeError: Attribute: `data` not found', 'runtime'),
+      provider_timeout: () => taktileError(`We encountered an issue while retrieving the response from the provider. Details: ${JSON.stringify({
+        detail: [{ msg: 'Timeout on downstream API: get https://ms.lendswift.com/leads/v1/ssn/000000000', type: 'provider_timeout', ctx: { msg: 'Request to downstream API timed out', provider_raw_response: null, provider_status_code: 504 } }],
+        meta: { request_attempts: 1, provider_response_status: 'timeout' },
+      })}`, 'provider'),
+      // A 200 with no decision in it, which the flow's build_response cannot read.
+      no_decision: () => json({ status: 'error', detail: { msg: 'money gate: no decision', exc_type: 'runtime' } }),
     },
   },
 ]
+
+/** A Taktile decide error body, as LendSwift's answered on 2026-10-21 (#2582), with nothing real in it. */
+function taktileError(msg: string, excType: string): StubAnswer {
+  return json({
+    status: 'error',
+    detail: { msg, node_id: '00000000-0000-4000-8000-00000000d0de', exc_type: excType },
+    metadata: { version: 'gate', entity_id: 'gate-entity', flow_slug: 'training', decision_id: 'gate-decision-0001', environment: 'gate' },
+    raw_provider_requests: [{ money_gate: 'stands in for the requests LendSwift sent its providers' }],
+    raw_provider_responses: [],
+  }, 500)
+}
 
 export function ruleNames(): string[] {
   return RULES.map((r) => r.name)
