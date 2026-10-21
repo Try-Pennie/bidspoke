@@ -35,6 +35,7 @@ import { workflowsUsingPartner as workflowsUsingPartnerShared } from '../../lib/
 import { readOrgWorkflows } from '../../lib/org-workflows'
 import { secretKeys } from '../../lib/secret-crypto'
 import { retirePartnerLastGood } from '../../lib/partner-last-good'
+import { checkDefinitionConnections, connectionRefusalOfWriteError, type ConnectionCheckRefusal } from '../../lib/workflow-connection-check'
 
 type Variables = AuthVariables
 
@@ -117,6 +118,53 @@ async function unreadBuyerRuleRefusal(
   return c.json({ error: `Nothing was saved. ${problems.join(' ')}`, problems }, 422)
 }
 
+/**
+ * Every route here that writes a definition (create, save, duplicate, version
+ * restore) asks this before its first write (#2338, build PR 7): a definition
+ * naming a connection that was removed, or one of another organization, is
+ * refused by name and nothing is written. A check that cannot be made refuses
+ * too (lib/workflow-connection-check.ts). The database trigger
+ * workflows_refuse_missing_connections enforces the same answer at the write
+ * itself; __guards__/worker/workflow-connection-check-guard.test.ts fails on a
+ * definition writer that does not ask.
+ */
+async function connectionRefusal(
+  c: Context<{ Bindings: Env; Variables: Variables }>,
+  supabase: ReturnType<typeof createSupabaseClient>,
+  orgId: string,
+  definition: unknown,
+): Promise<Response | null> {
+  const refusal = await checkDefinitionConnections(supabase, orgId, definition)
+  return refusal ? c.json(refusal.body, refusal.status) : null
+}
+
+/**
+ * A save or restore writes its version snapshot before the workflow row. When
+ * the trigger then refuses the row (a removal committed after the check), the
+ * snapshot is taken back, so the history holds no version that never went live,
+ * and the refusal is answered by name. A take back that fails is logged: the
+ * stray snapshot is history only, never run, and its restore is refused the same
+ * way.
+ */
+async function answerLostRace(
+  c: Context<{ Bindings: Env; Variables: Variables }>,
+  supabase: ReturnType<typeof createSupabaseClient>,
+  refusal: ConnectionCheckRefusal,
+  workflowId: string,
+  versionNumber: number,
+): Promise<Response> {
+  // A miss is logged as a zero row write (the snapshot is not there to take back).
+  const { error } = await requireRowsAffected(
+    'workflow_versions.take_back',
+    () => supabase.from('workflow_versions').delete().eq('workflow_id', workflowId).eq('version_number', versionNumber).select('id'),
+    { onMiss: 'error', context: { workflow_id: workflowId, version_number: versionNumber } },
+  )
+  if (error && !isNoRowMatchedError(error)) {
+    console.error(JSON.stringify({ event: 'workflow_version_not_taken_back', workflow_id: workflowId, version_number: versionNumber, error: formatErr(error) }))
+  }
+  return c.json(refusal.body, refusal.status)
+}
+
 // POST /api/workflows
 workflows.post('/', async (c) => {
   const { orgId, userId } = c.get('user')
@@ -141,13 +189,17 @@ workflows.post('/', async (c) => {
     if (!folder) return c.json({ error: 'folder not found' }, 404)
   }
 
+  const definition = sanitizeDefinition(body.definition ?? { nodes: [], edges: [], trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } } })
+  const missing = await connectionRefusal(c, supabase, orgId, definition)
+  if (missing) return missing
+
   const { data, error } = await supabase
     .from('workflows')
     .insert({
       organization_id: orgId,
       name: body.name,
       description: body.description ?? null,
-      definition: asJson(sanitizeDefinition(body.definition ?? { nodes: [], edges: [], trigger: { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } } })),
+      definition: asJson(definition),
       // A new workflow starts switched off (#1706): nothing a caller sends can create
       // one that takes traffic before a person has switched it on through PATCH,
       // which is where the unconfigured node and partner safeguards live.
@@ -161,6 +213,8 @@ workflows.post('/', async (c) => {
     .select()
     .single()
 
+  const lostRace = connectionRefusalOfWriteError(error)
+  if (lostRace) return c.json(lostRace.body, lostRace.status)
   if (error) return dbError(c, error)
 
   await writeAuditLog(supabase, orgId, 'workflow', data.id, 'created', userId)
@@ -191,6 +245,13 @@ workflows.post('/:id/duplicate', async (c) => {
 
   if (sourceErr || !source) return c.json({ error: 'Workflow not found' }, 404)
 
+  // The copy's definition is a new write: a connection removed since the source
+  // was saved stops it here, before anything is written (#2338). Older snapshots
+  // copied into its history below are history only and are not judged.
+  const cloneDefinition = sanitizeDefinition(source.definition)
+  const missing = await connectionRefusal(c, supabase, orgId, cloneDefinition)
+  if (missing) return missing
+
   // Create the clone, always switched off (#1706), whatever the source's state.
   // A copy of a live workflow is a second definition that could take traffic the
   // moment anything routes to it, so a person switches it on deliberately.
@@ -200,7 +261,7 @@ workflows.post('/:id/duplicate', async (c) => {
       organization_id: orgId,
       name: `${source.name} (copy)`,
       description: source.description ?? null,
-      definition: sanitizeDefinition(source.definition),
+      definition: cloneDefinition,
       is_active: false,
       folder_id: source.folder_id ?? null,
       created_by: userId,
@@ -211,6 +272,8 @@ workflows.post('/:id/duplicate', async (c) => {
     .select()
     .single()
 
+  const lostRace = connectionRefusalOfWriteError(createErr)
+  if (lostRace) return c.json(lostRace.body, lostRace.status)
   if (createErr || !clone) return c.json({ error: createErr?.message ?? 'Failed to create copy' }, 500)
 
   // Copy the full version history. Preserve version_number, created_at, message,
@@ -458,6 +521,15 @@ workflows.put('/:id', async (c) => {
     return c.json({ id, no_changes: true, ...copyWarning(copyRefreshed) })
   }
 
+  // A new definition names only live connections of this organization (#2338),
+  // asked before the snapshot below, so a refusal writes nothing. A save that
+  // sends no definition writes none, and the trigger judges only a definition
+  // that changes.
+  if (body.definition !== undefined) {
+    const missing = await connectionRefusal(c, supabase, orgId, body.definition)
+    if (missing) return missing
+  }
+
   // Get next version number. `.single()` reports "no prior versions" (first save)
   // as PGRST116 — fine, start at 1. Any other error is a real DB failure: bailing
   // beats defaulting to 1, which would collide with / clobber an existing chain.
@@ -505,6 +577,8 @@ workflows.put('/:id', async (c) => {
     .select()
     .single()
 
+  const lostRace = connectionRefusalOfWriteError(updateError)
+  if (lostRace) return answerLostRace(c, supabase, lostRace, id, nextVersion)
   const updateBlocked = dbErrorUnlessNotFound(c, updateError)
   if (updateBlocked) return updateBlocked
   if (!updated) return c.json({ error: 'Workflow not found' }, 404)
@@ -902,6 +976,12 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
     if (unread) return unread
   }
 
+  // The old definition may name a connection removed since it was saved
+  // (#2338): it stops here, before the snapshot, and asks for a replacement.
+  const restored = sanitizeDefinition(version.definition)
+  const missing = await connectionRefusal(c, supabase, orgId, restored)
+  if (missing) return missing
+
   // Restore = create a new version with the old definition. PGRST116 = no prior
   // versions → start at 1; any other error is a real failure (defaulting to 1
   // would clobber the chain), so bail.
@@ -920,7 +1000,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   const { error: restoreInsertError } = await supabase.from('workflow_versions').insert({
     workflow_id: id,
     version_number: nextVersion,
-    definition: sanitizeDefinition(version.definition),
+    definition: restored,
     created_by: userId,
     message: `Restored from v${version.version_number}`,
   })
@@ -930,15 +1010,24 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   // result entirely, so a restore could write history, fail to move the live
   // definition, and still answer 200: history and definition silently diverge
   // (#588).
-  const restoreBlocked = await requireRowOr404(c, 'Workflow not found', () =>
-    supabase
+  // The raw error is kept, because the trigger's refusal (#2338) names the
+  // connections in a detail the rowcount helper does not carry.
+  let restoreWriteError: unknown = null
+  const restoreWrite = await requireRowsAffected('Workflow not found', async () => {
+    const result = await supabase
       .from('workflows')
-      .update({ definition: sanitizeDefinition(version.definition), updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name })
+      .update({ definition: restored, updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name })
       .eq('id', id)
       .eq('organization_id', orgId)
       .select('id')
-  )
-  if (restoreBlocked) return restoreBlocked
+    restoreWriteError = result.error
+    return result
+  })
+  const lostRace = connectionRefusalOfWriteError(restoreWriteError)
+  if (lostRace) return answerLostRace(c, supabase, lostRace, id, nextVersion)
+  if (restoreWrite.error) {
+    return isNoRowMatchedError(restoreWrite.error) ? c.json({ error: 'Workflow not found' }, 404) : dbError(c, restoreWrite.error)
+  }
 
   const copyRefreshed = await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
@@ -1330,6 +1419,10 @@ workflows.get('/:id/rename-impact', async (c) => {
 // Rewrites `steps.OLD.…` → `steps.NEW.…` in each listed partner's bid_formula
 // and bid_resolver_config.formula. Caller is responsible for filtering out
 // cross-workflow-shared partners using the rename-impact response.
+// It writes partner formulas only, never a workflow definition (the canvas
+// saves the renamed definition through PUT /:id, which checks its connections,
+// #2338), and a namespace cannot hold a connection id (isValidNamespace allows
+// no hyphen), so it asks no connection check.
 workflows.post('/:id/rename-apply', async (c) => {
   const { orgId, userId } = c.get('user')
   const id = c.req.param('id')

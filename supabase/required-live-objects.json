@@ -567,6 +567,15 @@
     "note": "The workflows using one connection, by its id, soft deleted ones included (#2338, R5 and R9): the Connections page's Used by tab and its Remove refusal read it, and remove_ops_connection calls it, so a missing function fails both. Read only, but it reads every workflow definition of an organization, so service_role only and anon must be denied. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would read nothing."
   },
   {
+    "name": "definition_connection_problems",
+    "args": {
+      "p_organization_id": "00000000-0000-0000-0000-000000000000",
+      "p_definition": { "nodes": [] }
+    },
+    "anon": "denied",
+    "note": "The connection check every workflow definition writer asks before it writes (#2338, build PR 7): create, save, duplicate and version restore in routes/api/workflows.ts. A missing function refuses every one of those writes by name (workflow_connection_check_unavailable) rather than saving unchecked, so a workflow cannot be saved at all until it exists. Read only, but it reads connections, tombstones and the audit log, so service_role only and anon must be denied. Probed with the all zero organization and a definition naming nothing, which reads nothing."
+  },
+  {
     "name": "remove_ops_connection",
     "args": {
       "p_organization_id": "00000000-0000-0000-0000-000000000000",

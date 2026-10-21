@@ -5,6 +5,15 @@
  * Auth rejection is covered in workflows-auth.test.ts.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { sanitizeCodeNodeScripts } from '@bidspoke/script-hygiene'
+// The live money workflows the money gate replays (#2338: their save must be unchanged).
+import MONEY_MAIN_FLOW from '../../../../money-gate/fixtures/definitions/60e2e0bc-5aa2-47db-b333-3a8fe1c62e09.json'
+import MONEY_RML_GIGFI from '../../../../money-gate/fixtures/definitions/6624acd0-bf61-4d21-85fc-4371ca7ed77d.json'
+import MONEY_LEAD_ECONOMY from '../../../../money-gate/fixtures/definitions/89b1a6af-7e0f-43de-bc66-1e888184551f.json'
+import MONEY_LIBERTY1_CLICK from '../../../../money-gate/fixtures/definitions/8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08.json'
+import MONEY_ENGINE from '../../../../money-gate/fixtures/definitions/da82a183-1a4a-417e-b0b8-5f3fe5e14840.json'
+import MONEY_RML_LENDSWIFT from '../../../../money-gate/fixtures/definitions/e1b810da-16c0-49eb-bf12-ba1c9b67c914.json'
+import MONEY_DELEGATE_GMAIL from '../../../../money-gate/fixtures/definitions/ee8ebc50-07dc-4670-89c7-d8ae47401558.json'
 import { recordingContext } from '../../../test-setup/wait-until'
 import { makeSupabase as makeSupabaseMock, type TableConfig } from './_supabase-mock'
 import type { Env } from '../../../index'
@@ -2120,5 +2129,226 @@ describe('a live buyer step that cannot read a buyer profile rule (#2149)', () =
     const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: codeOnly } })
     expect(res.status).toBe(200)
     expect(vi.mocked(loadBuyerProfiles)).not.toHaveBeenCalled()
+  })
+})
+
+// Every definition writer re-checks the connection ids it would write (#2338,
+// build PR 7): a removed connection, or one of another organization, is refused
+// by name with nothing written; a check that cannot be made refuses too; and a
+// definition naming no connection is written exactly as before.
+describe('workflow definition writers re-check connection ids (#2338)', () => {
+  const REMOVED = '33333333-3333-3333-3333-333333333301'
+  const ELSEWHERE = '33333333-3333-3333-3333-333333333302'
+  const naming = (id: string) => ({ nodes: [{ id: 'n1', namespace: 'sf_import', type: 'code', config: { script: 'return 1', connection_id: id } }], edges: [] })
+  const removedRow = { connection_id: REMOVED, problem: 'removed', name: 'Pennie Salesforce', steps: ['sf_import'] }
+  const elsewhereRow = { connection_id: ELSEWHERE, problem: 'not_this_organization', name: null, steps: ['sf_import'] }
+  const triggerRefusal = {
+    code: 'BP409',
+    message: 'workflow_names_missing_connection',
+    details: JSON.stringify([{ id: REMOVED, problem: 'removed', name: 'Pennie Salesforce', steps: ['sf_import'] }]),
+  }
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    app = await makeApp()
+  })
+
+  /** The check answering with these rows, or failing with this error. */
+  const checkAnswering = (answer: { data: unknown; error: unknown }) =>
+    vi.fn(async (name: string, _args: unknown) => (name === 'definition_connection_problems' ? answer : { data: null, error: null }))
+
+  const writes = (sb: ReturnType<typeof makeSupabase>) => ({
+    workflows: (sb.calls.workflows ?? []).filter(([m]) => m === 'insert' || m === 'update' || m === 'upsert'),
+    versions: (sb.calls.workflow_versions ?? []).filter(([m]) => m === 'insert' || m === 'update' || m === 'upsert'),
+  })
+
+  type Tables = Record<string, TableConfig | TableConfig[]>
+  /** Each writer, with the tables it reads before its first write and the definition it would write. */
+  const writers: Array<{ label: string; method: string; path: string; body: unknown; tables: Tables }> = [
+    {
+      label: 'POST / (create)',
+      method: 'POST', path: '/workflows', body: { name: 'New', definition: naming(REMOVED) },
+      tables: { workflows: { insertResult: { id: 'wf-new' } } },
+    },
+    {
+      label: 'PUT /:id (save)',
+      method: 'PUT', path: '/workflows/wf-1', body: { definition: naming(REMOVED) },
+      tables: {
+        workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
+        workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2 } }],
+      },
+    },
+    {
+      label: 'POST /:id/duplicate',
+      method: 'POST', path: '/workflows/wf-1/duplicate', body: undefined,
+      tables: {
+        workflows: [{ single: { name: 'Lead Routing', description: null, definition: naming(REMOVED), folder_id: null } }, { insertResult: { id: 'wf-copy' } }],
+        workflow_versions: [{ list: [] }, { insertResult: {} }],
+      },
+    },
+    {
+      label: 'POST /:id/versions/:version_id/restore',
+      method: 'POST', path: '/workflows/wf-1/versions/ver-1/restore', body: undefined,
+      tables: {
+        workflows: [{ single: existingWorkflow }, { list: [{ id: 'wf-1' }] }],
+        workflow_versions: [{ single: { id: 'ver-1', definition: naming(REMOVED), version_number: 1 } }, { single: { version_number: 3 } }, { insertResult: { id: 'ver-4' } }],
+      },
+    },
+  ]
+
+  it.each(writers)('$label refuses a removed connection with 409, naming it and its step, and writes nothing', async (w) => {
+    const sb = makeSupabase({ users: { single: testUser }, ...w.tables }, { rpc: checkAnswering({ data: [removedRow], error: null }) })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, w.method, w.path, { body: w.body })
+    expect(res.status).toBe(409)
+    const body = await res.json() as { error: string; code: string; missing_connections: unknown[] }
+    expect(body.code).toBe('workflow_connection_missing')
+    expect(body.error).toBe('Nothing was saved. The step sf_import names the connection "Pennie Salesforce", which was removed. Give the step a replacement connection, then save again.')
+    expect(body.missing_connections).toEqual([{ id: REMOVED, problem: 'removed', name: 'Pennie Salesforce', steps: ['sf_import'] }])
+    expect(writes(sb)).toEqual({ workflows: [], versions: [] })
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+  })
+
+  it.each(writers)('$label asks the check with the caller\'s organization and the definition it would write', async (w) => {
+    const rpc = checkAnswering({ data: [], error: null })
+    const sb = makeSupabase({ users: { single: testUser }, ...w.tables }, { rpc })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, w.method, w.path, { body: w.body })
+    expect(res.status).toBeLessThan(300)
+    expect(rpc).toHaveBeenCalledWith('definition_connection_problems', { p_organization_id: USER_ORG, p_definition: naming(REMOVED) })
+  })
+
+  it('refuses another organization\'s connection by its id, never by a name', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
+      workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2 } }],
+    }, { rpc: checkAnswering({ data: [elsewhereRow], error: null }) })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: naming(ELSEWHERE) } })
+    expect(res.status).toBe(409)
+    const body = await res.json() as { error: string }
+    expect(body.error).toBe(`Nothing was saved. The step sf_import names a connection that is not one of this organization's (${ELSEWHERE}). Give the step a replacement connection, then save again.`)
+    expect(writes(sb)).toEqual({ workflows: [], versions: [] })
+  })
+
+  it.each(writers)('$label answers a connection lookup that failed with 503 and writes nothing, never saving unchecked', async (w) => {
+    const sb = makeSupabase({ users: { single: testUser }, ...w.tables }, {
+      rpc: checkAnswering({ data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } }),
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, w.method, w.path, { body: w.body })
+    expect(res.status).toBe(503)
+    expect(((await res.json()) as { code: string }).code).toBe('workflow_connection_check_failed')
+    expect(writes(sb)).toEqual({ workflows: [], versions: [] })
+  })
+
+  it.each(writers)('$label answers a check that does not exist yet (its migration unapplied) with a named 503 and writes nothing', async (w) => {
+    const sb = makeSupabase({ users: { single: testUser }, ...w.tables }, {
+      rpc: checkAnswering({ data: null, error: { code: 'PGRST202', message: 'Could not find the function public.definition_connection_problems(p_definition, p_organization_id) in the schema cache' } }),
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, w.method, w.path, { body: w.body })
+    expect(res.status).toBe(503)
+    expect(((await res.json()) as { code: string }).code).toBe('workflow_connection_check_unavailable')
+    expect(writes(sb)).toEqual({ workflows: [], versions: [] })
+  })
+
+  it('a save sending no definition writes none and asks no check', async () => {
+    const rpc = checkAnswering({ data: [removedRow], error: null })
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: existingWorkflow }, { single: { ...existingWorkflow, name: 'Renamed' } }],
+      workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2 } }],
+    }, { rpc })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
+    expect(res.status).toBe(200)
+    expect(rpc).not.toHaveBeenCalledWith('definition_connection_problems', expect.anything())
+  })
+
+  it('a save that lost the race to a removal (the trigger refused the row) is answered by name, and its version snapshot is taken back', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: existingWorkflow }, { updateError: triggerRefusal }],
+      workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2 } }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: naming(REMOVED) } })
+    expect(res.status).toBe(409)
+    expect(((await res.json()) as { error: string }).error).toContain('"Pennie Salesforce", which was removed')
+    expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'delete')).toHaveLength(1)
+    expect(sb.eqCalls.workflow_versions).toEqual(expect.arrayContaining([['workflow_id', 'wf-1'], ['version_number', 2]]))
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+  })
+
+  it('a restore that lost the race is answered by name, and its version snapshot is taken back', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: existingWorkflow }, { updateError: triggerRefusal }],
+      workflow_versions: [{ single: { id: 'ver-1', definition: naming(REMOVED), version_number: 1 } }, { single: { version_number: 3 } }, { insertResult: { id: 'ver-4' } }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
+    expect(res.status).toBe(409)
+    expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'delete')).toHaveLength(1)
+    expect(sb.eqCalls.workflow_versions).toEqual(expect.arrayContaining([['workflow_id', 'wf-1'], ['version_number', 4]]))
+    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { label: 'POST / (create)', method: 'POST', path: '/workflows', body: { name: 'New', definition: naming(REMOVED) } as unknown, tables: { workflows: { insertError: triggerRefusal } } as Tables },
+    { label: 'POST /:id/duplicate', method: 'POST', path: '/workflows/wf-1/duplicate', body: undefined as unknown, tables: {
+      workflows: [{ single: { name: 'Lead Routing', description: null, definition: naming(REMOVED), folder_id: null } }, { insertError: triggerRefusal }],
+    } as Tables },
+  ])('$label that lost the race is answered by name, never as an internal error', async (w) => {
+    const sb = makeSupabase({ users: { single: testUser }, ...w.tables })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, w.method, w.path, { body: w.body })
+    expect(res.status).toBe(409)
+    expect(((await res.json()) as { code: string }).code).toBe('workflow_connection_missing')
+    expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'insert')).toEqual([])
+  })
+
+  // The money workflows the money gate replays: a save of each, and a create of
+  // each, writes the definition byte for byte as the route wrote it before the
+  // check existed (the sanitised definition, nothing added or reordered).
+  const money = [MONEY_MAIN_FLOW, MONEY_RML_GIGFI, MONEY_LEAD_ECONOMY, MONEY_LIBERTY1_CLICK, MONEY_ENGINE, MONEY_RML_LENDSWIFT, MONEY_DELEGATE_GMAIL] as unknown as Array<{ id: string; name: string; definition: Record<string, unknown> }>
+
+  it('reads the money workflows it exists to check, each with steps (a fixture with none would pass on nothing)', () => {
+    expect(money.map((m) => m.name)).toEqual(expect.arrayContaining(['Main Flow', 'Engine Bidding Workflow']))
+    for (const m of money) expect((m.definition.nodes as unknown[]).length).toBeGreaterThan(0)
+  })
+
+  it.each(money)('a save of the money workflow $name writes its definition byte for byte as before', async (m) => {
+    const expected = JSON.stringify(sanitizeCodeNodeScripts(structuredClone(m.definition) as { nodes?: unknown }))
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: { ...existingWorkflow, id: m.id, is_active: false } }, { single: { ...existingWorkflow, id: m.id } }],
+      workflow_versions: [{ single: { version_number: 7 } }, { insertResult: { id: 'ver-8', version_number: 8 } }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', `/workflows/${m.id}`, { body: { definition: m.definition } })
+    expect(res.status).toBe(200)
+    const written = (table: string, method: string) => (sb.calls[table] ?? []).filter(([k]) => k === method).map(([, args]) => JSON.stringify((args[0] as { definition: unknown }).definition))
+    expect(written('workflow_versions', 'insert')).toEqual([expected])
+    expect(written('workflows', 'update')).toEqual([expected])
+  })
+
+  it.each(money)('a create of the money workflow $name writes its definition byte for byte as before', async (m) => {
+    const expected = JSON.stringify(sanitizeCodeNodeScripts(structuredClone(m.definition) as { nodes?: unknown }))
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { insertResult: { id: 'wf-new' } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows', { body: { name: m.name, definition: m.definition } })
+    expect(res.status).toBe(201)
+    const inserted = (sb.calls.workflows ?? []).filter(([k]) => k === 'insert').map(([, args]) => JSON.stringify((args[0] as { definition: unknown }).definition))
+    expect(inserted).toEqual([expected])
   })
 })

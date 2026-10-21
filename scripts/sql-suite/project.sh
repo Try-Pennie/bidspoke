@@ -24,7 +24,11 @@ case "$SQL_SUITE_PROJECT" in
     # container at /sql-suite-fixtures/<the folder's package name>/.
     # The partner delete labels (#2140) are read by the Worker and by
     # partner_delete.test.sql, at /sql-suite-fixtures/partner-delete/.
-    SUITE_FIXTURES=("$ROOT/packages/buyer-profile/fixtures" "$ROOT/apps/worker/src/partner-delete/labels")
+    # The money gate's live workflow definitions (#2338, build PR 7), at
+    # /sql-suite-fixtures/money-gate/definitions/, which
+    # workflow_connection_check.test.sql saves through the workflows trigger to
+    # prove a money workflow's definition is stored exactly as sent.
+    SUITE_FIXTURES=("$ROOT/packages/buyer-profile/fixtures" "$ROOT/apps/worker/src/partner-delete/labels" "$ROOT/apps/worker/money-gate/fixtures")
     ;;
   ops)
     SUITE_MIGRATIONS="$ROOT/supabase-ops/supabase/migrations"

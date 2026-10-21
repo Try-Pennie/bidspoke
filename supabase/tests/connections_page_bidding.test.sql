@@ -75,6 +75,14 @@ RETURNS void
 LANGUAGE plpgsql
 AS $fn$
 BEGIN
+  -- Org B's workflow naming org A's connection, written before that connection
+  -- exists: since build PR 7 (#2338, workflows_refuse_missing_connections) a
+  -- write naming another organization's connection is refused, so this is the
+  -- one order that can still plant the state these cases prove is ignored.
+  INSERT INTO public.workflows (id, organization_id, name, definition, deleted_at)
+  VALUES ('44444444-4444-4444-4444-44444c2338b1', '11111111-1111-1111-1111-11111c2338bb', 'B workflow',
+     '{"nodes":[{"id":"n1","namespace":"x","type":"code","config":{"connection_id":"33333333-3333-3333-3333-33333c2338a1"}}],"edges":[]}', NULL);
+
   INSERT INTO public.service_connections
     (id, organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for, credential_generation, target, acts_as, updated_by)
   VALUES
@@ -106,10 +114,7 @@ BEGIN
      '{"nodes":[{"id":"n1","namespace":"x","type":"code","config":{"connection":"Pennie Salesforce","connection_id":"33333333-3333-3333-3333-333333333399"}}],"edges":[]}', NULL),
     -- The only workflow using a4, and it is soft deleted.
     ('44444444-4444-4444-4444-44444c2338a5', '11111111-1111-1111-1111-11111c2338aa', 'Retired Snowflake export',
-     '{"nodes":[{"id":"n1","namespace":"x","type":"code","config":{"connection_id":"33333333-3333-3333-3333-33333c2338a4"}}],"edges":[]}', now() - interval '1 day'),
-    -- Org B's workflow naming org A's connection.
-    ('44444444-4444-4444-4444-44444c2338b1', '11111111-1111-1111-1111-11111c2338bb', 'B workflow',
-     '{"nodes":[{"id":"n1","namespace":"x","type":"code","config":{"connection_id":"33333333-3333-3333-3333-33333c2338a1"}}],"edges":[]}', NULL);
+     '{"nodes":[{"id":"n1","namespace":"x","type":"code","config":{"connection_id":"33333333-3333-3333-3333-33333c2338a4"}}],"edges":[]}', now() - interval '1 day');
 END
 $fn$;
 
