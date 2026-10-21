@@ -271,8 +271,12 @@ html {
   .dialog-lg {
     @apply max-w-3xl;
   }
+  /* Every dialog's title is 20px, by this rule alone (#2338 round 35, Dan 2026-10-21):
+     lib/__guards__/dialog-title-guard.test.ts fails on any other rule sizing one. */
   .dialog-title {
-    @apply text-base font-semibold text-graphite;
+    @apply font-semibold text-graphite;
+    font-size: 20px;
+    line-height: 1.5;
   }
   .dialog-description {
     @apply text-sm text-gray-700;
@@ -754,18 +758,20 @@ html {
   .cx-page .btn.g-btn { display: inline-flex; align-items: center; gap: 10px; background: #fff; border: 1px solid #747775; border-radius: 4px; padding: 0 12px; height: 40px; font-family: Roboto, Arial, sans-serif; font-size: 14px; font-weight: 500; color: #1F1F1F; }
   .g-btn svg { display: block; }
 
-  /* Rounds 19 to 21 (build PR 10): the dialogs, on the one Dialog shell. Round 26: a 20px title. */
-  .dialog.cx-dialog { padding: 22px 24px; gap: 0; color: #1D212F; font-size: 14px; }
+  /* Rounds 19 to 21 (build PR 10): the dialogs, on the one Dialog shell, whose title rule draws them 20px (round 35). */
+  .dialog.cx-dialog { padding: 22px 24px; gap: 8px; color: #1D212F; font-size: 14px; }
   .dialog.cx-dialog-reconnect { max-width: 480px; }
   .dialog.cx-dialog-replace { max-width: 500px; }
   .dialog.cx-dialog-remove { max-width: 460px; }
-  .cx-dialog .dialog-title { font-size: 20px; font-weight: 600; color: #1D212F; margin: 0 0 8px; line-height: 1.5; }
   .cx-dialog .dialog-description { font-size: 14px; color: #1D212F; text-wrap: pretty; }
   .cx-dialog .dialog-body { color: #1D212F; font-size: 14px; }
   .cx-dialog .ad-form { margin-top: 8px; }
-  .cx-dialog .dialog-actions { margin-top: 18px; }
-  .cx-dialog-reconnect .dialog-actions, .cx-dialog-replace .dialog-actions { justify-content: flex-start; margin-top: 20px; }
+  .cx-dialog .dialog-actions { margin-top: 10px; }
+  .cx-dialog-reconnect .dialog-actions, .cx-dialog-replace .dialog-actions { justify-content: flex-start; margin-top: 12px; }
   .cx-dialog .dialog-actions .ad-line { flex-basis: 100%; }
+  /* The line under a dialog's buttons, as the settled frames space it: Reconnect's a form's row apart, Remove's close under its buttons. */
+  .cx-dialog-reconnect .dialog-actions .ad-line { margin-top: 12px; }
+  .cx-dialog-remove .dialog-actions .ad-line { margin-top: -4px; }
   .cx-dialog .btn:is(.cx-btn, .cx-btn-quiet, .cx-btn-dangerfill) { line-height: 1.5; white-space: nowrap; }
   .cx-dialog .btn.cx-btn { padding: 6px 12px; border-radius: 8px; font-size: 13px; font-weight: 500; }
   .cx-dialog .btn.cx-btn-quiet { background: #fff; color: #1D212F; border: 1px solid #D9D4CC; border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 400; }
