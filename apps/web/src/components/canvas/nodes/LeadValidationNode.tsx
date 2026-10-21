@@ -34,9 +34,11 @@ export function LeadValidationNode({ data, selected }: NodeProps) {
     >
       <Handle type="target" position={Position.Top} id="input" />
 
-      <div data-card-header className="flex items-center gap-2 rounded-t-lg border-b border-slate-100 bg-slate-50 px-3 py-2">
+      {/* The settled hex values, written as such: Tailwind 4's slate scale is
+          defined in oklch, which renders a shade off them. */}
+      <div data-card-header className="flex items-center gap-2 rounded-t-lg border-b border-[#f1f5f9] bg-[#f8fafc] px-3 py-2">
         <SquareCheckBig className={`h-4 w-4 ${NODE_TYPE_COLOR.lead_validation.icon}`} aria-hidden="true" />
-        <span className="text-xs font-semibold uppercase tracking-wide text-slate-700">Lead validation</span>
+        <span className="text-xs font-semibold uppercase tracking-wide text-[#334155]">Lead validation</span>
       </div>
       <div className="px-3 py-2">
         <p className="truncate text-sm font-semibold text-graphite">{label || namespace}</p>

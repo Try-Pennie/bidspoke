@@ -47,10 +47,12 @@ describe('the lead validation card', () => {
   it('draws its header in slate: 50 behind, 100 for the rule, 700 for the label (C2)', () => {
     const { container } = renderCard(leadValidationFixtureConfig())
     const header = container.querySelector('[data-card-header]')!
-    expect(header.className).toMatch(/\bbg-slate-50\b/)
-    expect(header.className).toMatch(/\bborder-slate-100\b/)
+    // As exact hex: Tailwind 4's slate classes are oklch and render a shade off
+    // the settled values, which the browser checks measured.
+    expect(header.className).toContain('bg-[#f8fafc]')
+    expect(header.className).toContain('border-[#f1f5f9]')
     const label = [...header.querySelectorAll('span')].find((s) => s.textContent === 'Lead validation')!
-    expect(label.className).toMatch(/\btext-slate-700\b/)
+    expect(label.className).toContain('text-[#334155]')
   })
 
   it('has one source handle, the pass through output, at the centre', () => {

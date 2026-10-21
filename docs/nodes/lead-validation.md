@@ -2,7 +2,19 @@
 
 An ordered list of checks a lead must pass before a bidding workflow goes on. Each check is a rule builder condition describing a lead that may go on, the rejection reason the lead source is told when a lead does not, and what happens when the lead lacks a value the check reads. The first check a lead does not pass rejects it; a lead that passes every check goes on to the next step.
 
-It replaces the `validate_bidding_and_state` code nodes the RML and Lead Economy workflows carry today (#934). The engine half shipped first (#2589) and is not offered on the canvas palette yet: its card and config panel are phase 3 (#2590). No live workflow uses it until a swap issue moves one, with proof that the node answers every lead exactly as the script did.
+It replaces the `validate_bidding_and_state` code nodes the RML and Lead Economy workflows carry today (#934). The engine half shipped first (#2589); the palette entry, card and settings panel followed (#2590). No live workflow uses it until a swap issue moves one, with proof that the node answers every lead exactly as the script did.
+
+## On the canvas
+
+The palette offers it as **Lead Validation**. Its card says how many checks it runs and has one way out, labelled pass: a rejected lead is answered by the step itself and goes nowhere else on the canvas.
+
+Its settings, as settled in `docs/design/lead-validation-node.html`:
+
+- **Lead id field**: the value sent back as `lead_id` when a lead is rejected.
+- **Checks, in order**: one row per check, its name and a short form of its condition. Choosing a row opens that check below the list ("Check N of M"), with its name, Move up, Move down and Remove check, the rule builder for its condition, **Rejects with** (a reason from the list, never typed) and **If the lead has no value** (reject with this reason, let it through, or fail the run). **Add check** adds a blank check at the end.
+- **Advanced**: timeout, retries and what happens if the step fails, collapsed.
+
+A node copied with Cmd+C carries its step id and display name, and Cmd+V keeps both when that step id is free in the workflow, so a swap pastes the proven node exactly as it was proven. Pasted beside a step with the same id, it takes the type's default id, as any paste does.
 
 ## What a rejection sends
 
@@ -69,7 +81,11 @@ The output and the logged input name the check and the field, never a value comp
 
 ## Save validation
 
-A save (and a create) is refused when an attached Lead Validation node has: no checks; no lead id field; a check with no label, no id, or the id of another check; a group with no conditions; a condition with no field or no operator; an operator outside the shared list; an empty value on an operator that reads one; a literal that is not a number on a number comparison, or not a list on a list comparison; a reference on an operator that compares text; a reason outside the list; an `on_missing` outside the three; a header with no name or value; a reference to a step that does not run before the node; or a Constants key the Constants step does not hold. The rule is `findLeadValidationProblems` in `packages/workflow-definition/src/lead-validation.ts`; the canvas reads the same parser.
+A Lead Validation node inside a parallel block (a slot of a Parallel node, or anywhere down a slot before its join) is refused at every save and create, live or not: a lead it rejects there cannot be answered, because the other slots are still running. The rule is `findLeadValidationPlacementProblems`. A definition saved before the rule that still holds one fails the slot at run time with an error naming the lead validation step.
+
+The rules below block only a write that makes a definition live, as every other unconfigured step does: a save of a switched on workflow, switching one on, and restoring a version onto a switched on workflow. A switched off draft with a half built check saves.
+
+A live save is refused when an attached Lead Validation node has: no checks; no lead id field; a check with no label, no id, or the id of another check; a group with no conditions; a condition with no field or no operator; an operator outside the shared list; an empty value on an operator that reads one; a literal that is not a number on a number comparison, or not a list on a list comparison; a reference on an operator that compares text; a reason outside the list; an `on_missing` outside the three; a header with no name or value; a reference to a step that does not run before the node; or a Constants key the Constants step does not hold. The rule is `findLeadValidationProblems` in `packages/workflow-definition/src/lead-validation.ts`; the canvas reads the same parser.
 
 Partner values the Constants node adds from the database (`activeBidding`, `subAccountIdsMap`, `<Slug>ClickUrl` and the rest) are not in its own data, so a check cannot name them yet. A partner lookup check is its own issue.
 
