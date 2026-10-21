@@ -318,16 +318,20 @@ function addPanel(variant) {
       field("Client id", input(draft.clientId)),
       field("Client secret", input(MASK, true)));
     var save = el("button", "cx-btn cx-btn-sm", "Save");
-    // Round 13: Save greys out, and a line under the buttons says what is happening and counts.
+    // Round 13: Save greys out, and a line under the buttons says what is happening and counts. It is
+    // the app's working line, its spinner level with the capitals (round 32).
     if (variant.save === "saving") {
       save.disabled = true;
-      line = part(el("div", "ad-line"), "save-line"); line.setAttribute("data-state", "saving"); line.setAttribute("role", "status");
-      var spin = part(el("span", "spin"), "spinner"); spin.setAttribute("aria-hidden", "true");
-      line.append(spin, document.createTextNode("Checking the login with Salesforce, " + draft.elapsed));
+      line = part(el("div", "ad-line"), "save-line"); line.setAttribute("data-state", "saving");
+      var working = el("p", "outcome outcome-working"); working.setAttribute("role", "status");
+      working.innerHTML = SPIN; working.firstChild.setAttribute("data-part", "spinner");
+      working.append(document.createTextNode("Checking the login with Salesforce, " + draft.elapsed));
+      line.append(working);
     }
-    // Round 14: the same line turns red, and Save is ready again.
+    // Round 14: the same line turns red, and Save is ready again. Red text is FieldError's
+    // (.impeccable.md), so the line is drawn in its class (build PR 10, 2026-10-21).
     if (variant.save === "failed") {
-      line = part(el("div", "ad-line bad"), "save-line"); line.setAttribute("data-state", "failed"); line.setAttribute("role", "alert");
+      line = part(el("p", "field-error text-sm ad-line"), "save-line"); line.setAttribute("data-state", "failed"); line.setAttribute("role", "alert");
       line.append(document.createTextNode("Salesforce refused the client secret. Nothing was saved. Check the secret and save again."));
     }
     foot.append(save, el("button", "cx-btn-quiet", "Cancel"));

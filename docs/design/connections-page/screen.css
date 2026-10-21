@@ -79,9 +79,10 @@
 /* Round 27: an open dropdown's highlighted row is pale grey behind dark text, in every dropdown. */
 .sv-opt[aria-selected="true"] { background: #F1EFEA; color: #343434; }
 .ad-foot { display: flex; gap: 8px; margin-top: 4px; align-items: center; }
-.ad-line { display: flex; align-items: center; gap: 10px; font-size: 14px; color: #1D212F; margin-top: 4px; }
-.ad-line.bad { color: #B42318; align-items: flex-start; }
-.spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #D9D4CC; border-top-color: #1D212F; display: inline-block; flex: none; }
+/* The line under the buttons has no colour of its own: a saving line is the app's working line,
+   a failed one FieldError's red (build PR 10). */
+.ad-line { display: flex; align-items: flex-start; gap: 10px; font-size: 14px; margin-top: 4px; text-wrap: pretty; }
+.ad-line .outcome { font-size: 14px; color: #1D212F; }
 .sv-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .sv-tile { border: 1px solid #E5E0D8; border-radius: 10px; padding: 10px 12px; font-size: 14px; color: #1D212F; background: #fff; }
 .sv-tile .cx-hint { display: block; margin-top: 2px; }
@@ -95,7 +96,8 @@
 .g-btn svg { display: block; }
 
 /* Rounds 19 to 21: dialogs. Round 26: every dialog's title is 20px. */
-.cx-scrim { position: fixed; inset: 0; background: rgba(29,33,47,.35); display: grid; place-items: center; z-index: 50; }
+/* The dim is the app's Dialog shell's own (bg-navy/40), not a decision (the idioms say so). */
+.cx-scrim { position: fixed; inset: 0; background: rgba(29,33,47,.4); display: grid; place-items: center; z-index: 50; }
 .cx-dialog { width: 440px; background: #fff; border-radius: 12px; padding: 22px 24px; box-shadow: 0 12px 40px rgba(0,0,0,.18); color: #1D212F; font-size: 14px; }
 .cx-dialog h2 { font-size: 20px; font-weight: 600; color: #1D212F; margin: 0 0 8px; }
 .cx-dialog .foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }

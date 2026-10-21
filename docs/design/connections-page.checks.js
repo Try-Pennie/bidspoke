@@ -39,6 +39,14 @@
     if (css(h).fontSize !== DIALOG_TITLE) return "the dialog's title is " + css(h).fontSize + ", not " + DIALOG_TITLE;
     return null;
   }
+  // The app's red for a failure, read from the colour FieldError draws on this side (its one class).
+  function failureRed(doc) {
+    var m = main(doc), probe = doc.createElement("span"); probe.className = "field-error"; probe.textContent = "x";
+    m.append(probe); var c = css(probe).color; probe.remove();
+    return c;
+  }
+  // A dialog, or an alert dialog (one whose answer destroys something, announced by what it says).
+  function dialogOf(doc) { return q(doc, '[role="dialog"], [role="alertdialog"]'); }
   function connections(ctx) {
     var list = ctx.fixture.connections.slice();
     if (EXTRA.indexOf(ctx.frame) >= 0) list.push(ctx.fixture.justSaved);
@@ -299,7 +307,8 @@
       var want = "Salesforce refused the client secret. Nothing was saved. Check the secret and save again.";
       if (!line || line.getAttribute("data-state") !== "failed") return bad("no failed line");
       if (txt(line) !== want) return bad("the line reads \"" + txt(line) + "\"");
-      if (css(line).color !== RED) return bad("the line is " + css(line).color + ", not red");
+      // Red is FieldError's (.impeccable.md), or the problem status's red on a side that has no FieldError.
+      if ([failureRed(doc), RED].indexOf(css(line).color) < 0) return bad("the line is " + css(line).color + ", not red");
       if (!save || disabled(save)) return bad("Save is not ready again");
       return ok("red line, Save ready");
     } },
@@ -317,7 +326,9 @@
         if (!typed || typed.value !== nw.address) return bad("Org is not a box reading " + nw.address);
         if (typed.getAttribute("role") !== "combobox" || typed.getAttribute("aria-expanded") !== "true") return bad("the Org box is not a combobox with its menu open");
         if (q(org, "button")) return bad("Org is still a dropdown button");
-        var opts = qa(org, '[role="option"]');
+        // The menu the box controls, wherever it is drawn (the app draws it at the end of the page).
+        var menu = typed.getAttribute("aria-controls") && doc.getElementById(typed.getAttribute("aria-controls"));
+        var opts = qa(menu || org, '[role="option"]');
         var want = "Use " + nw.address + " as a new org";
         if (!same(opts.map(txt), [want])) return bad("the Org menu offers " + JSON.stringify(opts.map(txt)));
         var ob = box(opts[0]);
@@ -358,7 +369,8 @@
       if (css(g).backgroundColor !== WHITE) return bad("the Google button is " + css(g).backgroundColor);
       if (!q(g, "svg, img")) return bad("the Google button has no logo");
       if (button(form, "Save")) return bad("Save is still there");
-      var first = buttons(form)[0];
+      // The form's first action: a tile that chooses the service and a card that chooses a way are choices, not actions.
+      var first = buttons(form).filter(function (b) { return !b.closest('[data-part="service-tile"]') && b.getAttribute("role") !== "radio"; })[0];
       if (first !== g) return bad("the first button is " + txt(first));
       return ok("Google's button in place of Save");
     } },
@@ -372,7 +384,7 @@
       return ok(name + " chosen and open, no message");
     } },
     { id: "D19", frames: ["reconnect"], check: function (doc, ctx) {
-      var dg = q(doc, '[role="dialog"]'), c = chosen(doc, ctx);
+      var dg = dialogOf(doc), c = chosen(doc, ctx);
       if (!dg) return bad("no dialog");
       var title = "Reconnect " + c.name;
       if (dg.getAttribute("aria-label") !== title && txt(q(dg, "h1, h2, h3")) !== title) return bad("the dialog is not titled " + title);
@@ -386,7 +398,7 @@
       return ok(title);
     } },
     { id: "D20", frames: ["replace"], check: function (doc, ctx) {
-      var dg = q(doc, '[role="dialog"]'), c = chosen(doc, ctx), w = ctx.fixture.replaceWith;
+      var dg = dialogOf(doc), c = chosen(doc, ctx), w = ctx.fixture.replaceWith;
       if (!dg) return bad("no dialog");
       var title = "Replace " + c.name;
       if (dg.getAttribute("aria-label") !== title && txt(q(dg, "h1, h2, h3")) !== title) return bad("the dialog is not titled " + title);
@@ -408,7 +420,7 @@
       if (css(rb).color !== RED) return bad("Remove is " + css(rb).color + ", not red");
       if (txt(row) !== "Remove") return bad("the Remove row reads \"" + txt(row) + "\"");
       if (ctx.frame === "remove") {
-        var dg = q(doc, '[role="dialog"]'), title = "Remove " + ctx.fixture.justSaved.name + "?";
+        var dg = dialogOf(doc), title = "Remove " + ctx.fixture.justSaved.name + "?";
         if (!dg || (dg.getAttribute("aria-label") !== title && txt(q(dg, "h1, h2, h3")) !== title)) return bad("no dialog titled " + title);
         var tp = titleProblem(dg, title); if (tp) return bad(tp);
         if (txt(dg).indexOf("Its login is deleted from Bidspoke and cannot be brought back.") < 0) return bad("the dialog does not say what is lost");
