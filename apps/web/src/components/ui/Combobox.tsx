@@ -253,11 +253,17 @@ export function Combobox({
    * Leaving the typing box keeps what it shows as the value, so the box never
    * reads as chosen while holding something else: a known org typed in full is
    * that org, anything else typed is the new value, and an empty box goes back
-   * to the list, which shows the value still held.
+   * to the list, which shows the known value still held, or nothing when the
+   * box was emptied of a typed new value.
    */
   const leaveTyping = () => {
     close()
-    if (query === '') { setTyping(false); return }
+    if (query === '') {
+      // An emptied box that held a typed new value no longer holds it; a known value stays.
+      if (value !== '' && !known.some((o) => o.value === value)) onChange('', { isNew: false })
+      setTyping(false)
+      return
+    }
     const q = query.toLowerCase()
     const knownMatch = known.find((o) => [o.label, o.hint, o.value].some((s) => lower(s) === q))
     if (knownMatch) {

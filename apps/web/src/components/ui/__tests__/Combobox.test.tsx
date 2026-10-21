@@ -307,6 +307,23 @@ describe('Combobox', () => {
     expect(onPicked).toHaveBeenCalledTimes(1)
   })
 
+  it('emptying the box that holds a typed new org and leaving it clears the value, never calling it no longer available', async () => {
+    const onPicked = vi.fn()
+    render(<><Harness load={async () => ORGS} newValue={NEW_ORG} onPicked={onPicked} /><button type="button">Next</button></>)
+    screen.getByRole('combobox', { name: 'Org' }).focus()
+    await userEvent.keyboard('{ArrowDown}')
+    await userEvent.click((await screen.findAllByRole('option')).at(-1) as HTMLElement)
+    await userEvent.type(screen.getByRole('combobox', { name: 'Org' }), 'lendco.my.salesforce.com')
+    await userEvent.tab()
+    await userEvent.clear(screen.getByRole('combobox', { name: 'Org' }))
+    await userEvent.tab()
+    expect(onPicked).toHaveBeenLastCalledWith('', false)
+    const box = screen.getByRole('combobox', { name: 'Org' })
+    expect(box.tagName).toBe('BUTTON')
+    expect(box).toHaveTextContent('Choose an org')
+    expect(box).not.toHaveTextContent('no longer available')
+  })
+
   it('a stored value is never called no longer available when the list could not be read', async () => {
     render(
       <Combobox id="org" aria-label="Org" value="achieve" onChange={() => {}} loadOptions={async () => { throw new Error('Salesforce did not answer.') }} />
