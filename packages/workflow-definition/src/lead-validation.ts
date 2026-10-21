@@ -19,7 +19,7 @@
  * lead's, and the check's own choice applies.
  */
 import { isNodeType } from '@bidspoke/node-types'
-import { CONDITION_OPERATOR_SPECS, isConditionOperator, isConditionValueReference, type ConditionOperator } from './condition-operators'
+import { CONDITION_OPERATOR_SPECS, isConditionOperator, isConditionValueReference, operatorTakesValue, type ConditionOperator } from './condition-operators'
 import { isLeadRejectionReason, type LeadRejectionReason } from './lead-rejection-reasons'
 import { upstreamNamespaces } from './reference-validation'
 import type { EdgeDefLike, NodeDefLike, ValidationError } from './workflow-validation'
@@ -32,6 +32,17 @@ import type { EdgeDefLike, NodeDefLike, ValidationError } from './workflow-valid
  */
 export const LEAD_VALIDATION_ON_MISSING = ['reject', 'pass', 'fail_run'] as const
 export type LeadValidationOnMissing = (typeof LEAD_VALIDATION_ON_MISSING)[number]
+
+/**
+ * The words the settings panel offers each choice in (Dan, 2026-10-21,
+ * docs/design/lead-validation-node.html D14). A Record over the list, so a
+ * choice added without its words does not compile.
+ */
+export const LEAD_VALIDATION_ON_MISSING_LABELS: Readonly<Record<LeadValidationOnMissing, string>> = {
+  reject: 'Reject with this reason',
+  pass: 'Let it through',
+  fail_run: 'Fail the run',
+}
 
 export type LeadValidationLogic = 'AND' | 'OR'
 
@@ -360,4 +371,97 @@ export function findLeadValidationProblems(nodes: NodeDefLike[], edges: EdgeDefL
     }
   }
   return errors
+}
+
+// The operator's words, by a Map rather than a bracket lookup on the specs, because
+// the operator comes from stored config and `constructor` is a key of every object.
+const OPERATOR_LABELS = new Map<string, string>(Object.entries(CONDITION_OPERATOR_SPECS).map(([op, spec]) => [op, spec.label]))
+
+const lastSegment = (path: string): string => path.split('.').pop() ?? path
+
+function valueText(value: unknown): string | null {
+  if (value === undefined || value === null || value === '') return null
+  if (Array.isArray(value)) return value.map((v) => String(v)).join(', ')
+  if (isConditionValueReference(value)) return lastSegment(value)
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return null
+}
+
+/**
+ * The short form of a check's condition a settings list row shows (Dan,
+ * 2026-10-21, docs/design/lead-validation-node.html D2): the first condition's
+ * field by its last segment, its operator in the rule builder dropdown's own
+ * words (D9), its value by its last segment when it is a reference (so a
+ * Constants value reads by its key), and "and N more" for the rest. Null when
+ * the check has no condition with a field yet. Reads stored config, so any
+ * shape is accepted.
+ */
+export function leadValidationCheckSummary(check: unknown): string | null {
+  const condition = isRecord(check) && isRecord(check.condition) ? check.condition : {}
+  const groups = Array.isArray(condition.groups) ? condition.groups : []
+  const conditions = groups
+    .flatMap((g: unknown) => (isRecord(g) && Array.isArray(g.conditions) ? (g.conditions as unknown[]) : []))
+    .filter((c): c is Record<string, unknown> => isRecord(c) && typeof c.field === 'string' && c.field.trim() !== '')
+  if (conditions.length === 0) return null
+  const first = conditions[0]
+  const op = typeof first.operator === 'string' ? OPERATOR_LABELS.get(first.operator) : undefined
+  const value = op !== undefined && isConditionOperator(first.operator) && operatorTakesValue(first.operator) ? valueText(first.value) : null
+  const more = conditions.length > 1 ? ` and ${conditions.length - 1} more` : ''
+  return [lastSegment(first.field as string), op, value].filter(Boolean).join(' ') + more
+}
+
+/**
+ * The ids of every node that runs inside a parallel block, read the way the
+ * engine runs one (runParallelChild in apps/worker/src/engine/index.ts): each
+ * slot's first node is a `child-` edge's target off the parallel step (or, for a
+ * legacy parallel with no slot edges, its `children` list), and a slot runs on
+ * down its edges until the parallel_end. A legacy parallel with no parallel_end
+ * runs only the child itself in the block.
+ */
+function nodesInsideParallelBlocks(nodes: NodeDefLike[], edges: EdgeDefLike[]): Set<string> {
+  const byId = new Map(nodes.map((n) => [n.id, n]))
+  const out = (id: string) => edges.filter((e) => e.source === id)
+  const inside = new Set<string>()
+  for (const parallel of nodes) {
+    if (parallel.type !== 'parallel') continue
+    const slotTargets = out(parallel.id)
+      .filter((e) => (e.source_handle ?? '').startsWith('child-'))
+      .map((e) => e.target)
+    const children = (slotTargets.length > 0 ? slotTargets : parallel.children ?? []).filter((id) => byId.get(id)?.type !== 'parallel_end')
+    const walked = new Set<string>()
+    let joined = false
+    const queue = [...children]
+    while (queue.length > 0) {
+      const id = queue.shift() as string
+      if (walked.has(id)) continue
+      const n = byId.get(id)
+      if (!n) continue
+      if (n.type === 'parallel_end') {
+        joined = true
+        continue
+      }
+      walked.add(id)
+      queue.push(...out(id).map((e) => e.target))
+    }
+    for (const id of joined ? walked : children) inside.add(id)
+  }
+  return inside
+}
+
+/**
+ * A lead validation step inside a parallel block (Dan's decision on #2590,
+ * 2026-10-21): a rejection there cannot answer the lead, since its siblings are
+ * still running, so the engine fails the slot instead. Refused at every save,
+ * live or not, like a loop: no further configuration makes the placement work.
+ */
+export function findLeadValidationPlacementProblems(nodes: NodeDefLike[], edges: EdgeDefLike[]): ValidationError[] {
+  const inside = nodesInsideParallelBlocks(nodes, edges)
+  return nodes
+    .filter((n) => n.type === 'lead_validation' && inside.has(n.id))
+    .map((n) => ({
+      nodeId: n.id,
+      namespace: n.namespace,
+      ...(n.label ? { label: n.label } : {}),
+      message: 'A lead validation step cannot run inside a parallel block: a lead it rejects there cannot be answered. Move it before the parallel block.',
+    }))
 }
