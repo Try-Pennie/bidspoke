@@ -121,6 +121,50 @@ export function consumeParens(src: string, open: number): number {
   return src.length
 }
 
+// ── Route handler scanning ───────────────────────────────────────────────────
+//
+// Shared by the guards that read what each worker route handler does to the
+// workflows table: workflow-copy-refresh-guard (#1845) and
+// workflow-connection-check-guard (#2338). Both read source with comments
+// blanked and strings kept.
+
+/** The calls chained onto a builder from `start`, read call by call: each name and the source of its arguments. */
+export function chainCallsAfter(src: string, start: number): Array<{ name: string; args: string }> {
+  const calls: Array<{ name: string; args: string }> = []
+  let i = start
+  for (;;) {
+    while (i < src.length && /\s/.test(src[i])) i += 1
+    if (src[i] !== '.') return calls
+    const m = /^\.(\w+)\s*\(/.exec(src.slice(i))
+    if (!m) return calls
+    const open = i + m[0].length - 1
+    const close = consumeParens(src, open)
+    calls.push({ name: m[1], args: src.slice(open + 1, close - 1) })
+    i = close
+  }
+}
+
+export interface RouteHandler { file: string; label: string; start: number; end: number }
+
+/**
+ * Route handlers, each running from its registration to the next one. Only a
+ * call on a router the file declares (`const workflows = new Hono...`) is a
+ * registration: `kv.get('key', 'json')` on a line of its own has the same shape
+ * and would otherwise end the handler it sits in.
+ */
+export function routeHandlersOf(file: string, src: string): RouteHandler[] {
+  const routers = [...src.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=\s*new\s+Hono\b/g)].map((m) => m[1])
+  if (routers.length === 0) return []
+  const registration = new RegExp(`^\\s*(?:${routers.join('|')})\\.(get|post|put|patch|delete|all)\\(\\s*(['"\`])([^'"\`]*)\\2\\s*,`, 'gm')
+  const starts = [...src.matchAll(registration)]
+  return starts.map((m, k) => ({
+    file,
+    label: `${m[1].toUpperCase()} ${m[3]}`,
+    start: m.index ?? 0,
+    end: k + 1 < starts.length ? (starts[k + 1].index ?? src.length) : src.length,
+  }))
+}
+
 // ── Supabase write scanning ──────────────────────────────────────────────────
 //
 // Shared by the guards that police PostgREST writes (worker-zero-row-write-guard,

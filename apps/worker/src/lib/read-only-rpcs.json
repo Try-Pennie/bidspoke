@@ -25,7 +25,8 @@
     "partner_delete_check",
     "db_stall_snapshot",
     "connection_references",
-    "connection_history"
+    "connection_history",
+    "definition_connection_problems"
   ],
   "mutating": [
     "record_archive_day_measurement",

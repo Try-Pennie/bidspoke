@@ -16,26 +16,17 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
-import { WORKER_SRC, listTsFiles, sanitizeSource, consumeParens } from '../../__tests__/_scan-utils'
+import { WORKER_SRC, listTsFiles, sanitizeSource, chainCallsAfter, routeHandlersOf, type RouteHandler } from '../../__tests__/_scan-utils'
 
 const WRITE_METHODS = new Set(['insert', 'update', 'upsert', 'delete'])
 const REFRESH_CALL = /\bawait\s+refreshWorkflowCaches\s*\(/g
 
 interface Write { file: string; at: number; methods: string[] }
-interface Handler { file: string; label: string; start: number; end: number }
+type Handler = RouteHandler
 
 /** The method names chained onto a `.from(...)`, read call by call. */
 function chainAfter(src: string, start: number): string[] {
-  const methods: string[] = []
-  let i = start
-  for (;;) {
-    while (i < src.length && /\s/.test(src[i])) i += 1
-    if (src[i] !== '.') return methods
-    const m = /^\.(\w+)\s*\(/.exec(src.slice(i))
-    if (!m) return methods
-    methods.push(m[1])
-    i = consumeParens(src, i + m[0].length - 1)
-  }
+  return chainCallsAfter(src, start).map((call) => call.name)
 }
 
 /** Every chain on `.from('workflows')` that writes, in source with comments blanked. */
@@ -52,24 +43,8 @@ function createsANewRowOnly(write: Write): boolean {
   return write.methods.filter((name) => WRITE_METHODS.has(name)).every((name) => name === 'insert')
 }
 
-/**
- * Route handlers, each running from its registration to the next one. Only a
- * call on a router the file declares (`const workflows = new Hono...`) is a
- * registration: `kv.get('key', 'json')` on a line of its own has the same shape
- * and would otherwise end the handler it sits in.
- */
-function handlersOf(file: string, src: string): Handler[] {
-  const routers = [...src.matchAll(/\b(?:const|let|var)\s+(\w+)\s*=\s*new\s+Hono\b/g)].map((m) => m[1])
-  if (routers.length === 0) return []
-  const registration = new RegExp(`^\\s*(?:${routers.join('|')})\\.(get|post|put|patch|delete|all)\\(\\s*(['"\`])([^'"\`]*)\\2\\s*,`, 'gm')
-  const starts = [...src.matchAll(registration)]
-  return starts.map((m, k) => ({
-    file,
-    label: `${m[1].toUpperCase()} ${m[3]}`,
-    start: m.index ?? 0,
-    end: k + 1 < starts.length ? (starts[k + 1].index ?? src.length) : src.length,
-  }))
-}
+/** Route handlers, each from its registration to the next (the shared reader in _scan-utils). */
+const handlersOf = routeHandlersOf
 
 interface SourceScan {
   writingHandlers: Map<Handler, Write[]>

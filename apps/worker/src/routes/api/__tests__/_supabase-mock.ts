@@ -177,6 +177,11 @@ export function makeSupabase(
         // never has to reimplement it just to stub one grouped query.
         if (opts.rpc) return opts.rpc(name, args)
         if (opts.rpcs) return Promise.resolve({ data: opts.rpcs[name] ?? [], error: null })
+        // Every workflow definition write asks this first (#2338, build PR 7) and
+        // refuses a null answer as a failed check, so a test that is not about the
+        // check gets the answer of a definition naming no connection. The check's
+        // own tests pass `rpc` or `rpcs` to answer otherwise.
+        if (name === 'definition_connection_problems') return Promise.resolve({ data: [], error: null })
         return Promise.resolve({ data: null, error: null })
       }
       const usersCfg = firstCfg('users')
@@ -269,7 +274,11 @@ export function makeSupabase(
               }
             }
             if (prop === 'delete') {
-              return () => writeChain(undefined, cfg.deleteError, readSingle, readList, cfg.writeRows, recordEq)
+              // Recorded, so a test can assert a route took back a row it wrote (#2338).
+              return (...args: unknown[]) => {
+                ;(calls[table] ??= []).push(['delete', args])
+                return writeChain(undefined, cfg.deleteError, readSingle, readList, cfg.writeRows, recordEq)
+              }
             }
 
             return (...args: unknown[]) => {

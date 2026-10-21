@@ -3199,6 +3199,19 @@ export type Database = {
         Returns: number
       }
       db_stall_snapshot: { Args: never; Returns: Json }
+      definition_connection_ids: {
+        Args: { p_definition: Json }
+        Returns: string[]
+      }
+      definition_connection_problems: {
+        Args: { p_definition: Json; p_organization_id: string }
+        Returns: {
+          connection_id: string
+          name: string
+          problem: string
+          steps: string[]
+        }[]
+      }
       delete_partner_config: {
         Args: {
           p_actor: string
