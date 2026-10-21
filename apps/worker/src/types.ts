@@ -8,6 +8,7 @@
 export { NODE_TYPES, NODE_TRAITS, assertNever, isNodeType } from '@bidspoke/node-types'
 export type { NodeType, NodeTraits } from '@bidspoke/node-types'
 import type { NodeType, WorkflowLane } from '@bidspoke/node-types'
+import type { ConditionOperator } from '@bidspoke/workflow-definition'
 import type { RetryTiming } from './lib/post-response-budget'
 
 export interface WorkflowDefinition {
@@ -73,7 +74,9 @@ export interface NodeConfig {
 
 export interface EdgeCondition {
   field: string
-  operator: 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'contains' | 'not_contains' | 'is_true' | 'is_false' | 'exists' | 'not_exists' | 'is_null' | 'is_not_null' | 'in_array' | 'not_in_array'
+  // The one operator list both apps read (#2588): packages/workflow-definition.
+  // evaluateCondition in engine/graph.ts switches over it exhaustively.
+  operator: ConditionOperator
   value?: unknown
 }
 
