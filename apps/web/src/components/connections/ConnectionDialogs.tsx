@@ -3,7 +3,8 @@
 /**
  * The Connections page's dialogs (#2338, build PR 10; R19 to R21, D19 to
  * D21), on the app's one Dialog shell, drawn to
- * docs/design/connections-page.html with its 20px titles (round 26):
+ * docs/design/connections-page.html (their titles are the shared rule's 20px,
+ * round 35, as every dialog's in Bidspoke):
  *
  * - Reconnect <name>: what the connection names that the login is built from
  *   kept (Salesforce's client id), and each field of the login asked anew; Save

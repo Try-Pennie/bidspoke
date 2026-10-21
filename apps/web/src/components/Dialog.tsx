@@ -40,8 +40,9 @@ interface DialogBase {
   /**
    * A page's own class on the panel, beside the shell's, for a page whose
    * settled design draws its dialogs to its own geometry (the Connections
-   * page's 20px titles, #2338 round 26). Never a second dialog: the shell's
-   * semantics, focus and dismissal stay the same.
+   * page's widths and padding, #2338). Never a second dialog: the shell's
+   * semantics, focus and dismissal stay the same, and the title's size is the
+   * shared `.dialog-title` rule's alone (round 35, dialog-title-guard.test.ts).
    */
   className?: string
   children?: ReactNode
