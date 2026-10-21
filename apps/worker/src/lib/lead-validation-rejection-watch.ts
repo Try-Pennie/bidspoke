@@ -30,14 +30,15 @@
  *    (0.71 to 1.26 times), loan amount exceeds maximum 11.8% to 26.0% against
  *    15.9% (0.74 to 1.64 times), all rejections 21.5% to 39.7% against 27.3%;
  *  - every other reason was 0, apart from 2 invalid name in the week.
- * So a reason holding at least COMMON_SHARE of the week pages when its share
- * falls to DROP_RATIO of the week's (a check letting through what it used to
- * reject) or rises to RISE_RATIO times (a check rejecting too much): neither
- * was reached by any window. A reason the week barely saw pages when it reaches
- * RARE_MIN_COUNT leads and RARE_MIN_POINTS above its share, which no window came
- * near (the most was 2). A window of fewer than MIN_RUNS is not judged (the
+ * So (REJECTION_RULE) a reason holding at least `commonShare` (2%) of the week
+ * pages when its share falls to `dropRatio` (half) of the week's (a check
+ * letting through what it used to reject) or rises to `riseRatio` (twice) the
+ * week's (a check rejecting too much): neither was reached by any window. A
+ * reason the week barely saw pages when it reaches `rareMinCount` (10) leads
+ * and `rareMinPoints` (3 points) above its share, which no window came near
+ * (the most was 2). A window of fewer than `minRuns` (300) is not judged (the
  * first hour of each day and every night), and a baseline of fewer than
- * BASELINE_MIN_RUNS (about a day) is unmeasured. Re-measure after a few weeks of
+ * `baselineMinRuns` (3,000, about a day) is unmeasured. Re-measure after a few weeks of
  * node runs (L172).
  *
  * WHAT IT CANNOT SEE. A reason with no real cases (bidding not active, military
