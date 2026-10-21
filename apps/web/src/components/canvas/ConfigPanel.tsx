@@ -21,6 +21,7 @@ import { isHardCoded4xx } from '@/lib/response-status'
 import { isBuyerPartner } from '@/lib/partner-roles'
 import { CLICK_CHECK_BUDGET_MS, DEFAULT_ALERT_OVER_PERCENT, PAYLOAD_NORMALISERS, POPULATIONS, WIRED_POPULATIONS } from '@bidspoke/buyer-profile'
 import { POPULATION_LABELS } from '@/components/partners/buyer-profile/labels'
+import { SIMPLE_FILTER_OPERATORS, VALUE_LESS_OPERATORS } from '@bidspoke/workflow-definition'
 import { useKeyValueRows } from './useKeyValueRows'
 import { suggestedTimeoutMs } from '@/lib/timeout-suggestion'
 import { useTimeoutSuggestion } from './nodes/timeout-suggestions'
@@ -751,21 +752,8 @@ function StepInputView({ input, namespace }: { input: unknown; namespace: string
 
 // ── Type-specific sections ────────────────────────────────────────────────────
 
-const FILTER_OPERATORS: { value: EdgeCondition['operator']; label: string }[] = [
-  { value: 'eq', label: 'equals' },
-  { value: 'neq', label: 'does not equal' },
-  { value: 'gt', label: 'greater than' },
-  { value: 'gte', label: 'greater than or equal' },
-  { value: 'lt', label: 'less than' },
-  { value: 'lte', label: 'less than or equal' },
-  { value: 'contains', label: 'contains' },
-  { value: 'not_contains', label: 'does not contain' },
-  { value: 'exists', label: 'exists' },
-  { value: 'not_exists', label: 'does not exist' },
-]
-
-const VALUE_LESS = new Set<EdgeCondition['operator']>(['exists', 'not_exists'])
-
+// The simple Filter condition offers the shared list's simple operators in their
+// spelled out words (#2588); which of them takes a value is the shared list's too.
 function FilterConfig({
   config,
   onChange,
@@ -831,14 +819,14 @@ function FilterConfig({
               onChange={(e) => setCondition({ operator: e.target.value as EdgeCondition['operator'] })}
               className="w-full appearance-none rounded-md border border-gray-200 bg-white py-2 pl-3 pr-8 text-sm text-gray-800 focus:border-gray-400 focus:outline-none"
             >
-              {FILTER_OPERATORS.map((op) => (
+              {SIMPLE_FILTER_OPERATORS.map((op) => (
                 <option key={op.value} value={op.value}>{op.label}</option>
               ))}
             </select>
             <ChevronDown className="pointer-events-none absolute right-2.5 top-2.5 h-4 w-4 text-gray-500" />
           </div>
           {/* Value */}
-          {!VALUE_LESS.has(operator) && (
+          {!VALUE_LESS_OPERATORS.has(operator) && (
             <input
               type="text"
               value={value}

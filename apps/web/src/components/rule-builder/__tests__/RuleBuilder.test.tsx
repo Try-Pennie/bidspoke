@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import RuleBuilder from '../RuleBuilder'
 import type { ConditionGroup } from '@/types/workflow'
+import { CONDITION_OPERATORS, CONDITION_OPERATOR_SPECS } from '@bidspoke/workflow-definition'
 
 // Characterization tests (#239) for the Filter/Branch rule builder. RuleBuilder is
 // controlled: it never mutates its own state, it calls onChange with the next
@@ -122,5 +123,38 @@ describe('RuleBuilder', () => {
     expect(trash).toHaveLength(1)
     fireEvent.click(trash[0])
     expect(lastGroups(onChange)).toHaveLength(0)
+  })
+
+  // #2588's editor half: the dropdown reads the one shared operator list, so the
+  // two lead validation operators appear under the names Dan settled (#2590).
+  it('offers every shared operator, in list order, with its shared label', () => {
+    render(
+      <RuleBuilder groups={[group({ field: 'a', operator: 'eq', value: '1' })]} logic="AND" onChange={vi.fn()} />,
+    )
+    const options = Array.from(screen.getByRole('combobox').querySelectorAll('option'))
+    expect(options.map((o) => o.value)).toEqual([...CONDITION_OPERATORS])
+    expect(options.map((o) => o.textContent)).toEqual(CONDITION_OPERATORS.map((op) => CONDITION_OPERATOR_SPECS[op].label))
+    expect(options.at(-2)?.textContent).toBe('contains a letter')
+    expect(options.at(-1)?.textContent).toBe('is not empty')
+  })
+
+  it.each(['has_letter', 'not_blank'] as const)('hides the value input for %s, which reads only the field', (operator) => {
+    render(<RuleBuilder groups={[group({ field: 'firstName', operator, value: '' })]} logic="AND" onChange={vi.fn()} />)
+    expect(screen.queryByPlaceholderText('value')).not.toBeInTheDocument()
+  })
+
+  it('keeps a reference typed into a numeric operator as the string, so the engine can resolve it', () => {
+    const onChange = vi.fn()
+    render(<RuleBuilder groups={[group({ field: 'loanAmount', operator: 'lte', value: '' })]} logic="AND" onChange={onChange} />)
+    fireEvent.change(screen.getByPlaceholderText('value'), { target: { value: 'steps.constants.output.maximumLoanAmount' } })
+    expect(lastGroups(onChange)[0].conditions[0].value).toBe('steps.constants.output.maximumLoanAmount')
+  })
+
+  it('keeps typed text as it is for a stored operator the list does not hold, rather than failing', () => {
+    const onChange = vi.fn()
+    const stored = { field: 'a', operator: 'constructor' as unknown as 'eq', value: '' }
+    render(<RuleBuilder groups={[group(stored)]} logic="AND" onChange={onChange} />)
+    fireEvent.change(screen.getByPlaceholderText('value'), { target: { value: '42' } })
+    expect(lastGroups(onChange)[0].conditions[0].value).toBe('42')
   })
 })

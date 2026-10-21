@@ -61,6 +61,15 @@ describe('derived operator views', () => {
     expect(label('not_exists')).toBe('not exists')
   })
 
+  it('names the two lead validation operators as Dan settled them (#2590, design round 4)', () => {
+    // docs/design/lead-validation-node.html, decision D4: worded like the existing
+    // choices (contains, is null), so the dropdown reads as one family.
+    expect(CONDITION_OPERATOR_SPECS.has_letter.label).toBe('contains a letter')
+    expect(CONDITION_OPERATOR_SPECS.has_letter.words).toBe('contains a letter')
+    expect(CONDITION_OPERATOR_SPECS.not_blank.label).toBe('is not empty')
+    expect(CONDITION_OPERATOR_SPECS.not_blank.words).toBe('is not empty')
+  })
+
   it('the simple Filter dropdown offers exactly the ten it offered before, with its spelled out labels', () => {
     expect(SIMPLE_FILTER_OPERATORS.map((o) => o.value)).toEqual([
       'eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'contains', 'not_contains', 'exists', 'not_exists',

@@ -12,17 +12,18 @@
  * an unconfigured node, while it was gating live traffic. Mirror the engine's
  * precedence here, once, so the two surfaces cannot drift from it again.
  */
+import { CONDITION_OPERATORS, CONDITION_OPERATOR_SPECS } from './condition-operators'
 
-// Keyed by the operator string (the web EdgeCondition.operator union stays in the
-// app). A Map, not a plain object, because the operator comes from stored config:
-// a bracket lookup on an object finds inherited members like `constructor` or
-// `toString` for those keys and returns a truthy value, so the summary would show
-// one instead of no label (L738). A missing key yields undefined, as before.
-const OP_LABELS = new Map<string, string>([
-  ['eq', 'equals'], ['neq', '≠'], ['gt', '>'], ['gte', '≥'], ['lt', '<'], ['lte', '≤'],
-  ['contains', 'contains'], ['not_contains', "doesn't contain"],
-  ['exists', 'exists'], ['not_exists', "doesn't exist"],
-])
+// The card names an operator in the rule builder dropdown's own words, one
+// vocabulary for both (Dan, 2026-10-21, docs/design/lead-validation-node.html
+// D3), so the labels are CONDITION_OPERATOR_SPECS' and never a copy. A Map, not a
+// plain object, because the operator comes from stored config: a bracket lookup
+// on an object finds inherited members like `constructor` or `toString` for those
+// keys and returns a truthy value, so the summary would show one instead of no
+// label (L738). A missing key yields undefined.
+const OP_LABELS = new Map<string, string>(
+  CONDITION_OPERATORS.map((op) => [op, CONDITION_OPERATOR_SPECS[op].label]),
+)
 
 interface SimpleCondition {
   field?: string

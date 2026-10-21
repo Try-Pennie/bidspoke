@@ -2,43 +2,35 @@
 
 import type { ConditionGroup, EdgeCondition } from '@/types/workflow'
 import { Plus, Trash2 } from 'lucide-react'
+import {
+  CONDITION_OPERATOR_SPECS,
+  RULE_BUILDER_OPERATORS,
+  VALUE_LESS_OPERATORS,
+  isConditionOperator,
+} from '@bidspoke/workflow-definition'
 import FieldAutocomplete from './FieldAutocomplete'
 
-const OPERATORS: { value: EdgeCondition['operator']; label: string }[] = [
-  { value: 'eq', label: '=' },
-  { value: 'neq', label: '≠' },
-  { value: 'gt', label: '>' },
-  { value: 'gte', label: '≥' },
-  { value: 'lt', label: '<' },
-  { value: 'lte', label: '≤' },
-  { value: 'contains', label: 'contains' },
-  { value: 'not_contains', label: 'not contains' },
-  { value: 'in_array', label: 'in list' },
-  { value: 'not_in_array', label: 'not in list' },
-  { value: 'is_true', label: 'is true' },
-  { value: 'is_false', label: 'is false' },
-  { value: 'is_null', label: 'is null' },
-  { value: 'is_not_null', label: 'is not null' },
-  { value: 'exists', label: 'exists' },
-  { value: 'not_exists', label: 'not exists' },
-]
-
-const VALUE_LESS_OPERATORS = new Set<EdgeCondition['operator']>(['exists', 'not_exists', 'is_true', 'is_false', 'is_null', 'is_not_null'])
-const NUMERIC_OPERATORS = new Set<EdgeCondition['operator']>(['gt', 'gte', 'lt', 'lte'])
-const EQUALITY_OPERATORS = new Set<EdgeCondition['operator']>(['eq', 'neq'])
+// The operator list, its labels and what each one's value holds come from the
+// one shared list (#2588), so the dropdown cannot drift from the engine's switch
+// or from the Filter card's summary, which names operators in these same words.
 
 // Coerce raw input to the right JS type for the given operator, so the engine's
 // strict-equality (`===`) and numeric comparison operators behave correctly.
-// Numeric operators (gt/gte/lt/lte) always store as number. Equality operators
-// (eq/neq) auto-detect numeric strings and store as number; otherwise stay as
-// string. Other operators (contains, in_array, …) stay raw.
+// Numeric operators (gt/gte/lt/lte) store a number when the input is one, and
+// otherwise keep the text, which is how a `steps.`/`trigger.`/`env.` reference
+// stays a reference the engine resolves at run time. Equality operators (eq/neq)
+// auto-detect numeric strings and store as number; otherwise stay as string.
+// Other operators (contains, in_array, …) stay raw.
 function parseValueForOperator(raw: string, operator: EdgeCondition['operator']): unknown {
   if (raw === '') return ''
-  if (NUMERIC_OPERATORS.has(operator)) {
+  // The operator comes from stored config, so it is checked against the list
+  // before its spec is read: an unknown one keeps the text as typed.
+  const kind = isConditionOperator(operator) ? CONDITION_OPERATOR_SPECS[operator].valueKind : undefined
+  if (kind === 'number') {
     const n = Number(raw)
     return Number.isFinite(n) ? n : raw
   }
-  if (EQUALITY_OPERATORS.has(operator) && /^-?\d+(\.\d+)?$/.test(raw.trim())) {
+  if (kind === 'scalar' && /^-?\d+(\.\d+)?$/.test(raw.trim())) {
     return Number(raw)
   }
   return raw
@@ -156,7 +148,7 @@ export default function RuleBuilder({ groups, logic, onChange, fieldSuggestions 
                     updateCondition(gi, ci, { ...cond, operator: nextOp, value: nextValue })
                   }}
                 >
-                  {OPERATORS.map((op) => (
+                  {RULE_BUILDER_OPERATORS.map((op) => (
                     <option key={op.value} value={op.value}>
                       {op.label}
                     </option>
