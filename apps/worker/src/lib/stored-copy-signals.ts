@@ -288,6 +288,10 @@ async function reportServing(deps: StoredCopyCheckDeps, reading: LedgerReading, 
         recoveredPhrase: 'has stopped',
         alertedAt: due.alertedAt,
         endedAt: due.endedAt,
+        // due.firstHealthyAt is deliberately not passed (#2580): this check asks
+        // recoveryDue on a tick that still saw a copy used below the threshold,
+        // which is not over, so the tick it records is not one that found the
+        // condition clear. The notice says it had cleared by this tick instead.
         measuredWindowMinutes: STORED_COPY_SERVING_WINDOW_MINUTES,
         url: `${deps.appUrl}/dashboard`,
       }, nowMs).catch((e: unknown) => {

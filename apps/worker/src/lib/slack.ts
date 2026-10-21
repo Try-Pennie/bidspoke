@@ -3003,6 +3003,8 @@ export interface RecoveredSubject {
   subject: string
   alertedAt: string
   endedAt?: string | null
+  /** The first healthy check after the last sighting (#2580), from recoveryDue; absent when not recorded. */
+  firstHealthyAt?: string | null
   url?: string
 }
 
@@ -3033,6 +3035,13 @@ export interface RecoveryWording {
    * that really does judge a range keeps the default unchanged.
    */
   recoveredPhrase?: string
+  /**
+   * The subject's `endedAt` is an observed CLEARING, not the last sighting of the
+   * problem (#2580). Only the scheduled job heartbeat passes it: its end is the
+   * completion that showed the job finished. Every other check's end is the last
+   * tick the condition was seen, which the sentence must never call the clearing.
+   */
+  endedAtIsClearing?: boolean
 }
 
 /** The Slack link appended to a recovered subject, or nothing. */
@@ -3065,17 +3074,40 @@ function recoveryTiming(item: RecoveredSubject, wording: RecoveryWording, now: n
   // told the reader a LendSwift outage cleared at 6:01 AM while the ping API
   // went on failing until 6:52. What the check DID observe is that the condition
   // had passed by the tick that announced this, so that is what it says.
+  const firedAt = etTime(Date.parse(item.alertedAt))
   let howLong = '.'
   if (span.kind === 'within_window') {
     howLong =
       ` and covered the ${describeDuration(span.windowMs)} before it, which is as precisely as this check measures. ` +
       `It had passed by ${etTime(now)}.`
-  } else if (span.kind === 'measured') {
+  } else if (span.kind === 'measured' && (span.lastSeenAt === null || wording.endedAtIsClearing)) {
+    // No end recorded: the span runs to now and claims no end. Or the end is a
+    // clearing the check observed (the heartbeat's completion), so it is named.
     const lasted = describeDuration(span.ms)
-    if (lasted) howLong = ` and lasted ${lasted}${span.clearedAt !== null ? `, clearing at ${etTime(span.clearedAt)}` : ''}.`
+    if (lasted) howLong = ` and lasted ${lasted}${span.lastSeenAt !== null ? `, clearing at ${etTime(span.lastSeenAt)}` : ''}.`
+  } else if (span.kind === 'measured' && span.lastSeenAt !== null) {
+    // The last sighting is when the problem was last SEEN, never when it cleared
+    // (#2580): for a per run check, a one run incident's last sighting is the
+    // tick that paged, so "clearing at" repeated the fire time. On 2026-10-21 the
+    // partners page all-clear said it cleared at 4:01 AM, the moment it fired,
+    // while the first run to find it clear was 4:05. So the sentence names what
+    // was observed on each side of the end: the last sighting, and the first
+    // healthy check after it, or where that is not known, that it had cleared by
+    // the tick announcing this, as the windowed sentence does (#1268).
+    const lastSeenAt = span.lastSeenAt
+    const lastSeen = etTime(lastSeenAt)
+    const lasted = describeDuration(span.ms)
+    const seen = lastSeen === firedAt || !lasted
+      ? `${firedAt}, when the problem was last seen.`
+      : `${firedAt}. The problem was last seen ${lasted} later, at ${lastSeen}.`
+    const healthy = item.firstHealthyAt ? Date.parse(item.firstHealthyAt) : NaN
+    const clear = Number.isFinite(healthy) && healthy > lastSeenAt
+      ? `The first check to find it clear was at ${etTime(healthy)}.`
+      : `It had cleared by ${etTime(now)}.`
+    return `The ${wording.signal} alert fired at ${seen} ${clear}`
   }
 
-  return `The ${wording.signal} alert fired at ${etTime(Date.parse(item.alertedAt))}${howLong}`
+  return `The ${wording.signal} alert fired at ${firedAt}${howLong}`
 }
 
 /**
@@ -3093,7 +3125,10 @@ function sameRecoveryTick(items: readonly RecoveredSubject[]): boolean {
   const first = items[0]
   return (
     Number.isFinite(Date.parse(first.alertedAt)) &&
-    items.every((i) => i.alertedAt === first.alertedAt && (i.endedAt ?? null) === (first.endedAt ?? null))
+    items.every((i) =>
+      i.alertedAt === first.alertedAt &&
+      (i.endedAt ?? null) === (first.endedAt ?? null) &&
+      (i.firstHealthyAt ?? null) === (first.firstHealthyAt ?? null))
   )
 }
 
@@ -3256,10 +3291,10 @@ export async function sendRecoveryAlert(
 export async function sendDatabaseRecoveredAlert(
   slack: { bot_token: string },
   channel: string,
-  payload: { alertedAt: string; endedAt: string | null; measured: string; appUrl: string },
+  payload: { alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null; measured: string; appUrl: string },
   now: number = Date.now(),
 ): Promise<boolean> {
-  const item: RecoveredSubject = { subject: 'Bidspoke', alertedAt: payload.alertedAt, endedAt: payload.endedAt }
+  const item: RecoveredSubject = { subject: 'Bidspoke', alertedAt: payload.alertedAt, endedAt: payload.endedAt, firstHealthyAt: payload.firstHealthyAt }
   const wording: RecoveryWording = { signal: 'database unreachable', recoveredPhrase: 'can read its database again' }
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
@@ -3310,10 +3345,10 @@ export async function sendSlackTokenUnreadableAlert(
 export async function sendSlackTokenReadableAlert(
   slack: { bot_token: string },
   channel: string,
-  payload: { alertedAt: string; endedAt: string | null; appUrl: string },
+  payload: { alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null; appUrl: string },
   now: number = Date.now(),
 ): Promise<boolean> {
-  const item: RecoveredSubject = { subject: 'The Slack token', alertedAt: payload.alertedAt, endedAt: payload.endedAt }
+  const item: RecoveredSubject = { subject: 'The Slack token', alertedAt: payload.alertedAt, endedAt: payload.endedAt, firstHealthyAt: payload.firstHealthyAt }
   const wording: RecoveryWording = { signal: 'Slack token', recoveredPhrase: 'can be read again' }
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
@@ -3394,7 +3429,10 @@ export async function sendCronHeartbeatRecoveryAlert(
         ? 'finished the run reported as never finished, late'
         : 'has finished a run since, so it is running again',
       alertedAt: recovery.alertedAt,
+      // The completion this reports: when the job was seen finished, so a clearing
+      // the check observed rather than a last sighting of the problem (#2580).
       endedAt: recovery.endedAt,
+      endedAtIsClearing: true,
     },
     now,
   )
@@ -3414,7 +3452,7 @@ export async function sendCronHeartbeatRecoveryAlert(
 export async function sendPgCronRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { jobname: string; alertedAt: string; endedAt: string | null },
+  recovery: { jobname: string; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -3428,6 +3466,7 @@ export async function sendPgCronRecoveryAlert(
       recoveredPhrase: 'is running and succeeding again',
       alertedAt: recovery.alertedAt,
       endedAt: recovery.endedAt,
+      firstHealthyAt: recovery.firstHealthyAt,
     },
     now,
   )
@@ -3523,7 +3562,7 @@ export const writebackBacklogRecoveryWording: RecoveryWording = {
 export async function sendWritebackBacklogRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { alertedAt: string; endedAt: string | null },
+  recovery: { alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -3531,7 +3570,7 @@ export async function sendWritebackBacklogRecoveryAlert(
   return sendRecoveryAlert(
     connection,
     connection.default_channel,
-    { subject: WRITEBACK_BACKLOG_RECOVERY_SUBJECT, alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, ...writebackBacklogRecoveryWording },
+    { subject: WRITEBACK_BACKLOG_RECOVERY_SUBJECT, alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...writebackBacklogRecoveryWording },
     now,
   )
 }
@@ -3631,7 +3670,7 @@ export const opsConnectionLoginRecoveryWording: RecoveryWording = {
 export async function sendOpsConnectionLoginRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { subject: string; alertedAt: string; endedAt: string | null },
+  recovery: { subject: string; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -3639,7 +3678,7 @@ export async function sendOpsConnectionLoginRecoveryAlert(
   return sendRecoveryAlert(
     connection,
     connection.default_channel,
-    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, ...opsConnectionLoginRecoveryWording },
+    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...opsConnectionLoginRecoveryWording },
     now,
   )
 }
@@ -3706,7 +3745,7 @@ export const opsConnectionWriteBackRecoveryWording: RecoveryWording = {
 export async function sendOpsConnectionWriteBackRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { subject: string; alertedAt: string; endedAt: string | null },
+  recovery: { subject: string; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -3714,7 +3753,7 @@ export async function sendOpsConnectionWriteBackRecoveryAlert(
   return sendRecoveryAlert(
     connection,
     connection.default_channel,
-    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, ...opsConnectionWriteBackRecoveryWording },
+    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...opsConnectionWriteBackRecoveryWording },
     now,
   )
 }
@@ -3789,7 +3828,7 @@ export const opsConnectionOwnerRecoveryWording: RecoveryWording = {
 export async function sendOpsConnectionOwnerRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { subject: string; alertedAt: string; endedAt: string | null },
+  recovery: { subject: string; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -3797,7 +3836,7 @@ export async function sendOpsConnectionOwnerRecoveryAlert(
   return sendRecoveryAlert(
     connection,
     connection.default_channel,
-    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, ...opsConnectionOwnerRecoveryWording },
+    { subject: slackText(recovery.subject), alertedAt: recovery.alertedAt, endedAt: recovery.endedAt, firstHealthyAt: recovery.firstHealthyAt, ...opsConnectionOwnerRecoveryWording },
     now,
   )
 }
@@ -3841,7 +3880,7 @@ export async function sendSalesforceBulkheadLimitAlert(supabase: SupabaseClient,
 export async function sendSalesforceBulkheadLimitRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { sizedFor: number; alertedAt: string; endedAt: string | null },
+  recovery: { sizedFor: number; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -3853,6 +3892,7 @@ export async function sendSalesforceBulkheadLimitRecoveryAlert(
       subject: 'The Salesforce bulkhead limit',
       alertedAt: recovery.alertedAt,
       endedAt: recovery.endedAt,
+      firstHealthyAt: recovery.firstHealthyAt,
       signal: 'Salesforce bulkhead limit',
       recoveredPhrase: `matches the ${recovery.sizedFor} the ops Salesforce lane is sized for again`,
     },
@@ -3915,7 +3955,7 @@ export async function sendMinuteJobFailingAlert(supabase: SupabaseClient, orgId:
 export async function sendMinuteJobFailingRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { label: string; alertedAt: string; endedAt: string | null },
+  recovery: { label: string; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -3930,6 +3970,7 @@ export async function sendMinuteJobFailingRecoveryAlert(
       recoveredPhrase: `has run for ${RECOVERY_REARM_MINUTES} minutes without failing`,
       alertedAt: recovery.alertedAt,
       endedAt: recovery.endedAt,
+      firstHealthyAt: recovery.firstHealthyAt,
     },
     now,
   )
@@ -4025,7 +4066,7 @@ export async function sendWritebackDrainAlert(connection: { bot_token: string; d
 export async function sendWorkflowScheduleRecoveryAlert(
   supabase: SupabaseClient,
   orgId: string,
-  recovery: { label: string; alertedAt: string; endedAt: string | null },
+  recovery: { label: string; alertedAt: string; endedAt: string | null; firstHealthyAt?: string | null },
   now: number = Date.now(),
 ): Promise<boolean> {
   const connection = await getSlackConnection(supabase, orgId)
@@ -4039,6 +4080,7 @@ export async function sendWorkflowScheduleRecoveryAlert(
       recoveredPhrase: 'is running on schedule again',
       alertedAt: recovery.alertedAt,
       endedAt: recovery.endedAt,
+      firstHealthyAt: recovery.firstHealthyAt,
     },
     now,
   )

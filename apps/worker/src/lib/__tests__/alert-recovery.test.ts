@@ -3,6 +3,7 @@ import {
   RECOVERY_REARM_MINUTES,
   RECOVERY_TTL_SECONDS,
   announceRecovery,
+  healthyKey,
   keepAlerted,
   markAlerted,
   markSpikeSeen,
@@ -159,7 +160,7 @@ describe('announceRecovery', () => {
     const kv = fakeKv({ 'volume-cliff-recovery:wf-1': '2026-08-14T10:00:00.000Z' })
     const send = vi.fn().mockResolvedValue(true)
     expect(await announceRecovery(kv, 'volume-cliff', 'wf-1', 'volume-cliff-cooldown:wf-1', ORG, send)).toBe(true)
-    expect(send).toHaveBeenCalledWith('2026-08-14T10:00:00.000Z', null)
+    expect(send).toHaveBeenCalledWith('2026-08-14T10:00:00.000Z', null, null)
   })
 
   it('deletes no cooldown when the check has none to clear (#851)', async () => {
@@ -169,7 +170,7 @@ describe('announceRecovery', () => {
     const del = vi.spyOn(kv, 'delete')
     expect(await announceRecovery(kv, 'workflow-schedule', 'a.yml', null, PLATFORM, vi.fn().mockResolvedValue(true))).toBe(true)
     expect(kv.store.has('workflow-schedule-recovery:a.yml')).toBe(false)
-    expect(del.mock.calls.map((c) => c[0])).toEqual(['workflow-schedule-recovery:a.yml', 'workflow-schedule-active:a.yml'])
+    expect(del.mock.calls.map((c) => c[0])).toEqual(['workflow-schedule-recovery:a.yml', 'workflow-schedule-active:a.yml', 'workflow-schedule-healthy:a.yml'])
   })
 
   it('clears the cooldown too, so the next genuine spike pages immediately', async () => {
@@ -327,14 +328,16 @@ describe('announceRecovery re-arm window (#814)', () => {
     const kv = seeded()
     const send = vi.fn().mockResolvedValue(true)
     expect(await call(kv, send, '2026-08-15T03:11:00.000Z')).toBe(true)
-    expect(send).toHaveBeenCalledWith(START, LAST_FAIL)
+    // No healthy tick asked before this one, so this is the first healthy check (#2580).
+    expect(send).toHaveBeenCalledWith(START, LAST_FAIL, '2026-08-15T03:11:00.000Z')
   })
 
   it('reports the end as the last observed failure, not the announcement time', async () => {
     const kv = seeded()
     const send = vi.fn().mockResolvedValue(true)
+    await call(kv, send, '2026-08-15T02:45:00.000Z') // the first healthy tick, held
     await call(kv, send, '2026-08-15T05:00:00.000Z') // announced hours later
-    expect(send).toHaveBeenCalledWith(START, LAST_FAIL)
+    expect(send).toHaveBeenCalledWith(START, LAST_FAIL, '2026-08-15T02:45:00.000Z')
   })
 
   it('a relapse inside the window continues the SAME incident', async () => {
@@ -350,8 +353,9 @@ describe('announceRecovery re-arm window (#814)', () => {
     expect(send).not.toHaveBeenCalled()
 
     expect(await call(kv, send, '2026-08-15T03:35:00.000Z')).toBe(true)
-    // One incident: 9:32 PM to 11:04 PM, not a five minute blip.
-    expect(send).toHaveBeenCalledWith(START, relapse)
+    // One incident: 9:32 PM to 11:04 PM, not a five minute blip, first seen clear
+    // by the 11:20 tick, the first healthy one after the relapse.
+    expect(send).toHaveBeenCalledWith(START, relapse, '2026-08-15T03:20:00.000Z')
   })
 
   it('clears the running-end key with the rest once announced', async () => {
@@ -372,7 +376,7 @@ describe('announceRecovery re-arm window (#814)', () => {
     const kv = fakeKv({ 'failure-rate-recovery:wf-1:ACRO': START })
     const send = vi.fn().mockResolvedValue(true)
     expect(await call(kv, send, '2026-08-15T02:45:00.000Z')).toBe(true)
-    expect(send).toHaveBeenCalledWith(START, null)
+    expect(send).toHaveBeenCalledWith(START, null, null)
   })
 
   it('announces with a null end when the running-end is unparseable', async () => {
@@ -382,7 +386,7 @@ describe('announceRecovery re-arm window (#814)', () => {
     })
     const send = vi.fn().mockResolvedValue(true)
     expect(await call(kv, send, '2026-08-15T02:45:00.000Z')).toBe(true)
-    expect(send).toHaveBeenCalledWith(START, null)
+    expect(send).toHaveBeenCalledWith(START, null, null)
   })
 
   it('honours a caller-supplied re-arm window', async () => {
@@ -435,13 +439,17 @@ describe('recoveryDue and settleRecovery (#1267)', () => {
     const due = await recoveryDue(seeded(), 'field-presence-drought', 'wf-1 f', {
       now: Date.parse('2026-09-10T11:00:05.000Z'),
     })
-    expect(due).toEqual({ alertedAt: START, endedAt: START })
+    expect(due).toEqual({ alertedAt: START, endedAt: START, firstHealthyAt: '2026-09-10T11:00:05.000Z' })
   })
 
-  it('does not touch any key on its own, because nothing has been delivered yet', async () => {
+  it('settles nothing on its own, because nothing has been delivered yet: it only records the first healthy check (#2580)', async () => {
     const kv = seeded()
     await recoveryDue(kv, 'field-presence-drought', 'wf-1 f', { now: Date.parse('2026-09-10T11:00:05.000Z') })
-    expect(kv.store.size).toBe(3)
+    expect(kv.store.size).toBe(4)
+    expect(kv.store.get('field-presence-drought-recovery:wf-1 f')).toBe(START)
+    expect(kv.store.get('field-presence-drought-active:wf-1 f')).toBe(START)
+    expect(kv.store.get('field-presence-drought-cooldown:wf-1 f')).toBe('1')
+    expect(kv.store.has(healthyKey('field-presence-drought', 'wf-1 f'))).toBe(true)
   })
 
   it('settleRecovery clears the marker, the running end and the cooldown', async () => {
@@ -472,5 +480,102 @@ describe('keepAlerted (#1274)', () => {
     const kv = fakeKv({ [recoveryKey('partner-reachability', 'host')]: '2026-09-05T06:00:00.000Z' })
     await keepAlerted(kv, 'partner-reachability', 'host', '2026-09-06T06:00:00.000Z', PLATFORM, NOW_MS)
     expect(kv.store.get(recoveryKey('partner-reachability', 'host'))).toBe('2026-09-05T06:00:00.000Z')
+  })
+})
+
+/**
+ * #2580. The all-clear named the LAST FAILURE as the moment the condition cleared.
+ * The partners page live updates check runs every five minutes: on 2026-10-21 its
+ * only failed run paged at 08:01 UTC, the next run (08:05:34) received its notice,
+ * and the all-clear at 08:35 said the alert lasted under a minute, "clearing at"
+ * 4:01 AM, which is the moment it fired. Nothing was observed clear at 4:01.
+ *
+ * What the check DID observe is the first healthy run after the last failure, so
+ * that run is recorded the first time a healthy run asks whether an all-clear is
+ * owed, and handed to the all-clear with the rest.
+ */
+describe('the first healthy observation after the last sighting (#2580)', () => {
+  const PAGED = '2026-10-21T08:01:08.000Z' // the failed run's page, 4:01 AM EDT
+  const FIRST_RECEIVED = '2026-10-21T08:05:34.000Z' // the next run, which received its notice
+  const ANNOUNCED = '2026-10-21T08:35:40.000Z' // the re-arm window over
+  const seeded = () =>
+    fakeKv({
+      'partner-page-live-recovery:channel': PAGED,
+      'partner-page-live-active:channel': PAGED,
+    })
+  const due = (kv: ReturnType<typeof fakeKv>, now: string) =>
+    recoveryDue(kv, 'partner-page-live', 'channel', { now: Date.parse(now) })
+
+  it('records the first healthy run inside the re-arm window and hands it to the all-clear', async () => {
+    const kv = seeded()
+    expect(await due(kv, FIRST_RECEIVED)).toBeNull()
+    expect(await due(kv, '2026-10-21T08:10:31.000Z')).toBeNull() // a later healthy run does not move it
+    expect(await due(kv, ANNOUNCED)).toEqual({ alertedAt: PAGED, endedAt: PAGED, firstHealthyAt: FIRST_RECEIVED })
+  })
+
+  it('belongs to the LAST sighting: a relapse after it is followed by a new first healthy run', async () => {
+    const kv = seeded()
+    await due(kv, FIRST_RECEIVED)
+    const relapse = '2026-10-21T08:10:40.000Z'
+    await markSpikeSeen(kv, 'partner-page-live', 'channel', Date.parse(relapse))
+    await due(kv, '2026-10-21T08:15:33.000Z')
+    expect(await due(kv, '2026-10-21T08:46:00.000Z')).toEqual({
+      alertedAt: PAGED,
+      endedAt: relapse,
+      firstHealthyAt: '2026-10-21T08:15:33.000Z',
+    })
+  })
+
+  it('records nothing on a call at or before the last sighting, which is no healthy observation', async () => {
+    const kv = seeded()
+    expect(await due(kv, PAGED)).toBeNull()
+    expect(kv.store.has(healthyKey('partner-page-live', 'channel'))).toBe(false)
+  })
+
+  it('names no first healthy run when no running end was recorded, since there is nothing it came after', async () => {
+    const kv = fakeKv({ 'partner-page-live-recovery:channel': PAGED })
+    expect(await due(kv, ANNOUNCED)).toEqual({ alertedAt: PAGED, endedAt: null, firstHealthyAt: null })
+  })
+
+  it('reads an unparseable record as absent and records this run instead', async () => {
+    const kv = seeded()
+    kv.store.set(healthyKey('partner-page-live', 'channel'), 'not json')
+    await due(kv, FIRST_RECEIVED)
+    expect((await due(kv, ANNOUNCED))?.firstHealthyAt).toBe(FIRST_RECEIVED)
+  })
+
+  it('never holds the all-clear when the record cannot be read: it names no first healthy run instead', async () => {
+    const kv = seeded()
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const get = kv.get
+    kv.get = (k: string) => (k === healthyKey('partner-page-live', 'channel') ? Promise.reject(new Error('KV read refused')) : get(k))
+    expect(await due(kv, ANNOUNCED)).toEqual({ alertedAt: PAGED, endedAt: PAGED, firstHealthyAt: null })
+    expect(errSpy).toHaveBeenCalled()
+    errSpy.mockRestore()
+  })
+
+  it('never holds the all-clear when the record cannot be written either', async () => {
+    const kv = seeded()
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    kv.put = () => Promise.reject(new Error('KV write refused'))
+    expect(await due(kv, ANNOUNCED)).toEqual({ alertedAt: PAGED, endedAt: PAGED, firstHealthyAt: null })
+    expect(errSpy).toHaveBeenCalled()
+    errSpy.mockRestore()
+  })
+
+  it('announceRecovery passes it to the sender as the third argument', async () => {
+    const kv = seeded()
+    const send = vi.fn().mockResolvedValue(true)
+    const call = (now: string) => announceRecovery(kv, 'partner-page-live', 'channel', null, PLATFORM, send, { now: Date.parse(now) })
+    expect(await call(FIRST_RECEIVED)).toBe(false)
+    expect(await call(ANNOUNCED)).toBe(true)
+    expect(send).toHaveBeenCalledWith(PAGED, PAGED, FIRST_RECEIVED)
+  })
+
+  it('settleRecovery removes it with the other markers', async () => {
+    const kv = seeded()
+    await due(kv, FIRST_RECEIVED)
+    await settleRecovery(kv, 'partner-page-live', 'channel', null, { ...PLATFORM, reason: 'all_clear' }, Date.parse(ANNOUNCED))
+    expect(kv.store.has(healthyKey('partner-page-live', 'channel'))).toBe(false)
   })
 })

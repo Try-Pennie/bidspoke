@@ -339,7 +339,7 @@ export async function runVolumeCliffCheck(
         wfId,
         backoffCooldownKey(backoff),
         incident,
-        async (alertedAt, endedAt) => {
+        async (alertedAt, endedAt, firstHealthyAt) => {
           const slack = await getSlackConnection(supabase, wf.organization_id)
           if (!slack || !slack.volume_alerts_enabled) return false
           return sendRecoveryAlert(
@@ -347,7 +347,7 @@ export async function runVolumeCliffCheck(
             wf.slack_channel ?? slack.default_channel,
             // Judges the trailing RECENT_WINDOW_MINUTES, so a one-tick cliff has a
             // zero span: name the window it measured, not a gap it did not (#1108).
-            { signal: 'volume cliff', subject: wf.name, alertedAt, endedAt, measuredWindowMinutes: RECENT_WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
+            { signal: 'volume cliff', subject: wf.name, alertedAt, endedAt, firstHealthyAt, measuredWindowMinutes: RECENT_WINDOW_MINUTES, url: `${appUrl}/workflows/${wfId}` },
           )
         },
         { hasEvidence: () => isVolumeRecovered(bucket) },

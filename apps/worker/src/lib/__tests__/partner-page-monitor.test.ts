@@ -395,6 +395,27 @@ describe('runPartnerPageMonitor', () => {
     ])
   })
 
+  // #2580, the 2026-10-21 timings: the only failed run paged at 08:01:08 UTC and
+  // the next run, at 08:05:34, received its notice. The all-clear must carry that
+  // run as the first healthy check, so it never names the page as the clearing.
+  it('hands the all-clear the first run that received its notice after the miss (#2580)', async () => {
+    const h = monitorHarness()
+    h.clock.now = Date.parse('2026-10-21T08:01:08.000Z')
+    h.set({ kind: 'not_received', partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 4, rounds: 2 })
+    await h.run()
+    h.set({ kind: 'received', latencyMs: 80, partitionToday: true, partitionTomorrow: true, joinAttempts: 1, pings: 1, rounds: 1 })
+    h.clock.now = Date.parse('2026-10-21T08:05:34.000Z')
+    await h.every5(RECOVERY_REARM_MINUTES + 5)
+    const recoveries = h.sent.filter((s) => s.kind === 'recovery' && s.payload.signal === 'partners page live updates')
+    expect(recoveries).toHaveLength(1)
+    expect((recoveries[0].payload.items as unknown[])[0]).toEqual({
+      subject: 'The partners page channel',
+      alertedAt: '2026-10-21T08:01:08.000Z',
+      endedAt: '2026-10-21T08:01:08.000Z',
+      firstHealthyAt: '2026-10-21T08:05:34.000Z',
+    })
+  })
+
   it('a cold start whose first notice is lost records received with the ping count, and pages nothing', async () => {
     const h = monitorHarness({ measure: () => measurePartnerPageDelivery(measureDeps(world({ lostPings: 1 })).deps) })
     const summary = await h.run()

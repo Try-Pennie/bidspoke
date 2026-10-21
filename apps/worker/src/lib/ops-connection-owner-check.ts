@@ -101,7 +101,7 @@ export interface OpsConnectionOwnerDeps {
   /** Pages the connection's organization. Returns whether it reached Slack. */
   sendAlert(organizationId: string, alert: OpsConnectionOwnerAlert): Promise<boolean>
   /** The all clear. Returns whether it reached Slack. */
-  sendRecovery(organizationId: string, recovery: { subject: string; alertedAt: string; endedAt: string | null }): Promise<boolean>
+  sendRecovery(organizationId: string, recovery: { subject: string; alertedAt: string; endedAt: string | null; firstHealthyAt: string | null }): Promise<boolean>
   /** The check could not run: pages through the export alerter. */
   reportUnreadable(problems: string[]): Promise<void>
   /** The check ran: stands an earlier could-not-run page down. */
@@ -207,7 +207,7 @@ async function clearOrphan(deps: OpsConnectionOwnerDeps, id: string, open: OpenO
     id,
     null,
     incidentFor(open.organization_id, open.label, errors),
-    (alertedAt, endedAt) => deps.sendRecovery(open.organization_id, { subject: open.label, alertedAt, endedAt }),
+    (alertedAt, endedAt, firstHealthyAt) => deps.sendRecovery(open.organization_id, { subject: open.label, alertedAt, endedAt, firstHealthyAt }),
     // A daily state check: a complete read that no longer finds it is the end.
     { now: nowMs, rearmMinutes: 0 },
   )

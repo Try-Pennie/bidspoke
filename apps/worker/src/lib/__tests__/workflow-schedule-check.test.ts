@@ -262,7 +262,8 @@ describe('runWorkflowScheduleWatch: the all-clear (#851)', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0][1]).toBe('org-1')
     // How long it was down is measured to the last dark tick, not to this message.
-    expect(calls[0][2]).toEqual({ label: first.label, alertedAt: iso(NOW), endedAt: iso(NOW) })
+    // And the first healthy check after it is this one, the first to see it run (#2580).
+    expect(calls[0][2]).toEqual({ label: first.label, alertedAt: iso(NOW), endedAt: iso(NOW), firstHealthyAt: iso(NOW + HOUR) })
 
     // Settled: the next healthy run owes nothing.
     await runWorkflowScheduleWatch(supabase, kv, ENV, NOW + 2 * HOUR, fetchAll(iso(NOW + 2 * HOUR - 60_000)))

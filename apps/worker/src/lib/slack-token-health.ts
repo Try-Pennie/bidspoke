@@ -103,7 +103,7 @@ export async function judgeSlackTokens(
         orgId,
         backoffCooldownKey(backoffKey(orgId)),
         incident(orgId),
-        (alertedAt, endedAt) => sendSlackTokenReadableAlert(conn, conn.default_channel, { alertedAt, endedAt, appUrl: deps.appUrl }, nowMs),
+        (alertedAt, endedAt, firstHealthyAt) => sendSlackTokenReadableAlert(conn, conn.default_channel, { alertedAt, endedAt, firstHealthyAt, appUrl: deps.appUrl }, nowMs),
         { now: nowMs, claim: minuteAllClearClaim(deps.claims, SLACK_TOKEN_SIGNAL, orgId) },
       )
       if (recovered) await clearCondition(deps.kv, backoffKey(orgId))

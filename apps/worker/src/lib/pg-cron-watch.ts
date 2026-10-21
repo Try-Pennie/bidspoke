@@ -453,10 +453,10 @@ async function checkOne(
         verdict.jobname,
         cooldownKey(verdict.jobname),
         pgCronIncident(verdict.jobname),
-        async (alertedAt, endedAt) => {
+        async (alertedAt, endedAt, firstHealthyAt) => {
           let delivered = false
           for (const orgId of orgIds) {
-            if (await sendPgCronRecoveryAlert(supabase, orgId, { jobname: verdict.jobname, alertedAt, endedAt }, nowMs)) {
+            if (await sendPgCronRecoveryAlert(supabase, orgId, { jobname: verdict.jobname, alertedAt, endedAt, firstHealthyAt }, nowMs)) {
               delivered = true
             }
           }
