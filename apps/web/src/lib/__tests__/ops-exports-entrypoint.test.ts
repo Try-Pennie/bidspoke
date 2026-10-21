@@ -18,8 +18,9 @@
  * Since #2338 build PR 6 the check also requires the Google list's three
  * methods. The class below is the one the API answered on 2026-10-21 for the
  * 01:05 UTC deploy (version f575481b, the merge of #2569), read before that
- * pull request moved them into the required list; the #2456 class, which lacks
- * them, is now a red case.
+ * pull request moved them into the required list, so its comment above the
+ * three is the deployed bundle's own text, kept as read; the #2456 class,
+ * which lacks them, is now a red case.
  */
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'

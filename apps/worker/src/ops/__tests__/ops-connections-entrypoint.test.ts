@@ -6,9 +6,9 @@
  * to an entrypoint the deployed Worker does not export: the binding deploys
  * green and every call throws "internal error; reference = <id>" within 20 to
  * 40 ms. So the first test here is that OpsConnections stays exported from the
- * ops Worker's main module, with exactly the methods bidding calls plus the
- * Google list's three, which ship on ops before bidding calls them (#2338); a
- * rename or a removal fails here before it can deploy. That a real binding
+ * ops Worker's main module, with exactly the methods bidding calls
+ * (OPS_CONNECTIONS_METHODS, the Google list's three among them since #2338
+ * build PR 6); a rename or a removal fails here before it can deploy. That a real binding
  * reaches it inside workerd is ops-connections.workers.test.ts.
  *
  * The rest: every answer is a value (a rejection across an RPC call reads as a
@@ -43,7 +43,7 @@ function opsDatabase(answers: Record<string, unknown>) {
 const configured: Partial<OpsEnv> = { LANE: 'ops', OPS_SUPABASE_URL: 'https://zwihpjxouklvkvngkvmw.supabase.co', OPS_SUPABASE_SECRET_KEY: 'sb_secret_test_not_real' }
 
 describe('OpsConnections stays exported from the ops Worker (Phase 0 spike, #2330)', () => {
-  it('is a named export of the main module, a WorkerEntrypoint, with exactly the methods the bidding Worker calls and the Google list\'s', () => {
+  it('is a named export of the main module, a WorkerEntrypoint, with exactly OPS_CONNECTIONS_METHODS, the methods the bidding Worker calls', () => {
     expect(opsModule.OpsConnections).toBe(OpsConnections)
     expect(Object.getPrototypeOf(OpsConnections)).toBe(WorkerEntrypoint)
     expect(Object.getOwnPropertyNames(OpsConnections.prototype).filter((n) => n !== 'constructor').sort())
