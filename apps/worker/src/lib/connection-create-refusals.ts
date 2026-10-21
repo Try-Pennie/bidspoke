@@ -187,7 +187,8 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   connection_host_not_declared: (c) => `${c.service} sent the check to an address this connection does not name. Nothing was saved. Check the address and save again.`,
   sf_pool_busy: () => 'Salesforce is busy with other Bidspoke work. Nothing was saved. Save again in a minute.',
   sf_org_unmeasured: (c) => `Bidspoke has not yet measured the Salesforce org ${orgOf(c)}. Nothing was saved. Save again in a minute.`,
-  sf_cap_unset: (c) => `Bidspoke has no approved cap for the Salesforce org ${orgOf(c)}. Nothing was saved. Dan must approve a cap for this org before a connection to it can be saved.`,
+  // Dan's words, design round 33 (2026-10-21): what is missing and what happens next, in the person's terms.
+  sf_cap_unset: (c) => `Bidspoke has no limit set yet on how many Salesforce calls its workflows may make to ${c.org ?? 'the org this connection names'}, so it cannot connect to that org. Nothing was saved. Ask Dan to set a limit for this org, then save again.`,
   sf_purpose_cap_unset: (c) => `Bidspoke has no approved share for checking logins on the Salesforce org ${orgOf(c)}. Nothing was saved. Dan must approve one for this org before a connection to it can be saved.`,
   sf_budget_floor: (c) => `The Salesforce org ${orgOf(c)} has nearly used up today's API calls. Nothing was saved. Save again tomorrow, or ask Dan.`,
   sf_budget_unmeasured: () => 'Bidspoke has no recent reading of how many Salesforce API calls are left today. Nothing was saved. Save again in a few minutes.',

@@ -45,7 +45,7 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
   'remove': ['Remove Achieve Salesforce 2?', 'Its login is deleted from Bidspoke and cannot be brought back.'],
   // Build PR 10: the states the settled design never drew.
   'add-stalled': ['The login check with Salesforce did not answer within 120 seconds, so Bidspoke cannot tell whether the connection was saved.'],
-  'add-failed-no-cap': ['Bidspoke has no approved cap for the Salesforce org lendco.my.salesforce.com.'],
+  'add-failed-no-cap': ['Bidspoke has no limit set yet on how many Salesforce calls its workflows may make to lendco.my.salesforce.com, so it cannot connect to that org. Nothing was saved. Ask Dan to set a limit for this org, then save again.'],
   'add-snowflake': ['Private key', 'Warehouse', 'Schema'],
   'add-leave-ask': ['The new connection is not saved', 'Leaving discards what is typed into its form.'],
   'add-saving-leave-ask': ['The login is still being checked'],

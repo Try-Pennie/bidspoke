@@ -541,7 +541,7 @@ describe('a verify that does not pass writes nothing', () => {
     expect(db.rows).toHaveLength(1)
   })
 
-  it('an org with no approved lane cap names the org and that Dan must approve one (#2556)', async () => {
+  it('an org with no approved lane cap names the org and asks Dan to set a limit for it (#2556, round 33)', async () => {
     const db = storeDouble()
     vi.mocked(createSupabaseClient).mockReturnValue(db as never)
     const { env } = makeEnv({ verify: async () => ({ ok: false, refused: 'sf_cap_unset', detail: 'no approved cap', retry_at: null }) })
@@ -549,7 +549,7 @@ describe('a verify that does not pass writes nothing', () => {
     expect(res.status).toBe(422)
     expect(await res.json()).toMatchObject({
       error: 'sf_cap_unset',
-      message: 'Bidspoke has no approved cap for the Salesforce org lendco.my.salesforce.com. Nothing was saved. Dan must approve a cap for this org before a connection to it can be saved.',
+      message: 'Bidspoke has no limit set yet on how many Salesforce calls its workflows may make to lendco.my.salesforce.com, so it cannot connect to that org. Nothing was saved. Ask Dan to set a limit for this org, then save again.',
     })
     expect(db.rows).toEqual([])
   })

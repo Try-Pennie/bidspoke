@@ -218,7 +218,7 @@ export const ELAPSED_MS = 4_000
 /** The refusals the Worker's routes answer, worded as they word them (lib/connection-create-refusals.ts). */
 const LIST_REFUSED = 'The connections could not be read: the use counts read failed.'
 const SECRET_REFUSED = 'Salesforce refused the client secret. Nothing was saved. Check the secret and save again.'
-const NO_CAP = 'Bidspoke has no approved cap for the Salesforce org lendco.my.salesforce.com. Nothing was saved. Dan must approve a cap for this org before a connection to it can be saved.'
+const NO_CAP = 'Bidspoke has no limit set yet on how many Salesforce calls its workflows may make to lendco.my.salesforce.com, so it cannot connect to that org. Nothing was saved. Ask Dan to set a limit for this org, then save again.'
 const IN_USE = 'Daily Salesforce cleanup uses this connection, so it cannot be removed. Nothing was removed. Take it out of that workflow first.'
 const OPS_NOT_TOLD = 'The connection is removed. The workflows server could not be told straight away, so it stops using the login at its next minute check, and within 6 hours at the latest if it cannot reach Bidspoke.'
 const ADD_REFUSED = 'ops@trypennie is not one mailbox address or one shared drive id. Nothing was added. Check it and add it again.'
