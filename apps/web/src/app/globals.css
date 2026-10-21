@@ -481,6 +481,11 @@ html {
   .outcome {
     @apply inline-flex items-center gap-1.5 text-xs;
   }
+  /* A working line's spinner is as tall as the capital letters and level with
+     them (#2338 round 32, Dan 2026-10-21). The one rule that sizes it, for
+     every working line in the app; outcome-spinner-guard.test.ts refuses any
+     other. */
+  .outcome svg { width: 0.95em; height: 0.95em; flex: none; position: relative; top: -0.1em }
   .outcome-working {
     @apply text-gray-600;
   }
@@ -591,6 +596,102 @@ html {
     @apply rounded-sm bg-line-soft text-transparent;
     box-shadow: 0 0 0 2px theme('colors.line-soft');
   }
+
+  /* The Connections page as the settled design draws it (#2338, build PR 9,
+     docs/design/connections-page/screen.css). Its buttons are the design
+     system's Button, given the design's geometry here; navy marks the chosen
+     row, blue is for buttons only, red #B42318 only for a problem's status. */
+  .cx-page { padding: 32px 32px 48px; max-width: 1072px; position: relative; }
+  .cx-head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 24px; }
+  /* The design's controls take the page's own line height, not the button's tighter one. */
+  .cx-page .btn:is(.cx-btn, .cx-btn-quiet, .cx-btn-danger, .cx-item-btn, .ga-link) { line-height: 1.5; }
+  .cx-page .btn.cx-btn { padding: 8px 16px; border-radius: 8px; font-size: 14px; font-weight: 500; white-space: nowrap; }
+  .cx-page .btn.cx-btn-sm { padding: 6px 12px; font-size: 13px; }
+  .cx-page .btn.cx-btn-quiet { background: #fff; color: #1D212F; border: 1px solid #D9D4CC; border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 400; white-space: nowrap; }
+  .cx-page .btn.cx-btn-quiet:hover { background: #FBF9F6; }
+  .cx-page .btn.cx-btn-danger { background: #fff; color: #B42318; border: 1px solid #E8B4AE; border-radius: 8px; padding: 6px 12px; font-size: 13px; font-weight: 400; }
+  .cx-page .btn.cx-btn-danger:disabled { color: #B9B2A8; border-color: #E5E0D8; opacity: 1; }
+  .cx-page .btn.cx-btn:disabled { opacity: .85; }
+  .cx-hint { color: #697081; font-size: 13px; }
+  .cx-status { font-size: 13px; color: #1D212F; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+  .cx-status .dot { width: 8px; height: 8px; border-radius: 50%; background: #9AA1AE; }
+  .cx-status.problem { color: #B42318; font-weight: 500; }
+  .cx-status.problem .dot { background: #B42318; }
+  .cx-card { background: #fff; border: 1px solid #E5E0D8; border-radius: 12px; }
+  .cx-loading { padding: 8px 0; font-size: 14px; }
+  .cx-loading .outcome { font-size: 14px; color: #1D212F; }
+
+  /* Round 1: the list on the left, the chosen connection on the right. */
+  .cx-split { display: grid; grid-template-columns: 300px 1fr; gap: 24px; align-items: start; }
+  .cx-list { padding: 8px 0; }
+  .cx-item { font-size: 14px; color: #1D212F; }
+  .cx-page .btn.cx-item-btn { display: flex; width: 100%; justify-content: space-between; align-items: center; padding: 8px 16px; border-radius: 0; font-size: 14px; font-weight: 400; color: inherit; text-align: left; }
+  .cx-page .btn.cx-item-btn:hover { background: #FBF9F6; }
+  .cx-item.sel { background: #1D212F; color: #fff; }
+  .cx-page .cx-item.sel .btn.cx-item-btn:hover { background: #1D212F; }
+  .cx-item.sel .cx-hint { color: #D9D4CC; }
+  .cx-item-two { display: flex; flex-direction: column; }
+
+  /* Round 4: each section headed dark, normal case, 14px semibold, a line above each after the first. */
+  .cx-group { text-transform: none; letter-spacing: 0; font-size: 14px; font-weight: 600; color: #1D212F; padding: 14px 16px 6px; border-top: 1px solid #E5E0D8; margin: 6px 0 0; }
+  .cx-section:first-child .cx-group { border-top: 0; margin-top: 0; }
+
+  /* Rounds 5 to 9: the detail panel. */
+  .cx-detail { padding: 24px; min-width: 0; }
+  .cx-detail h2 { font-size: 20px; font-weight: 600; color: #1D212F; margin: 0 0 4px; }
+  .cx-rows { margin-top: 20px; border-top: 1px solid #EFEAE3; }
+  .cx-row { display: grid; grid-template-columns: 140px 1fr; padding: 12px 0; border-bottom: 1px solid #EFEAE3; font-size: 14px; color: #1D212F; }
+  .cx-row > :first-child { color: #697081; }
+  .cx-actions { display: flex; gap: 8px; margin-top: 20px; }
+  .cx-tabs .tabs-list { display: flex; gap: 24px; margin: 16px 0 0; box-shadow: none; border-bottom: 1px solid #E5E0D8; }
+  .cx-tabs .tab { padding: 10px 0; font-size: 14px; line-height: 1.5; color: #697081; margin-bottom: -1px; }
+  .cx-tabs .tab[data-state='active'] { color: #1D212F; font-weight: 600; border-bottom-color: #1D212F; }
+  .cx-notice { margin-top: 16px; border: 1px solid #E8B4AE; background: #FDF3F2; border-radius: 10px; padding: 14px 16px; font-size: 14px; color: #1D212F; }
+  .cx-notice p { margin: 0 0 6px; }
+  .cx-page .cx-notice .btn.cx-btn { margin-top: 6px; }
+  .cx-danger { margin-top: 28px; padding-top: 16px; border-top: 1px solid #EFEAE3; display: flex; justify-content: space-between; align-items: center; gap: 16px; }
+  .cx-danger .what { font-size: 14px; color: #1D212F; }
+  .cx-danger .btn { margin-left: auto; }
+  .cx-inline { margin-top: 12px; padding: 12px 14px; background: #FBF9F6; border: 1px solid #EFEAE3; border-radius: 10px; font-size: 14px; color: #1D212F; }
+  .cx-wf { display: block; padding: 8px 0; border-bottom: 1px solid #EFEAE3; font-size: 14px; color: #1D212F; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: #B9B2A8; }
+  .cx-inline .cx-wf { padding: 6px 0; }
+  .cx-wf-gone { text-decoration: none; color: #697081; }
+  .cx-link { color: #1D212F; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: #B9B2A8; }
+  .cx-aside { margin-top: 20px; font-size: 14px; color: #1D212F; }
+  .cx-empty { margin-top: 16px; font-size: 14px; color: #1D212F; }
+  .cx-tab-list { margin-top: 8px; }
+  .cx-history { margin-top: 8px; }
+  .cx-history-row { display: grid; grid-template-columns: 72px 80px 140px 1fr; column-gap: 12px; padding: 10px 0; border-bottom: 1px solid #EFEAE3; font-size: 14px; color: #1D212F; }
+  .cx-history-row > :nth-child(-n + 3) { color: #697081; }
+
+  /* Round 10: Google mailboxes and drives, in the panel. */
+  .ga-intro { font-size: 14px; color: #1D212F; margin: 6px 0 16px; max-width: 560px; }
+  .ga-term { position: relative; text-decoration: underline dotted; text-underline-offset: 3px; cursor: help; }
+  .ga-term:focus-visible { outline: 2px solid #1B72BA; outline-offset: 2px; border-radius: 2px; }
+  /* The term's explanation, shown on hover and on keyboard focus alike. */
+  .ga-term:is(:hover, :focus-visible)::after {
+    content: attr(data-explain); position: absolute; left: 0; top: calc(100% + 6px); z-index: 20; width: 280px;
+    background: #1D212F; color: #fff; font-size: 13px; line-height: 1.4; padding: 8px 10px; border-radius: 8px; text-decoration: none; white-space: normal;
+  }
+  .ga-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; column-gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid #EFEAE3; font-size: 14px; color: #1D212F; }
+  .ga-row > * { white-space: nowrap; }
+  .ga-row > :first-child { overflow: hidden; text-overflow: ellipsis; }
+  .ga-add { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+  .ga-add-line { display: flex; gap: 8px; }
+  .ga-add-line .input { flex: 1; }
+  .cx-page .ga-add .btn.cx-btn { flex: none; }
+  .cx-page .btn.ga-link { background: none; border: 0; padding: 0; font-size: 13px; color: #1D212F; text-decoration: underline; text-underline-offset: 3px; }
+  .ga-edit { margin-top: 10px; }
+  .ga-edit.outcome, .ga-edit .outcome { font-size: 13px; }
+  .ga-failed { margin-top: 8px; display: flex; flex-direction: column; align-items: flex-start; gap: 8px; font-size: 14px; }
+  .ga-limit { margin-top: 10px; }
+
+  /* Rounds 22 and 23: statuses not current, and the list not loaded. */
+  .un-strip { margin: -8px 0 16px; border: 1px solid #E5E0D8; background: #FBF9F6; border-radius: 10px; padding: 10px 14px; font-size: 14px; color: #1D212F; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .un-strip-text { display: flex; flex-direction: column; gap: 2px; }
+  .ld-card { padding: 28px 24px; font-size: 14px; color: #1D212F; }
+  .ld-card p { margin: 0 0 6px; }
+  .cx-page .ld-card .btn.cx-btn-quiet { margin-top: 10px; }
 }
 
 /* Radix hides the Select list's scrollbar with an unlayered style of its own,

@@ -1,4 +1,4 @@
-/* The Connections page as settled in the #2338 design rounds (round 1 to 27), with the rejected
+/* The Connections page as settled in the #2338 design rounds (rounds 1 to 32), with the rejected
    options' rules taken out. Colours are the app's: navy #1D212F marks a selection, blue #1B72BA is
    for buttons only, red #B42318 only for something wrong, grey hint text #697081. */
 .cx-page { padding: 32px 32px 48px; max-width: 1072px; position: relative; }
@@ -55,9 +55,16 @@
 .ga-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto; column-gap: 12px; align-items: center; padding: 10px 0; border-bottom: 1px solid #EFEAE3; font-size: 14px; color: #1D212F; }
 .ga-row > * { white-space: nowrap; }
 .ga-row > :first-child { overflow: hidden; text-overflow: ellipsis; }
-.ga-add { display: flex; gap: 8px; margin-top: 16px; }
-.ga-add .input { flex: 1; }
+.ga-add { display: flex; flex-direction: column; gap: 8px; margin-top: 16px; }
+/* Rounds 29 to 31: the choice first, then each line of boxes; a drive's address alone on its line. */
+.ga-add-line { display: flex; gap: 8px; }
+.ga-add-line .input { flex: 1; }
 .ga-add .cx-btn { flex: none; }
+.ga-link[disabled] { opacity: .5; }
+.ga-edit { margin-top: 10px; }
+.ga-edit .outcome { font-size: 13px; }
+/* Round 32: a working line's spinner is as tall as the capitals and level with them. */
+.outcome svg { width: 0.95em; height: 0.95em; flex: none; position: relative; top: -0.1em }
 .ga-link { background: none; border: 0; padding: 0; font: inherit; font-size: 13px; color: #1D212F; text-decoration: underline; text-underline-offset: 3px; }
 
 /* Rounds 11 to 18: Add connection, in the right panel. */
@@ -96,7 +103,11 @@
 .rp-box { width: 14px; height: 14px; border-radius: 3px; background: #1D212F; display: inline-grid; place-items: center; color: #fff; font-size: 10px; flex: none; }
 
 /* Rounds 22 and 23: statuses unknown, and the list not loaded. */
+.un-strip-text { display: flex; flex-direction: column; gap: 2px; }
 .un-strip { margin: -8px 0 16px; border: 1px solid #E5E0D8; background: #FBF9F6; border-radius: 10px; padding: 10px 14px; font-size: 14px; color: #1D212F; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
 .ld-card { padding: 28px 24px; font-size: 14px; color: #1D212F; }
 .ld-card p { margin: 0 0 6px; }
 .ld-card .cx-btn-quiet { margin-top: 10px; }
+/* The Slack alert login's panel (passed in review, 2026-10-21): where its settings live. */
+.cx-aside { margin-top: 20px; font-size: 14px; color: #1D212F; }
+.cx-link { color: #1D212F; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: #B9B2A8; }

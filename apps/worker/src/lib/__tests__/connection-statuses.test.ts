@@ -10,9 +10,13 @@ import { STORED_COPY_RECONFIRM_AFTER_MS } from '../stored-copy-age'
 import {
   connectionStatusesCopyKey,
   forgetConnectionStatusesMemory,
+  forgetSlackAlertStatusMemory,
   pageStatusOf,
   readConnectionStatuses,
+  readSlackAlertStatus,
   rememberConnectionStatuses,
+  rememberSlackAlertStatus,
+  slackAlertStatusCopyKey,
 } from '../connection-statuses'
 
 const ORG_A = '11111111-1111-4111-8111-111111111111'
@@ -136,5 +140,44 @@ describe('the last known statuses', () => {
   it('with no KV binding there is nothing to keep or read', async () => {
     await expect(rememberConnectionStatuses(undefined, ORG_A, [row('healthy')], T0)).resolves.toBeUndefined()
     expect(await readConnectionStatuses(undefined, ORG_A)).toEqual({ kind: 'absent' })
+  })
+})
+
+describe("the Slack alert login's last known status (build PR 9)", () => {
+  afterEach(() => forgetSlackAlertStatusMemory())
+
+  it('reads back what was kept, with the time it was measured', async () => {
+    const kv = memoryKv()
+    await rememberSlackAlertStatus(kv, ORG_A, { status: 'reauth', acts_as: 'bidspoke_alerts in Pennie' }, T0)
+    expect(await readSlackAlertStatus(kv, ORG_A)).toEqual({ kind: 'read', as_of: new Date(T0).toISOString(), value: { status: 'reauth', acts_as: 'bidspoke_alerts in Pennie' } })
+    expect(await readSlackAlertStatus(kv, ORG_B)).toEqual({ kind: 'absent' })
+  })
+
+  it('writes again only when the status changes or is due to be confirmed', async () => {
+    const kv = memoryKv()
+    await rememberSlackAlertStatus(kv, ORG_A, { status: 'ok', acts_as: 'a in b' }, T0)
+    await rememberSlackAlertStatus(kv, ORG_A, { status: 'ok', acts_as: 'a in b' }, T0 + 1000)
+    expect(kv.puts).toBe(1)
+    await rememberSlackAlertStatus(kv, ORG_A, { status: 'reauth', acts_as: 'a in b' }, T0 + 2000)
+    await rememberSlackAlertStatus(kv, ORG_A, { status: 'reauth', acts_as: 'a in b' }, T0 + 2000 + STORED_COPY_RECONFIRM_AFTER_MS)
+    expect(kv.puts).toBe(3)
+  })
+
+  it('refuses a copy naming another organization, or carrying a status the page does not show, rather than showing it', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const kv = memoryKv()
+    kv.store.set(slackAlertStatusCopyKey(ORG_A), JSON.stringify({ organization_id: ORG_B, as_of: new Date(T0).toISOString(), status: 'ok', acts_as: null }))
+    expect((await readSlackAlertStatus(kv, ORG_A)).kind).toBe('unreadable')
+    kv.store.set(slackAlertStatusCopyKey(ORG_A), JSON.stringify({ organization_id: ORG_A, as_of: new Date(T0).toISOString(), status: 'healthy', acts_as: null }))
+    expect((await readSlackAlertStatus(kv, ORG_A)).kind).toBe('unreadable')
+  })
+
+  it('never throws when KV refuses the write or the read', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const kv = memoryKv()
+    kv.failPut = true
+    await expect(rememberSlackAlertStatus(kv, ORG_A, { status: 'ok', acts_as: null }, T0)).resolves.toBeUndefined()
+    kv.failGet = true
+    expect((await readSlackAlertStatus(kv, ORG_A)).kind).toBe('unreadable')
   })
 })

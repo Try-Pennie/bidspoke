@@ -626,6 +626,10 @@ export interface ConnectionListRow {
   name: string
   /** The service's catalogue key. */
   service: string
+  /** The service's name as the page shows it (the catalogue's), absent from a Worker before build PR 9. */
+  service_name?: string
+  /** The Slack alert login, listed as Bidspoke Alerts; its status is Slack's own answer about its token. */
+  alert_login?: boolean
   acts_as: string | null
   person_bound: boolean
   owner: { user_id: string; name: string | null; email: string | null } | null
@@ -642,6 +646,12 @@ export interface ConnectionListRow {
   } | null
   /** How many workflows use it, soft deleted ones included (R5). */
   used_by: number
+  /** When its login was last checked, either way (build PR 9): ops's latest check, or when Slack last answered about the alert login. */
+  checked_at?: string | null
+  /** Those workflows by name, deleted ones marked (build PR 9). */
+  workflows?: Array<{ id: string; name: string; deleted: boolean }>
+  /** A Salesforce connection's org host (build PR 9). */
+  org?: string | null
   created_at: string
   updated_at: string
 }
@@ -754,7 +764,7 @@ const MIGRATION_TIMEOUT_MS = 180_000
 // known statuses, and a lookup up to 30 s for ops (OPS_CONNECTIONS_DEADLINES_MS
 // in apps/worker/src/lib/ops-connections-client.ts); each gets headroom past
 // that, so the Worker's own named answer arrives before the browser gives up.
-const CONNECTIONS_LIST_TIMEOUT_MS = 45_000
+export const CONNECTIONS_LIST_TIMEOUT_MS = 45_000
 const CONNECTION_LOOKUP_TIMEOUT_MS = 45_000
 
 type ReqInit = RequestInit & { timeoutMs?: number }
@@ -1366,6 +1376,19 @@ export const api = {
     list: () => req<ConnectionList>('/api/connections', { timeoutMs: CONNECTIONS_LIST_TIMEOUT_MS }),
     // The save, POST /api/connections (#2338, build PR 5), is called by the
     // Add connection form, which arrives with build PR 10.
+    // The History tab (build PR 9): newest first, each naming who made it.
+    history: (id: string) =>
+      req<{ entries: Array<{ id: string; action: string; at: string; by: string | null; credential_changed: boolean; changes: unknown }> }>(`/api/connections/${encodeURIComponent(id)}/history`),
+    // The company list of Google mailboxes and drives (R10). Each refusal throws carrying the route's sentence in body.message.
+    googleSubjects: () =>
+      req<{ subjects: Array<{ kind: 'mailbox' | 'drive'; subject: string; display_name: string | null; added_by: string; added_at: string }>; reached_limit: boolean }>('/api/connections/google/subjects'),
+    addGoogleSubject: (body: { kind: 'mailbox' | 'drive'; subject: string; display_name: string | null }) =>
+      req<{ outcome: 'added' | 'already_listed'; entry: { kind: 'mailbox' | 'drive'; subject: string; display_name: string | null; added_by: string; added_at: string } }>('/api/connections/google/subjects', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    removeGoogleSubject: (kind: 'mailbox' | 'drive', subject: string) =>
+      req<{ outcome: 'removed' }>(`/api/connections/google/subjects/${encodeURIComponent(kind)}/${encodeURIComponent(subject)}`, { method: 'DELETE' }),
     lookup: (id: string, key: string, parents: string[] = []) =>
       req<{ answer: ConnectionLookupAnswer }>(`/api/connections/${encodeURIComponent(id)}/lookup/${encodeURIComponent(key)}`, {
         method: 'POST',

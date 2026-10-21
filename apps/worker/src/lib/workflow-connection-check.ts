@@ -1,7 +1,9 @@
 /**
  * The connection check every workflow definition writer asks before it writes
  * (#2338, build PR 7; R9): create, save, duplicate and version restore in
- * routes/api/workflows.ts.
+ * routes/api/workflows.ts, and the switch on (PATCH, #2576, build PR 9), which
+ * writes no definition but makes the stored one live, so the trigger below
+ * (which fires on a write of the definition) never judges it.
  *
  * A step names a connection by its id. Once a connection is removed (or when an
  * id is another organization's connection) a definition naming it would fail on
@@ -24,7 +26,8 @@
  *
  * Never unchecked: a function that is missing (this code deployed before its
  * migration was applied, L640), a lookup that failed, or an answer this module
- * cannot read each refuse the save with their own named code, never pass it.
+ * cannot read each refuse the save (or the switch on) with their own named
+ * code, never pass it.
  */
 import type { createSupabaseClient } from './supabase'
 import { formatErr } from './format-error'
@@ -73,31 +76,42 @@ function itemSentence(m: MissingConnection): string {
   return `The steps ${listed(m.steps)} name ${connectionPhrase(m)}.`
 }
 
-/** The save's refusal for the connections named: each one, where it is named, and what to do. */
-export function missingConnectionsSentence(missing: readonly MissingConnection[]): string {
+/** What the refused request was doing: a save of a definition (every writer), or switching a workflow on. */
+export type ConnectionCheckedAction = 'save' | 'switch_on'
+
+/** The refusal's first sentence, saying what did not happen. */
+const NOT_DONE: Readonly<Record<ConnectionCheckedAction, string>> = {
+  save: 'Nothing was saved.',
+  switch_on: 'The workflow was not switched on.',
+}
+
+/** The refusal for the connections named: each one, where it is named, and what to do. */
+export function missingConnectionsSentence(missing: readonly MissingConnection[], action: ConnectionCheckedAction = 'save'): string {
+  const then = action === 'save' ? 'then save again' : 'then switch the workflow on'
+  const give = action === 'save' ? 'a replacement connection' : 'a replacement connection and save it'
   if (missing.length === 0) {
-    return 'Nothing was saved. This workflow names a connection that was removed while it was being saved. Give its step a replacement connection, then save again.'
+    return `${NOT_DONE[action]} This workflow names a connection that was removed while it was being ${action === 'save' ? 'saved' : 'switched on'}. Give its step ${give}, ${then}.`
   }
   const steps = new Set(missing.flatMap((m) => m.steps))
   const todo = steps.size === 0
-    ? `Replace ${missing.length === 1 ? 'it' : 'them'} with a connection of this organization, then save again.`
-    : steps.size === 1 ? 'Give the step a replacement connection, then save again.' : 'Give each of those steps a replacement connection, then save again.'
-  return `Nothing was saved. ${missing.map(itemSentence).join(' ')} ${todo}`
+    ? `Replace ${missing.length === 1 ? 'it' : 'them'} with a connection of this organization${action === 'save' ? '' : ' and save'}, ${then}.`
+    : steps.size === 1 ? `Give the step ${give}, ${then}.` : `Give each of those steps ${give}, ${then}.`
+  return `${NOT_DONE[action]} ${missing.map(itemSentence).join(' ')} ${todo}`
 }
 
-const SENTENCES: { readonly [C in Exclude<WorkflowConnectionRefusalCode, 'workflow_connection_missing'>]: string } = {
-  workflow_connection_check_unavailable:
-    'Nothing was saved. Bidspoke could not check that every connection this workflow names still exists, because the database does not have that check yet. Tell Dan, since saving works again once the database update is applied.',
-  workflow_connection_check_failed:
-    'Nothing was saved. Bidspoke could not check that every connection this workflow names still exists, because the database did not answer. Save again in a minute.',
+const SENTENCES: { readonly [C in Exclude<WorkflowConnectionRefusalCode, 'workflow_connection_missing'>]: (action: ConnectionCheckedAction) => string } = {
+  workflow_connection_check_unavailable: (action) =>
+    `${NOT_DONE[action]} Bidspoke could not check that every connection this workflow names still exists, because the database does not have that check yet. Tell Dan, since ${action === 'save' ? 'saving' : 'switching on'} works again once the database update is applied.`,
+  workflow_connection_check_failed: (action) =>
+    `${NOT_DONE[action]} Bidspoke could not check that every connection this workflow names still exists, because the database did not answer. ${action === 'save' ? 'Save' : 'Switch it on'} again in a minute.`,
 }
 
-function refusal(code: Exclude<WorkflowConnectionRefusalCode, 'workflow_connection_missing'>): ConnectionCheckRefusal {
-  return { status: 503, body: { error: SENTENCES[code], code } }
+function refusal(code: Exclude<WorkflowConnectionRefusalCode, 'workflow_connection_missing'>, action: ConnectionCheckedAction): ConnectionCheckRefusal {
+  return { status: 503, body: { error: SENTENCES[code](action), code } }
 }
 
-function missingRefusal(missing: MissingConnection[]): ConnectionCheckRefusal {
-  return { status: 409, body: { error: missingConnectionsSentence(missing), code: 'workflow_connection_missing', missing_connections: missing } }
+function missingRefusal(missing: MissingConnection[], action: ConnectionCheckedAction = 'save'): ConnectionCheckRefusal {
+  return { status: 409, body: { error: missingConnectionsSentence(missing, action), code: 'workflow_connection_missing', missing_connections: missing } }
 }
 
 /** One answered row, or null when it is not of the shape the function returns. */
@@ -124,32 +138,33 @@ function isMissingFunction(error: { code?: unknown }): boolean {
 }
 
 /**
- * Asks whether the definition about to be written names a connection that is
- * not a live one of the organization. null: it names none, write it. Otherwise
- * the refusal to answer, and nothing may be written.
+ * Asks whether the definition about to be written (or, switching on, made live)
+ * names a connection that is not a live one of the organization. null: it
+ * names none, go ahead. Otherwise the refusal to answer, worded for the
+ * action, and nothing may be written.
  */
-export async function checkDefinitionConnections(supabase: Client, orgId: string, definition: unknown): Promise<ConnectionCheckRefusal | null> {
+export async function checkDefinitionConnections(supabase: Client, orgId: string, definition: unknown, action: ConnectionCheckedAction = 'save'): Promise<ConnectionCheckRefusal | null> {
   let answer: { data: unknown; error: unknown }
   try {
     answer = await supabase.rpc('definition_connection_problems', { p_organization_id: orgId, p_definition: definition as never })
   } catch (err) {
     console.error(JSON.stringify({ event: 'workflow_connection_check_failed', organization_id: orgId, error: formatErr(err) }))
-    return refusal('workflow_connection_check_failed')
+    return refusal('workflow_connection_check_failed', action)
   }
   if (answer.error) {
     const error = answer.error as { code?: unknown }
     const code = isMissingFunction(error) ? 'workflow_connection_check_unavailable' : 'workflow_connection_check_failed'
     console.error(JSON.stringify({ event: code, organization_id: orgId, error: formatErr(answer.error) }))
-    return refusal(code)
+    return refusal(code, action)
   }
   const missing = readRows(answer.data, 'connection_id')
   if (missing === null) {
     console.error(JSON.stringify({ event: 'workflow_connection_check_failed', organization_id: orgId, error: 'the check answered rows this route cannot read' }))
-    return refusal('workflow_connection_check_failed')
+    return refusal('workflow_connection_check_failed', action)
   }
   if (missing.length === 0) return null
   console.warn(JSON.stringify({ event: 'workflow_connection_refused', organization_id: orgId, connections: missing.map((m) => ({ id: m.id, problem: m.problem })) }))
-  return missingRefusal(missing)
+  return missingRefusal(missing, action)
 }
 
 /**

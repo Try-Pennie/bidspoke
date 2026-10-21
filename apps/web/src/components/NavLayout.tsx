@@ -6,20 +6,29 @@ import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { createClient } from '@/lib/supabase/client'
 import { leaveThen } from '@/lib/leave-guard'
-import { GitBranch, Settings, LogOut, Puzzle, KeyRound, Users, LayoutDashboard, Globe, BookOpen } from 'lucide-react'
+import { GitBranch, Settings, LogOut, Plug, KeyRound, Users, LayoutDashboard, Globe, BookOpen } from 'lucide-react'
 
+// Integrations became Connections, with a plug (#2338, R2, D2). The old
+// Integrations page stays reachable, from the Slack alert login on the
+// Connections page, until build PR 14 moves its alert settings and retires it.
 const NAV = [
-  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { href: '/workflows', label: 'Workflows', icon: GitBranch },
-  { href: '/partners', label: 'Partners', icon: Users },
-  { href: '/endpoints', label: 'Endpoints', icon: Globe },
-  { href: '/env', label: 'Environment', icon: Settings },
-  { href: '/sources', label: 'API Sources', icon: KeyRound },
-  { href: '/integrations', label: 'Integrations', icon: Puzzle },
+  { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, iconName: 'layout-dashboard' },
+  { href: '/workflows', label: 'Workflows', icon: GitBranch, iconName: 'git-branch' },
+  { href: '/partners', label: 'Partners', icon: Users, iconName: 'users' },
+  { href: '/endpoints', label: 'Endpoints', icon: Globe, iconName: 'globe' },
+  { href: '/env', label: 'Environment', icon: Settings, iconName: 'settings' },
+  { href: '/sources', label: 'API Sources', icon: KeyRound, iconName: 'key-round' },
+  { href: '/connections', label: 'Connections', icon: Plug, iconName: 'plug' },
 ]
 
-export default function NavLayout({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname()
+/**
+ * `activeHref` draws that item as the current page wherever the layout is
+ * rendered: only the development preview of a page sets it (/dev/connections),
+ * so its picture matches the page as served.
+ */
+export default function NavLayout({ children, activeHref }: { children: React.ReactNode; activeHref?: string }) {
+  const routePath = usePathname()
+  const pathname = activeHref ?? routePath
   const router = useRouter()
 
   // A page holding unsaved work asks first, in its own dialog (#2138, PM-5).
@@ -56,7 +65,7 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
           <span className="text-lg font-semibold tracking-tight text-white">Bidspoke</span>
         </div>
         <div className="flex-1 space-y-0.5 px-2 py-2">
-          {NAV.map(({ href, label, icon: Icon }) => {
+          {NAV.map(({ href, label, icon: Icon, iconName }) => {
             const active = pathname === href || pathname.startsWith(href + '/')
             return (
               <Link
@@ -68,7 +77,7 @@ export default function NavLayout({ children }: { children: React.ReactNode }) {
                     : 'text-white/70 hover:bg-white/5 hover:text-white'
                 }`}
               >
-                <Icon className={`h-4 w-4 ${active ? 'text-p-blue' : 'text-white/60'}`} />
+                <Icon data-icon={iconName} className={`h-4 w-4 ${active ? 'text-p-blue' : 'text-white/60'}`} />
                 {label}
               </Link>
             )

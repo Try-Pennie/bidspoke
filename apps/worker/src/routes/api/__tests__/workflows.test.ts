@@ -2435,4 +2435,61 @@ describe('workflow definition writers re-check connection ids (#2338)', () => {
     const inserted = (sb.calls.workflows ?? []).filter(([k]) => k === 'insert').map(([, args]) => JSON.stringify((args[0] as { definition: unknown }).definition))
     expect(inserted).toEqual([expected])
   })
+
+  // #2576: switching a workflow on writes no definition, so the trigger never
+  // judges it; the route asks the same check about the definition it makes live.
+  describe('PATCH /:id switching a workflow on (#2576)', () => {
+    const live = { id: 'wf-1', name: 'Achieve report import', is_active: false, definition: naming(REMOVED) }
+    const patchTables = (): Tables => ({ workflows: [{ single: live }, { single: { id: 'wf-1', name: live.name, is_active: true, folder_id: null, updated_at: '2026-10-21T15:00:00Z' } }] })
+
+    it('refuses to switch on a workflow naming a removed connection, by name, and writes nothing', async () => {
+      const sb = makeSupabase({ users: { single: testUser }, ...patchTables() }, { rpc: checkAnswering({ data: [removedRow], error: null }) })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+      expect(res.status).toBe(409)
+      const body = await res.json() as { error: string; code: string; missing_connections: unknown[] }
+      expect(body.code).toBe('workflow_connection_missing')
+      expect(body.error).toBe('The workflow was not switched on. The step sf_import names the connection "Pennie Salesforce", which was removed. Give the step a replacement connection and save it, then switch the workflow on.')
+      expect(body.missing_connections).toEqual([{ id: REMOVED, problem: 'removed', name: 'Pennie Salesforce', steps: ['sf_import'] }])
+      expect(writes(sb).workflows).toEqual([])
+      expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+      expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+    })
+
+    it('asks the check with the caller\'s organization and the stored definition, then switches it on', async () => {
+      const rpc = checkAnswering({ data: [], error: null })
+      const sb = makeSupabase({ users: { single: testUser }, ...patchTables() }, { rpc })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+      expect(res.status).toBe(200)
+      expect(rpc).toHaveBeenCalledWith('definition_connection_problems', { p_organization_id: USER_ORG, p_definition: naming(REMOVED) })
+      expect(writes(sb).workflows).toHaveLength(1)
+    })
+
+    it.each([
+      { what: 'a lookup that failed', error: { code: '57014', message: 'canceling statement due to statement timeout' }, code: 'workflow_connection_check_failed' },
+      { what: 'a check that does not exist yet', error: { code: 'PGRST202', message: 'Could not find the function' }, code: 'workflow_connection_check_unavailable' },
+    ])('answers $what with a named 503 and never switches on unchecked', async ({ error, code }) => {
+      const sb = makeSupabase({ users: { single: testUser }, ...patchTables() }, { rpc: checkAnswering({ data: null, error }) })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+      expect(res.status).toBe(503)
+      const body = (await res.json()) as { code: string; error: string }
+      expect(body.code).toBe(code)
+      expect(body.error.startsWith('The workflow was not switched on.')).toBe(true)
+      expect(writes(sb).workflows).toEqual([])
+    })
+
+    it.each([
+      { what: 'switching off', body: { is_active: false } },
+      { what: 'moving it to a folder', body: { folder_id: null } },
+    ])('asks no check when $what, which makes nothing live', async ({ body }) => {
+      const rpc = checkAnswering({ data: [removedRow], error: null })
+      const sb = makeSupabase({ users: { single: testUser }, ...patchTables() }, { rpc })
+      vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+      const res = await request(app, 'PATCH', '/workflows/wf-1', { body })
+      expect(res.status).toBe(200)
+      expect(rpc).not.toHaveBeenCalledWith('definition_connection_problems', expect.anything())
+    })
+  })
 })
