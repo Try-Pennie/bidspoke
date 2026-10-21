@@ -138,13 +138,18 @@ describe('the list and the chosen connection', () => {
     expect(part('used-by')).toBeNull()
   })
 
-  it('reads its History when the tab is opened, saying when it could not', async () => {
-    const history = vi.fn(async () => { throw Object.assign(new Error('x'), { body: { message: "The connection's history could not be read." } }) })
+  it('reads its History when the tab is opened, saying when it could not, and Try again reads it again', async () => {
+    const history = vi.fn()
+      .mockRejectedValueOnce(Object.assign(new Error('x'), { body: { message: "The connection's history could not be read." } }))
+      .mockResolvedValueOnce({ entries: [{ id: 'h1', action: 'INSERT', at: '2026-10-17T14:02:00Z', by: 'Dan Wright', credential_changed: false, changes: {} }] })
     render(<ConnectionsScreen source={source({ history })} clock={manualClock().clock} initialChosen={{ kind: 'connection', id: 'pennie' }} />)
     await waitFor(() => expect(part('detail')).not.toBeNull())
     fireEvent.mouseDown(screen.getByRole('tab', { name: 'History' }))
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe("The connection's history could not be read."))
     expect(history).toHaveBeenCalledWith('pennie')
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(document.querySelector('[data-part="history-row"]')?.textContent).toContain('Added'))
+    expect(history).toHaveBeenCalledTimes(2)
   })
 })
 

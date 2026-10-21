@@ -148,14 +148,17 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
   const chosen = chosenConnection(state)
   const chosenId = chosen?.id ?? null
   const historyOfChosen = chosenId ? state.history[chosenId] : undefined
+  const loadHistory = useCallback((id: string) => {
+    dispatch({ type: 'history_requested', id, at: clock.now() })
+    source.history(id).then(
+      (a) => dispatch({ type: 'history_answered', id, entries: a.entries }),
+      (err: unknown) => dispatch({ type: 'history_refused', id, sentence: changeSentence(err, "The connection's history could not be read") }),
+    )
+  }, [source, clock])
   useEffect(() => {
     if (state.tab !== 'history' || !chosenId || historyOfChosen) return
-    dispatch({ type: 'history_requested', id: chosenId, at: clock.now() })
-    source.history(chosenId).then(
-      (a) => dispatch({ type: 'history_answered', id: chosenId, entries: a.entries }),
-      (err: unknown) => dispatch({ type: 'history_refused', id: chosenId, sentence: changeSentence(err, "The connection's history could not be read") }),
-    )
-  }, [state.tab, chosenId, historyOfChosen, source, clock])
+    loadHistory(chosenId)
+  }, [state.tab, chosenId, historyOfChosen, loadHistory])
 
   const addEntry = useCallback(() => {
     const s = latest.current
@@ -240,7 +243,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
                 />
               )
               : chosen
-                ? <DetailPanel c={chosen} state={state} orgNames={orgNames} onTab={(tab) => dispatch({ type: 'tab', tab })} />
+                ? <DetailPanel c={chosen} state={state} orgNames={orgNames} onTab={(tab) => dispatch({ type: 'tab', tab })} onHistoryRetry={() => loadHistory(chosen.id)} />
                 : null}
           </div>
         </>
@@ -306,7 +309,13 @@ function WorkflowLinks({ workflows }: { workflows: ConnectionView['workflows'] }
   )
 }
 
-function DetailPanel({ c, state, orgNames, onTab }: { c: ConnectionView; state: ConnectionsState; orgNames: Readonly<Record<string, string>>; onTab: (t: DetailTab) => void }) {
+function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry }: {
+  c: ConnectionView
+  state: ConnectionsState
+  orgNames: Readonly<Record<string, string>>
+  onTab: (t: DetailTab) => void
+  onHistoryRetry: () => void
+}) {
   const notice = problemNotice(c, state.now, orgNames)
   const n = c.workflows.length
   const facts: Array<[string, string]> = [
@@ -376,18 +385,25 @@ function DetailPanel({ c, state, orgNames, onTab }: { c: ConnectionView; state: 
             : <p className="cx-empty">No workflow uses it.</p>}
         </TabPanel>
         <TabPanel value="history">
-          <HistoryList state={history} now={state.now} secret={secretWordOf(c)} />
+          <HistoryList state={history} now={state.now} secret={secretWordOf(c)} onRetry={onHistoryRetry} />
         </TabPanel>
       </Tabs>
     </section>
   )
 }
 
-function HistoryList({ state, now, secret }: { state: ConnectionsState['history'][string] | undefined; now: number; secret: string }) {
+function HistoryList({ state, now, secret, onRetry }: { state: ConnectionsState['history'][string] | undefined; now: number; secret: string; onRetry: () => void }) {
   if (!state || state.kind === 'loading') {
     return <div className="cx-empty"><Outcome state={{ kind: 'working', label: 'Loading the history', startedAt: state?.startedAt ?? now, now }} /></div>
   }
-  if (state.kind === 'failed') return <FieldError alert className="cx-empty">{state.sentence}</FieldError>
+  if (state.kind === 'failed') {
+    return (
+      <div className="ga-failed">
+        <FieldError alert size="sm">{state.sentence}</FieldError>
+        <Button variant="secondary" className="cx-btn-quiet" onClick={onRetry}>Try again</Button>
+      </div>
+    )
+  }
   if (state.entries.length === 0) return <p className="cx-empty">No change is recorded.</p>
   return (
     <div className="cx-history">
