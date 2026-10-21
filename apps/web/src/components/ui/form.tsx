@@ -434,7 +434,7 @@ export function ChipCheck({ id, checked, onChange, label, shortLabel, size = 'sm
  */
 export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'destructive' | 'ghost' | 'row' | 'quiet' | 'remove'
 
-export function Button({ variant, type = 'button', form, onClick, disabled, busy, children, 'aria-label': ariaLabel, describedBy: db, title, className, keepFocus }: {
+export function Button({ variant, type = 'button', form, onClick, disabled, busy, children, 'aria-label': ariaLabel, describedBy: db, title, className, keepFocus, current, part }: {
   variant: ButtonVariant
   type?: 'button' | 'submit'
   /** The form a submit button belongs to when it is drawn outside it (the partners save bar, #2138). */
@@ -454,11 +454,17 @@ export function Button({ variant, type = 'button', form, onClick, disabled, busy
    * still reaches the button as usual (#2327).
    */
   keepFocus?: boolean
+  /** The button is the chosen one of a list of them (a list row that opens what it names): aria-current. */
+  current?: boolean
+  /** A data-part name a settled design's checks read the button by (#2338), never a styling hook. */
+  part?: string
 }) {
   return (
     <button
       type={type}
       form={form}
+      data-part={part}
+      aria-current={current ? 'true' : undefined}
       onMouseDown={keepFocus ? (e) => e.preventDefault() : undefined}
       aria-describedby={db}
       onClick={onClick}

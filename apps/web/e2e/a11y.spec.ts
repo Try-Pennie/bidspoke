@@ -36,6 +36,11 @@ const PAGES: { name: string; path: string; exclude?: string[] }[] = [
   // Added in #674. /access and /settings are only redirects to /settings/access,
   // so the two real settings pages are listed instead.
   { name: 'integrations page', path: '/integrations' },
+  // #2338 build PR 9: the Connections page drawn from the settled design's
+  // fixture (its development preview, which reads and writes nothing), with a
+  // problem open and with the Google list open.
+  { name: 'connections page, a problem open', path: '/dev/connections?frame=problem' },
+  { name: 'connections page, the Google list open', path: '/dev/connections?frame=google-list' },
   { name: 'endpoints page', path: '/endpoints' },
   { name: 'settings access page', path: '/settings/access' },
   { name: 'settings api keys page', path: '/settings/api-keys' },
