@@ -558,18 +558,18 @@ describe('the RML bidding flows (#2092)', () => {
   })
 
   const RML = [
-    // RML LendSwift also keeps ping_lendswift since #2582, after build_response, and
-    // its build_response awaits the #2582 paste, so it carries version 22's script as
-    // its baseline until that lands.
-    { folder: 'rml-lendswift', name: 'RML - Bidding Workflow (LendSwift)', id: 'e1b810da-16c0-49eb-bf12-ba1c9b67c914', onDisk: RML_LENDSWIFT_RAW as string, before: BEFORE_2092.rml_lendswift, namespaces: ['build_response', 'ping_lendswift'], baseline: RML_LENDSWIFT_BUILD_BEFORE_2582_RAW as string },
-    { folder: 'rml-gigfi', name: 'RML - Bidding Workflow (GigFi)', id: '6624acd0-bf61-4d21-85fc-4371ca7ed77d', onDisk: RML_GIGFI_RAW as string, before: BEFORE_2092.rml_gigfi, namespaces: ['build_response'], baseline: null },
-    { folder: 'bidding-lendswift', name: 'Bidding - LendSwift', id: '0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5', onDisk: BIDDING_LENDSWIFT_RAW as string, before: BEFORE_2092.bidding_lendswift, namespaces: ['build_response'], baseline: null },
+    // RML LendSwift also keeps ping_lendswift since #2582, after build_response. The
+    // #2582 paste landed on 2026-10-21 (version 24) and the hourly check read both as
+    // agree, so neither carries a baseline any more.
+    { folder: 'rml-lendswift', name: 'RML - Bidding Workflow (LendSwift)', id: 'e1b810da-16c0-49eb-bf12-ba1c9b67c914', onDisk: RML_LENDSWIFT_RAW as string, before: BEFORE_2092.rml_lendswift, namespaces: ['build_response', 'ping_lendswift'] },
+    { folder: 'rml-gigfi', name: 'RML - Bidding Workflow (GigFi)', id: '6624acd0-bf61-4d21-85fc-4371ca7ed77d', onDisk: RML_GIGFI_RAW as string, before: BEFORE_2092.rml_gigfi, namespaces: ['build_response'] },
+    { folder: 'bidding-lendswift', name: 'Bidding - LendSwift', id: '0f4df7a7-2405-4fc7-9af4-5d5e05ce96c5', onDisk: BIDDING_LENDSWIFT_RAW as string, before: BEFORE_2092.bidding_lendswift, namespaces: ['build_response'] },
   ]
 
   for (const flow of RML) {
     const watched = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === flow.folder)
 
-    it(`${flow.name} is watched on its live workflow with build_response, the file on disk, with a baseline only while a paste is awaited`, async () => {
+    it(`${flow.name} is watched on its live workflow with build_response, the file on disk, and no baseline`, async () => {
       expect(watched?.name).toBe(flow.name)
       expect(watched?.workflowId).toBe(flow.id)
       expect(watched?.configSources).toEqual([])
@@ -578,18 +578,16 @@ describe('the RML bidding flows (#2092)', () => {
       expect(kept.script).toBe(flow.onDisk)
       expect(stripTrailingWhitespace(kept.script)).toBe(kept.script)
       expect(kept.newNodeSince).toBeUndefined()
-      expect(kept.canvasBaselineSha256).toBe(flow.baseline === null ? null : await sha256Hex(flow.baseline))
-      expect(kept.baselineReadOn).toBe(flow.baseline === null ? null : '2026-10-21')
+      // No paste is awaited on any of them, so none carries a baseline.
+      for (const k of watched!.scripts) {
+        expect(k.canvasBaselineSha256).toBeNull()
+        expect(k.baselineReadOn).toBeNull()
+      }
       const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'build_response', config: { script } }] })
       // Put back to the unsigned script, every reservemyloan link goes out without its token, so it pages.
       expect((await judgeKeptScripts([kept], definition(flow.before), flow.name))[0].state).toBe('drift')
       expect((await judgeKeptScripts([kept], definition(kept.script), flow.name))[0].state).toBe('agree')
       expect((await judgeKeptScripts([kept], definition(flow.before + '\n// edited'), flow.name))[0].state).toBe('drift')
-      // While a paste is awaited, the live script it was derived from is not a drift.
-      if (flow.baseline !== null) {
-        expect((await judgeKeptScripts([kept], definition(flow.baseline), flow.name))[0].state).toBe('awaiting_paste')
-        expect((await judgeKeptScripts([kept], definition(flow.baseline + '\n// edited'), flow.name))[0].state).toBe('drift')
-      }
     })
 
     it(`${flow.name}: the kept script is the canvas script with only the link signing added, and for LendSwift the #2582 partner_error answer`, () => {
@@ -607,8 +605,8 @@ describe('the RML bidding flows (#2092)', () => {
     })
   }
 
-  it('RML LendSwift ping_lendswift awaits its no bid on error paste (#2582): the canvas script it was derived from reads as awaiting, not drift', async () => {
-    // The canvas script as live version 22 held it on 2026-10-21, exactly (its hash is the baseline).
+  it('RML LendSwift ping_lendswift was pasted for #2582 and read as agree, so version 22\'s script now pages as a drift', async () => {
+    // The canvas script as live version 22 held it on 2026-10-21, exactly.
     const before = RML_LENDSWIFT_PING_BEFORE_2582_RAW as string
     const watched = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === 'rml-lendswift')!
     const kept = watched.scripts.find((k) => k.namespace === 'ping_lendswift')!
@@ -616,12 +614,20 @@ describe('the RML bidding flows (#2092)', () => {
     expect(kept.script).toBe(RML_LENDSWIFT_PING_RAW as string)
     expect(stripTrailingWhitespace(kept.script)).toBe(kept.script)
     expect(kept.newNodeSince).toBeUndefined()
-    expect(kept.canvasBaselineSha256).toBe(await sha256Hex(before))
-    expect(kept.baselineReadOn).toBe('2026-10-21')
+    expect(kept.canvasBaselineSha256).toBeNull()
+    expect(kept.baselineReadOn).toBeNull()
     const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'ping_lendswift', config: { script } }] })
-    expect((await judgeKeptScripts([kept], definition(before), watched.name))[0].state).toBe('awaiting_paste')
+    // Put back to version 22, a LendSwift failure would end the run with a 500 again, so it pages.
+    expect((await judgeKeptScripts([kept], definition(before), watched.name))[0].state).toBe('drift')
     expect((await judgeKeptScripts([kept], definition(kept.script), watched.name))[0].state).toBe('agree')
-    expect((await judgeKeptScripts([kept], definition(before + '\n// edited'), watched.name))[0].state).toBe('drift')
+  })
+
+  it('RML LendSwift build_response was pasted for #2582 and read as agree, so version 22\'s script now pages as a drift', async () => {
+    const watched = KEPT_CANVAS_WORKFLOWS.find((w) => w.folder === 'rml-lendswift')!
+    const kept = watched.scripts.find((k) => k.namespace === 'build_response')!
+    const definition = (script: string) => ({ nodes: [{ type: 'code', namespace: 'build_response', config: { script } }] })
+    // Put back to version 22, a LendSwift failure would answer unqualified_lead instead of partner_error.
+    expect((await judgeKeptScripts([kept], definition(RML_LENDSWIFT_BUILD_BEFORE_2582_RAW as string), watched.name))[0].state).toBe('drift')
   })
 })
 
