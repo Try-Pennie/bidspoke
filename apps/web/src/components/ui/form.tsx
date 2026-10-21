@@ -13,7 +13,7 @@
  * code (#2137, measured on /dashboard and the canvas).
  */
 import { useRef, useState, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react'
-import { Loader2 } from 'lucide-react'
+import { Check, Loader2 } from 'lucide-react'
 
 // ── Field ─────────────────────────────────────────────────────────────────────
 
@@ -40,19 +40,22 @@ export function Field({ id, label, labelHidden, hint, error, children }: { id: s
  * and the page's colour scan refuses red anywhere else. `alert` announces it as
  * it appears; `boxed` sets it on a pale red panel for a failure that stands on
  * its own rather than under a field. `size` is left out to take the text size
- * around it.
+ * around it. `part` and `partState` are the data-part and data-state a settled
+ * design's checks read the line by (#2338), never a styling hook.
  */
-export function FieldError({ id, alert, size, boxed, as: Tag = 'p', className, children }: {
+export function FieldError({ id, alert, size, boxed, as: Tag = 'p', className, part, partState, children }: {
   id?: string
   alert?: boolean
   size?: 'xs' | 'sm'
   boxed?: boolean
   as?: 'p' | 'span' | 'div' | 'li'
   className?: string
+  part?: string
+  partState?: string
   children: ReactNode
 }) {
   const classes = ['field-error', size ? `text-${size}` : '', boxed ? 'field-error-box' : '', className ?? ''].filter(Boolean).join(' ')
-  return <Tag id={id} role={alert ? 'alert' : undefined} className={classes}>{children}</Tag>
+  return <Tag id={id} role={alert ? 'alert' : undefined} className={classes} data-part={part} data-state={partState}>{children}</Tag>
 }
 
 /** The ids a control should be described by, given which of hint and error are present. */
@@ -98,6 +101,8 @@ interface TextInputProps {
    * the box itself holds exactly what is typed.
    */
   tint?: string
+  /** A value that cannot be changed here, shown in the box it would be typed into (a Reconnect's kept client id, #2338). */
+  readOnly?: boolean
 }
 
 /** The value split around each `tint`, the tinted parts marked. */
@@ -110,7 +115,7 @@ function tintParts(value: string, tint: string): ReactNode[] {
  * A plain text box. One that offers values as the person types is
  * SuggestInput (SuggestInput.tsx), never a native datalist (#2326).
  */
-export function TextInput({ id, value, onChange, placeholder, mono, disabled, describedBy: db, className, onEnter, onBlur, tint, ...aria }: TextInputProps) {
+export function TextInput({ id, value, onChange, placeholder, mono, disabled, describedBy: db, className, onEnter, onBlur, tint, readOnly, ...aria }: TextInputProps) {
   const mirror = useRef<HTMLDivElement>(null)
   // The copy behind follows the box's own scroll, however it moved: typing, the caret keys, a drag or a click.
   const follow = tint ? (e: { currentTarget: HTMLInputElement }) => { if (mirror.current) mirror.current.scrollLeft = e.currentTarget.scrollLeft } : undefined
@@ -128,9 +133,10 @@ export function TextInput({ id, value, onChange, placeholder, mono, disabled, de
       onMouseUp={follow}
       placeholder={placeholder}
       disabled={disabled}
+      readOnly={readOnly}
       aria-describedby={db}
       aria-label={aria['aria-label']}
-      className={`input ${mono ? 'font-mono' : ''} ${className ?? ''}`.trim()}
+      className={`input ${readOnly ? 'input-readonly' : ''} ${mono ? 'font-mono' : ''} ${className ?? ''}`.replace(/\s+/g, ' ').trim()}
     />
   )
   return tint ? (
@@ -141,6 +147,77 @@ export function TextInput({ id, value, onChange, placeholder, mono, disabled, de
       {box}
     </div>
   ) : box
+}
+
+/**
+ * A secret on one line (a client secret, an API key, #2338 R15): masked, and
+ * never filled by the browser from a saved password, since what it holds is a
+ * service's secret and not the person's own. Enter in it is kept from the form
+ * around it, as in every box here (L596).
+ */
+export function SecretInput({ id, value, onChange, placeholder, disabled, describedBy: db, className, autoFocus, ...aria }: {
+  id: string
+  value: string
+  onChange: (value: string) => void
+  placeholder?: string
+  disabled?: boolean
+  /** Takes the focus when drawn: the one box a dialog asks to be typed into (a new secret). */
+  autoFocus?: boolean
+  describedBy?: string
+  'aria-label'?: string
+  className?: string
+}) {
+  return (
+    <input
+      id={id}
+      type="password"
+      autoComplete="new-password"
+      autoFocus={autoFocus}
+      spellCheck={false}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => holdEnter(e)}
+      placeholder={placeholder}
+      disabled={disabled}
+      aria-describedby={db}
+      aria-label={aria['aria-label']}
+      className={`input ${className ?? ''}`.trim()}
+    />
+  )
+}
+
+/**
+ * A secret over several lines (a private key's PEM, #2338): its own masked box,
+ * keeping the line breaks that are part of the key, never spell checked and
+ * never filled by the browser.
+ */
+export function SecretBlock({ id, value, onChange, rows = 4, disabled, describedBy: db, className, autoFocus, 'aria-label': ariaLabel }: {
+  id: string
+  value: string
+  onChange: (value: string) => void
+  rows?: number
+  disabled?: boolean
+  /** Takes the focus when drawn, as SecretInput's. */
+  autoFocus?: boolean
+  describedBy?: string
+  'aria-label'?: string
+  className?: string
+}) {
+  return (
+    <textarea
+      id={id}
+      value={value}
+      rows={rows}
+      autoComplete="off"
+      autoFocus={autoFocus}
+      spellCheck={false}
+      disabled={disabled}
+      aria-describedby={db}
+      aria-label={ariaLabel}
+      onChange={(e) => onChange(e.target.value)}
+      className={`textarea secret-block ${className ?? ''}`.trim()}
+    />
+  )
 }
 
 interface NumberInputProps {
@@ -304,8 +381,12 @@ export function TextArea({ id, value, onChange, rows = 3, placeholder, mono, cla
  * Every option is a button of type button, so no key it handles submits the
  * form around it (L596). `stacked` lays the options out one per line, each
  * with its hint under its label, for choices that need a sentence to tell apart.
+ * `layout="cards"` lays them out as cards side by side, each its label with its
+ * hint in a grey line under it (#2338 R16: a company mailbox or drive, or your
+ * own Google account). `optionPart` is the data-part a settled design's checks
+ * read each option by, with data-chosen on the chosen one (#2338).
  */
-export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, options, onChange, disabled, describedBy: db, stacked }: {
+export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, options, onChange, disabled, describedBy: db, stacked: stackedProp, layout, optionPart }: {
   id: string
   label: string
   /**
@@ -320,7 +401,12 @@ export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, 
   disabled?: boolean
   describedBy?: string
   stacked?: boolean
+  layout?: 'cards'
+  optionPart?: string
 }) {
+  const cards = layout === 'cards'
+  // A card carries its hint under its label, as a stacked row does; only the geometry differs.
+  const stacked = stackedProp || cards
   const labelId = `${id}-label`
   const chosen = options.findIndex((o) => o.value === value)
   const tabStop = chosen === -1 ? 0 : chosen
@@ -336,9 +422,10 @@ export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, 
       {visibleLabel === undefined || visibleLabel === label
         ? <span id={labelId} className="mb-1 block text-xs font-medium text-gray-600">{label}</span>
         : <span id={labelId} className={visibleLabel === '' ? 'sr-only' : 'mb-1 block text-xs font-medium text-gray-600'}><span className="sr-only">{label}</span>{visibleLabel !== '' && <span aria-hidden="true">{visibleLabel}</span>}</span>}
-      <div id={id} role="radiogroup" aria-labelledby={labelId} aria-describedby={db} aria-disabled={disabled || undefined} className={stacked ? 'choice-stack' : 'choice-group'}>
+      <div id={id} role="radiogroup" aria-labelledby={labelId} aria-describedby={db} aria-disabled={disabled || undefined} className={cards ? 'choice-cards' : stacked ? 'choice-stack' : 'choice-group'}>
         {options.map((o, i) => {
           const on = o.value === value
+          const kind = cards ? 'choice-card' : stacked ? 'choice-row' : 'choice'
           return (
             <button
               key={o.value}
@@ -347,6 +434,8 @@ export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, 
               aria-checked={on}
               tabIndex={i === tabStop ? 0 : -1}
               disabled={disabled}
+              data-part={optionPart}
+              data-chosen={optionPart && on ? 'true' : undefined}
               aria-labelledby={stacked ? `${id}-${i}-label` : undefined}
               aria-describedby={stacked && o.hint ? `${id}-${i}-hint` : undefined}
               onClick={() => { if (!disabled) onChange(o.value) }}
@@ -356,9 +445,14 @@ export function ChoiceGroup<T extends string>({ id, label, visibleLabel, value, 
                 e.preventDefault()
                 choose(i + step, e.currentTarget.parentElement)
               }}
-              className={stacked ? `choice-row ${on ? 'choice-row-on' : ''}`.trim() : `choice ${on ? 'choice-on' : ''}`.trim()}
+              className={`${kind} ${on ? `${kind}-on` : ''}`.trim()}
             >
-              {stacked ? (
+              {cards ? (
+                <>
+                  <span id={`${id}-${i}-label`} className="choice-card-label">{o.label}</span>
+                  {o.hint && <span id={`${id}-${i}-hint`} className="choice-card-hint">{o.hint}</span>}
+                </>
+              ) : stacked ? (
                 <>
                   <span aria-hidden="true" className="choice-dot" />
                   <span className="text-left">
@@ -417,6 +511,21 @@ export function ChipCheck({ id, checked, onChange, label, shortLabel, size = 'sm
       className={`chip ${size === 'lg' ? 'chip-lg' : ''} ${checked ? 'chip-on' : ''}`.replace(/\s+/g, ' ').trim()}
     >
       {shortLabel ?? label}
+    </button>
+  )
+}
+
+/**
+ * A row that is a checkbox (#2338 R20: each workflow ticked in Replace): a
+ * navy square holding a tick when checked, the row's words after it. A button
+ * with the checkbox role, so it is named by its words and announced as checked
+ * or not, Space toggles it, and it never submits the form around it.
+ */
+export function TickRow({ checked, onChange, label, disabled }: { checked: boolean; onChange: (checked: boolean) => void; label: string; disabled?: boolean }) {
+  return (
+    <button type="button" role="checkbox" aria-checked={checked} disabled={disabled} onClick={() => onChange(!checked)} className={`tick-row ${checked ? 'tick-row-on' : ''}`.trim()}>
+      <span className="tick-box" aria-hidden="true">{checked && <Check className="h-2.5 w-2.5" strokeWidth={3} />}</span>
+      <span>{label}</span>
     </button>
   )
 }
@@ -503,7 +612,7 @@ export function Outcome({ state }: { state: OutcomeState }) {
     return (
       <p role="status" className="outcome outcome-working">
         {/* Sized by the one .outcome svg rule in globals.css: as tall as the capitals, level with them (round 32). */}
-        <Loader2 className="animate-spin" aria-hidden="true" />
+        <Loader2 className="animate-spin" aria-hidden="true" data-part="spinner" />
         {state.label}, {seconds} s
       </p>
     )

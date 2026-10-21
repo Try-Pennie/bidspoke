@@ -25,8 +25,12 @@ import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { WEB_SRC, listFiles } from './_scan-utils'
 
-/** The partners page: its route and its components, every subdirectory included. */
-const GUARDED_DIRS = ['app/(app)/partners', 'components/partners']
+/**
+ * The partners page: its route and its components, every subdirectory
+ * included; and the Connections page's components (#2338, build PR 10), whose
+ * form and dialogs are built only from the shared controls too.
+ */
+const GUARDED_DIRS = ['app/(app)/partners', 'components/partners', 'components/connections']
 const UI_DIR = 'components/ui'
 /**
  * The app's one Dialog shell (#2134), the other place Radix may be imported:

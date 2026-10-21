@@ -3,7 +3,7 @@
 import { useMemo } from 'react'
 import NavLayout from '@/components/NavLayout'
 import { ConnectionsScreen, type ConnectionsClock } from '@/components/connections/ConnectionsScreen'
-import { PREVIEW_NOW, PREVIEW_ORG_NAMES, previewFrame, previewScript, previewSource } from './connections-preview-source'
+import { PREVIEW_NOW, PREVIEW_ORG_NAMES, previewFrame, previewScript, previewServices, previewSource } from './connections-preview-source'
 
 /**
  * The Connections page drawn from the settled design's fixture, one frame at a
@@ -33,6 +33,7 @@ export function ConnectionsPreview({ frame, moreGoogle }: { frame: string | unde
     }
   }, [script])
   const { chosen } = previewFrame(frame)
+  const services = useMemo(() => previewServices(), [])
   return (
     <NavLayout activeHref="/connections">
       <ConnectionsScreen
@@ -40,9 +41,12 @@ export function ConnectionsPreview({ frame, moreGoogle }: { frame: string | unde
         source={source}
         clock={clock}
         orgNames={script ? script.orgNames : PREVIEW_ORG_NAMES}
+        services={services}
         initialChosen={script ? undefined : chosen}
         initialEvents={script?.events}
         noInitialLoad={script !== null}
+        initialFocus={script?.focus}
+        initialLeaveTo={script?.leaveTo}
       />
     </NavLayout>
   )

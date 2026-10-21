@@ -15,7 +15,7 @@ import {
 const NOW = Date.parse('2026-10-20T16:00:00Z') // 12:00 PM ET
 
 const conn = (over: Partial<ConnectionView>): ConnectionView => ({
-  id: over.name ?? 'c', name: 'c', service: 'salesforce', serviceName: 'Salesforce', actsAs: null, status: 'ok', org: null,
+  id: over.name ?? 'c', name: 'c', service: 'salesforce', serviceName: 'Salesforce', actsAs: null, status: 'ok', org: null, target: null,
   workflows: [], lastCheckedAt: null, problemSince: null, problemCause: null, alertLogin: false, ...over,
 })
 

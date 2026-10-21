@@ -65,6 +65,9 @@ function source(over: Partial<ConnectionsSource> = {}): ConnectionsSource {
     googleSubjects: vi.fn(async () => ({ subjects: [ENTRY], reached_limit: false })),
     addGoogleSubject: vi.fn(async (b) => ({ outcome: 'added' as const, entry: { ...ENTRY, kind: b.kind, subject: b.subject } })),
     removeGoogleSubject: vi.fn(async () => ({ outcome: 'removed' as const })),
+    create: vi.fn(async () => { throw new Error('not called in this test') }),
+    reconnect: vi.fn(async () => { throw new Error('not called in this test') }),
+    remove: vi.fn(async () => { throw new Error('not called in this test') }),
     ...over,
   }
 }

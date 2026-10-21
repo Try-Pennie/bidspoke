@@ -37,6 +37,15 @@ describe('Dialog', () => {
     expect(dialog).toHaveTextContent('Body text')
   })
 
+  // #2338: the Connections page's settled design draws its dialogs with a 20px title (round 26).
+  it("carries a page's own class on its panel, beside the shell's, and nothing else when given none", () => {
+    const { unmount } = render(<Dialog title="Reconnect Achieve Salesforce" onDismiss={() => {}} className="cx-dialog" actions={<Button variant="secondary" onClick={() => {}}>Cancel</Button>} />)
+    expect(screen.getByRole('dialog')).toHaveClass('dialog', 'dialog-sm', 'cx-dialog')
+    unmount()
+    render(<Example />)
+    expect(screen.getByRole('dialog').className.trim().split(/\s+/).sort()).toEqual(['dialog', 'dialog-sm'])
+  })
+
   it('is an alertdialog when the caller says the question is a warning', () => {
     render(<Example warning />)
     expect(screen.getByRole('alertdialog', { name: 'Delete matrix?' })).toHaveAttribute('aria-modal', 'true')

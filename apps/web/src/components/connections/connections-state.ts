@@ -1,10 +1,12 @@
 /**
- * The Connections page's state (#2338, build PR 9): one pure reducer the page
- * only sends events to, tested on its own (connections-state.test.ts), because
- * the pieces change together: the list's load, its deadline and Try again, the
- * stale strip's Try again over a list still shown, the chosen connection and
- * tab, each connection's history, and the Google list with its adds and
- * removes (CLAUDE.md, interlocking screen state).
+ * The Connections page's state (#2338, build PRs 9 and 10): one pure reducer the
+ * page only sends events to, tested on its own (connections-state.test.ts and
+ * connections-form-state.test.ts), because the pieces change together: the
+ * list's load, its deadline and Try again, the stale strip's Try again over a
+ * list still shown, the chosen connection and tab, each connection's history,
+ * the Google list with its adds and removes, the Add connection form with its
+ * save, and the Reconnect, Replace and Remove dialogs (CLAUDE.md, interlocking
+ * screen state).
  *
  * Every wait is told apart (Dan, 2026-06-28): started and still alive carry
  * the moment they began, so the page shows the seconds counting from `now`,
@@ -13,7 +15,8 @@
  * answer cannot replace the card or a newer list. The clock is the `tick`
  * event's, never the machine's, so tests move time by hand.
  */
-import { addRequestOf, draftReady, EMPTY_DRAFT, firstConnection, listGroups, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry } from './connection-model'
+import { addRequestOf, draftReady, EMPTY_DRAFT, firstConnection, listGroups, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry, type UsingWorkflow } from './connection-model'
+import { draftDirty, EMPTY_ADD_DRAFT, type AddDraft, type GoogleWay } from './add-form-model'
 
 /** What the could not load card says when Bidspoke's server gave no answer (D23). */
 export const LIST_NO_ANSWER = "Bidspoke's server did not answer."
@@ -35,7 +38,8 @@ export type ListState =
       refresh: { kind: 'idle' } | { kind: 'loading'; attempt: number; startedAt: number } | { kind: 'failed'; cause: string }
     }
 
-export type Chosen = { kind: 'none' } | { kind: 'connection'; id: string } | { kind: 'google' }
+/** What the right panel shows: a connection, the Google list, or the Add connection form, with nothing chosen in the list (D11). */
+export type Chosen = { kind: 'none' } | { kind: 'connection'; id: string } | { kind: 'google' } | { kind: 'add' }
 export type DetailTab = 'connection' | 'used_by' | 'history'
 
 export type HistoryState = { kind: 'loading'; startedAt: number } | { kind: 'loaded'; entries: HistoryEntry[] } | { kind: 'failed'; sentence: string }
@@ -52,6 +56,40 @@ export type GoogleEdit =
   | { kind: 'removing'; entry: Pick<DelegationEntry, 'kind' | 'subject'>; shown: string; startedAt: number }
   | { kind: 'failed'; sentence: string }
 
+/**
+ * A save, a Reconnect or a Remove: being edited, running (since when, and what
+ * its line says if it stalls), or failed with its sentence. `unconfirmed` is a
+ * stall, whose outcome is not known, so a late answer to it is still taken.
+ */
+export type SaveState =
+  | { kind: 'editing' }
+  | { kind: 'saving'; attempt: number; startedAt: number; stalled: string }
+  | { kind: 'failed'; sentence: string; unconfirmed: boolean }
+
+/** The Add connection form: what it holds, its save, and what was chosen before it opened, for Cancel. */
+export interface AddState {
+  draft: AddDraft
+  save: SaveState
+  before: Chosen
+}
+
+export type DialogState =
+  | null
+  | { kind: 'reconnect'; id: string; values: Readonly<Record<string, string>>; save: SaveState }
+  | { kind: 'remove'; id: string; values: Readonly<Record<string, string>>; save: SaveState }
+  /** The removal stands, and the workflows server could not be told at once: its notice, until closed. */
+  | { kind: 'removed'; name: string; notice: string }
+  /** Replace, drawn as the design draws it and inert until build PR 12 (R20). */
+  | { kind: 'replace'; id: string; with: string | null; ticked: string[] }
+
+/** How long a save or a Reconnect may check its login, and a Remove take, before its line says it stalled: the client's own ceilings (api.ts). */
+export interface ChangeDeadlines {
+  saveDeadlineMs: number
+  removeDeadlineMs: number
+}
+
+export const CHANGE_DEADLINES: ChangeDeadlines = { saveDeadlineMs: 120_000, removeDeadlineMs: 50_000 }
+
 export interface ConnectionsState {
   now: number
   /** How long a load of the list may take before the card says it did not answer. */
@@ -65,6 +103,12 @@ export interface ConnectionsState {
   google: GoogleState | null
   draft: DelegationDraft
   edit: GoogleEdit
+  deadlines: ChangeDeadlines
+  /** The Add connection form while it is open. */
+  add: AddState | null
+  dialog: DialogState
+  /** The last save, Reconnect and Remove started, each numbered by the caller; only the latest one's answer counts. */
+  lastChange: { save: number; reconnect: number; remove: number }
 }
 
 export type ConnectionsEvent =
@@ -90,8 +134,34 @@ export type ConnectionsEvent =
   | { type: 'remove_requested'; entry: Pick<DelegationEntry, 'kind' | 'subject'>; shown: string; at: number }
   | { type: 'remove_answered'; entry: Pick<DelegationEntry, 'kind' | 'subject'> }
   | { type: 'remove_refused'; sentence: string }
+  // ── The Add connection form (build PR 10) ──
+  | { type: 'add_opened' }
+  | { type: 'add_service'; service: string | null }
+  | { type: 'add_name'; text: string }
+  /** A field of the chosen service; `typedNew` when an org was typed as a new one rather than chosen. */
+  | { type: 'add_field'; field: string; text: string; typedNew?: boolean }
+  | { type: 'add_google'; way: GoogleWay }
+  | { type: 'add_closed' }
+  /** A save, numbered by the caller above every earlier one, with the sentence its line says if it stalls. */
+  | { type: 'save_requested'; attempt: number; at: number; stalled: string }
+  | { type: 'save_answered'; attempt: number; connection: ConnectionView }
+  | { type: 'save_refused'; attempt: number; sentence: string }
+  // ── The dialogs ──
+  | { type: 'dialog_opened'; dialog: 'reconnect' | 'remove' | 'replace'; id: string }
+  | { type: 'dialog_field'; field: string; text: string }
+  | { type: 'dialog_closed' }
+  | { type: 'replace_with'; id: string }
+  | { type: 'replace_tick'; workflow: string }
+  | { type: 'reconnect_requested'; attempt: number; at: number; stalled: string }
+  | { type: 'reconnect_answered'; attempt: number; id: string; actsAs: string | null; at: number }
+  | { type: 'reconnect_refused'; attempt: number; sentence: string }
+  | { type: 'connection_remove_requested'; attempt: number; at: number; stalled: string }
+  /** `notice` when the removal stands and the workflows server could not be told at once. */
+  | { type: 'connection_remove_answered'; attempt: number; id: string; notice: string | null }
+  /** `workflows` when it was refused because workflows use it, naming them. */
+  | { type: 'connection_remove_refused'; attempt: number; sentence: string; workflows?: UsingWorkflow[] }
 
-export function initialConnectionsState(now: number, deadlineMs: number, chosen: Chosen = { kind: 'none' }): ConnectionsState {
+export function initialConnectionsState(now: number, deadlineMs: number, chosen: Chosen = { kind: 'none' }, deadlines: ChangeDeadlines = CHANGE_DEADLINES): ConnectionsState {
   return {
     now,
     deadlineMs,
@@ -103,6 +173,10 @@ export function initialConnectionsState(now: number, deadlineMs: number, chosen:
     google: null,
     draft: EMPTY_DRAFT,
     edit: { kind: 'idle' },
+    deadlines,
+    add: null,
+    dialog: null,
+    lastChange: { save: 0, reconnect: 0, remove: 0 },
   }
 }
 
@@ -115,7 +189,7 @@ export function currentListAttempt(s: ConnectionsState): number | null {
 
 /** A chosen connection that is still in the list, else the first one (nothing chosen when the list is empty). */
 function keepChosen(chosen: Chosen, data: LoadedList): Chosen {
-  if (chosen.kind === 'google') return chosen
+  if (chosen.kind === 'google' || chosen.kind === 'add') return chosen
   if (chosen.kind === 'connection' && data.connections.some((c) => c.id === chosen.id)) return chosen
   const first = firstConnection(listGroups(data.connections))
   return first ? { kind: 'connection', id: first.id } : { kind: 'google' }
@@ -147,10 +221,17 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
       if (l.kind === 'loaded' && l.refresh.kind === 'loading' && e.at - l.refresh.startedAt >= s.deadlineMs) {
         next = { ...next, list: { ...l, refresh: { kind: 'failed', cause: LIST_NO_ANSWER } } }
       }
+      // A save, a Reconnect or a Remove that has not answered by its deadline stalls: its outcome is not known (R13).
+      if (s.add && stalls(s.add.save, e.at, s.deadlines.saveDeadlineMs)) next = { ...next, add: { ...s.add, save: stalledOf(s.add.save) } }
+      const d = s.dialog
+      if (d && (d.kind === 'reconnect' || d.kind === 'remove') && stalls(d.save, e.at, d.kind === 'remove' ? s.deadlines.removeDeadlineMs : s.deadlines.saveDeadlineMs)) {
+        next = { ...next, dialog: { ...d, save: stalledOf(d.save) } }
+      }
       return next
     }
     case 'choose':
-      return { ...s, chosen: e.chosen, tab: 'connection', edit: s.edit.kind === 'failed' ? { kind: 'idle' } : s.edit }
+      // Leaving the form discards it; the page asks first while it holds something (unsavedWork).
+      return { ...s, chosen: e.chosen, tab: 'connection', edit: s.edit.kind === 'failed' ? { kind: 'idle' } : s.edit, add: e.chosen.kind === 'add' ? s.add : null }
     case 'tab':
       return { ...s, tab: e.tab }
     case 'history_requested':
@@ -194,8 +275,165 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
     }
     case 'remove_refused':
       return s.edit.kind === 'removing' ? { ...s, edit: { kind: 'failed', sentence: e.sentence } } : s
+
+    // ── The Add connection form (R11 to R16, R18) ──
+    case 'add_opened': {
+      if (s.list.kind !== 'loaded' || s.dialog) return s
+      if (s.add) return { ...s, chosen: { kind: 'add' } }
+      return { ...s, chosen: { kind: 'add' }, add: { draft: EMPTY_ADD_DRAFT, save: { kind: 'editing' }, before: s.chosen } }
+    }
+    case 'add_service':
+      return editDraft(s, (d) => ({ ...d, service: e.service }))
+    case 'add_name':
+      return editDraft(s, (d) => ({ ...d, name: e.text }))
+    case 'add_field':
+      return editDraft(s, (d) => {
+        if (!d.service) return d
+        const values = { ...d.values, [d.service]: { ...(d.values[d.service] ?? {}), [e.field]: e.text } }
+        const typedNew = e.typedNew === undefined ? d.typedNew : { ...d.typedNew, [d.service]: { ...(d.typedNew[d.service] ?? {}), [e.field]: e.typedNew } }
+        return { ...d, values, typedNew }
+      })
+    case 'add_google':
+      return editDraft(s, (d) => ({ ...d, google: e.way }))
+    case 'add_closed': {
+      // Cancel closes the form even while its save checks (D13: only Save is held); the save's answer still lists what it made.
+      if (!s.add || s.list.kind !== 'loaded') return s
+      return { ...s, add: null, chosen: keepChosen(s.add.before, s.list.data) }
+    }
+    case 'save_requested': {
+      if (!s.add || !s.add.draft.service || s.add.save.kind === 'saving' || e.attempt <= s.lastChange.save || s.list.kind !== 'loaded') return s
+      return { ...s, now: e.at, lastChange: { ...s.lastChange, save: e.attempt }, add: { ...s.add, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
+    }
+    case 'save_answered': {
+      // The connection exists once its save answered, however late (R18), so it is listed; it takes the panel while the form is still open.
+      if (e.attempt !== s.lastChange.save || s.list.kind !== 'loaded') return s
+      const connections = [...s.list.data.connections.filter((c) => c.id !== e.connection.id), e.connection]
+      const list = { ...s.list, data: { ...s.list.data, connections } }
+      if (!s.add) return { ...s, list }
+      return { ...s, list, add: null, chosen: { kind: 'connection', id: e.connection.id }, tab: 'connection' }
+    }
+    case 'save_refused': {
+      if (e.attempt !== s.lastChange.save || !s.add || !awaiting(s.add.save)) return s
+      return { ...s, add: { ...s.add, save: { kind: 'failed', sentence: e.sentence, unconfirmed: false } } }
+    }
+
+    // ── The dialogs (R19 to R21) ──
+    case 'dialog_opened': {
+      if (s.list.kind !== 'loaded' || s.dialog) return s
+      const c = s.list.data.connections.find((x) => x.id === e.id)
+      // The Slack alert login is reconnected and removed on the Integrations page; its routes refuse both here.
+      if (!c || c.alertLogin) return s
+      if (e.dialog === 'remove' && c.workflows.length > 0) return s
+      if (e.dialog === 'replace') {
+        const others = s.list.data.connections
+          .filter((x) => x.service === c.service && x.id !== c.id && !x.alertLogin)
+          .sort((a, b) => Number(a.status !== 'ok') - Number(b.status !== 'ok') || a.name.localeCompare(b.name))
+        return { ...s, dialog: { kind: 'replace', id: c.id, with: others[0]?.id ?? null, ticked: c.workflows.map((w) => w.id) } }
+      }
+      return { ...s, dialog: { kind: e.dialog, id: c.id, values: {}, save: { kind: 'editing' } } }
+    }
+    case 'dialog_field': {
+      const d = s.dialog
+      if (!d || d.kind !== 'reconnect') return s
+      return { ...s, dialog: { ...d, values: { ...d.values, [e.field]: e.text }, save: d.save.kind === 'failed' ? { kind: 'editing' } : d.save } }
+    }
+    case 'dialog_closed': {
+      // Cancel closes a dialog even while its change runs; the change's answer still lands on the list.
+      if (!s.dialog) return s
+      return { ...s, dialog: null }
+    }
+    case 'replace_with':
+      return s.dialog?.kind === 'replace' ? { ...s, dialog: { ...s.dialog, with: e.id } } : s
+    case 'replace_tick': {
+      const d = s.dialog
+      if (d?.kind !== 'replace') return s
+      return { ...s, dialog: { ...d, ticked: d.ticked.includes(e.workflow) ? d.ticked.filter((w) => w !== e.workflow) : [...d.ticked, e.workflow] } }
+    }
+    case 'reconnect_requested': {
+      const d = s.dialog
+      if (d?.kind !== 'reconnect' || d.save.kind === 'saving' || e.attempt <= s.lastChange.reconnect) return s
+      return { ...s, now: e.at, lastChange: { ...s.lastChange, reconnect: e.attempt }, dialog: { ...d, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
+    }
+    case 'reconnect_answered': {
+      // The new login is saved once this answers, however late: the connection reads working, checked now.
+      if (e.attempt !== s.lastChange.reconnect || s.list.kind !== 'loaded') return s
+      const connections = s.list.data.connections.map((c) => (c.id === e.id
+        ? { ...c, status: 'ok' as const, problemSince: null, problemCause: null, actsAs: e.actsAs ?? c.actsAs, lastCheckedAt: new Date(e.at).toISOString() }
+        : c))
+      // Its history has a new entry now, so it is read again when its tab next opens.
+      const history = Object.fromEntries(Object.entries(s.history).filter(([id]) => id !== e.id))
+      const dialog = s.dialog?.kind === 'reconnect' && s.dialog.id === e.id ? null : s.dialog
+      return { ...s, list: { ...s.list, data: { ...s.list.data, connections } }, history, dialog }
+    }
+    case 'reconnect_refused': {
+      const d = s.dialog
+      if (e.attempt !== s.lastChange.reconnect || d?.kind !== 'reconnect' || !awaiting(d.save)) return s
+      return { ...s, dialog: { ...d, save: { kind: 'failed', sentence: e.sentence, unconfirmed: false } } }
+    }
+    case 'connection_remove_requested': {
+      const d = s.dialog
+      if (d?.kind !== 'remove' || d.save.kind === 'saving' || e.attempt <= s.lastChange.remove) return s
+      return { ...s, now: e.at, lastChange: { ...s.lastChange, remove: e.attempt }, dialog: { ...d, save: { kind: 'saving', attempt: e.attempt, startedAt: e.at, stalled: e.stalled } } }
+    }
+    case 'connection_remove_answered': {
+      if (e.attempt !== s.lastChange.remove || s.list.kind !== 'loaded') return s
+      const gone = s.list.data.connections.find((c) => c.id === e.id)
+      const data = { ...s.list.data, connections: s.list.data.connections.filter((c) => c.id !== e.id) }
+      const history = Object.fromEntries(Object.entries(s.history).filter(([id]) => id !== e.id))
+      const open = s.dialog?.kind === 'remove' && s.dialog.id === e.id
+      const dialog: DialogState = open ? (e.notice ? { kind: 'removed', name: gone?.name ?? 'The connection', notice: e.notice } : null) : s.dialog
+      return { ...s, list: { ...s.list, data }, history, dialog, chosen: keepChosen(s.chosen, data) }
+    }
+    case 'connection_remove_refused': {
+      const d = s.dialog
+      if (e.attempt !== s.lastChange.remove || d?.kind !== 'remove' || !awaiting(d.save) || s.list.kind !== 'loaded') return s
+      const workflows = e.workflows
+      const list = workflows
+        ? { ...s.list, data: { ...s.list.data, connections: s.list.data.connections.map((c) => (c.id === d.id ? { ...c, workflows } : c)) } }
+        : s.list
+      return { ...s, list, dialog: { ...d, save: { kind: 'failed', sentence: e.sentence, unconfirmed: false } } }
+    }
   }
 }
+
+/** Whether a change is still waiting for its answer: running, or stalled with its outcome not known. */
+function awaiting(save: SaveState): boolean {
+  return save.kind === 'saving' || (save.kind === 'failed' && save.unconfirmed)
+}
+
+function stalls(save: SaveState, at: number, deadlineMs: number): boolean {
+  return save.kind === 'saving' && at - save.startedAt >= deadlineMs
+}
+
+function stalledOf(save: SaveState): SaveState {
+  return save.kind === 'saving' ? { kind: 'failed', sentence: save.stalled, unconfirmed: true } : save
+}
+
+/**
+ * An edit of the form, taken while its save checks too (D13 holds only Save),
+ * since it changes nothing already sent; it clears a failed line, since what
+ * failed is being changed.
+ */
+function editDraft(s: ConnectionsState, change: (d: AddDraft) => AddDraft): ConnectionsState {
+  if (!s.add) return s
+  return { ...s, add: { ...s.add, draft: change(s.add.draft), save: s.add.save.kind === 'failed' ? { kind: 'editing' } : s.add.save } }
+}
+
+/**
+ * Whether leaving now would lose something (L608): the form with something
+ * typed or its save running, a Reconnect with a login typed or its check
+ * running, or a Remove running. The leave guard asks first while it is true.
+ */
+export function unsavedWork(s: ConnectionsState): boolean {
+  if (s.add && (draftDirty(s.add.draft) || s.add.save.kind === 'saving')) return true
+  const d = s.dialog
+  if (d && (d.kind === 'reconnect' || d.kind === 'remove')) {
+    if (d.save.kind === 'saving') return true
+    if (Object.values(d.values).some((v) => v.trim() !== '')) return true
+  }
+  return false
+}
+
 
 /** The chosen connection, when one is chosen and the list holds it. */
 export function chosenConnection(s: ConnectionsState): ConnectionView | null {
