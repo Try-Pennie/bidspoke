@@ -27,9 +27,12 @@ export type ConnectionAuthKind = (typeof CONNECTION_AUTH_KINDS)[number]
  * The control a field is drawn with. `secret` is a masked one line box,
  * `secret_block` a masked box for a multi line key (a PEM), and
  * `salesforce_org` the dropdown of the orgs Bidspoke knows, with Another org
- * last (R15).
+ * last (R15), and `google_subject` the dropdown of the organization's company
+ * list of mailboxes and drives (R16, D16), under the choice between a company
+ * mailbox or drive and your own Google account. The Add connection form
+ * (apps/web/src/components/connections, build PR 10 of #2338) draws each.
  */
-export const CONNECTION_INPUTS = ['text', 'secret', 'secret_block', 'salesforce_org'] as const
+export const CONNECTION_INPUTS = ['text', 'secret', 'secret_block', 'salesforce_org', 'google_subject'] as const
 export type ConnectionInput = (typeof CONNECTION_INPUTS)[number]
 
 const SECRET_INPUTS: ReadonlySet<ConnectionInput> = new Set(['secret', 'secret_block'])

@@ -4,7 +4,7 @@
  * create route answers as the refusal's message and the page shows as it is
  * (build PR 10). Each says what failed, that nothing was saved, and what to do,
  * as the settled design does: "Salesforce refused the client secret. Nothing
- * was saved. Check the client secret and save again."
+ * was saved. Check the secret and save again."
  *
  * The codes are the route's own (CREATE_ROUTE_REFUSAL_CODES) and every code
  * OpsConnections.verify can answer: its own refusals but the ones only another
@@ -193,7 +193,8 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   sf_budget_unmeasured: () => 'Bidspoke has no recent reading of how many Salesforce API calls are left today. Nothing was saved. Save again in a few minutes.',
   sf_lease_unavailable: () => 'The workflows server could not reserve a Salesforce call for the check. Nothing was saved. Save again in a minute.',
   connection_record_failed: () => 'The workflows server could not record the check before sending it. Nothing was saved. Save again.',
-  connection_needs_reauth: (c) => `${c.service} refused the ${c.secret}. Nothing was saved. Check the ${c.secret} and save again.`,
+  // The design's sentence (D14): the secret is named once, then "the secret" (L605); a service with no secret says its login.
+  connection_needs_reauth: (c) => `${c.service} refused the ${c.secret}. Nothing was saved. Check the ${c.secret === 'login' ? 'login' : 'secret'} and save again.`,
   connection_auth_unavailable: (c) => `${c.service} did not answer the sign in. Nothing was saved. Save again in a minute.`,
   connection_not_allowed: (c) => `A Bidspoke rule refused this ${c.service} login before it was tried. Nothing was saved. Check what the connection names and save again.`,
   connection_auth_check_unavailable: () => 'The workflows server could not read the list it checks this login against. Nothing was saved. Save again in a minute.',

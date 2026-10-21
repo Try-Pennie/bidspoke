@@ -532,7 +532,7 @@ describe('a verify that does not pass writes nothing', () => {
     const failed = await post(env, salesforce())
     expect(failed.status).toBe(422)
     expect(await failed.json()).toMatchObject({
-      error: 'connection_needs_reauth', message: 'Salesforce refused the client secret. Nothing was saved. Check the client secret and save again.',
+      error: 'connection_needs_reauth', message: 'Salesforce refused the client secret. Nothing was saved. Check the secret and save again.',
     })
     expect(db.rows).toEqual([])
 

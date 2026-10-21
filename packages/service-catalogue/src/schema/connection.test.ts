@@ -125,6 +125,11 @@ describe('the connection checks', () => {
     expect(CONNECTION_INPUTS).toContain('secret')
   })
 
+  it("name the company list's dropdown as an input, so a Google entry can declare it (R16, build PR 10)", () => {
+    expect(CONNECTION_INPUTS).toContain('google_subject')
+    expect(codes(serviceWith({ auth: 'service_account_delegation', fields: [{ key: 'subject', label: 'Acts as', input: 'google_subject', required: true, target: 'subject' }] }))).toEqual([])
+  })
+
   it('refuse a field that goes into neither the login nor the target', () => {
     expect(codes(serviceWith({ fields: [{ key: 'k', label: 'K', input: 'text', required: true }] }))).toEqual(['field_not_placed'])
   })
