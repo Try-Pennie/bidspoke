@@ -88,8 +88,9 @@ AS $fn$
     'ct', encode(convert_to('planted-ct-2338', 'UTF8'), 'base64'))::text
 $fn$;
 
--- Connections. Org A: a1 Ops Salesforce, a2 Ops OpenAI, ag and ah (the two
--- race cases'), ar (removed in case C). Org B: b1 live, bt removed.
+-- Connections. Org A: a1 Ops Salesforce, a2 Ops OpenAI, a7 and a8 (cases G
+-- and H, the two races), a9 Retired OpenAI (removed in case C). Org B: b1
+-- live, b2 removed (a tombstone and no row).
 CREATE OR REPLACE FUNCTION pg_temp.wcc_connections()
 RETURNS void
 LANGUAGE plpgsql
