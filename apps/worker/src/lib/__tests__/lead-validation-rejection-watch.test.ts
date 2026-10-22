@@ -37,6 +37,8 @@ import { incidentSignal } from '../incident-signals'
 import { transitions } from './_incident-events'
 
 const GIGFI = '6624acd0-bf61-4d21-85fc-4371ca7ed77d'
+const LENDSWIFT = 'e1b810da-16c0-49eb-bf12-ba1c9b67c914'
+const LEAD_ECONOMY = '89b1a6af-7e0f-43de-bc66-1e888184551f'
 const STEP = 'validate_bidding_and_state'
 
 /** Counts with every reason at zero unless given. */
@@ -101,6 +103,8 @@ describe('judgeRejectionShares(): the rule, against the spread it was set from',
     expect(REJECTION_RULE.baselineMinRuns).toBe(3_000)
     const thin = judgeRejectionShares(counts(600), counts(2_999, { 'ineligible state': 300 }))
     expect(thin.state).toBe('unmeasured')
+    // A baselineSince can make the baseline shorter than a week, so the reason names it as the baseline.
+    expect(thin.state === 'unmeasured' && thin.reason).toBe('the baseline holds 2999 runs, under the 3000 it needs')
   })
 
   it('refuses counts that cannot add up rather than reading them as a shift', () => {
@@ -109,9 +113,78 @@ describe('judgeRejectionShares(): the rule, against the spread it was set from',
   })
 })
 
+/**
+ * RML LendSwift (#2593): every two hour window of its real traffic, 2026-10-14
+ * 02:00 to 2026-10-22 02:00 UTC (113,644 runs, 191 windows of 347 to 2,698).
+ * It gets leads around the clock, and no state rejection reaches the step (an
+ * earlier filter keeps them out).
+ */
+const LENDSWIFT_WEEK = counts(113_644, { 'loan amount exceeds maximum': 13_950, 'military status ineligible': 718, 'invalid name': 8 })
+
+describe('judgeRejectionShares(): RML LendSwift, against the spread it was measured on', () => {
+  it('stays quiet on the most extreme two hour windows of the measured week', () => {
+    // loan amount exceeds maximum ran 6.9% to 19.1% of a window against 12.3%
+    // for the week (0.56 to 1.55 times): the lowest is a night window.
+    expect(judgeRejectionShares(counts(466, { 'loan amount exceeds maximum': 32, 'military status ineligible': 4 }), LENDSWIFT_WEEK).state).toBe('normal')
+    expect(judgeRejectionShares(counts(2_337, { 'loan amount exceeds maximum': 446, 'military status ineligible': 11 }), LENDSWIFT_WEEK).state).toBe('normal')
+    expect(judgeRejectionShares(counts(683, { 'loan amount exceeds maximum': 47, 'military status ineligible': 4 }), LENDSWIFT_WEEK).state).toBe('normal')
+    // military status ineligible, under the 2% common share, peaked at 18 (1.4%
+    // against 0.63%), and invalid name at 6: both under the rare floor.
+    expect(judgeRejectionShares(counts(1_305, { 'loan amount exceeds maximum': 138, 'military status ineligible': 18 }), LENDSWIFT_WEEK).state).toBe('normal')
+    expect(judgeRejectionShares(counts(1_694, { 'loan amount exceeds maximum': 229, 'military status ineligible': 13, 'invalid name': 6 }), LENDSWIFT_WEEK).state).toBe('normal')
+  })
+
+  it('pages a loan amount check that stops rejecting, and a state check that rejects every lead', () => {
+    const lenient = judgeRejectionShares(counts(900, { 'loan amount exceeds maximum': 0, 'military status ineligible': 6 }), LENDSWIFT_WEEK)
+    expect(lenient.state === 'shifted' && lenient.shifts.map((s) => `${s.bucket} ${s.direction}`)).toEqual(['loan amount exceeds maximum fell', 'all rejections fell'])
+    const strict = judgeRejectionShares(counts(900, { 'ineligible state': 790, 'loan amount exceeds maximum': 100, 'military status ineligible': 6 }), LENDSWIFT_WEEK)
+    expect(strict.state === 'shifted' && strict.shifts.map((s) => s.bucket)).toContain('ineligible state')
+  })
+})
+
+/**
+ * Lead Economy (#2594), measured only from 2026-10-19 15:00 UTC: version 39 was
+ * saved at 14:53 that day and began rejecting a loan under $2,000 as
+ * unqualified_lead, which moved that reason from about none of the runs to about
+ * 30%. Its runs from then to 2026-10-22 02:00 UTC: 7,884, in 20 judged windows of
+ * 329 to 723 runs.
+ */
+const LEAD_ECONOMY_WEEK = counts(7_884, { 'ineligible state': 249, unqualified_lead: 2_335 })
+
+describe('judgeRejectionShares(): Lead Economy, against the spread it was measured on', () => {
+  it('stays quiet on the most extreme two hour windows since version 39', () => {
+    // ineligible state 2.0% to 4.5% against 3.2% (0.63 to 1.43 times),
+    // unqualified_lead 24.6% to 36.4% against 29.6% (0.83 to 1.23 times).
+    expect(judgeRejectionShares(counts(451, { 'ineligible state': 9, unqualified_lead: 130 }), LEAD_ECONOMY_WEEK).state).toBe('normal')
+    expect(judgeRejectionShares(counts(575, { 'ineligible state': 26, unqualified_lead: 143 }), LEAD_ECONOMY_WEEK).state).toBe('normal')
+    expect(judgeRejectionShares(counts(329, { 'ineligible state': 14, unqualified_lead: 81 }), LEAD_ECONOMY_WEEK).state).toBe('normal')
+    expect(judgeRejectionShares(counts(434, { 'ineligible state': 11, unqualified_lead: 158 }), LEAD_ECONOMY_WEEK).state).toBe('normal')
+  })
+
+  it('pages a qualified check that lets every lead through, or rejects nearly every one', () => {
+    const lenient = judgeRejectionShares(counts(500, { 'ineligible state': 16, unqualified_lead: 0 }), LEAD_ECONOMY_WEEK)
+    expect(lenient.state === 'shifted' && lenient.shifts.map((s) => `${s.bucket} ${s.direction}`)).toEqual(['unqualified_lead fell', 'all rejections fell'])
+    const strict = judgeRejectionShares(counts(500, { 'ineligible state': 16, unqualified_lead: 470 }), LEAD_ECONOMY_WEEK)
+    expect(strict.state === 'shifted' && strict.shifts.map((s) => `${s.bucket} ${s.direction}`)).toEqual(['unqualified_lead rose', 'all rejections rose'])
+  })
+
+  it('would page on every busy window against a week that runs back past version 39, which is why its baseline starts there', () => {
+    // The 7 days before 2026-10-21 13:00 UTC as the watch would read them with no
+    // start: roughly 2,346 unqualified_lead in 23,000 runs, most of the runs from
+    // before the $2,000 minimum. Measured: 24 windows since version 39 paged so.
+    const mixed = counts(23_000, { 'ineligible state': 760, unqualified_lead: 2_346 })
+    expect(judgeRejectionShares(counts(521, { 'ineligible state': 11, unqualified_lead: 171 }), mixed).state).toBe('shifted')
+    expect(judgeRejectionShares(counts(521, { 'ineligible state': 11, unqualified_lead: 171 }), LEAD_ECONOMY_WEEK).state).toBe('normal')
+  })
+})
+
 describe('the watch, its signal and its heartbeat', () => {
-  it('watches RML GigFi\'s validation step for every reason on the shared list', () => {
-    expect(REJECTION_WATCHES).toEqual([{ workflowId: GIGFI, namespace: STEP, reasons: LEAD_REJECTION_REASONS }])
+  it('watches the validation step of GigFi, LendSwift and Lead Economy for every reason on the shared list', () => {
+    expect(REJECTION_WATCHES).toEqual([
+      { workflowId: GIGFI, namespace: STEP, reasons: LEAD_REJECTION_REASONS },
+      { workflowId: LENDSWIFT, namespace: STEP, reasons: LEAD_REJECTION_REASONS },
+      { workflowId: LEAD_ECONOMY, namespace: STEP, reasons: LEAD_REJECTION_REASONS, baselineSince: '2026-10-19T14:53:40.535Z' },
+    ])
   })
 
   it('is a registered signal keyed on the workflow, with the window it judges', () => {
@@ -280,6 +353,48 @@ describe('runLeadValidationRejectionWatch', () => {
     expect(sendRecoveryAlert).not.toHaveBeenCalled()
     expect(sendLeadValidationRejectionAlert).not.toHaveBeenCalled()
     expect(kv.store.get(`${LEAD_VALIDATION_REJECTION_SIGNAL}-recovery:${GIGFI}`)).toBe(alertedAt)
+  })
+
+  it('reads a watch\'s baseline only from its baselineSince, so a change of rule before it is not judged as a shift', async () => {
+    // Before the start: no unqualified_lead at all. After it: about 30%, as now.
+    const since = new Date(NOW - 2 * 24 * 3_600_000).toISOString()
+    const before = runs(new Date(NOW - 5 * 24 * 3_600_000).toISOString(), 20_000, { 'ineligible state': 600 })
+    const after = runs(new Date(NOW - 24 * 3_600_000).toISOString(), 5_000, { 'ineligible state': 150, unqualified_lead: 1_500 })
+    const window = runs(windowAt, 500, { 'ineligible state': 15, unqualified_lead: 150 })
+    const supabase = () => makeSupabase([...before, ...after, ...window], { service_connections: [{ organization_id: ORG }], workflows: [wf] })
+    const watch = { workflowId: GIGFI, namespace: STEP, reasons: LEAD_REJECTION_REASONS }
+
+    const started = await runLeadValidationRejectionWatch(supabase() as never, makeKv() as never, URL, NOW, [{ ...watch, baselineSince: since }])
+    expect(started.judged).toEqual([{ workflowId: GIGFI, state: 'normal', runs: 500, baselineRuns: 5_000 }])
+    expect(sendLeadValidationRejectionAlert).not.toHaveBeenCalled()
+
+    const unstarted = await runLeadValidationRejectionWatch(supabase() as never, makeKv() as never, URL, NOW, [watch])
+    expect(unstarted.judged).toEqual([{ workflowId: GIGFI, state: 'shifted', runs: 500, baselineRuns: 25_000 }])
+    expect(vi.mocked(sendLeadValidationRejectionAlert).mock.calls[0][2].baseline_days).toBe(7)
+  })
+
+  it('pages against a started baseline naming the days it covered, not a week', async () => {
+    const since = new Date(NOW - 2 * 24 * 3_600_000).toISOString()
+    const after = runs(new Date(NOW - 24 * 3_600_000).toISOString(), 5_000, { 'ineligible state': 150, unqualified_lead: 1_500 })
+    const window = runs(windowAt, 500, { 'ineligible state': 15, unqualified_lead: 0 })
+    const supabase = makeSupabase([...after, ...window], { service_connections: [{ organization_id: ORG }], workflows: [wf] })
+    const out = await runLeadValidationRejectionWatch(supabase as never, makeKv() as never, URL, NOW, [{ workflowId: GIGFI, namespace: STEP, reasons: LEAD_REJECTION_REASONS, baselineSince: since }])
+    expect(out.paged).toEqual([GIGFI])
+    // From the start to the window's start: 2 days less the 2 hour window and the 2 minute settle.
+    expect(vi.mocked(sendLeadValidationRejectionAlert).mock.calls[0][2].baseline_days).toBe(1.9)
+  })
+
+  it('refuses a baselineSince that is not a time, rather than reading the whole week', async () => {
+    const supabase = db(runs(windowAt, 600, { 'ineligible state': 70, 'loan amount exceeds maximum': 95 }))
+    await expect(runLeadValidationRejectionWatch(supabase as never, makeKv() as never, URL, NOW, [{ workflowId: GIGFI, namespace: STEP, reasons: LEAD_REJECTION_REASONS, baselineSince: 'version 39' }])).rejects.toThrow(/baselineSince version 39 is not a time/)
+  })
+
+  it('leaves the baseline at 7 days once baselineSince is further back than that', async () => {
+    const supabase = db(runs(windowAt, 600, { 'ineligible state': 70, 'loan amount exceeds maximum': 95 }))
+    const out = await runLeadValidationRejectionWatch(supabase as never, makeKv() as never, URL, NOW, [
+      { workflowId: GIGFI, namespace: STEP, reasons: LEAD_REJECTION_REASONS, baselineSince: new Date(NOW - 30 * 24 * 3_600_000).toISOString() },
+    ])
+    expect(out.judged).toEqual([{ workflowId: GIGFI, state: 'normal', runs: 600, baselineRuns: 20_000 }])
   })
 
   it('judges nothing when the workflow is not live in an organization with Slack', async () => {

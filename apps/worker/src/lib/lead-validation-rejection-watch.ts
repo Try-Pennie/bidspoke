@@ -42,9 +42,17 @@
  * node runs (L172).
  *
  * WHAT IT CANNOT SEE. A reason with no real cases (bidding not active, military
- * status ineligible and unqualified on GigFi) can only rise: a check that stops
- * rejecting it is invisible here and was proved by the grid instead. A small
- * shift inside the measured spread is not a page.
+ * status ineligible and unqualified on GigFi; bidding not active, ineligible
+ * state and employment status missing on LendSwift; bidding not active, invalid
+ * name and missing phone on Lead Economy) can only rise: a check that stops
+ * rejecting it is invisible here and was proved by the grid instead. The same
+ * holds for a reason under the 2% common share, which only the rare floor
+ * judges (military status ineligible on LendSwift, 0.63%). A small shift inside
+ * the measured spread is not a page.
+ *
+ * The baseline is the BASELINE_DAYS before the window, or from a watch's
+ * baselineSince when that is later (REJECTION_WATCHES says why each has one),
+ * and the page names the span it covered.
  *
  * Conventions shared with the other rate checks (partner-error-rate.ts): the
  * incident record through markAlerted, recordPaged and announceRecovery under
@@ -104,11 +112,43 @@ export interface RejectionWatch {
   /** The validation step, which keeps its namespace across the swap. */
   namespace: string
   reasons: readonly string[]
+  /**
+   * When set, the baseline never reads runs started before this time: the save
+   * of the version whose rules the baseline must hold, when the runs before it
+   * were judged by different ones. Once it is more than BASELINE_DAYS back it
+   * changes nothing.
+   */
+  baselineSince?: string
 }
 
+/**
+ * Each workflow's rule is REJECTION_RULE, measured on its own traffic:
+ *  - RML GigFi (#2592): see the module comment.
+ *  - RML LendSwift (#2593): every two hour window of 2026-10-14 02:00 to
+ *    2026-10-22 02:00 UTC (113,644 runs, 191 windows of 347 to 2,698; it gets
+ *    leads around the clock). loan amount exceeds maximum ran 6.9% to 19.1% of
+ *    a window against 12.3% for the week (0.56 to 1.55 times), all rejections
+ *    7.5% to 19.6% against 12.9%; military status ineligible (0.63%, so judged
+ *    by the rare floor) peaked at 18 in a window and invalid name at 6. No
+ *    state rejection reaches the step. None would have paged.
+ *  - Lead Economy (#2594): version 39, saved 2026-10-19 14:53:40 UTC, began
+ *    rejecting a loan under $2,000 as unqualified_lead, which moved that reason
+ *    from about none of the runs to about 30%. Against a baseline running back
+ *    past that save, 24 windows since would have paged, so its baseline starts
+ *    there (baselineSince). From 15:00 that day to 2026-10-22 02:00 UTC (7,884
+ *    runs, 20 judged windows of 329 to 723): ineligible state 2.0% to 4.5%
+ *    against 3.2% (0.63 to 1.43 times), unqualified_lead 24.6% to 36.4% against
+ *    29.6% (0.83 to 1.23 times), all rejections 28.9% to 38.9% against 32.8%.
+ *    None would have paged. Its leads run about 130 an hour, so many two hour
+ *    windows are under minRuns and not judged.
+ */
 export const REJECTION_WATCHES: readonly RejectionWatch[] = [
   { workflowId: '6624acd0-bf61-4d21-85fc-4371ca7ed77d', namespace: 'validate_bidding_and_state', reasons: LEAD_REJECTION_REASONS },
+  { workflowId: 'e1b810da-16c0-49eb-bf12-ba1c9b67c914', namespace: 'validate_bidding_and_state', reasons: LEAD_REJECTION_REASONS },
+  { workflowId: '89b1a6af-7e0f-43de-bc66-1e888184551f', namespace: 'validate_bidding_and_state', reasons: LEAD_REJECTION_REASONS, baselineSince: '2026-10-19T14:53:40.535Z' },
 ]
+
+const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/
 
 /** One window's runs: every finished live run, those that ended at the step, those that failed there, and the rejections by reason. */
 export interface RejectionCounts {
@@ -168,7 +208,7 @@ export function judgeRejectionShares(current: RejectionCounts, baseline: Rejecti
   if (current.runs < rule.minRuns) return { state: 'unjudged', runs: current.runs }
   const before = new Map(rejectionBuckets(baseline).map((b) => [b.bucket, b.count]))
   if (baseline.runs < rule.baselineMinRuns) {
-    return { state: 'unmeasured', runs: current.runs, baselineRuns: baseline.runs, reason: `the week before holds ${baseline.runs} runs, under the ${rule.baselineMinRuns} it needs` }
+    return { state: 'unmeasured', runs: current.runs, baselineRuns: baseline.runs, reason: `the baseline holds ${baseline.runs} runs, under the ${rule.baselineMinRuns} it needs` }
   }
   const shifts: RejectionShift[] = []
   for (const { bucket, count } of now) {
@@ -250,11 +290,15 @@ export async function runLeadValidationRejectionWatch(
 
   const windowEnd = new Date(now - SETTLE_MS)
   const windowStart = new Date(windowEnd.getTime() - WINDOW_MINUTES * 60 * 1000)
-  const baselineStart = new Date(windowStart.getTime() - BASELINE_DAYS * 24 * 3_600_000)
+  const weekStart = windowStart.getTime() - BASELINE_DAYS * 24 * 3_600_000
 
   for (const watch of watches) {
     const wf = byId.get(watch.workflowId)
     if (!wf) continue
+    // Only a full UTC time: Date.parse alone reads text like "version 39" as the year 39.
+    const since = watch.baselineSince && ISO_UTC.test(watch.baselineSince) ? Date.parse(watch.baselineSince) : Number.NaN
+    if (watch.baselineSince !== undefined && Number.isNaN(since)) throw new Error(`${LEAD_VALIDATION_REJECTION_JOB}: baselineSince ${watch.baselineSince} is not a time`)
+    const baselineStart = new Date(Number.isNaN(since) ? weekStart : Math.max(weekStart, since))
     const current = await readRejectionCounts(supabase, watch, windowStart, windowEnd)
     // A thin window is not judged, so the week is not read for it.
     const verdict = current.runs < REJECTION_RULE.minRuns
@@ -289,7 +333,7 @@ export async function runLeadValidationRejectionWatch(
             endedAt,
             firstHealthyAt,
             measuredWindowMinutes: WINDOW_MINUTES,
-            recoveredPhrase: 'is rejecting leads at the shares of the week before again',
+            recoveredPhrase: 'is rejecting leads at the shares of the days before again',
             url: `${appUrl}/workflows/${wf.id}`,
           })
         },
@@ -311,7 +355,8 @@ export async function runLeadValidationRejectionWatch(
       namespace: watch.namespace,
       runs: verdict.runs,
       baseline_runs: verdict.baselineRuns,
-      baseline_days: BASELINE_DAYS,
+      // The span the baseline covered, which a baselineSince can make shorter than a week (L11).
+      baseline_days: Math.round((windowStart.getTime() - baselineStart.getTime()) / (24 * 3_600_000) * 10) / 10,
       shifts: verdict.shifts,
       window_minutes: WINDOW_MINUTES,
       window_end: windowEnd.toISOString(),

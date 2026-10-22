@@ -11,7 +11,9 @@
  * environment, in apps/worker/.dev.vars, or in the file --dev-vars names:
  *   npx tsx scripts/lead-validation-swap-verify.ts <candidate> [--version <n>] [--dev-vars <path>]
  *
- * <candidate> is a file name under money-gate/swap/candidates. Without
+ * <candidate> is a file name under money-gate/swap/candidates (rml-gigfi,
+ * rml-lendswift, lead-economy; Lead Economy's save also sets its Constants
+ * minimumLoanAmount, which the check expects exactly). Without
  * --version it checks the workflow's newest version against the one before it.
  * Exit 0 on a pass, or when the newest version still holds the pinned script
  * (the swap is not saved yet, said as such); 1 on any difference.

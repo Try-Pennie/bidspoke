@@ -6,10 +6,14 @@
  */
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
-import { parseCandidate } from '../candidate'
-import { verifySavedSwap, type DefinitionVersion } from '../verify-save'
+import { parseCandidate, type SwapCandidate } from '../candidate'
+import { formatSwapVerification, verifySavedSwap, type DefinitionVersion } from '../verify-save'
 import gigfi from '../candidates/rml-gigfi.json'
+import lendswift from '../candidates/rml-lendswift.json'
+import leadEconomy from '../candidates/lead-economy.json'
 import gigfiDef from '../../fixtures/definitions/6624acd0-bf61-4d21-85fc-4371ca7ed77d.json'
+import lendswiftDef from '../../fixtures/definitions/e1b810da-16c0-49eb-bf12-ba1c9b67c914.json'
+import leadEconomyDef from '../../fixtures/definitions/89b1a6af-7e0f-43de-bc66-1e888184551f.json'
 
 type Def = { trigger?: unknown; nodes: Array<{ id: string; [k: string]: unknown }>; edges: Array<{ id?: string; source: string; target: string; [k: string]: unknown }> }
 
@@ -109,5 +113,99 @@ describe('verifySavedSwap', () => {
   it('fails when the step appears twice, or not at all', () => {
     expect(verify(canvasSave((d) => { d.nodes.push({ ...d.nodes.find((x) => x.id === NEW)!, id: 'dup' }) })).ok).toBe(false)
     expect(verify(canvasSave((d) => { d.nodes = d.nodes.filter((x) => x.id !== NEW) })).ok).toBe(false)
+  })
+})
+
+/** The same canvas save for any candidate: the old step deleted, the candidate pasted with a new id, its two edges made again, and the Constants the candidate sets typed in. */
+function canvasSaveOf(c: SwapCandidate, def: Def, over: (d: Def) => void = () => {}, typeConstants = true): Def {
+  const d = clone(def)
+  const oldId = c.replaces.node_id
+  const old = d.nodes.find((n) => n.id === oldId)!
+  d.nodes = d.nodes.filter((n) => n.id !== oldId)
+  d.nodes.push({ id: NEW, namespace: c.node.namespace, label: c.node.label, type: 'lead_validation', position: old.position, config: clone(c.node.config), variables: {} })
+  d.edges = d.edges.map((e) => (e.source === oldId || e.target === oldId
+    ? { ...e, id: `new-${String(e.id)}`, source: e.source === oldId ? NEW : e.source, target: e.target === oldId ? NEW : e.target }
+    : e))
+  if (typeConstants && c.constants_data) {
+    const k = d.nodes.find((n) => n.type === 'constants') as unknown as { config: { data: Record<string, unknown> } }
+    k.config.data = { ...k.config.data, ...clone(c.constants_data) }
+  }
+  over(d)
+  return d
+}
+
+describe('verifySavedSwap: RML LendSwift (#2593)', () => {
+  const ls = parseCandidate(lendswift, 'rml-lendswift.json')
+  const before = (lendswiftDef as unknown as { definition: Def }).definition
+  const check = (saved: Def) => verifySavedSwap(ls, v(24, before), v(25, saved), saved)
+
+  it('passes the canvas swap of the live version 24, which the committed fixture is', () => {
+    const r = check(canvasSaveOf(ls, before))
+    expect(r.problems).toEqual([])
+    expect(r.notes.join('\n')).toContain('2 edges into or out of the step were made again with new ids')
+    expect(formatSwapVerification(r, 'LendSwift').split('\n')[0]).toBe('LendSwift: PASS, only the validation step changed')
+  })
+
+  it('fails when the pasted step is GigFi\'s (it reads steps.parsed_name, which LendSwift does not have)', () => {
+    const r = check(canvasSaveOf(ls, before, (d) => {
+      const n = d.nodes.find((x) => x.id === NEW) as unknown as { config: unknown }
+      n.config = clone(candidate.node.config)
+    }))
+    expect(r.ok).toBe(false)
+    expect(r.problems.join('\n')).toContain('config.checks[2].condition.groups[0].conditions[0].field')
+  })
+
+  it('fails on any change to its Constants, which this swap does not set', () => {
+    const r = check(canvasSaveOf(ls, before, (d) => {
+      const k = d.nodes.find((n) => n.type === 'constants') as unknown as { config: { data: Record<string, unknown> } }
+      k.config.data.maximumLoanAmount = 6000
+    }))
+    expect(r.ok).toBe(false)
+    expect(r.problems.join('\n')).toContain('config.data.maximumLoanAmount')
+  })
+})
+
+describe('verifySavedSwap: Lead Economy (#2594), whose save also sets Constants minimumLoanAmount to 2000', () => {
+  const le = parseCandidate(leadEconomy, 'lead-economy.json')
+  const before = (leadEconomyDef as unknown as { definition: Def }).definition
+  const constantsOf = (d: Def) => (d.nodes.find((n) => n.type === 'constants') as unknown as { config: { data: Record<string, unknown> } }).config.data
+  const check = (saved: Def, previous: Def = before) => verifySavedSwap(le, v(39, previous), v(40, saved), saved)
+
+  it('starts from the live version 39, whose Constants minimum is 1000', () => {
+    expect(constantsOf(before).minimumLoanAmount).toBe(1000)
+    expect(le.constants_data).toEqual({ minimumLoanAmount: 2000 })
+  })
+
+  it('passes the canvas swap with the Constants minimum typed in, naming that change', () => {
+    const r = check(canvasSaveOf(le, before))
+    expect(r.problems).toEqual([])
+    expect(r.ok).toBe(true)
+    expect(r.notes.join('\n')).toContain('the Constants step\'s minimumLoanAmount changed from 1000 to 2000, as the candidate sets')
+    expect(formatSwapVerification(r, 'Lead Economy').split('\n')[0]).toBe('Lead Economy: PASS, only the validation step and the Constants values the candidate sets changed')
+  })
+
+  it('fails when the Constants minimum was not changed, naming the value it expected', () => {
+    const r = check(canvasSaveOf(le, before, () => {}, false))
+    expect(r.ok).toBe(false)
+    expect(r.problems.join('\n')).toContain('the Constants step\'s minimumLoanAmount is 1000, not the 2000 the candidate sets')
+  })
+
+  it('fails when the Constants minimum was typed as text, or as another number', () => {
+    expect(check(canvasSaveOf(le, before, (d) => { constantsOf(d).minimumLoanAmount = '2000' })).problems.join('\n')).toContain('minimumLoanAmount is "2000", not the 2000')
+    expect(check(canvasSaveOf(le, before, (d) => { constantsOf(d).minimumLoanAmount = 20000 })).ok).toBe(false)
+  })
+
+  it('fails when any other Constants value changed alongside it', () => {
+    const r = check(canvasSaveOf(le, before, (d) => { constantsOf(d).minimumAnnualIncome = 40000 }))
+    expect(r.ok).toBe(false)
+    expect(r.problems.join('\n')).toContain('config.data.minimumAnnualIncome')
+  })
+
+  it('passes, with nothing to note for Constants, when the minimum was already 2000 in the version before', () => {
+    const already = clone(before)
+    constantsOf(already).minimumLoanAmount = 2000
+    const r = check(canvasSaveOf(le, already), already)
+    expect(r.ok).toBe(true)
+    expect(r.notes.join('\n')).not.toContain('Constants')
   })
 })

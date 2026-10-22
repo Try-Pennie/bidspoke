@@ -614,7 +614,7 @@ export async function sendLeadValidationRejectionAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*${payload.workflow_name}*: in the ${hours} hours to ${etTime(payload.window_end)}, the \`${payload.namespace}\` step rejected leads at different shares than in the week before.`,
+        text: `*${payload.workflow_name}*: in the ${hours} hours to ${etTime(payload.window_end)}, the \`${payload.namespace}\` step rejected leads at different shares than in the ${payload.baseline_days} days before.`,
       },
     },
     { type: 'section', text: { type: 'mrkdwn', text: lines.join('\n') } },
@@ -622,7 +622,7 @@ export async function sendLeadValidationRejectionAlert(
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `*What to do:* if this step was changed recently, roll it back: open the workflow, open Version history, and restore the version saved before the change. If nothing changed in the workflow, the leads this source sends have changed. An all clear follows when the shares are back to the week before.`,
+        text: `*What to do:* if this step was changed recently, roll it back: open the workflow, open Version history, and restore the version saved before the change. If nothing changed in the workflow, the leads this source sends have changed. An all clear follows when the shares are back to those of the days before.`,
       },
     },
     { type: 'section', text: { type: 'mrkdwn', text: `<${payload.app_url}/workflows/${payload.workflow_id}|Open workflow →>` } },
