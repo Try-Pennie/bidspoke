@@ -56,10 +56,10 @@ function resolveRelative(from: string, specifier: string, read: Reader): string 
   return null
 }
 
-/** The relative modules a file loads at run time: type only imports and exports are erased, so they are skipped. */
 /** The specifiers a parsed file loads at run time, kept per tree: a tree kept by parsedSource is walked once. */
 const specifiersOf = new WeakMap<ts.SourceFile, string[]>()
 
+/** The relative modules a file loads at run time: type only imports and exports are erased, so they are skipped. */
 export function runtimeImports(file: string, read: Reader): string[] {
   const src = read(file)
   if (src === undefined) return []

@@ -50,8 +50,6 @@ function supabaseWith(tables: Record<string, TableConfig | TableConfig[]>) {
   return sb
 }
 
-// The route tree is imported once, before the tests, so its cold import (seconds
-// on a busy machine) is not charged to whichever test happens to run first.
 async function get(path: string) {
   return api.request(path, { method: 'GET', headers: { Authorization: 'Bearer tok' } }, testEnv, mockCtx)
 }

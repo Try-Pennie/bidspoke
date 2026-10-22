@@ -35,8 +35,8 @@ const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks' } as unknown as Env
 
 // ── App factory ───────────────────────────────────────────────────────────────
 
+// The full api router (jwtAuth and every route), imported at the top of the file.
 async function makeApp() {
-  // Import the full api router (includes jwtAuth + all routes)
   return api
 }
 

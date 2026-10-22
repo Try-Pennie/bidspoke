@@ -88,8 +88,6 @@ function supabaseWith(tables: Record<string, TableConfig | TableConfig[]>, rpc?:
   vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase({ users: { single: testUser }, ...tables }, rpc ? { rpc } : {}) as unknown as ReturnType<typeof createSupabaseClient>)
 }
 
-// The route tree is imported once, before the tests, so its cold import (seconds
-// on a busy machine) is not charged to whichever test happens to run first.
 async function call(method: string, route: string, body?: unknown) {
   return api.request(route, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' }, body: body === undefined ? undefined : JSON.stringify(body) }, env, mockCtx)
 }
