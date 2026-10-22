@@ -78,7 +78,7 @@ const EXECUTORS: Record<NodeType, NodeExecutor> = {
   salesforce: ({ node, ctx, env, signal }) => executeSalesforceNode(node, ctx, env, signal),
   data_store: ({ node, ctx, env }) => executeDataStoreNode(node, ctx, env),
   latency_gate: ({ node, ctx, env, supabase }) => executeLatencyGateNode(node, ctx, env, supabase),
-  achieve_offers: ({ node, ctx, signal }) => executeAchieveOffersNode(node, ctx, signal),
+  achieve_offers: ({ node, ctx, env, signal }) => executeAchieveOffersNode(node, ctx, env, signal),
   lead_validation: ({ node, ctx }) => executeLeadValidationNode(node, ctx),
 }
 

@@ -320,7 +320,8 @@ async function loadOrgEnv(
   // 2026-06-26 (the node sent the encrypted blob as the password, a 401), so a
   // secret that fails to decrypt is never passed through raw; for code, Webhook
   // and Salesforce nodes the Cloudflare worker-secret binding remains the fallback
-  // for an org secret (buildSandboxEnv).
+  // for an org secret (buildSandboxEnv), and for the Achieve Offers node's firewall
+  // key (achieveIdentityHeaders, #1263).
   // Platform master secrets (worker bindings) are blocked separately in
   // lib/sandbox-env.ts.
   //
