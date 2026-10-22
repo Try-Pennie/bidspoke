@@ -79,6 +79,10 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
   'add-slack-not-a-bot': ['This token acts as a person, not as a bot. Nothing was saved. Use the bot token from the ops Slack app and save again.'],
   'add-slack-workspace-mismatch': ['Slack says this bot is in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.'],
   'slack-ops-bot': ['Ops alerts bot', 'Bidspoke Ops in Pennie'],
+  // #2337: OpenAI, a project's API key.
+  'add-openai': ['An API key for a project', 'Project ID', 'API key'],
+  'add-openai-project-mismatch': ['OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.'],
+  'openai-summaries': ['Summaries', 'Project proj_bidspoke_ops in pennie'],
 }
 
 function quiet(): ConnectionsSource {
