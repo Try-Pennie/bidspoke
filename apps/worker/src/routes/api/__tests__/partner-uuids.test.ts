@@ -26,6 +26,7 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { invalidatePartnerConstantsCache } from '../../../lib/partner-constants-loader'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
+import api from '../index'
 
 const USER_ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com', display_name: 'Dan Wright' }
@@ -33,7 +34,6 @@ const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, 
 const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {} } as unknown as Env
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 const mockCtx = recordingContext()

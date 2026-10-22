@@ -77,6 +77,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { resolveSalesforceCredsFor } from '../../../lib/salesforce-creds'
+import api from '../index'
 
 const ORG = '0a000000-0000-4000-8000-000000000001'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000000002'
@@ -187,7 +188,6 @@ function makeEnv(ops: { verify?: Verify; list?: () => Promise<unknown>; revoke?:
 const ctx = recordingContext()
 
 async function post(env: Env, body: unknown) {
-  const { default: api } = await import('../index')
   return api.request('/connections', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
@@ -478,7 +478,6 @@ describe('refused before anything is sealed or verified', () => {
   it('a body whose declared length is over the limit, before it is read', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
     const { env, binding } = makeEnv()
-    const { default: api } = await import('../index')
     const res = await api.request('/connections', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok', 'Content-Length': '999999' },

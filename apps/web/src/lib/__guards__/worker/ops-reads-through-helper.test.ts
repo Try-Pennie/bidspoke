@@ -134,9 +134,11 @@ const fmt = (f: Finding) => `${f.file}:${f.line} ${f.what}`
 describe('every ops database query goes through readOpsRows or callOpsRpc (#1709, #1948)', () => {
   const program = buildWorkerProgram(SOURCE_FILES)
   const result = scanOpsQueries(program, SOURCE_FILES)
+  // Built while the file is collected: it checks every file, which is not charged to a test's 5 second limit (#2619).
+  const loadErrors = workerProgramLoadErrors(program)
 
   it('loads the worker program fully, so a clean result is not every type being any', () => {
-    expect(workerProgramLoadErrors(program)).toEqual([])
+    expect(loadErrors).toEqual([])
   })
 
   it('scans the worker source, both helper modules among it', () => {
@@ -158,27 +160,49 @@ describe('every ops database query goes through readOpsRows or callOpsRpc (#1709
     expect(result.offenders.map(fmt)).toEqual([])
   })
 
+  // The planted programs below are built and scanned while the file is collected,
+  // so their type checking is not charged to a test's 5 second limit (#2619).
+  const planted = path.join(WORKER_SRC, 'ops/__planted_ops_query__.ts')
+  const plantedSrc = [
+    "import type { SupabaseClient } from '@supabase/supabase-js'",
+    "import { createOpsSupabaseClient, type OpsDbEnv, type OpsSupabaseClient } from './ops-db'",
+    'function wider(c: SupabaseClient) { return c }',
+    'export function planted(env: OpsDbEnv, held: { db: OpsSupabaseClient }) {',
+    '  const db = createOpsSupabaseClient(env)',
+    "  void db.from('ops_runs').select('*')",
+    '  const alias = db',
+    "  void alias.rpc('anything')",
+    "  void held.db['schema']('other')",
+    '  const { from } = db',
+    '  void from',
+    '  wider(db)',
+    '  return db as SupabaseClient',
+    '}',
+  ].join('\n')
+  const plantedResult = scanOpsQueries(buildWorkerProgram([OPS_DB], { [planted]: plantedSrc }), [planted])
+
+  const plantedWrites = path.join(WORKER_SRC, 'ops/__planted_ops_writes__.ts')
+  const plantedWritesSrc = [
+    "import type { OpsSupabaseClient } from './ops-db'",
+    'export async function callOpsRpc(client: OpsSupabaseClient) {',
+    "  return client.rpc('anything', {})",
+    '}',
+  ].join('\n')
+  const plantedWritesResult = scanOpsQueries(buildWorkerProgram([OPS_DB, OPS_WRITES], { [plantedWrites]: plantedWritesSrc }), [plantedWrites])
+
+  // In ops-writes.ts itself, a .from inside callOpsRpc is still an offender:
+  // the write helper may call functions, never read or write a table.
+  const swapped = [
+    "import type { OpsSupabaseClient } from './ops-db'",
+    'export async function callOpsRpc(client: OpsSupabaseClient) {',
+    "  void client.from('run_requests').select('*')",
+    "  return client.rpc('anything', {})",
+    '}',
+  ].join('\n')
+  const swappedResult = scanOpsQueries(buildWorkerProgram([OPS_DB], { [OPS_WRITES]: swapped }), [OPS_WRITES])
+
   it('fails on each planted way round the helpers, by file, line and kind', () => {
-    const planted = path.join(WORKER_SRC, 'ops/__planted_ops_query__.ts')
-    const src = [
-      "import type { SupabaseClient } from '@supabase/supabase-js'",
-      "import { createOpsSupabaseClient, type OpsDbEnv, type OpsSupabaseClient } from './ops-db'",
-      'function wider(c: SupabaseClient) { return c }',
-      'export function planted(env: OpsDbEnv, held: { db: OpsSupabaseClient }) {',
-      '  const db = createOpsSupabaseClient(env)',
-      "  void db.from('ops_runs').select('*')",
-      '  const alias = db',
-      "  void alias.rpc('anything')",
-      "  void held.db['schema']('other')",
-      '  const { from } = db',
-      '  void from',
-      '  wider(db)',
-      '  return db as SupabaseClient',
-      '}',
-    ].join('\n')
-    const program = buildWorkerProgram([OPS_DB], { [planted]: src })
-    const { offenders } = scanOpsQueries(program, [planted])
-    expect(offenders.map(fmt)).toEqual([
+    expect(plantedResult.offenders.map(fmt)).toEqual([
       'ops/__planted_ops_query__.ts:6 .from on the ops client',
       'ops/__planted_ops_query__.ts:8 .rpc on the ops client',
       "ops/__planted_ops_query__.ts:9 ['schema'] on the ops client",
@@ -189,28 +213,8 @@ describe('every ops database query goes through readOpsRows or callOpsRpc (#1709
   })
 
   it('allows only its own method inside each helper, and only in its own file', () => {
-    const plantedWrites = path.join(WORKER_SRC, 'ops/__planted_ops_writes__.ts')
-    const src = [
-      "import type { OpsSupabaseClient } from './ops-db'",
-      'export async function callOpsRpc(client: OpsSupabaseClient) {',
-      "  return client.rpc('anything', {})",
-      '}',
-    ].join('\n')
-    const program = buildWorkerProgram([OPS_DB, OPS_WRITES], { [plantedWrites]: src })
-    expect(scanOpsQueries(program, [plantedWrites]).offenders.map(fmt)).toEqual(['ops/__planted_ops_writes__.ts:3 .rpc on the ops client'])
-
-    // In ops-writes.ts itself, a .from inside callOpsRpc is still an offender:
-    // the write helper may call functions, never read or write a table.
-    const swapped = [
-      "import type { OpsSupabaseClient } from './ops-db'",
-      'export async function callOpsRpc(client: OpsSupabaseClient) {',
-      "  void client.from('run_requests').select('*')",
-      "  return client.rpc('anything', {})",
-      '}',
-    ].join('\n')
-    const program2 = buildWorkerProgram([OPS_DB], { [OPS_WRITES]: swapped })
-    const result2 = scanOpsQueries(program2, [OPS_WRITES])
-    expect(result2.offenders.map(fmt)).toEqual(['ops/ops-writes.ts:3 .from on the ops client'])
-    expect(result2.allowed.map(fmt)).toEqual(['ops/ops-writes.ts:4 .rpc on the ops client'])
+    expect(plantedWritesResult.offenders.map(fmt)).toEqual(['ops/__planted_ops_writes__.ts:3 .rpc on the ops client'])
+    expect(swappedResult.offenders.map(fmt)).toEqual(['ops/ops-writes.ts:3 .from on the ops client'])
+    expect(swappedResult.allowed.map(fmt)).toEqual(['ops/ops-writes.ts:4 .rpc on the ops client'])
   })
 })

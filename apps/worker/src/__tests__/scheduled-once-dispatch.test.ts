@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { recordingContext } from '../test-setup/wait-until'
 import type { Env } from '../index'
 import { AlertClaimObject } from '../durable-objects/alert-claim'
+import { loadWorker } from '../test-setup/load-worker'
 
 /**
  * #1899: the real scheduled handler claims the tick before any job starts, so
@@ -33,7 +34,7 @@ vi.mock('../lib/stored-copy-ledger', async (importOriginal) => ({
 }))
 
 // The guard recorder's backoff takes no real time here: src/test-setup/guard-recorder.ts.
-const worker = (await import('../index')).default
+const { default: worker } = await loadWorker()
 const { countCronGuardEvents } = await import('../lib/cron-guard-watch')
 
 function claimNamespace(): DurableObjectNamespace {

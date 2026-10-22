@@ -27,7 +27,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { recordingContext } from '../test-setup/wait-until'
-import worker from '../index'
 import type { Env } from '../index'
 import { AlertClaimObject } from '../durable-objects/alert-claim'
 import { CRON_JOBS, completedKey, heartbeatKey } from '../lib/cron-heartbeat'
@@ -36,6 +35,9 @@ import { SLACK_CONNS_LASTGOOD_KEY, SLACK_COPY_SAVED_AT_KEY } from '../lib/slack-
 import { NOBODY_TOLD_LINE } from '../lib/nobody-told-page'
 import { TEST_KEY } from '../lib/__tests__/_scheduled-slack-doubles'
 import { slackPostOf } from './helpers/slack-fetch'
+import { loadWorker } from '../test-setup/load-worker'
+
+const { default: worker } = await loadWorker()
 
 const ORG = '55555555-5555-4555-8555-555555555555'
 const CONN = { bot_token: 'xoxb-t', default_channel: 'C-ALERTS', volume_alerts_enabled: true, config_alerts_enabled: true }

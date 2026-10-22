@@ -16,6 +16,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 // ── Supabase mock (per-table, call-count-indexed) ─────────────────────────────
 
@@ -29,7 +30,6 @@ const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, 
 const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: { delete: async () => {} } } as unknown as Env
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

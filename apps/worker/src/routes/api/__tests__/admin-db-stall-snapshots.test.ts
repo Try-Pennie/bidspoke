@@ -5,7 +5,7 @@
  * the database. A storage outage is a 503 carrying the error, never an empty
  * list that reads as "no stall was snapshotted" (L11).
  */
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 import { stallSnapshotKey, type StallSnapshotRecord } from '../../../lib/db-stall-snapshot'
@@ -16,6 +16,7 @@ vi.mock('../../../lib/supabase')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -59,15 +60,8 @@ function envWith(kvImpl: ReturnType<typeof kv>): Env {
 }
 
 async function request(env: Env, query = '', method = 'GET') {
-  const { default: api } = await import('../index')
   return api.fetch(new Request(`https://x/admin/db-stall-snapshots${query}`, { method, headers: { Authorization: 'Bearer t' } }), env, mockCtx)
 }
-
-// The API module is imported once, ahead of the tests, so its cold import is
-// not charged to the first test's 5 second limit on a loaded machine.
-beforeAll(async () => {
-  await import('../index')
-}, 30_000)
 
 beforeEach(() => {
   vi.clearAllMocks()

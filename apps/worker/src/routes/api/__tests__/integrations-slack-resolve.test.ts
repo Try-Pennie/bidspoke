@@ -30,6 +30,7 @@ vi.mock('../../../lib/supabase')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 const ORG = 'org-2331'
 const testUser = { id: 'user-2331', organization_id: ORG, email: 'dan@pennie.com' }
@@ -68,7 +69,6 @@ function slack(answers: Answer[]) {
 
 /** The routes as production mounts them: a thrown error reaches the root's handler, recorded here, which answers the generic 500. */
 async function app() {
-  const { default: api } = await import('../index')
   const thrown: unknown[] = []
   const root = new Hono<{ Bindings: Env }>()
   root.onError((err, c) => {

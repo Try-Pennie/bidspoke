@@ -20,6 +20,7 @@ vi.mock('../../../lib/lead-status-check', async (importOriginal) => {
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { checkLeadStatus } from '../../../lib/lead-status-check'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -33,7 +34,6 @@ const partners = [
 ]
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

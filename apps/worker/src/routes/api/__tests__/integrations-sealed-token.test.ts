@@ -30,6 +30,7 @@ import { parseSlackConnection } from '../../../lib/slack-connection'
 import { readSlackCopy, rememberSlackConnections } from '../../../lib/slack-copy'
 import { makeSupabase } from './_supabase-mock'
 import { slackPostOf } from '../../../__tests__/helpers/slack-fetch'
+import api from '../index'
 
 const ORG = 'org-abc'
 const USER = 'user-1'
@@ -80,7 +81,6 @@ const env = {
 } as unknown as Env
 
 async function call(method: string, path: string, body?: unknown) {
-  const { default: api } = await import('../index')
   return api.request(path, {
     method,
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
