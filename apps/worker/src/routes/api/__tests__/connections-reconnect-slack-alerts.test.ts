@@ -289,6 +289,23 @@ describe('Reconnect the Slack alerts login with no new token: the stored one is 
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(db, ORG, 'service_connection', ALERT_ROW, 'connection_rechecked', USER, {})
   })
 
+  it('with no key ring there is never an unhandled error: the plain copy is checked while it exists, and a sealed only row is named unreadable', async () => {
+    const db = await storeDouble()
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const asked = slackAuthTest(slackAccepts)
+    const { env } = makeEnv({ SECRET_ENCRYPTION_KEY: undefined })
+    // This release keeps config.bot_token beside the sealed copy (#2331), so the check still answers from it.
+    const withCopy = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
+    expect(withCopy.status).toBe(200)
+    expect(asked).toEqual([OLD_TOKEN])
+    // The contract release's shape: sealed only, which no ring can open here.
+    db.table[0].config = { default_channel: '#bidspoke-alerts' }
+    const sealedOnly = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
+    expect(sealedOnly.status).toBe(422)
+    expect(((await sealedOnly.json()) as Answer).error).toBe('reconnect_login_unreadable')
+    expect(asked).toEqual([OLD_TOKEN])
+  })
+
   it('a stored token Slack now refuses says so, and says to reconnect with a new one', async () => {
     const db = await storeDouble()
     db.table[0].config = { bot_token: REFUSED_TOKEN, default_channel: '#bidspoke-alerts' }

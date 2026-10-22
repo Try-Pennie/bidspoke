@@ -140,6 +140,10 @@ describe('the Slack alerts login\'s panel (round 36)', () => {
     const slackAlerts = vi.fn(async () => { if (++calls === 1) throw new TypeError('Failed to fetch'); return SETTINGS })
     render(<ConnectionsScreen source={source({ slackAlerts })} clock={manualClock().clock} initialChosen={{ kind: 'connection', id: 'alert-row-id' }} />)
     await waitFor(() => expect(screen.getByText('The alert settings could not be read: the server could not be reached.')).toBeTruthy())
+    // A failed line, as D25 reads it in the settled design: marked failed where it is drawn, and an alert.
+    const line = part('alerts-line')!
+    expect(line.getAttribute('data-state')).toBe('failed')
+    expect(line.getAttribute('role')).toBe('alert')
     fireEvent.click(within(part('alert-settings')!).getByRole('button', { name: 'Try again' }))
     await waitFor(() => expect(part('alert-channel')).not.toBeNull())
     expect(slackAlerts).toHaveBeenCalledTimes(2)

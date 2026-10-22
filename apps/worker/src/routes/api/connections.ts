@@ -715,7 +715,14 @@ async function reconnectSlackAlertLogin(
   }
 
   if (fields === null) {
-    const resolved = await resolveSlackConnection(row, secretKeys(c.env))
+    // A missing key ring is the resolver's own named state (slack_key_ring_missing), never an unhandled 500.
+    let keys: ReturnType<typeof secretKeys> | undefined
+    try {
+      keys = secretKeys(c.env)
+    } catch (err) {
+      console.error(JSON.stringify({ event: 'slack_alert_recheck_no_key_ring', organization_id: orgId, error: formatErr(err) }))
+    }
+    const resolved = await resolveSlackConnection(row, keys)
     if (resolved.kind !== 'connection') return own('reconnect_login_unreadable')
     const check = await asked(resolved.connection.bot_token)
     if (check.kind === 'unanswered') return own('slack_unanswered')
