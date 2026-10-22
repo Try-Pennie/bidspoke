@@ -174,10 +174,10 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
     [PLANTED_HELPER]: "import type { Context } from 'hono'\nexport const read = (c: Context) => c.req.query('ssn')\n",
     [PLANTED_FILTER]: "import type { Context } from 'hono'\nexport const read = (c: Context) => c.req.query('status')\n",
   }
-  // Rooted at the planted files alone: they import only hono and one small
-  // module, so this program does not load the whole worker a second time.
   // Built while the file is collected: it checks every file, which is not charged to a test's 5 second limit (#2619).
   const loadErrors = workerProgramLoadErrors(program)
+  // Rooted at the planted files alone: they import only hono and one small
+  // module, so this program does not load the whole worker a second time.
   const plantedProgram = buildWorkerProgram([], planted)
   const plantedResults = new Map(Object.keys(planted).map((file) => [file, scanQueryReads(plantedProgram, [file])]))
   const plantedFindings = (file: string): Finding[] => {
