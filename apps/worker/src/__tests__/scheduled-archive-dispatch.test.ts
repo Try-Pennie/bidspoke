@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { recordingContext } from '../test-setup/wait-until'
 import type { Env } from '../index'
+import { loadWorker } from '../test-setup/load-worker'
 
 /**
  * The cron wiring guard asserts a branch EXISTS for every scheduled cron, by
@@ -70,7 +71,7 @@ vi.mock('../lib/supabase', () => ({
   createSupabaseClient: () => ({ from: () => ({ select: () => ({}) }) }),
 }))
 
-const worker = (await import('../index')).default
+const { default: worker } = await loadWorker()
 
 const env = {
   IDEMPOTENCY: { get: async () => null, put: async () => undefined, delete: async () => undefined },

@@ -41,6 +41,7 @@ vi.mock('../../../lib/audit')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
+import api from '../index'
 
 const ORG = '0a000000-0000-4000-8000-000000000001'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000000002'
@@ -166,7 +167,6 @@ function makeEnv(order: string[], ops: Partial<Record<'verify' | 'clearReauth' |
 const ctx = recordingContext()
 
 async function call(env: Env, method: string, path: string, body?: unknown) {
-  const { default: api } = await import('../index')
   return api.request(path, {
     method,
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },

@@ -20,6 +20,7 @@ vi.mock('../../../lib/supabase')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 const ORG_A = '11111111-1111-4111-8111-111111111111'
 const ORG_B = '22222222-2222-4222-8222-222222222222'
@@ -202,7 +203,6 @@ const env = { SUPABASE_JWKS_URL: 'https://fake.jwks' } as unknown as Env
 const mockCtx = recordingContext()
 
 async function get(path: string, headers: Record<string, string> = { Authorization: 'Bearer tok' }) {
-  const { default: api } = await import('../index')
   return api.request(path, { method: 'GET', headers }, env, mockCtx)
 }
 

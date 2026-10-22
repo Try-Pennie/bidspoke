@@ -3,7 +3,7 @@
  * emits for the partner, with the workflows that read it. JWT and organization
  * scoped; the Worker is service_role, so the route filters the organization.
  */
-import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
@@ -14,6 +14,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
 import { PARTNER_CONSTANT_KINDS, PARTNER_CONSTANT_MAPS } from '../../../engine/nodes/constants'
+import api from '../index'
 
 const ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: ORG, email: 'dan@pennie.com' }
@@ -48,11 +49,6 @@ function supabaseWith(tables: Record<string, TableConfig | TableConfig[]>) {
   vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
   return sb
 }
-
-// The route tree is imported once, before the tests, so its cold import (seconds
-// on a busy machine) is not charged to whichever test happens to run first.
-let api: Awaited<typeof import('../index')>['default']
-beforeAll(async () => { api = (await import('../index')).default }, 60_000)
 
 async function get(path: string) {
   return api.request(path, { method: 'GET', headers: { Authorization: 'Bearer tok' } }, testEnv, mockCtx)

@@ -22,6 +22,18 @@ function workerCompilerOptions(): ts.CompilerOptions {
   return ts.parseJsonConfigFileContent(config.config, ts.sys, WORKER_ROOT, undefined, CONFIG_PATH).options
 }
 
+/**
+ * Each file read from disk, parsed once per test file and shared by every
+ * program built after it (#2619). A guard building a program per planted case
+ * otherwise parsed the TypeScript and Workers type libraries and the worker
+ * source again for each one, inside the test's 5 second limit. Sharing parsed
+ * files between programs built with the same options is what TypeScript's own
+ * language service does; a file served from `extra` is never kept.
+ */
+const diskFiles = new Map<string, ts.SourceFile>()
+const versionKey = (lang: ts.ScriptTarget | ts.CreateSourceFileOptions): string =>
+  typeof lang === 'object' ? `${lang.languageVersion}:${lang.impliedNodeFormat ?? ''}` : String(lang)
+
 /** A program over the given worker files, with `extra` served from memory on top of the disk. */
 export function buildWorkerProgram(roots: string[], extra: Record<string, string> = {}): ts.Program {
   const options = workerCompilerOptions()
@@ -31,8 +43,16 @@ export function buildWorkerProgram(roots: string[], extra: Record<string, string
   const getSourceFile = host.getSourceFile.bind(host)
   host.readFile = (f) => extra[f] ?? readFile(f)
   host.fileExists = (f) => f in extra || fileExists(f)
-  host.getSourceFile = (f, lang, onError, create) =>
-    f in extra ? ts.createSourceFile(f, extra[f], lang, true) : getSourceFile(f, lang, onError, create)
+  host.getSourceFile = (f, lang, onError, create) => {
+    if (f in extra) return ts.createSourceFile(f, extra[f], lang, true)
+    const key = `${f}\0${versionKey(lang)}`
+    let file = diskFiles.get(key)
+    if (file === undefined) {
+      file = getSourceFile(f, lang, onError, create)
+      if (file !== undefined) diskFiles.set(key, file)
+    }
+    return file
+  }
   return ts.createProgram({ rootNames: [...roots, ...Object.keys(extra)], options, host })
 }
 
