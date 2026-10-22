@@ -44,7 +44,7 @@ import { runPartnerPageMonitor, PARTNER_PAGE_MONITOR_JOB } from './lib/partner-p
 import { livePartnerPageMonitorDeps } from './lib/partner-page-monitor-live'
 import { formatScheduleSummary, runWorkflowScheduleWatch } from './lib/workflow-schedule-watch'
 import { runPgCronWatch, QUIET_STATUSES as pgCronQuietStatuses } from './lib/pg-cron-watch'
-import { runQueryTimeoutWatchLive } from './lib/query-timeout-watch'
+import { runQueryCancellationWatchLive, runQueryTimeoutWatchLive } from './lib/query-timeout-watch'
 import { tickTimer, type TickTimer } from './lib/tick-timing'
 import { runCronGuardWatchLive } from './lib/cron-guard-watch'
 import { isolateCronGuardRecorder } from './lib/cron-guard-record'
@@ -923,6 +923,21 @@ const scheduledJobs = {
             }
           })
           .catch((e) => console.error('[query-timeout-watch] check failed:', e))
+      )
+      // Pages on Worker queries Postgres already CANCELLED (#2651). The half above
+      // reads pg_stat_statements, which never records a statement that did not
+      // finish, so a query cancelled on every run is invisible to it. The Supabase
+      // client records each cancellation as it arrives (query-cancellations.ts);
+      // this counts them. A separate run, so neither half shares the other's read
+      // failures (L71).
+      ctx.waitUntil(
+        runQueryCancellationWatchLive(supabase, env.IDEMPOTENCY)
+          .then((r) => {
+            if (r.groups.length || r.unread) {
+              console.error(`[query-timeout-watch] cancelled statements=${r.groups.length} unread=${r.unread} alerted=${r.alerted}`)
+            }
+          })
+          .catch((e) => console.error('[query-timeout-watch] cancellation check failed:', e))
       )
       // The workflow dispatcher that drives these same workflows runs on the
       // 15 minute cron below (#1058, #1368), concurrently with this watch across

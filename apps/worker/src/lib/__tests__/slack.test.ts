@@ -4,7 +4,7 @@
  * markdown link (not interactive button), channel override, no-op when unconfigured.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { sendFailureSaturationAlert, sendPartnerErrorRateAlert, sendFailureAlert, sendDurationAlert, sendRecoveryAlert, sendGroupedRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, sendQueryTimeoutAlert, getSlackConnection, sendPgCronRecoveryAlert, sendWorkflowScheduleRecoveryAlert, sendCronHeartbeatRecoveryAlert } from '../slack'
+import { sendFailureSaturationAlert, sendPartnerErrorRateAlert, sendFailureAlert, sendDurationAlert, sendRecoveryAlert, sendGroupedRecoveryAlert, sendSlowSpikeAlert, sendSecretDriftAlert, sendSecretDecryptAlert, sendBackupFailureAlert, sendFailureSpikeAlert, sendUpstreamOutageAlert, sendOutcomeDeadLetterAlert, sendRequiredSecretsAlert, sendRequiredEnvVarsAlert, sendMatrixSyncFailureAlert, sendExportFailureAlert, sendQueryTimeoutAlert, sendQueryCancelledAlert, getSlackConnection, sendPgCronRecoveryAlert, sendWorkflowScheduleRecoveryAlert, sendCronHeartbeatRecoveryAlert } from '../slack'
 import type { QueryTimeoutOffender } from '../slack'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
@@ -336,6 +336,71 @@ describe('sendQueryTimeoutAlert (#1043)', () => {
   it('does nothing when Slack is not configured', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const delivered = await sendQueryTimeoutAlert(makeSupabase(null) as any, 'org-1', [offender()])
+    expect(delivered).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('sendQueryCancelledAlert (#2651)', () => {
+  let fetchMock: ReturnType<typeof vi.fn>
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true }) })
+    vi.stubGlobal('fetch', fetchMock)
+  })
+  afterEach(() => vi.unstubAllGlobals())
+
+  const statement = 'HEAD workflow_executions?select=id&workflow_id=eq.?&final_node_namespace=eq.?&response_body->>reason=eq.?'
+  const textOf = async () => {
+    const { blocks } = await slackPostOf(fetchMock.mock.calls[0])
+    return {
+      header: blocks[0].text.text as string,
+      text: blocks.map((b: { text?: { text: string } }) => b.text?.text ?? '').join('\n') as string,
+    }
+  }
+
+  it('names each statement, how many times it was cancelled and when last, in Eastern time, with one Fix line', async () => {
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ ok: true, ts: '1729569664.000100' }) })
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const delivered = await sendQueryCancelledAlert(makeSupabase(slackConnection) as any, 'org-1', {
+      groups: [{ statement, count: 4, lastAtMs: Date.parse('2026-10-22T04:01:05Z') }],
+      truncated: false,
+      unread: null,
+    })
+    expect(delivered).toBe(true)
+    const { header, text } = await textOf()
+    expect(header).toBe('Database queries were cancelled before they finished')
+    expect(text).toContain('4 times, the last at 12:01 AM ET on Oct 22')
+    // The statement is shown escaped for Slack, since `>` is markup there (L757).
+    expect(text).toContain('response_body-&gt;&gt;reason=eq.?')
+    expect(text.match(/\*Fix:\*/g)).toHaveLength(1)
+    // Plain words, not the machinery: no error code, role or stats view in the prose.
+    expect(text).not.toMatch(/57014|service_role|pg_stat_statements|queryid/)
+  })
+
+  it('shows a count as a floor when the record was too long to read in full', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendQueryCancelledAlert(makeSupabase(slackConnection) as any, 'org-1', {
+      groups: [{ statement, count: 50_000, lastAtMs: Date.parse('2026-10-22T13:01:05Z') }],
+      truncated: true,
+      unread: null,
+    })
+    expect((await textOf()).text).toContain('At least 50,000 times, the last at 9:01 AM ET on Oct 22')
+  })
+
+  it('says the record could not be read, with the reason, and never that nothing was cancelled', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendQueryCancelledAlert(makeSupabase(slackConnection) as any, 'org-1', { groups: [], truncated: false, unread: 'list failed' }, Date.parse('2026-10-22T05:00:00Z'))
+    const { header, text } = await textOf()
+    expect(header).toBe('Could not check for cancelled database queries')
+    expect(text).toContain('cannot say whether any were cancelled')
+    expect(text).toContain('1:00 AM ET on Oct 22')
+    expect(text).toContain('list failed')
+    expect(text.match(/\*Fix:\*/g)).toHaveLength(1)
+  })
+
+  it('does nothing when Slack is not configured', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const delivered = await sendQueryCancelledAlert(makeSupabase(null) as any, 'org-1', { groups: [], truncated: false, unread: 'x' })
     expect(delivered).toBe(false)
     expect(fetchMock).not.toHaveBeenCalled()
   })

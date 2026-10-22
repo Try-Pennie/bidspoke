@@ -34,6 +34,7 @@ const KEPT: Record<string, string> = {
   'src/lib/connection-statuses.ts:lastWritten': 'only spaces out the Connections page\'s last known statuses writes; read by the list route alone, never by a run (#2338)',
   'src/lib/connection-statuses.ts:lastSlackWritten': 'only spaces out the Slack alert login\'s last known status writes; read by the list route alone, never by a run (#2338, build PR 9)',
   'src/lib/incident-outbox.ts:seq':'only orders two incident outbox keys written in one millisecond; no run reads it, and the drain does not depend on it (#2099)',
+  'src/lib/query-cancellations.ts:counter': 'only keeps two cancellation records written in one millisecond apart; no run reads it (#2651)',
 }
 
 function filesUnder(dir: string): string[] {
