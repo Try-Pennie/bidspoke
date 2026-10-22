@@ -828,6 +828,8 @@ async function reconnectSlackAlertLogin(
 
 // POST /api/connections/:id/reconnect   body {} | { fields: { <field key>: <value> } }
 //   200 { outcome: 'reconnected' | 'checked', connection: { id, generation, acts_as } }
+//       a check of the Slack alerts login whose row was never sealed also
+//       carries seal: 'sealed' | 'failed' (#2331, sealNeverSealedAlertRow)
 //   otherwise { error, message, ... }: the code and the sentence the Reconnect
 //   dialog shows (lib/connection-create-refusals.ts)
 //
@@ -856,7 +858,9 @@ async function reconnectSlackAlertLogin(
 // Audit: a new login's commit is audited by the store's trigger under the actor
 // (reconnect_ops_connection sets updated_by), with credential_enc kept out; a
 // check without one changes no bidding row, so the route writes its audit row,
-// naming the generation checked and nothing of the login.
+// naming the generation checked and nothing of the login. The one exception is
+// the Slack alerts login's first seal (#2331): the same token, sealed, audited
+// by the store's trigger under the actor (updated_by).
 connections.post('/:id/reconnect', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const id = c.req.param('id')

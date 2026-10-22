@@ -6,7 +6,8 @@
  * the one function that saves that token (saveSlackAlertConnection in
  * routes/api/integrations.ts), keeping the channel and the four alert switches.
  * With no token, the stored one is checked with Slack again and nothing is
- * written. Remove stays refused for this login.
+ * written, except that an alert row never sealed is then sealed with that same
+ * token (#2331). Remove stays refused for this login.
  *
  * Who may call it: any signed in user of the organization (jwtAuth). Whose
  * data: the caller's organization's alert row only; another organization's is
