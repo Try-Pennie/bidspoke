@@ -1,9 +1,16 @@
-// Integrations management: the Slack connection (Phase 1.7).
+// The Slack alert connection (Phase 1.7). Since #2338 (build PR 14) the
+// Integrations page is retired: the Connections page's Slack alerts login panel
+// reads GET /slack, searches GET /slack/channels and saves PATCH
+// /slack/settings, and its Reconnect saves a new token through
+// saveSlackAlertConnection below, the one save of that token, which POST /slack
+// calls too. POST /slack/resolve, POST /slack and DELETE /slack have no caller
+// in the app since then: connecting a first alert bot, and disconnecting one,
+// have no page (noted on #2338's PR 14).
 // POST   /api/integrations/slack/resolve   validate a token, return the workspace name and channel list
 // POST   /api/integrations/slack           save or replace the Slack connection, once Slack accepts the token
 // GET    /api/integrations/slack           the current Slack connection (token never returned)
 // GET    /api/integrations/slack/channels  search channels by name
-// PATCH  /api/integrations/slack/settings  alert toggles and channels
+// PATCH  /api/integrations/slack/settings  the alert switches and the default channel
 // DELETE /api/integrations/slack           disconnect
 //
 // Who may call these: any signed in user of the organization (jwtAuth). Whose
@@ -59,6 +66,7 @@ import { dbError, dbErrorUnlessNotFound, requireRowOr404, rowsTouched } from '..
 import { createSlackClient, slackBodyOf } from '@bidspoke/slack-client'
 import { verifySlackToken } from '../../lib/slack-token-check'
 import type { Env } from '../../index'
+import type { Json } from '../../types/database'
 import type { AuthVariables } from '../../middleware/jwt-auth'
 import { createSupabaseClient } from '../../lib/supabase'
 import { copyCleared, copyWarning } from '../../lib/stored-copy'
@@ -157,20 +165,50 @@ integrations.post('/slack', async (c) => {
 
   // config.bot_token stays beside the sealed copy in this release (dual write,
   // see the header): the rollback target reads only it.
-  const config = {
+  const saved = await saveSlackAlertConnection(c.env, supabase, { orgId, userId, email }, {
     bot_token: body.bot_token,
     default_channel: body.default_channel,
     workspace_name: body.workspace_name ?? null,
-  }
+  })
+  if (saved.kind === 'seal_failed') return c.json({ error: 'slack_token_seal_failed: the token could not be sealed, so nothing was saved' }, 500)
+  if (saved.kind === 'store_failed') return dbError(c, saved.error)
+  return c.json({ ok: true, ...saved.copyWarning })
+})
 
+/** What saving the alert row's token came to: saved (with the saved copy's warning, when its edit failed), or refused before or at the write. */
+export type SlackAlertSave =
+  | { kind: 'saved'; copyWarning: ReturnType<typeof copyWarning> }
+  | { kind: 'seal_failed' }
+  | { kind: 'store_failed'; error: { code?: string; message: string } }
+
+/**
+ * The one save of the Slack alert row's bot token (#2331, #2338): seal it,
+ * upsert the organization's one alert row, then edit the saved Slack copy.
+ * POST /slack calls it, and so does the Connections page's Reconnect on the
+ * Slack alerts login (POST /api/connections/:id/reconnect), so there is one way
+ * to save that token. The token is checked with Slack (verifySlackToken)
+ * before either caller gets here. `config` is the whole config the row will
+ * hold: a Reconnect passes the row's own with the new token in it, so the
+ * channel and the alert switches are kept.
+ *
+ * Who: the caller's organization's row, from the verified token; updated_by
+ * names the user, so the table's trigger audits the change under them.
+ */
+export async function saveSlackAlertConnection(
+  env: Env,
+  supabase: ReturnType<typeof createSupabaseClient>,
+  who: { orgId: string; userId: string; email: string | null },
+  config: Record<string, unknown> & { bot_token: string },
+): Promise<SlackAlertSave> {
+  const { orgId, userId, email } = who
   let keys: SecretKeys
   let credentialEnc: string
   try {
-    keys = secretKeys(c.env)
-    credentialEnc = await encryptSecret(body.bot_token, keys)
+    keys = secretKeys(env)
+    credentialEnc = await encryptSecret(config.bot_token, keys)
   } catch (e) {
     console.error(`[integrations] the Slack token could not be sealed for org ${orgId}, so nothing was saved: ${formatErr(e)}`)
-    return c.json({ error: 'slack_token_seal_failed: the token could not be sealed, so nothing was saved' }, 500)
+    return { kind: 'seal_failed' }
   }
 
   // Upsert: the org's one alert row. The table's trigger audits it, naming
@@ -196,7 +234,8 @@ integrations.post('/slack', async (c) => {
         auth_type: 'oauth',
         // The token is in credential_enc, not a Cloudflare secret (#2332).
         cf_secret_key: null,
-        config,
+        // A Reconnect passes the row's own config back, which was read as JSON.
+        config: config as Json,
         credential_enc: credentialEnc,
         sealed_for: 'bidding_ring',
         updated_by: userId,
@@ -207,18 +246,17 @@ integrations.post('/slack', async (c) => {
     .select('id')
     .single()
 
-  if (error) return dbError(c, error)
+  if (error) return { kind: 'store_failed', error }
 
   const copyEdited = await copyCleared(
     async () => {
       const entry = await copyEntryFor(keys, orgId, { config, credential_enc: credentialEnc })
-      if (entry !== KEEP_ENTRY) await editSlackCopyEntry(c.env.IDEMPOTENCY, keys, orgId, entry)
+      if (entry !== KEEP_ENTRY) await editSlackCopyEntry(env.IDEMPOTENCY, keys, orgId, entry)
     },
     `the saved Slack copy for org ${orgId}`,
   )
-
-  return c.json({ ok: true, ...copyWarning(copyEdited) })
-})
+  return { kind: 'saved', copyWarning: copyWarning(copyEdited) }
+}
 
 integrations.get('/slack', async (c) => {
   const { orgId } = c.get('user')
@@ -241,7 +279,6 @@ integrations.get('/slack', async (c) => {
     matrix_alerts_enabled: cfg?.matrix_alerts_enabled !== false,
     config_alerts_enabled: cfg?.config_alerts_enabled !== false,
     backup_alerts_enabled: cfg?.backup_alerts_enabled !== false,
-    matrix_alerts_channel: (cfg?.matrix_alerts_channel as string | undefined) ?? null,
     // never return the token
     updated_at: data.updated_at,
     updated_by_email: data.updated_by_email,
@@ -311,7 +348,8 @@ integrations.get('/slack/channels', async (c) => {
 integrations.patch('/slack/settings', async (c) => {
   const { orgId, userId } = c.get('user')
   const supabase = createSupabaseClient(c.env)
-  const body = await c.req.json<{ volume_alerts_enabled?: boolean; default_channel?: string; matrix_alerts_enabled?: boolean; matrix_alerts_channel?: string | null; config_alerts_enabled?: boolean; backup_alerts_enabled?: boolean }>()
+  // matrix_alerts_channel is no longer taken (#2338): the bid matrix alerts post to the default channel.
+  const body = await c.req.json<{ volume_alerts_enabled?: boolean; default_channel?: string; matrix_alerts_enabled?: boolean; config_alerts_enabled?: boolean; backup_alerts_enabled?: boolean }>()
 
   const { data: rows, error: existingErr } = await alertRowQuery(supabase, orgId, `id, ${SLACK_ROW_COLUMNS}`)
 
@@ -327,7 +365,6 @@ integrations.patch('/slack/settings', async (c) => {
     ...(body.volume_alerts_enabled !== undefined ? { volume_alerts_enabled: body.volume_alerts_enabled } : {}),
     ...(body.default_channel ? { default_channel: body.default_channel } : {}),
     ...(body.matrix_alerts_enabled !== undefined ? { matrix_alerts_enabled: body.matrix_alerts_enabled } : {}),
-    ...(body.matrix_alerts_channel !== undefined ? { matrix_alerts_channel: body.matrix_alerts_channel || null } : {}),
     ...(body.config_alerts_enabled !== undefined ? { config_alerts_enabled: body.config_alerts_enabled } : {}),
     ...(body.backup_alerts_enabled !== undefined ? { backup_alerts_enabled: body.backup_alerts_enabled } : {}),
   }

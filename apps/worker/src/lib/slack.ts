@@ -4,6 +4,7 @@
 
 import { CONFIG_FAULT_WORDS } from '../engine/nodes/lead-validation'
 import { scheduleInWords } from './schedule-words'
+import { SLACK_ALERT_LOGIN_LINK } from '@bidspoke/service-catalogue/schema'
 import { DRAIN_STALL_SCHEDULES } from './strand-schedules'
 import { listWithOverflow, MAX_LISTED_LINES } from './list-overflow'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -966,7 +967,8 @@ export async function sendMatrixChangeAlert(
   if (!connection.matrix_alerts_enabled) return true
   if (payload.changes.length === 0) return true
 
-  const channel = channelOverride || connection.matrix_alerts_channel || connection.default_channel
+  // The separate matrix channel is retired (#2338, Dan's decision 3): matrix alerts post to the default channel.
+  const channel = channelOverride || connection.default_channel
   const totalAdded = payload.changes.reduce((s, c) => s + c.added.length, 0)
   const totalRemoved = payload.changes.reduce((s, c) => s + c.removed.length, 0)
   const totalEdited = payload.changes.reduce((s, c) => s + c.edited.length, 0)
@@ -1071,7 +1073,8 @@ export async function sendMatrixValidationAlert(
   if (!connection.matrix_alerts_enabled) return true
   if (payload.configs.length === 0) return true
 
-  const channel = channelOverride || connection.matrix_alerts_channel || connection.default_channel
+  // The separate matrix channel is retired (#2338, Dan's decision 3): matrix alerts post to the default channel.
+  const channel = channelOverride || connection.default_channel
   const total = payload.configs.reduce((s, c) => s + c.problems.length, 0)
 
   const blocks: unknown[] = [
@@ -3642,7 +3645,7 @@ export async function sendSlackTokenUnreadableAlert(
         // unreadable token, but cannot give a client its missing key ring.
         text: payload.reason === 'slack_key_ring_missing'
           ? '*How to fix:* this needs a code fix in the Worker, so that the database client reading the connection is built with its key ring (lib/supabase.ts). The stored token is fine, and saving the connection again does not change it.'
-          : `*How to fix:* save the Slack connection again on the Integrations page, which seals the token under the current key.\n<${payload.appUrl}/integrations|Open Integrations>`,
+          : `*How to fix:* reconnect Bidspoke Alerts on the Connections page with its bot token, which seals the token under the current key.\n<${payload.appUrl}${SLACK_ALERT_LOGIN_LINK}|Open Bidspoke Alerts>`,
       },
     },
   ]
@@ -3661,7 +3664,7 @@ export async function sendSlackTokenReadableAlert(
   const blocks: unknown[] = [
     { type: 'header', text: { type: 'plain_text', text: 'Recovered', emoji: false } },
     { type: 'section', text: { type: 'mrkdwn', text: recoverySentence(item, wording, now) } },
-    { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}/integrations|Open Integrations>` } },
+    { type: 'section', text: { type: 'mrkdwn', text: `<${payload.appUrl}${SLACK_ALERT_LOGIN_LINK}|Open Bidspoke Alerts>` } },
   ]
   return (await postMessage(slack.bot_token, channel, blocks, 'Recovered: the Slack token can be read again')) !== null
 }

@@ -273,6 +273,27 @@ describe('sendMatrixChangeAlert', () => {
     expect(text).toContain('Removed 650–719')
   })
 
+  // #2338 build PR 14 (Dan's decision 3, 2026-10-21): the separate matrix channel is retired. The
+  // production row holds the key with no value (measured 2026-10-21), so the alert posts to the
+  // default channel before and after; a row that still held a value now posts there too.
+  it('posts to the default channel for today\'s data, the matrix channel key present and empty', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendMatrixChangeAlert(makeSupabase({ ...slackConnection, matrix_alerts_channel: null as unknown as string }) as any, 'org-1', null, {
+      changed_at: '2024-01-15T18:00:00.000Z',
+      changes: [change],
+    })
+    expect((await slackPostOf(fetchMock.mock.calls[0])).channel).toBe('#alerts')
+  })
+
+  it('no longer reads a separate matrix channel: a row still holding one posts to the default channel', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendMatrixChangeAlert(makeSupabase({ ...slackConnection, matrix_alerts_channel: '#old-matrix-channel' }) as any, 'org-1', null, {
+      changed_at: '2024-01-15T18:00:00.000Z',
+      changes: [change],
+    })
+    expect((await slackPostOf(fetchMock.mock.calls[0])).channel).toBe('#alerts')
+  })
+
   it('respects the channel override', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await sendMatrixChangeAlert(makeSupabase(slackConnection) as any, 'org-1', '#bid-changes', {
@@ -374,6 +395,12 @@ describe('sendMatrixValidationAlert (#182)', () => {
     expect(text).toContain('Overlap')
     expect(text).toContain('Gap (sell-off)')
     expect(text).toContain('overlaps 700-800')
+  })
+
+  it('no longer reads a separate matrix channel (#2338): a row still holding one posts to the default channel', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await sendMatrixValidationAlert(makeSupabase({ ...slackConnection, matrix_alerts_channel: '#old-matrix-channel' }) as any, 'org-1', null, { checked_at: '2024-01-15T18:00:00.000Z', configs })
+    expect((await slackPostOf(fetchMock.mock.calls[0])).channel).toBe('#alerts')
   })
 
   it('respects the channel override', async () => {

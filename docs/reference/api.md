@@ -327,15 +327,15 @@ Response `201` (the only time the key is shown in full):
 
 ## Integrations (Slack)
 
-`/api/integrations`. Org-level Slack connection for failure and anomaly alerts.
+`/api/integrations`. The organization's Slack alert connection, which Bidspoke's own alerts post through. Since #2338 there is no Integrations page: its settings are on the Slack alerts login's panel on the Connections page (`/connections?connection=slack-alerts`, where `/integrations` now redirects), which reads `GET /slack`, searches `GET /slack/channels` and saves `PATCH /slack/settings`. A new bot token is saved by Reconnect on that login (`POST /api/connections/:id/reconnect`, below), which Slack checks first and which shares one save with `POST /slack`. No page calls `POST /slack/resolve`, `POST /slack` or `DELETE /slack` since then.
 
 | Method | Path | Purpose |
 |--------|------|---------|
 | POST | `/api/integrations/slack/resolve` | Validate a bot token and return the workspace name plus channel list. |
-| POST | `/api/integrations/slack` | Save or update the Slack connection. |
-| GET | `/api/integrations/slack` | Get the current connection (token masked). |
-| GET | `/api/integrations/slack/channels` | List channels for the connected workspace. |
-| PATCH | `/api/integrations/slack/settings` | Update alert toggles (volume, matrix-change, config warnings, etc.). |
+| POST | `/api/integrations/slack` | Save or update the Slack connection, once Slack accepts the token. |
+| GET | `/api/integrations/slack` | Get the current connection: the default channel and the four alert switches (never the token). |
+| GET | `/api/integrations/slack/channels?q=` | Search the workspace's channels holding `q` (at least 3 letters). |
+| PATCH | `/api/integrations/slack/settings` | Change the default channel or one of the four alert switches (`volume_alerts_enabled`, `config_alerts_enabled`, `backup_alerts_enabled`, `matrix_alerts_enabled`). The bid matrix alerts' separate channel (`matrix_alerts_channel`) is retired: they post to the default channel. |
 | DELETE | `/api/integrations/slack` | Disconnect Slack. |
 
 ## Connections
@@ -519,16 +519,9 @@ Both carry `signal` and its reader label `signal_label` (`Unrecognised signal`, 
 | POST | `/api/access` | Add an email to the allowlist. |
 | DELETE | `/api/access/:email` | Remove an email from the allowlist. |
 
-## Service presets
+## Service presets (retired)
 
-`/api/service-presets`. Reusable per-service field-mapping presets for the Integration node.
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/service-presets` | List presets. |
-| POST | `/api/service-presets` | Create a preset. |
-| PUT | `/api/service-presets/:id` | Update a preset. |
-| DELETE | `/api/service-presets/:id` | Delete a preset. |
+`/api/service-presets` is retired (#2338): HTTP Services presets are gone, and the Webhook step offers only its built in services. Every path answers 404. The `service_presets` table stays until a later release drops it (#2638).
 
 ## Folders
 

@@ -21,7 +21,10 @@
 //   {state: "loadfailed"}                                the list did not load (round 23)
 //   {state: "loadfailed", cause: "refused"}              the server answered a refusal (passed in review, 2026-10-21)
 //   {state: "detail", chosen, statuses: "stale", retry: "failed"}   the strip's Try again failed (review)
-//   {state: "detail", chosen: "Bidspoke Alerts"}         the Slack alert login's panel (review)
+//   {state: "detail", chosen: "Bidspoke Alerts"}         the Slack alert login's panel: Reconnect, then its
+//                                                        alert settings under an Alerts heading (round 36)
+//   {state: "detail", chosen: "Bidspoke Alerts", dialog: "reconnect"}   Reconnect asking for a new bot
+//                                                        token (Dan's decision 4, 2026-10-21)
 //   {state: "google", add: "drive"}                      a shared drive pasted and named, ready to add (rounds 29 to 31)
 //   {state: "google", edit: "removing"}                  an entry being removed, 4 s in (review, round 32)
 //   extra: true adds the fixture's justSaved connection to the list (rounds 18 and 21).
@@ -139,9 +142,47 @@ function listColumn(variant) {
 
 function workflowLink(name) { var a = part(el("a", "cx-wf", name), "workflow-link"); a.href = "#"; return a; }
 
+// Round 36 (Dan, 2026-10-21), "On the login's panel": the alert settings the retired Integrations page
+// held, in its words and its order.
+var ALERTS = [
+  ["volume_alerts_enabled", "Volume anomaly alerts", "When a day's runs are far above or below normal."],
+  ["config_alerts_enabled", "Configuration warning alerts", "When a live step's timeout is too short to be reliable."],
+  ["backup_alerts_enabled", "Backup failure alerts", "When workflow backups to GitHub keep failing."],
+  ["matrix_alerts_enabled", "Bid matrix change alerts", "When rows of the Salesforce bid matrix change."]
+];
+function toggle(name, on) {
+  var b = el("button", "toggle" + (on ? " toggle-on" : ""));
+  b.type = "button"; b.setAttribute("role", "switch"); b.setAttribute("aria-checked", String(on)); b.setAttribute("aria-label", name);
+  b.setAttribute("data-state", on ? "checked" : "unchecked");
+  var k = el("span", "toggle-knob"); k.setAttribute("data-state", on ? "checked" : "unchecked");
+  b.append(k);
+  return b;
+}
+// The heading and the rows go straight into the panel, as round 36 drew them, so the heading keeps its rule above.
+function alertSettings() {
+  var h = part(el("h3", "cx-group", "Alerts"), "alerts-heading"); h.style.marginTop = "20px";
+  var rows = part(el("div", "cx-rows"), "alert-settings");
+  var ch = part(el("div", "cx-row"), "alert-channel");
+  var value = el("div"); value.style.display = "flex"; value.style.alignItems = "center"; value.style.justifyContent = "space-between"; value.style.gap = "12px";
+  value.append(part(el("span", null, FX().alerts.channel), "alert-channel-value"), el("button", "cx-btn-quiet", "Change"));
+  ch.append(el("div", null, "Posts to"), value);
+  rows.append(ch);
+  ALERTS.forEach(function (a) {
+    var row = part(el("div", "cx-row"), "alert-switch"); row.setAttribute("data-switch", a[0]);
+    row.style.gridTemplateColumns = "minmax(0, 1fr) auto";
+    var text = el("div"); var hint = el("div", "cx-hint", a[2]); hint.style.fontSize = "13px";
+    text.append(el("div", null, a[1]), hint);
+    var right = el("div"); right.style.display = "flex"; right.style.justifyContent = "flex-end";
+    right.append(toggle(a[1], FX().alerts.switches[a[0]]));
+    row.append(text, right);
+    rows.append(row);
+  });
+  return [h, rows];
+}
+
 function alertPanel(c) {
-  // The Slack alert login: no Reconnect, Replace or Remove, since the routes refuse all three for it,
-  // and its settings named where they live.
+  // The Slack alert login: Reconnect as every login has it (Dan's decision 4), Replace and Remove still
+  // refused for it, then its alert settings under the facts (round 36).
   var d = part(el("div", "cx-card cx-detail"), "detail");
   d.append(el("h2", null, c.name), statusEl(c));
   var tabs = el("div", "cx-dtabs"); tabs.setAttribute("role", "tablist");
@@ -157,10 +198,10 @@ function alertPanel(c) {
     row.append(el("div", null, r[0]), el("div", null, r[1])); rows.append(row);
   });
   d.append(rows);
-  var aside = el("p", "cx-aside");
-  var link = el("a", "cx-link", "Integrations page"); link.href = "#";
-  aside.append(document.createTextNode("Its token and the alerts it posts are set on the "), link, document.createTextNode("."));
-  d.append(aside);
+  var acts = part(el("div", "cx-actions"), "actions");
+  acts.append(el("button", "cx-btn-quiet", "Reconnect"));
+  d.append(acts);
+  alertSettings().forEach(function (e) { d.append(e); });
   return d;
 }
 
@@ -401,6 +442,14 @@ function dialog(title, width) {
 function reconnectDialog(c, variant) {
   var dl = dialog("Reconnect " + c.name, 480);
   var g = el("div", "ad-form");
+  // Dan's decision 4 (2026-10-21): the Slack alerts login's Reconnect asks for a new bot token, which
+  // Slack checks before it is saved; nothing it names is kept, so there is no kept field.
+  if (c.name === "Bidspoke Alerts") {
+    g.append(field("New bot token", input("", true)));
+    var at = el("div", "ad-foot"); at.append(el("button", "cx-btn cx-btn-sm", "Save"), el("button", "cx-btn-quiet", "Cancel"));
+    g.append(at); dl.box.append(g);
+    return dl.scrim;
+  }
   var failed = variant.reconnect === "failed";
   // Passed in review: a refused Reconnect keeps the secret typed and says why under the buttons.
   g.append(field("Client id", input(FX().reconnect.clientId)), field("New client secret", input(failed ? MASK : "", true)));

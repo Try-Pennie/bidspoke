@@ -4,7 +4,7 @@
 // score runs them on the design first (the positive control) and then on the built page.
 (function () {
   var NAVY = "rgb(29, 33, 47)", BLUE = "rgb(27, 114, 186)", RED = "rgb(180, 35, 24)", HINT = "rgb(105, 112, 129)", WHITE = "rgb(255, 255, 255)";
-  var ALL = ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded", "google-add-drive", "google-removing", "stale-retry-failed", "not-loaded-refused", "alert-login", "add-stalled", "add-failed-no-cap", "reconnect-failed", "remove-refused-in-use"];
+  var ALL = ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded", "google-add-drive", "google-removing", "stale-retry-failed", "not-loaded-refused", "alert-login", "add-stalled", "add-failed-no-cap", "reconnect-failed", "remove-refused-in-use", "alert-reconnect"];
   // Round 26: every dialog's title is one size.
   var DIALOG_TITLE = "20px";
   var EXTRA = ["saved", "remove", "remove-refused-in-use"];
@@ -585,7 +585,7 @@
       return ok("the menu floats over Client id");
     } },
     // Round 35: every dialog's title is 20px, drawn by the app's one title rule.
-    { id: "D36", frames: ["reconnect", "replace", "remove", "reconnect-failed", "remove-refused-in-use"], check: function (doc) {
+    { id: "D36", frames: ["reconnect", "replace", "remove", "reconnect-failed", "remove-refused-in-use", "alert-reconnect"], check: function (doc) {
       var dgs = qa(doc, '[role="dialog"], [role="alertdialog"]');
       if (!dgs.length) return bad("no dialog");
       for (var i = 0; i < dgs.length; i++) {
@@ -596,6 +596,69 @@
       return ok(dgs.length + " dialog title(s) at " + DIALOG_TITLE);
     } },
     // Round 27: an open dropdown's highlighted row is pale grey behind dark text, in every dropdown.
+    // Round 36 (build PR 14): the Slack alert login's alert settings, under its facts, in Dan's words.
+    { id: "D37", frames: ["alert-login"], check: function (doc) {
+      var WANT = [
+        ["volume_alerts_enabled", "Volume anomaly alerts", "When a day's runs are far above or below normal."],
+        ["config_alerts_enabled", "Configuration warning alerts", "When a live step's timeout is too short to be reliable."],
+        ["backup_alerts_enabled", "Backup failure alerts", "When workflow backups to GitHub keep failing."],
+        ["matrix_alerts_enabled", "Bid matrix change alerts", "When rows of the Salesforce bid matrix change."]
+      ];
+      var panel = p(main(doc), "detail");
+      if (!panel) return bad("no detail panel");
+      var facts = pa(panel, "fact").map(function (f) { return f.getAttribute("data-fact"); });
+      if (!same(facts, ["Service", "Acts as", "Last checked"])) return bad("the facts are " + JSON.stringify(facts));
+      var head = p(panel, "alerts-heading");
+      if (!head || txt(head) !== "Alerts") return bad("no heading reads Alerts");
+      var last = pa(panel, "fact").slice(-1)[0];
+      if (box(head).top < box(last).bottom) return bad("the Alerts heading is not under the facts");
+      var ch = p(panel, "alert-channel");
+      if (!ch || box(ch).top < box(head).bottom) return bad("no Posts to row under the heading");
+      var chText = said(ch);
+      if (chText.indexOf("Posts to") !== 0 || chText.indexOf("#bidspoke-alerts") < 0) return bad("the channel row reads " + chText);
+      if (!same(buttons(ch).map(txt), ["Change"])) return bad("the channel row's buttons are " + JSON.stringify(buttons(ch).map(txt)));
+      var rows = pa(panel, "alert-switch");
+      if (rows.length !== 4) return bad(rows.length + " switch rows, not 4");
+      for (var i = 0; i < 4; i++) {
+        var r = rows[i], w = WANT[i];
+        if (r.getAttribute("data-switch") !== w[0]) return bad("row " + (i + 1) + " is " + r.getAttribute("data-switch") + ", not " + w[0]);
+        if (box(r).top < box(i ? rows[i - 1] : ch).bottom) return bad(w[1] + " is not below the row before it");
+        var sw = q(r, '[role="switch"]');
+        if (!sw || sw.getAttribute("aria-label") !== w[1]) return bad("row " + (i + 1) + " has no switch named " + w[1]);
+        if (sw.getAttribute("aria-checked") !== "true") return bad(w[1] + " is not on");
+        var t = said(r);
+        if (t !== w[1] + " " + w[2]) return bad("row " + (i + 1) + " reads " + JSON.stringify(t));
+      }
+      if (/Integrations/.test(txt(panel))) return bad("the panel names the Integrations page");
+      return ok("Alerts: Posts to #bidspoke-alerts with Change, and the four switches in order");
+    } },
+    // Dan's decision 4 (build PR 14): Reconnect on the Slack alert login, the same button and dialog.
+    { id: "D40", frames: ["alert-login", "alert-reconnect"], check: function (doc, ctx) {
+      if (ctx.frame === "alert-reconnect") {
+        var dg = dialogOf(doc);
+        if (!dg) return bad("no dialog");
+        var title = "Reconnect Bidspoke Alerts";
+        if (dg.getAttribute("aria-label") !== title && txt(q(dg, "h1, h2, h3")) !== title) return bad("the dialog is not titled " + title);
+        var tp = titleProblem(dg, title); if (tp) return bad(tp);
+        var f = pa(dg, "field"), names = f.map(function (x) { return x.getAttribute("data-field"); });
+        if (!same(names, ["New bot token"])) return bad("the fields are " + JSON.stringify(names));
+        var tok = q(f[0], "input");
+        if (!tok || tok.type !== "password" || tok.value !== "") return bad("New bot token is not an empty masked field");
+        if (!same(buttons(dg).map(txt), ["Save", "Cancel"])) return bad("the buttons are " + JSON.stringify(buttons(dg).map(txt)));
+        return ok(title + ": New bot token, Save and Cancel");
+      }
+      var panel = p(main(doc), "detail");
+      if (!panel) return bad("no detail panel");
+      var acts = p(panel, "actions");
+      if (!acts || !same(buttons(acts).map(txt), ["Reconnect"])) return bad("the action row reads " + JSON.stringify(acts ? buttons(acts).map(txt) : null));
+      var b = buttons(acts)[0], s = css(b);
+      if ([BLUE, RED].indexOf(s.backgroundColor) >= 0 || [BLUE, RED].indexOf(s.color) >= 0) return bad("Reconnect is not quiet");
+      var facts = pa(panel, "fact"), head = p(panel, "alerts-heading");
+      if (!facts.length || box(acts).top < box(facts[facts.length - 1]).bottom) return bad("Reconnect is not under the facts");
+      if (!head || box(head).top < box(acts).bottom) return bad("Reconnect is not before the Alerts heading");
+      if (button(panel, "Replace") || button(panel, "Remove")) return bad("the panel offers Replace or Remove");
+      return ok("a quiet Reconnect under the facts, and no Replace or Remove");
+    } },
     { id: "D28", frames: ["add-salesforce-new-org"], check: function (doc) {
       var HIGHLIGHT = "rgb(241, 239, 234)", GRAPHITE = "rgb(52, 52, 52)";
       var opt = qa(doc, '[role="listbox"] [role="option"][aria-selected="true"]')[0];

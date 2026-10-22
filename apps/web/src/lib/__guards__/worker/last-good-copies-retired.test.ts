@@ -110,7 +110,7 @@ const KINDS: Kind[] = [
     // lib/__tests__/secret-reencrypt.test.ts).
     exempt: {
       'apps/worker/src/routes/api/connections.ts POST /': 'inserts a new ops_key connection under a fresh id, never the bidding_ring Slack alert row the copy holds',
-      'apps/worker/src/routes/api/connections.ts POST /:id/reconnect': 'reconnect_ops_connection writes only an ops_key row, and refuses the bidding_ring Slack alert row the copy holds without writing it',
+      'apps/worker/src/routes/api/connections.ts POST /:id/reconnect': 'reconnect_ops_connection writes only an ops_key row, and refuses the bidding_ring Slack alert row the copy holds without writing it; a Reconnect of the Slack alert row (build PR 14) saves through saveSlackAlertConnection, which edits the copy itself and is held to this rule as its own handler',
       'apps/worker/src/routes/api/connections.ts DELETE /:id': 'remove_ops_connection deletes only an ops_key row, and refuses the bidding_ring Slack alert row the copy holds without writing it',
       'apps/worker/src/routes/api/slack-token-seal.ts sealSlackTokens': 'seals the token already in config.bot_token into credential_enc: the connection the copy holds is unchanged, and the next probe rewrites the copy from the rows',
       'apps/worker/src/lib/secret-reencrypt.ts reencryptSecrets': 're-locks credential_enc under the next key: the token the copy holds is unchanged, and the next probe rewrites the copy under the ring in force',
@@ -390,9 +390,11 @@ describe('every handler writing service_connections edits the saved Slack copy (
     expect(found.offenders).toEqual([])
   })
 
+  // #2338 build PR 14: POST /slack and the Slack alert login's Reconnect both save the token through
+  // saveSlackAlertConnection, so that function is the handler holding the write (and the copy edit).
   it('the enumeration finds the Slack settings routes, so an empty offender list is a measurement (L1)', () => {
     expect(found.handlers).toEqual(expect.arrayContaining([
-      'apps/worker/src/routes/api/integrations.ts POST /slack',
+      'apps/worker/src/routes/api/integrations.ts saveSlackAlertConnection',
       'apps/worker/src/routes/api/integrations.ts PATCH /slack/settings',
       'apps/worker/src/routes/api/integrations.ts DELETE /slack',
     ]))

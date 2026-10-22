@@ -32,7 +32,9 @@ const GATED_PATHS = [
   '/sources',
   '/endpoints',
   '/partners',
+  // Retired as a page (#2338): a redirect to /connections, behind the gate like it.
   '/integrations',
+  '/connections',
   '/access',
   '/settings',
   '/settings/access',

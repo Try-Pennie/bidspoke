@@ -61,6 +61,9 @@ function source(over: Partial<ConnectionsSource> = {}): ConnectionsSource {
     create: vi.fn(async () => ({ connection: CREATED })),
     reconnect: vi.fn(async (id: string) => ({ outcome: 'reconnected' as const, connection: { id, acts_as: 'pennie.api@achieve.example' } })),
     remove: vi.fn(async () => ({ outcome: 'removed' as const, ops: { told: true as const } })),
+    slackAlerts: vi.fn(async () => ({ connected: true, default_channel: '#bidspoke-alerts' })),
+    updateSlackAlerts: vi.fn(async () => ({ ok: true })),
+    searchSlackChannels: vi.fn(async () => ({ channels: [] })),
     ...over,
   }
 }

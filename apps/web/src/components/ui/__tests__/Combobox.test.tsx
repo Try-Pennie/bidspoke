@@ -16,7 +16,7 @@ import path from 'node:path'
 import { useState } from 'react'
 import { act, render, screen, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { Combobox, ComboboxControl, useListLoad, type ComboboxClock, type ComboboxOption } from '../Combobox'
+import { Combobox, ComboboxControl, useListLoad, useSearchLoad, type ComboboxClock, type ComboboxOption } from '../Combobox'
 import { Field } from '../form'
 
 const ORGS: ComboboxOption[] = [
@@ -468,5 +468,78 @@ describe('ComboboxControl with a load its caller holds', () => {
     const box = screen.getByRole('combobox', { name: 'Org' })
     expect(box).toHaveTextContent('Choose an org')
     expect(box).not.toHaveTextContent('7b0c1d2e-id')
+  })
+})
+
+// #2338 build PR 14: the Slack alerts login's channel is chosen by searching Slack as the box is typed
+// into (GET /api/integrations/slack/channels needs 3 letters), so the list is a search, not one read.
+describe('Combobox: a searched list (useSearchLoad)', () => {
+  const CHANNELS: ComboboxOption[] = [{ value: '#ops-alerts', label: '#ops-alerts' }, { value: '#ops-bidding', label: '#ops-bidding' }]
+
+  function Search({ search, clock, onPicked }: { search: (q: string, signal: AbortSignal) => Promise<readonly ComboboxOption[]>; clock: ComboboxClock; onPicked?: (v: string) => void }) {
+    const [value, setValue] = useState('')
+    const { list, onSearch } = useSearchLoad(search, { minChars: 3, clock })
+    return (
+      <ComboboxControl
+        id="channel" aria-label="Channel" value={value} list={list} clock={clock} emptyMessage="No channels match."
+        onChange={(v) => { setValue(v); onPicked?.(v) }}
+        search={{ onSearch, minChars: 3, prompt: "Type at least 3 letters of the channel's name.", placeholder: 'Search channels' }}
+      />
+    )
+  }
+  const channelBox = () => screen.getByRole('combobox', { name: 'Channel' })
+
+  it('is a box to type into that sends nothing until 3 letters, then searches once typing pauses', async () => {
+    const clock = new ManualClock()
+    const asked: string[] = []
+    render(<Search clock={clock} search={async (q) => { asked.push(q); return CHANNELS }} />)
+    await act(async () => {})
+    expect(channelBox().tagName).toBe('INPUT')
+    fireEvent.focus(channelBox())
+    expect(screen.getByText("Type at least 3 letters of the channel's name.")).toBeInTheDocument()
+    fireEvent.change(channelBox(), { target: { value: 'op' } })
+    clock.advance(300)
+    await act(async () => {})
+    expect(asked).toEqual([])
+    fireEvent.change(channelBox(), { target: { value: 'ops' } })
+    // While typing pauses the menu reads as loading, never as the last query's answer.
+    expect(screen.getByRole('status')).toHaveTextContent('Loading')
+    clock.advance(300)
+    await act(async () => {})
+    expect(asked).toEqual(['ops'])
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['#ops-alerts', '#ops-bidding'])
+  })
+
+  it('choosing a channel takes its value and shows it in the box; what was typed is never a value of its own', async () => {
+    const clock = new ManualClock()
+    const picked: string[] = []
+    render(<Search clock={clock} search={async () => CHANNELS} onPicked={(v) => picked.push(v)} />)
+    fireEvent.focus(channelBox())
+    fireEvent.change(channelBox(), { target: { value: 'ops' } })
+    clock.advance(300)
+    await act(async () => {})
+    fireEvent.mouseDown(screen.getByRole('option', { name: '#ops-bidding' }))
+    expect(picked).toEqual(['#ops-bidding'])
+    expect((channelBox() as HTMLInputElement).value).toBe('#ops-bidding')
+    fireEvent.change(channelBox(), { target: { value: 'nothing-like-it' } })
+    fireEvent.blur(channelBox())
+    expect(picked).toEqual(['#ops-bidding'])
+  })
+
+  it('a search with no match says so, and a failed one says why with Try again', async () => {
+    const clock = new ManualClock()
+    let fail = false
+    render(<Search clock={clock} search={async () => { if (fail) throw new Error('The channels could not be searched: Slack API error: ratelimited.'); return [] }} />)
+    fireEvent.focus(channelBox())
+    fireEvent.change(channelBox(), { target: { value: 'zzz' } })
+    clock.advance(300)
+    await act(async () => {})
+    expect(screen.getByText('No channels match.')).toBeInTheDocument()
+    fail = true
+    fireEvent.change(channelBox(), { target: { value: 'zzzz' } })
+    clock.advance(300)
+    await act(async () => {})
+    expect(screen.getByRole('alert')).toHaveTextContent('The channels could not be searched: Slack API error: ratelimited.')
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
   })
 })

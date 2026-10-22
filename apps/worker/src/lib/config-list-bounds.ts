@@ -28,8 +28,6 @@ export const CONFIG_LIST_BOUNDS = {
   folders: 200,
   /** webhook_endpoints of one organization: 9. */
   webhookEndpoints: 500,
-  /** service_presets of one organization: 0. */
-  servicePresets: 200,
   /** partner_bid_configs of one organization: 0. */
   partnerBidConfigs: 200,
   /** api_sources of one organization: 7. */

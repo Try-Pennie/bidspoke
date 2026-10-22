@@ -61,7 +61,10 @@ import {
 } from '../../lib/ops-connections-contract'
 import { pageStatusOf, readConnectionStatuses, readSlackAlertStatus, rememberConnectionStatuses, rememberSlackAlertStatus } from '../../lib/connection-statuses'
 import { checkSlackAlertLogin, isSlackAlertRow } from '../../lib/slack-alert-login-check'
-import { onlySlackAlertRow, SLACK_ALERT_READ_LIMIT, SLACK_ROW_COLUMNS } from '../../lib/slack-connection'
+import { onlySlackAlertRow, resolveSlackConnection, SLACK_ALERT_READ_LIMIT, SLACK_ROW_COLUMNS } from '../../lib/slack-connection'
+import { slackActsAs, verifySlackToken } from '../../lib/slack-token-check'
+import { secretKeys } from '../../lib/secret-crypto'
+import { saveSlackAlertConnection } from './integrations'
 import { OPS_CONNECTIONS_DEADLINES_MS } from '../../lib/ops-connections-client'
 
 type Variables = AuthVariables
@@ -596,6 +599,9 @@ const ROUTE_STATUS: Readonly<Record<ConnectionRouteRefusalCode, 200 | 400 | 404 
   connection_not_found: 404,
   connection_not_reconnectable: 422,
   connection_not_removable: 422,
+  slack_token_refused: 422,
+  slack_stored_token_refused: 422,
+  slack_unanswered: 503,
   reconnect_target_changed: 422,
   reconnect_target_unreadable: 422,
   reconnect_login_unreadable: 422,
@@ -651,6 +657,93 @@ function opsCheckRefusal(answer: { ok: false; refused: string; detail: string; r
   }
   const code: CreateRefusalCode = isCreateRefusalCode(answer.refused) ? answer.refused : 'verify_refused_unknown'
   return { code, extra: { detail: answer.detail, retry_at: answer.retry_at } }
+}
+
+// ── Reconnect on the Slack alerts login (build PR 14; Dan's decision 4, 2026-10-21) ──
+
+/** The Slack alerts login's one field: its bot token, the key POST /api/integrations/slack has always taken. */
+const SLACK_ALERT_TOKEN_FIELD = { key: 'bot_token', label: 'Bot token' } as const
+
+interface SlackAlertRow { id: string; config: unknown; credential_enc: string | null }
+
+/** The caller's organization's Slack alert row with this id (lib/slack-connection.ts defines which row that is), or none. */
+async function readSlackAlertRow(supabase: ReturnType<typeof createSupabaseClient>, orgId: string, id: string): Promise<{ kind: 'row'; row: SlackAlertRow } | { kind: 'none' } | { kind: 'unreadable' }> {
+  const { data, error } = await onlySlackAlertRow(supabase.from('service_connections').select(`id, ${SLACK_ROW_COLUMNS}`).eq('organization_id', orgId).eq('id', id)).limit(SLACK_ALERT_READ_LIMIT)
+  if (error) {
+    console.error(JSON.stringify({ event: 'connection_reconnect_read_failed', organization_id: orgId, error: formatErr(error) }))
+    return { kind: 'unreadable' }
+  }
+  const row = (data as unknown as SlackAlertRow[] | null)?.find((r) => r.id === id)
+  return row ? { kind: 'row', row } : { kind: 'none' }
+}
+
+type OwnRefusal = (code: ConnectionRouteRefusalCode, ctx?: Partial<RouteRefusalContext>, extra?: Record<string, unknown>) => Response
+type CreateRefusalAnswer = (code: CreateRefusalCode, ctx?: Partial<RefusalContext>, extra?: Record<string, unknown>) => Response
+
+/**
+ * Reconnect on the Slack alerts login. Ops never holds this login, so Slack is
+ * what checks it, with auth.test (verifySlackToken), and nothing is asked of
+ * ops. With a new bot token: checked first, then saved by the one function
+ * that saves that token (saveSlackAlertConnection, which POST
+ * /api/integrations/slack calls too), onto the row's own config, so the channel
+ * and the four alert switches are kept. With none: the stored token is checked
+ * again and nothing is written, as for every other login. A token Slack could
+ * not be asked about is never called refused (L11).
+ *
+ * Who: the caller's organization's alert row, read by id and organization
+ * (readSlackAlertRow). The save's updated_by names the user, so the table's
+ * trigger audits a new token; a check without one writes its audit row here.
+ */
+async function reconnectSlackAlertLogin(
+  c: Context<{ Bindings: Env; Variables: AuthVariables }>,
+  supabase: ReturnType<typeof createSupabaseClient>,
+  row: SlackAlertRow,
+  fields: Record<string, string> | null,
+  refuse: { ownRefusal: OwnRefusal; createRefusal: CreateRefusalAnswer },
+): Promise<Response> {
+  const { orgId, userId, email } = c.get('user')
+  const words = { service: SLACK_SERVICE_NAME, secret: 'token' }
+  const own = (code: ConnectionRouteRefusalCode, names: string[] = []) => refuse.ownRefusal(code, { ...words, names })
+  const asked = async (token: string): Promise<{ kind: 'ok'; actsAs: string | null; team: string | null } | { kind: 'refused'; slackError: string | null } | { kind: 'unanswered' }> => {
+    try {
+      const check = await verifySlackToken(token)
+      return check.kind === 'ok' ? { kind: 'ok', actsAs: slackActsAs(check), team: check.team } : check
+    } catch (err) {
+      console.warn(JSON.stringify({ event: 'slack_alert_reconnect_unanswered', organization_id: orgId, error: formatErr(err) }))
+      return { kind: 'unanswered' }
+    }
+  }
+
+  if (fields === null) {
+    const resolved = await resolveSlackConnection(row, secretKeys(c.env))
+    if (resolved.kind !== 'connection') return own('reconnect_login_unreadable')
+    const check = await asked(resolved.connection.bot_token)
+    if (check.kind === 'unanswered') return own('slack_unanswered')
+    if (check.kind === 'refused') return own('slack_stored_token_refused', check.slackError ? [check.slackError] : [])
+    await writeAuditLog(supabase, orgId, 'service_connection', row.id, 'connection_rechecked', userId, {})
+    console.log(JSON.stringify({ event: 'connection_rechecked', organization_id: orgId, connection_id: row.id, service: 'slack' }))
+    return c.json({ outcome: 'checked', connection: { id: row.id, acts_as: check.actsAs } })
+  }
+
+  const unknown = Object.keys(fields).filter((k) => k !== SLACK_ALERT_TOKEN_FIELD.key)
+  if (unknown.length > 0) return refuse.createRefusal('connection_fields_undeclared', { ...words, names: unknown }, { fields: unknown })
+  const token = (fields[SLACK_ALERT_TOKEN_FIELD.key] ?? '').trim()
+  if (token === '') return refuse.createRefusal('connection_fields_missing', { ...words, names: [SLACK_ALERT_TOKEN_FIELD.label] }, { fields: [SLACK_ALERT_TOKEN_FIELD.key] })
+
+  const check = await asked(token)
+  if (check.kind === 'unanswered') return own('slack_unanswered')
+  if (check.kind === 'refused') return own('slack_token_refused', check.slackError ? [check.slackError] : [])
+
+  const existing = row.config && typeof row.config === 'object' && !Array.isArray(row.config) ? (row.config as Record<string, unknown>) : {}
+  const config = { ...existing, bot_token: token, ...(check.team ? { workspace_name: check.team } : {}) }
+  const saved = await saveSlackAlertConnection(c.env, supabase, { orgId, userId, email }, config)
+  if (saved.kind === 'seal_failed') return refuse.createRefusal('connection_seal_failed', words)
+  if (saved.kind === 'store_failed') {
+    console.error(JSON.stringify({ event: 'slack_alert_reconnect_store_failed', organization_id: orgId, connection_id: row.id, error: formatErr(saved.error) }))
+    return refuse.createRefusal('connection_store_failed', words)
+  }
+  console.log(JSON.stringify({ event: 'connection_reconnected', organization_id: orgId, connection_id: row.id, service: 'slack' }))
+  return c.json({ outcome: 'reconnected', connection: { id: row.id, acts_as: check.actsAs }, ...saved.copyWarning })
 }
 
 // POST /api/connections/:id/reconnect   body {} | { fields: { <field key>: <value> } }
@@ -717,6 +810,10 @@ connections.post('/:id/reconnect', async (c) => {
     return createRefusal('connections_unavailable')
   }
   if (!data) {
+    // The Slack alerts login is reconnected here too (build PR 14, Dan's decision 4): Slack checks its token, not ops.
+    const alert = await readSlackAlertRow(supabase, orgId, id)
+    if (alert.kind === 'unreadable') return createRefusal('connections_unavailable')
+    if (alert.kind === 'row') return reconnectSlackAlertLogin(c, supabase, alert.row, body.fields, { ownRefusal, createRefusal })
     const missing = await rowMissing(supabase, orgId, id)
     if (missing === 'unreadable') return createRefusal('connections_unavailable')
     return ownRefusal(missing === 'not_ops' ? 'connection_not_reconnectable' : 'connection_not_found')

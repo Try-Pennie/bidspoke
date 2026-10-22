@@ -12,7 +12,6 @@ import sources from './sources'
 import partners from './partners'
 import partnerBidConfigs from './partner-bid-configs'
 import access from './access'
-import servicePresets from './service-presets'
 import stats from './stats'
 import connections from './connections'
 import endpointRoutes from './endpoints'
@@ -52,7 +51,7 @@ api.route('/sources', sources)
 api.route('/partners', partners)
 api.route('/partner-bid-configs', partnerBidConfigs)
 api.route('/access', access)
-api.route('/service-presets', servicePresets)
+// HTTP Services presets are retired (#2338): their routes are gone, and the service_presets table stays until #2638 drops it.
 api.route('/stats', stats)
 api.route('/connections', connections)
 api.route('/endpoints', endpointRoutes)

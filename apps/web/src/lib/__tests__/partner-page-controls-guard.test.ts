@@ -169,8 +169,8 @@ describe('the shared controls live in one place (L613)', () => {
  * takes this to zero; until then a new native select fails here instead of
  * merging.
  */
+// #2338 (build PR 14) retired the Integrations page and its 2, so it holds none now.
 const NATIVE_SELECT_CEILING: Record<string, number> = {
-  'app/(app)/integrations/page.tsx': 2,
   'app/(app)/sources/page.tsx': 2,
   'components/canvas/ConfigPanel.tsx': 24,
   'components/canvas/TriggerConfigPanel.tsx': 2,
