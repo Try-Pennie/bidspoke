@@ -234,6 +234,20 @@ export const CRON_JOBS: CronJob[] = [
       'nothing notices the bidding Worker\'s Salesforce bulkhead limit moving off the 20 the ops Salesforce lane\'s cap was sized against, so bidding and ops together can ask Salesforce for more calls at once than its org allows (#2336)',
   },
   {
+    // A lead validation script pasted back into a workflow (#2595,
+    // validation-script-guard.ts).
+    id: 'validation-script-guard',
+    label: 'Lead validation script guard',
+    triggerCron: '0 13 * * *',
+    // 24h cadence, 2h slack, matching the other daily jobs.
+    staleMs: 26 * H,
+    // One paged read of the active workflows' definitions and a text scan of
+    // each code node; the allowance is for the database being slow.
+    maxRunMs: 30 * MIN,
+    dependents:
+      'nobody is told when a code node rejecting leads with the lead validation reasons is pasted back into a workflow that swapped to the Lead Validation step, so its checks leave the step quietly and the per reason report stops covering them (#2595)',
+  },
+  {
     id: 'partner-reachability',
     label: 'Partner reachability probe',
     triggerCron: '*/5 * * * *',
