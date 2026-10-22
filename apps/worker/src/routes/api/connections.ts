@@ -67,6 +67,7 @@ import { compareWithSlackAlertBot } from '../../lib/slack-alert-bot'
 import type { MeasuredIdentityAnswer } from '../../lib/ops-connections-contract'
 import { secretKeys } from '../../lib/secret-crypto'
 import { saveSlackAlertConnection } from './integrations'
+import { sealSlackTokens } from './slack-token-seal'
 import { OPS_CONNECTIONS_DEADLINES_MS } from '../../lib/ops-connections-client'
 
 type Variables = AuthVariables
@@ -704,6 +705,48 @@ async function readSlackAlertRow(supabase: ReturnType<typeof createSupabaseClien
   return row ? { kind: 'row', row } : { kind: 'none' }
 }
 
+/**
+ * Seal an alert row that was never sealed (#2331, phase 1 of #1689), called
+ * only once Slack has accepted its stored token. The seal must run as a signed
+ * in user of the row's organization, and checking the stored token again on
+ * this page is the tested button that does it: it calls sealSlackTokens, the
+ * same function as POST /api/admin/seal-slack-token, which keeps the plaintext
+ * beside the sealed copy until the contract release and verifies what it
+ * stored. A row already sealed is left alone (null). A seal that fails does
+ * not undo the check that passed: it answers 'failed' and is logged by name,
+ * never with the token. Once the contract release lands no unsealed row can
+ * exist, and this goes with the plaintext fallback.
+ */
+async function sealNeverSealedAlertRow(
+  supabase: ReturnType<typeof createSupabaseClient>,
+  keys: ReturnType<typeof secretKeys> | undefined,
+  orgId: string,
+  userId: string,
+  row: SlackAlertRow,
+): Promise<'sealed' | 'failed' | null> {
+  if (row.credential_enc) return null
+  const failed = (error: string) => {
+    console.error(JSON.stringify({ event: 'slack_alert_seal_failed', organization_id: orgId, connection_id: row.id, error }))
+    return 'failed' as const
+  }
+  if (!keys) return failed('no key ring: SECRET_ENCRYPTION_KEY is not set, so the token cannot be sealed')
+  try {
+    const result = await sealSlackTokens(supabase, keys, orgId, userId, { dryRun: false })
+    const stored = result.verification.find((v) => v.id === row.id)
+    if (!stored?.sealed) return failed(`the row was not sealed (cannot seal: ${result.cannotSeal.length}, changed meanwhile: ${result.changedMeanwhile.length})`)
+    const line = JSON.stringify({
+      event: 'slack_alert_token_sealed', organization_id: orgId, connection_id: row.id, sealed: result.sealed,
+      opens_with_lock_key: stored.opensWithLockKey, matches_plaintext: stored.matchesPlaintext, rotating: result.rotating, ready_for_contract: result.readyForContract,
+    })
+    // Sealed but not verified (a copy that does not open, or holds another token) is the F128 case: loud.
+    if (result.readyForContract) console.log(line)
+    else console.error(line)
+    return 'sealed'
+  } catch (err) {
+    return failed(formatErr(err))
+  }
+}
+
 type OwnRefusal = (code: ConnectionRouteRefusalCode, ctx?: Partial<RouteRefusalContext>, extra?: Record<string, unknown>) => Response
 type CreateRefusalAnswer = (code: CreateRefusalCode, ctx?: Partial<RefusalContext>, extra?: Record<string, unknown>) => Response
 
@@ -714,7 +757,9 @@ type CreateRefusalAnswer = (code: CreateRefusalCode, ctx?: Partial<RefusalContex
  * that saves that token (saveSlackAlertConnection, which POST
  * /api/integrations/slack calls too), onto the row's own config, so the channel
  * and the four alert switches are kept. With none: the stored token is checked
- * again and nothing is written, as for every other login. A token Slack could
+ * again and, as for every other login, nothing about the login changes; the one
+ * write is sealing a row that was never sealed (sealNeverSealedAlertRow), which
+ * keeps the same token. A token Slack could
  * not be asked about is never called refused (L11).
  *
  * Who: the caller's organization's alert row, read by id and organization
@@ -756,7 +801,8 @@ async function reconnectSlackAlertLogin(
     if (check.kind === 'refused') return own('slack_stored_token_refused', check.slackError ? [check.slackError] : [])
     await writeAuditLog(supabase, orgId, 'service_connection', row.id, 'connection_rechecked', userId, {})
     console.log(JSON.stringify({ event: 'connection_rechecked', organization_id: orgId, connection_id: row.id, service: 'slack' }))
-    return c.json({ outcome: 'checked', connection: { id: row.id, acts_as: check.actsAs } })
+    const sealed = await sealNeverSealedAlertRow(supabase, keys, orgId, userId, row)
+    return c.json({ outcome: 'checked', connection: { id: row.id, acts_as: check.actsAs }, ...(sealed ? { seal: sealed } : {}) })
   }
 
   const unknown = Object.keys(fields).filter((k) => k !== SLACK_ALERT_TOKEN_FIELD.key)
@@ -782,6 +828,8 @@ async function reconnectSlackAlertLogin(
 
 // POST /api/connections/:id/reconnect   body {} | { fields: { <field key>: <value> } }
 //   200 { outcome: 'reconnected' | 'checked', connection: { id, generation, acts_as } }
+//       a check of the Slack alerts login whose row was never sealed also
+//       carries seal: 'sealed' | 'failed' (#2331, sealNeverSealedAlertRow)
 //   otherwise { error, message, ... }: the code and the sentence the Reconnect
 //   dialog shows (lib/connection-create-refusals.ts)
 //
@@ -810,7 +858,9 @@ async function reconnectSlackAlertLogin(
 // Audit: a new login's commit is audited by the store's trigger under the actor
 // (reconnect_ops_connection sets updated_by), with credential_enc kept out; a
 // check without one changes no bidding row, so the route writes its audit row,
-// naming the generation checked and nothing of the login.
+// naming the generation checked and nothing of the login. The one exception is
+// the Slack alerts login's first seal (#2331): the same token, sealed, audited
+// by the store's trigger under the actor (updated_by).
 connections.post('/:id/reconnect', async (c) => {
   const { orgId, userId, email } = c.get('user')
   const id = c.req.param('id')
