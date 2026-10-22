@@ -42,6 +42,20 @@ describe('sendLeadValidationRejectionAlert', () => {
     expect(text).toContain(`https://app.test/workflows/${WF}`)
   })
 
+  it('names the span the baseline covered when it is shorter than a week, in the summary and each line', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => slackOk({ ts: '1.3' }))
+    vi.stubGlobal('fetch', fetchMock)
+    await sendLeadValidationRejectionAlert({ bot_token: 'xoxb' }, '#le', {
+      workflow_id: WF, workflow_name: 'Lead Economy - Bidding Workflow', namespace: 'validate_bidding_and_state', runs: 500, baseline_runs: 7_884, baseline_days: 2.5,
+      shifts: [{ bucket: 'unqualified_lead', direction: 'fell', count: 0, share: 0, baselineCount: 2_335, baselineShare: 2_335 / 7_884 }],
+      window_minutes: 120, window_end: '2026-10-22T17:58:00.000Z', app_url: 'https://app.test',
+    })
+    const text = JSON.stringify((await slackPostOf(fetchMock.mock.calls[0])).blocks)
+    expect(text).toContain('rejected leads at different shares than in the 2.5 days before')
+    expect(text).toContain('in the 2.5 days before. It fell')
+    expect(text).not.toContain('week')
+  })
+
   it('reports a refused post as not delivered, so no incident is opened for it', async () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation(async () => slackOk({ ok: false, error: 'channel_not_found' })))
     const delivered = await sendLeadValidationRejectionAlert({ bot_token: 'xoxb' }, '#gone', {

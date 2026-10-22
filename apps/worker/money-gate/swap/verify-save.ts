@@ -11,6 +11,9 @@
  *    candidate's (compared as canonical JSON, so key order does not count);
  *  - every other step is unchanged apart from its position, and every edge is
  *    unchanged once the old step id is read as the new one;
+ *  - when the candidate sets Constants values (constants_data, Lead Economy's
+ *    minimumLoanAmount, #2594), the one Constants step holds exactly those
+ *    values, said as a note when they changed, and nothing else in it moved;
  *  - the live workflow row holds the saved version.
  *
  * What the canvas paste necessarily changes is said apart as a NOTE, never a
@@ -67,6 +70,8 @@ export function differingPaths(a: Json, b: Json, path = ''): string[] {
 }
 
 const md5 = (s: string) => createHash('md5').update(s).digest('hex')
+/** How a note about a Constants value the candidate set begins, which the report's headline reads. */
+const CONSTANTS_NOTE = 'the Constants step\'s '
 const nodeName = (n: NodeLike) => `${String(n.namespace ?? '?')} (${n.id})`
 
 export function verifySavedSwap(candidate: SwapCandidate, previous: DefinitionVersion, saved: DefinitionVersion, live: DefinitionLike): SwapVerification {
@@ -102,6 +107,18 @@ export function verifySavedSwap(candidate: SwapCandidate, previous: DefinitionVe
   const { nodes: _nn, edges: _ne, ...nextRest } = next
   for (const p of differingPaths(prevRest, nextRest)) problems.push(`the definition's ${p} changed`)
 
+  // The Constants values the candidate sets (Lead Economy's minimumLoanAmount,
+  // #2594): the one Constants step must hold exactly them, and nothing else in it
+  // may move.
+  const constantsData = candidate.constants_data ?? {}
+  const constantsKeys = Object.keys(constantsData)
+  const constantsSteps = prev.nodes.filter((n) => n.type === 'constants')
+  if (constantsKeys.length && constantsSteps.length !== 1) {
+    problems.push(`the candidate sets Constants values but version ${previous.version_number} has ${constantsSteps.length} Constants steps`)
+  }
+  const constantsId = constantsKeys.length && constantsSteps.length === 1 ? constantsSteps[0].id : null
+  const dataOf = (n: NodeLike): Record<string, Json> => ((n.config?.data ?? {}) as Record<string, Json>)
+
   // Every other step: unchanged apart from where its card sits.
   const newId = swapped?.id ?? candidate.replaces.node_id
   const prevOthers = new Map(prev.nodes.filter((n) => n.id !== candidate.replaces.node_id).map((n) => [n.id, n]))
@@ -112,7 +129,20 @@ export function verifySavedSwap(candidate: SwapCandidate, previous: DefinitionVe
     if (!m) { problems.push(`step ${nodeName(n)} is missing from version ${saved.version_number}`); continue }
     const { position: pp, ...pn } = n
     const { position: mp, ...mn } = m
-    for (const p of differingPaths(pn, mn)) problems.push(`step ${nodeName(n)} changed at ${p}`)
+    if (id === constantsId) {
+      const was = dataOf(n)
+      const now = dataOf(m)
+      for (const k of constantsKeys) {
+        if (!same(now[k], constantsData[k])) problems.push(`the Constants step's ${k} is ${JSON.stringify(now[k])}, not the ${JSON.stringify(constantsData[k])} the candidate sets`)
+        else if (!same(was[k], constantsData[k])) notes.push(`${CONSTANTS_NOTE}${k} changed from ${JSON.stringify(was[k])} to ${JSON.stringify(constantsData[k])}, as the candidate sets`)
+      }
+      // Everything else in the step, compared with the candidate's values in place.
+      const expected = { ...pn, config: { ...(pn.config ?? {}), data: { ...was, ...constantsData } } }
+      const asSet = { ...mn, config: { ...(mn.config ?? {}), data: { ...now, ...constantsData } } }
+      for (const p of differingPaths(expected, asSet)) problems.push(`step ${nodeName(n)} changed at ${p}`)
+    } else {
+      for (const p of differingPaths(pn, mn)) problems.push(`step ${nodeName(n)} changed at ${p}`)
+    }
     if (!same(pp, mp)) moved.push(String(n.namespace ?? id))
   }
   for (const [id, m] of nextOthers) if (!prevOthers.has(id)) problems.push(`step ${nodeName(m)} is new in version ${saved.version_number}`)
@@ -143,7 +173,9 @@ export function verifySavedSwap(candidate: SwapCandidate, previous: DefinitionVe
 
 /** The report the CLI prints. */
 export function formatSwapVerification(r: SwapVerification, label: string): string {
-  const lines = [`${label}: ${r.ok ? 'PASS, only the validation step changed' : `FAIL, ${r.problems.length} difference(s)`}`]
+  const setConstants = r.notes.some((n) => n.startsWith(CONSTANTS_NOTE))
+  const pass = `PASS, only the validation step${setConstants ? ' and the Constants values the candidate sets' : ''} changed`
+  const lines = [`${label}: ${r.ok ? pass : `FAIL, ${r.problems.length} difference(s)`}`]
   for (const p of r.problems) lines.push(`  problem: ${p}`)
   for (const n of r.notes) lines.push(`  note: ${n}`)
   return lines.join('\n')
