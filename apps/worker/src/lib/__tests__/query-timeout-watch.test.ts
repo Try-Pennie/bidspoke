@@ -7,10 +7,14 @@ import {
   judgeStatement,
   judgeStatements,
   runQueryTimeoutWatch,
+  runQueryCancellationWatch,
+  type CancellationReport,
+  type QueryCancellationWatchDeps,
   type SlowStatement,
   type StatementVerdict,
   type QueryTimeoutWatchDeps,
 } from '../query-timeout-watch'
+import { readCancellations, withCancellationRecord, type CancellationStore } from '../query-cancellations'
 
 /**
  * Warn when a query approaches the statement timeout, instead of failing at it (#1043).
@@ -224,5 +228,165 @@ describe('runQueryTimeoutWatch', () => {
   it('throws on a read failure, so an outage of the check is never a clean bill of health (L98)', async () => {
     const d = deps({ read: async () => { throw new Error('rpc down') } })
     await expect(runQueryTimeoutWatch(d)).rejects.toThrow('rpc down')
+  })
+})
+
+/**
+ * The cancellations themselves (#2651, L800). pg_stat_statements records a statement only
+ * when it finishes, so one cancelled at its ceiling never counts above; the Worker records
+ * each cancellation it is answered with (query-cancellations.ts), and this half of the watch
+ * pages on any it has not already paged for, naming the statement.
+ */
+describe('runQueryCancellationWatch', () => {
+  const at = (iso: string) => Date.parse(iso)
+  const HEAD_COUNT = 'HEAD workflow_executions?select=id&workflow_id=eq.?'
+
+  function cdeps(over: Partial<QueryCancellationWatchDeps> = {}): QueryCancellationWatchDeps & { lines: string[]; send: Mock; kv: ReturnType<typeof fakeKv> } {
+    const lines: string[] = []
+    const send: Mock = (over.send as Mock) ?? vi.fn(async (_r: CancellationReport, _n: number) => true)
+    const kv = (over.kv as ReturnType<typeof fakeKv>) ?? fakeKv()
+    return {
+      read: async () => ({ events: [{ statement: HEAD_COUNT, atMs: at('2026-10-22T04:01:04Z') }], truncated: false }),
+      now: () => at('2026-10-22T05:00:00Z'),
+      log: (l: string) => void lines.push(l),
+      ...over,
+      kv,
+      send,
+      lines,
+    }
+  }
+
+  it('pages on a cancellation, naming the statement, how many times and when it was last cancelled', async () => {
+    const d = cdeps()
+    const r = await runQueryCancellationWatch(d)
+    expect(r.alerted).toBe(true)
+    const report: CancellationReport = d.send.mock.calls[0][0]
+    expect(report.unread).toBeNull()
+    expect(report.groups).toEqual([{ statement: HEAD_COUNT, count: 1, lastAtMs: at('2026-10-22T04:01:04Z') }])
+  })
+
+  it('does not page again for cancellations it has already paged for, and pages for a newer one', async () => {
+    const d = cdeps()
+    await runQueryCancellationWatch(d)
+    const again = cdeps({ kv: d.kv })
+    expect((await runQueryCancellationWatch(again)).alerted).toBe(false)
+    expect(again.send).not.toHaveBeenCalled()
+
+    const later = cdeps({
+      kv: d.kv,
+      read: async () => ({
+        events: [
+          { statement: HEAD_COUNT, atMs: at('2026-10-22T04:01:04Z') },
+          { statement: HEAD_COUNT, atMs: at('2026-10-22T09:01:47Z') },
+        ],
+        truncated: false,
+      }),
+    })
+    expect((await runQueryCancellationWatch(later)).alerted).toBe(true)
+    // Only the cancellation since the last page is counted.
+    expect(later.send.mock.calls[0][0].groups).toEqual([{ statement: HEAD_COUNT, count: 1, lastAtMs: at('2026-10-22T09:01:47Z') }])
+  })
+
+  it('does not record that it paged when the page was not delivered, so the next run tries again (L12)', async () => {
+    const d = cdeps({ send: vi.fn(async () => false) })
+    expect((await runQueryCancellationWatch(d)).alerted).toBe(false)
+    const next = cdeps({ kv: d.kv })
+    expect((await runQueryCancellationWatch(next)).alerted).toBe(true)
+  })
+
+  it('pages when it cannot read what it last paged for, rather than staying silent (L168)', async () => {
+    const kv = fakeKv()
+    kv.get = async () => {
+      throw new Error('kv down')
+    }
+    const d = cdeps({ kv })
+    expect((await runQueryCancellationWatch(d)).alerted).toBe(true)
+  })
+
+  it('stays silent with no cancellations recorded, and logs that it looked', async () => {
+    const d = cdeps({ read: async () => ({ events: [], truncated: false }) })
+    const r = await runQueryCancellationWatch(d)
+    expect(r.alerted).toBe(false)
+    expect(d.send).not.toHaveBeenCalled()
+    expect(d.lines.some((l) => l.includes('event=query_cancellations') && l.includes('recorded=0'))).toBe(true)
+  })
+
+  it('SAYS it could not read the record, never reads it as no cancellations (L98)', async () => {
+    const d = cdeps({
+      read: async () => {
+        throw new Error('list failed')
+      },
+    })
+    const r = await runQueryCancellationWatch(d)
+    expect(r.unread).toBe(true)
+    expect(r.alerted).toBe(true)
+    const report: CancellationReport = d.send.mock.calls[0][0]
+    expect(report.groups).toEqual([])
+    expect(report.unread).toContain('list failed')
+    expect(d.lines.some((l) => l.includes('event=query_cancellations_unread') && l.includes('list failed'))).toBe(true)
+  })
+
+  it('says an unreadable record at most once in six hours, but always logs it', async () => {
+    const failing = async () => {
+      throw new Error('list failed')
+    }
+    const d = cdeps({ read: failing })
+    await runQueryCancellationWatch(d)
+    const again = cdeps({ read: failing, kv: d.kv })
+    expect((await runQueryCancellationWatch(again)).alerted).toBe(false)
+    expect(again.lines.some((l) => l.includes('event=query_cancellations_unread'))).toBe(true)
+  })
+
+  it('carries a truncated listing through, so the count is shown as a floor', async () => {
+    const d = cdeps({ read: async () => ({ events: [{ statement: HEAD_COUNT, atMs: at('2026-10-22T04:01:04Z') }], truncated: true }) })
+    await runQueryCancellationWatch(d)
+    expect(d.send.mock.calls[0][0].truncated).toBe(true)
+  })
+
+  it('would have paged for the 2026-10-22 LendSwift cancellations at 05:00 and 10:00 UTC, and not between', async () => {
+    // The twelve cancellations in that day's edge and Postgres logs: six counts at 04:00 and
+    // six at 09:00, each run of the rejection watch. Recorded through the real Supabase fetch
+    // wrapper, read through the real lister, judged by the real watch.
+    const records = new Map<string, { metadata: unknown }>()
+    const store: CancellationStore = {
+      put: async (key, _v, opts) => void records.set(key, { metadata: opts?.metadata }),
+      list: async ({ prefix }) => ({
+        keys: [...records.entries()]
+          .filter(([k]) => k.startsWith(prefix))
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([name, r]) => ({ name, metadata: r.metadata })),
+        list_complete: true,
+      }),
+    }
+    const base =
+      'https://xvrmivmpfykwwtriqwpg.supabase.co/rest/v1/workflow_executions?select=id&workflow_id=eq.e1b810da-16c0-49eb-bf12-ba1c9b67c914&is_test=eq.false&status=neq.running&started_at=gte.2026-10-15T01%3A58%3A30.891Z&started_at=lt.2026-10-22T01%3A58%3A30.891Z'
+    const ns = base + '&final_node_namespace=eq.validate_bidding_and_state'
+    const reason = (r: string) => ns + `&status=neq.failed&response_body-%3E%3Ereason=eq.${r}`
+    const run = [base, ns, reason('bidding+not+active'), reason('ineligible+state'), reason('loan+amount+exceeds+maximum'), reason('invalid+name')]
+    let clock = 0
+    const fetchFn = withCancellationRecord(
+      async () => new Response(null, { status: 500, headers: { 'proxy-status': 'PostgREST; error=57014' } }),
+      { store, now: () => clock, log: () => {} },
+    )
+    clock = at('2026-10-22T04:01:04Z')
+    for (const u of run) await fetchFn(u, { method: 'HEAD' })
+
+    const kv = fakeKv()
+    const watch = (iso: string) => cdeps({ kv, read: () => readCancellations(store), now: () => at(iso) })
+
+    const five = watch('2026-10-22T05:00:00Z')
+    expect((await runQueryCancellationWatch(five)).alerted).toBe(true)
+    const groups: CancellationReport['groups'] = five.send.mock.calls[0][0].groups
+    expect(groups.map((g) => g.count)).toEqual([4, 1, 1])
+    expect(groups[0].statement).toContain('response_body->>reason=eq.?')
+
+    const six = watch('2026-10-22T06:00:00Z')
+    expect((await runQueryCancellationWatch(six)).alerted).toBe(false)
+
+    clock = at('2026-10-22T09:01:47Z')
+    for (const u of run) await fetchFn(u, { method: 'HEAD' })
+    const ten = watch('2026-10-22T10:00:00Z')
+    expect((await runQueryCancellationWatch(ten)).alerted).toBe(true)
+    expect(ten.send.mock.calls[0][0].groups.map((g: { count: number }) => g.count)).toEqual([4, 1, 1])
   })
 })
