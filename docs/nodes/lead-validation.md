@@ -2,7 +2,7 @@
 
 An ordered list of checks a lead must pass before a bidding workflow goes on. Each check is a rule builder condition describing a lead that may go on, the rejection reason the lead source is told when a lead does not, and what happens when the lead lacks a value the check reads. The first check a lead does not pass rejects it; a lead that passes every check goes on to the next step.
 
-It replaces the `validate_bidding_and_state` code nodes the RML and Lead Economy workflows carry today (#934). The engine half shipped first (#2589); the palette entry, card and settings panel followed (#2590). No live workflow uses it until a swap issue moves one, with proof that the node answers every lead exactly as the script did.
+It replaces the `validate_bidding_and_state` code nodes the RML and Lead Economy workflows carried (#934). The engine half shipped first (#2589); the palette entry, card and settings panel followed (#2590). Each workflow moves to it in its own swap issue, with proof that the node answers every lead exactly as the script did. RML GigFi runs it since 2026-10-22 (version 25, #2592); RML LendSwift and Lead Economy still run their scripts.
 
 ## On the canvas
 
