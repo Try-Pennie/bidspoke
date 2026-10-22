@@ -115,14 +115,14 @@ describe('a repeat visit to the same Submission (#2485)', () => {
     const m = posted[0]
     expect(m.alert).toBe(false)
     expect(m.fixHint).toBeUndefined()
-    expect(m.title).toBe('1 of 2 invalid state writes landed in Salesforce and 1 was overwritten by a later run')
-    expect(m.lines[0]).toBe(
-      '2 Main Flow runs wrote an invalid state outcome straight to Salesforce from Oct 18, 8:50 AM EDT to Oct 19, 8:50 AM EDT. ' +
-        "1 landed fully: the Submission took the run's link and every field it sent, and its Lead carries the same Engine ids. " +
-        "Of those, 1 wrote a Submission an earlier run had already completed, so its Lead keeps that run's Engine ids, which Salesforce copies only at the first completion, and was not compared. " +
-        "1 more was overwritten since by a later run's write to the same Submission, so it was not compared.",
+    expect(m.title).toBe('Direct Salesforce writes: 1 of 2 arrived complete and 1 was replaced by a later run')
+    expect(m.lines[1]).toBe(
+      'From Oct 18, 8:50 AM to Oct 19, 8:50 AM ET, 2 leads were written directly. 1 arrived complete. ' +
+        "The Submission has every field the run sent, and the Lead we compared has matching Engine ids. " +
+        "1 went to a Submission an earlier run had already completed. Salesforce copies the Engine ids to the Lead only the first time, so its Lead keeps that earlier run's ids. " +
+        '1 more was replaced by a later run that wrote the same Submission, so it was not compared.',
     )
-    expect(m.lines.join('\n')).not.toMatch(/did not land|roll/)
+    expect(m.lines.join('\n')).not.toMatch(/did not|move Main Flow back/)
 
     expect(runs[0].outcome).toBe('all_landed')
     expect(runs[0].summary).toMatchObject({
@@ -135,12 +135,28 @@ describe('a repeat visit to the same Submission (#2485)', () => {
     })
   })
 
-  it('the direct writes are compared with the relay on the same measure, the overwritten one said and left out', async () => {
+  it('the Pipedream comparison does not repeat the direct count, which its own paragraph already says', async () => {
     const { d, posted } = deps({ steps: [STEP_1, STEP_2], records: { [SUB]: SUB_RECORD, [LEAD]: LEAD_RECORD } })
     d.readRelay = async () => ({ total: 3, sample: [] })
     await runInvalidStateWatch(d)
-    expect(posted[0].lines.join('\n')).toContain(
-      'The direct writes on the same measure: 1 of 1 landed fully (100.0%), and 1 more was left out because a later run wrote the same Submission.',
+    expect(posted[0].lines[posted[0].lines.length - 1]).toBe('In the same hours Pipedream sent 3 other outcomes. None of them were checked in Salesforce.')
+  })
+
+  it("a LATER run's stamp of another step whose link the Submission holds is said in words: what it replaced, by count, and the Lead (the 2026-10-19 wording)", async () => {
+    // Not set aside, because the stamp names a different step, so the run is listed.
+    const { d, posted } = deps({ steps: [STEP_1], records: { [SUB]: holding(STEP_2, { Bidspoke_Write__c: stamp(RUN_2, 'send_salesforce') }), [LEAD]: LEAD_RECORD } })
+    const report = await runInvalidStateWatch(d)
+    expect(report.native).toEqual([
+      {
+        kind: 'not_landed',
+        executionId: RUN_1,
+        problems: ["a later run wrote the same Submission, so this run's link and 5 of its fields were replaced", "its Lead's Engine ids don't match the Submission"],
+        fields: ['Engine_Lead_UUID_SO__c', 'Engine_UUID_SO__c', 'External_Timestamp__c', 'PDFlow_4__c', 'PD_Completed_Timestamp__c'],
+        stampedBy: RUN_2,
+      },
+    ])
+    expect(posted[0].lines).toContain(
+      `<${link(RUN_1)}|Run ${RUN_1}>: a later run wrote the same Submission, so this run's link and 5 of its fields were replaced, and its Lead's Engine ids don't match the Submission.`,
     )
   })
 
@@ -150,10 +166,11 @@ describe('a repeat visit to the same Submission (#2485)', () => {
     const report = await runInvalidStateWatch(d)
     expect(report.native[0]).toEqual({ kind: 'landed', executionId: RUN_1 })
     expect(report.native[1]).toMatchObject({ kind: 'not_landed', executionId: RUN_2 })
-    expect((report.native[1] as { problems: string[] }).problems[0]).toBe(`Another write has stamped the Submission since (run ${RUN_1}), so a difference below may be that write's.`)
+    expect((report.native[1] as { problems: string[] }).problems).toEqual(["the Submission still holds an earlier run's write, so this run's link and 5 of its fields never arrived"])
+    expect(report.native[1]).toMatchObject({ stampedBy: RUN_1 })
     expect(posted[0].alert).toBe(true)
-    expect(posted[0].title).toBe('1 of 2 invalid state writes did not land in Salesforce')
-    expect(posted[0].fixHint).toContain('roll Main Flow back')
+    expect(posted[0].title).toBe('Direct Salesforce writes: 1 of 2 did not arrive complete')
+    expect(posted[0].fixHint).toContain('move Main Flow back to Pipedream')
   })
 
   it('a stamp that cannot be read, or names a later run of a DIFFERENT step, or a later run whose link the Submission does not hold, is not a later run overwriting this one', async () => {
@@ -181,7 +198,7 @@ describe('a repeat visit to the same Submission (#2485)', () => {
   it("a Lead matching no run's Engine ids is still a mismatch", async () => {
     const { d } = deps({ steps: [STEP_1, STEP_2], records: { [SUB]: SUB_RECORD, [LEAD]: { ...LEAD_RECORD, EngineUUID__c: 'uuid-nobody', EngineLeadUUID__c: 'lead-uuid-nobody' } } })
     const report = await runInvalidStateWatch(d)
-    expect(report.native[1]).toEqual({ kind: 'not_landed', executionId: RUN_2, problems: ["The Lead's Engine UUID and Engine Lead UUID differ from the Submission's."] })
+    expect(report.native[1]).toEqual({ kind: 'not_landed', executionId: RUN_2, problems: ["its Lead's Engine ids don't match the Submission"] })
   })
 
   it("a Lead holding a LATER run's Engine ids is not a first completion copy", async () => {
@@ -189,7 +206,7 @@ describe('a repeat visit to the same Submission (#2485)', () => {
     const third = visit(RUN_3, { uuid: 'uuid-third', lead: 'lead-uuid-third' })
     const { d } = deps({ steps: [STEP_2, third], records: { [SUB]: SUB_RECORD, [LEAD]: { ...LEAD_RECORD, EngineUUID__c: 'uuid-third', EngineLeadUUID__c: 'lead-uuid-third' } } })
     const report = await runInvalidStateWatch(d)
-    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_2, problems: ["The Lead's Engine UUID and Engine Lead UUID differ from the Submission's."] })
+    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_2, problems: ["its Lead's Engine ids don't match the Submission"] })
   })
 
   it("an earlier run's ids on a Lead that names ANOTHER Submission, or that the earlier run wrote to another Submission, are not this Submission's first completion", async () => {
@@ -241,10 +258,10 @@ describe('a repeat visit to the same Submission (#2485)', () => {
     }
     const m = canaryWatchMessage(report, APP)
     expect(m.alert).toBe(true)
-    expect(m.title).toBe(`${OVERWRITE_STORM_MIN} of ${native.length} invalid state writes were overwritten by a later run of Main Flow`)
-    expect(m.lines).toContain(`<${link('old-0')}|Run old-0> was overwritten by <${link('new-0')}|Run new-0>.`)
-    expect(m.fixHint).toMatch(/^More runs than usual wrote a Submission another run wrote after them\./)
-    expect(m.fixHint).not.toMatch(/roll/)
+    expect(m.title).toBe(`Direct Salesforce writes: ${OVERWRITE_STORM_MIN} of ${native.length} were replaced by a later run`)
+    expect(m.lines).toContain(`<${link('old-0')}|Run old-0> was replaced by <${link('new-0')}|Run new-0>, a later run that wrote the same Submission.`)
+    expect(m.fixHint).toMatch(/^More runs than usual wrote a Submission that a later run wrote again\./)
+    expect(m.fixHint).not.toMatch(/move Main Flow back/)
 
     // End to end, the job run record says so too.
     const later = ['01a14fdd-6c10-7000-8000-00000000000a', '01a14fdd-6c10-7000-8000-00000000000b', '01a14fdd-6c10-7000-8000-00000000000c']

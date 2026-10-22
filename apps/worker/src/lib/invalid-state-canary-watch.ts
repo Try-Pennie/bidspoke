@@ -127,7 +127,7 @@ import { mintedMsFromUuidV7 } from '@bidspoke/uuidv7'
 import { secretKeys } from './secret-crypto'
 import { formatErr } from './format-error'
 import { recordFinishedJobRun, type JobRunEnding } from './job-run-record'
-import { etTime, getSlackConnection, postMessage } from './slack'
+import { getSlackConnection, postMessage } from './slack'
 
 export const INVALID_STATE_WATCH_JOB = 'invalid-state-canary-watch'
 
@@ -226,7 +226,13 @@ export interface RelayReadBack {
 
 export type RunVerdict =
   | { kind: 'landed'; executionId: string }
-  | { kind: 'not_landed'; executionId: string; problems: string[] }
+  /**
+   * `problems` are plain word clauses, joined into one sentence by the message,
+   * naming no field by its API name (#2652). `fields` keeps, for the job run
+   * record, which fields held a different value (names, never values), and
+   * `stampedBy` the run whose write stamp the Submission holds instead.
+   */
+  | { kind: 'not_landed'; executionId: string; problems: string[]; fields?: string[]; stampedBy?: string }
   /**
    * Landed, then moved on (#2396): every field sent was saved, and since then a
    * later write changed `laterWrite` (LATER_WRITE_FIELDS only), or the Lead has
@@ -471,6 +477,37 @@ function supersededByLaterWrite(differing: string[], current: Record<string, unk
   })
 }
 
+/** What the Submission's write stamp says, when it is not this run's. */
+type StampFinding = { kind: 'none' } | { kind: 'other_run'; run: string; order: 'later' | 'earlier' | 'same_run' | 'unknown' }
+
+/**
+ * What a Submission holds that this run did not write, in plain words (#2652):
+ * the stamp, the run link and how many fields differ, never which by API name
+ * (the record keeps those). A stamp from a run that is known to be later or
+ * earlier says what that means for the link and fields in one clause; any other
+ * finding is a clause of its own.
+ */
+function submissionClauses(stamp: StampFinding | null, link: 'none' | 'other' | null, fieldCount: number): string[] {
+  if (stamp?.kind === 'other_run' && (stamp.order === 'later' || stamp.order === 'earlier')) {
+    const head = stamp.order === 'later' ? 'a later run wrote the same Submission' : "the Submission still holds an earlier run's write"
+    const parts = [link ? "this run's link" : null, fieldCount > 0 ? `${fieldCount.toLocaleString('en-US')} of its fields` : null].filter((t): t is string => t !== null)
+    if (parts.length === 0) return [head]
+    const one = parts.length === 1 && (link !== null || fieldCount === 1)
+    return [`${head}, so ${joinAnd(parts)} ${stamp.order === 'later' ? (one ? 'was replaced' : 'were replaced') : 'never arrived'}`]
+  }
+  const clauses: string[] = []
+  if (stamp?.kind === 'none') clauses.push("the Submission does not carry this run's write stamp")
+  else if (stamp) clauses.push(stamp.order === 'same_run' ? 'another step of this run wrote the same Submission' : 'another run wrote the same Submission')
+  if (link === 'none') clauses.push('the Submission has no Bidspoke run link')
+  else if (link === 'other') clauses.push("the Submission's run link is not this run's")
+  if (fieldCount === 1) clauses.push('1 of its fields holds a different value from the one this run sent')
+  else if (fieldCount > 1) clauses.push(`${fieldCount.toLocaleString('en-US')} of its fields hold different values from the ones this run sent`)
+  return clauses
+}
+
+/** A reason sentence as a clause inside a longer one. */
+const asClause = (sentence: string) => sentence.replace(/\.$/, '')
+
 /** One write's read-back. `stop` says Salesforce stopped answering. */
 async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlierRun: EarlierRunLookup): Promise<{ verdict: RunVerdict; stop: boolean }> {
   const { executionId, sent, recordId } = w
@@ -485,7 +522,7 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
   const fields = [...new Set([...(stamped ? [WRITE_MARKER_FIELD] : []), RUN_LINK_FIELD, 'Lead__c', 'CreatedDate', 'LastModifiedDate', ...sentFields])]
   const sub = await readRecord(read, 'Submission', `/sobjects/Submission__c/${recordId}?fields=${fields.join(',')}`)
   if (sub.kind === 'unread') return unchecked(sub.reason, sub.stop)
-  if (sub.kind === 'missing') return { verdict: { kind: 'not_landed', executionId, problems: ['The Submission does not exist in Salesforce.'] }, stop: false }
+  if (sub.kind === 'missing') return { verdict: { kind: 'not_landed', executionId, problems: ['the Submission does not exist in Salesforce'] }, stop: false }
   const current = sub.body
   const link = current[RUN_LINK_FIELD]
 
@@ -498,10 +535,10 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
     if (later) return { verdict: { kind: 'superseded', executionId, byExecutionId: later }, stop: false }
   }
 
-  const problems: string[] = []
+  let stampFinding: StampFinding | null = null
   if (stamped) {
     const stamp = parseWriteMarker(current[WRITE_MARKER_FIELD])
-    if (!stamp) problems.push("The Submission does not carry this run's write stamp.")
+    if (!stamp) stampFinding = { kind: 'none' }
     else if (stamp.executionId !== executionId || stamp.stepNamespace !== w.stepNamespace) {
       // A customer's later visit writes the same Submission again (#2485). The
       // stamp names that write's run and step, and the run link names its
@@ -512,20 +549,27 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
       if (stamp.stepNamespace === w.stepNamespace && laterRunInLink(link, expectedLink, executionId) === stamp.executionId) {
         return { verdict: { kind: 'superseded', executionId, byExecutionId: stamp.executionId }, stop: false }
       }
-      problems.push(`Another write has stamped the Submission since (run ${stamp.executionId}), so a difference below may be that write's.`)
+      const order =
+        stamp.executionId === executionId ? 'same_run' : startedAfter(stamp.executionId, executionId) ? 'later' : startedAfter(executionId, stamp.executionId) ? 'earlier' : 'unknown'
+      stampFinding = { kind: 'other_run', run: stamp.executionId, order }
     }
   }
-  if (link === null || link === undefined || link === '') problems.push('The Submission has no Bidspoke run link.')
-  else if (link !== expectedLink) problems.push("The Submission's Bidspoke run link is not this run's.")
+  const linkFinding = link === null || link === undefined || link === '' ? 'none' : link !== expectedLink ? 'other' : null
   const differing = sentFields.filter((k) => sent[k] !== REDACTED && (!(k in current) || !sameSalesforceValue(current[k], sent[k]))).sort()
-  const laterWrite = problems.length === 0 && differing.length > 0 && supersededByLaterWrite(differing, current, sent, w.startedAt) ? differing : []
-  if (differing.length > 0 && laterWrite.length === 0) {
-    const n = differing.length
-    problems.push(`${n} field${n === 1 ? ' holds' : 's hold'} a different value from the one the run sent: ${joinAnd(differing)}.`)
-  }
+  const laterWrite = stampFinding === null && linkFinding === null && differing.length > 0 && supersededByLaterWrite(differing, current, sent, w.startedAt) ? differing : []
+  const fieldsDiffering = laterWrite.length === 0 ? differing : []
+  // What the Lead check found, said after what the Submission holds.
+  const leadProblems: string[] = []
+  const problems = () => [...submissionClauses(stampFinding, linkFinding, fieldsDiffering.length), ...leadProblems]
   const verdict = (newerSubmission: boolean, leadFromEarlierRun: string | null = null): RunVerdict =>
-    problems.length > 0
-      ? { kind: 'not_landed', executionId, problems }
+    problems().length > 0
+      ? {
+          kind: 'not_landed',
+          executionId,
+          problems: problems(),
+          ...(fieldsDiffering.length > 0 ? { fields: fieldsDiffering } : {}),
+          ...(stampFinding?.kind === 'other_run' ? { stampedBy: stampFinding.run } : {}),
+        }
       : laterWrite.length > 0 || newerSubmission || leadFromEarlierRun
         ? { kind: 'moved_on', executionId, laterWrite, newerSubmission, ...(leadFromEarlierRun ? { leadFromEarlierRun } : {}) }
         : { kind: 'landed', executionId }
@@ -534,17 +578,17 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
   if (!sentEngineIds) return { verdict: verdict(false), stop: false }
   const leadId = current.Lead__c
   if (typeof leadId !== 'string' || !isSalesforceRecordId(leadId)) {
-    problems.push('The Submission has no Lead, so its Engine ids reached no Lead.')
+    leadProblems.push('the Submission has no Lead, so its Engine ids reached no Lead')
     return { verdict: verdict(false), stop: false }
   }
   const lead = await readRecord(read, 'Lead', `/sobjects/Lead/${leadId}?fields=${LEAD_UUID},${LEAD_LEAD_UUID},${LEAD_SUBMISSION}`)
   if (lead.kind === 'unread') {
-    if (problems.length === 0) return unchecked(lead.reason, lead.stop)
-    problems.push(`Its Lead could not be read: ${lead.reason}`)
+    if (problems().length === 0) return unchecked(lead.reason, lead.stop)
+    leadProblems.push(`its Lead could not be read: ${asClause(lead.reason)}`)
     return { verdict: verdict(false), stop: lead.stop }
   }
   if (lead.kind === 'missing') {
-    problems.push("The Submission's Lead does not exist in Salesforce.")
+    leadProblems.push('its Lead does not exist in Salesforce')
     return { verdict: verdict(false), stop: false }
   }
   const leadIds = lead.body
@@ -556,7 +600,7 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
   }
   const which = differsFrom(current)
   if (which.length === 0) return { verdict: verdict(false), stop: false }
-  const mismatch = `The Lead's ${joinAnd(which)} differ${which.length === 1 ? 's' : ''} from the Submission's.`
+  const mismatch = which.length === 1 ? `its Lead's ${which[0]} doesn't match the Submission` : "its Lead's Engine ids don't match the Submission"
 
   const other = leadIds[LEAD_SUBMISSION]
   // SubmissionService copies the Engine ids to the Lead only when the Submission's
@@ -571,11 +615,11 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
       earlier = await earlierRun(w, leadIds)
     } catch (e) {
       const reason = `Main Flow's runs of the day before could not be read to compare the Lead against (${formatErr(e)}).`
-      if (problems.length === 0) return unchecked(reason)
-      problems.push(mismatch, reason)
+      if (problems().length === 0) return unchecked(reason)
+      leadProblems.push(mismatch, asClause(reason))
       return { verdict: verdict(false), stop: false }
     }
-    if (!earlier) problems.push(mismatch)
+    if (!earlier) leadProblems.push(mismatch)
     return { verdict: verdict(false, earlier), stop: false }
   }
 
@@ -584,18 +628,18 @@ async function checkWrite(w: SubmissionWrite, read: Read, appUrl: string, earlie
   // holds that visit's copy (#2396): this write's ids cannot be on it any more.
   // Any other Lead whose ids differ is a mismatch, as before.
   if (typeof other !== 'string' || !leadNamesAnotherSubmission(other, recordId) || !isSalesforceRecordId(other)) {
-    problems.push(mismatch)
+    leadProblems.push(mismatch)
     return { verdict: verdict(false), stop: false }
   }
   const newer = await readRecord(read, "Lead's other Submission", `/sobjects/Submission__c/${other}?fields=CreatedDate,${SUB_UUID},${SUB_LEAD_UUID}`)
   if (newer.kind === 'unread') {
-    if (problems.length === 0) return unchecked(newer.reason, newer.stop)
-    problems.push(mismatch, `The other Submission its Lead names could not be read: ${newer.reason}`)
+    if (problems().length === 0) return unchecked(newer.reason, newer.stop)
+    leadProblems.push(mismatch, `the other Submission its Lead names could not be read: ${asClause(newer.reason)}`)
     return { verdict: verdict(false), stop: newer.stop }
   }
   const followedNewer =
     newer.kind === 'record' && salesforceTimeMs(newer.body.CreatedDate) > salesforceTimeMs(current.CreatedDate) && differsFrom(newer.body).length === 0
-  if (!followedNewer) problems.push(mismatch)
+  if (!followedNewer) leadProblems.push(mismatch)
   return { verdict: verdict(followedNewer), stop: false }
 }
 
@@ -703,18 +747,38 @@ async function measure(deps: CanaryWatchDeps, from: string, to: string): Promise
 }
 
 const fmt = (n: number) => n.toLocaleString('en-US')
-const pct = (n: number, d: number) => `${((100 * n) / d).toFixed(1)}%`
 const runLabel = (appUrl: string, id: string) => {
   const url = bidspokeRunLink(appUrl, MAIN_FLOW_WORKFLOW_ID, id)
   return url ? `<${url}|Run ${id}>` : `Run ${id}`
 }
+
+/**
+ * When Main Flow version 172 went live, 2026-10-16 23:20 UTC (7:20 PM ET on Oct
+ * 16): from then on its invalid_state_sf_post writes straight to Salesforce. The
+ * message's first paragraph names the day from this (#2652).
+ */
+export const DIRECT_WRITE_SINCE = '2026-10-16T23:20:00.000Z'
+
+const ET_ZONE = 'America/New_York'
+/** A day in ET, as "Oct 16". */
+const etDay = (at: string) => new Intl.DateTimeFormat('en-US', { timeZone: ET_ZONE, month: 'short', day: 'numeric' }).format(new Date(at))
+/** A time in ET without its zone, as "Oct 21, 9:23 AM": the sentence says ET once, after the second. */
+const etClock = (at: string) =>
+  new Intl.DateTimeFormat('en-US', { timeZone: ET_ZONE, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(at))
+
+/** The first paragraph of every message that reports runs: what is being tried, and why Pipedream is compared (#2652). */
+const introLine = () =>
+  `Since ${etDay(DIRECT_WRITE_SINCE)}, Main Flow writes the outcome for leads from states we don't serve straight to Salesforce. Every other outcome still goes through Pipedream.`
+
+/** Every title starts with this, so the day's message is recognisable at a glance. */
+const TITLE = 'Direct Salesforce writes'
 
 const SKIP_WORDS: Record<string, string> = {
   nothing_to_write: 'the Engine sent nothing to write',
   no_record_id: 'there was no Submission to write to',
 }
 
-/** Landed fully: every field sent was saved, whether or not a later write has moved it on since (#2396). */
+/** Landed fully ("arrived complete"): every field sent was saved, whether or not a later write has moved it on since (#2396). */
 const landedFully = (v: RunVerdict) => v.kind === 'landed' || v.kind === 'moved_on'
 
 /** Did not land fully, or could not be checked: what alerts, and what the record lists by run. */
@@ -732,154 +796,199 @@ const overwriteStorm = (native: RunVerdict[]) => {
   return k >= OVERWRITE_STORM_MIN && k >= OVERWRITE_STORM_SHARE * native.length
 }
 
+/** A run's problem clauses as one sentence: "a, b, and c". */
+const sayProblems = (clauses: string[]) =>
+  clauses.length <= 1 ? clauses.join('') : `${clauses.slice(0, -1).join(', ')}, and ${clauses[clauses.length - 1]}`
+
 /**
- * How many of those that landed fully were moved on since (#2396), by which of
- * the two, so they are counted in the rate and still seen. A post moved on both
- * ways is counted under each.
+ * Those that arrived complete and were moved on since (#2396, #2485), by which
+ * way, so they are counted in the rate and still seen. A post moved on both ways
+ * is counted under each. `ofThose` says which runs the first sentence counts
+ * from. None of these claims a Lead was compared that was not: a Lead that
+ * followed a newer Submission was not compared, and a Lead holding the first
+ * completion's copy matched the earlier run, never this one.
  */
-function movedOnSentence(vs: RunVerdict[]): string {
+function movedOnSentences(vs: RunVerdict[], ofThose: string): string {
   const a = supersededByLater(vs)
   const b = followedNewerSubmission(vs)
   const c = leadFromFirstCompletion(vs)
-  const parts = [
-    a > 0 ? `${fmt(a)} ${a === 1 ? 'was' : 'were'} superseded since by a later write to ${Object.keys(LATER_WRITE_FIELDS).join(' or ')}` : null,
-    b > 0 ? `${fmt(b)} ${b === 1 ? 'has' : 'have'} a Lead that has since followed a newer Submission of the same customer, so ${b === 1 ? 'its' : 'their'} Lead was not compared` : null,
+  return [
+    a > 0 ? ` ${fmt(a)} ${ofThose} ${a === 1 ? 'was' : 'were'} updated again later when the sale finished, which is expected.` : '',
+    b > 0
+      ? ` ${fmt(b)} ${b === 1 ? 'belongs to a customer' : 'belong to customers'} who came back and started a new Submission, so only the Submission was checked for ${b === 1 ? 'it' : 'those'}.`
+      : '',
     c > 0
-      ? `${fmt(c)} wrote a Submission an earlier run had already completed, so ${c === 1 ? 'its Lead keeps' : 'their Leads keep'} that run's Engine ids, which Salesforce copies only at the first completion, and ${c === 1 ? 'was' : 'were'} not compared`
-      : null,
-  ].filter((t): t is string => t !== null)
-  return parts.length === 0 ? '' : ` Of those, ${parts.join(', and ')}.`
+      ? c === 1
+        ? " 1 went to a Submission an earlier run had already completed. Salesforce copies the Engine ids to the Lead only the first time, so its Lead keeps that earlier run's ids."
+        : ` ${fmt(c)} went to Submissions earlier runs had already completed. Salesforce copies the Engine ids to the Lead only the first time, so their Leads keep those earlier runs' ids.`
+      : '',
+  ].join('')
 }
 
 /**
- * The relay comparison, on the direct writes' own measure: of the posts read
- * back, how many Salesforce took in full (#2313), those moved on since among
- * them and said (#2396). Posts a later run overwrote, and posts with no
- * Submission, are said and left out of the rate.
+ * The Pipedream comparison, on the direct writes' own measure: of the outcomes
+ * read back, how many Salesforce took in full (#2313), those moved on since among
+ * them and said (#2396). Outcomes a later run overwrote, and those with no
+ * Submission, are said and left out of the count. The direct count is not
+ * repeated here: its own paragraph says it (#2652).
  */
-function relayLine(r: RelayReadBack, directRead: number, directLanded: number, directOverwritten: number): string {
+function relayLine(r: RelayReadBack): string {
   const count = (k: RunVerdict['kind']) => r.sample.filter((v) => v.kind === k).length
   const landed = r.sample.filter(landedFully).length
   const notLanded = count('not_landed')
   const unchecked = count('unchecked')
   const superseded = count('superseded')
   const judged = landed + notLanded + unchecked
-  let line = `Over the same hours ${fmt(r.total)} of Main Flow's other outcome posts went through the relay.`
-  const more = judged > 0 ? 'more' : 'of them'
+  let line: string
   if (judged === 0) {
-    if (superseded + r.noSubmission === 0) line += ' None of them were read back from Salesforce.'
+    line = `In the same hours Pipedream sent ${fmt(r.total)} other outcome${r.total === 1 ? '' : 's'}.`
+    if (superseded + r.noSubmission === 0) line += ' None of them were checked in Salesforce.'
   } else {
-    const rest = [notLanded > 0 ? `${fmt(notLanded)} did not` : null, unchecked > 0 ? `${fmt(unchecked)} could not be checked` : null].filter((t): t is string => t !== null)
-    line +=
-      ` ${fmt(judged)} of them, spread over the day, ${judged === 1 ? 'was' : 'were'} read back from Salesforce the same way: ` +
-      `${joinAnd([`${fmt(landed)} landed fully (${pct(landed, judged)})`, ...rest])}.` +
-      movedOnSentence(r.sample)
+    const checked = judged === r.total ? (judged === 1 ? 'the one outcome' : `all ${fmt(judged)} outcomes`) : `${fmt(judged)} of the ${fmt(r.total)} outcomes`
+    const result =
+      notLanded + unchecked === 0
+        ? `, and ${judged === 1 ? 'it' : `all ${fmt(judged)}`} arrived complete.`
+        : `: ${joinAnd([`${fmt(landed)} arrived complete`, ...(notLanded > 0 ? [`${fmt(notLanded)} did not`] : []), ...(unchecked > 0 ? [`${fmt(unchecked)} could not be checked`] : [])])}.`
+    line = `For comparison, we checked ${checked} Pipedream sent in the same hours${result}` + movedOnSentences(r.sample, notLanded + unchecked === 0 ? 'of those' : 'of those that arrived complete')
   }
-  if (superseded > 0) line += ` ${fmt(superseded)} ${more} ${superseded === 1 ? 'was' : 'were'} read back and left out because a later run wrote the same Submission.`
-  if (r.noSubmission > 0) line += ` ${fmt(r.noSubmission)} ${more} had no Submission, so the relay wrote nothing.`
-  if (directRead > 0) {
-    line += ` The direct writes on the same measure: ${fmt(directLanded)} of ${fmt(directRead)} landed fully (${pct(directLanded, directRead)})`
-    line += directOverwritten > 0 ? `, and ${fmt(directOverwritten)} more ${directOverwritten === 1 ? 'was' : 'were'} left out because a later run wrote the same Submission.` : '.'
-  }
+  const more = judged > 0 ? 'more' : 'of them'
+  if (superseded > 0) line += ` ${fmt(superseded)} ${more} ${superseded === 1 ? 'was' : 'were'} left out because a later run of Main Flow wrote the same Submission.`
+  if (r.noSubmission > 0) line += ` ${fmt(r.noSubmission)} ${more} had no Submission, so Pipedream wrote nothing.`
   return line
 }
 
-/** The Fix line for an overwrite storm (#2485): no write was shown lost, so it never says roll back. */
+/**
+ * The direct writes' own paragraph: how many leads were written directly over
+ * the hours read, and how many arrived complete. "Arrived complete" is said once,
+ * with what it means, and only on a day nothing went wrong.
+ */
+function directLine(native: RunVerdict[], span: string): string {
+  const n = native.length
+  const landed = native.filter(landedFully).length
+  const notLanded = native.filter((v) => v.kind === 'not_landed').length
+  const unchecked = native.filter((v) => v.kind === 'unchecked').length
+  const k = overwritten(native).length
+  let line = `From ${span}, ${fmt(n)} ${n === 1 ? 'lead was' : 'leads were'} written directly`
+  if (landed === n) line += n === 1 ? ', and it arrived complete.' : `, and all ${fmt(n)} arrived complete.`
+  else if (k === n) {
+    line += `, and ${n === 1 ? 'it was' : `all ${fmt(n)} were`} replaced by a later run that wrote the same Submission, so ${n === 1 ? 'it was' : 'they were'} not compared.`
+    return line
+  } else {
+    line += `. ${joinAnd([`${fmt(landed)} arrived complete`, ...(notLanded > 0 ? [`${fmt(notLanded)} did not`] : []), ...(unchecked > 0 ? [`${fmt(unchecked)} could not be checked`] : [])])}.`
+  }
+  if (landed > 0 && notLanded + unchecked === 0) {
+    // A Lead that followed a newer Submission, or holds the first completion's copy, was not compared with this run's ids.
+    const compared = followedNewerSubmission(native) + leadFromFirstCompletion(native) > 0 ? ' we compared' : ''
+    line +=
+      landed === 1
+        ? ` The Submission has every field the run sent, and the Lead${compared} has matching Engine ids.`
+        : ` Each Submission has every field the run sent, and each Lead${compared} has matching Engine ids.`
+  }
+  line += movedOnSentences(native, notLanded + unchecked + k === 0 ? 'of those' : 'of those that arrived complete')
+  if (k > 0) line += ` ${fmt(k)} more ${k === 1 ? 'was' : 'were'} replaced by a later run that wrote the same Submission, so ${k === 1 ? 'it was' : 'they were'} not compared.`
+  return line
+}
+
+/** The Fix line for an overwrite storm (#2485): no write was shown lost, so it never says move back to Pipedream. */
 const OVERWRITE_FIX =
-  'More runs than usual wrote a Submission another run wrote after them. Open the runs above: one customer coming back several times is expected, the same visit written twice is not.'
+  'More runs than usual wrote a Submission that a later run wrote again. Open the runs above: one customer coming back several times is expected, the same visit written twice is not.'
 
 /** The Fix line for a day Main Flow spent off the direct write (#2312). */
 const ROLLBACK_FIX =
-  "If Main Flow was rolled back on purpose, nothing else is needed. If not, open Main Flow's version history and see which version is live. Either way, the time on the relay is a gap in the week of direct writes being measured."
+  "If Main Flow was moved back to Pipedream on purpose, nothing else is needed. If not, open Main Flow's version history and see which version is live. Either way, the time on Pipedream is a gap in the direct writes being measured."
 
-/** The day's message, separate from the send so the words can be tested. */
+/**
+ * The day's message, separate from the send so the words can be tested. One
+ * vocabulary on every variant (#2652): "written directly" for the native write,
+ * "Pipedream" for the relay, "arrived complete" for landed fully, no field API
+ * names, times in ET.
+ */
 export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): CanaryWatchMessage {
-  const span = `from ${etTime(report.from)} to ${etTime(report.to)}`
   if (report.readError) {
     return {
-      title: 'Invalid state write check could not run',
+      title: `${TITLE}: the check could not run`,
       lines: [`The check could not read yesterday's Main Flow runs from the database (${report.readError}).`],
       fixHint: 'Check the database is answering. The check runs again tomorrow morning.',
       alert: true,
     }
   }
+  const span = `${etClock(report.from)} to ${etClock(report.to)} ET`
   const n = report.native.length
   const landed = report.native.filter(landedFully).length
   const notLanded = report.native.filter((v) => v.kind === 'not_landed').length
   const unchecked = report.native.filter((v) => v.kind === 'unchecked').length
   const setAside = overwritten(report.native)
   const storm = overwriteStorm(report.native)
-  const lines: string[] = []
+  const lines: string[] = [introLine()]
 
-  if (n === 0) {
-    lines.push(`Zero Main Flow runs wrote an invalid state outcome straight to Salesforce ${span}.`)
-  } else {
-    lines.push(
-      `${fmt(n)} Main Flow run${n === 1 ? '' : 's'} wrote an invalid state outcome straight to Salesforce ${span}. ` +
-        `${fmt(landed)} landed fully: the Submission took the run's link and every field it sent, and its Lead carries the same Engine ids.` +
-        movedOnSentence(report.native) +
-        (setAside.length > 0
-          ? ` ${fmt(setAside.length)} more ${setAside.length === 1 ? 'was' : 'were'} overwritten since by a later run's write to the same Submission, so ${setAside.length === 1 ? 'it was' : 'they were'} not compared.`
-          : ''),
-    )
-  }
+  lines.push(n === 0 ? `No leads were written directly from ${span}.` : directLine(report.native, span))
   if (report.skipped.length > 0) {
     const k = report.skipped.length
     const reasons = joinAnd([...new Set(report.skipped.map((s) => SKIP_WORDS[s.reason] ?? `the step said ${s.reason}`))])
-    lines.push(`${fmt(k)} more run${k === 1 ? ' was' : 's were'} skipped because ${reasons}, so nothing was sent.`)
+    lines.push(`${fmt(k)} more ${k === 1 ? 'lead was' : 'leads were'} not written because ${reasons}.`)
   }
   const r = report.relayInvalidState
-  const posts = (k: number) => `${fmt(k)} invalid state post${k === 1 ? '' : 's'}`
+  const outcomes = (k: number) => `${fmt(k)} ${k === 1 ? "outcome for a lead from a state we don't serve" : "outcomes for leads from states we don't serve"}`
   const offDirect = report.lastWasRelay || report.relayAfterSwitch > 0
   // Every direct post is either read back (native) or skipped, so neither means none went direct.
   const neverDirect = r > 0 && report.native.length === 0 && report.skipped.length === 0
   if (neverDirect) {
-    lines.push(`${r === 1 ? 'The 1 invalid state post' : `All ${posts(r)}`} went through the relay, so Main Flow is not on the direct write.`)
+    lines.push(
+      r === 1
+        ? "The one outcome for a lead from a state we don't serve went through Pipedream, so Main Flow is not writing these directly."
+        : `All ${outcomes(r)} went through Pipedream, so Main Flow is not writing them directly.`,
+    )
   } else if (report.lastWasRelay) {
-    lines.push(`${posts(r)} went through the relay, the last of them after every direct write, so Main Flow is back on the relay.`)
+    lines.push(
+      r === 1
+        ? `${outcomes(r)} went through Pipedream after every direct write, so Main Flow is back on Pipedream.`
+        : `${outcomes(r)} went through Pipedream, the last of them after every direct write, so Main Flow is back on Pipedream.`,
+    )
   } else {
     const before = r - report.relayAfterSwitch
-    if (before > 0) lines.push(`${posts(before)} went through the relay before Main Flow moved to the direct write.`)
+    if (before > 0) lines.push(`${outcomes(before)} went through Pipedream before Main Flow started writing them directly.`)
     if (report.relayAfterSwitch > 0) {
-      lines.push(`${posts(report.relayAfterSwitch)} went through the relay between direct writes, so Main Flow left the direct write for a while and came back.`)
+      lines.push(`${outcomes(report.relayAfterSwitch)} went through Pipedream between direct writes, so Main Flow went back to Pipedream for a while and came back.`)
     }
   }
 
   const bad = report.native.filter(isBad)
   for (const v of bad.slice(0, MAX_LISTED_RUNS)) {
-    lines.push(v.kind === 'not_landed' ? `${runLabel(appUrl, v.executionId)}: ${v.problems.join(' ')}` : `${runLabel(appUrl, v.executionId)} could not be checked: ${v.reason}`)
+    lines.push(v.kind === 'not_landed' ? `${runLabel(appUrl, v.executionId)}: ${sayProblems(v.problems)}.` : `${runLabel(appUrl, v.executionId)} could not be checked: ${v.reason}`)
   }
   if (bad.length > MAX_LISTED_RUNS) {
-    lines.push(`${fmt(bad.length - MAX_LISTED_RUNS)} more runs did not land fully or could not be checked; the job run record lists them all.`)
+    lines.push(`${fmt(bad.length - MAX_LISTED_RUNS)} more runs did not arrive complete or could not be checked; the job run record lists them all.`)
   }
   if (storm) {
-    for (const v of setAside.slice(0, MAX_LISTED_RUNS)) lines.push(`${runLabel(appUrl, v.executionId)} was overwritten by ${runLabel(appUrl, v.byExecutionId)}.`)
-    if (setAside.length > MAX_LISTED_RUNS) lines.push(`${fmt(setAside.length - MAX_LISTED_RUNS)} more runs were overwritten; the job run record lists them all.`)
+    for (const v of setAside.slice(0, MAX_LISTED_RUNS)) {
+      lines.push(`${runLabel(appUrl, v.executionId)} was replaced by ${runLabel(appUrl, v.byExecutionId)}, a later run that wrote the same Submission.`)
+    }
+    if (setAside.length > MAX_LISTED_RUNS) lines.push(`${fmt(setAside.length - MAX_LISTED_RUNS)} more runs were replaced; the job run record lists them all.`)
   }
 
   if ('error' in report.relay) {
-    lines.push(`The relay's posts could not be read from the database (${report.relay.error}).`)
+    lines.push(`Pipedream's outcomes could not be read from the database (${report.relay.error}).`)
   } else if (report.relay.total === 0) {
-    lines.push('No other outcome post went through the relay in those hours, so there is nothing to compare against.')
+    lines.push('No other outcome went through Pipedream in those hours, so there is nothing to compare against.')
   } else {
-    lines.push(relayLine(report.relay, n - setAside.length, landed, setAside.length))
+    lines.push(relayLine(report.relay))
   }
 
   const alert = bad.length > 0 || offDirect || storm
   let title: string
-  if (notLanded > 0 && unchecked > 0) title = `${fmt(notLanded)} of ${fmt(n)} invalid state writes did not land in Salesforce, and ${fmt(unchecked)} could not be checked`
-  else if (notLanded > 0) title = `${fmt(notLanded)} of ${fmt(n)} invalid state writes did not land in Salesforce`
-  else if (unchecked > 0) title = `${fmt(unchecked)} of ${fmt(n)} invalid state writes could not be checked in Salesforce`
-  // Not "back on" when nothing in the window went direct: the window cannot show it ever left.
-  else if (neverDirect) title = 'Main Flow is not on the direct write for invalid state posts'
-  else if (report.lastWasRelay) title = 'Main Flow is back on the relay for invalid state posts'
-  else if (offDirect) title = 'Main Flow left the direct write for invalid state posts for a while'
-  else if (storm) title = `${fmt(setAside.length)} of ${fmt(n)} invalid state writes were overwritten by a later run of Main Flow`
-  else if (n === 0) title = 'No invalid state writes to check yesterday'
+  if (notLanded > 0 && unchecked > 0) title = `${TITLE}: ${fmt(notLanded)} of ${fmt(n)} did not arrive complete, and ${fmt(unchecked)} could not be checked`
+  else if (notLanded > 0) title = `${TITLE}: ${fmt(notLanded)} of ${fmt(n)} did not arrive complete`
+  else if (unchecked > 0) title = `${TITLE}: ${fmt(unchecked)} of ${fmt(n)} could not be checked`
+  // Not "back on": when nothing in the window went direct, the window cannot show it ever left.
+  else if (neverDirect) title = `${TITLE}: Main Flow is not writing directly`
+  else if (report.lastWasRelay) title = `${TITLE}: Main Flow is back on Pipedream`
+  else if (offDirect) title = `${TITLE}: Main Flow went back to Pipedream for a while`
+  else if (storm) title = `${TITLE}: ${fmt(setAside.length)} of ${fmt(n)} were replaced by a later run`
+  else if (n === 0) title = `${TITLE}: none to check yesterday`
   else if (setAside.length > 0) {
     const k = setAside.length
-    title = n === 1 ? 'The invalid state write was overwritten by a later run' : `${fmt(landed)} of ${fmt(n)} invalid state writes landed in Salesforce and ${fmt(k)} ${k === 1 ? 'was' : 'were'} overwritten by a later run`
-  } else title = n === 1 ? 'The invalid state write landed in Salesforce' : `All ${fmt(n)} invalid state writes landed in Salesforce`
+    title = n === 1 ? `${TITLE}: the one write was replaced by a later run` : `${TITLE}: ${fmt(landed)} of ${fmt(n)} arrived complete and ${fmt(k)} ${k === 1 ? 'was' : 'were'} replaced by a later run`
+  } else title = n === 1 ? `${TITLE}: the one write arrived complete` : `${TITLE}: all ${fmt(n)} arrived complete`
 
   return {
     title,
@@ -888,7 +997,7 @@ export function canaryWatchMessage(report: CanaryWatchReport, appUrl: string): C
       ? {
           fixHint: [
             notLanded > 0
-              ? 'Open each run above and its Submission in Salesforce. If writes are being lost, roll Main Flow back to the relay with the saved rollback record.'
+              ? 'Open each run above and its Submission in Salesforce. If writes are being lost, move Main Flow back to Pipedream with the saved rollback record.'
               : unchecked > 0
                 ? 'Check Salesforce is answering and its login works. The check runs again tomorrow morning; check these runs by hand meanwhile.'
                 : null,
