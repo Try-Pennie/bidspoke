@@ -106,11 +106,24 @@ export function snowflakeSchemaTarget(target: unknown, _publicConfig?: unknown):
   return { service: 'snowflake', account: declared.account, database: declared.database, ...(declared.schema !== undefined ? { schema: declared.schema } : {}) }
 }
 
+const STATEMENT_READ = /^\/api\/v2\/statements\/[^/]+$/
+
+/**
+ * A GET of one statement, its status or a result partition, whose 429 is
+ * Snowflake's answer: still running for a poll, and for a partition read a
+ * result the client reports unread, never a requeue that would run the
+ * statement again (#1950, the Snowflake need recorded on it from #2337).
+ */
+export function snowflakeAnswersRateLimit(request: { method: string; url: URL }): boolean {
+  return request.method.toUpperCase() === 'GET' && STATEMENT_READ.test(request.url.pathname)
+}
+
 export function snowflakeServiceEntry(deps: { now(): number; sleep?: (ms: number) => Promise<void> }): OpsServiceEntry {
   return {
     rules: {
       service: 'snowflake',
       declaredHosts: (target) => [snowflakeHost(snowflakeTargetOf(target).account)],
+      answersRateLimit: snowflakeAnswersRateLimit,
       ...snowflakeKeyPairAuth(deps),
     },
     identity: deps.sleep ? snowflakeIdentityProbe(deps.sleep) : snowflakeIdentity,
