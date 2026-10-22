@@ -627,7 +627,7 @@ jobs:
       # files, which exits 0.
       - name: Prove the auth gate probe covered its paths
         if: steps.web.outputs.changed == 'true'
-        run: node .github/scripts/playwright-coverage.mjs "${{ runner.temp }}/gate-report.json" 23
+        run: node .github/scripts/playwright-coverage.mjs "${{ runner.temp }}/gate-report.json" 24
 
   security:
     name: Security scans

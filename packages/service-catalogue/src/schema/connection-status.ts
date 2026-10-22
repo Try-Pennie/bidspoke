@@ -27,6 +27,16 @@ export const CONNECTION_STATUS_WORDS: Readonly<Record<ConnectionPageStatus, stri
 export const SLACK_ALERT_LOGIN_NAME = 'Bidspoke Alerts'
 export const SLACK_SERVICE_NAME = 'Slack'
 
+/**
+ * The Connections page with the Slack alerts login open (#2338, build PR 14):
+ * where its token is reconnected and its alerts are set. The value names the
+ * login itself, not its row's id, so a link written without reading the
+ * database (an alert's text, the /integrations redirect) still opens it; the
+ * page reads it as the organization's Slack alerts login.
+ */
+export const SLACK_ALERT_LOGIN_LINK_ID = 'slack-alerts'
+export const SLACK_ALERT_LOGIN_LINK = `/connections?connection=${SLACK_ALERT_LOGIN_LINK_ID}`
+
 /** A status the Needs attention group holds: every one but Working. */
 export function isConnectionProblem(status: ConnectionPageStatus): boolean {
   return status !== 'ok'

@@ -8,7 +8,8 @@
  *
  * - Reconnect <name>: what the connection names that the login is built from
  *   kept (Salesforce's client id), and each field of the login asked anew; Save
- *   with nothing typed checks the stored login again.
+ *   with nothing typed checks the stored login again. The Slack alerts login
+ *   asks for a new bot token (build PR 14).
  * - Remove <name>?: what is lost, said, with Cancel and a red Remove; refused
  *   while a workflow uses it, naming each.
  * - The removal's notice, when the workflows server could not be told at once.
@@ -27,7 +28,7 @@ import { Dialog } from '@/components/Dialog'
 import { Button, SecretBlock, SecretInput, TextInput, TickRow } from '@/components/ui/form'
 import { Select } from '@/components/ui/Select'
 import type { LeaveRequest } from '@/lib/leave-guard'
-import { reconnectFieldsOf, workingLabel, type FormService } from './add-form-model'
+import { reconnectFieldsFor, workingLabel, type FormService } from './add-form-model'
 import { SaveLine } from './AddConnectionPanel'
 import type { ConnectionView } from './connection-model'
 import type { DialogState, UnsavedWork } from './connections-state'
@@ -54,7 +55,7 @@ export function ReconnectDialog({ dialog, connection, service, now, onField, onS
   onClose: () => void
 }) {
   const base = useId()
-  const { kept, asked } = service ? reconnectFieldsOf(service.connection, connection.target) : { kept: [], asked: [] }
+  const { kept, asked } = reconnectFieldsFor(connection, service)
   const saving = dialog.save.kind === 'saving'
   const typed = Object.values(dialog.values).some((v) => v.trim() !== '')
   return (
@@ -183,6 +184,8 @@ export const LEAVE_WORDS: Readonly<Record<UnsavedWork, { title: string; descript
   login: { title: 'The new login is not saved', description: 'Leaving discards the login typed into Reconnect.', leave: 'Discard' },
   login_checking: { title: 'The new login is still being checked', description: 'Leaving now means not seeing whether it was saved.', leave: 'Leave' },
   removing: { title: 'The connection is still being removed', description: 'Leaving now means not seeing whether it was removed.', leave: 'Leave' },
+  alert_channel: { title: 'The new alert channel is not saved', description: 'Leaving discards the channel chosen for the alerts.', leave: 'Discard' },
+  alert_channel_saving: { title: 'The alert channel is still being saved', description: 'Leaving now means not seeing whether it was saved.', leave: 'Leave' },
 }
 
 /** Leaving with something unsaved (L608): Keep editing, or Discard and go. */

@@ -1,7 +1,8 @@
 /**
  * The development preview's frames drawn by their events (#2338): the states
- * the settled design never drew (build PRs 9 and 10), and the settled add,
- * saved, Reconnect, Replace and Remove frames (build PR 10). Each, reached by
+ * the settled design never drew (build PRs 9, 10 and 14), and the settled add,
+ * saved, Reconnect, Replace and Remove frames (build PR 10) and the Slack
+ * alerts login's (build PR 14). Each, reached by
  * its id alone, draws its state through the real component and reducer, holds
  * a counting state still, and fetches nothing.
  */
@@ -30,7 +31,7 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
   'notice-org-by-address': ['Reconnect with a new client secret from the Salesforce admin of achieve.my.salesforce.com.'],
   'used-by-tab': ['Achieve report import'],
   'history-tab': ['Reconnected with a new client secret'],
-  'alert-login': ['Its token and the alerts it posts are set on the'],
+  'alert-login': ['Alerts', 'Posts to', '#bidspoke-alerts', 'Change', 'Volume anomaly alerts', "When a day's runs are far above or below normal.", 'Bid matrix change alerts', 'Reconnect'],
   // Build PR 10: the settled frames of the form and the dialogs, drawn by their events.
   'add-choose': ['Add a connection', 'A user and account, signed in by key pair'],
   'add-salesforce': ['Add a connection', 'Client secret'],
@@ -56,11 +57,28 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
   'remove-removing': ['Removing Achieve Salesforce 2, 4 s'],
   'remove-refused-in-use': ['Daily Salesforce cleanup uses this connection, so it cannot be removed.'],
   'remove-ops-not-told': ['The workflows server could not be told straight away'],
+  // Build PR 14: the Slack alerts login's Reconnect and its alert settings.
+  'alert-reconnect': ['Reconnect Bidspoke Alerts', 'New bot token'],
+  'alert-reconnect-checking': ['Checking the login with Slack, 4 s'],
+  'alert-reconnect-refused': ['Slack did not accept this token (invalid_auth). Nothing was saved. Check the token in the Slack app and save again.'],
+  'alert-login-refused': ['Slack has refused its token.', 'Reconnect with a new token from the Slack app.'],
+  'alert-switch-saving': ['Turning off volume anomaly alerts, 4 s'],
+  'alert-switch-saved': ['Turned off. These alerts no longer post.'],
+  'alert-switch-failed': ['Volume anomaly alerts may not have been turned off: the server answered with an error (HTTP 503). Reload the page to see whether it is off.'],
+  'alert-channel-open': ['Posts to', 'Save', 'Cancel'],
+  'alert-channel-chosen': ['Save', 'Cancel'],
+  'alert-channel-saving': ['Moving the alerts to #ops-alerts, 4 s'],
+  'alert-channel-failed': ['Alerts may not have been moved to #ops-alerts: the server answered with an error (HTTP 503). Reload the page to see where they post.'],
+  'alert-channel-saved': ['Alerts now post to #ops-alerts.'],
+  'alert-settings-loading': ['Loading the alert settings, 4 s'],
+  'alert-settings-failed': ['The alert settings could not be read: the server did not answer within 30 seconds.', 'Try again'],
+  'alert-settings-none': ['This organization has no Slack alert connection, so there are no alert settings to show.'],
+  'alert-channel-leave-ask': ['The new alert channel is not saved', 'Leaving discards the channel chosen for the alerts.'],
 }
 
 function quiet(): ConnectionsSource {
   const never = vi.fn(() => new Promise<never>(() => {}))
-  return { list: never, history: never, googleSubjects: never, addGoogleSubject: never, removeGoogleSubject: never, create: never, reconnect: never, remove: never }
+  return { list: never, history: never, googleSubjects: never, addGoogleSubject: never, removeGoogleSubject: never, create: never, reconnect: never, remove: never, slackAlerts: never, updateSlackAlerts: never, searchSlackChannels: never }
 }
 
 describe('the preview frames for states the design never drew', () => {

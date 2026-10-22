@@ -228,6 +228,16 @@ describe('notifyAllOrgsWithSlack, delivery gates the snapshot', () => {
     ])
   })
 
+  // #2338 build PR 14 (Dan's decision 3): the separate matrix channel is retired, so the hourly audit
+  // posts to the default channel, as it already did for the production row, whose key holds no value.
+  it('posts to the default channel, for today\'s data and for a row still holding a matrix channel', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ ok: true, ts: '1.1' }), { status: 200 }))
+    expect(await notifyAllOrgsWithSlack(makeSupabase(['org-1'], { ...enabled, matrix_alerts_channel: null }), [alert], now, undefined)).toBe(true)
+    expect(await notifyAllOrgsWithSlack(makeSupabase(['org-1'], { ...enabled, matrix_alerts_channel: '#old-matrix-channel' }), [alert], now, undefined)).toBe(true)
+    const channels = (await Promise.all(fetchSpy.mock.calls.map((c) => slackPostOf(c)))).map((b) => b.channel)
+    expect(channels).toEqual(['#c', '#c'])
+  })
+
   it('returns false when Slack reports ok:false, so the caller defers the snapshot', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(JSON.stringify({ ok: false, error: 'channel_not_found' }), { status: 200 }))
     expect(await notifyAllOrgsWithSlack(makeSupabase(['org-1'], enabled), [alert], now, undefined)).toBe(false)

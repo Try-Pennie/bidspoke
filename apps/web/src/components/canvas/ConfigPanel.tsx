@@ -13,7 +13,7 @@ import TemplateTextarea from './TemplateTextarea'
 import LeadValidationConfig from './LeadValidationConfig'
 import { X, Trash2, Plus, CheckCircle, ChevronDown, ChevronUp, ArrowRight, Copy, RotateCcw, Loader2, Play } from 'lucide-react'
 import { api } from '@/lib/api'
-import type { ServicePreset, Partner } from '@/lib/api'
+import type { Partner } from '@/lib/api'
 import RailResizeHandle from './RailResizeHandle'
 import { timeoutFloorMs, timeoutFloorReason } from '@/lib/timeout-floor'
 import { nextBranchLabel, armEdgeIds } from '@/lib/branch-arms'
@@ -2008,16 +2008,8 @@ function IntegrationConfig({
   const { rows: headerRows, invalidIds: headerInvalid, setKey: setHeaderKey, setValue: setHeaderValue, addRow: addHeader, removeRow: removeHeader } =
     useKeyValueRows<string>(initialHeaders, persistHeaders, '', reportValidity)
 
-  const [userPresets, setUserPresets] = useState<ServicePreset[]>([])
-
-  useEffect(() => {
-    api.servicePresets.list().then(setUserPresets).catch(() => {})
-  }, [])
-
-  const allOptions = [
-    ...BUILTIN_SERVICE_OPTIONS,
-    ...userPresets.map((p) => ({ value: p.slug, label: p.name })),
-  ]
+  // HTTP Services presets are retired (#2338, Dan's decision 2): the built in services are the list.
+  const allOptions = BUILTIN_SERVICE_OPTIONS
 
   const bodyStr =
     config.body !== undefined
@@ -2031,12 +2023,9 @@ function IntegrationConfig({
   }
 
   function onServiceChange(svc: string) {
-    const userPreset = userPresets.find((p) => p.slug === svc)
-    const authType = userPreset ? userPreset.auth_type : (AUTH_PRESETS[svc]?.authType ?? 'none')
+    const authType = AUTH_PRESETS[svc]?.authType ?? 'none'
     const label = allOptions.find((o) => o.value === svc)?.label ?? svc
-    const patch: Record<string, unknown> = { service: svc, service_label: label, auth: { ...auth, type: authType } }
-    if (userPreset?.base_url) patch.url = userPreset.base_url
-    onChange(patch)
+    onChange({ service: svc, service_label: label, auth: { ...auth, type: authType } })
   }
 
   const showBody = method !== 'GET' && method !== 'HEAD'

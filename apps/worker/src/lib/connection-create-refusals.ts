@@ -231,9 +231,16 @@ export function createRefusalSentence(code: CreateRefusalCode, ctx: RefusalConte
 export const CONNECTION_ROUTE_REFUSAL_CODES = [
   /** No connection of that id in the caller's organization: another organization's reads the same. */
   'connection_not_found',
-  /** The Slack alert login (not an ops connection), which the Integrations page reconnects and removes. */
+  /** A row that is neither an ops connection nor the Slack alerts login, so nothing here can reconnect it. */
   'connection_not_reconnectable',
+  /** The Slack alerts login, which Bidspoke's own alerts post through, so it is never removed (#2338). */
   'connection_not_removable',
+  /** Reconnect on the Slack alerts login (build PR 14): Slack refused the new bot token, its code in names[0] when it gave one. */
+  'slack_token_refused',
+  /** Reconnect with no new token on the Slack alerts login: Slack refused the saved one, its code in names[0] when it gave one. */
+  'slack_stored_token_refused',
+  /** Slack did not answer auth.test, so the token is neither accepted nor refused, and nothing is changed. */
+  'slack_unanswered',
   /** A Reconnect sent a value for what the connection names (an org, a client id, an account). */
   'reconnect_target_changed',
   /** What the stored row names cannot be read back into the form's fields. */
@@ -286,8 +293,13 @@ const one = (c: RouteRefusalContext, fallback: string) => c.names[0] ?? fallback
 
 const ROUTE_SENTENCES: { readonly [C in ConnectionRouteRefusalCode]: (ctx: RouteRefusalContext) => string } = {
   connection_not_found: () => 'There is no such connection in your organization. Nothing was changed. Reload the page.',
-  connection_not_reconnectable: () => 'This is Bidspoke\'s own Slack alert login, which is reconnected on the Integrations page, not here. Nothing was changed.',
-  connection_not_removable: () => 'This is Bidspoke\'s own Slack alert login, which is disconnected on the Integrations page, not here. Nothing was removed.',
+  connection_not_reconnectable: () => 'Bidspoke cannot reconnect this connection here. Nothing was changed. Tell Dan.',
+  connection_not_removable: () => 'This is the Slack login Bidspoke\'s own alerts post through, so it cannot be removed. Nothing was removed.',
+  // Slack's own code in brackets, or no brackets when it gave none, as Dan worded the Settings page's (2026-10-17).
+  slack_token_refused: (c) => `Slack did not accept this token${c.names[0] ? ` (${c.names[0]})` : ''}. Nothing was saved. Check the token in the Slack app and save again.`,
+  slack_stored_token_refused: (c) =>
+    `Slack no longer accepts the saved token${c.names[0] ? ` (${c.names[0]})` : ''}. Nothing was changed. Reconnect with a new token from the Slack app.`,
+  slack_unanswered: () => 'Slack did not answer when Bidspoke asked about the token. Nothing was changed. Try again in a minute.',
   reconnect_target_changed: (c) => `A Reconnect keeps what the connection names, so ${listed(c.names)} cannot change here. Nothing was saved. To use another, add a new connection.`,
   reconnect_target_unreadable: () => 'Bidspoke cannot read back what this connection names, so it cannot be reconnected. Nothing was saved. Tell Dan.',
   reconnect_login_unreadable: (c) => `Bidspoke cannot read this connection's stored login, so there is nothing to check. Nothing was changed. Reconnect with a new ${c.secret}.`,

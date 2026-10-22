@@ -717,7 +717,22 @@ html {
   .cx-inline .cx-wf { padding: 6px 0; }
   .cx-wf-gone { text-decoration: none; color: #697081; }
   .cx-link { color: #1D212F; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: #B9B2A8; }
-  .cx-aside { margin-top: 20px; font-size: 14px; color: #1D212F; }
+  /* Round 36 (build PR 14): the Slack alerts login's alert settings, under its facts. */
+  .cx-group.cx-alerts-heading { margin-top: 20px; }
+  .cx-alert-channel { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .cx-alert-channel-line { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .cx-alert-editor { display: flex; align-items: center; gap: 8px; }
+  .cx-alert-editor .combobox { flex: 1; min-width: 0; }
+  .cx-alert-editor .input { width: 100%; font-size: 14px; }
+  .cx-row.cx-switch-row { grid-template-columns: minmax(0, 1fr) auto; column-gap: 16px; }
+  .cx-switch-row .cx-hint { font-size: 13px; }
+  .cx-switch { display: flex; justify-content: flex-end; align-items: flex-start; }
+  /* The line a save says on its row: dark while it works and once it is done; a failed one keeps FieldError's red. */
+  .cx-alert-line { margin: 4px 0 0; font-size: 13px; text-wrap: pretty; }
+  .cx-alert-line:not(.field-error) { color: #1D212F; }
+  .cx-alert-line .outcome { font-size: 13px; color: #1D212F; }
+  /* A read of the settings that failed keeps its words balanced, so no line ends on one word (D27). */
+  .cx-alerts .ga-failed .field-error { text-wrap: pretty; }
   .cx-empty { margin-top: 16px; font-size: 14px; color: #1D212F; }
   .cx-tab-list { margin-top: 8px; }
   .cx-history { margin-top: 8px; }

@@ -11,6 +11,7 @@ import { loadedOf, type ConnectionsSource } from '@/components/connections/Conne
 import { CHANGE_DEADLINES, LIST_NO_ANSWER, type Chosen, type ConnectionsEvent } from '@/components/connections/connections-state'
 import type { DelegationEntry, HistoryEntry } from '@/components/connections/connection-model'
 import { catalogueServices, createdView, stalledSentence, type FormService } from '@/components/connections/add-form-model'
+import { alertSettingsOf, channelFailed, switchFailed, type AlertSettings } from '@/components/connections/alert-settings-model'
 
 /** The moment every frame is drawn at: 12:00 PM ET on the day the design was settled. */
 export const PREVIEW_NOW = Date.parse('2026-10-20T16:00:00Z')
@@ -165,6 +166,14 @@ function historyOf(c: FixtureConnection | undefined): HistoryEntry[] {
 /** The Salesforce orgs the fixture knows, by host. */
 export const PREVIEW_ORG_NAMES: Readonly<Record<string, string>> = Object.fromEntries(fixture.salesforceOrgs.map(([name, host]) => [host, name]))
 
+/** The Slack alerts login's alert settings as GET /api/integrations/slack answers them, from the fixture (round 36). */
+function alertsAnswer() {
+  return { connected: true, workspace_name: 'Pennie', default_channel: fixture.alerts.channel, ...fixture.alerts.switches }
+}
+
+/** The settings as the page holds them once read. */
+export const PREVIEW_ALERTS: AlertSettings = alertSettingsOf(alertsAnswer())!
+
 export function previewSource(frame: string | undefined, moreGoogle = 0): ConnectionsSource {
   const shape = previewFrame(frame)
   const all: FixtureConnection[] = fixture.connections
@@ -202,6 +211,11 @@ export function previewSource(frame: string | undefined, moreGoogle = 0): Connec
       subjects = subjects.filter((s) => !(s.kind === kind && s.subject === subject))
       return Promise.resolve({ outcome: 'removed' })
     },
+    slackAlerts: () => Promise.resolve(alertsAnswer()),
+    updateSlackAlerts: () => Promise.resolve({ ok: true }),
+    searchSlackChannels: (q) => Promise.resolve({
+      channels: fixture.alerts.channels.filter((c) => c.includes(q.toLowerCase())).map((c) => ({ id: slug(c), name: c.replace(/^#/, '') })),
+    }),
   }
 }
 
@@ -232,6 +246,8 @@ export interface PreviewScript {
   focus?: string
   /** A list item chosen once drawn, by name (the leave question it asks). */
   leaveTo?: string
+  /** What the alert channel's search box opens holding (the open channel menu). */
+  channelQuery?: string
 }
 
 /** Every frame drawn this way, by id: the URL is /dev/connections?frame=<id>. */
@@ -245,6 +261,12 @@ export const SCRIPTED_FRAMES = [
   'add-stalled', 'add-failed-no-cap', 'add-snowflake', 'add-leave-ask', 'add-saving-leave-ask',
   'reconnect-saving', 'reconnect-failed', 'reconnect-stalled', 'reconnect-snowflake',
   'remove-removing', 'remove-refused-in-use', 'remove-ops-not-told',
+  // Build PR 14: the Slack alerts login's alert settings and its Reconnect. alert-login and
+  // alert-reconnect are settled frames; the rest are states the settled design never drew.
+  'alert-reconnect', 'alert-reconnect-checking', 'alert-reconnect-refused', 'alert-login-refused',
+  'alert-switch-saving', 'alert-switch-saved', 'alert-switch-failed',
+  'alert-channel-open', 'alert-channel-chosen', 'alert-channel-saving', 'alert-channel-failed', 'alert-channel-saved',
+  'alert-settings-loading', 'alert-settings-failed', 'alert-settings-none', 'alert-channel-leave-ask',
 ] as const
 
 export function previewScript(frame: string | undefined): PreviewScript | null {
@@ -304,9 +326,70 @@ export function previewScript(frame: string | undefined): PreviewScript | null {
       return script([listed(), choose('Pennie Salesforce'), { type: 'tab', tab: 'history' }, { type: 'history_answered', id: idOf(pennie.name), entries: historyOf(pennie) }])
     }
     case 'alert-login':
-      return script([listed(), choose('Bidspoke Alerts')])
+      return script([listed(), choose('Bidspoke Alerts'), ALERTS_READ])
   }
-  return formScript(frame)
+  return alertScript(frame) ?? formScript(frame)
+}
+
+/** The alert settings read, as every alert frame starts. */
+const ALERTS_READ: ConnectionsEvent = { type: 'alerts_answered', settings: PREVIEW_ALERTS }
+
+/** Slack's refusal of a new token, worded as the Worker words it (lib/connection-create-refusals.ts). */
+const SLACK_REFUSED = 'Slack did not accept this token (invalid_auth). Nothing was saved. Check the token in the Slack app and save again.'
+
+/** The Slack alerts login's frames (build PR 14), each drawn by the events a person's presses would send. */
+function alertScript(frame: string): PreviewScript | null {
+  const T = PREVIEW_NOW
+  const S = T - ELAPSED_MS
+  const rows = fixture.connections.map((c) => rowOf(c as FixtureConnection))
+  const statuses: ConnectionList['statuses'] = { stale: false, as_of: new Date(T).toISOString(), unavailable: null }
+  const listed = (over: (r: ConnectionListRow) => ConnectionListRow = (r) => r): ConnectionsEvent => ({ type: 'list_answered', attempt: 1, data: loadedOf({ connections: rows.map(over), statuses }) })
+  const alertId = idOf('Bidspoke Alerts')
+  const opened: ConnectionsEvent[] = [listed(), { type: 'choose', chosen: { kind: 'connection', id: alertId } }, ALERTS_READ]
+  const reconnect: ConnectionsEvent[] = [...opened, { type: 'dialog_opened', dialog: 'reconnect', id: alertId }]
+  const typedToken: ConnectionsEvent = { type: 'dialog_field', field: 'bot_token', text: 'plainsecrets' }
+  const volumeOff = (at: number): ConnectionsEvent => ({ type: 'alerts_switch_requested', key: 'volume_alerts_enabled', to: false, attempt: 1, at })
+  const channelOpen: ConnectionsEvent[] = [...opened, { type: 'alerts_channel_opened' }]
+  const chosen: ConnectionsEvent[] = [...channelOpen, { type: 'alerts_channel_chosen', channel: '#ops-alerts' }]
+  const saveChannel = (at: number): ConnectionsEvent => ({ type: 'alerts_channel_save_requested', attempt: 1, at })
+  const script = (events: ConnectionsEvent[], more: Partial<PreviewScript> = {}): PreviewScript => ({ events, orgNames: PREVIEW_ORG_NAMES, ...more })
+  const serverError = Object.assign(new Error('x'), { status: 503 })
+  switch (frame) {
+    case 'alert-reconnect':
+      return script(reconnect)
+    case 'alert-reconnect-checking':
+      return script([...reconnect, typedToken, { type: 'reconnect_requested', attempt: 1, at: S, stalled: stalledSentence('Slack', CHANGE_DEADLINES.saveDeadlineMs, 'reconnected') }, { type: 'tick', at: T }])
+    case 'alert-reconnect-refused':
+      return script([...reconnect, typedToken, { type: 'reconnect_requested', attempt: 1, at: S, stalled: '' }, { type: 'reconnect_refused', attempt: 1, sentence: SLACK_REFUSED }])
+    case 'alert-login-refused':
+      // Slack refused the stored token: the notice, with Reconnect in it, as every login's.
+      return script([listed((r) => (r.id === alertId ? { ...r, status: 'reauth', status_word: 'Needs reconnecting', checked_at: new Date(S).toISOString() } : r)), { type: 'choose', chosen: { kind: 'connection', id: alertId } }, ALERTS_READ])
+    case 'alert-switch-saving':
+      return script([...opened, volumeOff(S), { type: 'tick', at: T }])
+    case 'alert-switch-saved':
+      return script([...opened, volumeOff(S), { type: 'alerts_switch_answered', key: 'volume_alerts_enabled', attempt: 1 }])
+    case 'alert-switch-failed':
+      return script([...opened, volumeOff(S), { type: 'alerts_switch_refused', key: 'volume_alerts_enabled', attempt: 1, sentence: switchFailed('volume_alerts_enabled', false, serverError) }])
+    case 'alert-channel-open':
+      return script(channelOpen, { focus: '[data-part="channel-editor"] input', channelQuery: 'ops' })
+    case 'alert-channel-chosen':
+      return script(chosen)
+    case 'alert-channel-saving':
+      return script([...chosen, saveChannel(S), { type: 'tick', at: T }])
+    case 'alert-channel-failed':
+      return script([...chosen, saveChannel(S), { type: 'alerts_channel_save_refused', attempt: 1, sentence: channelFailed('#ops-alerts', serverError) }])
+    case 'alert-channel-saved':
+      return script([...chosen, saveChannel(S), { type: 'alerts_channel_save_answered', attempt: 1, channel: '#ops-alerts' }])
+    case 'alert-settings-loading':
+      return script([listed(), { type: 'choose', chosen: { kind: 'connection', id: alertId } }, { type: 'alerts_requested', at: S }, { type: 'tick', at: T }])
+    case 'alert-settings-failed':
+      return script([listed(), { type: 'choose', chosen: { kind: 'connection', id: alertId } }, { type: 'alerts_refused', sentence: 'The alert settings could not be read: the server did not answer within 30 seconds.' }])
+    case 'alert-settings-none':
+      return script([listed(), { type: 'choose', chosen: { kind: 'connection', id: alertId } }, { type: 'alerts_answered', settings: null }])
+    case 'alert-channel-leave-ask':
+      return script(chosen, { leaveTo: 'Ops alerts bot' })
+  }
+  return null
 }
 
 /** The form's and the dialogs' frames (build PR 10), each drawn by the events a person's presses would send. */

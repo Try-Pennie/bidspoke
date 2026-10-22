@@ -477,7 +477,8 @@ async function postToOrg(supabase: SupabaseClient, orgId: string, blocks: unknow
   if (found.kind === 'none') return true
   const connection = found.connection
   if (!connection.matrix_alerts_enabled) return true
-  const channel = connection.matrix_alerts_channel || connection.default_channel
+  // The separate matrix channel is retired (#2338, Dan's decision 3): matrix alerts post to the default channel.
+  const channel = connection.default_channel
   return (await postMessage(connection.bot_token, channel, blocks, text)) !== null
 }
 

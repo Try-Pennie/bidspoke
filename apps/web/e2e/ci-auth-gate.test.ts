@@ -116,7 +116,7 @@ describe('the probe itself', () => {
 
   it('covers every gated route group the app exposes', () => {
     const code = probeCode()
-    for (const route of ['/workflows', '/env', '/sources', '/endpoints', '/partners', '/integrations', '/settings', '/dashboard']) {
+    for (const route of ['/workflows', '/env', '/sources', '/endpoints', '/partners', '/integrations', '/connections', '/settings', '/dashboard']) {
       expect(code, `the probe does not cover ${route}`).toContain(`'${route}'`)
     }
   })

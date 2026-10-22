@@ -175,13 +175,14 @@ describe('the Slack token page names a fix that changes the state it reports (L1
     return slackPostJsonOf(fetchMock.mock.calls[0])
   }
 
-  it('an undecryptable token: save the connection again, which seals it under the current key', async () => {
-    expect(await sentText('slack_token_undecryptable')).toContain('save the Slack connection again')
+  // #2338 build PR 14: the Integrations page is retired, so the fix is Reconnect on the Slack alerts login.
+  it('an undecryptable token: reconnect the Slack alerts login, which seals it under the current key', async () => {
+    expect(await sentText('slack_token_undecryptable')).toContain('reconnect Bidspoke Alerts on the Connections page with its bot token, which seals the token under the current key')
   })
 
   it('a missing key ring: a code fix, and says that saving again does not help', async () => {
     const text = await sentText('slack_key_ring_missing')
-    expect(text).not.toContain('save the Slack connection again')
+    expect(text).not.toContain('reconnect Bidspoke Alerts')
     expect(text).toContain('saving the connection again does not change it')
   })
 })

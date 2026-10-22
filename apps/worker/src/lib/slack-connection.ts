@@ -38,8 +38,9 @@ export interface SlackConnection {
   /** GitHub workflow-backup-failure alerts (#206). Own toggle so muting config
    *  noise doesn't silently disable this data-safety alert (#223). */
   backup_alerts_enabled: boolean
-  /** Optional dedicated channel for matrix-change alerts. Falls back to default_channel when null. */
-  matrix_alerts_channel: string | null
+  // matrix_alerts_channel, a separate channel for the bid matrix alerts, is retired (#2338, Dan's
+  // decision 3 of 2026-10-21): no production row held a value, so every matrix alert already posted
+  // to default_channel. A row's config may still carry the key; nothing reads it.
 }
 
 /** Null when the config lacks a bot token or a default channel. */
@@ -58,7 +59,6 @@ export function parseSlackConnection(config: unknown): SlackConnection | null {
     matrix_alerts_enabled: cfg.matrix_alerts_enabled !== false,
     config_alerts_enabled: cfg.config_alerts_enabled !== false,
     backup_alerts_enabled: cfg.backup_alerts_enabled !== false,
-    matrix_alerts_channel: typeof cfg.matrix_alerts_channel === 'string' && cfg.matrix_alerts_channel ? cfg.matrix_alerts_channel : null,
   }
 }
 

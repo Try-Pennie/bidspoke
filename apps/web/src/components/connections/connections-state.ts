@@ -17,6 +17,8 @@
  */
 import { addRequestOf, draftReady, EMPTY_DRAFT, firstConnection, LIST_NO_ANSWER, listGroups, type ConnectionView, type DelegationDraft, type DelegationEntry, type HistoryEntry, type UsingWorkflow } from './connection-model'
 import { draftDirty, EMPTY_ADD_DRAFT, type AddDraft, type GoogleWay } from './add-form-model'
+import { alertsReducer, alertsUnsaved, initialAlertsState, type AlertsEvent, type AlertsState } from './alert-settings-state'
+import { SLACK_ALERT_LOGIN_LINK_ID } from '@bidspoke/service-catalogue/schema'
 
 /** What the could not load card says when Bidspoke's server gave no answer (D23); one copy, in connection-model. */
 export { LIST_NO_ANSWER }
@@ -112,6 +114,8 @@ export interface ConnectionsState {
   dialog: DialogState
   /** The last save, Reconnect and Remove started, each numbered by the caller; only the latest one's answer counts. */
   lastChange: { save: number; reconnect: number; remove: number }
+  /** The Slack alerts login's alert settings (build PR 14): their own reducer, alert-settings-state.ts. */
+  alerts: AlertsState
 }
 
 export type ConnectionsEvent =
@@ -163,6 +167,12 @@ export type ConnectionsEvent =
   | { type: 'connection_remove_answered'; attempt: number; id: string; notice: string | null }
   /** `workflows` when it was refused because workflows use it, naming them. */
   | { type: 'connection_remove_refused'; attempt: number; sentence: string; workflows?: UsingWorkflow[] }
+  // ── The Slack alerts login's alert settings (build PR 14), handed to alertsReducer ──
+  | AlertsEvent
+
+function isAlertsEvent(e: ConnectionsEvent): e is AlertsEvent {
+  return e.type.startsWith('alerts_')
+}
 
 export function initialConnectionsState(now: number, deadlineMs: number, chosen: Chosen = { kind: 'none' }, deadlines: ChangeDeadlines = CHANGE_DEADLINES): ConnectionsState {
   return {
@@ -180,6 +190,7 @@ export function initialConnectionsState(now: number, deadlineMs: number, chosen:
     add: null,
     dialog: null,
     lastChange: { save: 0, reconnect: 0, remove: 0 },
+    alerts: initialAlertsState(now),
   }
 }
 
@@ -190,10 +201,16 @@ export function currentListAttempt(s: ConnectionsState): number | null {
   return null
 }
 
-/** A chosen connection that is still in the list, else the first one (nothing chosen when the list is empty). */
+/**
+ * A chosen connection that is still in the list, else the first one (nothing
+ * chosen when the list is empty). SLACK_ALERT_LOGIN_LINK_ID names the Slack
+ * alerts login without its id (an alert's link, the /integrations redirect).
+ */
 function keepChosen(chosen: Chosen, data: LoadedList): Chosen {
   if (chosen.kind === 'google' || chosen.kind === 'add') return chosen
   if (chosen.kind === 'connection' && data.connections.some((c) => c.id === chosen.id)) return chosen
+  const alertLogin = chosen.kind === 'connection' && chosen.id === SLACK_ALERT_LOGIN_LINK_ID ? data.connections.find((c) => c.alertLogin) : undefined
+  if (alertLogin) return { kind: 'connection', id: alertLogin.id }
   const first = firstConnection(listGroups(data.connections))
   return first ? { kind: 'connection', id: first.id } : { kind: 'google' }
 }
@@ -201,6 +218,11 @@ function keepChosen(chosen: Chosen, data: LoadedList): Chosen {
 const sameEntry = (a: Pick<DelegationEntry, 'kind' | 'subject'>, b: Pick<DelegationEntry, 'kind' | 'subject'>) => a.kind === b.kind && a.subject === b.subject
 
 export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): ConnectionsState {
+  if (isAlertsEvent(e)) {
+    // A change that starts sets the clock, so its seconds count from nought.
+    const now = 'at' in e ? e.at : s.now
+    return { ...s, now, alerts: alertsReducer(s.alerts, e) }
+  }
   switch (e.type) {
     case 'list_requested': {
       const attempt = e.attempt
@@ -233,8 +255,11 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
       return next
     }
     case 'choose':
-      // Leaving the form discards it; the page asks first while it holds something (unsavedWork).
-      return { ...s, chosen: e.chosen, tab: 'connection', edit: s.edit.kind === 'failed' ? { kind: 'idle' } : s.edit, add: e.chosen.kind === 'add' ? s.add : null }
+      // Leaving the form or the channel editor discards it; the page asks first while it holds something (unsavedWork).
+      return {
+        ...s, chosen: e.chosen, tab: 'connection', edit: s.edit.kind === 'failed' ? { kind: 'idle' } : s.edit, add: e.chosen.kind === 'add' ? s.add : null,
+        alerts: alertsReducer(s.alerts, { type: 'alerts_channel_closed' }),
+      }
     case 'tab':
       return { ...s, tab: e.tab }
     case 'history_requested':
@@ -326,8 +351,8 @@ export function connectionsReducer(s: ConnectionsState, e: ConnectionsEvent): Co
     case 'dialog_opened': {
       if (s.list.kind !== 'loaded' || s.dialog) return s
       const c = s.list.data.connections.find((x) => x.id === e.id)
-      // The Slack alert login is reconnected and removed on the Integrations page; its routes refuse both here.
-      if (!c || c.alertLogin) return s
+      // The Slack alert login is reconnected here like every other (build PR 14); its routes refuse Remove and Replace.
+      if (!c || (c.alertLogin && e.dialog !== 'reconnect')) return s
       if (e.dialog === 'remove' && c.workflows.length > 0) return s
       if (e.dialog === 'replace') {
         const others = s.list.data.connections
@@ -428,7 +453,7 @@ function editDraft(s: ConnectionsState, change: (d: AddDraft) => AddDraft): Conn
 }
 
 /** What leaving now would lose, so the leave question can name it (L608). */
-export type UnsavedWork = 'form' | 'form_checking' | 'login' | 'login_checking' | 'removing'
+export type UnsavedWork = 'form' | 'form_checking' | 'login' | 'login_checking' | 'removing' | 'alert_channel' | 'alert_channel_saving'
 
 /**
  * What leaving now would lose (L608): the form with something typed or its
@@ -445,6 +470,9 @@ export function unsavedWork(s: ConnectionsState): UnsavedWork | null {
   }
   if (s.add?.save.kind === 'saving') return 'form_checking'
   if (s.add && draftDirty(s.add.draft)) return 'form'
+  const alerts = alertsUnsaved(s.alerts)
+  if (alerts === 'channel_saving') return 'alert_channel_saving'
+  if (alerts === 'channel') return 'alert_channel'
   return null
 }
 

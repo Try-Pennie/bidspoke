@@ -198,6 +198,22 @@ export function reconnectFieldsOf(connection: ConnectionDeclaration, target: Rea
   return { kept, asked }
 }
 
+/**
+ * What Reconnect asks on the Slack alerts login (build PR 14, Dan's decision
+ * 4): its new bot token, by the key the Worker takes (bot_token), which Slack
+ * checks before it is saved. Slack has no catalogue entry, so it is named here.
+ */
+export const SLACK_ALERT_RECONNECT_FIELDS: ReconnectFields = {
+  kept: [],
+  asked: [{ key: 'bot_token', label: 'New bot token', input: 'secret' }],
+}
+
+/** What Reconnect shows for a connection: the Slack alerts login's token, its catalogue entry's fields, or nothing for a service it does not declare. */
+export function reconnectFieldsFor(connection: Pick<ConnectionView, 'alertLogin' | 'target'>, service: FormService | null): ReconnectFields {
+  if (connection.alertLogin) return SLACK_ALERT_RECONNECT_FIELDS
+  return service ? reconnectFieldsOf(service.connection, connection.target) : { kept: [], asked: [] }
+}
+
 /** A Reconnect's body: the new login's fields that were typed, or none, which checks the stored login again. */
 export function reconnectBodyOf(values: Readonly<Record<string, string>>): { fields?: Record<string, string> } {
   const fields = Object.fromEntries(Object.entries(values).filter(([, v]) => v.trim() !== ''))

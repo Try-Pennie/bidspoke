@@ -142,7 +142,7 @@ A partner's `alert_config` (`partner_configs.alert_config`) controls whether its
 - Both keys default to alerting. Omit the config entirely to alert on everything.
 - Set `alert` to `false` to suppress that category. The example above stops alerting on transient partner failures (noisy, self-healing) while still alerting on permanent ones.
 
-Per-workflow alert routing is set with the workflow's `slack_channel` override (failure and slow alerts for that workflow post there instead of the org default channel). Org-wide alert toggles for volume-cliff, matrix-change, and timeout-config alerts live on the Integrations page. See [Observability](./observability.md#slack-alerts).
+Per-workflow alert routing is set with the workflow's `slack_channel` override (failure and slow alerts for that workflow post there instead of the org default channel). Org-wide alert switches for volume-cliff, matrix-change, timeout-config and backup failure alerts, and the default channel, live on the Slack alerts login's panel on the Connections page. See [Observability](./observability.md#slack-alerts).
 
 ## Resuming or replaying a failed execution
 

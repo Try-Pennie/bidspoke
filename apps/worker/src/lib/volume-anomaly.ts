@@ -175,7 +175,7 @@ export async function runVolumeAnomalyCheck(
 
     const connection = await getSlackConnection(supabase, orgId)
     if (!connection) continue
-    if (!connection.volume_alerts_enabled) continue  // org opted out via Integrations page
+    if (!connection.volume_alerts_enabled) continue  // org opted out on the Slack alerts login's panel (Connections page)
 
     const dayType = isWeekend(yesterday) ? 'weekend' : 'weekday'
     await sendVolumeAlert(connection, anomaly.kind, anomaly.yesterdayCount, anomaly.baselineAvg, dayType)

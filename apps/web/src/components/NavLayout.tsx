@@ -8,9 +8,9 @@ import { createClient } from '@/lib/supabase/client'
 import { leaveThen } from '@/lib/leave-guard'
 import { GitBranch, Settings, LogOut, Plug, KeyRound, Users, LayoutDashboard, Globe, BookOpen } from 'lucide-react'
 
-// Integrations became Connections, with a plug (#2338, R2, D2). The old
-// Integrations page stays reachable, from the Slack alert login on the
-// Connections page, until build PR 14 moves its alert settings and retires it.
+// Integrations became Connections, with a plug (#2338, R2, D2). Build PR 14
+// retired the Integrations page: its alert settings are on the Slack alerts
+// login's panel, and /integrations redirects there.
 const NAV = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, iconName: 'layout-dashboard' },
   { href: '/workflows', label: 'Workflows', icon: GitBranch, iconName: 'git-branch' },
