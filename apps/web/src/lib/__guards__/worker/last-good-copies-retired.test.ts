@@ -42,6 +42,7 @@ import path from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { REPO_ROOT, WORKER_SRC, listTsFiles } from '../../__tests__/_scan-utils'
+import { parsedSource, sourceText } from '../../__tests__/_parsed-source'
 
 interface Kind {
   table: string
@@ -229,12 +230,15 @@ export function sqlFunctionsWriting(kind: Kind, migrations: Array<{ name: string
   return out
 }
 
+let migrations: Array<{ name: string; text: string }> | undefined
+/** Every migration, read once per test file. */
 function readMigrations(): Array<{ name: string; text: string }> {
   const dir = path.join(REPO_ROOT, 'supabase/migrations')
-  return readdirSync(dir)
+  migrations ??= readdirSync(dir)
     .filter((f) => f.endsWith('.sql'))
     .sort()
     .map((name) => ({ name, text: readFileSync(path.join(dir, name), 'utf8') }))
+  return migrations
 }
 
 const isFunctionLike = (n: ts.Node): n is ts.FunctionLikeDeclaration =>
@@ -285,9 +289,13 @@ export interface Finding {
   dynamicFroms: string[]
 }
 
-/** Judge one file's source for one kind. `rel` is the repo-relative path used in messages. */
-export function judge(kind: Kind, rel: string, src: string, rpcWriters: Set<string>): Finding {
-  const sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)
+/**
+ * Judge one file's source for one kind. `rel` is the repo-relative path used in
+ * messages; `file`, when given, is the absolute path, so the three kinds share
+ * one parse of each file (#2619).
+ */
+export function judge(kind: Kind, rel: string, src: string, rpcWriters: Set<string>, file: string = rel): Finding {
+  const sf = parsedSource(file, src)
   const writes: Array<{ node: ts.CallExpression; what: string }> = []
   const dynamicFroms: string[] = []
   const lineOf = (n: ts.Node) => sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1
@@ -335,12 +343,22 @@ export function judge(kind: Kind, rel: string, src: string, rpcWriters: Set<stri
   return { handlers: [...handlers], offenders, dynamicFroms }
 }
 
+/** Each kind is scanned once per test file, while it is collected; a test asking again reuses that scan (#2619). */
+const scans = new Map<Kind, Finding>()
 function scan(kind: Kind): Finding {
+  const known = scans.get(kind)
+  if (known) return known
+  const found = scanTree(kind)
+  scans.set(kind, found)
+  return found
+}
+
+function scanTree(kind: Kind): Finding {
   const rpcWriters = sqlFunctionsWriting(kind, readMigrations())
   const all: Finding = { handlers: [], offenders: [], dynamicFroms: [] }
   for (const file of sourceFiles()) {
     const rel = path.relative(REPO_ROOT, file).replace(/\\/g, '/')
-    const f = judge(kind, rel, readFileSync(file, 'utf8'), rpcWriters)
+    const f = judge(kind, rel, sourceText(file), rpcWriters, file)
     all.handlers.push(...f.handlers)
     all.offenders.push(...f.offenders)
     all.dynamicFroms.push(...f.dynamicFroms)

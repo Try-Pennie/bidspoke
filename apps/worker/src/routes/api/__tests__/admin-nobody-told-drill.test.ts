@@ -24,6 +24,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { recordAuditLog } from '../../../lib/audit'
 import { BETTER_STACK_ALERT_NAME, NOBODY_TOLD_LINE, NOBODY_TOLD_PAGE_DEADLINE_MS, createNobodyToldPager } from '../../../lib/nobody-told-page'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -69,7 +70,6 @@ function stubFetch(mode: number | 'throw' | 'stall') {
 }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

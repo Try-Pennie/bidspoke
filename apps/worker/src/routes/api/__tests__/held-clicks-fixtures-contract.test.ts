@@ -35,6 +35,7 @@ import { makeSupabase, type TableConfig } from './_supabase-mock'
 
 import partnersJson from '../../../../../web/e2e/fixtures/partners/partners.json'
 import heldJson from '../../../../../web/e2e/fixtures/partners/synthetic/held-clicks.liberty1.json'
+import api from '../index'
 
 type Entry = {
   id: string; prospect_id: string; reason: string; detail: string; partner_lead_id: string | null; workflow_id: string | null
@@ -70,7 +71,6 @@ function supabaseWith(tables: Record<string, TableConfig | TableConfig[]>) {
 }
 
 async function call(method: string, route: string, body?: unknown) {
-  const { default: api } = await import('../index')
   return api.request(route, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' }, body: body === undefined ? undefined : JSON.stringify(body) }, env, mockCtx)
 }
 

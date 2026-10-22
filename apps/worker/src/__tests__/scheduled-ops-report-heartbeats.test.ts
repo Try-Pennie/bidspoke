@@ -3,6 +3,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { recordingContext } from '../test-setup/wait-until'
 import type { Env } from '../index'
 import { alertRowListAnswer } from './helpers/slack-alert-read'
+import { loadWorker } from '../test-setup/load-worker'
 
 /**
  * #2519: the three minute jobs that turn the ops tick's report into pages,
@@ -42,7 +43,7 @@ vi.mock('../lib/supabase', () => ({
   createSupabaseClient: () => ({ from: () => ({ select: () => ({}) }) }),
 }))
 
-const worker = (await import('../index')).default
+const { default: worker } = await loadWorker()
 const heartbeat = await vi.importActual<typeof import('../lib/cron-heartbeat')>('../lib/cron-heartbeat')
 
 const MIN = 60_000
