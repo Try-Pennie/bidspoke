@@ -8,46 +8,26 @@
 export { NODE_TYPES, NODE_TRAITS, assertNever, isNodeType } from '@bidspoke/node-types'
 export type { NodeType, NodeTraits } from '@bidspoke/node-types'
 import type { NodeType, WorkflowLane } from '@bidspoke/node-types'
-import type { ConditionOperator } from '@bidspoke/workflow-definition'
+import type { ConditionOperator, HttpWebhookTrigger } from '@bidspoke/workflow-definition'
 import type { RetryTiming } from './lib/post-response-budget'
 
 export interface WorkflowDefinition {
   id: string
   name: string
-  trigger: TriggerConfig
+  // The money engine reads an http webhook's settings and nothing else, so its
+  // definitions are typed as one. The full union is TriggerConfig, from
+  // @bidspoke/workflow-definition (#1947); widening this field to it, with the
+  // engine narrowing on the type, comes with the change that stamps a run's
+  // trigger_type from its trigger instead of a constant.
+  trigger: HttpWebhookTrigger
   nodes: NodeDefinition[]
   edges: EdgeDefinition[]
 }
 
-// A known failure signal whose per-execution Slack page is muted; instead one
-// aggregated page fires when matching failures cross a rate threshold (#248).
-export interface MutedFailureSignal {
-  /** Case-insensitive substring matched against the failure's error_message. */
-  match: string
-  /** Aggregated alert fires when matching failures reach this many in the window. */
-  count: number
-  /** Trailing window, in minutes, the count is measured over. */
-  window_minutes: number
-  /** Per-signal cooldown between aggregated alerts. Defaults to 30 min. */
-  cooldown_minutes?: number
-}
-
-export interface TriggerConfig {
-  type: 'http_webhook'
-  config: {
-    method: string
-    auth_method: 'api_key' | 'none'
-    idempotency?: {
-      enabled: boolean
-      derive_from_fields?: string[]
-      ttl_seconds?: number
-    }
-    duration_alert_ms?: number
-    success_node_namespaces?: string[]
-    /** Failure signals whose per-run page is muted in favor of a rate alert (#248). */
-    muted_failure_signals?: MutedFailureSignal[]
-  }
-}
+// The trigger types live in @bidspoke/workflow-definition (#1947), one home for
+// both apps. Re-exported here so every existing import from './types' keeps
+// working; the imports move to the package and these lines go in #2648.
+export type { HttpWebhookConfig, HttpWebhookTrigger, MutedFailureSignal, ScheduleTrigger, TriggerConfig } from '@bidspoke/workflow-definition'
 
 export type ExecutionOutcome = 'successful' | 'completed' | 'failed'
 
