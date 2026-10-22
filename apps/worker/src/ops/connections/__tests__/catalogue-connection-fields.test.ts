@@ -37,6 +37,10 @@ const SAMPLES: Readonly<Record<string, () => Readonly<Record<string, string>>>> 
     client_id: 'ops-client-id-3MVG',
     client_secret: 'canary-sf-client-secret-2338',
   }),
+  slack: () => ({
+    team_id: 'T0PENNIE',
+    bot_token: 'canary-ops-bot-token-2337',
+  }),
   snowflake: () => ({
     account: 'ab12345.us-east-1',
     user: 'OPS_READER',
@@ -112,6 +116,12 @@ const AUTH_KIND_BEHAVIOUR: Readonly<Partial<Record<ConnectionAuthKind, (seen: { 
   client_credentials: ({ tokenRequests }) => {
     expect(tokenRequests).toHaveLength(1)
     expect(tokenRequests[0].body.get('grant_type')).toBe('client_credentials')
+  },
+  static_key: ({ auth, tokenRequests }) => {
+    // The stored key itself, read on every request: no token endpoint is asked and nothing is minted.
+    expect(tokenRequests).toEqual([])
+    expect(auth.headers.authorization).toBe('Bearer canary-ops-bot-token-2337')
+    expect(auth.secrets).toEqual(['canary-ops-bot-token-2337'])
   },
   key_pair: ({ auth, tokenRequests }) => {
     // Signed locally with the connection's own key: no token endpoint is asked.

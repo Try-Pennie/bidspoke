@@ -129,6 +129,7 @@ const MONEY_WORDS: Readonly<Record<MoneyTargetKind, string>> = {
   supabase_project: 'Bidspoke\'s own Supabase project',
   salesforce_client_id: 'the Salesforce connected app Bidspoke bids through',
   snowflake_user: 'a Snowflake user Bidspoke\'s bidding signs in as',
+  slack_alert_bot: 'the Slack bot that posts Bidspoke\'s own alerts',
 }
 
 /** "Tell Dan" closes a sentence about a fault only Dan can fix: the person in the ops team who runs the Workers. */

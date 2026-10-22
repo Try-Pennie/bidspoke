@@ -169,7 +169,7 @@ run beside the rest of the tick and awaited before its report.
 - **The probe.** The service's identity probe, the one verify uses
   (Salesforce `/services/oauth2/userinfo`, which must still be the org and user
   verify measured; Snowflake `CURRENT_USER()` and the account, which must be the
-  declared ones), through connectionFetch, purpose `connection_check`, the
+  declared ones; Slack `auth.test`, a bot in the declared workspace), through connectionFetch, purpose `connection_check`, the
   committed copy only, recording nothing. A Salesforce probe takes a lease under
   the `connection_check` share of 1 (Decision 11), so the connections of one org
   are probed one after another. Each check, its record included, has its own
@@ -213,7 +213,7 @@ value, a refusal naming its cause. Each method has a ceiling
 
 | Method | Does | Writes |
 |---|---|---|
-| `verify` | Measures what the credential authenticates as through connectionFetch (Salesforce: `/services/oauth2/userinfo`; Snowflake: `CURRENT_USER()` and the account, which must be the declared ones or it is refused `verify_identity_mismatch`, and which records nothing, `snowflake-service.ts` says why); refuses money's run as user (`money_identity_match`), a sealed client id other than the declared one (`verify_client_id_mismatch`), a person bound candidate (`candidate_not_refreshable`: it is proven by its code exchange), and a service with no measurement yet (`verify_identity_unmeasurable`). | Salesforce: the measured identity, under the generation the request carried. Snowflake: nothing |
+| `verify` | Measures what the credential authenticates as through connectionFetch (Salesforce: `/services/oauth2/userinfo`; Snowflake: `CURRENT_USER()` and the account, which must be the declared ones or it is refused `verify_identity_mismatch`, and which records nothing, `snowflake-service.ts` says why; Slack: `auth.test`, which must answer a bot (a `bot_id`) in the declared `team_id` or it is refused `verify_identity_mismatch`, recording nothing, and whose bot the bidding create and Reconnect routes then compare with the alerts bot, `lib/slack-alert-bot.ts`); refuses money's run as user (`money_identity_match`), a sealed client id other than the declared one (`verify_client_id_mismatch`), a person bound candidate (`candidate_not_refreshable`: it is proven by its code exchange), and a service with no measurement yet (`verify_identity_unmeasurable`). | Salesforce: the measured identity, under the generation the request carried. Snowflake: nothing |
 | `clearReauth` | Reconnect: `verify` of the candidate, then the clearing. Bidding calls it after its compare and set committed the candidate's generation. | `reauth_cleared_at` |
 | `revoke` | A removal. | the ops tombstone |
 | `health` | Each connection's status (`connection_status`). | nothing |
@@ -246,7 +246,7 @@ value, a refusal naming its cause. Each method has a ceiling
 
 | Minter | Services | Login (sealed JSON) | Target (declared, public) | Expiry signal |
 |---|---|---|---|---|
-| `staticKeyAuth` | Slack ops bot (decision 6), OpenAI, Anthropic, Supabase, HTTP | `{ "api_key" }`, or `bot_token` for Slack, `service_key` for Supabase | the service's hosts | 401 |
+| `staticKeyAuth` | Slack ops bot (decision 6), OpenAI, Anthropic, Supabase, HTTP | `{ "api_key" }`, or `bot_token` for Slack, `service_key` for Supabase | the service's hosts; Slack's is `{ team_id }`, its one host `slack.com` | 401; for Slack also a 200 whose `ok: false` names a login refusal (`invalid_auth`, `not_authed`, `token_revoked`, `token_expired`, `account_inactive`), since Slack refuses a token without a 401 (`slack-service.ts`) |
 | `snowflakeKeyPairAuth` | Snowflake | `{ "private_key": "<PEM>" }` | `{ account, user }`, and optionally `warehouse`, `role`, `database`, `schema` for the session (a lookup needs `database`) | 401 |
 | `salesforceClientCredentialsAuth` | Salesforce | `{ client_id, client_secret }` of the org's ops connected app | `{ instance_url, client_id }` | 401 (INVALID_SESSION_ID), the money path's own rule |
 | `googleDelegationAuth` | Google (Sheets, Gmail, Calendar, Drive) | the service account key JSON Google issues | `{ subject: "<mailbox>", drives?: ["<shared drive id>"] }` | 401 |

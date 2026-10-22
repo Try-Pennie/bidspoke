@@ -63,6 +63,8 @@ import { pageStatusOf, readConnectionStatuses, readSlackAlertStatus, rememberCon
 import { checkSlackAlertLogin, isSlackAlertRow } from '../../lib/slack-alert-login-check'
 import { onlySlackAlertRow, resolveSlackConnection, SLACK_ALERT_READ_LIMIT, SLACK_ROW_COLUMNS } from '../../lib/slack-connection'
 import { slackActsAs, verifySlackToken } from '../../lib/slack-token-check'
+import { compareWithSlackAlertBot } from '../../lib/slack-alert-bot'
+import type { MeasuredIdentityAnswer } from '../../lib/ops-connections-contract'
 import { secretKeys } from '../../lib/secret-crypto'
 import { saveSlackAlertConnection } from './integrations'
 import { OPS_CONNECTIONS_DEADLINES_MS } from '../../lib/ops-connections-client'
@@ -147,6 +149,27 @@ function earliest(times: Array<string | null>): string | null {
   const known = times.filter((t): t is string => t !== null)
   if (known.length === 0) return null
   return known.reduce((a, b) => (Date.parse(a) <= Date.parse(b) ? a : b))
+}
+
+/** What a refusal of the alerts bot names as its match: the login, never a value. */
+const SLACK_ALERT_MATCH = 'the Slack alert login'
+
+/**
+ * Whether a verified Slack bot is the organization's alerts bot (#2337, Dan's
+ * decision 6), read through the one alert row filter; null for a login of any
+ * other service. Ops measured the bot, and only bidding holds the alerts
+ * login, so the comparison is made here (lib/slack-alert-bot.ts).
+ */
+async function slackAlertBotOf(
+  supabase: ReturnType<typeof createSupabaseClient>, env: Env, orgId: string, identity: MeasuredIdentityAnswer,
+): Promise<'alert_bot' | 'other' | 'unreadable' | null> {
+  if (identity.kind !== 'slack') return null
+  const check = await compareWithSlackAlertBot(
+    () => onlySlackAlertRow(supabase.from('service_connections').select(SLACK_ROW_COLUMNS).eq('organization_id', orgId)).limit(SLACK_ALERT_READ_LIMIT),
+    env, orgId, identity.bot_id,
+  )
+  if (check.kind === 'unreadable') console.error(JSON.stringify({ event: 'slack_alert_bot_unreadable', organization_id: orgId, detail: check.detail }))
+  return check.kind
 }
 
 // GET /api/connections
@@ -527,6 +550,10 @@ connections.post('/', async (c) => {
     // The detail is built from names on ops (finding F120).
     return refuse(code, { ...words, org }, { detail: answer.detail, retry_at: answer.retry_at })
   }
+  // A Slack bot is never the alerts bot (Dan's decision 6). Verify wrote nothing for a candidate, so nothing is withdrawn.
+  const alertBot = await slackAlertBotOf(supabase, c.env, orgId, answer.identity)
+  if (alertBot === 'alert_bot') return refuse('connection_money_identity', { ...words, money: 'slack_alert_bot' }, { money: 'slack_alert_bot', matched: SLACK_ALERT_MATCH })
+  if (alertBot === 'unreadable') return refuse('connection_money_targets_unreadable', words)
 
   // 7. The one insert.
   const { data: created, error: insertError } = await supabase
@@ -889,6 +916,10 @@ connections.post('/:id/reconnect', async (c) => {
     const { code, extra } = opsCheckRefusal(verified)
     return createRefusal(code, { org }, extra)
   }
+  // A new Slack token is never the alerts bot's either (Dan's decision 6).
+  const alertBot = await slackAlertBotOf(supabase, c.env, orgId, verified.identity)
+  if (alertBot === 'alert_bot') return createRefusal('connection_money_identity', { money: 'slack_alert_bot' }, { money: 'slack_alert_bot', matched: SLACK_ALERT_MATCH })
+  if (alertBot === 'unreadable') return createRefusal('connection_money_targets_unreadable')
   const actsAs = actsAsOf(verified.identity)
 
   // 4. The compare and set on the generation read.

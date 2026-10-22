@@ -206,6 +206,9 @@ async function moneySalesforceIdentity(deps: OpsConnectionsDeps, organizationId:
 }
 
 function identityAnswer(identity: MeasuredIdentity): MeasuredIdentityAnswer {
+  if (identity.kind === 'slack') {
+    return { kind: 'slack', team_id: identity.teamId, team: identity.team, user_id: identity.userId, user: identity.user, bot_id: identity.botId }
+  }
   if (identity.kind === 'snowflake') {
     return {
       kind: 'snowflake', account_locator: identity.accountLocator, organization_name: identity.organizationName, account_name: identity.accountName, user: identity.user,
@@ -252,8 +255,8 @@ async function verifyIdentity(
   const resolved = used as { service: string; generation: number } | null
   if (resolved === null) return refuse('ops_connections_failed', 'the identity was measured without a request through connectionFetch')
 
-  // A Snowflake identity is the declared one or the probe refused it, and
-  // nothing about it is kept (snowflake-service.ts says why).
+  // A Snowflake or Slack identity is the declared one or the probe refused it,
+  // and nothing about it is kept (snowflake-service.ts and slack-service.ts say why).
   if (identity.kind !== 'salesforce') return { ok: true, service: resolved.service, generation: resolved.generation, identity: identityAnswer(identity) }
   if (money !== null && isMoneySalesforceIdentity(identity, money)) {
     return refuse('money_identity_match', 'the credential authenticates as money\'s Salesforce run as user, which an ops connection may never act as')

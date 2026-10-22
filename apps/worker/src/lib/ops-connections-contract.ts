@@ -238,6 +238,7 @@ export interface ExchangeOAuthCodeRequest {
 export type MeasuredIdentityAnswer =
   | { kind: 'salesforce'; sf_org_id: string; username: string }
   | { kind: 'snowflake'; account_locator: string; organization_name: string | null; account_name: string | null; user: string }
+  | { kind: 'slack'; team_id: string; team: string | null; user_id: string; user: string | null; bot_id: string }
 
 export type VerifyAnswer = { ok: true; service: string; generation: number; identity: MeasuredIdentityAnswer } | OpsConnectionsRefused
 export type ClearReauthAnswer = { ok: true; service: string; generation: number; identity: MeasuredIdentityAnswer; cleared: true } | OpsConnectionsRefused

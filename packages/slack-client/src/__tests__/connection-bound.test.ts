@@ -81,7 +81,7 @@ describe('createSlackClient bound to a connection fetch (#2337)', () => {
 
   it('refuses a token in the parameters before anything is sent: the connection applies the login, never the caller', async () => {
     const f = boundFetch(answer({ ok: true }))
-    await expect(createSlackClient({ fetch: f.fetch }).chat.postMessage({ channel: 'C1', text: 'x', token: 'xoxb-smuggled' })).rejects.toThrow(/token/)
+    await expect(createSlackClient({ fetch: f.fetch }).chat.postMessage({ channel: 'C1', text: 'x', token: 'canary-smuggled-token-2337' })).rejects.toThrow(/token/)
     expect(f.sent).toEqual([])
   })
 
