@@ -147,7 +147,7 @@ describe('achieve offers node', () => {
   it('records the block in the result reason and notes a sighting, without failing the flow', async () => {
     fetchMock.mockResolvedValue(fakeResponse(403, ACHIEVE_CLOUDFLARE_BLOCK_PAGE))
     const ctx = { ...makeCtx(achieveEnv), trigger: { ...makeCtx().trigger, payload } } as unknown as ExecutionContext
-    const result = await executeAchieveOffersNode(node(), ctx)
+    const result = await executeAchieveOffersNode(node(), ctx, {} as Env)
     const output = result.output as Record<string, unknown>
     expect(output.response_status).toBe('error')
     expect(String(output.response_reason)).toMatch(/block page/i)

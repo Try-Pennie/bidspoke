@@ -79,24 +79,24 @@ export const REQUIRED_PARTNER_SECRETS = [
   // is on the live Main Flow path: unset, that path stays blocked, and the only thing
   // that reports it is a field-presence alert four days later, naming a symptom.
   //
-  // Read what this actually measures before trusting it. This guard checks the WORKER
-  // BINDING, and the Achieve node reads the DB copy (`ctx.env`, loaded per org by
-  // env-loader). They are two copies of one value, written together by the
-  // Environment Variables page (a secret row there is stored AND pushed to the
-  // binding by setCfSecret), which is why the binding is a usable proxy at all. So it
-  // catches the case that actually happens, nobody ever created it, and it is blind
-  // to the DB row being deleted or blanked while the binding survives, which is the
-  // direction that breaks the node silently. Nothing covers that today: the
-  // required-env-vars guard (#394) reads `is_secret=false` rows only and cannot see
-  // this one. Tracked in #1263.
+  // What this measures (#1263). The value has two copies, the Environment Variables
+  // row and the Worker binding that page writes in the same save, and this guard
+  // reads the binding. That is the copy a run falls back to: every reader takes
+  // the saved value first and the binding second (achieveIdentityHeaders for the
+  // Offers node and the reachability probe, buildSandboxEnv for the Scout code
+  // node), so a row removed by hand changes nothing while the binding stands. A
+  // delete or a blank save through the page removes or blanks both copies, which
+  // this guard sees. A row that no longer decrypts is the secret decrypt check's
+  // (#404).
   'ACHIEVE_PARTNER_KEY',
   // Signs the customer links the Engine Bidding and Lead Economy code nodes build
   // (#2089). Unset, every offer link goes out without its token, and trypennie.com
   // refuses any record created after its cutoff, while every run still succeeds:
   // the only other sign is `link_token: missing_secret` on the step output. Must
-  // equal the value Salesforce and trypennie.com hold. The same two copies caveat
-  // as ACHIEVE_PARTNER_KEY above applies: the code node reads the Environment
-  // Variables page's row, and this guard sees the binding that page pushes.
+  // equal the value Salesforce and trypennie.com hold. Two copies, as with
+  // ACHIEVE_PARTNER_KEY above: the code nodes read the saved row with this binding
+  // underneath it (buildSandboxEnv), so a row removed by hand falls back to the
+  // binding this guard measures.
   'LINK_TOKEN_SECRET',
 ] as const
 

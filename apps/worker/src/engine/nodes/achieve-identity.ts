@@ -53,7 +53,30 @@ export const ACHIEVE_KEY_HEADER = 'X-Pennie-Key'
 export const ACHIEVE_CLIENT_ID = 'pennie'
 
 /**
+ * Where the key is read from. It has two copies (#1263): the saved Environment
+ * Variables row, which reaches a run as its decrypted values (`ctx.env`), and the
+ * Worker binding the page pushes in the same save. `saved` is null for a caller
+ * outside any run (the reachability probe), which has only the binding.
+ */
+export interface AchieveKeySources {
+  saved: Record<string, string | undefined> | null
+  worker: Record<string, unknown>
+}
+
+/** A non-blank string, trimmed, or null. */
+function present(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() !== '' ? value.trim() : null
+}
+
+/**
  * The identifying headers for a request to one of the three Achieve hosts.
+ *
+ * The key is the saved value first and the Worker binding second, the order every
+ * other reader of a partner credential uses (buildSandboxEnv), so a row removed by
+ * hand while its binding survives changes nothing. That is what makes the daily
+ * required secrets check, which measures the binding, true for this key. Both
+ * sources are required so that no caller can read one copy by omission. A blank
+ * saved value counts as unset here and falls through to the binding.
  *
  * A missing or blank key does NOT stop the request. Their rule would refuse it,
  * which is the state we are already in, and refusing to send would replace one
@@ -62,9 +85,9 @@ export const ACHIEVE_CLIENT_ID = 'pennie'
  * firewall log, and the client header still goes out so the request is ours.
  * A missing key is made loud by the required-secrets guard, not by this call.
  */
-export function achieveIdentityHeaders(env: Record<string, string | undefined>): Record<string, string> {
-  const key = (env.ACHIEVE_PARTNER_KEY ?? '').trim()
-  return key === ''
+export function achieveIdentityHeaders(sources: AchieveKeySources): Record<string, string> {
+  const key = present(sources.saved?.ACHIEVE_PARTNER_KEY) ?? present(sources.worker.ACHIEVE_PARTNER_KEY)
+  return key === null
     ? { [ACHIEVE_CLIENT_HEADER]: ACHIEVE_CLIENT_ID }
     : { [ACHIEVE_CLIENT_HEADER]: ACHIEVE_CLIENT_ID, [ACHIEVE_KEY_HEADER]: key }
 }
