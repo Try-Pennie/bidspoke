@@ -47,6 +47,12 @@
  *     write back (#2340 phase 10 item 4, write-back-check.ts), beside the rest
  *     of the tick, and those pending past the bound are carried in the report's
  *     write_backs for the ops-connection-write-back signal.
+ *     Then, every tick and in either mode (#1950), the frozen definition copies
+ *     (copyDefinitions): each current version the ops database does not hold
+ *     yet is asked of the bidding Worker and saved, so a run executes the
+ *     version it started on through a bidding outage. A conflict, an unserved
+ *     version or a refused row pages at once; a failed request or save is
+ *     asked again next tick.
  *  5. The schedules, each inside its own boundary: planFires (packages/
  *     workflow-definition) with the database clock, the floor and the last slot
  *     observed; each fire recorded in schedule_fire_observations, whose UNIQUE

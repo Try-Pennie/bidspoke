@@ -11,8 +11,10 @@
  * gives up at 15 s and keeps its saved copies: the workflow list (one paged
  * read), the connection list (two paged reads, #2335), a heartbeat stamp of the
  * tick or of an ops job (one KV write, #2340), money's identity for one organization (one KV read, #2335), a
- * rotated login's compare and set (one rpc, #2335), or a resealed login's
- * compare and set during a rotation of the ops key (one rpc, #2333).
+ * rotated login's compare and set (one rpc, #2335), a resealed login's
+ * compare and set during a rotation of the ops key (one rpc, #2333), or the
+ * definitions of up to MAX_DEFINITIONS_PER_REQUEST ops workflow versions (one
+ * read each, #1950).
  */
 import { WorkerEntrypoint } from 'cloudflare:workers'
 import type { Env } from '../env'
