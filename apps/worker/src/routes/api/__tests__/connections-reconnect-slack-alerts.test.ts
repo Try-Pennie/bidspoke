@@ -58,10 +58,11 @@ async function rows(): Promise<Row[]> {
   ]
 }
 
-/** service_connections with the filters the alert row read sends (eq, or, limit) and the upsert the save sends. */
-async function storeDouble(opts: { upsertError?: { code: string; message: string } } = {}) {
-  const table = await rows()
+/** service_connections with the filters the alert row read sends (eq, or, limit), the upsert the save sends and the update the seal sends. */
+async function storeDouble(opts: { upsertError?: { code: string; message: string }; updateError?: { code: string; message: string }; table?: Row[] } = {}) {
+  const table = opts.table ?? await rows()
   const upserts: Array<{ row: Row; onConflict: string | undefined }> = []
+  const updates: Row[] = []
   const from = (name: string) => {
     const filters: Array<(r: Row) => boolean> = []
     let cap = Infinity
@@ -91,6 +92,22 @@ async function storeDouble(opts: { upsertError?: { code: string; message: string
         }
         return done
       },
+      // The seal's UPDATE (sealSlackTokens): eq and is filters, then select('id') answers the rows written.
+      update(patch: Row) {
+        const where: Array<(r: Row) => boolean> = []
+        const u = {
+          eq(col: string, v: unknown) { where.push((r) => r[col] === v); return u },
+          is(col: string, v: unknown) { where.push((r) => (r[col] ?? null) === v); return u },
+          select() { return u },
+          then(resolve: (v: { data: Row[] | null; error: { code: string; message: string } | null }) => unknown) {
+            if (opts.updateError) return Promise.resolve({ data: null, error: opts.updateError }).then(resolve)
+            const hit = table.filter((r) => where.every((f) => f(r)))
+            for (const r of hit) { Object.assign(r, patch); updates.push({ id: r.id, ...patch }) }
+            return Promise.resolve({ data: hit.map((r) => ({ id: r.id })), error: null }).then(resolve)
+          },
+        }
+        return u
+      },
     }
     return b
   }
@@ -106,7 +123,15 @@ async function storeDouble(opts: { upsertError?: { code: string; message: string
     }
     return Promise.resolve({ data: null, error: { code: '42883', message: `no function ${fn}` } })
   }
-  return { from, rpc, table, upserts }
+  return { from, rpc, table, upserts, updates }
+}
+
+/** The alert row as production holds it on 2026-10-22: never sealed (sealed_for null, no credential_enc), the token in config only. */
+function unsealedRows(): Row[] {
+  return [{
+    id: ALERT_ROW, organization_id: ORG, service_type: 'slack', name: 'slack', sealed_for: null, credential_enc: null,
+    config: { bot_token: OLD_TOKEN, default_channel: '#bidspoke-alerts', workspace_name: 'Pennie' },
+  }]
 }
 
 /** Slack's auth.test: each token answered as Slack would, and every token asked recorded. */
@@ -320,6 +345,96 @@ describe('Reconnect the Slack alerts login with no new token: the stored one is 
       message: 'Slack no longer accepts the saved token (invalid_auth). Nothing was changed. Reconnect with a new token from the Slack app.',
     })
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+})
+
+// #2331 (phase 1 of #1689): the alert row production holds was never sealed,
+// and the seal (POST /api/admin/seal-slack-token) must be run as a signed in
+// user of that organization. Checking the stored token again is the button that
+// does it: once Slack accepts the stored token, an unsealed alert row is sealed
+// by sealSlackTokens, the same function as the admin route, which keeps the
+// plaintext beside it until the contract release and verifies what it stored.
+describe('Checking the stored token again seals an alert row that was never sealed', () => {
+  const tokenIn = (lines: unknown[][]) => lines.some((l) => l.map(String).join(' ').includes(OLD_TOKEN))
+
+  it('seals it for the ring once Slack accepts the stored token, keeping the plaintext, and says so', async () => {
+    const db = await storeDouble({ table: unsealedRows() })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const asked = slackAuthTest(slackAccepts)
+    const { env } = makeEnv()
+    const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
+    expect(res.status).toBe(200)
+    expect((await res.json()) as Answer).toMatchObject({ outcome: 'checked', connection: { id: ALERT_ROW }, seal: 'sealed' })
+    expect(asked).toEqual([OLD_TOKEN])
+    expect(db.upserts).toEqual([])
+    expect(db.updates).toHaveLength(1)
+    const [row] = db.table
+    expect(row.sealed_for).toBe('bidding_ring')
+    expect(row.updated_by).toBe(USER)
+    expect(await decryptSecret(row.credential_enc as string, KEY)).toBe(OLD_TOKEN)
+    expect((row.config as Row).bot_token).toBe(OLD_TOKEN)
+    const logged = vi.mocked(console.log).mock.calls
+    expect(logged.some((l) => String(l[0]).includes('"event":"slack_alert_token_sealed"') && String(l[0]).includes('"ready_for_contract":true'))).toBe(true)
+    expect(tokenIn(logged)).toBe(false)
+  })
+
+  it('a row already sealed is not written again, and the answer carries no seal', async () => {
+    const db = await storeDouble()
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    slackAuthTest(slackAccepts)
+    const { env } = makeEnv()
+    const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
+    expect(res.status).toBe(200)
+    expect((await res.json()) as Answer).not.toHaveProperty('seal')
+    expect(db.updates).toEqual([])
+  })
+
+  it('a stored token Slack refuses is not sealed', async () => {
+    const table = unsealedRows()
+    ;(table[0].config as Row).bot_token = REFUSED_TOKEN
+    const db = await storeDouble({ table })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    slackAuthTest(slackAccepts)
+    const { env } = makeEnv()
+    const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
+    expect(((await res.json()) as Answer).error).toBe('slack_stored_token_refused')
+    expect(db.updates).toEqual([])
+    expect(db.table[0].credential_enc).toBeNull()
+  })
+
+  it('Slack not answering seals nothing', async () => {
+    const db = await storeDouble({ table: unsealedRows() })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    slackAuthTest(() => { throw new TypeError('fetch failed') })
+    const { env } = makeEnv()
+    const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
+    expect(((await res.json()) as Answer).error).toBe('slack_unanswered')
+    expect(db.updates).toEqual([])
+  })
+
+  it('a seal the database refuses still answers the check, says the seal failed, and logs it by name with no token', async () => {
+    const db = await storeDouble({ table: unsealedRows(), updateError: { code: '57014', message: 'canceling statement due to statement timeout' } })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    slackAuthTest(slackAccepts)
+    const { env } = makeEnv()
+    const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
+    expect(res.status).toBe(200)
+    expect((await res.json()) as Answer).toMatchObject({ outcome: 'checked', seal: 'failed' })
+    const errors = vi.mocked(console.error).mock.calls
+    expect(errors.some((l) => String(l[0]).includes('"event":"slack_alert_seal_failed"'))).toBe(true)
+    expect(tokenIn(errors)).toBe(false)
+    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(db, ORG, 'service_connection', ALERT_ROW, 'connection_rechecked', USER, {})
+  })
+
+  it('with no key ring the check still answers from the plaintext, and the seal fails by name rather than throwing', async () => {
+    const db = await storeDouble({ table: unsealedRows() })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    slackAuthTest(slackAccepts)
+    const { env } = makeEnv({ SECRET_ENCRYPTION_KEY: undefined })
+    const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
+    expect(res.status).toBe(200)
+    expect((await res.json()) as Answer).toMatchObject({ outcome: 'checked', seal: 'failed' })
+    expect(db.updates).toEqual([])
   })
 })
 
