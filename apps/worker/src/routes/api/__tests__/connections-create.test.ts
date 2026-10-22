@@ -351,6 +351,24 @@ describe('the sealed login opens through the real ops minters (round trip)', () 
     expect(header).toMatch(/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/)
     expect(((await res.json()) as { connection: { acts_as: string } }).connection.acts_as).toBe('OPS_READER')
   })
+
+  it('OpenAI (#2337): the key typed is sent with the project, and saved acting as its project in its organization', async () => {
+    const db = storeDouble()
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    let headers: Record<string, string> = {}
+    const { env } = makeEnv({
+      verify: async (r) => {
+        headers = { ...(await mintFromCandidate(r, async () => { throw new Error('a static key asks no token endpoint') })).headers }
+        return { ok: true, service: 'openai', generation: 1, identity: { kind: 'openai', project_id: 'proj_0PS2337', organization: 'pennie-ops' } }
+      },
+    })
+    const res = await post(env, { service: 'openai', name: 'Summaries', fields: { project_id: 'proj_0PS2337', api_key: 'canary-openai-key-2337' } })
+    expect(res.status).toBe(201)
+    expect(headers).toEqual({ authorization: 'Bearer canary-openai-key-2337', 'openai-project': 'proj_0PS2337' })
+    expect(((await res.json()) as { connection: { acts_as: string } }).connection.acts_as).toBe('Project proj_0PS2337 in pennie-ops')
+    expect(db.inserts.map((r) => [r.service_type, r.auth_type, r.sealed_for, r.target])).toEqual([['openai', 'api_key', 'ops_key', { project_id: 'proj_0PS2337' }]])
+    expect(JSON.stringify(db.inserts)).not.toContain('canary-openai-key-2337')
+  })
 })
 
 describe('an ops Slack connection is never the alerts bot (Dan\'s decision 6, #2337)', () => {
@@ -422,6 +440,28 @@ describe('an ops Slack connection is never the alerts bot (Dan\'s decision 6, #2
     const res = await post(env, opsSlack)
     expect(((await res.json()) as { error: string }).error).toBe('connection_money_targets_unreadable')
     expect(db.inserts).toEqual([])
+  })
+})
+
+describe('an ops OpenAI connection: a project\'s API key (#2337)', () => {
+  const API_KEY = 'canary-openai-key-2337'
+  const openai = { service: 'openai', name: 'Summaries', fields: { project_id: 'proj_0PS2337', api_key: API_KEY } }
+
+  it('acts as its project alone when OpenAI named no organization', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    const { env } = makeEnv({ verify: async () => ({ ok: true, service: 'openai', generation: 1, identity: { kind: 'openai', project_id: 'proj_0PS2337', organization: null } }) })
+    const res = await post(env, openai)
+    expect(((await res.json()) as { connection: { acts_as: string } }).connection.acts_as).toBe('Project proj_0PS2337')
+  })
+
+  it('says a key of another project in its own sentence', async () => {
+    vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
+    const { env } = makeEnv({ verify: async () => ({ ok: false, refused: 'verify_openai_project_mismatch', detail: 'named on ops' }) })
+    const body = (await (await post(env, openai)).json()) as { error: string; message: string }
+    expect(body).toMatchObject({
+      error: 'verify_openai_project_mismatch',
+      message: 'OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.',
+    })
   })
 })
 
