@@ -122,8 +122,6 @@ export interface CancellationRecordOptions {
   delay?: (ms: number) => Promise<void>
 }
 
-let counter = 0
-
 /**
  * Wrap the Supabase client's fetch so every answer that is a cancelled statement is
  * logged and recorded before the caller gets it. The record is raced against a deadline
@@ -150,10 +148,9 @@ export function withCancellationRecord(baseFetch: typeof fetch, options: Cancell
       return res
     }
     const store = options.store
-    // The time first, so keys list in order; a counter and a random tail so two in the same
-    // millisecond, in this isolate or another, never share a key.
-    counter = (counter + 1) % 1_000_000
-    const key = `${CANCELLATION_KEY_PREFIX}${String(atMs).padStart(14, '0')}:${counter}:${Math.random().toString(36).slice(2, 10)}`
+    // The time first, so keys list in order; a random tail so two in the same millisecond, in
+    // this isolate or another, never share a key.
+    const key = `${CANCELLATION_KEY_PREFIX}${String(atMs).padStart(14, '0')}:${crypto.randomUUID()}`
     const raced = await raceDeadline(
       () => store.put(key, '', { expirationTtl: CANCELLATION_TTL_SECONDS, metadata: { s: statement, at: atMs } }),
       CANCELLATION_RECORD_DEADLINE_MS,
