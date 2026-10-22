@@ -1411,3 +1411,65 @@ export async function recordSfBudgetReading(
   if (data !== 'recorded') throw new OpsWriteError(`${name} returned something other than recorded`)
   return data
 }
+
+// ── retention and definition copies (#1950, ops migration 20261022150000) ──
+
+/** The observation_purge sweep: observations past 30 days, never a workflow's latest slot. */
+export async function purgeScheduleObservations(client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions): Promise<{ purged: number; more: boolean }> {
+  const name = 'purge_schedule_observations'
+  const row = oneRow(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  return { purged: field(name, row, 'purged', isInt, 'a count'), more: field(name, row, 'more', isBool, 'true or false') }
+}
+
+/**
+ * One workflow version's definition, as the bidding Worker served it. conflict:
+ * a different definition is held for the version and is kept, which is the
+ * bidding side breaking its own rule, so the caller pages. no_copy: no saved
+ * copy names the workflow yet.
+ */
+export async function saveWorkflowDefinition(
+  client: OpsSupabaseClient, organizationId: OrganizationId, workflowId: string, versionNumber: number, definition: Record<string, unknown>, options?: OpsRpcOptions,
+): Promise<'saved' | 'already_saved' | 'conflict' | 'no_copy'> {
+  const name = 'save_workflow_definition'
+  const data = await callOpsRpc(client, name, {
+    p_organization_id: organizationId, p_workflow_id: workflowId, p_version_number: versionNumber, p_definition: definition,
+  }, options)
+  if (!oneOf(['saved', 'already_saved', 'conflict', 'no_copy'] as const)(data)) throw new OpsWriteError(`${name} returned something other than a save outcome`)
+  return data
+}
+
+/** One version of one organization's workflow, or null when it is not held. */
+export async function readWorkflowDefinition(
+  client: OpsSupabaseClient, organizationId: OrganizationId, workflowId: string, versionNumber: number, options?: OpsRpcOptions,
+): Promise<{ definition: Record<string, unknown>; savedAt: string } | null> {
+  const name = 'workflow_definition'
+  const all = rows(name, await callOpsRpc(client, name, { p_organization_id: organizationId, p_workflow_id: workflowId, p_version_number: versionNumber }, options))
+  if (all.length > 1) throw new OpsWriteError(`${name} returned ${all.length} rows, expected at most 1`)
+  if (all.length === 0) return null
+  const row = all[0]
+  const definition = row.definition
+  if (typeof definition !== 'object' || definition === null || Array.isArray(definition)) throw new OpsWriteError(`${name} returned a definition that is not an object`)
+  return { definition: definition as Record<string, unknown>, savedAt: field(name, row, 'saved_at', isString, 'a time') }
+}
+
+/** The saved copies whose current version has no definition held, at most limit, and whether the read was full. */
+export async function readMissingWorkflowDefinitions(
+  client: OpsSupabaseClient, limit: number, options?: OpsRpcOptions,
+): Promise<{ missing: Array<{ workflowId: string; organizationId: OrganizationId; versionNumber: number }>; reachedLimit: boolean }> {
+  const name = 'missing_workflow_definitions'
+  const all = rows(name, await callOpsRpc(client, name, { p_limit: limit }, options))
+  const missing = all.map((row) => {
+    let organizationId: OrganizationId
+    try {
+      organizationId = organizationIdFrom(row.organization_id)
+    } catch {
+      throw new OpsWriteError(`${name} returned a workflow whose organization is not a uuid`)
+    }
+    return {
+      workflowId: field(name, row, 'workflow_id', isString, 'an id'),
+      organizationId,
+      versionNumber: field(name, row, 'version_number', isInt, 'a whole number'),
+    }
+  })
+  return { missing, reachedLimit: missing.length === limit }
+}

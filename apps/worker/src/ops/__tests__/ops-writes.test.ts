@@ -54,6 +54,10 @@ import {
   sweepExpiredLeases,
   sweepSfLeases,
   takeLookupAllowance,
+  purgeScheduleObservations,
+  readMissingWorkflowDefinitions,
+  readWorkflowDefinition,
+  saveWorkflowDefinition,
 } from '../ops-writes'
 import type { ResourceWaitCause } from '../run-vocabulary'
 
@@ -763,5 +767,40 @@ describe('the Google mailboxes and drives list (#2338, PR 2)', () => {
     const none = rpcFetch([])
     await expect(readGoogleDelegationSubjects(none.client, ORG, 0)).rejects.toThrow(/1 to 1000/)
     expect(none.calls).toEqual([])
+  })
+})
+
+describe('retention and the definition copies (#1950, ops migration 20261022150000)', () => {
+  it('purges observations a page at a time and reads its answer', async () => {
+    const { client, calls } = rpcFetch([{ purged: 7, more: false }])
+    expect(await purgeScheduleObservations(client, 1000)).toEqual({ purged: 7, more: false })
+    expect(calls).toEqual([{ path: '/rest/v1/rpc/purge_schedule_observations', body: { p_limit: 1000 } }])
+    await expect(purgeScheduleObservations(rpcFetch([{ purged: '7', more: false }]).client, 1000)).rejects.toThrow(/purged that is not a count/)
+  })
+
+  it('saves a definition within its organization and refuses an answer it does not know', async () => {
+    const { client, calls } = rpcFetch('saved')
+    expect(await saveWorkflowDefinition(client, ORG, WF, 3, { nodes: [] })).toBe('saved')
+    expect(calls).toEqual([{ path: '/rest/v1/rpc/save_workflow_definition', body: { p_organization_id: ORG, p_workflow_id: WF, p_version_number: 3, p_definition: { nodes: [] } } }])
+    for (const answer of ['already_saved', 'conflict', 'no_copy'] as const) {
+      expect(await saveWorkflowDefinition(rpcFetch(answer).client, ORG, WF, 3, { nodes: [] })).toBe(answer)
+    }
+    await expect(saveWorkflowDefinition(rpcFetch('replaced').client, ORG, WF, 3, { nodes: [] })).rejects.toThrow(/save outcome/)
+  })
+
+  it('reads one version, null when it is not held, and refuses a definition that is not an object', async () => {
+    const def = { nodes: [{ id: 'a' }] }
+    expect(await readWorkflowDefinition(rpcFetch([{ definition: def, saved_at: '2026-10-22T10:00:00Z' }]).client, ORG, WF, 3))
+      .toEqual({ definition: def, savedAt: '2026-10-22T10:00:00Z' })
+    expect(await readWorkflowDefinition(rpcFetch([]).client, ORG, WF, 3)).toBeNull()
+    await expect(readWorkflowDefinition(rpcFetch([{ definition: [1], saved_at: 'x' }]).client, ORG, WF, 3)).rejects.toThrow(/not an object/)
+    await expect(readWorkflowDefinition(rpcFetch([{ definition: def, saved_at: 'x' }, { definition: def, saved_at: 'y' }]).client, ORG, WF, 3)).rejects.toThrow(/at most 1/)
+  })
+
+  it('lists the versions still to fetch, says when the read was full, and refuses a row with no organization', async () => {
+    const row = { workflow_id: WF, organization_id: ORG, version_number: 2 }
+    expect(await readMissingWorkflowDefinitions(rpcFetch([row]).client, 2)).toEqual({ missing: [{ workflowId: WF, organizationId: ORG, versionNumber: 2 }], reachedLimit: false })
+    expect((await readMissingWorkflowDefinitions(rpcFetch([row, row]).client, 2)).reachedLimit).toBe(true)
+    await expect(readMissingWorkflowDefinitions(rpcFetch([{ ...row, organization_id: 'nope' }]).client, 2)).rejects.toThrow(/organization is not a uuid/)
   })
 })
