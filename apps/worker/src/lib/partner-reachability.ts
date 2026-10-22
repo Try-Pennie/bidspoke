@@ -131,7 +131,8 @@ export interface ReachabilitySummary {
 
 /** The four targets. A constant, because the hosts change with the code that calls them. */
 export function probeTargets(env: Record<string, string | undefined>): ProbeTarget[] {
-  const identity = achieveIdentityHeaders(env)
+  // The probe runs outside any workflow, so it has the Worker binding alone.
+  const identity = achieveIdentityHeaders({ saved: null, worker: env })
   const achieve: ProbeTarget[] = ACHIEVE_HOSTS.map((host) => ({
     host,
     url: `https://${host}/`,

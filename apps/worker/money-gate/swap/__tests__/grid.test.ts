@@ -10,12 +10,13 @@
  *
  * Once a swap is saved, the money gate definition holds the node and no longer
  * the script, so the version before the save is kept in `swap/replaced/` and the
- * grid runs against that (RML GigFi, version 24, swapped 2026-10-22, #2592). It
- * stays for as long as the candidate is what runs: it is the record of what the
- * node was proved equal to, the version a rollback restores, and the only test
- * holding the node's evaluator to the behaviour GigFi's leads had. The saved step
- * is held to the candidate's config, so a later canvas edit fails here rather than
- * leaving the grid proving a config nothing runs.
+ * grid runs against that (RML GigFi, version 24, swapped 2026-10-22, #2592; RML
+ * LendSwift, version 25, swapped 2026-10-22 as version 26, #2593). It stays for as
+ * long as the candidate is what runs: it is the record of what the node was proved
+ * equal to, the version a rollback restores, and the only test holding the node's
+ * evaluator to the behaviour that workflow's leads had. The saved step is held to
+ * the candidate's config, so a later canvas edit fails here rather than leaving the
+ * grid proving a config nothing runs.
  *
  * For each candidate it holds that:
  * - the candidate is what a save accepts, in place, in that workflow;
@@ -36,7 +37,8 @@ import lendswift from '../candidates/rml-lendswift.json'
 import leadEconomy from '../candidates/lead-economy.json'
 import gigfiLive from '../../fixtures/definitions/6624acd0-bf61-4d21-85fc-4371ca7ed77d.json'
 import gigfiBeforeSwap from '../replaced/rml-gigfi-v24.json'
-import lendswiftDef from '../../fixtures/definitions/e1b810da-16c0-49eb-bf12-ba1c9b67c914.json'
+import lendswiftLive from '../../fixtures/definitions/e1b810da-16c0-49eb-bf12-ba1c9b67c914.json'
+import lendswiftBeforeSwap from '../replaced/rml-lendswift-v25.json'
 import leadEconomyDef from '../../fixtures/definitions/89b1a6af-7e0f-43de-bc66-1e888184551f.json'
 
 interface Def { id: string; name: string; definition: { nodes: Array<{ id: string; namespace: string; type: string; label?: string; config?: Record<string, unknown> }>; edges: Array<{ source: string; target: string; source_handle?: string }> } }
@@ -53,7 +55,7 @@ interface Case {
 
 const CASES: Case[] = [
   { file: 'rml-gigfi.json', candidate: parseCandidate(gigfi, 'rml-gigfi.json'), def: gigfiBeforeSwap as Def, live: gigfiLive as Def, spec: (k) => rmlGrid(k, 'parsed_name', true) },
-  { file: 'rml-lendswift.json', candidate: parseCandidate(lendswift, 'rml-lendswift.json'), def: lendswiftDef as Def, spec: (k) => rmlGrid(k, 'parse_name', false) },
+  { file: 'rml-lendswift.json', candidate: parseCandidate(lendswift, 'rml-lendswift.json'), def: lendswiftBeforeSwap as Def, live: lendswiftLive as Def, spec: (k) => rmlGrid(k, 'parse_name', false) },
   { file: 'lead-economy.json', candidate: parseCandidate(leadEconomy, 'lead-economy.json'), def: leadEconomyDef as Def, spec: (k, c) => leadEconomyGrid(k, c.constants_data ?? {}) },
 ]
 

@@ -13,7 +13,8 @@ import lendswift from '../candidates/rml-lendswift.json'
 import leadEconomy from '../candidates/lead-economy.json'
 import gigfiBeforeSwap from '../replaced/rml-gigfi-v24.json'
 import gigfiSaved from '../../fixtures/definitions/6624acd0-bf61-4d21-85fc-4371ca7ed77d.json'
-import lendswiftDef from '../../fixtures/definitions/e1b810da-16c0-49eb-bf12-ba1c9b67c914.json'
+import lendswiftBeforeSwap from '../replaced/rml-lendswift-v25.json'
+import lendswiftSaved from '../../fixtures/definitions/e1b810da-16c0-49eb-bf12-ba1c9b67c914.json'
 import leadEconomyDef from '../../fixtures/definitions/89b1a6af-7e0f-43de-bc66-1e888184551f.json'
 
 type Def = { trigger?: unknown; nodes: Array<{ id: string; [k: string]: unknown }>; edges: Array<{ id?: string; source: string; target: string; [k: string]: unknown }> }
@@ -149,10 +150,25 @@ function canvasSaveOf(c: SwapCandidate, def: Def, over: (d: Def) => void = () =>
 
 describe('verifySavedSwap: RML LendSwift (#2593)', () => {
   const ls = parseCandidate(lendswift, 'rml-lendswift.json')
-  const before = (lendswiftDef as unknown as { definition: Def }).definition
-  const check = (saved: Def) => verifySavedSwap(ls, v(24, before), v(25, saved), saved)
+  // LendSwift's version 25, the version before its swap: the money gate's
+  // definition holds the saved node (version 26) since the refresh, so the copy
+  // kept in swap/replaced is the base. Version 25 changed only ping_lendswift
+  // from the version 24 the candidate was proved against.
+  const before = (lendswiftBeforeSwap as unknown as { definition: Def }).definition
+  const lendswiftSavedDef = (lendswiftSaved as unknown as { definition: Def }).definition
+  const check = (saved: Def) => verifySavedSwap(ls, v(25, before), v(26, saved), saved)
 
-  it('passes the canvas swap of the live version 24, which the committed fixture is', () => {
+  it('passes LendSwift as Dan saved it on 2026-10-22 (version 26), with only what a paste changes as notes', () => {
+    const r = check(lendswiftSavedDef)
+    expect(r.problems).toEqual([])
+    expect(r.ok).toBe(true)
+    const saved = lendswiftSavedDef.nodes.find((n) => n.namespace === ls.node.namespace)!
+    expect(r.notes.join('\n')).toContain(`the step's id changed from ${ls.replaces.node_id} to ${saved.id}`)
+    expect(r.notes.join('\n')).toContain('2 edges into or out of the step were made again with new ids')
+    expect(formatSwapVerification(r, 'LendSwift').split('\n')[0]).toBe('LendSwift: PASS, only the validation step changed')
+  })
+
+  it('passes the canvas swap of version 25, the version before the swap', () => {
     const r = check(canvasSaveOf(ls, before))
     expect(r.problems).toEqual([])
     expect(r.notes.join('\n')).toContain('2 edges into or out of the step were made again with new ids')
