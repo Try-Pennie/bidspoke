@@ -160,7 +160,11 @@ export class AlertClaimObject implements DurableObject {
 
   /**
    * Body: { now, scheduled_time, holder }. Answers whether this delivery of a
-   * cron tick runs; the rule is in the comment on TICK_LEASE_STALE_MS.
+   * cron tick runs; the rule is in the comment on TICK_LEASE_STALE_MS. A close
+   * this holder sent before its claim arrived (#2646, keepEarlySettle) is
+   * applied when the claim makes it the holder: a done stores the tick as done,
+   * a release leaves it free. Its answer then reaches nobody, since that
+   * delivery stopped waiting for it long ago.
    */
   private async handleTickClaim(request: Request): Promise<Response> {
     const body = await request.json<{ now?: unknown; scheduled_time?: unknown; holder?: unknown; after_wait?: unknown }>()
