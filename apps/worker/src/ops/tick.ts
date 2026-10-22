@@ -25,6 +25,9 @@
  *     step 8, stamping its own heartbeat (SF_LIMITS_JOB) through the gateway.
  *     Since #2340 the connection_check sweep (connection-check.ts) the same way,
  *     which proves each ops connection's login and stamps CONNECTION_CHECK_JOB.
+ *     Since #1950 the observation_purge sweep, which keeps
+ *     schedule_fire_observations to 30 days and is claimed only while the
+ *     database clock reads the 03:00 Eastern hour (OBSERVATION_PURGE_EVERY_SECONDS).
  *  4. The workflows (decision 4, 2026-10-16): fetch the ops workflows' state from
  *     the bidding Worker over the service binding, save it as the last good
  *     copy, then read the copies back. The tick plans from what the database
