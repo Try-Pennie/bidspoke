@@ -26,7 +26,7 @@ import type { ConnectionCheckTarget, SfLimitsTarget } from '../ops-writes'
 import { SF_LIMITS_EVERY_SECONDS } from '../sf-limits'
 import { CONNECTION_CHECK_JOB, SF_LIMITS_JOB } from '../../lib/ops-gateway-contract'
 import { CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_READ_LIMIT, CONNECTION_LOGINS_READ_LIMIT, type ProbeAnswer } from '../connection-check'
-import { TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
+import { OBSERVATION_PURGE_EVERY_SECONDS, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const WF_A = '00000000-0000-4000-8000-0000000019a1'
@@ -139,6 +139,10 @@ function fake(opts: {
   tombstones?: { purged: number; more: boolean }
   /** What each page of the Salesforce lease sweep answers (#2334). */
   sfLeases?: { swept: number; more: boolean }
+  /** What each page of the observation purge answers (#1950). */
+  observationsPurge?: { purged: number; more: boolean }
+  /** The database clock, when a case needs another time than DB_NOW. */
+  dbNow?: string
   failing?: Partial<Record<keyof OpsTickDb, Error>>
   observed?: (o: ScheduleObservation) => 'recorded' | 'already_recorded'
   dispatchFails?: (item: DispatchItem) => boolean
@@ -188,7 +192,8 @@ function fake(opts: {
     async recordConnectionCheck(_org: unknown, connectionId: string, result: { ok: true } | { ok: false; cause: string }) {
       fail('recordConnectionCheck'); connectionChecks.push({ connectionId, result }); return 'recorded' as const
     },
-    async now() { fail('now'); return DB_NOW },
+    async now() { fail('now'); return opts.dbNow ?? DB_NOW },
+    async purgeObservations(limit: number) { fail('purgeObservations'); calls.push(`purgeObservations:${limit}`); return opts.observationsPurge ?? { purged: 0, more: false } },
     async sfLimitsTargets(limit: number) {
       fail('sfLimitsTargets'); calls.push(`sfLimitsTargets:${limit}`)
       return { targets: opts.sfTargets ?? [], reachedLimit: false }
@@ -566,6 +571,47 @@ describe('slots', () => {
   })
 })
 
+describe('the observation purge (#1950: schedule_fire_observations kept 30 days, purged nightly)', () => {
+  // DB_NOW is 06:02 Eastern; the purge is claimed only in the 03:00 Eastern hour, on the database clock.
+  const NIGHT = '2026-10-17T07:15:00.000Z' // 03:15 EDT
+
+  it('is not claimed outside its night hour', async () => {
+    const f = fake({})
+    await runOpsTick(f.ports)
+    expect(f.db.calls).not.toContain('claim:observation_purge')
+    expect(f.db.calls).not.toContain('purgeObservations')
+  })
+
+  it('is claimed for 20 hours in the 03:00 Eastern hour, pages while there is more, and counts what it purged', async () => {
+    const f = fake({ dbNow: NIGHT, observationsPurge: { purged: 1000, more: true } })
+    const report = await runOpsTick(f.ports)
+    expect(OBSERVATION_PURGE_EVERY_SECONDS).toBe(20 * 3600)
+    expect(f.db.calls).toContain(`claim:observation_purge:${OBSERVATION_PURGE_EVERY_SECONDS}`)
+    expect(f.db.calls.filter((c) => c === 'purgeObservations')).toHaveLength(10)
+    expect(f.db.calls).toContain('purgeObservations:1000')
+    expect(report.counts.observations_purged).toBe(10_000)
+  })
+
+  it('reads the hour on the Eastern clock, so 03:15 UTC is not its hour', async () => {
+    const f = fake({ dbNow: '2026-10-17T03:15:00.000Z' }) // 23:15 EDT the day before
+    await runOpsTick(f.ports)
+    expect(f.db.calls).not.toContain('claim:observation_purge')
+  })
+
+  it('a failed purge is its own problem and stops nothing else', async () => {
+    const f = fake({ dbNow: NIGHT, failing: { purgeObservations: new Error('lock timeout') } })
+    const report = await runOpsTick(f.ports)
+    expect(report.problem_keys).toContain('sweep_failed:observation_purge')
+    expect(f.db.calls).toEqual(expect.arrayContaining(['readCopies', 'dueQueueDepth', 'purgeTombstones']))
+  })
+
+  it('with no database clock it is not claimed, since its hour cannot be read', async () => {
+    const f = fake({ dbNow: NIGHT, failing: { now: new Error('down') } })
+    await runOpsTick(f.ports)
+    expect(f.db.calls).not.toContain('claim:observation_purge')
+  })
+})
+
 describe('the connection storage sweeps (#2334)', () => {
   it('claims tombstone_expiry for just under an hour and counts the tombstones it purged', async () => {
     const f = fake({ tombstones: { purged: 3, more: false } })
@@ -770,7 +816,10 @@ describe('the sf_limits sweep inside the tick (#2336)', () => {
   // the report says which sweeps this tick ran: the ones whose claim it owned.
   it('says which sweeps the tick ran: every one whose claim it owned', async () => {
     const report = await runOpsTick(fake().ports)
-    expect(report.sweeps_run).toEqual(TICK_SWEEPS.map((s) => s.sweep))
+    // Outside 03:00 Eastern the observation purge is not claimed (#1950).
+    expect(report.sweeps_run).toEqual(TICK_SWEEPS.filter((s) => s.easternHour === undefined).map((s) => s.sweep))
+    const night = await runOpsTick(fake({ dbNow: '2026-10-17T07:15:00.000Z' }).ports)
+    expect(night.sweeps_run).toEqual(TICK_SWEEPS.map((s) => s.sweep))
   })
 
   it('names no sweep it stood down from or whose claim failed', async () => {

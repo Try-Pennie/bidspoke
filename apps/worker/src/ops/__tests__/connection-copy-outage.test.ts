@@ -64,6 +64,7 @@ function opsDb() {
     sweepLeases: async () => { throw new Error('not claimed') },
     expireRuns: async () => { throw new Error('not claimed') },
     purgeTombstones: async () => { throw new Error('not claimed') },
+    purgeObservations: async () => { throw new Error('not claimed') },
     // Unclaimed (TICK_SF_LEASE_SWEEP), so it runs every tick: nothing has lapsed here.
     sweepSfLeases: async () => ({ swept: 0, more: false }),
     queueDisagreements: async () => [],
