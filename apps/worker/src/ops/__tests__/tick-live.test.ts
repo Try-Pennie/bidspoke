@@ -21,7 +21,7 @@ const NOW = Date.parse('2026-10-17T10:02:31.000Z')
 const schedule = { type: 'schedule', config: { interval_seconds: 300, timezone: 'UTC', overlap: 'skip', catch_up: 'none', jitter_max_seconds: 0 } }
 
 /** PostgREST, answering each ops function by name, recording what was called. */
-function opsDatabase() {
+function opsDatabase(extra: Record<string, unknown> = {}) {
   const called: string[] = []
   const answers: Record<string, unknown> = {
     ops_now: '2026-10-17T10:02:30+00:00',
@@ -51,13 +51,16 @@ function opsDatabase() {
     missing_workflow_definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3 }],
     save_workflow_definition: 'saved',
   }
-  const fakeFetch: typeof globalThis.fetch = (async (input: string | URL | Request) => {
+  Object.assign(answers, extra)
+  const bodies: Record<string, unknown> = {}
+  const fakeFetch: typeof globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const name = new URL(input instanceof Request ? input.url : input.toString()).pathname.replace('/rest/v1/rpc/', '')
     called.push(name)
+    if (init?.body) bodies[name] = JSON.parse(String(init.body)) as unknown
     if (!(name in answers)) return Response.json({ code: '42883', message: `no function ${name}` }, { status: 404 })
     return Response.json(answers[name])
   }) as typeof globalThis.fetch
-  return { fetch: fakeFetch, called }
+  return { fetch: fakeFetch, called, bodies }
 }
 
 function gateway(): OpsGatewayBinding & { reports: OpsTickReport[]; started: number; jobStamps: string[]; jobReports: unknown[]; definitionRequests: unknown[] } {
@@ -117,10 +120,18 @@ function listing(db: ReturnType<typeof opsDatabase>, connectionId: string, servi
 }
 
 /** OpsInternal as the binding reaches it: it verifies every signature it is handed. */
-function self(): OpsInternalBinding & { observed: string[] } {
+function self(): OpsInternalBinding & { observed: string[]; ran: string[] } {
   const s = {
     observed: [] as string[],
+    ran: [] as string[],
     ping: async () => ({ lane: 'ops' }),
+    // Answers as OpsInternal.run does: verifies, then reports the run done.
+    run: async (signed: unknown) => {
+      const env = await verifyDispatch(await dispatchKey('master-secret'), signed, NOW)
+      if (env.item.kind !== 'run') return { refused: 'not_a_run' }
+      s.ran.push(env.item.run.runRequestId)
+      return { outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' }
+    },
     resealConnections: async () => { throw new Error('the tick does not call resealConnections') },
     // Answers a refusal as OpsInternal.observe does: a value, never a throw across the binding.
     observe: async (signed: unknown) => {
@@ -172,6 +183,47 @@ const configured = (g = gateway(), s = self(), t = tokenObjects()) => ({
   g,
   s,
   t,
+})
+
+describe('OPS_TICK_MODE (#1950)', () => {
+  const claimedRow = {
+    run_request_id: '0192f4a0-0000-7000-8000-000000000001', organization_id: ORG, workflow_id: WF, workflow_version: 3, trigger_kind: 'schedule',
+    claim_token: '11111111-2222-4333-8444-555555555555', claim_expires_at: '2026-10-17T10:03:30+00:00', state_version: 2, attempts: 0, uncharged_attempts: 0,
+    max_attempts: 3, resume_reason: null, execution_chain_id: '0192f4a0-0000-7000-9000-000000000001', resumed_from_execution_id: null, payload: null, payload_ref: null,
+  }
+
+  it('unset, the tick observes: no claim, no real fire', async () => {
+    const db = opsDatabase()
+    const { env } = configured()
+    const report = await runOpsTick(liveTickPorts(env, null, { sealRegistry, now: () => NOW, fetch: db.fetch }))
+    expect(report.mode).toBe('observe')
+    expect(db.called).not.toContain('claim_run_requests')
+    expect(db.called).not.toContain('record_schedule_fire')
+  })
+
+  it('live: records the fire through record_schedule_fire, claims with the run lease, and hands the run to OpsInternal.run signed', async () => {
+    const db = opsDatabase({
+      record_schedule_fire: [{ outcome: 'enqueued', fire_id: '0192f4a0-0000-7000-a000-000000000001', run_request_id: claimedRow.run_request_id, run_status: 'queued' }],
+      claim_run_requests: [claimedRow],
+    })
+    const { env, s } = configured()
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_TICK_MODE: 'live' } as OpsEnv, null, { sealRegistry, now: () => NOW, fetch: db.fetch }))
+    expect(report.mode).toBe('live')
+    expect(db.called).toEqual(expect.arrayContaining(['record_schedule_fire', 'claim_run_requests']))
+    expect(db.bodies.claim_run_requests).toMatchObject({ p_limit: 40, p_per_workflow: 5, p_lease_seconds: 60 })
+    expect(s.ran).toEqual([claimedRow.run_request_id])
+    expect(report.counts).toMatchObject({ runs_claimed: 1, runs_done: 1, fires_enqueued: 1 })
+  })
+
+  it('a value that names no mode runs observe, and is reported not configured by name', async () => {
+    const db = opsDatabase()
+    const { env } = configured()
+    const report = await runOpsTick(liveTickPorts({ ...env, OPS_TICK_MODE: 'yes' } as OpsEnv, null, { sealRegistry, now: () => NOW, fetch: db.fetch }))
+    expect(report.mode).toBe('observe')
+    expect(report.outcome).toBe('not_configured')
+    expect(report.not_configured_secrets).toEqual(['OPS_TICK_MODE'])
+    expect(db.called).not.toContain('claim_run_requests')
+  })
 })
 
 describe('the live tick', () => {

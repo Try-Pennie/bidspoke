@@ -75,6 +75,13 @@ export interface OpsEnv extends OpsDbEnv {
    * after each tick (reseal-live.ts). Unset, nothing is resealed.
    */
   OPS_RESEAL?: string
+  /**
+   * The minute tick's mode (#1950), in wrangler.ops.toml [vars] once Dan
+   * switches it: "live" records real fires, claims and runs; unset or
+   * "observe" (as deployed) records what it would run and runs nothing.
+   * Any other value runs observe and is reported not configured, by name.
+   */
+  OPS_TICK_MODE?: string
   PORTING_TEE: R2Bucket
   /**
    * The ops code namespace (bidspoke-code-nodes-ops). Its outbound Worker,

@@ -15,18 +15,22 @@
  */
 import { describe, expect, it } from 'vitest'
 import { MAX_DEFINITIONS_PER_REQUEST, OPS_TICK_PROBLEM_RULES } from '../../lib/ops-gateway-contract'
-import { organizationIdFrom } from '../ops-db'
+import { organizationIdFrom, type OrganizationId } from '../ops-db'
 import {
   OpsWriteTimeoutError, type ConnectionCopyInput, type SaveConnectionCopiesResult, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult,
   type WorkflowCopy, type WorkflowCopyInput,
 } from '../ops-writes'
 import type { OpsSweep } from '../run-vocabulary'
 import { ConnectionRefusal, RequeueAt } from '../connections/refusals'
-import type { ConnectionCheckTarget, SfLimitsTarget } from '../ops-writes'
+import type {
+  ClaimRunRequests, ClaimedRun, CompleteOutcome, CompletedRun, ConnectionCheckTarget, ScheduleFire, ScheduleFireResult, SfLimitsTarget,
+} from '../ops-writes'
+import { RUN_LEASE_SECONDS, type RunInvocationReport } from '../run-invocation'
 import { SF_LIMITS_EVERY_SECONDS } from '../sf-limits'
 import { CONNECTION_CHECK_JOB, SF_LIMITS_JOB } from '../../lib/ops-gateway-contract'
 import { CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_READ_LIMIT, CONNECTION_LOGINS_READ_LIMIT, type ProbeAnswer } from '../connection-check'
-import { DEFINITIONS_PER_TICK, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
+import {
+  COPIES_STALE_AFTER_MS, DEFINITIONS_PER_TICK, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, RUN_OUTCOME_FAILING_RATE, RUN_OUTCOME_MIN_RUNS, TICK_CLAIM_LIMIT, TICK_CLAIM_PER_WORKFLOW, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const WF_A = '00000000-0000-4000-8000-0000000019a1'
@@ -94,7 +98,12 @@ interface Fake {
     sfReadings: Array<{ sfOrgId: string; dailyApiMax: number; dailyApiRemaining: number }>
     connectionChecks: Array<{ connectionId: string; result: { ok: true } | { ok: false; cause: string } }>
     savedDefinitions: Array<{ organizationId: string; workflowId: string; versionNumber: number; definition: unknown }>
+    fires: Array<{ organizationId: string; fire: ScheduleFire }>
+    claims: ClaimRunRequests[]
+    completed: Array<{ runRequestId: string; end: CompleteOutcome }>
   }
+  /** The runs handed to OpsInternal.run (#1950). */
+  ranRuns: string[]
   /** The definition requests sent to the bidding Worker (#1950). */
   definitionRequests: Array<{ versions: Array<{ workflow_id: string; version_number: number }> }>
   dispatched: DispatchItem[]
@@ -152,6 +161,12 @@ function fake(opts: {
   serveDefs?: (request: { versions: Array<{ workflow_id: string; version_number: number }> }) => Promise<unknown>
   /** What save_workflow_definition answers each save. */
   saveDef?: (workflowId: string) => 'saved' | 'already_saved' | 'conflict' | 'no_copy'
+  /** The tick's mode (#1950); observe by default, as deployed. */
+  mode?: 'observe' | 'live'
+  /** The runs a live claim takes. */
+  claimed?: ClaimedRun[]
+  /** What OpsInternal.run answers for each run; completed done by default. */
+  runReport?: (run: ClaimedRun) => Promise<RunInvocationReport>
   failing?: Partial<Record<keyof OpsTickDb, Error>>
   observed?: (o: ScheduleObservation) => 'recorded' | 'already_recorded'
   dispatchFails?: (item: DispatchItem) => boolean
@@ -203,6 +218,21 @@ function fake(opts: {
     },
     async now() { fail('now'); return opts.dbNow ?? DB_NOW },
     savedDefinitions: [] as Array<{ organizationId: string; workflowId: string; versionNumber: number; definition: unknown }>,
+    fires: [] as Array<{ organizationId: string; fire: ScheduleFire }>,
+    claims: [] as ClaimRunRequests[],
+    completed: [] as Array<{ runRequestId: string; end: CompleteOutcome }>,
+    async recordFire(organizationId: OrganizationId, fire: ScheduleFire): Promise<ScheduleFireResult> {
+      fail('recordFire'); db.fires.push({ organizationId, fire })
+      return { outcome: 'enqueued', fireId: 'fire-1', runRequestId: 'run-1', runStatus: 'queued' }
+    },
+    async claimRuns(claim: ClaimRunRequests): Promise<ClaimedRun[]> {
+      fail('claimRuns'); db.claims.push(claim)
+      return opts.claimed ?? []
+    },
+    async completeRun(run: ClaimedRun, end: CompleteOutcome): Promise<CompletedRun> {
+      fail('completeRun'); db.completed.push({ runRequestId: run.runRequestId, end })
+      return { outcome: 'completed', runStatus: end.outcome }
+    },
     async missingDefinitions(limit: number) {
       fail('missingDefinitions'); calls.push(`missingDefinitions:${limit}`)
       const missing = (opts.missingDefs ?? []).map((m) => ({ ...m, organizationId: organizationIdFrom(m.organizationId) }))
@@ -252,7 +282,13 @@ function fake(opts: {
   const probes: string[] = []
   const objectReads: string[] = []
   const definitionRequests: Array<{ versions: Array<{ workflow_id: string; version_number: number }> }> = []
+  const ranRuns: string[] = []
   const ports: OpsTickPorts = {
+    mode: opts.mode ?? 'observe',
+    dispatchRun: async (run) => {
+      ranRuns.push(run.runRequestId)
+      return (opts.runReport ?? (async () => ({ outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' }) as RunInvocationReport))(run)
+    },
     tickId: 'tick-1',
     scheduledTime: Date.parse('2026-10-17T11:02:48.004Z'),
     now: () => WORKER_NOW,
@@ -308,7 +344,7 @@ function fake(opts: {
       dispatched.push(item)
     },
   }
-  return { ports, db, dispatched, stamps, reports, jobStamps, sfReads, probes, objectReads, definitionRequests }
+  return { ports, db, dispatched, stamps, reports, jobStamps, sfReads, probes, objectReads, definitionRequests, ranRuns }
 }
 
 describe('a healthy tick', () => {
@@ -596,6 +632,163 @@ describe('slots', () => {
     const f = fake({ copies: [copy({ scheduleKnownSince: '2026-10-17T10:00:00.000Z' })] })
     await runOpsTick(f.ports)
     expect(f.db.observations).toEqual([])
+  })
+})
+
+/** One claimed run of `workflowId`. */
+function claimedRun(workflowId: string, n: number, over: Partial<ClaimedRun> = {}): ClaimedRun {
+  return {
+    runRequestId: `0192f4a0-0000-7000-8000-${String(n).padStart(12, '0')}`, organizationId: ORG, workflowId, workflowVersion: 3,
+    triggerKind: 'schedule', claimToken: `token-${n}`, claimExpiresAt: '2026-10-17T10:03:30.000Z', stateVersion: 2,
+    attempts: 0, unchargedAttempts: 0, maxAttempts: 3, resumeReason: null,
+    executionChainId: `0192f4a0-0000-7000-9000-${String(n).padStart(12, '0')}`, resumedFromExecutionId: null, payload: null, payloadRef: null,
+    ...over,
+  }
+}
+
+describe('live mode (#1950): real fires, the claim and run dispatch', () => {
+  it('observe mode, as deployed, records observations and never claims or fires', async () => {
+    const f = fake({ claimed: [claimedRun(WF_A, 1)] })
+    const report = await runOpsTick(f.ports)
+    expect(report.mode).toBe('observe')
+    expect(f.db.fires).toEqual([])
+    expect(f.db.calls).not.toContain('claimRuns')
+    expect(f.ranRuns).toEqual([])
+  })
+
+  it('records a due slot as a real fire with its schedule\'s overlap, and observes nothing it would fire', async () => {
+    const f = fake({ mode: 'live' })
+    const report = await runOpsTick(f.ports)
+    expect(report.mode).toBe('live')
+    expect(f.db.fires).toEqual([{ organizationId: ORG, fire: {
+      workflowId: WF_A, workflowVersion: 3, scheduledFor: new Date('2026-10-17T10:00:00.000Z'), previousScheduledFor: null, overlap: 'skip',
+    } }])
+    expect(f.db.observations.filter((o) => o.outcome === 'would_fire')).toEqual([])
+    expect(f.dispatched.filter((d) => d.kind === 'would_fire')).toEqual([])
+    expect(report.counts.fires_enqueued).toBe(1)
+  })
+
+  it('plans from the later of the last real fire and the last observed slot, so going live re-fires nothing observe already passed', async () => {
+    const f = fake({ mode: 'live', copies: [copy({ lastServed: null, lastObserved: '2026-10-17T10:00:00.000Z' })] })
+    await runOpsTick(f.ports)
+    expect(f.db.fires).toEqual([])
+    // An older real fire does not stand in front of a later observed slot.
+    const both = fake({ mode: 'live', copies: [copy({ lastServed: '2026-10-17T09:55:00.000Z', lastObserved: '2026-10-17T10:00:00.000Z' })] })
+    await runOpsTick(both.ports)
+    expect(both.db.fires).toEqual([])
+  })
+
+  it('claims with k per workflow and its run lease, hands each claimed run to OpsInternal.run, and counts what they ended as', async () => {
+    const f = fake({ mode: 'live', claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2)] })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.claims).toEqual([{ worker: 'tick-1', limit: TICK_CLAIM_LIMIT, perWorkflow: TICK_CLAIM_PER_WORKFLOW, leaseSeconds: RUN_LEASE_SECONDS }])
+    expect(f.ranRuns.sort()).toEqual([claimedRun(WF_A, 1).runRequestId, claimedRun(WF_A, 2).runRequestId])
+    expect(report.counts).toMatchObject({ runs_claimed: 2, runs_done: 2 })
+    expect(report.outcome).toBe('ok')
+  })
+
+  it('ends a claimed run of a workflow switched off, deleted or with no copy, without running it', async () => {
+    const WF_C = '00000000-0000-4000-8000-0000000019a3'
+    const f = fake({
+      mode: 'live',
+      copies: [copy(), copy({ workflowId: WF_B, isActive: false, mayStart: false }), copy({ workflowId: WF_C, deletedAt: '2026-10-17T09:30:00.000Z', mayStart: false })],
+      claimed: [claimedRun(WF_B, 1), claimedRun(WF_C, 2), claimedRun('00000000-0000-4000-8000-0000000019ff', 3)],
+    })
+    await runOpsTick(f.ports)
+    expect(f.ranRuns).toEqual([])
+    expect(f.db.completed.map((c) => c.end)).toEqual([
+      { outcome: 'dead', reason: 'workflow_inactive' }, { outcome: 'dead', reason: 'workflow_deleted' }, { outcome: 'dead', reason: 'workflow_deleted' },
+    ])
+  })
+
+  it('refuses to fire or start anything from copies last confirmed more than 6 hours ago, and pages at once (Dan, 2026-10-22)', async () => {
+    expect(COPIES_STALE_AFTER_MS).toBe(6 * 3600_000)
+    const stale = new Date(Date.parse(DB_NOW) - COPIES_STALE_AFTER_MS - 60_000).toISOString()
+    const f = fake({
+      mode: 'live', fetch: async () => { throw new Error('the bidding database did not answer') },
+      copies: [copy({ confirmedAt: stale })], claimed: [claimedRun(WF_A, 1)],
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.fires).toEqual([])
+    expect(f.db.calls).not.toContain('claimRuns')
+    expect(f.ranRuns).toEqual([])
+    expect(report.problem_keys).toContain('copies_stale')
+    expect(OPS_TICK_PROBLEM_RULES.copies_stale).toBe('at_once')
+  })
+
+  it('within the 6 hours, a bidding outage still fires and runs from the saved copies', async () => {
+    const recent = new Date(Date.parse(DB_NOW) - COPIES_STALE_AFTER_MS + 60_000).toISOString()
+    const f = fake({ mode: 'live', fetch: async () => { throw new Error('down') }, copies: [copy({ confirmedAt: recent })], claimed: [claimedRun(WF_A, 1)] })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.fires).toHaveLength(1)
+    expect(f.ranRuns).toHaveLength(1)
+    expect(report.problem_keys).not.toContain('copies_stale')
+  })
+
+  it('one run whose dispatch throws stops none of the others (L73)', async () => {
+    const f = fake({
+      mode: 'live', claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2)],
+      runReport: async (run) => { if (run.runRequestId.endsWith('1')) throw new Error('OpsInternal.run did not answer'); return { outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' } },
+    })
+    const report = await runOpsTick(f.ports)
+    expect(f.ranRuns).toHaveLength(2)
+    expect(report.counts).toMatchObject({ runs_done: 1, runs_lost: 1 })
+  })
+
+  it('a claim that fails is its own problem, held for three ticks, and the schedules still fire', async () => {
+    const f = fake({ mode: 'live', failing: { claimRuns: new Error('lock timeout') } })
+    const report = await runOpsTick(f.ports)
+    expect(report.problem_keys).toContain('claim_failed')
+    expect(OPS_TICK_PROBLEM_RULES.claim_failed).toBe('three_in_a_row')
+    expect(f.db.fires).toHaveLength(1)
+  })
+})
+
+describe('run outcomes counted against a rate (L77, #1950)', () => {
+  const unknown: RunInvocationReport = { outcome: 'completed', end: { outcome: 'needs_human', reason: 'send_outcome_unknown', error: 'x' }, runStatus: 'needs_human' }
+  const requeued: RunInvocationReport = { outcome: 'completed', end: { outcome: 'retry', error: 'step a: rate_limited' }, runStatus: 'queued' }
+  const lost: RunInvocationReport = { outcome: 'claim_lost', during: 'heartbeat' }
+
+  it('pages at once for a run whose send outcome is unknown, since a person must resolve it', async () => {
+    const f = fake({ mode: 'live', claimed: [claimedRun(WF_A, 1)], runReport: async () => unknown })
+    const report = await runOpsTick(f.ports)
+    expect(report.problem_keys).toContain(`run_outcome_unknown:${WF_A}`)
+    expect(OPS_TICK_PROBLEM_RULES.run_outcome_unknown).toBe('at_once')
+    expect(report.counts.runs_unknown).toBe(1)
+  })
+
+  it('pages, held for three ticks, when lost and requeued runs of one workflow reach the rate, and only at the minimum count', async () => {
+    expect(RUN_OUTCOME_MIN_RUNS).toBe(3)
+    expect(RUN_OUTCOME_FAILING_RATE).toBe(0.5)
+    const reports = [lost, requeued, { outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' } as RunInvocationReport]
+    const f = fake({ mode: 'live', claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2), claimedRun(WF_A, 3)], runReport: async (run) => reports[Number(run.runRequestId.slice(-1)) - 1] })
+    const report = await runOpsTick(f.ports)
+    expect(report.problem_keys).toContain(`runs_failing:${WF_A}`)
+    expect(OPS_TICK_PROBLEM_RULES.runs_failing).toBe('three_in_a_row')
+    expect(report.counts).toMatchObject({ runs_lost: 1, runs_requeued: 1, runs_done: 1 })
+
+    // Below the minimum count, the same rate is not judged (L716).
+    const few = fake({ mode: 'live', claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2)], runReport: async () => lost })
+    expect((await runOpsTick(few.ports)).problem_keys ?? []).not.toContain(`runs_failing:${WF_A}`)
+  })
+
+  it('counts each workflow apart: one workflow failing does not page for another', async () => {
+    const f = fake({
+      mode: 'live',
+      copies: [copy(), copy({ workflowId: WF_B, trigger: { type: 'http_webhook', config: {} } })],
+      claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2), claimedRun(WF_A, 3), claimedRun(WF_B, 4), claimedRun(WF_B, 5), claimedRun(WF_B, 6)],
+      runReport: async (run) => (run.workflowId === WF_A ? lost : { outcome: 'completed', end: { outcome: 'done' }, runStatus: 'done' }),
+    })
+    const report = await runOpsTick(f.ports)
+    expect(report.problem_keys).toContain(`runs_failing:${WF_A}`)
+    expect(report.problem_keys).not.toContain(`runs_failing:${WF_B}`)
+  })
+
+  it('pages at once when the lease sweep sends a lapsed run with a send to a person', async () => {
+    const f = fake({ leases: { requeued: 0, retried: 0, needsHuman: 2, dead: 0, failed: 0, more: false } })
+    const report = await runOpsTick(f.ports)
+    expect(report.problem_keys).toContain('runs_lapsed_after_send')
+    expect(OPS_TICK_PROBLEM_RULES.runs_lapsed_after_send).toBe('at_once')
   })
 })
 

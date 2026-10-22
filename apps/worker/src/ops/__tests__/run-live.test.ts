@@ -1,0 +1,100 @@
+/**
+ * OpsInternal.run (#1950, PR 4b of B3): a claimed run the tick dispatched,
+ * verified, its definition found, and run through invokeRun against the ops
+ * database's own functions. The database here is a fake PostgREST answering
+ * each function by name, so these tests prove the wiring: the signature and
+ * item checks, the definition read from the frozen copy and fetched from the
+ * bidding Worker when not held, and a run whose definition cannot be had
+ * returned to the queue without being started.
+ */
+import { describe, expect, it } from 'vitest'
+import { dispatchKey, signDispatch } from '../dispatch-auth'
+import type { OpsEnv } from '../index'
+import type { ClaimedRun } from '../ops-writes'
+import { organizationIdFrom } from '../ops-db'
+import { RUN_DEFINITION_RETRY_MS, runDispatched } from '../run-live'
+
+const NOW = Date.parse('2026-10-17T10:02:31.000Z')
+const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
+const WF = '00000000-0000-4000-8000-0000000019a1'
+const DEF = { nodes: [], edges: [] }
+
+const RUN: ClaimedRun = {
+  runRequestId: '0192f4a0-0000-7000-8000-000000000001', organizationId: ORG, workflowId: WF, workflowVersion: 3,
+  triggerKind: 'schedule', claimToken: '11111111-2222-4333-8444-555555555555', claimExpiresAt: '2026-10-17T10:03:31.000Z', stateVersion: 2,
+  attempts: 0, unchargedAttempts: 0, maxAttempts: 3, resumeReason: null, executionChainId: '0192f4a0-0000-7000-9000-000000000001',
+  resumedFromExecutionId: null, payload: null, payloadRef: null,
+}
+
+/** The ops database: each function answered by name, every call recorded with its arguments. */
+function opsDb(answers: Record<string, unknown>) {
+  const calls: Array<{ name: string; body: Record<string, unknown> }> = []
+  const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const name = new URL(input instanceof Request ? input.url : input.toString()).pathname.replace('/rest/v1/rpc/', '')
+    calls.push({ name, body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> })
+    if (!(name in answers)) return Response.json({ code: '42883', message: `no function ${name}` }, { status: 404 })
+    return Response.json(answers[name])
+  }) as typeof globalThis.fetch
+  return { fetch, calls, names: () => calls.map((c) => c.name) }
+}
+
+const LIFECYCLE = {
+  start_run_execution: [{ outcome: 'started', state_version: 3, attempt: 1 }],
+  extend_run_lease: true,
+  complete_run_request: [{ outcome: 'completed', run_status: 'failed', state_version: 4 }],
+  save_workflow_definition: 'saved',
+}
+
+function env(gateway?: { opsWorkflowDefinitions(r: unknown): Promise<unknown> }): OpsEnv {
+  return {
+    LANE: 'ops', PORTING_CAPTURE_MASTER: 'master-secret', OPS_SUPABASE_URL: 'https://zwihpjxouklvkvngkvmw.supabase.co', OPS_SUPABASE_SECRET_KEY: 'sb_secret_test_not_real',
+    ...(gateway ? { OPS_GATEWAY: gateway } : {}),
+  } as unknown as OpsEnv
+}
+
+async function signed(item: unknown, master = 'master-secret') {
+  return signDispatch(await dispatchKey(master), { v: 1, tick_id: 'tick-1', signed_at: new Date(NOW).toISOString(), item: item as never })
+}
+
+const deps = (fetch: typeof globalThis.fetch) => ({ nowMs: NOW, opsFetch: fetch, newExecutionId: () => '0192f4a0-0000-7000-8000-0000000000ee' })
+
+describe('OpsInternal.run', () => {
+  it('refuses outside the ops lane, a signature that does not verify, and an item that is not a run, each by name', async () => {
+    const db = opsDb(LIFECYCLE)
+    expect(await runDispatched({ ...env(), LANE: 'money' } as OpsEnv, await signed({ kind: 'run', run: RUN }), deps(db.fetch))).toMatchObject({ refused: 'lane_not_ops (money)' })
+    expect(await runDispatched(env(), await signed({ kind: 'run', run: RUN }, 'another-master'), deps(db.fetch))).toEqual({ refused: 'bad_signature' })
+    expect(await runDispatched(env(), await signed({ kind: 'probe' }), deps(db.fetch))).toEqual({ refused: 'not_a_run' })
+    expect(db.calls).toEqual([])
+  })
+
+  it('runs a run whose definition ops holds: reads it in the run\'s organization, starts under the claim token, and ends the claim', async () => {
+    const db = opsDb({ ...LIFECYCLE, workflow_definition: [{ definition: DEF, saved_at: '2026-10-17T09:00:00Z' }] })
+    const report = await runDispatched(env(), await signed({ kind: 'run', run: RUN }), deps(db.fetch))
+    expect(report).toMatchObject({ outcome: 'completed' })
+    const read = db.calls.find((c) => c.name === 'workflow_definition')
+    expect(read?.body).toEqual({ p_organization_id: ORG, p_workflow_id: WF, p_version_number: 3 })
+    expect(db.calls.find((c) => c.name === 'start_run_execution')?.body).toMatchObject({ p_run_request_id: RUN.runRequestId, p_claim_token: RUN.claimToken })
+    expect(db.names().indexOf('start_run_execution')).toBeLessThan(db.names().indexOf('complete_run_request'))
+  })
+
+  it('fetches a definition ops does not hold from the bidding Worker, freezes it, then runs', async () => {
+    const asked: unknown[] = []
+    const gateway = { opsWorkflowDefinitions: async (r: unknown) => { asked.push(r); return { definitions: [{ workflow_id: WF, organization_id: ORG, version_number: 3, definition: DEF }], unserved: [] } } }
+    const db = opsDb({ ...LIFECYCLE, workflow_definition: [] })
+    const report = await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN }), deps(db.fetch))
+    expect(asked).toEqual([{ versions: [{ workflow_id: WF, version_number: 3 }] }])
+    expect(db.names()).toContain('save_workflow_definition')
+    expect(report).toMatchObject({ outcome: 'completed' })
+  })
+
+  it('a definition it cannot have returns the run to the queue a minute on, without starting it', async () => {
+    const gateway = { opsWorkflowDefinitions: async () => { throw new Error('the bidding Worker did not answer') } }
+    const db = opsDb({ ...LIFECYCLE, workflow_definition: [], complete_run_request: [{ outcome: 'completed', run_status: 'queued', state_version: 3 }] })
+    const report = await runDispatched(env(gateway), await signed({ kind: 'run', run: RUN }), deps(db.fetch))
+    expect(db.names()).not.toContain('start_run_execution')
+    const complete = db.calls.find((c) => c.name === 'complete_run_request')
+    expect(complete?.body).toMatchObject({ p_outcome: 'retry', p_not_before: new Date(NOW + RUN_DEFINITION_RETRY_MS).toISOString() })
+    expect(String(complete?.body.p_error)).toMatch(/definition/)
+    expect(report).toMatchObject({ outcome: 'definition_unavailable' })
+  })
+})

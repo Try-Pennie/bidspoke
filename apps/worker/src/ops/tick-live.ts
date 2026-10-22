@@ -20,13 +20,14 @@
  * tick awaits everything it starts and a call that never answers would hold the
  * tick, and every dispatched call with it, until the 15 minute wall.
  */
-import type { OpsTickReport } from '../lib/ops-gateway-contract'
+import type { OpsTickMode, OpsTickReport } from '../lib/ops-gateway-contract'
+import type { RunInvocationReport } from './run-invocation'
 import { raceDeadline } from '../lib/alert-claim'
 import { opsConnectionKeyProblems, type SealRegistry } from './connection-key'
 import { createOpsSupabaseClient, OpsDatabaseConfigError, type OpsSupabaseClient } from './ops-db'
 import {
   claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, purgeScheduleObservations, readConnectionCheckTargets,
-  readMissingWorkflowDefinitions, saveWorkflowDefinition, readSfLimitsTargets,
+  readMissingWorkflowDefinitions, saveWorkflowDefinition, recordScheduleFire, claimRunRequests, completeRunRequest, type ClaimedRun, readSfLimitsTargets,
   readWorkflowCopies, recordConnectionCheck, recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements,
   saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions,
 } from './ops-writes'
@@ -44,6 +45,20 @@ import type { DispatchItem, OpsTickDb, OpsTickPorts } from './tick'
 export const GATEWAY_DEADLINE_MS = 15_000
 /** An observe dispatch: a verify and a log line. */
 export const DISPATCH_DEADLINE_MS = 10_000
+/**
+ * A run dispatch (#1950): a whole run, whose lease extend_run_lease caps at 15
+ * minutes from its claim, the wall clock of the tick that dispatched it (spike
+ * P1, P4). Just inside that, so the tick reports the run lost rather than being
+ * cut off with it.
+ */
+export const RUN_DISPATCH_DEADLINE_MS = 14 * 60_000 + 30_000
+
+/** The modes OPS_TICK_MODE may name. Unset is observe, as deployed; anything else is observe too, and named as not configured. */
+export function tickModeFrom(value: string | undefined): { mode: OpsTickMode; unknown: string | null } {
+  if (value === undefined || value.trim() === '' || value.trim() === 'observe') return { mode: 'observe', unknown: null }
+  if (value.trim() === 'live') return { mode: 'live', unknown: null }
+  return { mode: 'observe', unknown: value }
+}
 
 export interface LiveTickOptions {
   now?: () => number
@@ -64,6 +79,9 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     expireRuns: (limit) => expireOverdueRunRequests(client, limit, rpc),
     purgeTombstones: (limit) => purgeExpiredConnectionTombstones(client, limit, rpc),
     purgeObservations: (limit) => purgeScheduleObservations(client, limit, rpc),
+    recordFire: (org, fire) => recordScheduleFire(client, org, fire, rpc),
+    claimRuns: (claim) => claimRunRequests(client, claim, rpc),
+    completeRun: (run, end) => completeRunRequest(client, run.organizationId, run.runRequestId, run.claimToken, end, rpc),
     missingDefinitions: (limit) => readMissingWorkflowDefinitions(client, limit, rpc),
     saveDefinition: (org, workflowId, versionNumber, definition) => saveWorkflowDefinition(client, org, workflowId, versionNumber, definition, rpc),
     sweepSfLeases: (limit) => sweepSfLeases(client, limit, rpc),
@@ -171,12 +189,33 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
   const gateway = env.OPS_GATEWAY
   const self = env.SELF
   const noGateway = () => new Error('the OPS_GATEWAY binding to the bidding Worker is missing from this deploy')
+  const mode = tickModeFrom(env.OPS_TICK_MODE)
   return {
+    mode: mode.mode,
+    dispatchRun: async (run: ClaimedRun): Promise<RunInvocationReport> => {
+      if (!self) throw new Error('the SELF binding is missing from this deploy')
+      const signed = await signDispatch(await dispatchKey(env.PORTING_CAPTURE_MASTER), {
+        v: 1, tick_id: tickId, signed_at: new Date(now()).toISOString(), item: { kind: 'run', run },
+      })
+      const answer = await bounded('OpsInternal.run', () => self.run(signed), RUN_DISPATCH_DEADLINE_MS, options.delay)
+      const a = (typeof answer === 'object' && answer !== null ? answer : {}) as { refused?: unknown; outcome?: unknown; error?: unknown }
+      if (typeof a.refused === 'string') throw new Error(`OpsInternal refused the run: ${a.refused}`)
+      // Returned to the queue for want of its definition: counted as requeued.
+      if (a.outcome === 'definition_unavailable') return { outcome: 'completed', end: { outcome: 'retry', error: String(a.error) }, runStatus: 'queued' }
+      if (a.outcome !== 'completed' && a.outcome !== 'claim_lost' && a.outcome !== 'start_failed' && a.outcome !== 'complete_failed') {
+        throw new Error('OpsInternal.run answered without saying how the run ended')
+      }
+      return answer as RunInvocationReport
+    },
     tickId,
     scheduledTime,
     now,
     db: opsTickDatabase(env, options),
-    checkSecrets: () => opsConnectionKeyProblems(env, options.sealRegistry),
+    // An OPS_TICK_MODE that names no mode is not configured, by name: the tick runs in observe mode meanwhile.
+    checkSecrets: async () => [
+      ...(mode.unknown === null ? [] : [{ secret: 'OPS_TICK_MODE', problem: `OPS_TICK_MODE is ${JSON.stringify(mode.unknown)}, which is neither observe nor live, so the tick ran in observe mode.` }]),
+      ...(await opsConnectionKeyProblems(env, options.sealRegistry)),
+    ],
     gateway: {
       fetchWorkflows: () => {
         if (!gateway) throw noGateway()

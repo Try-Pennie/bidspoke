@@ -68,6 +68,10 @@ function opsDb() {
     // Every version held: this test is about the connection copies.
     missingDefinitions: async () => ({ missing: [], reachedLimit: false }),
     saveDefinition: async () => { throw new Error('nothing is missing') },
+    // Observe mode, as deployed: nothing fires for real, is claimed or ended.
+    recordFire: async () => { throw new Error('observe mode fires nothing') },
+    claimRuns: async () => { throw new Error('observe mode claims nothing') },
+    completeRun: async () => { throw new Error('observe mode ends no run') },
     // Unclaimed (TICK_SF_LEASE_SWEEP), so it runs every tick: nothing has lapsed here.
     sweepSfLeases: async () => ({ swept: 0, more: false }),
     queueDisagreements: async () => [],
@@ -119,6 +123,8 @@ function opsDb() {
 
 function ports(db: OpsTickDb, fetchConnections: () => Promise<unknown>): OpsTickPorts {
   return {
+    mode: 'observe',
+    dispatchRun: async () => { throw new Error('observe mode dispatches no run') },
     tickId: `tick-${clock.value}`,
     scheduledTime: clock.value,
     now: () => clock.value,

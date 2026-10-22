@@ -18,8 +18,9 @@
  * `ping` proves the dispatch arrives. `observe` (#1949) is what the minute cron
  * dispatches in observe mode: every fire it would have made, signed
  * (dispatch-auth.ts), verified here and logged, and nothing more, so the path a
- * run will take is exercised every minute short of the run itself (L142). Run
- * invocation (#1950) adds its run method here, behind the same checks.
+ * run will take is exercised every minute short of the run itself (L142).
+ * `run` (#1950) is what the tick dispatches in live mode: one claimed run,
+ * behind the same checks (run-live.ts).
  * Spike 0 measured what a call here may spend: its own CPU budget (32 s, not the
  * caller's), and it is canceled the moment its caller's invocation ends, so a
  * caller must await it (docs/ops-ceilings-spike.md P4).
@@ -29,6 +30,7 @@ import { dispatchKey, verifyDispatch, type SignedDispatch } from './dispatch-aut
 import { OPS_LANE, type OpsEnv } from './index'
 import { resealConnections, type ResealRefused, type ResealReport } from './reseal'
 import { liveResealDeps, ResealNotConfigured } from './reseal-live'
+import { runDispatched, type RunDispatchAnswer } from './run-live'
 
 /** A refusal by OpsInternal, carrying its reason. */
 export class OpsInternalRefused extends Error {
@@ -44,6 +46,8 @@ export interface OpsInternalBinding {
   observe(signed: SignedDispatch): Promise<unknown>
   /** A ResealReport or a ResealRefused (#2333). */
   resealConnections(request: { apply: boolean }): Promise<unknown>
+  /** One claimed run, signed (#1950): a RunDispatchAnswer (run-live.ts). */
+  run(signed: SignedDispatch): Promise<unknown>
 }
 
 /** What observe answers. */
@@ -78,6 +82,8 @@ export async function observeDispatch(env: OpsEnv, signed: unknown, nowMs: numbe
   opsInternalIdentity(env)
   const envelope = await verifyDispatch(await dispatchKey(env.PORTING_CAPTURE_MASTER), signed, nowMs)
   const item = envelope.item
+  // A run is OpsInternal.run's, never observed (#1950).
+  if (item.kind === 'run') throw new OpsInternalRefused('not_observed_a_run')
   console.log(JSON.stringify({
     event: 'ops_observe', tick_id: envelope.tick_id, kind: item.kind,
     ...(item.kind === 'would_fire' ? { workflow_id: item.workflowId, scheduled_for: item.scheduledFor, dispatch_at: item.dispatchAt } : {}),
@@ -88,6 +94,16 @@ export async function observeDispatch(env: OpsEnv, signed: unknown, nowMs: numbe
 export class OpsInternal extends WorkerEntrypoint<OpsEnv> {
   ping() {
     return opsInternalIdentity(this.env)
+  }
+
+  /**
+   * One claimed run the minute tick dispatched in live mode (#1950): verified,
+   * its definition found, and run to the end of its claim (run-live.ts, which
+   * says who may call it and whose data it touches). Every answer is a value,
+   * a refusal included; the tick awaits it, since this call dies with its caller.
+   */
+  async run(signed: SignedDispatch): Promise<RunDispatchAnswer> {
+    return runDispatched(this.env, signed, { nowMs: Date.now() })
   }
 
   async observe(signed: SignedDispatch): Promise<ObservedDispatch | RefusedDispatch> {
