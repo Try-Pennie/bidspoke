@@ -20,8 +20,8 @@
  * version 40 and its Constants minimum in version 41, #2594) is checked as one
  * change, and the versions between are named. Exit 0 on a pass, or when the
  * version checked still holds the pinned script (the swap is not saved yet, said
- * as such); 1 on any difference, or when none of the SEARCH_DEPTH versions before
- * it holds the pinned script.
+ * as such); 1 on any difference, or when none of the SEARCH_DEPTH - 1 versions
+ * read before it holds the pinned script (SEARCH_DEPTH counts the one checked).
  */
 import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
