@@ -12,6 +12,26 @@ import type { ConnectionListRow } from '@/lib/api'
 
 const ET = 'America/New_York'
 
+/** What the could not load card says when Bidspoke's server gave no answer (D23). */
+export const LIST_NO_ANSWER = "Bidspoke's server did not answer."
+
+/**
+ * What a failed list load says, on the page's card and under a step's
+ * Connection field alike: the design's sentence when the server gave no
+ * answer, else the route's own.
+ */
+export function loadFailedSentence(cause: string): string {
+  return cause === LIST_NO_ANSWER ? `The connections could not be loaded: ${LIST_NO_ANSWER}` : cause
+}
+
+/** Why a list load failed: no answer, or the route's own sentence; never a raw fetch error or a status code. */
+export function listFailureCause(err: unknown): string {
+  const e = (err ?? {}) as { body?: unknown }
+  const sentence = e.body && typeof e.body === 'object' ? (e.body as { message?: unknown }).message : undefined
+  if (typeof sentence === 'string' && sentence.trim() !== '') return sentence
+  return LIST_NO_ANSWER
+}
+
 /** The Google section's own entry, the company list of mailboxes and drives (R10, D10). */
 export const GOOGLE_SERVICE_NAME = 'Google'
 export const GOOGLE_LIST_ENTRY = 'Mailboxes and drives'

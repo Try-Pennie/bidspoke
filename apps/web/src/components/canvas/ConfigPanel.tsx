@@ -338,7 +338,8 @@ export default function ConfigPanel({ node, onUpdate = () => {}, onDelete = () =
           </div>
         </div>
       ) : (
-      <div className="flex-1 overflow-y-auto text-sm">
+      // The id is what the settled step form design's checks read a step's fields by (#2338).
+      <div id="step-panel-body" className="flex-1 overflow-y-auto text-sm">
       <div className={`p-4 space-y-5 ${readOnly ? 'pointer-events-none' : ''}`}>
 
         {/* Broken references (#424). Placed above the fields so it is read

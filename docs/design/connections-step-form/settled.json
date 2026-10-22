@@ -11,21 +11,31 @@
  "fixture": "../connections-step-form.fixture.json",
  "frames": [
   {"id": "step-healthy", "title": "A Salesforce step on a working connection: Pennie Salesforce", "width": 1120, "variant": {"chosen": "Pennie Salesforce"}},
-  {"id": "step-problem", "title": "A Salesforce step on a connection with a problem: Achieve Salesforce", "width": 1120, "variant": {"chosen": "Achieve Salesforce"}}
+  {"id": "step-problem", "title": "A Salesforce step on a connection with a problem: Achieve Salesforce", "width": 1120, "variant": {"chosen": "Achieve Salesforce"}},
+  {"id": "step-failing", "title": "A Salesforce step on a connection whose login check is failing: Lendco Salesforce", "width": 1120, "variant": {"chosen": "Lendco Salesforce"}},
+  {"id": "none-chosen", "title": "A Salesforce step with no connection chosen yet", "width": 1120, "variant": {"chosen": null}},
+  {"id": "loading", "title": "The connections list still loading, 6 seconds in", "width": 1120, "variant": {"chosen": "Pennie Salesforce", "list": "loading"}},
+  {"id": "failed", "title": "The connections list got no answer", "width": 1120, "variant": {"chosen": "Pennie Salesforce", "list": "failed"}},
+  {"id": "refused", "title": "The connections list refused, in the route's own words", "width": 1120, "variant": {"chosen": "Pennie Salesforce", "list": "refused"}},
+  {"id": "empty", "title": "No Salesforce connection yet", "width": 1120, "variant": {"chosen": null, "list": "empty"}},
+  {"id": "gone", "title": "A chosen connection the list no longer holds", "width": 1120, "variant": {"chosen": "Removed Salesforce"}}
  ],
  "decisions": [
-  {"id": "D8", "decision": "On the canvas, a step's Connection field is the app's dropdown with the chosen connection's name, with only \"Acts as <who>\" under it; nothing about status on a healthy day. A connection with a problem adds one red line saying what is wrong and where it is fixed, \"Needs reconnecting on the Connections page\", its last two words a dark underlined link to that page.", "why": "Rounds 8 and 8b: who the step acts as is the fact a builder needs; a healthy status is noise. Round 24: the problem is fixed on the Connections page, so the line says so and links there.", "requirement": "R8",
-   "frames": ["step-healthy", "step-problem"],
-   "check": "The Connection field is a dropdown reading the chosen connection's name with \"Acts as <who>\" under it and nothing else on a working connection; on a connection with a problem one more line reads \"Needs reconnecting on the Connections page\" in red (#B42318) at weight 500, holding one link reading Connections page that is dark (#1D212F), underlined and of normal weight (400)."},
+  {"id": "D8", "decision": "On the canvas, a step's Connection field is the app's dropdown with the chosen connection's name, with only \"Acts as <who>\" under it; nothing about status on a healthy day. A connection with a problem adds one red line saying what is wrong and where it is fixed, \"Needs reconnecting on the Connections page\", or \"Check failing on the Connections page\" when its login check is failing, its last two words a dark underlined link to that page.", "why": "Rounds 8 and 8b: who the step acts as is the fact a builder needs; a healthy status is noise. Round 24: the problem is fixed on the Connections page, so the line says so and links there. Dan, 2026-10-20 (the R8 follow up on #2338): a failing check reads the same way.", "requirement": "R8",
+   "frames": ["step-healthy", "step-problem", "step-failing"],
+   "check": "The Connection field is a dropdown reading the chosen connection's name with \"Acts as <who>\" under it and nothing else on a working connection; on a connection with a problem one more line reads \"<status> on the Connections page\" (Needs reconnecting, or Check failing) in red (FieldError's red, or #B42318) at weight 500, holding one link reading Connections page that is dark (#1D212F), underlined and of normal weight (400)."},
   {"id": "D24", "decision": "Blue is for buttons only; links are dark and underlined.", "why": "The app's colour rule (.impeccable.md, #2114).", "requirement": "R24",
-   "frames": ["step-healthy", "step-problem"],
+   "frames": ["step-healthy", "step-problem", "step-failing", "none-chosen", "loading", "failed", "refused", "empty", "gone"],
    "check": "Nothing in the Connection field is coloured blue (#1B72BA) in its text or background outside a button, and every link in it is dark (#1D212F) and underlined."},
   {"id": "D25", "decision": "Red is only for something genuinely wrong.", "why": "The app's colour rule (.impeccable.md, #2114).", "requirement": "R24",
-   "frames": ["step-healthy", "step-problem"],
-   "check": "Red (#B42318) appears in the step panel only on the line saying the connection has a problem."},
+   "frames": ["step-healthy", "step-problem", "step-failing", "none-chosen", "loading", "failed", "refused", "empty", "gone"],
+   "check": "Red (FieldError's red, read from FieldError's class on each side, or #B42318) appears in the step panel only on the line saying the connection has a problem and on a sentence saying the list could not be read or the chosen connection no longer exists, and every such sentence is drawn in that red."},
   {"id": "D27", "decision": "No line of text ends with a single word on its own line. A rule for all of Bidspoke's copy, made by Dan on 2026-10-20 in these rounds.", "why": "Dan, 2026-10-20, #2338 design rounds.", "requirement": "R25",
-   "frames": ["step-healthy", "step-problem"],
-   "check": "No block of text in the Connection field wraps so that its last line holds a single word (the other fields are the product's copy as it is today, not decided here)."}
+   "frames": ["step-healthy", "step-problem", "step-failing", "none-chosen", "loading", "failed", "refused", "empty", "gone"],
+   "check": "No block of text in the Connection field wraps so that its last line holds a single word, a link's words read as part of the sentence around them (the other fields are the product's copy as it is today, not decided here)."},
+  {"id": "D37", "decision": "The Connection field's own states. Nothing chosen: the dropdown reads \"Choose a connection\" in the hint grey with nothing under it. While the list loads: the dropdown is blank and one working line with its spinner reads \"Loading the connections, <n> s\". A list that could not be read: the dropdown is blank, one red line says why (\"The connections could not be loaded: Bidspoke's server did not answer.\" when no answer came, else the route's own sentence) and a Try again button sits under it. No connection of the step's service: the placeholder, and in grey \"No Salesforce connection yet. Add one on the Connections page.\", its page a dark underlined link. A chosen connection the list no longer holds: the placeholder, and in red \"The connection this step used no longer exists. Choose another.\" No state shows a connection's id.", "why": "Dan passed each state as built on 2026-10-21 (#2338, build PR 11), answering Settled.", "requirement": "R8",
+   "frames": ["none-chosen", "loading", "failed", "refused", "empty", "gone"],
+   "check": "Per frame: the dropdown's text (the placeholder in the hint grey #697081, or blank), the lines under it read exactly as the decision says, a failed or gone sentence in FieldError's red, the empty line's one link reading Connections page dark and underlined, the loading line holding a spinner, a failed list a Try again button, and nothing under or in the field naming the chosen connection."}
  ],
  "exceptions": [],
  "idioms": [
