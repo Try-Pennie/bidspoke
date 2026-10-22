@@ -19,7 +19,7 @@ import { opsServiceEntry, registeredOpsServices } from '../services'
 import { CONN, ORG, T0, makeDoubles, makeKeys, sealLogin, usableCopy, visibleText, type Doubles, type TestKeys } from './harness'
 
 /** The canary key: not shaped like a real one, so no scanner reads it as a secret. */
-const API_KEY = 'canary-anthropic-key-2337'
+const API_KEY = 'canary-ant-key-2337'
 const WORKSPACE = 'wrkspc_0PS2337'
 const ORGANIZATION = '0a1b2c3d-0000-4000-8000-000000002337'
 const TARGET = { workspace_id: WORKSPACE }

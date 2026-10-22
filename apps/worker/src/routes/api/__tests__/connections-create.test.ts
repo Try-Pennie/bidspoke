@@ -380,12 +380,12 @@ describe('the sealed login opens through the real ops minters (round trip)', () 
         return { ok: true, service: 'anthropic', generation: 1, identity: { kind: 'anthropic', workspace_id: 'wrkspc_0PS2337', organization_id: '0a1b2c3d-0000-4000-8000-000000002337' } }
       },
     })
-    const res = await post(env, { service: 'anthropic', name: 'Lead notes 2', fields: { workspace_id: 'wrkspc_0PS2337', api_key: 'canary-anthropic-key-2337' } })
+    const res = await post(env, { service: 'anthropic', name: 'Lead notes 2', fields: { workspace_id: 'wrkspc_0PS2337', api_key: 'canary-ant-key-2337' } })
     expect(res.status).toBe(201)
-    expect(headers).toEqual({ 'x-api-key': 'canary-anthropic-key-2337', 'anthropic-workspace-id': 'wrkspc_0PS2337' })
+    expect(headers).toEqual({ 'x-api-key': 'canary-ant-key-2337', 'anthropic-workspace-id': 'wrkspc_0PS2337' })
     expect(((await res.json()) as { connection: { acts_as: string } }).connection.acts_as).toBe('Workspace wrkspc_0PS2337')
     expect(db.inserts.map((r) => [r.service_type, r.auth_type, r.sealed_for, r.target])).toEqual([['anthropic', 'api_key', 'ops_key', { workspace_id: 'wrkspc_0PS2337' }]])
-    expect(JSON.stringify(db.inserts)).not.toContain('canary-anthropic-key-2337')
+    expect(JSON.stringify(db.inserts)).not.toContain('canary-ant-key-2337')
   })
 })
 
@@ -475,7 +475,7 @@ describe('an ops OpenAI connection: a project\'s API key (#2337)', () => {
   it('says an Anthropic key of another workspace in its own sentence', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(storeDouble() as never)
     const { env } = makeEnv({ verify: async () => ({ ok: false, refused: 'verify_anthropic_workspace_mismatch', detail: 'named on ops' }) })
-    const body = (await (await post(env, { service: 'anthropic', name: 'Lead notes 2', fields: { workspace_id: 'wrkspc_0PS2337', api_key: 'canary-anthropic-key-2337' } })).json()) as { error: string; message: string }
+    const body = (await (await post(env, { service: 'anthropic', name: 'Lead notes 2', fields: { workspace_id: 'wrkspc_0PS2337', api_key: 'canary-ant-key-2337' } })).json()) as { error: string; message: string }
     expect(body).toMatchObject({
       error: 'verify_anthropic_workspace_mismatch',
       message: 'Anthropic says this API key runs in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.',
