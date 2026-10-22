@@ -1,8 +1,10 @@
 /**
  * Lane checks for a run (#1707, plan 0.C). A workflow is stored under a lane,
- * money or ops, and the Worker running it serves one lane. Both refusals happen
- * before an execution row is written or a node runs, so a misrouted workflow
- * leaves no half recorded run behind.
+ * money or ops, and the Worker running it serves one lane. All three refusals
+ * (a workflow of another lane, a node type the lane cannot run, and a trigger
+ * that does not start runs in the lane, #1947) happen before an execution row
+ * is written or a node runs, so a misrouted run leaves no half recorded run
+ * behind.
  *
  * The walk holds the same line again on every node it reaches (#1725), through
  * laneRefusalFor, so code that reaches walkGraph without the entry check still
