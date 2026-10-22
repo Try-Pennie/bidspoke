@@ -176,6 +176,8 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
   }
   // Rooted at the planted files alone: they import only hono and one small
   // module, so this program does not load the whole worker a second time.
+  // Built while the file is collected: it checks every file, which is not charged to a test's 5 second limit (#2619).
+  const loadErrors = workerProgramLoadErrors(program)
   const plantedProgram = buildWorkerProgram([], planted)
   const plantedResults = new Map(Object.keys(planted).map((file) => [file, scanQueryReads(plantedProgram, [file])]))
   const plantedFindings = (file: string): Finding[] => {
@@ -185,7 +187,7 @@ describe('no code a sender reaches reads the query string (#1815)', () => {
   }
 
   it('loads the Workers types, without which every Request and URL is `any` and nothing is found', () => {
-    expect(workerProgramLoadErrors(program)).toEqual([])
+    expect(loadErrors).toEqual([])
     const checker = program.getTypeChecker()
     const sf = program.getSourceFile(path.join(WORKER_SRC, 'ops/index.ts'))
     expect(sf).toBeDefined()
