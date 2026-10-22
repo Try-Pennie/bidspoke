@@ -595,7 +595,6 @@
       }
       return ok(dgs.length + " dialog title(s) at " + DIALOG_TITLE);
     } },
-    // Round 27: an open dropdown's highlighted row is pale grey behind dark text, in every dropdown.
     // Round 36 (build PR 14): the Slack alert login's alert settings, under its facts, in Dan's words.
     { id: "D37", frames: ["alert-login"], check: function (doc) {
       var WANT = [
@@ -659,6 +658,7 @@
       if (button(panel, "Replace") || button(panel, "Remove")) return bad("the panel offers Replace or Remove");
       return ok("a quiet Reconnect under the facts, and no Replace or Remove");
     } },
+    // Round 27: an open dropdown's highlighted row is pale grey behind dark text, in every dropdown.
     { id: "D28", frames: ["add-salesforce-new-org"], check: function (doc) {
       var HIGHLIGHT = "rgb(241, 239, 234)", GRAPHITE = "rgb(52, 52, 52)";
       var opt = qa(doc, '[role="listbox"] [role="option"][aria-selected="true"]')[0];
