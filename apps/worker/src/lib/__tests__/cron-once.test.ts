@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { AlertClaimObject, TICK_LEASE_STALE_MS, TICK_LEASE_RENEW_MS } from '../../durable-objects/alert-claim'
 import { runCronTickOnce, cronTickKey, CRON_TICK_DEADLINE_MS, DELIVERY_LINE_PREFIX } from '../cron-once'
 import { CLAIM_DEADLINE_MS } from '../alert-claim'
+import { findDoubledTicks, type TickDelivery } from '../cron-guard-watch'
 // The consumers of the FAILED OPEN line (#2166) and the delivery line (#2284), a
 // separate app, imported to prove the contract.
 import { failOpensIn } from '../../../../worker-tail/src/fail-opens'
@@ -438,6 +439,81 @@ describe('the tick claim has its own deadline (#2284)', () => {
     }))
     expect(outcome).toBe('ran')
     expect(errors.join('\n')).toMatch(/FAILED OPEN.*did not answer inside 5000ms/)
+  })
+
+  // #2646: 2026-10-22 03:00 UTC the claim missed its deadline but reached the
+  // object; the delivery had dropped its holder, so nothing renewed or closed the
+  // claim, and a same scheduled time delivery took it over and ran the jobs again.
+  it('keeps the holder of a claim that timed out: it renews once the claim lands, and closes the tick', async () => {
+    const { ns } = claimNamespace()
+    const calls: string[] = []
+    let letThrough: () => void = () => {}
+    const released = new Promise<void>((r) => { letThrough = r })
+    let landed: Promise<Response> = Promise.resolve(new Response())
+    const lateNs = {
+      idFromName: (n: string) => n,
+      get: (name: string) => ({
+        fetch: (url: string, init?: RequestInit) => {
+          calls.push(new URL(url).pathname)
+          const stub = ns.get(name as unknown as DurableObjectId)
+          if (!url.endsWith('/tick-claim')) return stub.fetch(url, init)
+          landed = released.then(() => stub.fetch(url, init))
+          return landed
+        },
+      }),
+    } as unknown as DurableObjectNamespace
+    let deadlines = 0
+    const clock = { t: MINUTE }
+    const job = pendingJob()
+    let renew: () => void = () => {}
+    const run = runCronTickOnce(lateNs, { cron: '*/15 * * * *', scheduledTime: MINUTE }, job.ran, {
+      now: () => clock.t, holder: () => 'late',
+      // Only the claim's deadline expires; the renewals and the close are answered.
+      delay: () => (deadlines++ === 0 ? Promise.resolve() : new Promise<void>(() => {})),
+      every: (fn) => { renew = fn; return () => {} },
+    })
+    await vi.waitFor(() => expect(job.ran).toHaveBeenCalledTimes(1))
+    expect(errors.join('\n')).toMatch(/FAILED OPEN.*did not answer inside 5000ms, running and keeping holder=late in case the claim arrives late/)
+    // A renewal before the claim lands is refused, and renewing carries on.
+    clock.t += TICK_LEASE_RENEW_MS
+    renew()
+    await vi.waitFor(() => expect(calls.filter((c) => c === '/tick-renew')).toHaveLength(1))
+    await new Promise((r) => setTimeout(r, 0))
+    expect(warns.join('\n')).not.toMatch(/was refused/)
+    letThrough()
+    await landed
+    clock.t += TICK_LEASE_RENEW_MS
+    renew()
+    await vi.waitFor(() => expect(logs.join('\n')).toMatch(/the late claim reached .* holder=late now renews/))
+    job.finish()
+    await run
+    expect(calls).toContain('/tick-done')
+    // Cloudflare delivers the same scheduled time again, long after the lease window.
+    const again = vi.fn(async () => {})
+    expect(await runCronTickOnce(ns, { cron: '*/15 * * * *', scheduledTime: MINUTE }, again, { now: () => MINUTE + 7 * 60_000, holder: () => 'again', every: () => () => {} })).toBe('skipped')
+    expect(again).not.toHaveBeenCalled()
+    // The record of deliveries reads failed_open then skipped, which the hourly
+    // check does not page as a tick run twice; before #2646 it read took_over.
+    const decided = [...logs, ...warns, ...errors]
+      .filter((l) => l.startsWith(DELIVERY_LINE_PREFIX))
+      .map((l) => JSON.parse(l.slice(DELIVERY_LINE_PREFIX.length)) as { delivery: string; outcome: string })
+    expect(decided.map((d) => [d.delivery, d.outcome])).toEqual([['late', 'failed_open'], ['again', 'skipped']])
+    expect(findDoubledTicks(decided.map((d, i) => ({
+      id: d.delivery, cron: '*/15 * * * *', scheduledAtMs: MINUTE, outcome: d.outcome as TickDelivery['outcome'], invocationOutcome: 'ok', atMs: MINUTE + i,
+    })))).toEqual([])
+  })
+
+  it('does not keep a holder when the claim object answered with an error: nothing was stored to renew or close', async () => {
+    const paths: string[] = []
+    const refusing = {
+      idFromName: (n: string) => n,
+      get: () => ({ fetch: async (url: string) => { paths.push(new URL(url).pathname); return new Response('{"error":"x"}', { status: 400 }) } }),
+    } as unknown as DurableObjectNamespace
+    let renewing = false
+    expect(await runCronTickOnce(refusing, { cron: '0 9 * * *', scheduledTime: MINUTE }, vi.fn(async () => {}), { every: () => { renewing = true; return () => {} } })).toBe('ran')
+    expect(renewing).toBe(false)
+    expect(paths).toEqual(['/tick-claim'])
+    expect(errors.join('\n')).toMatch(/FAILED OPEN.*400, running without the claim/)
   })
 
   it('a claim answering in 3 s, which failed open at the old 2 s deadline, now runs guarded', async () => {
