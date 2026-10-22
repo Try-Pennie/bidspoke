@@ -121,11 +121,19 @@ export class ConnectionRefusal extends Error {
  */
 export type RequeueCause = 'rate_limited' | ResourceWaitCause
 
-/** Try again at notBefore. Answered, never thrown, and never slept on. */
+/**
+ * Try again at notBefore. Answered, never thrown, and never slept on.
+ *
+ * status is the HTTP status of the request's answer that asked for it (429, or
+ * a 503 with Retry-After), or null when the request was never sent (a lease
+ * refused, a token endpoint's 429). The run invocation reads it (#1950): a 429
+ * proves nothing was applied, a 503 does not, so a non idempotent send answered
+ * 503 ends as outcome unknown rather than being requeued.
+ */
 export class RequeueAt {
   readonly kind = 'requeue_at' as const
 
-  constructor(readonly notBefore: Date, readonly cause: RequeueCause) {}
+  constructor(readonly notBefore: Date, readonly cause: RequeueCause, readonly status: number | null = null) {}
 }
 
 /**
