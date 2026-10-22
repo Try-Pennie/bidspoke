@@ -16,6 +16,7 @@ import {
   configPanelKind,
   readStoredPanelWidth,
 } from '../panel-widths'
+import { NODE_TYPES } from '@/types/workflow'
 
 /** Minimal Storage stand-in: the real one is only reachable in the DOM project. */
 function storageOf(entries: Record<string, string> = {}): Pick<Storage, 'getItem'> {
@@ -73,6 +74,42 @@ describe('configPanelKind', () => {
     expect(configPanelKind('salesforce')).toBe('form')
     expect(configPanelKind('bid_group')).toBe('form')
     expect(configPanelKind(undefined)).toBe('form')
+  })
+})
+
+// Issue #2595. The lead validation settings panel was settled in
+// docs/design/lead-validation-node.html drawn at 469 wide; at the 320 form width
+// its numbered check rows and the rule builder truncate. It opens at the width
+// it was drawn at, through its own kind, so no other step's opening width moves.
+describe('the lead validation panel', () => {
+  it('has a panel kind of its own', () => {
+    expect(configPanelKind('lead_validation')).toBe('checks')
+  })
+
+  it('opens at 469, the width its settled design was drawn at', () => {
+    expect(PANEL_WIDTH_DEFAULTS.checks).toBe(469)
+    expect(readStoredPanelWidth('checks', storageOf())).toBe(469)
+  })
+
+  it('leaves every other step type where it opened before', () => {
+    for (const type of NODE_TYPES) {
+      if (type === 'lead_validation') continue
+      expect(configPanelKind(type)).toBe(type === 'code' ? 'code' : 'form')
+    }
+    expect(PANEL_WIDTH_DEFAULTS.form).toBe(320)
+  })
+
+  it('remembers its own width, not the form width', () => {
+    const store = storageOf({ 'bidspoke.panelWidth.form': '360', 'bidspoke.panelWidth.checks': '520' })
+    expect(readStoredPanelWidth('checks', store)).toBe(520)
+    expect(readStoredPanelWidth('form', store)).toBe(360)
+  })
+
+  // The width saved before the panels were split is a narrow form width that
+  // predates this panel; carrying it over would bring back the truncation.
+  it('does not inherit the old shared width', () => {
+    const store = storageOf({ [LEGACY_PANEL_WIDTH_KEY]: '320' })
+    expect(readStoredPanelWidth('checks', store)).toBe(469)
   })
 })
 

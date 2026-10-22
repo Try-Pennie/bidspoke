@@ -144,7 +144,15 @@ const reasonOf = (o: ValidationOutcome): string | null => {
   return typeof r === 'string' ? r : null
 }
 
-export function compareOutcomes(script: ValidationOutcome, node: ValidationOutcome, config: LeadValidationConfig): Comparison {
+/**
+ * `keyOrder`: whether the order of the body's keys is compared (the default).
+ * The source reads the body as JSON text, so the order is part of the answer
+ * wherever the script's answer is the one it produced (the grid runs it). The
+ * real traffic replay reads it back from `execution_steps.output`, a jsonb
+ * column, which stores keys in its own order, so there the order that reached
+ * the source is not recorded and is set aside.
+ */
+export function compareOutcomes(script: ValidationOutcome, node: ValidationOutcome, config: LeadValidationConfig, opts: { keyOrder: boolean } = { keyOrder: true }): Comparison {
   const checkByReason = (reason: string | null) => config.checks.find((c) => c.reason === reason)?.id ?? null
   const diff = (kind: OutcomeDifference['kind'], script_check: string | null, node_check: string | null, fields: string[] = []): OutcomeDifference => ({ script_check, node_check, kind, fields })
   if (script.kind === 'threw') {
@@ -159,6 +167,13 @@ export function compareOutcomes(script: ValidationOutcome, node: ValidationOutco
   if (reasonOf(s) !== reasonOf(n)) return { bucket: 'response_differs', difference: diff('other_reason', checkByReason(reasonOf(s)), n.check_id, ['body.reason']) }
   const a = { status: s.status, headers: s.headers ?? {}, body: s.body }
   const b = { status: n.status, headers: n.headers ?? {}, body: n.body }
-  if (canonical(a) === canonical(b)) return { bucket: 'agree', difference: null }
-  return { bucket: 'response_differs', difference: diff('answer', checkByReason(reasonOf(s)), n.check_id, deepDiff(a, b).map((d) => d.path)) }
+  if (canonical(a) !== canonical(b)) {
+    return { bucket: 'response_differs', difference: diff('answer', checkByReason(reasonOf(s)), n.check_id, deepDiff(a, b).map((d) => d.path)) }
+  }
+  // The same keys and values: the source still reads the body as JSON text, so
+  // the order of its keys is part of the answer (#2594).
+  if (opts.keyOrder && JSON.stringify(s.body) !== JSON.stringify(n.body)) {
+    return { bucket: 'response_differs', difference: diff('answer', checkByReason(reasonOf(s)), n.check_id, ['body key order']) }
+  }
+  return { bucket: 'agree', difference: null }
 }

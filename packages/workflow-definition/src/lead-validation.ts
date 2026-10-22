@@ -64,6 +64,15 @@ export interface LeadValidationCheck {
   condition: { groups: LeadValidationGroup[]; logic: LeadValidationLogic }
   reason: LeadRejectionReason
   on_missing: LeadValidationOnMissing
+  /**
+   * A rejection by this check also answers `requestId`, the run's trace id,
+   * after `reason` (#2594). Lead Economy's script sent it on its unqualified_lead
+   * rejection only, and Dan decided on 2026-10-21 to keep sending it. Off unless
+   * a check sets it, so a config saved before it answers as it did; a parsed
+   * check carries the key only when it is on. Set in config: the settings panel
+   * carries it through every edit but draws no control for it.
+   */
+  include_request_id?: true
 }
 
 export interface LeadValidationConfig {
@@ -212,6 +221,10 @@ function checkProblems(raw: unknown, index: number, seenIds: Set<string>): { pro
   if (typeof check.on_missing !== 'string' || !ON_MISSING.has(check.on_missing)) {
     problems.push(`Check ${name}: no choice for a lead missing a value (reject, pass or fail the run)`)
   }
+  const includeRequestId = check.include_request_id
+  if (includeRequestId !== undefined && includeRequestId !== null && typeof includeRequestId !== 'boolean') {
+    problems.push(`Check ${name}: include_request_id is neither true nor false`)
+  }
 
   const condition = isRecord(check.condition) ? check.condition : {}
   const groupsRaw = Array.isArray(condition.groups) ? condition.groups : []
@@ -244,6 +257,7 @@ function checkProblems(raw: unknown, index: number, seenIds: Set<string>): { pro
       condition: { groups, logic: condition.logic as LeadValidationLogic },
       reason: check.reason as LeadRejectionReason,
       on_missing: check.on_missing as LeadValidationOnMissing,
+      ...(includeRequestId === true ? { include_request_id: true as const } : {}),
     },
   }
 }

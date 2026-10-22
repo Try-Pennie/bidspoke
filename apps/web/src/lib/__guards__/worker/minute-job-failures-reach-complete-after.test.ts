@@ -141,6 +141,8 @@ describe('a counted job stamped through completeAfter hands its failures to it (
       'click-path-checks',
       'buyer-select-parity',
       'live-share-refusals',
+      // #2592: the rejection rate watch after a lead validation swap.
+      'lead-validation-rejection-watch',
       'engine-script-drift',
     ].sort())
   })

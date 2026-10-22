@@ -90,6 +90,19 @@ describe('the width a canvas actually gives an open node panel', () => {
     expect(renderedWidth()).toBe(PANEL_WIDTH_DEFAULTS.form)
   })
 
+  // #2595: the lead validation panel was settled drawn at 469 wide, and its
+  // check rows and rule builder truncate at the 320 form width.
+  it('opens a lead validation step at the width its design was drawn at, and moves no other step', () => {
+    render(<CanvasStandIn initialType="lead_validation" />)
+    expect(renderedWidth()).toBe(PANEL_WIDTH_DEFAULTS.checks)
+
+    fireEvent.click(screen.getByText('select form node'))
+    expect(renderedWidth()).toBe(PANEL_WIDTH_DEFAULTS.form)
+
+    fireEvent.click(screen.getByText('select code node'))
+    expect(renderedWidth()).toBe(PANEL_WIDTH_DEFAULTS.code)
+  })
+
   it('remembers the two widths separately as the selection moves between nodes', () => {
     render(<CanvasStandIn initialType="code" />)
 

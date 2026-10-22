@@ -7,7 +7,8 @@
 // for want of a value), or { valid: false, check_id, field, reason, cause? }.
 // A rejection answers through `earlyResponse` exactly as the validate scripts'
 // code sentinel did: status 200, the configured headers, and
-// { lead_id, status: 'rejected', reason }, ending the walk.
+// { lead_id, status: 'rejected', reason }, ending the walk. A check with
+// `include_request_id` adds `requestId`, the run's trace id, after `reason` (#2594).
 //
 // Why it does not call evaluateConditionGroups: that returns a plain boolean,
 // reads a missing value as false, turns '' and null into 0 in a number compare
@@ -234,6 +235,15 @@ function judgeCheck(check: LeadValidationCheck, ctx: ExecutionContext): Verdict 
 
 // ── Executor ──────────────────────────────────────────────────────────────────
 
+/**
+ * The run's trace id, read where a code node's script reads `execution.trace_id`
+ * (the `execution` block code.ts hands the sandbox), so a check answering
+ * `requestId` sends what the script it replaces sent.
+ */
+function runTraceId(ctx: ExecutionContext): string {
+  return (ctx.execution ?? { trace_id: ctx.trigger.trace_id }).trace_id
+}
+
 export function executeLeadValidationNode(node: NodeDefinition, ctx: ExecutionContext): StepExecutionResult {
   const constants = ctx.constantsNamespaces
   if (!constants) {
@@ -285,7 +295,14 @@ export function executeLeadValidationNode(node: NodeDefinition, ctx: ExecutionCo
       earlyResponse: {
         status: 200,
         ...(headers ? { headers } : {}),
-        body: { lead_id: resolveField(config.lead_id_field, ctx), status: 'rejected', reason: check.reason },
+        // requestId last, as Lead Economy's script wrote it: the source reads JSON
+        // text, so the key order is part of the answer (#2594).
+        body: {
+          lead_id: resolveField(config.lead_id_field, ctx),
+          status: 'rejected',
+          reason: check.reason,
+          ...(check.include_request_id ? { requestId: runTraceId(ctx) } : {}),
+        },
       },
       resolvedInput,
     }

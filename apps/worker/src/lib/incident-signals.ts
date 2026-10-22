@@ -93,6 +93,10 @@ export const INCIDENT_SIGNALS = [
   // workflow's step, keyed on `${workflowId}:${namespace}`. It judges a state,
   // so it has no window. Paged from the engine's run, once per incident.
   { signal: 'lead-validation-config', label: 'Lead validation setting', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: null },
+  // A lead validation step's rejection reasons moving against the week before,
+  // the watch after a swap (#2592, lead-validation-rejection-watch.ts). One
+  // workflow, keyed on its id; it judges a two hour window every hour.
+  { signal: 'lead-validation-rejection-rate', label: 'Lead validation rejections', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 120 },
   // A partner ping failing while each lead still ends as a no bid (#2582, partner-error-rate.ts).
   { signal: 'partner-error-rate', label: 'Partner error', scope: 'org', subject: 'workflow', startMeans: FIRST_PAGE, windowMinutes: 5 },
   { signal: 'db-unreachable', label: 'Database unreachable', scope: 'org', subject: 'organization', startMeans: FIRST_PAGE, windowMinutes: null },

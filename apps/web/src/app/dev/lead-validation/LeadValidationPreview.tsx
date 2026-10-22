@@ -7,19 +7,22 @@ import '@xyflow/react/dist/style.css'
 import ConfigPanel from '@/components/canvas/ConfigPanel'
 import { nodeTypes } from '@/components/canvas/nodes/registry'
 import { PREVIEW_CONFIG, PREVIEW_NODE } from './lead-validation-preview-source'
+import { PANEL_WIDTH_DEFAULTS, configPanelKind } from '@/lib/panel-widths'
 
 /**
  * The lead validation step's card and settings panel as the canvas draws them
  * (#2590), for the settled designs' checks files and for screenshots (L606),
  * with no auth and no network. The card sits between a Constants step and a
  * Response, as in RML GigFi; the panel is the real ConfigPanel, open on it, at
- * the width the settled design was drawn at. `?checks=1` keeps only the first
+ * the width the canvas opens it at when none is remembered (#2595), which is the
+ * width the settled design was drawn at. `?panel=320` draws it narrower. `?checks=1` keeps only the first
  * check, the step at its smallest real size.
  */
 export function LeadValidationPreview() {
   const params = useSearchParams()
   const count = Math.max(0, Math.min(PREVIEW_CONFIG.checks.length, Number(params.get('checks') ?? PREVIEW_CONFIG.checks.length) || 0))
-  const width = Number(params.get('panel') ?? 469) || 469
+  const opening = PANEL_WIDTH_DEFAULTS[configPanelKind('lead_validation')]
+  const width = Number(params.get('panel') ?? opening) || opening
   const [config, setConfig] = useState<Record<string, unknown>>(() => ({ ...PREVIEW_CONFIG, checks: PREVIEW_CONFIG.checks.slice(0, count) }))
 
   const nodes: Node[] = useMemo(() => [

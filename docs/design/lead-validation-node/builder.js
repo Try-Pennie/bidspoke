@@ -134,7 +134,7 @@ function buildScreen(variant) {
   var fx = window.DESIGN_FIXTURE;
   var panel = h("div", "flex h-full flex-col", [
     h("div", "flex items-center justify-between border-b border-gray-100 px-4 py-3", [
-      h("div", null, [h("p", "text-xs font-medium uppercase tracking-wide text-gray-500", ["lead validation"]), h("p", "mt-0.5 text-sm font-semibold text-graphite", [fx.node.title]), h("p", "font-mono text-xs text-gray-500", [fx.node.id])]),
+      h("div", null, [h("p", "text-xs font-medium uppercase tracking-wide text-gray-500", ["lead_validation"]), h("p", "mt-0.5 text-sm font-semibold text-graphite", [fx.node.title]), h("p", "font-mono text-xs text-gray-500", [fx.node.id])]),
       h("div", "flex items-center gap-1", [
         h("button", "rounded p-1.5 text-gray-500 hover:bg-gray-100", [icon(I.copy)], {"aria-label": "Duplicate node"}),
         h("button", "rounded p-1.5 text-gray-500 hover:bg-red-50 hover:text-red-500", [icon(I.trash)], {"aria-label": "Delete node"}),
