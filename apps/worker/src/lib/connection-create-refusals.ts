@@ -170,6 +170,7 @@ const SENTENCES: { readonly [C in CreateRefusalCode]: (ctx: RefusalContext) => s
   verify_identity_mismatch: (c) => `${c.service} says this login belongs to another account than the one entered. Nothing was saved. Check the account and save again.`,
   verify_slack_not_a_bot: () => 'This token acts as a person, not as a bot. Nothing was saved. Use the bot token from the ops Slack app and save again.',
   verify_slack_workspace_mismatch: () => 'Slack says this bot is in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.',
+  verify_openai_project_mismatch: () => 'OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.',
   identity_changed: (c) => `${c.service} names another user for this login than it did before. Nothing was saved. Tell Dan before it is used.`,
   measured_identity_unrecorded: () => 'The login worked, but the workflows server could not record who it acts as. Nothing was saved. Save again.',
 

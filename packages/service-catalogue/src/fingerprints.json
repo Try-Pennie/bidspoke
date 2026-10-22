@@ -1,4 +1,10 @@
 {
+  "openai.add-conversation-items@1": "0617bfb8201bcbb3f190e77092508fab7f59b21824d087e8f9fa395177ee045b",
+  "openai.chat@1": "7c3aef388044f5dd4d444dc55bcf9909ecde6fd9efce7fe72d8a8035e91878d5",
+  "openai.create-conversation@1": "b19bd7cbfc0d8de988015e0f1d3f04bb318f987ef142131d5de6b2a81783d7b8",
+  "openai.create-response@1": "a407f785d191f3305a8e9ec28843264f940d18eb3444baa654d8be016c59c896",
+  "openai.get-conversation@1": "b6a2b2a0cd6908004ae8440306730e4a43a61dc03ca8e78463ca198342a051e4",
+  "openai.list-conversation-items@1": "1cc92da662d00835216d614797f0d3544aec07fbb0792ae0c5f46dc87b11bb03",
   "slack.send-message@1": "05bfd55619f892f7aa64637cb195e34d1ae457a354065ff47a992c4521302218",
   "snowflake.execute-sql-query@1": "3d7b959fb6e8785d05844bc177f28733ea21cbccdcd23fe1ffe7eb8481edf1ff",
   "snowflake.insert-multiple-rows@1": "95eb475d487dcdf9aa098de2e5c910cc0e9732ac0da2a1b0d44be7d2fdcc321b"

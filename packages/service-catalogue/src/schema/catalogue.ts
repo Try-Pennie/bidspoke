@@ -1,3 +1,4 @@
+import { OPENAI_SERVICE } from './services/openai'
 import { SALESFORCE_SERVICE } from './services/salesforce'
 import { SLACK_SERVICE } from './services/slack'
 import { SNOWFLAKE_SERVICE } from './services/snowflake'
@@ -7,10 +8,10 @@ import type { ServiceSchema } from './types'
  * The shipped catalogue: every service, its actions and its connection,
  * declaratively. Each service arrives in its own PR of #2337 with its runtime
  * half, its run files and their fingerprints, and catalogue.test.ts holds them
- * all to the same checks. Snowflake was the first, then Slack; Salesforce's
- * entry came ahead of its actions, with its connection only (#2338).
+ * all to the same checks. Snowflake was the first, then Slack, then OpenAI;
+ * Salesforce's entry came ahead of its actions, with its connection only (#2338).
  *
  * In the order the Add connection tiles are drawn, by name, as the settled
  * design lists them (schema/connection.test.ts holds that).
  */
-export const CATALOGUE: readonly ServiceSchema[] = [SALESFORCE_SERVICE, SLACK_SERVICE, SNOWFLAKE_SERVICE]
+export const CATALOGUE: readonly ServiceSchema[] = [OPENAI_SERVICE, SALESFORCE_SERVICE, SLACK_SERVICE, SNOWFLAKE_SERVICE]
