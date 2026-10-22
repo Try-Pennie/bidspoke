@@ -28,6 +28,8 @@ import {
   pickEvenly,
   readRelayPosts,
   STEP_COLUMNS,
+  DIRECT_WRITE_SINCE,
+  OVERWRITE_STORM_MIN,
   type CanaryWatchDeps,
   type CanaryWatchReport,
   type RelayStep,
@@ -36,8 +38,11 @@ import {
 import { CRON_JOBS, evaluateHeartbeat } from '../cron-heartbeat'
 import { MAIN_FLOW_WORKFLOW_ID } from '../main-flow-port/transform'
 import type { SalesforceRead } from '../../engine/inquiry-post'
+import { REPEAT_RUN_1, REPEAT_RUN_2 } from './fixtures/invalid-state-repeat-visit-2026-10-18'
 
 const APP = 'https://bidspoke.example'
+/** The first paragraph of every message that reports runs (#2652). */
+const INTRO = "Since Oct 16, Main Flow writes the outcome for leads from states we don't serve straight to Salesforce. Every other outcome still goes through Pipedream."
 // 13:00 UTC on 2026-10-18, when the daily batch runs.
 const NOW_MS = Date.parse('2026-10-18T13:00:00Z')
 const RUN_A = '01a14600-0000-7000-8000-00000000000a'
@@ -162,7 +167,7 @@ describe('the invalid state canary watch', () => {
     expect(asked[1]).toBe(`/sobjects/Lead/${LEAD_A}?fields=EngineUUID__c,EngineLeadUUID__c,Submission_Object_ID__c`)
     expect(posted).toHaveLength(1)
     expect(posted[0].alert).toBe(false)
-    expect(posted[0].title).toBe('The invalid state write landed in Salesforce')
+    expect(posted[0].title).toBe('Direct Salesforce writes: the one write arrived complete')
   })
 
   it('a landed resend from the read-back (attempt 1) still counts as this run landing', async () => {
@@ -190,12 +195,12 @@ describe('the invalid state canary watch', () => {
       },
     })
     const report = await runInvalidStateWatch(d)
-    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ['The Submission has no Bidspoke run link.'] })
+    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ['the Submission has no Bidspoke run link'] })
     expect(report.native[1]).toEqual({ kind: 'landed', executionId: RUN_B })
     const m = posted[0]
     expect(m.alert).toBe(true)
-    expect(m.title).toBe('1 of 2 invalid state writes did not land in Salesforce')
-    expect(m.lines.join('\n')).toContain(`<${link(RUN_A)}|Run ${RUN_A}>: The Submission has no Bidspoke run link.`)
+    expect(m.title).toBe('Direct Salesforce writes: 1 of 2 did not arrive complete')
+    expect(m.lines.join('\n')).toContain(`<${link(RUN_A)}|Run ${RUN_A}>: the Submission has no Bidspoke run link.`)
     expect(m.fixHint).toBeTruthy()
   })
 
@@ -205,7 +210,7 @@ describe('the invalid state canary watch', () => {
       records: { [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_1__c: link(RUN_B) }), [LEAD_A]: ok(landedLead(RUN_A)) },
     })
     const report = await runInvalidStateWatch(d)
-    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ["The Submission's Bidspoke run link is not this run's."] })
+    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ["the Submission's run link is not this run's"] })
   })
 
   it("PDFlow_4__c overwritten by the inquiry relay's Pipedream link is a field that holds a different value, not a missing run link", async () => {
@@ -214,7 +219,7 @@ describe('the invalid state canary watch', () => {
       records: { [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_4__c: 'https://pipedream.example/@pennie/p_abc/inspect/1' }), [LEAD_A]: ok(landedLead(RUN_A)) },
     })
     const report = await runInvalidStateWatch(d)
-    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ['1 field holds a different value from the one the run sent: PDFlow_4__c.'] })
+    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ['1 of its fields holds a different value from the one this run sent'], fields: ['PDFlow_4__c'] })
   })
 
   it("a direct run that sent no stamp and whose Submission holds a later run's link did not land: a direct write is set aside only on a later run's stamp of the same step (#2485)", async () => {
@@ -225,7 +230,7 @@ describe('the invalid state canary watch', () => {
       records: { [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_1__c: link(RUN_B) }), [LEAD_A]: ok(landedLead(RUN_A)) },
     })
     const report = await runInvalidStateWatch(d)
-    expect(report.native).toEqual([{ kind: 'not_landed', executionId: RUN_A, problems: ["The Submission's Bidspoke run link is not this run's."] }])
+    expect(report.native).toEqual([{ kind: 'not_landed', executionId: RUN_A, problems: ["the Submission's run link is not this run's"] }])
   })
 
   it('a mismatched field is named by field, never by value', async () => {
@@ -240,7 +245,9 @@ describe('the invalid state canary watch', () => {
     expect(report.native[0]).toEqual({
       kind: 'not_landed',
       executionId: RUN_A,
-      problems: ['2 fields hold a different value from the one the run sent: LeadSaleType__c and VantageScore__c.'],
+      problems: ['2 of its fields hold different values from the ones this run sent'],
+      // The record keeps which fields, by name, never by value; the message says how many.
+      fields: ['LeadSaleType__c', 'VantageScore__c'],
     })
     const text = JSON.stringify(posted[0])
     expect(text).not.toContain('701')
@@ -260,10 +267,10 @@ describe('the invalid state canary watch', () => {
     expect(report.native[0]).toEqual({
       kind: 'not_landed',
       executionId: RUN_A,
-      problems: [
-        `Another write has stamped the Submission since (run ${RUN_B}), so a difference below may be that write's.`,
-        '1 field holds a different value from the one the run sent: VantageScore__c.',
-      ],
+      // RUN_B was minted in the same millisecond, so it cannot be shown to be later or earlier.
+      problems: ['another run wrote the same Submission', '1 of its fields holds a different value from the one this run sent'],
+      fields: ['VantageScore__c'],
+      stampedBy: RUN_B,
     })
   })
 
@@ -273,19 +280,19 @@ describe('the invalid state canary watch', () => {
       records: { [SUB_A]: ok(landedSubmission(RUN_A, LEAD_A)), [LEAD_A]: ok({ ...landedLead(RUN_A), EngineUUID__c: null }) },
     })
     const report = await runInvalidStateWatch(d)
-    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ["The Lead's Engine UUID differs from the Submission's."] })
+    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ["its Lead's Engine UUID doesn't match the Submission"] })
   })
 
   it('a Submission with no Lead is said, because the Lead check could not be met', async () => {
     const { d } = deps({ steps: [nativeStep(RUN_A, SUB_A)], records: { [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), Lead__c: null }) } })
     const report = await runInvalidStateWatch(d)
-    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ['The Submission has no Lead, so its Engine ids reached no Lead.'] })
+    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ['the Submission has no Lead, so its Engine ids reached no Lead'] })
   })
 
   it('a Submission that does not exist did not land', async () => {
     const { d } = deps({ steps: [nativeStep(RUN_A, SUB_A)] })
     const report = await runInvalidStateWatch(d)
-    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ['The Submission does not exist in Salesforce.'] })
+    expect(report.native[0]).toEqual({ kind: 'not_landed', executionId: RUN_A, problems: ['the Submission does not exist in Salesforce'] })
   })
 
   it('a Salesforce read failure is "could not check", never "landed", and stops the reads so the rest say why', async () => {
@@ -301,7 +308,7 @@ describe('the invalid state canary watch', () => {
     expect(asked).toHaveLength(1)
     const m = posted[0]
     expect(m.alert).toBe(true)
-    expect(m.title).toBe('2 of 2 invalid state writes could not be checked in Salesforce')
+    expect(m.title).toBe('Direct Salesforce writes: 2 of 2 could not be checked')
     expect(m.lines.join('\n')).toContain(`<${link(RUN_A)}|Run ${RUN_A}> could not be checked: Salesforce did not answer the Submission read (no answer within 12 s).`)
   })
 
@@ -335,7 +342,7 @@ describe('the invalid state canary watch', () => {
     const report = await runInvalidStateWatch(d)
     expect(report.skipped).toEqual([{ executionId: RUN_B, reason: 'nothing_to_write' }])
     expect(asked.some((p) => p.includes(SUB_B))).toBe(false)
-    expect(posted[0].lines.join('\n')).toContain('1 more run was skipped because the Engine sent nothing to write, so nothing was sent.')
+    expect(posted[0].lines.join('\n')).toContain('1 more lead was not written because the Engine sent nothing to write.')
   })
 
   it('zero runs is said plainly, as a report, not an alert', async () => {
@@ -343,8 +350,9 @@ describe('the invalid state canary watch', () => {
     const report = await runInvalidStateWatch(d)
     expect(report.native).toEqual([])
     expect(posted[0].alert).toBe(false)
-    expect(posted[0].title).toBe('No invalid state writes to check yesterday')
-    expect(posted[0].lines[0]).toBe('Zero Main Flow runs wrote an invalid state outcome straight to Salesforce from Oct 17, 8:50 AM EDT to Oct 18, 8:50 AM EDT.')
+    expect(posted[0].title).toBe('Direct Salesforce writes: none to check yesterday')
+    expect(posted[0].lines[0]).toBe(INTRO)
+    expect(posted[0].lines[1]).toBe('No leads were written directly from Oct 17, 8:50 AM to Oct 18, 8:50 AM ET.')
   })
 
   // #2312: the first report (2026-10-17) said Main Flow had left the direct write
@@ -360,18 +368,18 @@ describe('the invalid state canary watch', () => {
     const report = await runInvalidStateWatch(d)
     expect(report.relayInvalidState).toBe(5)
     const text = posted[0].lines.join('\n')
-    expect(text).toContain('5 invalid state posts went through the relay before Main Flow moved to the direct write.')
-    expect(text).not.toMatch(/no longer on the direct write|back on the relay/)
+    expect(text).toContain("5 outcomes for leads from states we don't serve went through Pipedream before Main Flow started writing them directly.")
+    expect(text).not.toMatch(/back on Pipedream|went back to Pipedream/)
     expect(posted[0].alert).toBe(false)
-    expect(posted[0].title).toBe('All 2 invalid state writes landed in Salesforce')
+    expect(posted[0].title).toBe('Direct Salesforce writes: all 2 arrived complete')
   })
 
   it('a relay post after the last direct write is a rollback, and reads as an alert', async () => {
     const { d, posted } = deps({ steps: [nativeStep(RUN_A, SUB_A), nativeStep(RUN_B, SUB_B), relayStep('r1')], records: landedA })
     await runInvalidStateWatch(d)
     expect(posted[0].alert).toBe(true)
-    expect(posted[0].title).toBe('Main Flow is back on the relay for invalid state posts')
-    expect(posted[0].lines.join('\n')).toContain('the last of them after every direct write, so Main Flow is back on the relay.')
+    expect(posted[0].title).toBe('Direct Salesforce writes: Main Flow is back on Pipedream')
+    expect(posted[0].lines.join('\n')).toContain("1 outcome for a lead from a state we don't serve went through Pipedream after every direct write, so Main Flow is back on Pipedream.")
     expect(posted[0].fixHint).toMatch(/version history/)
   })
 
@@ -381,23 +389,23 @@ describe('the invalid state canary watch', () => {
     expect(report.relayInvalidState).toBe(1)
     expect(report.native).toEqual([])
     expect(posted[0].alert).toBe(true)
-    expect(posted[0].lines.join('\n')).toContain('The 1 invalid state post went through the relay, so Main Flow is not on the direct write.')
+    expect(posted[0].lines.join('\n')).toContain("The one outcome for a lead from a state we don't serve went through Pipedream, so Main Flow is not writing these directly.")
     // Not "back on": nothing in the window shows it was ever on the direct write.
-    expect(posted[0].title).toBe('Main Flow is not on the direct write for invalid state posts')
+    expect(posted[0].title).toBe('Direct Salesforce writes: Main Flow is not writing directly')
   })
 
   it('relay posts between direct writes are said as a spell off the direct write, as an alert', async () => {
     const { d, posted } = deps({ steps: [nativeStep(RUN_A, SUB_A), relayStep('r1'), relayStep('r2'), nativeStep(RUN_B, SUB_B)], records: landedA })
     await runInvalidStateWatch(d)
     expect(posted[0].alert).toBe(true)
-    expect(posted[0].lines.join('\n')).toContain('2 invalid state posts went through the relay between direct writes, so Main Flow left the direct write for a while and came back.')
+    expect(posted[0].lines.join('\n')).toContain("2 outcomes for leads from states we don't serve went through Pipedream between direct writes, so Main Flow went back to Pipedream for a while and came back.")
   })
 
   it('a write that did not land keeps its own title when a rollback came too, and the Fix line covers both', async () => {
     const missing = { ...landedA, [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), PDFlow_1__c: null }) }
     const { d, posted } = deps({ steps: [nativeStep(RUN_A, SUB_A), relayStep('r1')], records: missing })
     await runInvalidStateWatch(d)
-    expect(posted[0].title).toBe('1 of 1 invalid state writes did not land in Salesforce')
+    expect(posted[0].title).toBe('Direct Salesforce writes: 1 of 1 did not arrive complete')
     expect(posted[0].fixHint).toMatch(/Open each run above/)
     expect(posted[0].fixHint).toMatch(/version history/)
   })
@@ -476,10 +484,9 @@ describe('the invalid state canary watch', () => {
     expect(report.relay.total).toBe(3360)
     expect(report.relay.sample.map((v) => v.kind)).toEqual(['landed', 'not_landed'])
     const text = posted[0].lines.join('\n')
-    expect(text).toContain(
-      "Over the same hours 3,360 of Main Flow's other outcome posts went through the relay. 2 of them, spread over the day, were read back from Salesforce the same way: 1 landed fully (50.0%) and 1 did not.",
-    )
-    expect(text).toContain('The direct writes on the same measure: 1 of 1 landed fully (100.0%).')
+    expect(text).toContain('For comparison, we checked 2 of the 3,360 outcomes Pipedream sent in the same hours: 1 arrived complete and 1 did not.')
+    // The direct count is said once, in its own paragraph, never repeated here.
+    expect(text).not.toMatch(/direct writes on the same measure/)
     expect(text).not.toMatch(/Pipedream answered/)
     // The comparison does not page: the relay is not what the canary watches.
     expect(posted[0].alert).toBe(false)
@@ -519,7 +526,7 @@ describe('the invalid state canary watch', () => {
     expect(report.relay.sample).toEqual([])
     expect(report.relay.noSubmission).toBe(1)
     expect(asked).toHaveLength(0)
-    expect(posted[0].lines.join('\n')).toContain("Over the same hours 1 of Main Flow's other outcome posts went through the relay. 1 of them had no Submission, so the relay wrote nothing.")
+    expect(posted[0].lines.join('\n')).toContain('In the same hours Pipedream sent 1 other outcome. 1 of them had no Submission, so Pipedream wrote nothing.')
   })
 
   it('a relay post a LATER run overwrote is left out of the rate, while an EARLIER run\'s link means this one did not land', async () => {
@@ -537,11 +544,11 @@ describe('the invalid state canary watch', () => {
     if ('error' in report.relay) throw new Error('relay read failed')
     expect(report.relay.sample).toEqual([
       { kind: 'superseded', executionId: RELAY_2, byExecutionId: RELAY_3 },
-      { kind: 'not_landed', executionId: RELAY_1, problems: ["The Submission's Bidspoke run link is not this run's."] },
+      { kind: 'not_landed', executionId: RELAY_1, problems: ["the Submission's run link is not this run's"] },
     ])
     const text = posted[0].lines.join('\n')
-    expect(text).toContain('1 of them, spread over the day, was read back from Salesforce the same way: 0 landed fully (0.0%) and 1 did not.')
-    expect(text).toContain('1 more was read back and left out because a later run wrote the same Submission.')
+    expect(text).toContain('For comparison, we checked 1 of the 2 outcomes Pipedream sent in the same hours: 0 arrived complete and 1 did not.')
+    expect(text).toContain('1 more was left out because a later run of Main Flow wrote the same Submission.')
   })
 
   it('a relay read that Salesforce does not answer is "could not be checked", and stops the relay reads too', async () => {
@@ -553,7 +560,7 @@ describe('the invalid state canary watch', () => {
     if ('error' in report.relay) throw new Error('relay read failed')
     expect(report.relay.sample.map((v) => v.kind)).toEqual(['unchecked', 'unchecked'])
     expect(asked).toHaveLength(1)
-    expect(posted[0].lines.join('\n')).toContain('0 landed fully (0.0%) and 2 could not be checked.')
+    expect(posted[0].lines.join('\n')).toContain('For comparison, we checked all 2 outcomes Pipedream sent in the same hours: 0 arrived complete and 2 could not be checked.')
   })
 
   it('the relay reads stop at their time budget, and what was not read is said as not checked', async () => {
@@ -582,7 +589,7 @@ describe('the invalid state canary watch', () => {
     const { d, posted } = deps({ readRelay: async () => { throw new Error('canceling statement due to statement timeout') } })
     const report = await runInvalidStateWatch(d)
     expect(report.relay).toEqual({ error: 'canceling statement due to statement timeout' })
-    expect(posted[0].lines.join('\n')).toContain("The relay's posts could not be read from the database (canceling statement due to statement timeout).")
+    expect(posted[0].lines.join('\n')).toContain("Pipedream's outcomes could not be read from the database (canceling statement due to statement timeout).")
   })
 
   it('picks the relay sample evenly over the day, in order, and takes every post when there are fewer', () => {
@@ -598,7 +605,7 @@ describe('the invalid state canary watch', () => {
     const report = await runInvalidStateWatch(d)
     expect(report.readError).toBe('upstream connect error')
     expect(posted[0].alert).toBe(true)
-    expect(posted[0].title).toBe('Invalid state write check could not run')
+    expect(posted[0].title).toBe('Direct Salesforce writes: the check could not run')
     expect(posted[0].lines[0]).toBe("The check could not read yesterday's Main Flow runs from the database (upstream connect error).")
   })
 
@@ -656,8 +663,9 @@ describe('the invalid state canary watch', () => {
     const fields = new URL(`https://x${asked[0]}`).searchParams.get('fields')!.split(',')
     expect(fields).toEqual(expect.arrayContaining(['LastModifiedDate', 'CreatedDate']))
     const text = posted[0].lines.join('\n')
-    expect(text).toContain('1 of them, spread over the day, was read back from Salesforce the same way: 1 landed fully (100.0%).')
-    expect(text).toContain('Of those, 1 was superseded since by a later write to External_Exchange_Status__c or External_Timestamp__c.')
+    expect(text).toContain(
+      'For comparison, we checked the one outcome Pipedream sent in the same hours, and it arrived complete. 1 of those was updated again later when the sale finished, which is expected.',
+    )
   })
 
   it('a differing status on a Submission last written BEFORE the post is still a post that did not land', async () => {
@@ -669,7 +677,7 @@ describe('the invalid state canary watch', () => {
     const report = await runInvalidStateWatch(d)
     if ('error' in report.relay) throw new Error('relay read failed')
     expect(report.relay.sample).toEqual([
-      { kind: 'not_landed', executionId: RELAY_1, problems: ['1 field holds a different value from the one the run sent: External_Exchange_Status__c.'] },
+      { kind: 'not_landed', executionId: RELAY_1, problems: ['1 of its fields holds a different value from the one this run sent'], fields: ['External_Exchange_Status__c'] },
     ])
   })
 
@@ -694,7 +702,8 @@ describe('the invalid state canary watch', () => {
       {
         kind: 'not_landed',
         executionId: RELAY_1,
-        problems: ['3 fields hold a different value from the one the run sent: External_Exchange_Status__c, External_Timestamp__c and VantageScore__c.'],
+        problems: ['3 of its fields hold different values from the ones this run sent'],
+        fields: ['External_Exchange_Status__c', 'External_Timestamp__c', 'VantageScore__c'],
       },
     ])
   })
@@ -725,7 +734,7 @@ describe('the invalid state canary watch', () => {
     expect(report.relay.sample).toEqual([{ kind: 'moved_on', executionId: RELAY_1, laterWrite: [], newerSubmission: true }])
     expect(asked[1]).toBe(`/sobjects/Lead/${RLEAD_1}?fields=EngineUUID__c,EngineLeadUUID__c,Submission_Object_ID__c`)
     expect(asked[2]).toBe(`/sobjects/Submission__c/${NEWER_SUB}?fields=CreatedDate,Engine_UUID_SO__c,Engine_Lead_UUID_SO__c`)
-    expect(posted[0].lines.join('\n')).toContain('Of those, 1 has a Lead that has since followed a newer Submission of the same customer, so its Lead was not compared.')
+    expect(posted[0].lines.join('\n')).toContain('1 belongs to a customer who came back and started a new Submission, so only the Submission was checked for it.')
   })
 
   it('a Lead naming an OLDER Submission, or a newer one whose Engine ids it does not carry either, is still a mismatch', async () => {
@@ -734,7 +743,7 @@ describe('the invalid state canary watch', () => {
       const report = await runInvalidStateWatch(d)
       if ('error' in report.relay) throw new Error('relay read failed')
       expect(report.relay.sample).toEqual([
-        { kind: 'not_landed', executionId: RELAY_1, problems: ["The Lead's Engine UUID and Engine Lead UUID differ from the Submission's."] },
+        { kind: 'not_landed', executionId: RELAY_1, problems: ["its Lead's Engine ids don't match the Submission"] },
       ])
     }
   })
@@ -773,10 +782,12 @@ describe('the invalid state canary watch', () => {
       { kind: 'moved_on', executionId: RUN_B, laterWrite: [], newerSubmission: true },
     ])
     expect(posted[0].alert).toBe(false)
-    expect(posted[0].title).toBe('All 2 invalid state writes landed in Salesforce')
-    expect(posted[0].lines[0]).toContain(
-      "2 landed fully: the Submission took the run's link and every field it sent, and its Lead carries the same Engine ids. " +
-        'Of those, 1 was superseded since by a later write to External_Exchange_Status__c or External_Timestamp__c, and 1 has a Lead that has since followed a newer Submission of the same customer, so its Lead was not compared.',
+    expect(posted[0].title).toBe('Direct Salesforce writes: all 2 arrived complete')
+    expect(posted[0].lines[1]).toBe(
+      'From Oct 17, 8:50 AM to Oct 18, 8:50 AM ET, 2 leads were written directly, and all 2 arrived complete. ' +
+        'Each Submission has every field the run sent, and each Lead we compared has matching Engine ids. ' +
+        '1 of those was updated again later when the sale finished, which is expected. ' +
+        '1 belongs to a customer who came back and started a new Submission, so only the Submission was checked for it.',
     )
   })
 
@@ -803,9 +814,9 @@ describe('the invalid state canary watch', () => {
     }
     const text = canaryWatchMessage(report, APP).lines.join('\n')
     expect(text).toContain(
-      "Over the same hours 3,400 of Main Flow's other outcome posts went through the relay. 100 of them, spread over the day, were read back from Salesforce the same way: 100 landed fully (100.0%). " +
-        'Of those, 11 were superseded since by a later write to External_Exchange_Status__c or External_Timestamp__c, and 2 have a Lead that has since followed a newer Submission of the same customer, so their Lead was not compared. ' +
-        'The direct writes on the same measure: 11 of 11 landed fully (100.0%).',
+      'For comparison, we checked 100 of the 3,400 outcomes Pipedream sent in the same hours, and all 100 arrived complete. ' +
+        '11 of those were updated again later when the sale finished, which is expected. ' +
+        '2 belong to customers who came back and started a new Submission, so only the Submission was checked for those.',
     )
     expect(text).not.toMatch(/did not/)
 
@@ -832,14 +843,14 @@ describe('the invalid state canary watch', () => {
   })
 
   it('lists at most 15 runs and says how many more, so a bad day is not cut off silently', () => {
-    const native = Array.from({ length: 18 }, (_, i) => ({ kind: 'not_landed' as const, executionId: `run-${i}`, problems: ['The Submission has no Bidspoke run link.'] }))
+    const native = Array.from({ length: 18 }, (_, i) => ({ kind: 'not_landed' as const, executionId: `run-${i}`, problems: ['the Submission has no Bidspoke run link'] }))
     const report: CanaryWatchReport = {
       from: '2026-10-17T12:50:00.000Z', to: '2026-10-18T12:50:00.000Z', native, skipped: [], relayInvalidState: 0, relayAfterSwitch: 0, lastWasRelay: false, nativeCompleted: 18,
       relay: { total: 10, sample: [], noSubmission: 0 },
     }
     const m = canaryWatchMessage(report, APP)
     expect(m.lines.filter((l) => l.startsWith('<'))).toHaveLength(15)
-    expect(m.lines).toContain('3 more runs did not land fully or could not be checked; the job run record lists them all.')
+    expect(m.lines).toContain('3 more runs did not arrive complete or could not be checked; the job run record lists them all.')
   })
 })
 
@@ -877,6 +888,188 @@ function relayDatabase(n: number, opts: { dropFromSample?: number; listError?: s
   }
   return { supabase: { from } as unknown as SupabaseClient, queries }
 }
+
+/**
+ * The words of the daily message (#2652). Dan found the report hard to read on
+ * 2026-10-22: it never said what was being trialled, used internal terms, and
+ * printed Salesforce field names. One vocabulary on every variant: "written
+ * directly" for the native write, "Pipedream" for the relay, "arrived complete"
+ * for landed fully, no field API names, times in ET.
+ */
+describe('the words of the daily message (#2652)', () => {
+  const day = (over: Partial<CanaryWatchReport>): CanaryWatchReport => ({
+    from: '2026-10-21T13:23:00.000Z',
+    to: '2026-10-22T13:23:00.000Z',
+    native: [],
+    skipped: [],
+    relayInvalidState: 0,
+    relayAfterSwitch: 0,
+    lastWasRelay: false,
+    nativeCompleted: 0,
+    relay: { total: 0, sample: [], noSubmission: 0 },
+    ...over,
+  })
+  const landedRuns = (n: number, tag = 'direct') => Array.from({ length: n }, (_, i) => ({ kind: 'landed' as const, executionId: `${tag}-${i}` }))
+  const laterWrite = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({ kind: 'moved_on' as const, executionId: `later-${i}`, laterWrite: ['External_Exchange_Status__c', 'External_Timestamp__c'], newerSubmission: false }))
+  const newerSubmission = (n: number) => Array.from({ length: n }, (_, i) => ({ kind: 'moved_on' as const, executionId: `newer-${i}`, laterWrite: [], newerSubmission: true }))
+  const label = (run: string) => `<${link(run)}|Run ${run}>`
+
+  it('names the day the direct write started from the constant for the switch, version 172 at 7:20 PM ET on Oct 16', () => {
+    expect(DIRECT_WRITE_SINCE).toBe('2026-10-16T23:20:00.000Z')
+    expect(canaryWatchMessage(day({ native: landedRuns(1) }), APP).lines[0]).toBe(INTRO)
+  })
+
+  it('a normal day (the 2026-10-22 shape) reads in plain words', () => {
+    const m = canaryWatchMessage(
+      day({ native: landedRuns(13), nativeCompleted: 13, relay: { total: 3285, sample: [...landedRuns(89, 'relay'), ...laterWrite(9), ...newerSubmission(2)], noSubmission: 0 } }),
+      APP,
+    )
+    expect(m.title).toBe('Direct Salesforce writes: all 13 arrived complete')
+    expect(m.lines).toEqual([
+      INTRO,
+      'From Oct 21, 9:23 AM to Oct 22, 9:23 AM ET, 13 leads were written directly, and all 13 arrived complete. ' +
+        'Each Submission has every field the run sent, and each Lead has matching Engine ids.',
+      'For comparison, we checked 100 of the 3,285 outcomes Pipedream sent in the same hours, and all 100 arrived complete. ' +
+        '9 of those were updated again later when the sale finished, which is expected. ' +
+        '2 belong to customers who came back and started a new Submission, so only the Submission was checked for those.',
+    ])
+    expect(m.alert).toBe(false)
+    expect(m.fixHint).toBeUndefined()
+  })
+
+  it('a day with misses (the 2026-10-19 shape) names each run in words and says how to fix it', () => {
+    const m = canaryWatchMessage(
+      day({
+        from: '2026-10-18T13:00:00.000Z',
+        to: '2026-10-19T13:00:00.000Z',
+        native: [
+          ...landedRuns(15),
+          {
+            kind: 'not_landed',
+            executionId: REPEAT_RUN_1,
+            problems: ["a later run wrote the same Submission, so this run's link and 5 of its fields were replaced", "its Lead's Engine ids don't match the Submission"],
+          },
+          { kind: 'not_landed', executionId: REPEAT_RUN_2, problems: ["its Lead's Engine ids don't match the Submission"] },
+        ],
+        nativeCompleted: 17,
+        relay: { total: 3310, sample: [...landedRuns(88, 'relay'), ...laterWrite(11), ...newerSubmission(1)], noSubmission: 0 },
+      }),
+      APP,
+    )
+    expect(m.title).toBe('Direct Salesforce writes: 2 of 17 did not arrive complete')
+    expect(m.lines).toEqual([
+      INTRO,
+      'From Oct 18, 9:00 AM to Oct 19, 9:00 AM ET, 17 leads were written directly. 15 arrived complete and 2 did not.',
+      `${label(REPEAT_RUN_1)}: a later run wrote the same Submission, so this run's link and 5 of its fields were replaced, and its Lead's Engine ids don't match the Submission.`,
+      `${label(REPEAT_RUN_2)}: its Lead's Engine ids don't match the Submission.`,
+      'For comparison, we checked 100 of the 3,310 outcomes Pipedream sent in the same hours, and all 100 arrived complete. ' +
+        '11 of those were updated again later when the sale finished, which is expected. ' +
+        '1 belongs to a customer who came back and started a new Submission, so only the Submission was checked for it.',
+    ])
+    expect(m.alert).toBe(true)
+    expect(m.fixHint).toBe('Open each run above and its Submission in Salesforce. If writes are being lost, move Main Flow back to Pipedream with the saved rollback record.')
+  })
+
+  it('on a mixed day, the runs moved on since are counted among those that arrived complete, never among those that did not', () => {
+    const m = canaryWatchMessage(
+      day({ native: [...landedRuns(1), ...laterWrite(1), { kind: 'not_landed', executionId: RUN_A, problems: ['the Submission has no Bidspoke run link'] }] }),
+      APP,
+    )
+    expect(m.lines[1]).toBe(
+      'From Oct 21, 9:23 AM to Oct 22, 9:23 AM ET, 3 leads were written directly. 2 arrived complete and 1 did not. ' +
+        '1 of those that arrived complete was updated again later when the sale finished, which is expected.',
+    )
+  })
+
+  it('a Lead holding the first completion copy is said as such, and never claimed to match this run', () => {
+    const m = canaryWatchMessage(
+      day({ native: [...landedRuns(2), { kind: 'moved_on', executionId: RUN_B, laterWrite: [], newerSubmission: false, leadFromEarlierRun: RUN_A }] }),
+      APP,
+    )
+    expect(m.lines[1]).toBe(
+      'From Oct 21, 9:23 AM to Oct 22, 9:23 AM ET, 3 leads were written directly, and all 3 arrived complete. ' +
+        'Each Submission has every field the run sent, and each Lead we compared has matching Engine ids. ' +
+        "1 went to a Submission an earlier run had already completed. Salesforce copies the Engine ids to the Lead only the first time, so its Lead keeps that earlier run's ids.",
+    )
+  })
+
+  it('every variant keeps the same vocabulary in its title, and the intro on each that reports runs', () => {
+    const notLanded = { kind: 'not_landed' as const, executionId: RUN_A, problems: ['the Submission has no Bidspoke run link'] }
+    const unchecked = { kind: 'unchecked' as const, executionId: RUN_B, reason: 'Salesforce refused the login (401).' }
+    const storm = Array.from({ length: OVERWRITE_STORM_MIN }, (_, i) => ({ kind: 'superseded' as const, executionId: `old-${i}`, byExecutionId: `new-${i}` }))
+    const cases: Array<[CanaryWatchReport, string]> = [
+      [day({ readError: 'upstream connect error' }), 'Direct Salesforce writes: the check could not run'],
+      [day({}), 'Direct Salesforce writes: none to check yesterday'],
+      [day({ native: landedRuns(1) }), 'Direct Salesforce writes: the one write arrived complete'],
+      [day({ native: landedRuns(13) }), 'Direct Salesforce writes: all 13 arrived complete'],
+      [day({ native: [...landedRuns(2), notLanded] }), 'Direct Salesforce writes: 1 of 3 did not arrive complete'],
+      [day({ native: [...landedRuns(2), unchecked] }), 'Direct Salesforce writes: 1 of 3 could not be checked'],
+      [day({ native: [landedRuns(1)[0], notLanded, unchecked] }), 'Direct Salesforce writes: 1 of 3 did not arrive complete, and 1 could not be checked'],
+      [day({ relayInvalidState: 4, lastWasRelay: true }), 'Direct Salesforce writes: Main Flow is not writing directly'],
+      [day({ native: landedRuns(2), relayInvalidState: 1, relayAfterSwitch: 1, lastWasRelay: true }), 'Direct Salesforce writes: Main Flow is back on Pipedream'],
+      [day({ native: landedRuns(2), relayInvalidState: 1, relayAfterSwitch: 1 }), 'Direct Salesforce writes: Main Flow went back to Pipedream for a while'],
+      [day({ native: [...landedRuns(15), ...storm] }), `Direct Salesforce writes: ${OVERWRITE_STORM_MIN} of ${15 + OVERWRITE_STORM_MIN} were replaced by a later run`],
+      [day({ native: [storm[0]] }), 'Direct Salesforce writes: the one write was replaced by a later run'],
+      [day({ native: [...landedRuns(4), storm[0]] }), 'Direct Salesforce writes: 4 of 5 arrived complete and 1 was replaced by a later run'],
+    ]
+    for (const [report, title] of cases) {
+      const m = canaryWatchMessage(report, APP)
+      expect(m.title).toBe(title)
+      if (!report.readError) expect(m.lines[0]).toBe(INTRO)
+      const words = [m.title, ...m.lines, m.fixHint ?? ''].join('\n')
+      expect(words).not.toMatch(/\brelay\b|invalid state|landed fully|\bEDT\b|\bEST\b|__c\b/)
+    }
+  })
+
+  it('the Fix lines for a day off the direct write and an overwrite storm use the same words', () => {
+    const off = canaryWatchMessage(day({ native: landedRuns(2), relayInvalidState: 1, relayAfterSwitch: 1, lastWasRelay: true }), APP)
+    expect(off.fixHint).toBe(
+      "If Main Flow was moved back to Pipedream on purpose, nothing else is needed. If not, open Main Flow's version history and see which version is live. Either way, the time on Pipedream is a gap in the direct writes being measured.",
+    )
+    const storm = Array.from({ length: OVERWRITE_STORM_MIN }, (_, i) => ({ kind: 'superseded' as const, executionId: `old-${i}`, byExecutionId: `new-${i}` }))
+    const stormy = canaryWatchMessage(day({ native: [...landedRuns(5), ...storm] }), APP)
+    expect(stormy.fixHint).toBe(
+      'More runs than usual wrote a Submission that a later run wrote again. Open the runs above: one customer coming back several times is expected, the same visit written twice is not.',
+    )
+    expect(stormy.lines).toContain(`${label('old-0')} was replaced by ${label('new-0')}, a later run that wrote the same Submission.`)
+  })
+
+  it('no message line names a Salesforce field by its API name, even when the runs it lists differ in named fields', async () => {
+    // End to end, so the per run lines are what the check actually wrote, on both halves.
+    const RSUB = 'a04Ui00000RRRR9IAA'
+    const { d, posted } = deps({
+      steps: [nativeStep(RUN_A, SUB_A), nativeStep(RUN_B, SUB_B)],
+      readRelay: async () => ({
+        total: 40,
+        sample: [
+          {
+            execution_id: '01a14500-0000-7000-8000-000000000009',
+            step_namespace: 'tripoint_sf_post',
+            step_type: 'webhook',
+            status: 'completed',
+            started_at: '2026-10-17T13:31:13.000Z',
+            input: { resolved: { body: { submissionId: RSUB, executionId: '01a14500-0000-7000-8000-000000000009', PDFlow_1__c: link('01a14500-0000-7000-8000-000000000009'), VantageScore__c: 'null' } } },
+            output: {},
+          },
+        ],
+      }),
+      records: {
+        [SUB_A]: ok({ ...landedSubmission(RUN_A, LEAD_A), Bidspoke_Write__c: `${RUN_B}:send_salesforce:0`, VantageScore__c: 701, PDFlow_4__c: 'https://pipedream.example/x' }),
+        [LEAD_A]: ok({ ...landedLead(RUN_A), EngineUUID__c: null }),
+        [SUB_B]: ok({ ...landedSubmission(RUN_B, LEAD_B), PDFlow_1__c: null, LeadSaleType__c: null }),
+        [LEAD_B]: ok(landedLead(RUN_B)),
+        [RSUB]: ok({ PDFlow_1__c: link('01a14500-0000-7000-8000-000000000009'), VantageScore__c: '640' }),
+      },
+    })
+    const report = await runInvalidStateWatch(d)
+    expect(report.native.map((v) => v.kind)).toEqual(['not_landed', 'not_landed'])
+    const m = posted[0]
+    const words = [m.title, ...m.lines, m.fixHint ?? '']
+    expect(words.join('\n')).toContain(`${label(RUN_A)}: another run wrote the same Submission, 2 of its fields hold different values from the ones this run sent, and its Lead's Engine UUID doesn't match the Submission.`)
+    for (const w of words) expect(w).not.toMatch(/__c\b/)
+  })
+})
 
 describe('reading the relay sample from the database', () => {
   it('lists every relay post of the eight other outcome posts in the window, then reads back an even sample of them in time order', async () => {
