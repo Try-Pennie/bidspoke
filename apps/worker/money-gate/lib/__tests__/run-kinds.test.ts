@@ -35,6 +35,7 @@ import { verifyJwt } from '../../../src/lib/jwt'
 import { deployCompareCodeBundle, deployTestCodeBundle } from '../../../src/lib/code-node-deployer'
 import { loadWorkflowDefinition } from '../../../src/engine/definition-loader'
 import shadow from '../../../src/routes/shadow'
+import api from '../../../src/routes/api/index'
 import { RUN_KINDS, fixtureId, runOptions } from '../run-kinds'
 
 const ctx = recordingContext()
@@ -105,7 +106,6 @@ describe('a test run is replayed with exactly what POST /api/workflows/:id/test 
       // The route refuses a workflow stored under another lane before deploying (#1725).
       workflows: { single: { id: 'wf-1', organization_id: ORG, lane: 'money' } },
     }) as unknown as ReturnType<typeof createSupabaseClient>)
-    const { default: api } = await import('../../../src/routes/api/index')
     return api.request('/workflows/wf-1/test', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' }, body: JSON.stringify(body) }, env, ctx)
   }
 

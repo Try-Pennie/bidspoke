@@ -17,6 +17,7 @@ vi.mock('../../../lib/supabase')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -39,7 +40,6 @@ function envWith(kvImpl: ReturnType<typeof kv>): Env {
 }
 
 async function request(method: string, env: Env) {
-  const { default: api } = await import('../index')
   return api.fetch(new Request('https://x/admin/database-memory-readings', { method, headers: { Authorization: 'Bearer t' } }), env, mockCtx)
 }
 

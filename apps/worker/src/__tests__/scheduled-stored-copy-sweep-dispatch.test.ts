@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { recordingContext } from '../test-setup/wait-until'
 import type { Env } from '../index'
 import { STORED_COPY_SWEEP_BUDGET_MS } from '../lib/stored-copy-sweep'
+import { loadWorker } from '../test-setup/load-worker'
 
 /**
  * #1846: the stored copy sweep runs every minute, beside the prewarm, and its
@@ -26,7 +27,7 @@ vi.mock('../lib/supabase', () => ({
   createSupabaseClient: () => ({ from: () => ({ select: () => ({}) }) }),
 }))
 
-const worker = (await import('../index')).default
+const { default: worker } = await loadWorker()
 
 const WORKFLOW_CACHE = { get: async () => null, put: async () => undefined, delete: async () => undefined, list: async () => ({ keys: [], list_complete: true }) }
 const env = {

@@ -12,6 +12,7 @@ vi.mock('../../../lib/supabase')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
+import api from '../index'
 
 /**
  * The shared mock now covers what this file kept a local copy for: a
@@ -118,7 +119,6 @@ const execDegraded = {
 }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

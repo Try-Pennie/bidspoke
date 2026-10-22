@@ -6,7 +6,7 @@
  * ones and other organizations' never do. The Worker is service_role, so the
  * route's own filters are the scoping.
  */
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
@@ -16,6 +16,7 @@ vi.mock('../../../lib/supabase')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
+import api from '../index'
 
 const ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: ORG, email: 'dan@pennie.com' }
@@ -29,9 +30,6 @@ const partner = { id: P1, organization_id: ORG }
 const wf = (id: string, nodes: Array<Record<string, unknown>>, over: Record<string, unknown> = {}) => ({
   id, name: `Workflow ${id}`, is_active: true, organization_id: ORG, deleted_at: null, definition: { nodes }, ...over,
 })
-
-let api: Awaited<typeof import('../index')>['default']
-beforeAll(async () => { api = (await import('../index')).default }, 60_000)
 
 function supabaseWith(tables: Record<string, TableConfig | TableConfig[]>) {
   const sb = makeSupabase({ users: { single: testUser }, ...tables })

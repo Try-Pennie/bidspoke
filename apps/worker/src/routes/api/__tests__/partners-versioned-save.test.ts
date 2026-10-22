@@ -26,6 +26,7 @@ import { invalidatePartnerConstantsCache } from '../../../lib/partner-constants-
 import { refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
 import { COPY_NOT_CLEARED_MESSAGE } from '../../../lib/stored-copy'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com', display_name: 'Dan Wright' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -34,7 +35,6 @@ const SAVE_ID = '0b9f6c1e-3c2a-4d7e-8f10-2a3b4c5d6e7f'
 const STORED = { id: 'p-1', organization_id: 'org-abc', name: 'SoFi', slug: 'sofi', bid_mode: 'ping_only', is_active: true, click_url: null, cf_secret_key: null, version: 4 }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

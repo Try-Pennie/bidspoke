@@ -29,6 +29,7 @@ import { decryptSecret, encryptSecret } from '../../../lib/secret-crypto'
 import { readSlackCopy, rememberSlackConnections } from '../../../lib/slack-copy'
 import { parseSlackConnection } from '../../../lib/slack-connection'
 import { slackPostOf } from '../../../__tests__/helpers/slack-fetch'
+import api from '../index'
 
 const ORG = '0a000000-0000-4000-8000-000000000001'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000000002'
@@ -170,7 +171,6 @@ function makeEnv(over: Partial<Record<string, unknown>> = {}) {
 }
 
 async function call(env: Env, method: string, path: string, body?: unknown) {
-  const { default: api } = await import('../index')
   return api.request(path, {
     method,
     headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
