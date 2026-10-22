@@ -32,6 +32,10 @@ beforeAll(async () => {
 }, 120_000)
 
 const SAMPLES: Readonly<Record<string, () => Readonly<Record<string, string>>>> = {
+  openai: () => ({
+    project_id: 'proj_0PS2337',
+    api_key: 'canary-openai-key-2337',
+  }),
   salesforce: () => ({
     instance_url: 'https://trypennie.my.salesforce.com',
     client_id: 'ops-client-id-3MVG',
@@ -112,16 +116,18 @@ function partsOf(service: ServiceSchema): { login: Record<string, string>; targe
 const without = (fields: Record<string, string>, name: string) => Object.fromEntries(Object.entries(fields).filter(([k]) => k !== name))
 
 /** What each auth kind does when it mints, seen from the outside. A kind with no entry here fails, so a new kind brings its check. */
-const AUTH_KIND_BEHAVIOUR: Readonly<Partial<Record<ConnectionAuthKind, (seen: { auth: Authorization; tokenRequests: TokenRequest[] }) => void>>> = {
+const AUTH_KIND_BEHAVIOUR: Readonly<Partial<Record<ConnectionAuthKind, (seen: { auth: Authorization; tokenRequests: TokenRequest[]; login: Record<string, string> }) => void>>> = {
   client_credentials: ({ tokenRequests }) => {
     expect(tokenRequests).toHaveLength(1)
     expect(tokenRequests[0].body.get('grant_type')).toBe('client_credentials')
   },
-  static_key: ({ auth, tokenRequests }) => {
+  static_key: ({ auth, tokenRequests, login }) => {
     // The stored key itself, read on every request: no token endpoint is asked and nothing is minted.
     expect(tokenRequests).toEqual([])
-    expect(auth.headers.authorization).toBe('Bearer canary-ops-bot-token-2337')
-    expect(auth.secrets).toEqual(['canary-ops-bot-token-2337'])
+    const keys = Object.values(login)
+    expect(keys).toHaveLength(1)
+    expect(auth.secrets).toEqual(keys)
+    expect(Object.values(auth.headers).filter((v) => v === keys[0] || v === `Bearer ${keys[0]}`)).toHaveLength(1)
   },
   key_pair: ({ auth, tokenRequests }) => {
     // Signed locally with the connection's own key: no token endpoint is asked.
@@ -154,7 +160,7 @@ describe('the catalogue connection declarations, against the ops minters', () =>
         const check = AUTH_KIND_BEHAVIOUR[service.connection.auth]
         expect(check, `no behaviour check for the auth kind ${service.connection.auth}`).toBeDefined()
         const { login, target } = partsOf(service)
-        check!(await mint(service.key, login, target))
+        check!({ ...(await mint(service.key, login, target)), login })
       })
 
       it('is refused without each required login field, so the minter reads every one by its declared name', async () => {
