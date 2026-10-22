@@ -9,7 +9,9 @@
  * measurement is here (salesforce-service.ts: /services/oauth2/userinfo, the org
  * id and username), and Snowflake's (snowflake-service.ts: CURRENT_USER() and
  * the account, which must be the ones the target declares, #2337), and Slack's
- * (slack-service.ts: auth.test, a bot in the declared workspace, #2337). The
+ * (slack-service.ts: auth.test, a bot in the declared workspace, #2337), and
+ * OpenAI's (openai-service.ts: the free models list, in the declared project,
+ * #2337). The
  * others the plan names (a Supabase key's project ref, Google's token for the
  * declared mailbox) arrive with each service's rules (Phase 7), each
  * as another kind here; until a service has one, verify refuses it by name
@@ -39,6 +41,13 @@ export type MeasuredIdentity =
       /** auth.test's user_id and bot_id: the bot user, and the bot, which a person's token has none of. */
       readonly userId: string
       readonly botId: string
+    }
+  | {
+      readonly kind: 'openai'
+      /** The project the key was proven to work in: the declared one, sent as OpenAI-Project (openai-service.ts). */
+      readonly projectId: string
+      /** The `openai-organization` header: the organization OpenAI bills the key's requests to, null where it named none. */
+      readonly organization: string | null
     }
 
 /** connectionFetch bound to one verify call: a response, or a ConnectionRefusal thrown by name. */
@@ -75,7 +84,11 @@ export class IdentityMismatch extends Error {
    */
   constructor(
     message: string,
-    readonly code: 'verify_identity_mismatch' | 'verify_slack_not_a_bot' | 'verify_slack_workspace_mismatch' = 'verify_identity_mismatch',
+    readonly code:
+      | 'verify_identity_mismatch'
+      | 'verify_slack_not_a_bot'
+      | 'verify_slack_workspace_mismatch'
+      | 'verify_openai_project_mismatch' = 'verify_identity_mismatch',
   ) {
     super(message)
     this.name = 'IdentityMismatch'
