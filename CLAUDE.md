@@ -91,11 +91,17 @@
     decides `sideEffect` and `idempotent` itself, with `idempotentBecause` saying
     why, never from a Pipedream annotation (R11). Steps resolve an action by
     `(key, version)` and a missing version is refused as `action_version_missing`,
-    never run on the newest. Snowflake (#2337) is its first service;
+    never run on the newest. Snowflake (#2337) was its first service, then Slack
+    (`slack.send-message`, the ops bot of Dan's decision 6, never the alerts bot:
+    the create and Reconnect routes compare the bot ops verify measured with the
+    alerts bot, `lib/slack-alert-bot.ts`, #2654);
     `src/__fixtures__/catalogue` is a test only service that proves the machinery.
   - `packages/slack-client` (#2337): `createSlackClient`, the one place a Slack Web
-    API client is built, used by the Worker's alerts and Settings routes, and the
-    one the catalogue's ops Slack actions must use once they exist. It pins slack-web-api-client exactly, with retry
+    API client is built, used by the Worker's alerts and Settings routes with a bot
+    token, and by the catalogue's ops Slack actions and the ops Slack verify bound
+    to a connection's fetch (`createSlackClient({ fetch })`, which sends through
+    connectionFetch, since the library itself sends only through the global
+    fetch). It pins slack-web-api-client exactly, with retry
     and debug logging off, and holds the only declaration of the library.
     `slack-calls-one-client.test.ts` scans every workspace package and fails on any
     other Slack client or import.
