@@ -5,3 +5,12 @@
 .sf-problem { font-weight: 500; }
 .sf-problem a { color: #1D212F; text-decoration: underline; font-weight: 400; }
 .select-trigger { width: 100%; }
+/* The field's own states (Dan, 2026-10-21): each line wrapped so none ends on a lone word, a failed
+   sentence in FieldError's red over its Try again, the placeholder in the hint grey, and the working
+   line's spinner sized by the app's .outcome svg rule (round 32), which the captured chrome predates. */
+.sf-line { text-wrap: pretty; }
+.sf-line.field-error { color: var(--color-red-700); }
+.sf-line a { color: #1D212F; text-decoration: underline; font-weight: 400; }
+.sf-failed { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.sf-placeholder { color: #697081; }
+.outcome svg { width: 0.95em; height: 0.95em; flex: none; position: relative; top: -0.1em; }

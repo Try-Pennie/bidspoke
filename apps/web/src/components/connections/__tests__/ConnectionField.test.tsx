@@ -177,6 +177,8 @@ describe('the step form Connection field', () => {
     const alert = within(field()).getByRole('alert')
     expect(alert).toHaveTextContent("The connections could not be loaded: Bidspoke's server did not answer.")
     expect(alert).not.toHaveTextContent('fetch')
+    // The settled design's checks read a sentence saying something went wrong by this part (D25, D37).
+    expect(alert).toHaveAttribute('data-part', 'connection-failed')
     expect(box()).toHaveTextContent(/^$/)
   })
 
@@ -194,6 +196,7 @@ describe('the step form Connection field', () => {
     expect(box()).toHaveTextContent('Choose a connection')
     expect(lines()).toEqual(['The connection this step used no longer exists. Choose another.'])
     expect(field().querySelector('.field-error')).not.toBeNull()
+    expect(field().querySelector('[data-part="connection-failed"]')).toHaveTextContent('The connection this step used no longer exists. Choose another.')
     expect(field()).not.toHaveTextContent('c-removed')
   })
 

@@ -26,6 +26,19 @@
    "status": "failing"
   }
  ],
+ "fieldWords": {
+  "_about": "What the field says in its own states, as Dan passed them on 2026-10-21; the build's words, held equal by the preview's test.",
+  "placeholder": "Choose a connection",
+  "loading": "Loading the connections",
+  "loadingSeconds": 6,
+  "noAnswer": "The connections could not be loaded: Bidspoke's server did not answer.",
+  "refused": "The connections could not be read: the use counts read failed.",
+  "emptyBefore": "No Salesforce connection yet. Add one on the ",
+  "page": "Connections page",
+  "emptyAfter": ".",
+  "gone": "The connection this step used no longer exists. Choose another.",
+  "removed": "Removed Salesforce"
+ },
  "statusVocabulary": {
   "ok": "Working",
   "reauth": "Needs reconnecting",

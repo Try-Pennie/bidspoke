@@ -109,7 +109,7 @@ function Line({ id, line, onRetry }: { id: string; line: FieldLine; onRetry: () 
     case 'failed':
       return (
         <div id={id} className="connection-field-line connection-field-failed">
-          <FieldError alert size="xs">{line.sentence}</FieldError>
+          <FieldError alert size="xs" part="connection-failed">{line.sentence}</FieldError>
           <Button variant="secondary" className="btn-sm" onClick={onRetry}>Try again</Button>
         </div>
       )
@@ -120,6 +120,6 @@ function Line({ id, line, onRetry }: { id: string; line: FieldLine; onRetry: () 
         </p>
       )
     case 'gone':
-      return <FieldError id={id} alert size="xs" className="connection-field-line">{line.sentence}</FieldError>
+      return <FieldError id={id} alert size="xs" part="connection-failed" className="connection-field-line">{line.sentence}</FieldError>
   }
 }

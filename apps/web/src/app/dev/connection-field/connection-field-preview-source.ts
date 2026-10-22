@@ -12,11 +12,14 @@ import type { ComboboxClock } from '@/components/ui/Combobox'
 import type { Workflow } from '@/types/workflow'
 import fixture from '../../../../../../docs/design/connections-step-form.fixture.json'
 
-/** The settled frames (docs/design/connections-step-form/settled.json): the design score's built side. */
-export const SETTLED_FRAMES = ['step-healthy', 'step-problem', 'step-failing'] as const
+/**
+ * The settled frames (docs/design/connections-step-form/settled.json): the design score's built
+ * side. The field's own states joined them once Dan passed each as built (2026-10-21).
+ */
+export const SETTLED_FRAMES = ['step-healthy', 'step-problem', 'step-failing', 'none-chosen', 'loading', 'failed', 'refused', 'empty', 'gone'] as const
 
-/** The states the settled design never drew, each its own frame for the design round to look at. */
-export const UNDRAWN_FRAMES = ['none-chosen', 'menu-open', 'loading', 'failed', 'refused', 'empty', 'gone'] as const
+/** The states the settled design does not draw: the open menu, which a picture of the page cannot hold. */
+export const UNDRAWN_FRAMES = ['menu-open'] as const
 
 export type PreviewFrame = (typeof SETTLED_FRAMES)[number] | (typeof UNDRAWN_FRAMES)[number]
 
@@ -65,7 +68,7 @@ export function chosenIdOf(frame: PreviewFrame): string | null {
     case 'step-problem': return idOf('Achieve Salesforce')
     case 'step-failing': return idOf('Lendco Salesforce')
     case 'none-chosen': case 'menu-open': case 'empty': return null
-    case 'gone': return idOf('Removed Salesforce')
+    case 'gone': return idOf(fixture.fieldWords.removed)
     default: return idOf('Pennie Salesforce')
   }
 }
@@ -76,7 +79,7 @@ export function previewLoadList(frame: PreviewFrame): () => Promise<ConnectionLi
     case 'loading': return () => new Promise<ConnectionList>(() => {})
     // The client's own timeout gives no body, which the field reads as no answer.
     case 'failed': return () => Promise.reject(Object.assign(new Error('timed out'), { timedOut: true }))
-    case 'refused': return () => Promise.reject(Object.assign(new Error('HTTP 503'), { body: { message: 'The connections could not be read: the use counts read failed.' } }))
+    case 'refused': return () => Promise.reject(Object.assign(new Error('HTTP 503'), { body: { message: fixture.fieldWords.refused } }))
     case 'empty': return () => Promise.resolve({ ...PREVIEW_LIST, connections: [] })
     default: return () => Promise.resolve(PREVIEW_LIST)
   }

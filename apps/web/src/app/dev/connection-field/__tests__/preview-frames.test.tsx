@@ -10,6 +10,8 @@ import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ConnectionField } from '@/components/connections/ConnectionField'
+import { CONNECTIONS_PAGE, emptyLine, GONE_SENTENCE, LOADING_LABEL } from '@/components/connections/connection-field-model'
+import { LIST_NO_ANSWER, loadFailedSentence } from '@/components/connections/connection-model'
 import { realClock } from '@/components/ui/Combobox'
 import fixture from '../../../../../../../docs/design/connections-step-form.fixture.json'
 import { chosenIdOf, idOf, PREVIEW_LIST, previewFrameOf, previewLoadList, SETTLED_FRAMES, stillClock, UNDRAWN_FRAMES, type PreviewFrame } from '../connection-field-preview-source'
@@ -58,6 +60,19 @@ describe('the Connection field preview', () => {
     expect(PREVIEW_LIST.connections.map((c) => [c.name, c.acts_as, c.status_word])).toEqual(
       fixture.connections.map((c) => [c.name, c.actsAs, fixture.statusVocabulary[c.status as keyof typeof fixture.statusVocabulary]]),
     )
+  })
+
+  // The settled frames of the field's own states are drawn by the design's builder from these words, so
+  // the build's words and the fixture's are one set (Dan passed the states as built, 2026-10-21).
+  it("the field's own words are the settled fixture's", () => {
+    const w = fixture.fieldWords
+    expect(LOADING_LABEL).toBe(w.loading)
+    expect(GONE_SENTENCE).toBe(w.gone)
+    expect(CONNECTIONS_PAGE).toBe(w.page)
+    expect(loadFailedSentence(LIST_NO_ANSWER)).toBe(w.noAnswer)
+    expect(emptyLine('Salesforce')).toMatchObject({ before: w.emptyBefore, page: w.page, after: w.emptyAfter })
+    expect(SHOWS.empty).toEqual([w.emptyBefore + w.page + w.emptyAfter])
+    expect(SHOWS['none-chosen']).toEqual([w.placeholder])
   })
 
   it('an unknown frame id opens the healthy frame', () => {
