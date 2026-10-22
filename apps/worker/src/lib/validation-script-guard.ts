@@ -75,8 +75,7 @@ export interface ValidationScriptException {
 
 export const KNOWN_VALIDATION_SCRIPTS: readonly ValidationScriptException[] = [
   { workflowId: '89b1a6af-7e0f-43de-bc66-1e888184551f', namespace: 'validate_bidding_and_state', label: 'Lead Economy - Bidding Workflow', endedBy: '#2594' },
-  // No swap issue exists for Engine Bidding yet; its swap waits on #1414.
-  { workflowId: 'da82a183-1a4a-417e-b0b8-5f3fe5e14840', namespace: 'validate_bidding_and_state', label: 'Engine Bidding Workflow', endedBy: '#1414' },
+  { workflowId: 'da82a183-1a4a-417e-b0b8-5f3fe5e14840', namespace: 'validate_bidding_and_state', label: 'Engine Bidding Workflow', endedBy: '#2655' },
 ]
 
 /**
