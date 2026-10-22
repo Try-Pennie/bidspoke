@@ -94,7 +94,8 @@ function causeOf(err: unknown): { sentence: string | null; mayHaveLanded: boolea
     : body?.error === SLACK_ALERT_AMBIGUOUS ? 'Bidspoke holds more than one Slack alert connection for this organization, so it cannot tell which to change'
     : typeof body?.error === 'string' && body.error.trim() !== '' ? body.error : null
   const status = typeof e.status === 'number' ? e.status : null
-  // A call given up on, or a server that failed or could not be reached, may have saved (L11).
+  // A call given up on, a server that could not be reached, or one that failed while answering (a 5xx,
+  // whatever its body says) may have saved (L11); only a refusal below 500 is known to have saved nothing.
   const mayHaveLanded = e.timedOut === true || status === null || status >= 500
   return { sentence: said, mayHaveLanded, cause: requestFailureCause(err) }
 }
@@ -109,7 +110,7 @@ export function switchFailed(key: AlertSwitchKey, to: boolean, err: unknown): st
   const { sentence, mayHaveLanded, cause } = causeOf(err)
   const why = sentence ? sentence.replace(/\.$/, '') : cause
   const was = to ? 'off' : 'on'
-  if (mayHaveLanded && !sentence) return `${name} may not have been turned ${to ? 'on' : 'off'}: ${why}. Reload the page to see whether it is ${to ? 'on' : 'off'}.`
+  if (mayHaveLanded) return `${name} may not have been turned ${to ? 'on' : 'off'}: ${why}. Reload the page to see whether it is ${to ? 'on' : 'off'}.`
   return `${name} was not turned ${to ? 'on' : 'off'}: ${why}. It is still ${was}.`
 }
 
@@ -117,7 +118,7 @@ export function switchFailed(key: AlertSwitchKey, to: boolean, err: unknown): st
 export function channelFailed(channel: string, err: unknown): string {
   const { sentence, mayHaveLanded, cause } = causeOf(err)
   const why = sentence ? sentence.replace(/\.$/, '') : cause
-  if (mayHaveLanded && !sentence) return `Alerts may not have been moved to ${channel}: ${why}. Reload the page to see where they post.`
+  if (mayHaveLanded) return `Alerts may not have been moved to ${channel}: ${why}. Reload the page to see where they post.`
   return `Alerts were not moved to ${channel}: ${why}. They still post where they did.`
 }
 

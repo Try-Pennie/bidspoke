@@ -63,6 +63,10 @@ describe('what a save says', () => {
     const timedOut = Object.assign(new Error('Timed out'), { timedOut: true, timeoutMs: 30_000 })
     expect(switchFailed('backup_alerts_enabled', false, timedOut)).toBe('Backup failure alerts may not have been turned off: the server did not answer within 30 seconds. Reload the page to see whether it is off.')
     expect(channelFailed('#ops-alerts', new TypeError('Failed to fetch'))).toBe('Alerts may not have been moved to #ops-alerts: the server could not be reached. Reload the page to see where they post.')
+    // A 5xx whose body names the failure may still have written: it is said as not known, with the body's words.
+    const serverFailed = Object.assign(new Error('x'), { status: 503, body: { error: 'canceling statement due to statement timeout' } })
+    expect(switchFailed('volume_alerts_enabled', false, serverFailed)).toBe('Volume anomaly alerts may not have been turned off: canceling statement due to statement timeout. Reload the page to see whether it is off.')
+    expect(channelFailed('#ops-alerts', serverFailed)).toBe('Alerts may not have been moved to #ops-alerts: canceling statement due to statement timeout. Reload the page to see where they post.')
   })
 
   it('a read or a search that failed says so in a sentence', () => {
