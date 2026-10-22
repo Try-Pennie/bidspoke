@@ -65,6 +65,10 @@ export const ACCEPTED_PRINT_SITES: readonly AcceptedPrintSite[] = [
   // It is here because the detector cannot tell a scalar from a record at scan
   // time (both are just an identifier in the source), so the distinction has to
   // be made by a person once, here. See #1255.
+  // Since version 26 (2026-10-22, #2593) the step is a lead validation node and
+  // prints nothing. The entry stays while version 25, which still carries the
+  // line, is the rollback target of that swap's watch, so a rollback does not
+  // page as a new print; it goes when #2593 closes.
   { workflow: 'RML - Bidding Workflow (LendSwift)', namespace: 'validate_bidding_and_state', identifier: 'employmentStatus' },
 ]
 
