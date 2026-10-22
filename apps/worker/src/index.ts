@@ -676,6 +676,26 @@ const scheduledJobs = {
           }
         })().catch((e) => console.error('[salesforce-bulkhead-check] failed:', e))
       )
+      // A lead validation script pasted back into a workflow (#2595): a code
+      // node returning status rejected with a lead validation reason, in any
+      // active workflow outside the known exceptions. Its own heartbeat, so a
+      // missed day pages, and its own failure boundary (L71).
+      track(
+        (async () => {
+          const { runValidationScriptGuardForEnv, VALIDATION_SCRIPT_GUARD_JOB } = await import('./lib/validation-script-guard')
+          await writeHeartbeat(env.IDEMPOTENCY, VALIDATION_SCRIPT_GUARD_JOB).catch((e) =>
+            console.error('[cron-heartbeat] validation-script-guard write failed:', e)
+          )
+          try {
+            const r = await runValidationScriptGuardForEnv(supabase, env)
+            if (r.alerted) console.error(`[validation-script-guard] ${r.newFindings.length} new, ${r.staleExceptions.length} stale exceptions, ${r.unreadable.length} unreadable`)
+          } finally {
+            await writeHeartbeatCompleted(env.IDEMPOTENCY, VALIDATION_SCRIPT_GUARD_JOB).catch((e) =>
+              console.error('[cron-heartbeat] validation-script-guard completed write failed:', e)
+            )
+          }
+        })().catch((e) => console.error('[validation-script-guard] failed:', e))
+      )
       // The deletion gate's measurements (#872, Phase A4). SHADOW: it writes
       // numbers to execution_archive_days and nothing reads them to authorise a
       // deletion until A5 (#873). Daily, because it re-measures every day still
