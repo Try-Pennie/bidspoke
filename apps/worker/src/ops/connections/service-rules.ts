@@ -88,6 +88,14 @@ export interface ServiceRules {
   expired(response: Response): boolean | Promise<boolean>
   /** The beforeRequest auth: mints or reuses a token. Throws LoginMintError by kind. */
   authorize(input: AuthorizeInput): Promise<Authorization>
+  /**
+   * Whether a 429, or a 503 with Retry-After, on this request is the service's
+   * answer, handed back as the Response rather than a RequeueAt (#1950).
+   * Snowflake answers a statement status poll 429 to mean still running, which
+   * its client reads; a requeue there would report a running statement as
+   * unread. Absent: every rate limit is a RequeueAt.
+   */
+  readonly answersRateLimit?: (request: { method: string; url: URL }) => boolean
 }
 
 /** What a minter supplies: the auth, the expiry signal it answers, and for Salesforce the instance host. */
