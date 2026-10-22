@@ -95,7 +95,7 @@ describe('problemNotice (R7, D7)', () => {
 
   it('words the Slack alert login by its token, with no time when Slack is what measured it', () => {
     const alerts = conn({ name: 'Bidspoke Alerts', service: 'slack', serviceName: 'Slack', status: 'reauth', alertLogin: true })
-    expect(problemNotice(alerts, NOW)).toEqual({ cause: 'Slack has refused its token.', effect: null, fix: 'Save a new token for it from the Slack app.' })
+    expect(problemNotice(alerts, NOW)).toEqual({ cause: 'Slack has refused its token.', effect: null, fix: 'Reconnect with a new token from the Slack app.' })
   })
 
   it('gives no notice to a working connection', () => {

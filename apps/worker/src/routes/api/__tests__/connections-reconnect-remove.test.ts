@@ -93,6 +93,14 @@ function storeDouble(order: string[], opts: StoreOptions = {}) {
     const b = {
       select(cols: string) { if (name === 'service_connections') selects.push(cols); return b },
       eq(col: string, v: unknown) { filters.push((r) => r[col] === v); return b },
+      // The Slack alert row read (onlySlackAlertRow), which a Reconnect of a row that is not an ops one asks first.
+      or(filter: string) {
+        if (filter !== 'sealed_for.eq.bidding_ring,sealed_for.is.null') throw new Error(`the double reads no filter ${filter}`)
+        filters.push((r) => r.sealed_for === 'bidding_ring' || r.sealed_for === null)
+        return b
+      },
+      limit() { return b },
+      then(resolve: (v: { data: Row[]; error: null }) => unknown) { return Promise.resolve({ data: table.filter((r) => filters.every((f) => f(r))), error: null }).then(resolve) },
       async maybeSingle() {
         return { data: table.find((r) => filters.every((f) => f(r))) ?? null, error: null }
       },
@@ -440,25 +448,21 @@ describe('the Slack alert login and other organizations are refused by every rou
     expect([binding.verify, binding.clearReauth, binding.revoke, binding.lookup].every((f) => f.mock.calls.length === 0)).toBe(true)
   })
 
-  it('the Slack alert row is neither reconnected nor removed here, and its token is never read (#2060: the saved Slack copy is untouched)', async () => {
+  // Reconnect on the Slack alert row is Slack's, not ops's, since build PR 14: connections-reconnect-slack-alerts.test.ts.
+  it('the Slack alert row is never removed here, and its token is never read (#2060: the saved Slack copy is untouched)', async () => {
     const order: string[] = []
     const db = storeDouble(order)
     vi.mocked(createSupabaseClient).mockReturnValue(db as never)
     const { env, binding } = makeEnv(order)
 
-    const r = await reconnect(env, ALERT_ROW, { fields: { client_secret: NEW_SECRET } })
-    expect(r.status).toBe(422)
-    expect(((await r.json()) as Answer).error).toBe('connection_not_reconnectable')
     const d = await remove(env, ALERT_ROW)
     expect(d.status).toBe(422)
     expect(((await d.json()) as Answer).error).toBe('connection_not_removable')
 
     expect(binding.verify).not.toHaveBeenCalled()
     expect(binding.revoke).not.toHaveBeenCalled()
-    expect(db.rpcs.filter((c) => c.name === 'reconnect_ops_connection')).toEqual([])
     expect(db.table.find((r) => r.id === ALERT_ROW)).toMatchObject({ credential_enc: 'ring-ciphertext', config: { bot_token: ALERT_TOKEN } })
-    // Only the read filtered to ops_key rows asks for config; the one that finds the alert row asks for its id alone.
-    expect(db.selects.filter((cols) => /config|credential_enc/.test(cols))).toHaveLength(1)
+    expect(db.selects.filter((cols) => /config|credential_enc/.test(cols))).toHaveLength(0)
   })
 
   it('a body naming an organization is refused: the caller\'s own is the only one', async () => {

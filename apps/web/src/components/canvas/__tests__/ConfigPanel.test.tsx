@@ -30,7 +30,6 @@ vi.mock('@/lib/api', () => ({
   api: {
     connections: { list: vi.fn().mockResolvedValue({ connections: [], statuses: { as_of: null, stale: false, unavailable: null } }) },
     partners: { list: vi.fn().mockResolvedValue([]) },
-    servicePresets: { list: vi.fn().mockResolvedValue([]) },
     executions: {
       stepDurationStats: vi.fn().mockResolvedValue({
         p50: null, p95: null, p99: null, max_ms: null, sample_size: 0,
@@ -689,6 +688,20 @@ describe('ConfigPanel: the webhook node has no legacy schema browser (#2338)', (
     expect(screen.queryByText(/^Schema$/)).toBeNull()
     expect(screen.queryByText(/Sync schema|No connection configured/)).toBeNull()
     expect(vi.mocked(api.connections.list)).not.toHaveBeenCalled()
+  })
+})
+
+// #2338 (build PR 14, Dan's decision 2): HTTP Services presets are retired. Production held none, so
+// the Webhook step offers its built in services only and reads no presets (api.servicePresets is gone,
+// and this file's api double has none, so a call to it would throw here).
+describe('ConfigPanel: the Webhook step offers its built in services only (#2338)', () => {
+  it('lists Custom, Equifax and Salesforce, and nothing else', async () => {
+    renderPanel(nodeOf('webhook', { service: 'custom' }))
+    await screen.findByText(/^URL$/)
+    const service = Array.from(document.querySelectorAll('select')).find((s) => Array.from(s.options).some((o) => o.value === 'equifax'))
+    expect(service).toBeDefined()
+    expect(Array.from(service!.options).map((o) => o.textContent)).toEqual(['Custom', 'Equifax', 'Salesforce'])
+    expect((api as unknown as Record<string, unknown>).servicePresets).toBeUndefined()
   })
 })
 

@@ -3,7 +3,9 @@
  * one client (@bidspoke/slack-client). Two callers share it, so they cannot
  * disagree about what counts as a refusal (L370):
  *
- * - POST /api/integrations/slack checks a token before it is sealed and saved;
+ * - POST /api/integrations/slack, and Reconnect on the Slack alerts login
+ *   (POST /api/connections/:id/reconnect), check a token before it is sealed
+ *   and saved;
  * - GET /api/connections checks the Slack alert login's stored token, so the
  *   Connections page shows a status that was measured (build PR 9) rather
  *   than none, which is all ops health could give it, since ops never holds

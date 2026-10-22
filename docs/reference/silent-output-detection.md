@@ -31,7 +31,7 @@ Still, do not read a clean coverage manifest as proof that every field a workflo
 
 ## The alerts
 
-There are three alerts and one check that only logs. All the alerts post to your org's Slack channel (or the workflow's `slack_channel` override) and are gated on the same `volume_alerts_enabled` toggle as the volume alerts, on the Integrations page.
+There are three alerts and one check that only logs. All the alerts post to your org's Slack channel (or the workflow's `slack_channel` override) and are gated on the same `volume_alerts_enabled` switch as the volume alerts, on the Slack alerts login's panel on the Connections page.
 
 ### Output Field Stopped (hourly)
 

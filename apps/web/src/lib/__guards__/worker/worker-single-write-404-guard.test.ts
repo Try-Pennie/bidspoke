@@ -93,7 +93,7 @@ describe('worker single()-write 404 guard (#595)', () => {
       `Supabase update ending in .single() whose PGRST116 reaches dbError(): a row that does not\n` +
         `exist, or belongs to another org, answers 500 instead of the 404 api.md promises.\n` +
         `Route the error through dbErrorUnlessNotFound() (lib/api-error), then "if (!data) return 404".\n` +
-        `See routes/api/service-presets.ts for the shape.\n` +
+        `See routes/api/folders.ts (PUT /:id) for the shape.\n` +
         `Deliberate exception? Add "// single-404-ok: <reason>" above the write.\n\n` +
         findings.map((f) => `  ${f.file}:${f.line}  ${f.snippet}`).join('\n')
     ).toEqual([])

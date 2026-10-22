@@ -35,7 +35,8 @@ const PAGES: { name: string; path: string; exclude?: string[] }[] = [
   { name: 'workflows list', path: '/workflows', exclude: ['.react-flow'] },
   // Added in #674. /access and /settings are only redirects to /settings/access,
   // so the two real settings pages are listed instead.
-  { name: 'integrations page', path: '/integrations' },
+  // The Integrations page is retired (#2338): /integrations redirects to the Connections page.
+  { name: 'connections page', path: '/connections' },
   { name: 'endpoints page', path: '/endpoints' },
   { name: 'settings access page', path: '/settings/access' },
   { name: 'settings api keys page', path: '/settings/api-keys' },

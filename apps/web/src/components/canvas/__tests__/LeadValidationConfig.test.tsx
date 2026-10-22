@@ -17,7 +17,6 @@ vi.mock('@/lib/api', () => ({
   api: {
     connections: { list: vi.fn().mockResolvedValue({ connections: [], statuses: { as_of: null, stale: false, unavailable: null } }) },
     partners: { list: vi.fn().mockResolvedValue([]) },
-    servicePresets: { list: vi.fn().mockResolvedValue([]) },
     executions: {
       stepDurationStats: vi.fn().mockResolvedValue({
         p50: null, p95: null, p99: null, max_ms: null, sample_size: 0,

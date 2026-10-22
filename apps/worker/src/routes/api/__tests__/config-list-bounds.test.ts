@@ -63,7 +63,6 @@ const CASES: ListCase[] = [
   { route: '/partner-bid-configs', table: 'partner_bid_configs', bound: CONFIG_LIST_BOUNDS.partnerBidConfigs },
   { route: '/partner-uuids', table: 'partner_uuid_map', bound: CONFIG_LIST_BOUNDS.partnerUuids },
   { route: '/partners', table: 'partner_configs', bound: CONFIG_LIST_BOUNDS.partnerConfigs },
-  { route: '/service-presets', table: 'service_presets', bound: CONFIG_LIST_BOUNDS.servicePresets },
   { route: '/sources', table: 'api_sources', bound: CONFIG_LIST_BOUNDS.apiSources },
   { route: '/sources/assignments', table: 'source_workflow_assignments', bound: CONFIG_LIST_BOUNDS.sourceAssignments },
   { route: '/sources/s/workflows', table: 'source_workflow_assignments', bound: CONFIG_LIST_BOUNDS.sourceAssignments },

@@ -21,7 +21,14 @@
 //   {state: "loadfailed"}                                the list did not load (round 23)
 //   {state: "loadfailed", cause: "refused"}              the server answered a refusal (passed in review, 2026-10-21)
 //   {state: "detail", chosen, statuses: "stale", retry: "failed"}   the strip's Try again failed (review)
-//   {state: "detail", chosen: "Bidspoke Alerts"}         the Slack alert login's panel (review)
+//   {state: "detail", chosen: "Bidspoke Alerts"}         the Slack alert login's panel: Reconnect, then its
+//                                                        alert settings under an Alerts heading (round 36)
+//   {state: "detail", chosen: "Bidspoke Alerts", dialog: "reconnect"}   Reconnect asking for a new bot
+//                                                        token (Dan's decision 4, 2026-10-21)
+//   {state: "detail", chosen: "Bidspoke Alerts", alerts: "switch-failed" | "channel-open" |
+//    "channel-saved" | "settings-failed"}                the alert settings' states Dan passed as built
+//   {state: "detail", chosen: "Bidspoke Alerts", alertStatus: "reauth"}   Slack refused the saved token
+//                                                        (all passed in review, 2026-10-22)
 //   {state: "google", add: "drive"}                      a shared drive pasted and named, ready to add (rounds 29 to 31)
 //   {state: "google", edit: "removing"}                  an entry being removed, 4 s in (review, round 32)
 //   extra: true adds the fixture's justSaved connection to the list (rounds 18 and 21).
@@ -71,6 +78,8 @@ function renameNav() {
 function all(variant) {
   var list = FX().connections.slice();
   if (variant.extra) list.push(FX().justSaved);
+  // Passed in review: Slack refused the alert login's saved token, which a check measured just now.
+  if (variant.alertStatus) list = list.map(function (c) { return c.name === "Bidspoke Alerts" ? Object.assign({}, c, { status: variant.alertStatus, checked: "just now" }) : c; });
   return list;
 }
 function statusLabel(c) { return FX().statusVocabulary[c.status]; }
@@ -139,10 +148,101 @@ function listColumn(variant) {
 
 function workflowLink(name) { var a = part(el("a", "cx-wf", name), "workflow-link"); a.href = "#"; return a; }
 
-function alertPanel(c) {
-  // The Slack alert login: no Reconnect, Replace or Remove, since the routes refuse all three for it,
-  // and its settings named where they live.
+// Round 36 (Dan, 2026-10-21), "On the login's panel": the alert settings the retired Integrations page
+// held, in its words and its order.
+var ALERTS = [
+  ["volume_alerts_enabled", "Volume anomaly alerts", "When a day's runs are far above or below normal."],
+  ["config_alerts_enabled", "Configuration warning alerts", "When a live step's timeout is too short to be reliable."],
+  ["backup_alerts_enabled", "Backup failure alerts", "When workflow backups to GitHub keep failing."],
+  ["matrix_alerts_enabled", "Bid matrix change alerts", "When rows of the Salesforce bid matrix change."]
+];
+function toggle(name, on) {
+  var b = el("button", "toggle" + (on ? " toggle-on" : ""));
+  b.type = "button"; b.setAttribute("role", "switch"); b.setAttribute("aria-checked", String(on)); b.setAttribute("aria-label", name);
+  b.setAttribute("data-state", on ? "checked" : "unchecked");
+  var k = el("span", "toggle-knob"); k.setAttribute("data-state", on ? "checked" : "unchecked");
+  b.append(k);
+  return b;
+}
+// The states of the alert settings Dan passed as built (review, 2026-10-22), word for word as the build says them.
+var SWITCH_FAILED = "Volume anomaly alerts may not have been turned off: the server answered with an error (HTTP 503). Reload the page to see whether it is off.";
+var SETTINGS_FAILED = "The alert settings could not be read: the server did not answer within 30 seconds.";
+var MOVED_TO = "#ops-alerts";
+// A line a save says on its row: 13px under the row's own line, its words wrapped evenly (as the build's cx-alert-line).
+function alertLine(e) { e.style.margin = "4px 0 0"; e.style.textWrap = "pretty"; return e; }
+function failedAlertLine(text, name) {
+  var l = alertLine(part(el("p", "field-error text-sm", text), name)); l.setAttribute("role", "alert"); l.setAttribute("data-state", "failed");
+  return l;
+}
+// Change: the row's value becomes the channel search with Save and Cancel; its menu lists the channels holding
+// what is typed, over the rows below, the first one highlighted (round 27), nothing yet chosen.
+function channelEditor() {
+  var ed = part(el("div"), "channel-editor"); ed.style.display = "flex"; ed.style.alignItems = "center"; ed.style.gap = "8px";
+  var anchor = el("div"); anchor.style.position = "relative"; anchor.style.flex = "1"; anchor.style.minWidth = "0";
+  var box = input("ops"); box.classList.add("sv-typed"); box.style.width = "100%"; box.style.fontSize = "14px";
+  box.setAttribute("role", "combobox"); box.setAttribute("aria-expanded", "true"); box.setAttribute("aria-controls", "channel-menu");
+  box.setAttribute("aria-label", "The channel alerts post to");
+  var menu = el("div", "sv-menu"); menu.id = "channel-menu"; menu.setAttribute("role", "listbox");
+  FX().alerts.channels.filter(function (c) { return c.indexOf("ops") >= 0; }).forEach(function (c, i) {
+    var opt = el("div", "sv-opt"); opt.setAttribute("role", "option"); opt.setAttribute("aria-selected", String(i === 0));
+    var chk = el("span", "sv-opt-check"); chk.setAttribute("aria-hidden", "true");
+    opt.append(chk, el("span", null, c)); menu.append(opt);
+  });
+  anchor.append(box, menu);
+  var save = el("button", "cx-btn cx-btn-sm", "Save"); save.disabled = true;
+  ed.append(anchor, save, el("button", "cx-btn-quiet", "Cancel"));
+  return ed;
+}
+// The heading and the rows go straight into the panel, as round 36 drew them, so the heading keeps its rule above.
+function alertSettings(variant) {
+  var state = variant.alerts;
+  var h = part(el("h3", "cx-group", "Alerts"), "alerts-heading"); h.style.marginTop = "20px";
+  // Passed in review: settings that could not be read say why, in red, with Try again, and no rows.
+  if (state === "settings-failed") {
+    var f = el("div", "ga-failed"); f.style.marginTop = "8px"; f.style.display = "flex"; f.style.flexDirection = "column"; f.style.alignItems = "flex-start"; f.style.gap = "8px"; f.style.fontSize = "14px";
+    var fl = part(el("p", "field-error text-sm", SETTINGS_FAILED), "alerts-line"); fl.setAttribute("role", "alert"); fl.setAttribute("data-state", "failed");
+    // Its words balanced, so no line ends on one word (D27), as the build draws it.
+    fl.style.textWrap = "pretty";
+    f.append(fl, el("button", "cx-btn-quiet", "Try again"));
+    return [h, f];
+  }
+  var rows = part(el("div", "cx-rows"), "alert-settings");
+  var ch = part(el("div", "cx-row"), "alert-channel");
+  var value = el("div"); value.style.display = "flex"; value.style.flexDirection = "column"; value.style.gap = "6px"; value.style.minWidth = "0";
+  if (state === "channel-open") value.append(channelEditor());
+  else {
+    var line = el("div"); line.style.display = "flex"; line.style.alignItems = "center"; line.style.justifyContent = "space-between"; line.style.gap = "12px";
+    line.append(part(el("span", null, state === "channel-saved" ? MOVED_TO : FX().alerts.channel), "alert-channel-value"), el("button", "cx-btn-quiet", "Change"));
+    value.append(line);
+    // Passed in review: Save says where the alerts post now, on the row it changed.
+    if (state === "channel-saved") {
+      var said = alertLine(part(el("p", null, "Alerts now post to " + MOVED_TO + "."), "channel-line"));
+      said.setAttribute("role", "status"); said.setAttribute("data-state", "saved"); said.style.fontSize = "13px"; said.style.color = "#1D212F";
+      value.append(said);
+    }
+  }
+  ch.append(el("div", null, "Posts to"), value);
+  rows.append(ch);
+  ALERTS.forEach(function (a) {
+    var row = part(el("div", "cx-row"), "alert-switch"); row.setAttribute("data-switch", a[0]);
+    row.style.gridTemplateColumns = "minmax(0, 1fr) auto"; row.style.columnGap = "16px";
+    var text = el("div"); var hint = el("div", "cx-hint", a[2]); hint.style.fontSize = "13px";
+    text.append(el("div", null, a[1]), hint);
+    // Passed in review: a save that failed turned the switch back, and its row says why, in red.
+    if (state === "switch-failed" && a[0] === "volume_alerts_enabled") text.append(failedAlertLine(SWITCH_FAILED, "switch-line"));
+    var right = el("div"); right.style.display = "flex"; right.style.justifyContent = "flex-end"; right.style.alignItems = "flex-start";
+    right.append(toggle(a[1], FX().alerts.switches[a[0]]));
+    row.append(text, right);
+    rows.append(row);
+  });
+  return [h, rows];
+}
+
+function alertPanel(c, variant) {
+  // The Slack alert login: Reconnect as every login has it (Dan's decision 4), Replace and Remove still
+  // refused for it, then its alert settings under the facts (round 36).
   var d = part(el("div", "cx-card cx-detail"), "detail");
+  var problem = c.status !== "ok";
   d.append(el("h2", null, c.name), statusEl(c));
   var tabs = el("div", "cx-dtabs"); tabs.setAttribute("role", "tablist");
   ["Connection", "Used by (0)", "History"].forEach(function (t, k) {
@@ -151,21 +251,30 @@ function alertPanel(c) {
     tabs.append(tab);
   });
   d.append(tabs);
+  // Passed in review: Slack refused its saved token, so the notice says so and holds Reconnect, as every login's does.
+  if (problem) {
+    var note = part(el("div", "cx-notice"), "problem-notice");
+    note.append(el("p", null, "Slack has refused its token."), el("p", "cx-hint", "Reconnect with a new token from the Slack app."));
+    note.append(el("button", "cx-btn cx-btn-sm", "Reconnect"));
+    d.append(note);
+  }
   var rows = el("div", "cx-rows");
   [["Service", c.service], ["Acts as", c.actsAs], ["Last checked", c.checked]].forEach(function (r) {
     var row = part(el("div", "cx-row"), "fact"); row.setAttribute("data-fact", r[0]);
     row.append(el("div", null, r[0]), el("div", null, r[1])); rows.append(row);
   });
   d.append(rows);
-  var aside = el("p", "cx-aside");
-  var link = el("a", "cx-link", "Integrations page"); link.href = "#";
-  aside.append(document.createTextNode("Its token and the alerts it posts are set on the "), link, document.createTextNode("."));
-  d.append(aside);
+  if (!problem) {
+    var acts = part(el("div", "cx-actions"), "actions");
+    acts.append(el("button", "cx-btn-quiet", "Reconnect"));
+    d.append(acts);
+  }
+  alertSettings(variant).forEach(function (e) { d.append(e); });
   return d;
 }
 
-function detailPanel(c) {
-  if (c.name === "Bidspoke Alerts") return alertPanel(c);
+function detailPanel(c, variant) {
+  if (c.name === "Bidspoke Alerts") return alertPanel(c, variant);
   var d = part(el("div", "cx-card cx-detail"), "detail");
   var problem = c.status !== "ok";
   var n = c.workflows.length;
@@ -401,6 +510,14 @@ function dialog(title, width) {
 function reconnectDialog(c, variant) {
   var dl = dialog("Reconnect " + c.name, 480);
   var g = el("div", "ad-form");
+  // Dan's decision 4 (2026-10-21): the Slack alerts login's Reconnect asks for a new bot token, which
+  // Slack checks before it is saved; nothing it names is kept, so there is no kept field.
+  if (c.name === "Bidspoke Alerts") {
+    g.append(field("New bot token", input("", true)));
+    var at = el("div", "ad-foot"); at.append(el("button", "cx-btn cx-btn-sm", "Save"), el("button", "cx-btn-quiet", "Cancel"));
+    g.append(at); dl.box.append(g);
+    return dl.scrim;
+  }
   var failed = variant.reconnect === "failed";
   // Passed in review: a refused Reconnect keeps the secret typed and says why under the buttons.
   g.append(field("Client id", input(FX().reconnect.clientId)), field("New client secret", input(failed ? MASK : "", true)));
@@ -468,7 +585,7 @@ function buildScreen(variant) {
   var right;
   if (variant.state === "google") right = googlePanel(variant);
   else if (variant.state === "add") right = addPanel(variant);
-  else right = detailPanel(chosen);
+  else right = detailPanel(chosen, variant);
   split.append(listColumn(variant), right);
   page.append(split);
   if (variant.dialog === "reconnect") page.append(reconnectDialog(chosen, variant));

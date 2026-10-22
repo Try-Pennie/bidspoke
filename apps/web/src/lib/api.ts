@@ -699,13 +699,26 @@ export interface WebhookEndpointBody {
   is_active?: boolean
 }
 
-export interface ServicePreset {
-  id: string
-  name: string
-  slug: string
-  auth_type: string
-  base_url: string | null
-  created_at: string
+/** GET /api/integrations/slack: the Slack alert row's settings, never its token. */
+export interface SlackAlertSettingsAnswer {
+  connected: boolean
+  workspace_name?: string | null
+  default_channel?: string | null
+  volume_alerts_enabled?: boolean
+  matrix_alerts_enabled?: boolean
+  config_alerts_enabled?: boolean
+  backup_alerts_enabled?: boolean
+  updated_at?: string
+  updated_by_email?: string | null
+}
+
+/** PATCH /api/integrations/slack/settings: the default channel, or one of the four alert switches. */
+export interface SlackAlertSettingsPatch {
+  default_channel?: string
+  volume_alerts_enabled?: boolean
+  matrix_alerts_enabled?: boolean
+  config_alerts_enabled?: boolean
+  backup_alerts_enabled?: boolean
 }
 
 const WORKER_URL = process.env.NEXT_PUBLIC_WORKER_URL ?? 'http://localhost:8787'
@@ -1317,38 +1330,18 @@ export const api = {
       req<{ ok: boolean }>(`/api/partner-uuids/${id}`, { method: 'DELETE' }),
   },
 
+  // The Slack alerts login's alert settings (#2338, build PR 14): the channel the alerts post to and
+  // the four alert switches, read and saved by the Connections page's alert login panel. Its token is
+  // saved by Reconnect (connections.reconnect).
   integrations: {
-    resolveSlack: (bot_token: string) =>
-      req<{ workspace_name: string; channels: Array<{ id: string; name: string }> }>(
-        '/api/integrations/slack/resolve',
-        { method: 'POST', body: JSON.stringify({ bot_token }) }
-      ),
-    getSlack: () => req<{
-      connected: boolean
-      workspace_name?: string | null
-      default_channel?: string | null
-      volume_alerts_enabled?: boolean
-      matrix_alerts_enabled?: boolean
-      config_alerts_enabled?: boolean
-      backup_alerts_enabled?: boolean
-      matrix_alerts_channel?: string | null
-      updated_at?: string
-      updated_by_email?: string | null
-    }>('/api/integrations/slack'),
-    saveSlack: (data: { bot_token: string; default_channel: string; workspace_name?: string }) =>
-      req<{ ok: boolean }>('/api/integrations/slack', {
-        method: 'POST',
-        body: JSON.stringify(data),
-      }),
-    updateSlackSettings: (data: { volume_alerts_enabled?: boolean; default_channel?: string; matrix_alerts_enabled?: boolean; matrix_alerts_channel?: string | null; config_alerts_enabled?: boolean; backup_alerts_enabled?: boolean }) =>
-      req<{ ok: boolean }>('/api/integrations/slack/settings', {
+    getSlack: () => req<SlackAlertSettingsAnswer>('/api/integrations/slack'),
+    updateSlackSettings: (data: SlackAlertSettingsPatch) =>
+      req<{ ok: boolean; stored_copy_warning?: string }>('/api/integrations/slack/settings', {
         method: 'PATCH',
         body: JSON.stringify(data),
       }),
     searchSlackChannels: (q: string) =>
       req<{ channels: Array<{ id: string; name: string }> }>(`/api/integrations/slack/channels?q=${encodeURIComponent(q)}`),
-    deleteSlack: () =>
-      req<{ ok: boolean }>('/api/integrations/slack', { method: 'DELETE' }),
   },
   stats: {
     get: (window: 7 | 14 | 30 = 7) => req<StatsResponse>(`/api/stats?window=${window}`),
@@ -1360,16 +1353,6 @@ export const api = {
     list: (days: 7 | 14 | 30, offset = 0) => req<IncidentsResponse>(`/api/incidents?days=${days}&offset=${offset}`),
     ongoing: () => req<OngoingIncidentsResponse>('/api/incidents/ongoing'),
     failedRuns: (id: string) => req<IncidentFailedRuns>(`/api/incidents/${encodeURIComponent(id)}/failed-runs`),
-  },
-
-  servicePresets: {
-    list: () => req<ServicePreset[]>('/api/service-presets'),
-    create: (body: { name: string; slug: string; auth_type: string; base_url?: string }) =>
-      req<ServicePreset>('/api/service-presets', { method: 'POST', body: JSON.stringify(body) }),
-    update: (id: string, body: { name?: string; auth_type?: string; base_url?: string }) =>
-      req<ServicePreset>(`/api/service-presets/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
-    delete: (id: string) =>
-      req<{ ok: boolean }>(`/api/service-presets/${id}`, { method: 'DELETE' }),
   },
 
   access: {

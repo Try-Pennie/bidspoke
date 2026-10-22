@@ -138,6 +138,43 @@ export function useListLoad<T>(loader: (signal: AbortSignal) => Promise<readonly
   return useMemo(() => ({ load, now, retry }), [load, now, retry])
 }
 
+/**
+ * A load for a searched list (ComboboxControl's `search`): the latest query
+ * is loaded once typing pauses for `debounceMs`, through useListLoad, so the
+ * heartbeat, the deadline and Try again are the same as every other list's,
+ * and an answer for an earlier query is never taken. Below `minChars` nothing
+ * is sent.
+ */
+export function useSearchLoad<T>(
+  search: (query: string, signal: AbortSignal) => Promise<readonly T[]>,
+  { minChars, debounceMs = 250, initialQuery = '', ...options }: ListLoadOptions & { minChars: number; debounceMs?: number; initialQuery?: string },
+): { list: ListLoadHandle<T>; onSearch: (query: string) => void } {
+  const queryRef = useRef(initialQuery)
+  const searchRef = useRef(search)
+  useEffect(() => { searchRef.current = search })
+  const list = useListLoad<T>(
+    (signal) => (queryRef.current.length >= minChars ? searchRef.current(queryRef.current, signal) : Promise.resolve([])),
+    options,
+  )
+  const clock = options.clock ?? realClock
+  const pending = useRef<unknown>(null)
+  // While typing pauses, the menu reads as loading for the new query, never as the last query's answer.
+  const [waitingSince, setWaitingSince] = useState<number | null>(null)
+  const retry = list.retry
+  const onSearch = useCallback((query: string) => {
+    queryRef.current = query
+    if (pending.current !== null) clock.clearTimeout(pending.current)
+    setWaitingSince((since) => since ?? clock.now())
+    pending.current = clock.setTimeout(() => { pending.current = null; setWaitingSince(null); retry() }, debounceMs)
+  }, [clock, debounceMs, retry])
+  useEffect(() => () => { if (pending.current !== null) clock.clearTimeout(pending.current) }, [clock])
+  const shown = useMemo<ListLoadHandle<T>>(
+    () => (waitingSince === null ? list : { ...list, load: { kind: 'loading', startedAt: waitingSince } }),
+    [list, waitingSince],
+  )
+  return { list: shown, onSearch }
+}
+
 interface ComboboxControlProps {
   id: string
   value: string
@@ -162,6 +199,25 @@ interface ComboboxControlProps {
    * the box reads the placeholder, so the caller says what happened to it.
    */
   hideUnlistedValue?: boolean
+  /**
+   * The list is searched as the box is typed into, rather than read once (a
+   * Slack channel search, #2338 build PR 14): the control is always the box to
+   * type into, `onSearch` hears each change of what is typed, and the caller's
+   * load (`list`) answers for the latest. Until `minChars` are typed the menu
+   * says `prompt` and nothing is offered. Choosing an option shows its label in
+   * the box; what is typed is never taken as a value of its own.
+   */
+  search?: ComboboxSearch
+}
+
+export interface ComboboxSearch {
+  onSearch: (query: string) => void
+  minChars: number
+  /** What the menu says until enough is typed: "Type at least 3 letters of the channel's name." */
+  prompt: string
+  placeholder?: string
+  /** What the box opens holding, when the caller's load already searched for it. */
+  initialQuery?: string
 }
 
 interface ComboboxProps extends ComboboxControlProps {
@@ -202,7 +258,7 @@ export function Combobox({ loadOptions, deadlineMs, clock = realClock, ...contro
  */
 export function ComboboxControl({
   id, value, onChange, list, placeholder, emptyMessage = 'Nothing to choose from.', newValue, valueIsNew,
-  disabled, describedBy: db, 'aria-label': ariaLabel, slowAfterMs = 2000, clock = realClock, hideUnlistedValue,
+  disabled, describedBy: db, 'aria-label': ariaLabel, slowAfterMs = 2000, clock = realClock, hideUnlistedValue, search,
 }: ComboboxControlProps & { list: ListLoadHandle<ComboboxOption> }) {
   const base = useId()
   const menuId = `${base}-menu`
@@ -222,27 +278,30 @@ export function ComboboxControl({
   const [open, setOpen] = useState(false)
   /** The marked item; -1 means the default for the mode (the chosen one, or the first). */
   const [active, setActive] = useState(-1)
-  const [typing, setTyping] = useState(Boolean(newValue && valueIsNew && value))
-  const [typed, setTyped] = useState(newValue && valueIsNew ? value : '')
+  const [typing, setTyping] = useState(Boolean(search) || Boolean(newValue && valueIsNew && value))
+  const [typed, setTyped] = useState(search?.initialQuery ?? (newValue && valueIsNew ? value : ''))
   const focusNext = useRef<'trigger' | 'input' | null>(null)
   /** The value this control took as typed, the only one an emptied box may clear. */
   const typedNew = useRef<string | null>(newValue && valueIsNew && value ? value : null)
 
   const known = useMemo(() => (load.kind === 'ready' ? load.options : []), [load])
   const query = typed.trim()
+  /** A search with too little typed yet: the menu says what to type, and offers nothing. */
+  const tooShort = Boolean(search) && query.length < (search?.minChars ?? 0)
   const items = useMemo<Item[]>(() => {
     if (!typing) {
       const list: Item[] = known.map((option) => ({ kind: 'option', option }))
       if (newValue) list.push({ kind: 'another', label: newValue.chooseLabel })
       return list
     }
+    if (tooShort) return []
     const q = query.toLowerCase()
     const matches = q ? known.filter((o) => lower(o.label).includes(q) || lower(o.hint).includes(q) || lower(o.value) === q) : known
     const list: Item[] = matches.map((option) => ({ kind: 'option', option }))
     const exact = known.some((o) => [o.label, o.hint, o.value].some((s) => lower(s) === q))
     if (q && !exact && newValue) list.push({ kind: 'use', typed: query, label: newValue.useLabel(query) })
     return list
-  }, [typing, known, newValue, query])
+  }, [typing, known, newValue, query, tooShort])
 
   const chosenIndex = items.findIndex((it) => it.kind === 'option' && it.option.value === value)
   const defaultActive = typing
@@ -304,7 +363,9 @@ export function ComboboxControl({
       return
     }
     onChange(item.option.value, { isNew: false })
-    if (typing) { focusNext.current = 'trigger'; setTyping(false); setTyped('') }
+    // A search keeps its box, showing what was chosen.
+    if (search) setTyped(item.option.label)
+    else if (typing) { focusNext.current = 'trigger'; setTyping(false); setTyped('') }
     close()
   }
 
@@ -317,6 +378,8 @@ export function ComboboxControl({
    */
   const leaveTyping = () => {
     close()
+    // A search's box is only for finding; leaving it chooses nothing.
+    if (search) return
     if (query === '') {
       // An emptied box that held a typed new value no longer holds it; a known value stays.
       if (value !== '' && typedNew.current === value) { typedNew.current = null; onChange('', { isNew: false }) }
@@ -402,7 +465,7 @@ export function ComboboxControl({
     if (k === 'Enter' && shown && load.kind === 'failed') { e.preventDefault(); retry(); return }
     if (k === 'Escape') {
       if (shown) { e.preventDefault(); e.stopPropagation(); close(); return }
-      if (query === '') {
+      if (query === '' && !search) {
         // Nothing typed: back to the list of what Bidspoke knows.
         e.preventDefault()
         e.stopPropagation()
@@ -419,7 +482,7 @@ export function ComboboxControl({
   const leaves = (next: EventTarget | null) => !(next instanceof Node && (contentRef.current?.contains(next) || anchorRef.current?.contains(next)))
   const insideAnchor = (target: EventTarget | null) => target instanceof Node && Boolean(anchorRef.current?.contains(target))
 
-  const showEmpty = load.kind === 'ready' && items.every((it) => it.kind !== 'option') && (!typing || query === '')
+  const showEmpty = !tooShort && load.kind === 'ready' && items.every((it) => it.kind !== 'option') && (!typing || query === '' || Boolean(search))
   const seconds = load.kind === 'loading' && now - load.startedAt >= slowAfterMs ? Math.floor((now - load.startedAt) / 1000) : null
   const controls = shown ? (items.length ? listId : menuId) : undefined
   const activeDescendant = markedId ?? undefined
@@ -444,9 +507,9 @@ export function ComboboxControl({
                 autoComplete="off"
                 spellCheck={false}
                 value={typed}
-                placeholder={newValue?.placeholder}
+                placeholder={search?.placeholder ?? newValue?.placeholder}
                 disabled={disabled}
-                onChange={(e) => { setTyped(e.target.value); setOpen(true); setActive(-1) }}
+                onChange={(e) => { setTyped(e.target.value); setOpen(true); setActive(-1); search?.onSearch(e.target.value.trim()) }}
                 onFocus={() => setOpen(true)}
                 onBlur={(e) => { if (leaves(e.relatedTarget)) leaveTyping() }}
                 onKeyDown={onInputKeyDown}
@@ -491,13 +554,14 @@ export function ComboboxControl({
             onPointerDownOutside={(e) => { if (insideAnchor(e.target)) e.preventDefault() }}
             onFocusOutside={(e) => { if (insideAnchor(e.target)) e.preventDefault() }}
           >
-            {load.kind === 'loading' && (
+            {tooShort && <p className="combobox-note">{search?.prompt}</p>}
+            {!tooShort && load.kind === 'loading' && (
               <p role="status" className="combobox-note">
                 <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
                 {seconds === null ? 'Loading' : `Loading, ${seconds} s`}
               </p>
             )}
-            {load.kind === 'failed' && (
+            {!tooShort && load.kind === 'failed' && (
               <div className="combobox-failed">
                 <FieldError alert size="sm" className="text-pretty">{load.message}</FieldError>
                 <Button variant="secondary" className="btn-sm" keepFocus onClick={retry}>Try again</Button>

@@ -47,6 +47,7 @@ export function ConnectionsPreview({ frame, moreGoogle }: { frame: string | unde
         noInitialLoad={script !== null}
         initialFocus={script?.focus}
         initialLeaveTo={script?.leaveTo}
+        initialChannelQuery={script?.channelQuery}
       />
     </NavLayout>
   )

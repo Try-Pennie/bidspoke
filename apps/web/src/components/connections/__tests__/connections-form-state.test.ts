@@ -177,10 +177,14 @@ describe('unsaved work, which the leave guard asks about (L608)', () => {
 describe('Reconnect (R19)', () => {
   const open = (): ConnectionsState => run([{ type: 'dialog_opened', dialog: 'reconnect', id: 'c2' }], loaded())
 
-  it('opens for an ops connection, never for the Slack alert login, whose routes refuse it', () => {
+  // Build PR 14 (Dan's decision 4): the Slack alerts login has Reconnect like every other login; its
+  // routes still refuse Remove and Replace, so neither dialog opens for it.
+  it('opens for an ops connection and for the Slack alerts login; Remove and Replace never open for the alert login', () => {
     expect(open().dialog).toEqual({ kind: 'reconnect', id: 'c2', values: {}, save: { kind: 'editing' }, started: null })
-    const alert = run([{ type: 'list_answered', attempt: 1, data: { ...LIST, connections: [conn({ id: 'a1', alertLogin: true })] } }, { type: 'dialog_opened', dialog: 'reconnect', id: 'a1' }])
-    expect(alert.dialog).toBeNull()
+    const listed: ConnectionsEvent = { type: 'list_answered', attempt: 1, data: { ...LIST, connections: [conn({ id: 'a1', alertLogin: true, workflows: [] })] } }
+    expect(run([listed, { type: 'dialog_opened', dialog: 'reconnect', id: 'a1' }]).dialog).toEqual({ kind: 'reconnect', id: 'a1', values: {}, save: { kind: 'editing' }, started: null })
+    expect(run([listed, { type: 'dialog_opened', dialog: 'remove', id: 'a1' }]).dialog).toBeNull()
+    expect(run([listed, { type: 'dialog_opened', dialog: 'replace', id: 'a1' }]).dialog).toBeNull()
   })
 
   it('a reconnected login reads working, its problem gone, checked now, acting as who the check measured', () => {

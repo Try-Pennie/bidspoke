@@ -219,7 +219,7 @@ export function problemNotice(c: ConnectionView, now: number, orgNames: Readonly
   const orgName = c.org ? orgNames[c.org] : undefined
   const from = orgName ? `${orgName}'s ${c.serviceName} admin` : c.org ? `the ${c.serviceName} admin of ${c.org}` : `the ${c.serviceName} admin`
   const fix = c.status === 'reauth'
-    ? c.alertLogin ? 'Save a new token for it from the Slack app.' : `Reconnect with a new ${secret} from ${from}.`
+    ? c.alertLogin ? 'Reconnect with a new token from the Slack app.' : `Reconnect with a new ${secret} from ${from}.`
     : 'Reconnect to check the login again.'
   return { cause: said(cause), effect, fix }
 }

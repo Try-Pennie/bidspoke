@@ -23,10 +23,15 @@
  * (ConnectionDialogs.tsx), and leaving with something unsaved asks first
  * (lib/leave-guard.ts). Replace is drawn and inert until build PR 12, and Sign
  * in with Google until build PR 13.
+ *
+ * Build PR 14 (R2): the Integrations page is retired. The Slack alerts login's
+ * panel holds its alert settings (AlertSettings.tsx: the channel the alerts
+ * post to and the four switches), loaded with the list, and its Reconnect asks
+ * for a new bot token, as every other login's Reconnect asks for its login.
  */
 import Link from 'next/link'
 import { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from 'react'
-import type { ConnectionList } from '@/lib/api'
+import type { ConnectionList, SlackAlertSettingsAnswer, SlackAlertSettingsPatch } from '@/lib/api'
 import { errorSentence, requestFailureCause } from '@/lib/error-sentence'
 import { Button, ChoiceGroup, FieldError, Outcome, TextInput } from '@/components/ui/form'
 import { Tabs, TabPanel } from '@/components/ui/Tabs'
@@ -43,6 +48,10 @@ import {
 import { AddConnectionPanel } from './AddConnectionPanel'
 import { LeaveConnectionDialog, ReconnectDialog, RemoveDialog, RemovedDialog, ReplaceDialog } from './ConnectionDialogs'
 import { leaveThen, useLeaveGuard, type LeaveRequest } from '@/lib/leave-guard'
+import type { ComboboxOption } from '@/components/ui/Combobox'
+import { AlertSettings } from './AlertSettings'
+import { alertSettingsOf, channelFailed, channelSearchFailed, settingsUnreadable, switchFailed, switchPatch, type AlertSwitchKey } from './alert-settings-model'
+import { alertsWaiting } from './alert-settings-state'
 
 /** What the page calls: the Worker's routes live, the fixture in the preview. Each refusal throws as api.ts's req() does. */
 export interface ConnectionsSource {
@@ -57,6 +66,12 @@ export interface ConnectionsSource {
   reconnect(id: string, body: { fields?: Record<string, string> }): Promise<{ outcome: 'reconnected' | 'checked'; connection: { id: string; acts_as: string | null } }>
   /** DELETE /api/connections/:id: refused while a workflow uses it (build PR 6). */
   remove(id: string): Promise<{ outcome: 'removed'; ops: { told: true } | { told: false; message: string } }>
+  /** GET /api/integrations/slack: the Slack alerts login's alert settings (build PR 14). */
+  slackAlerts(): Promise<SlackAlertSettingsAnswer>
+  /** PATCH /api/integrations/slack/settings: one switch, or the channel. */
+  updateSlackAlerts(patch: SlackAlertSettingsPatch): Promise<unknown>
+  /** GET /api/integrations/slack/channels: Slack's channels holding the text. */
+  searchSlackChannels(q: string): Promise<{ channels: Array<{ id: string; name: string }> }>
 }
 
 /** What time it is, and a repeating timer; the preview's stands still. */
@@ -96,7 +111,7 @@ function workflowsOfRefusal(err: unknown): ConnectionView['workflows'] | undefin
     .map((w) => ({ id: w.id, name: w.name, deleted: w.deleted === true }))
 }
 
-export function ConnectionsScreen({ source, clock = browserClock, orgNames = {}, services: servicesProp, initialChosen, initialTab, initialEvents, noInitialLoad, initialFocus, initialLeaveTo }: {
+export function ConnectionsScreen({ source, clock = browserClock, orgNames = {}, services: servicesProp, initialChosen, initialTab, initialEvents, noInitialLoad, initialFocus, initialLeaveTo, initialChannelQuery }: {
   source: ConnectionsSource
   clock?: ConnectionsClock
   /** Salesforce orgs Bidspoke knows by name, by host: the notice names an org by it, and the form offers it. */
@@ -116,6 +131,8 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
   initialFocus?: string
   /** A list item the preview chooses once drawn, by name, to show the leave question it asks. */
   initialLeaveTo?: string
+  /** What the alert channel's search box opens holding: only the preview passes it, to draw the open menu. */
+  initialChannelQuery?: string
 }) {
   const services = useMemo(() => servicesProp ?? catalogueServices(), [servicesProp])
   const [state, dispatch] = useReducer(connectionsReducer, undefined, () => (initialEvents ?? []).reduce(connectionsReducer, {
@@ -142,7 +159,15 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     )
   }, [source, clock])
 
-  // The first load, and the company list beside it, so both are there when chosen (L610).
+  const loadAlerts = useCallback(() => {
+    dispatch({ type: 'alerts_requested', at: clock.now() })
+    source.slackAlerts().then(
+      (a) => dispatch({ type: 'alerts_answered', settings: alertSettingsOf(a) }),
+      (err: unknown) => dispatch({ type: 'alerts_refused', sentence: settingsUnreadable(err) }),
+    )
+  }, [source, clock])
+
+  // The first load, and the company list and the alert settings beside it, so each is there when chosen (L610).
   // Once per mount: a new `source` or `clock` (the preview rebuilds them) never sends attempt 1 again.
   const loadedOnce = useRef(false)
   useEffect(() => {
@@ -150,7 +175,8 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     loadedOnce.current = true
     loadList(1)
     loadGoogle()
-  }, [loadList, loadGoogle, noInitialLoad])
+    loadAlerts()
+  }, [loadList, loadGoogle, loadAlerts, noInitialLoad])
 
   const tryAgain = useCallback(() => {
     const attempt = ++lastAttempt.current
@@ -166,6 +192,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     || Object.values(state.history).some((h) => h.kind === 'loading')
     || state.add?.save.kind === 'saving'
     || ((state.dialog?.kind === 'reconnect' || state.dialog?.kind === 'remove') && state.dialog.save.kind === 'saving')
+    || alertsWaiting(state.alerts)
   useEffect(() => clock.every(waiting ? 1000 : 30_000, () => dispatch({ type: 'tick', at: clock.now() })), [clock, waiting])
 
   const chosen = chosenConnection(state)
@@ -258,6 +285,57 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
       (err: unknown) => dispatch({ type: 'connection_remove_refused', attempt, sentence: saveFailureSentence(err, c.serviceName, ms, 'removed'), workflows: workflowsOfRefusal(err) }),
     )
   }, [source, clock])
+
+  // ── The Slack alerts login's alert settings (build PR 14) ──
+  // Each change's number, taken at the press, above every earlier one, so a late answer is never taken for a later press.
+  const alertChange = useRef(state.alerts.lastAttempt)
+
+  const toggleAlert = useCallback((key: AlertSwitchKey, to: boolean) => {
+    if (latest.current.alerts.load.kind !== 'loaded') return
+    const attempt = ++alertChange.current
+    dispatch({ type: 'alerts_switch_requested', key, to, attempt, at: clock.now() })
+    source.updateSlackAlerts(switchPatch(key, to)).then(
+      () => dispatch({ type: 'alerts_switch_answered', key, attempt }),
+      (err: unknown) => dispatch({ type: 'alerts_switch_refused', key, attempt, sentence: switchFailed(key, to, err) }),
+    )
+  }, [source, clock])
+
+  const saveAlertChannel = useCallback(() => {
+    const c = latest.current.alerts.channel
+    if (c.kind !== 'open' || c.chosen === null || c.save.kind === 'saving') return
+    const channel = c.chosen
+    const attempt = ++alertChange.current
+    dispatch({ type: 'alerts_channel_save_requested', attempt, at: clock.now() })
+    source.updateSlackAlerts({ default_channel: channel }).then(
+      () => dispatch({ type: 'alerts_channel_save_answered', attempt, channel }),
+      (err: unknown) => dispatch({ type: 'alerts_channel_save_refused', attempt, sentence: channelFailed(channel, err) }),
+    )
+  }, [source, clock])
+
+  const searchChannels = useCallback(async (q: string): Promise<readonly ComboboxOption[]> => {
+    try {
+      const answer = await source.searchSlackChannels(q)
+      return answer.channels.map((ch) => ({ value: `#${ch.name}`, label: `#${ch.name}` }))
+    } catch (err) {
+      // The menu shows a loader's error as it is, so it is a sentence, never a raw fetch error.
+      throw new Error(channelSearchFailed(err))
+    }
+  }, [source])
+
+  const alertsPanel = (
+    <AlertSettings
+      state={state.alerts}
+      now={state.now}
+      onToggle={toggleAlert}
+      onChannelOpen={() => dispatch({ type: 'alerts_channel_opened' })}
+      onChannelChosen={(channel) => dispatch({ type: 'alerts_channel_chosen', channel })}
+      onChannelSave={saveAlertChannel}
+      onChannelClose={() => dispatch({ type: 'alerts_channel_closed' })}
+      searchChannels={searchChannels}
+      onRetry={loadAlerts}
+      initialChannelQuery={initialChannelQuery}
+    />
+  )
 
   // Leaving with something unsaved asks first, whichever way: a link, Back, a refresh, or another item in the list (L608).
   const [leaveAsk, setLeaveAsk] = useState<LeaveRequest | null>(null)
@@ -371,6 +449,7 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
                     onHistoryRetry={() => loadHistory(chosen.id)}
                     onReconnect={() => dispatch({ type: 'dialog_opened', dialog: 'reconnect', id: chosen.id })}
                     onRemove={() => dispatch({ type: 'dialog_opened', dialog: 'remove', id: chosen.id })}
+                    alerts={alertsPanel}
                   />
                 )
                 : null}
@@ -471,7 +550,7 @@ function WorkflowLinks({ workflows }: { workflows: ConnectionView['workflows'] }
   )
 }
 
-function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry, onReconnect, onRemove }: {
+function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry, onReconnect, onRemove, alerts }: {
   c: ConnectionView
   state: ConnectionsState
   orgNames: Readonly<Record<string, string>>
@@ -479,6 +558,8 @@ function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry, onReconnect, o
   onHistoryRetry: () => void
   onReconnect: () => void
   onRemove: () => void
+  /** The Slack alerts login's alert settings, drawn under its facts (round 36). */
+  alerts: React.ReactNode
 }) {
   const notice = problemNotice(c, state.now, orgNames)
   const n = c.workflows.length
@@ -506,7 +587,7 @@ function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry, onReconnect, o
               <p>{notice.cause}</p>
               {notice.effect && <p>{notice.effect}</p>}
               <p className="cx-hint">{notice.fix}</p>
-              {!c.alertLogin && <Button variant="primary" className="cx-btn cx-btn-sm" onClick={onReconnect}>Reconnect</Button>}
+              <Button variant="primary" className="cx-btn cx-btn-sm" onClick={onReconnect}>Reconnect</Button>
             </div>
           )}
           <div className="cx-rows">
@@ -519,9 +600,15 @@ function DetailPanel({ c, state, orgNames, onTab, onHistoryRetry, onReconnect, o
           </div>
           {c.alertLogin
             ? (
-              <p className="cx-aside">
-                Its token and the alerts it posts are set on the <Link href="/integrations" className="cx-link">Integrations page</Link>.
-              </p>
+              <>
+                {/* Dan's decision 4 (2026-10-21): Reconnect, as every other login has it. Replace and Remove stay refused for it. */}
+                {!notice && (
+                  <div className="cx-actions" data-part="actions">
+                    <Button variant="secondary" className="cx-btn-quiet" onClick={onReconnect}>Reconnect</Button>
+                  </div>
+                )}
+                {alerts}
+              </>
             )
             : (
               <>
