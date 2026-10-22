@@ -190,7 +190,7 @@ if (result.error) {
   // the Applicant through patch_applicant_no_bid and answers the source normally.
   // LendSwift's own reason stays on this step's output as lendswift_error.
   const lendswiftError = describeLendSwiftError(result);
-  console.error('LendSwift failed, so the lead is answered as no bid (#2582):', JSON.stringify(lendswiftError));
+
   return {
     error: true,
     statusCode: result.statusCode,
