@@ -19,6 +19,7 @@
  *
  * The same object also answers "does this delivery of a cron tick run?" (#1899)
  * under `/tick-claim`, `/tick-renew`, `/tick-done` and `/tick-release`; see TickClaimResult below.
+ * `/tick-read` answers what it holds, for the never finished page (#2610).
  */
 
 interface ClaimStorage {
