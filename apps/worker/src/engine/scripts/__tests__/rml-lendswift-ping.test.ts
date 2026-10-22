@@ -251,3 +251,29 @@ describe('answers LendSwift gives are passed on unchanged (#2582)', () => {
     expect(built.minBidAmt).toBe(2)
   })
 })
+
+describe('a LendSwift failure is never printed to the logs (#2650)', () => {
+  // The summary masked digit runs only, so a name or email in LendSwift's message
+  // would have reached Workers Logs. It is already kept on the step output as
+  // lendswift_error, so the print added nothing and Dan had it removed (2026-10-22).
+  async function printedBy(fetch: CanvasRun['fetch']): Promise<unknown[][]> {
+    const printed: unknown[][] = []
+    const record = (...args: unknown[]) => { printed.push(args) }
+    const out = await runCanvasScript(PING_LENDSWIFT, {
+      payload,
+      env,
+      steps: { create_applicant: { output: { body: { id: APPLICANT } } }, constants: { output: constants } },
+      console: { log: record, info: record, warn: record, error: record, debug: record },
+      fetch,
+    }) as Record<string, unknown>
+    // The failure is still kept where it is read: on the step output.
+    expect(out.lendswift_error).toBeTruthy()
+    return printed
+  }
+
+  it('prints nothing for an error answer, a failed call or a provider timeout', async () => {
+    expect(await printedBy(decide({ status: 500, body: RUNTIME_ERROR }).fetch)).toEqual([])
+    expect(await printedBy(decide(new TypeError('fetch failed')).fetch)).toEqual([])
+    expect(await printedBy(decide({ status: 500, body: PROVIDER_TIMEOUT }).fetch)).toEqual([])
+  })
+})
