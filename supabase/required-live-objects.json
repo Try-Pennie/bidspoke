@@ -158,6 +158,17 @@
     "note": "Read hourly by the Worker's query-timeout watch (#1043) to see which statements are approaching their role's statement_timeout, before one is cancelled with a 57014 (#1040). Security definer, so it MUST be denied to anon: Postgres grants EXECUTE to PUBLIC on every new function by default (#762), and this discloses the slowest statements and their shapes. Probed with p_min_calls because an empty body returns PGRST202, indistinguishable from the function being absent."
   },
   {
+    "name": "lead_validation_rejection_counts",
+    "args": {
+      "p_workflow_id": "00000000-0000-0000-0000-000000000000",
+      "p_namespace": "validate_bidding_and_state",
+      "p_from": "2026-01-01T00:00:00Z",
+      "p_to": "2026-01-01T00:00:00Z"
+    },
+    "anon": "denied",
+    "note": "Read hourly by the lead validation rejection watch (#2592, #2647): one pass counts a span's runs, runs at the step, failures and a count per reason, for the two hour window and for each new whole day of the baseline. If it is missing every run of the watch fails, and the watch is the rollback trigger for each lead validation swap. service_role only, so anon must be denied. Probed with all four args and an empty span, because an empty body answers PGRST202 like an absent function."
+  },
+  {
     "name": "archive_index_health",
     "args": {},
     "anon": "denied",

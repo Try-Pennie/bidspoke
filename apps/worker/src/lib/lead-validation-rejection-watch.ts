@@ -12,7 +12,7 @@
  *
  * WHAT IT JUDGES. Every hour, each watched workflow's finished live runs in the
  * WINDOW_MINUTES ending SETTLE_MS ago, against the same workflow's runs over the
- * BASELINE_DAYS before that window. A run is counted by where it ENDED
+ * BASELINE_DAYS whole days before that window (baselineDays). A run is counted by where it ENDED
  * (workflow_executions.final_node_namespace) and the reason its answer gave
  * (response_body.reason), which is the same field for the script and the node:
  * the money gate's A/B mode found the two answers identical (#2623), so the
@@ -50,9 +50,14 @@
  * judges (military status ineligible on LendSwift, 0.63%). A small shift inside
  * the measured spread is not a page.
  *
- * The baseline is the BASELINE_DAYS before the window, or from a watch's
+ * The baseline is the BASELINE_DAYS whole days ending at the last
+ * BASELINE_DAY_ENDS_UTC_HOUR (08:00 UTC) before the window, or from a watch's
  * baselineSince when that is later (REJECTION_WATCHES says why each has one),
- * and the page names the span it covered.
+ * and the page names the span it covered. Whole days, so each is counted once
+ * and kept rather than the week being recounted every hour (#2647, see Reads).
+ * The hours between the baseline's end and the window's start (1 to 24 of them) are in
+ * neither, which leaves the week's shares, the figures the rule was set
+ * against, as they were.
  *
  * Conventions shared with the other rate checks (partner-error-rate.ts): the
  * incident record through markAlerted, recordPaged and announceRecovery under
@@ -229,39 +234,156 @@ export function judgeRejectionShares(current: RejectionCounts, baseline: Rejecti
 }
 
 // ── Reads ───────────────────────────────────────────────────────────────────
+//
+// THE COST (#2647). The watch first sent 3 + 9 head counts per span, each a
+// separate pass over the same rows, and recounted the whole baseline week every
+// hour. RML LendSwift ran 99,115 times in the week to 2026-10-22: its week is
+// about 101,000 heap pages (a pass reads one per run), 790 MB of the database's
+// 1 GB shared_buffers. Warm, the twelve counts took about a second; in the hours
+// other heavy work had pushed those pages out (04:00, 05:00, 06:00, 09:00 and
+// 14:00 UTC that day) they took 20 to 30 s and were cancelled twice at the 30 s
+// service_role ceiling. Measured on 2026-10-22 at 15:30 UTC, a cold page cost
+// about 0.55 ms (1,146 pages in one sample), so even ONE pass over a cold week
+// would run near a minute. Two changes, then:
+//  1. Every bucket of a span is counted in one pass by
+//     lead_validation_rejection_counts (migration 20261022160000), grouped by
+//     the answer's reason: 14,436 pages and 37 ms warm for one LendSwift day,
+//     against twelve passes before.
+//  2. The baseline is seven WHOLE days ending at BASELINE_DAY_ENDS_UTC_HOUR,
+//     counted one day per read and kept in KV once counted, so an hourly run
+//     reads only its two hour window, and one new day joins the baseline each
+//     day (about 14,500 LendSwift runs, at most 8 s even if every page were
+//     cold). A day is never re-read for the same watch while it is kept.
 
-type CountQuery = PromiseLike<{ count: number | null; error: unknown }>
+/** The function that counts a span's buckets in one pass. */
+export const REJECTION_COUNTS_RPC = 'lead_validation_rejection_counts'
 
-async function headCount(query: CountQuery, label: string): Promise<number> {
-  const { count, error } = await query
-  if (error) throw new Error(`${LEAD_VALIDATION_REJECTION_JOB} ${label}: ${formatErr(error)}`)
-  if (typeof count !== 'number') throw new Error(`${LEAD_VALIDATION_REJECTION_JOB} ${label}: no count returned`)
-  return count
+/**
+ * The baseline's days end at this UTC hour. A new day first joins at the hourly
+ * run once the window starts after it: 11:00 UTC, an hour the twelve old counts
+ * ran in under 1.1 s on 2026-10-22, clear of the slow 04:00 to 06:00 and 09:00
+ * hours. A failed count is retried at 12:00 and 13:00, both measured quiet too.
+ */
+export const BASELINE_DAY_ENDS_UTC_HOUR = 8
+
+/** Every count a span holds, with every reason the answers gave (listed or not). */
+interface SpanCounts {
+  runs: number
+  atStep: number
+  failed: number
+  byReason: Record<string, number>
+}
+
+const isCount = (n: unknown): n is number => typeof n === 'number' && Number.isInteger(n) && n >= 0
+
+function spanCountsOf(v: unknown): SpanCounts | null {
+  if (typeof v !== 'object' || v === null) return null
+  const o = v as Record<string, unknown>
+  const runs = o.runs, atStep = o.atStep ?? o.at_step, failed = o.failed, byReason = o.byReason ?? o.by_reason
+  if (!isCount(runs) || !isCount(atStep) || !isCount(failed) || atStep > runs || failed > atStep) return null
+  if (typeof byReason !== 'object' || byReason === null || Array.isArray(byReason)) return null
+  if (!Object.values(byReason).every(isCount)) return null
+  return { runs, atStep, failed, byReason: { ...(byReason as Record<string, number>) } }
+}
+
+async function readSpanCounts(supabase: SupabaseClient, watch: RejectionWatch, from: Date, to: Date): Promise<SpanCounts> {
+  const span = `${watch.workflowId} ${from.toISOString()} to ${to.toISOString()}`
+  const answer: { data: unknown; error: unknown } = await supabase.rpc(REJECTION_COUNTS_RPC, {
+    p_workflow_id: watch.workflowId,
+    p_namespace: watch.namespace,
+    p_from: from.toISOString(),
+    p_to: to.toISOString(),
+  })
+  const { data, error } = answer
+  if (error) throw new Error(`${LEAD_VALIDATION_REJECTION_JOB} counts ${span}: ${formatErr(error)}`)
+  const counts = Array.isArray(data) && data.length === 1 ? spanCountsOf(data[0]) : null
+  if (!counts) throw new Error(`${LEAD_VALIDATION_REJECTION_JOB} counts ${span}: the answer was not one row of counts`)
+  return counts
+}
+
+/** A span's counts narrowed to the watch's reasons; any other reason is what rejectionBuckets calls a reason not on the list. */
+function toRejectionCounts(c: SpanCounts, reasons: readonly string[]): RejectionCounts {
+  return { runs: c.runs, atStep: c.atStep, failed: c.failed, byReason: Object.fromEntries(reasons.map((r) => [r, c.byReason[r] ?? 0])) }
 }
 
 /**
- * Head counts, never rows (the 1,000 row cap), over workflow_executions on its
- * (workflow_id, started_at) index. A week of GigFi's runs counted in 48 ms warm
- * on 2026-10-21. Throws when any count cannot be read.
+ * One read, never rows (the 1,000 row cap): the function returns a single row
+ * of counts. Throws when it cannot be read, so a run that cannot judge fails.
  */
 export async function readRejectionCounts(supabase: SupabaseClient, watch: RejectionWatch, from: Date, to: Date): Promise<RejectionCounts> {
-  const base = () => supabase
-    .from('workflow_executions')
-    .select('id', { count: 'exact', head: true })
-    .eq('workflow_id', watch.workflowId)
-    .eq('is_test', false)
-    .neq('status', 'running')
-    .gte('started_at', from.toISOString())
-    .lt('started_at', to.toISOString())
-  const atStep = () => base().eq('final_node_namespace', watch.namespace)
-  const span = `${from.toISOString()} to ${to.toISOString()}`
-  const [runs, at, failed, ...byReason] = await Promise.all([
-    headCount(base(), `runs ${span}`),
-    headCount(atStep(), `runs ending at ${watch.namespace} ${span}`),
-    headCount(atStep().eq('status', 'failed'), `failed ${watch.namespace} ${span}`),
-    ...watch.reasons.map((r) => headCount(atStep().neq('status', 'failed').eq('response_body->>reason', r), `${r} ${span}`)),
-  ])
-  return { runs, atStep: at, failed, byReason: Object.fromEntries(watch.reasons.map((r, i) => [r, byReason[i]])) }
+  return toRejectionCounts(await readSpanCounts(supabase, watch, from, to), watch.reasons)
+}
+
+export interface BaselineDay {
+  from: Date
+  to: Date
+}
+
+const DAY_MS = 24 * 3_600_000
+
+/**
+ * The baseline's days: the BASELINE_DAYS whole days ending at the last
+ * BASELINE_DAY_ENDS_UTC_HOUR at or before the window's start, oldest first.
+ * A `since` drops the days before it and cuts the one it falls in, so no run
+ * before it is read; a since after the last day's end leaves no days.
+ */
+export function baselineDays(windowStart: Date, since?: number): BaselineDay[] {
+  const t = windowStart.getTime()
+  let end = Math.floor(t / DAY_MS) * DAY_MS + BASELINE_DAY_ENDS_UTC_HOUR * 3_600_000
+  if (end > t) end -= DAY_MS
+  const days: BaselineDay[] = []
+  for (let k = BASELINE_DAYS; k >= 1; k--) {
+    const dayEnd = end - (k - 1) * DAY_MS
+    const dayStart = Math.max(dayEnd - DAY_MS, since ?? Number.NEGATIVE_INFINITY)
+    if (dayStart < dayEnd) days.push({ from: new Date(dayStart), to: new Date(dayEnd) })
+  }
+  return days
+}
+
+/** How long a counted day is kept: past the last hour the baseline can still reach it. */
+export const BASELINE_DAY_TTL_SECONDS = (BASELINE_DAYS + 2) * 24 * 3_600
+
+/** The version names what a kept day holds, so a change to what is counted never reads an old one. */
+function baselineDayKey(watch: RejectionWatch, day: BaselineDay): string {
+  return `${LEAD_VALIDATION_REJECTION_SIGNAL}-baseline-day:v1:${watch.workflowId}:${watch.namespace}:${day.from.toISOString()}:${day.to.toISOString()}`
+}
+
+/**
+ * The baseline, summed from its days. A day already kept is not read again; a
+ * day not kept (or kept as anything but a whole set of counts) is counted, one
+ * day per read, one read at a time, and then kept. A run that started in a day
+ * and was still running when the day was counted is not in it: the day ends at
+ * least SETTLE_MS plus a window before it is first counted, as the window's
+ * runs do. KV failing is logged and costs only the recount; a count that
+ * cannot be read throws.
+ */
+export async function readBaselineCounts(supabase: SupabaseClient, kv: RecoveryKv, watch: RejectionWatch, days: readonly BaselineDay[]): Promise<RejectionCounts> {
+  const total: SpanCounts = { runs: 0, atStep: 0, failed: 0, byReason: {} }
+  for (const day of days) {
+    const key = baselineDayKey(watch, day)
+    let counts: SpanCounts | null = null
+    try {
+      const kept = await kv.get(key)
+      if (kept !== null) {
+        try { counts = spanCountsOf(JSON.parse(kept)) } catch { counts = null }
+      }
+    } catch (e) {
+      console.error(`[${LEAD_VALIDATION_REJECTION_JOB}] reading kept baseline day ${key} failed, counting it: ${formatErr(e)}`)
+    }
+    if (!counts) {
+      counts = await readSpanCounts(supabase, watch, day.from, day.to)
+      try {
+        await kv.put(key, JSON.stringify(counts), { expirationTtl: BASELINE_DAY_TTL_SECONDS })
+      } catch (e) {
+        console.error(`[${LEAD_VALIDATION_REJECTION_JOB}] keeping baseline day ${key} failed, it will be counted again: ${formatErr(e)}`)
+      }
+    }
+    total.runs += counts.runs
+    total.atStep += counts.atStep
+    total.failed += counts.failed
+    for (const [r, n] of Object.entries(counts.byReason)) total.byReason[r] = (total.byReason[r] ?? 0) + n
+  }
+  return toRejectionCounts(total, watch.reasons)
 }
 
 // ── The check ───────────────────────────────────────────────────────────────
@@ -290,7 +412,6 @@ export async function runLeadValidationRejectionWatch(
 
   const windowEnd = new Date(now - SETTLE_MS)
   const windowStart = new Date(windowEnd.getTime() - WINDOW_MINUTES * 60 * 1000)
-  const weekStart = windowStart.getTime() - BASELINE_DAYS * 24 * 3_600_000
 
   for (const watch of watches) {
     const wf = byId.get(watch.workflowId)
@@ -298,12 +419,12 @@ export async function runLeadValidationRejectionWatch(
     // Only a full UTC time: Date.parse alone reads text like "version 39" as the year 39.
     const since = watch.baselineSince && ISO_UTC.test(watch.baselineSince) ? Date.parse(watch.baselineSince) : Number.NaN
     if (watch.baselineSince !== undefined && Number.isNaN(since)) throw new Error(`${LEAD_VALIDATION_REJECTION_JOB}: baselineSince ${watch.baselineSince} is not a time`)
-    const baselineStart = new Date(Number.isNaN(since) ? weekStart : Math.max(weekStart, since))
+    const days = baselineDays(windowStart, Number.isNaN(since) ? undefined : since)
     const current = await readRejectionCounts(supabase, watch, windowStart, windowEnd)
-    // A thin window is not judged, so the week is not read for it.
+    // A thin window is not judged, so the baseline is not read for it.
     const verdict = current.runs < REJECTION_RULE.minRuns
       ? judgeRejectionShares(current, current)
-      : judgeRejectionShares(current, await readRejectionCounts(supabase, watch, baselineStart, windowStart))
+      : judgeRejectionShares(current, await readBaselineCounts(supabase, kv, watch, days))
     summary.judged.push({ workflowId: wf.id, state: verdict.state, runs: verdict.runs, ...(verdict.state === 'unjudged' ? {} : { baselineRuns: verdict.baselineRuns }) })
 
     const cooldownKey = `${LEAD_VALIDATION_REJECTION_SIGNAL}-cooldown:${wf.id}`
@@ -356,7 +477,7 @@ export async function runLeadValidationRejectionWatch(
       runs: verdict.runs,
       baseline_runs: verdict.baselineRuns,
       // The span the baseline covered, which a baselineSince can make shorter than a week (L11).
-      baseline_days: Math.round((windowStart.getTime() - baselineStart.getTime()) / (24 * 3_600_000) * 10) / 10,
+      baseline_days: days.length ? Math.round((days[days.length - 1].to.getTime() - days[0].from.getTime()) / DAY_MS * 10) / 10 : 0,
       shifts: verdict.shifts,
       window_minutes: WINDOW_MINUTES,
       window_end: windowEnd.toISOString(),
