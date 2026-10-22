@@ -207,9 +207,11 @@ export class AlertClaimObject implements DurableObject {
   }
 
   /**
-   * Body: { holder }. Marks the tick done, but only for the run that holds it:
-   * a run that was taken over and turns out to have been alive does not close
-   * the claim its retry now holds.
+   * Body: { holder, now }. Marks the tick done, but only for the run that holds
+   * it: a run that was taken over and turns out to have been alive does not
+   * close the claim its retry now holds. A done from a holder it does not hold
+   * is kept for that holder's claim, in case it is late (#2646, keepEarlySettle);
+   * `now` dates that kept done's cleanup.
    */
   private async handleTickDone(request: Request): Promise<Response> {
     const body = await request.json<{ holder?: unknown; now?: unknown }>()
@@ -224,9 +226,11 @@ export class AlertClaimObject implements DurableObject {
   }
 
   /**
-   * Body: { holder }. The holder's jobs threw before they could run, so the
-   * tick is freed for the platform's retry or any later delivery. Only the
-   * holder may free it, for the same reason as tick-done.
+   * Body: { holder, now }. The holder's jobs threw before they could run, so
+   * the tick is freed for the platform's retry or any later delivery. Only the
+   * holder may free it, for the same reason as tick-done. A release from a
+   * holder it does not hold is kept the same way as a done (#2646), so a late
+   * claim from that holder leaves the tick free.
    */
   private async handleTickRelease(request: Request): Promise<Response> {
     const body = await request.json<{ holder?: unknown; now?: unknown }>()
