@@ -32,7 +32,11 @@
  *  5. Per attempt: RECORD the sanitised request (or a declared reason nothing
  *     is recorded), and only then apply the auth, and send. Redirects are never
  *     followed: a redirect would leave the declared hosts.
- *  6. A 429, or a 503 with Retry-After, is a RequeueAt. The service's declared
+ *  6. A 429, or a 503 with Retry-After, is a RequeueAt carrying that status
+ *     (#1950: the runner tells a 503 that may have been applied from a 429
+ *     that was not), unless the service's rules say a rate limit on this
+ *     request is its answer (answersRateLimit: Snowflake's status poll, whose
+ *     429 means still running), when the response is handed back. The service's declared
  *     expiry signal renews the token once and retries once; a second is
  *     needs_reauth. A body that can be read only once is never sent twice.
  *  7. For Salesforce, the latest response's Sforce-Limit-Info is the org's
@@ -471,7 +475,7 @@ function rateLimited(response: Response, now: number): RequeueAt | null {
   const header = response.headers.get('retry-after')
   if (response.status !== 429 && !(response.status === 503 && header !== null)) return null
   const at = header === null ? null : retryAfterAt(header, now)
-  return new RequeueAt(at === null ? new Date(now + RATE_LIMIT_DEFAULT_MS) : clampedRetry(now, at), 'rate_limited')
+  return new RequeueAt(at === null ? new Date(now + RATE_LIMIT_DEFAULT_MS) : clampedRetry(now, at), 'rate_limited', response.status)
 }
 
 /** A response nobody will read: its body is cancelled, so it does not hold the connection open. */
@@ -701,7 +705,8 @@ async function sendWithRenewal(
     }
     observeBudget(deps, call, budget, response)
 
-    const requeue = rateLimited(response, deps.now())
+    // A service may declare a rate limit on some requests to be its answer (Snowflake's statement poll, #1950).
+    const requeue = rules.answersRateLimit?.({ method, url: new URL(url) }) ? null : rateLimited(response, deps.now())
     if (requeue) {
       discard(response)
       return requeue
