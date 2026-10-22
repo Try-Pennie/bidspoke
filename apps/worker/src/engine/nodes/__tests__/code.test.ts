@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { executeCodeNode, unionReferencedSteps, scopeSteps, hasDynamicStepsAccess } from '../code'
+import { executeCodeNode, unionReferencedSteps, scopeSteps, hasDynamicStepsAccess, buildCodeStepInput } from '../code'
 import { codeWorkerName, codeBundleName, buildBundledWorkerScript } from '../../../lib/code-node-deployer'
 import type { ExecutionContext, NodeDefinition, StepOutput } from '../../../types'
 import type { Env } from '../../../index'
@@ -405,5 +405,48 @@ describe('buildBundledWorkerScript', () => {
     // .constructor on a falsy throw value.
     const nameOccurrences = bundle.split("err && err.name ? err.name : (err ? err.constructor.name : 'Error')").length - 1
     expect(nameOccurrences).toBeGreaterThanOrEqual(2)
+  })
+})
+
+// #1263: a setting written as {{env.X}} must read the same values the script's own
+// `env` does, the run's saved value first and the Worker binding underneath it.
+// Main Flow's Eligibility Scout step takes ACHIEVE_PARTNER_KEY this way, and read
+// only the saved row, so a row removed by hand stopped the key while the daily
+// required secrets check, which measures the binding, stayed green.
+describe('code node settings read the run values over the Worker bindings (#1263)', () => {
+  function sentProps(bundleFetch: ReturnType<typeof vi.fn>): Record<string, unknown> {
+    return (JSON.parse(bundleFetch.mock.calls[0][1].body as string) as { props: Record<string, unknown> }).props
+  }
+
+  function withBindings(bundleFetch: ReturnType<typeof vi.fn>, bindings: Record<string, string>): Env {
+    return { ...makeEnv(() => bundleFetch), ...bindings } as unknown as Env
+  }
+
+  const keyNode = () => node({ script: 'return props.key', props: [{ name: 'key', source: '{{env.PARTNER_KEY}}' }] })
+
+  it('falls back to the Worker binding when the run has no saved value', async () => {
+    const bundleFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    await executeCodeNode(keyNode(), ctx(), withBindings(bundleFetch, { PARTNER_KEY: 'from-binding' }))
+    expect(sentProps(bundleFetch).key).toBe('from-binding')
+  })
+
+  it('prefers the run saved value over the Worker binding', async () => {
+    const bundleFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    const c = { ...ctx(), env: { PARTNER_KEY: 'from-row' } }
+    await executeCodeNode(keyNode(), c, withBindings(bundleFetch, { PARTNER_KEY: 'from-binding' }))
+    expect(sentProps(bundleFetch).key).toBe('from-row')
+  })
+
+  it('never resolves a platform master secret through a setting', async () => {
+    const bundleFetch = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }))
+    const n = node({ script: 'return props.k', props: [{ name: 'k', source: '{{env.SECRET_ENCRYPTION_KEY}}' }] })
+    await executeCodeNode(n, ctx(), withBindings(bundleFetch, { SECRET_ENCRYPTION_KEY: 'master' }))
+    expect(sentProps(bundleFetch).k).toBeUndefined()
+  })
+
+  it('records in the step input the same value it sent', () => {
+    const env = { PARTNER_KEY: 'from-binding' } as unknown as Env
+    const resolved = buildCodeStepInput(keyNode(), ctx(), env).resolved as { props: Record<string, unknown> }
+    expect(resolved.props).toEqual({ key: 'from-binding' })
   })
 })

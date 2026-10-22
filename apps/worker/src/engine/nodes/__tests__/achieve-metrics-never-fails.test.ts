@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import type { Env } from '../../../index'
 
 // The metrics derivation runs before the call and OUTSIDE the node's try block, so a throw
 // there would fail a node whose whole contract is that it never fails the flow: it is a
@@ -89,7 +90,7 @@ describe('a failing metrics derivation cannot fail the node', () => {
       throw new Error('unexpected report shape')
     })
 
-    const { output } = await executeAchieveOffersNode(makeNode(), ctxWithReport())
+    const { output } = await executeAchieveOffersNode(makeNode(), ctxWithReport(), {} as Env)
     const out = output as Record<string, unknown>
 
     // The call still happened and its outcome is intact: the diagnostic failing must not cost
@@ -103,7 +104,7 @@ describe('a failing metrics derivation cannot fail the node', () => {
 
   it('carries the metrics through when the derivation succeeds', async () => {
     mocks.deriveCreditMetrics.mockReturnValue({ vantage_score: 700 })
-    const { output } = await executeAchieveOffersNode(makeNode(), ctxWithReport())
+    const { output } = await executeAchieveOffersNode(makeNode(), ctxWithReport(), {} as Env)
     expect((output as Record<string, unknown>).credit_metrics).toEqual({ vantage_score: 700 })
   })
 })
