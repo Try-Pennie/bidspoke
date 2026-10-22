@@ -83,6 +83,10 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
   'add-openai': ['An API key for a project', 'Project ID', 'API key'],
   'add-openai-project-mismatch': ['OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.'],
   'openai-summaries': ['Summaries', 'Project proj_bidspoke_ops in pennie'],
+  // #2337: Anthropic, a workspace's API key.
+  'add-anthropic': ['An API key for a workspace', 'Workspace ID', 'API key'],
+  'add-anthropic-workspace-mismatch': ['Anthropic says this API key runs in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.'],
+  'anthropic-lead-notes': ['Lead notes', 'Workspace wrkspc_ops'],
 }
 
 function quiet(): ConnectionsSource {
