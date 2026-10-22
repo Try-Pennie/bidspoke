@@ -3,14 +3,16 @@ import { recordingContext } from '../test-setup/wait-until'
 import type { Env } from '../index'
 
 /**
- * The two daily checks on the bidding Worker: the ops connection owner check
- * (#2340) and the Salesforce bulkhead limit check (#2336). Each runs on the
+ * The daily checks on the bidding Worker: the ops connection owner check
+ * (#2340), the Salesforce bulkhead limit check (#2336) and the lead validation
+ * script guard (#2595). Each runs on the
  * 13:00 batch and nowhere else, and stamps its own heartbeat, started and then
  * completed whichever way its run ended (L514). Invokes the real scheduled
  * handler rather than reading the source.
  */
 const runOpsConnectionOwnerCheckForEnv = vi.fn().mockResolvedValue({ judged: true, personBound: 0, orphaned: [], paged: [], allClear: [], unreadable: [], errors: [] })
 const runSalesforceBulkheadCheckForEnv = vi.fn().mockResolvedValue({ limit: 20, sizedFor: 20, verdict: 'matches', paged: 0, toldNobody: false, allClear: false, errors: [] })
+const runValidationScriptGuardForEnv = vi.fn().mockResolvedValue({ findings: [], newFindings: [], staleExceptions: [], unreadable: [], scanned: 9, alerted: false })
 const writeHeartbeat = vi.fn().mockResolvedValue(undefined)
 const writeHeartbeatCompleted = vi.fn().mockResolvedValue(undefined)
 
@@ -21,6 +23,10 @@ vi.mock('../lib/ops-connection-owner-check', async (importOriginal) => ({
 vi.mock('../lib/salesforce-bulkhead-check', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/salesforce-bulkhead-check')>()),
   runSalesforceBulkheadCheckForEnv: (...args: unknown[]) => runSalesforceBulkheadCheckForEnv(...args),
+}))
+vi.mock('../lib/validation-script-guard', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/validation-script-guard')>()),
+  runValidationScriptGuardForEnv: (...args: unknown[]) => runValidationScriptGuardForEnv(...args),
 }))
 vi.mock('../lib/cron-heartbeat', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/cron-heartbeat')>()),
@@ -53,6 +59,7 @@ async function fire(cron: string) {
 const CHECKS = [
   { id: 'ops-connection-owner', run: runOpsConnectionOwnerCheckForEnv },
   { id: 'salesforce-bulkhead-check', run: runSalesforceBulkheadCheckForEnv },
+  { id: 'validation-script-guard', run: runValidationScriptGuardForEnv },
 ] as const
 
 beforeEach(() => {

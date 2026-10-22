@@ -44,6 +44,7 @@ import { ARCHIVE_EXPIRY_REMEDY, ARCHIVE_EXPIRY_UNLISTED_REMEDY } from '../archiv
 import { LOGPUSH_CHECK_REMEDY, LOGPUSH_UNREADABLE_REMEDY } from '../logpush-check'
 import { RETENTION_CHECK_REMEDY, RETENTION_CHECK_UNREADABLE_REMEDY } from '../retention-check'
 import { PAYLOAD_PRINT_REMEDY } from '../payload-print-check'
+import { VALIDATION_SCRIPT_REMEDY } from '../validation-script-guard'
 import {
   MATRIX_AUDIT_REMEDY,
   MATRIX_AUDIT_SNAPSHOT_READ_REMEDY,
@@ -94,6 +95,7 @@ const REMEDIES: ReadonlyArray<readonly [string, AlertRemedy]> = [
   ['execution retention', RETENTION_CHECK_REMEDY],
   ['execution retention unreadable', RETENTION_CHECK_UNREADABLE_REMEDY],
   ['code node payload prints', PAYLOAD_PRINT_REMEDY],
+  ['lead validation script guard', VALIDATION_SCRIPT_REMEDY],
   ['salesforce matrix audit', MATRIX_AUDIT_REMEDY],
   ['salesforce matrix audit snapshot read', MATRIX_AUDIT_SNAPSHOT_READ_REMEDY],
   ['salesforce matrix audit snapshot write', MATRIX_AUDIT_SNAPSHOT_WRITE_REMEDY],
