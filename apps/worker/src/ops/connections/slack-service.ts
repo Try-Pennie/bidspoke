@@ -97,10 +97,10 @@ export function slackServiceEntry(): OpsServiceEntry {
       },
       expired: slackExpired,
       // The target is read first, so a connection declaring no workspace is refused by rule before its key is read.
-      authorize: (input: AuthorizeInput) => new Promise<void>((resolve) => {
+      authorize: async (input: AuthorizeInput) => {
         slackTeamOf(input.target)
-        resolve()
-      }).then(() => key.authorize(input)),
+        return await key.authorize(input)
+      },
     },
     identity: slackIdentity,
   }

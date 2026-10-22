@@ -148,7 +148,7 @@ export function createSlackClient(connection: SlackConnection): SlackAPIClient {
 
 /**
  * A Slack call that got an ANSWER, and the answer was a failure. In the pinned
- * version (1.1.14) the library throws exactly these for an answer:
+ * version (1.1.15) the library throws exactly these for an answer:
  *
  * - `SlackAPIError` for HTTP 200 with `ok:false` and an `error` code;
  * - `SlackAPIConnectionError` with the HTTP status for any status but 200 (a

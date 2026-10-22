@@ -36,8 +36,8 @@ import { REPO_ROOT, WORKER_SRC, listFiles, sanitizeSource, workspacePackages } f
  *
  * It scans the src folder of every workspace package (apps/* and packages/*),
  * enumerated from pnpm-workspace.yaml rather than listed here (L96), so the
- * Worker, the service catalogue runtime where the ops Slack actions will live
- * (Phase 7), and any package added later are all covered without an edit.
+ * Worker, the service catalogue runtime where the ops Slack actions live
+ * (runtime/slack, #2337), and any package added later are all covered without an edit.
  * Comments are stripped, so a comment naming the API is not a call; tests are
  * not scanned.
  */
