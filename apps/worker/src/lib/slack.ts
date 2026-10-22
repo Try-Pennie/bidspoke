@@ -2338,7 +2338,7 @@ export async function sendQueryCancelledAlert(
       'The Worker\'s queries are cancelled at 30 seconds, and one cancelled on every run never shows up as slow, so the cancellations are counted here.\n' +
       lines.join('\n') +
       more
-    fix = '*Fix:* make that query cheaper, with an index or a narrower date range, so it finishes well inside 30 seconds. It fails on every run until then.'
+    fix = '*Fix:* make that query cheaper, with an index or a narrower date range, so it finishes well inside 30 seconds. Until then, each run that hits the limit fails the same way.'
     fallback = `Database queries cancelled: ${report.groups.length} statement(s)`
   }
   const blocks = [
