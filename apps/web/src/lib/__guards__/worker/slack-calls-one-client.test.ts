@@ -20,7 +20,12 @@ import { REPO_ROOT, WORKER_SRC, listFiles, sanitizeSource, workspacePackages } f
  *
  * - a string naming `slack.com/api` (a fetch, a URL, a constant holding it);
  * - `new SlackAPIClient(`, anywhere but the package's index.ts, which may
- *   build exactly one, inside createSlackClient;
+ *   build exactly one, inside createSlackClient. The home may also declare a
+ *   subclass (the connection bound client the ops Slack actions use, #2337,
+ *   which sends through connectionFetch because the library can only send
+ *   through the global fetch), and each such class too is built exactly once,
+ *   inside createSlackClient. The home may name slack.com/api once, as that
+ *   client's SLACK_API_BASE, and nowhere else;
  * - any import of slack-web-api-client (static, dynamic or require, a type
  *   only import included) anywhere but that same file. The package re-exports
  *   the types a caller needs, so the library has one importer, and an alias
@@ -43,6 +48,8 @@ const LIBRARY = 'slack-web-api-client'
 
 const API_HOST = /slack\.com\/api/
 const NEW_CLIENT = /\bnew\s+SlackAPIClient\s*\(/g
+/** A client class the home declares on top of the library's (the connection bound client, #2337). */
+const SUBCLASS = /\bclass\s+(\w+)\s+extends\s+SlackAPIClient\b/g
 /** Any import of the library: `from '...'`, `import '...'`, `import('...')`, `require('...')`. */
 const LIBRARY_IMPORT = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)['"`]slack-web-api-client(?:\/[^'"`]*)?['"`]/
 
@@ -50,14 +57,23 @@ const LIBRARY_IMPORT = /(?:\bfrom\s*|\bimport\s*\(?\s*|\brequire\s*\(\s*)['"`]sl
 export function slackCallsOutsideFactory(source: string, home = false): string[] {
   const src = sanitizeSource(source, { blankStrings: false })
   const found: string[] = []
-  if (API_HOST.test(src)) found.push('names slack.com/api')
-  const news = [...src.matchAll(NEW_CLIENT)]
   if (home) {
+    // The home may name the API base once, as the constant the connection bound client sends to (#2337).
+    const named = [...src.matchAll(/slack\.com\/api/g)].length
+    const asBase = /\bconst\s+SLACK_API_BASE\s*=\s*['"`]https:\/\/slack\.com\/api\/['"`]/.test(src) ? 1 : 0
+    if (named > asBase) found.push('names slack.com/api other than as SLACK_API_BASE')
+    // Every client class, the library's and each subclass the home declares, is built exactly once, inside the factory.
     const start = src.indexOf('export function createSlackClient(')
     const end = start < 0 ? -1 : src.indexOf('\n}', start)
-    const inside = news.filter((m) => start >= 0 && (m.index ?? 0) > start && (m.index ?? 0) < end)
-    if (news.length !== 1 || inside.length !== 1) found.push(`builds ${news.length} SlackAPIClient, ${inside.length} inside createSlackClient`)
+    const classes = ['SlackAPIClient', ...[...src.matchAll(SUBCLASS)].map((m) => m[1])]
+    for (const name of classes) {
+      const news = [...src.matchAll(new RegExp(`\\bnew\\s+${name}\\s*\\(`, 'g'))]
+      const inside = news.filter((m) => start >= 0 && (m.index ?? 0) > start && (m.index ?? 0) < end)
+      if (news.length !== 1 || inside.length !== 1) found.push(`builds ${name} ${news.length} times, ${inside.length} inside createSlackClient`)
+    }
   } else {
+    if (API_HOST.test(src)) found.push('names slack.com/api')
+    const news = [...src.matchAll(NEW_CLIENT)]
     if (news.length > 0) found.push('builds a SlackAPIClient')
     if (LIBRARY_IMPORT.test(src)) found.push(`imports ${LIBRARY}`)
   }
@@ -138,7 +154,16 @@ describe('every Slack call goes through createSlackClient (#2331, #2337)', () =>
     // The home: one construction inside the factory passes; a second anywhere fails.
     const factory = `import { SlackAPIClient } from 'slack-web-api-client'\nexport function createSlackClient(c: { bot_token: string }) {\n  return new SlackAPIClient(c.bot_token, {})\n}\n`
     expect(slackCallsOutsideFactory(factory, true)).toEqual([])
-    expect(slackCallsOutsideFactory(`${factory}export const other = new SlackAPIClient('x')\n`, true)).toEqual(['builds 2 SlackAPIClient, 1 inside createSlackClient'])
+    expect(slackCallsOutsideFactory(`${factory}export const other = new SlackAPIClient('x')\n`, true)).toEqual(['builds SlackAPIClient 2 times, 1 inside createSlackClient'])
+    // The connection bound client (#2337): a subclass declared in the home, built once inside the factory, passes.
+    const bound = `import { SlackAPIClient } from 'slack-web-api-client'\nclass Bound extends SlackAPIClient {}\nconst SLACK_API_BASE = 'https://slack.com/api/'\nexport function createSlackClient(c: { bot_token: string } | { fetch: F }) {\n  if ('fetch' in c) return new Bound(c.fetch, {})\n  return new SlackAPIClient(c.bot_token, {})\n}\n`
+    expect(slackCallsOutsideFactory(bound, true)).toEqual([])
+    // A subclass built outside the factory, or never built, or the base named twice, fails.
+    expect(slackCallsOutsideFactory(`${bound}export const loose = new Bound(f, {})\n`, true)).toEqual(['builds Bound 2 times, 1 inside createSlackClient'])
+    expect(slackCallsOutsideFactory(bound.replace("if ('fetch' in c) return new Bound(c.fetch, {})\n", ''), true)).toEqual(['builds Bound 0 times, 0 inside createSlackClient'])
+    expect(slackCallsOutsideFactory(`${bound}const other = 'https://slack.com/api/chat.postMessage'\n`, true)).toEqual(['names slack.com/api other than as SLACK_API_BASE'])
+    // Outside the home a subclass is still a client built elsewhere: it needs the library's import.
+    expect(slackCallsOutsideFactory(`import { SlackAPIClient } from 'slack-web-api-client'\nclass Mine extends SlackAPIClient {}\nconst c = new Mine('x')`)).toEqual(['imports slack-web-api-client'])
   })
 
   it('fails on a second declaration of the library, or a range in the package', () => {
