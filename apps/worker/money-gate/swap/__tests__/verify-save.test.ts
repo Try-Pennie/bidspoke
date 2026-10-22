@@ -11,7 +11,8 @@ import { formatSwapVerification, verifySavedSwap, type DefinitionVersion } from 
 import gigfi from '../candidates/rml-gigfi.json'
 import lendswift from '../candidates/rml-lendswift.json'
 import leadEconomy from '../candidates/lead-economy.json'
-import gigfiDef from '../../fixtures/definitions/6624acd0-bf61-4d21-85fc-4371ca7ed77d.json'
+import gigfiBeforeSwap from '../replaced/rml-gigfi-v24.json'
+import gigfiSaved from '../../fixtures/definitions/6624acd0-bf61-4d21-85fc-4371ca7ed77d.json'
 import lendswiftDef from '../../fixtures/definitions/e1b810da-16c0-49eb-bf12-ba1c9b67c914.json'
 import leadEconomyDef from '../../fixtures/definitions/89b1a6af-7e0f-43de-bc66-1e888184551f.json'
 
@@ -20,7 +21,10 @@ type Def = { trigger?: unknown; nodes: Array<{ id: string; [k: string]: unknown 
 const candidate = parseCandidate(gigfi, 'rml-gigfi.json')
 const OLD = candidate.replaces.node_id
 const NEW = '11111111-2222-4333-8444-555555555555'
-const previousDef = (gigfiDef as unknown as { definition: Def }).definition
+// GigFi's version 24, the version before its swap (#2592): the money gate's
+// definition holds the saved node since the refresh, so the copy kept for the grid is the base.
+const previousDef = (gigfiBeforeSwap as unknown as { definition: Def }).definition
+const savedDef = (gigfiSaved as unknown as { definition: Def }).definition
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T
 
 /** What the canvas saves after Delete, paste and one wire drag: a new id, the node appended, new edge ids. */
@@ -40,6 +44,15 @@ const v = (n: number, definition: Def): DefinitionVersion => ({ version_number: 
 const verify = (saved: Def, live: Def = saved, previous: Def = previousDef) => verifySavedSwap(candidate, v(24, previous), v(25, saved), live)
 
 describe('verifySavedSwap', () => {
+  it('passes GigFi as Dan saved it on 2026-10-22 (version 25), with only what a paste changes as notes', () => {
+    const r = verify(savedDef)
+    expect(r.problems).toEqual([])
+    expect(r.ok).toBe(true)
+    const saved = savedDef.nodes.find((n) => n.namespace === candidate.node.namespace)!
+    expect(r.notes.join('\n')).toContain(`the step's id changed from ${OLD} to ${saved.id}`)
+    expect(r.notes.join('\n')).toContain('2 edges into or out of the step were made again with new ids')
+  })
+
   it('passes the canvas swap, naming the new step id and the two re-made edges', () => {
     const r = verify(canvasSave())
     expect(r.problems).toEqual([])

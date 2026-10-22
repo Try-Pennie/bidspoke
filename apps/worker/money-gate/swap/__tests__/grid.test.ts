@@ -8,6 +8,15 @@
  * text compared is the text production runs: a definition refreshed with an
  * edited script fails the pin here rather than proving the wrong text.
  *
+ * Once a swap is saved, the money gate definition holds the node and no longer
+ * the script, so the version before the save is kept in `swap/replaced/` and the
+ * grid runs against that (RML GigFi, version 24, swapped 2026-10-22, #2592). It
+ * stays for as long as the candidate is what runs: it is the record of what the
+ * node was proved equal to, the version a rollback restores, and the only test
+ * holding the node's evaluator to the behaviour GigFi's leads had. The saved step
+ * is held to the candidate's config, so a later canvas edit fails here rather than
+ * leaving the grid proving a config nothing runs.
+ *
  * For each candidate it holds that:
  * - the candidate is what a save accepts, in place, in that workflow;
  * - every arm is reached (each reason rejected by both sides, and a lead let
@@ -25,7 +34,8 @@ import { leadEconomyGrid, rmlGrid } from '../grid-specs'
 import gigfi from '../candidates/rml-gigfi.json'
 import lendswift from '../candidates/rml-lendswift.json'
 import leadEconomy from '../candidates/lead-economy.json'
-import gigfiDef from '../../fixtures/definitions/6624acd0-bf61-4d21-85fc-4371ca7ed77d.json'
+import gigfiLive from '../../fixtures/definitions/6624acd0-bf61-4d21-85fc-4371ca7ed77d.json'
+import gigfiBeforeSwap from '../replaced/rml-gigfi-v24.json'
 import lendswiftDef from '../../fixtures/definitions/e1b810da-16c0-49eb-bf12-ba1c9b67c914.json'
 import leadEconomyDef from '../../fixtures/definitions/89b1a6af-7e0f-43de-bc66-1e888184551f.json'
 
@@ -34,12 +44,15 @@ interface Def { id: string; name: string; definition: { nodes: Array<{ id: strin
 interface Case {
   file: string
   candidate: SwapCandidate
+  /** The definition holding the script the candidate replaces: the money gate's, or the version before a saved swap. */
   def: Def
+  /** Once the swap is saved: the money gate's definition, which runs the node. */
+  live?: Def
   spec: (constants: Record<string, unknown>, candidate: SwapCandidate) => GridSpec
 }
 
 const CASES: Case[] = [
-  { file: 'rml-gigfi.json', candidate: parseCandidate(gigfi, 'rml-gigfi.json'), def: gigfiDef as Def, spec: (k) => rmlGrid(k, 'parsed_name', true) },
+  { file: 'rml-gigfi.json', candidate: parseCandidate(gigfi, 'rml-gigfi.json'), def: gigfiBeforeSwap as Def, live: gigfiLive as Def, spec: (k) => rmlGrid(k, 'parsed_name', true) },
   { file: 'rml-lendswift.json', candidate: parseCandidate(lendswift, 'rml-lendswift.json'), def: lendswiftDef as Def, spec: (k) => rmlGrid(k, 'parse_name', false) },
   { file: 'lead-economy.json', candidate: parseCandidate(leadEconomy, 'lead-economy.json'), def: leadEconomyDef as Def, spec: (k, c) => leadEconomyGrid(k, c.constants_data ?? {}) },
 ]
@@ -75,6 +88,19 @@ for (const c of CASES) {
       expect(c.def.id).toBe(c.candidate.workflow_id)
       expect(md5(scriptOf(c)), `the committed definition's ${c.candidate.replaces.namespace} script is not the one the candidate was proved against; refresh the candidate's pin from workflow_versions and rerun the proofs`).toBe(c.candidate.replaces.script_md5)
     })
+
+    if (c.live) {
+      const live = c.live
+      it('is what the saved workflow runs: the step holds the candidate, and no step the replaced script', () => {
+        expect(live.id).toBe(c.candidate.workflow_id)
+        const steps = live.definition.nodes.filter((n) => n.namespace === c.candidate.node.namespace)
+        expect(steps.map((n) => n.type)).toEqual(['lead_validation'])
+        expect(steps[0].label).toBe(c.candidate.node.label)
+        expect(steps[0].config, `the saved ${c.candidate.node.namespace} step is not the config this grid proves; prove the new config, or retire this entry`).toEqual(c.candidate.node.config)
+        const scripts = live.definition.nodes.map((n) => n.config?.script).filter((x): x is string => typeof x === 'string')
+        expect(scripts.map(md5)).not.toContain(c.candidate.replaces.script_md5)
+      })
+    }
 
     it('is a node a save accepts, in place, in that workflow', () => {
       const swapped = applyCandidate(c.def, c.candidate)

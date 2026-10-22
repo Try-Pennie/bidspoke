@@ -19,9 +19,16 @@
  * which is exactly how the original defect survived (L52). See the fixture
  * README for what this still cannot check, and #934 for the consolidation that
  * removes the copy.
+ *
+ * GigFi's step is a lead validation node since 2026-10-22 (#2592): its block
+ * runs the node as saved, and only LendSwift's script is still held here.
  */
 import { describe, it, expect } from 'vitest'
+import { constantsNamespacesOf } from '@bidspoke/workflow-definition'
 import fixture from './fixtures/rml-validate-scripts.json'
+import gigfiLive from '../../../money-gate/fixtures/definitions/6624acd0-bf61-4d21-85fc-4371ca7ed77d.json'
+import { executeLeadValidationNode } from '../nodes/lead-validation'
+import type { ExecutionContext, NodeDefinition } from '../../types'
 
 type Which = keyof typeof fixture.scripts
 
@@ -141,18 +148,44 @@ describe('LendSwift validate_bidding_and_state', () => {
   })
 })
 
-describe('GigFi validate_bidding_and_state', () => {
-  // GigFi's own step namespace differs (parsed_name, not parse_name), which is
-  // why the harness takes it as an argument rather than assuming.
-  const run = compile('gigfi')
-  const go = (over?: Parameters<typeof lead>[0]) => run(lead(over), steps('parsed_name'))
+// GigFi's step became a lead validation node on 2026-10-22 (version 25, #2592),
+// so its script copy is retired and the same four behaviours are held against
+// the node as saved, read from the money gate's definition of the workflow. The
+// script's own text still runs, against the node, in the swap grid
+// (money-gate/swap/__tests__/grid.test.ts, from swap/replaced/rml-gigfi-v24.json).
+describe('GigFi validate_bidding_and_state, a lead validation step since version 25', () => {
+  const definition = (gigfiLive as unknown as { definition: { nodes: NodeDefinition[] } }).definition
+  const node = definition.nodes.find((n) => n.namespace === 'validate_bidding_and_state')!
+  const constantsNamespaces = constantsNamespacesOf(definition.nodes)
 
-  // GigFi requires self_employed, so a military lead was already being turned
-  // away, as 'unqualified'. The repair is about the reason being true: the
-  // military branch runs first, so it wins, and an auditor reading the response
-  // sees why the lead was actually refused.
+  const go = (over?: Parameters<typeof lead>[0]): Rejection => {
+    const ctx = {
+      trigger: { payload: lead(over), source: 'gigfi', workflow_id: 'wf', trace_id: 't', org_id: 'org' },
+      steps: steps('parsed_name'),
+      env: {},
+      execution: { workflow_id: 'wf', trace_id: 't' },
+      constantsNamespaces,
+    } as unknown as ExecutionContext
+    const result = executeLeadValidationNode(node, ctx)
+    return result.earlyResponse
+      ? { response: result.earlyResponse as Rejection['response'] }
+      : { valid: true }
+  }
+
+  it('is the lead validation node, reading employment status and never militaryStatus', () => {
+    expect(node.type).toBe('lead_validation')
+    expect(JSON.stringify(node.config)).not.toMatch(/militaryStatus/)
+    expect(JSON.stringify(node.config)).toMatch(/employmentStatus/)
+  })
+
+  // GigFi requires self_employed, so a military lead is turned away either way.
+  // The repair is about the reason being true: the military check comes before
+  // the self employed one, so it wins.
   it('rejects a military applicant as military rather than as unqualified', () => {
-    expect(reasonOf(go({ employmentStatus: 'military' }))).toBe('military status ineligible')
+    const r = go({ employmentStatus: 'military' })
+    expect(reasonOf(r)).toBe('military status ineligible')
+    expect(r.response?.body.status).toBe('rejected')
+    expect(r.response?.body.lead_id).toBe('lead-1')
   })
 
   it('still rejects other non-self-employed applicants as unqualified', () => {
@@ -169,12 +202,12 @@ describe('GigFi validate_bidding_and_state', () => {
   })
 })
 
-describe('both scripts', () => {
+describe('the LendSwift script', () => {
   // The defect in one sentence: the old key is gone from the source text. A
   // grep-shaped assertion rather than a behavioural one, because the behaviour
   // of reading an absent field is indistinguishable from not reading it, so
   // behaviour alone cannot prove the dead reference was actually removed.
-  for (const which of ['lendswift', 'gigfi'] as Which[]) {
+  for (const which of ['lendswift'] as Which[]) {
     it(`${which} no longer reads militaryStatus outside a comment`, () => {
       const code = sourceOf(which)
         .split('\n')
