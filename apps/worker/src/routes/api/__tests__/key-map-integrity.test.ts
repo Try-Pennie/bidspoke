@@ -32,6 +32,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { setCfSecret } from '../../../lib/cf-secrets'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 const USER_ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
@@ -53,7 +54,6 @@ const testEnv = {
 const mockCtx = recordingContext()
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

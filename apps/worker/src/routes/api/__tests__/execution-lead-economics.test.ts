@@ -29,6 +29,7 @@ vi.mock('../../../engine/index')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 const USER_ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
@@ -53,7 +54,6 @@ async function getExecution(sighting: Record<string, unknown> | null) {
       lead_sightings: { maybeSingle: sighting },
     }) as never,
   )
-  const { default: api } = await import('../index')
   const res = await api.request(
     '/executions/exec-1',
     { method: 'GET', headers: { Authorization: 'Bearer tok' } },

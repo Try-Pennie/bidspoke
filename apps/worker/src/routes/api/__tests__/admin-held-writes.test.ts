@@ -33,6 +33,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { previewReplay, replayHeldWrite, abandonHeldWrite, supabaseHeldWriteStore } from '../../../lib/writeback-replay'
+import api from '../index'
 
 const ORG = 'org-abc'
 const ID = '22222222-2222-2222-2222-222222222471'
@@ -42,7 +43,6 @@ const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks', SECRET_ENCRYPTION_KEY:
 const mockCtx = recordingContext()
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 
