@@ -18,6 +18,7 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { refreshWorkflowCaches } from '../../../engine/definition-loader'
 import { writeAuditLog } from '../../../lib/audit'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 // ── Supabase chain mock ───────────────────────────────────────────────────────
 
@@ -36,7 +37,6 @@ const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks' } as unknown as Env
 
 async function makeApp() {
   // Import the full api router (includes jwtAuth + all routes)
-  const { default: api } = await import('../index')
   return api
 }
 

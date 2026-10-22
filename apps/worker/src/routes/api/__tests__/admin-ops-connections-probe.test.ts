@@ -22,6 +22,7 @@ vi.mock('../../../lib/supabase')
 
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
+import api from '../index'
 
 const USER_ID = '3b4b7f61-2a51-4c2e-9d55-0c7d3c1b9e01'
 const ORG_ID = '8d0f5a1c-6e2b-4b0a-a7c4-5f9e3d2c1b00'
@@ -64,7 +65,6 @@ describe('GET /admin/ops-connections-probe (#2335)', () => {
   })
 
   const get = async (opsConnections: OpsConnectionsBinding | undefined, headers: Record<string, string> = { Authorization: 'Bearer tok' }) => {
-    const { default: api } = await import('../index')
     const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', ...(opsConnections ? { OPS_CONNECTIONS: opsConnections } : {}) } as unknown as Env
     return api.request('/admin/ops-connections-probe', { method: 'GET', headers }, env, mockCtx)
   }

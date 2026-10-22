@@ -8,7 +8,7 @@
  * anything is read or written, so a stale client is told which field to leave
  * out rather than reaching the database at all.
  */
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
@@ -23,6 +23,7 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
 import { invalidatePartnerConstantsCache } from '../../../lib/partner-constants-loader'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com', display_name: 'Dan Wright' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -33,9 +34,6 @@ const RETIRED_MESSAGE = 'bid_mode is retired: nothing reads it, and its column w
 
 // The route tree is imported once, before the tests, so its cold import is not
 // charged to whichever test runs first.
-let api: Awaited<typeof import('../index')>['default']
-beforeAll(async () => { api = (await import('../index')).default }, 60_000)
-
 function call(method: 'POST' | 'PUT', route: string, body: unknown) {
   return api.request(route, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' }, body: JSON.stringify(body) }, env, mockCtx)
 }

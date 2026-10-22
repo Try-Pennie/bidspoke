@@ -24,6 +24,7 @@ import path from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { WORKER_SRC, listTsFiles } from '../../__tests__/_scan-utils'
+import { parseSnippet } from '../../__tests__/_parsed-source'
 import { STAMPED_IN, jobWorkers } from './_cron-registry'
 
 const INDEX_SOURCE = readFileSync(path.join(WORKER_SRC, 'index.ts'), 'utf8')
@@ -77,7 +78,7 @@ function stampIds(source: string): Record<StampCall, Set<string>> {
     }
     ts.forEachChild(node, visit)
   }
-  visit(ts.createSourceFile('stamps.ts', source, ts.ScriptTarget.Latest, true))
+  visit(parseSnippet(source, 'stamps.ts'))
   parsed.set(source, out)
   return out
 }

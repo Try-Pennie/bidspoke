@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { recordingContext } from '../test-setup/wait-until'
 import type { Env } from '../index'
 import { alertRowListAnswer } from './helpers/slack-alert-read'
+import { loadWorker } from '../test-setup/load-worker'
 
 /**
  * #2523 through the real scheduled handler: a minute job whose runs keep
@@ -61,7 +62,7 @@ vi.mock('../lib/slack', async (importOriginal) => ({
 const db = { from: () => ({ select: () => alertRowListAnswer({ data: [{ organization_id: 'org-one' }], error: null }) }) }
 vi.mock('../lib/supabase', () => ({ getSupabaseClient: () => db, createSupabaseClient: () => db }))
 
-const worker = (await import('../index')).default
+const { default: worker } = await loadWorker()
 const heartbeat = await vi.importActual<typeof import('../lib/cron-heartbeat')>('../lib/cron-heartbeat')
 
 const MIN = 60_000

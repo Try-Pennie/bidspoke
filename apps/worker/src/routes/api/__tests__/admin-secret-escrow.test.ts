@@ -18,6 +18,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { reencryptSecrets } from '../../../lib/secret-reencrypt'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@trypennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@trypennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -49,7 +50,6 @@ const RESULT = {
 }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

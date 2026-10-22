@@ -18,6 +18,7 @@ vi.mock('../../../lib/supabase')
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -32,7 +33,6 @@ describe('/api/service-presets is retired (#2338)', () => {
   it('every method answers 404, and the service_presets table is never touched', async () => {
     const client = makeSupabase({ users: { single: testUser }, service_presets: { list: [{ id: 'sp-1' }], single: { id: 'sp-1' } } })
     vi.mocked(createSupabaseClient).mockReturnValue(client as unknown as ReturnType<typeof createSupabaseClient>)
-    const { default: api } = await import('../index')
     for (const [method, route] of [['GET', '/service-presets'], ['POST', '/service-presets'], ['PUT', '/service-presets/sp-1'], ['DELETE', '/service-presets/sp-1']] as const) {
       const res = await api.request(route, {
         method,

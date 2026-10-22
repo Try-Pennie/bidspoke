@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { recordingContext } from '../test-setup/wait-until'
 import type { Env } from '../index'
 import { STORED_COPY_LEDGER_PREFIX, forgetStoredCopyLedger, noteStoredCopy } from '../lib/stored-copy-ledger'
+import { loadWorker } from '../test-setup/load-worker'
 
 /**
  * #1848: the stored copy alerts run every minute right after the sweep, on what
@@ -32,7 +33,7 @@ vi.mock('../lib/supabase', () => ({
   createSupabaseClient: () => ({ from: () => ({ select: () => ({}) }) }),
 }))
 
-const worker = (await import('../index')).default
+const { default: worker } = await loadWorker()
 
 function makeEnv() {
   const puts: string[] = []
