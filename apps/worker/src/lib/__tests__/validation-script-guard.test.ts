@@ -25,7 +25,9 @@ import {
 } from '../validation-script-guard'
 import type { AlertRemedy } from '../export-alerts'
 import gigfiV24 from '../../../money-gate/swap/replaced/rml-gigfi-v24.json'
+import lendSwiftV25 from '../../../money-gate/swap/replaced/rml-lendswift-v25.json'
 import gigfiLive from '../../../money-gate/fixtures/definitions/6624acd0-bf61-4d21-85fc-4371ca7ed77d.json'
+import lendSwiftLive from '../../../money-gate/fixtures/definitions/e1b810da-16c0-49eb-bf12-ba1c9b67c914.json'
 import leadEconomy from '../../../money-gate/fixtures/definitions/89b1a6af-7e0f-43de-bc66-1e888184551f.json'
 import engineBidding from '../../../money-gate/fixtures/definitions/da82a183-1a4a-417e-b0b8-5f3fe5e14840.json'
 import mainFlow from '../../../money-gate/fixtures/definitions/60e2e0bc-5aa2-47db-b333-3a8fe1c62e09.json'
@@ -35,13 +37,8 @@ import gmailDelegate from '../../../money-gate/fixtures/definitions/ee8ebc50-07d
 const supabase = {} as never
 
 interface Fixture { id: string; name: string; definition: unknown }
-/**
- * The money gate's copies of the live definitions. RML LendSwift's copy is left
- * out: it still holds the script its v26 swap (#2593) retired on 2026-10-22,
- * until the fixture is refreshed, so it says nothing about what LendSwift runs
- * today.
- */
-const COMMITTED: Fixture[] = [gigfiLive, leadEconomy, engineBidding, mainFlow, liberty1Click, gmailDelegate] as Fixture[]
+/** The money gate's copies of the live definitions, the two swapped RML workflows included. */
+const COMMITTED: Fixture[] = [gigfiLive, lendSwiftLive, leadEconomy, engineBidding, mainFlow, liberty1Click, gmailDelegate] as Fixture[]
 
 type FixtureNode = { namespace?: string; type?: string; config?: { script?: string } }
 function nodeOf(fixture: { definition: unknown }, namespace: string): FixtureNode {
@@ -88,6 +85,10 @@ describe('findValidationScripts', () => {
     expect(hits[0].reasons).toEqual(
       expect.arrayContaining(['bidding not active', 'ineligible state', 'invalid name', 'unqualified']),
     )
+  })
+
+  it('finds the validation script LendSwift ran before its swap', () => {
+    expect(findValidationScripts(lendSwiftV25.definition).map((h) => h.namespace)).toEqual(['validate_bidding_and_state'])
   })
 
   it('finds a reason passed through a variable', () => {
