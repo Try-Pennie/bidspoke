@@ -2283,6 +2283,72 @@ export async function sendQueryTimeoutAlert(
   )) !== null
 }
 
+/**
+ * The Worker queries Postgres cancelled before they finished, as query-timeout-watch counts
+ * them (#2651). Declared here structurally, as QueryTimeoutOffender is, so slack.ts does not
+ * import the watch module.
+ */
+export interface QueryCancellationReport {
+  groups: { statement: string; count: number; lastAtMs: number }[]
+  truncated: boolean
+  unread: string | null
+}
+
+export async function sendQueryCancelledAlert(
+  supabase: SupabaseClient,
+  orgId: string,
+  report: QueryCancellationReport,
+  nowMs: number = Date.now(),
+): Promise<boolean> {
+  const connection = await getSlackConnection(supabase, orgId)
+  if (!connection) return false
+  const when = (ms: number) => {
+    const d = new Date(ms)
+    const time = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', hour: 'numeric', minute: '2-digit' }).format(d)
+    const day = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', month: 'short', day: 'numeric' }).format(d)
+    return `${time} ET on ${day}`
+  }
+
+  let header: string
+  let body: string
+  let fix: string
+  let fallback: string
+  if (report.unread !== null) {
+    header = 'Could not check for cancelled database queries'
+    body =
+      `The hourly check could not read its record of cancelled Worker queries, so it cannot say whether any were cancelled. ` +
+      `It failed at ${when(nowMs)} with: ${slackText(report.unread.slice(0, 300))}`
+    fix = '*Fix:* check that the Worker\'s key value store is answering. The next hourly check tries again, and says this again in six hours if it still cannot.'
+    fallback = 'Could not check for cancelled database queries'
+  } else {
+    header = 'Database queries were cancelled before they finished'
+    // Most cancelled first (the watch sorts them). At most six, as the near limit alert, so the
+    // section stays under Slack's 3000 character limit with each statement cut to 280.
+    const SHOWN = 6
+    const lines = report.groups.slice(0, SHOWN).map((g) => {
+      const times = `${g.count.toLocaleString('en-US')} ${g.count === 1 ? 'time' : 'times'}`
+      const count = report.truncated ? `At least ${times}` : times.charAt(0).toUpperCase() + times.slice(1)
+      // Cut BEFORE escaping, so the cut cannot land inside an entity such as `&amp;` (L757).
+      const shown = slackText(g.statement.replace(/`/g, "'").slice(0, 280))
+      return `• ${count}, the last at ${when(g.lastAtMs)}:\n   \`${shown}\``
+    })
+    const more = report.groups.length > SHOWN ? `\n(and ${report.groups.length - SHOWN} more, in the hourly check's log)` : ''
+    body =
+      'Postgres cancelled these Worker queries before they finished, so whatever ran them got an error instead of an answer. ' +
+      'The Worker\'s queries are cancelled at 30 seconds, and one cancelled on every run never shows up as slow, so the cancellations are counted here.\n' +
+      lines.join('\n') +
+      more
+    fix = '*Fix:* make that query cheaper, with an index or a narrower date range, so it finishes well inside 30 seconds. It fails on every run until then.'
+    fallback = `Database queries cancelled: ${report.groups.length} statement(s)`
+  }
+  const blocks = [
+    { type: 'header', text: { type: 'plain_text', text: header, emoji: false } },
+    { type: 'section', text: { type: 'mrkdwn', text: body } },
+    { type: 'section', text: { type: 'mrkdwn', text: fix } },
+  ]
+  return (await postMessage(connection.bot_token, connection.default_channel, blocks, fallback)) !== null
+}
+
 export async function sendCronHeartbeatAlert(
   supabase: SupabaseClient,
   orgId: string,
