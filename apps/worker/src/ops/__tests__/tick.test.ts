@@ -735,6 +735,13 @@ describe('live mode (#1950): real fires, the claim and run dispatch', () => {
     expect(report.counts).toMatchObject({ runs_done: 1, runs_lost: 1 })
   })
 
+  it('claims nothing when the copies could not be read, rather than ending every claimed run as of a deleted workflow', async () => {
+    const f = fake({ mode: 'live', failing: { readCopies: new Error('the ops database did not answer') }, claimed: [claimedRun(WF_A, 1)] })
+    await runOpsTick(f.ports)
+    expect(f.db.calls).not.toContain('claimRuns')
+    expect(f.db.completed).toEqual([])
+  })
+
   it('a claim that fails is its own problem, held for three ticks, and the schedules still fire', async () => {
     const f = fake({ mode: 'live', failing: { claimRuns: new Error('lock timeout') } })
     const report = await runOpsTick(f.ports)

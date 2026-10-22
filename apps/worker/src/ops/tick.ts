@@ -767,10 +767,13 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   }
 
   let copies: WorkflowCopy[] = []
+  /** The copies were read: a claimed run is judged against them, so with none read nothing is claimed. */
+  let copiesRead = false
   if (db) {
     try {
       const read = await db.readCopies(COPIES_READ_LIMIT)
       copies = read.copies
+      copiesRead = true
       if (read.reachedLimit) problem('copies_read_limit', `The ops tick read ${COPIES_READ_LIMIT} workflow copies, its limit, so any past it were not planned.`)
     } catch (err) {
       problem('copies_read_failed', `The ops tick could not read the saved workflow copies (${formatErr(err)}), so it planned no fires.`)
@@ -927,7 +930,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     } catch (err) {
       problem('claim_depth_failed', `The ops tick could not read what a claim would find: ${formatErr(err)}.`)
     }
-  } else if (db && live && !liveHeld && dbNow !== null) {
+  } else if (db && live && !liveHeld && dbNow !== null && copiesRead) {
     try {
       claimed = await db.claimRuns({ worker: ports.tickId, limit: TICK_CLAIM_LIMIT, perWorkflow: TICK_CLAIM_PER_WORKFLOW, leaseSeconds: RUN_LEASE_SECONDS })
       if (claimed.length > 0) bump(counts, 'runs_claimed', claimed.length)
