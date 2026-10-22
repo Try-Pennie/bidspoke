@@ -75,8 +75,11 @@ function present(value: unknown): string | null {
  * other reader of a partner credential uses (buildSandboxEnv), so a row removed by
  * hand while its binding survives changes nothing. That is what makes the daily
  * required secrets check, which measures the binding, true for this key. Both
- * sources are required so that no caller can read one copy by omission. A blank
- * saved value counts as unset here and falls through to the binding.
+ * sources are required so that no caller can read one copy by omission. Only an
+ * ABSENT saved value falls through to the binding: a blank one wins, as an empty
+ * run value does in buildSandboxEnv, because the loader hands a workflow's
+ * undecryptable secret over empty on purpose so the organization's copy cannot
+ * stand in for it.
  *
  * A missing or blank key does NOT stop the request. Their rule would refuse it,
  * which is the state we are already in, and refusing to send would replace one
@@ -86,7 +89,10 @@ function present(value: unknown): string | null {
  * A missing key is made loud by the required-secrets guard, not by this call.
  */
 export function achieveIdentityHeaders(sources: AchieveKeySources): Record<string, string> {
-  const key = present(sources.saved?.ACHIEVE_PARTNER_KEY) ?? present(sources.worker.ACHIEVE_PARTNER_KEY)
+  const saved = sources.saved
+  const key = saved && Object.hasOwn(saved, 'ACHIEVE_PARTNER_KEY')
+    ? present(saved.ACHIEVE_PARTNER_KEY)
+    : present(sources.worker.ACHIEVE_PARTNER_KEY)
   return key === null
     ? { [ACHIEVE_CLIENT_HEADER]: ACHIEVE_CLIENT_ID }
     : { [ACHIEVE_CLIENT_HEADER]: ACHIEVE_CLIENT_ID, [ACHIEVE_KEY_HEADER]: key }

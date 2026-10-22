@@ -37,9 +37,14 @@ describe('achieveIdentityHeaders', () => {
     expect(headers[ACHIEVE_KEY_HEADER]).toBe('from-binding')
   })
 
-  it.each(['', '   '])('falls back to the Worker binding when the saved value is blank (%j)', (value) => {
+  // The loader hands a workflow's own secret over EMPTY when it cannot decrypt it,
+  // on purpose, so the organization's copy cannot stand in for it (valuesFor in
+  // env-loader). A blank saved value is therefore an answer, not an absence: the
+  // binding underneath, which is the organization's, must not show through, exactly
+  // as buildSandboxEnv lets an empty run value win.
+  it.each(['', '   '])('does not fall back to the Worker binding when the saved value is blank (%j)', (value) => {
     const headers = achieveIdentityHeaders({ saved: { ACHIEVE_PARTNER_KEY: value }, worker: { ACHIEVE_PARTNER_KEY: 'from-binding' } })
-    expect(headers[ACHIEVE_KEY_HEADER]).toBe('from-binding')
+    expect(ACHIEVE_KEY_HEADER in headers).toBe(false)
   })
 
   it('prefers the saved value over the Worker binding', () => {
