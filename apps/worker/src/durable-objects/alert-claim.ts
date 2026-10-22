@@ -110,6 +110,11 @@ export type TickClaimResult =
 
 const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
 
+/** A close that reached the object before its holder's claim (#2646); see keepEarlySettle. */
+type EarlySettle = 'done' | 'release'
+
+const earlySettleKey = (holder: string) => `tick-early:${holder}`
+
 export class AlertClaimObject implements DurableObject {
   state: DurableObjectState
 
@@ -164,9 +169,15 @@ export class AlertClaimObject implements DurableObject {
     }
     const { now, scheduled_time: scheduledTime, holder } = body
     const held = await this.state.storage.get<TickStorage>('tick')
+    // A close this holder sent before its claim arrived (#2646): applied below if
+    // the claim makes it the holder, and spent either way, since a claim landing
+    // after its own delivery's close is the last word that delivery sends.
+    const early = await this.takeEarlySettle(holder)
     if (!held) {
-      await this.state.storage.put<TickStorage>('tick', { holder, scheduled_time: scheduledTime, started_at: now, renewed_at: now, status: 'running', duplicates: 0 })
       await this.state.storage.setAlarm(now + TICK_CLAIM_KEEP_MS)
+      if (early !== 'release') {
+        await this.state.storage.put<TickStorage>('tick', { holder, scheduled_time: scheduledTime, started_at: now, renewed_at: now, status: early === 'done' ? 'done' : 'running', duplicates: 0 })
+      }
       return json<TickClaimResult>({ run: true, reason: 'first' })
     }
     const age = now - held.started_at
@@ -177,7 +188,8 @@ export class AlertClaimObject implements DurableObject {
     const afterWait = body.after_wait === true
     if (isRetry) {
       const duplicates = afterWait ? Math.max(0, held.duplicates - 1) : held.duplicates
-      await this.state.storage.put<TickStorage>('tick', { ...held, holder, started_at: now, renewed_at: now, duplicates })
+      if (early === 'release') await this.state.storage.delete('tick')
+      else await this.state.storage.put<TickStorage>('tick', { ...held, holder, started_at: now, renewed_at: now, status: early === 'done' ? 'done' : 'running', duplicates })
       return json<TickClaimResult>({ run: true, reason: 'retry', holder: held.holder, holder_age_ms: age })
     }
     const duplicates = afterWait ? held.duplicates : held.duplicates + 1
@@ -200,10 +212,13 @@ export class AlertClaimObject implements DurableObject {
    * the claim its retry now holds.
    */
   private async handleTickDone(request: Request): Promise<Response> {
-    const body = await request.json<{ holder?: unknown }>()
+    const body = await request.json<{ holder?: unknown; now?: unknown }>()
     if (typeof body.holder !== 'string' || body.holder === '') return json({ error: 'holder is required' }, 400)
     const held = await this.state.storage.get<TickStorage>('tick')
-    if (!held || held.holder !== body.holder) return json({ marked: false })
+    if (!held || held.holder !== body.holder) {
+      await this.keepEarlySettle(body.holder, 'done', held, body.now)
+      return json({ marked: false, kept: true })
+    }
     await this.state.storage.put<TickStorage>('tick', { ...held, status: 'done' })
     return json({ marked: true })
   }
@@ -214,12 +229,44 @@ export class AlertClaimObject implements DurableObject {
    * holder may free it, for the same reason as tick-done.
    */
   private async handleTickRelease(request: Request): Promise<Response> {
-    const body = await request.json<{ holder?: unknown }>()
+    const body = await request.json<{ holder?: unknown; now?: unknown }>()
     if (typeof body.holder !== 'string' || body.holder === '') return json({ error: 'holder is required' }, 400)
     const held = await this.state.storage.get<TickStorage>('tick')
-    if (!held || held.holder !== body.holder) return json({ released: false })
+    if (!held || held.holder !== body.holder) {
+      await this.keepEarlySettle(body.holder, 'release', held, body.now)
+      return json({ released: false, kept: true })
+    }
     await this.state.storage.delete('tick')
     return json({ released: true })
+  }
+
+  /**
+   * A close (done or release) from a holder this object does not hold (#2646).
+   * A delivery whose claim misses its deadline runs anyway and keeps its holder,
+   * and when its jobs are quick its close can arrive BEFORE its late claim does.
+   * Refused and forgotten, the claim would then land as a running holder that
+   * nobody renews or closes, and a same scheduled time delivery would take it
+   * over once the lease went stale and run the jobs again (2026-10-22 03:00 UTC).
+   * So the close is kept, by holder, and that holder's claim applies it.
+   *
+   * A close from a holder that was taken over is kept too and never applied:
+   * that holder's claim has arrived already and does not come again. A kept
+   * close is never a claim, so it never makes another delivery skip: a claim
+   * that never arrives leaves the tick to whoever asks next. The alarm clears it
+   * with everything else.
+   */
+  private async keepEarlySettle(holder: string, how: EarlySettle, held: TickStorage | undefined, now: unknown): Promise<void> {
+    await this.state.storage.put<EarlySettle>(earlySettleKey(holder), how)
+    // A held tick has its alarm already; a kept close alone needs one.
+    if (!held) await this.state.storage.setAlarm((isFiniteNumber(now) ? now : Date.now()) + TICK_CLAIM_KEEP_MS)
+  }
+
+  /** The close this holder sent ahead of its claim, removed as it is read. */
+  private async takeEarlySettle(holder: string): Promise<EarlySettle | undefined> {
+    const key = earlySettleKey(holder)
+    const how = await this.state.storage.get<EarlySettle>(key)
+    if (how !== undefined) await this.state.storage.delete(key)
+    return how
   }
 
   /**

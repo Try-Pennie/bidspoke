@@ -21,7 +21,10 @@
  * from one Cloudflare killed and is retrying.
  *
  * Every failure to ask fails OPEN, logged as `FAILED OPEN`: a job run twice is
- * recoverable and a job skipped is not. Every skip is logged as `skipped
+ * recoverable and a job skipped is not. A claim that missed its deadline may
+ * still reach the object (2026-10-22 03:00 UTC, #2646), so that delivery keeps
+ * its holder and renews and closes with it, and the object keeps a close that
+ * arrives before its claim. Every skip is logged as `skipped
  * duplicate` with the holder and the object's running count of duplicates for
  * that tick, so the doubling stays measurable in Workers Logs. Both are also
  * handed to `onGuardEvent`, which counts them so the hourly check in
@@ -135,8 +138,15 @@ export function cronTickKey(cron: string, scheduledTime: number): string {
 
 const iso = (ms: number): string => (Number.isFinite(ms) ? new Date(ms).toISOString() : String(ms))
 
+/**
+ * `holder` is who renews and closes the tick, null when nothing was asked or the
+ * object answered that it stored nothing. `landed` is false for a claim that
+ * missed its deadline (#2646): it may still reach the object, so its holder is
+ * kept and renews and closes as though it had run guarded, and a refusal means
+ * only that it has not arrived yet.
+ */
 type Decision =
-  | { run: true; holder: string | null }
+  | { run: true; holder: string | null; landed: boolean }
   | { run: false }
 
 async function decide(
@@ -159,14 +169,18 @@ async function decide(
       console.error(`[cron-once] could not record ${kind} event=${info.id} ${label}: ${formatErr(e)}`)
     }
   }
-  const failOpen = (why: string): Decision => {
+  // `keep` for a claim that timed out (#2646): it may still land, so this
+  // delivery keeps its holder, renews and closes with it. A claim that never
+  // asked, or was answered with an error, stored nothing to keep.
+  const failOpen = (why: string, keep = false): Decision => {
     const info = newEvent()
     // The tail worker parses this exact shape (apps/worker-tail, #2166), so
     // `event=<id>` stays straight after `FAILED OPEN`.
-    console.error(`[cron-once] FAILED OPEN event=${info.id} ${label}: ${why}, running without the claim`)
+    const how = keep ? `running and keeping holder=${holder} in case the claim arrives late` : 'running without the claim'
+    console.error(`[cron-once] FAILED OPEN event=${info.id} ${label}: ${why}, ${how}`)
     said('failed_open')
     report('failed_open', info)
-    return { run: true, holder: null }
+    return { run: true, holder: keep ? holder : null, landed: false }
   }
   if (!ns) return failOpen('no ALERT_CLAIM binding')
   if (!Number.isFinite(event.scheduledTime)) return failOpen('the event carries no scheduled time')
@@ -185,7 +199,7 @@ async function decide(
   }, deadlineMs, options.delay)
 
   let outcome = await ask()
-  if (outcome.kind === 'timed_out') return failOpen(`claim ${key} did not answer inside ${deadlineMs}ms`)
+  if (outcome.kind === 'timed_out') return failOpen(`claim ${key} did not answer inside ${deadlineMs}ms`, true)
   if (outcome.kind === 'threw') return failOpen(`claim ${key} failed: ${formatErr(outcome.error)}`)
 
   // A same-time delivery that finds the holder running with a fresh lease cannot
@@ -204,7 +218,7 @@ async function decide(
     console.log(`[cron-once] waiting ${waitMs}ms on a same-time holder ${label} holder=${first.holder} lease_age_ms=${first.holder_lease_age_ms}`)
     await (options.sleep ?? sleepFor)(waitMs)
     outcome = await ask(true)
-    if (outcome.kind === 'timed_out') return failOpen(`claim ${key} did not answer inside ${deadlineMs}ms after waiting on a same-time holder`)
+    if (outcome.kind === 'timed_out') return failOpen(`claim ${key} did not answer inside ${deadlineMs}ms after waiting on a same-time holder`, true)
     if (outcome.kind === 'threw') return failOpen(`claim ${key} failed after waiting on a same-time holder: ${formatErr(outcome.error)}`)
   }
 
@@ -226,19 +240,29 @@ async function decide(
     console.log(`[cron-once] running ${label} holder=${holder}`)
     said('ran')
   }
-  return { run: true, holder }
+  return { run: true, holder, landed: true }
 }
 
-/** Renews this holder's lease every TICK_LEASE_RENEW_MS; returns the stop. A failed renewal is logged, never thrown. */
+/**
+ * Renews this holder's lease every TICK_LEASE_RENEW_MS; returns the stop. A failed renewal is logged, never thrown.
+ *
+ * A holder whose claim missed its deadline (`landed` false, #2646) renews too:
+ * once the late claim reaches the object its renewals keep the lease fresh, so a
+ * same scheduled time delivery is skipped rather than taking the tick over. Until
+ * then the object refuses them, which says only that the claim has not arrived,
+ * so they carry on. The first one accepted shows the claim did land.
+ */
 function startRenewing(
   ns: DurableObjectNamespace,
   event: CronTickEvent,
   holder: string,
+  landedAtStart: boolean,
   options: CronTickOptions,
 ): () => void {
   const deadlineMs = options.deadlineMs ?? CRON_TICK_DEADLINE_MS
   const key = cronTickKey(event.cron, event.scheduledTime)
   const clock = options.now ?? Date.now
+  let landed = landedAtStart
   let stop: () => void = () => {}
   let stopped = false
   const halt = () => { if (!stopped) { stopped = true; stop() } }
@@ -261,7 +285,11 @@ function startRenewing(
     // Refused: the tick was handed to a retry (this run's renewals had stopped
     // reaching the object), so this run is now the second one. Said once, and
     // renewing stops, because the lease is no longer this run's to keep.
-    if (outcome.kind === 'ok' && outcome.value?.renewed === false) {
+    if (outcome.kind === 'ok' && outcome.value?.renewed === true && !landed) {
+      landed = true
+      console.log(`[cron-once] the late claim reached ${key}: holder=${holder} now renews and will close it`)
+    }
+    if (outcome.kind === 'ok' && outcome.value?.renewed === false && landed) {
       console.warn(`[cron-once] renewal of ${key} was refused: the tick was handed to another delivery, holder=${holder} keeps running as a second run`)
       halt()
     }
@@ -280,13 +308,21 @@ async function settleTick(
 ): Promise<void> {
   const deadlineMs = options.deadlineMs ?? CRON_TICK_DEADLINE_MS
   const key = cronTickKey(event.cron, event.scheduledTime)
+  const clock = options.now ?? Date.now
   const outcome = await raceDeadline(async () => {
     const res = await ns.get(ns.idFromName(key)).fetch(`https://do/tick-${how}`, {
       method: 'POST',
-      body: JSON.stringify({ holder }),
+      // `now` dates a close the object keeps for a claim that has not arrived (#2646).
+      body: JSON.stringify({ holder, now: clock() }),
     })
     if (!res.ok) throw new Error(`claim object answered ${res.status}`)
+    return res.json<{ kept?: unknown }>()
   }, deadlineMs, options.delay)
+  // A close that reached the object ahead of this holder's late claim is kept
+  // there, and that claim applies it when it lands (#2646).
+  if (outcome.kind === 'ok' && outcome.value?.kept === true) {
+    console.log(`[cron-once] ${how} of ${key}: the object does not hold holder=${holder}, so it keeps the ${how} for that holder's claim in case it arrives late`)
+  }
   // Not fatal either way. An unmarked or unreleased claim stops being renewed,
   // so a later delivery of the same scheduled time takes over as a retry once
   // the lease is stale; a failed release delays the retry rather than losing it.
@@ -319,7 +355,7 @@ export async function runCronTickOnce(
   if (!decision.run) return 'skipped'
   // Renew the lease while the jobs run, so a same-time delivery can tell this run
   // is alive (#2064). A run that was killed stops renewing, and its retry runs.
-  const stopRenewing = ns && decision.holder ? startRenewing(ns, event, decision.holder, options) : () => {}
+  const stopRenewing = ns && decision.holder ? startRenewing(ns, event, decision.holder, decision.landed, options) : () => {}
   try {
     await jobs()
   } catch (e) {
