@@ -282,13 +282,15 @@ function startRenewing(
     // again, which is the direction to err in.
     if (outcome.kind === 'timed_out') console.error(`[cron-once] could not renew ${key} inside ${deadlineMs}ms`)
     if (outcome.kind === 'threw') console.error(`[cron-once] could not renew ${key}: ${formatErr(outcome.error)}`)
-    // Refused: the tick was handed to a retry (this run's renewals had stopped
-    // reaching the object), so this run is now the second one. Said once, and
-    // renewing stops, because the lease is no longer this run's to keep.
+    // Accepted for a claim that missed its deadline: it has landed (#2646).
     if (outcome.kind === 'ok' && outcome.value?.renewed === true && !landed) {
       landed = true
       console.log(`[cron-once] the late claim reached ${key}: holder=${holder} now renews and will close it`)
     }
+    // Refused once the claim had landed: the tick was handed to a retry (this
+    // run's renewals had stopped reaching the object), so this run is now the
+    // second one. Said once, and renewing stops, because the lease is no longer
+    // this run's to keep. Refused before it landed says only that it has not.
     if (outcome.kind === 'ok' && outcome.value?.renewed === false && landed) {
       console.warn(`[cron-once] renewal of ${key} was refused: the tick was handed to another delivery, holder=${holder} keeps running as a second run`)
       halt()
