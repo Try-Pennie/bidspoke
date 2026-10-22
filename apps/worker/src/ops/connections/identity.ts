@@ -8,9 +8,10 @@
  * refuses a credential whose measured identity is money's. Salesforce's
  * measurement is here (salesforce-service.ts: /services/oauth2/userinfo, the org
  * id and username), and Snowflake's (snowflake-service.ts: CURRENT_USER() and
- * the account, which must be the ones the target declares, #2337). The others
- * the plan names (a Supabase key's project ref, Google's token for the declared
- * mailbox, Slack's auth.test) arrive with each service's rules (Phase 7), each
+ * the account, which must be the ones the target declares, #2337), and Slack's
+ * (slack-service.ts: auth.test, a bot in the declared workspace, #2337). The
+ * others the plan names (a Supabase key's project ref, Google's token for the
+ * declared mailbox) arrive with each service's rules (Phase 7), each
  * as another kind here; until a service has one, verify refuses it by name
  * (verify_identity_unmeasurable), never passes it unmeasured.
  */
@@ -27,6 +28,17 @@ export type MeasuredIdentity =
       readonly accountName: string | null
       /** CURRENT_USER(). */
       readonly user: string
+    }
+  | {
+      readonly kind: 'slack'
+      /** auth.test's team_id: the workspace the bot is in. */
+      readonly teamId: string
+      /** auth.test's names for the workspace and the bot user, null where Slack left one out. */
+      readonly team: string | null
+      readonly user: string | null
+      /** auth.test's user_id and bot_id: the bot user, and the bot, which a person's token has none of. */
+      readonly userId: string
+      readonly botId: string
     }
 
 /** connectionFetch bound to one verify call: a response, or a ConnectionRefusal thrown by name. */
@@ -56,7 +68,15 @@ export class IdentityUnreadable extends Error {
  * never their values.
  */
 export class IdentityMismatch extends Error {
-  constructor(message: string) {
+  /**
+   * The refusal it is answered as: verify_identity_mismatch, or a service's own
+   * code where one service has two causes a person fixes differently (Slack's,
+   * #2337), so each has its own sentence (L11).
+   */
+  constructor(
+    message: string,
+    readonly code: 'verify_identity_mismatch' | 'verify_slack_not_a_bot' | 'verify_slack_workspace_mismatch' = 'verify_identity_mismatch',
+  ) {
     super(message)
     this.name = 'IdentityMismatch'
   }
