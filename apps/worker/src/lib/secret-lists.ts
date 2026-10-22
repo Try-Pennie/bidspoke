@@ -83,8 +83,9 @@ export const REQUIRED_PARTNER_SECRETS = [
   // row and the Worker binding that page writes in the same save, and this guard
   // reads the binding. That is the copy a run falls back to: every reader takes
   // the saved value first and the binding second (achieveIdentityHeaders for the
-  // Offers node and the reachability probe, buildSandboxEnv for the Scout code
-  // node), so a row removed by hand changes nothing while the binding stands. A
+  // Offers node and the reachability probe; resolveCodeProps for Main Flow's Scout
+  // step, which takes the key as a `{{env.ACHIEVE_PARTNER_KEY}}` setting), so a row
+  // removed by hand changes nothing while the binding stands. A
   // delete or a blank save through the page removes or blanks both copies, which
   // this guard sees. A row that no longer decrypts is the secret decrypt check's
   // (#404).
