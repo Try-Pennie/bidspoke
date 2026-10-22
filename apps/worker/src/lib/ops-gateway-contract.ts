@@ -78,6 +78,38 @@ export interface OpsGatewayBinding {
   opsConnections(): Promise<unknown>
   /** One organization's ServedMoneyIdentities, for parseServedMoneyIdentities (#2335). */
   moneyIdentities(organizationId: string): Promise<unknown>
+  /** An OpsDefinitionRequest in; a ServedOpsDefinitions out, for parseServedOpsDefinitions (#1950). */
+  opsWorkflowDefinitions(request: unknown): Promise<unknown>
+}
+
+/**
+ * The most workflow versions one definition request names (#1950). The ops tick
+ * asks only for the versions its frozen copy lacks, so a request is usually
+ * empty or one; past this the rest wait a minute for the next tick.
+ */
+export const MAX_DEFINITIONS_PER_REQUEST = 10
+
+/** What the ops tick asks the bidding Worker for: workflow versions by id and number. */
+export interface OpsDefinitionRequest {
+  versions: Array<{ workflow_id: string; version_number: number }>
+}
+
+/** One version's definition as the bidding database holds it, with the organization it belongs to. */
+export interface ServedOpsDefinition {
+  workflow_id: string
+  organization_id: string
+  version_number: number
+  definition: Record<string, unknown>
+}
+
+/**
+ * The answer: each version served, and each one asked for that the bidding
+ * database holds no ops lane row of (unserved), named rather than left out, so
+ * the tick can tell a version that does not exist from one not yet answered.
+ */
+export interface ServedOpsDefinitions {
+  definitions: ServedOpsDefinition[]
+  unserved: Array<{ workflow_id: string; version_number: number }>
 }
 
 /**
@@ -232,8 +264,12 @@ export interface ReplaceConnectionEnvelopeAnswer {
   current_kid: string | null
 }
 
-/** The tick's own mode. Observe only (#1949): live claiming and dispatch come with run invocation (#1950). */
-export const OPS_TICK_MODES = ['observe'] as const
+/**
+ * The tick's own mode. observe (#1949) records what it would run; live (#1950)
+ * records real fires, claims and dispatches runs. The bidding Worker reads live
+ * from the release that adds it here, before the ops Worker can send it (L640).
+ */
+export const OPS_TICK_MODES = ['observe', 'live'] as const
 export type OpsTickMode = (typeof OPS_TICK_MODES)[number]
 
 export const OPS_TICK_OUTCOMES = ['ok', 'problems', 'not_configured'] as const
@@ -427,6 +463,14 @@ export const OPS_TICK_PROBLEM_RULES = {
   /** A removal is served for 7 hours, so the next tick records it again. */
   tombstone_record_failed: 'three_in_a_row',
   /**
+   * The frozen definition copies (#1950): the list of versions not held, the
+   * request to the bidding Worker, or its answer's shape failed. Every version
+   * not held is asked for again next tick.
+   */
+  definitions_failed: 'three_in_a_row',
+  /** One version's save failed; it is still not held, so asked for again next tick. */
+  definition_save_failed: 'three_in_a_row',
+  /**
    * The sentence saying how many problems a report left out. Every at_once
    * problem is kept ahead of it (capTickProblems), so it stands only for held
    * ones; were it paged at once, one bad tick with many schedules would page.
@@ -450,6 +494,16 @@ export const OPS_TICK_PROBLEM_RULES = {
   connection_copies_expired: 'at_once',
   /** The connection step threw past its own boundaries, which nothing expects. */
   connections_step_failed: 'at_once',
+  /**
+   * A version's frozen copy holds a different definition from the one the
+   * bidding Worker now serves for it (#1950): a saved version changed, which
+   * breaks the rule the copy rests on. The copy is kept; a person decides.
+   */
+  definition_conflict: 'at_once',
+  /** A version an ops copy names that the bidding database holds no ops lane row of. */
+  definition_unserved: 'at_once',
+  /** A served definition in a shape the ops Worker does not read, not asked for, or of another organization than its copy. */
+  definition_refused: 'at_once',
   // Reported once, never again by a later tick.
   /** The agreement check failed after its claim; it is not tried again for 14 minutes. */
   agreement_check_failed: 'at_once',
@@ -644,6 +698,69 @@ export function parseServedOpsWorkflows(raw: unknown): { list: ServedOpsWorkflow
   // A list with refused rows does not name every ops workflow it could read, so
   // it must not withdraw the ones it failed to describe.
   return { list: { served_at: raw.served_at, complete: raw.complete && refused.length === 0, workflows }, refused }
+}
+
+const isVersionNumber = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v) && v >= 1
+
+/**
+ * The ops tick's definition request, as the bidding Worker reads it (#1950):
+ * at most MAX_DEFINITIONS_PER_REQUEST versions, each a workflow uuid and a
+ * version number and nothing else. Throws by name on anything else, before any read.
+ */
+export function parseOpsDefinitionRequest(raw: unknown): OpsDefinitionRequest {
+  if (!isRecord(raw) || !Array.isArray(raw.versions)) throw new OpsGatewayContractError('a definition request is { versions: [...] }')
+  if (raw.versions.length > MAX_DEFINITIONS_PER_REQUEST) {
+    throw new OpsGatewayContractError(`a definition request names at most ${MAX_DEFINITIONS_PER_REQUEST} versions, not ${raw.versions.length}`)
+  }
+  const versions = raw.versions.map((v: unknown) => {
+    if (!isRecord(v) || Object.keys(v).length !== 2 || typeof v.workflow_id !== 'string' || !UUID.test(v.workflow_id) || !isVersionNumber(v.version_number)) {
+      throw new OpsGatewayContractError('each version in a definition request is { workflow_id: uuid, version_number: whole number from 1 }')
+    }
+    return { workflow_id: v.workflow_id, version_number: v.version_number }
+  })
+  return { versions }
+}
+
+/** One served definition as the ops Worker keeps it. */
+export interface ReadOpsDefinition {
+  workflowId: string
+  organizationId: string
+  versionNumber: number
+  definition: Record<string, unknown>
+}
+
+/**
+ * The bidding Worker's answer, as the ops Worker reads it (#1950). A row it
+ * did not ask for, or whose definition is not an object, is refused by name
+ * and not saved: a frozen copy that is wrong stays wrong. Throws when the
+ * answer is not the shape at all.
+ */
+export function parseServedOpsDefinitions(
+  raw: unknown, asked: ReadonlyArray<{ workflowId: string; versionNumber: number }>,
+): { definitions: ReadOpsDefinition[]; unserved: Array<{ workflowId: string; versionNumber: number }>; refused: Array<{ workflowId: string | null; text: string }> } {
+  if (!isRecord(raw) || !Array.isArray(raw.definitions) || !Array.isArray(raw.unserved)) {
+    throw new OpsGatewayContractError('the bidding Worker answered the definition request with something other than { definitions, unserved }')
+  }
+  const wanted = new Set(asked.map((a) => `${a.workflowId}:${a.versionNumber}`))
+  const definitions: ReadOpsDefinition[] = []
+  const refused: Array<{ workflowId: string | null; text: string }> = []
+  raw.definitions.forEach((row: unknown, i: number) => {
+    const workflowId = isRecord(row) && typeof row.workflow_id === 'string' && UUID.test(row.workflow_id) ? row.workflow_id : null
+    const name = workflowId !== null && isRecord(row) ? `workflow ${workflowId} version ${String(row.version_number)}` : `row ${i}`
+    if (!isRecord(row) || workflowId === null || typeof row.organization_id !== 'string' ||
+      !UUID.test(row.organization_id) || !isVersionNumber(row.version_number) || !isRecord(row.definition)) {
+      refused.push({ workflowId, text: `The bidding Worker served the definition of ${name} in a shape the ops Worker does not read, so it was not saved.` })
+      return
+    }
+    if (!wanted.has(`${workflowId}:${row.version_number}`)) {
+      refused.push({ workflowId, text: `The bidding Worker served the definition of ${name}, which the ops tick did not ask for, so it was not saved.` })
+      return
+    }
+    definitions.push({ workflowId, organizationId: row.organization_id, versionNumber: row.version_number, definition: row.definition })
+  })
+  const unserved = raw.unserved.flatMap((u: unknown) =>
+    isRecord(u) && typeof u.workflow_id === 'string' && isVersionNumber(u.version_number) ? [{ workflowId: u.workflow_id, versionNumber: u.version_number }] : [])
+  return { definitions, unserved, refused }
 }
 
 /** The tick's report as the bidding Worker received it. Throws on one it cannot read. */

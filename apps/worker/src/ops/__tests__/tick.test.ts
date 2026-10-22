@@ -14,7 +14,7 @@
  * database clock, so a fire computed on the wrong one is visible.
  */
 import { describe, expect, it } from 'vitest'
-import { OPS_TICK_PROBLEM_RULES } from '../../lib/ops-gateway-contract'
+import { MAX_DEFINITIONS_PER_REQUEST, OPS_TICK_PROBLEM_RULES } from '../../lib/ops-gateway-contract'
 import { organizationIdFrom } from '../ops-db'
 import {
   OpsWriteTimeoutError, type ConnectionCopyInput, type SaveConnectionCopiesResult, type SaveCopiesResult, type ScheduleObservation, type SweepClaim, type SweepResult,
@@ -93,7 +93,10 @@ interface Fake {
     calls: string[]; saved: WorkflowCopyInput[][]; savedConnections: ConnectionCopyInput[][]; observations: ScheduleObservation[]
     sfReadings: Array<{ sfOrgId: string; dailyApiMax: number; dailyApiRemaining: number }>
     connectionChecks: Array<{ connectionId: string; result: { ok: true } | { ok: false; cause: string } }>
+    savedDefinitions: Array<{ organizationId: string; workflowId: string; versionNumber: number; definition: unknown }>
   }
+  /** The definition requests sent to the bidding Worker (#1950). */
+  definitionRequests: Array<{ versions: Array<{ workflow_id: string; version_number: number }> }>
   dispatched: DispatchItem[]
   stamps: string[]
   reports: unknown[]
@@ -143,6 +146,12 @@ function fake(opts: {
   observationsPurge?: { purged: number; more: boolean }
   /** The database clock, when a case needs another time than DB_NOW. */
   dbNow?: string
+  /** The versions missing_workflow_definitions lists (#1950); none by default. */
+  missingDefs?: Array<{ workflowId: string; organizationId: string; versionNumber: number }>
+  /** What the bidding Worker answers the definition request with; each asked version served by default. */
+  serveDefs?: (request: { versions: Array<{ workflow_id: string; version_number: number }> }) => Promise<unknown>
+  /** What save_workflow_definition answers each save. */
+  saveDef?: (workflowId: string) => 'saved' | 'already_saved' | 'conflict' | 'no_copy'
   failing?: Partial<Record<keyof OpsTickDb, Error>>
   observed?: (o: ScheduleObservation) => 'recorded' | 'already_recorded'
   dispatchFails?: (item: DispatchItem) => boolean
@@ -193,6 +202,16 @@ function fake(opts: {
       fail('recordConnectionCheck'); connectionChecks.push({ connectionId, result }); return 'recorded' as const
     },
     async now() { fail('now'); return opts.dbNow ?? DB_NOW },
+    savedDefinitions: [] as Array<{ organizationId: string; workflowId: string; versionNumber: number; definition: unknown }>,
+    async missingDefinitions(limit: number) {
+      fail('missingDefinitions'); calls.push(`missingDefinitions:${limit}`)
+      const missing = (opts.missingDefs ?? []).map((m) => ({ ...m, organizationId: organizationIdFrom(m.organizationId) }))
+      return { missing, reachedLimit: missing.length === limit }
+    },
+    async saveDefinition(organizationId: string, workflowId: string, versionNumber: number, definition: Record<string, unknown>) {
+      fail('saveDefinition'); db.savedDefinitions.push({ organizationId, workflowId, versionNumber, definition })
+      return opts.saveDef?.(workflowId) ?? 'saved'
+    },
     async purgeObservations(limit: number) { fail('purgeObservations'); calls.push(`purgeObservations:${limit}`); return opts.observationsPurge ?? { purged: 0, more: false } },
     async sfLimitsTargets(limit: number) {
       fail('sfLimitsTargets'); calls.push(`sfLimitsTargets:${limit}`)
@@ -232,6 +251,7 @@ function fake(opts: {
   const sfReads: string[] = []
   const probes: string[] = []
   const objectReads: string[] = []
+  const definitionRequests: Array<{ versions: Array<{ workflow_id: string; version_number: number }> }> = []
   const ports: OpsTickPorts = {
     tickId: 'tick-1',
     scheduledTime: Date.parse('2026-10-17T11:02:48.004Z'),
@@ -248,6 +268,14 @@ function fake(opts: {
       fetchConnections: opts.fetchConnections ?? (async () => servedConnections()),
       started: async () => { stamps.push('started'); if (opts.stampFails) throw new Error('the gateway is not deployed') },
       completed: async (r) => { stamps.push('completed'); reports.push(r); if (opts.stampFails) throw new Error('the gateway is not deployed') },
+      fetchDefinitions: async (request) => {
+        definitionRequests.push(request)
+        if (opts.serveDefs) return opts.serveDefs(request)
+        return {
+          definitions: request.versions.map((v) => ({ workflow_id: v.workflow_id, organization_id: ORG, version_number: v.version_number, definition: { nodes: [] } })),
+          unserved: [],
+        }
+      },
       jobStarted: async (job) => { jobStamps.push(`started:${job}`); if (opts.jobStampFails) throw new Error('the gateway is not deployed') },
       jobCompleted: async (job) => { jobStamps.push(`completed:${job}`); if (opts.jobStampFails) throw new Error('the gateway is not deployed') },
     },
@@ -280,7 +308,7 @@ function fake(opts: {
       dispatched.push(item)
     },
   }
-  return { ports, db, dispatched, stamps, reports, jobStamps, sfReads, probes, objectReads }
+  return { ports, db, dispatched, stamps, reports, jobStamps, sfReads, probes, objectReads, definitionRequests }
 }
 
 describe('a healthy tick', () => {
@@ -568,6 +596,67 @@ describe('slots', () => {
     const f = fake({ copies: [copy({ scheduleKnownSince: '2026-10-17T10:00:00.000Z' })] })
     await runOpsTick(f.ports)
     expect(f.db.observations).toEqual([])
+  })
+})
+
+describe('the frozen definition copies (#1950)', () => {
+  const WF_D = '00000000-0000-4000-8000-0000000019d1'
+  const missing = [{ workflowId: WF_D, organizationId: ORG, versionNumber: 3 }]
+
+  it('asks for nothing when every current version is held', async () => {
+    const f = fake()
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls).toContain(`missingDefinitions:${MAX_DEFINITIONS_PER_REQUEST}`)
+    expect(f.definitionRequests).toEqual([])
+    expect(report.outcome).toBe('ok')
+  })
+
+  it('asks the bidding Worker for each version not held, and saves what it serves within the copy\'s organization', async () => {
+    const f = fake({ missingDefs: missing })
+    const report = await runOpsTick(f.ports)
+    expect(f.definitionRequests).toEqual([{ versions: [{ workflow_id: WF_D, version_number: 3 }] }])
+    expect(f.db.savedDefinitions).toEqual([{ organizationId: ORG, workflowId: WF_D, versionNumber: 3, definition: { nodes: [] } }])
+    expect(report.counts.definitions_saved).toBe(1)
+    expect(report.outcome).toBe('ok')
+  })
+
+  it('pages at once on a conflict, a version the bidding Worker cannot serve, and a definition served under another organization', async () => {
+    const other = '7a1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f61'
+    const f = fake({
+      missingDefs: [...missing, { workflowId: WF_A, organizationId: ORG, versionNumber: 2 }, { workflowId: WF_B, organizationId: ORG, versionNumber: 5 }],
+      serveDefs: async () => ({
+        definitions: [
+          { workflow_id: WF_D, organization_id: ORG, version_number: 3, definition: { nodes: [] } },
+          { workflow_id: WF_B, organization_id: other, version_number: 5, definition: { nodes: [] } },
+        ],
+        unserved: [{ workflow_id: WF_A, version_number: 2 }],
+      }),
+      saveDef: () => 'conflict',
+    })
+    const report = await runOpsTick(f.ports)
+    expect(report.problem_keys).toEqual(expect.arrayContaining([`definition_conflict:${WF_D}`, `definition_unserved:${WF_A}`, `definition_refused:${WF_B}`]))
+    for (const k of ['definition_conflict', 'definition_unserved', 'definition_refused'] as const) expect(OPS_TICK_PROBLEM_RULES[k]).toBe('at_once')
+    expect(f.db.savedDefinitions.map((s) => s.workflowId)).toEqual([WF_D])
+  })
+
+  it('a fetch that fails is held for three ticks, and stops nothing else', async () => {
+    const f = fake({ missingDefs: missing, serveDefs: async () => { throw new Error('the bidding Worker did not answer') } })
+    const report = await runOpsTick(f.ports)
+    expect(report.problem_keys).toContain('definitions_failed')
+    expect(OPS_TICK_PROBLEM_RULES.definitions_failed).toBe('three_in_a_row')
+    expect(f.dispatched.length).toBeGreaterThan(0)
+  })
+
+  it('one save that fails is that version\'s problem, and the next is still saved', async () => {
+    const f = fake({
+      missingDefs: [...missing, { workflowId: WF_A, organizationId: ORG, versionNumber: 2 }],
+      failing: {},
+      saveDef: (wf) => { if (wf === WF_D) throw new Error('lock timeout'); return 'saved' },
+    })
+    const report = await runOpsTick(f.ports)
+    expect(report.problem_keys).toContain(`definition_save_failed:${WF_D}`)
+    expect(OPS_TICK_PROBLEM_RULES.definition_save_failed).toBe('three_in_a_row')
+    expect(report.counts.definitions_saved).toBe(1)
   })
 })
 

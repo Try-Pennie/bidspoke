@@ -72,7 +72,8 @@
 import { easternParts } from '@bidspoke/buyer-profile'
 import { planFires, scheduleFloorMs, scheduleFromTrigger, validateSchedule, type MissedReason, type PlannedFire, type ScheduleConfig } from '@bidspoke/workflow-definition'
 import {
-  CONNECTION_CHECK_JOB, SF_LIMITS_JOB, capTickProblems, parseServedOpsWorkflows, tickProblem, type ConnectionLoginsReport, type OpsGatewayJob, type OpsJobReport,
+  CONNECTION_CHECK_JOB, MAX_DEFINITIONS_PER_REQUEST, SF_LIMITS_JOB, capTickProblems, parseServedOpsDefinitions, parseServedOpsWorkflows, tickProblem,
+  type ConnectionLoginsReport, type OpsDefinitionRequest, type OpsGatewayJob, type OpsJobReport,
   type OpsTickMode, type OpsTickOutcome, type OpsTickProblemKind, type OpsTickReport, type TickProblem, type WriteBacksReport,
 } from '../lib/ops-gateway-contract'
 import { runWriteBackCheck, type WriteBackCheckDeps } from './write-back-check'
@@ -192,6 +193,10 @@ export interface OpsTickDb extends ConnectionServeDb {
   purgeTombstones(limit: number): Promise<{ purged: number; more: boolean }>
   /** The observation_purge sweep (purge_schedule_observations, #1950). */
   purgeObservations(limit: number): Promise<{ purged: number; more: boolean }>
+  /** The saved copies whose current version has no frozen definition yet (missing_workflow_definitions, #1950). */
+  missingDefinitions(limit: number): Promise<{ missing: Array<{ workflowId: string; organizationId: OrganizationId; versionNumber: number }>; reachedLimit: boolean }>
+  /** One version's frozen definition (save_workflow_definition, #1950). */
+  saveDefinition(organizationId: OrganizationId, workflowId: string, versionNumber: number, definition: Record<string, unknown>): Promise<'saved' | 'already_saved' | 'conflict' | 'no_copy'>
   /** The Salesforce lease sweep (sweep_sf_leases). */
   sweepSfLeases(limit: number): Promise<{ swept: number; more: boolean }>
   queueDisagreements(limit: number): Promise<QueueDisagreement[]>
@@ -241,6 +246,8 @@ export interface OpsTickPorts {
     fetchWorkflows(): Promise<unknown>
     /** The ops connections, served by the bidding Worker (#2335). */
     fetchConnections(): Promise<unknown>
+    /** The definitions of the versions named, served by the bidding Worker (#1950). */
+    fetchDefinitions(request: OpsDefinitionRequest): Promise<unknown>
     started(): Promise<void>
     completed(report: OpsTickReport): Promise<void>
     /** An ops job's heartbeat stamps (OpsGateway.opsJobStarted and opsJobCompleted, #2340). */
@@ -346,6 +353,59 @@ function startWriteBacks(ports: OpsTickPorts, list: Parameters<typeof runWriteBa
     problems: [tickProblem('write_back_check_failed', `The write back check failed (${formatErr(err)}), so whether a new login of a person bound connection is waiting to be saved back to Bidspoke was not judged; it runs again with the connection check.`)],
     counts: {},
   }))
+}
+
+/**
+ * The frozen definition copies (#1950, Dan's decision recorded on #1950,
+ * 2026-10-22): each saved copy's current version not held yet is asked of the
+ * bidding Worker, at most MAX_DEFINITIONS_PER_REQUEST a tick, and saved under
+ * the organization the copy places it in. A version never changes, so once
+ * held it is never asked for again; one that differs from the copy held is a
+ * conflict the database keeps the first of, and pages. A failed list, request
+ * or answer is held for three ticks (every version not held is asked again
+ * next tick); each save has its own boundary.
+ */
+async function copyDefinitions(
+  ports: OpsTickPorts, db: OpsTickDb, problem: (kind: OpsTickProblemKind, text: string, subject?: string) => void, counts: Record<string, number>,
+): Promise<void> {
+  let missing: Awaited<ReturnType<OpsTickDb['missingDefinitions']>>['missing']
+  let served: ReturnType<typeof parseServedOpsDefinitions>
+  try {
+    const listed = await db.missingDefinitions(MAX_DEFINITIONS_PER_REQUEST)
+    missing = listed.missing
+    if (missing.length === 0) return
+    bump(counts, 'definitions_missing', missing.length)
+    served = parseServedOpsDefinitions(
+      await ports.gateway.fetchDefinitions({ versions: missing.map((m) => ({ workflow_id: m.workflowId, version_number: m.versionNumber })) }),
+      missing,
+    )
+  } catch (err) {
+    problem('definitions_failed', `The ops tick could not copy the definitions of the workflow versions it does not hold yet (${formatErr(err)}); it asks again next minute.`)
+    return
+  }
+  for (const r of served.refused) problem('definition_refused', r.text, r.workflowId ?? undefined)
+  for (const u of served.unserved) {
+    problem('definition_unserved', `The bidding Worker holds no ops lane version ${u.versionNumber} of workflow ${u.workflowId}, which the ops copy names, so no run can execute it.`, u.workflowId)
+  }
+  for (const def of served.definitions) {
+    const want = missing.find((m) => m.workflowId === def.workflowId && m.versionNumber === def.versionNumber)
+    if (want === undefined) continue
+    if (def.organizationId !== want.organizationId) {
+      problem('definition_refused', `The bidding Worker served version ${def.versionNumber} of workflow ${def.workflowId} under another organization than its ops copy, so it was not saved.`, def.workflowId)
+      continue
+    }
+    try {
+      const outcome = await db.saveDefinition(want.organizationId, def.workflowId, def.versionNumber, def.definition)
+      if (outcome === 'saved') bump(counts, 'definitions_saved')
+      else if (outcome === 'already_saved') bump(counts, 'definitions_already_saved')
+      else if (outcome === 'no_copy') bump(counts, 'definitions_no_copy')
+      else {
+        problem('definition_conflict', `Version ${def.versionNumber} of workflow ${def.workflowId} as the bidding Worker serves it now differs from the copy ops froze, so a saved version changed; ops keeps its copy and a person must decide which is right.`, def.workflowId)
+      }
+    } catch (err) {
+      problem('definition_save_failed', `The ops tick could not save version ${def.versionNumber} of workflow ${def.workflowId} (${formatErr(err)}); it asks again next minute.`, def.workflowId)
+    }
+  }
 }
 
 export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
@@ -577,6 +637,10 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
       }
     }
   }
+
+  // 4e. The frozen definition copies (#1950), their own boundary, in every mode,
+  // so the path is proven before live runs need it (L142).
+  if (db) await copyDefinitions(ports, db, problem, counts)
 
   // 5. The schedules, each its own boundary.
   if (dbNow !== null && db) {

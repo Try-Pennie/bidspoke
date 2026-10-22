@@ -18,8 +18,9 @@ import { WorkerEntrypoint } from 'cloudflare:workers'
 import type { Env } from '../env'
 import { createSupabaseClient } from './supabase'
 import { readMoneyIdentities } from './money-identity'
+import { parseOpsDefinitionRequest } from './ops-gateway-contract'
 import {
-  readOpsConnections, readOpsWorkflows, recordOpsJobCompleted, recordOpsJobStarted, recordOpsTickCompleted, recordOpsTickStarted, replaceConnectionEnvelope,
+  readOpsConnections, readOpsWorkflowDefinitions, readOpsWorkflows, recordOpsJobCompleted, recordOpsJobStarted, recordOpsTickCompleted, recordOpsTickStarted, replaceConnectionEnvelope,
   storeRotatedEnvelope,
 } from './ops-gateway'
 
@@ -46,6 +47,17 @@ export class OpsGateway extends WorkerEntrypoint<Env> {
    */
   moneyIdentities(organizationId: unknown) {
     return readMoneyIdentities(this.env.IDEMPOTENCY, organizationId, Date.now())
+  }
+
+  /**
+   * The definitions of the ops workflow versions the tick asks for (#1950): the
+   * request read by name first (parseOpsDefinitionRequest, at most
+   * MAX_DEFINITIONS_PER_REQUEST versions), then one read per version, retries
+   * off. Who may call it and whose data: readOpsWorkflowDefinitions in ops-gateway.ts.
+   */
+  opsWorkflowDefinitions(request: unknown) {
+    const parsed = parseOpsDefinitionRequest(request)
+    return readOpsWorkflowDefinitions(createSupabaseClient(this.env, { retry: false }), parsed)
   }
 
   async opsTickStarted() {

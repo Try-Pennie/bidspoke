@@ -114,6 +114,7 @@ function gateway(...answers: Array<StoreRotatedEnvelopeAnswer | Error | ((reques
       opsJobCompleted: async () => { throw new Error('not used') },
       opsConnections: async () => { throw new Error('not used') },
       moneyIdentities: async () => { throw new Error('not used') },
+      opsWorkflowDefinitions: async () => { throw new Error('not used') },
       replaceConnectionEnvelope: async () => { throw new Error('not used') },
       storeRotatedEnvelope: async (request: unknown) => {
         requests.push(request as Record<string, unknown>)
