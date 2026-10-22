@@ -14,7 +14,10 @@ import { BUCKETS } from '../outcomes'
 import { formatRealTrafficReport, replayRealTraffic, ReplayRefused, PAGE } from '../real-traffic'
 import { parseArgs } from '../../../scripts/lead-validation-replay'
 import lendswift from '../candidates/rml-lendswift.json'
-import lendswiftDef from '../../fixtures/definitions/e1b810da-16c0-49eb-bf12-ba1c9b67c914.json'
+// LendSwift's version 25, the version before its swap (#2593): the money gate's
+// definition runs the node since version 26, so a version carrying the pinned
+// script is the copy kept in swap/replaced.
+import lendswiftDef from '../replaced/rml-lendswift-v25.json'
 
 type Row = Record<string, unknown>
 

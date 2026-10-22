@@ -9,7 +9,10 @@ import type { FixtureRecord, Transcript } from '../../lib/compare'
 import type { SwapCandidate } from '../candidate'
 import { EXTRA_RUN_KINDS } from '../../lib/run-kinds'
 import lendswift from '../candidates/rml-lendswift.json'
-import lendswiftDef from '../../fixtures/definitions/e1b810da-16c0-49eb-bf12-ba1c9b67c914.json'
+// LendSwift's version 25, the version before its swap (#2593): the money gate's
+// definition runs the node since version 26, so the copy kept in swap/replaced
+// is the definition that still holds the script the candidate replaces.
+import lendswiftDef from '../replaced/rml-lendswift-v25.json'
 import gigfiDef from '../../fixtures/definitions/6624acd0-bf61-4d21-85fc-4371ca7ed77d.json'
 
 const files = { '../swap/candidates/rml-lendswift.json': lendswift }

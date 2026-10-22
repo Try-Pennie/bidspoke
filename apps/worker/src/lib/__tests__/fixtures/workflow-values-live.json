@@ -1,5 +1,5 @@
 {
-  "about": "Measured by scripts/measure-workflow-values-fixture.ts from Try-Pennie/bidspoke-workflows; see that script. RML GigFi (6624acd0-bf61-4d21-85fc-4371ca7ed77d) is production version 25 (the lead validation swap, #2592, saved 2026-10-22), reduced the same way, because the mirror holds no copy of that save.",
+  "about": "Measured by scripts/measure-workflow-values-fixture.ts from Try-Pennie/bidspoke-workflows; see that script. RML GigFi (6624acd0-bf61-4d21-85fc-4371ca7ed77d) is production version 25 (the lead validation swap, #2592, saved 2026-10-22), reduced the same way, because the mirror holds no copy of that save. RML LendSwift (e1b810da-16c0-49eb-bf12-ba1c9b67c914) is production version 26 (the lead validation swap, #2593, saved 2026-10-22), from the money gate's copy of it, which the export checked equal to the mirror and to production, reduced the same way.",
   "mirror_commit": "18d91be8eee26b6703103c9a51ff332ee2ad372f",
   "partners": [
     {
@@ -577,15 +577,6 @@
             }
           },
           {
-            "id": "f164e4d5-8f83-4ff1-a7e4-d655db2b1677",
-            "namespace": "validate_bidding_and_state",
-            "label": "Validate Bidding and State",
-            "type": "code",
-            "config": {
-              "script": "const constants = steps.constants.output;\nconst allowedStates = constants.states;\nconst biddingActive = constants.biddingActive;\nconst validLoanAmount = loanAmount <= constants.maximumLoanAmount;"
-            }
-          },
-          {
             "id": "994c9673-0281-4a18-a438-3e521d0fa879",
             "namespace": "ping_lendswift",
             "label": "Ping Lendswift",
@@ -601,6 +592,58 @@
             "type": "code",
             "config": {
               "script": "const constants = steps.constants.output;\nconst floor = constants.LendswiftSubAccountMinBids?.[subAccountUuid];\nconst bidAmount = lendswiftBid * constants.multiplier;\nconst offerLink = await withLinkToken(constants.pennieClickUrl + `/${applicantId}`, applicantId);\n        name: constants.offerName,\n        display_name: constants.offerName,\n        product_type: constants.productType,\n        logo_src: constants.logoSrc,\n        offer_title: constants.offerTitle,\n        offer_details: constants.offerDetails,"
+            }
+          },
+          {
+            "id": "e773dbc4-ef17-4b78-a64c-31e3c4972de6",
+            "namespace": "validate_bidding_and_state",
+            "label": "Validate Bidding and State",
+            "type": "lead_validation",
+            "config": {
+              "checks": [
+                {
+                  "condition": {
+                    "groups": [
+                      {
+                        "conditions": [
+                          {
+                            "field": "steps.constants.output.biddingActive"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {
+                  "condition": {
+                    "groups": [
+                      {
+                        "conditions": [
+                          {
+                            "value": "steps.constants.output.states"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {},
+                {
+                  "condition": {
+                    "groups": [
+                      {
+                        "conditions": [
+                          {
+                            "value": "steps.constants.output.maximumLoanAmount"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {},
+                {}
+              ]
             }
           }
         ],
