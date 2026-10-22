@@ -5,8 +5,8 @@
  * `validate_bidding_and_state` code node with the first class Lead Validation
  * step, whose checks and reasons are set on the canvas, reported per reason and
  * held to the shared vocabulary. Once a workflow has swapped (RML GigFi since its
- * v25, RML LendSwift since its v26), nothing stopped somebody pasting a script back in and quietly undoing
- * all of that. This reads every active workflow's saved definition once a day
+ * v25, RML LendSwift since its v26, Lead Economy since its v40), nothing stopped
+ * somebody pasting a script back in and quietly undoing all of that. This reads every active workflow's saved definition once a day
  * and reports a code node that still does the validation step's job.
  *
  * WHAT IT MATCHES. Behaviour, not the namespace spelling: a code node is flagged
@@ -74,7 +74,6 @@ export interface ValidationScriptException {
 }
 
 export const KNOWN_VALIDATION_SCRIPTS: readonly ValidationScriptException[] = [
-  { workflowId: '89b1a6af-7e0f-43de-bc66-1e888184551f', namespace: 'validate_bidding_and_state', label: 'Lead Economy - Bidding Workflow', endedBy: '#2594' },
   { workflowId: 'da82a183-1a4a-417e-b0b8-5f3fe5e14840', namespace: 'validate_bidding_and_state', label: 'Engine Bidding Workflow', endedBy: '#2655' },
 ]
 
