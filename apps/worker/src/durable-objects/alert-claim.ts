@@ -89,9 +89,20 @@ interface TickStorage {
   started_at: number
   /** When the holder last renewed its lease; absent on a record from before #2064, which reads started_at. */
   renewed_at?: number
+  /** When a same scheduled time delivery last took the tick over from a holder that had stopped renewing (#2610). */
+  retried_at?: number
   status: 'running' | 'done'
   duplicates: number
 }
+
+/**
+ * What `/tick-read` answers (#2610): the tick as held, for the never finished
+ * page to say whether Cloudflare's retry of a stopped run took it and finished.
+ * `retried_at` is null when no retry has taken it.
+ */
+export type TickReadResult =
+  | { found: false }
+  | { found: true; status: 'running' | 'done'; scheduled_time: number; started_at: number; retried_at: number | null }
 
 export type TickClaimResult =
   | { run: true; reason: 'first' }
@@ -131,6 +142,7 @@ export class AlertClaimObject implements DurableObject {
       case '/tick-done': return this.handleTickDone(request)
       case '/tick-release': return this.handleTickRelease(request)
       case '/tick-renew': return this.handleTickRenew(request)
+      case '/tick-read': return this.handleTickRead()
       default:
         return new Response('Not found', { status: 404 })
     }
@@ -193,7 +205,7 @@ export class AlertClaimObject implements DurableObject {
     if (isRetry) {
       const duplicates = afterWait ? Math.max(0, held.duplicates - 1) : held.duplicates
       if (early === 'release') await this.state.storage.delete('tick')
-      else await this.state.storage.put<TickStorage>('tick', { ...held, holder, started_at: now, renewed_at: now, status: early === 'done' ? 'done' : 'running', duplicates })
+      else await this.state.storage.put<TickStorage>('tick', { ...held, holder, started_at: now, renewed_at: now, retried_at: now, status: early === 'done' ? 'done' : 'running', duplicates })
       return json<TickClaimResult>({ run: true, reason: 'retry', holder: held.holder, holder_age_ms: age })
     }
     const duplicates = afterWait ? held.duplicates : held.duplicates + 1
@@ -291,6 +303,19 @@ export class AlertClaimObject implements DurableObject {
     if (!held || held.holder !== body.holder || held.status !== 'running') return json({ renewed: false })
     await this.state.storage.put<TickStorage>('tick', { ...held, renewed_at: body.now })
     return json({ renewed: true })
+  }
+
+  /** Reads the tick as held, changing nothing (#2610). */
+  private async handleTickRead(): Promise<Response> {
+    const held = await this.state.storage.get<TickStorage>('tick')
+    if (!held) return json<TickReadResult>({ found: false })
+    return json<TickReadResult>({
+      found: true,
+      status: held.status,
+      scheduled_time: held.scheduled_time,
+      started_at: held.started_at,
+      retried_at: held.retried_at ?? null,
+    })
   }
 
   async alarm(): Promise<void> {
