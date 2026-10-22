@@ -7,7 +7,8 @@
  * Each service's entry arrives with its catalogue runtime entry and its actions
  * (Phase 7, #2337), built from its minter (./minters), its declared hosts, its
  * identity measurement (./identity.ts) and, where it has lookups, its schema
- * target. Snowflake was the first (snowflake-service.ts). Salesforce
+ * target. Snowflake was the first (snowflake-service.ts), then the ops Slack
+ * bot (slack-service.ts, Dan's decision 6: never the alerts bot). Salesforce
  * (salesforce-service.ts) is registered ahead of its actions, so verify and
  * lookups reach the ops pool, which grants them only within the caps Dan
  * approved for the org (Decision 11, ops migration 20261020010000: the
@@ -22,12 +23,15 @@
  */
 import type { OpsServiceEntry } from './ops-connections'
 import { salesforceServiceEntry } from './salesforce-service'
+import { slackServiceEntry } from './slack-service'
 import { snowflakeServiceEntry } from './snowflake-service'
 
 const REGISTERED: Readonly<Record<string, OpsServiceEntry>> = {
   // Each minter's memo is per isolate, keyed on connection, generation and user.
   snowflake: snowflakeServiceEntry({ now: () => Date.now() }),
   salesforce: salesforceServiceEntry({ now: () => Date.now() }),
+  // A static bot token: nothing is minted, so there is no memo.
+  slack: slackServiceEntry(),
 }
 
 /** The registered entry for a service key, or undefined. An own key only: a 'constructor' must not reach Object.prototype. */

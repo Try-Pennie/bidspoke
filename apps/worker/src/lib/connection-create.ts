@@ -10,6 +10,7 @@
 import { connectionSecretLabel, type ConnectionAuthKind, type ServiceSchema } from '@bidspoke/service-catalogue/schema'
 import type { DelegationSubjectRow, MeasuredIdentityAnswer } from './ops-connections-contract'
 import { CONNECTION_NAME_MAX } from './connection-create-refusals'
+import { slackActsAs } from './slack-token-check'
 
 /** The keys the form's body may hold. Anything else, an organization above all, is refused by name. */
 const BODY_KEYS = ['service', 'name', 'fields'] as const
@@ -155,8 +156,8 @@ export function googleTargetSubjects(target: unknown): { mailbox: string; drives
  * mailbox as the connection's subject, a drive among its drives. Read from the
  * target, the connection's declaration of whom it acts as, which the Google
  * minter mints from and checks against the list (minters/google.ts); acts_as
- * holds nothing for a Google connection (actsAsOf measures Salesforce and
- * Snowflake only). Any service's row is read, so a target of this shape under
+ * holds nothing for a Google connection (actsAsOf measures Salesforce,
+ * Snowflake and Slack only). Any service's row is read, so a target of this shape under
  * another service key refuses too, the harmless side (L648). Ordered by name.
  */
 export function connectionsNamingSubject<R extends { name: string; target: unknown }>(rows: readonly R[], kind: 'mailbox' | 'drive', subject: string): R[] {
@@ -172,6 +173,11 @@ export function connectionsNamingSubject<R extends { name: string; target: unkno
 
 /** Who a verified login acts as, as the acts_as column holds it (1 to 320 characters), or null. */
 export function actsAsOf(identity: MeasuredIdentityAnswer): string | null {
-  const who = identity.kind === 'salesforce' ? identity.username : identity.kind === 'snowflake' ? identity.user : null
+  const who = identity.kind === 'salesforce'
+    ? identity.username
+    : identity.kind === 'snowflake'
+      ? identity.user
+      // A Slack bot as the alert login's Acts as reads it: "<bot> in <workspace>" (#2337).
+      : slackActsAs({ user: identity.user, team: identity.team })
   return typeof who === 'string' && who.trim() !== '' && who.length <= 320 ? who : null
 }

@@ -30,12 +30,19 @@
  * Both shares are reasoned, not calibrated. Every statement read is logged
  * (`event=query_timeout_watch`) on every run so the shares can be checked against a full
  * window of real readings (L172).
+ *
+ * BLIND SPOT, AND THE SECOND HALF (#2651, L800). pg_stat_statements records a statement only
+ * when it FINISHES, so one cancelled at its ceiling never counts here, and one cancelled on
+ * every run never appears at all. `runQueryCancellationWatch` (below) counts the
+ * cancellations themselves, for the Worker's queries, from the record the Supabase client
+ * writes as each arrives (query-cancellations.ts). The browser's are not counted yet.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import { anyDelivered, forEachSlackOrg } from './alert-fanout'
 import { formatErr } from './format-error'
 import { logReadFailure } from './scheduled-read'
-import { sendQueryTimeoutAlert } from './slack'
+import { sendQueryCancelledAlert, sendQueryTimeoutAlert } from './slack'
+import { readCancellations, type CancellationEvent } from './query-cancellations'
 
 /** More than this share of the role's ceiling on a TYPICAL run is a warning. */
 export const WARN_MEAN_SHARE = 0.5
@@ -282,6 +289,143 @@ export async function runQueryTimeoutWatchLive(supabase: SupabaseClient, kv: KVN
     kv,
     send: (offenders) =>
       forEachSlackOrg(supabase, 'query-timeout-watch', 'tell-only', (orgId) => sendQueryTimeoutAlert(supabase, orgId, offenders)).then(anyDelivered),
+    now: () => Date.now(),
+    log: (line) => console.log(line),
+  })
+}
+
+// ---------------------------------------------------------------------------------------------
+// The cancellations themselves (#2651, L800).
+//
+// Everything above reads pg_stat_statements, which records a statement only when it FINISHES.
+// One cancelled at its role's ceiling never finishes, so it never counts, and a statement
+// cancelled on every run never appears at all: on 2026-10-22 the 06:00 UTC page said a
+// LendSwift count was "close to being cancelled" two hours after it had been cancelled, and
+// five hours before it was cancelled again. So this half counts the cancellations, from the
+// record the Worker writes as each one arrives (query-cancellations.ts, which says why that
+// source). It is a separate run from the near limit half, so neither shares the other's read
+// failures (L71).
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * The newest cancellation already paged for a statement, keyed on a hash of the statement
+ * (its text can run to 900 bytes, past KV's 512 byte key limit). It outlives the records it
+ * judges (48 hours), so an old record can never read as new.
+ */
+export const queryCancelPagedKey = async (statement: string): Promise<string> => {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(statement))
+  const hex = [...new Uint8Array(digest)].slice(0, 8).map((b) => b.toString(16).padStart(2, '0')).join('')
+  return `query-timeout:cancel-paged:${hex}`
+}
+const CANCEL_PAGED_TTL_SECONDS = 72 * 60 * 60
+/** One page per window saying the record could not be read, rather than one an hour. */
+export const QUERY_CANCEL_UNREAD_COOLDOWN_KEY = 'query-timeout:cancel-unread:alerted'
+
+/** One statement's cancellations since it was last paged for. */
+export interface CancelledGroup {
+  statement: string
+  count: number
+  lastAtMs: number
+}
+
+/** What a cancellation page carries: the statements, or why the record could not be read. */
+export interface CancellationReport {
+  groups: CancelledGroup[]
+  /** True when the listing stopped at its page cap, so each count is a floor. */
+  truncated: boolean
+  /** Why the record could not be read, or null when it was. */
+  unread: string | null
+}
+
+export interface QueryCancellationWatchDeps {
+  /** Every recorded cancellation. A failure THROWS, never returns empty (L98). */
+  read: () => Promise<{ events: CancellationEvent[]; truncated: boolean }>
+  kv: { get(key: string): Promise<string | null>; put(key: string, value: string, opts?: { expirationTtl?: number }): Promise<void> }
+  send: (report: CancellationReport, nowMs: number) => Promise<boolean>
+  now: () => number
+  log: (line: string) => void
+}
+
+export interface QueryCancellationWatchResult {
+  groups: CancelledGroup[]
+  alerted: boolean
+  /** True when the record could not be read this run. */
+  unread: boolean
+}
+
+export async function runQueryCancellationWatch(deps: QueryCancellationWatchDeps): Promise<QueryCancellationWatchResult> {
+  const nowMs = deps.now()
+  const safePut = async (key: string, value: string, ttl: number) => {
+    try {
+      await deps.kv.put(key, value, { expirationTtl: ttl })
+    } catch (e) {
+      deps.log(`[query-timeout-watch] kv put failed for ${key}: ${formatErr(e)}`)
+    }
+  }
+
+  let read: { events: CancellationEvent[]; truncated: boolean }
+  try {
+    read = await deps.read()
+  } catch (e) {
+    // An unreadable record is not a quiet hour. It is logged every run and paged at most once
+    // a window; a cooldown we cannot read pages, because unknown lands on the alerting side.
+    const reason = formatErr(e)
+    deps.log(`[query-timeout-watch] event=query_cancellations_unread error=${JSON.stringify(reason)}`)
+    let cooling: boolean
+    try {
+      cooling = (await deps.kv.get(QUERY_CANCEL_UNREAD_COOLDOWN_KEY)) !== null
+    } catch {
+      cooling = false
+    }
+    if (cooling) return { groups: [], alerted: false, unread: true }
+    const delivered = await deps.send({ groups: [], truncated: false, unread: reason }, nowMs)
+    if (delivered) await safePut(QUERY_CANCEL_UNREAD_COOLDOWN_KEY, '1', QUERY_TIMEOUT_COOLDOWN_TTL_SECONDS)
+    return { groups: [], alerted: delivered, unread: true }
+  }
+
+  const byStatement = new Map<string, CancellationEvent[]>()
+  for (const e of read.events) {
+    const list = byStatement.get(e.statement) ?? []
+    list.push(e)
+    byStatement.set(e.statement, list)
+  }
+  deps.log(`[query-timeout-watch] event=query_cancellations recorded=${read.events.length} statements=${byStatement.size} truncated=${read.truncated}`)
+
+  const firing: CancelledGroup[] = []
+  for (const [statement, events] of byStatement) {
+    let pagedThrough = -Infinity
+    try {
+      const raw = await deps.kv.get(await queryCancelPagedKey(statement))
+      if (raw !== null && Number.isFinite(Number(raw))) pagedThrough = Number(raw)
+    } catch {
+      pagedThrough = -Infinity // a read we could not make must not suppress a page
+    }
+    const fresh = events.filter((e) => e.atMs > pagedThrough)
+    const lastAtMs = Math.max(...events.map((e) => e.atMs))
+    deps.log(
+      `[query-timeout-watch] event=query_cancelled_statement recorded=${events.length} new=${fresh.length}` +
+        ` last=${new Date(lastAtMs).toISOString()} statement=${JSON.stringify(statement)}`,
+    )
+    if (fresh.length > 0) firing.push({ statement, count: fresh.length, lastAtMs: Math.max(...fresh.map((e) => e.atMs)) })
+  }
+  firing.sort((a, b) => b.count - a.count || b.lastAtMs - a.lastAtMs)
+  if (firing.length === 0) return { groups: [], alerted: false, unread: false }
+
+  const delivered = await deps.send({ groups: firing, truncated: read.truncated, unread: null }, nowMs)
+  // Recorded only on delivery, so a Slack outage does not swallow the cancellations (L12).
+  if (delivered) {
+    for (const g of firing) await safePut(await queryCancelPagedKey(g.statement), String(g.lastAtMs), CANCEL_PAGED_TTL_SECONDS)
+  }
+  return { groups: firing, alerted: delivered, unread: false }
+}
+
+/** Wire the live dependencies and run the cancellation half. */
+export async function runQueryCancellationWatchLive(supabase: SupabaseClient, kv: KVNamespace): Promise<QueryCancellationWatchResult> {
+  return runQueryCancellationWatch({
+    read: () => readCancellations(kv),
+    kv,
+    send: (report, nowMs) =>
+      forEachSlackOrg(supabase, 'query-cancellation-watch', 'tell-only', (orgId) => sendQueryCancelledAlert(supabase, orgId, report, nowMs)).then(anyDelivered),
     now: () => Date.now(),
     log: (line) => console.log(line),
   })

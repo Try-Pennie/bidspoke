@@ -215,7 +215,7 @@ beforeEach(async () => {
   vi.clearAllMocks()
   forgetConnectionStatusesMemory()
   forgetSlackAlertStatusMemory()
-  vi.mocked(verifySlackToken).mockResolvedValue({ kind: 'ok', user: 'bidspoke_alerts', team: 'Pennie' })
+  vi.mocked(verifySlackToken).mockResolvedValue({ kind: 'ok', user: 'bidspoke_alerts', team: 'Pennie', botId: 'B0ALERTS' })
   vi.mocked(verifyJwt).mockResolvedValue({ sub: USER, email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' })
   vi.mocked(writeAuditLog).mockResolvedValue(undefined)
   app = await makeApp()

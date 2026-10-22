@@ -6,6 +6,7 @@ import { guardLocalDevWrites, type RpcClassification } from './local-dev-write-g
 import { secretKeys } from './secret-crypto'
 import { registerSlackKeyRing } from './slack-key-ring'
 import { withRowCapCheck } from './row-cap'
+import { withCancellationRecord } from './query-cancellations'
 
 // Local `wrangler dev` shares the real production Supabase project (there is no
 // separate local backend), and the Worker connects as service_role, which
@@ -151,9 +152,11 @@ export function createSupabaseClient(env: Env, options: { fetch?: typeof fetch; 
     ...(options.retry === false ? { db: { retry: false } } : {}),
     // Every read that comes back at the row cap without a declared limit is
     // reported, and fails inside a scheduled tick (#1436, row-cap.ts).
+    // Every query Postgres cancels before it finishes is recorded for the hourly
+    // query timeout watch, which cannot see it any other way (#2651, query-cancellations.ts).
     global: {
       fetch: withRequestDeadline(
-        withRowCapCheck(baseFetch, {
+        withRowCapCheck(withCancellationRecord(baseFetch, { store: env.IDEMPOTENCY }), {
           betterStack: { token: env.BETTERSTACK_OUTAGE_TOKEN, url: env.BETTERSTACK_OUTAGE_URL },
           sendFetch: baseFetch,
         }),

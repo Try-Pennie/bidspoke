@@ -21,11 +21,9 @@ export const CONNECTION_STATUS_WORDS: Readonly<Record<ConnectionPageStatus, stri
 /**
  * The Slack alert login as the Connections page lists it (D2): the bot that
  * posts Bidspoke's own alerts, stored as the row named `slack`, shown by this
- * name under Slack. Slack has no catalogue entry yet; once it ships, the
- * service's name comes from there and SLACK_SERVICE_NAME goes.
+ * name under Slack, whose name comes from the catalogue's Slack entry (#2337).
  */
 export const SLACK_ALERT_LOGIN_NAME = 'Bidspoke Alerts'
-export const SLACK_SERVICE_NAME = 'Slack'
 
 /**
  * The Connections page with the Slack alerts login open (#2338, build PR 14):
