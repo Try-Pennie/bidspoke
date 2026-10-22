@@ -400,15 +400,18 @@ async function copyDefinitions(
   const start = (Math.floor(ports.now() / 60_000) * DEFINITIONS_PER_TICK) % all.length
   const window = Array.from({ length: Math.min(DEFINITIONS_PER_TICK, all.length) }, (_, i) => all[(start + i) % all.length])
   for (let at = 0; at < window.length; at += MAX_DEFINITIONS_PER_REQUEST) {
-    await copyDefinitionBatch(ports, db, window.slice(at, at + MAX_DEFINITIONS_PER_REQUEST), problem, counts)
+    // A request that fails ends this tick's asking: with the bidding Worker down,
+    // each further batch would wait out its own gateway deadline before the
+    // schedules run, so the next minute asks again instead.
+    if (!(await copyDefinitionBatch(ports, db, window.slice(at, at + MAX_DEFINITIONS_PER_REQUEST), problem, counts))) return
   }
 }
 
-/** One request's worth of versions, its own boundary. */
+/** One request's worth of versions, its own boundary. False when the request itself failed. */
 async function copyDefinitionBatch(
   ports: OpsTickPorts, db: OpsTickDb, missing: Awaited<ReturnType<OpsTickDb['missingDefinitions']>>['missing'],
   problem: (kind: OpsTickProblemKind, text: string, subject?: string) => void, counts: Record<string, number>,
-): Promise<void> {
+): Promise<boolean> {
   let served: ReturnType<typeof parseServedOpsDefinitions>
   try {
     served = parseServedOpsDefinitions(
@@ -417,7 +420,7 @@ async function copyDefinitionBatch(
     )
   } catch (err) {
     problem('definitions_failed', `The ops tick could not copy the definitions of the workflow versions it does not hold yet (${formatErr(err)}); it asks again next minute.`)
-    return
+    return false
   }
   for (const r of served.refused) problem('definition_refused', r.text, r.workflowId ?? undefined)
   for (const u of served.unserved) {
@@ -442,6 +445,7 @@ async function copyDefinitionBatch(
       problem('definition_save_failed', `The ops tick could not save version ${def.versionNumber} of workflow ${def.workflowId} (${formatErr(err)}); it asks again next minute.`, def.workflowId)
     }
   }
+  return true
 }
 
 export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {

@@ -628,6 +628,14 @@ describe('the frozen definition copies (#1950)', () => {
     expect(new Set([...asked, ...nextAsked]).size).toBe(many.length)
   })
 
+  it('stops asking after a request fails, so a bidding outage costs the tick one request deadline, not one per batch', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({ workflowId: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, organizationId: ORG, versionNumber: 1 }))
+    const f = fake({ missingDefs: many, serveDefs: async () => { throw new Error('the bidding Worker did not answer within 15 s') } })
+    const report = await runOpsTick(f.ports)
+    expect(f.definitionRequests).toHaveLength(1)
+    expect(report.problem_keys).toContain('definitions_failed')
+  })
+
   it('pages at once when more versions are missing than one read lists', async () => {
     const many = Array.from({ length: DEFINITIONS_READ_LIMIT }, (_, i) => ({ workflowId: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, organizationId: ORG, versionNumber: 1 }))
     const report = await runOpsTick(fake({ missingDefs: many, serveDefs: async () => ({ definitions: [], unserved: [] }) }).ports)
