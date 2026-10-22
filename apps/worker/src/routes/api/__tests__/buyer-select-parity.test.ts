@@ -22,6 +22,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { runBuyerSelectParityRefreshForEnv } from '../../../lib/buyer-select-parity'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
+import api from '../index'
 
 const testUser = { id: '22222222-2222-4222-8222-222222222222', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: testUser.id, email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -33,7 +34,6 @@ const HASH = 'a'.repeat(64)
 const row = { workflow_id: WF, et_day: '2027-09-19', organization_id: 'org-abc', sell_off_agree: 10, sell_off_disagree: 0, counts_hash: HASH, window_complete: true, signed_off_at: null, unmeasured: [] }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

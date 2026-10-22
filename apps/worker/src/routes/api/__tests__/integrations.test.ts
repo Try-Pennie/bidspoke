@@ -16,6 +16,7 @@ import { makeSupabase } from './_supabase-mock'
 import { readSlackCopy, rememberSlackConnections, SLACK_CONNS_LASTGOOD_KEY } from '../../../lib/slack-copy'
 import { parseSlackConnection } from '../../../lib/slack-connection'
 import { COPY_NOT_CLEARED_MESSAGE } from '../../../lib/stored-copy'
+import api from '../index'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
@@ -51,7 +52,6 @@ const testEnv = {
 } as unknown as Env
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

@@ -50,6 +50,7 @@ import { loadEnvVars } from '../../../lib/env-loader'
 import { pushWorkflowToGitHub } from '../../../lib/github'
 import { recordBackupSuccess, recordBackupFailure } from '../../../lib/github-backup-alert'
 import { uuidv7 } from '@bidspoke/uuidv7'
+import api from '../index'
 
 /**
  * The shared mock now covers what this file kept a local copy for: a handler for
@@ -80,7 +81,6 @@ const testEnv = {
 } as unknown as Env
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

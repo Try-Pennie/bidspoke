@@ -26,6 +26,7 @@ import { writeAuditLog } from '../../../lib/audit'
 import { executeWorkflow } from '../../../engine/index'
 import { readArchivedExecution, readArchivedChildren, readArchivedParentSteps, searchArchive } from '../../../lib/archive-read'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
@@ -54,7 +55,6 @@ const testEnv = {
 } as unknown as Env
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

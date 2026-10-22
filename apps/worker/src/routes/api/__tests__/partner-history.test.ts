@@ -22,6 +22,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
 import type { PartnerHistory } from '@bidspoke/partner-history'
+import api from '../index'
 
 const ORG = 'org-abc'
 const PARTNER = '33333333-3333-3333-3333-333333332141'
@@ -32,7 +33,6 @@ const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks' } as unknown as Env
 const mockCtx = recordingContext()
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 
