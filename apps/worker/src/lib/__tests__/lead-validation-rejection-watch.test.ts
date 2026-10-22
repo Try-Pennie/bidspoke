@@ -103,6 +103,8 @@ describe('judgeRejectionShares(): the rule, against the spread it was set from',
     expect(REJECTION_RULE.baselineMinRuns).toBe(3_000)
     const thin = judgeRejectionShares(counts(600), counts(2_999, { 'ineligible state': 300 }))
     expect(thin.state).toBe('unmeasured')
+    // A baselineSince can make the baseline shorter than a week, so the reason names it as the baseline.
+    expect(thin.state === 'unmeasured' && thin.reason).toBe('the baseline holds 2999 runs, under the 3000 it needs')
   })
 
   it('refuses counts that cannot add up rather than reading them as a shift', () => {

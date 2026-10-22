@@ -208,7 +208,7 @@ export function judgeRejectionShares(current: RejectionCounts, baseline: Rejecti
   if (current.runs < rule.minRuns) return { state: 'unjudged', runs: current.runs }
   const before = new Map(rejectionBuckets(baseline).map((b) => [b.bucket, b.count]))
   if (baseline.runs < rule.baselineMinRuns) {
-    return { state: 'unmeasured', runs: current.runs, baselineRuns: baseline.runs, reason: `the week before holds ${baseline.runs} runs, under the ${rule.baselineMinRuns} it needs` }
+    return { state: 'unmeasured', runs: current.runs, baselineRuns: baseline.runs, reason: `the baseline holds ${baseline.runs} runs, under the ${rule.baselineMinRuns} it needs` }
   }
   const shifts: RejectionShift[] = []
   for (const { bucket, count } of now) {
