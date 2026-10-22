@@ -148,6 +148,15 @@ describe('history and the Google list words', () => {
     expect(historyWhat(e({}), 'client secret')).toBe('Changed')
   })
 
+  it('a seal of the Slack alert row that was never sealed (#2331) reads as stored sealed, never as a new token', () => {
+    const e = (over: object) => ({ id: 'a', action: 'updated', at: '', by: null, credential_changed: true, changes: {}, ...over })
+    expect(historyWhat(e({ changes: { sealed_for: { old: null, new: 'bidding_ring' } } }), 'token')).toBe('Token now stored sealed')
+    // A new token saved over an already sealed row is still a reconnect.
+    expect(historyWhat(e({ changes: {} }), 'token')).toBe('Reconnected with a new token')
+    // A hand written row whose changes are not an object is read as before.
+    expect(historyWhat(e({ changes: 'x' }), 'token')).toBe('Reconnected with a new token')
+  })
+
   it("shows a drive by its name, says who added each entry and when, and reads an address as a mailbox", () => {
     const drive = { kind: 'drive' as const, subject: '0ABCdefGHIjklMNOpq', display_name: 'Partner reports', added_by: 'Dan Wright', added_at: '2026-10-19T14:00:00Z' }
     expect(delegationShown(drive)).toBe('Partner reports')
