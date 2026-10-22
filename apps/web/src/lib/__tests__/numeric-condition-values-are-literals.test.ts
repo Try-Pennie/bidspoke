@@ -23,13 +23,20 @@ interface NumericCondition {
   value: unknown
 }
 
-/** Every `{ field, operator, value }` with a numeric operator, at any depth of the definition. */
+/**
+ * Every `{ field, operator, value }` with a numeric operator, at any depth of the
+ * definition, outside a lead validation step. That step (#2589) was built after
+ * #2588 and resolves a reference on the value side by design (RML GigFi's loan
+ * check reads its maximum from Constants since 2026-10-22, #2592), so no value
+ * of its was ever compared as a literal and nothing there changed behaviour.
+ */
 function numericConditions(def: CommittedDefinition): NumericCondition[] {
   const out: NumericCondition[] = []
   const walk = (v: unknown): void => {
     if (Array.isArray(v)) { v.forEach(walk); return }
     if (v === null || typeof v !== 'object') return
     const obj = v as Record<string, unknown>
+    if (obj.type === 'lead_validation') return
     if ('field' in obj && typeof obj.operator === 'string' && NUMERIC.has(obj.operator)) {
       out.push({ file: def.file, operator: obj.operator, value: obj.value })
     }
@@ -63,6 +70,20 @@ describe('numeric conditions in committed definitions hold literal values (#2588
 
   it('no numeric condition has a value that now resolves as a reference', () => {
     expect(referenceLooking(conditions)).toEqual([])
+  })
+
+  it('leaves a lead validation step out: its checks resolve a reference by design, so none was ever read as a literal', () => {
+    const seeded = definitionsIn({
+      nodes: [
+        { type: 'lead_validation', config: { checks: [{ id: 'loan', condition: { groups: [{ conditions: [
+          { field: 'trigger.payload.amount', operator: 'lte', value: 'steps.constants.output.maximumLoanAmount' },
+        ], logic: 'AND' }], logic: 'AND' } }] } },
+        { type: 'filter', config: { condition: { groups: [{ conditions: [
+          { field: 'trigger.payload.amount', operator: 'lte', value: 'steps.constants.output.maximumLoanAmount' },
+        ], logic: 'AND' }], logic: 'AND' } } },
+      ],
+    }, 'seeded.json')
+    expect(referenceLooking(seeded.flatMap(numericConditions)).map((c) => c.operator)).toEqual(['lte'])
   })
 
   it('the scan finds a reference-looking value when one is seeded (positive control)', () => {

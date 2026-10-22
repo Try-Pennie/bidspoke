@@ -1,5 +1,5 @@
 {
-  "about": "Measured by scripts/measure-workflow-values-fixture.ts from Try-Pennie/bidspoke-workflows; see that script.",
+  "about": "Measured by scripts/measure-workflow-values-fixture.ts from Try-Pennie/bidspoke-workflows; see that script. RML GigFi (6624acd0-bf61-4d21-85fc-4371ca7ed77d) is production version 25 (the lead validation swap, #2592, saved 2026-10-22), reduced the same way, because the mirror holds no copy of that save.",
   "mirror_commit": "18d91be8eee26b6703103c9a51ff332ee2ad372f",
   "partners": [
     {
@@ -331,15 +331,6 @@
             }
           },
           {
-            "id": "8ef8adb2-4182-4409-af20-58b30c283ba3",
-            "namespace": "validate_bidding_and_state",
-            "label": "Validate Bidding And State",
-            "type": "code",
-            "config": {
-              "script": "  const constants = steps.constants.output;\n  const allowedStates = constants.states;\n  const biddingActive = constants.biddingActive;\n  const validLoanAmount = loanAmount <= constants.maximumLoanAmount;"
-            }
-          },
-          {
             "id": "ebc31eb2-5f2e-4979-b3df-edd460290d4f",
             "namespace": "ping_gigfi",
             "label": "Ping GigFi",
@@ -355,6 +346,58 @@
             "type": "code",
             "config": {
               "script": "const constants = steps.constants.output;\nconst floor = constants.GigfiSubAccountMinBids?.[subAccountUuid];\nconst bidAmount = gigfiBid * constants.multiplier;\nconst offerLink = await withLinkToken(constants.pennieClickUrl + `/${applicantId}`, applicantId);\n        name: constants.offerName,\n        display_name: constants.offerName,\n        product_type: constants.productType,\n        logo_src: constants.logoSrc,\n        offer_title: constants.offerTitle,\n        offer_details: constants.offerDetails,"
+            }
+          },
+          {
+            "id": "96cd793e-8bae-494b-82cf-9090a9b2fe7a",
+            "namespace": "validate_bidding_and_state",
+            "label": "Validate Bidding And State",
+            "type": "lead_validation",
+            "config": {
+              "checks": [
+                {
+                  "condition": {
+                    "groups": [
+                      {
+                        "conditions": [
+                          {
+                            "field": "steps.constants.output.biddingActive"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {
+                  "condition": {
+                    "groups": [
+                      {
+                        "conditions": [
+                          {
+                            "value": "steps.constants.output.states"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {},
+                {
+                  "condition": {
+                    "groups": [
+                      {
+                        "conditions": [
+                          {
+                            "value": "steps.constants.output.maximumLoanAmount"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                },
+                {},
+                {}
+              ]
             }
           }
         ],

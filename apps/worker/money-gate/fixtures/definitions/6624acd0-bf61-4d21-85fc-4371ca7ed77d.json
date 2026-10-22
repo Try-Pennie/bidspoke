@@ -16,18 +16,6 @@
         "source_handle": "output"
       },
       {
-        "id": "9b4fa640-5712-4723-ac31-f19b6cdd0828",
-        "source": "a52917dc-b4cb-4504-b32e-f5e36a986b8a",
-        "target": "8ef8adb2-4182-4409-af20-58b30c283ba3",
-        "source_handle": "output"
-      },
-      {
-        "id": "9b329885-f00b-44ba-8b46-71b313e8e1b8",
-        "source": "8ef8adb2-4182-4409-af20-58b30c283ba3",
-        "target": "6f9b6a29-2baa-4a6f-888e-5bd369acfb85",
-        "source_handle": "output"
-      },
-      {
         "id": "f6a6ab01-5c5c-44bc-b931-d7d3f995ff79",
         "source": "6f9b6a29-2baa-4a6f-888e-5bd369acfb85",
         "target": "efefa7be-30a0-4499-8ace-1aedb0f8e724",
@@ -86,6 +74,18 @@
         "id": "3f0855bd-5d99-49bc-a33f-884808dc6230",
         "source": "57a6aad8-cc2a-4bdc-890b-8d6f096328e5",
         "target": "4bb6ba4c-61a7-46c7-926b-021f5f787dbf",
+        "source_handle": "output"
+      },
+      {
+        "id": "4602c441-323a-4ee1-a731-bead0101db8a",
+        "source": "a52917dc-b4cb-4504-b32e-f5e36a986b8a",
+        "target": "96cd793e-8bae-494b-82cf-9090a9b2fe7a",
+        "source_handle": "output"
+      },
+      {
+        "id": "2eeae6be-f32e-4f9c-8502-c1d59262a9dd",
+        "source": "96cd793e-8bae-494b-82cf-9090a9b2fe7a",
+        "target": "6f9b6a29-2baa-4a6f-888e-5bd369acfb85",
         "source_handle": "output"
       }
     ],
@@ -158,7 +158,7 @@
           "retries": 2
         },
         "position": {
-          "x": 394,
+          "x": 293,
           "y": 197
         },
         "namespace": "constants",
@@ -173,25 +173,10 @@
           "retries": 2
         },
         "position": {
-          "x": 394,
+          "x": 293,
           "y": 350
         },
         "namespace": "parsed_name",
-        "variables": {}
-      },
-      {
-        "id": "8ef8adb2-4182-4409-af20-58b30c283ba3",
-        "type": "code",
-        "label": "Validate Bidding And State",
-        "config": {
-          "script": "function isBlank(name) {\n    return !name || name.trim() === \"\" || !/[a-zA-Z]/.test(name);\n  }\n\n  const constants = steps.constants.output;\n  const allowedStates = constants.states;\n  const state = payload.personalInformation.state;\n  const validState = allowedStates.includes(state);\n\n  const firstName = steps.parsed_name.output.firstName;\n  const lastName = steps.parsed_name.output.lastName;\n  const validName = !isBlank(firstName) && !isBlank(lastName);\n\n  const biddingActive = constants.biddingActive;\n\n  const loanAmount = payload.loanInformation.loanAmount;\n  const validLoanAmount = loanAmount <= constants.maximumLoanAmount;\n\n  // Military exclusion (#926). This read payload.personalInformation.militaryStatus\n  // until 2026-08-21, a field the partner has never sent, so the strict\n  // comparison against true was always false and the rejection below was\n  // unreachable: zero rejections in 150,110 runs over 7 days, while 157 leads\n  // carrying employmentStatus 'military' were sold. The signal the partner does\n  // send is financialInformation.employmentStatus, one of employed,\n  // employed_full_time, employed_part_time, military, not_employed, other,\n  // retired. Measured present on 27,809 of 27,809 leads across both workflows.\n  // GigFi additionally requires self_employed, so a military lead was already\n  // rejected here, as 'unqualified'. Keying the check correctly gives it the\n  // accurate reason instead, and the military branch runs first so it wins.\n  const financial = payload.financialInformation || {};\n  const employmentStatus = financial.employmentStatus;\n  const isMilitary = employmentStatus === 'military';\n  const isSelfEmployed = employmentStatus === 'self_employed';\n\n  // All checks pass -> continue to the next node\n  if (biddingActive && validState && validName && validLoanAmount && !isMilitary && isSelfEmployed) {\n    return { valid: true };\n  }\n\n  const headers = { \"Content-Type\": \"application/json\" };\n\n  if (!biddingActive) {\n    console.log(`Rejected due to bidding not being active: ${biddingActive}`);\n    return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"bidding not active\" } } };\n  }\n\n  if (!validState) {\n    console.log(`Rejected due to invalid_state: ${state}`);\n    return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"ineligible state\" } } };\n  }\n\n  if (!validName) {\n    console.log(`Rejected due to invalid name: firstName=\"${firstName}\", lastName=\"${lastName}\"`);\n    return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"invalid name\" } } };\n  }\n\n  if (!validLoanAmount) {\n    console.log(`Rejected due to loan amount: ${loanAmount}`);\n    return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"loan amount exceeds maximum\" } } };\n  }\n\n  if (isMilitary) {\n    console.log(`Rejected due to military status: employmentStatus=${employmentStatus}`);\n    return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"military status ineligible\" } } };\n  }\n\n  if (!isSelfEmployed) {\n    console.log(`Rejected due to employment status: ${employmentStatus}`);\n    return { response: { status: 200, headers, body: { lead_id: payload.leadUuid, status: \"rejected\", reason: \"unqualified\" } } };\n  }",
-          "retries": 2
-        },
-        "position": {
-          "x": 394,
-          "y": 503
-        },
-        "namespace": "validate_bidding_and_state",
         "variables": {}
       },
       {
@@ -203,8 +188,8 @@
           "retries": 2
         },
         "position": {
-          "x": 394,
-          "y": 656
+          "x": 293,
+          "y": 684
         },
         "namespace": "applicant_body",
         "variables": {}
@@ -245,8 +230,8 @@
           ]
         },
         "position": {
-          "x": 394,
-          "y": 809
+          "x": 293,
+          "y": 837
         },
         "namespace": "create_applicant",
         "variables": {}
@@ -260,8 +245,8 @@
           "retries": 2
         },
         "position": {
-          "x": 394,
-          "y": 966
+          "x": 293,
+          "y": 994
         },
         "namespace": "ping_gigfi",
         "variables": {}
@@ -275,8 +260,8 @@
           "retries": 2
         },
         "position": {
-          "x": 394,
-          "y": 1119
+          "x": 293,
+          "y": 1147
         },
         "namespace": "build_response",
         "variables": {}
@@ -292,8 +277,8 @@
           "continue_after_response": true
         },
         "position": {
-          "x": 394,
-          "y": 1272
+          "x": 293,
+          "y": 1300
         },
         "namespace": "return_response",
         "variables": {}
@@ -328,8 +313,8 @@
           "else_label": "No Bid"
         },
         "position": {
-          "x": 242,
-          "y": 1425
+          "x": 141,
+          "y": 1453
         },
         "namespace": "patch_applicant",
         "variables": {}
@@ -339,8 +324,8 @@
         "type": "branch_end",
         "config": {},
         "position": {
-          "x": 242,
-          "y": 1811
+          "x": 141,
+          "y": 1839
         },
         "namespace": "branch_end_1",
         "variables": {}
@@ -374,8 +359,8 @@
           ]
         },
         "position": {
-          "x": 242,
-          "y": 1606
+          "x": 141,
+          "y": 1634
         },
         "namespace": "patch_applicant_bid",
         "variables": {}
@@ -406,10 +391,157 @@
           ]
         },
         "position": {
-          "x": 546,
-          "y": 1606
+          "x": 445,
+          "y": 1634
         },
         "namespace": "patch_applicant_no_bid",
+        "variables": {}
+      },
+      {
+        "id": "96cd793e-8bae-494b-82cf-9090a9b2fe7a",
+        "type": "lead_validation",
+        "label": "Validate Bidding And State",
+        "config": {
+          "checks": [
+            {
+              "id": "bidding_active",
+              "label": "Bidding is on",
+              "reason": "bidding not active",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "steps.constants.output.biddingActive",
+                        "operator": "is_true"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "on_missing": "reject"
+            },
+            {
+              "id": "state",
+              "label": "State is one we take",
+              "reason": "ineligible state",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "trigger.payload.personalInformation.state",
+                        "value": "steps.constants.output.states",
+                        "operator": "in_array"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "on_missing": "reject"
+            },
+            {
+              "id": "name",
+              "label": "First and last name each have a letter",
+              "reason": "invalid name",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "steps.parsed_name.output.firstName",
+                        "operator": "has_letter"
+                      },
+                      {
+                        "field": "steps.parsed_name.output.lastName",
+                        "operator": "has_letter"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "on_missing": "reject"
+            },
+            {
+              "id": "loan_amount",
+              "label": "Loan amount is at most the maximum",
+              "reason": "loan amount exceeds maximum",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "trigger.payload.loanInformation.loanAmount",
+                        "value": "steps.constants.output.maximumLoanAmount",
+                        "operator": "lte"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "on_missing": "reject"
+            },
+            {
+              "id": "military",
+              "label": "Not military",
+              "reason": "military status ineligible",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "trigger.payload.financialInformation.employmentStatus",
+                        "value": "military",
+                        "operator": "neq"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "on_missing": "pass"
+            },
+            {
+              "id": "self_employed",
+              "label": "Self employed",
+              "reason": "unqualified",
+              "condition": {
+                "logic": "AND",
+                "groups": [
+                  {
+                    "logic": "AND",
+                    "conditions": [
+                      {
+                        "field": "trigger.payload.financialInformation.employmentStatus",
+                        "value": "self_employed",
+                        "operator": "eq"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "on_missing": "reject"
+            }
+          ],
+          "lead_id_field": "trigger.payload.leadUuid",
+          "response_headers": {
+            "Content-Type": "application/json"
+          }
+        },
+        "position": {
+          "x": 293,
+          "y": 503
+        },
+        "namespace": "validate_bidding_and_state",
         "variables": {}
       }
     ],

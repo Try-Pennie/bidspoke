@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "exported_at": "2026-10-21T21:02:33.061Z",
+  "exported_at": "2026-10-22T13:00:35.016Z",
   "tables": {
     "workflows": [
       {
@@ -81,6 +81,11 @@
         "version_number": 24
       },
       {
+        "id": "1da2ba7d-8cd7-4788-8e48-fee33119d8ec",
+        "workflow_id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
+        "version_number": 25
+      },
+      {
         "id": "426604bc-a24d-4398-aa00-8cdbd5cbb28d",
         "workflow_id": "8a0f65aa-49a9-441c-a47e-b2a9a5fb2b08",
         "version_number": 16
@@ -104,11 +109,6 @@
         "id": "bf21ad86-c02e-4145-996d-3a334a23f512",
         "workflow_id": "89b1a6af-7e0f-43de-bc66-1e888184551f",
         "version_number": 39
-      },
-      {
-        "id": "e7d4d50f-83fb-4edd-9f81-38434592fe01",
-        "workflow_id": "6624acd0-bf61-4d21-85fc-4371ca7ed77d",
-        "version_number": 24
       }
     ],
     "partner_configs": [
