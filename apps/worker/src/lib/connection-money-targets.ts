@@ -43,7 +43,12 @@ export const MONEY_SNOWFLAKE_USER_NAMES: readonly string[] = (
   [...REQUIRED_SECRETS, ...REQUIRED_PARTNER_SECRETS, ...FEATURE_GATED_SECRETS] as readonly string[]
 ).filter((name) => name.endsWith('_USER'))
 
-export type MoneyTargetKind = 'supabase_project' | 'salesforce_client_id' | 'snowflake_user'
+/**
+ * `slack_alert_bot` is not compared here: a bot token's identity is in no
+ * target, so the routes compare the bot ops verify measured against the alerts
+ * bot (lib/slack-alert-bot.ts, #2337, Dan's decision 6).
+ */
+export type MoneyTargetKind = 'supabase_project' | 'salesforce_client_id' | 'snowflake_user' | 'slack_alert_bot'
 
 export interface MoneyTarget {
   readonly kind: MoneyTargetKind

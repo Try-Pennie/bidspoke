@@ -142,26 +142,43 @@ export function detectRowCapHit(req: { url: string; method: string; accept: stri
   const total = range[3] === '*' ? null : Number(range[3])
   if (total !== null && total <= last + 1) return null
 
-  let url: URL
-  try {
-    url = new URL(req.url)
-  } catch {
-    return null
-  }
-  const at = url.pathname.indexOf('/rest/v1/')
-  if (at === -1) return null
-  const segments = url.pathname.slice(at + '/rest/v1/'.length).split('/').filter(Boolean).map(decodeURIComponent)
-  if (segments.length === 0) return null
-  const kind: RowCapHit['kind'] = segments[0] === 'rpc' && segments.length > 1 ? 'rpc' : 'table'
-  const relation = kind === 'rpc' ? segments[1] : segments[0]
+  const target = restTarget(req.url)
+  if (target === null) return null
+  const { relation, kind, params } = target
 
   const method = req.method.toUpperCase()
   if (kind === 'table' && method !== 'GET') return null
   if (kind === 'rpc' && method !== 'GET' && method !== 'POST') return null
   if (req.accept !== null && req.accept.toLowerCase().includes('application/vnd.pgrst.object')) return null
-  if (declaredLimit(url.searchParams) !== null) return null
+  if (declaredLimit(params) !== null) return null
 
-  return { relation, kind, query: redactQuery(url.searchParams), rows, total }
+  return { relation, kind, query: redactQuery(params), rows, total }
+}
+
+/**
+ * The table or rpc a PostgREST request names, with its query string, or null when
+ * the address is not under /rest/v1/. Shared with the cancellation record
+ * (query-cancellations.ts), so both name a statement the same way.
+ */
+export function restTarget(rawUrl: string): { relation: string; kind: 'table' | 'rpc'; params: URLSearchParams } | null {
+  let url: URL
+  try {
+    url = new URL(rawUrl)
+  } catch {
+    return null
+  }
+  const at = url.pathname.indexOf('/rest/v1/')
+  if (at === -1) return null
+  let segments: string[]
+  try {
+    segments = url.pathname.slice(at + '/rest/v1/'.length).split('/').filter(Boolean).map(decodeURIComponent)
+  } catch {
+    return null
+  }
+  if (segments.length === 0) return null
+  const kind: 'table' | 'rpc' = segments[0] === 'rpc' && segments.length > 1 ? 'rpc' : 'table'
+  const relation = kind === 'rpc' ? segments[1] : segments[0]
+  return { relation, kind, params: url.searchParams }
 }
 
 /** The only fields a report carries. */
@@ -285,7 +302,7 @@ async function sendToBetterStack(event: RowCapEvent, options: RowCapOptions, now
   }
 }
 
-function describeRequest(input: RequestInfo | URL, init?: RequestInit): { url: string; method: string; accept: string | null } {
+export function describeRequest(input: RequestInfo | URL, init?: RequestInit): { url: string; method: string; accept: string | null } {
   if (typeof input === 'string' || input instanceof URL) {
     return { url: typeof input === 'string' ? input : input.href, method: init?.method ?? 'GET', accept: new Headers(init?.headers).get('Accept') }
   }

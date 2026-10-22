@@ -74,6 +74,11 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
   'alert-settings-failed': ['The alert settings could not be read: the server did not answer within 30 seconds.', 'Try again'],
   'alert-settings-none': ['This organization has no Slack alert connection, so there are no alert settings to show.'],
   'alert-channel-leave-ask': ['The new alert channel is not saved', 'Leaving discards the channel chosen for the alerts.'],
+  // #2337: the ops Slack bot, now the catalogue's own service.
+  'add-slack': ['A bot in a Slack workspace', 'Workspace ID', 'Bot token'],
+  'add-slack-not-a-bot': ['This token acts as a person, not as a bot. Nothing was saved. Use the bot token from the ops Slack app and save again.'],
+  'add-slack-workspace-mismatch': ['Slack says this bot is in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.'],
+  'slack-ops-bot': ['Ops alerts bot', 'Bidspoke Ops in Pennie'],
 }
 
 function quiet(): ConnectionsSource {

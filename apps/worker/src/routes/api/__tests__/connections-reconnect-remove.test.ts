@@ -324,6 +324,54 @@ describe('Reconnect with a new client secret: verify, then compare and set, then
   })
 })
 
+describe('Reconnect of an ops Slack bot never takes the alerts bot (Dan\'s decision 6, #2337)', () => {
+  const SLACK_CONN = 'c0000000-0000-4000-8000-000000000004'
+  const NEW_TOKEN = 'canary-new-ops-bot-token-2337'
+  function slackWorld(order: string[], botId: string, alertsBotId: string) {
+    const db = storeDouble(order)
+    db.table.push({
+      id: SLACK_CONN, organization_id: ORG, service_type: 'slack', name: 'Ops bot', sealed_for: 'ops_key', credential_generation: 1,
+      credential_enc: JSON.stringify(STORED_ENVELOPE), config: {}, target: { team_id: 'T0PENNIE' }, acts_as: 'bidspoke_ops in Pennie', person_bound: false,
+    })
+    // The alert login, holding its token in the legacy plaintext form this double can resolve.
+    Object.assign(db.table.find((r) => r.id === ALERT_ROW)!, { credential_enc: null, config: { bot_token: ALERT_TOKEN, default_channel: 'C0ALERTS' } })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ ok: true, team_id: 'T0PENNIE', team: 'Pennie', user_id: 'U0ALERTS', user: 'bidspoke_alerts', bot_id: alertsBotId })))
+    const identity = { kind: 'slack', team_id: 'T0PENNIE', team: 'Pennie', user_id: 'U0OPS', user: 'bidspoke_ops', bot_id: botId }
+    const { env } = makeEnv(order, {
+      verify: async (r) => {
+        const c = parseVerifyRequest(r).candidate!
+        return { ok: true, service: c.service, generation: c.generation, identity }
+      },
+      clearReauth: async (r) => {
+        const c = parseClearReauthRequest(r).candidate
+        return { ok: true, service: c.service, generation: c.generation, identity, cleared: true }
+      },
+    })
+    return { db, env }
+  }
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('a new token that is the alerts bot is refused by name after verify, and nothing is committed', async () => {
+    const order: string[] = []
+    const { db, env } = slackWorld(order, 'B0ALERTS', 'B0ALERTS')
+    const res = await reconnect(env, SLACK_CONN, { fields: { bot_token: NEW_TOKEN } })
+    expect(res.status).toBe(422)
+    expect(((await res.json()) as Answer)).toMatchObject({ error: 'connection_money_identity', money: 'slack_alert_bot' })
+    expect(order).toEqual(['verify'])
+    expect(db.table.find((r) => r.id === SLACK_CONN)?.credential_generation).toBe(1)
+  })
+
+  it('a new token for another bot is committed, acting as that bot', async () => {
+    const order: string[] = []
+    const { env } = slackWorld(order, 'B0OPS', 'B0ALERTS')
+    const res = await reconnect(env, SLACK_CONN, { fields: { bot_token: NEW_TOKEN } })
+    expect(res.status).toBe(200)
+    expect(await res.json()).toEqual({ outcome: 'reconnected', connection: { id: SLACK_CONN, generation: 2, acts_as: 'bidspoke_ops in Pennie' } })
+    expect(order).toEqual(['verify', 'rpc:reconnect_ops_connection', 'clearReauth'])
+  })
+})
+
 describe('Reconnect without a new login: clearReauth alone', () => {
   it('checks the row\'s own envelope at its own generation, commits nothing, and audits who asked', async () => {
     const order: string[] = []

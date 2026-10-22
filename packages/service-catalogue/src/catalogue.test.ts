@@ -33,6 +33,20 @@ const SHIPPED = {
 
 const inside = (dir: string) => (file: string) => file.startsWith(dir + path.sep)
 
+/**
+ * Every file an entry reaches, following workspace packages through the
+ * lockfile's links as the fingerprint does: the runtime entry reaches
+ * @bidspoke/slack-client through the Slack actions (#2337). The schema entry is
+ * walked without links, so a workspace import there is refused by name.
+ */
+function linkedGraph(entry: string): string[] {
+  const lock = readImporterLock(SHIPPED.lockfile, SHIPPED.importer)
+  return collectModuleImports(entry, {
+    root: { importer: SHIPPED.importer, dir: PACKAGE_ROOT },
+    linkOf: (importer, name) => linkedPath(lock, importer, name),
+  }).files
+}
+
 describe('the shipped catalogue', () => {
   it('passes every catalogue check: versions, fingerprints, traits and pairing', async () => {
     expect(await checkCatalogue(SHIPPED)).toEqual([])
@@ -67,11 +81,24 @@ describe('the shipped catalogue', () => {
     expect(resolveDependencies(lock, packages).closure.some((key) => key.startsWith('slack-web-api-client@'))).toBe(true)
   })
 
+  it("folds the Slack action's whole reach into its fingerprint: the slack-client source and the library's pinned version (#2337)", () => {
+    const lock = readImporterLock(SHIPPED.lockfile, SHIPPED.importer)
+    const reached = collectModuleImports(path.join(SHIPPED.actionsDir, 'slack.send-message.v1.ts'), {
+      root: { importer: SHIPPED.importer, dir: PACKAGE_ROOT },
+      linkOf: (importer, name) => linkedPath(lock, importer, name),
+    })
+    expect(reached.files).toContain(path.join(REPO_ROOT, 'packages/slack-client/src/index.ts'))
+    expect(reached.files).toContain(path.join(SRC, 'runtime', 'slack', 'call.ts'))
+    expect(reached.packages).toEqual([expect.objectContaining({ name: 'slack-web-api-client', importer: 'packages/slack-client' })])
+    const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, 'packages/slack-client/package.json'), 'utf8')) as { dependencies: Record<string, string> }
+    expect(resolveDependencies(lock, reached.packages).closure).toContain(`slack-web-api-client@${manifest.dependencies['slack-web-api-client']}`)
+  })
+
   it('carries no test fixture action', () => {
     expect(catalogueActions(CATALOGUE).filter((a) => a.key.startsWith('fixture.'))).toEqual([])
     expect(RUNTIME_ACTIONS.filter((a) => a.key.startsWith('fixture.'))).toEqual([])
     for (const entry of ['schema/index.ts', 'runtime/index.ts']) {
-      const reached = collectModuleGraph(path.join(SRC, entry)).filter(inside(path.join(SRC, '__fixtures__')))
+      const reached = linkedGraph(path.join(SRC, entry)).filter(inside(path.join(SRC, '__fixtures__')))
       expect(reached, `${entry} reaches the test fixtures`).toEqual([])
     }
   })
@@ -94,8 +121,9 @@ describe('the schema entry stays declarative', () => {
   it('walks a real graph, so the check above cannot pass on an empty one', () => {
     const schemaGraph = collectModuleGraph(path.join(SRC, 'schema', 'index.ts'))
     expect(schemaGraph).toContain(path.join(SRC, 'schema', 'lookup.ts'))
-    const runtimeGraph = collectModuleGraph(path.join(SRC, 'runtime', 'index.ts'))
+    const runtimeGraph = linkedGraph(path.join(SRC, 'runtime', 'index.ts'))
     expect(runtimeGraph).toContain(path.join(SRC, 'runtime', 'registry.ts'))
+    expect(runtimeGraph).toContain(path.join(REPO_ROOT, 'packages', 'slack-client', 'src', 'index.ts'))
   })
 
   it('exposes exactly the two entry points, with no root entry that would carry both', () => {

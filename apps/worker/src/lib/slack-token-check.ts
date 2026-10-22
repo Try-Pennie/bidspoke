@@ -21,7 +21,8 @@
 import { createSlackClient, slackCallFailure, slackNetworkCause } from '@bidspoke/slack-client'
 
 export type SlackTokenCheck =
-  | { kind: 'ok'; user: string | null; team: string | null }
+  /** `botId` is auth.test's bot_id, null for a person's token: the alerts bot ops Slack connections are compared with (#2337). */
+  | { kind: 'ok'; user: string | null; team: string | null; botId: string | null }
   | { kind: 'refused'; slackError: string | null }
 
 const textOrNull = (v: unknown): string | null => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null)
@@ -30,7 +31,7 @@ export async function verifySlackToken(token: string): Promise<SlackTokenCheck> 
   try {
     const answer = await createSlackClient({ bot_token: token }).auth.test()
     // The library throws only for ok:false WITH a code; without one it returns.
-    if (answer.ok) return { kind: 'ok', user: textOrNull(answer.user), team: textOrNull(answer.team) }
+    if (answer.ok) return { kind: 'ok', user: textOrNull(answer.user), team: textOrNull(answer.team), botId: textOrNull(answer.bot_id) }
     return { kind: 'refused', slackError: answer.error ?? null }
   } catch (e) {
     const failure = slackCallFailure(e)

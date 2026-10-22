@@ -56,17 +56,8 @@ const fixtures = vi.hoisted(() => {
       ],
     },
   }
-  const slack: ServiceSchema = {
-    key: 'slack',
-    name: 'Slack',
-    actions: [],
-    connection: {
-      tile: 'A workspace, signed in as its bot',
-      auth: 'static_key',
-      fields: [{ key: 'bot_token', label: 'Bot token', input: 'secret', required: true, login: 'bot_token' }],
-    },
-  }
-  return { extra: [google, supabase, slack], publicKeys: {} as Record<string, string> }
+  // Slack is the real catalogue's own since #2337.
+  return { extra: [google, supabase], publicKeys: {} as Record<string, string> }
 })
 
 vi.mock('@bidspoke/service-catalogue/schema', async (importOriginal) => {
@@ -117,6 +108,12 @@ function storeDouble(rows: Row[] = [], opts: StoreOptions = {}) {
     const b = {
       select() { return b },
       eq(col: string, v: unknown) { filters.push((r) => r[col] === v); return b },
+      // onlySlackAlertRow's seal filter: sealed for bidding, or the legacy unsealed row.
+      or() { filters.push((r) => r.sealed_for === 'bidding_ring' || r.sealed_for === null || r.sealed_for === undefined); return b },
+      limit(n: number) {
+        if (opts.readError) return Promise.resolve({ data: null, error: opts.readError })
+        return Promise.resolve({ data: rows.filter((r) => filters.every((f) => f(r))).slice(0, n), error: null })
+      },
       insert(row: Row) { inserted = row; return b },
       async maybeSingle() {
         if (opts.readError) return { data: null, error: opts.readError }
@@ -288,7 +285,7 @@ describe('POST /connections saves a connection only once verify passes', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(db as never)
     const { env } = makeEnv({ verify: async (r) => ({ ok: true, service: r.candidate!.service, generation: 1, identity: { kind: 'snowflake', account_locator: 'AB1', organization_name: null, account_name: null, user: 'BOT' } }) })
     await post(env, salesforce())
-    await post(env, { service: 'slack', name: 'Ops bot', fields: { bot_token: 'xoxb-canary' } })
+    await post(env, { service: 'slack', name: 'Ops bot', fields: { team_id: 'T0PENNIE', bot_token: 'canary-ops-bot-token-2337' } })
     expect(db.inserts.map((r) => r.service_type)).toEqual(['salesforce', 'slack'])
     expect(db.inserts.every((r) => r.sealed_for === 'ops_key')).toBe(true)
   })
@@ -353,6 +350,78 @@ describe('the sealed login opens through the real ops minters (round trip)', () 
     expect(res.status).toBe(201)
     expect(header).toMatch(/^Bearer [\w-]+\.[\w-]+\.[\w-]+$/)
     expect(((await res.json()) as { connection: { acts_as: string } }).connection.acts_as).toBe('OPS_READER')
+  })
+})
+
+describe('an ops Slack connection is never the alerts bot (Dan\'s decision 6, #2337)', () => {
+  const ALERT_TOKEN = 'canary-alert-bot-token-2337'
+  const alertRow = { id: 'a1', organization_id: ORG, service_type: 'slack', name: 'slack', sealed_for: null, credential_enc: null, config: { bot_token: ALERT_TOKEN, default_channel: 'C0ALERTS' } }
+  const opsSlack = { service: 'slack', name: 'Ops bot', fields: { team_id: 'T0PENNIE', bot_token: 'canary-ops-bot-token-2337' } }
+  const measured = (botId: string): Verify => async (r) => ({
+    ok: true, service: r.candidate!.service, generation: 1,
+    identity: { kind: 'slack', team_id: 'T0PENNIE', team: 'Pennie', user_id: 'U0OPS', user: 'bidspoke_ops', bot_id: botId },
+  })
+  /** Slack's auth.test, as the bidding Worker asks it about the alerts token. */
+  function alertsBotIs(answer: { bot_id: string } | Error) {
+    const asked: Request[] = []
+    vi.stubGlobal('fetch', vi.fn(async (req: Request) => {
+      asked.push(req)
+      if (answer instanceof Error) throw answer
+      return Response.json({ ok: true, team_id: 'T0PENNIE', team: 'Pennie', user_id: 'U0ALERTS', user: 'bidspoke_alerts', ...answer })
+    }))
+    return asked
+  }
+  afterEach(() => vi.unstubAllGlobals())
+
+  it('is refused by name when the token verify measured is the alerts bot, and nothing is stored', async () => {
+    const db = storeDouble([alertRow])
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    const asked = alertsBotIs({ bot_id: 'B0ALERTS' })
+    const { env } = makeEnv({ verify: measured('B0ALERTS') })
+    const res = await post(env, opsSlack)
+    expect(res.status).toBe(422)
+    const body = (await res.json()) as { error: string; message: string; money: string }
+    expect([body.error, body.money]).toEqual(['connection_money_identity', 'slack_alert_bot'])
+    expect(body.message).toBe('This is the Slack bot that posts Bidspoke\'s own alerts, which a workflow connection may never use. Nothing was saved. Use a login made for workflows.')
+    expect(JSON.stringify(body)).not.toContain(ALERT_TOKEN)
+    expect(db.inserts).toEqual([])
+    expect(asked.map((r) => r.headers.get('Authorization'))).toEqual([`Bearer ${ALERT_TOKEN}`])
+  })
+
+  it('is saved, acting as its bot in its workspace, when it is another bot', async () => {
+    const db = storeDouble([alertRow])
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    alertsBotIs({ bot_id: 'B0ALERTS' })
+    const { env } = makeEnv({ verify: measured('B0OPS') })
+    const res = await post(env, opsSlack)
+    expect(res.status).toBe(201)
+    expect(((await res.json()) as { connection: { acts_as: string } }).connection.acts_as).toBe('bidspoke_ops in Pennie')
+    expect(db.inserts.map((r) => [r.service_type, r.sealed_for, r.target])).toEqual([['slack', 'ops_key', { team_id: 'T0PENNIE' }]])
+  })
+
+  it("says which of verify's two Slack refusals it was, each in its own sentence", async () => {
+    const sentences: Record<string, string> = {}
+    for (const refused of ['verify_slack_not_a_bot', 'verify_slack_workspace_mismatch']) {
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble([alertRow]) as never)
+      const { env } = makeEnv({ verify: async () => ({ ok: false, refused, detail: 'named on ops' }) })
+      const body = (await (await post(env, opsSlack)).json()) as { error: string; message: string }
+      expect(body.error).toBe(refused)
+      sentences[refused] = body.message
+    }
+    expect(sentences).toEqual({
+      verify_slack_not_a_bot: 'This token acts as a person, not as a bot. Nothing was saved. Use the bot token from the ops Slack app and save again.',
+      verify_slack_workspace_mismatch: 'Slack says this bot is in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.',
+    })
+  })
+
+  it('is refused, never passed, when whether it is the alerts bot cannot be told', async () => {
+    const db = storeDouble([alertRow])
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    alertsBotIs(new TypeError('network down'))
+    const { env } = makeEnv({ verify: measured('B0OPS') })
+    const res = await post(env, opsSlack)
+    expect(((await res.json()) as { error: string }).error).toBe('connection_money_targets_unreadable')
+    expect(db.inserts).toEqual([])
   })
 })
 
@@ -435,7 +504,7 @@ describe('refused before anything is sealed or verified', () => {
   })
 
   it('the Slack alert login\'s reserved name', async () => {
-    const r = await refused({ service: 'slack', name: 'Slack', fields: { bot_token: 'xoxb-canary' } })
+    const r = await refused({ service: 'slack', name: 'Slack', fields: { team_id: 'T0PENNIE', bot_token: 'canary-ops-bot-token-2337' } })
     expect(r.status).toBe(409)
     expect(r.body.error).toBe('connection_name_reserved')
   })

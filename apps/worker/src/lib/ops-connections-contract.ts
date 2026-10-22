@@ -140,6 +140,10 @@ export const OPS_CONNECTIONS_REFUSAL_CODES = [
   'verify_identity_unreadable',
   /** The service measured another identity than the connection's target declares (#2337). */
   'verify_identity_mismatch',
+  /** A Slack token that acts as a person (auth.test named no bot): an ops Slack connection is a bot (#2337). */
+  'verify_slack_not_a_bot',
+  /** A Slack bot in another workspace than the target's team_id (#2337). */
+  'verify_slack_workspace_mismatch',
   /** A generation ops holds as its copy measured another identity than before. */
   'identity_changed',
   /** The measured identity could not be written, so the connection is not verified. */
@@ -238,6 +242,7 @@ export interface ExchangeOAuthCodeRequest {
 export type MeasuredIdentityAnswer =
   | { kind: 'salesforce'; sf_org_id: string; username: string }
   | { kind: 'snowflake'; account_locator: string; organization_name: string | null; account_name: string | null; user: string }
+  | { kind: 'slack'; team_id: string; team: string | null; user_id: string; user: string | null; bot_id: string }
 
 export type VerifyAnswer = { ok: true; service: string; generation: number; identity: MeasuredIdentityAnswer } | OpsConnectionsRefused
 export type ClearReauthAnswer = { ok: true; service: string; generation: number; identity: MeasuredIdentityAnswer; cleared: true } | OpsConnectionsRefused

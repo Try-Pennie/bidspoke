@@ -72,7 +72,8 @@ function rowOf(c: FixtureConnection): ConnectionListRow {
     acts_as: c.actsAs,
     person_bound: c.kind === 'person',
     owner: null,
-    target: c.instance ? { instance_url: `https://${c.instance}`, client_id: clientIdOf(c.name) } : null,
+    // An ops Slack bot declares its workspace (#2337); the alert login declares nothing.
+    target: c.instance ? { instance_url: `https://${c.instance}`, client_id: clientIdOf(c.name) } : c.service === 'Slack' && !alert ? { team_id: 'T0PENNIE' } : null,
     org: c.instance ?? null,
     status,
     status_word: fixture.statusVocabulary[c.status as keyof typeof fixture.statusVocabulary] ?? null,
@@ -233,6 +234,9 @@ export const ELAPSED_MS = 4_000
 const LIST_REFUSED = 'The connections could not be read: the use counts read failed.'
 const SECRET_REFUSED = 'Salesforce refused the client secret. Nothing was saved. Check the secret and save again.'
 const NO_CAP = 'Bidspoke has no limit set yet on how many Salesforce calls its workflows may make to lendco.my.salesforce.com, so it cannot connect to that org. Nothing was saved. Ask Dan to set a limit for this org, then save again.'
+/** The create route's sentences for verify's two Slack refusals (apps/worker lib/connection-create-refusals.ts, #2337). */
+const SLACK_NOT_A_BOT = 'This token acts as a person, not as a bot. Nothing was saved. Use the bot token from the ops Slack app and save again.'
+const SLACK_OTHER_WORKSPACE = 'Slack says this bot is in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.'
 const IN_USE = 'Daily Salesforce cleanup uses this connection, so it cannot be removed. Nothing was removed. Take it out of that workflow first.'
 const OPS_NOT_TOLD = 'The connection is removed. The workflows server could not be told straight away, so it stops using the login at its next minute check, and within 6 hours at the latest if it cannot reach Bidspoke.'
 const ADD_REFUSED = 'ops@trypennie is not one mailbox address or one shared drive id. Nothing was added. Check it and add it again.'
@@ -267,6 +271,8 @@ export const SCRIPTED_FRAMES = [
   'alert-switch-saving', 'alert-switch-saved', 'alert-switch-failed',
   'alert-channel-open', 'alert-channel-chosen', 'alert-channel-saving', 'alert-channel-failed', 'alert-channel-saved',
   'alert-settings-loading', 'alert-settings-failed', 'alert-settings-none', 'alert-channel-leave-ask',
+  // #2337: the ops Slack bot's form, its two verify refusals, and its panel.
+  'add-slack', 'add-slack-not-a-bot', 'add-slack-workspace-mismatch', 'slack-ops-bot',
 ] as const
 
 export function previewScript(frame: string | undefined): PreviewScript | null {
@@ -417,6 +423,14 @@ function formScript(frame: string): PreviewScript | null {
     { type: 'add_field', field: 'client_secret', text: 'plainsecrets' },
   ]
   const saveAt = (at: number): ConnectionsEvent => ({ type: 'save_requested', attempt: 1, at, stalled })
+  // A plain word in the token box, so the masked box shows dots and no token shape.
+  const slackForm: ConnectionsEvent[] = [
+    ...opened,
+    { type: 'add_service', service: 'slack' },
+    { type: 'add_name', text: 'Ops reports bot' },
+    { type: 'add_field', field: 'team_id', text: 'T0PENNIE' },
+    { type: 'add_field', field: 'bot_token', text: 'plainbottoken' },
+  ]
   const reconnectOf = (name: string): ConnectionsEvent[] => [listed(), google, choose(name), { type: 'dialog_opened', dialog: 'reconnect', id: idOf(name) }]
   const removeOf = (): ConnectionsEvent[] => [listed([justSaved]), google, choose(fixture.justSaved.name), { type: 'dialog_opened', dialog: 'remove', id: idOf(fixture.justSaved.name) }]
   const typedSecret: ConnectionsEvent = { type: 'dialog_field', field: 'client_secret', text: 'plainsecrets' }
@@ -470,6 +484,14 @@ function formScript(frame: string): PreviewScript | null {
       return script([...removeOf(), { type: 'connection_remove_requested', attempt: 1, at: S, stalled: stalledSentence('Salesforce', CHANGE_DEADLINES.removeDeadlineMs, 'removed') }, { type: 'tick', at: T }])
     case 'remove-refused-in-use':
       return script([...removeOf(), { type: 'connection_remove_requested', attempt: 1, at: S, stalled: '' }, { type: 'connection_remove_refused', attempt: 1, sentence: IN_USE, workflows: [{ id: idOf('Daily Salesforce cleanup'), name: 'Daily Salesforce cleanup', deleted: false }] }])
+    case 'add-slack':
+      return script(slackForm)
+    case 'add-slack-not-a-bot':
+      return script([...slackForm, saveAt(T - elapsed), { type: 'save_refused', attempt: 1, sentence: SLACK_NOT_A_BOT }])
+    case 'add-slack-workspace-mismatch':
+      return script([...slackForm, saveAt(T - elapsed), { type: 'save_refused', attempt: 1, sentence: SLACK_OTHER_WORKSPACE }])
+    case 'slack-ops-bot':
+      return script([listed(), google, choose('Ops alerts bot')])
     case 'remove-ops-not-told':
       return script([...removeOf(), { type: 'connection_remove_requested', attempt: 1, at: S, stalled: '' }, { type: 'connection_remove_answered', attempt: 1, id: idOf(fixture.justSaved.name), notice: OPS_NOT_TOLD }])
   }
