@@ -259,3 +259,23 @@ describe('executeCodeChain per-node fallback error handling (#460)', () => {
     expect(ctx.steps.a).toEqual({ output: { score: 720 }, status: 'completed' })
   })
 })
+
+// #1263: a chained node's {{env.X}} setting reads the run values over the Worker
+// bindings, the same as a single code node and the script's own `env`.
+describe('executeCodeChain settings read the run values over the Worker bindings (#1263)', () => {
+  it('falls back to the Worker binding when the run has no saved value', async () => {
+    let body = ''
+    const bundleFetch = vi.fn().mockImplementation((_url: string, init: RequestInit) => {
+      body = init.body as string
+      return Promise.resolve(new Response(JSON.stringify({ results: [{ namespace: 'a', status: 'completed', output: {} }] }), { status: 200 }))
+    })
+    const env = { DYNAMIC_WORKER_LOADER: { get: () => ({ fetch: bundleFetch }) }, PARTNER_KEY: 'from-binding' } as unknown as Env
+    const chain = [code('a', { script: 'return props.key', props: [{ name: 'key', source: '{{env.PARTNER_KEY}}' }] })]
+    const ctx = { trigger: { payload: {}, source: 't', workflow_id: 'wf', org_id: '', trace_id: 'tr' }, steps: {}, env: {} } as unknown as ExecutionContext
+
+    await executeCodeChain(chain, ctx, env)
+
+    const sent = JSON.parse(body) as { chain: { props: Record<string, unknown> }[] }
+    expect(sent.chain[0].props.key).toBe('from-binding')
+  })
+})
