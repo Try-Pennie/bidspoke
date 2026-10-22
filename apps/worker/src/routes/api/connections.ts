@@ -35,7 +35,7 @@
 import { Hono, type Context } from 'hono'
 import { CURRENT_OPS_KID, OPS_CONNECTION_PUBLIC_KEYS, seal, SealError, type SealedEnvelope } from '@bidspoke/connection-seal'
 import {
-  CATALOGUE, CONNECTION_STATUS_WORDS, connectionParts, SLACK_ALERT_LOGIN_NAME, SLACK_SERVICE_NAME, type ConnectionPageStatus,
+  CATALOGUE, CONNECTION_STATUS_WORDS, connectionParts, SLACK_ALERT_LOGIN_NAME, type ConnectionPageStatus,
 } from '@bidspoke/service-catalogue/schema'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
@@ -132,9 +132,9 @@ function healthOf(row: HealthRow | undefined) {
   }
 }
 
-/** A service's name as the page shows it: the catalogue's, or Slack's for the alert login, or its key for a row the catalogue does not declare. */
+/** A service's name as the page shows it: the catalogue's (Slack's, the alert login's too, since #2337), or its key for a row the catalogue does not declare. */
 function serviceNameOf(key: string): string {
-  return declaredService(CATALOGUE, key)?.name ?? (key === 'slack' ? SLACK_SERVICE_NAME : key)
+  return declaredService(CATALOGUE, key)?.name ?? key
 }
 
 /** The latest of the times given, or null when none is. */
@@ -729,7 +729,7 @@ async function reconnectSlackAlertLogin(
   refuse: { ownRefusal: OwnRefusal; createRefusal: CreateRefusalAnswer },
 ): Promise<Response> {
   const { orgId, userId, email } = c.get('user')
-  const words = { service: SLACK_SERVICE_NAME, secret: 'token' }
+  const words = { service: serviceNameOf('slack'), secret: 'token' }
   const own = (code: ConnectionRouteRefusalCode, names: string[] = []) => refuse.ownRefusal(code, { ...words, names })
   const asked = async (token: string): Promise<{ kind: 'ok'; actsAs: string | null; team: string | null } | { kind: 'refused'; slackError: string | null } | { kind: 'unanswered' }> => {
     try {

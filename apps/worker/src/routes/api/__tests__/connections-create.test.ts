@@ -399,6 +399,21 @@ describe('an ops Slack connection is never the alerts bot (Dan\'s decision 6, #2
     expect(db.inserts.map((r) => [r.service_type, r.sealed_for, r.target])).toEqual([['slack', 'ops_key', { team_id: 'T0PENNIE' }]])
   })
 
+  it("says which of verify's two Slack refusals it was, each in its own sentence", async () => {
+    const sentences: Record<string, string> = {}
+    for (const refused of ['verify_slack_not_a_bot', 'verify_slack_workspace_mismatch']) {
+      vi.mocked(createSupabaseClient).mockReturnValue(storeDouble([alertRow]) as never)
+      const { env } = makeEnv({ verify: async () => ({ ok: false, refused, detail: 'named on ops' }) })
+      const body = (await (await post(env, opsSlack)).json()) as { error: string; message: string }
+      expect(body.error).toBe(refused)
+      sentences[refused] = body.message
+    }
+    expect(sentences).toEqual({
+      verify_slack_not_a_bot: 'This token acts as a person, not as a bot. Nothing was saved. Use the bot token from the ops Slack app and save again.',
+      verify_slack_workspace_mismatch: 'Slack says this bot is in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.',
+    })
+  })
+
   it('is refused, never passed, when whether it is the alerts bot cannot be told', async () => {
     const db = storeDouble([alertRow])
     vi.mocked(createSupabaseClient).mockReturnValue(db as never)

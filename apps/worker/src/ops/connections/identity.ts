@@ -68,7 +68,15 @@ export class IdentityUnreadable extends Error {
  * never their values.
  */
 export class IdentityMismatch extends Error {
-  constructor(message: string) {
+  /**
+   * The refusal it is answered as: verify_identity_mismatch, or a service's own
+   * code where one service has two causes a person fixes differently (Slack's,
+   * #2337), so each has its own sentence (L11).
+   */
+  constructor(
+    message: string,
+    readonly code: 'verify_identity_mismatch' | 'verify_slack_not_a_bot' | 'verify_slack_workspace_mismatch' = 'verify_identity_mismatch',
+  ) {
     super(message)
     this.name = 'IdentityMismatch'
   }

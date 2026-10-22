@@ -21,7 +21,8 @@
  * Slack client factory bound to connectionFetch (@bidspoke/slack-client), as
  * the catalogue's Slack action talks to Slack. It must answer a bot (a bot_id:
  * a person's token acts as that person) in the declared workspace, or verify
- * refuses it (verify_identity_mismatch). A different workspace needs a new
+ * refuses it, by its cause: verify_slack_not_a_bot or
+ * verify_slack_workspace_mismatch, each with its own sentence on the form. A different workspace needs a new
  * target, which is a new generation, so nothing is kept about it.
  *
  * What it cannot see: whether the bot is the alerts bot. Ops never holds the
@@ -80,8 +81,8 @@ export const slackIdentity: IdentityProbe = {
     const userId = text(answer.user_id)
     if (teamId === null || userId === null) throw new IdentityUnreadable('auth.test named no team_id or no user_id')
     const botId = text(answer.bot_id)
-    if (botId === null) throw new IdentityMismatch('the token is a person\'s, not a bot\'s: an ops Slack connection is a bot in a workspace')
-    if (teamId !== slackTeamOf(target)) throw new IdentityMismatch('the bot is in another Slack workspace than its target declares')
+    if (botId === null) throw new IdentityMismatch('the token is a person\'s, not a bot\'s: an ops Slack connection is a bot in a workspace', 'verify_slack_not_a_bot')
+    if (teamId !== slackTeamOf(target)) throw new IdentityMismatch('the bot is in another Slack workspace than its target declares', 'verify_slack_workspace_mismatch')
     return { kind: 'slack', teamId, team: text(answer.team), userId, user: text(answer.user), botId }
   },
 }

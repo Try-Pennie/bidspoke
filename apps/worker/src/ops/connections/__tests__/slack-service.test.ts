@@ -87,14 +87,14 @@ describe('verify of a Slack ops bot token', () => {
     const w = world()
     w.d.respond(authTest({ team_id: 'T0ELSEWHERE', team: 'Elsewhere Co' }))
     const answer = await verify(w)
-    expect(answer).toMatchObject({ ok: false, refused: 'verify_identity_mismatch' })
+    expect(answer).toMatchObject({ ok: false, refused: 'verify_slack_workspace_mismatch' })
     expect(JSON.stringify(answer)).not.toContain('T0ELSEWHERE')
   })
 
   it("refuses a person's token: the connection is a bot in a workspace, never somebody acting as themselves", async () => {
     const w = world()
     w.d.respond(authTest({ bot_id: undefined }))
-    expect(await verify(w)).toMatchObject({ ok: false, refused: 'verify_identity_mismatch' })
+    expect(await verify(w)).toMatchObject({ ok: false, refused: 'verify_slack_not_a_bot' })
   })
 
   it('a token Slack refuses twice (revoked, expired, an uninstalled app) is needs_reauth through connectionFetch', async () => {

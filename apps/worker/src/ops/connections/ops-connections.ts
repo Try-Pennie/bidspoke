@@ -248,7 +248,7 @@ async function verifyIdentity(
   } catch (err) {
     if (err instanceof ConnectionRefusal) return fromRefusal(err, true)
     if (err instanceof IdentityUnreadable) return refuse('verify_identity_unreadable', err.message)
-    if (err instanceof IdentityMismatch) return refuse('verify_identity_mismatch', err.message)
+    if (err instanceof IdentityMismatch) return refuse(err.code, err.message)
     return unexpected(err, 'the identity measurement')
   }
   // connectionFetch resolved the subject before any request, so a measured identity always has one.
