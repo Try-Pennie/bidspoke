@@ -16,12 +16,14 @@ vi.mock('../lib/cache-prewarm', async (importOriginal) => ({
   prewarmKvCaches: vi.fn(() => new Promise(() => {})),
 }))
 
-import worker, { MINUTE_JOB_DEADLINE_MS } from '../index'
 import type { Env } from '../index'
 import { TICK_CHECKPOINT_MS } from '../lib/tick-timing'
 import { SUPABASE_REQUEST_DEADLINE_MS } from '../lib/supabase'
 import { prewarmKvCaches } from '../lib/cache-prewarm'
 import { recordingContext } from '../test-setup/wait-until'
+import { loadWorker } from '../test-setup/load-worker'
+
+const { default: worker, MINUTE_JOB_DEADLINE_MS } = await loadWorker()
 
 const env = {} as unknown as Env
 

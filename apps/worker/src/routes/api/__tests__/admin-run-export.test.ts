@@ -19,6 +19,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { runSightingsExport } from '../../../lib/sightings-export'
 import { runAchieveExport } from '../../../lib/achieve-export'
+import api from '../index'
 
 const USER_ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
@@ -41,7 +42,6 @@ function makeSupabase() {
 }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

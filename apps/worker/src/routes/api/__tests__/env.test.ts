@@ -26,6 +26,7 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { setCfSecret, deleteCfSecret, listCfSecretNames } from '../../../lib/cf-secrets'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
@@ -43,7 +44,6 @@ const testEnv = {
 } as unknown as Env
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

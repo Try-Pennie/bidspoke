@@ -36,6 +36,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { readBuyerSoldOn, refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -60,7 +61,6 @@ const mainFlow = { id: 'wf-main', name: 'Main Flow', is_active: true, organizati
 const engine = { id: 'wf-engine', name: 'Engine Bidding', is_active: true, organization_id: 'org-abc', deleted_at: null, definition: { nodes: [{ type: 'buyer_select', config: { population: 'engine' } }] } }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

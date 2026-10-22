@@ -19,6 +19,7 @@ import { writeAuditLog } from '../../../lib/audit'
 import { invalidatePartnerConstantsCache } from '../../../lib/partner-constants-loader'
 import { readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../../../lib/buyer-profile-loader'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -51,7 +52,6 @@ const savedPatch = (sb: unknown): Record<string, unknown> | undefined =>
   ((sb as { saveRpc: ReturnType<typeof vi.fn> }).saveRpc.mock.calls.find(([n]) => n === 'save_partner_config')?.[1] as { p_patch?: Record<string, unknown> } | undefined)?.p_patch
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

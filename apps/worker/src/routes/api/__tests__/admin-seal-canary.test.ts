@@ -38,6 +38,7 @@ vi.mock('@bidspoke/connection-seal', async (importOriginal) => {
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { open, RESTORE_DRILL_CANARY, restoreDrillAad } from '@bidspoke/connection-seal'
+import api from '../index'
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const USER_ID = '3b4b7f61-2a51-4c2e-9d55-0c7d3c1b9e01'
@@ -142,7 +143,6 @@ function env(): Env {
 }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

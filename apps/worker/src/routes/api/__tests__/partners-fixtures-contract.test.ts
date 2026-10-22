@@ -8,7 +8,7 @@
  * gives it the fixture's rows: the partner list, each buyer's profile read, the
  * sub-account IDs, and the stale save's 409 the merge dialog opens from.
  */
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { recordingContext } from '../../../test-setup/wait-until'
 import type { Env } from '../../../index'
 
@@ -38,6 +38,7 @@ import type { WorkflowValuesAnswer } from '../../../lib/workflow-values-shape'
 import historyJson from '../../../../../web/e2e/fixtures/partners/history.json'
 import historyMatrixJson from '../../../../../web/e2e/fixtures/partners/synthetic/history-matrix.tripoint.json'
 import type { HistoryEntry, PartnerHistory } from '@bidspoke/partner-history'
+import api from '../index'
 
 type Row = Record<string, unknown> & { id: string; slug: string; partner_type: string; accept_signals: unknown }
 const partners = partnersJson as unknown as Row[]
@@ -86,11 +87,6 @@ const withoutWarning = ({ credential_warning: _w, ...row }: Row) => row
 function supabaseWith(tables: Record<string, TableConfig | TableConfig[]>, rpc?: (name: string, args: unknown) => Promise<{ data: unknown; error: unknown }>) {
   vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase({ users: { single: testUser }, ...tables }, rpc ? { rpc } : {}) as unknown as ReturnType<typeof createSupabaseClient>)
 }
-
-// The route tree is imported once, before the tests, so its cold import (seconds
-// on a busy machine) is not charged to whichever test happens to run first.
-let api: Awaited<typeof import('../index')>['default']
-beforeAll(async () => { api = (await import('../index')).default }, 60_000)
 
 async function call(method: string, route: string, body?: unknown) {
   return api.request(route, { method, headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' }, body: body === undefined ? undefined : JSON.stringify(body) }, env, mockCtx)

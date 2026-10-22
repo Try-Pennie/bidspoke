@@ -17,6 +17,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { archiveHealth } from '../../../lib/archive-health'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 const USER_ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
@@ -36,7 +37,6 @@ const REPORT = {
 }
 
 async function request(method: string, path: string) {
-  const { default: api } = await import('../index')
   return api.fetch(
     new Request(`https://x${path}`, { method, headers: { Authorization: 'Bearer t' } }),
     testEnv,

@@ -26,6 +26,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { runExecutionArchive } from '../../../lib/execution-archive'
 import { CRON_RUN_BUDGET, REQUEST_RUN_BUDGET } from '../../../archive/deadline'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -110,7 +111,6 @@ function makeSupabase(hourRows?: Array<{ hour_start: string }>) {
 }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

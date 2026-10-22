@@ -33,6 +33,7 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { verifySlackToken } from '../../../lib/slack-token-check'
 import { CONNECTIONS_LIST_MAX } from '../connections'
+import api from '../index'
 
 const ORG = '0a000000-0000-4000-8000-000000000001'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000000002'
@@ -185,7 +186,6 @@ function makeEnv(ops: Partial<Record<'health' | 'lookup', (req: unknown) => Prom
 }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 
