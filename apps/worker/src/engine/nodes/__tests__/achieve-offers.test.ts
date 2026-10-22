@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { executeAchieveOffersNode } from '../achieve-offers'
 import type { NodeDefinition, ExecutionContext } from '../../../types'
+import type { Env } from '../../../index'
 
 function makeNode(config: Record<string, unknown> = {}): NodeDefinition {
   return {
@@ -98,7 +99,7 @@ describe('executeAchieveOffersNode', () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     const parent = new AbortController()
     parent.abort()
-    await executeAchieveOffersNode(makeNode(), makeCtx(), parent.signal)
+    await executeAchieveOffersNode(makeNode(), makeCtx(), {} as Env, parent.signal)
     const init = fetchMock.mock.calls[0][1] as RequestInit
     expect((init.signal as AbortSignal).aborted).toBe(true)
   })
@@ -113,7 +114,7 @@ describe('executeAchieveOffersNode', () => {
         init.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })))
       }))
       vi.stubGlobal('fetch', fetchMock)
-      const pending = executeAchieveOffersNode(makeNode(), makeCtx())
+      const pending = executeAchieveOffersNode(makeNode(), makeCtx(), {} as Env)
       await vi.advanceTimersByTimeAsync(8_999)
       const signal = (fetchMock.mock.calls[0][1] as RequestInit).signal as AbortSignal
       expect(signal.aborted).toBe(false)
@@ -137,7 +138,7 @@ describe('executeAchieveOffersNode', () => {
 
   it('sends an accepted lead and returns marked output with offers', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(2))
-    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx({ env: PROD_ENV }))
+    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx({ env: PROD_ENV }), {} as Env)
     const out = output as Record<string, unknown>
 
     expect(out._achieve_evaluation).toBe(true)
@@ -168,7 +169,7 @@ describe('executeAchieveOffersNode', () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ env: { ...PROD_ENV, ACHIEVE_PARTNER_KEY: 'a-shared-secret' } })
+      makeCtx({ env: { ...PROD_ENV, ACHIEVE_PARTNER_KEY: 'a-shared-secret' } }), {} as Env
     )
     const init = fetchMock.mock.calls[0][1] as RequestInit
     const headers = init.headers as Record<string, string>
@@ -176,15 +177,30 @@ describe('executeAchieveOffersNode', () => {
     expect(headers['X-Pennie-Key']).toBe('a-shared-secret')
   })
 
+  // #1263: the run's saved values lack the key (its row was removed by hand) while
+  // the Worker binding the daily required secrets check measures is still there.
+  // The call must still carry the key, as a code node's would.
+  it('sends the key from the Worker binding when the saved row is missing', async () => {
+    const fetchMock = mockFetchOnce(200, acceptedResponse(1))
+    await executeAchieveOffersNode(
+      makeNode(),
+      makeCtx({ env: PROD_ENV }),
+      { ACHIEVE_PARTNER_KEY: 'from-binding' } as unknown as Env
+    )
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    const headers = init.headers as Record<string, string>
+    expect(headers['X-Pennie-Key']).toBe('from-binding')
+  })
+
   it('defaults to the sandbox endpoint when ACHIEVE_API_URL is unset', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
-    await executeAchieveOffersNode(makeNode(), makeCtx())
+    await executeAchieveOffersNode(makeNode(), makeCtx(), {} as Env)
     expect(fetchMock.mock.calls[0][0]).toBe('https://api-stg.freedomfinancialnet.com/evaluations')
   })
 
   it('respects wait_for_offers config', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(0))
-    await executeAchieveOffersNode(makeNode({ wait_for_offers: false }), makeCtx())
+    await executeAchieveOffersNode(makeNode({ wait_for_offers: false }), makeCtx(), {} as Env)
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
     expect(body.partner_config).toEqual({ wait_for_offers: false })
   })
@@ -196,7 +212,7 @@ describe('executeAchieveOffersNode', () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     const payload = fullPayload()
     payload.loanInformation.purpose = 'credit_card_refi'
-    await executeAchieveOffersNode(makeNode(), makeCtx({ payload, env: PROD_ENV }))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ payload, env: PROD_ENV }), {} as Env)
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
     expect(body.loan_purpose).toBe('credit_card_refinance')
   })
@@ -212,7 +228,7 @@ describe('executeAchieveOffersNode', () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     await executeAchieveOffersNode(
       makeNode({ targeted_products: ['fdr'] } as Record<string, unknown>),
-      makeCtx()
+      makeCtx(), {} as Env
     )
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
     expect(body.partner_config).not.toHaveProperty('targeted_products')
@@ -230,7 +246,7 @@ describe('executeAchieveOffersNode', () => {
             output: { eligibilityData: { estimated_total_debt: 31250.6 }, final: 28000 },
           },
         },
-      })
+      }), {} as Env
     )
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
     expect(body.unsecured_debt).toBe(31251)
@@ -244,7 +260,7 @@ describe('executeAchieveOffersNode', () => {
         steps: {
           pennie_or_eligibility: { status: 'completed', output: { final: 28000 } },
         },
-      })
+      }), {} as Env
     )
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
     expect(body.unsecured_debt).toBe(28000)
@@ -261,7 +277,7 @@ describe('executeAchieveOffersNode', () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ steps: { pennie_or_eligibility: { status: 'completed', output } } })
+      makeCtx({ steps: { pennie_or_eligibility: { status: 'completed', output } } }), {} as Env
     )
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
     expect(body).not.toHaveProperty('unsecured_debt')
@@ -278,7 +294,7 @@ describe('executeAchieveOffersNode', () => {
             output: { eligibilityData: { estimated_total_debt: 0 }, final: 28000 },
           },
         },
-      })
+      }), {} as Env
     )
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
     expect(body.unsecured_debt).toBe(28000)
@@ -288,7 +304,7 @@ describe('executeAchieveOffersNode', () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     await executeAchieveOffersNode(
       makeNode({ unsecured_debt_ref: '{{steps.other.output.debt}}' }),
-      makeCtx({ steps: { other: { status: 'completed', output: { debt: 0 } } } })
+      makeCtx({ steps: { other: { status: 'completed', output: { debt: 0 } } } }), {} as Env
     )
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
     expect(body).not.toHaveProperty('unsecured_debt')
@@ -296,7 +312,7 @@ describe('executeAchieveOffersNode', () => {
 
   it('classifies a rejected lead without failing', async () => {
     mockFetchOnce(200, { response: 'rejected', response_reason: 'DuplicateLead' })
-    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx())
+    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx(), {} as Env)
     const out = output as Record<string, unknown>
     expect(out.ok).toBe(false)
     expect(out.response_status).toBe('rejected')
@@ -306,7 +322,7 @@ describe('executeAchieveOffersNode', () => {
 
   it('returns error output on non-2xx without throwing', async () => {
     mockFetchOnce(401, { message: 'Invalid credentials' })
-    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx())
+    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx(), {} as Env)
     const out = output as Record<string, unknown>
     expect(out.ok).toBe(false)
     expect(out.status).toBe(401)
@@ -316,7 +332,7 @@ describe('executeAchieveOffersNode', () => {
 
   it('returns error output when fetch throws', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
-    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx())
+    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx(), {} as Env)
     const out = output as Record<string, unknown>
     expect(out.ok).toBe(false)
     expect(out.response_status).toBe('error')
@@ -326,7 +342,7 @@ describe('executeAchieveOffersNode', () => {
   it('skips the API call when credentials are missing', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx({ env: {} }))
+    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx({ env: {} }), {} as Env)
     const out = output as Record<string, unknown>
     expect(fetchMock).not.toHaveBeenCalled()
     expect(out.response_status).toBe('error')
@@ -338,10 +354,10 @@ describe('executeAchieveOffersNode', () => {
   // shared wording sends whoever reads it to the wrong setting.
   it('names the environment whose credentials are missing', async () => {
     vi.stubGlobal('fetch', vi.fn())
-    const staging = await executeAchieveOffersNode(makeNode(), makeCtx({ env: { ACHIEVE_ENV: 'staging' } }))
+    const staging = await executeAchieveOffersNode(makeNode(), makeCtx({ env: { ACHIEVE_ENV: 'staging' } }), {} as Env)
     expect((staging.output as Record<string, unknown>).response_reason).toMatch(/staging/i)
 
-    const prod = await executeAchieveOffersNode(makeNode(), makeCtx({ env: { ACHIEVE_ENV: 'production' } }))
+    const prod = await executeAchieveOffersNode(makeNode(), makeCtx({ env: { ACHIEVE_ENV: 'production' } }), {} as Env)
     expect((prod.output as Record<string, unknown>).response_reason).toMatch(/production/i)
   })
 
@@ -353,7 +369,7 @@ describe('executeAchieveOffersNode', () => {
     vi.stubGlobal('fetch', fetchMock)
     const { output } = await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ env: { ...PROD_ENV, ACHIEVE_ENV: 'prod' } })
+      makeCtx({ env: { ...PROD_ENV, ACHIEVE_ENV: 'prod' } }), {} as Env
     )
     const out = output as Record<string, unknown>
     expect(fetchMock).not.toHaveBeenCalled()
@@ -378,7 +394,7 @@ describe('executeAchieveOffersNode', () => {
           ACHIEVE_STAGING_USERNAME: 'stg_user',
           ACHIEVE_STAGING_PASSWORD: 'stg_pass',
         },
-      })
+      }), {} as Env
     )
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('https://api-stg.freedomfinancialnet.com/evaluations')
@@ -398,7 +414,7 @@ describe('executeAchieveOffersNode', () => {
     vi.stubGlobal('fetch', fetchMock)
     const { output } = await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ env: VANTAGE_ENV, steps: withVantage(650) })
+      makeCtx({ env: VANTAGE_ENV, steps: withVantage(650) }), {} as Env
     )
     const out = output as Record<string, unknown>
     expect(fetchMock).not.toHaveBeenCalled()
@@ -411,7 +427,7 @@ describe('executeAchieveOffersNode', () => {
     vi.stubGlobal('fetch', fetchMock)
     const { output } = await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ env: VANTAGE_ENV, steps: withVantage(null) })
+      makeCtx({ env: VANTAGE_ENV, steps: withVantage(null) }), {} as Env
     )
     const out = output as Record<string, unknown>
     expect(fetchMock).not.toHaveBeenCalled()
@@ -428,7 +444,7 @@ describe('executeAchieveOffersNode', () => {
     vi.stubGlobal('fetch', fetchMock)
     const { output } = await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ env: { ...PROD_ENV, ACHIEVE_ALLOWED_STATES: 'CA,TX' }, steps: withVantage(720) })
+      makeCtx({ env: { ...PROD_ENV, ACHIEVE_ALLOWED_STATES: 'CA,TX' }, steps: withVantage(720) }), {} as Env
     )
     const out = output as Record<string, unknown>
     expect(fetchMock).not.toHaveBeenCalled()
@@ -441,7 +457,7 @@ describe('executeAchieveOffersNode', () => {
     vi.stubGlobal('fetch', vi.fn())
     const { output } = await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ env: { ...PROD_ENV, ACHIEVE_MIN_LOAN_AMOUNT: '10000' }, steps: withVantage(720) })
+      makeCtx({ env: { ...PROD_ENV, ACHIEVE_MIN_LOAN_AMOUNT: '10000' }, steps: withVantage(720) }), {} as Env
     )
     const out = output as Record<string, unknown>
     expect(out.reason).toBe('loan_amount_below_min')
@@ -453,7 +469,7 @@ describe('executeAchieveOffersNode', () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ env: VANTAGE_ENV, steps: withVantage(720) })
+      makeCtx({ env: VANTAGE_ENV, steps: withVantage(720) }), {} as Env
     )
     expect(fetchMock).toHaveBeenCalled()
   })
@@ -462,7 +478,7 @@ describe('executeAchieveOffersNode', () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ env: { ...PROD_ENV, ACHIEVE_MIN_VANTAGE_SCORE: '0' }, steps: withVantage(400) })
+      makeCtx({ env: { ...PROD_ENV, ACHIEVE_MIN_VANTAGE_SCORE: '0' }, steps: withVantage(400) }), {} as Env
     )
     expect(fetchMock).toHaveBeenCalled()
   })
@@ -471,7 +487,7 @@ describe('executeAchieveOffersNode', () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ env: PROD_ENV, steps: withVantage(400) })
+      makeCtx({ env: PROD_ENV, steps: withVantage(400) }), {} as Env
     )
     expect(fetchMock).toHaveBeenCalled()
   })
@@ -483,7 +499,7 @@ describe('executeAchieveOffersNode', () => {
     vi.stubGlobal('fetch', fetchMock)
     const { output } = await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ payload: { personalInformation: { firstName: 'Joe' } }, env: PROD_ENV })
+      makeCtx({ payload: { personalInformation: { firstName: 'Joe' } }, env: PROD_ENV }), {} as Env
     )
     const out = output as Record<string, unknown>
     expect(fetchMock).not.toHaveBeenCalled()
@@ -503,7 +519,7 @@ describe('executeAchieveOffersNode', () => {
           ACHIEVE_PASSWORD: 'p',
           ACHIEVE_API_URL: 'https://api.freedomfinancialnet.com',
         },
-      })
+      }), {} as Env
     )
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('https://api.freedomfinancialnet.com/evaluations')
@@ -517,7 +533,7 @@ describe('executeAchieveOffersNode', () => {
   describe('tracking fields for Achieve (#1080)', () => {
     const trackingSent = async (payload: unknown, env: Record<string, string>, config: Record<string, unknown> = {}) => {
       const fetchMock = mockFetchOnce(200, acceptedResponse(1))
-      await executeAchieveOffersNode(makeNode(config), makeCtx({ payload, env }))
+      await executeAchieveOffersNode(makeNode(config), makeCtx({ payload, env }), {} as Env)
       const [, init] = fetchMock.mock.calls[0] as [string, RequestInit]
       return JSON.parse(init.body as string).tracking as Record<string, unknown>
     }
@@ -576,7 +592,7 @@ describe('executeAchieveOffersNode', () => {
       mockFetchOnce(status, body, headers)
       const { output } = await executeAchieveOffersNode(
         makeNode(),
-        makeCtx({ payload: fullPayload(), env: PROD_ENV })
+        makeCtx({ payload: fullPayload(), env: PROD_ENV }), {} as Env
       )
       return output as Record<string, unknown>
     }
@@ -647,7 +663,7 @@ describe('executeAchieveOffersNode', () => {
 
     it('carries the derived metrics on a sent lead', async () => {
       mockFetchOnce(200, acceptedResponse(1))
-      const { output } = await executeAchieveOffersNode(makeNode(), withReport())
+      const { output } = await executeAchieveOffersNode(makeNode(), withReport(), {} as Env)
       const metrics = (output as Record<string, unknown>).credit_metrics as Record<string, unknown>
       expect(metrics.vantage_score).toBe(720)
       expect(metrics.revolving_utilisation).toBeCloseTo(0.3, 4)
@@ -662,7 +678,7 @@ describe('executeAchieveOffersNode', () => {
       mockFetchOnce(200, acceptedResponse(1))
       const ctx = withReport()
       delete (ctx.steps as Record<string, unknown>).equifax_credit_report
-      const { output } = await executeAchieveOffersNode(makeNode(), ctx)
+      const { output } = await executeAchieveOffersNode(makeNode(), ctx, {} as Env)
       expect((output as Record<string, unknown>).credit_metrics).toBeNull()
     })
   })
@@ -676,7 +692,7 @@ describe('executeAchieveOffersNode', () => {
       const fetchMock = mockFetchOnce(200, acceptedResponse(1))
       const ctx = makeCtx({ env: VANTAGE_ENV, steps: withVantage(650) })
       ctx.isTest = true
-      const { output } = await executeAchieveOffersNode(makeNode(), ctx)
+      const { output } = await executeAchieveOffersNode(makeNode(), ctx, {} as Env)
       const out = output as Record<string, unknown>
       expect(fetchMock).toHaveBeenCalledTimes(1)
       expect(out._achieve_evaluation).toBe(true)
@@ -688,7 +704,7 @@ describe('executeAchieveOffersNode', () => {
       vi.stubGlobal('fetch', fetchMock)
       const { output } = await executeAchieveOffersNode(
         makeNode(),
-        makeCtx({ env: VANTAGE_ENV, steps: withVantage(650) })
+        makeCtx({ env: VANTAGE_ENV, steps: withVantage(650) }), {} as Env
       )
       expect(fetchMock).not.toHaveBeenCalled()
       expect((output as Record<string, unknown>)._achieve_skipped).toBe(true)
@@ -699,7 +715,7 @@ describe('executeAchieveOffersNode', () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
     const payload = fullPayload()
     payload.financialInformation = { annualIncome: 0, employmentStatus: 'gig_worker' }
-    await executeAchieveOffersNode(makeNode(), makeCtx({ payload }))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ payload }), {} as Env)
     const body = JSON.parse((fetchMock.mock.calls[0][1] as RequestInit).body as string)
     expect(body).not.toHaveProperty('annual_income')
     expect(body).not.toHaveProperty('employment_status')
@@ -732,7 +748,7 @@ describe('executeAchieveOffersNode sandbox profile', () => {
 
   it('overlays only the seeded name and address in the sandbox', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
-    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }), {} as Env)
     const body = sentBody(fetchMock)
 
     expect(body.first_name).toBe('Mark')
@@ -750,7 +766,7 @@ describe('executeAchieveOffersNode sandbox profile', () => {
 
   it('overlays the seeded SSN in the sandbox', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
-    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }), {} as Env)
     const body = sentBody(fetchMock)
 
     // Achieve gave us the seeded profile's SSN; it must be sent in their NNN-NN-NNNN format,
@@ -761,7 +777,7 @@ describe('executeAchieveOffersNode sandbox profile', () => {
 
   it('keeps every non-seeded field as the real lead in the sandbox', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
-    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(STG) }), {} as Env)
     const body = sentBody(fetchMock)
 
     // Only name, address and SSN are seeded; everything else stays the real lead's.
@@ -776,7 +792,7 @@ describe('executeAchieveOffersNode sandbox profile', () => {
 
   it('sends the real lead untouched when pointed at production', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
-    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(PROD) }))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(PROD) }), {} as Env)
     const body = sentBody(fetchMock)
 
     expect(body.first_name).toBe('Joseph')
@@ -789,7 +805,7 @@ describe('executeAchieveOffersNode sandbox profile', () => {
 
   it('fails safe: overlays the seeded name when ACHIEVE_API_URL is unset', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
-    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(undefined) }))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(undefined) }), {} as Env)
     const body = sentBody(fetchMock)
 
     expect(body.last_name).toBe('Mayerberger')
@@ -804,35 +820,35 @@ describe('executeAchieveOffersNode sandbox profile', () => {
     const sandboxEnv = envWith(STG)
 
     mockFetchOnce(200, acceptedResponse(1))
-    const ok = await executeAchieveOffersNode(makeNode(), makeCtx({ env: sandboxEnv }))
+    const ok = await executeAchieveOffersNode(makeNode(), makeCtx({ env: sandboxEnv }), {} as Env)
     expect((ok.output as Record<string, unknown>).sandbox).toBe(true)
 
     mockFetchOnce(401, { message: 'Invalid credentials' })
-    const authFail = await executeAchieveOffersNode(makeNode(), makeCtx({ env: sandboxEnv }))
+    const authFail = await executeAchieveOffersNode(makeNode(), makeCtx({ env: sandboxEnv }), {} as Env)
     expect((authFail.output as Record<string, unknown>).sandbox).toBe(true)
 
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network down')))
-    const netFail = await executeAchieveOffersNode(makeNode(), makeCtx({ env: sandboxEnv }))
+    const netFail = await executeAchieveOffersNode(makeNode(), makeCtx({ env: sandboxEnv }), {} as Env)
     expect((netFail.output as Record<string, unknown>).sandbox).toBe(true)
 
     // Incomplete lead: skipped before the API call, still a sandbox-shaped row.
     const incomplete = await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ payload: { personalInformation: {} }, env: sandboxEnv })
+      makeCtx({ payload: { personalInformation: {} }, env: sandboxEnv }), {} as Env
     )
     expect((incomplete.output as Record<string, unknown>).sandbox).toBe(true)
 
     // Missing credentials: skipped before the API call.
     const noCreds = await executeAchieveOffersNode(
       makeNode(),
-      makeCtx({ env: { ACHIEVE_API_URL: STG } })
+      makeCtx({ env: { ACHIEVE_API_URL: STG } }), {} as Env
     )
     expect((noCreds.output as Record<string, unknown>).sandbox).toBe(true)
   })
 
   it('marks the output NOT sandbox on production', async () => {
     mockFetchOnce(200, acceptedResponse(1))
-    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(PROD) }))
+    const { output } = await executeAchieveOffersNode(makeNode(), makeCtx({ env: envWith(PROD) }), {} as Env)
     expect((output as Record<string, unknown>).sandbox).toBe(false)
   })
 })
@@ -877,7 +893,7 @@ describe('executeAchieveOffersNode consents', () => {
       makeCtx({
         payload: payloadWithConsents({ consentsToFcra: true, consentsToTcpa: true }),
         env: consentEnv,
-      })
+      }), {} as Env
     )
     // e_sign / policy / term ride on the same "Agree & View Offers" click that grants FCRA.
     expect(sentBody(fetchMock).consents).toEqual({
@@ -896,7 +912,7 @@ describe('executeAchieveOffersNode consents', () => {
       makeCtx({
         payload: payloadWithConsents({ consentsToFcra: true, consentsToTcpa: false }),
         env: consentEnv,
-      })
+      }), {} as Env
     )
     const consents = sentBody(fetchMock).consents
     expect(consents).not.toHaveProperty('tcpa')
@@ -910,7 +926,7 @@ describe('executeAchieveOffersNode consents', () => {
       makeCtx({
         payload: payloadWithConsents({ consentsToFcra: false, consentsToTcpa: true }),
         env: consentEnv,
-      })
+      }), {} as Env
     )
     const consents = sentBody(fetchMock).consents
     expect(consents).toEqual({ tcpa: TCPA })
@@ -923,7 +939,7 @@ describe('executeAchieveOffersNode consents', () => {
       makeCtx({
         payload: payloadWithConsents({ consentsToFcra: true, consentsToTcpa: true }),
         env: { ACHIEVE_USERNAME: 'u', ACHIEVE_PASSWORD: 'p', ACHIEVE_CONSENT_FCRA: FCRA },
-      })
+      }), {} as Env
     )
     expect(sentBody(fetchMock).consents).toEqual({ fcra: FCRA })
   })
@@ -935,14 +951,14 @@ describe('executeAchieveOffersNode consents', () => {
       makeCtx({
         payload: payloadWithConsents({ consentsToFcra: false, consentsToTcpa: false }),
         env: consentEnv,
-      })
+      }), {} as Env
     )
     expect(sentBody(fetchMock)).not.toHaveProperty('consents')
   })
 
   it('omits consents entirely when the payload has no legalInformation', async () => {
     const fetchMock = mockFetchOnce(200, acceptedResponse(1))
-    await executeAchieveOffersNode(makeNode(), makeCtx({ env: consentEnv }))
+    await executeAchieveOffersNode(makeNode(), makeCtx({ env: consentEnv }), {} as Env)
     expect(sentBody(fetchMock)).not.toHaveProperty('consents')
   })
 })

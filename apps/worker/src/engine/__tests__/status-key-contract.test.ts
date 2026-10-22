@@ -207,7 +207,7 @@ describe('status output key contract', () => {
     }
     const result = await executeAchieveOffersNode(
       makeNode('achieve_offers', {}),
-      makeCtx(payload, { ACHIEVE_USERNAME: 'user', ACHIEVE_PASSWORD: 'pass' })
+      makeCtx(payload, { ACHIEVE_USERNAME: 'user', ACHIEVE_PASSWORD: 'pass' }), {} as Env
     )
     expectCanonicalStatus(result.output, 200)
   })

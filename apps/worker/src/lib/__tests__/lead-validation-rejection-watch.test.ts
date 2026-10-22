@@ -19,13 +19,16 @@ vi.mock('../slack', () => ({
 import { LEAD_REJECTION_REASONS } from '@bidspoke/workflow-definition'
 import {
   BASELINE_DAYS,
+  BASELINE_DAY_ENDS_UTC_HOUR,
   LEAD_VALIDATION_REJECTION_JOB,
   LEAD_VALIDATION_REJECTION_SIGNAL,
   REJECTION_RULE,
   REJECTION_WATCHES,
   SETTLE_MS,
   WINDOW_MINUTES,
+  baselineDays,
   judgeRejectionShares,
+  readBaselineCounts,
   readRejectionCounts,
   rejectionBuckets,
   runLeadValidationRejectionWatch,
@@ -201,42 +204,51 @@ describe('the watch, its signal and its heartbeat', () => {
 
 interface ExecRow { workflow_id: string; started_at: string; is_test: boolean; status: string; final_node_namespace: string | null; reason: string | null }
 
-/** A Supabase double that applies the filters a head count uses to workflow_executions rows. */
-function makeSupabase(rows: ExecRow[], other: Record<string, unknown[]> = {}, opts: { failOn?: string } = {}) {
-  const queries: string[] = []
+interface CountArgs { p_workflow_id: string; p_namespace: string; p_from: string; p_to: string }
+
+/**
+ * A Supabase double. lead_validation_rejection_counts is computed from the rows
+ * the way the SQL function computes it (supabase/tests/lead_validation_rejection_counts.test.sql
+ * proves the function against a real database); every other table answers `other`.
+ */
+function makeSupabase(rows: ExecRow[], other: Record<string, unknown[]> = {}, opts: { fail?: (a: CountArgs) => boolean } = {}) {
+  const counted: CountArgs[] = []
   return {
-    queries,
+    counted,
+    rpc(name: string, a: CountArgs) {
+      if (name !== 'lead_validation_rejection_counts') return Promise.resolve({ data: null, error: { message: `no function ${name}` } })
+      counted.push(a)
+      if (opts.fail?.(a)) return Promise.resolve({ data: null, error: { message: 'canceling statement due to statement timeout' } })
+      const live = rows.filter((r) => r.workflow_id === a.p_workflow_id && !r.is_test && r.status !== 'running' && r.started_at >= a.p_from && r.started_at < a.p_to)
+      const atStep = live.filter((r) => r.final_node_namespace === a.p_namespace)
+      const byReason: Record<string, number> = {}
+      for (const r of atStep) if (r.status !== 'failed' && r.reason !== null) byReason[r.reason] = (byReason[r.reason] ?? 0) + 1
+      return Promise.resolve({ data: [{ runs: live.length, at_step: atStep.length, failed: atStep.filter((r) => r.status === 'failed').length, by_reason: byReason }], error: null })
+    },
     from(table: string) {
-      const filters: Array<(r: ExecRow) => boolean> = []
-      const desc: string[] = []
-      let head = false
-      const col = (r: ExecRow, c: string): unknown => (c === 'response_body->>reason' ? r.reason : (r as unknown as Record<string, unknown>)[c])
       // Any builder method this double does not model (the Slack list read's) passes through.
       const chain: Record<string, unknown> = new Proxy({} as Record<string, unknown>, {
-        get(_t, prop) { return prop in methods ? methods[prop as string] : () => chain },
-      })
-      const methods: Record<string, unknown> = {
-        select(_cols: string, o?: { count?: string; head?: boolean }) { head = Boolean(o?.head); return chain },
-        eq(c: string, v: unknown) { desc.push(`${c}=${String(v)}`); filters.push((r) => col(r, c) === v); return chain },
-        neq(c: string, v: unknown) { desc.push(`${c}!=${String(v)}`); filters.push((r) => col(r, c) !== v); return chain },
-        gte(c: string, v: string) { filters.push((r) => String(col(r, c)) >= v); return chain },
-        lt(c: string, v: string) { filters.push((r) => String(col(r, c)) < v); return chain },
-        then(res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) {
-          if (table === 'workflow_executions') {
-            queries.push(desc.join(' '))
-            if (opts.failOn && desc.join(' ').includes(opts.failOn)) return Promise.resolve({ data: null, count: null, error: { message: 'statement timeout' } }).then(res, rej)
-            const n = rows.filter((r) => filters.every((f) => f(r))).length
-            return Promise.resolve({ data: head ? null : [], count: n, error: null }).then(res, rej)
-          }
-          return Promise.resolve({ data: other[table] ?? [], error: null }).then(res, rej)
+        get(_t, prop) {
+          if (prop === 'then') return (res: (v: unknown) => unknown, rej?: (e: unknown) => unknown) => Promise.resolve({ data: other[table] ?? [], error: null }).then(res, rej)
+          return () => chain
         },
-      }
+      })
       return chain
     },
   }
 }
 
-describe('readRejectionCounts(): head counts over workflow_executions', () => {
+function makeKv(initial: Record<string, string> = {}) {
+  const m = new Map(Object.entries(initial))
+  return {
+    store: m,
+    get: vi.fn(async (k: string) => m.get(k) ?? null),
+    put: vi.fn(async (k: string, v: string, _o?: { expirationTtl?: number }) => { m.set(k, v) }),
+    delete: vi.fn(async (k: string) => { m.delete(k) }),
+  }
+}
+
+describe('readRejectionCounts(): one pass over workflow_executions', () => {
   const at = '2026-10-21T15:00:00.000Z'
   const base = { workflow_id: GIGFI, started_at: at, is_test: false, status: 'completed' }
   const rows: ExecRow[] = [
@@ -251,18 +263,108 @@ describe('readRejectionCounts(): head counts over workflow_executions', () => {
     { ...base, final_node_namespace: STEP, reason: 'ineligible state', started_at: '2026-10-21T17:00:00.000Z' },
   ]
 
-  it('counts finished live runs in the window, by where they ended and why', async () => {
-    const c = await readRejectionCounts(makeSupabase(rows) as never, REJECTION_WATCHES[0], new Date('2026-10-21T14:00:00Z'), new Date('2026-10-21T16:00:00Z'))
+  it('counts finished live runs in the window, by where they ended and why, in one read', async () => {
+    const supabase = makeSupabase(rows)
+    const c = await readRejectionCounts(supabase as never, REJECTION_WATCHES[0], new Date('2026-10-21T14:00:00Z'), new Date('2026-10-21T16:00:00Z'))
     expect(c.runs).toBe(5)
     expect(c.atStep).toBe(4)
     expect(c.failed).toBe(1)
     expect(c.byReason['ineligible state']).toBe(2)
+    // Only the listed reasons are named; a reason off the list is what remains.
+    expect(Object.keys(c.byReason).sort()).toEqual([...LEAD_REJECTION_REASONS].sort())
     expect(rejectionBuckets(c).find((b) => b.bucket === 'a reason not on the list')?.count).toBe(1)
+    expect(supabase.counted).toEqual([{ p_workflow_id: GIGFI, p_namespace: STEP, p_from: '2026-10-21T14:00:00.000Z', p_to: '2026-10-21T16:00:00.000Z' }])
   })
 
-  it('throws when a count cannot be read, so the run fails rather than reading as quiet', async () => {
-    const supabase = makeSupabase(rows, {}, { failOn: 'status=failed' })
+  it('throws when the count cannot be read, so the run fails rather than reading as quiet', async () => {
+    const supabase = makeSupabase(rows, {}, { fail: () => true })
     await expect(readRejectionCounts(supabase as never, REJECTION_WATCHES[0], new Date('2026-10-21T14:00:00Z'), new Date('2026-10-21T16:00:00Z'))).rejects.toThrow(/statement timeout/)
+  })
+
+  it('throws on an answer that is not one row of whole counts, rather than judging a misread', async () => {
+    const bad = (data: unknown) => ({ rpc: () => Promise.resolve({ data, error: null }) })
+    const from = new Date('2026-10-21T14:00:00Z')
+    const to = new Date('2026-10-21T16:00:00Z')
+    await expect(readRejectionCounts(bad([]) as never, REJECTION_WATCHES[0], from, to)).rejects.toThrow(/not one row of counts/)
+    await expect(readRejectionCounts(bad([{ runs: '5', at_step: 1, failed: 0, by_reason: {} }]) as never, REJECTION_WATCHES[0], from, to)).rejects.toThrow(/not one row of counts/)
+    await expect(readRejectionCounts(bad([{ runs: 5, at_step: 1, failed: 0, by_reason: { x: -1 } }]) as never, REJECTION_WATCHES[0], from, to)).rejects.toThrow(/not one row of counts/)
+  })
+})
+
+describe('baselineDays(): the baseline is seven whole days, so it is counted a day at a time', () => {
+  it('ends at the last 08:00 UTC at or before the window starts, in seven day long pieces', () => {
+    expect(BASELINE_DAY_ENDS_UTC_HOUR).toBe(8)
+    const days = baselineDays(new Date('2026-10-22T12:58:00Z'))
+    expect(days).toHaveLength(BASELINE_DAYS)
+    expect(days[0]).toEqual({ from: new Date('2026-10-15T08:00:00Z'), to: new Date('2026-10-16T08:00:00Z') })
+    expect(days[6]).toEqual({ from: new Date('2026-10-21T08:00:00Z'), to: new Date('2026-10-22T08:00:00Z') })
+    // Before 08:00 the day before's boundary still stands, and exactly at it the new one does.
+    expect(baselineDays(new Date('2026-10-22T07:59:59Z'))[6].to).toEqual(new Date('2026-10-21T08:00:00Z'))
+    expect(baselineDays(new Date('2026-10-22T08:00:00Z'))[6].to).toEqual(new Date('2026-10-22T08:00:00Z'))
+  })
+
+  it('starts no earlier than a baselineSince, dropping the days before it and cutting the day it falls in', () => {
+    const days = baselineDays(new Date('2026-10-22T12:58:00Z'), Date.parse('2026-10-19T14:53:40.535Z'))
+    expect(days.map((d) => d.from.toISOString())).toEqual(['2026-10-19T14:53:40.535Z', '2026-10-20T08:00:00.000Z', '2026-10-21T08:00:00.000Z'])
+    // A since after the boundary leaves no baseline at all, which judges as unmeasured.
+    expect(baselineDays(new Date('2026-10-22T12:58:00Z'), Date.parse('2026-10-22T09:00:00Z'))).toEqual([])
+  })
+})
+
+describe('readBaselineCounts(): each whole day is counted once and kept', () => {
+  const watch = REJECTION_WATCHES[1]
+  const rowsOn = (day: string, n: number, reason: string): ExecRow[] =>
+    Array.from({ length: n }, () => ({ workflow_id: LENDSWIFT, started_at: `${day}T12:00:00.000Z`, is_test: false, status: 'completed', final_node_namespace: STEP, reason }))
+  const rows = [...rowsOn('2026-10-16', 3, 'loan amount exceeds maximum'), ...rowsOn('2026-10-21', 2, 'military status ineligible'), ...rowsOn('2026-10-21', 1, 'renamed reason')]
+  const days = baselineDays(new Date('2026-10-22T12:58:00Z'))
+
+  it('sums the days, and reads each from the database only until it is kept', async () => {
+    const supabase = makeSupabase(rows)
+    const kv = makeKv()
+    const first = await readBaselineCounts(supabase as never, kv as never, watch, days)
+    expect(first).toMatchObject({ runs: 6, atStep: 6, failed: 0 })
+    expect(first.byReason['loan amount exceeds maximum']).toBe(3)
+    expect(first.byReason['military status ineligible']).toBe(2)
+    expect(supabase.counted).toHaveLength(BASELINE_DAYS)
+    // Kept for longer than the baseline reaches back, so a day is never counted twice.
+    expect(kv.put.mock.calls.every((c) => (c[2]?.expirationTtl ?? 0) > BASELINE_DAYS * 86_400)).toBe(true)
+
+    const again = await readBaselineCounts(supabase as never, kv as never, watch, days)
+    expect(again).toEqual(first)
+    expect(supabase.counted).toHaveLength(BASELINE_DAYS)
+  })
+
+  it('counts a day again when what was kept for it is not a whole set of counts', async () => {
+    const supabase = makeSupabase(rows)
+    const kv = makeKv()
+    await readBaselineCounts(supabase as never, kv as never, watch, days)
+    const key = [...kv.store.keys()].find((k) => k.endsWith(':2026-10-21T08:00:00.000Z:2026-10-22T08:00:00.000Z'))
+    expect(key).toBeDefined()
+    kv.store.set(key as string, '{"runs":"lots"}')
+    const c = await readBaselineCounts(supabase as never, kv as never, watch, days)
+    expect(c.runs).toBe(6)
+    expect(supabase.counted).toHaveLength(BASELINE_DAYS + 1)
+  })
+
+  it('still counts when the store cannot be read or written, saying so in the log', async () => {
+    const supabase = makeSupabase(rows)
+    const kv = makeKv()
+    kv.get.mockRejectedValue(new Error('kv down'))
+    kv.put.mockRejectedValue(new Error('kv down'))
+    const err = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const c = await readBaselineCounts(supabase as never, kv as never, watch, days)
+    expect(c.runs).toBe(6)
+    expect(err.mock.calls.some((args) => String(args[0]).includes('kv down'))).toBe(true)
+    err.mockRestore()
+  })
+
+  it('throws when a day cannot be counted, and keeps nothing for it', async () => {
+    const supabase = makeSupabase(rows, {}, { fail: (a) => a.p_from === '2026-10-18T08:00:00.000Z' })
+    const kv = makeKv()
+    await expect(readBaselineCounts(supabase as never, kv as never, watch, days)).rejects.toThrow(/statement timeout/)
+    expect([...kv.store.keys()].some((k) => k.endsWith(':2026-10-18T08:00:00.000Z:2026-10-19T08:00:00.000Z'))).toBe(false)
+    // The days before it were counted and kept.
+    expect([...kv.store.keys()].some((k) => k.endsWith(':2026-10-17T08:00:00.000Z:2026-10-18T08:00:00.000Z'))).toBe(true)
   })
 })
 
@@ -274,16 +376,6 @@ describe('runLeadValidationRejectionWatch', () => {
   const URL = 'https://app.example.com'
   const wf = { id: GIGFI, name: 'RML - Bidding Workflow (GigFi)', organization_id: ORG, slack_channel: null }
   const NOW = Date.parse('2026-10-21T18:00:00.000Z')
-
-  function makeKv(initial: Record<string, string> = {}) {
-    const m = new Map(Object.entries(initial))
-    return {
-      store: m,
-      get: vi.fn(async (k: string) => m.get(k) ?? null),
-      put: vi.fn(async (k: string, v: string) => { m.set(k, v) }),
-      delete: vi.fn(async (k: string) => { m.delete(k) }),
-    }
-  }
 
   /** `n` finished runs at `at`, `rejected` of them at the step with `reason`. */
   function runs(at: string, n: number, byReason: Record<string, number>): ExecRow[] {
@@ -305,7 +397,7 @@ describe('runLeadValidationRejectionWatch', () => {
     vi.mocked(sendLeadValidationRejectionAlert).mockResolvedValue(true)
   })
 
-  it('judges the two hours that ended SETTLE_MS ago against the week before them', async () => {
+  it('judges the two hours that ended SETTLE_MS ago against the seven whole days before them', async () => {
     const supabase = db(runs(windowAt, 600, { 'ineligible state': 70, 'loan amount exceeds maximum': 95 }))
     const out = await runLeadValidationRejectionWatch(supabase as never, makeKv() as never, URL, NOW)
     expect(BASELINE_DAYS).toBe(7)
@@ -380,8 +472,8 @@ describe('runLeadValidationRejectionWatch', () => {
     const supabase = makeSupabase([...after, ...window], { service_connections: [{ organization_id: ORG }], workflows: [wf] })
     const out = await runLeadValidationRejectionWatch(supabase as never, makeKv() as never, URL, NOW, [{ workflowId: GIGFI, namespace: STEP, reasons: LEAD_REJECTION_REASONS, baselineSince: since }])
     expect(out.paged).toEqual([GIGFI])
-    // From the start to the window's start: 2 days less the 2 hour window and the 2 minute settle.
-    expect(vi.mocked(sendLeadValidationRejectionAlert).mock.calls[0][2].baseline_days).toBe(1.9)
+    // From the start (2026-10-19 18:00) to the end of the baseline's last whole day (2026-10-21 08:00).
+    expect(vi.mocked(sendLeadValidationRejectionAlert).mock.calls[0][2].baseline_days).toBe(1.6)
   })
 
   it('refuses a baselineSince that is not a time, rather than reading the whole week', async () => {
@@ -402,5 +494,73 @@ describe('runLeadValidationRejectionWatch', () => {
     const out = await runLeadValidationRejectionWatch(supabase as never, makeKv() as never, URL, NOW)
     expect(out.judged).toEqual([])
     expect(sendLeadValidationRejectionAlert).not.toHaveBeenCalled()
+  })
+
+  it('reads only the two hour window on the next hour, the baseline days being kept', async () => {
+    const kv = makeKv()
+    const supabase = db(runs(windowAt, 600, { 'ineligible state': 70, 'loan amount exceeds maximum': 95 }))
+    await runLeadValidationRejectionWatch(supabase as never, kv as never, URL, NOW)
+    expect(supabase.counted).toHaveLength(1 + BASELINE_DAYS)
+    const next = await runLeadValidationRejectionWatch(supabase as never, kv as never, URL, NOW + 3_600_000)
+    expect(next.judged).toEqual([{ workflowId: GIGFI, state: 'normal', runs: 600, baselineRuns: 20_000 }])
+    expect(supabase.counted).toHaveLength(2 + BASELINE_DAYS)
+  })
+})
+
+/**
+ * The read budget (#2647), held against the largest watched workflow. RML
+ * LendSwift ran 99,115 times in the week to 2026-10-22, about five times GigFi
+ * or Lead Economy, and its week is about 101,000 heap pages, 790 MB of a 1 GB
+ * shared_buffers. Twelve counts of that week every hour were cancelled at the
+ * 30 s service_role ceiling at 04:00 and 09:00 UTC that day. One day of it is
+ * about 14,500 runs and 14,400 pages (37 ms warm, measured 2026-10-22 15:30
+ * UTC). So no read may span more than one day, a whole day is read once and
+ * then kept, and an hourly run reads the two hour window and nothing else.
+ */
+describe('the read budget: no hourly run recounts the week', () => {
+  const ORG = '26472647-2647-4647-8647-264726472647'
+  const wfs = [GIGFI, LENDSWIFT, LEAD_ECONOMY].map((id) => ({ id, name: id, organization_id: ORG, slack_channel: null }))
+  const START = Date.parse('2026-10-21T18:00:00.000Z')
+  const DAY = 24 * 3_600_000
+
+  /** 160 finished runs every hour for each workflow, from 9 days before START to a day after it. */
+  function traffic(): ExecRow[] {
+    const out: ExecRow[] = []
+    for (let h = START - 9 * DAY; h < START + DAY; h += 3_600_000) {
+      const at = new Date(h + 30 * 60_000).toISOString()
+      for (const wf of wfs) for (let i = 0; i < 160; i++) out.push({ workflow_id: wf.id, started_at: at, is_test: false, status: 'completed', final_node_namespace: i < 20 ? STEP : 'return_response', reason: i < 20 ? 'loan amount exceeds maximum' : null })
+    }
+    return out
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(getSlackConnection).mockResolvedValue({ bot_token: 'xoxb-t', default_channel: 'C1' } as never)
+  })
+
+  it('over a day of hourly runs reads each whole day once per watch, and every read is at most a day long', async () => {
+    const supabase = makeSupabase(traffic(), { service_connections: [{ organization_id: ORG }], workflows: wfs })
+    const kv = makeKv()
+    const perRun: number[] = []
+    for (let h = 0; h < 24; h++) {
+      const before = supabase.counted.length
+      const out = await runLeadValidationRejectionWatch(supabase as never, kv as never, 'https://app.example.com', START + h * 3_600_000)
+      expect(out.judged.map((j) => j.state)).toEqual(['normal', 'normal', 'normal'])
+      perRun.push(supabase.counted.length - before)
+    }
+    const span = (a: CountArgs) => Date.parse(a.p_to) - Date.parse(a.p_from)
+    expect(Math.max(...supabase.counted.map(span))).toBeLessThanOrEqual(DAY)
+
+    const windows = supabase.counted.filter((a) => span(a) === WINDOW_MINUTES * 60_000)
+    const days = supabase.counted.filter((a) => span(a) !== WINDOW_MINUTES * 60_000)
+    expect(windows).toHaveLength(24 * 3)
+    // No whole day is read twice for the same watch.
+    expect(new Set(days.map((a) => `${a.p_workflow_id} ${a.p_from} ${a.p_to}`)).size).toBe(days.length)
+    // The first run reads the week a day at a time; one new day joins at 11:00 UTC (08:00 plus the window and the settle).
+    for (const wf of [GIGFI, LENDSWIFT]) expect(days.filter((a) => a.p_workflow_id === wf)).toHaveLength(BASELINE_DAYS + 1)
+    // Lead Economy's baseline starts at its version 39 save, so it holds fewer days.
+    expect(days.filter((a) => a.p_workflow_id === LEAD_ECONOMY)).toHaveLength(3)
+    // Every run after the first reads only the windows, apart from the one that takes in the new day.
+    expect(perRun.slice(1).filter((n) => n !== 3)).toEqual([6])
   })
 })

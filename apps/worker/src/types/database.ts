@@ -3292,6 +3292,20 @@ export type Database = {
         Returns: number
       }
       is_allowlisted: { Args: never; Returns: boolean }
+      lead_validation_rejection_counts: {
+        Args: {
+          p_from: string
+          p_namespace: string
+          p_to: string
+          p_workflow_id: string
+        }
+        Returns: {
+          at_step: number
+          by_reason: Json
+          failed: number
+          runs: number
+        }[]
+      }
       monitor_partner_page_ping: {
         Args: { p_org: string; p_save_id: string }
         Returns: Json

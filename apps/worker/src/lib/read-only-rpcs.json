@@ -14,6 +14,7 @@
     "field_presence_window",
     "pg_cron_health",
     "query_timeout_watch",
+    "lead_validation_rejection_counts",
     "step_duration_percentiles",
     "step_duration_percentiles_by_workflow",
     "step_duration_percentiles_typed",
