@@ -54,10 +54,11 @@ export function AlertSettings({ state, now, onToggle, onChannelOpen, onChannelCh
       )}
       {load.kind === 'failed' && (
         <div className="ga-failed">
-          <FieldError alert size="sm">{load.sentence}</FieldError>
+          <FieldError alert size="sm" part="alerts-line" partState="failed">{load.sentence}</FieldError>
           <Button variant="secondary" className="cx-btn-quiet" onClick={onRetry}>Try again</Button>
         </div>
       )}
+      {/* No way to connect a first alert bot from the app since the Integrations page went: #2642. */}
       {load.kind === 'none' && <p className="cx-empty">{NOT_CONNECTED}</p>}
       {load.kind === 'loaded' && (
         <div className="cx-rows cx-alert-rows">

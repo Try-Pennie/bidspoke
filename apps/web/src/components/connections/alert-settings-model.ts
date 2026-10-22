@@ -128,7 +128,11 @@ export function settingsUnreadable(err: unknown): string {
   return `The alert settings could not be read: ${sentence ? sentence.replace(/\.$/, '') : cause}.`
 }
 
-/** The panel's line when the organization has no Slack alert connection to set. */
+/**
+ * The panel's line when the organization has no Slack alert connection to set.
+ * Connecting a first alert bot (and checking a token's workspace) has no page
+ * since the Integrations page was retired: #2642.
+ */
 export const NOT_CONNECTED = 'This organization has no Slack alert connection, so there are no alert settings to show.'
 
 /** The fewest letters a channel search sends, as GET /api/integrations/slack/channels requires. */

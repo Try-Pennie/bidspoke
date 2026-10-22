@@ -165,11 +165,11 @@ describe('the shared controls live in one place (L613)', () => {
  * JSX), counted on main at cc073f0f when #2137 built the shared Select: 40 in
  * 11 files. #2137 took 8 of them: SignalRuleBuilder.tsx 3,
  * ExtraExtractionEditor.tsx 2, BidResolverEditor.tsx 1, BidMatrixViewer.tsx 1
- * and form.tsx 1, leaving the 32 in 6 files below. #2198 moves the rest and
- * takes this to zero; until then a new native select fails here instead of
- * merging.
+ * and form.tsx 1, leaving 32 in 6 files. #2338 (build PR 14) retired the
+ * Integrations page and its 2, leaving the 30 in 5 files below. #2198 moves
+ * the rest and takes this to zero; until then a new native select fails here
+ * instead of merging.
  */
-// #2338 (build PR 14) retired the Integrations page and its 2, so it holds none now.
 const NATIVE_SELECT_CEILING: Record<string, number> = {
   'app/(app)/sources/page.tsx': 2,
   'components/canvas/ConfigPanel.tsx': 24,

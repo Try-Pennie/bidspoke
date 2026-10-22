@@ -4,7 +4,7 @@
 // score runs them on the design first (the positive control) and then on the built page.
 (function () {
   var NAVY = "rgb(29, 33, 47)", BLUE = "rgb(27, 114, 186)", RED = "rgb(180, 35, 24)", HINT = "rgb(105, 112, 129)", WHITE = "rgb(255, 255, 255)";
-  var ALL = ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded", "google-add-drive", "google-removing", "stale-retry-failed", "not-loaded-refused", "alert-login", "add-stalled", "add-failed-no-cap", "reconnect-failed", "remove-refused-in-use", "alert-reconnect"];
+  var ALL = ["healthy", "problem", "google-list", "add-choose", "add-salesforce", "add-saving", "add-failed", "add-salesforce-new-org", "add-google-company", "add-google-own", "saved", "reconnect", "replace", "remove", "stale", "not-loaded", "google-add-drive", "google-removing", "stale-retry-failed", "not-loaded-refused", "alert-login", "add-stalled", "add-failed-no-cap", "reconnect-failed", "remove-refused-in-use", "alert-reconnect", "alert-login-refused", "alert-switch-failed", "alert-channel-open", "alert-channel-saved", "alert-settings-failed"];
   // Round 26: every dialog's title is one size.
   var DIALOG_TITLE = "20px";
   var EXTRA = ["saved", "remove", "remove-refused-in-use"];
@@ -474,8 +474,8 @@
       var reds = [fieldRed, RED];
       var isRed = function (c) { return reds.indexOf(c) >= 0; };
       var ownText = function (e) { return Array.prototype.some.call(e.childNodes, function (n) { return n.nodeType === 3 && n.nodeValue.trim(); }); };
-      // A failed line: a save that failed, or a Try again that did not work.
-      var failed = function (e) { return !!e.closest('[data-part="save-line"][data-state="failed"]') || /^Trying again did not work/.test(txt(e)); };
+      // A failed line: a save or a read that failed, marked failed where it is drawn, or a Try again that did not work.
+      var failed = function (e) { return !!e.closest('[data-part][data-state="failed"]') || /^Trying again did not work/.test(txt(e)); };
       var all = qa(m, "*");
       var off = all.filter(function (e) {
         var s = css(e);
@@ -595,14 +595,18 @@
       }
       return ok(dgs.length + " dialog title(s) at " + DIALOG_TITLE);
     } },
-    // Round 36 (build PR 14): the Slack alert login's alert settings, under its facts, in Dan's words.
-    { id: "D37", frames: ["alert-login"], check: function (doc) {
+    // Round 36 (build PR 14): the Slack alert login's alert settings, under its facts, in Dan's words,
+    // and the states of them Dan passed as built (review, 2026-10-22).
+    { id: "D37", frames: ["alert-login", "alert-login-refused", "alert-switch-failed", "alert-channel-open", "alert-channel-saved", "alert-settings-failed"], check: function (doc, ctx) {
       var WANT = [
         ["volume_alerts_enabled", "Volume anomaly alerts", "When a day's runs are far above or below normal."],
         ["config_alerts_enabled", "Configuration warning alerts", "When a live step's timeout is too short to be reliable."],
         ["backup_alerts_enabled", "Backup failure alerts", "When workflow backups to GitHub keep failing."],
         ["matrix_alerts_enabled", "Bid matrix change alerts", "When rows of the Salesforce bid matrix change."]
       ];
+      var SWITCH_FAILED = "Volume anomaly alerts may not have been turned off: the server answered with an error (HTTP 503). Reload the page to see whether it is off.";
+      var SETTINGS_FAILED = "The alert settings could not be read: the server did not answer within 30 seconds.";
+      var red = failureRed(doc);
       var panel = p(main(doc), "detail");
       if (!panel) return bad("no detail panel");
       var facts = pa(panel, "fact").map(function (f) { return f.getAttribute("data-fact"); });
@@ -611,11 +615,40 @@
       if (!head || txt(head) !== "Alerts") return bad("no heading reads Alerts");
       var last = pa(panel, "fact").slice(-1)[0];
       if (box(head).top < box(last).bottom) return bad("the Alerts heading is not under the facts");
+      if (/Integrations/.test(txt(panel))) return bad("the panel names the Integrations page");
+      if (ctx.frame === "alert-settings-failed") {
+        var fl = p(panel, "alerts-line");
+        if (!fl || txt(fl) !== SETTINGS_FAILED) return bad("the failed read reads " + JSON.stringify(txt(fl)));
+        if (css(fl).color !== red || fl.getAttribute("role") !== "alert") return bad("the failed read is not a red alert");
+        if (box(fl).top < box(head).bottom) return bad("the failed read is not under the heading");
+        if (!button(panel, "Try again")) return bad("no Try again");
+        if (pa(panel, "alert-switch").length || p(panel, "alert-channel")) return bad("rows are drawn over a read that failed");
+        return ok("Alerts: the read failed, in red, with Try again");
+      }
       var ch = p(panel, "alert-channel");
       if (!ch || box(ch).top < box(head).bottom) return bad("no Posts to row under the heading");
       var chText = said(ch);
-      if (chText.indexOf("Posts to") !== 0 || chText.indexOf("#bidspoke-alerts") < 0) return bad("the channel row reads " + chText);
-      if (!same(buttons(ch).map(txt), ["Change"])) return bad("the channel row's buttons are " + JSON.stringify(buttons(ch).map(txt)));
+      if (chText.indexOf("Posts to") !== 0) return bad("the channel row reads " + chText);
+      if (ctx.frame === "alert-channel-open") {
+        var ed = p(ch, "channel-editor"), cb = ed && q(ed, '[role="combobox"]');
+        if (!cb || cb.value !== "ops") return bad("the channel row holds no search box reading ops");
+        var save = button(ed, "Save");
+        if (!save || !disabled(save) || !button(ed, "Cancel")) return bad("the editor's Save is not held, or there is no Cancel");
+        var opts = qa(doc, '[role="listbox"] [role="option"]');
+        if (!same(opts.map(txt), ["#ops-alerts", "#ops-bidding", "#ops-reporting"])) return bad("the menu lists " + JSON.stringify(opts.map(txt)));
+        if (opts[0].getAttribute("aria-selected") !== "true") return bad("the first channel is not highlighted");
+        if (box(opts[0]).top < box(cb).bottom) return bad("the menu is not under the box");
+      } else {
+        var want = ctx.frame === "alert-channel-saved" ? "#ops-alerts" : "#bidspoke-alerts";
+        var v = p(ch, "alert-channel-value");
+        if (!v || txt(v) !== want) return bad("the channel reads " + txt(v) + ", not " + want);
+        if (!same(buttons(ch).map(txt), ["Change"])) return bad("the channel row's buttons are " + JSON.stringify(buttons(ch).map(txt)));
+        var moved = p(ch, "channel-line");
+        if (ctx.frame === "alert-channel-saved") {
+          if (!moved || txt(moved) !== "Alerts now post to #ops-alerts.") return bad("the saved line reads " + JSON.stringify(txt(moved)));
+          if (css(moved).color === red) return bad("the saved line is red");
+        } else if (moved) return bad("a channel line is shown: " + txt(moved));
+      }
       var rows = pa(panel, "alert-switch");
       if (rows.length !== 4) return bad(rows.length + " switch rows, not 4");
       for (var i = 0; i < 4; i++) {
@@ -625,14 +658,19 @@
         var sw = q(r, '[role="switch"]');
         if (!sw || sw.getAttribute("aria-label") !== w[1]) return bad("row " + (i + 1) + " has no switch named " + w[1]);
         if (sw.getAttribute("aria-checked") !== "true") return bad(w[1] + " is not on");
+        var failedHere = ctx.frame === "alert-switch-failed" && i === 0;
         var t = said(r);
-        if (t !== w[1] + " " + w[2]) return bad("row " + (i + 1) + " reads " + JSON.stringify(t));
+        if (t !== w[1] + " " + w[2] + (failedHere ? " " + SWITCH_FAILED : "")) return bad("row " + (i + 1) + " reads " + JSON.stringify(t));
+        if (failedHere) {
+          var sl = p(r, "switch-line");
+          if (!sl || css(sl).color !== red || sl.getAttribute("role") !== "alert") return bad("the failed save is not a red alert on its row");
+        }
       }
-      if (/Integrations/.test(txt(panel))) return bad("the panel names the Integrations page");
-      return ok("Alerts: Posts to #bidspoke-alerts with Change, and the four switches in order");
+      return ok(ctx.frame + ": Alerts with Posts to and the four switches in order");
     } },
-    // Dan's decision 4 (build PR 14): Reconnect on the Slack alert login, the same button and dialog.
-    { id: "D40", frames: ["alert-login", "alert-reconnect"], check: function (doc, ctx) {
+    // Dan's decision 4 (build PR 14): Reconnect on the Slack alert login, the same button and dialog;
+    // its placement under the facts passed in review (2026-10-22).
+    { id: "D40", frames: ["alert-login", "alert-reconnect", "alert-login-refused", "alert-switch-failed", "alert-channel-open", "alert-channel-saved", "alert-settings-failed"], check: function (doc, ctx) {
       if (ctx.frame === "alert-reconnect") {
         var dg = dialogOf(doc);
         if (!dg) return bad("no dialog");
@@ -648,14 +686,24 @@
       }
       var panel = p(main(doc), "detail");
       if (!panel) return bad("no detail panel");
+      if (button(panel, "Replace") || button(panel, "Remove")) return bad("the panel offers Replace or Remove");
+      var facts = pa(panel, "fact"), head = p(panel, "alerts-heading");
+      if (ctx.frame === "alert-login-refused") {
+        var note = p(panel, "problem-notice");
+        if (!note) return bad("no problem notice");
+        var lines = qa(note, "p").map(txt);
+        if (!same(lines, ["Slack has refused its token.", "Reconnect with a new token from the Slack app."])) return bad("the notice reads " + JSON.stringify(lines));
+        var rb = button(note, "Reconnect");
+        if (!rb || css(rb).backgroundColor !== BLUE) return bad("the notice holds no blue Reconnect");
+        if (p(panel, "actions")) return bad("a Reconnect row is drawn under the facts as well");
+        return ok("the notice holds a blue Reconnect, and no row under the facts repeats it");
+      }
       var acts = p(panel, "actions");
       if (!acts || !same(buttons(acts).map(txt), ["Reconnect"])) return bad("the action row reads " + JSON.stringify(acts ? buttons(acts).map(txt) : null));
       var b = buttons(acts)[0], s = css(b);
       if ([BLUE, RED].indexOf(s.backgroundColor) >= 0 || [BLUE, RED].indexOf(s.color) >= 0) return bad("Reconnect is not quiet");
-      var facts = pa(panel, "fact"), head = p(panel, "alerts-heading");
       if (!facts.length || box(acts).top < box(facts[facts.length - 1]).bottom) return bad("Reconnect is not under the facts");
       if (!head || box(head).top < box(acts).bottom) return bad("Reconnect is not before the Alerts heading");
-      if (button(panel, "Replace") || button(panel, "Remove")) return bad("the panel offers Replace or Remove");
       return ok("a quiet Reconnect under the facts, and no Replace or Remove");
     } },
     // Round 27: an open dropdown's highlighted row is pale grey behind dark text, in every dropdown.

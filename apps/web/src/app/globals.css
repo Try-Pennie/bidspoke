@@ -731,6 +731,8 @@ html {
   .cx-alert-line { margin: 4px 0 0; font-size: 13px; text-wrap: pretty; }
   .cx-alert-line:not(.field-error) { color: #1D212F; }
   .cx-alert-line .outcome { font-size: 13px; color: #1D212F; }
+  /* A read of the settings that failed keeps its words balanced, so no line ends on one word (D27). */
+  .cx-alerts .ga-failed .field-error { text-wrap: pretty; }
   .cx-empty { margin-top: 16px; font-size: 14px; color: #1D212F; }
   .cx-tab-list { margin-top: 8px; }
   .cx-history { margin-top: 8px; }
