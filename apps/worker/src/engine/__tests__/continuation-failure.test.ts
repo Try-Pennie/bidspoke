@@ -87,7 +87,7 @@ function run() {
   return {
     harness,
     result: executeWorkflow(
-      { workflowId: WF_ID, payload: { lead: 1 }, source: 'engine' },
+      { triggerType: 'http_webhook', workflowId: WF_ID, payload: { lead: 1 }, source: 'engine' },
       harness.env,
       moneyRuntime(supabase),
       harness.executionCtx

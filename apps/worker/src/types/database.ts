@@ -2902,6 +2902,7 @@ export type Database = {
           created_at: string
           created_by: string | null
           definition: Json
+          definition_schema_version: number | null
           id: string
           message: string | null
           version_number: number
@@ -2912,6 +2913,7 @@ export type Database = {
           created_at?: string
           created_by?: string | null
           definition: Json
+          definition_schema_version?: number | null
           id?: string
           message?: string | null
           version_number: number
@@ -2922,6 +2924,7 @@ export type Database = {
           created_at?: string
           created_by?: string | null
           definition?: Json
+          definition_schema_version?: number | null
           id?: string
           message?: string | null
           version_number?: number
@@ -2950,6 +2953,7 @@ export type Database = {
           created_at: string
           created_by: string | null
           definition: Json
+          definition_schema_version: number | null
           deleted_at: string | null
           description: string | null
           folder_id: string | null
@@ -2970,6 +2974,7 @@ export type Database = {
           created_at?: string
           created_by?: string | null
           definition?: Json
+          definition_schema_version?: number | null
           deleted_at?: string | null
           description?: string | null
           folder_id?: string | null
@@ -2990,6 +2995,7 @@ export type Database = {
           created_at?: string
           created_by?: string | null
           definition?: Json
+          definition_schema_version?: number | null
           deleted_at?: string | null
           description?: string | null
           folder_id?: string | null

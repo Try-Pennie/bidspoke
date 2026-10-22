@@ -106,7 +106,7 @@ function loadDef() {
 async function run(opts: { isTest?: boolean } = {}) {
   const harness = makeHarness()
   await executeWorkflow(
-    { workflowId: WF_ID, payload: { lead: 1 }, source: 'engine', ...opts },
+    { triggerType: 'http_webhook', workflowId: WF_ID, payload: { lead: 1 }, source: 'engine', ...opts },
     harness.env,
     moneyRuntime(supabase),
     harness.executionCtx,

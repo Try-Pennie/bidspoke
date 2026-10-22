@@ -9,6 +9,7 @@
  * cannot run a node its lane does not allow.
  */
 import { isNodeType, isWorkflowLane, nodeTypeRunsInLane, type WorkflowLane } from '@bidspoke/node-types'
+import { TRIGGER_LANES, type TriggerType } from '@bidspoke/workflow-definition'
 import type { WorkflowDefinition } from '../types'
 
 /** A node type the workflow's lane may not run: an ops workflow never reaches a money executor. */
@@ -28,6 +29,24 @@ export class WorkflowLaneError extends Error {
     super(`Workflow ${workflowId} runs in the ${workflowLane} lane, not ${workerLane}`)
     this.name = 'WorkflowLaneError'
   }
+}
+
+/**
+ * A run started by a trigger its lane's engine does not run (#1947): a money
+ * run started by a schedule would be recorded as one, and nothing that reads
+ * the bidding database's trigger_type expects that value. TRIGGER_LANES in
+ * @bidspoke/workflow-definition is the one list of which lane runs which.
+ */
+export class TriggerLaneError extends Error {
+  constructor(readonly triggerType: TriggerType, readonly lane: WorkflowLane) {
+    super(`A ${triggerType} trigger does not start runs in the ${lane} lane`)
+    this.name = 'TriggerLaneError'
+  }
+}
+
+/** Refuses a run whose entry point names a trigger the lane does not run. */
+export function assertTriggerStartsRunsInLane(triggerType: TriggerType, lane: WorkflowLane): void {
+  if (!TRIGGER_LANES[triggerType].includes(lane)) throw new TriggerLaneError(triggerType, lane)
 }
 
 /**

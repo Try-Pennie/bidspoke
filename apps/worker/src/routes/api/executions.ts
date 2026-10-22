@@ -708,6 +708,8 @@ executions.post('/:id/resume', async (c) => {
     workflowId: execution.workflow_id,
     payload: execution.trigger_payload,
     source: execution.source ?? 'resume',
+    // A resume reruns a money run, and every money run is started by a webhook (#1947).
+    triggerType: 'http_webhook',
     resumeFromExecutionId: id,
   }, supabase)
   if (result instanceof Response) return result
@@ -752,6 +754,8 @@ executions.post('/:id/replay', async (c) => {
     workflowId: execution.workflow_id,
     payload: execution.trigger_payload,
     source: execution.source ?? 'replay',
+    // As a resume: a rerun of a money run, which a webhook started (#1947).
+    triggerType: 'http_webhook',
     parentExecutionId: id,
   }, supabase)
   if (result instanceof Response) return result
