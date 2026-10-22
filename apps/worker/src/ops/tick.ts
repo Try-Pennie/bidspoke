@@ -105,6 +105,10 @@ export const TICK_CLAIM_PER_WORKFLOW = 5
 /** The most runs one tick would claim: 40 concurrent dispatches from one tick were measured to work (spike P4). */
 export const TICK_CLAIM_LIMIT = 40
 
+/** The versions not held yet that one tick lists (L24: within PostgREST's 1,000 rows), and how many of them it asks the bidding Worker for. */
+export const DEFINITIONS_READ_LIMIT = 1000
+export const DEFINITIONS_PER_TICK = 30
+
 /** The copies one tick reads: every ops workflow, within PostgREST's 1,000 rows (L24). */
 const COPIES_READ_LIMIT = 1000
 
@@ -364,23 +368,49 @@ function startWriteBacks(ports: OpsTickPorts, list: Parameters<typeof runWriteBa
 /**
  * The frozen definition copies (#1950, Dan's decision recorded on #1950,
  * 2026-10-22): each saved copy's current version not held yet is asked of the
- * bidding Worker, at most MAX_DEFINITIONS_PER_REQUEST a tick, and saved under
- * the organization the copy places it in. A version never changes, so once
- * held it is never asked for again; one that differs from the copy held is a
- * conflict the database keeps the first of, and pages. A failed list, request
- * or answer is held for three ticks (every version not held is asked again
- * next tick); each save has its own boundary.
+ * bidding Worker and saved under the organization the copy places it in. A
+ * version never changes, so once held it is never asked for again; one that
+ * differs from the copy held is a conflict the database keeps the first of,
+ * and pages. A failed list, request or answer is held for three ticks (every
+ * version not held is asked again next tick); each save has its own boundary.
+ *
+ * WHICH ARE ASKED. Up to DEFINITIONS_READ_LIMIT missing versions are listed,
+ * and DEFINITIONS_PER_TICK of them asked, in requests of
+ * MAX_DEFINITIONS_PER_REQUEST, from a window that moves along the list every
+ * minute. So a version that can never be served (it pages at once each time it
+ * is asked) cannot stand at the front of the list and starve every version
+ * behind it (L778): each listed version is asked within a few minutes.
  */
 async function copyDefinitions(
   ports: OpsTickPorts, db: OpsTickDb, problem: (kind: OpsTickProblemKind, text: string, subject?: string) => void, counts: Record<string, number>,
 ): Promise<void> {
-  let missing: Awaited<ReturnType<OpsTickDb['missingDefinitions']>>['missing']
+  let listed: Awaited<ReturnType<OpsTickDb['missingDefinitions']>>
+  try {
+    listed = await db.missingDefinitions(DEFINITIONS_READ_LIMIT)
+  } catch (err) {
+    problem('definitions_failed', `The ops tick could not list the workflow versions it does not hold yet (${formatErr(err)}); it asks again next minute.`)
+    return
+  }
+  if (listed.missing.length === 0) return
+  bump(counts, 'definitions_missing', listed.missing.length)
+  if (listed.reachedLimit) {
+    problem('definitions_backlog', `More than ${DEFINITIONS_READ_LIMIT} ops workflow versions are not held yet, so some are not even listed to ask the bidding Worker for; runs of them will wait for their definition.`)
+  }
+  const all = listed.missing
+  const start = (Math.floor(ports.now() / 60_000) * DEFINITIONS_PER_TICK) % all.length
+  const window = Array.from({ length: Math.min(DEFINITIONS_PER_TICK, all.length) }, (_, i) => all[(start + i) % all.length])
+  for (let at = 0; at < window.length; at += MAX_DEFINITIONS_PER_REQUEST) {
+    await copyDefinitionBatch(ports, db, window.slice(at, at + MAX_DEFINITIONS_PER_REQUEST), problem, counts)
+  }
+}
+
+/** One request's worth of versions, its own boundary. */
+async function copyDefinitionBatch(
+  ports: OpsTickPorts, db: OpsTickDb, missing: Awaited<ReturnType<OpsTickDb['missingDefinitions']>>['missing'],
+  problem: (kind: OpsTickProblemKind, text: string, subject?: string) => void, counts: Record<string, number>,
+): Promise<void> {
   let served: ReturnType<typeof parseServedOpsDefinitions>
   try {
-    const listed = await db.missingDefinitions(MAX_DEFINITIONS_PER_REQUEST)
-    missing = listed.missing
-    if (missing.length === 0) return
-    bump(counts, 'definitions_missing', missing.length)
     served = parseServedOpsDefinitions(
       await ports.gateway.fetchDefinitions({ versions: missing.map((m) => ({ workflow_id: m.workflowId, version_number: m.versionNumber })) }),
       missing,

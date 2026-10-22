@@ -107,6 +107,12 @@ describe('parseServedOpsDefinitions (the ops Worker)', () => {
     expect(parsed.refused[1].text).toMatch(/shape/)
   })
 
+  it('refuses an unserved version it did not ask about, rather than paging for it', () => {
+    const parsed = parseServedOpsDefinitions({ definitions: [], unserved: [{ workflow_id: WF, version_number: 9 }, { workflow_id: WF2, version_number: 1 }] }, asked)
+    expect(parsed.unserved).toEqual([{ workflowId: WF2, versionNumber: 1 }])
+    expect(parsed.refused).toEqual([{ workflowId: WF, text: expect.stringMatching(/did not ask about/) }])
+  })
+
   it('throws on an answer that is not the shape', () => {
     expect(() => parseServedOpsDefinitions(null, asked)).toThrow(OpsGatewayContractError)
     expect(() => parseServedOpsDefinitions({ definitions: [] }, asked)).toThrow(OpsGatewayContractError)

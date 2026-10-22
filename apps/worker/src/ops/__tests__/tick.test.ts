@@ -26,7 +26,7 @@ import type { ConnectionCheckTarget, SfLimitsTarget } from '../ops-writes'
 import { SF_LIMITS_EVERY_SECONDS } from '../sf-limits'
 import { CONNECTION_CHECK_JOB, SF_LIMITS_JOB } from '../../lib/ops-gateway-contract'
 import { CONNECTION_CHECK_EVERY_SECONDS, CONNECTION_CHECK_READ_LIMIT, CONNECTION_LOGINS_READ_LIMIT, type ProbeAnswer } from '../connection-check'
-import { OBSERVATION_PURGE_EVERY_SECONDS, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
+import { DEFINITIONS_PER_TICK, DEFINITIONS_READ_LIMIT, OBSERVATION_PURGE_EVERY_SECONDS, TICK_SWEEPS, runOpsTick, type DispatchItem, type OpsTickDb, type OpsTickPorts, type UnconfiguredSecret } from '../tick'
 
 const ORG = organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60')
 const WF_A = '00000000-0000-4000-8000-0000000019a1'
@@ -606,9 +606,33 @@ describe('the frozen definition copies (#1950)', () => {
   it('asks for nothing when every current version is held', async () => {
     const f = fake()
     const report = await runOpsTick(f.ports)
-    expect(f.db.calls).toContain(`missingDefinitions:${MAX_DEFINITIONS_PER_REQUEST}`)
+    expect(f.db.calls).toContain(`missingDefinitions:${DEFINITIONS_READ_LIMIT}`)
     expect(f.definitionRequests).toEqual([])
     expect(report.outcome).toBe('ok')
+  })
+
+  it('asks at most DEFINITIONS_PER_TICK versions a tick, in requests of MAX_DEFINITIONS_PER_REQUEST, starting where the minute says, so versions that can never be served cannot starve the rest (L778)', async () => {
+    const many = Array.from({ length: 60 }, (_, i) => ({ workflowId: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, organizationId: ORG, versionNumber: 1 }))
+    const f = fake({ missingDefs: many, serveDefs: async () => ({ definitions: [], unserved: [] }) })
+    await runOpsTick(f.ports)
+    const asked = f.definitionRequests.flatMap((r) => r.versions.map((v) => v.workflow_id))
+    expect(f.definitionRequests.every((r) => r.versions.length <= MAX_DEFINITIONS_PER_REQUEST)).toBe(true)
+    expect(asked).toHaveLength(DEFINITIONS_PER_TICK)
+    // WORKER_NOW is minute 29,312,342 of the epoch; the window starts there, wrapping round the list.
+    const start = (Math.floor(WORKER_NOW / 60_000) * DEFINITIONS_PER_TICK) % many.length
+    expect(asked[0]).toBe(many[start].workflowId)
+    // The next minute asks the ones this minute did not reach.
+    const next = fake({ missingDefs: many, serveDefs: async () => ({ definitions: [], unserved: [] }) })
+    await runOpsTick({ ...next.ports, now: () => WORKER_NOW + 60_000 })
+    const nextAsked = next.definitionRequests.flatMap((r) => r.versions.map((v) => v.workflow_id))
+    expect(new Set([...asked, ...nextAsked]).size).toBe(many.length)
+  })
+
+  it('pages at once when more versions are missing than one read lists', async () => {
+    const many = Array.from({ length: DEFINITIONS_READ_LIMIT }, (_, i) => ({ workflowId: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`, organizationId: ORG, versionNumber: 1 }))
+    const report = await runOpsTick(fake({ missingDefs: many, serveDefs: async () => ({ definitions: [], unserved: [] }) }).ports)
+    expect(report.problem_keys).toContain('definitions_backlog')
+    expect(OPS_TICK_PROBLEM_RULES.definitions_backlog).toBe('at_once')
   })
 
   it('asks the bidding Worker for each version not held, and saves what it serves within the copy\'s organization', async () => {

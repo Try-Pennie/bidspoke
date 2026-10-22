@@ -504,6 +504,8 @@ export const OPS_TICK_PROBLEM_RULES = {
   definition_unserved: 'at_once',
   /** A served definition in a shape the ops Worker does not read, not asked for, or of another organization than its copy. */
   definition_refused: 'at_once',
+  /** More versions are missing than one read lists, so some are not even in the rotation the tick asks from. */
+  definitions_backlog: 'at_once',
   // Reported once, never again by a later tick.
   /** The agreement check failed after its claim; it is not tried again for 14 minutes. */
   agreement_check_failed: 'at_once',
@@ -758,8 +760,16 @@ export function parseServedOpsDefinitions(
     }
     definitions.push({ workflowId, organizationId: row.organization_id, versionNumber: row.version_number, definition: row.definition })
   })
-  const unserved = raw.unserved.flatMap((u: unknown) =>
-    isRecord(u) && typeof u.workflow_id === 'string' && isVersionNumber(u.version_number) ? [{ workflowId: u.workflow_id, versionNumber: u.version_number }] : [])
+  const unserved: Array<{ workflowId: string; versionNumber: number }> = []
+  raw.unserved.forEach((u: unknown, i: number) => {
+    const workflowId = isRecord(u) && typeof u.workflow_id === 'string' && UUID.test(u.workflow_id) ? u.workflow_id : null
+    if (!isRecord(u) || workflowId === null || !isVersionNumber(u.version_number) || !wanted.has(`${workflowId}:${u.version_number}`)) {
+      const name = workflowId === null ? `unserved row ${i}` : `workflow ${workflowId} version ${String(isRecord(u) ? u.version_number : '')}`
+      refused.push({ workflowId, text: `The bidding Worker said it could not serve ${name}, which the ops tick did not ask about, so nothing was paged for it.` })
+      return
+    }
+    unserved.push({ workflowId, versionNumber: u.version_number })
+  })
   return { definitions, unserved, refused }
 }
 
