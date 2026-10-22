@@ -15,7 +15,7 @@
 export { NODE_TYPES, NODE_TRAITS, assertNever, isNodeType } from '@bidspoke/node-types'
 export type { NodeType, NodeTraits } from '@bidspoke/node-types'
 import type { NodeType } from '@bidspoke/node-types'
-import type { ConditionOperator } from '@bidspoke/workflow-definition'
+import type { ConditionOperator, HttpWebhookTrigger } from '@bidspoke/workflow-definition'
 
 export interface EdgeCondition {
   field: string
@@ -66,37 +66,12 @@ export interface EdgeDef {
   hidden?: boolean
 }
 
-// A known failure signal whose per-run Slack page is muted; one aggregated page
-// fires instead when matching failures cross a rate threshold (#248). Mirrors the
-// worker's MutedFailureSignal.
-export interface MutedFailureSignal {
-  match: string
-  count: number
-  window_minutes: number
-  cooldown_minutes?: number
-}
-
-export interface TriggerDef {
-  type: 'http_webhook'
-  config: {
-    method: string
-    auth_method: 'api_key' | 'none'
-    idempotency?: {
-      enabled: boolean
-      derive_from_fields?: string[]
-      ttl_seconds?: number
-    }
-    duration_alert_ms?: number
-    /**
-     * Node namespaces that count as "successful" when the walk ends on one
-     * of them. Empty or missing = no runs are marked Successful; everything
-     * non-failed goes to Completed.
-     */
-    success_node_namespaces?: string[]
-    /** Failure signals whose per-run page is muted in favor of a rate alert (#248). */
-    muted_failure_signals?: MutedFailureSignal[]
-  }
-}
+// The trigger types live in @bidspoke/workflow-definition (#1947), one home the
+// worker reads too, so the two copies that stood here and in the worker cannot
+// drift. TriggerDef is the http webhook trigger every canvas workflow carries;
+// these aliases go when their imports move to the package (#2648).
+export type { MutedFailureSignal } from '@bidspoke/workflow-definition'
+export type TriggerDef = HttpWebhookTrigger
 
 export type ExecutionOutcome = 'successful' | 'completed' | 'failed'
 

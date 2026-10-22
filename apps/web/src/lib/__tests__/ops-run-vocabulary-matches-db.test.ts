@@ -43,6 +43,7 @@ import {
   TERMINAL_RUN_REQUEST_STATUSES,
   TRIGGER_KINDS,
 } from '../../../../worker/src/ops/run-vocabulary'
+import { PLANNED_TRIGGER_TYPES, TRIGGER_TYPES } from '@bidspoke/workflow-definition'
 
 const MIGRATIONS = path.join(REPO_ROOT, 'supabase-ops/supabase/migrations')
 const SQL = readdirSync(MIGRATIONS)
@@ -121,6 +122,16 @@ describe('the run engine vocabularies match the ops database constraints', () =>
       expect(clause, outcome).not.toBeNull()
       expect(sorted([...clause![1].matchAll(/'([^']*)'/g)].map((m) => m[1]))).toEqual(sorted(reasons))
     }
+  })
+
+  /**
+   * A run's trigger_kind is what started it: one of the definition trigger
+   * types (@bidspoke/workflow-definition, #1947), built or planned, or a
+   * person's rerun. A type added to the definition union and not the run
+   * vocabulary would be a run the ops database refuses to record.
+   */
+  it('the run trigger kinds are the definition trigger types, built and planned, plus rerun (#1947)', () => {
+    expect(sorted(TRIGGER_KINDS)).toEqual(sorted([...TRIGGER_TYPES, ...PLANNED_TRIGGER_TYPES, 'rerun']))
   })
 
   it('no reason belongs to two statuses, so a reason names its status', () => {
