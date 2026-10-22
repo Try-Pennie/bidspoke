@@ -20,7 +20,7 @@ import { executePartnerBidNode } from './nodes/partner-bid'
 import { executeBuyerSelectNode, productionDeps as buyerSelectProductionDeps } from './nodes/buyer-select'
 import { executeBuyerClickSendNode, productionDeps as buyerClickSendProductionDeps } from './nodes/buyer-click-send'
 import { executeBuyerClickCheckNode, productionDeps as buyerClickCheckProductionDeps } from './nodes/buyer-click-check'
-import { buildCodeStepInput, unionReferencedSteps, scopeSteps, codeDispatchTarget, bundleUnreachableMessage, bundleMissingForGood, type CodeDispatchTarget } from './nodes/code'
+import { buildCodeStepInput, resolveCodeProps, unionReferencedSteps, scopeSteps, codeDispatchTarget, bundleUnreachableMessage, bundleMissingForGood, type CodeDispatchTarget } from './nodes/code'
 import { salesforceAnswerOf, type SalesforceAnswer } from './nodes/salesforce'
 import { findEntryNode, outgoingEdges, findNode, evaluateEdge } from './graph'
 import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDeterministicCodeError } from './error-classifier'
@@ -2314,7 +2314,7 @@ export async function walkGraph(
           // chainPayload build, but aren't returned per-step, so re-resolve here.
           // resolveValue is cheap (string templating against ctx); fine on the
           // hot path for a chain of ~3-5 nodes.
-          const chainResolvedInput = buildCodeStepInput(chainNode, ctx)
+          const chainResolvedInput = buildCodeStepInput(chainNode, ctx, env)
           logStep(stepLogQueue, executionId, executionStartedAt, chainNode, r.status, chainResolvedInput, r.output ?? null, r.error, chainErrorType, 0, stepStartedAtIso, stepOrder, undefined, r.logs)
           // The bundle's raw records for this step become sightings through the one detector
           // (#1265); the chain response came straight from JSON, so the records are re-read.
@@ -2969,15 +2969,7 @@ export async function executeCodeChain(
   // vars (decrypted by env-loader) still flow (#108).
   const mergedEnv = buildSandboxEnv(env, ctx.env)
 
-  const chainPayload = chain.map((n) => {
-    const propsConfig = (n.config?.props ?? []) as Array<{ name: string; source: string }>
-    const props: Record<string, unknown> = {}
-    for (const p of propsConfig) {
-      if (!p?.name || !p?.source) continue
-      props[p.name] = resolveValue(p.source, ctx)
-    }
-    return { namespace: n.namespace, props }
-  })
+  const chainPayload = chain.map((n) => ({ namespace: n.namespace, props: resolveCodeProps(n, ctx, env) }))
 
   // Scope the steps to the union of what the chain's scripts reference, so a
   // chained code node can't read step PII (SSNs, partner bids) it never touches

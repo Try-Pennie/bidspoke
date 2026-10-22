@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { executeAchieveOffersNode } from '../achieve-offers'
 import type { ExecutionContext, NodeDefinition } from '../../../types'
+import type { Env } from '../../../index'
 
 function ctx(shadow_mode?: 'off' | 'dry_run'): ExecutionContext {
   return { trigger: { payload: {}, source: 's', workflow_id: 'w', trace_id: 't', org_id: 'o' }, steps: {}, env: {}, shadow_mode }
@@ -12,7 +13,7 @@ describe('executeAchieveOffersNode — shadow dry_run', () => {
   it('returns a stub with no _achieve_evaluation marker and no fetch', async () => {
     const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    const res = await executeAchieveOffersNode(node, ctx('dry_run'))
+    const res = await executeAchieveOffersNode(node, ctx('dry_run'), {} as Env)
     expect(fetchMock).not.toHaveBeenCalled()
     const out = res.output as Record<string, unknown>
     expect(out._shadow).toBe(true)

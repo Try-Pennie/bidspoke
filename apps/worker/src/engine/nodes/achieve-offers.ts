@@ -41,6 +41,7 @@
  */
 
 import type { NodeDefinition, ExecutionContext, StepExecutionResult } from '../../types'
+import type { Env } from '../../index'
 import { formatErr } from '../../lib/format-error'
 import { resolveValue } from '../context'
 import { linkAbort } from '../retry'
@@ -188,6 +189,8 @@ function nonEmpty(v: unknown): string | undefined {
 export async function executeAchieveOffersNode(
   node: NodeDefinition,
   ctx: ExecutionContext,
+  // The Worker bindings, read only for the firewall key's fallback copy (#1263).
+  env: Env,
   signal?: AbortSignal
 ): Promise<StepExecutionResult> {
   // Shadow dry-run: don't hit the Achieve API; return a stub that the achieve-log
@@ -307,7 +310,7 @@ export async function executeAchieveOffersNode(
         // Without these the call is refused by Achieve's firewall before it reaches
         // their API, for what another Workers tenant did with the shared egress
         // address we all leave from. See achieve-identity.ts.
-        ...achieveIdentityHeaders(ctx.env),
+        ...achieveIdentityHeaders({ saved: ctx.env, worker: env as unknown as Record<string, unknown> }),
       },
       body: JSON.stringify(request),
       signal: controller.signal,

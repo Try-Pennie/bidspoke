@@ -47,6 +47,27 @@ import { buildSandboxEnv } from '../../lib/sandbox-env'
 import { resolveValue } from '../context'
 
 /**
+ * A code node's declared settings (`props`), resolved for the run (#1263). An
+ * `{{env.X}}` source reads the same values the script's own `env` global does
+ * (buildSandboxEnv): the run's saved value first, the Worker binding underneath
+ * it, and never a platform master secret. They used to resolve against the saved
+ * values alone, so a setting lost its credential when the row went while the
+ * script's `env` still had it from the binding. The single node run, the chained
+ * run and the step input record all resolve here, so what is recorded is what
+ * was sent.
+ */
+export function resolveCodeProps(node: NodeDefinition, ctx: ExecutionContext, env: Env): Record<string, unknown> {
+  const propsConfig = (node.config?.props ?? []) as Array<{ name: string; source: string }>
+  const runCtx: ExecutionContext = { ...ctx, env: buildSandboxEnv(env, ctx.env) }
+  const resolvedProps: Record<string, unknown> = {}
+  for (const p of propsConfig) {
+    if (!p?.name || !p?.source) continue
+    resolvedProps[p.name] = resolveValue(p.source, runCtx)
+  }
+  return resolvedProps
+}
+
+/**
  * Builds the Results-panel "Input" shape for a code node:
  *   template: the props config the author wrote (with template strings intact)
  *   resolved: the resolved prop values + referenced step namespaces
@@ -57,13 +78,9 @@ import { resolveValue } from '../context'
  * Exported so the chained-code path in walkGraph can synthesize the same shape
  * without re-implementing the prop resolution logic.
  */
-export function buildCodeStepInput(node: NodeDefinition, ctx: ExecutionContext): ResolvedStepInput {
+export function buildCodeStepInput(node: NodeDefinition, ctx: ExecutionContext, env: Env): ResolvedStepInput {
   const propsConfig = (node.config?.props ?? []) as Array<{ name: string; source: string }>
-  const resolvedProps: Record<string, unknown> = {}
-  for (const p of propsConfig) {
-    if (!p?.name || !p?.source) continue
-    resolvedProps[p.name] = resolveValue(p.source, ctx)
-  }
+  const resolvedProps = resolveCodeProps(node, ctx, env)
   const script = (node.config?.script as string | undefined) ?? ''
   const referenced = extractReferencedSteps(script)
   return {
@@ -172,11 +189,7 @@ export async function executeCodeNode(
   // receives them as a `props` global. Sources are templated against the
   // execution context (steps.X, payload.Y, env.Z, execution.*).
   const propsConfig = (node.config?.props ?? []) as Array<{ name: string; source: string }>
-  const resolvedProps: Record<string, unknown> = {}
-  for (const p of propsConfig) {
-    if (!p?.name || !p?.source) continue
-    resolvedProps[p.name] = resolveValue(p.source, ctx)
-  }
+  const resolvedProps = resolveCodeProps(node, ctx, env)
 
   // Captured for the Results panel. Built once here so both the throw path
   // (attach to err) and the happy path (return in result) use identical data.
