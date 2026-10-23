@@ -16,9 +16,9 @@
  * be read refuses the call too (check_unavailable), never lets it through.
  *
  * The scopes asked for are derived from the catalogue (googleDelegationScopes:
- * the union of what its Google actions declare), never written here. While no
- * Google action ships, that list is empty and every mint is refused
- * (no_delegation_scopes).
+ * the union of what its Google actions declare), never written here: since
+ * #2337 shipped them, the four the grant names. A catalogue declaring none
+ * would leave the list empty, and every mint refused (no_delegation_scopes).
  *
  * The mint: a JWT with iss the service account's client_email, sub the
  * mailbox, the space joined scope and aud Google's token URI, signed RS256 with
@@ -29,9 +29,18 @@
  * sends only to the connection's declared hosts, so a Google service's entry
  * must declare oauth2.googleapis.com beside the API host it calls.
  *
- * The login is the service account key JSON Google issues ({ client_email,
- * private_key, token_uri, ... }); the target is `{ subject: "<mailbox>",
- * drives?: ["<shared drive id>", ...] }`. Memoised per connection, generation,
+ * THE KEY is the service account key JSON Google issues ({ client_email,
+ * private_key, token_uri, ... }), held as the ops Worker's own secret
+ * (GOOGLE_DELEGATION_KEY, read through deps.serviceAccountKey, #2337), never in
+ * a connection's sealed login: the key can act as anyone in the Workspace, so
+ * it is not handed to whoever adds a connection, and the settled Connections
+ * form asks only for the mailbox (D16). A Google connection's sealed login is
+ * empty and is never read. A key unset, unreadable, unable to sign or naming
+ * another token_uri is refused by rule (connection_not_allowed:
+ * delegation_key_unset or delegation_key_malformed), nothing sent and nothing
+ * recorded against the connection, which is not at fault.
+ *
+ * The target is `{ subject: "<mailbox>", drives?: ["<shared drive id>", ...] }`. Memoised per connection, generation,
  * mailbox and scope list (two mailboxes never share a token), until Google's
  * expires_in less GOOGLE_REUSE_MARGIN_MS.
  */
@@ -43,7 +52,7 @@ import type { DelegationCheckOutcome } from '../../run-vocabulary'
 import { LoginMintError } from '../refusals'
 import type { Authorization, AuthorizeInput, MinterRules } from '../service-rules'
 import { authorizeThroughMemo } from './memo-authorize'
-import { loginFields, loginString, targetFields, targetString } from './login-fields'
+import { targetFields, targetString } from './login-fields'
 import { readAccessToken, requestToken, type MinterClockDeps } from './token-endpoint'
 
 export const GOOGLE_TOKEN_URI = 'https://oauth2.googleapis.com/token'
@@ -59,6 +68,31 @@ export interface GoogleDelegationDeps extends MinterClockDeps {
   checkDelegation(organizationId: OrganizationId, mailbox: string, drives: readonly string[]): Promise<DelegationCheckOutcome>
   /** The catalogue the scopes are derived from. The shipped one unless a test passes its own. */
   catalogue?: readonly ServiceSchema[]
+  /** The service account key JSON, the ops Worker's GOOGLE_DELEGATION_KEY; undefined when it is unset. */
+  serviceAccountKey(): string | undefined
+  /**
+   * The isolate's token memo. The live registry passes one memo kept for the
+   * isolate's life, since the entry is built per request; a test passes none
+   * and gets its own.
+   */
+  memo?: TokenMemo<Authorization>
+}
+
+/** The ops Worker's key, read as Google issues it, or a refusal by rule. */
+function keyOf(raw: string | undefined): { clientEmail: string; pem: string } {
+  if (raw === undefined || raw.trim() === '') throw new LoginMintError('not_allowed', 'delegation_key_unset')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    throw new LoginMintError('not_allowed', 'delegation_key_malformed')
+  }
+  const key = (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}) as Record<string, unknown>
+  const tokenUri = Object.hasOwn(key, 'token_uri') ? key.token_uri : GOOGLE_TOKEN_URI
+  if (typeof key.client_email !== 'string' || key.client_email === '' || typeof key.private_key !== 'string' || tokenUri !== GOOGLE_TOKEN_URI) {
+    throw new LoginMintError('not_allowed', 'delegation_key_malformed')
+  }
+  return { clientEmail: key.client_email, pem: key.private_key }
 }
 
 /** The declared mailbox, lower case, and drives, or target_invalid. */
@@ -74,9 +108,14 @@ function subjectsOf(target: unknown): { mailbox: string; drives: string[] } {
   return { mailbox, drives: [...raw] }
 }
 
+/** A token memo for Google, for the registry to keep for the isolate's life. */
+export function googleTokenMemo(deps: MinterClockDeps): TokenMemo<Authorization> {
+  return new TokenMemo<Authorization>({ now: () => deps.now(), reuseMarginMs: GOOGLE_REUSE_MARGIN_MS })
+}
+
 export function googleDelegationAuth(deps: GoogleDelegationDeps): MinterRules {
   const scope = googleDelegationScopes(deps.catalogue ?? CATALOGUE).join(' ')
-  const memo = new TokenMemo<Authorization>({ now: () => deps.now(), reuseMarginMs: GOOGLE_REUSE_MARGIN_MS })
+  const memo = deps.memo ?? googleTokenMemo(deps)
   return {
     expired: (response) => response.status === 401,
     authorize: async (input: AuthorizeInput): Promise<Authorization> => {
@@ -92,11 +131,8 @@ export function googleDelegationAuth(deps: GoogleDelegationDeps): MinterRules {
       }
       if (allowed !== 'allowed') throw new LoginMintError('not_allowed', allowed)
 
-      const login = loginFields(input.login)
-      const clientEmail = loginString(login, 'client_email')
-      const pem = loginString(login, 'private_key')
-      const tokenUri = Object.hasOwn(login, 'token_uri') ? login.token_uri : GOOGLE_TOKEN_URI
-      if (tokenUri !== GOOGLE_TOKEN_URI) throw new LoginMintError('refused', 'token_uri_unexpected')
+      // The ops Worker's key, never the connection's login (above).
+      const { clientEmail, pem } = keyOf(deps.serviceAccountKey())
 
       const key = { connectionId: input.connectionId, generation: input.generation, sub: mailbox, scope }
       return authorizeThroughMemo(memo, key, input, async (nowMs) => {
@@ -104,7 +140,7 @@ export function googleDelegationAuth(deps: GoogleDelegationDeps): MinterRules {
         try {
           privateKey = await importPrivateKey(pem)
         } catch {
-          throw new LoginMintError('refused', 'login_malformed')
+          throw new LoginMintError('not_allowed', 'delegation_key_malformed')
         }
         const iat = Math.floor(nowMs / 1000)
         const assertion = await signRs256Jwt(privateKey, {

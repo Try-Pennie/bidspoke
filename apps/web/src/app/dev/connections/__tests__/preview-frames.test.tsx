@@ -87,6 +87,9 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
   'add-anthropic': ['An API key for a workspace', 'Workspace ID', 'API key'],
   'add-anthropic-workspace-mismatch': ['Anthropic says this API key runs in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.'],
   'anthropic-lead-notes': ['Lead notes', 'Workspace wrkspc_ops'],
+  // #2337: Google, the catalogue's own entry: verify's mailbox refusal, and a company mailbox's panel.
+  'add-google-mailbox-mismatch': ['Google says this acts as another mailbox than the one chosen. Nothing was saved. Choose the mailbox again from the company list and save.'],
+  'google-ops-mailbox': ['Ops mailbox', 'ops@trypennie.com'],
 }
 
 function quiet(): ConnectionsSource {

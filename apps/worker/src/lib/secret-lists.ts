@@ -141,7 +141,8 @@ export const OPS_REQUIRED_SECRETS = [
 
 /**
  * Secrets the ops Worker may hold and does not require (#1709 part 3): the NEXT
- * ops private key, which is optional for good (#2333).
+ * ops private key, which is optional for good (#2333), and the Google
+ * delegation key until it is set (#2337).
  */
 export const OPS_OPTIONAL_SECRETS = [
   // The NEXT ops private key (#2333), held only during a rotation of the ops key
@@ -150,6 +151,13 @@ export const OPS_OPTIONAL_SECRETS = [
   // mid rotation. When it is set, the minute tick checks it imports too, and
   // counts it as opening the current kid once that kid has moved to it.
   'OPS_CONNECTIONS_PRIVATE_KEY_NEXT',
+  // The Google domain wide delegation service account's key JSON (#2337), which
+  // every Google connection's token is minted with (ops/connections/minters/
+  // google.ts); never a connection's login, since it can act as anyone in the
+  // Workspace. Optional only until Dan sets it after the Workspace grant: then it
+  // moves to OPS_REQUIRED_SECRETS (L65), tracked on the issue the hand off names.
+  // Re-obtained by creating a new key for the service account in Google Cloud.
+  'GOOGLE_DELEGATION_KEY',
 ] as const
 
 /** Every secret the ops Worker may hold; anything else on it fails the parity check. */
