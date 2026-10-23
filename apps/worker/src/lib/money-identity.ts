@@ -24,12 +24,20 @@
  * written or cleared here, and the call takes no bulkhead slot (one call a day).
  *
  * SERVED. readMoneyIdentities answers OpsGateway.moneyIdentities(organizationId)
- * with that organization's reading only, keyed by it, so another organization's
- * can never be returned; no reading is null, which verify refuses by name
- * (money_identity_unmeasured), never a pass. Who may call it: only the ops Worker,
- * through its OPS_GATEWAY service binding; no public route reaches it. Whose
- * data: one organization's money Salesforce org id and username, non secret
- * identifiers. The token is never stored, logged or put in an error.
+ * for ANY organization with money's one reading (#2690, Dan's option 1,
+ * 2026-10-22): money's login is the same whichever Bidspoke organization adds an
+ * ops Salesforce connection, so every organization's ops logins are compared
+ * against it. Before #2690 the reading was kept and served per organization, so
+ * an organization other than the one holding money's credentials was answered
+ * unmeasured for ever and could never verify a Salesforce connection. The
+ * reading is kept once for the lane (MONEY_SALESFORCE_IDENTITY_KEY), naming the
+ * organization that holds money's credentials, and served under the
+ * organization asked about, which the ops side checks. No reading is null,
+ * which verify refuses by name (money_identity_unmeasured), never a pass. Who
+ * may call it: only the ops Worker, through its OPS_GATEWAY service binding; no
+ * public route reaches it. Whose data: money's Salesforce org id and username,
+ * non secret identifiers that ops verify only compares against and never
+ * answers, logs or stores. The token is never stored, logged or put in an error.
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type { Env } from '../env'
@@ -44,8 +52,12 @@ import { requireSalesforceCreds, resolveSalesforceCredentialOrg, type Salesforce
 /** The job's id in the heartbeat registry and the export alerter. Never rename it: it keys its KV state. */
 export const MONEY_IDENTITY_JOB = 'money-identity'
 
-/** Where one organization's reading is kept. */
-export const moneySalesforceIdentityKey = (organizationId: string): string => `money-identity:salesforce:${organizationId}`
+/**
+ * Where the one reading is kept, for the whole lane (#2690). Readings kept
+ * per organization before #2690 (money-identity:salesforce:<organization id>)
+ * are no longer read: the first daily run after the change writes this key.
+ */
+export const MONEY_SALESFORCE_IDENTITY_KEY = 'money-identity:salesforce'
 
 /** The userinfo call's deadline, body included. */
 export const USERINFO_TIMEOUT_MS = 10_000
@@ -152,7 +164,7 @@ export async function measureMoneyIdentity(deps: MoneyIdentityDeps): Promise<Mon
     return failed(organizationId, `The money identity was not measured: ${(err as Error).message}.`)
   }
   try {
-    await deps.kv.put(moneySalesforceIdentityKey(organizationId), JSON.stringify({ organization_id: organizationId, ...identity }))
+    await deps.kv.put(MONEY_SALESFORCE_IDENTITY_KEY, JSON.stringify({ organization_id: organizationId, ...identity }))
   } catch (err) {
     return failed(organizationId, `The money identity was measured but could not be kept (${(err as Error).message}), so ops still has the last reading.`)
   }
@@ -160,19 +172,20 @@ export async function measureMoneyIdentity(deps: MoneyIdentityDeps): Promise<Mon
 }
 
 /**
- * One organization's money identities, for OpsGateway.moneyIdentities. Throws
- * by name when asked without an organization uuid, or when the kept reading is
- * unreadable or names another organization: a reading that cannot be trusted is
- * never answered as one, nor as unmeasured.
+ * Money's identities as OpsGateway.moneyIdentities serves them to one
+ * organization: money's one reading, whichever organization asks (#2690).
+ * Throws by name when asked without an organization uuid, or when the kept
+ * reading is unreadable or names no organization holding money's credentials:
+ * a reading that cannot be trusted is never answered as one, nor as unmeasured.
  */
 export async function readMoneyIdentities(kv: Pick<KvLike, 'get'>, askedFor: unknown, nowMs: number): Promise<ServedMoneyIdentities> {
   if (typeof askedFor !== 'string' || !UUID.test(askedFor)) {
     throw new OpsGatewayContractError('the money identities were asked for with no organization uuid')
   }
-  // The writer keys on the database's lowercase id, so the lookup does too.
+  // The ops side compares the answer's organization with the one it asked about in lower case.
   const organizationId = askedFor.toLowerCase()
   const servedAt = new Date(nowMs).toISOString()
-  const raw = await kv.get(moneySalesforceIdentityKey(organizationId))
+  const raw = await kv.get(MONEY_SALESFORCE_IDENTITY_KEY)
   if (raw === null) return { organization_id: organizationId, served_at: servedAt, salesforce: null }
   let kept: unknown
   try {
@@ -180,8 +193,10 @@ export async function readMoneyIdentities(kv: Pick<KvLike, 'get'>, askedFor: unk
   } catch {
     throw new OpsGatewayContractError('the kept money Salesforce identity is unreadable')
   }
-  const keptOrg = (kept as { organization_id?: unknown } | null)?.organization_id
-  if (keptOrg !== organizationId) throw new OpsGatewayContractError('the kept money Salesforce identity names another organization than the one it is kept under')
+  const holder = (kept as { organization_id?: unknown } | null)?.organization_id
+  if (typeof holder !== 'string' || !UUID.test(holder)) {
+    throw new OpsGatewayContractError('the kept money Salesforce identity names no organization holding money\'s Salesforce credentials')
+  }
   return { organization_id: organizationId, served_at: servedAt, salesforce: parseMoneySalesforceIdentity(kept, 'the kept money Salesforce identity') }
 }
 

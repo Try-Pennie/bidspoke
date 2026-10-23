@@ -1,4 +1,7 @@
+import { HTML_DOCUMENT_MARKER, containsHtmlDocument } from '@bidspoke/salesforce-api'
 import { truncateKeepingTail } from './truncate-text'
+
+export { containsHtmlDocument }
 
 /**
  * Collapse an upstream HTML error page down to the signal it carries (#695).
@@ -16,11 +19,10 @@ import { truncateKeepingTail } from './truncate-text'
  * failure, and the readable text of that document is the whole of what we want.
  */
 
-// An HTML DOCUMENT, not merely markup-looking text. An error message can easily
-// contain angle brackets ("Expected <number>, got ...") or an XML fault body,
-// and neither is a page: rewriting those would lose real detail. Note the real
-// Salesforce page serves `<!doctypehtml>` with no space, so the space is optional.
-const HTML_DOCUMENT_MARKER = /<!doctype\s*html|<html[\s>]/i
+// An HTML DOCUMENT, not merely markup-looking text: the marker and its test live
+// in @bidspoke/salesforce-api (html-document.ts) since #2337, because the
+// Salesforce failure rule there reads them, and are imported back here so there
+// is one marker.
 
 /** Blocks whose contents are never human-readable signal. */
 const OPAQUE_BLOCKS = /<(script|style|svg)\b[^>]*>[\s\S]*?<\/\1\s*>/gi
@@ -29,10 +31,6 @@ const OPAQUE_BLOCKS = /<(script|style|svg)\b[^>]*>[\s\S]*?<\/\1\s*>/gi
 // request-ID stamp, which is what Salesforce support asks for.
 const MAX_VISIBLE_CHARS = 500
 const VISIBLE_TAIL_CHARS = 140
-
-export function containsHtmlDocument(text: string): boolean {
-  return HTML_DOCUMENT_MARKER.test(text)
-}
 
 /**
  * A partner's firewall answering with a block page instead of data (#1265).

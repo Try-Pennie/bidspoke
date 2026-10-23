@@ -3,6 +3,10 @@ import {
   OPENAI_ADD_CONVERSATION_ITEMS_V1, OPENAI_CHAT_V1, OPENAI_CREATE_CONVERSATION_V1, OPENAI_CREATE_RESPONSE_V1, OPENAI_GET_CONVERSATION_V1,
   OPENAI_LIST_CONVERSATION_ITEMS_V1,
 } from '../schema/services/openai'
+import {
+  SALESFORCE_APEX_REST_V1, SALESFORCE_BULK_INGEST_V1, SALESFORCE_CREATE_RECORD_V1, SALESFORCE_CREATE_RECORDS_V1, SALESFORCE_GET_INGEST_JOB_V1, SALESFORCE_QUERY_V1,
+  SALESFORCE_SOQL_SEARCH_V1, SALESFORCE_UPDATE_RECORD_V1, SALESFORCE_UPDATE_RECORDS_V1, SALESFORCE_UPSERT_RECORD_V1,
+} from '../schema/services/salesforce'
 import { SLACK_SEND_MESSAGE_V1 } from '../schema/services/slack'
 import { SNOWFLAKE_EXECUTE_SQL_QUERY_V1, SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1 } from '../schema/services/snowflake'
 import { run as anthropicChatV1 } from './actions/anthropic.chat.v1'
@@ -12,6 +16,16 @@ import { run as openaiCreateConversationV1 } from './actions/openai.create-conve
 import { run as openaiCreateResponseV1 } from './actions/openai.create-response.v1'
 import { run as openaiGetConversationV1 } from './actions/openai.get-conversation.v1'
 import { run as openaiListConversationItemsV1 } from './actions/openai.list-conversation-items.v1'
+import { run as salesforceApexRestV1 } from './actions/salesforce.apex-rest.v1'
+import { run as salesforceBulkIngestV1 } from './actions/salesforce.bulk-ingest.v1'
+import { run as salesforceCreateRecordV1 } from './actions/salesforce.create-record.v1'
+import { run as salesforceCreateRecordsV1 } from './actions/salesforce.create-records.v1'
+import { run as salesforceGetIngestJobV1 } from './actions/salesforce.get-ingest-job.v1'
+import { run as salesforceQueryV1 } from './actions/salesforce.query.v1'
+import { run as salesforceSoqlSearchV1 } from './actions/salesforce.soql-search.v1'
+import { run as salesforceUpdateRecordV1 } from './actions/salesforce.update-record.v1'
+import { run as salesforceUpdateRecordsV1 } from './actions/salesforce.update-records.v1'
+import { run as salesforceUpsertRecordV1 } from './actions/salesforce.upsert-record.v1'
 import { run as slackSendMessageV1 } from './actions/slack.send-message.v1'
 import { run as snowflakeExecuteSqlQueryV1 } from './actions/snowflake.execute-sql-query.v1'
 import { run as snowflakeInsertMultipleRowsV1 } from './actions/snowflake.insert-multiple-rows.v1'
@@ -39,9 +53,23 @@ export const RUNTIME_ACTIONS: readonly RuntimeAction[] = [
   implement(OPENAI_LIST_CONVERSATION_ITEMS_V1, openaiListConversationItemsV1),
   implement(OPENAI_GET_CONVERSATION_V1, openaiGetConversationV1),
   implement(ANTHROPIC_CHAT_V1, anthropicChatV1),
+  implement(SALESFORCE_SOQL_SEARCH_V1, salesforceSoqlSearchV1),
+  implement(SALESFORCE_QUERY_V1, salesforceQueryV1),
+  implement(SALESFORCE_CREATE_RECORD_V1, salesforceCreateRecordV1),
+  implement(SALESFORCE_UPDATE_RECORD_V1, salesforceUpdateRecordV1),
+  implement(SALESFORCE_UPSERT_RECORD_V1, salesforceUpsertRecordV1),
+  implement(SALESFORCE_CREATE_RECORDS_V1, salesforceCreateRecordsV1),
+  implement(SALESFORCE_UPDATE_RECORDS_V1, salesforceUpdateRecordsV1),
+  implement(SALESFORCE_APEX_REST_V1, salesforceApexRestV1),
+  implement(SALESFORCE_BULK_INGEST_V1, salesforceBulkIngestV1),
+  implement(SALESFORCE_GET_INGEST_JOB_V1, salesforceGetIngestJobV1),
 ]
 
 /**
+ * Salesforce has no entry: a client credentials login needs no consent URL,
+ * its token is minted again rather than refreshed, and its verify is the ops
+ * Worker's userinfo probe (apps/worker src/ops/connections/salesforce-service.ts).
+ *
  * Anthropic has no entry: a static API key needs no consent URL or refresh,
  * and its verify is the ops Worker's free models call (apps/worker
  * src/ops/connections/anthropic-service.ts).

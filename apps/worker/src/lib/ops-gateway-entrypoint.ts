@@ -43,9 +43,10 @@ export class OpsGateway extends WorkerEntrypoint<Env> {
   }
 
   /**
-   * Money's measured Salesforce identity for the one organization named, and
-   * no other (#2335): one KV read. Who may call it and whose data:
-   * money-identity.ts.
+   * Money's measured Salesforce identity, served under the organization named
+   * (#2335): one KV read. Every organization is answered with money's one
+   * reading, since money's login is the same whichever organization asks
+   * (#2690). Who may call it and whose data: money-identity.ts.
    */
   moneyIdentities(organizationId: unknown) {
     return readMoneyIdentities(this.env.IDEMPOTENCY, organizationId, Date.now())

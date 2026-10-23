@@ -25,6 +25,7 @@
     "@bidspoke/partner-page-live": "workspace:*",
     "@bidspoke/partner-history": "workspace:*",
     "@bidspoke/slack-client": "workspace:*",
+    "@bidspoke/salesforce-api": "workspace:*",
     "@supabase/supabase-js": "^2.118.0",
     "hono": "^4.13.13"
   },
