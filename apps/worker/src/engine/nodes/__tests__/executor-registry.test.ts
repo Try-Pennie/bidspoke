@@ -18,6 +18,9 @@ const MONEY_ONLY: NodeType[] = [
   'latency_gate', 'lead_validation', 'partner_bid', 'salesforce',
 ]
 
+/** Ops only (#2339): a catalogue step, which the money registry must never hold. */
+const OPS_ONLY: NodeType[] = ['app_action']
+
 const ctx = (): ExecutionContext => ({
   trigger: { payload: {}, source: 'test', workflow_id: 'wf', org_id: '', trace_id: 'trace' },
   steps: {},
@@ -26,8 +29,12 @@ const ctx = (): ExecutionContext => ({
 const node = (type: NodeType): NodeDefinition => ({ id: 'n1', namespace: `${type}_1`, type, config: {} })
 
 describe('executor registry', () => {
-  it('the money registry has an executor for every node type', () => {
-    expect([...executorTypesForLane('money')].sort()).toEqual([...NODE_TYPES].sort())
+  it('the money registry has an executor for every node type but the ops only ones', () => {
+    expect([...executorTypesForLane('money')].sort()).toEqual(NODE_TYPES.filter((t) => !OPS_ONLY.includes(t)).sort())
+  })
+
+  it('an ops only type in the engine\'s ops registry refuses by name: an ops run walks it in src/ops (#2339)', async () => {
+    await expect(createNodeExecutor('ops')(node('app_action'), ctx(), {} as never)).rejects.toThrow('runs only in an ops run')
   })
 
   it('the ops registry holds no money executor', () => {

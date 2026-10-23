@@ -58,6 +58,10 @@ export const NODE_TYPE_COLOR: Record<ColoredNodeType, NodeColor> = {
   // The card header's label colour, slate 700 (Dan, 2026-10-21, #2590 C2): a
   // quiet grey blue that reads as a gate, distinct from Parallel's slate 500.
   lead_validation: { icon: 'text-slate-700',  hex: '#334155' },
+  // An ops catalogue step (#2339). Its card carries the service's own mark on the
+  // plain beige header (docs/design/app-action-node-card.html), so it has no
+  // colour of its own; this is the plain box's, drawn for a service with no mark.
+  app_action:     { icon: 'text-slate-400',   hex: '#94a3b8' },
 }
 
 /** Gray for a type we do not know. A stray or future node still draws. */
