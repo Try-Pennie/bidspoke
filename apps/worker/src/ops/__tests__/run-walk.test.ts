@@ -116,6 +116,14 @@ describe('walkOpsDefinition', () => {
     expect(r.seen).toHaveLength(0)
   })
 
+  it('refuses an edge condition that reads env.*, which would compare against a blank', async () => {
+    const r = recorder()
+    const gated = { ...edge('trigger', 'act'), condition: { logic: 'AND', groups: [{ logic: 'AND', conditions: [{ field: 'env.REGION', operator: 'equals', value: 'us' }] }] } }
+    const end = await walkOpsDefinition({ nodes: [node('act', 'action_a')], edges: [gated] }, runCtx().ctx, { action_a: r.handler })
+    expect(end).toMatchObject({ outcome: 'failed', error: expect.stringMatching(/env\.REGION/) })
+    expect(r.seen).toHaveLength(0)
+  })
+
   it('ends failed, naming the step, when a handler reports an error or throws; a stopped run is passed on', async () => {
     const failing: OpsStepHandler = async () => ({ output: null, error: 'partner refused' })
     const def = { nodes: [node('act', 'action_a')], edges: [edge('trigger', 'act')] }

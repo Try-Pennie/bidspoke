@@ -82,7 +82,8 @@ export async function walkOpsDefinition(
   if (unrunnable.length > 0) {
     return failed(`an ops run cannot take a step of type ${unrunnable.join(', ')} yet, so nothing was run`)
   }
-  const env = [...envReferences(nodes)]
+  // Steps and edge conditions alike: both resolve against the run's (empty) environment.
+  const env = [...envReferences(edges, envReferences(nodes))]
   if (env.length > 0) {
     return failed(`the definition reads ${env.join(', ')}, and ops runs load no environment variables yet, so nothing was run`)
   }
