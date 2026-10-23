@@ -10,6 +10,7 @@
 docs/design/*/chrome.html linguist-generated
 
 # Settled design pages written by the design rounds' make-settled.py.
+docs/design/canvas-save-conflict.html linguist-generated
 docs/design/connections-page.html linguist-generated
 docs/design/connections-step-form.html linguist-generated
 docs/design/google-sign-in-return.html linguist-generated
