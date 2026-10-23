@@ -382,7 +382,7 @@ integrations.patch('/slack/settings', async (c) => {
   if (updateBlocked) return updateBlocked
 
   // The copy entry is the new settings with the token the row holds, opened
-  // from credential_enc, so a row with no plaintext copy stays in the copy.
+  // from credential_enc, its only home, so the org stays in the copy.
   const copyEdited = await copyCleared(
     async () => {
       // The ring is read in here, so a missing key can fail only the copy edit.
