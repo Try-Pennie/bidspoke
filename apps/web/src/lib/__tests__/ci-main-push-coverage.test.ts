@@ -32,10 +32,20 @@ const stripComments = (yaml: string): string =>
     .map((line) => (/^\s*#/.test(line) ? '' : line.replace(/\s+#.*$/, '')))
     .join('\n')
 
+/**
+ * The summary job the main ruleset requires (#2749). It checks nothing itself:
+ * it reads the other jobs' results, and on main Verify's own fan-in plays that
+ * part, so it has no counterpart to find there. Exempt by name, not by shape,
+ * and its reviewer is ci-passed.test.ts, which fails unless it needs every
+ * other job and runs only the decision script (L129).
+ */
+const SUMMARY_JOB = 'ci-passed'
+
 /** ci.yml jobs whose job-level `if:` restricts them to pull requests. */
 function pullRequestOnlyJobs(): Array<{ id: string; body: string }> {
   const yaml = readWorkflow(CI)
   return workflowJobIds(yaml)
+    .filter((id) => id !== SUMMARY_JOB)
     .map((id) => ({ id, body: workflowJobBody(yaml, id) }))
     .filter(({ body }) => {
       // Job-level `if:` sits at four spaces; a step's sits deeper.

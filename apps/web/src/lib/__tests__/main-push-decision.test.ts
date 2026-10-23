@@ -4,16 +4,13 @@ import { describe, expect, it } from 'vitest'
 import { REPO_ROOT, readWorkflow, workflowJobBody, workflowStepBody } from './_scan-utils'
 
 /**
- * Issue #760, the free stand-in for #266.
+ * Issue #760, written as the free stand-in for #266 while rulesets were
+ * unavailable on the free plan.
  *
- * Server-side branch protection is unavailable here: both
- * `repos/Try-Pennie/bidspoke/rulesets` and `.../branches/main/protection` return
- * 403 "Upgrade to GitHub Pro or make this repository public". #266 stays open on
- * that billing decision, but merges to main deploy the production bidding
- * engine, and the husky hooks that partially cover the gap are bypassable with
- * `--no-verify` / `SKIP_TEST_CHECK`.
- *
- * So this reports a direct push after the fact instead of preventing it.
+ * Since 2026-10-23 (Try-Pennie on GitHub Team) a ruleset on main refuses a
+ * direct push (#2749). This stays as the backstop: an admin can switch the
+ * ruleset off or add a bypass, and merges to main deploy the production
+ * bidding engine, so a direct push is still reported after the fact.
  *
  * THE FAIL-SAFE DIRECTION IS `ok`, and note it is the OPPOSITE of the artifact
  * deploy gate in this same repo, for a reason worth keeping straight. That gate

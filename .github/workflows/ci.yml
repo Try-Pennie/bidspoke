@@ -746,13 +746,12 @@ jobs:
       # merged PR yet, so running there would fail every single PR, and a guard
       # that is always red is a guard nobody reads.
       #
-      # Server-side branch protection is unavailable here: both
-      # repos/Try-Pennie/bidspoke/rulesets and .../branches/main/protection return
-      # 403 "Upgrade to GitHub Pro or make this repository public" (#266 stays open
-      # on that billing decision). Merges to main deploy the production bidding
-      # engine, and the husky hooks that partially cover the gap are bypassable
-      # with --no-verify / SKIP_TEST_CHECK. So this reports a direct push after the
-      # fact rather than preventing it.
+      # Since 2026-10-23 (Try-Pennie on GitHub Team) a ruleset on main refuses a
+      # direct push and requires the CI passed check (#2749). This step predates
+      # it and stays as the backstop: an admin can switch the ruleset off or add
+      # a bypass, and merges to main deploy the production bidding engine, so a
+      # commit that arrives without a reviewed PR is still reported after the
+      # fact.
       #
       # Two independent sources, because of LESSONS L119: GitHub's commit-to-PR
       # association index can return empty for a genuinely reviewed, merged PR and
@@ -961,3 +960,30 @@ jobs:
             --json --output "$RUNNER_TEMP/semgrep-report.json"
           node .github/scripts/scan-coverage.mjs semgrep "$RUNNER_TEMP/semgrep-report.json" \
             apps/worker/src/ apps/web/src/ apps/worker-tail/src/
+
+  # The one check from this file the main ruleset requires (#2749). Requiring
+  # every job above by name made each display name load-bearing: a rename left
+  # every pull request waiting on a check that never reports (L305). So the
+  # ruleset requires this, and this requires everything above.
+  #
+  # always() is what makes it safe: GitHub counts a SKIPPED required check as
+  # passing, so without it a failed leg would skip this job and the pull request
+  # would merge red. Pull requests only, because no ruleset reads it on a push
+  # to main, where five legs are skipped by design. Guard: ci-passed.test.ts,
+  # which also fails when a job is added above and left out of needs.
+  ci-passed:
+    name: CI passed
+    needs: [typecheck, lint, test-worker, test-web, money-gate, a11y, auth-gate, security]
+    if: always() && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/scripts
+      - name: Every CI leg succeeded
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: bash .github/scripts/ci-passed-decision.sh "$NEEDS"
