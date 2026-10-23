@@ -187,6 +187,14 @@ describe('testing an app_action step on ops', () => {
     expect((requests.at(-1) as { omitted: number }).omitted).toBe(40 - shown)
   })
 
+  it('keeps a plain null answer as null, never as an answer over the cap', async () => {
+    const w = world()
+    w.d.respond(Response.json(null))
+    const answer = await runStepTest(w.deps, request(), new AbortController().signal)
+    expect(answer).toMatchObject({ ok: true, result: { status: 'completed', output: null, output_bytes: 4 } })
+    expect(w.kept[0].result).toMatchObject({ output: null, outputBytes: null })
+  })
+
   it('answers the result even when it could not be kept, saying so', async () => {
     const w = world({ record: async () => { throw new Error('canceling statement due to statement timeout') } })
     w.d.respond(Response.json({ id: 1 }))

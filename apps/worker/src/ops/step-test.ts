@@ -173,14 +173,16 @@ export async function runStepTest(deps: StepTestDeps, request: TestStepRequest, 
   }
 
   const outputBytes = error === null ? byteLength(output) : null
-  const kept = outputBytes !== null && outputBytes > STEP_TEST_OUTPUT_MAX_BYTES ? null : output
+  // Only an answer over the cap is kept by its size; a plain null answer is kept as null.
+  const overCap = outputBytes !== null && outputBytes > STEP_TEST_OUTPUT_MAX_BYTES
+  const kept = overCap ? null : output
   const result: StepTestRecord = {
     nodeId: request.node.id,
     namespace: request.node.namespace,
     testedBy: request.tested_by,
     status: error === null ? 'completed' : 'failed',
     output: kept,
-    outputBytes: kept === null && outputBytes !== null ? outputBytes : null,
+    outputBytes: overCap ? outputBytes : null,
     error: error === null ? null : clip(error, ERROR_MAX - 60),
     requests: collector.kept(),
     durationMs: Math.max(0, deps.now() - started),
@@ -199,7 +201,7 @@ export async function runStepTest(deps: StepTestDeps, request: TestStepRequest, 
   return {
     ok: true,
     recorded,
-    result: { ...view({ ...result, testedAt }), output_bytes: kept === null ? result.outputBytes : outputBytes },
+    result: { ...view({ ...result, testedAt }), output_bytes: outputBytes },
   }
 }
 

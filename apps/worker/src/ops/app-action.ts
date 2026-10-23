@@ -39,9 +39,11 @@
  *    since nothing was changed. invokeRun still fails a retry after a send that
  *    cannot be repeated, and itself ends a send that may have landed.
  *
- * WHAT IT RECORDS. Nothing but the send ledger row run.send writes before each
- * non GET send (method, host, the attempt key), which holds no header and no
- * body, so connectionFetch is told no request is recorded. A login is applied
+ * WHAT IT RECORDS. In a run, nothing but the send ledger row run.send writes
+ * before each non GET send (method, host, the attempt key), which holds no
+ * header and no body, so connectionFetch is told no request is recorded. A step
+ * test (step-test.ts, #2339) passes its own record target instead, and keeps
+ * each request as connectionFetch sanitised it, before the login was applied. A login is applied
  * after that and never reaches the step output, the ledger, the run's end or a
  * log line, even from a service that echoes it back, since connectionFetch
  * scrubs every answer it hands the action (__tests__/app-action.test.ts proves

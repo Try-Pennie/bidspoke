@@ -8,7 +8,7 @@
 -- WHAT IT PROVES.
 --   A. The table is under the ops rules: row level security on,
 --      organization_id uuid NOT NULL, the browser roles shut out, service_role
---      read only, a direct write refused.
+--      read only, and a direct write as service_role refused by the database.
 --   B. record_step_test keeps only the latest result per step: a second test of
 --      the same step replaces the first, another step keeps its own.
 --   C. It refuses another organization's workflow when ops holds a copy of it,
@@ -38,6 +38,8 @@ CREATE TEMP TABLE st_ids AS SELECT
 
 -- ── A. The ops rules ─────────────────────────────────────────────────────────
 DO $do$
+DECLARE
+  v_wrote boolean;
 BEGIN
   IF NOT (SELECT relrowsecurity FROM pg_class WHERE oid = 'public.step_test_results'::regclass) THEN
     RAISE EXCEPTION 'step_test_results has row level security off';
@@ -55,6 +57,17 @@ BEGIN
       OR has_table_privilege('service_role', 'public.step_test_results', 'DELETE') THEN
     RAISE EXCEPTION 'service_role is not read only on step_test_results';
   END IF;
+  -- And a direct write as service_role is refused by the database, not only absent from the grants.
+  SET LOCAL ROLE service_role;
+  BEGIN
+    INSERT INTO public.step_test_results (organization_id, workflow_id, node_id, namespace, tested_by, status, duration_ms)
+    VALUES (gen_random_uuid(), gen_random_uuid(), 'direct', 'direct', gen_random_uuid(), 'completed', 1);
+    v_wrote := true;
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_wrote := false;
+  END;
+  RESET ROLE;
+  IF v_wrote THEN RAISE EXCEPTION 'service_role wrote step_test_results directly'; END IF;
   INSERT INTO st_cases VALUES ('rules: row level security, organization uuid, browser roles shut out, service_role read only');
 END
 $do$;
