@@ -29,9 +29,11 @@
  *    only), public config, declared target and serve_until, and the removals of
  *    the last 7 hours. Never a plaintext login: the bidding Worker cannot open an
  *    envelope, and a public config or target naming a login field is refused;
- *  - money's measured Salesforce run as identity for one organization
- *    (moneyIdentities), a non secret value ops verify compares a credential's
- *    measured identity against.
+ *  - money's measured Salesforce run as identity, served under one
+ *    organization (moneyIdentities), a non secret value ops verify compares a
+ *    credential's measured identity against. Since #2690 every organization is
+ *    served money's one reading, measured for the organization holding money's
+ *    Salesforce credentials.
  *
  * And since #2340, the heartbeat stamps of the ops jobs other than the tick
  * (opsJobStarted, opsJobCompleted), each a sweep inside the tick that the
