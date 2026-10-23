@@ -3,11 +3,11 @@
  * to, composed from the validators both apps already share, judged by the
  * rules in force at the definition's own schema stamp.
  *
- * Pure: it reads only its arguments. Nothing on a write path or the execution
- * path calls it yet. #1947's later changes route every write of
- * `workflows.definition` through it, first reporting only, so every live
- * definition and every saved version is measured against it before it refuses
- * anything (L56, L65).
+ * Pure: it reads only its arguments. Every money lane definition write calls
+ * it, report only (the Worker's lib/definition-report.ts, #1947 PR 3): it
+ * logs what it would refuse and refuses nothing, so every live definition and
+ * every saved version is measured against it before it refuses anything (L56,
+ * L65). Nothing on the execution path calls it.
  *
  * Each rule says how it is enforced, matching what the canvas and the save
  * route do today:

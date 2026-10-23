@@ -13,7 +13,8 @@ import {
 
 // validateDefinition (#1947): one pure function composing the validators both
 // apps already share, plus the trigger union, judged by the rules in force at
-// the definition's own schema stamp. Nothing on a write path calls it yet.
+// the definition's own schema stamp. The Worker's write paths call it report
+// only (lib/definition-report.ts), so it refuses nothing yet.
 
 type Node = { id: string; type: string; namespace: string; config?: Record<string, unknown>; label?: string }
 type Edge = { source: string; target: string; source_handle?: string; condition?: unknown }
