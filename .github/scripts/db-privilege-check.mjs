@@ -10,6 +10,10 @@
 // The main project serves the browser, so anon and authenticated legitimately
 // reach tables there; the rule is that every table or view they can reach has row
 // level security, and that they reach nothing at all in the porting schema (#1710).
+// They read there but never write: every write goes through the Worker, so
+// neither role may hold INSERT, UPDATE or DELETE on any table, partition or view
+// in public, at table or column level, and the default privileges of postgres in
+// public must not hand those back to a table created later (#2719).
 // The ops project serves no browser: anon and authenticated reach nothing in
 // public, every table has RLS and an organization_id uuid NOT NULL column, and the
 // default privileges of postgres in public grant them nothing (L124, L541, L18).
@@ -22,6 +26,11 @@ import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 const BROWSER = "array['anon','authenticated']"
+
+// workflows and workflow_versions lose their browser writes in #2717's migration,
+// not #2719's, so they are exempt from the write rule only while that migration's
+// public.write_workflow does not exist. The exemption ends by itself when it lands.
+const BEFORE_2717 = "not exists (select 1 from pg_proc where proname = 'write_workflow' and pronamespace = 'public'::regnamespace)"
 
 /** Objects in the given schemas that no extension owns. */
 const ownRelations = (schemas, kinds) => `
@@ -46,6 +55,23 @@ v as (
   select 'schema porting', r || ' holds USAGE'
   from unnest(${BROWSER}) r
   where exists (select 1 from pg_namespace where nspname = 'porting') and has_schema_privilege(r, 'porting', 'USAGE')
+  union all
+  select name, r || ' holds ' || p
+  from rel, unnest(${BROWSER}) r, unnest(array['INSERT', 'UPDATE', 'DELETE']) p
+  where name like 'public.%' and has_table_privilege(r, oid, p)
+    and not (name in ('public.workflows', 'public.workflow_versions') and ${BEFORE_2717})
+  union all
+  select name, r || ' holds a column INSERT or UPDATE'
+  from rel, unnest(${BROWSER}) r
+  where name like 'public.%' and has_any_column_privilege(r, oid, 'INSERT, UPDATE')
+    and not has_table_privilege(r, oid, 'INSERT, UPDATE')
+    and not (name in ('public.workflows', 'public.workflow_versions') and ${BEFORE_2717})
+  union all
+  select 'default privileges of postgres in public', 'grant ' || e.privilege_type || ' on tables to ' || coalesce(pg_get_userbyid(nullif(e.grantee, 0)), 'PUBLIC')
+  from pg_default_acl d, aclexplode(d.defaclacl) e
+  where d.defaclrole = 'postgres'::regrole and d.defaclnamespace = 'public'::regnamespace and d.defaclobjtype = 'r'
+    and e.privilege_type in ('INSERT', 'UPDATE', 'DELETE')
+    and (e.grantee = 0 or pg_get_userbyid(e.grantee) in ('anon', 'authenticated'))
 )
 select 'inspected' as kind, (select count(*) from rel)::text as object, null::text as problem
 union all

@@ -98,6 +98,21 @@ describe('RULES (#1709)', () => {
     expect(RULES.main).toContain('relrowsecurity')
     expect(RULES.main).toContain("'porting'")
   })
+
+  // #2719: no browser role may write any table in public, at table or column
+  // level, and a table created later must not get the write back through the
+  // default privileges. The SQL was run red and green against the SQL suite's
+  // database (recorded on the pull request); this holds that it stays in the rule.
+  it('checks the main project for any browser write in public, column grants and default privileges included (#2719)', () => {
+    for (const fragment of ["'INSERT'", "'UPDATE'", "'DELETE'", 'has_any_column_privilege', 'pg_default_acl', "defaclrole = 'postgres'::regrole"]) {
+      expect(RULES.main).toContain(fragment)
+    }
+  })
+
+  it('exempts workflows and workflow_versions only until #2717 has created write_workflow (#2719)', () => {
+    expect(RULES.main).toMatch(/'public\.workflows', 'public\.workflow_versions'/)
+    expect(RULES.main).toMatch(/proname = 'write_workflow'/)
+  })
 })
 
 describe('the script as CI runs it (#1709)', () => {

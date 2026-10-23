@@ -620,5 +620,21 @@
     },
     "anon": "denied",
     "note": "One connection's audit rows, newest first, never its credential (#2338, R5, the History tab). Read only, but it reads an organization's audit log, so service_role only and anon must be denied. Probed with the all zero organization and connection id, which no row carries, so even a probe that ran it would read nothing."
+  },
+  {
+    "name": "write_workflow",
+    "args": {
+      "p_op": "save",
+      "p_org": "00000000-0000-0000-0000-000000000000",
+      "p_id": "00000000-0000-0000-0000-000000000000",
+      "p_expected_version": 0,
+      "p_fields": {},
+      "p_save_id": null,
+      "p_actor": "00000000-0000-0000-0000-000000000000",
+      "p_actor_email": "probe@invalid",
+      "p_actor_name": "probe"
+    },
+    "anon": "denied",
+    "note": "Every workflow write the Worker makes (#1947): create, duplicate, save, restore, switch on or off, move, soft delete. A WRITE: anon reaching it could put a definition live. Probed as a save of the all zero organization and workflow, which no row carries, so even a probe that ran it refuses workflow_not_found and writes nothing."
   }
 ]

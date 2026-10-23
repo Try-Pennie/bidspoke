@@ -45,15 +45,15 @@ DECLARE
 BEGIN
   FOREACH v IN ARRAY ARRAY['oauth', 'credentials'] LOOP
     err := pg_temp.atn_error_of(format(
-      $q$INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, config)
-         VALUES ('11111111-1111-1111-1111-1111111e2332', 'slack', 'slack', %L, '{"bot_token":"planted-2332"}')$q$, v));
+      $q$INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, credential_enc, sealed_for, config)
+         VALUES ('11111111-1111-1111-1111-1111111e2332', 'slack', 'slack', %L, 'planted-ciphertext', 'bidding_ring', '{"default_channel":"#a"}')$q$, v));
     IF err IS NULL OR err NOT LIKE '%service_connections_auth_type_check%' THEN
       RAISE EXCEPTION 'an insert with auth_type % was not refused by the CHECK: %', v, coalesce(err, 'no error');
     END IF;
   END LOOP;
 
-  INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, config)
-  VALUES ('11111111-1111-1111-1111-1111111e2332', 'slack', 'slack', 'bot_token', '{"bot_token":"planted-2332"}');
+  INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, credential_enc, sealed_for, config)
+  VALUES ('11111111-1111-1111-1111-1111111e2332', 'slack', 'slack', 'bot_token', 'planted-ciphertext', 'bidding_ring', '{"default_channel":"#a"}');
   FOREACH v IN ARRAY ARRAY['oauth', 'credentials'] LOOP
     err := pg_temp.atn_error_of(format(
       $q$UPDATE public.service_connections SET auth_type = %L WHERE organization_id = '11111111-1111-1111-1111-1111111e2332'$q$, v));

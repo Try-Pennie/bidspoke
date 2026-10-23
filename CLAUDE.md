@@ -1,6 +1,6 @@
 # Bidspoke — Project Conventions
 
-@TODO.md
+The planning list is [TODO.md](./TODO.md) (#2606): read it before work on anything it tracks, and tick off what you finish. It is linked rather than imported, because imported it put every session over the instruction size limit, and `apps/web/src/lib/__tests__/claude-md-imports.test.ts` keeps it that way.
 
 ## Design
 @.impeccable.md
