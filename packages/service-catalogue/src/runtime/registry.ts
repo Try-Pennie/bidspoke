@@ -13,6 +13,7 @@ import {
 } from '../schema/services/salesforce'
 import { SLACK_SEND_MESSAGE_V1 } from '../schema/services/slack'
 import { SNOWFLAKE_EXECUTE_SQL_QUERY_V1, SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1 } from '../schema/services/snowflake'
+import { SUPABASE_INSERT_ROW_V1, SUPABASE_SELECT_ROW_V1, SUPABASE_UPDATE_ROW_V1 } from '../schema/services/supabase'
 import { run as anthropicChatV1 } from './actions/anthropic.chat.v1'
 import { run as googleCalendarCreateEventV1 } from './actions/google.calendar-create-event.v1'
 import { run as googleCalendarDeleteEventV1 } from './actions/google.calendar-delete-event.v1'
@@ -51,6 +52,9 @@ import { run as salesforceUpsertRecordV1 } from './actions/salesforce.upsert-rec
 import { run as slackSendMessageV1 } from './actions/slack.send-message.v1'
 import { run as snowflakeExecuteSqlQueryV1 } from './actions/snowflake.execute-sql-query.v1'
 import { run as snowflakeInsertMultipleRowsV1 } from './actions/snowflake.insert-multiple-rows.v1'
+import { run as supabaseInsertRowV1 } from './actions/supabase.insert-row.v1'
+import { run as supabaseSelectRowV1 } from './actions/supabase.select-row.v1'
+import { run as supabaseUpdateRowV1 } from './actions/supabase.update-row.v1'
 import { implement, type RuntimeAction, type ServiceRuntime } from './types'
 
 /**
@@ -103,9 +107,16 @@ export const RUNTIME_ACTIONS: readonly RuntimeAction[] = [
   implement(GOOGLE_CALENDAR_LIST_EVENTS_V1, googleCalendarListEventsV1),
   implement(HTTP_GET_REQUEST_V1, httpGetRequestV1),
   implement(HTTP_CUSTOM_REQUEST_V1, httpCustomRequestV1),
+  implement(SUPABASE_INSERT_ROW_V1, supabaseInsertRowV1),
+  implement(SUPABASE_SELECT_ROW_V1, supabaseSelectRowV1),
+  implement(SUPABASE_UPDATE_ROW_V1, supabaseUpdateRowV1),
 ]
 
 /**
+ * Supabase has no entry: a static service key needs no consent URL or
+ * refresh, and its verify is the ops Worker's GET of the project's REST root
+ * (apps/worker src/ops/connections/supabase-service.ts).
+ *
  * HTTP has no entry: a static key needs no consent URL or refresh, and its
  * verify is the ops Worker's GET of the connection's check path (apps/worker
  * src/ops/connections/http-service.ts).

@@ -88,3 +88,18 @@ describe('the Google entry on the live wiring (#2337)', () => {
     expect(String(refused)).toContain('delegation_key_unset')
   })
 })
+
+describe('the Supabase entry on the live wiring (#2337)', () => {
+  const live = () => liveOpsConnectionsDeps(configured as OpsEnv, { opensLogins: false, opsFetch: (async () => Response.json({})) as unknown as typeof globalThis.fetch })
+
+  it('refuses this Worker\'s own ops project, read from OPS_SUPABASE_URL, and the bidding project', () => {
+    const supabase = live().services('supabase')
+    expect(supabase?.rules.service).toBe('supabase')
+    expect(() => supabase!.rules.declaredHosts({ project_url: 'https://zwihpjxouklvkvngkvmw.supabase.co' }, {})).toThrow()
+    expect(() => supabase!.rules.declaredHosts({ project_url: 'xvrmivmpfykwwtriqwpg' }, {})).toThrow()
+  })
+
+  it('declares another project\'s one host', () => {
+    expect(live().services('supabase')!.rules.declaredHosts({ project_url: 'blicjwldjfjubbukxatn' }, {})).toEqual(['blicjwldjfjubbukxatn.supabase.co'])
+  })
+})

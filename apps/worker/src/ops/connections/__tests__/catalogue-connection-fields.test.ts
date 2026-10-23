@@ -43,6 +43,8 @@ const opsServiceEntry = (service: string) => opsServiceRegistry({
     // A company mailbox's form (the catalogue's fields) never reaches a person's token object.
     tokens: { get: () => { throw new Error('a catalogue form login never asks a token object') } },
   },
+  // The bidding and ops projects, neither of them the sample's.
+  supabase: { laneProjectRefs: () => ['xvrmivmpfykwwtriqwpg', 'zwihpjxouklvkvngkvmw'] },
 })(service)
 
 const SAMPLES: Readonly<Record<string, () => Readonly<Record<string, string>>>> = {
@@ -71,6 +73,10 @@ const SAMPLES: Readonly<Record<string, () => Readonly<Record<string, string>>>> 
   slack: () => ({
     team_id: 'T0PENNIE',
     bot_token: 'canary-ops-bot-token-2337',
+  }),
+  supabase: () => ({
+    project_url: 'https://blicjwldjfjubbukxatn.supabase.co',
+    service_key: 'canary-supabase-key-2337',
   }),
   snowflake: () => ({
     account: 'ab12345.us-east-1',
@@ -154,7 +160,10 @@ const AUTH_KIND_BEHAVIOUR: Readonly<Partial<Record<ConnectionAuthKind, (seen: { 
     const keys = Object.values(login)
     expect(keys).toHaveLength(1)
     expect(auth.secrets).toEqual(keys)
-    expect(Object.values(auth.headers).filter((v) => v === keys[0] || v === `Bearer ${keys[0]}`)).toHaveLength(1)
+    // Sent as itself or as a bearer token, in one header, or two for Supabase, whose gateway reads apikey and PostgREST the bearer (#2337).
+    const carrying = Object.values(auth.headers).filter((v) => v.includes(keys[0]))
+    expect(carrying.length).toBeGreaterThanOrEqual(1)
+    expect(carrying.every((v) => v === keys[0] || v === `Bearer ${keys[0]}`)).toBe(true)
   },
   service_account_delegation: ({ auth, tokenRequests, login }) => {
     // The ops Worker's key signs one jwt-bearer grant at Google; the connection's login is empty (#2337).

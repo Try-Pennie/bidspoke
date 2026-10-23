@@ -187,6 +187,7 @@ describe('every other ops service owns its hosts, which an HTTP connection may n
     salesforce: { instance_url: 'https://trypennie.my.salesforce.com', client_id: 'ops-client' },
     snowflake: { account: 'ab12345.us-east-1', user: 'OPS_READER' },
     google: { subject: 'ops@trypennie.example' },
+    supabase: { project_url: 'https://blicjwldjfjubbukxatn.supabase.co' },
   }
   const registry = opsServiceRegistry({
     google: {
@@ -194,6 +195,7 @@ describe('every other ops service owns its hosts, which an HTTP connection may n
       serviceAccountKey: () => '{}',
       tokens: { get: () => { throw new Error('never') } },
     },
+    supabase: { laneProjectRefs: () => [] },
   })
 
   it('has a sample target for every registered service but HTTP, so a new service is held to this too', () => {

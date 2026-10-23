@@ -21,6 +21,8 @@
  * by opsServiceRegistry, since its minter checks the ops database's delegation
  * list and signs with the ops Worker's key, neither of which exists at module
  * load; its token memo is kept here for the isolate's life all the same.
+ * Supabase (supabase-service.ts, #2337) is built per request too, since the
+ * ops project it refuses is read from the request's env.
  * Every service not listed here is refused by
  * name (connection_service_unknown).
  *
@@ -38,6 +40,7 @@ import type { OpsServiceEntry } from './ops-connections'
 import { salesforceServiceEntry } from './salesforce-service'
 import { slackServiceEntry } from './slack-service'
 import { snowflakeServiceEntry } from './snowflake-service'
+import { supabaseServiceEntry, type SupabaseServiceDeps } from './supabase-service'
 
 const REGISTERED: Readonly<Record<string, OpsServiceEntry>> = {
   // Each minter's memo is per isolate, keyed on connection, generation and user.
@@ -54,15 +57,16 @@ const REGISTERED: Readonly<Record<string, OpsServiceEntry>> = {
 }
 
 /** The services built per request, with what each needs from the request's Worker. */
-export const PER_REQUEST_SERVICES = ['google'] as const
+export const PER_REQUEST_SERVICES = ['google', 'supabase'] as const
 
 /**
  * What the per request services need: Google's delegation list check and the
  * ops Worker's key, and the token objects of a person's own Google account
- * (#2338).
+ * (#2338); Supabase's, the bidding and ops projects it refuses (#2337).
  */
 export interface OpsServiceDeps {
   readonly google: Pick<GoogleServiceDeps, 'checkDelegation' | 'serviceAccountKey' | 'tokens'>
+  readonly supabase: SupabaseServiceDeps
 }
 
 /** Google's token memo, per isolate, keyed on connection, generation, mailbox and scope (minters/google.ts). */
@@ -82,7 +86,8 @@ export function opsServiceEntry(service: string): OpsServiceEntry | undefined {
 /** Every registered service's entry, the per request ones built with the deps given. What the live wiring passes. */
 export function opsServiceRegistry(deps: OpsServiceDeps): (service: string) => OpsServiceEntry | undefined {
   const google = googleServiceEntry({ now: () => Date.now(), memo: GOOGLE_MEMO, ownAccountCache: GOOGLE_OWN_ACCOUNT_CACHE, ...deps.google })
-  return (service) => (service === 'google' ? google : opsServiceEntry(service))
+  const supabase = supabaseServiceEntry(deps.supabase)
+  return (service) => (service === 'google' ? google : service === 'supabase' ? supabase : opsServiceEntry(service))
 }
 
 /** The registered service keys, for tests and the status of this deploy. */
