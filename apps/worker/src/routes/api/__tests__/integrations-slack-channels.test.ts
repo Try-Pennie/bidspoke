@@ -24,6 +24,7 @@ import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { makeSupabase } from './_supabase-mock'
 import api from '../index'
+import { sealedSlackRow } from '../../../__tests__/helpers/sealed-slack-row'
 
 const ORG = 'org-2331'
 const testUser = { id: 'user-2331', organization_id: ORG, email: 'dan@pennie.com' }
@@ -36,6 +37,8 @@ const env = {
 } as unknown as Env
 
 const TOKEN = 'test-bot-token-channels'
+// The alert row as stored (#2331's contract release): the token sealed with the env's key, no plaintext.
+const ALERT_ROW = await sealedSlackRow({ bot_token: TOKEN, default_channel: '#alerts' })
 const NETWORK = new TypeError('fetch failed')
 
 type Answer = { status?: number; body?: unknown; raw?: string; headers?: Record<string, string> } | 'network'
@@ -79,7 +82,7 @@ beforeEach(() => {
   vi.mocked(verifyJwt).mockResolvedValue(validPayload)
   vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase({
     users: { single: testUser },
-    service_connections: { list: [{ config: { bot_token: TOKEN, default_channel: '#alerts' }, credential_enc: null }] },
+    service_connections: { list: [ALERT_ROW] },
   }) as never)
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})

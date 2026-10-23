@@ -17,6 +17,7 @@ import { readSlackCopy, rememberSlackConnections, SLACK_CONNS_LASTGOOD_KEY } fro
 import { parseSlackConnection } from '../../../lib/slack-connection'
 import { COPY_NOT_CLEARED_MESSAGE } from '../../../lib/stored-copy'
 import api from '../index'
+import { sealedSlackRow } from '../../../__tests__/helpers/sealed-slack-row'
 
 // ── Supabase mock ─────────────────────────────────────────────────────────────
 
@@ -347,7 +348,8 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
       makeSupabase({
         users: { single: testUser },
         service_connections: {
-          list: [{ id: 'sc-1', config: { bot_token: 'xoxb-mine', default_channel: '#mine' } }],
+          // The row as stored (#2331's contract release): the token sealed with KEY, no plaintext.
+          list: [{ id: 'sc-1', ...(await sealedSlackRow({ bot_token: 'xoxb-mine', default_channel: '#mine' })) }],
           writeRows: [{ id: 'sc-1' }],
         },
       }) as never
@@ -428,7 +430,8 @@ describe('the saved Slack copy follows the Slack settings routes (#2060)', () =>
       makeSupabase({
         users: { single: testUser },
         service_connections: {
-          list: [{ id: 'sc-1', config: { bot_token: 'xoxb-mine', default_channel: '#mine' } }],
+          // The row as stored (#2331's contract release): the token sealed with KEY, no plaintext.
+          list: [{ id: 'sc-1', ...(await sealedSlackRow({ bot_token: 'xoxb-mine', default_channel: '#mine' })) }],
           upsertResult: { id: 'sc-1', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-10-15T00:00:00Z' },
           writeRows: [{ id: 'sc-1' }],
         },

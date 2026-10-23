@@ -20,8 +20,11 @@ import { createLeadSupabaseClient, LEAD_READ_DEADLINE_MS } from '../../../lib/le
 import { readLastGoodSlackConnections, SLACK_CONNS_LASTGOOD_KEY } from '../../../lib/slack-copy'
 import { encryptSecret } from '../../../lib/secret-crypto'
 import { slackPostOf } from '../../../__tests__/helpers/slack-fetch'
+import { sealedSlackRow, SLACK_TEST_KEY } from '../../../__tests__/helpers/sealed-slack-row'
 
-const env = { SUPABASE_URL: 'https://db.example.test', SUPABASE_SECRET_KEY: 'k' } as unknown as Env
+const env = { SUPABASE_URL: 'https://db.example.test', SUPABASE_SECRET_KEY: 'k', SECRET_ENCRYPTION_KEY: SLACK_TEST_KEY } as unknown as Env
+// The live alert row as stored (#2331's contract release): the token sealed with the Worker's key, no plaintext.
+const LIVE_ROW = await sealedSlackRow({ bot_token: 'xoxb-live', default_channel: 'C-LIVE' })
 const KEY = btoa('1'.repeat(32))
 const TRIPPED = { ok: true, state: 'open', tripped: true } as const
 
@@ -44,7 +47,7 @@ function database(mode: 'refuse' | 'hang' | 'up') {
       })
     }
     // A read is answered with an array: the lookup asks for up to two alert rows (#2332).
-    return new Response(JSON.stringify([{ config: { bot_token: 'xoxb-live', default_channel: 'C-LIVE' } }]), { status: 200, headers: { 'content-type': 'application/json' } })
+    return new Response(JSON.stringify([LIVE_ROW]), { status: 200, headers: { 'content-type': 'application/json' } })
   }) as typeof globalThis.fetch
   return { state, fetch }
 }

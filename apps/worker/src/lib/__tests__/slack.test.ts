@@ -9,6 +9,7 @@ import type { QueryTimeoutOffender } from '../slack'
 import { slackPostOf } from '../../__tests__/helpers/slack-fetch'
 import type { FailureAlertPayload, SlowSpikeAlertPayload, SlackConnection } from '../slack'
 import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
+import { sealedSlackRow, withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -18,12 +19,12 @@ function makeSupabase(connection: Record<string, string> | null) {
       if (typeof prop === 'symbol') return undefined
       if (prop === 'limit') return alertRowsAnswer(() =>
         connection
-          ? Promise.resolve({ data: { config: connection }, error: null })
+          ? sealedSlackRow(connection).then((row) => ({ data: row, error: null }))
           : Promise.resolve({ data: null, error: null }))
       return () => chain
     },
   })
-  return { from: () => chain }
+  return withSlackKeyRing({ from: () => chain })
 }
 
 const slackConnection = {
@@ -493,7 +494,7 @@ describe('getSlackConnection — distinguishes a DB error from not-configured (#
         return () => chain
       },
     })
-    return { from: () => chain, _calls: () => i }
+    return withSlackKeyRing({ from: () => chain, _calls: () => i })
   }
 
   const cfg = { bot_token: 'xoxb-t', default_channel: '#a' }
@@ -502,7 +503,7 @@ describe('getSlackConnection — distinguishes a DB error from not-configured (#
   afterEach(() => errSpy.mockRestore())
 
   it('returns the connection on a successful read', async () => {
-    const sb = makeSeqSupabase([{ data: { config: cfg } }])
+    const sb = makeSeqSupabase([{ data: await sealedSlackRow(cfg) }])
     const conn = await getSlackConnection(sb as never, 'org-1', [0, 0])
     expect(conn?.bot_token).toBe('xoxb-t')
     expect(errSpy).not.toHaveBeenCalled()
@@ -526,7 +527,7 @@ describe('getSlackConnection — distinguishes a DB error from not-configured (#
   it('retries a transient error and returns the connection when a later attempt succeeds', async () => {
     const sb = makeSeqSupabase([
       { error: { message: 'pool timeout' } },
-      { data: { config: cfg } },
+      { data: await sealedSlackRow(cfg) },
     ])
     const conn = await getSlackConnection(sb as never, 'org-1', [0, 0])
     expect(conn?.bot_token).toBe('xoxb-t')
@@ -553,11 +554,11 @@ describe('sendMatrixSyncFailureAlert (#408)', () => {
     const chain: unknown = new Proxy({}, {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
-        if (prop === 'limit') return alertRowsAnswer(() => Promise.resolve({ data: connection ? { config: connection } : null, error: null }))
+        if (prop === 'limit') return alertRowsAnswer(async () => ({ data: connection ? await sealedSlackRow(connection) : null, error: null }))
         return () => chain
       },
     })
-    return { from: () => chain }
+    return withSlackKeyRing({ from: () => chain })
   }
   const conn = { bot_token: 'xoxb-t', default_channel: '#alerts', config_alerts_enabled: true }
 
@@ -603,11 +604,11 @@ describe('sendExportFailureAlert (#412)', () => {
     const chain: unknown = new Proxy({}, {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
-        if (prop === 'limit') return alertRowsAnswer(() => Promise.resolve({ data: connection ? { config: connection } : null, error: null }))
+        if (prop === 'limit') return alertRowsAnswer(async () => ({ data: connection ? await sealedSlackRow(connection) : null, error: null }))
         return () => chain
       },
     })
-    return { from: () => chain }
+    return withSlackKeyRing({ from: () => chain })
   }
   const conn = { bot_token: 'xoxb-t', default_channel: '#alerts', config_alerts_enabled: true }
 
@@ -1785,11 +1786,11 @@ describe('the scheduled job all-clears (#851)', () => {
     const chain: unknown = new Proxy({}, {
       get(_, prop) {
         if (typeof prop === 'symbol') return undefined
-        if (prop === 'limit') return alertRowsAnswer(() => Promise.resolve({ data: { config: { bot_token: 'xoxb-t', default_channel: '#alerts' } }, error: null }))
+        if (prop === 'limit') return alertRowsAnswer(async () => ({ data: await sealedSlackRow({ bot_token: 'xoxb-t', default_channel: '#alerts' }), error: null }))
         return () => chain
       },
     })
-    return { from: () => chain } as never
+    return withSlackKeyRing({ from: () => chain }) as never
   }
   const sent = async () => (await slackPostOf(fetchMock.mock.calls[0]))
   const ALERTED = '2026-08-15T01:32:00.000Z'

@@ -12,7 +12,7 @@
  *   Slack accepts the token        ok (Working), acting as the bot Slack names
  *   Slack refuses it               reauth (Needs reconnecting): only a new token fixes it
  *   a sealed token no key opens  reauth too, and Slack is not asked: the alerts cannot
- *   (and no plaintext copy)       post with it either, and saving the token again is the fix
+ *                                 post with it either, and saving the token again is the fix
  *   a row with no usable token    unanswered: nothing about a token was measured
  *   no answer by the deadline      unanswered: the route shows the last known status
  *                                  under the stale strip, as for an ops login, or no
@@ -72,8 +72,7 @@ export async function checkSlackAlertLogin(
         keys = undefined
       }
       const resolved = await resolveSlackConnection(picked.row, keys)
-      // Only a sealed token no key opens, with no plaintext copy, is known to be
-      // unusable. A row that reads as no connection (no token, no channel, or
+      // Only a sealed token no key opens is known to be unusable. A row that reads as no connection (no token, no channel, or
       // gone since the list read) measured nothing about a token, so it is not
       // called refused: it falls back to the last known status like no answer.
       if (resolved.kind === 'unreadable') {
