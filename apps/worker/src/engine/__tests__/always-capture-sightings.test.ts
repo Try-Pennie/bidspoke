@@ -92,7 +92,7 @@ function loadDefinition() {
 async function run(isTest = false) {
   const { env, executionCtx, drain } = makeHarness()
   await executeWorkflow(
-    { workflowId: 'wf-1', payload: { ssn: '000-00-0000' }, source: 'engine', isTest },
+    { triggerType: 'http_webhook', workflowId: 'wf-1', payload: { ssn: '000-00-0000' }, source: 'engine', isTest },
     env,
     moneyRuntime(supabase),
     executionCtx,

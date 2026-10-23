@@ -47,6 +47,8 @@ export interface RunOptions {
   workflowId: string
   payload: unknown
   source: string
+  // Every kind is started by an HTTP request, as each route names it (#1947).
+  triggerType: 'http_webhook'
   isTest?: boolean
   shadowMode?: 'dry_run'
   enforceSourceAssignment?: boolean
@@ -59,13 +61,14 @@ export function runOptions(kind: RunKind, start: RunStart, extras: TestRunExtras
   const { workflowId, payload, source } = start
   switch (kind) {
     case 'live':
-      return { workflowId, payload, source }
+      return { workflowId, payload, source, triggerType: 'http_webhook' }
     case 'test':
       // routes/api/workflows.ts, POST /:id/test: the source is always test_runner.
       return {
         workflowId,
         payload,
         source: 'test_runner',
+        triggerType: 'http_webhook',
         isTest: true,
         executionId: extras.executionId,
         ...(extras.codeBundleName ? { codeBundleName: extras.codeBundleName } : {}),
@@ -78,6 +81,7 @@ export function runOptions(kind: RunKind, start: RunStart, extras: TestRunExtras
         workflowId,
         payload,
         source: `${source}__shadow`,
+        triggerType: 'http_webhook',
         isTest: true,
         shadowMode: 'dry_run',
         enforceSourceAssignment: false,
