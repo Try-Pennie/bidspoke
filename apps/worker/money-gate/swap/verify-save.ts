@@ -2,7 +2,9 @@
  * The check after a lead validation swap is saved (#2592, part of #934): what
  * Dan saved is what was proved, and nothing else in the workflow moved.
  *
- * It compares the saved version with the one before it:
+ * It compares the saved version with the version before the swap, the newest
+ * one before it still holding the pinned script (pickSwapVersions; a swap saved
+ * in two versions, as Lead Economy's was, is compared as one change, #2594):
  *  - the version before holds the code step the candidate replaces, with the
  *    script whose md5 the candidate pins (so the proofs compared against what
  *    was actually replaced);
@@ -82,9 +84,7 @@ export function verifySavedSwap(candidate: SwapCandidate, previous: DefinitionVe
   const ns = candidate.replaces.namespace
 
   // The version before holds the proven script.
-  const old = prev.nodes.find((n) => n.id === candidate.replaces.node_id)
-  const script = old?.config?.script
-  if (!old || old.type !== 'code' || old.namespace !== ns || typeof script !== 'string' || md5(script) !== candidate.replaces.script_md5) {
+  if (!holdsPinnedScript(candidate, prev)) {
     problems.push(`version ${previous.version_number} does not hold the script the proofs compared against (code step ${ns}, id ${candidate.replaces.node_id}, md5 ${candidate.replaces.script_md5})`)
   }
 
@@ -169,6 +169,38 @@ export function verifySavedSwap(candidate: SwapCandidate, previous: DefinitionVe
   if (remade) notes.push(`${remade} edges into or out of the step were made again with new ids, joining the same steps by the same outputs`)
 
   return { ok: problems.length === 0, problems, notes }
+}
+
+/** Whether a version holds the code step the candidate replaces, with the pinned script. */
+export function holdsPinnedScript(candidate: SwapCandidate, def: DefinitionLike): boolean {
+  const n = def.nodes.find((x) => x.id === candidate.replaces.node_id)
+  const script = n?.config?.script
+  return n?.type === 'code' && n.namespace === candidate.replaces.namespace && typeof script === 'string' && md5(script) === candidate.replaces.script_md5
+}
+
+export type SwapVersions =
+  /** The newest version still holds the pinned script: the swap is not saved. */
+  | { kind: 'not_saved'; saved: DefinitionVersion }
+  /** `base` is the newest version before `saved` holding the pinned script; `between` the versions after it, newest first. */
+  | { kind: 'found'; saved: DefinitionVersion; base: DefinitionVersion; between: number[] }
+  /** No version read before `saved` holds the pinned script. */
+  | { kind: 'no_base'; saved: DefinitionVersion; searched: number[] }
+
+/**
+ * Which versions the post save check compares (#2594). A swap can take more than
+ * one save: Lead Economy pasted the step in version 40 and set its Constants
+ * minimum in version 41, and neither alone is the whole swap. So the newest
+ * version is compared with the newest version before it that still holds the
+ * pinned script, never simply the one before it, and the versions in between are
+ * named. `newestFirst` is the saved version followed by those before it.
+ */
+export function pickSwapVersions(candidate: SwapCandidate, newestFirst: DefinitionVersion[]): SwapVersions {
+  const [saved, ...older] = newestFirst
+  if (!saved) throw new Error('no versions to compare')
+  if (holdsPinnedScript(candidate, saved.definition)) return { kind: 'not_saved', saved }
+  const at = older.findIndex((x) => holdsPinnedScript(candidate, x.definition))
+  if (at === -1) return { kind: 'no_base', saved, searched: older.map((x) => x.version_number) }
+  return { kind: 'found', saved, base: older[at], between: older.slice(0, at).map((x) => x.version_number) }
 }
 
 /** The report the CLI prints. */
