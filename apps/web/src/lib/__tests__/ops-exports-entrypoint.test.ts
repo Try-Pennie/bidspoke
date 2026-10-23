@@ -21,6 +21,11 @@
  * pull request moved them into the required list, so its comment above the
  * three is the deployed bundle's own text, kept as read; the #2456 class,
  * which lacks them, is now a red case.
+ *
+ * Since #2338 build PR 13 it requires signInClient too. The deployed script
+ * the passing case reads is that #2569 class with the method #2739 shipped,
+ * written in the bundler's shape (CLASS_SIGN_IN), not a read of the deploy;
+ * the #2569 class, which lacks it, is a red case.
  */
 import { describe, expect, it } from 'vitest'
 import { spawnSync } from 'node:child_process'
@@ -68,6 +73,17 @@ const CLASS = `var OpsConnections = class extends WorkerEntrypoint2 {
 `
 /** The class as the #2456 deploy had it, before the Google list's methods shipped. */
 const CLASS_2456 = CLASS.replace(/ {2}\/\/ The Google mailboxes[\s\S]*(?=\};\n$)/, '')
+/**
+ * The class with signInClient (#2338 build PR 13a, #2739), the bundler's shape
+ * of the source that shipped it, since build PR 13b requires it: the #2569
+ * class above, which lacks it, is now a red case.
+ */
+const CLASS_SIGN_IN = CLASS.replace(/\};\n$/, `  // Sign in with Google (#2338, build PR 13). Not in OPS_CONNECTIONS_METHODS until the bidding routes call it: see the contract.
+  signInClient(request) {
+    return signInClientAnswer(this.env, request);
+  }
+};
+`)
 const EXPORTS_WITH = `export {
   ConnectionTokenObject,
   MAX_BODY_BYTES,
@@ -93,7 +109,8 @@ var OpsInternal = class extends WorkerEntrypoint {
   }
 };
 `
-const DEPLOYED = `${PRELUDE}${CLASS}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${EXPORTS_WITH}`
+const DEPLOYED = `${PRELUDE}${CLASS_SIGN_IN}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${EXPORTS_WITH}`
+const DEPLOYED_2569 = `${PRELUDE}${CLASS}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${EXPORTS_WITH}`
 const DEPLOYED_2456 = `${PRELUDE}${CLASS_2456}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${EXPORTS_WITH}`
 const BEFORE_2456 = `${PRELUDE}\n// src/ops/index.ts\nvar OPS_LANE = "ops";\n${EXPORTS_WITHOUT}`
 
@@ -118,17 +135,24 @@ describe('mainModuleOf', () => {
 })
 
 describe('entrypointVerdict', () => {
-  it('passes the script as deployed by #2569, which carries the Google list\'s methods', () => {
+  it('passes the script as deployed by #2739, which carries signInClient beside the Google list\'s methods', () => {
+    expect(CLASS_SIGN_IN).toContain('signInClient(request)')
     expect(entrypointVerdict(DEPLOYED)).toEqual({ ok: true, lines: [expect.stringContaining(
-      'exports OpsConnections, a WorkerEntrypoint, with verify, clearReauth, revoke, health, lookup, exchangeOAuthCode, addDelegationSubject, removeDelegationSubject, listDelegationSubjects',
+      'exports OpsConnections, a WorkerEntrypoint, with verify, clearReauth, revoke, health, lookup, exchangeOAuthCode, addDelegationSubject, removeDelegationSubject, listDelegationSubjects, signInClient',
     )] })
+  })
+
+  it('fails the script as deployed by #2569, naming signInClient, which it lacks (#2338 build PR 13)', () => {
+    const verdict = entrypointVerdict(DEPLOYED_2569)
+    expect(verdict.ok).toBe(false)
+    expect(verdict.lines.join('\n')).toMatch(/lacks signInClient/)
   })
 
   it('fails the script as deployed by #2456, naming the Google list\'s methods it lacks (#2338 build PR 6)', () => {
     expect(CLASS_2456).not.toContain('Delegation')
     const verdict = entrypointVerdict(DEPLOYED_2456)
     expect(verdict.ok).toBe(false)
-    expect(verdict.lines.join('\n')).toMatch(/lacks addDelegationSubject, removeDelegationSubject, listDelegationSubjects/)
+    expect(verdict.lines.join('\n')).toMatch(/lacks addDelegationSubject, removeDelegationSubject, listDelegationSubjects, signInClient/)
   })
 
   it('fails the script as deployed before #2456, which exported no OpsConnections', () => {
