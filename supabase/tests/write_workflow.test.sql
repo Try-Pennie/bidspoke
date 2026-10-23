@@ -25,7 +25,10 @@
 --   E. delete: a soft delete, switched off, version unmoved; any later write
 --      is workflow_not_found, and so is another organization's workflow.
 --   F. duplicate: a switched off copy on the source's lane with its stamp and
---      its whole history; a source with no history gets a first version.
+--      its whole history; a copy named from a version the source no longer
+--      holds is refused stale_version (BP409), so its definition always
+--      matches the history and stamp copied beside it; a source with no
+--      history gets a first version.
 --   G. A save refused by workflows_refuse_missing_connections takes its
 --      snapshot back with it.
 --   H. The version trigger: any writer's change to a versioned column moves

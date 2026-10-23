@@ -551,6 +551,30 @@ describe('PUT /workflows/:id', () => {
     expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
   })
 
+  // A write that names no version number has no number to label the backup by.
+  // It was labelled v0, a version no workflow ever has (#1947 review).
+  it('hands the backup no version number, never 0, when the write named none', async () => {
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase(
+      { users: { single: testUser }, workflows: { single: existingWorkflow } },
+      { write: () => ({ data: { workflow: existingWorkflow }, error: null }) },
+    ) as unknown as ReturnType<typeof createSupabaseClient>)
+    await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
+    await drainWaitUntil()
+    expect(vi.mocked(pushWorkflowToGitHub).mock.calls[0]?.[5]).toBeNull()
+  })
+
+  it('hands the backup the version number the write named', async () => {
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    vi.mocked(createSupabaseClient).mockReturnValue(makeSupabase(
+      { users: { single: testUser }, workflows: { single: existingWorkflow } },
+      { write: () => ({ data: { workflow: existingWorkflow, version_id: 'ver-7', version_number: 7 }, error: null }) },
+    ) as unknown as ReturnType<typeof createSupabaseClient>)
+    await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
+    await drainWaitUntil()
+    expect(vi.mocked(pushWorkflowToGitHub).mock.calls[0]?.[5]).toBe(7)
+  })
+
   it('records a backup failure (for alerting) when the push throws', async () => {
     vi.mocked(pushWorkflowToGitHub).mockRejectedValue(new Error('GitHub push failed (401): Bad credentials'))
     vi.mocked(recordBackupFailure).mockResolvedValue(false)

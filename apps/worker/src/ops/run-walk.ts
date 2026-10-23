@@ -7,7 +7,8 @@
  * transform, response; branch_end and exit only route or stop): nothing they do
  * leaves the Worker. Every other step runs through a handler registered for its
  * type, which reaches outside only through the run's ctx.send, the ledgered,
- * fenced, deadlined send. #2339 registers app_action here. A type with neither
+ * fenced, deadlined send: app_action (app-action.ts, #2339), which
+ * run-body.ts registers. A type with neither
  * is refused by name before any step runs, so a run never does half its graph
  * and stops at a step it cannot take; the ops lane's webhook and code steps are
  * refused that way until they send through ctx.send.
@@ -20,8 +21,9 @@
  * route is reached. Failed, naming the step, when a step reports an error or
  * throws; a step's error is deterministic, so retrying the run would only
  * repeat it. Failed with max_steps_exceeded past OPS_WALK_MAX_STEPS steps (a
- * loop). RunStopped from ctx.send is passed on, so invokeRun ends the run by
- * the answer that stopped it.
+ * loop). A step that throws StepEndsRun ends the run as it says (a retry or
+ * needs_human), naming the step. RunStopped from ctx.send is passed on, so
+ * invokeRun ends the run by the answer that stopped it.
  */
 import { buildContext } from '../engine/context'
 import { evaluateEdge, findEntryNode, findNode, outgoingEdges } from '../engine/graph'
@@ -39,8 +41,20 @@ export const OPS_WALK_MAX_STEPS = 200
 /** A step that may reach outside the Worker, and only through run.send. */
 export type OpsStepHandler = (args: { node: NodeDefinition; ctx: ExecutionContext; run: RunContext }) => Promise<StepExecutionResult>
 
-/** The handlers the live run body uses: none yet; #2339 registers app_action. */
-export const OPS_STEP_HANDLERS: Readonly<Record<string, OpsStepHandler>> = {}
+/**
+ * Thrown by a handler whose step decides how the whole run ends rather than
+ * failing it (#2339): a retry when nothing it did can have changed anything
+ * (a copy it could not read, a GET past its deadline, an idempotent action's
+ * unknown outcome), needs_human when a non idempotent send's outcome is
+ * unknown. The walk ends the run so, naming the step; invokeRun still turns a
+ * retry after a send that cannot be repeated into failed.
+ */
+export class StepEndsRun extends Error {
+  constructor(readonly end: Exclude<RunBodyEnd, { outcome: 'done' }>) {
+    super(end.error ?? end.outcome)
+    this.name = 'StepEndsRun'
+  }
+}
 
 /** The in memory executors: pure, reaching nothing outside the Worker. */
 const IN_MEMORY: Readonly<Record<string, (node: NodeDefinition, ctx: ExecutionContext) => StepExecutionResult>> = {
@@ -69,7 +83,7 @@ function envReferences(value: unknown, found = new Set<string>()): Set<string> {
 const failed = (error: string): RunBodyEnd => ({ outcome: 'failed', error })
 
 export async function walkOpsDefinition(
-  definition: unknown, run: RunContext, handlers: Readonly<Record<string, OpsStepHandler>> = OPS_STEP_HANDLERS,
+  definition: unknown, run: RunContext, handlers: Readonly<Record<string, OpsStepHandler>>,
 ): Promise<RunBodyEnd> {
   if (!isRecord(definition) || !Array.isArray(definition.nodes) || !Array.isArray(definition.edges)) {
     return failed('the definition is not nodes and edges, so nothing was run')
@@ -111,6 +125,7 @@ export async function walkOpsDefinition(
       result = inMemory ? IN_MEMORY[step.type](step, ctx) : await handlers[step.type]({ node: step, ctx, run })
     } catch (err) {
       if (err instanceof RunStopped) throw err
+      if (err instanceof StepEndsRun) return { ...err.end, error: `${name}: ${err.end.error ?? err.end.outcome}` }
       return failed(`${name}: ${formatErr(err)}`)
     }
     if (result.error !== undefined) return failed(`${name}: ${result.error}`)
