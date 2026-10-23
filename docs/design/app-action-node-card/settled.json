@@ -32,7 +32,7 @@
  ],
  "exceptions": [],
  "idioms": [
-  "The card is drawn into the empty slot of an App Action step in a captured copy of the canvas at 1440 wide (the rounds drew it in place of a Salesforce step's card); the canvas, its header, the step's connection handles and the cards around it are the product as it is today, not decisions.",
+  "The card is drawn into the empty slot of an App Action step in a captured copy of the canvas at 1440 wide (the rounds drew it in place of a Salesforce step's card); the step's two connection handles are kept beside the slot inside a transparent box with the card's 1 px border, so they sit where the real card places them. The canvas, its header, the handles and the cards around it are the product as it is today, not decisions.",
   "Google Drive's mark is drawn inline as an SVG; the build draws the same SVG."
  ]
 }
