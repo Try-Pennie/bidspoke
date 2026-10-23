@@ -944,6 +944,14 @@ describe('the observation purge (#1950: schedule_fire_observations kept 30 days,
     expect(quiet.db.calls).not.toContain('purgeStepTests')
   })
 
+  it('a failed observation purge still lets the step test purge run that night, and is the sweep\'s problem', async () => {
+    const f = fake({ dbNow: NIGHT, failing: { purgeObservations: new Error('lock timeout') }, stepTestsPurge: { purged: 3, more: false } })
+    const report = await runOpsTick(f.ports)
+    expect(f.db.calls).toContain('purgeStepTests:1000')
+    expect(report.counts.step_tests_purged).toBe(3)
+    expect(report.problem_keys).toContain('sweep_failed:observation_purge')
+  })
+
   it('a failed step test purge is the sweep\'s problem and stops nothing else', async () => {
     const f = fake({ dbNow: NIGHT, failing: { purgeStepTests: new Error('lock timeout') } })
     const report = await runOpsTick(f.ports)

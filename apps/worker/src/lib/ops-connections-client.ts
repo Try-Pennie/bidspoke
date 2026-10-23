@@ -72,8 +72,10 @@ export const OPS_STEP_TEST_DEADLINES_MS: Readonly<Record<OpsStepTestMethod, numb
 
 type CalledMethod = OpsConnectionsMethod | OpsStepTestMethod
 
-const deadlineOf = (method: CalledMethod): number =>
-  Object.hasOwn(OPS_STEP_TEST_DEADLINES_MS, method) ? OPS_STEP_TEST_DEADLINES_MS[method as OpsStepTestMethod] : OPS_CONNECTIONS_DEADLINES_MS[method as OpsConnectionsMethod]
+/** Every method's deadline in one table, so a method missing from either fails to compile. */
+const DEADLINES_MS: Readonly<Record<CalledMethod, number>> = { ...OPS_CONNECTIONS_DEADLINES_MS, ...OPS_STEP_TEST_DEADLINES_MS }
+
+const deadlineOf = (method: CalledMethod): number => DEADLINES_MS[method]
 
 interface Requests {
   verify: VerifyRequest

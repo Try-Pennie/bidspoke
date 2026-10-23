@@ -26,8 +26,9 @@
  *     Since #2340 the connection_check sweep (connection-check.ts) the same way,
  *     which proves each ops connection's login and stamps CONNECTION_CHECK_JOB.
  *     Since #1950 the observation_purge sweep, which keeps
- *     schedule_fire_observations to 30 days and is claimed only while the
- *     database clock reads the 03:00 Eastern hour (OBSERVATION_PURGE_EVERY_SECONDS).
+ *     schedule_fire_observations to 30 days, and since #2339 step_test_results
+ *     to 7 days, and is claimed only while the database clock reads the 03:00
+ *     Eastern hour (OBSERVATION_PURGE_EVERY_SECONDS).
  *  4. The workflows (decision 4, 2026-10-16): fetch the ops workflows' state from
  *     the bidding Worker over the service binding, save it as the last good
  *     copy, then read the copies back. The tick plans from what the database
@@ -153,7 +154,10 @@ export type TickSweep = OpsSweep
  * for 20 hours, so a second tick inside that hour stands down and the next
  * night's claim is free. Up to 10 pages of 1,000 rows a night, far past the
  * rows a day of every ops schedule adds; a backlog drains over the nights that
- * follow, and only rows past 30 days wait for it.
+ * follow, and only rows past 30 days wait for it. The same sweep deletes the
+ * step test results tested more than 7 days ago (#2339, Dan, 2026-10-23;
+ * purge_step_test_results holds that window), and their reader serves none
+ * older than 7 days whether or not the purge has run.
  */
 export const OBSERVATION_PURGE_EVERY_SECONDS = 20 * 3600
 export const OBSERVATION_PURGE_EASTERN_HOUR = 3
@@ -701,13 +705,28 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
               return r.more
             }
             case 'observation_purge': {
-              const r = await db.purgeObservations(s.pageLimit)
-              bump(counts, 'observations_purged', r.purged)
-              // A step's test result is kept 7 days (#2339, Dan's decision of
-              // 2026-10-23), deleted by this same nightly sweep.
-              const t = await db.purgeStepTests(s.pageLimit)
-              bump(counts, 'step_tests_purged', t.purged)
-              return r.more || t.more
+              // Two purges in one sweep, each run whatever the other did, so a
+              // failing one never keeps the other's rows past their time: the
+              // observations (30 days) and the step test results (7 days, #2339,
+              // Dan's decision of 2026-10-23). A failure of either is the sweep's.
+              let more = false
+              let failure: { error: unknown } | null = null
+              try {
+                const r = await db.purgeObservations(s.pageLimit)
+                bump(counts, 'observations_purged', r.purged)
+                more ||= r.more
+              } catch (error) {
+                failure = { error }
+              }
+              try {
+                const t = await db.purgeStepTests(s.pageLimit)
+                bump(counts, 'step_tests_purged', t.purged)
+                more ||= t.more
+              } catch (error) {
+                failure ??= { error }
+              }
+              if (failure) throw failure.error
+              return more
             }
           }
         })
