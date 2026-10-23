@@ -7,7 +7,10 @@
  */
 import type { ConnectionList, ConnectionListRow } from '@/lib/api'
 import fixture from '../../../../../../docs/design/connections-page.fixture.json'
+import googleReturn from '../../../../../../docs/design/google-sign-in-return.fixture.json'
+import { FINISHING_LABEL } from '@/components/connections/google-sign-in-return'
 import { loadedOf, type ConnectionsSource } from '@/components/connections/ConnectionsScreen'
+import { keptSignInsIn } from '@/components/connections/google-sign-in-kept'
 import { CHANGE_DEADLINES, LIST_NO_ANSWER, type Chosen, type ConnectionsEvent } from '@/components/connections/connections-state'
 import type { DelegationEntry, HistoryEntry } from '@/components/connections/connection-model'
 import { catalogueServices, createdView, stalledSentence, type FormService } from '@/components/connections/add-form-model'
@@ -224,6 +227,8 @@ export function previewSource(frame: string | undefined, moreGoogle = 0): Connec
     // The preview signs in to nothing: its link is Google's own page, which it never opens.
     startGoogleSignIn: () => Promise.resolve({ url: 'https://accounts.google.com/o/oauth2/v2/auth' }),
     goTo: () => undefined,
+    finishGoogleSignIn: () => new Promise(() => {}),
+    keptSignIns: keptSignInsIn(null),
   }
 }
 
@@ -240,6 +245,8 @@ export const ELAPSED_MS = 4_000
 /** The refusals the Worker's routes answer, worded as they word them (lib/connection-create-refusals.ts). */
 const LIST_REFUSED = 'The connections could not be read: the use counts read failed.'
 const SECRET_REFUSED = 'Salesforce refused the client secret. Nothing was saved. Check the secret and save again.'
+/** The sign in route's sentence for a consent declined on Google's page (google_sign_in_denied, apps/worker/src/lib/google-sign-in.ts). */
+export const GOOGLE_DECLINED = googleReturn.declined
 const NO_CAP = 'Bidspoke has no limit set yet on how many Salesforce calls its workflows may make to lendco.my.salesforce.com, so it cannot connect to that org. Nothing was saved. Ask Dan to set a limit for this org, then save again.'
 /** The create route's sentences for verify's two Slack refusals (apps/worker lib/connection-create-refusals.ts, #2337). */
 const SLACK_NOT_A_BOT = 'This token acts as a person, not as a bot. Nothing was saved. Use the bot token from the ops Slack app and save again.'
@@ -292,6 +299,9 @@ export const SCRIPTED_FRAMES = [
   'add-anthropic', 'add-anthropic-workspace-mismatch', 'anthropic-lead-notes',
   // #2337: Google, the catalogue's own entry now: verify's mailbox refusal, and a company mailbox's panel.
   'add-google-mailbox-mismatch', 'google-ops-mailbox',
+  // #2338 build PR 13, the settled return from Sign in with Google (docs/design/google-sign-in-return.html):
+  // back in the add form, the finish running, and the sign in declined on Google's page.
+  'add-google-own-finishing', 'add-google-own-declined',
 ] as const
 
 export function previewScript(frame: string | undefined): PreviewScript | null {
@@ -467,6 +477,9 @@ function formScript(frame: string): PreviewScript | null {
   const googleForm: ConnectionsEvent[] = [
     ...opened, { type: 'add_service', service: 'google' }, { type: 'add_name', text: fixture.draft.google.companyName }, { type: 'add_field', field: 'subject', text: fixture.draft.google.subject },
   ]
+  const ownForm: ConnectionsEvent[] = [...opened, { type: 'add_service', service: 'google' }, { type: 'add_google', way: 'own' }, { type: 'add_name', text: fixture.draft.google.ownName }]
+  // Back from Google (D1): the finish running in the add form, its working line under the buttons.
+  const finishing = (at: number): ConnectionsEvent => ({ type: 'save_requested', attempt: 1, at, stalled: stalledSentence('Google', deadline, 'saved'), label: FINISHING_LABEL })
   const reconnectOf = (name: string): ConnectionsEvent[] => [listed(), google, choose(name), { type: 'dialog_opened', dialog: 'reconnect', id: idOf(name) }]
   const removeOf = (): ConnectionsEvent[] => [listed([justSaved]), google, choose(fixture.justSaved.name), { type: 'dialog_opened', dialog: 'remove', id: idOf(fixture.justSaved.name) }]
   const typedSecret: ConnectionsEvent = { type: 'dialog_field', field: 'client_secret', text: 'plainsecrets' }
@@ -490,7 +503,11 @@ function formScript(frame: string): PreviewScript | null {
     case 'google-ops-mailbox':
       return script([listed(), google, choose('Ops mailbox')])
     case 'add-google-own':
-      return script([...opened, { type: 'add_service', service: 'google' }, { type: 'add_google', way: 'own' }, { type: 'add_name', text: fixture.draft.google.ownName }])
+      return script(ownForm)
+    case 'add-google-own-finishing':
+      return script([...ownForm, finishing(T - Number.parseInt(googleReturn.elapsed, 10) * 1000), { type: 'tick', at: T }])
+    case 'add-google-own-declined':
+      return script([...ownForm, finishing(T - elapsed), { type: 'save_refused', attempt: 1, sentence: GOOGLE_DECLINED }])
     case 'saved': {
       const service = catalogueServices().find((x) => x.key === 'salesforce')!
       const answer = { id: idOf(fixture.justSaved.name), name: fixture.justSaved.name, service: 'salesforce', acts_as: fixture.justSaved.actsAs, target: { instance_url: `https://${fixture.justSaved.instance}`, client_id: sf.clientId }, created_at: new Date(T).toISOString() }

@@ -11,8 +11,8 @@ import { StrictMode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ConnectionList, ConnectionListRow } from '@/lib/api'
 import { ConnectionsScreen, type ConnectionsClock, type ConnectionsSource } from '../ConnectionsScreen'
-import { GoogleSignInReturn, NO_SIGN_IN, signInReturnOf } from '../GoogleSignInReturn'
-import { GoogleSignInPreview } from '@/app/dev/google-sign-in/GoogleSignInPreview'
+import { NO_SIGN_IN, signInReturnHref, signInReturnOf, type SignInReturn } from '../google-sign-in-return'
+import { keptSignInsIn, type KeptSignIns } from '../google-sign-in-kept'
 
 const T0 = Date.parse('2026-10-20T16:00:00Z')
 const LINK = 'https://accounts.google.com/o/oauth2/v2/auth?state=s'
@@ -49,9 +49,17 @@ function source(over: Partial<ConnectionsSource> = {}): ConnectionsSource {
     updateSlackAlerts: vi.fn(async () => ({ ok: true })),
     searchSlackChannels: vi.fn(async () => ({ channels: [] })),
     startGoogleSignIn: vi.fn(async () => ({ url: LINK })),
+    finishGoogleSignIn: vi.fn(async () => { throw new Error('not called') }),
     goTo: vi.fn(),
+    keptSignIns: memoryKept(),
     ...over,
   }
+}
+
+/** The kept form values in memory, as the page keeps them in the tab's session storage. */
+function memoryKept(): KeptSignIns {
+  const m = new Map<string, string>()
+  return keptSignInsIn({ getItem: (k) => m.get(k) ?? null, setItem: (k, v) => { m.set(k, v) }, removeItem: (k) => { m.delete(k) } })
 }
 
 const part = (name: string) => document.querySelector(`[data-part="${name}"]`) as HTMLElement | null
@@ -155,51 +163,127 @@ describe('Reconnect of a person\'s own Google account', () => {
   })
 })
 
-describe('the callback page', () => {
+describe('the callback route hands the result back to Connections (D1, Dan 2026-10-23)', () => {
   const params = (q: string) => new URLSearchParams(q)
 
   it('reads what Google put on its address', () => {
-    expect(signInReturnOf(params('state=s1&code=c1&scope=x'))).toEqual({ kind: 'finish', body: { state: 's1', code: 'c1' } })
-    expect(signInReturnOf(params('state=s1&error=access_denied'))).toEqual({ kind: 'finish', body: { state: 's1', error: 'access_denied' } })
-    expect(signInReturnOf(params('code=c1'))).toEqual({ kind: 'empty' })
-    expect(signInReturnOf(params('state=s1'))).toEqual({ kind: 'empty' })
-    expect(signInReturnOf(null)).toEqual({ kind: 'empty' })
+    expect(signInReturnOf(params('state=s1&code=c1&scope=x'))).toEqual({ state: 's1', body: { state: 's1', code: 'c1' } })
+    expect(signInReturnOf(params('state=s1&error=access_denied'))).toEqual({ state: 's1', body: { state: 's1', error: 'access_denied' } })
+    expect(signInReturnOf(params('code=c1'))).toEqual({ state: null, body: null })
+    expect(signInReturnOf(params('state=s1'))).toEqual({ state: 's1', body: null })
+    expect(signInReturnOf(null)).toEqual({ state: null, body: null })
   })
 
-  it('finishes once, even when React runs its effect twice, then opens the saved connection', async () => {
-    let answer: (v: { connection: { id: string } }) => void = () => {}
-    const finish = vi.fn(() => new Promise<{ connection: { id: string } }>((r) => { answer = r }))
-    const open = vi.fn()
-    render(<StrictMode><GoogleSignInReturn ret={{ kind: 'finish', body: { state: 's1', code: 'c1' } }} finish={finish} open={open} now={() => T0} /></StrictMode>)
-    expect(screen.getByRole('status').textContent).toMatch(/^Finishing the sign in with Google/)
-    expect(finish).toHaveBeenCalledTimes(1)
-    expect(finish).toHaveBeenCalledWith({ state: 's1', code: 'c1' })
-    await act(async () => answer({ connection: { id: 'new1' } }))
-    expect(open).toHaveBeenCalledWith('new1')
+  it('sends the browser to Connections carrying only what Google said, so the Connections page finishes it', () => {
+    const href = new URL(signInReturnHref(params('state=s1&code=c1&scope=x&authuser=0')), 'https://x.example')
+    expect(href.pathname).toBe('/connections')
+    expect(Object.fromEntries(href.searchParams)).toEqual({ google_sign_in: 'return', state: 's1', code: 'c1' })
+    expect(Object.fromEntries(new URL(signInReturnHref(params('state=s1&error=access_denied')), 'https://x.example').searchParams))
+      .toEqual({ google_sign_in: 'return', state: 's1', error: 'access_denied' })
+    expect(signInReturnHref(params(''))).toBe('/connections?google_sign_in=return')
   })
 
-  it('says why nothing was saved in the route\'s own sentence, with the way back', async () => {
-    const finish = vi.fn(async () => { throw refusal('google_sign_in_denied', 'You did not allow Bidspoke into your Google account. Nothing was saved. Sign in with Google again and allow it to connect.') })
-    const open = vi.fn()
-    render(<GoogleSignInReturn ret={{ kind: 'finish', body: { state: 's1', error: 'access_denied' } }} finish={finish} open={open} now={() => T0} />)
-    await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/^You did not allow Bidspoke/))
-    expect(screen.getByRole('link', { name: 'Back to Connections' }).getAttribute('href')).toBe('/connections')
-    expect(open).not.toHaveBeenCalled()
+  it('keeps a start\'s form values under its state, once, and never throws when storage does', () => {
+    const kept = memoryKept()
+    kept.keep('s1', { kind: 'new', name: 'My Google 2' })
+    expect(kept.take('s1')).toEqual({ kind: 'new', name: 'My Google 2' })
+    expect(kept.take('s1')).toBeNull()
+    const broken = keptSignInsIn({ getItem: () => { throw new Error('denied') }, setItem: () => { throw new Error('denied') }, removeItem: () => { throw new Error('denied') } })
+    expect(() => broken.keep('s1', { kind: 'new', name: 'x' })).not.toThrow()
+    expect(broken.take('s1')).toBeNull()
+  })
+})
+
+describe('back on Connections from Google (D1, D2, Dan 2026-10-23)', () => {
+  const DECLINED = refusal('google_sign_in_denied', 'You did not allow Bidspoke into your Google account. Nothing was saved. Sign in with Google again and allow it to connect.')
+
+  async function cameBack(ret: SignInReturn, over: Partial<ConnectionsSource> = {}, kept?: Parameters<KeptSignIns['keep']>[1]) {
+    const clock = manualClock()
+    const s = source(over)
+    if (kept && ret.state) s.keptSignIns.keep(ret.state, kept)
+    render(<ConnectionsScreen source={s} clock={clock.clock} signInReturn={ret} />)
+    await waitFor(() => expect(s.list).toHaveBeenCalled())
+    return { s, ...clock }
+  }
+  const field = (label: string) => document.querySelector(`[data-part="add-form"] [data-field="${label}"]`) as HTMLElement
+
+  it('a sign in you declined lands back in the add form you left, everything kept, the reason in red right under the buttons', async () => {
+    const { s } = await cameBack({ state: 's1', body: { state: 's1', error: 'access_denied' } }, { finishGoogleSignIn: vi.fn(async () => { throw DECLINED }) }, { kind: 'new', name: 'My Google 2' })
+    await waitFor(() => expect(part('save-line')?.getAttribute('data-state')).toBe('failed'))
+    expect(s.finishGoogleSignIn).toHaveBeenCalledWith({ state: 's1', error: 'access_denied' })
+    const form = part('add-form')!
+    expect(form.querySelector('[data-part="service-tile"][data-chosen="true"]')!.getAttribute('data-service')).toBe('Google')
+    expect((within(field('Name')).getByRole('textbox') as HTMLInputElement).value).toBe('My Google 2')
+    expect(screen.getByRole('radio', { name: 'My own Google account' })).toBeChecked()
+    const line = part('save-line')!
+    expect(line.textContent).toBe(DECLINED.body.message)
+    // D2: the product's error red, FieldError.
+    expect(line).toHaveClass('field-error')
+    // Directly under the Sign in with Google and Cancel row, with no separate page and no way back to name.
+    expect(form.querySelector('.ad-foot')!.nextElementSibling).toBe(line)
+    expect(screen.queryByRole('link', { name: 'Back to Connections' })).toBeNull()
+    expect((within(form).getByRole('button', { name: 'Sign in with Google' }) as HTMLButtonElement).disabled).toBe(false)
   })
 
-  it.each([
-    ['working', /^Finishing the sign in with Google/],
-    ['failed', /^You did not allow Bidspoke/],
-    ['empty', /^This page holds no sign in/],
-  ] as const)('the screenshot preview draws the %s state with no call to the Worker', async (frame, words) => {
-    render(<GoogleSignInPreview frame={frame} />)
-    await waitFor(() => expect((screen.queryByRole('alert') ?? screen.getByRole('status')).textContent).toMatch(words))
+  it('shows the finish running in the same spot, counting, then opens the new connection with no message', async () => {
+    let answer: (v: unknown) => void = () => {}
+    const finishGoogleSignIn = vi.fn(() => new Promise((r) => { answer = r }))
+    const { advance } = await cameBack({ state: 's1', body: { state: 's1', code: 'c1' } }, { finishGoogleSignIn: finishGoogleSignIn as ConnectionsSource['finishGoogleSignIn'] }, { kind: 'new', name: 'My Google 2' })
+    await waitFor(() => expect(part('save-line')?.getAttribute('data-state')).toBe('saving'))
+    advance(3_000)
+    expect(part('save-line')!.textContent).toBe('Finishing the sign in with Google, 3 s')
+    expect(part('add-form')!.querySelector('.ad-foot')!.nextElementSibling).toBe(part('save-line'))
+    await act(async () => answer({ outcome: 'created', connection: { id: 'new-own', name: 'My Google 2', service: 'google', acts_as: 'dan@trypennie.com' } }))
+    expect(part('add-form')).toBeNull()
+    expect(document.querySelector('[data-part="list-item"][data-selected="true"]')!.getAttribute('data-name')).toBe('My Google 2')
   })
 
-  it('an address with no sign in asks nothing and says so', () => {
-    const finish = vi.fn()
-    render(<GoogleSignInReturn ret={{ kind: 'empty' }} finish={finish} open={vi.fn()} now={() => T0} />)
-    expect(screen.getByRole('alert').textContent).toBe(NO_SIGN_IN)
-    expect(finish).not.toHaveBeenCalled()
+  it('a Reconnect\'s failure lands in that connection\'s Reconnect dialog, where it started', async () => {
+    await cameBack({ state: 's2', body: { state: 's2', error: 'access_denied' } }, { finishGoogleSignIn: vi.fn(async () => { throw DECLINED }) }, { kind: 'reconnect', connectionId: 'mine' })
+    const dialog = await screen.findByRole('dialog', { name: 'Reconnect My Google' })
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toBe(DECLINED.body.message))
+    expect(part('add-form')).toBeNull()
+  })
+
+  it('a return whose kept values are gone still lands in the Google form, own account chosen, with the reason', async () => {
+    await cameBack({ state: 's3', body: { state: 's3', error: 'access_denied' } }, { finishGoogleSignIn: vi.fn(async () => { throw DECLINED }) })
+    await waitFor(() => expect(part('save-line')?.textContent).toBe(DECLINED.body.message))
+    expect(part('add-form')!.querySelector('[data-part="service-tile"][data-chosen="true"]')!.getAttribute('data-service')).toBe('Google')
+    expect(screen.getByRole('radio', { name: 'My own Google account' })).toBeChecked()
+  })
+
+  it('a return carrying no sign in asks nothing and says so in the form', async () => {
+    const { s } = await cameBack({ state: null, body: null })
+    await waitFor(() => expect(part('save-line')?.textContent).toBe(NO_SIGN_IN))
+    expect(s.finishGoogleSignIn).not.toHaveBeenCalled()
+  })
+
+  it('finishes once, however often the page draws', async () => {
+    const finishGoogleSignIn = vi.fn(async () => { throw DECLINED })
+    const s = source({ finishGoogleSignIn })
+    const ret: SignInReturn = { state: 's1', body: { state: 's1', error: 'access_denied' } }
+    render(<StrictMode><ConnectionsScreen source={s} clock={manualClock().clock} signInReturn={ret} /></StrictMode>)
+    await waitFor(() => expect(part('save-line')?.getAttribute('data-state')).toBe('failed'))
+    expect(finishGoogleSignIn).toHaveBeenCalledTimes(1)
+  })
+
+  it('finishes once even when the page is drawn again with new props after the list has loaded', async () => {
+    // The state is single use, so a second finish would replace the real reason with "already used".
+    const finishGoogleSignIn = vi.fn(async () => { throw DECLINED })
+    const s = source({ finishGoogleSignIn })
+    const ret: SignInReturn = { state: 's1', body: { state: 's1', error: 'access_denied' } }
+    const { rerender } = render(<ConnectionsScreen source={s} clock={manualClock().clock} signInReturn={ret} />)
+    await waitFor(() => expect(part('save-line')?.getAttribute('data-state')).toBe('failed'))
+    rerender(<ConnectionsScreen source={{ ...s }} clock={manualClock().clock} signInReturn={ret} />)
+    await act(async () => {})
+    expect(finishGoogleSignIn).toHaveBeenCalledTimes(1)
+    expect(part('save-line')!.textContent).toBe(DECLINED.body.message)
+  })
+
+  it('a start keeps the form\'s values under the state its link names, for the return', async () => {
+    const { s } = await openOwnAccountForm()
+    fireEvent.click(within(part('add-form')!).getByRole('button', { name: 'Sign in with Google' }))
+    await waitFor(() => expect(s.goTo).toHaveBeenCalled())
+    expect(s.keptSignIns.take('s')).toEqual({ kind: 'new', name: 'My Google 2' })
   })
 })

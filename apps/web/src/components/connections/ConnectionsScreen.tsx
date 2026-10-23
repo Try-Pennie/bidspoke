@@ -45,7 +45,10 @@ import {
 import {
   catalogueServices, createBodyOf, createdView, knownOrgs, reconnectBodyOf, saveFailureSentence, stalledSentence, type CreateBody, type CreatedConnection, type FormService,
 } from './add-form-model'
+import { GOOGLE_OWN_ACCOUNT_TARGET } from '@bidspoke/service-catalogue/schema'
 import { AddConnectionPanel } from './AddConnectionPanel'
+import type { KeptSignIns } from './google-sign-in-kept'
+import { FINISHING_LABEL, NO_SIGN_IN, type SignInFinishBody, type SignInReturn } from './google-sign-in-return'
 import { LeaveConnectionDialog, ReconnectDialog, RemoveDialog, RemovedDialog, ReplaceDialog } from './ConnectionDialogs'
 import { leaveThen, useLeaveGuard, type LeaveRequest } from '@/lib/leave-guard'
 import type { ComboboxOption } from '@/components/ui/Combobox'
@@ -68,6 +71,13 @@ export interface ConnectionsSource {
   startGoogleSignIn(body: { name: string } | { connection_id: string }): Promise<{ url: string }>
   /** Sends the browser to Google's link; the preview stays where it is. */
   goTo(url: string): void
+  /** POST /api/connections/google/sign-in/finish: what Google returned, finished on this page (D1, 2026-10-23). */
+  finishGoogleSignIn(body: SignInFinishBody): Promise<
+    | { outcome: 'created'; connection: { id: string; name: string; service: string; acts_as: string | null } }
+    | { outcome: 'reconnected'; connection: { id: string; acts_as: string | null }; cleared: boolean }
+  >
+  /** What the form held when the browser left for Google, kept under the sign in's state for its return. */
+  keptSignIns: KeptSignIns
   /** DELETE /api/connections/:id: refused while a workflow uses it (build PR 6). */
   remove(id: string): Promise<{ outcome: 'removed'; ops: { told: true } | { told: false; message: string } }>
   /** GET /api/integrations/slack: the Slack alerts login's alert settings (build PR 14). */
@@ -102,6 +112,15 @@ function changeSentence(err: unknown, what: string): string {
   return `${what}: ${requestFailureCause(err)}.`
 }
 
+/** The state a Sign in with Google link carries, which its return comes back under. */
+function stateOfLink(url: string): string | null {
+  try {
+    return new URL(url).searchParams.get('state')
+  } catch {
+    return null
+  }
+}
+
 export function loadedOf(answer: ConnectionList): LoadedList {
   return { connections: answer.connections.map(viewOf), statuses: { stale: answer.statuses.stale, asOf: answer.statuses.as_of } }
 }
@@ -115,7 +134,7 @@ function workflowsOfRefusal(err: unknown): ConnectionView['workflows'] | undefin
     .map((w) => ({ id: w.id, name: w.name, deleted: w.deleted === true }))
 }
 
-export function ConnectionsScreen({ source, clock = browserClock, orgNames = {}, services: servicesProp, initialChosen, initialTab, initialEvents, noInitialLoad, initialFocus, initialLeaveTo, initialChannelQuery }: {
+export function ConnectionsScreen({ source, clock = browserClock, orgNames = {}, services: servicesProp, initialChosen, initialTab, initialEvents, noInitialLoad, initialFocus, initialLeaveTo, initialChannelQuery, signInReturn }: {
   source: ConnectionsSource
   clock?: ConnectionsClock
   /** Salesforce orgs Bidspoke knows by name, by host: the notice names an org by it, and the form offers it. */
@@ -137,6 +156,8 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
   initialLeaveTo?: string
   /** What the alert channel's search box opens holding: only the preview passes it, to draw the open menu. */
   initialChannelQuery?: string
+  /** What Google sent back, when the page was opened from its sign in (D1): finished here, in the form or dialog it left. */
+  signInReturn?: SignInReturn | null
 }) {
   const services = useMemo(() => servicesProp ?? catalogueServices(), [servicesProp])
   const [state, dispatch] = useReducer(connectionsReducer, undefined, () => (initialEvents ?? []).reduce(connectionsReducer, {
@@ -286,11 +307,15 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
     if (attempt <= s.lastChange.save) return
     const ms = s.deadlines.saveDeadlineMs
     dispatch({ type: 'save_requested', attempt, at: clock.now(), stalled: stalledSentence('Google', ms, 'saved') })
-    source.startGoogleSignIn({ name: s.add.draft.name }).then(
+    const name = s.add.draft.name
+    source.startGoogleSignIn({ name }).then(
       (a) => {
         // A form cancelled, or a newer press, while the link was fetched goes nowhere: its state just expires.
         const now = latest.current.add
         if (!now || now.started !== attempt || now.save.kind !== 'saving') return
+        // The form's values, for the return to put back (D1).
+        const state = stateOfLink(a.url)
+        if (state) source.keptSignIns.keep(state, { kind: 'new', name })
         dispatch({ type: 'add_closed' })
         setSignInLink(a.url)
       },
@@ -311,12 +336,64 @@ export function ConnectionsScreen({ source, clock = browserClock, orgNames = {},
         // A dialog cancelled while the link was fetched goes nowhere: its state just expires.
         const now = latest.current.dialog
         if (now?.kind !== 'reconnect' || now.id !== d.id || now.save.kind !== 'saving' || latest.current.lastChange.reconnect !== attempt) return
+        const state = stateOfLink(a.url)
+        if (state) source.keptSignIns.keep(state, { kind: 'reconnect', connectionId: d.id })
         dispatch({ type: 'dialog_closed' })
         setSignInLink(a.url)
       },
       (err: unknown) => dispatch({ type: 'reconnect_refused', attempt, sentence: saveFailureSentence(err, 'Google', ms, 'reconnected') }),
     )
   }, [source, clock])
+
+  // ── Back from Google (D1, D2, Dan 2026-10-23) ──
+  // Finished here, once the list has loaded, in the form or dialog the sign in left: the working line
+  // under its buttons while it runs, the new connection opened when saved, the reason in red when not.
+  const returned = useRef(false)
+  const listLoaded = state.list.kind === 'loaded'
+  useEffect(() => {
+    if (!signInReturn || returned.current || !listLoaded) return
+    returned.current = true
+    const s = latest.current
+    if (s.list.kind !== 'loaded') return
+    const kept = signInReturn.state ? source.keptSignIns.take(signInReturn.state) : null
+    const ms = s.deadlines.saveDeadlineMs
+    const body = signInReturn.body
+    const reconnecting = kept?.kind === 'reconnect' ? s.list.data.connections.find((c) => c.id === kept.connectionId) : undefined
+    if (reconnecting) {
+      dispatch({ type: 'choose', chosen: { kind: 'connection', id: reconnecting.id } })
+      dispatch({ type: 'dialog_opened', dialog: 'reconnect', id: reconnecting.id })
+      const attempt = ++changeNumber.current.reconnect
+      dispatch({ type: 'reconnect_requested', attempt, at: clock.now(), stalled: stalledSentence('Google', ms, 'reconnected'), label: FINISHING_LABEL })
+      if (!body) {
+        dispatch({ type: 'reconnect_refused', attempt, sentence: NO_SIGN_IN })
+        return
+      }
+      source.finishGoogleSignIn(body).then(
+        (a) => dispatch({ type: 'reconnect_answered', attempt, id: reconnecting.id, actsAs: a.connection.acts_as, at: clock.now() }),
+        (err: unknown) => dispatch({ type: 'reconnect_refused', attempt, sentence: saveFailureSentence(err, 'Google', ms, 'reconnected') }),
+      )
+      return
+    }
+    const google = services.find((x) => x.key === 'google')
+    dispatch({ type: 'add_opened' })
+    dispatch({ type: 'add_service', service: 'google' })
+    dispatch({ type: 'add_google', way: 'own' })
+    dispatch({ type: 'add_name', text: kept?.kind === 'new' ? kept.name : '' })
+    const attempt = ++changeNumber.current.save
+    dispatch({ type: 'save_requested', attempt, at: clock.now(), stalled: stalledSentence('Google', ms, 'saved'), label: FINISHING_LABEL })
+    if (!body) {
+      dispatch({ type: 'save_refused', attempt, sentence: NO_SIGN_IN })
+      return
+    }
+    source.finishGoogleSignIn(body).then(
+      (a) => {
+        if (a.outcome !== 'created' || !google) return
+        const created = { ...a.connection, target: { ...GOOGLE_OWN_ACCOUNT_TARGET }, created_at: new Date(clock.now()).toISOString() }
+        dispatch({ type: 'save_answered', attempt, connection: createdView(created, google, clock.now()) })
+      },
+      (err: unknown) => dispatch({ type: 'save_refused', attempt, sentence: saveFailureSentence(err, 'Google', ms, 'saved') }),
+    )
+  }, [signInReturn, listLoaded, source, clock, services])
 
   const remove = useCallback(() => {
     const s = latest.current

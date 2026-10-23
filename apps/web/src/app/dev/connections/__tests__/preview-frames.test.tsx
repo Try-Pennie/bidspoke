@@ -9,6 +9,7 @@
 import { render, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { ConnectionsScreen, type ConnectionsSource } from '@/components/connections/ConnectionsScreen'
+import { keptSignInsIn } from '@/components/connections/google-sign-in-kept'
 import { PREVIEW_NOW, previewScript, previewServices, SCRIPTED_FRAMES } from '../connections-preview-source'
 
 vi.mock('next/link', () => ({ default: ({ href, children, className }: { href: string; children: React.ReactNode; className?: string }) => <a href={href} className={className}>{children}</a> }))
@@ -90,11 +91,13 @@ const SHOWS: Record<(typeof SCRIPTED_FRAMES)[number], string[]> = {
   // #2337: Google, the catalogue's own entry: verify's mailbox refusal, and a company mailbox's panel.
   'add-google-mailbox-mismatch': ['Google says this acts as another mailbox than the one chosen. Nothing was saved. Choose the mailbox again from the company list and save.'],
   'google-ops-mailbox': ['Ops mailbox', 'ops@trypennie.com'],
+  'add-google-own-finishing': ['Finishing the sign in with Google, 3 s', 'Sign in with Google'],
+  'add-google-own-declined': ['You did not allow Bidspoke into your Google account. Nothing was saved. Sign in with Google again and allow it to connect.'],
 }
 
 function quiet(): ConnectionsSource {
   const never = vi.fn(() => new Promise<never>(() => {}))
-  return { list: never, history: never, googleSubjects: never, addGoogleSubject: never, removeGoogleSubject: never, create: never, reconnect: never, remove: never, slackAlerts: never, updateSlackAlerts: never, searchSlackChannels: never, startGoogleSignIn: never, goTo: vi.fn() }
+  return { list: never, history: never, googleSubjects: never, addGoogleSubject: never, removeGoogleSubject: never, create: never, reconnect: never, remove: never, slackAlerts: never, updateSlackAlerts: never, searchSlackChannels: never, startGoogleSignIn: never, goTo: vi.fn(), finishGoogleSignIn: never, keptSignIns: keptSignInsIn(null) }
 }
 
 describe('the preview frames for states the design never drew', () => {
@@ -107,7 +110,8 @@ describe('the preview frames for states the design never drew', () => {
     // The whole document: a dialog is drawn at the end of the body, outside the page.
     const text = () => (document.body.textContent ?? '').replace(/\s+/g, ' ')
     for (const s of SHOWS[frame]) await waitFor(() => expect(text(), frame).toContain(s))
-    for (const call of Object.values(source)) expect(call).not.toHaveBeenCalled()
+    // Every call the source can make (the kept sign in values are a store, not a call).
+    for (const call of Object.values(source).filter((v) => typeof v === 'function')) expect(call).not.toHaveBeenCalled()
     unmount()
   })
 

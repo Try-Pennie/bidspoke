@@ -65,7 +65,7 @@ export function SaveLine({ save, now, label }: { save: SaveState; now: number; l
   if (save.kind === 'saving') {
     return (
       <div className="ad-line" data-part="save-line" data-state="saving">
-        <Outcome state={{ kind: 'working', label, startedAt: save.startedAt, now }} />
+        <Outcome state={{ kind: 'working', label: save.label ?? label, startedAt: save.startedAt, now }} />
       </div>
     )
   }

@@ -2,11 +2,13 @@
 
 export const runtime = 'edge'
 
-import { Suspense } from 'react'
+import { Suspense, useEffect, useState } from 'react'
 import { useSearchParams } from 'next/navigation'
 import NavLayout from '@/components/NavLayout'
 import { api } from '@/lib/api'
 import { leaveThen } from '@/lib/leave-guard'
+import { sessionKeptSignIns } from '@/components/connections/google-sign-in-kept'
+import { connectionsSignInReturn } from '@/components/connections/google-sign-in-return'
 import { ConnectionsScreen, type ConnectionsSource } from '@/components/connections/ConnectionsScreen'
 
 /**
@@ -26,6 +28,9 @@ const live: ConnectionsSource = {
   reconnect: (id, body) => api.connections.reconnect(id, body),
   remove: (id) => api.connections.remove(id),
   startGoogleSignIn: (body) => api.connections.startGoogleSignIn(body),
+  finishGoogleSignIn: (body) => api.connections.finishGoogleSignIn(body),
+  // The add form's values across the round trip to Google, in this tab's session storage (D1).
+  keptSignIns: sessionKeptSignIns(),
   // Google's page, once nothing on this one would be lost (the screen waits for that); asked through the guard all the same.
   goTo: (url) => leaveThen({ kind: 'page', name: 'Google' }, () => window.location.assign(url)),
   slackAlerts: () => api.integrations.getSlack(),
@@ -41,8 +46,15 @@ const live: ConnectionsSource = {
  * /integrations now sends a reader (build PR 14).
  */
 function Screen() {
-  const named = useSearchParams()?.get('connection')
-  return <ConnectionsScreen source={live} initialChosen={named ? { kind: 'connection', id: named } : undefined} />
+  const params = useSearchParams()
+  const named = params?.get('connection')
+  // Back from Sign in with Google (D1, Dan 2026-10-23): read once, finished in the form it left.
+  const [signInReturn] = useState(() => connectionsSignInReturn(params))
+  // Google's code and state leave the address bar at once, so a refresh or Back never posts them again.
+  useEffect(() => {
+    if (signInReturn) window.history.replaceState(window.history.state, '', '/connections')
+  }, [signInReturn])
+  return <ConnectionsScreen source={live} initialChosen={named ? { kind: 'connection', id: named } : undefined} signInReturn={signInReturn} />
 }
 
 export default function ConnectionsPage() {
