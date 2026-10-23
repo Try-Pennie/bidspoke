@@ -24,39 +24,67 @@ import { REPO_ROOT } from './_scan-utils'
 const CLAUDE_MD = path.join(REPO_ROOT, 'CLAUDE.md')
 const PROJECT_SHARE_BUDGET = 60_000
 
+// An `@path` anywhere in the text imports that file, in a sentence as well as
+// alone on a line, except inside code, which is how the platform reads it. A
+// word after @ that names no file (a package like an npm scope) loads nothing.
 function importsOf(text: string): string[] {
-  return text
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => /^@\S+$/.test(line))
-    .map((line) => line.slice(1))
+  const prose = text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '')
+  return [...prose.matchAll(/(?:^|[\s(])@([^\s()`]+)/gm)].map((m) => m[1].replace(/[.,;:]+$/, ''))
 }
+
+// Every file a session loads from CLAUDE.md: the file itself and its imports,
+// followed into imported files too, each resolved from the file naming it.
+function loadedFiles(root: string): string[] {
+  const seen = new Set<string>()
+  const visit = (file: string, depth: number) => {
+    if (seen.has(file) || depth > 5) return
+    seen.add(file)
+    for (const ref of importsOf(fs.readFileSync(file, 'utf8'))) {
+      const target = path.resolve(path.dirname(file), ref)
+      if (fs.existsSync(target) && fs.statSync(target).isFile()) visit(target, depth + 1)
+    }
+  }
+  visit(root, 0)
+  return [...seen]
+}
+
+describe('importsOf', () => {
+  it('reads an import alone on a line and one inside a sentence', () => {
+    expect(importsOf('@TODO.md\nsee @docs/plan.md, then go')).toEqual(['TODO.md', 'docs/plan.md'])
+  })
+
+  it('ignores an @ inside code and an address', () => {
+    expect(importsOf('run `@cloudflare/vitest-plugin`\n```\n@TODO.md\n```\nmail a@b.com')).toEqual([])
+  })
+})
 
 describe('CLAUDE.md imports (#2606)', () => {
   const text = fs.readFileSync(CLAUDE_MD, 'utf8')
-  const imports = importsOf(text)
+  const loaded = loadedFiles(CLAUDE_MD)
 
-  it('does not import TODO.md, and links it instead', () => {
+  it('does not load TODO.md, and links it instead', () => {
     // Resolved and case folded, so any spelling of the planning list's path is caught (#2606).
     const planningList = path.join(REPO_ROOT, 'TODO.md').toLowerCase()
-    const resolved = imports.map((p) => path.resolve(REPO_ROOT, p).toLowerCase())
-    expect(resolved, 'CLAUDE.md imports TODO.md whole into every session; link it').not.toContain(planningList)
+    expect(
+      loaded.map((f) => f.toLowerCase()),
+      'a session loads TODO.md whole; link it',
+    ).not.toContain(planningList)
     expect(text).toMatch(/\[TODO\.md\]\(\.\/TODO\.md\)/)
   })
 
   it('finds the imports it measures', () => {
-    // The design context is imported on purpose; finding it proves the parser
-    // reads the import lines rather than passing on an empty list (L1).
-    expect(imports).toContain('.impeccable.md')
+    // The design context is imported on purpose; finding it proves the walk
+    // reads the imports rather than passing on CLAUDE.md alone (L1).
+    expect(loaded).toContain(path.join(REPO_ROOT, '.impeccable.md'))
   })
 
-  it('keeps CLAUDE.md and everything it imports under the project budget', () => {
-    const sizes = [CLAUDE_MD, ...imports.map((p) => path.join(REPO_ROOT, p))].map((file) => ({
+  it('keeps CLAUDE.md and everything it loads under the project budget', () => {
+    const sizes = loaded.map((file) => ({
       file: path.relative(REPO_ROOT, file),
       chars: fs.readFileSync(file, 'utf8').length,
     }))
     const total = sizes.reduce((sum, s) => sum + s.chars, 0)
-    expect(total, `CLAUDE.md and its imports come to ${total} characters: ${JSON.stringify(sizes)}`).toBeLessThan(
+    expect(total, `CLAUDE.md and what it loads come to ${total} characters: ${JSON.stringify(sizes)}`).toBeLessThan(
       PROJECT_SHARE_BUDGET,
     )
   })
