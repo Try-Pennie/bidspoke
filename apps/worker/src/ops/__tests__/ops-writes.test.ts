@@ -58,6 +58,9 @@ import {
   readMissingWorkflowDefinitions,
   readWorkflowDefinition,
   saveWorkflowDefinition,
+  recordStepTest,
+  readStepTestResult,
+  purgeStepTestResults,
 } from '../ops-writes'
 import type { ResourceWaitCause } from '../run-vocabulary'
 
@@ -802,5 +805,55 @@ describe('retention and the definition copies (#1950, ops migration 202610221500
     expect(await readMissingWorkflowDefinitions(rpcFetch([row]).client, 2)).toEqual({ missing: [{ workflowId: WF, organizationId: ORG, versionNumber: 2 }], reachedLimit: false })
     expect((await readMissingWorkflowDefinitions(rpcFetch([row, row]).client, 2)).reachedLimit).toBe(true)
     await expect(readMissingWorkflowDefinitions(rpcFetch([{ ...row, organization_id: 'nope' }]).client, 2)).rejects.toThrow(/organization is not a uuid/)
+  })
+})
+
+// A step's test result, kept on ops (#2339, ops migration 20261024010000).
+describe('the step test result wrappers (#2339)', () => {
+  const WF = '00000000-0000-4000-8000-0000000023b0'
+  const DAN = '00000000-0000-4000-8000-0000000023d1'
+  const result = {
+    nodeId: 'n1', namespace: 'find_files', testedBy: DAN, status: 'completed' as const, output: { files: [1] }, error: null,
+    requests: [{ method: 'GET', url: 'https://www.googleapis.com/drive/v3/files' }], durationMs: 120,
+  }
+
+  it('record_step_test sends every field and answers when it was recorded', async () => {
+    const { client, calls } = rpcFetch('2026-10-23T20:00:00+00:00')
+    expect(await recordStepTest(client, ORG, WF, result)).toBe('2026-10-23T20:00:00+00:00')
+    expect(calls[0]).toEqual({
+      path: '/rest/v1/rpc/record_step_test',
+      body: {
+        p_organization_id: ORG, p_workflow_id: WF, p_node_id: 'n1', p_namespace: 'find_files', p_tested_by: DAN, p_status: 'completed',
+        p_output: { files: [1] }, p_error: null, p_requests: result.requests, p_duration_ms: 120,
+      },
+    })
+  })
+
+  it('record_step_test refuses, sending nothing, a status outside the list and a failure with no error', async () => {
+    const { client, calls } = rpcFetch('2026-10-23T20:00:00+00:00')
+    await expect(recordStepTest(client, ORG, WF, { ...result, status: 'running' as never })).rejects.toThrow(/status/)
+    await expect(recordStepTest(client, ORG, WF, { ...result, status: 'failed', output: null, error: null })).rejects.toThrow(/error/)
+    expect(calls).toEqual([])
+  })
+
+  it('step_test_result reads one step\'s result, or none, and refuses a row it cannot read', async () => {
+    const row = {
+      node_id: 'n1', namespace: 'find_files', tested_by: DAN, tested_at: '2026-10-23T20:00:00+00:00', status: 'completed', output: { files: [1] },
+      output_bytes: 13, error: null, requests: [], duration_ms: 120, db_now: '2026-10-23T20:01:00+00:00',
+    }
+    const read = rpcFetch([row])
+    expect(await readStepTestResult(read.client, ORG, WF, 'n1')).toEqual({
+      nodeId: 'n1', namespace: 'find_files', testedBy: DAN, testedAt: '2026-10-23T20:00:00+00:00', status: 'completed', output: { files: [1] },
+      outputBytes: 13, error: null, requests: [], durationMs: 120,
+    })
+    expect(read.calls[0]).toEqual({ path: '/rest/v1/rpc/step_test_result', body: { p_organization_id: ORG, p_workflow_id: WF, p_node_id: 'n1' } })
+    expect(await readStepTestResult(rpcFetch([]).client, ORG, WF, 'n1')).toBeNull()
+    await expect(readStepTestResult(rpcFetch([{ ...row, status: 'mostly' }]).client, ORG, WF, 'n1')).rejects.toThrow(/status/)
+  })
+
+  it('purge_step_test_results reads its page', async () => {
+    const { client, calls } = rpcFetch([{ purged: 3, more: false }])
+    expect(await purgeStepTestResults(client, 100)).toEqual({ purged: 3, more: false })
+    expect(calls[0]).toEqual({ path: '/rest/v1/rpc/purge_step_test_results', body: { p_limit: 100 } })
   })
 })

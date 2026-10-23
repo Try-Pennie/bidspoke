@@ -47,6 +47,8 @@ export const OPS_ORGANIZATION_RPCS = [
   'remove_google_delegation_subject',
   // A workflow version's definition, copied from the bidding Worker (#1950).
   'save_workflow_definition',
+  // A step's latest test result (#2339).
+  'record_step_test',
 ] as const
 
 /**
@@ -72,6 +74,8 @@ export const OPS_LANE_RPCS = [
   'record_sf_budget_reading',
   // The observation_purge sweep (#1950): retention is the same for every organization.
   'purge_schedule_observations',
+  // The same nightly sweep purges step test results past 7 days (#2339).
+  'purge_step_test_results',
 ] as const
 
 /**
@@ -95,6 +99,8 @@ export const OPS_ORGANIZATION_READ_ONLY_RPCS = [
   'connection_copy', 'connection_status', 'google_delegation_check', 'list_google_delegation_subjects',
   // One version of one organization's workflow definition (#1950).
   'workflow_definition',
+  // One step's latest test result, nothing past 7 days (#2339).
+  'step_test_result',
 ] as const
 export const OPS_READ_ONLY_RPCS = [...OPS_LANE_READ_ONLY_RPCS, ...OPS_ORGANIZATION_READ_ONLY_RPCS] as const
 

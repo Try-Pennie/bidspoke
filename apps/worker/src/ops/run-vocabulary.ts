@@ -224,3 +224,9 @@ export type NonStepLeaseOutcome = (typeof NON_STEP_LEASE_OUTCOMES)[number]
 /** Where a budget reading came from: the sf_limits sweep's /limits read, or a response's Sforce-Limit-Info header. */
 export const SF_BUDGET_SOURCES = ['limits', 'sforce_limit_info'] as const
 export type SfBudgetSource = (typeof SF_BUDGET_SOURCES)[number]
+
+// ── a step's test result (#2339, supabase-ops migration 20261024010000) ─────
+
+/** How a step's test ended: its action answered, or it did not (the error says why). */
+export const STEP_TEST_STATUSES = ['completed', 'failed'] as const
+export type StepTestStatus = (typeof STEP_TEST_STATUSES)[number]

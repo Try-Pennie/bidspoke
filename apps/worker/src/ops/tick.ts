@@ -233,6 +233,8 @@ export interface OpsTickDb extends ConnectionServeDb {
   purgeTombstones(limit: number): Promise<{ purged: number; more: boolean }>
   /** The observation_purge sweep (purge_schedule_observations, #1950). */
   purgeObservations(limit: number): Promise<{ purged: number; more: boolean }>
+  /** Also the observation_purge sweep: step test results past 7 days (purge_step_test_results, #2339). */
+  purgeStepTests(limit: number): Promise<{ purged: number; more: boolean }>
   /** The saved copies whose current version has no frozen definition yet (missing_workflow_definitions, #1950). */
   missingDefinitions(limit: number): Promise<{ missing: Array<{ workflowId: string; organizationId: OrganizationId; versionNumber: number }>; reachedLimit: boolean }>
   /** A slot fired for real in live mode: its fire row and its run in one transaction (record_schedule_fire, #1950). */
@@ -701,7 +703,11 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
             case 'observation_purge': {
               const r = await db.purgeObservations(s.pageLimit)
               bump(counts, 'observations_purged', r.purged)
-              return r.more
+              // A step's test result is kept 7 days (#2339, Dan's decision of
+              // 2026-10-23), deleted by this same nightly sweep.
+              const t = await db.purgeStepTests(s.pageLimit)
+              bump(counts, 'step_tests_purged', t.purged)
+              return r.more || t.more
             }
           }
         })
