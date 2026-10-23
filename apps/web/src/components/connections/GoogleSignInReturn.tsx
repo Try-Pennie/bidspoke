@@ -16,6 +16,7 @@
 import Link from 'next/link'
 import { useEffect, useRef, useState } from 'react'
 import { FieldError, Outcome } from '@/components/ui/form'
+import { CONNECTION_SAVE_TIMEOUT_MS } from '@/lib/api'
 import { saveFailureSentence } from './add-form-model'
 
 /** What the callback's address holds, read once. */
@@ -35,8 +36,8 @@ export function signInReturnOf(params: { get(name: string): string | null } | nu
 /** When the address holds no sign in at all: opened by hand, or Google sent nothing. */
 export const NO_SIGN_IN = 'This page holds no sign in to finish. Nothing was saved. Start it again from the Connections page.'
 
-/** How long the finish may take before its line says it stalled: the client's own ceiling (api.ts). */
-const FINISH_DEADLINE_MS = 120_000
+/** How long the finish may take before its line says it stalled: the client's own ceiling for it (api.ts). */
+const FINISH_DEADLINE_MS = CONNECTION_SAVE_TIMEOUT_MS
 
 export function GoogleSignInReturn({ ret, finish, open, now = () => Date.now() }: {
   ret: SignInReturn
