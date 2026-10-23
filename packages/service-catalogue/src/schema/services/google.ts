@@ -25,7 +25,8 @@ import type { ActionArgument, ActionSchema, ServiceSchema } from '../types'
  *     gmail-send-email                   9 (1 disabled)    gmail-send-email
  *     google_calendar-create-event       3 (2 disabled)    calendar-create-event
  *     google_calendar-delete-event       3                 calendar-delete-event
- *   code steps reaching Google, 55 (1 disabled), by call
+ *   code steps reaching Google, 55 (1 disabled); a step is counted once for
+ *   each kind of call it makes, so the rows below add up to more than 55
  *     Drive files.list                  20                 drive-list-files
  *     Drive files.get (alt=media)       20                 drive-download-file
  *     Sheets values append, get, update 17                 the Sheets actions above
