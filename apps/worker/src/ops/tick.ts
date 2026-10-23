@@ -59,8 +59,18 @@
  *     slot key means a doubled tick records, and dispatches, a slot once. A miss
  *     is recorded and reported: a missing expected run is a problem (#1949).
  *  6. The claim, observed: what a claim of up to TICK_CLAIM_PER_WORKFLOW runs a
- *     workflow (k) would find, read without claiming. Live claiming starts with
- *     run invocation (#1950), which builds the run a claim hands over.
+ *     workflow (k) would find, read without claiming.
+ *
+ * LIVE MODE (#1950, OPS_TICK_MODE=live; observe as deployed). Step 5 records
+ * each fire for real (record_schedule_fire: its fire row and its run in one
+ * transaction), planning from the later of the last real fire and the last
+ * observed slot. Step 6 claims (claim_run_requests, k per workflow, the run
+ * lease) instead of reading the depth. Step 7 hands each claimed run to
+ * OpsInternal.run, signed and awaited, each in its own boundary; a run of a
+ * workflow its copy says is switched off or deleted is ended dead unrun. With
+ * the copies last confirmed more than COPIES_STALE_AFTER_MS ago nothing fires
+ * or is claimed, and copies_stale pages. The runs' outcomes are counted per
+ * workflow against a rate (judgeRunOutcomes, L77).
  *  7. Dispatch, each item inside its own boundary: every newly recorded fire is
  *     handed to OpsInternal.observe through the SELF binding, signed (dispatch-
  *     auth.ts), and awaited, because a dispatched call dies with the tick that
@@ -91,14 +101,13 @@ import {
 import { formatErr } from '../lib/format-error'
 import { saveServedConnections, type ConnectionServeDb } from './connection-serve'
 import type { OrganizationId } from './ops-db'
+import { RUN_LEASE_SECONDS, type RunInvocationReport } from './run-invocation'
 import {
-  MAX_COPIES_PER_SAVE, type ConnectionCheckTarget, type QueueDisagreement, type SaveCopiesResult, type ScheduleObservation, type SfLimitsTarget, type SweepClaim,
+  MAX_COPIES_PER_SAVE, type ClaimRunRequests, type ClaimedRun, type CompleteOutcome, type CompletedRun, type ScheduleFire, type ScheduleFireResult, type ConnectionCheckTarget, type QueueDisagreement, type SaveCopiesResult, type ScheduleObservation, type SfLimitsTarget, type SweepClaim,
   type SweepResult, type WorkflowCopy, type WorkflowCopyInput,
 } from './ops-writes'
-import { OBSERVATION_REASONS, type OpsSweep } from './run-vocabulary'
+import { OBSERVATION_REASONS, type OpsSweep, type OverlapRule } from './run-vocabulary'
 
-/** The only mode this tick has (#1949). */
-export const OPS_TICK_MODE: OpsTickMode = 'observe'
 
 /** k, the most runs of one workflow a claim takes (#1698 D1): the fair claim measured at k 5 (spike P9). */
 export const TICK_CLAIM_PER_WORKFLOW = 5
@@ -108,6 +117,27 @@ export const TICK_CLAIM_LIMIT = 40
 /** The versions not held yet that one tick lists (L24: within PostgREST's 1,000 rows), and how many of them it asks the bidding Worker for. */
 export const DEFINITIONS_READ_LIMIT = 1000
 export const DEFINITIONS_PER_TICK = 30
+
+/**
+ * In live mode, how old the saved workflow copies may be and still start runs
+ * (Dan, 2026-10-22, on #1950): within it, ported workflows keep running through
+ * a bidding outage from their last confirmed copies; past it, the tick fires no
+ * schedule and claims no run, and pages (copies_stale), so a long outage cannot
+ * run a workflow on a stale on or off state. Judged on the database clock.
+ */
+export const COPIES_STALE_AFTER_MS = 6 * 60 * 60 * 1000
+
+/**
+ * The rate at which one workflow's runs, in one tick, ending lost (a claim
+ * lost, a start or complete that failed, a dispatch that failed) or requeued
+ * (a retry or a wait) pages, held for three ticks in a row (L77): an outcome
+ * each run treats as expected is still counted, so a systemic failure is not
+ * read as ordinary noise. Judged only from RUN_OUTCOME_MIN_RUNS runs of the
+ * workflow in the tick (L716), so one unlucky run of a quiet workflow never pages.
+ * Both are first settings, to be re-measured once live runs exist (L316).
+ */
+export const RUN_OUTCOME_MIN_RUNS = 3
+export const RUN_OUTCOME_FAILING_RATE = 0.5
 
 /** The copies one tick reads: every ops workflow, within PostgREST's 1,000 rows (L24). */
 const COPIES_READ_LIMIT = 1000
@@ -205,6 +235,12 @@ export interface OpsTickDb extends ConnectionServeDb {
   purgeObservations(limit: number): Promise<{ purged: number; more: boolean }>
   /** The saved copies whose current version has no frozen definition yet (missing_workflow_definitions, #1950). */
   missingDefinitions(limit: number): Promise<{ missing: Array<{ workflowId: string; organizationId: OrganizationId; versionNumber: number }>; reachedLimit: boolean }>
+  /** A slot fired for real in live mode: its fire row and its run in one transaction (record_schedule_fire, #1950). */
+  recordFire(organizationId: OrganizationId, fire: ScheduleFire): Promise<ScheduleFireResult>
+  /** The live claim (claim_run_requests, #1950). */
+  claimRuns(claim: ClaimRunRequests): Promise<ClaimedRun[]>
+  /** Ends a claimed run without running it (complete_run_request): a workflow switched off or deleted. */
+  completeRun(run: ClaimedRun, end: CompleteOutcome): Promise<CompletedRun>
   /** One version's frozen definition (save_workflow_definition, #1950). */
   saveDefinition(organizationId: OrganizationId, workflowId: string, versionNumber: number, definition: Record<string, unknown>): Promise<'saved' | 'already_saved' | 'conflict' | 'no_copy'>
   /** The Salesforce lease sweep (sweep_sf_leases). */
@@ -238,8 +274,18 @@ export interface UnconfiguredSecret {
 export type DispatchItem =
   | { kind: 'would_fire'; workflowId: string; organizationId: string; scheduledFor: string; dispatchAt: string }
   | { kind: 'probe' }
+  /** A claimed run for OpsInternal.run (#1950). Its claim token is its nonce: start_run_execution takes a claim once. */
+  | { kind: 'run'; run: ClaimedRun }
 
 export interface OpsTickPorts {
+  /** observe (the deployed default) or live (#1950), from OPS_TICK_MODE. */
+  mode: OpsTickMode
+  /**
+   * One claimed run handed to OpsInternal.run through the SELF binding, signed,
+   * and awaited (a dispatched call dies with the tick that made it, spike P4).
+   * Throws when the call is refused or fails.
+   */
+  dispatchRun(run: ClaimedRun): Promise<RunInvocationReport>
   tickId: string
   /** The cron's scheduledTime, reported as received; nothing keys on it. */
   scheduledTime: number | null
@@ -448,6 +494,89 @@ async function copyDefinitionBatch(
   return true
 }
 
+/** The last slot a schedule served: observed (observe mode), or the later of fired and observed (live). */
+function lastServedMs(c: WorkflowCopy, live: boolean): number | null {
+  const observed = c.lastObserved === null ? null : Date.parse(c.lastObserved)
+  if (!live) return observed
+  const fired = c.lastServed === null ? null : Date.parse(c.lastServed)
+  if (observed === null) return fired
+  if (fired === null) return observed
+  return Math.max(observed, fired)
+}
+
+/**
+ * How one claimed run ended, as the tick counts it (L77): lost covers a lost
+ * claim, a start or complete that failed and a dispatch that failed (each
+ * leaves the run to the lease sweep); requeued a retry or a wait; ended a run
+ * of a workflow switched off or deleted, ended without running.
+ */
+export type RunTally = 'done' | 'lost' | 'unknown' | 'requeued' | 'failed' | 'ended'
+
+function tallyOf(report: RunInvocationReport): RunTally {
+  if (report.outcome !== 'completed') return 'lost'
+  switch (report.end.outcome) {
+    case 'done': return 'done'
+    case 'retry':
+    case 'suspend': return 'requeued'
+    case 'needs_human': return report.end.reason === 'send_outcome_unknown' ? 'unknown' : 'lost'
+    case 'failed':
+    case 'dead': return 'failed'
+  }
+}
+
+/**
+ * One claimed run, in its own boundary (L73: a throw here never stops a
+ * sibling). A run of a workflow its copy says is deleted or switched off, or
+ * that no copy names, is ended dead without running (the claim re-checks the
+ * workflow, #1698 1.3); any other is handed to OpsInternal.run and awaited.
+ */
+async function dispatchOneRun(ports: OpsTickPorts, db: OpsTickDb | null, copies: readonly WorkflowCopy[], run: ClaimedRun): Promise<{ workflowId: string; tally: RunTally; error?: string }> {
+  const copy = copies.find((c) => c.workflowId === run.workflowId)
+  try {
+    if (copy === undefined || copy.deletedAt !== null || copy.withdrawnAt !== null || !copy.mayStart) {
+      const reason = copy === undefined || copy.deletedAt !== null || copy.withdrawnAt !== null ? 'workflow_deleted' : 'workflow_inactive'
+      if (db === null) throw new Error('no ops database to end the run in')
+      await db.completeRun(run, { outcome: 'dead', reason })
+      return { workflowId: run.workflowId, tally: 'ended' }
+    }
+    return { workflowId: run.workflowId, tally: tallyOf(await ports.dispatchRun(run)) }
+  } catch (err) {
+    return { workflowId: run.workflowId, tally: 'lost', error: formatErr(err) }
+  }
+}
+
+/**
+ * The runs' outcomes counted against a rate, per workflow (L77, #1950). Every
+ * unknown send pages at once: the run waits for a person. Lost and requeued runs
+ * page, held for three ticks, once they reach RUN_OUTCOME_FAILING_RATE of at
+ * least RUN_OUTCOME_MIN_RUNS runs of one workflow in the tick.
+ */
+function judgeRunOutcomes(
+  results: ReadonlyArray<{ workflowId: string; tally: RunTally; error?: string }>,
+  problem: (kind: OpsTickProblemKind, text: string, subject?: string) => void,
+  counts: Record<string, number>,
+): void {
+  const byWorkflow = new Map<string, Record<RunTally, number> & { runs: number; errors: string[] }>()
+  for (const r of results) {
+    bump(counts, `runs_${r.tally}`)
+    const w = byWorkflow.get(r.workflowId) ?? { runs: 0, done: 0, lost: 0, unknown: 0, requeued: 0, failed: 0, ended: 0, errors: [] }
+    w.runs++
+    w[r.tally]++
+    if (r.error) w.errors.push(r.error)
+    byWorkflow.set(r.workflowId, w)
+  }
+  for (const [workflowId, w] of byWorkflow) {
+    if (w.unknown > 0) {
+      problem('run_outcome_unknown', `${w.unknown} ${w.unknown === 1 ? 'run' : 'runs'} of workflow ${workflowId} made a send whose outcome is unknown (no answer, a dropped connection, or a 503 to a send that cannot be repeated), so ${w.unknown === 1 ? 'it waits' : 'they wait'} for a person (needs_human, send_outcome_unknown).`, workflowId)
+    }
+    const failing = w.lost + w.requeued
+    if (w.runs >= RUN_OUTCOME_MIN_RUNS && failing / w.runs >= RUN_OUTCOME_FAILING_RATE) {
+      const first = w.errors[0] ? ` The first error: ${w.errors[0]}.` : ''
+      problem('runs_failing', `${failing} of the ${w.runs} runs of workflow ${workflowId} this tick were lost (${w.lost}) or requeued (${w.requeued}).${first}`, workflowId)
+    }
+  }
+}
+
 export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   const startedAt = new Date(ports.now()).toISOString()
   // Each problem keyed by its kind (#2506), so the bidding Worker can hold one a
@@ -553,6 +682,10 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
             case 'lease_expiry': {
               const r = await db.sweepLeases(s.pageLimit)
               bump(counts, 'leases_swept', r.requeued + r.retried + r.needsHuman + r.dead + r.failed)
+              // Each kind of lapse counted apart (L77): the runs lost to a lease expiry.
+              if (r.requeued > 0) bump(counts, 'leases_lapsed_requeued', r.requeued)
+              if (r.retried > 0) bump(counts, 'leases_lapsed_retried', r.retried)
+              if (r.needsHuman > 0) bump(counts, 'leases_lapsed_needs_human', r.needsHuman)
               return r.more
             }
             case 'run_expiry': {
@@ -576,6 +709,13 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
         if (s.sweep === 'queue_agreement') problem('agreement_check_failed', `The ${s.sweep} sweep failed: ${formatErr(err)}.`)
         else problem('sweep_failed', `The ${s.sweep} sweep failed: ${formatErr(err)}.`, s.sweep)
       }
+    }
+
+    // A run whose lease lapsed after a send not declared idempotent waits for a
+    // person (lease_expired_after_send): paged at once, since nothing retries it.
+    const lapsedAfterSend = counts.leases_lapsed_needs_human ?? 0
+    if (lapsedAfterSend > 0) {
+      problem('runs_lapsed_after_send', `${lapsedAfterSend} ops ${lapsedAfterSend === 1 ? 'run' : 'runs'} lost ${lapsedAfterSend === 1 ? 'its' : 'their'} lease after a send that cannot safely be repeated, so ${lapsedAfterSend === 1 ? 'it waits' : 'they wait'} for a person (needs_human, lease_expired_after_send).`)
     }
 
     // The Salesforce lease sweep, every tick, unclaimed (TICK_SF_LEASE_SWEEP), its own boundary.
@@ -625,10 +765,13 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   }
 
   let copies: WorkflowCopy[] = []
+  /** The copies were read: a claimed run is judged against them, so with none read nothing is claimed. */
+  let copiesRead = false
   if (db) {
     try {
       const read = await db.readCopies(COPIES_READ_LIMIT)
       copies = read.copies
+      copiesRead = true
       if (read.reachedLimit) problem('copies_read_limit', `The ops tick read ${COPIES_READ_LIMIT} workflow copies, its limit, so any past it were not planned.`)
     } catch (err) {
       problem('copies_read_failed', `The ops tick could not read the saved workflow copies (${formatErr(err)}), so it planned no fires.`)
@@ -637,7 +780,9 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   if (fetchError !== null) {
     if (copies.length > 0) {
       bump(counts, 'copies_used_saved')
-      const oldest = Math.min(...copies.map((c) => Date.parse(c.confirmedAt)))
+      // A withdrawn copy is confirmed by no list, so its age says nothing about the others.
+      const named = copies.filter((c) => c.withdrawnAt === null)
+      const oldest = Math.min(...(named.length > 0 ? named : copies).map((c) => Date.parse(c.confirmedAt)))
       problem('workflows_fetch_failed', `The ops tick could not fetch the ops workflows from the bidding Worker (${fetchError}), so it planned from the saved copies, the oldest last confirmed ${slotLabel(oldest)}.`)
     } else {
       problem('workflows_fetch_failed', `The ops tick could not fetch the ops workflows from the bidding Worker (${fetchError}) and has no saved copy, so it planned nothing.`)
@@ -682,8 +827,23 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   // so the path is proven before live runs need it (L142).
   if (db) await copyDefinitions(ports, db, problem, counts)
 
+  // 4f. In live mode, copies last confirmed more than 6 hours ago start nothing
+  // (Dan, 2026-10-22): no fire, no claim, and a page. One served list confirms
+  // every copy it names, so the oldest stands for them all; a withdrawn copy is
+  // in no list, so nothing confirms it again, and it may start nothing anyway.
+  const live = ports.mode === 'live'
+  let liveHeld = false
+  const confirmable = copies.filter((c) => c.withdrawnAt === null)
+  if (live && dbNow !== null && confirmable.length > 0) {
+    const oldest = Math.min(...confirmable.map((c) => Date.parse(c.confirmedAt)))
+    if (!(Date.parse(dbNow) - oldest <= COPIES_STALE_AFTER_MS)) {
+      liveHeld = true
+      problem('copies_stale', `The saved ops workflow copies were last confirmed ${slotLabel(oldest)}, more than 6 hours ago, so the tick fired no schedule and started no run; they start again once the bidding Worker serves the workflows.`)
+    }
+  }
+
   // 5. The schedules, each its own boundary.
-  if (dbNow !== null && db) {
+  if (dbNow !== null && db && !liveHeld) {
     const dbNowMs = Date.parse(dbNow)
     for (const c of copies) {
       const sched = scheduleFromTrigger(c.trigger)
@@ -712,10 +872,25 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
           schedule: config,
           dbNowMs,
           floorMs: scheduleFloorMs({ knownSinceMs: Date.parse(c.scheduleKnownSince) }),
-          // Observe mode serves nothing, so what it observed is what it would have served.
-          lastServedMs: c.lastObserved === null ? null : Date.parse(c.lastObserved),
+          // Observe mode serves nothing, so what it observed is what it would have
+          // served. Live mode serves from the later of its last real fire and its
+          // last observed slot, so going live never re-fires a slot observe passed.
+          lastServedMs: lastServedMs(c, live),
         })
         for (const fire of plan.fires) {
+          if (live) {
+            // The schedule's overlap rule is the run engine's own vocabulary (OverlapRule): a type check, not a cast.
+            const overlap: OverlapRule = config.overlap
+            const fired = await db.recordFire(c.organizationId, {
+              workflowId: c.workflowId, workflowVersion: c.versionNumber, scheduledFor: new Date(fire.scheduled_for),
+              previousScheduledFor: fire.previous_scheduled_for === null ? null : new Date(fire.previous_scheduled_for),
+              overlap,
+              // A fixed per workflow jitter (#1698 D7) holds the run back until its dispatch time.
+              ...(fire.dispatch_at > fire.scheduled_for ? { notBefore: new Date(fire.dispatch_at) } : {}),
+            })
+            bump(counts, `fires_${fired.outcome}`)
+            continue
+          }
           const outcome = await db.recordObservation(c.organizationId, {
             workflowId: c.workflowId, workflowVersion: c.versionNumber, scheduledFor: new Date(fire.scheduled_for), outcome: 'would_fire',
             reason: fire.reason, dispatchAt: new Date(fire.dispatch_at),
@@ -747,8 +922,9 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     }
   }
 
-  // 6. The claim, observed.
-  if (db) {
+  // 6. The claim: observed (what a claim would find), or in live mode taken.
+  let claimed: ClaimedRun[] = []
+  if (db && !live) {
     try {
       const depth = await db.dueQueueDepth()
       bump(counts, 'due_runs', depth.dueRuns)
@@ -756,11 +932,21 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     } catch (err) {
       problem('claim_depth_failed', `The ops tick could not read what a claim would find: ${formatErr(err)}.`)
     }
+  } else if (db && live && !liveHeld && dbNow !== null && copiesRead) {
+    try {
+      claimed = await db.claimRuns({ worker: ports.tickId, limit: TICK_CLAIM_LIMIT, perWorkflow: TICK_CLAIM_PER_WORKFLOW, leaseSeconds: RUN_LEASE_SECONDS })
+      if (claimed.length > 0) bump(counts, 'runs_claimed', claimed.length)
+    } catch (err) {
+      problem('claim_failed', `The ops tick could not claim runs (${formatErr(err)}); every queued run waits for the next tick.`)
+    }
   }
 
-  // 7. Dispatch, each its own boundary, all awaited.
-  const toSend: DispatchItem[] = items.length > 0 ? items : [{ kind: 'probe' }]
+  // 7. Dispatch, each its own boundary, all awaited: the runs (live), the observed
+  // fires, and with neither, one probe so the path is proven every minute.
+  const runsDone = Promise.all(claimed.map((run) => dispatchOneRun(ports, db, copies, run)))
+  const toSend: DispatchItem[] = items.length > 0 ? items : claimed.length > 0 ? [] : [{ kind: 'probe' }]
   const sent = await Promise.allSettled(toSend.map((item) => ports.dispatch(item)))
+  judgeRunOutcomes(await runsDone, problem, counts)
   sent.forEach((r, i) => {
     if (r.status === 'fulfilled') {
       bump(counts, 'dispatched')
@@ -769,7 +955,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
     bump(counts, 'dispatch_failed')
     const item = toSend[i]
     if (item.kind === 'probe') problem('probe_failed', `The probe through the dispatch path failed: ${formatErr(r.reason)}.`)
-    else problem('dispatch_failed', `The dispatch of workflow ${item.workflowId}'s ${slotLabel(Date.parse(item.scheduledFor))} slot failed: ${formatErr(r.reason)}.`, item.workflowId)
+    else if (item.kind === 'would_fire') problem('dispatch_failed', `The dispatch of workflow ${item.workflowId}'s ${slotLabel(Date.parse(item.scheduledFor))} slot failed: ${formatErr(r.reason)}.`, item.workflowId)
   })
 
   // 7b. The sf_limits sweep, if this tick owns it, settled before the report carries its problems.
@@ -799,7 +985,7 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   const capped = capTickProblems(problems)
   const report: OpsTickReport = {
     tick_id: ports.tickId,
-    mode: OPS_TICK_MODE,
+    mode: ports.mode,
     scheduled_time: ports.scheduledTime === null ? null : new Date(ports.scheduledTime).toISOString(),
     started_at: startedAt,
     finished_at: new Date(ports.now()).toISOString(),

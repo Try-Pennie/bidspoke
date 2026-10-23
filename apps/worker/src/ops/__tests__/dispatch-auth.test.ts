@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest'
 import { DISPATCH_MAX_SKEW_MS, dispatchKey, signDispatch, verifyDispatch } from '../dispatch-auth'
 import { OpsInternalRefused } from '../internal'
+import { organizationIdFrom } from '../ops-db'
 
 const NOW = Date.parse('2026-10-17T10:02:31.000Z')
 const envelope = { v: 1 as const, tick_id: 'tick-1', signed_at: new Date(NOW).toISOString(), item: { kind: 'probe' as const } }
@@ -24,6 +25,29 @@ async function refusal(p: Promise<unknown>): Promise<string> {
   }
   throw new Error('expected a refusal')
 }
+
+const RUN = {
+  runRequestId: '0192f4a0-0000-7000-8000-000000000001', organizationId: organizationIdFrom('6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'), workflowId: '00000000-0000-4000-8000-0000000019a1',
+  workflowVersion: 3, triggerKind: 'schedule', claimToken: '11111111-2222-4333-8444-555555555555', claimExpiresAt: '2026-10-17T10:03:31.000Z', stateVersion: 2,
+  attempts: 0, unchargedAttempts: 0, maxAttempts: 3, resumeReason: null, executionChainId: '0192f4a0-0000-7000-9000-000000000001',
+  resumedFromExecutionId: null, payload: { slot: '2026-10-17T10:00:00Z' }, payloadRef: null,
+}
+
+describe('a run dispatch (#1950)', () => {
+  it('carries a claimed run, signed and verified whole', async () => {
+    const key = await dispatchKey('master-secret')
+    const runEnvelope = { ...envelope, item: { kind: 'run' as const, run: RUN } }
+    expect(await verifyDispatch(key, await signDispatch(key, runEnvelope), NOW)).toEqual(runEnvelope)
+  })
+
+  it('refuses a run item missing its claim token, with a bad organization, or with a field of the wrong type', async () => {
+    const key = await dispatchKey('master-secret')
+    for (const run of [{ ...RUN, claimToken: undefined }, { ...RUN, organizationId: 'nope' }, { ...RUN, stateVersion: '2' }, { ...RUN, extra: 1 }]) {
+      const signed = await signDispatch(key, { ...envelope, item: { kind: 'run', run } as never })
+      expect(await refusal(verifyDispatch(key, signed, NOW))).toBe('malformed')
+    }
+  })
+})
 
 describe('dispatch signatures', () => {
   it('verifies what it signed', async () => {
