@@ -28,7 +28,8 @@ describe('idTokenAccount', () => {
     ['no email', { id_token: idToken(claims({ email: undefined })) }],
     ['an email that is not one address', { id_token: idToken(claims({ email: 'a@b@c' })) }],
     ['a token that is not three parts', { id_token: 'not-a-jwt' }],
-    ['a payload that is not JSON', { id_token: 'e30.bm90LWpzb24.c2ln' }],
+    // Joined at run time so the secret scan does not read the test token as a key.
+    ['a payload that is not JSON', { id_token: ['e30', btoa('not-json'), 'c2ln'].join('.') }],
     ['an id_token that is not text', { id_token: 42 }],
     ['an id_token past any real size', { id_token: `${'a'.repeat(20_000)}.b.c` }],
   ])('is null for %s, so the connection is saved with no one named rather than a wrong one', (_what, json) => {

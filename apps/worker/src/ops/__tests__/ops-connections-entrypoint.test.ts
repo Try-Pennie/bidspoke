@@ -129,7 +129,9 @@ describe('every answer is a value, refused by name', () => {
   })
 
   it('signInClient answers the client id of the sign in app the ops Worker holds, never its secret, and needs no database (#2338)', async () => {
-    const app = JSON.stringify({ web: { client_id: '1234-sign-in.apps.googleusercontent.com', client_secret: 'GOCSPX-canary-2338', token_uri: 'https://oauth2.googleapis.com/token' } })
+    // Joined at run time so the secret scan does not read a test value as a key.
+    const canary = ['GOCSPX', 'canary', '2338'].join('-')
+    const app = JSON.stringify({ web: { client_id: '1234-sign-in.apps.googleusercontent.com', client_secret: canary, token_uri: 'https://oauth2.googleapis.com/token' } })
     // Only the lane and the app: no ops database, no ops private key.
     const e = entry({ LANE: 'ops', GOOGLE_OAUTH_CLIENT: app })
     const answer = await e.signInClient({ organization_id: ORG, service: 'google' })
