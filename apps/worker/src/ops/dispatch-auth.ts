@@ -13,9 +13,11 @@
  * The comparison is the shared constant time verifier (@bidspoke/porting-evidence
  * verifyBodySignature), never a bespoke `===`.
  *
- * Not yet a replay guard: observe is read only, so a replayed observe changes
- * nothing. Run invocation (#1950) adds the nonce its `run` method needs before
- * any call here can cause a send.
+ * Replay. A replayed observe changes nothing: it is read only. A replayed run
+ * (#1950) is refused by the database, not here: its item carries the run's
+ * claim token, which is its nonce, and start_run_execution starts a claim once
+ * (only from claimed, and only under that token), so a replay inside the skew
+ * window answers claim_lost and sends nothing, whichever copy arrives first.
  */
 import { deriveHexKey, signBody, verifyBodySignature } from '@bidspoke/porting-evidence'
 import { OpsInternalRefused } from './internal'
@@ -51,9 +53,29 @@ export async function signDispatch(keyHex: string, envelope: DispatchEnvelope): 
   return { body, signature: await signBody(keyHex, encoder.encode(body)) }
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v)
+const isText = (v: unknown): v is string => typeof v === 'string' && v !== ''
+const isTextOrNull = (v: unknown): boolean => v === null || isText(v)
+
+/** The fields of a ClaimedRun, each with its check: a run item carries these and no others. */
+const CLAIMED_RUN_FIELDS: Record<string, (v: unknown) => boolean> = {
+  runRequestId: isText, organizationId: (v) => typeof v === 'string' && UUID.test(v), workflowId: isText, workflowVersion: isInt,
+  triggerKind: isText, claimToken: isText, claimExpiresAt: isText, stateVersion: isInt, attempts: isInt, unchargedAttempts: isInt,
+  maxAttempts: isInt, resumeReason: isTextOrNull, executionChainId: isText, resumedFromExecutionId: isTextOrNull,
+  payload: () => true, payloadRef: isTextOrNull,
+}
+
+function isClaimedRun(v: unknown): boolean {
+  if (!isRecord(v)) return false
+  const keys = Object.keys(v)
+  return keys.length === Object.keys(CLAIMED_RUN_FIELDS).length && keys.every((k) => Object.hasOwn(CLAIMED_RUN_FIELDS, k) && CLAIMED_RUN_FIELDS[k](v[k]))
+}
+
 function isDispatchItem(v: unknown): v is DispatchItem {
   if (!isRecord(v)) return false
   if (v.kind === 'probe') return Object.keys(v).length === 1
+  if (v.kind === 'run') return Object.keys(v).length === 2 && isClaimedRun(v.run)
   return v.kind === 'would_fire' && typeof v.workflowId === 'string' && typeof v.organizationId === 'string' &&
     typeof v.scheduledFor === 'string' && typeof v.dispatchAt === 'string'
 }
