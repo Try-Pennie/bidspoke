@@ -93,7 +93,7 @@ BEGIN
      NULL, pg_temp.cpb_envelope('aXYtYTI')::text, 'ops_key', 1, NULL, NULL, '22222222-2222-2222-2222-22222c2338aa'),
     ('33333333-3333-3333-3333-33333c2338a4', '11111111-1111-1111-1111-11111c2338aa', 'snowflake', 'Ops Snowflake', 'key_pair', NULL,
      NULL, pg_temp.cpb_envelope('aXYtYTQ')::text, 'ops_key', 2, NULL, NULL, '22222222-2222-2222-2222-22222c2338aa'),
-    ('33333333-3333-3333-3333-33333c2338a3', '11111111-1111-1111-1111-11111c2338aa', 'slack', 'slack', 'oauth', NULL,
+    ('33333333-3333-3333-3333-33333c2338a3', '11111111-1111-1111-1111-11111c2338aa', 'slack', 'slack', 'bot_token', NULL,
      '{"bot_token":"planted-bot-token-2338"}', 'planted-ciphertext-2338', 'bidding_ring', 1, NULL, NULL, '22222222-2222-2222-2222-22222c2338aa'),
     ('33333333-3333-3333-3333-33333c2338b1', '11111111-1111-1111-1111-11111c2338bb', 'salesforce', 'B Salesforce', 'oauth_client_credentials', NULL,
      NULL, pg_temp.cpb_envelope('aXYtYjE')::text, 'ops_key', 1, NULL, NULL, NULL);
@@ -177,7 +177,7 @@ BEGIN
       VALUES ('11111111-1111-1111-1111-11111c2338aa', svc, 'legacy ' || svc, 'api_key', 'LEGACY_SECRET');
     END LOOP;
     INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, config, credential_enc, sealed_for)
-    VALUES ('11111111-1111-1111-1111-11111c2338aa', 'slack', 'slack', 'oauth', '{}', 'planted', 'bidding_ring');
+    VALUES ('11111111-1111-1111-1111-11111c2338aa', 'slack', 'slack', 'bot_token', '{}', 'planted', 'bidding_ring');
     RAISE EXCEPTION 'cpb_rollback';
   EXCEPTION WHEN raise_exception THEN
     IF SQLERRM <> 'cpb_rollback' THEN RAISE; END IF;

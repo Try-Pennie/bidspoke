@@ -80,7 +80,7 @@ BEGIN
   -- The alert row with no name: the trigger used to name it service_type.
   BEGIN
     INSERT INTO public.service_connections (organization_id, service_type, auth_type, cf_secret_key, config, credential_enc, sealed_for)
-    VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'oauth', NULL, '{"default_channel":"#alerts"}', 'planted-ciphertext-2334-a', 'bidding_ring');
+    VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'bot_token', NULL, '{"default_channel":"#alerts"}', 'planted-ciphertext-2334-a', 'bidding_ring');
   EXCEPTION WHEN not_null_violation THEN
     refused := refused + 1;
   END;
@@ -108,7 +108,7 @@ BEGIN
   -- Exactly what routes/api/integrations.ts POST /slack sends.
   INSERT INTO public.service_connections
     (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
-  VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'slack', 'oauth', NULL,
+  VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'slack', 'bot_token', NULL,
           '{"bot_token":"planted-bot-token-2334","default_channel":"#alerts"}', 'planted-ciphertext-2334-c', 'bidding_ring',
           '22222222-2222-2222-2222-22222222334a', 'scc2332@example.test')
   ON CONFLICT (organization_id, service_type, name) DO UPDATE SET
@@ -119,7 +119,7 @@ BEGIN
 
   INSERT INTO public.service_connections
     (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
-  VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'slack', 'oauth', NULL,
+  VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'slack', 'bot_token', NULL,
           '{"bot_token":"planted-bot-token-2334","default_channel":"#alerts-2"}', 'planted-ciphertext-2334-d', 'bidding_ring',
           '22222222-2222-2222-2222-22222222334a', 'scc2332@example.test')
   ON CONFLICT (organization_id, service_type, name) DO UPDATE SET
@@ -147,7 +147,7 @@ BEGIN
   BEGIN
     INSERT INTO public.service_connections
       (organization_id, service_type, auth_type, cf_secret_key, config, credential_enc, sealed_for)
-    VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'oauth', '',
+    VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'bot_token', '',
             '{"bot_token":"planted-bot-token-2334","default_channel":"#old"}', 'planted-ciphertext-2334-e', 'bidding_ring')
     ON CONFLICT (organization_id, service_type) DO UPDATE SET config = EXCLUDED.config;
   EXCEPTION WHEN OTHERS THEN
@@ -175,8 +175,8 @@ BEGIN
   VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'ops-alerts', 'bot_token', 'planted-ops-ciphertext-2334', 'ops_key');
   -- Two legacy rows of one service under different names.
   INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key)
-  VALUES ('11111111-1111-1111-1111-11111112334a', 'salesforce', 'first', 'credentials', 'CONN_PLANTED_A'),
-         ('11111111-1111-1111-1111-11111112334a', 'salesforce', 'second', 'credentials', 'CONN_PLANTED_B');
+  VALUES ('11111111-1111-1111-1111-11111112334a', 'salesforce', 'first', 'oauth_client_credentials', 'CONN_PLANTED_A'),
+         ('11111111-1111-1111-1111-11111112334a', 'salesforce', 'second', 'oauth_client_credentials', 'CONN_PLANTED_B');
   IF (SELECT count(*) FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-11111112334a' AND service_type = 'slack') <> 2
      OR (SELECT count(*) FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-11111112334a' AND service_type = 'salesforce') <> 2 THEN
     RAISE EXCEPTION 'a second row of a service under its own name was not saved';
@@ -185,7 +185,7 @@ BEGIN
   -- The same name twice is still refused, by the named unique.
   BEGIN
     INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key)
-    VALUES ('11111111-1111-1111-1111-11111112334a', 'salesforce', 'first', 'credentials', 'CONN_PLANTED_C');
+    VALUES ('11111111-1111-1111-1111-11111112334a', 'salesforce', 'first', 'oauth_client_credentials', 'CONN_PLANTED_C');
   EXCEPTION WHEN unique_violation THEN
     GET STACKED DIAGNOSTICS refused = CONSTRAINT_NAME;
   END;
@@ -197,7 +197,7 @@ BEGIN
   refused := NULL;
   BEGIN
     INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, credential_enc, sealed_for)
-    VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'second-alert', 'oauth', NULL, 'planted-ciphertext-2334-f', 'bidding_ring');
+    VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'second-alert', 'bot_token', NULL, 'planted-ciphertext-2334-f', 'bidding_ring');
   EXCEPTION WHEN unique_violation THEN
     GET STACKED DIAGNOSTICS refused = CONSTRAINT_NAME;
   END;
@@ -233,7 +233,7 @@ DECLARE
 BEGIN
   -- A second non ops slack row as well, the case a delete by type removed too.
   INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config)
-  VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'second slack', 'oauth', NULL, '{"default_channel":"#b"}');
+  VALUES ('11111111-1111-1111-1111-11111112334a', 'slack', 'second slack', 'bot_token', NULL, '{"default_channel":"#b"}');
   SELECT id INTO alert_id FROM public.service_connections
   WHERE organization_id = '11111111-1111-1111-1111-11111112334a' AND service_type = 'slack' AND name = 'slack';
 

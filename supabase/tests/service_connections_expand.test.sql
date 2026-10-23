@@ -20,9 +20,9 @@
 --   release 2 and the delete by service type. All three went with release 2:
 --   their coverage is service_connections_contract.test.sql cases C to G and
 --   service_connections_delete_by_id.test.sql cases B to D.)
---   G. auth_type accepts the six catalogue kinds (api_key among them) and still
---      the legacy oauth and credentials; anything else is
---      refused.
+--   G. auth_type accepts the six catalogue kinds (api_key among them); the
+--      legacy oauth and credentials went in release 3 (proven in
+--      service_connections_auth_type_narrow.test.sql); anything else is refused.
 --   H. The new columns default (person_bound false, credential_generation 1,
 --      target null), and cf_secret_key may be null.
 --   I. connection_tombstones: no browser privilege, RLS on, service_role keeps
@@ -58,7 +58,7 @@ BEGIN
   -- service_type, cf_secret_key normalised to null.
   INSERT INTO public.service_connections
     (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
-  VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'slack', 'oauth', NULL,
+  VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'slack', 'bot_token', NULL,
           '{"bot_token":"planted-bot-token-2332","default_channel":"#alerts","workspace_name":"Test"}',
           'planted-ciphertext-2332-a', 'bidding_ring', '22222222-2222-2222-2222-22222222332a', 'sce2332@example.test')
   RETURNING id INTO alert_id;
@@ -67,7 +67,7 @@ BEGIN
   -- conflict target.
   INSERT INTO public.service_connections
     (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
-  VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'slack', 'oauth', NULL,
+  VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'slack', 'bot_token', NULL,
           '{"bot_token":"planted-bot-token-2332","default_channel":"#alerts-3","workspace_name":"Test"}',
           'planted-ciphertext-2332-c', 'bidding_ring', '22222222-2222-2222-2222-22222222332a', 'sce2332@example.test')
   ON CONFLICT (organization_id, service_type, name) DO UPDATE SET
@@ -147,7 +147,7 @@ DECLARE
   k text;
   refused boolean := false;
 BEGIN
-  FOREACH k IN ARRAY ARRAY['service_account', 'bot_token', 'oauth_client_credentials', 'oauth_user', 'key_pair', 'api_key', 'oauth', 'credentials'] LOOP
+  FOREACH k IN ARRAY ARRAY['service_account', 'bot_token', 'oauth_client_credentials', 'oauth_user', 'key_pair', 'api_key'] LOOP
     INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key)
     VALUES ('11111111-1111-1111-1111-11111112332b', 'snowflake', 'auth-' || k, k, 'CONN_PLANTED');
     DELETE FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-11111112332b' AND service_type = 'snowflake';
@@ -160,7 +160,7 @@ BEGIN
   END;
   IF NOT refused THEN RAISE EXCEPTION 'an unknown auth_type was saved'; END IF;
   DELETE FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-11111112332b';
-  INSERT INTO sce_cases VALUES ('auth_type takes the six catalogue kinds and the legacy oauth and credentials, and refuses anything else');
+  INSERT INTO sce_cases VALUES ('auth_type takes the six catalogue kinds and refuses anything else');
 END
 $do$;
 
