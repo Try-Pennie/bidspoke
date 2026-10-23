@@ -75,13 +75,6 @@ function sanitizeDefinition<T>(definition: T): T {
 }
 
 /**
- * The refusal for a definition whose Salesforce write options are malformed
- * (#2170), naming the step, or null. One function for create and save, the two
- * routes a caller's definition enters by. Restore replays a version that was
- * itself saved, and duplicate copies a saved definition, so both carry only
- * definitions this check already passed or that predate the options.
- */
-/**
  * The named 400 for a definition the rules cannot read (#2190): not an object,
  * a step or connection list that is not a list, or an entry without the
  * strings every rule reads. It is validateDefinition's own parse
@@ -111,6 +104,13 @@ function loopRefusal(c: Context<{ Bindings: Env; Variables: Variables }>, defini
   return c.json({ error: `Workflow has a loop: ${cycle.join(' → ')}. Remove the edge that returns to an earlier node before saving.` }, 400)
 }
 
+/**
+ * The refusal for a definition whose Salesforce write options are malformed
+ * (#2170), naming the step, or null. One function for create and save, the two
+ * routes a caller's definition enters by. Restore replays a version that was
+ * itself saved, and duplicate copies a saved definition, so both carry only
+ * definitions this check already passed or that predate the options.
+ */
 function salesforceOptionRefusal(definition: unknown): string | null {
   const nodes = (definition as { nodes?: unknown } | null | undefined)?.nodes
   if (!Array.isArray(nodes)) return null
