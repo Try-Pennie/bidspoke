@@ -231,7 +231,9 @@ export async function saveSlackAlertConnection(
         organization_id: orgId,
         service_type: 'slack',
         name: SLACK_ALERT_CONNECTION_NAME,
-        auth_type: 'oauth',
+        // The catalogue's kind for a Slack bot (#2332 release 3). Never the
+        // legacy oauth, which the narrowed auth_type CHECK refuses.
+        auth_type: 'bot_token',
         // The token is in credential_enc, not a Cloudflare secret (#2332).
         cf_secret_key: null,
         // A Reconnect passes the row's own config back, which was read as JSON.
