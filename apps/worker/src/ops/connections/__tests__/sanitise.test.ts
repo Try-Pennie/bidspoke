@@ -121,14 +121,14 @@ describe('sanitiseRequest', () => {
 // error a run stores and logs.
 describe('credentialSecretsOfLogin', () => {
   it('takes the whole login and every value under a credential named key, at any depth', () => {
-    const login = JSON.stringify({ api_key: TOKEN, nested: { refresh_token: 'refresh-0002-abcdef', private_key: '-----BEGIN KEY-----\nabc\n-----END KEY-----\n' } })
+    const login = JSON.stringify({ api_key: TOKEN, nested: { refresh_token: 'refresh-0002-abcdef', private_key: 'canary key line one\ncanary key line two\n' } })
     const secrets = credentialSecretsOfLogin(login)
-    expect(secrets).toEqual(expect.arrayContaining([login, TOKEN, 'refresh-0002-abcdef', '-----BEGIN KEY-----\nabc\n-----END KEY-----\n']))
+    expect(secrets).toEqual(expect.arrayContaining([login, TOKEN, 'refresh-0002-abcdef', 'canary key line one\ncanary key line two\n']))
   })
 
   it('leaves the public fields of a login alone, so a response naming the same domain or account is not mangled', () => {
     const google = JSON.stringify({
-      type: 'service_account', project_id: 'pennie-ops-1234', private_key: '-----BEGIN PRIVATE KEY-----\nxyz\n-----END PRIVATE KEY-----\n',
+      type: 'service_account', project_id: 'pennie-ops-1234', private_key: 'canary signing key line one\ncanary signing key line two\n',
       client_email: 'ops@pennie-ops-1234.iam.gserviceaccount.com', client_id: '1234567890123', universe_domain: 'googleapis.com',
     })
     const secrets = credentialSecretsOfLogin(google)
