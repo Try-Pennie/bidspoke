@@ -34,6 +34,7 @@ const BINDING_NAMED_IN = new Set([ENV, CLIENT])
 const CLIENT_IMPORTERS: Record<string, string> = {
   [path.join(WORKER_SRC, 'routes/api/ops-connections-probe.ts')]: 'the deploy probe: one call ops refuses by name, for a signed in caller',
   [path.join(WORKER_SRC, 'routes/api/connections.ts')]: 'the Connections routes (#2338): the list asks health and the lookup route asks lookup, for a signed in caller\'s own organization',
+  [path.join(WORKER_SRC, 'routes/api/ops-step-test.ts')]: 'the canvas step test of an ops workflow (#2339): testStep and stepTestResult, for a signed in caller\'s own organization\'s ops workflow',
 }
 
 /** The money path: every module here, and everything it loads, must never reach the binding. */

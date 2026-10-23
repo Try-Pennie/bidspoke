@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   LOOKUP_RATE_PER_MINUTE, OPS_CONNECTIONS_CEILINGS_MS, OPS_CONNECTIONS_METHODS, OPS_DELEGATION_METHODS, OPS_SIGN_IN_CEILINGS_MS, OPS_SIGN_IN_METHODS,
+  OPS_STEP_TEST_CEILINGS_MS, OPS_STEP_TEST_METHODS, STEP_TEST_CONTEXT_MAX_BYTES, parseStepTestResultRequest, parseTestStepRequest,
   OpsConnectionsContractError, parseAddDelegationSubjectRequest, parseClearReauthRequest, parseExchangeOAuthCodeRequest, parseHealthRequest,
   parseListDelegationSubjectsRequest, parseLookupRequest, parseRemoveDelegationSubjectRequest, parseRevokeRequest, parseSignInClientRequest, parseVerifyRequest,
 } from '../ops-connections-contract'
@@ -45,6 +46,49 @@ describe('the OpsConnections contract', () => {
     for (const m of OPS_SIGN_IN_METHODS) expect(OPS_CONNECTIONS_METHODS as readonly string[]).not.toContain(m)
     expect(Object.keys(OPS_SIGN_IN_CEILINGS_MS)).toEqual([...OPS_SIGN_IN_METHODS])
     for (const ms of Object.values(OPS_SIGN_IN_CEILINGS_MS)) expect(ms).toBeGreaterThan(0)
+  })
+
+  it('keeps the step test methods apart from the methods bidding calls until the ops deploy carries them (#2339)', () => {
+    expect([...OPS_STEP_TEST_METHODS]).toEqual(['testStep', 'stepTestResult'])
+    for (const m of OPS_STEP_TEST_METHODS) expect(OPS_CONNECTIONS_METHODS as readonly string[]).not.toContain(m)
+    expect(Object.keys(OPS_STEP_TEST_CEILINGS_MS)).toEqual([...OPS_STEP_TEST_METHODS])
+    for (const ms of Object.values(OPS_STEP_TEST_CEILINGS_MS)) expect(ms).toBeGreaterThan(0)
+  })
+
+  describe('a step test request (#2339)', () => {
+    const WF = '0199f0a0-0000-7000-8000-0000000000aa'
+    const DAN = '0199f0a0-0000-7000-8000-0000000000d1'
+    const node = { id: 'node_1', namespace: 'find_files', config: { service: 'google', action: 'google.drive-list-files' } }
+    const ok = { organization_id: ORG, workflow_id: WF, tested_by: DAN, node, trigger_payload: { a: 1 }, steps: { earlier: { output: { b: 2 }, status: 'completed' } }, confirm_send: false }
+
+    it('reads the organization, workflow, tester, step, its context and the confirmation', () => {
+      expect(parseTestStepRequest({ ...ok, organization_id: ORG.toUpperCase(), extra: 'ignored' })).toEqual(ok)
+      // No context is an empty one, and no confirmation is none.
+      const { trigger_payload: _t, steps: _s, confirm_send: _c, ...bare } = ok
+      expect(parseTestStepRequest(bare)).toEqual({ ...bare, trigger_payload: {}, steps: {}, confirm_send: false })
+    })
+
+    it('refuses each malformed field by name, never echoing its value', () => {
+      expect(refused(() => parseTestStepRequest({ ...ok, workflow_id: 'wf' }))).toMatch(/workflow_id/)
+      expect(refused(() => parseTestStepRequest({ ...ok, tested_by: undefined }))).toMatch(/tested_by/)
+      expect(refused(() => parseTestStepRequest({ ...ok, node: { ...node, id: '' } }))).toMatch(/node's id/)
+      expect(refused(() => parseTestStepRequest({ ...ok, node: { ...node, namespace: 'two words' } }))).toMatch(/node's step id/)
+      expect(refused(() => parseTestStepRequest({ ...ok, node: { ...node, config: [] } }))).toMatch(/node's settings/)
+      expect(refused(() => parseTestStepRequest({ ...ok, steps: [] }))).toMatch(/steps/)
+      expect(refused(() => parseTestStepRequest({ ...ok, steps: { earlier: 'x' } }))).toMatch(/steps/)
+      expect(refused(() => parseTestStepRequest({ ...ok, confirm_send: 'yes' }))).toMatch(/confirm_send/)
+      const secret = 'sk-live-never-echoed'
+      expect(refused(() => parseTestStepRequest({ ...ok, workflow_id: secret }))).not.toContain(secret)
+    })
+
+    it(`refuses a context over ${STEP_TEST_CONTEXT_MAX_BYTES} bytes`, () => {
+      expect(refused(() => parseTestStepRequest({ ...ok, trigger_payload: { big: 'x'.repeat(STEP_TEST_CONTEXT_MAX_BYTES) } }))).toMatch(/context/)
+    })
+
+    it('a result read names the organization, workflow and step', () => {
+      expect(parseStepTestResultRequest({ organization_id: ORG, workflow_id: WF.toUpperCase(), node_id: 'node_1' })).toEqual({ organization_id: ORG, workflow_id: WF, node_id: 'node_1' })
+      expect(refused(() => parseStepTestResultRequest({ organization_id: ORG, workflow_id: WF }))).toMatch(/node's id/)
+    })
   })
 
   it('a sign in client request names the organization and a service key, and nothing else is read', () => {

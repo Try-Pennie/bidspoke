@@ -20,6 +20,8 @@
 --      results tested more than 7 days ago, a page at a time.
 --   F. The three functions are SECURITY DEFINER with a fixed search_path,
 --      executable by service_role alone, the read STABLE.
+--   G. An answer not kept (over its cap) is named by its size; a kept one's
+--      size is measured, never taken from the caller.
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh builds
 -- (SQL_SUITE_PROJECT=ops), inside one transaction rolled back at the end.
@@ -64,9 +66,9 @@ DECLARE
   v_n integer;
 BEGIN
   SELECT * INTO i FROM st_ids;
-  PERFORM public.record_step_test(i.org, i.wf, 'n1', 'find_files', i.dan, 'completed', '{"files": [1]}'::jsonb, NULL, '[]'::jsonb, 120);
-  PERFORM public.record_step_test(i.org, i.wf, 'n1', 'find_files', i.dan, 'failed', NULL, 'drive_failed: the service answered 500', '[]'::jsonb, 80);
-  PERFORM public.record_step_test(i.org, i.wf, 'n2', 'notify', i.dan, 'completed', '{"ok": true}'::jsonb, NULL, '[]'::jsonb, 40);
+  PERFORM public.record_step_test(i.org, i.wf, 'n1', 'find_files', i.dan, 'completed', '{"files": [1]}'::jsonb, NULL, NULL, '[]'::jsonb, 120);
+  PERFORM public.record_step_test(i.org, i.wf, 'n1', 'find_files', i.dan, 'failed', NULL, NULL, 'drive_failed: the service answered 500', '[]'::jsonb, 80);
+  PERFORM public.record_step_test(i.org, i.wf, 'n2', 'notify', i.dan, 'completed', '{"ok": true}'::jsonb, NULL, NULL, '[]'::jsonb, 40);
   SELECT count(*) INTO v_n FROM public.step_test_results WHERE organization_id = i.org AND workflow_id = i.wf;
   IF v_n <> 2 THEN RAISE EXCEPTION 'expected one result per step, found % rows', v_n; END IF;
   IF (SELECT status FROM public.step_test_results WHERE workflow_id = i.wf AND node_id = 'n1') <> 'failed' THEN
@@ -90,15 +92,15 @@ BEGIN
   INSERT INTO public.ops_workflow_copies (workflow_id, organization_id, is_active, row_updated_at, version_number, served_at)
   VALUES ('00000000-0000-4000-8000-0000000023b9', i.other_org, false, now(), 1, now());
   BEGIN
-    PERFORM public.record_step_test(i.org, '00000000-0000-4000-8000-0000000023b9', 'n1', 'x', i.dan, 'completed', '{}'::jsonb, NULL, '[]'::jsonb, 1);
+    PERFORM public.record_step_test(i.org, '00000000-0000-4000-8000-0000000023b9', 'n1', 'x', i.dan, 'completed', '{}'::jsonb, NULL, NULL, '[]'::jsonb, 1);
   EXCEPTION WHEN insufficient_privilege THEN v_refused := v_refused + 1;
   END;
   BEGIN
-    PERFORM public.record_step_test(i.org, i.wf, 'n3', 'x', i.dan, 'running', NULL, NULL, '[]'::jsonb, 1);
+    PERFORM public.record_step_test(i.org, i.wf, 'n3', 'x', i.dan, 'running', NULL, NULL, NULL, '[]'::jsonb, 1);
   EXCEPTION WHEN check_violation THEN v_refused := v_refused + 1;
   END;
   BEGIN
-    PERFORM public.record_step_test(i.org, i.wf, 'n3', 'x', i.dan, 'completed', jsonb_build_object('big', repeat('x', 300000)), NULL, '[]'::jsonb, 1);
+    PERFORM public.record_step_test(i.org, i.wf, 'n3', 'x', i.dan, 'completed', jsonb_build_object('big', repeat('x', 300000)), NULL, NULL, '[]'::jsonb, 1);
   EXCEPTION WHEN check_violation THEN v_refused := v_refused + 1;
   END;
   IF v_refused <> 3 THEN RAISE EXCEPTION 'refused % of 3 malformed or foreign results', v_refused; END IF;
@@ -135,9 +137,9 @@ DECLARE
   v_p record;
 BEGIN
   SELECT * INTO i FROM st_ids;
-  PERFORM public.record_step_test(i.org, i.wf, 'fresh', 'fresh', i.dan, 'completed', '{}'::jsonb, NULL, '[]'::jsonb, 1);
-  PERFORM public.record_step_test(i.org, i.wf, 'old_a', 'old_a', i.dan, 'completed', '{}'::jsonb, NULL, '[]'::jsonb, 1);
-  PERFORM public.record_step_test(i.org, i.wf, 'old_b', 'old_b', i.dan, 'completed', '{}'::jsonb, NULL, '[]'::jsonb, 1);
+  PERFORM public.record_step_test(i.org, i.wf, 'fresh', 'fresh', i.dan, 'completed', '{}'::jsonb, NULL, NULL, '[]'::jsonb, 1);
+  PERFORM public.record_step_test(i.org, i.wf, 'old_a', 'old_a', i.dan, 'completed', '{}'::jsonb, NULL, NULL, '[]'::jsonb, 1);
+  PERFORM public.record_step_test(i.org, i.wf, 'old_b', 'old_b', i.dan, 'completed', '{}'::jsonb, NULL, NULL, '[]'::jsonb, 1);
   UPDATE public.step_test_results SET tested_at = now() - interval '7 days' + interval '1 minute' WHERE node_id = 'fresh';
   UPDATE public.step_test_results SET tested_at = now() - interval '8 days' WHERE node_id IN ('old_a', 'old_b');
   -- n2 is already 7 days and a minute old (case D); n1 was tested just now.
@@ -175,10 +177,29 @@ BEGIN
 END
 $do$;
 
+-- ── G. An answer not kept is named by its size ───────────────────────────────
+DO $do$
+DECLARE
+  i st_ids%ROWTYPE;
+  v_wf uuid := '00000000-0000-4000-8000-0000000023b1';
+BEGIN
+  SELECT * INTO i FROM st_ids;
+  PERFORM public.record_step_test(i.org, v_wf, 'big', 'big', i.dan, 'completed', NULL, 300000, NULL, '[]'::jsonb, 1);
+  PERFORM public.record_step_test(i.org, v_wf, 'small', 'small', i.dan, 'completed', '{"a": 1}'::jsonb, 5, NULL, '[]'::jsonb, 1);
+  IF (SELECT output_bytes FROM public.step_test_results WHERE workflow_id = v_wf AND node_id = 'big') IS DISTINCT FROM 300000 THEN
+    RAISE EXCEPTION 'an answer over the cap did not keep its size';
+  END IF;
+  IF (SELECT output_bytes FROM public.step_test_results WHERE workflow_id = v_wf AND node_id = 'small') IS DISTINCT FROM octet_length('{"a": 1}'::jsonb::text) THEN
+    RAISE EXCEPTION 'a kept answer''s size was taken from the caller, not measured';
+  END IF;
+  INSERT INTO st_cases VALUES ('size: an answer not kept is named by its size, a kept one measured');
+END
+$do$;
+
 DO $do$
 DECLARE v_n integer := (SELECT count(*) FROM st_cases);
 BEGIN
-  IF v_n <> 6 THEN RAISE EXCEPTION 'step_test_results: % of 6 cases ran', v_n; END IF;
+  IF v_n <> 7 THEN RAISE EXCEPTION 'step_test_results: % of 7 cases ran', v_n; END IF;
   RAISE NOTICE 'step_test_results: % cases passed', v_n;
 END
 $do$;

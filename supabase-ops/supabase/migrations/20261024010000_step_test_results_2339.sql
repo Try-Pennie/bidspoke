@@ -68,6 +68,8 @@ CREATE FUNCTION public.record_step_test(
   p_tested_by        uuid,
   p_status           text,
   p_output           jsonb,
+  -- The size of an answer not kept (p_output null because it was over the cap); ignored when p_output is given.
+  p_output_bytes     integer,
   p_error            text,
   p_requests         jsonb,
   p_duration_ms      integer
@@ -89,7 +91,7 @@ BEGIN
   INSERT INTO public.step_test_results (organization_id, workflow_id, node_id, namespace, tested_by, tested_at, status, output, output_bytes, error,
     requests, duration_ms)
   VALUES (p_organization_id, p_workflow_id, p_node_id, p_namespace, p_tested_by, v_at, p_status, p_output,
-    CASE WHEN p_output IS NULL THEN NULL ELSE octet_length(p_output::text) END, p_error, coalesce(p_requests, '[]'::jsonb), p_duration_ms)
+    CASE WHEN p_output IS NULL THEN p_output_bytes ELSE octet_length(p_output::text) END, p_error, coalesce(p_requests, '[]'::jsonb), p_duration_ms)
   ON CONFLICT ON CONSTRAINT step_test_results_pkey DO UPDATE
   SET namespace = excluded.namespace, tested_by = excluded.tested_by, tested_at = excluded.tested_at, status = excluded.status,
       output = excluded.output, output_bytes = excluded.output_bytes, error = excluded.error, requests = excluded.requests,
@@ -142,8 +144,8 @@ BEGIN
 END
 $fn$;
 
-REVOKE ALL ON FUNCTION public.record_step_test(uuid, uuid, text, text, uuid, text, jsonb, text, jsonb, integer) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.record_step_test(uuid, uuid, text, text, uuid, text, jsonb, text, jsonb, integer) TO service_role;
+REVOKE ALL ON FUNCTION public.record_step_test(uuid, uuid, text, text, uuid, text, jsonb, integer, text, jsonb, integer) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.record_step_test(uuid, uuid, text, text, uuid, text, jsonb, integer, text, jsonb, integer) TO service_role;
 REVOKE ALL ON FUNCTION public.step_test_result(uuid, uuid, text) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION public.step_test_result(uuid, uuid, text) TO service_role;
 REVOKE ALL ON FUNCTION public.purge_step_test_results(integer) FROM PUBLIC, anon, authenticated;

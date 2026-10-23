@@ -62,7 +62,7 @@ export const CREATE_ROUTE_REFUSAL_CODES = [
 ] as const
 export type CreateRouteRefusalCode = (typeof CREATE_ROUTE_REFUSAL_CODES)[number]
 
-/** OpsConnections refusals only another method answers: the Google list's, the lookups', health's, revoke's, the Reconnect's clearing and signInClient's. */
+/** OpsConnections refusals only another method answers: the Google list's, the lookups', health's, revoke's, the Reconnect's clearing, signInClient's and the step test's. */
 export const NOT_VERIFY_REFUSALS = [
   'reauth_clear_unrecorded',
   'revoke_unrecorded',
@@ -80,6 +80,9 @@ export const NOT_VERIFY_REFUSALS = [
   'sign_in_app_unset',
   'sign_in_app_malformed',
   'sign_in_not_offered',
+  // The step test's (#2339): the test node route words them itself.
+  'step_test_send_unconfirmed',
+  'step_test_unavailable',
 ] as const satisfies readonly OpsConnectionsOwnRefusal[]
 
 export type VerifyRefusalCode =

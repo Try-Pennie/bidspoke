@@ -1496,7 +1496,9 @@ export interface StepTestRecord {
   status: StepTestStatus
   /** The action's answer, scrubbed of the connection's secrets; null for a failure or an answer over the cap. */
   output: unknown
-  /** Why it failed, or why an answer was not kept; null when it completed and was kept. */
+  /** The answer's size: given for one over the cap (output null), so it is named, never read as empty; measured by the database otherwise. */
+  outputBytes: number | null
+  /** Why it failed; null when it completed. */
   error: string | null
   /** Each request the step made, sanitised before its login was applied. */
   requests: unknown[]
@@ -1505,8 +1507,6 @@ export interface StepTestRecord {
 
 export interface StoredStepTest extends StepTestRecord {
   testedAt: string
-  /** The answer's size: one over the cap is named, never read as empty. */
-  outputBytes: number | null
 }
 
 /** Keeps a step's latest test result, replacing the one before. Answers when it was recorded, on the database clock. */
@@ -1518,7 +1518,7 @@ export async function recordStepTest(
   if (result.status === 'failed' && (result.error === null || result.error === '')) throw new OpsWriteError(`${name}: a failed test needs its error`)
   const data = await callOpsRpc(client, name, {
     p_organization_id: organizationId, p_workflow_id: workflowId, p_node_id: result.nodeId, p_namespace: result.namespace, p_tested_by: result.testedBy,
-    p_status: result.status, p_output: result.output ?? null, p_error: result.error, p_requests: result.requests, p_duration_ms: result.durationMs,
+    p_status: result.status, p_output: result.output ?? null, p_output_bytes: result.outputBytes, p_error: result.error, p_requests: result.requests, p_duration_ms: result.durationMs,
   }, options)
   if (!isTime(data)) throw new OpsWriteError(`${name} returned something other than a time`)
   return data

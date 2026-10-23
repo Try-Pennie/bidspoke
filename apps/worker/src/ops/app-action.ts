@@ -52,7 +52,7 @@ import { ActionFailure, resolveRuntimeAction, type ActionArgs, type ActionContex
 import { resolveValue } from '../engine/context'
 import { formatErr } from '../lib/format-error'
 import type { StepExecutionResult } from '../types'
-import { connectionFetch, type ConnectionCall, type ConnectionFetchDeps } from './connections/connection-fetch'
+import { connectionFetch, type ConnectionCall, type ConnectionFetchDeps, type RecordTarget } from './connections/connection-fetch'
 import { isOwnAccountTarget } from './connections/google-service'
 import { ConnectionRefusal, RequeueAt, type ConnectionRefusalCode } from './connections/refusals'
 import { RunStopped, StepNotSent, StepTimedOut, stepRequestId, type ForwardAnswer } from './run-invocation'
@@ -69,6 +69,12 @@ export interface AppActionDeps {
   resolveAction(key: string, version: number): ResolvedAction<RuntimeAction>
   /** Every wait an action makes (a poll's interval). */
   sleep(ms: number): Promise<void>
+  /**
+   * Where each request's sanitised record goes before it is sent. A run records
+   * nothing beyond its send ledger row (RECORDS_NOTHING); a step test keeps
+   * them with its result (#2339, step-test.ts).
+   */
+  record?: RecordTarget
 }
 
 /**
@@ -163,7 +169,7 @@ export function appActionHandler(deps: AppActionDeps): OpsStepHandler {
           source: { kind: 'copy' },
           purpose: 'step',
           workflowId: run.run.workflowId,
-          record: RECORDS_NOTHING,
+          record: deps.record ?? RECORDS_NOTHING,
           signal,
         }, url, { ...init, method }),
       })

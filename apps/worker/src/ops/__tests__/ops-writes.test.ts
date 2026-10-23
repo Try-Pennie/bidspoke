@@ -831,7 +831,7 @@ describe('the step test result wrappers (#2339)', () => {
   const WF = '00000000-0000-4000-8000-0000000023b0'
   const DAN = '00000000-0000-4000-8000-0000000023d1'
   const result = {
-    nodeId: 'n1', namespace: 'find_files', testedBy: DAN, status: 'completed' as const, output: { files: [1] }, error: null,
+    nodeId: 'n1', namespace: 'find_files', testedBy: DAN, status: 'completed' as const, output: { files: [1] }, outputBytes: null, error: null,
     requests: [{ method: 'GET', url: 'https://www.googleapis.com/drive/v3/files' }], durationMs: 120,
   }
 
@@ -842,7 +842,7 @@ describe('the step test result wrappers (#2339)', () => {
       path: '/rest/v1/rpc/record_step_test',
       body: {
         p_organization_id: ORG, p_workflow_id: WF, p_node_id: 'n1', p_namespace: 'find_files', p_tested_by: DAN, p_status: 'completed',
-        p_output: { files: [1] }, p_error: null, p_requests: result.requests, p_duration_ms: 120,
+        p_output: { files: [1] }, p_output_bytes: null, p_error: null, p_requests: result.requests, p_duration_ms: 120,
       },
     })
   })
