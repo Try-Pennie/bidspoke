@@ -69,14 +69,16 @@ function rowOf(c: FixtureConnection): ConnectionListRow {
     service: slug(c.service),
     service_name: c.service,
     alert_login: alert,
-    // An OpenAI key acts in its project, as the create route words it (#2337): OpenAI names no project to a key, only its id.
-    acts_as: c.service === 'OpenAI' ? 'Project proj_bidspoke_ops in pennie' : c.actsAs,
+    // An OpenAI key acts in its project and an Anthropic key in its workspace, as the create route words them (#2337): neither names more than an id to a key.
+    acts_as: c.service === 'OpenAI' ? 'Project proj_bidspoke_ops in pennie' : c.service === 'Anthropic' ? 'Workspace wrkspc_ops' : c.actsAs,
     person_bound: c.kind === 'person',
     owner: null,
-    // An ops Slack bot declares its workspace and an OpenAI key its project (#2337); the alert login declares nothing.
+    // An ops Slack bot declares its workspace, an OpenAI key its project and an Anthropic key its workspace (#2337); the alert login declares nothing.
     target: c.instance
       ? { instance_url: `https://${c.instance}`, client_id: clientIdOf(c.name) }
-      : c.service === 'Slack' && !alert ? { team_id: 'T0PENNIE' } : c.service === 'OpenAI' ? { project_id: 'proj_bidspoke_ops' } : null,
+      : c.service === 'Slack' && !alert ? { team_id: 'T0PENNIE' }
+        : c.service === 'OpenAI' ? { project_id: 'proj_bidspoke_ops' }
+          : c.service === 'Anthropic' ? { workspace_id: 'wrkspc_ops' } : null,
     org: c.instance ?? null,
     status,
     status_word: fixture.statusVocabulary[c.status as keyof typeof fixture.statusVocabulary] ?? null,
@@ -242,6 +244,8 @@ const SLACK_NOT_A_BOT = 'This token acts as a person, not as a bot. Nothing was 
 const SLACK_OTHER_WORKSPACE = 'Slack says this bot is in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.'
 /** The create route's sentence for verify's OpenAI project refusal (#2337). */
 const OPENAI_OTHER_PROJECT = 'OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.'
+/** The create route's sentence for verify's Anthropic workspace refusal (#2337). */
+const ANTHROPIC_OTHER_WORKSPACE = 'Anthropic says this API key runs in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.'
 const IN_USE = 'Daily Salesforce cleanup uses this connection, so it cannot be removed. Nothing was removed. Take it out of that workflow first.'
 const OPS_NOT_TOLD = 'The connection is removed. The workflows server could not be told straight away, so it stops using the login at its next minute check, and within 6 hours at the latest if it cannot reach Bidspoke.'
 const ADD_REFUSED = 'ops@trypennie is not one mailbox address or one shared drive id. Nothing was added. Check it and add it again.'
@@ -280,6 +284,8 @@ export const SCRIPTED_FRAMES = [
   'add-slack', 'add-slack-not-a-bot', 'add-slack-workspace-mismatch', 'slack-ops-bot',
   // #2337: an OpenAI project's key: its form, verify's project refusal, and its panel.
   'add-openai', 'add-openai-project-mismatch', 'openai-summaries',
+  // #2337: an Anthropic workspace's key: its form, verify's workspace refusal, and its panel.
+  'add-anthropic', 'add-anthropic-workspace-mismatch', 'anthropic-lead-notes',
 ] as const
 
 export function previewScript(frame: string | undefined): PreviewScript | null {
@@ -445,6 +451,13 @@ function formScript(frame: string): PreviewScript | null {
     { type: 'add_field', field: 'project_id', text: 'proj_bidspoke_ops' },
     { type: 'add_field', field: 'api_key', text: 'plainapikey' },
   ]
+  const anthropicForm: ConnectionsEvent[] = [
+    ...opened,
+    { type: 'add_service', service: 'anthropic' },
+    { type: 'add_name', text: 'Loan document review' },
+    { type: 'add_field', field: 'workspace_id', text: 'wrkspc_ops' },
+    { type: 'add_field', field: 'api_key', text: 'plainapikey' },
+  ]
   const reconnectOf = (name: string): ConnectionsEvent[] => [listed(), google, choose(name), { type: 'dialog_opened', dialog: 'reconnect', id: idOf(name) }]
   const removeOf = (): ConnectionsEvent[] => [listed([justSaved]), google, choose(fixture.justSaved.name), { type: 'dialog_opened', dialog: 'remove', id: idOf(fixture.justSaved.name) }]
   const typedSecret: ConnectionsEvent = { type: 'dialog_field', field: 'client_secret', text: 'plainsecrets' }
@@ -512,6 +525,12 @@ function formScript(frame: string): PreviewScript | null {
       return script([...openaiForm, saveAt(T - elapsed), { type: 'save_refused', attempt: 1, sentence: OPENAI_OTHER_PROJECT }])
     case 'openai-summaries':
       return script([listed(), google, choose('Summaries')])
+    case 'add-anthropic':
+      return script(anthropicForm)
+    case 'add-anthropic-workspace-mismatch':
+      return script([...anthropicForm, saveAt(T - elapsed), { type: 'save_refused', attempt: 1, sentence: ANTHROPIC_OTHER_WORKSPACE }])
+    case 'anthropic-lead-notes':
+      return script([listed(), google, choose('Lead notes')])
     case 'remove-ops-not-told':
       return script([...removeOf(), { type: 'connection_remove_requested', attempt: 1, at: S, stalled: '' }, { type: 'connection_remove_answered', attempt: 1, id: idOf(fixture.justSaved.name), notice: OPS_NOT_TOLD }])
   }
