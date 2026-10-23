@@ -6,9 +6,10 @@
 -- rolled back. No real identity.
 --
 -- WHAT IT PROVES, each statement made as service_role, the Worker's role:
---   A. A direct INSERT, UPDATE of the definition, is_active, deleted_at or lane, and
---      DELETE of a workflow are refused by the database itself (42501), and so
---      are a direct INSERT, UPDATE of the definition and DELETE of a version.
+--   A. A direct INSERT, UPDATE of the definition, is_active, deleted_at or lane,
+--      DELETE and TRUNCATE of a workflow are refused by the database itself
+--      (42501), and so are a direct INSERT, UPDATE of the definition, DELETE and
+--      TRUNCATE of a version.
 --   B. What the Worker still writes directly is allowed: a workflow's
 --      test_payloads (PATCH /:id/test-payloads) and a version's commit_sha (the
 --      GitHub backup's stamp).
@@ -20,7 +21,9 @@
 -- Mutations tried (each turned its case red, then was put back):
 --  - the REVOKE on workflows left out: A red (the direct update landed);
 --  - the GRANT of UPDATE (test_payloads) left out: B red;
---  - the GRANT of UPDATE (commit_sha) left out: B red.
+--  - the GRANT of UPDATE (commit_sha) left out: B red;
+--  - TRUNCATE left out of both REVOKEs: A red (the truncate passed the
+--    privilege check and reached the foreign key check, 0A000).
 
 BEGIN;
 
@@ -67,7 +70,9 @@ BEGIN
     $s$DELETE FROM public.workflows WHERE id = '44444444-4444-4444-4444-44444444c947'$s$,
     $s$INSERT INTO public.workflow_versions (workflow_id, version_number, definition) VALUES ('44444444-4444-4444-4444-44444444c947', 2, '{}')$s$,
     $s$UPDATE public.workflow_versions SET definition = '{}' WHERE id = '55555555-5555-5555-5555-55555555c947'$s$,
-    $s$DELETE FROM public.workflow_versions WHERE id = '55555555-5555-5555-5555-55555555c947'$s$
+    $s$DELETE FROM public.workflow_versions WHERE id = '55555555-5555-5555-5555-55555555c947'$s$,
+    $s$TRUNCATE public.workflow_versions$s$,
+    $s$TRUNCATE public.workflows$s$
   ] LOOP
     got := pg_temp.as_worker(stmt);
     IF got <> '42501' THEN RAISE EXCEPTION 'A: service_role ran % and got %, expected 42501', stmt, got; END IF;
