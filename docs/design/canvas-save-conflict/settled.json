@@ -9,7 +9,7 @@
  ],
  "chrome": {
   "captured": "chrome.html",
-  "from": "http://localhost:3017/dev/connection-field?frame=step-healthy at 1120 wide, the real WorkflowCanvas on its preview workflow, no sign in needed, 2026-10-22 (rounds 1 and 2 of #2599)",
+  "from": "http://localhost:3988/dev/connection-field?frame=step-healthy at 1120 wide, the real WorkflowCanvas on its preview workflow, no sign in needed, recaptured 2026-10-23 with the refused strip present in #save-bar-slot (so the canvas and its minimap are drawn at the height they have with the strip) and the slot emptied in the copy; the design was settled in rounds 1 and 2 of #2599 on 2026-10-22",
   "slot": "#save-bar-slot",
   "width": 1120
  },
