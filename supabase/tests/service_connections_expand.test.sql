@@ -59,7 +59,7 @@ BEGIN
   INSERT INTO public.service_connections
     (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
   VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'slack', 'bot_token', NULL,
-          '{"bot_token":"planted-bot-token-2332","default_channel":"#alerts","workspace_name":"Test"}',
+          '{"default_channel":"#alerts","workspace_name":"Test"}',
           'planted-ciphertext-2332-a', 'bidding_ring', '22222222-2222-2222-2222-22222222332a', 'sce2332@example.test')
   RETURNING id INTO alert_id;
 
@@ -68,7 +68,7 @@ BEGIN
   INSERT INTO public.service_connections
     (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
   VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'slack', 'bot_token', NULL,
-          '{"bot_token":"planted-bot-token-2332","default_channel":"#alerts-3","workspace_name":"Test"}',
+          '{"default_channel":"#alerts-3","workspace_name":"Test"}',
           'planted-ciphertext-2332-c', 'bidding_ring', '22222222-2222-2222-2222-22222222332a', 'sce2332@example.test')
   ON CONFLICT (organization_id, service_type, name) DO UPDATE SET
     auth_type = EXCLUDED.auth_type, cf_secret_key = EXCLUDED.cf_secret_key, config = EXCLUDED.config,

@@ -56,13 +56,13 @@ BEGIN
   INSERT INTO public.service_connections (id, organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for)
   VALUES
     ('33333333-3333-3333-3333-33333333a001', '11111111-1111-1111-1111-11111112333a', 'slack', 'slack', 'bot_token', NULL,
-     '{"bot_token":"planted-bot-token-2332-a"}', 'planted-ciphertext-2332-a', 'bidding_ring'),
+     '{}', 'planted-ciphertext-2332-a', 'bidding_ring'),
     ('33333333-3333-3333-3333-33333333a002', '11111111-1111-1111-1111-11111112333a', 'slack', 'second slack', 'bot_token', 'CONN_PLANTED_2332_B',
-     '{"bot_token":"planted-bot-token-2332-b"}', NULL, NULL),
+     '{}', NULL, NULL),
     ('33333333-3333-3333-3333-33333333a003', '11111111-1111-1111-1111-11111112333a', 'slack', 'ops-alerts', 'bot_token', NULL,
      NULL, 'planted-ops-ciphertext-2332', 'ops_key'),
     ('33333333-3333-3333-3333-33333333b001', '11111111-1111-1111-1111-11111112333b', 'slack', 'slack', 'bot_token', NULL,
-     '{"bot_token":"planted-bot-token-2332-c"}', 'planted-ciphertext-2332-c', 'bidding_ring');
+     '{}', 'planted-ciphertext-2332-c', 'bidding_ring');
 END
 $fn$;
 

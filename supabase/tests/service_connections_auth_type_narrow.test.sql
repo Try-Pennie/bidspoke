@@ -89,10 +89,10 @@ DECLARE
   n int;
 BEGIN
   INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for)
-  VALUES ('11111111-1111-1111-1111-1111111e2332', 'slack', 'slack', 'bot_token', NULL, '{"bot_token":"planted-2332"}', 'planted-ciphertext', 'bidding_ring')
+  VALUES ('11111111-1111-1111-1111-1111111e2332', 'slack', 'slack', 'bot_token', NULL, '{}', 'planted-ciphertext', 'bidding_ring')
   ON CONFLICT (organization_id, service_type, name) DO UPDATE SET auth_type = EXCLUDED.auth_type, config = EXCLUDED.config, credential_enc = EXCLUDED.credential_enc, sealed_for = EXCLUDED.sealed_for;
   INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for)
-  VALUES ('11111111-1111-1111-1111-1111111e2332', 'slack', 'slack', 'bot_token', NULL, '{"bot_token":"planted-2332-b"}', 'planted-ciphertext-b', 'bidding_ring')
+  VALUES ('11111111-1111-1111-1111-1111111e2332', 'slack', 'slack', 'bot_token', NULL, '{}', 'planted-ciphertext-b', 'bidding_ring')
   ON CONFLICT (organization_id, service_type, name) DO UPDATE SET auth_type = EXCLUDED.auth_type, config = EXCLUDED.config, credential_enc = EXCLUDED.credential_enc, sealed_for = EXCLUDED.sealed_for;
   SELECT count(*) INTO n FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-1111111e2332';
   IF n <> 1 THEN RAISE EXCEPTION 'two saves left % rows', n; END IF;
@@ -110,7 +110,7 @@ DECLARE
 BEGIN
   err := pg_temp.atn_error_of($q$
     INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for)
-    VALUES ('11111111-1111-1111-1111-1111111e2332', 'slack', 'slack', 'oauth', NULL, '{"bot_token":"planted-2332-c"}', 'planted-ciphertext-c', 'bidding_ring')
+    VALUES ('11111111-1111-1111-1111-1111111e2332', 'slack', 'slack', 'oauth', NULL, '{}', 'planted-ciphertext-c', 'bidding_ring')
     ON CONFLICT (organization_id, service_type, name) DO UPDATE SET auth_type = EXCLUDED.auth_type, config = EXCLUDED.config$q$);
   IF err IS NULL OR err NOT LIKE '%service_connections_auth_type_check%' THEN
     RAISE EXCEPTION 'the save from before #2693 was not refused: %', coalesce(err, 'no error');

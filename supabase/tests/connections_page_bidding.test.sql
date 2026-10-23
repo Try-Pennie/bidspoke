@@ -94,7 +94,7 @@ BEGIN
     ('33333333-3333-3333-3333-33333c2338a4', '11111111-1111-1111-1111-11111c2338aa', 'snowflake', 'Ops Snowflake', 'key_pair', NULL,
      NULL, pg_temp.cpb_envelope('aXYtYTQ')::text, 'ops_key', 2, NULL, NULL, '22222222-2222-2222-2222-22222c2338aa'),
     ('33333333-3333-3333-3333-33333c2338a3', '11111111-1111-1111-1111-11111c2338aa', 'slack', 'slack', 'bot_token', NULL,
-     '{"bot_token":"planted-bot-token-2338"}', 'planted-ciphertext-2338', 'bidding_ring', 1, NULL, NULL, '22222222-2222-2222-2222-22222c2338aa'),
+     '{}', 'planted-ciphertext-2338', 'bidding_ring', 1, NULL, NULL, '22222222-2222-2222-2222-22222c2338aa'),
     ('33333333-3333-3333-3333-33333c2338b1', '11111111-1111-1111-1111-11111c2338bb', 'salesforce', 'B Salesforce', 'oauth_client_credentials', NULL,
      NULL, pg_temp.cpb_envelope('aXYtYjE')::text, 'ops_key', 1, NULL, NULL, NULL);
 
