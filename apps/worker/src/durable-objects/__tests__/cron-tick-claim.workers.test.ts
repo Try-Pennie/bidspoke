@@ -10,7 +10,7 @@
 import { env } from 'cloudflare:workers'
 import { describe, expect, it, vi } from 'vitest'
 import type { Env } from '../../index'
-import { runCronTickOnce } from '../../lib/cron-once'
+import { runCronTickOnce, tickRetryReader } from '../../lib/cron-once'
 import { TICK_LEASE_STALE_MS } from '../alert-claim'
 
 const bindings = env as unknown as Pick<Env, 'ALERT_CLAIM'>
@@ -54,6 +54,9 @@ describe('the cron tick claim in workerd (#1899)', () => {
     expect(retry).toBe('ran')
     const other = await runCronTickOnce(bindings.ALERT_CLAIM, { cron: '*/5 * * * *', scheduledTime: minute }, async () => {}, { ...SLOW_OK, now: () => minute })
     expect(other).toBe('ran')
+    // #2610: the never finished page reads the retry back from the same object.
+    expect(await tickRetryReader(bindings.ALERT_CLAIM, { deadlineMs: 30_000 })('23 * * * *', minute)).toEqual({ retriedAtMs: minute + TICK_LEASE_STALE_MS + 1, finished: true })
+    expect(await tickRetryReader(bindings.ALERT_CLAIM, { deadlineMs: 30_000 })('*/5 * * * *', minute)).toBeNull()
   })
 })
 
