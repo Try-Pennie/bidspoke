@@ -35,10 +35,12 @@ import { fakePostgrest, type Row } from '../../__tests__/helpers/postgrest-fake'
 const ORG = '11111111-1111-4111-8111-111111112332'
 const OTHER_ORG = '22222222-2222-4222-8222-222222222332'
 const RING = { encryptWith: TEST_KEY, decryptWith: [TEST_KEY] }
+// Each candidate's token sealed with the reader's own ring: the worst case, a row a mis-scoped reader COULD open (#2331's contract release reads no plaintext).
+const SEALED = { alert: await encryptSecret('alert-bot-token', TEST_KEY), ops: await encryptSecret('OPS-bot-token', TEST_KEY), second: await encryptSecret('second-bot-token', TEST_KEY) }
 
 const legacyAlertRow = (org = ORG): Row => ({
   id: `alert-${org}`, organization_id: org, service_type: 'slack', name: 'slack', sealed_for: null,
-  credential_enc: null, config: { bot_token: 'alert-bot-token', default_channel: '#alerts' },
+  credential_enc: SEALED.alert, config: { default_channel: '#alerts' },
 })
 const sealedAlertRow = async (org = ORG): Promise<Row> => ({
   id: `alert-${org}`, organization_id: org, service_type: 'slack', name: 'slack', sealed_for: 'bidding_ring',
@@ -47,14 +49,14 @@ const sealedAlertRow = async (org = ORG): Promise<Row> => ({
 /** An ops Slack connection (#1689 Phase 8): its own name and bot, sealed for the ops key. */
 const opsRow = (org = ORG): Row => ({
   id: `ops-${org}`, organization_id: org, service_type: 'slack', name: 'ops-bot', sealed_for: 'ops_key',
-  // The ops ciphertext is not openable by the bidding ring; the plaintext here
-  // stands for anything a mis-scoped reader could turn into a connection.
-  credential_enc: null, config: { bot_token: 'OPS-bot-token', default_channel: '#ops' },
+  // A real ops ciphertext is not openable by the bidding ring; sealed here with
+  // the ring, it stands for anything a mis-scoped reader could turn into a connection.
+  credential_enc: SEALED.ops, config: { default_channel: '#ops' },
 })
 /** A second candidate for the alert row, which the database's unique constraints forbid today. */
 const secondCandidate = (org = ORG): Row => ({
   id: `second-${org}`, organization_id: org, service_type: 'slack', name: 'slack', sealed_for: 'bidding_ring',
-  credential_enc: null, config: { bot_token: 'second-bot-token', default_channel: '#second' },
+  credential_enc: SEALED.second, config: { default_channel: '#second' },
 })
 
 function db(rows: Row[]) {
@@ -149,7 +151,7 @@ describe('all org reads (alert-fanout)', () => {
   it('the volume check read (readEverySlackAlertRow) returns no ops row', async () => {
     const { client } = db([opsRow(), legacyAlertRow()])
     const rows = await readEverySlackAlertRow(client)
-    expect(rows.map((r) => (r.config as { bot_token: string }).bot_token)).toEqual(['alert-bot-token'])
+    expect(rows.map((r) => r.credential_enc)).toEqual([SEALED.alert])
   })
 })
 

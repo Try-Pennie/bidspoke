@@ -28,7 +28,7 @@ async function textOf(): Promise<string> {
 describe('the Slack token alerts link to the Slack alerts login on the Connections page', () => {
   it('the unreadable token alert says to reconnect there, and links to it', async () => {
     expect(SLACK_ALERT_LOGIN_LINK).toBe('/connections?connection=slack-alerts')
-    await sendSlackTokenUnreadableAlert({ bot_token: 'canary-token' }, '#alerts', { reason: 'slack_token_undecryptable', fellBackToPlaintext: true, appUrl: APP })
+    await sendSlackTokenUnreadableAlert({ bot_token: 'canary-token' }, '#alerts', { reason: 'slack_token_undecryptable', appUrl: APP })
     const text = await textOf()
     expect(text).toContain('reconnect Bidspoke Alerts on the Connections page')
     expect(text).toContain(`<${APP}${SLACK_ALERT_LOGIN_LINK}|Open Bidspoke Alerts>`)

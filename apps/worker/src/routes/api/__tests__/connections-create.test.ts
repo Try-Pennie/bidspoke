@@ -15,7 +15,7 @@
  * is opened in the round trip tests exactly as connectionFetch opens it, and
  * read by the real ops minters.
  */
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { open } from '@bidspoke/connection-seal'
 import type { ServiceSchema } from '@bidspoke/service-catalogue/schema'
 import { recordingContext } from '../../../test-setup/wait-until'
@@ -59,7 +59,8 @@ const fixtures = vi.hoisted(() => {
     },
   }
   // Slack is the real catalogue's own since #2337.
-  return { extra: [google, supabase], publicKeys: {} as Record<string, string> }
+  // sealDelayMs: a real time delay before each seal, for the test that must not count on sealing being quick (L290).
+  return { extra: [google, supabase], publicKeys: {} as Record<string, string>, sealDelayMs: 0 }
 })
 
 vi.mock('@bidspoke/service-catalogue/schema', async (importOriginal) => {
@@ -68,7 +69,14 @@ vi.mock('@bidspoke/service-catalogue/schema', async (importOriginal) => {
 })
 vi.mock('@bidspoke/connection-seal', async (importOriginal) => {
   const real = await importOriginal<typeof import('@bidspoke/connection-seal')>()
-  return { ...real, CURRENT_OPS_KID: 'ops-test-1', OPS_CONNECTION_PUBLIC_KEYS: fixtures.publicKeys }
+  // Sealing is real crypto that takes real time; a test can make it slower still, in real time, through setImmediate,
+  // which no fake timer here replaces (a slow machine in CI, #2721).
+  const seal: typeof real.seal = async (...args) => {
+    const until = Date.now() + fixtures.sealDelayMs
+    while (Date.now() < until) await new Promise((resolve) => setImmediate(resolve))
+    return real.seal(...args)
+  }
+  return { ...real, seal, CURRENT_OPS_KID: 'ops-test-1', OPS_CONNECTION_PUBLIC_KEYS: fixtures.publicKeys }
 })
 vi.mock('../../../lib/jwt')
 vi.mock('../../../lib/supabase')
@@ -80,6 +88,10 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { resolveSalesforceCredsFor } from '../../../lib/salesforce-creds'
 import api from '../index'
+import { encryptSecret } from '../../../lib/secret-crypto'
+import { SLACK_TEST_KEY } from '../../../__tests__/helpers/sealed-slack-row'
+
+const ALERT_SEALED = await encryptSecret('canary-alert-bot-token-2337', SLACK_TEST_KEY)
 
 const ORG = '0a000000-0000-4000-8000-000000000001'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000000002'
@@ -183,7 +195,7 @@ function makeEnv(ops: { verify?: Verify; list?: () => Promise<unknown>; revoke?:
     clearReauth: vi.fn(), health: vi.fn(), lookup: vi.fn(), exchangeOAuthCode: vi.fn(),
   }
   // Shaped like the real RPC stub, so a call it would refuse fails here too (#2570).
-  const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {}, OPS_CONNECTIONS: rpcStub(binding), ...WORKER_ENV } as unknown as Env
+  const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {}, OPS_CONNECTIONS: rpcStub(binding), ...WORKER_ENV, SECRET_ENCRYPTION_KEY: SLACK_TEST_KEY } as unknown as Env
   return { env, binding }
 }
 
@@ -393,7 +405,8 @@ describe('the sealed login opens through the real ops minters (round trip)', () 
 
 describe('an ops Slack connection is never the alerts bot (Dan\'s decision 6, #2337)', () => {
   const ALERT_TOKEN = 'canary-alert-bot-token-2337'
-  const alertRow = { id: 'a1', organization_id: ORG, service_type: 'slack', name: 'slack', sealed_for: null, credential_enc: null, config: { bot_token: ALERT_TOKEN, default_channel: 'C0ALERTS' } }
+  // The alert row as stored (#2331's contract release): its token sealed with the Worker's key, no plaintext.
+  const alertRow = { id: 'a1', organization_id: ORG, service_type: 'slack', name: 'slack', sealed_for: null, credential_enc: ALERT_SEALED, config: { default_channel: 'C0ALERTS' } }
   const opsSlack = { service: 'slack', name: 'Ops bot', fields: { team_id: 'T0PENNIE', bot_token: 'canary-ops-bot-token-2337' } }
   const measured = (botId: string): Verify => async (r) => ({
     ok: true, service: r.candidate!.service, generation: 1,
@@ -727,12 +740,18 @@ describe('a verify that does not pass writes nothing', () => {
 
   it('a verify that does not answer in time is named, and writes nothing', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    // Sealing as slow as a loaded CI runner makes it: the wait below must not count on it being quick.
+    fixtures.sealDelayMs = 300
+    onTestFinished(() => { fixtures.sealDelayMs = 0 })
     const db = storeDouble()
     vi.mocked(createSupabaseClient).mockReturnValue(db as never)
     const { env, binding } = makeEnv({ verify: () => new Promise(() => {}) })
     const pending = post(env, salesforce())
-    // Step the clock until verify has been asked, then past the bidding deadline (50 s).
-    for (let i = 0; i < 100 && binding.verify.mock.calls.length === 0; i++) await vi.advanceTimersByTimeAsync(0)
+    // Wait on the condition itself, verify having been asked, for up to 10 s of real time (Date is not faked),
+    // never a count of turns, which a slow machine outruns (L290, #2721); the fake clock does not move meanwhile.
+    // Then step the fake clock past the bidding deadline (50 s).
+    const askedBy = Date.now() + 10_000
+    while (binding.verify.mock.calls.length === 0 && Date.now() < askedBy) await vi.advanceTimersByTimeAsync(0)
     expect(binding.verify).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(50_000)
     const res = await pending

@@ -94,7 +94,7 @@ async function storeDouble(opts: { upsertError?: { code: string; message: string
         }
         return done
       },
-      // The seal's UPDATE (sealSlackTokens): eq and is filters, then select('id') answers the rows written.
+      // Any UPDATE (eq and is filters, then select('id') answers the rows written), recorded so a test can assert that a check writes none.
       update(patch: Row) {
         const where: Array<(r: Row) => boolean> = []
         const u = {
@@ -217,7 +217,10 @@ describe('Reconnect the Slack alerts login with a new bot token', () => {
     expect(row).toMatchObject({ organization_id: ORG, service_type: 'slack', name: 'slack', sealed_for: 'bidding_ring', updated_by: USER })
     expect(await decryptSecret(row.credential_enc as string, KEY)).toBe(NEW_TOKEN)
     // The channel and the switch already turned off are kept; the workspace is what Slack named.
-    expect(row.config).toMatchObject({ bot_token: NEW_TOKEN, default_channel: '#bidspoke-alerts', volume_alerts_enabled: false, workspace_name: 'Pennie HQ' })
+    expect(row.config).toMatchObject({ default_channel: '#bidspoke-alerts', volume_alerts_enabled: false, workspace_name: 'Pennie HQ' })
+    // #2331's contract release: the token lives only in credential_enc, and the old plaintext the row carried is not carried forward.
+    expect(row.config).not.toHaveProperty('bot_token')
+    expect(JSON.stringify(row.config)).not.toContain(OLD_TOKEN)
 
     // The saved Slack copy posts with the new token while the database is down (#2060).
     const copy = await readSlackCopy(env.IDEMPOTENCY as never, KEY)
@@ -315,26 +318,21 @@ describe('Reconnect the Slack alerts login with no new token: the stored one is 
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(db, ORG, 'service_connection', ALERT_ROW, 'connection_rechecked', USER, {})
   })
 
-  it('with no key ring there is never an unhandled error: the plain copy is checked while it exists, and a sealed only row is named unreadable', async () => {
+  it('with no key ring there is never an unhandled error: the row is named unreadable, even with a plaintext beside it, and Slack is not asked', async () => {
     const db = await storeDouble()
     vi.mocked(createSupabaseClient).mockReturnValue(db as never)
     const asked = slackAuthTest(slackAccepts)
     const { env } = makeEnv({ SECRET_ENCRYPTION_KEY: undefined })
-    // This release keeps config.bot_token beside the sealed copy (#2331), so the check still answers from it.
-    const withCopy = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
-    expect(withCopy.status).toBe(200)
-    expect(asked).toEqual([OLD_TOKEN])
-    // The contract release's shape: sealed only, which no ring can open here.
-    db.table[0].config = { default_channel: '#bidspoke-alerts' }
-    const sealedOnly = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
-    expect(sealedOnly.status).toBe(422)
-    expect(((await sealedOnly.json()) as Answer).error).toBe('reconnect_login_unreadable')
-    expect(asked).toEqual([OLD_TOKEN])
+    // The row still carries config.bot_token, as production does until the strip migration: it is never read (#2331).
+    const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
+    expect(res.status).toBe(422)
+    expect(((await res.json()) as Answer).error).toBe('reconnect_login_unreadable')
+    expect(asked).toEqual([])
   })
 
   it('a stored token Slack now refuses says so, and says to reconnect with a new one', async () => {
     const db = await storeDouble()
-    db.table[0].config = { bot_token: REFUSED_TOKEN, default_channel: '#bidspoke-alerts' }
+    db.table[0].config = { default_channel: '#bidspoke-alerts' }
     db.table[0].credential_enc = await encryptSecret(REFUSED_TOKEN, KEY)
     vi.mocked(createSupabaseClient).mockReturnValue(db as never)
     slackAuthTest(slackAccepts)
@@ -349,93 +347,34 @@ describe('Reconnect the Slack alerts login with no new token: the stored one is 
   })
 })
 
-// #2331 (phase 1 of #1689): the alert row production holds was never sealed,
-// and the seal (POST /api/admin/seal-slack-token) must be run as a signed in
-// user of that organization. Checking the stored token again is the button that
-// does it: once Slack accepts the stored token, an unsealed alert row is sealed
-// by sealSlackTokens, the same function as the admin route, which keeps the
-// plaintext beside it until the contract release and verifies what it stored.
-describe('Checking the stored token again seals an alert row that was never sealed', () => {
-  const tokenIn = (lines: unknown[][]) => lines.some((l) => l.map(String).join(' ').includes(OLD_TOKEN))
-
-  it('seals it for the ring once Slack accepts the stored token, keeping the plaintext, and says so', async () => {
+// #2331's contract release: the plaintext is never read, so a row that was
+// never sealed is no usable login. Checking it again neither asks Slack about
+// its plaintext nor seals it; the fix is a Reconnect with a new token.
+describe('a row that was never sealed, after the contract release', () => {
+  it('is named unreadable on a check, Slack is not asked, and nothing is written', async () => {
     const db = await storeDouble({ table: unsealedRows() })
     vi.mocked(createSupabaseClient).mockReturnValue(db as never)
     const asked = slackAuthTest(slackAccepts)
     const { env } = makeEnv()
     const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
-    expect(res.status).toBe(200)
-    expect((await res.json()) as Answer).toMatchObject({ outcome: 'checked', connection: { id: ALERT_ROW }, seal: 'sealed' })
-    expect(asked).toEqual([OLD_TOKEN])
+    expect(res.status).toBe(422)
+    expect(((await res.json()) as Answer).error).toBe('reconnect_login_unreadable')
+    expect(asked).toEqual([])
+    expect(db.updates).toEqual([])
     expect(db.upserts).toEqual([])
-    expect(db.updates).toHaveLength(1)
+  })
+
+  it('is sealed by a Reconnect with a new token, which never keeps the old plaintext', async () => {
+    const db = await storeDouble({ table: unsealedRows() })
+    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
+    slackAuthTest(slackAccepts)
+    const { env } = makeEnv()
+    const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, { fields: { bot_token: NEW_TOKEN } })
+    expect(res.status).toBe(200)
     const [row] = db.table
     expect(row.sealed_for).toBe('bidding_ring')
-    expect(row.updated_by).toBe(USER)
-    expect(await decryptSecret(row.credential_enc as string, KEY)).toBe(OLD_TOKEN)
-    expect((row.config as Row).bot_token).toBe(OLD_TOKEN)
-    const logged = vi.mocked(console.log).mock.calls
-    expect(logged.some((l) => String(l[0]).includes('"event":"slack_alert_token_sealed"') && String(l[0]).includes('"ready_for_contract":true'))).toBe(true)
-    expect(tokenIn(logged)).toBe(false)
-  })
-
-  it('a row already sealed is not written again, and the answer carries no seal', async () => {
-    const db = await storeDouble()
-    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
-    slackAuthTest(slackAccepts)
-    const { env } = makeEnv()
-    const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
-    expect(res.status).toBe(200)
-    expect((await res.json()) as Answer).not.toHaveProperty('seal')
-    expect(db.updates).toEqual([])
-  })
-
-  it('a stored token Slack refuses is not sealed', async () => {
-    const table = unsealedRows()
-    ;(table[0].config as Row).bot_token = REFUSED_TOKEN
-    const db = await storeDouble({ table })
-    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
-    slackAuthTest(slackAccepts)
-    const { env } = makeEnv()
-    const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
-    expect(((await res.json()) as Answer).error).toBe('slack_stored_token_refused')
-    expect(db.updates).toEqual([])
-    expect(db.table[0].credential_enc).toBeNull()
-  })
-
-  it('Slack not answering seals nothing', async () => {
-    const db = await storeDouble({ table: unsealedRows() })
-    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
-    slackAuthTest(() => { throw new TypeError('fetch failed') })
-    const { env } = makeEnv()
-    const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
-    expect(((await res.json()) as Answer).error).toBe('slack_unanswered')
-    expect(db.updates).toEqual([])
-  })
-
-  it('a seal the database refuses still answers the check, says the seal failed, and logs it by name with no token', async () => {
-    const db = await storeDouble({ table: unsealedRows(), updateError: { code: '57014', message: 'canceling statement due to statement timeout' } })
-    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
-    slackAuthTest(slackAccepts)
-    const { env } = makeEnv()
-    const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
-    expect(res.status).toBe(200)
-    expect((await res.json()) as Answer).toMatchObject({ outcome: 'checked', seal: 'failed' })
-    const errors = vi.mocked(console.error).mock.calls
-    expect(errors.some((l) => String(l[0]).includes('"event":"slack_alert_seal_failed"'))).toBe(true)
-    expect(tokenIn(errors)).toBe(false)
-    expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(db, ORG, 'service_connection', ALERT_ROW, 'connection_rechecked', USER, {})
-  })
-
-  it('with no key ring the check still answers from the plaintext, and the seal fails by name rather than throwing', async () => {
-    const db = await storeDouble({ table: unsealedRows() })
-    vi.mocked(createSupabaseClient).mockReturnValue(db as never)
-    slackAuthTest(slackAccepts)
-    const { env } = makeEnv({ SECRET_ENCRYPTION_KEY: undefined })
-    const res = await call(env, 'POST', `/connections/${ALERT_ROW}/reconnect`, {})
-    expect(res.status).toBe(200)
-    expect((await res.json()) as Answer).toMatchObject({ outcome: 'checked', seal: 'failed' })
-    expect(db.updates).toEqual([])
+    expect(await decryptSecret(row.credential_enc as string, KEY)).toBe(NEW_TOKEN)
+    expect(row.config).not.toHaveProperty('bot_token')
   })
 })
 

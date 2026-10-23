@@ -14,9 +14,11 @@ import { registerScheduledSlack } from '../scheduled-slack'
 import { runWorkflowScheduleWatch } from '../workflow-schedule-watch'
 import { runAndReportDispatch } from '../workflow-dispatch-run'
 import { fakeTimers, kvWith, kvWithCopy, tableClient, TEST_KEY, type Answer } from './_scheduled-slack-doubles'
+import { sealedSlackRow, withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
 
 const ORG = 'org-1'
 const CONN = { bot_token: 'xoxb-test', default_channel: '#ops', config_alerts_enabled: true }
+const CONN_ROW = await sealedSlackRow(CONN)
 
 /** KV for the check's own state, recording every write. */
 function stateKv() {
@@ -52,10 +54,12 @@ async function tick(kind: Tick) {
     if (table !== 'service_connections') return from(table)
     calls++
     if (calls === 1) return from(table)
-    const lookup: Answer = kind === 'delivered' ? { data: [{ config: CONN }] } : { error: { message: 'connection terminated' } }
+    const lookup: Answer = kind === 'delivered' ? { data: [CONN_ROW] } : { error: { message: 'connection terminated' } }
     return tableClient({ service_connections: lookup }).client.from(table)
   }
   const copy = kind === 'slack_refuses' ? await kvWithCopy({ [ORG]: CONN }) : kind === 'org_not_found' ? await kvWithCopy({ 'org-2': CONN }) : kvWith()
+  // createScheduledSupabaseClient registers the key ring too (it builds through createSupabaseClient).
+  withSlackKeyRing(client)
   registerScheduledSlack(client, { kv: copy, secretKeys: TEST_KEY, sleep: fakeTimers('never').sleep })
   const slackOk = kind === 'delivered'
   const posts: string[] = []

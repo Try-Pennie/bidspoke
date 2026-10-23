@@ -135,9 +135,12 @@ function mutedSignalProblem(value: unknown): string | null {
 
 /**
  * The fields of an http webhook's settings, judged only for the type each is
- * read as. A key nothing reads (custom_response on 152 saved versions) is
- * left alone: it was never part of the contract and refusing it would refuse
- * a restore of a version that runs.
+ * read as. A key nothing reads is left alone: it was never part of the
+ * contract and refusing it would refuse a restore of a version that runs.
+ * custom_response is one (decided for #1947 PR 3): a true or false carried
+ * over from Pipedream's http trigger, on 152 saved versions and 3 workflows,
+ * one of them live (the Engine Bidding Workflow), measured 2026-10-22. No
+ * code in apps/ reads it, so any value passes, malformed included.
  */
 function httpConfigProblems(config: Record<string, unknown>): TriggerProblem[] {
   const problems: TriggerProblem[] = []

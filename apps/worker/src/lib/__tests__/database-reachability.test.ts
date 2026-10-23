@@ -30,6 +30,7 @@ import { fakeTimers, tableClient, TEST_KEY } from './_scheduled-slack-doubles'
 import { outboxEvents, transitions } from './_incident-events'
 import { claimLedger, gate, overlap } from './_claims-double'
 import { MINUTE_ALERT_CLAIM_TTL_SECONDS } from '../alert-fanout'
+import { sealedSlackRow } from '../../__tests__/helpers/sealed-slack-row'
 
 const ORG = '55555555-5555-4555-8555-555555555555'
 const CONN = { bot_token: 'xoxb-t', default_channel: 'C1', volume_alerts_enabled: true }
@@ -74,7 +75,8 @@ const probeFailure = { source: 'probe' as const, what: 'the minute database prob
 const flagFailure = { source: 'scheduled-read' as const, what: 'heartbeat-checks slack organizations', error: 'timeout: no answer in 3000 ms' }
 
 /** A probe client whose service_connections read answers with `rows`. */
-const answering = (rows: unknown[] = [{ organization_id: ORG, config: { bot_token: CONN.bot_token, default_channel: CONN.default_channel } }]) =>
+const SEALED_ROW = await sealedSlackRow({ bot_token: CONN.bot_token, default_channel: CONN.default_channel }, { organization_id: ORG })
+const answering = (rows: unknown[] = [SEALED_ROW]) =>
   tableClient({ service_connections: { data: rows } }).client
 const failing = () => tableClient({ service_connections: { error: { message: 'connection refused', code: '08006' } } }).client
 
@@ -229,8 +231,8 @@ describe('each organization is its own failure boundary', () => {
     const del = kv.delete
     kv.delete = (k: string) => (k === `db-unreachable:${ORG}:condition` ? Promise.reject(new Error('KV DELETE failed: 500')) : del(k))
     const rows = [
-      { organization_id: ORG, config: { bot_token: CONN.bot_token, default_channel: CONN.default_channel } },
-      { organization_id: ORG2, config: { bot_token: CONN2.bot_token, default_channel: CONN2.default_channel } },
+      await sealedSlackRow({ bot_token: CONN.bot_token, default_channel: CONN.default_channel }, { organization_id: ORG }),
+      await sealedSlackRow({ bot_token: CONN2.bot_token, default_channel: CONN2.default_channel }, { organization_id: ORG2 }),
     ]
     await runDatabaseReachabilityProbe(probeDeps(kv, T0, answering(rows)))
     expect(vi.mocked(sendDatabaseRecoveredAlert).mock.calls.map((c) => c[1])).toEqual(['C1', 'C2'])
