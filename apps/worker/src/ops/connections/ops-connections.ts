@@ -206,6 +206,7 @@ async function moneySalesforceIdentity(deps: OpsConnectionsDeps, organizationId:
 }
 
 function identityAnswer(identity: MeasuredIdentity): MeasuredIdentityAnswer {
+  if (identity.kind === 'anthropic') return { kind: 'anthropic', workspace_id: identity.workspaceId, organization_id: identity.organizationId }
   if (identity.kind === 'openai') return { kind: 'openai', project_id: identity.projectId, organization: identity.organization }
   if (identity.kind === 'slack') {
     return { kind: 'slack', team_id: identity.teamId, team: identity.team, user_id: identity.userId, user: identity.user, bot_id: identity.botId }
@@ -256,7 +257,7 @@ async function verifyIdentity(
   const resolved = used as { service: string; generation: number } | null
   if (resolved === null) return refuse('ops_connections_failed', 'the identity was measured without a request through connectionFetch')
 
-  // A Snowflake, Slack or OpenAI identity is the declared one or the probe refused
+  // A Snowflake, Slack, OpenAI or Anthropic identity is the declared one or the probe refused
   // it, and nothing about it is kept (each service's file says why).
   if (identity.kind !== 'salesforce') return { ok: true, service: resolved.service, generation: resolved.generation, identity: identityAnswer(identity) }
   if (money !== null && isMoneySalesforceIdentity(identity, money)) {
