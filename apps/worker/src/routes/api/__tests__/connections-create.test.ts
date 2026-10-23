@@ -15,7 +15,7 @@
  * is opened in the round trip tests exactly as connectionFetch opens it, and
  * read by the real ops minters.
  */
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { open } from '@bidspoke/connection-seal'
 import type { ServiceSchema } from '@bidspoke/service-catalogue/schema'
 import { recordingContext } from '../../../test-setup/wait-until'
@@ -57,7 +57,8 @@ const fixtures = vi.hoisted(() => {
     },
   }
   // Slack is the real catalogue's own since #2337.
-  return { extra: [google, supabase], publicKeys: {} as Record<string, string> }
+  // sealDelayMs: a real time delay before each seal, for the test that must not count on sealing being quick (L290).
+  return { extra: [google, supabase], publicKeys: {} as Record<string, string>, sealDelayMs: 0 }
 })
 
 vi.mock('@bidspoke/service-catalogue/schema', async (importOriginal) => {
@@ -66,7 +67,14 @@ vi.mock('@bidspoke/service-catalogue/schema', async (importOriginal) => {
 })
 vi.mock('@bidspoke/connection-seal', async (importOriginal) => {
   const real = await importOriginal<typeof import('@bidspoke/connection-seal')>()
-  return { ...real, CURRENT_OPS_KID: 'ops-test-1', OPS_CONNECTION_PUBLIC_KEYS: fixtures.publicKeys }
+  // Sealing is real crypto that takes real time; a test can make it slower still, in real time, through setImmediate,
+  // which no fake timer here replaces (a slow machine in CI, #2721).
+  const seal: typeof real.seal = async (...args) => {
+    const until = Date.now() + fixtures.sealDelayMs
+    while (Date.now() < until) await new Promise((resolve) => setImmediate(resolve))
+    return real.seal(...args)
+  }
+  return { ...real, seal, CURRENT_OPS_KID: 'ops-test-1', OPS_CONNECTION_PUBLIC_KEYS: fixtures.publicKeys }
 })
 vi.mock('../../../lib/jwt')
 vi.mock('../../../lib/supabase')
@@ -692,12 +700,18 @@ describe('a verify that does not pass writes nothing', () => {
 
   it('a verify that does not answer in time is named, and writes nothing', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    // Sealing as slow as a loaded CI runner makes it: the wait below must not count on it being quick.
+    fixtures.sealDelayMs = 300
+    onTestFinished(() => { fixtures.sealDelayMs = 0 })
     const db = storeDouble()
     vi.mocked(createSupabaseClient).mockReturnValue(db as never)
     const { env, binding } = makeEnv({ verify: () => new Promise(() => {}) })
     const pending = post(env, salesforce())
-    // Step the clock until verify has been asked, then past the bidding deadline (50 s).
-    for (let i = 0; i < 100 && binding.verify.mock.calls.length === 0; i++) await vi.advanceTimersByTimeAsync(0)
+    // Wait on the condition itself, verify having been asked, for up to 10 s of real time (Date is not faked),
+    // never a count of turns, which a slow machine outruns (L290, #2721); the fake clock does not move meanwhile.
+    // Then step the fake clock past the bidding deadline (50 s).
+    const askedBy = Date.now() + 10_000
+    while (binding.verify.mock.calls.length === 0 && Date.now() < askedBy) await vi.advanceTimersByTimeAsync(0)
     expect(binding.verify).toHaveBeenCalledTimes(1)
     await vi.advanceTimersByTimeAsync(50_000)
     const res = await pending
