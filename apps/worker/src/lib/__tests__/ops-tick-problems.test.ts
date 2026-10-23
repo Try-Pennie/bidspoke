@@ -23,10 +23,14 @@ const THREE_IN_A_ROW = [
   'sf_limits_read_failing',
   // The frozen definition copies (#1950): every version not held is asked again next tick.
   'definitions_failed', 'definition_save_failed',
+  // Live mode (#1950): the claim is asked again next tick; a run outcome rate is judged over three ticks (L77).
+  'claim_failed', 'runs_failing',
 ]
 const AT_ONCE = [
   // The frozen definition copies (#1950): a person must decide, and no later tick changes it.
   'definition_conflict', 'definition_unserved', 'definition_refused', 'definitions_backlog',
+  // Live mode (#1950): stale copies stop everything; a run waiting for a person waits until one acts.
+  'copies_stale', 'run_outcome_unknown', 'runs_lapsed_after_send',
   'db_not_configured', 'not_configured', 'secrets_unchecked', 'agreement_check_failed', 'queue_disagreement', 'workflow_refused',
   'workflows_too_many', 'copies_read_limit', 'schedule_refused', 'schedule_no_version', 'slot_missed', 'dispatch_failed',
   'connections_list_unreadable', 'connection_refused', 'connections_too_many', 'connection_copies_expired', 'connections_step_failed',

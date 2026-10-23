@@ -37,8 +37,25 @@ describe('OpsInternal over the binding', () => {
     expect(entry.ping()).toEqual({ lane: 'ops', entrypoint: 'OpsInternal' })
   })
 
-  it('exposes ping, observe and the reseal (#2333) and nothing else until the run engine adds its run method (B3)', () => {
-    expect(Object.getOwnPropertyNames(OpsInternal.prototype).sort()).toEqual(['constructor', 'observe', 'ping', 'resealConnections'])
+  it('exposes ping, observe, the reseal (#2333) and run (#1950, B3), and nothing else', () => {
+    expect(Object.getOwnPropertyNames(OpsInternal.prototype).sort()).toEqual(['constructor', 'observe', 'ping', 'resealConnections', 'run'])
+  })
+
+  it('observe refuses a run item: a run is OpsInternal.run\'s, never only logged (#1950)', async () => {
+    const env = { LANE: 'ops', PORTING_CAPTURE_MASTER: 'master-secret' } as unknown as OpsEnv
+    const run = {
+      runRequestId: 'r', organizationId: '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60', workflowId: 'w', workflowVersion: 1, triggerKind: 'schedule', claimToken: 't',
+      claimExpiresAt: 'x', stateVersion: 1, attempts: 0, unchargedAttempts: 0, maxAttempts: 3, resumeReason: null, executionChainId: 'c',
+      resumedFromExecutionId: null, payload: null, payloadRef: null,
+    }
+    const signed = await signDispatch(await dispatchKey('master-secret'), { v: 1, tick_id: 'tick-1', signed_at: new Date(NOW).toISOString(), item: { kind: 'run', run } as never })
+    await expect(observeDispatch(env, signed, NOW)).rejects.toThrow(/not_observed_a_run/)
+  })
+
+  it('run refuses a dispatch it cannot verify, as a value, never a throw across the binding (#1950)', async () => {
+    const entry = new OpsInternal({} as ExecutionContext, { LANE: 'ops', PORTING_CAPTURE_MASTER: 'master-secret' } as unknown as OpsEnv)
+    const signed = await signDispatch(await dispatchKey('another-master'), { v: 1, tick_id: 'tick-1', signed_at: new Date().toISOString(), item: { kind: 'probe' } })
+    expect(await entry.run(signed)).toEqual({ refused: 'bad_signature' })
   })
 
   it('observe verifies a signed dispatch and answers what it observed (#1949)', async () => {
