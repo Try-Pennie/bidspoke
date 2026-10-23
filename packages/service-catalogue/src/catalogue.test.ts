@@ -94,6 +94,21 @@ describe('the shipped catalogue', () => {
     expect(resolveDependencies(lock, reached.packages).closure).toContain(`slack-web-api-client@${manifest.dependencies['slack-web-api-client']}`)
   })
 
+  it("folds each OpenAI action's shared request code into its fingerprint, and imports no npm package (#2337)", () => {
+    const lock = readImporterLock(SHIPPED.lockfile, SHIPPED.importer)
+    const openaiActions = RUNTIME_ACTIONS.filter((a) => a.key.startsWith('openai.'))
+    expect(openaiActions).toHaveLength(6)
+    for (const a of openaiActions) {
+      const reached = collectModuleImports(path.join(SHIPPED.actionsDir, `${a.key}.v${a.version}.ts`), {
+        root: { importer: SHIPPED.importer, dir: PACKAGE_ROOT },
+        linkOf: (importer, name) => linkedPath(lock, importer, name),
+      })
+      expect(reached.files, a.key).toContain(path.join(SRC, 'runtime', 'openai', 'call.ts'))
+      expect(reached.files, a.key).toContain(path.join(SRC, 'runtime', 'failure.ts'))
+      expect(reached.packages, a.key).toEqual([])
+    }
+  })
+
   it('carries no test fixture action', () => {
     expect(catalogueActions(CATALOGUE).filter((a) => a.key.startsWith('fixture.'))).toEqual([])
     expect(RUNTIME_ACTIONS.filter((a) => a.key.startsWith('fixture.'))).toEqual([])

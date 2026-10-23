@@ -22,6 +22,7 @@ vi.mock('../../../lib/tripoint-pricing-check', async (importOriginal) => {
 import { verifyJwt } from '../../../lib/jwt'
 import { createSupabaseClient } from '../../../lib/supabase'
 import { checkTripointPricing } from '../../../lib/tripoint-pricing-check'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -32,7 +33,6 @@ const rule = { floor: 10000, lowBand: { upTo: 12499, multiplier: 0.0009 }, highB
 const note = { code: 'floor-not-modelled', message: 'Salesforce books no Tripoint revenue below $10,000 of debt' }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

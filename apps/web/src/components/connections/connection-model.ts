@@ -235,11 +235,23 @@ export interface HistoryEntry {
   changes: unknown
 }
 
+function wasFirstSealed(changes: unknown): boolean {
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) return false
+  const s = (changes as Record<string, unknown>).sealed_for
+  if (!s || typeof s !== 'object') return false
+  const { old, new: now } = s as { old?: unknown; new?: unknown }
+  return old === null && now === 'bidding_ring'
+}
+
 /** What one history entry says happened. */
 export function historyWhat(e: HistoryEntry, secret: string): string {
   if (e.action === 'INSERT') return 'Added'
   if (e.action === 'DELETE') return 'Removed'
   if (e.action === 'connection_rechecked') return 'Login checked again'
+  // The Slack alert row's first seal (#2331): sealed_for goes from none to the
+  // ring. The stored token may be the same one (checking it again seals it) or a
+  // new one; the history row cannot say which, so the words claim neither.
+  if (e.credential_changed && wasFirstSealed(e.changes)) return `${secret.charAt(0).toUpperCase()}${secret.slice(1)} now stored sealed`
   if (e.credential_changed) return `Reconnected with a new ${secret}`
   return 'Changed'
 }

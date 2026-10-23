@@ -313,6 +313,39 @@ describe('the unfinished jobs of one run are one page and one recovery (#2117, 2
     for (const j of stopped()) expect(kv.store.has(alertedStatusKey(j.id))).toBe(false)
   })
 
+  // #2610: the page says when Cloudflare retried the run, read from the run's claim.
+  it('reads the run\'s claim and hands the page the retry that took it after the run began', async () => {
+    const reads: Array<[string, string]> = []
+    const retry = { retriedAtMs: RUN_START + 3 * MIN, finished: true }
+    await runHeartbeatChecks(fakeSupabase(), stoppedRun(), PAGED_AT, undefined, async (cron, scheduledMs) => { reads.push([cron, iso(scheduledMs)]); return retry })
+    expect(reads).toEqual([['*/15 * * * *', '2026-10-21T04:00:00.000Z']])
+    expect(vi.mocked(sendCronHeartbeatGroupAlert).mock.calls[0][2].retry).toEqual(retry)
+  })
+
+  it('pages without the retry when the read fails, and never waits on it to page', async () => {
+    await runHeartbeatChecks(fakeSupabase(), stoppedRun(), PAGED_AT, undefined, async () => { throw new Error('claim object unreachable') })
+    expect(sendCronHeartbeatGroupAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendCronHeartbeatGroupAlert).mock.calls[0][2].retry ?? null).toBeNull()
+  })
+
+  it('names no retry that began before the run the page is about: that run is the retry', async () => {
+    await runHeartbeatChecks(fakeSupabase(), stoppedRun(), PAGED_AT, undefined, async () => ({ retriedAtMs: RUN_START - 1_000, finished: true }))
+    expect(vi.mocked(sendCronHeartbeatGroupAlert).mock.calls[0][2].retry ?? null).toBeNull()
+  })
+
+  it('hands the retry to the page for one job on its own too', async () => {
+    const [only] = stopped()
+    const kv = stoppedRun()
+    // The other job finished, so only one is left unfinished.
+    for (const j of stopped()) if (j.id !== only.id) kv.store.set(completedKey(j.id), iso(RUN_START + 40_000))
+    const retry = { retriedAtMs: RUN_START + 3 * MIN, finished: false }
+    await runHeartbeatChecks(fakeSupabase(), kv, PAGED_AT, undefined, async () => retry)
+    expect(sendCronHeartbeatGroupAlert).not.toHaveBeenCalled()
+    expect(sendCronHeartbeatAlert).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(sendCronHeartbeatAlert).mock.calls[0][3]).toBe('vanished')
+    expect(vi.mocked(sendCronHeartbeatAlert).mock.calls[0][8]).toEqual(retry)
+  })
+
   it('holds the finished job\'s all-clear while the other job\'s next run is still inside its allowance, then sends one', async () => {
     const [early, late] = stopped()
     const kv = stoppedRun()

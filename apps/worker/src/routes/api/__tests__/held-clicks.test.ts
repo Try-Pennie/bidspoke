@@ -45,6 +45,7 @@ import { DeadlineError } from '@bidspoke/buyer-profile'
 import { GenerationMovedError, WrongStateError } from '../../../lib/buyer-sale-attempt'
 import { writeHeldClickSale, type SaleWrites } from '../../../lib/held-click-sale-writes'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
+import api from '../index'
 
 const testUser = { id: '22222222-2222-4222-8222-222222222222', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: testUser.id, email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -92,7 +93,6 @@ const submissionFailed: SaleWrites = {
 }
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

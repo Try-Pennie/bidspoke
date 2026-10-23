@@ -45,6 +45,8 @@ export const OPS_ORGANIZATION_RPCS = [
   // The Google mailboxes and drives list's writes, each with its change record (#2338).
   'add_google_delegation_subject',
   'remove_google_delegation_subject',
+  // A workflow version's definition, copied from the bidding Worker (#1950).
+  'save_workflow_definition',
 ] as const
 
 /**
@@ -68,6 +70,8 @@ export const OPS_LANE_RPCS = [
   'purge_expired_connection_tombstones',
   'sweep_sf_leases',
   'record_sf_budget_reading',
+  // The observation_purge sweep (#1950): retention is the same for every organization.
+  'purge_schedule_observations',
 ] as const
 
 /**
@@ -84,8 +88,14 @@ export const OPS_LANE_READ_ONLY_RPCS = [
   'sf_limits_targets',
   // The connection_check sweep's list and the tick's login states (#2340): every ops connection, each row carrying its organization.
   'connection_check_targets',
+  // The saved copies whose current version has no definition held yet (#1950), each row carrying its organization.
+  'missing_workflow_definitions',
 ] as const
-export const OPS_ORGANIZATION_READ_ONLY_RPCS = ['connection_copy', 'connection_status', 'google_delegation_check', 'list_google_delegation_subjects'] as const
+export const OPS_ORGANIZATION_READ_ONLY_RPCS = [
+  'connection_copy', 'connection_status', 'google_delegation_check', 'list_google_delegation_subjects',
+  // One version of one organization's workflow definition (#1950).
+  'workflow_definition',
+] as const
 export const OPS_READ_ONLY_RPCS = [...OPS_LANE_READ_ONLY_RPCS, ...OPS_ORGANIZATION_READ_ONLY_RPCS] as const
 
 export const OPS_MUTATING_RPCS = [...OPS_ORGANIZATION_RPCS, ...OPS_LANE_RPCS] as const

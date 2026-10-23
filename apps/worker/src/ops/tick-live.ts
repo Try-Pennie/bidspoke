@@ -25,7 +25,7 @@ import { raceDeadline } from '../lib/alert-claim'
 import { opsConnectionKeyProblems, type SealRegistry } from './connection-key'
 import { createOpsSupabaseClient, OpsDatabaseConfigError, type OpsSupabaseClient } from './ops-db'
 import {
-  claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, readConnectionCheckTargets, readSfLimitsTargets,
+  claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, purgeScheduleObservations, readConnectionCheckTargets, readSfLimitsTargets,
   readWorkflowCopies, recordConnectionCheck, recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements,
   saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions,
 } from './ops-writes'
@@ -62,6 +62,7 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     sweepLeases: (limit) => sweepExpiredLeases(client, limit, rpc),
     expireRuns: (limit) => expireOverdueRunRequests(client, limit, rpc),
     purgeTombstones: (limit) => purgeExpiredConnectionTombstones(client, limit, rpc),
+    purgeObservations: (limit) => purgeScheduleObservations(client, limit, rpc),
     sweepSfLeases: (limit) => sweepSfLeases(client, limit, rpc),
     queueDisagreements: (limit) => runQueueDisagreements(client, limit, rpc),
     saveCopies: (servedAt, complete, copies) => saveWorkflowCopies(client, servedAt, complete, copies, rpc),

@@ -17,11 +17,11 @@
  * buyer-profiles.ts twice, workflows.ts, admin.ts, timeout-audit.ts twice) and
  * against the planted chain in the last test.
  */
-import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { WORKER_SRC, listTsFiles } from '../../__tests__/_scan-utils'
+import { parsedSource, sourceText } from '../../__tests__/_parsed-source'
 
 const HOME = 'lib/org-workflows.ts'
 
@@ -41,7 +41,7 @@ function chainCalls(start: ts.CallExpression): Array<{ name: string; args: reado
 const literal = (e: ts.Expression | undefined): string | null => (e && ts.isStringLiteralLike(e) ? e.text : null)
 
 export function scanOrgWorkflowReads(file: string, source: string): Array<{ file: string; line: number }> {
-  const sf = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)
+  const sf = parsedSource(file, source)
   const found: Array<{ file: string; line: number }> = []
   const visit = (node: ts.Node) => {
     if (
@@ -68,18 +68,19 @@ export function scanOrgWorkflowReads(file: string, source: string): Array<{ file
 
 describe('organization workflow definitions are read through readOrgWorkflows', () => {
   const files = listTsFiles(WORKER_SRC)
+  // Read and parsed while the file is collected, not inside a test's 5 second limit (#2619).
+  const offenders = files
+    .filter((f) => rel(f) !== HOME)
+    .flatMap((f) => scanOrgWorkflowReads(f, sourceText(f)).map((o) => ({ ...o, file: rel(f) })))
+    .map((o) => `${o.file}:${o.line}`)
 
   it('scanned the Worker source (a positive control: the one allowed read is found)', () => {
     const home = files.find((f) => rel(f) === HOME)
     expect(home).toBeDefined()
-    expect(scanOrgWorkflowReads(HOME, readFileSync(home as string, 'utf8'))).toHaveLength(1)
+    expect(scanOrgWorkflowReads(home as string, sourceText(home as string))).toHaveLength(1)
   })
 
   it('no other file reads them', () => {
-    const offenders = files
-      .filter((f) => rel(f) !== HOME)
-      .flatMap((f) => scanOrgWorkflowReads(rel(f), readFileSync(f, 'utf8')))
-      .map((o) => `${o.file}:${o.line}`)
     expect(offenders).toEqual([])
   })
 

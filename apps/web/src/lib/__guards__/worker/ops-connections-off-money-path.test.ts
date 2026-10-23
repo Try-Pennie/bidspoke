@@ -19,10 +19,10 @@
  *     reason, so a new caller is a decision someone wrote down.
  */
 import { describe, expect, it } from 'vitest'
-import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import ts from 'typescript'
 import { listTsFiles, sanitizeSource, WORKER_SRC } from '../../__tests__/_scan-utils'
+import { parsedSource, sourceText, sourceTextIfAny } from '../../__tests__/_parsed-source'
 
 const CLIENT = path.join(WORKER_SRC, 'lib/ops-connections-client.ts')
 const ENV = path.join(WORKER_SRC, 'env.ts')
@@ -45,7 +45,7 @@ export function moneyRoots(files: string[]): string[] {
 
 type Reader = (file: string) => string | undefined
 
-const diskReader: Reader = (file) => (existsSync(file) ? readFileSync(file, 'utf8') : undefined)
+const diskReader: Reader = sourceTextIfAny
 
 /** A relative specifier resolved to a worker source file, the way the bundler resolves it. */
 function resolveRelative(from: string, specifier: string, read: Reader): string | null {
@@ -56,11 +56,16 @@ function resolveRelative(from: string, specifier: string, read: Reader): string 
   return null
 }
 
+/** The specifiers a parsed file loads at run time, kept per tree: a tree kept by parsedSource is walked once. */
+const specifiersOf = new WeakMap<ts.SourceFile, string[]>()
+
 /** The relative modules a file loads at run time: type only imports and exports are erased, so they are skipped. */
 export function runtimeImports(file: string, read: Reader): string[] {
   const src = read(file)
   if (src === undefined) return []
-  const sf = ts.createSourceFile(file, src, ts.ScriptTarget.Latest, true)
+  const sf = parsedSource(file, src)
+  const kept = specifiersOf.get(sf)
+  if (kept) return kept.filter((s) => s.startsWith('.')).map((s) => resolveRelative(file, s, read)).filter((f): f is string => f !== null)
   const specifiers: string[] = []
   const visit = (node: ts.Node) => {
     if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier)) {
@@ -80,6 +85,7 @@ export function runtimeImports(file: string, read: Reader): string[] {
     ts.forEachChild(node, visit)
   }
   visit(sf)
+  specifiersOf.set(sf, specifiers)
   return specifiers.filter((s) => s.startsWith('.')).map((s) => resolveRelative(file, s, read)).filter((f): f is string => f !== null)
 }
 
@@ -103,13 +109,23 @@ export function runtimeClosure(roots: string[], read: Reader): Map<string, strin
 
 const rel = (file: string) => path.relative(WORKER_SRC, file)
 
+/** Comments blanked, strings kept; kept per file while the text is the file on disk, so a planted case re-blanks only what it planted. */
+const blanked = new Map<string, { raw: string; out: string }>()
+function sanitized(file: string, raw: string): string {
+  const hit = blanked.get(file)
+  if (hit && hit.raw === raw) return hit.out
+  const out = sanitizeSource(raw, { blankStrings: false })
+  if (raw === sourceTextIfAny(file)) blanked.set(file, { raw, out })
+  return out
+}
+
 /** Every way the binding could be reached from where it must not be. Empty when it cannot. */
 export function offenders(files: string[], read: Reader = diskReader): string[] {
   const out: string[] = []
   for (const file of files) {
     const raw = read(file)
     if (raw === undefined) continue
-    const src = sanitizeSource(raw, { blankStrings: false })
+    const src = sanitized(file, raw)
     if (!BINDING_NAMED_IN.has(file)) {
       for (const m of src.matchAll(/\bOPS_CONNECTIONS\b/g)) {
         out.push(`${rel(file)}:${src.slice(0, m.index).split('\n').length} names the OPS_CONNECTIONS binding outside lib/ops-connections-client.ts`)
@@ -127,6 +143,9 @@ export function offenders(files: string[], read: Reader = diskReader): string[] 
 
 describe('OPS_CONNECTIONS never sits on the money path (Hard Rule 1)', () => {
   const files = listTsFiles(WORKER_SRC)
+  // The scan of the tree as it stands, made while the file is collected, so its one
+  // parse of every file is not charged to a test's 5 second limit (#2619).
+  const found = offenders(files)
 
   it('finds what it scans, so it cannot pass on nothing', () => {
     expect(files).toContain(CLIENT)
@@ -145,7 +164,7 @@ describe('OPS_CONNECTIONS never sits on the money path (Hard Rule 1)', () => {
   })
 
   it('the binding is named only where it is declared and called, the client is imported only by its listed callers, and the money path never reaches it', () => {
-    expect(offenders(files)).toEqual([])
+    expect(found).toEqual([])
   })
 
   describe('seen red on each planted route to the binding', () => {
@@ -156,7 +175,7 @@ describe('OPS_CONNECTIONS never sits on the money path (Hard Rule 1)', () => {
     const webhooks = path.join(WORKER_SRC, 'routes/webhooks.ts')
 
     it('a direct import in the engine', () => {
-      const extra = { [engineIndex]: `import { callOpsConnections } from '../lib/ops-connections-client'\n${readFileSync(engineIndex, 'utf8')}` }
+      const extra = { [engineIndex]: `import { callOpsConnections } from '../lib/ops-connections-client'\n${sourceText(engineIndex)}` }
       const found = offenders(withFile(extra), planted(extra))
       expect(found).toContain('engine/index.ts imports lib/ops-connections-client.ts and is not a listed caller')
       expect(found.some((o) => o.startsWith('the money path reaches lib/ops-connections-client.ts: engine/index.ts -> lib/ops-connections-client.ts'))).toBe(true)
@@ -166,26 +185,26 @@ describe('OPS_CONNECTIONS never sits on the money path (Hard Rule 1)', () => {
       const helper = path.join(WORKER_SRC, 'lib/planted-connections-helper.ts')
       const extra = {
         [helper]: `export { callOpsConnections } from './ops-connections-client'\n`,
-        [node]: `import { callOpsConnections } from '../../lib/planted-connections-helper'\n${readFileSync(node, 'utf8')}`,
+        [node]: `import { callOpsConnections } from '../../lib/planted-connections-helper'\n${sourceText(node)}`,
       }
       const found = offenders(withFile(extra), planted(extra))
       expect(found.some((o) => /^the money path reaches lib\/ops-connections-client\.ts: .*engine\/nodes\/partner-bid\.ts -> lib\/planted-connections-helper\.ts -> lib\/ops-connections-client\.ts$/.test(o))).toBe(true)
     })
 
     it('a dynamic import in the webhook route', () => {
-      const extra = { [webhooks]: `${readFileSync(webhooks, 'utf8')}\nexport const later = () => import('../lib/ops-connections-client')\n` }
+      const extra = { [webhooks]: `${sourceText(webhooks)}\nexport const later = () => import('../lib/ops-connections-client')\n` }
       expect(offenders(withFile(extra), planted(extra)).some((o) => o.includes('routes/webhooks.ts -> lib/ops-connections-client.ts'))).toBe(true)
     })
 
     it('the binding read straight off the env, by property or by string key', () => {
       for (const use of ['const b = env.OPS_CONNECTIONS', "const b = env['OPS_CONNECTIONS']"]) {
-        const extra = { [node]: `${readFileSync(node, 'utf8')}\n${use}\n` }
+        const extra = { [node]: `${sourceText(node)}\n${use}\n` }
         expect(offenders(withFile(extra), planted(extra)).some((o) => o.startsWith('engine/nodes/partner-bid.ts:') && o.includes('names the OPS_CONNECTIONS binding'))).toBe(true)
       }
     })
 
     it('but not a type only import, which compilation erases and so carries nothing to run', () => {
-      const extra = { [engineIndex]: `import type { OpsConnectionsUnavailable } from '../lib/ops-connections-client'\n${readFileSync(engineIndex, 'utf8')}` }
+      const extra = { [engineIndex]: `import type { OpsConnectionsUnavailable } from '../lib/ops-connections-client'\n${sourceText(engineIndex)}` }
       expect(offenders(withFile(extra), planted(extra))).toEqual([])
     })
   })

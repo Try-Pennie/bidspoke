@@ -23,6 +23,7 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { loadWorkflowDefinition } from '../../../engine/definition-loader'
 import { CONFIG_LIST_BOUNDS } from '../../../lib/config-list-bounds'
 import { makeSupabase, type TableConfig } from './_supabase-mock'
+import api from '../index'
 
 const testUser = { id: 'user-1', organization_id: 'org-abc', email: 'dan@pennie.com' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
@@ -30,7 +31,6 @@ const testEnv = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {} } a
 const mockCtx = recordingContext()
 
 async function makeApp() {
-  const { default: api } = await import('../index')
   return api
 }
 

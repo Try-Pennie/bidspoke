@@ -7,7 +7,7 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import { parseCandidate, type SwapCandidate } from '../candidate'
-import { formatSwapVerification, verifySavedSwap, type DefinitionVersion } from '../verify-save'
+import { formatSwapVerification, pickSwapVersions, verifySavedSwap, type DefinitionVersion } from '../verify-save'
 import gigfi from '../candidates/rml-gigfi.json'
 import lendswift from '../candidates/rml-lendswift.json'
 import leadEconomy from '../candidates/lead-economy.json'
@@ -15,7 +15,8 @@ import gigfiBeforeSwap from '../replaced/rml-gigfi-v24.json'
 import gigfiSaved from '../../fixtures/definitions/6624acd0-bf61-4d21-85fc-4371ca7ed77d.json'
 import lendswiftBeforeSwap from '../replaced/rml-lendswift-v25.json'
 import lendswiftSaved from '../../fixtures/definitions/e1b810da-16c0-49eb-bf12-ba1c9b67c914.json'
-import leadEconomyDef from '../../fixtures/definitions/89b1a6af-7e0f-43de-bc66-1e888184551f.json'
+import leadEconomyBeforeSwap from '../replaced/lead-economy-v39.json'
+import leadEconomySaved from '../../fixtures/definitions/89b1a6af-7e0f-43de-bc66-1e888184551f.json'
 
 type Def = { trigger?: unknown; nodes: Array<{ id: string; [k: string]: unknown }>; edges: Array<{ id?: string; source: string; target: string; [k: string]: unknown }> }
 
@@ -196,13 +197,46 @@ describe('verifySavedSwap: RML LendSwift (#2593)', () => {
 
 describe('verifySavedSwap: Lead Economy (#2594), whose save also sets Constants minimumLoanAmount to 2000', () => {
   const le = parseCandidate(leadEconomy, 'lead-economy.json')
-  const before = (leadEconomyDef as unknown as { definition: Def }).definition
+  // Lead Economy's version 39, the version before its swap: the money gate's
+  // definition holds the saved node (version 41) since the refresh, so the copy
+  // kept in swap/replaced is the base.
+  const before = (leadEconomyBeforeSwap as unknown as { definition: Def }).definition
+  const leadEconomySavedDef = (leadEconomySaved as unknown as { definition: Def }).definition
   const constantsOf = (d: Def) => (d.nodes.find((n) => n.type === 'constants') as unknown as { config: { data: Record<string, unknown> } }).config.data
   const check = (saved: Def, previous: Def = before) => verifySavedSwap(le, v(39, previous), v(40, saved), saved)
 
-  it('starts from the live version 39, whose Constants minimum is 1000', () => {
+  it('starts from version 39, the version before the swap, whose Constants minimum is 1000', () => {
     expect(constantsOf(before).minimumLoanAmount).toBe(1000)
     expect(le.constants_data).toEqual({ minimumLoanAmount: 2000 })
+  })
+
+  // Dan saved the swap in two versions on 2026-10-22: version 40 pasted the step
+  // and version 41 set the Constants minimum. Neither alone is the whole swap, so
+  // the check compares the newest version with version 39, the last that holds
+  // the pinned script.
+  it('passes Lead Economy as Dan saved it (version 41, against version 39), with only what a paste and the minimum change as notes', () => {
+    const r = verifySavedSwap(le, v(39, before), v(41, leadEconomySavedDef), leadEconomySavedDef)
+    expect(r.problems).toEqual([])
+    expect(r.ok).toBe(true)
+    const saved = leadEconomySavedDef.nodes.find((n) => n.namespace === le.node.namespace)!
+    const notes = r.notes.join('\n')
+    expect(notes).toContain(`the step's id changed from ${le.replaces.node_id} to ${saved.id}`)
+    expect(notes).toContain('2 edges into or out of the step were made again with new ids')
+    expect(notes).toContain('the Constants step\'s minimumLoanAmount changed from 1000 to 2000, as the candidate sets')
+    expect(formatSwapVerification(r, 'Lead Economy').split('\n')[0]).toBe('Lead Economy: PASS, only the validation step and the Constants values the candidate sets changed')
+  })
+
+  it('compares the newest version with version 39 when the swap took two saves, naming the version between', () => {
+    // Version 40 as saved: the step pasted, the Constants minimum still 1000.
+    const v40 = clone(leadEconomySavedDef)
+    constantsOf(v40).minimumLoanAmount = 1000
+    const picked = pickSwapVersions(le, [v(41, leadEconomySavedDef), v(40, v40), v(39, before), v(38, before)])
+    expect(picked.kind).toBe('found')
+    if (picked.kind !== 'found') return
+    expect([picked.saved.version_number, picked.base.version_number, picked.between]).toEqual([41, 39, [40]])
+    expect(verifySavedSwap(le, picked.base, picked.saved, leadEconomySavedDef).ok).toBe(true)
+    // Version 40 alone is not the whole swap: its minimum is still 1000.
+    expect(verifySavedSwap(le, v(39, before), v(40, v40), leadEconomySavedDef).problems.join('\n')).toContain('minimumLoanAmount is 1000, not the 2000 the candidate sets')
   })
 
   it('passes the canvas swap with the Constants minimum typed in, naming that change', () => {
@@ -236,5 +270,28 @@ describe('verifySavedSwap: Lead Economy (#2594), whose save also sets Constants 
     const r = check(canvasSaveOf(le, already), already)
     expect(r.ok).toBe(true)
     expect(r.notes.join('\n')).not.toContain('Constants')
+  })
+})
+
+describe('pickSwapVersions: which versions the post save check compares (#2594)', () => {
+  it('compares a one save swap with the version right before it', () => {
+    const picked = pickSwapVersions(candidate, [v(25, savedDef), v(24, previousDef), v(23, previousDef)])
+    expect(picked).toMatchObject({ kind: 'found', between: [] })
+    if (picked.kind === 'found') expect([picked.saved.version_number, picked.base.version_number]).toEqual([25, 24])
+  })
+
+  it('says the swap is not saved yet when the newest version still holds the pinned script', () => {
+    expect(pickSwapVersions(candidate, [v(24, previousDef), v(23, previousDef)])).toMatchObject({ kind: 'not_saved' })
+  })
+
+  it('finds no base when no version read holds the pinned script, naming the versions searched', () => {
+    const edited = clone(previousDef)
+    const n = edited.nodes.find((x) => x.id === OLD) as unknown as { config: { script: string } }
+    n.config.script += '\n// edited'
+    expect(pickSwapVersions(candidate, [v(25, savedDef), v(24, edited)])).toEqual({ kind: 'no_base', saved: v(25, savedDef), searched: [24] })
+  })
+
+  it('refuses an empty list', () => {
+    expect(() => pickSwapVersions(candidate, [])).toThrow(/no versions/)
   })
 })

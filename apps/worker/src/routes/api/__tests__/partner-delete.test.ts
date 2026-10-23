@@ -25,6 +25,7 @@ import { BLOCKED_MESSAGE, DELETE_CHECK_FAILED_MESSAGE, CONSEQUENCE_CHANGED_MESSA
 import type { PartnerDeleteCheck, PartnerDeleted, PartnerDeleteRefused } from '../../../lib/partner-delete-shape'
 import labels from '../../../partner-delete/labels/dependents.json'
 import { makeSupabase } from './_supabase-mock'
+import api from '../index'
 
 const ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: ORG, email: 'dan@pennie.com' }
@@ -121,7 +122,6 @@ function setup(world: World) {
 }
 
 async function call(env: Env, method: string, path: string, body?: unknown) {
-  const { default: api } = await import('../index')
   return api.request(path, { method, headers: { Authorization: 'Bearer tok', 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) }, env, mockCtx)
 }
 

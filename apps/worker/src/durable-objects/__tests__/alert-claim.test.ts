@@ -139,7 +139,8 @@ describe('AlertClaimObject cron tick claim (#1899)', () => {
     await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'a' })
     const retry = await tick(obj, { now: NOW + TICK_LEASE_STALE_MS, scheduled_time: NOW, holder: 'b' })
     expect(retry).toMatchObject({ run: true, reason: 'retry', holder: 'a' })
-    expect(await done(obj, 'a')).toEqual({ marked: false })
+    // Kept for a's claim (#2646), which has already come and does not come again.
+    expect(await done(obj, 'a')).toEqual({ marked: false, kept: true })
     expect(await done(obj, 'b')).toEqual({ marked: true })
     const late = await tick(obj, { now: NOW + 2 * TICK_LEASE_STALE_MS, scheduled_time: NOW, holder: 'c' })
     expect(late).toMatchObject({ run: false, holder: 'b', holder_status: 'done' })
@@ -173,11 +174,60 @@ describe('AlertClaimObject cron tick claim (#1899)', () => {
     const obj = new AlertClaimObject(makeDOState().state)
     await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'a' })
     const stranger = await (await obj.fetch(req('/tick-release', { holder: 'b' }))).json<{ released: boolean }>()
-    expect(stranger).toEqual({ released: false })
+    expect(stranger).toEqual({ released: false, kept: true })
     expect(await tick(obj, { now: NOW + 1_000, scheduled_time: NOW + 36_000, holder: 'b' })).toMatchObject({ run: false })
     const own = await (await obj.fetch(req('/tick-release', { holder: 'a' }))).json<{ released: boolean }>()
     expect(own).toEqual({ released: true })
     expect(await tick(obj, { now: NOW + 2_000, scheduled_time: NOW + 36_000, holder: 'c' })).toMatchObject({ run: true, reason: 'first' })
+  })
+
+  // #2646: a delivery whose claim missed its deadline runs and closes with its
+  // holder, and its close can arrive before its claim.
+  it('applies a done that arrived before its holder claim, and schedules cleanup for the kept done alone', async () => {
+    const { state, getAlarm } = makeDOState()
+    const obj = new AlertClaimObject(state)
+    expect(await (await obj.fetch(req('/tick-done', { holder: 'late', now: NOW + 4_000 }))).json()).toEqual({ marked: false, kept: true })
+    expect(getAlarm()).toBe(NOW + 4_000 + TICK_CLAIM_KEEP_MS)
+    expect(await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'late' })).toMatchObject({ run: true, reason: 'first' })
+    const again = await tick(obj, { now: NOW + 10 * TICK_LEASE_STALE_MS, scheduled_time: NOW, holder: 'again' })
+    expect(again).toMatchObject({ run: false, holder: 'late', holder_status: 'done' })
+  })
+
+  it('applies a done that arrived before a late claim that took over a stale holder', async () => {
+    const obj = new AlertClaimObject(makeDOState().state)
+    await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'dead' })
+    await done(obj, 'late')
+    expect(await tick(obj, { now: NOW + TICK_LEASE_STALE_MS, scheduled_time: NOW, holder: 'late' })).toMatchObject({ run: true, reason: 'retry' })
+    expect(await tick(obj, { now: NOW + 10 * TICK_LEASE_STALE_MS, scheduled_time: NOW, holder: 'again' })).toMatchObject({ run: false, holder: 'late', holder_status: 'done' })
+  })
+
+  it('a release that arrived before its holder claim leaves the tick free', async () => {
+    const obj = new AlertClaimObject(makeDOState().state)
+    expect(await (await obj.fetch(req('/tick-release', { holder: 'late', now: NOW }))).json()).toEqual({ released: false, kept: true })
+    await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'late' })
+    expect(await tick(obj, { now: NOW + 1_000, scheduled_time: NOW, holder: 'next' })).toMatchObject({ run: true, reason: 'first' })
+  })
+
+  it('a kept done never makes another delivery skip when its own claim never arrives', async () => {
+    const obj = new AlertClaimObject(makeDOState().state)
+    await done(obj, 'lost')
+    expect(await tick(obj, { now: NOW + 10 * TICK_LEASE_STALE_MS, scheduled_time: NOW, holder: 'next' })).toMatchObject({ run: true, reason: 'first' })
+  })
+
+  // #2610: the never finished page reads whether Cloudflare's retry of the run took the tick and finished.
+  it('tick-read says what it holds, and when a same scheduled time retry took the tick over', async () => {
+    const obj = new AlertClaimObject(makeDOState().state)
+    const read = async () => (await obj.fetch(req('/tick-read', {}))).json()
+    expect(await read()).toEqual({ found: false })
+    await tick(obj, { now: NOW, scheduled_time: NOW, holder: 'killed' })
+    expect(await read()).toEqual({ found: true, status: 'running', scheduled_time: NOW, started_at: NOW, retried_at: null })
+    await tick(obj, { now: NOW + 99_000, scheduled_time: NOW, holder: 'retry' })
+    expect(await read()).toEqual({ found: true, status: 'running', scheduled_time: NOW, started_at: NOW + 99_000, retried_at: NOW + 99_000 })
+    await done(obj, 'retry')
+    expect(await read()).toMatchObject({ status: 'done', retried_at: NOW + 99_000 })
+    // A duplicate with another scheduled time is no retry and changes nothing.
+    await tick(obj, { now: NOW + 120_000, scheduled_time: NOW + 36_000, holder: 'twin' })
+    expect(await read()).toMatchObject({ status: 'done', retried_at: NOW + 99_000 })
   })
 
   it('answers 400 to a malformed body rather than granting on it', async () => {
