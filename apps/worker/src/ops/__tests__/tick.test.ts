@@ -818,7 +818,7 @@ describe('the frozen definition copies (#1950)', () => {
     const asked = f.definitionRequests.flatMap((r) => r.versions.map((v) => v.workflow_id))
     expect(f.definitionRequests.every((r) => r.versions.length <= MAX_DEFINITIONS_PER_REQUEST)).toBe(true)
     expect(asked).toHaveLength(DEFINITIONS_PER_TICK)
-    // WORKER_NOW is minute 29,312,342 of the epoch; the window starts there, wrapping round the list.
+    // The window starts at the tick's minute of the epoch times DEFINITIONS_PER_TICK, modulo the list's length, and wraps round it.
     const start = (Math.floor(WORKER_NOW / 60_000) * DEFINITIONS_PER_TICK) % many.length
     expect(asked[0]).toBe(many[start].workflowId)
     // The next minute asks the ones this minute did not reach.
