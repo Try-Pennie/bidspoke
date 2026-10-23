@@ -32,6 +32,10 @@ beforeAll(async () => {
 }, 120_000)
 
 const SAMPLES: Readonly<Record<string, () => Readonly<Record<string, string>>>> = {
+  anthropic: () => ({
+    workspace_id: 'wrkspc_0PS2337',
+    api_key: 'canary-ant-key-2337',
+  }),
   openai: () => ({
     project_id: 'proj_0PS2337',
     api_key: 'canary-openai-key-2337',
