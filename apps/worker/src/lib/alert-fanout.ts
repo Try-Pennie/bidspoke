@@ -141,7 +141,7 @@ export async function readEverySlackConnection(supabase: SupabaseClient, logLabe
   for (const row of rows) {
     const resolved = await resolveSlackConnection(row, keys)
     const subject = `${logLabel} slack connection for org ${row.organization_id}`
-    // Said by name either way (#2331). An org whose token nobody can read is
+    // Said by name (#2331). An org whose token nobody can read is
     // left out of this live list, as an unparseable row always was; the probe
     // keeps its entry in the saved copy and pages about it.
     if (resolved.kind === 'unreadable') console.error(slackTokenProblemLine(subject, resolved))

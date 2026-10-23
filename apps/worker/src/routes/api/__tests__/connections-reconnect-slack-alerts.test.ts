@@ -94,7 +94,7 @@ async function storeDouble(opts: { upsertError?: { code: string; message: string
         }
         return done
       },
-      // The seal's UPDATE (sealSlackTokens): eq and is filters, then select('id') answers the rows written.
+      // Any UPDATE (eq and is filters, then select('id') answers the rows written), recorded so a test can assert that a check writes none.
       update(patch: Row) {
         const where: Array<(r: Row) => boolean> = []
         const u = {
