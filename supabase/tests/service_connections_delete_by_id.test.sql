@@ -2,8 +2,8 @@
 -- (#2332, phase 2 of #1689), migration 20261018150000.
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh builds
--- by replaying every migration from empty, never production. The tokens and the
--- ciphertexts below are planted placeholders, not credentials.
+-- by replaying every migration from empty, never production. The ciphertexts
+-- below are planted placeholders, not credentials.
 --
 -- WHY: the delete it replaced, by organization and service type, deleted every
 -- row of the type that was not an ops_key row. Release 2 (20261019150000)

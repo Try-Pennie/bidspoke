@@ -2,8 +2,8 @@
 -- (#2332, phase 2 of #1689; the item from #2481).
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh builds
--- by replaying every migration from empty, never production. The token below is
--- a planted placeholder, not a credential.
+-- by replaying every migration from empty, never production. Any stored value
+-- below is a planted placeholder, not a credential.
 --
 -- WHAT IT PROVES:
 --   A. A row of either legacy value, oauth or credentials, is refused by

@@ -1,8 +1,8 @@
 -- The store level audit of service_connections (#2331, phase 1 of #1689).
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh builds
--- by replaying every migration from empty, never production. The token and the
--- ciphertext below are planted placeholders, not credentials.
+-- by replaying every migration from empty, never production. The ciphertext
+-- below is a planted placeholder, not a credential.
 --
 -- WHAT IT PROVES. One audit_log row per change, whoever made it, naming the
 -- actor the way partner_configs_audit does (#1409), so the routes write none of

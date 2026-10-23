@@ -2,8 +2,8 @@
 -- #1689): release 1, step (a), migration 20261017150000.
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh builds
--- by replaying every migration from empty, never production. The token and the
--- ciphertexts below are planted placeholders, not credentials.
+-- by replaying every migration from empty, never production. The ciphertexts
+-- below are planted placeholders, not credentials.
 --
 -- WHAT IT PROVES (as the schema stands after every migration, release 2's
 -- contract step 20261019150000 included, which dropped the old one row per
