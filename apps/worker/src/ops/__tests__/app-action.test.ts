@@ -44,8 +44,9 @@ const schema = (key: string, version: number, over: Partial<RuntimeAction> = {})
 const post = (version: number): ActionRun => async (ctx, args) => {
   const host = (ctx.target as { host: string }).host
   const res = await ctx.fetch(`https://${host}/v${version}/post`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...args, request_id: ctx.requestId }) })
-  if (res.status >= 500) throw new ActionFailure('example_failed', `the service answered ${res.status}`, 'unknown')
-  if (res.status >= 400) throw new ActionFailure('example_refused', `the service answered ${res.status}`, 'not_applied')
+  // As the catalogue's actions do, a failure quotes what the service said.
+  if (res.status >= 500) throw new ActionFailure('example_failed', `the service answered ${res.status}: ${await res.text()}`, 'unknown')
+  if (res.status >= 400) throw new ActionFailure('example_refused', `the service answered ${res.status}: ${await res.text()}`, 'not_applied')
   return { version, answer: (await res.json()) as { id: number } }
 }
 
@@ -264,6 +265,26 @@ describe('a login never reaches a stored record or a log (#1689 3.0, from Revert
       const stored = JSON.stringify({ report, outputs: w.outputs, intents: w.db.intents, results: w.db.results, completes: w.db.completes, logs: w.logs, reports: w.d.rec.reports })
       expect(stored).not.toContain(ACCESS_TOKEN)
       expect(stored).not.toContain(LOGIN_SECRET)
+    }
+  })
+
+  it('a service that echoes the login back, in its answer or its error text, hands it to neither the step output nor the run\'s end', async () => {
+    const echo = `Bearer ${ACCESS_TOKEN} for ${LOGIN_SECRET}`
+    const answers: Array<[() => Response, string]> = [
+      [() => Response.json({ id: 42, echo }), 'done'],
+      [() => new Response(`refused: ${echo}`, { status: 422 }), 'failed'],
+      [() => new Response(`upstream says ${echo}`, { status: 502 }), 'needs_human'],
+    ]
+    for (const [answer, outcome] of answers) {
+      const w = world()
+      w.d.respond(answer())
+      const report = await w.run(definition(step()))
+      expect(report, outcome).toMatchObject({ end: { outcome } })
+      const stored = JSON.stringify({ report, outputs: w.outputs, intents: w.db.intents, results: w.db.results, completes: w.db.completes, logs: w.logs })
+      expect(stored, outcome).not.toContain(ACCESS_TOKEN)
+      expect(stored, outcome).not.toContain(LOGIN_SECRET)
+      // The rest of what the service said is kept, with the login marked as removed.
+      expect(stored, outcome).toContain('[redacted] for [redacted]')
     }
   })
 })

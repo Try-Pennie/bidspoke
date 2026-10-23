@@ -38,7 +38,9 @@
  * non GET send (method, host, the attempt key), which holds no header and no
  * body, so connectionFetch is told no request is recorded. A login is applied
  * after that and never reaches the step output, the ledger, the run's end or a
- * log line (__tests__/app-action.test.ts proves it with a known token).
+ * log line, even from a service that echoes it back, since connectionFetch
+ * scrubs every answer it hands the action (__tests__/app-action.test.ts proves
+ * both with a known token).
  */
 import { readAppActionConfig, readStepArgs, type ResolvedAction } from '@bidspoke/service-catalogue/schema'
 import { ActionFailure, resolveRuntimeAction, type ActionArgs, type ActionContext, type JsonValue, type RuntimeAction } from '@bidspoke/service-catalogue/runtime'
