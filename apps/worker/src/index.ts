@@ -21,7 +21,7 @@ import { runBuyerSelectParityRefreshForEnv, BUYER_SELECT_PARITY_JOB, EVERY_ORGAN
 import { runEngineScriptDriftForEnv, ENGINE_SCRIPT_DRIFT_JOB } from './lib/engine-script-drift'
 import { sendGroupedRecoveryAlert, sendPartnerPageLiveAlert, sendTitledAlert } from './lib/slack'
 import { makeAlertClaims, raceDeadline } from './lib/alert-claim'
-import { runCronTickOnce } from './lib/cron-once'
+import { runCronTickOnce, tickRetryReader } from './lib/cron-once'
 import { runEmailDropRateCheck } from './lib/email-drop-rate'
 import { runBigTableGuard } from './lib/big-table-guard'
 import { runDrainStallCheck } from './lib/drain-stall'
@@ -1461,7 +1461,8 @@ const scheduledJobs = {
         ),
       )
       minuteJob('heartbeat-checks',
-        runHeartbeatChecks(supabase, env.IDEMPOTENCY, Date.now(), reachability.claims)
+        // The tick guard's claims say when Cloudflare retried a run that never finished (#2610).
+        runHeartbeatChecks(supabase, env.IDEMPOTENCY, Date.now(), reachability.claims, tickRetryReader(env.ALERT_CLAIM))
           .then((rs) => {
             for (const r of rs) {
               if (r.status === 'stale' || r.status === 'never_ran' || r.status === 'vanished') {
