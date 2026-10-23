@@ -51,6 +51,7 @@
     "store_rotated_envelope",
     "replace_connection_envelope",
     "remove_ops_connection",
-    "reconnect_ops_connection"
+    "reconnect_ops_connection",
+    "write_workflow"
   ]
 }

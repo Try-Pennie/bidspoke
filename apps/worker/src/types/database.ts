@@ -2902,6 +2902,7 @@ export type Database = {
           created_at: string
           created_by: string | null
           definition: Json
+          definition_report: Json | null
           definition_schema_version: number | null
           id: string
           message: string | null
@@ -2913,6 +2914,7 @@ export type Database = {
           created_at?: string
           created_by?: string | null
           definition: Json
+          definition_report?: Json | null
           definition_schema_version?: number | null
           id?: string
           message?: string | null
@@ -2924,6 +2926,7 @@ export type Database = {
           created_at?: string
           created_by?: string | null
           definition?: Json
+          definition_report?: Json | null
           definition_schema_version?: number | null
           id?: string
           message?: string | null
@@ -2960,6 +2963,7 @@ export type Database = {
           id: string
           is_active: boolean
           lane: string
+          last_save_id: string | null
           name: string
           organization_id: string
           slack_channel: string | null
@@ -2968,6 +2972,7 @@ export type Database = {
           updated_by: string | null
           updated_by_email: string | null
           updated_by_name: string | null
+          version: number
         }
         Insert: {
           capture_sightings?: boolean
@@ -2981,6 +2986,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           lane?: string
+          last_save_id?: string | null
           name: string
           organization_id: string
           slack_channel?: string | null
@@ -2989,6 +2995,7 @@ export type Database = {
           updated_by?: string | null
           updated_by_email?: string | null
           updated_by_name?: string | null
+          version?: number
         }
         Update: {
           capture_sightings?: boolean
@@ -3002,6 +3009,7 @@ export type Database = {
           id?: string
           is_active?: boolean
           lane?: string
+          last_save_id?: string | null
           name?: string
           organization_id?: string
           slack_channel?: string | null
@@ -3010,6 +3018,7 @@ export type Database = {
           updated_by?: string | null
           updated_by_email?: string | null
           updated_by_name?: string | null
+          version?: number
         }
         Relationships: [
           {
@@ -3746,6 +3755,21 @@ export type Database = {
           workflow_id: string
           workflow_name: string
         }[]
+      }
+      workflows_unversioned_columns: { Args: never; Returns: string[] }
+      write_workflow: {
+        Args: {
+          p_actor: string
+          p_actor_email: string
+          p_actor_name: string
+          p_expected_version: number
+          p_fields: Json
+          p_id: string
+          p_op: string
+          p_org: string
+          p_save_id: string
+        }
+        Returns: Json
       }
     }
     Enums: {

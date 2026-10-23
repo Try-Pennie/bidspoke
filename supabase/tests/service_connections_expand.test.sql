@@ -2,8 +2,8 @@
 -- #1689): release 1, step (a), migration 20261017150000.
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh builds
--- by replaying every migration from empty, never production. The token and the
--- ciphertexts below are planted placeholders, not credentials.
+-- by replaying every migration from empty, never production. The ciphertexts
+-- below are planted placeholders, not credentials.
 --
 -- WHAT IT PROVES (as the schema stands after every migration, release 2's
 -- contract step 20261019150000 included, which dropped the old one row per
@@ -59,7 +59,7 @@ BEGIN
   INSERT INTO public.service_connections
     (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
   VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'slack', 'bot_token', NULL,
-          '{"bot_token":"planted-bot-token-2332","default_channel":"#alerts","workspace_name":"Test"}',
+          '{"default_channel":"#alerts","workspace_name":"Test"}',
           'planted-ciphertext-2332-a', 'bidding_ring', '22222222-2222-2222-2222-22222222332a', 'sce2332@example.test')
   RETURNING id INTO alert_id;
 
@@ -68,7 +68,7 @@ BEGIN
   INSERT INTO public.service_connections
     (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for, updated_by, updated_by_email)
   VALUES ('11111111-1111-1111-1111-11111112332a', 'slack', 'slack', 'bot_token', NULL,
-          '{"bot_token":"planted-bot-token-2332","default_channel":"#alerts-3","workspace_name":"Test"}',
+          '{"default_channel":"#alerts-3","workspace_name":"Test"}',
           'planted-ciphertext-2332-c', 'bidding_ring', '22222222-2222-2222-2222-22222222332a', 'sce2332@example.test')
   ON CONFLICT (organization_id, service_type, name) DO UPDATE SET
     auth_type = EXCLUDED.auth_type, cf_secret_key = EXCLUDED.cf_secret_key, config = EXCLUDED.config,

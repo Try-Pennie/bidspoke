@@ -96,7 +96,9 @@ export async function pushWorkflowToGitHub(
   workflowId: string,
   workflowName: string,
   definition: unknown,
-  versionNumber: number,
+  // The snapshot's number, or null when the save named none: the message then
+  // names no version rather than a v0 no workflow ever has.
+  versionNumber: number | null,
   message?: string
 ): Promise<string | null> {
   // No repo configured = backup intentionally disabled; stay silent.
@@ -111,7 +113,8 @@ export async function pushWorkflowToGitHub(
   const filePath = `${WORKFLOWS_DIR}/${workflowId}.json`
   const content = JSON.stringify({ id: workflowId, name: workflowName, definition }, null, 2)
   const contentBase64 = btoa(unescape(encodeURIComponent(content)))
-  const commitMessage = message?.trim() || `chore: update workflow "${workflowName}" to v${versionNumber}`
+  const commitMessage = message?.trim()
+    || `chore: update workflow "${workflowName}"${versionNumber === null ? '' : ` to v${versionNumber}`}`
 
   async function putWithSha(sha: string | null): Promise<Response> {
     const body: Record<string, unknown> = {

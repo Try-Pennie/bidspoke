@@ -56,8 +56,12 @@ export type AccessTokenAnswer =
     }
   | TokenObjectFailure
 
-/** The generation the exchanged login is sealed under, never a token. */
-export type ExchangeAnswer = { readonly ok: true; readonly generation: number } | TokenObjectFailure
+/**
+ * The generation the exchanged login is sealed under, never a token, and the
+ * account the person signed in as when the provider's id_token named one it
+ * verified (id-token-account.ts, #2338), else null.
+ */
+export type ExchangeAnswer = { readonly ok: true; readonly generation: number; readonly account: string | null } | TokenObjectFailure
 
 export class TokenObjectContractError extends Error {
   constructor(message: string) {
@@ -259,5 +263,10 @@ export function parseExchangeAnswer(raw: unknown): ExchangeAnswer {
   if (!isRecord(raw)) throw new TokenObjectContractError('the object answered something other than an object')
   if (raw.ok === false) return parseFailure(raw)
   if (raw.ok !== true || !isWhole(raw.generation) || raw.generation < 2) throw new TokenObjectContractError('the object answered an exchange in a shape this code does not read')
-  return { ok: true, generation: raw.generation }
+  // Absent from an object of an older release: no one named, never a guess.
+  const account = raw.account ?? null
+  if (account !== null && (typeof account !== 'string' || account.length > 320 || !account.includes('@'))) {
+    throw new TokenObjectContractError('the object answered an exchange naming an account this code does not read')
+  }
+  return { ok: true, generation: raw.generation, account }
 }
