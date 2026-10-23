@@ -1,10 +1,12 @@
 /**
  * The executor registry is built from each node type's lane trait (#1707, plan
- * 0.C). The money registry runs every type; the ops registry is a filter on it
- * that holds no money executor, so the ops Worker (0.E) cannot reach partner
- * config, partner credentials or a buyer ledger through any node.
+ * 0.C). The money registry runs every type but the ops only ones (app_action,
+ * #2339, which an ops run walks in src/ops); the ops registry holds no money
+ * executor, so the ops Worker (0.E) cannot reach partner config, partner
+ * credentials or a buyer ledger through any node, and its app_action entry
+ * refuses by name, since the ops run body, not this engine, runs it.
  *
- * The money only list is written out here rather than read from the traits, so
+ * The money only and ops only lists are written out here rather than read from the traits, so
  * a trait flipped by mistake turns this red instead of agreeing with itself
  * (L70, L721).
  */
