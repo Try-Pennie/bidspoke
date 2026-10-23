@@ -258,11 +258,11 @@ jobs:
   # with it on any pull request that did not match.
   #
   # And a workflow that does not run reports no check at all, which is a
-  # different thing from a check that passes. This repo has no server-side
-  # required checks today (#266 stays open on the plan), so that is latent rather
-  # than active, which is exactly why it is written here: the cost only appears
-  # if the plan is ever upgraded, and it appears as a merge button that never
-  # unblocks, with nothing pointing at the filter that caused it.
+  # different thing from a check that passes. Since 2026-10-23 the main ruleset
+  # requires CI passed (#2749), so this is live: a filter that stopped ci.yml
+  # starting would leave CI passed unreported, and the pull request would show a
+  # merge button that never unblocks, with nothing pointing at the filter that
+  # caused it.
   #
   # So the thirty seconds is deliberate, and it is the smaller cost. The
   # expensive steps are already scoped (#968).
@@ -787,7 +787,7 @@ jobs:
           DECISION=$(bash .github/scripts/main-push-decision.sh "$SHA" "$ASSOC" "$MERGE_SHA_PRS" "$LOOKUPS_OK")
 
           if [ "$DECISION" = "violation" ]; then
-            echo "::error::Commit ${SHA} was pushed directly to main, so it skipped CI gating and review. Open a pull request instead; server-side enforcement is tracked in #266."
+            echo "::error::Commit ${SHA} was pushed directly to main, so it skipped CI gating and review. Open a pull request instead. The main ruleset refuses direct pushes (#2749), so this one came through a ruleset bypass or with the ruleset switched off."
             exit 1
           fi
           echo "OK: this commit reached main through a pull request."

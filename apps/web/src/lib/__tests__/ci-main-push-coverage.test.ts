@@ -156,10 +156,10 @@ describe('ci.yml reports a check on every pull request (#894)', () => {
    * one to ci.yml to spare the a11y job would take the security scan, the
    * db-types check, lint, typecheck and both test jobs down with it on any pull
    * request that did not match, and a workflow that does not run reports no
-   * check at all. This repo has no server-side required checks today (#266), so
-   * that is currently a latent rather than an active hazard, which is precisely
-   * why it needs to be written down: the cost of the mistake is invisible until
-   * the plan is upgraded and then it is a merge button that never unblocks.
+   * check at all. Since 2026-10-23 the main ruleset requires CI passed (#2749),
+   * so the hazard is live: a filter that stopped ci.yml starting would leave CI
+   * passed unreported, and the pull request would show a merge button that
+   * never unblocks.
    *
    * The cost being avoided is about thirty seconds of runner time on a backend
    * pull request, now that the expensive steps are scoped (#968). That is a real
