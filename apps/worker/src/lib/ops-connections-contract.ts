@@ -66,6 +66,28 @@ export type OpsConnectionsCoreMethod = Exclude<OpsConnectionsMethod, OpsDelegati
 export const DELEGATION_LIST_LIMIT = 1000
 
 /**
+ * The sign in method (#2338, build PR 13; R17): the client id of the sign in
+ * app the ops Worker holds for a service (connections/oauth-apps.ts), which the
+ * bidding Worker's Sign in with Google link names. The app's secret never
+ * leaves ops (Dan's decision of 2026-10-22), and the id is read from the same
+ * secret the exchange sends with it, so the two cannot disagree.
+ *
+ * Kept apart from OPS_CONNECTIONS_METHODS on purpose, as the Google list's
+ * methods were in build PR 2: CI's deployed ops check requires the LIVE ops
+ * Worker to export every method on that list, on every pull request that
+ * touches ops, so the pull request adding this one cannot also require it of
+ * the deploy it precedes. The bidding routes that call it move it onto that
+ * list once the ops deploy carries it.
+ */
+export const OPS_SIGN_IN_METHODS = ['signInClient'] as const
+export type OpsSignInMethod = (typeof OPS_SIGN_IN_METHODS)[number]
+
+/** Reading one secret of the Worker's own: no database, no network. */
+export const OPS_SIGN_IN_CEILINGS_MS: Readonly<Record<OpsSignInMethod, number>> = {
+  signInClient: 5_000,
+}
+
+/**
  * How long the entrypoint lets each method run before it answers
  * ops_connections_timeout and aborts the request it was making. The bidding
  * Worker's own per method deadline (PR 9) must be longer than these, so ops
@@ -178,6 +200,12 @@ export const OPS_CONNECTIONS_REFUSAL_CODES = [
   'delegation_change_failed',
   /** The list could not be read. */
   'delegation_list_unavailable',
+  /** The ops Worker holds no sign in app for the service (its secret, named in the detail, is unset): nobody can sign in yet (#2338). */
+  'sign_in_app_unset',
+  /** The ops Worker's sign in app is not a web client's JSON it can read (the secret is named in the detail, never what it holds). */
+  'sign_in_app_malformed',
+  /** The service has no person bound sign in on this Worker. */
+  'sign_in_not_offered',
 ] as const
 export type OpsConnectionsOwnRefusal = (typeof OPS_CONNECTIONS_REFUSAL_CODES)[number]
 export type OpsConnectionsRefusalCode = OpsConnectionsOwnRefusal | ConnectionRefusalCode | SchemaLookupCode
@@ -272,7 +300,13 @@ export interface HealthRow {
 }
 export type HealthAnswer = { ok: true; connections: HealthRow[]; reached_limit: boolean } | OpsConnectionsRefused
 export type LookupAnswer = { ok: true; answer: SchemaLookupAnswer } | OpsConnectionsRefused
-export type ExchangeOAuthCodeAnswer = { ok: true; generation: number } | OpsConnectionsRefused
+/**
+ * The generation the consent's login is sealed under, whom the person signed in
+ * as where the provider said (#2338), else null, and whether needs_reauth was
+ * cleared: a consent is a person bound login's Reconnect, and false means the
+ * login is stored and the clearing could not be written.
+ */
+export type ExchangeOAuthCodeAnswer = { ok: true; generation: number; account: string | null; reauth_cleared: boolean } | OpsConnectionsRefused
 
 /**
  * The bidding Worker's OPS_CONNECTIONS binding (wrangler.toml, PR 9) to this
@@ -464,6 +498,24 @@ export function parseRemoveDelegationSubjectRequest(raw: unknown): RemoveDelegat
 
 export function parseListDelegationSubjectsRequest(raw: unknown): ListDelegationSubjectsRequest {
   return { organization_id: uuidField(record(raw), 'organization_id') }
+}
+
+// ── the sign in app (#2338, build PR 13) ────────────────────────────────────
+
+export interface SignInClientRequest {
+  organization_id: string
+  /** The service the person signs in to, by its catalogue key. */
+  service: string
+}
+
+/** The app's client id: public, the id the authorize link names. Never its secret. */
+export type SignInClientAnswer = { ok: true; service: string; client_id: string } | OpsConnectionsRefused
+
+export function parseSignInClientRequest(raw: unknown): SignInClientRequest {
+  const r = record(raw)
+  const organization_id = uuidField(r, 'organization_id')
+  if (typeof r.service !== 'string' || !SERVICE_KEY.test(r.service)) throw new OpsConnectionsContractError('the request\'s service is not a service key')
+  return { organization_id, service: r.service }
 }
 
 export function parseExchangeOAuthCodeRequest(raw: unknown): ExchangeOAuthCodeRequest {

@@ -28,6 +28,7 @@ import {
 } from '../connection-token-object'
 import type { AccessTokenAnswer, ExchangeAnswer, WriteBackStateAnswer } from '../connections/token-object-contract'
 import { KID, makeKeys, ORG, type TestKeys } from '../connections/__tests__/harness'
+import type { OAuthAppRead } from '../connections/oauth-apps'
 import type { OpsEnv } from '../index'
 
 const opsEnv = env as unknown as OpsEnv
@@ -77,10 +78,14 @@ interface TokenCall { grant: string | null; refresh: string | null; code: string
  */
 function tokenEndpoint(...answers: Array<(init?: RequestInit) => Response | Promise<Response>>) {
   const calls: TokenCall[] = []
+  // Every request body whole, for the tests of what client a request names (#2338).
+  const bodies: URLSearchParams[] = []
   return {
     calls,
+    bodies,
     fetch: async (_url: string, init?: RequestInit): Promise<Response> => {
       const body = new URLSearchParams(String(init?.body ?? ''))
+      bodies.push(body)
       calls.push({ grant: body.get('grant_type'), refresh: body.get('refresh_token'), code: body.get('code') })
       const answer = answers.length > 1 ? answers.shift()! : answers[0]
       return answer(init)
@@ -127,12 +132,19 @@ function gateway(...answers: Array<StoreRotatedEnvelopeAnswer | Error | ((reques
 }
 
 /** Points the object at the doubles and the future clock. Run again after an eviction: fields do not survive one. */
-async function wire(stub: DurableObjectStub<ConnectionTokenObject>, opts: { endpoint: ReturnType<typeof tokenEndpoint>; gw?: ReturnType<typeof gateway>; now?: () => number }) {
+async function wire(
+  stub: DurableObjectStub<ConnectionTokenObject>, opts: { endpoint: ReturnType<typeof tokenEndpoint>; gw?: ReturnType<typeof gateway>; now?: () => number; app?: OAuthAppRead },
+) {
   await runInDurableObject(stub, (o: ConnectionTokenObject) => {
     o.clock = opts.now ?? (() => T)
     o.fetchToken = opts.endpoint.fetch
     o.sealKeys = () => ({ privateKeys: keys.privateKeys, publicKeys: keys.publicKeys, kid: KID })
     o.gateway = () => opts.gw?.binding
+    // Left as the env's own read unless a test names the app (#2338).
+    if (opts.app) {
+      const app = opts.app
+      o.oauthApp = () => app
+    }
   })
 }
 
@@ -451,7 +463,7 @@ describe('exchangeOAuthCode inside the object', () => {
     // The row holds the app's login alone, at generation 1, before the consent.
     const app = await sealFor(conn, 1, APP)
     const answer: ExchangeAnswer = await stub.exchange(exchange(conn, 1, app))
-    expect(answer).toEqual({ ok: true, generation: 2 })
+    expect(answer).toEqual({ ok: true, generation: 2, account: null })
     expect(JSON.stringify(answer)).not.toContain('access-from-consent')
     expect(endpoint.calls).toEqual([{ grant: 'authorization_code', refresh: null, code: 'auth-code-2335' }])
     const kept = (await stored(stub))!
@@ -478,7 +490,7 @@ describe('exchangeOAuthCode inside the object', () => {
     release()
     ok(await refreshing)
     // The refresh stored generation 2, so the consent, read after it, takes 3: never the same generation twice.
-    expect(await consent).toEqual({ ok: true, generation: 3 })
+    expect(await consent).toEqual({ ok: true, generation: 3, account: null })
     expect(endpoint.calls.map((c) => c.grant)).toEqual(['refresh_token', 'authorization_code'])
     const kept = (await stored(stub))!
     expect(kept).toMatchObject({ generation: 3, committedGeneration: 1, writeBack: 'pending' })
@@ -563,7 +575,7 @@ describe('when the write back went pending (#2340, phase 10 item 4), and the tic
       organizationId: ORG, connectionId: conn, service: SERVICE, generation: 1, envelope: await sealFor(conn, 1, APP), tokenUrl: TOKEN_URL,
       code: 'auth-code-2340', verifier: 'v'.repeat(43), redirectUri: 'https://bidspoke.trypennie.dev/oauth/callback',
     })
-    expect(answer).toEqual({ ok: true, generation: 2 })
+    expect(answer).toEqual({ ok: true, generation: 2, account: null })
     expect((await stored(stub))!).toMatchObject({ v: 2, writeBack: 'pending', pendingSince: T + 3 * 60_000 })
   })
 
@@ -619,5 +631,84 @@ describe('when the write back went pending (#2340, phase 10 item 4), and the tic
       await state.storage.put('login', { v: 3, organizationId: ORG, connectionId: conn, service: SERVICE, writeBack: 'landed' })
     })
     expect(await stub.writeBackState(ask(conn))).toEqual<WriteBackStateAnswer>({ ok: false, reason: 'failed' })
+  })
+})
+
+describe('the sign in app\'s secret lives only on the ops Worker (#2338, Dan\'s decision of 2026-10-22)', () => {
+  const GOOGLE = 'google'
+  const GOOGLE_TOKEN = 'https://oauth2.googleapis.com/token'
+  const CLIENT_ID = '1234-sign-in.apps.googleusercontent.com'
+  const APP_SECRET = 'GOCSPX-ops-app-secret-2338'
+  const HELD: OAuthAppRead = { kind: 'app', clientId: CLIENT_ID, clientSecret: APP_SECRET }
+  const b64url = (value: unknown) => btoa(JSON.stringify(value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+  const idToken = (aud: string) => `${b64url({ alg: 'RS256' })}.${b64url({ aud, email: 'Dan@TryPennie.com', email_verified: true })}.c2ln`
+
+  async function sealGoogle(conn: string, generation: number, login: Record<string, unknown>): Promise<SealedEnvelope> {
+    return seal(keys.publicKeys, JSON.stringify(login), { organization_id: ORG, connection_id: conn, service: GOOGLE, generation, kid: KID })
+  }
+  function consent(conn: string, envelope: SealedEnvelope) {
+    return {
+      organizationId: ORG, connectionId: conn, service: GOOGLE, generation: 1, envelope, tokenUrl: GOOGLE_TOKEN,
+      code: 'auth-code-2338', verifier: 'v'.repeat(43), redirectUri: 'https://bidspoke.trypennie.dev/connections/google',
+    }
+  }
+  const signedIn = (aud = CLIENT_ID) => () => Response.json({ access_token: 'access-2338', expires_in: 3599, refresh_token: R1, id_token: idToken(aud), token_type: 'Bearer' })
+
+  it('a consent names the login\'s client id with the app\'s secret from ops, stores no secret, and answers whom it signed in as', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    const endpoint = tokenEndpoint(signedIn())
+    await wire(stub, { endpoint, app: HELD })
+    // The login bidding sealed holds the app's client id alone (the decision): never its secret.
+    const answer = await stub.exchange(consent(conn, await sealGoogle(conn, 1, { client_id: CLIENT_ID })))
+    expect(answer).toEqual({ ok: true, generation: 2, account: 'dan@trypennie.com' })
+    expect(endpoint.bodies[0].get('client_id')).toBe(CLIENT_ID)
+    expect(endpoint.bodies[0].get('client_secret')).toBe(APP_SECRET)
+    const kept = (await stored(stub))!
+    const opened = JSON.parse(await open(keys.privateKeys, kept.envelope, { organization_id: ORG, connection_id: conn, service: GOOGLE, generation: 2, kid: KID })) as Record<string, unknown>
+    expect(opened).toEqual({ client_id: CLIENT_ID, refresh_token: R1 })
+    expect(JSON.stringify(answer)).not.toContain(APP_SECRET)
+  })
+
+  it('an id_token issued for another client names no one', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    await wire(stub, { endpoint: tokenEndpoint(signedIn('another-client')), app: HELD })
+    expect(await stub.exchange(consent(conn, await sealGoogle(conn, 1, { client_id: CLIENT_ID })))).toEqual({ ok: true, generation: 2, account: null })
+  })
+
+  it('every refresh names the app\'s secret from ops too', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    const endpoint = tokenEndpoint(tokens('access-refreshed'))
+    await wire(stub, { endpoint, app: HELD })
+    const login = await sealGoogle(conn, 1, { client_id: CLIENT_ID, refresh_token: R1 })
+    ok(await stub.accessToken({ organizationId: ORG, connectionId: conn, service: GOOGLE, generation: 1, envelope: login, tokenUrl: GOOGLE_TOKEN, rejectedTokenId: null }))
+    expect(endpoint.bodies[0].get('grant_type')).toBe('refresh_token')
+    expect(endpoint.bodies[0].get('client_secret')).toBe(APP_SECRET)
+  })
+
+  it.each([
+    ['the app is not set on ops', { kind: 'unset', secret: 'GOOGLE_OAUTH_CLIENT' } as OAuthAppRead, { client_id: CLIENT_ID }, 'not_allowed', 'oauth_app_unset'],
+    ['the app on ops cannot be read', { kind: 'malformed', secret: 'GOOGLE_OAUTH_CLIENT' } as OAuthAppRead, { client_id: CLIENT_ID }, 'not_allowed', 'oauth_app_malformed'],
+    ['the login was issued to another app', HELD, { client_id: 'an-older-app' }, 'refused', 'client_id_mismatch'],
+    ['the login carries a secret of its own', HELD, { client_id: CLIENT_ID, client_secret: 'sealed-by-bidding' }, 'refused', 'login_malformed'],
+  ] as const)('when %s, the consent is refused by name, nothing is sent and nothing stored', async (_what, app, login, kind, reason) => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    const endpoint = tokenEndpoint(signedIn())
+    await wire(stub, { endpoint, app })
+    expect(await stub.exchange(consent(conn, await sealGoogle(conn, 1, login)))).toEqual({ ok: false, kind, reason, retryAtMs: null })
+    expect(endpoint.calls).toEqual([])
+    expect(await stored(stub)).toBeUndefined()
+  })
+
+  it('reads the app from the ops Worker\'s own GOOGLE_OAUTH_CLIENT, which this test env does not set: refused, nothing sent', async () => {
+    const conn = connection()
+    const stub = stubFor(conn)
+    const endpoint = tokenEndpoint(signedIn())
+    await wire(stub, { endpoint })
+    expect(await stub.exchange(consent(conn, await sealGoogle(conn, 1, { client_id: CLIENT_ID })))).toEqual({ ok: false, kind: 'not_allowed', reason: 'oauth_app_unset', retryAtMs: null })
+    expect(endpoint.calls).toEqual([])
   })
 })

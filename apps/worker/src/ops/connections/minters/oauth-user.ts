@@ -59,6 +59,17 @@ export interface OAuthUserService {
   tokenUrl(target: unknown): string
   /** The service's declared expiry signal. */
   expired(response: Response): boolean | Promise<boolean>
+  /**
+   * Whether a target is a person bound login of this service, for a service
+   * that also signs in another way (Google: a company mailbox through
+   * delegation, or a person's own account, #2338). Absent: every target is.
+   */
+  covers?(target: unknown): boolean
+}
+
+/** Whether the service signs this target in as a person (OAuthUserService.covers). */
+export function isPersonBoundTarget(service: OAuthUserService, target: unknown): boolean {
+  return service.covers === undefined ? true : service.covers(target)
 }
 
 /** One connection's ConnectionTokenObject, as this module reaches it. */
@@ -88,6 +99,28 @@ export interface OAuthUserDeps {
   tokens: TokenObjects
   /** Epoch ms, for the memo (L524: injected). */
   now(): number
+  /**
+   * The memo and the object's id for each token handed out, kept together for
+   * the isolate's life by a registry that builds its entry per request (Google,
+   * services.ts, #2338). Absent: this auth keeps its own.
+   */
+  cache?: OAuthUserCache
+}
+
+/**
+ * What an auth remembers between calls: the per isolate token memo, and the
+ * object's id for each token it handed out, so a renewal names the rejected
+ * one. The two live and die together: a token from the memo whose id was
+ * forgotten could not be named, and the object would hand the rejected token
+ * back.
+ */
+export interface OAuthUserCache {
+  readonly memo: TokenMemo<Authorization>
+  readonly tokenIds: WeakMap<Authorization, string>
+}
+
+export function oauthUserCache(deps: Pick<OAuthUserDeps, 'now'>): OAuthUserCache {
+  return { memo: new TokenMemo<Authorization>({ now: () => deps.now(), reuseMarginMs: OAUTH_USER_REUSE_MARGIN_MS }), tokenIds: new WeakMap() }
 }
 
 function tokenUrlOf(service: OAuthUserService, target: unknown): string {
@@ -101,9 +134,8 @@ function mintErrorOf(failure: TokenObjectFailure): LoginMintError {
 }
 
 export function oauthUserAuth(deps: OAuthUserDeps, service: OAuthUserService): MinterRules {
-  const memo = new TokenMemo<Authorization>({ now: () => deps.now(), reuseMarginMs: OAUTH_USER_REUSE_MARGIN_MS })
   // The object's id for each token this isolate handed out, so a renewal names the rejected one without carrying it.
-  const tokenIds = new WeakMap<Authorization, string>()
+  const { memo, tokenIds } = deps.cache ?? oauthUserCache(deps)
   return {
     expired: (response) => service.expired(response),
     authorize: async (input: AuthorizeInput): Promise<Authorization> => {
@@ -176,10 +208,13 @@ function invalid(detail: string): ConnectionRefusal {
 /**
  * A person's consent exchanged for the connection's first refresh token, kept
  * by its ConnectionTokenObject and handed back to the declared home by alarm.
- * Answers the generation the new login is sealed under, never a token. Throws a
- * ConnectionRefusal by name, built from names alone (F120).
+ * Answers the generation the new login is sealed under and the account the
+ * person signed in as where the provider named one (#2338), never a token.
+ * Throws a ConnectionRefusal by name, built from names alone (F120).
  */
-export async function exchangeOAuthCode(deps: ExchangeOAuthCodeDeps, service: OAuthUserService, call: ExchangeOAuthCodeCall): Promise<{ generation: number }> {
+export async function exchangeOAuthCode(
+  deps: ExchangeOAuthCodeDeps, service: OAuthUserService, call: ExchangeOAuthCodeCall,
+): Promise<{ generation: number; account: string | null }> {
   try {
     organizationIdFrom(call.organizationId)
   } catch {
@@ -189,6 +224,9 @@ export async function exchangeOAuthCode(deps: ExchangeOAuthCodeDeps, service: OA
   if (typeof call.code !== 'string' || call.code === '' || call.code.length > 4096) throw invalid('the authorization code is missing')
   if (typeof call.verifier !== 'string' || call.verifier.length < 43 || call.verifier.length > 128) throw invalid('the PKCE verifier is not 43 to 128 characters')
   if (!isTokenUrl(call.redirectUri)) throw invalid('the redirect URI is not an https URL')
+  if (!isPersonBoundTarget(service, call.candidate.target)) {
+    throw new ConnectionRefusal('connection_target_invalid', `the ${call.candidate.service} candidate's target is not a login signed in as a person`)
+  }
 
   await checkCandidate(deps.readCopy, call.organizationId, call.connectionId, call.candidate)
 
@@ -228,5 +266,5 @@ export async function exchangeOAuthCode(deps: ExchangeOAuthCodeDeps, service: OA
       answer.retryAtMs === null ? null : new Date(answer.retryAtMs),
     )
   }
-  return { generation: answer.generation }
+  return { generation: answer.generation, account: answer.account }
 }

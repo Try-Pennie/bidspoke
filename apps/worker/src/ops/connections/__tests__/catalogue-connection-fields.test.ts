@@ -40,6 +40,8 @@ const opsServiceEntry = (service: string) => opsServiceRegistry({
   google: {
     checkDelegation: async () => 'allowed',
     serviceAccountKey: () => JSON.stringify({ type: 'service_account', client_email: 'bidspoke-ops@ops.iam.gserviceaccount.com', private_key: pem, token_uri: 'https://oauth2.googleapis.com/token' }),
+    // A company mailbox's form (the catalogue's fields) never reaches a person's token object.
+    tokens: { get: () => { throw new Error('a catalogue form login never asks a token object') } },
   },
 })(service)
 

@@ -62,7 +62,7 @@ export const CREATE_ROUTE_REFUSAL_CODES = [
 ] as const
 export type CreateRouteRefusalCode = (typeof CREATE_ROUTE_REFUSAL_CODES)[number]
 
-/** OpsConnections refusals only another method answers: the Google list's, the lookups', health's, revoke's and the Reconnect's clearing. */
+/** OpsConnections refusals only another method answers: the Google list's, the lookups', health's, revoke's, the Reconnect's clearing and signInClient's. */
 export const NOT_VERIFY_REFUSALS = [
   'reauth_clear_unrecorded',
   'revoke_unrecorded',
@@ -76,6 +76,10 @@ export const NOT_VERIFY_REFUSALS = [
   'delegation_subject_not_listed',
   'delegation_change_failed',
   'delegation_list_unavailable',
+  // signInClient's (#2338, build PR 13): the sign in route words them itself.
+  'sign_in_app_unset',
+  'sign_in_app_malformed',
+  'sign_in_not_offered',
 ] as const satisfies readonly OpsConnectionsOwnRefusal[]
 
 export type VerifyRefusalCode =

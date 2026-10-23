@@ -169,12 +169,15 @@ describe('REST API — org scoping', () => {
   // PostgREST calls that a success, and this route used to pass it straight
   // through as 200 {ok:true}: a caller could not tell a delete that worked from
   // one that silently touched nothing in a workflow it does not own (#588).
+  // Every workflow write goes through write_workflow (#1947), which finds the
+  // row among the caller's organization's only and answers workflow_not_found
+  // for any other (supabase/tests/write_workflow.test.sql E).
   it('DELETE /:id: returns 404 when the workflow belongs to a different org', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: { writeRows: [] },
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase(
+        { users: { single: testUser } },
+        { rpc: async () => ({ data: null, error: { code: 'P0002', message: 'workflow_not_found' } }) },
+      ) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'DELETE', '/workflows/wf-other', { auth: 'Bearer tok' })
     expect(res.status).toBe(404)
@@ -182,14 +185,12 @@ describe('REST API — org scoping', () => {
   })
 
   it('DELETE /:id: scopes the soft delete to the caller org', async () => {
-    const supabase = makeSupabase({ users: { single: testUser }, workflows: { writeRows: [{ id: 'wf-1' }] } })
+    const rpc = vi.fn(async (name: string) => (name === 'write_workflow' ? { data: { workflow: { id: 'wf-1' } }, error: null } : { data: null, error: null }))
+    const supabase = makeSupabase({ users: { single: testUser } }, { rpc })
     vi.mocked(createSupabaseClient).mockReturnValue(supabase as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'DELETE', '/workflows/wf-1', { auth: 'Bearer tok' })
     expect(res.status).toBe(200)
-    expect(supabase.eqCalls['workflows']).toEqual([
-      ['id', 'wf-1'],
-      ['organization_id', USER_ORG],
-    ])
+    expect(rpc).toHaveBeenCalledWith('write_workflow', expect.objectContaining({ p_op: 'delete', p_id: 'wf-1', p_org: USER_ORG }))
   })
 
   it('GET /:id/versions — returns 404 when workflow belongs to a different org', async () => {
@@ -259,10 +260,10 @@ describe('REST API — happy path', () => {
   it('POST /workflows — returns 201 with created workflow', async () => {
     const created = { id: 'wf-new', name: 'New Workflow', organization_id: USER_ORG }
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: { insertResult: created },
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase(
+        { users: { single: testUser } },
+        { rpc: async (name: string) => (name === 'write_workflow' ? { data: { workflow: created }, error: null } : { data: [], error: null }) },
+      ) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/workflows', {
       auth: 'Bearer tok',

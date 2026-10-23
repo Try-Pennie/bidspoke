@@ -12,6 +12,10 @@
  * the one exemption, by its reason: it makes a new row whose id the database
  * mints, so no copy of that id can exist yet. A write outside any route handler
  * fails too, because no request is there to refresh the copy.
+ *
+ * Since #1947 a route writes through writeWorkflow (lib/write-workflow.ts),
+ * so each writeWorkflow call is a write too: create and duplicate make a new
+ * row, as an insert does, and every other op changes an existing one.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -29,9 +33,17 @@ function chainAfter(src: string, start: number): string[] {
   return chainCallsAfter(src, start).map((call) => call.name)
 }
 
-/** Every chain on `.from('workflows')` that writes, in source with comments blanked. */
+/** A writeWorkflow call and its op, the first key of the call it is sent (#1947). */
+const WRITE_WORKFLOW = /\bwriteWorkflow\s*\(\s*\w+\s*,\s*\{\s*op\s*:\s*(['"`])(\w+)\1/g
+/** The ops that make a new row, whose id no copy can hold yet. */
+const NEW_ROW_OPS = new Set(['create', 'duplicate'])
+
+/** Every chain on `.from('workflows')` that writes, and every writeWorkflow call, in source with comments blanked. */
 function workflowWrites(file: string, src: string): Write[] {
   const writes: Write[] = []
+  for (const m of src.matchAll(WRITE_WORKFLOW)) {
+    writes.push({ file, at: m.index ?? 0, methods: [NEW_ROW_OPS.has(m[2]) ? 'insert' : 'update'] })
+  }
   for (const m of src.matchAll(/\.from\(\s*(['"`])workflows\1\s*\)/g)) {
     const methods = chainAfter(src, (m.index ?? 0) + m[0].length)
     if (methods.some((name) => WRITE_METHODS.has(name))) writes.push({ file, at: m.index ?? 0, methods })
@@ -127,6 +139,11 @@ describe('the scanner', () => {
   it('reads a write through a multi line chain whose arguments hold parentheses and strings', () => {
     const src = blanked(`x.put('/:id', async (c) => {\n  await supabase\n    .from('workflows')\n    .update({ at: new Date().toISOString(), note: ')' })\n    .eq('id', id)\n})\n`)
     expect(workflowWrites('f.ts', src)[0].methods).toEqual(['update', 'eq'])
+  })
+
+  it('reads a writeWorkflow call as a write: a new row for create and duplicate, an existing one for every other op (#1947)', () => {
+    const src = blanked(`x.put('/:id', async (c) => {\n  await writeWorkflow(supabase, {\n    op: 'save',\n  })\n  await writeWorkflow(supabase, { op: 'create' })\n})\n`)
+    expect(workflowWrites('f.ts', src).map((w) => w.methods)).toEqual([['update'], ['insert']])
   })
 
   it('does not count a read, or a write to another table, as a workflows write', () => {
