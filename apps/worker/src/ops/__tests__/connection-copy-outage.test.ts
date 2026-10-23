@@ -65,6 +65,9 @@ function opsDb() {
     expireRuns: async () => { throw new Error('not claimed') },
     purgeTombstones: async () => { throw new Error('not claimed') },
     purgeObservations: async () => { throw new Error('not claimed') },
+    // Every version held: this test is about the connection copies.
+    missingDefinitions: async () => ({ missing: [], reachedLimit: false }),
+    saveDefinition: async () => { throw new Error('nothing is missing') },
     // Unclaimed (TICK_SF_LEASE_SWEEP), so it runs every tick: nothing has lapsed here.
     sweepSfLeases: async () => ({ swept: 0, more: false }),
     queueDisagreements: async () => [],
@@ -124,6 +127,7 @@ function ports(db: OpsTickDb, fetchConnections: () => Promise<unknown>): OpsTick
     gateway: {
       fetchWorkflows: async () => ({ served_at: new Date(clock.value).toISOString(), complete: true, workflows: [] }),
       fetchConnections,
+      fetchDefinitions: async () => { throw new Error('nothing is missing') },
       started: async () => {},
       completed: async () => {},
       jobStarted: async () => {},
