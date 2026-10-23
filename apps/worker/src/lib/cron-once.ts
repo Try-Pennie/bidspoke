@@ -41,7 +41,7 @@
  * failed six times in a row, 09:00:12 to 09:00:37). A delivery with a different
  * scheduled time is always a duplicate, whatever the lease.
  */
-import type { TickClaimResult } from '../durable-objects/alert-claim'
+import type { TickClaimResult, TickReadResult } from '../durable-objects/alert-claim'
 import { TICK_LEASE_RENEW_MS, TICK_LEASE_STALE_MS } from '../durable-objects/alert-claim'
 import { raceDeadline } from './alert-claim'
 import { formatErr } from './format-error'
@@ -298,6 +298,68 @@ function startRenewing(
   }
   stop = (options.every ?? everyInterval)(() => { if (!stopped) void renew() }, TICK_LEASE_RENEW_MS)
   return halt
+}
+
+/**
+ * How long the never finished page waits to learn whether a run was retried
+ * (#2610). The answer is a line of context, so the page never waits long for it:
+ * the alert claim's deadline, well above the object's own handling time (26 ms
+ * median, 755 ms the slowest in 7 days, measured 2026-10-17).
+ */
+export const TICK_READ_DEADLINE_MS = 2_000
+
+/** Cloudflare's retry of a stopped run, as the run's own claim records it (#2610). */
+export interface TickRetry {
+  /** When the retry took the tick over from the run that had stopped renewing. */
+  retriedAtMs: number
+  /** The retry closed the tick: its jobs all settled. */
+  finished: boolean
+}
+
+/** Reads the retry of one run, by its cron and scheduled time; null whenever it cannot say. */
+export type TickRetryReader = (cron: string, scheduledMs: number) => Promise<TickRetry | null>
+
+/**
+ * Reads, from a run's tick claim, whether a same scheduled time delivery took the
+ * tick over and whether that retry finished (#2610). Every way of not knowing
+ * answers null, logged when it is a failure: no binding, no answer in time, a
+ * throw, an error status, a shape it does not know, no tick held (the alarm
+ * deletes it an hour on), or no retry. Null means say nothing, so the page never
+ * states something the read did not establish, and never waits more than
+ * TICK_READ_DEADLINE_MS for it.
+ */
+export function tickRetryReader(
+  ns: DurableObjectNamespace | undefined,
+  options: { deadlineMs?: number; delay?: (ms: number) => Promise<void> } = {},
+): TickRetryReader {
+  const deadlineMs = options.deadlineMs ?? TICK_READ_DEADLINE_MS
+  return async (cron, scheduledMs) => {
+    if (!ns) return null
+    const key = cronTickKey(cron, scheduledMs)
+    const outcome = await raceDeadline(async () => {
+      const res = await ns.get(ns.idFromName(key)).fetch('https://do/tick-read', { method: 'POST', body: '{}' })
+      if (!res.ok) throw new Error(`claim object answered ${res.status}`)
+      return res.json<TickReadResult>()
+    }, deadlineMs, options.delay)
+    if (outcome.kind === 'timed_out') {
+      console.error(`[cron-once] could not read ${key} inside ${deadlineMs}ms; the page says nothing about a retry`)
+      return null
+    }
+    if (outcome.kind === 'threw') {
+      console.error(`[cron-once] could not read ${key}: ${formatErr(outcome.error)}; the page says nothing about a retry`)
+      return null
+    }
+    const tick = outcome.value
+    if (tick?.found === false) return null
+    const known = tick?.found === true && (tick.status === 'running' || tick.status === 'done') &&
+      (tick.retried_at === null || (typeof tick.retried_at === 'number' && Number.isFinite(tick.retried_at)))
+    if (!known) {
+      console.error(`[cron-once] could not read ${key}: the object answered a shape this does not know; the page says nothing about a retry`)
+      return null
+    }
+    if (tick.retried_at === null) return null
+    return { retriedAtMs: tick.retried_at, finished: tick.status === 'done' }
+  }
 }
 
 /** Closes the tick as `done`, or frees it with `release`, for this holder only. */

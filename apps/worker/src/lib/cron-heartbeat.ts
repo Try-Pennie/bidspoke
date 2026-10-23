@@ -71,6 +71,7 @@ import { releaseClaimQuietly, type AlertClaims } from './alert-claim'
 import { reportRecordError, writeIncidentEvent, type IncidentContext } from './incident-outbox'
 import type { IncidentEndReason } from './incident-signals'
 import { formatErr } from './format-error'
+import type { TickRetry, TickRetryReader } from './cron-once'
 
 /** The incident record's signal for this check (incident-signals.ts). */
 export const CRON_HEARTBEAT_SIGNAL = 'cron-heartbeat'
@@ -1174,6 +1175,32 @@ async function darkPageOf(kv: KVNamespace, check: JobCheck, nowMs: number): Prom
   }
 }
 
+/**
+ * Cloudflare's retry of the run a never finished page is about (#2610), read from
+ * the tick guard's claim for the run's cron and scheduled minute. Null, and so
+ * nothing said, for a minute job (judged on a drought, with no one run), another
+ * Worker's cron (its ticks are not claimed here), a read that fails, or a retry
+ * that took the tick before this run began: then this run is that retry, or
+ * later, and "Cloudflare retried this run" would be false. The reader has its own
+ * deadline, so a slow claim object holds the page up by at most that.
+ */
+async function retryOfRun(
+  readRetry: TickRetryReader | undefined,
+  job: Pick<CronJob, 'id' | 'triggerCron' | 'worker' | 'completionDroughtMs'>,
+  startedMs: number,
+): Promise<TickRetry | null> {
+  if (!readRetry || job.worker || job.completionDroughtMs || !Number.isFinite(startedMs)) return null
+  const slot = scheduledSlot(job.triggerCron, startedMs)
+  if (slot === null) return null
+  try {
+    const retry = await readRetry(job.triggerCron, slot)
+    return retry && retry.retriedAtMs > startedMs ? retry : null
+  } catch (e) {
+    console.error(`[cron-heartbeat] could not read whether ${job.id}'s run was retried; the page says nothing about it: ${formatErr(e)}`)
+    return null
+  }
+}
+
 /** Page one dark job on its own: claim, then read the cooldown, then post (#2062, L157). */
 async function pageOne(
   supabase: SupabaseClient,
@@ -1182,6 +1209,7 @@ async function pageOne(
   nowMs: number,
   orgIds: string[],
   claims: AlertClaims | undefined,
+  readRetry: TickRetryReader | undefined,
 ): Promise<HeartbeatCheckResult> {
   const { job, status, verdict } = check.look
   const page = await darkPageOf(kv, check, nowMs)
@@ -1192,8 +1220,9 @@ async function pageOne(
     inCooldown: page.inCooldown,
     send: async () => {
       const r = page.reminder()
+      const retry = status === 'vanished' && check.look.lastRan ? await retryOfRun(readRetry, job, Date.parse(check.look.lastRan)) : null
       for (const orgId of orgIds) {
-        if (await sendCronHeartbeatAlert(supabase, orgId, job, status as 'stale' | 'never_ran' | 'vanished' | 'unstamped', verdict.ageMs, r?.standing ?? null, nowMs, r?.unchanged ?? false)) alerted = true
+        if (await sendCronHeartbeatAlert(supabase, orgId, job, status as 'stale' | 'never_ran' | 'vanished' | 'unstamped', verdict.ageMs, r?.standing ?? null, nowMs, r?.unchanged ?? false, retry)) alerted = true
       }
       return alerted
     },
@@ -1224,6 +1253,7 @@ async function pageGroup(
   nowMs: number,
   orgIds: string[],
   claims: AlertClaims | undefined,
+  readRetry: TickRetryReader | undefined,
 ): Promise<HeartbeatCheckResult[]> {
   const results: HeartbeatCheckResult[] = []
   const pages: DarkPage[] = []
@@ -1263,12 +1293,17 @@ async function pageGroup(
   const [first] = reminders
   const standing = first && reminders.every((r) => r !== null) ? first.standing : null
   const unchanged = standing !== null && reminders.every((r) => r?.unchanged === true)
+  // The run the page is about began at the latest of its jobs' starts (#2610).
+  const starts = due.map((p) => (p.check.look.lastRan ? Date.parse(p.check.look.lastRan) : NaN)).filter((ms) => Number.isFinite(ms))
+  const retry = group.status === 'vanished' && starts.length
+    ? await retryOfRun(readRetry, due[0].check.look.job, Math.max(...starts))
+    : null
   let alerted = false
   for (const orgId of orgIds) {
     const sent = due.length === 1
       ? await sendCronHeartbeatAlert(
         supabase, orgId, due[0].check.look.job, group.status, due[0].check.look.verdict.ageMs,
-        reminders[0]?.standing ?? null, nowMs, reminders[0]?.unchanged ?? false,
+        reminders[0]?.standing ?? null, nowMs, reminders[0]?.unchanged ?? false, retry,
       )
       : await sendCronHeartbeatGroupAlert(
         supabase,
@@ -1279,6 +1314,7 @@ async function pageGroup(
           ...(group.worker ? { worker: group.worker } : {}),
           runAt: group.runAt,
           jobs: due.map((p) => ({ label: p.check.look.job.label, dependents: p.check.look.job.dependents, ageMs: p.check.look.verdict.ageMs })),
+          retry,
         },
         standing,
         nowMs,
@@ -1521,6 +1557,8 @@ export async function runHeartbeatChecks(
   kv: KVNamespace,
   nowMs: number = Date.now(),
   claims?: AlertClaims,
+  /** Reads Cloudflare's retry of a run from the tick guard (#2610); without it the never finished page says nothing of one. */
+  readRetry?: TickRetryReader,
 ): Promise<HeartbeatCheckResult[]> {
   const orgIds = orgIdsToTell(await slackOrgIds(supabase, 'cron-heartbeat', 'tell-only'))
 
@@ -1531,7 +1569,7 @@ export async function runHeartbeatChecks(
   const results = new Map<string, HeartbeatCheckResult>()
   for (const group of darkGroupsOf(checks.map((c) => c.look))) {
     const members = group.jobIds.map((id) => byId.get(id)!)
-    for (const r of await pageGroup(supabase, kv, group, members, nowMs, orgIds, claims)) results.set(r.jobId, r)
+    for (const r of await pageGroup(supabase, kv, group, members, nowMs, orgIds, claims, readRetry)) results.set(r.jobId, r)
   }
 
   const owed: Owed[] = []
@@ -1548,7 +1586,7 @@ export async function runHeartbeatChecks(
       if (standing.kind === 'waiting') waiting.set(job.id, { check, reported: standing.reported })
       results.set(job.id, check.result('healthy', false))
     } else {
-      results.set(job.id, await pageOne(supabase, kv, check, nowMs, orgIds, claims))
+      results.set(job.id, await pageOne(supabase, kv, check, nowMs, orgIds, claims, readRetry))
     }
   }
 

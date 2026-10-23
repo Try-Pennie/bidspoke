@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { AlertClaimObject, TICK_LEASE_STALE_MS, TICK_LEASE_RENEW_MS } from '../../durable-objects/alert-claim'
-import { runCronTickOnce, cronTickKey, CRON_TICK_DEADLINE_MS, DELIVERY_LINE_PREFIX } from '../cron-once'
+import { runCronTickOnce, cronTickKey, tickRetryReader, CRON_TICK_DEADLINE_MS, DELIVERY_LINE_PREFIX, TICK_READ_DEADLINE_MS } from '../cron-once'
 import { CLAIM_DEADLINE_MS } from '../alert-claim'
 import { findDoubledTicks, type TickDelivery } from '../cron-guard-watch'
 // The consumers of the FAILED OPEN line (#2166) and the delivery line (#2284), a
@@ -586,5 +586,54 @@ describe('one delivery line per decision (#2284)', () => {
       outcome: 'ran',
       invocation_outcome: 'ok',
     }])
+  })
+})
+
+// #2610: the never finished page says when Cloudflare's retry of the run took the
+// tick and whether it finished, read from the run's own claim. A read that cannot
+// answer must say nothing, never something false, and never hold the page up.
+describe('reading whether a run was retried (#2610)', () => {
+  it('names the retry and says it finished once the retry closed the tick', async () => {
+    const { ns } = claimNamespace()
+    const killed = Date.parse('2026-10-21T04:00:51.391Z')
+    void runCronTickOnce(ns, { cron: '*/15 * * * *', scheduledTime: killed }, () => new Promise<void>(() => {}), { now: () => killed, holder: () => 'killed', every: () => () => {} })
+    await vi.waitFor(() => expect(logs.join('\n')).toMatch(/running cron="\*\/15/))
+    const read = tickRetryReader(ns)
+    expect(await read('*/15 * * * *', Date.parse('2026-10-21T04:00:00.000Z'))).toBeNull()
+    const retryAt = Date.parse('2026-10-21T04:03:12.000Z')
+    await runCronTickOnce(ns, { cron: '*/15 * * * *', scheduledTime: killed }, async () => {}, { now: () => retryAt, holder: () => 'retry', every: () => () => {} })
+    expect(await read('*/15 * * * *', Date.parse('2026-10-21T04:00:00.000Z'))).toEqual({ retriedAtMs: retryAt, finished: true })
+  })
+
+  it('says a retry that has not finished has not', async () => {
+    const { ns } = claimNamespace()
+    void runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE }, () => new Promise<void>(() => {}), { now: () => MINUTE, holder: () => 'killed', every: () => () => {} })
+    await vi.waitFor(() => expect(logs.join('\n')).toMatch(/running cron="0 \* \* \* \*"/))
+    void runCronTickOnce(ns, { cron: '0 * * * *', scheduledTime: MINUTE }, () => new Promise<void>(() => {}), { now: () => MINUTE + 99_000, holder: () => 'retry', every: () => () => {} })
+    await vi.waitFor(() => expect(warns.join('\n')).toMatch(/took over/))
+    expect(await tickRetryReader(ns)('0 * * * *', MINUTE)).toEqual({ retriedAtMs: MINUTE + 99_000, finished: false })
+  })
+
+  it('answers nothing for a tick the object never held, or holds no longer', async () => {
+    const { ns } = claimNamespace()
+    expect(await tickRetryReader(ns)('0 * * * *', MINUTE)).toBeNull()
+  })
+
+  it('answers nothing, and says why in the log, when the object does not answer in time, throws, or answers an error', async () => {
+    const hanging = { idFromName: (n: string) => n, get: () => ({ fetch: () => new Promise<Response>(() => {}) }) } as unknown as DurableObjectNamespace
+    const waited: number[] = []
+    expect(await tickRetryReader(hanging, { delay: async (ms) => { waited.push(ms) } })('0 * * * *', MINUTE)).toBeNull()
+    expect(waited).toEqual([TICK_READ_DEADLINE_MS])
+    const throwing = { idFromName: () => { throw new TypeError('Invalid Durable Object ID') }, get: () => null } as unknown as DurableObjectNamespace
+    expect(await tickRetryReader(throwing)('0 * * * *', MINUTE)).toBeNull()
+    const refusing = { idFromName: (n: string) => n, get: () => ({ fetch: async () => new Response('nope', { status: 500 }) }) } as unknown as DurableObjectNamespace
+    expect(await tickRetryReader(refusing)('0 * * * *', MINUTE)).toBeNull()
+    const garbled = { idFromName: (n: string) => n, get: () => ({ fetch: async () => Response.json({ found: true, status: 'done', retried_at: 'soon' }) }) } as unknown as DurableObjectNamespace
+    expect(await tickRetryReader(garbled)('0 * * * *', MINUTE)).toBeNull()
+    expect(errors.filter((e) => e.includes('[cron-once] could not read'))).toHaveLength(4)
+  })
+
+  it('answers nothing without a binding', async () => {
+    expect(await tickRetryReader(undefined)('0 * * * *', MINUTE)).toBeNull()
   })
 })
