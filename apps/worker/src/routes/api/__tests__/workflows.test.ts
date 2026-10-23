@@ -52,14 +52,68 @@ import { recordBackupSuccess, recordBackupFailure } from '../../../lib/github-ba
 import { uuidv7 } from '@bidspoke/uuidv7'
 import api from '../index'
 
+/** One call of write_workflow, as the route sent it (#1947). */
+interface WriteArgs {
+  p_op: string
+  p_org: string
+  p_id: string | null
+  p_expected_version: number | null
+  p_fields: Record<string, unknown>
+  p_save_id: string | null
+  p_actor: string
+  p_actor_email: string
+  p_actor_name: string
+}
+type RpcAnswer = { data: unknown; error: unknown }
+
+/**
+ * Every workflow write goes through the write_workflow function (#1947). The
+ * route's own writeWorkflow is real here; the function is answered by `write`,
+ * by default as written, from the call: the fields it was sent over the stored
+ * row, the version one above the one it was made from. Every call is kept in
+ * `writes`, which is what a test asserts a route wrote.
+ */
+function defaultWrite(args: WriteArgs): RpcAnswer {
+  const f = args.p_fields
+  const created = args.p_op === 'create' || args.p_op === 'duplicate'
+  const workflow = {
+    ...existingWorkflow,
+    id: created ? 'wf-new' : args.p_id,
+    name: f.name ?? existingWorkflow.name,
+    definition: f.definition ?? existingWorkflow.definition,
+    is_active: f.is_active ?? (args.p_op === 'patch' ? true : false),
+    folder_id: f.folder_id ?? null,
+    version: (args.p_expected_version ?? 0) + 1,
+    updated_at: '2026-01-01T00:00:00Z',
+  }
+  return { data: { workflow, version_id: 'ver-new', version_number: 2, restored_from: args.p_op === 'restore' ? 1 : undefined }, error: null }
+}
+
 /**
  * The shared mock now covers what this file kept a local copy for: a handler for
  * non-auth rpcs, with jwtAuth's lookup served internally (#347).
  */
 const makeSupabase = (
   tables: Record<string, TableConfig | TableConfig[]> = {},
-  opts: { rpc?: (name: string, args: unknown) => Promise<{ data: unknown; error: unknown }> } = {},
-) => makeSupabaseMock(tables, opts)
+  opts: { rpc?: (name: string, args: unknown) => Promise<RpcAnswer>; write?: (args: WriteArgs) => RpcAnswer } = {},
+) => {
+  const writes: WriteArgs[] = []
+  const sb = makeSupabaseMock(tables, {
+    rpc: (name, args) => {
+      if (name === 'write_workflow') {
+        writes.push(args as WriteArgs)
+        return Promise.resolve((opts.write ?? defaultWrite)(args as WriteArgs))
+      }
+      if (opts.rpc) return opts.rpc(name, args)
+      if (name === 'definition_connection_problems') return Promise.resolve({ data: [], error: null })
+      return Promise.resolve({ data: null, error: null })
+    },
+  })
+  return Object.assign(sb, { writes })
+}
+
+/** The write_workflow calls of one op. */
+const writesOf = (sb: { writes: WriteArgs[] }, op: string) => sb.writes.filter((w) => w.p_op === op)
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -67,7 +121,9 @@ const USER_ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
 // A stored row always carries its lane (NOT NULL, default money, #1707), and the
 // test and test-node routes refuse a row without one (#1725).
-const existingWorkflow = { id: 'wf-1', name: 'Lead Routing', organization_id: USER_ORG, definition: { nodes: [], edges: [] }, lane: 'money' }
+const existingWorkflow = { id: 'wf-1', name: 'Lead Routing', organization_id: USER_ORG, definition: { nodes: [], edges: [] }, lane: 'money', version: 4 }
+/** What a canvas save names since #1947: the version it was edited from and its press. */
+const saveKeys = { expected_version: 4, save_id: '0b6f2a3e-8c1d-4e5f-9a7b-1c2d3e4f5a6b' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 // The keys the cache was asked to delete, read by the rename-apply tests (#1846).
 const kvDeleted: string[] = []
@@ -130,30 +186,19 @@ describe('PUT /workflows/:id', () => {
     expect(res.status).toBe(404)
   })
 
-  it('creates a version snapshot and returns the new version_id', async () => {
-    const newVersion = { id: 'ver-1', version_number: 2, workflow_id: 'wf-1' }
-    const updatedWorkflow = { ...existingWorkflow, name: 'Renamed' }
-
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        // workflows: first call fetches existing, second call is the update
-        workflows: [
-          { single: existingWorkflow },
-          { single: updatedWorkflow },
-        ],
-        // workflow_versions: first call gets last version number, second call inserts
-        workflow_versions: [
-          { single: { version_number: 1 } },
-          { insertResult: newVersion },
-        ],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+  it('writes the snapshot and the row through write_workflow, from the version read, and returns the new version_id', async () => {
+    const sb = makeSupabase(
+      { users: { single: testUser }, workflows: { single: existingWorkflow } },
+      { write: () => ({ data: { workflow: { ...existingWorkflow, name: 'Renamed', version: 5 }, version_id: 'ver-1', version_number: 2 }, error: null }) },
     )
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
 
     const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
     expect(res.status).toBe(200)
-    const body = await res.json() as { version_id: string }
+    const body = await res.json() as { version_id: string; version: number }
     expect(body.version_id).toBe('ver-1')
+    expect(body.version).toBe(5)
+    expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'save', p_org: USER_ORG, p_id: 'wf-1', p_expected_version: 4, p_fields: { name: 'Renamed' }, p_save_id: null, p_actor: 'user-1' })])
   })
 
   it('rejects a cyclic definition with 400 before saving (#334)', async () => {
@@ -168,7 +213,7 @@ describe('PUT /workflows/:id', () => {
       edges: [{ id: 'e1', source: 'a', target: 'b' }, { id: 'e2', source: 'b', target: 'a' }],
       trigger: { type: 'http_webhook', config: {} },
     }
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition } })
     expect(res.status).toBe(400)
     const body = await res.json() as { error: string }
     expect(body.error).toMatch(/loop/i)
@@ -190,7 +235,7 @@ describe('PUT /workflows/:id', () => {
       edges: [],
       trigger: { type: 'http_webhook', config: {} },
     }
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition } })
     expect(res.status).toBe(400)
     const body = await res.json() as { error: string }
     expect(body.error).toBe('invalid_state_sf_post: rename_fields must map each field name to a new field name')
@@ -211,7 +256,7 @@ describe('PUT /workflows/:id', () => {
       edges: [],
       trigger: { type: 'http_webhook', config: {} },
     }
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition } })
     expect(res.status).toBe(400)
     const body = await res.json() as { error: string; reason: string }
     expect(body.reason).toBe('definition_malformed')
@@ -248,7 +293,7 @@ describe('PUT /workflows/:id', () => {
       vi.mocked(createSupabaseClient).mockReturnValue(
         makeSupabase({ users: { single: testUser }, workflows: { single: liveWorkflow } }) as unknown as ReturnType<typeof createSupabaseClient>
       )
-      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: validationDefinition(validationConfig) } })
+      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: validationDefinition(validationConfig) } })
       return { status: res.status, error: (await res.json() as { error?: string }).error }
     }
     const savingSb = (workflow: Record<string, unknown>) => makeSupabase({
@@ -263,7 +308,7 @@ describe('PUT /workflows/:id', () => {
     it('saves a half built step on a switched off workflow', async () => {
       const sb = savingSb(existingWorkflow)
       vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: validationDefinition({ lead_id_field: '', checks: [] }) } })
+      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: validationDefinition({ lead_id_field: '', checks: [] }) } })
       expect(res.status).toBe(200)
     })
 
@@ -286,7 +331,7 @@ describe('PUT /workflows/:id', () => {
         ],
         trigger: { type: 'http_webhook', config: {} },
       }
-      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
+      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition } })
       expect(res.status).toBe(400)
       expect((await res.json() as { error: string }).error).toBe(
         'validate_bidding_and_state: A lead validation step cannot run inside a parallel block: a lead it rejects there cannot be answered. Move it before the parallel block.',
@@ -317,7 +362,7 @@ describe('PUT /workflows/:id', () => {
 
     it('saves a step whose every reference is sound', async () => {
       vi.mocked(createSupabaseClient).mockReturnValue(savingSb(liveWorkflow) as unknown as ReturnType<typeof createSupabaseClient>)
-      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: validationDefinition(goodConfig()) } })
+      const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: validationDefinition(goodConfig()) } })
       expect(res.status).toBe(200)
     })
 
@@ -350,18 +395,21 @@ describe('PUT /workflows/:id', () => {
     })
   })
 
-  it('aborts the save when the version-number lookup hits a real DB error (#303)', async () => {
-    // A dropped error here defaulted nextVersion to 1, risking a clobber of the
-    // existing version chain. A real (non-PGRST116) error must abort.
+  // write_workflow numbers the snapshot under the row lock now (#1947), so the
+  // version-number lookup #303 guarded is gone; a database error from the write
+  // itself is a 500, with nothing audited or refreshed.
+  it('answers 500 when write_workflow fails with a database error, and audits nothing', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: { single: existingWorkflow },
-        workflow_versions: { singleError: { code: '57P01', message: 'db connection lost' } },
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase(
+        { users: { single: testUser }, workflows: { single: existingWorkflow } },
+        { write: () => ({ data: null, error: { code: '57P01', message: 'db connection lost' } }) },
+      ) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
     expect(res.status).toBe(500)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
   })
 
   it('returns 5xx (not a false 404) when the ownership fetch hits a real DB error (#320)', async () => {
@@ -375,19 +423,6 @@ describe('PUT /workflows/:id', () => {
     expect(res.status).toBe(500)
   })
 
-  it('saves as version 1 when there are no prior versions (PGRST116 is not an error)', async () => {
-    const newVersion = { id: 'ver-1', version_number: 1, workflow_id: 'wf-1' }
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
-        // no `single` config → mock returns PGRST116 (no rows), then the insert
-        workflow_versions: [{}, { insertResult: newVersion }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
-    )
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'First' } })
-    expect(res.status).toBe(200)
-  })
 
   it('calls refreshWorkflowCaches with the workflow id', async () => {
     const newVersion = { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' }
@@ -401,7 +436,7 @@ describe('PUT /workflows/:id', () => {
     // A definition that actually differs from existingWorkflow's ({ nodes: [] }),
     // so the save is real and exercises the version/cache/audit/backup paths
     // rather than short-circuiting as a #569 no-op.
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
+    await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
     expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
   })
 
@@ -419,7 +454,7 @@ describe('PUT /workflows/:id', () => {
         workflow_versions: [{ single: { version_number: 1 } }, { insertResult: newVersion }],
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
     // The save landed, so it is answered as the success it was, with the warning beside it.
     expect(res.status).toBe(200)
     expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*repaired automatically/i)
@@ -443,7 +478,7 @@ describe('PUT /workflows/:id', () => {
     // A definition that actually differs from existingWorkflow's ({ nodes: [] }),
     // so the save is real and exercises the version/cache/audit/backup paths
     // rather than short-circuiting as a #569 no-op.
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
+    await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
     await drainWaitUntil()
     expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
     expect(vi.mocked(recordBackupFailure)).not.toHaveBeenCalled()
@@ -460,14 +495,10 @@ describe('PUT /workflows/:id', () => {
       makeSupabase({
         users: { single: testUser },
         workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
-        workflow_versions: [
-          { single: { version_number: 1 } },
-          { insertResult: newVersion },
-          { list: [] },                      // the commit_sha UPDATE touches nothing
-        ],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+        workflow_versions: { list: [] },     // the commit_sha UPDATE touches nothing
+      }, { write: () => ({ data: { workflow: existingWorkflow, version_id: newVersion.id, version_number: newVersion.version_number }, error: null }) }) as unknown as ReturnType<typeof createSupabaseClient>
     )
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
+    await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
     await drainWaitUntil()
 
     // One structured zero_row_write line, emitted by requireRowsAffected rather
@@ -493,18 +524,30 @@ describe('PUT /workflows/:id', () => {
       makeSupabase({
         users: { single: testUser },
         workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
-        workflow_versions: [
-          { single: { version_number: 1 } },
-          { insertResult: newVersion },
-          { list: [{ id: 'ver-bk1' }] },
-        ],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+        workflow_versions: { list: [{ id: 'ver-bk1' }] },
+      }, { write: () => ({ data: { workflow: existingWorkflow, version_id: newVersion.id, version_number: newVersion.version_number }, error: null }) }) as unknown as ReturnType<typeof createSupabaseClient>
     )
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
+    await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
     await drainWaitUntil()
 
     const logged = errSpy.mock.calls.map((call) => String(call[0]))
     expect(logged.some((line) => line.includes('zero_row_write'))).toBe(false)
+    expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
+  })
+
+  it('reports the commit-sha stamp as unset, and stamps nothing, when the write named no version', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue('commit-sha-123')
+    const sb = makeSupabase(
+      { users: { single: testUser }, workflows: { single: existingWorkflow } },
+      { write: () => ({ data: { workflow: existingWorkflow }, error: null }) },
+    )
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
+    await drainWaitUntil()
+    expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'update')).toEqual([])
+    const logged = errSpy.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+    expect(logged).toContainEqual(expect.objectContaining({ event: 'workflow_version_commit_sha_unset', workflow_id: 'wf-1', version_id: null }))
     expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
   })
 
@@ -522,7 +565,7 @@ describe('PUT /workflows/:id', () => {
     // A definition that actually differs from existingWorkflow's ({ nodes: [] }),
     // so the save is real and exercises the version/cache/audit/backup paths
     // rather than short-circuiting as a #569 no-op.
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
+    await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
     await drainWaitUntil()
     expect(vi.mocked(recordBackupFailure)).toHaveBeenCalledWith(expect.objectContaining({ workflowId: 'wf-1' }))
     expect(vi.mocked(recordBackupSuccess)).not.toHaveBeenCalled()
@@ -542,7 +585,7 @@ describe('PUT /workflows/:id', () => {
     await app.request('/workflows/wf-1', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
-      body: JSON.stringify({ definition: { nodes: [], edges: [] } }),
+      body: JSON.stringify({ ...saveKeys, definition: { nodes: [], edges: [] } }),
     }, localEnv, mockCtx)
     await drainWaitUntil()
     expect(vi.mocked(recordBackupFailure)).not.toHaveBeenCalled()
@@ -561,7 +604,7 @@ describe('PUT /workflows/:id', () => {
     // A definition that actually differs from existingWorkflow's ({ nodes: [] }),
     // so the save is real and exercises the version/cache/audit/backup paths
     // rather than short-circuiting as a #569 no-op.
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
+    await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
       expect.anything(), USER_ORG, 'workflow', 'wf-1', 'updated', 'user-1', expect.anything()
     )
@@ -580,7 +623,7 @@ describe('PUT /workflows/:id', () => {
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'PUT', '/workflows/wf-1', {
-      body: { name: 'Lead Routing', definition: { nodes: [], edges: [] } },
+      body: { ...saveKeys, name: 'Lead Routing', definition: { nodes: [], edges: [] } },
     })
     expect(res.status).toBe(200)
     const body = await res.json() as { no_changes?: boolean; version_id?: string }
@@ -601,7 +644,7 @@ describe('PUT /workflows/:id', () => {
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'PUT', '/workflows/wf-1', {
-      body: { name: 'Lead Routing', definition: { nodes: [], edges: [] } },
+      body: { ...saveKeys, name: 'Lead Routing', definition: { nodes: [], edges: [] } },
     })
     expect(((await res.json()) as { no_changes?: boolean }).no_changes).toBe(true)
     expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
@@ -616,7 +659,7 @@ describe('PUT /workflows/:id', () => {
     )
     vi.mocked(refreshWorkflowCaches).mockRejectedValueOnce(new Error('kv unavailable'))
     const res = await request(app, 'PUT', '/workflows/wf-1', {
-      body: { name: 'Lead Routing', definition: { nodes: [], edges: [] } },
+      body: { ...saveKeys, name: 'Lead Routing', definition: { nodes: [], edges: [] } },
     })
     expect(res.status).toBe(200)
     const body = (await res.json()) as { no_changes?: boolean; stored_copy_warning?: string }
@@ -637,7 +680,7 @@ describe('PUT /workflows/:id', () => {
     )
     // Same content, keys in a different order (as jsonb would return them).
     const res = await request(app, 'PUT', '/workflows/wf-1', {
-      body: { name: 'Lead Routing', definition: { trigger: { config: {}, type: 'http_webhook' }, edges: [], nodes: [] } },
+      body: { ...saveKeys, name: 'Lead Routing', definition: { trigger: { config: {}, type: 'http_webhook' }, edges: [], nodes: [] } },
     })
     const body = await res.json() as { no_changes?: boolean }
     expect(body.no_changes).toBe(true)
@@ -650,10 +693,10 @@ describe('PUT /workflows/:id', () => {
         users: { single: testUser },
         workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
         workflow_versions: [{ single: { version_number: 1 } }, { insertResult: newVersion }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+      }, { write: () => ({ data: { workflow: existingWorkflow, version_id: newVersion.id, version_number: 2 }, error: null }) }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'PUT', '/workflows/wf-1', {
-      body: { name: 'Lead Routing', definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } },
+      body: { ...saveKeys, name: 'Lead Routing', definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } },
     })
     expect(res.status).toBe(200)
     const body = await res.json() as { no_changes?: boolean; version_id?: string }
@@ -684,115 +727,85 @@ describe('POST /workflows/:id/duplicate', () => {
     expect(res.status).toBe(404)
   })
 
-  it('clones the workflow, copies version history, and audit-logs the source', async () => {
-    const source = { name: 'Lead Routing', description: null, definition: { nodes: [] }, folder_id: null, is_active: true }
-    const clone = { id: 'wf-copy', name: 'Lead Routing (copy)', organization_id: USER_ORG }
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        // 1st workflows call = source select; 2nd = clone insert
-        workflows: [{ single: source }, { insertResult: clone }],
-        // 1st workflow_versions call = source history select; 2nd = bulk insert
-        workflow_versions: [
-          { list: [{ version_number: 1, definition: { nodes: [] }, message: 'init' }, { version_number: 2, definition: { nodes: [] }, message: 'edit' }] },
-          { insertResult: {} },
-        ],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+  // The clone and its whole history land in one write_workflow call (#1947):
+  // the copy of every version, the first version of a source never saved, and
+  // the lane and stamp it keeps are proven against Postgres in
+  // supabase/tests/write_workflow.test.sql (F). What the route sends is here.
+  it('clones through write_workflow, from the source, switched off, and audit-logs the source', async () => {
+    const source = { name: 'Lead Routing', description: null, definition: { nodes: [], edges: [] }, folder_id: null, is_active: true, lane: 'money', version: 3 }
+    const clone = { id: 'wf-copy', name: 'Lead Routing (copy)', organization_id: USER_ORG, is_active: false }
+    const sb = makeSupabase(
+      { users: { single: testUser }, workflows: { single: source } },
+      { write: () => ({ data: { workflow: clone, versions_copied: 2 }, error: null }) },
     )
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
     expect(res.status).toBe(201)
-    const body = await res.json() as { id: string; name: string }
-    expect(body.id).toBe('wf-copy')
-    expect(body.name).toBe('Lead Routing (copy)')
+    const body = await res.json() as { id: string; name: string; history_copied: boolean }
+    expect(body).toMatchObject({ id: 'wf-copy', name: 'Lead Routing (copy)', history_copied: true })
+    expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'duplicate', p_id: 'wf-1', p_expected_version: 3, p_fields: { name: 'Lead Routing (copy)', definition: source.definition } })])
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
       expect.anything(), USER_ORG, 'workflow', 'wf-copy', 'created', 'user-1', { duplicated_from: 'wf-1' }
     )
   })
 
-  it('copies every version when the history runs past one 1,000 row page', async () => {
-    const source = { name: 'Long', description: null, definition: { nodes: [] }, folder_id: null, is_active: false }
-    const clone = { id: 'wf-long', name: 'Long (copy)', organization_id: USER_ORG }
-    const version = (n: number) => ({ version_number: n, definition: { nodes: [] }, message: null })
-    const sb = makeSupabase({
-      users: { single: testUser },
-      workflows: [{ single: source }, { insertResult: clone }],
-      workflow_versions: [
-        { list: Array.from({ length: 1000 }, (_, i) => version(i + 1)) },
-        { list: [version(1001), version(1002)] },
-        { insertResult: {} },
-      ],
-    })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
-    expect(res.status).toBe(201)
-    const inserts = (sb.calls.workflow_versions ?? []).filter(([m]) => m === 'insert')
-    expect(inserts).toHaveLength(1)
-    const rows = inserts[0][1][0] as Array<{ version_number: number }>
-    expect(rows.map((r) => r.version_number)).toEqual(Array.from({ length: 1002 }, (_, i) => i + 1))
-    expect(((await res.json()) as { history_copied?: boolean }).history_copied).toBe(true)
-  })
-
-  it('does not invent a v1 when the source history could not be read', async () => {
-    const source = { name: 'Real', description: null, definition: { nodes: [] }, folder_id: null, is_active: false }
-    const clone = { id: 'wf-copy4', name: 'Real (copy)', organization_id: USER_ORG }
-    const sb = makeSupabase({
-      users: { single: testUser },
-      workflows: [{ single: source }, { insertResult: clone }],
-      workflow_versions: [{ listError: { message: 'statement timeout' } }, { insertResult: {} }],
-    })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
-    expect(res.status).toBe(201)
-    expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'insert')).toEqual([])
-    expect(((await res.json()) as { history_copied?: boolean }).history_copied).toBe(false)
-  })
-
-  it('reports the history as not copied when writing the copied versions fails', async () => {
-    const source = { name: 'Real', description: null, definition: { nodes: [] }, folder_id: null, is_active: false }
-    const clone = { id: 'wf-copy5', name: 'Real (copy)', organization_id: USER_ORG }
+  // Before #1947 the clone was written first and its history after, so a failed
+  // history copy left a copy with no saved versions (answered history_copied
+  // false). Both are one transaction now: a failure writes neither.
+  it('answers a failed copy as an error and audits nothing, since the clone and its history land together or not at all', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const source = { name: 'Real', description: null, definition: { nodes: [], edges: [] }, folder_id: null, is_active: false, lane: 'money' }
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: [{ single: source }, { insertResult: clone }],
-        workflow_versions: [{ list: [{ version_number: 1, definition: { nodes: [] } }] }, { insertError: { message: 'insert failed' } }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase(
+        { users: { single: testUser }, workflows: { single: source } },
+        { write: () => ({ data: null, error: { code: '57014', message: 'canceling statement due to statement timeout' } }) },
+      ) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
-    expect(res.status).toBe(201)
-    expect(((await res.json()) as { history_copied?: boolean }).history_copied).toBe(false)
+    expect(res.status).toBe(500)
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 
-  it('seeds a baseline v1 when the source has no saved versions', async () => {
-    const source = { name: 'Fresh', description: null, definition: { nodes: [] }, folder_id: null, is_active: false }
-    const clone = { id: 'wf-copy2', name: 'Fresh (copy)', organization_id: USER_ORG }
+  it('copies from the source version it read, and answers a save landing in between with 409, copying nothing', async () => {
+    const source = { name: 'Lead Routing', description: null, definition: { nodes: [], edges: [] }, folder_id: null, is_active: false, lane: 'money', version: 6 }
+    const sb = makeSupabase(
+      { users: { single: testUser }, workflows: { single: source } },
+      { write: () => ({ data: null, error: { code: 'BP409', message: 'stale_version', details: JSON.stringify({ current: { ...source, version: 7 }, last_save_id: null, changed_by_name: 'Bob', changed_at: '2026-10-23T14:00:00Z' }) } }) },
+    )
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: 'stale_version', error: expect.stringMatching(/^Not duplicated\./) })
+    expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'duplicate', p_expected_version: 6 })])
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+  })
+
+  it('answers 404 when the source was deleted between the read and the copy', async () => {
+    const source = { name: 'Gone', description: null, definition: { nodes: [], edges: [] }, folder_id: null, is_active: false, lane: 'money' }
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: [{ single: source }, { insertResult: clone }],
-        workflow_versions: [{ list: [] }, { insertResult: {} }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase(
+        { users: { single: testUser }, workflows: { single: source } },
+        { write: () => ({ data: null, error: { code: 'P0002', message: 'workflow_not_found' } }) },
+      ) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
-    expect(res.status).toBe(201)
-    const body = await res.json() as { id: string }
-    expect(body.id).toBe('wf-copy2')
+    expect(res.status).toBe(404)
   })
 
   it('succeeds when the source has code nodes (deploy path runs, no CF creds = no-op)', async () => {
     const source = {
       name: 'Coded',
       description: null,
-      definition: { nodes: [{ id: 'n1', type: 'code', namespace: 'enrich', config: { script: 'return {}' } }] },
+      definition: { nodes: [{ id: 'n1', type: 'code', namespace: 'enrich', config: { script: 'return {}' } }], edges: [] },
       folder_id: null,
       is_active: true,
+      lane: 'money',
     }
-    const clone = { id: 'wf-copy3', name: 'Coded (copy)', organization_id: USER_ORG }
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: [{ single: source }, { insertResult: clone }],
-        workflow_versions: [{ list: [{ version_number: 1, definition: source.definition }] }, { insertResult: {} }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase(
+        { users: { single: testUser }, workflows: { single: source } },
+        { write: () => ({ data: { workflow: { id: 'wf-copy3', name: 'Coded (copy)', organization_id: USER_ORG } }, error: null }) },
+      ) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
     expect(res.status).toBe(201)
@@ -932,7 +945,7 @@ describe('DELETE /workflows/:id', () => {
   // while writing an audit row claiming a deletion (#588).
   it('returns 404 and writes nothing when the soft delete matches no row', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({ users: { single: testUser }, workflows: { list: [] } }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser } }, { write: () => ({ data: null, error: { code: 'P0002', message: 'workflow_not_found' } }) }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'DELETE', '/workflows/wf-gone')
     expect(res.status).toBe(404)
@@ -983,47 +996,48 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 
-  it('returns 200 with the new version number', async () => {
-    const oldVersion = { id: 'ver-1', definition: { nodes: [] }, version_number: 1 }
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflow_versions: [
-          { single: oldVersion },              // fetch target version
-          { single: { version_number: 3 } },   // get current max version number
-          { insertResult: { id: 'ver-4', version_number: 4 } },
-        ],
-        workflows: [
-          { single: existingWorkflow },        // ownership lookup
-          { list: [{ id: 'wf-1' }] },          // the definition UPDATE touches one row
-        ],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+  it('returns 200 with the new version number, written through write_workflow from the version read', async () => {
+    const oldVersion = { id: 'ver-1', definition: { nodes: [], edges: [] }, version_number: 1 }
+    const sb = makeSupabase(
+      { users: { single: testUser }, workflow_versions: { single: oldVersion }, workflows: { single: existingWorkflow } },
+      { write: () => ({ data: { workflow: { ...existingWorkflow, version: 5 }, version_id: 'ver-4', version_number: 4, restored_from: 1 }, error: null }) },
     )
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
     expect(res.status).toBe(200)
-    const body = await res.json() as { ok: boolean; version_number: number }
-    expect(body.ok).toBe(true)
-    expect(typeof body.version_number).toBe('number')
+    expect(await res.json()).toMatchObject({ ok: true, version_number: 4, version: 5 })
+    expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'restore', p_id: 'wf-1', p_expected_version: 4, p_fields: expect.objectContaining({ version_id: 'ver-1', definition: oldVersion.definition }) })])
   })
 
-  // The version snapshot is inserted before the definition UPDATE. That update
-  // discarded its result entirely, so a restore could write history, fail to
-  // move the live definition, and still answer 200 (#588).
-  it('returns 404 when the definition update matches no row, so history and definition cannot silently diverge', async () => {
-    const oldVersion = { id: 'ver-1', definition: { nodes: [] }, version_number: 1 }
+  it.each([['no body', undefined], ['a body of null', null], ['a body that is a list', [1]]])('a restore sent %s is made from the version read, never a 500', async (_, body) => {
+    const sb = makeSupabase({ users: { single: testUser }, workflow_versions: { single: { id: 'ver-1', definition: { nodes: [], edges: [] }, version_number: 1 } }, workflows: { single: existingWorkflow } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await app.request('/workflows/wf-1/versions/ver-1/restore', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    }, testEnv, mockCtx)
+    expect(res.status).toBe(200)
+    expect(sb.writes[0].p_expected_version).toBe(4)
+  })
+
+  it('a restore naming the version its page saw is made from that version', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflow_versions: { single: { id: 'ver-1', definition: { nodes: [], edges: [] }, version_number: 1 } }, workflows: { single: existingWorkflow } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore', { body: { expected_version: 2 } })
+    expect(res.status).toBe(200)
+    expect(sb.writes[0].p_expected_version).toBe(2)
+  })
+
+  // The snapshot and the definition are one transaction since #1947, so history
+  // and definition cannot diverge (#588); a workflow that vanished between the
+  // read and the write is a 404 with nothing written, audited or refreshed.
+  it('returns 404 when the workflow vanished before the write, and nothing is audited or refreshed', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflow_versions: [
-          { single: oldVersion },
-          { single: { version_number: 3 } },
-          { insertResult: { id: 'ver-4', version_number: 4 } },
-        ],
-        workflows: [
-          { single: existingWorkflow },        // ownership lookup passes
-          { list: [] },                        // ...then the workflow vanishes
-        ],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase(
+        { users: { single: testUser }, workflow_versions: { single: { id: 'ver-1', definition: { nodes: [], edges: [] }, version_number: 1 } }, workflows: { single: existingWorkflow } },
+        { write: () => ({ data: null, error: { code: 'P0002', message: 'workflow_not_found' } }) },
+      ) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
     expect(res.status).toBe(404)
@@ -1031,22 +1045,19 @@ describe('POST /workflows/:id/versions/:version_id/restore', () => {
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 
-  it('aborts the restore when the version-number lookup hits a real DB error (#303)', async () => {
-    const oldVersion = { id: 'ver-1', definition: { nodes: [] }, version_number: 1 }
+  it('answers a restore that lost the race to a save with 409 and the current row, writing nothing', async () => {
+    const current = { ...existingWorkflow, version: 6 }
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: { single: existingWorkflow },
-        workflow_versions: [
-          { single: oldVersion },                                  // fetch target version
-          { singleError: { code: '57P01', message: 'db down' } },  // lastVersion lookup errors
-        ],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase(
+        { users: { single: testUser }, workflow_versions: { single: { id: 'ver-1', definition: { nodes: [], edges: [] }, version_number: 1 } }, workflows: { single: existingWorkflow } },
+        { write: () => ({ data: null, error: { code: 'BP409', message: 'stale_version', details: JSON.stringify({ current, last_save_id: null, changed_by_name: 'Bob', changed_at: '2026-10-23T14:00:00Z' }) } }) },
+      ) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
-    expect(res.status).toBe(500)
-    // No clobbering write happened.
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: 'stale_version', current: { version: 6 }, changed_by_name: 'Bob', error: expect.stringMatching(/^Not restored\./) })
     expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 
   it('returns 5xx (not a false 404) when the target-version lookup hits a real DB error (#320)', async () => {
@@ -1774,7 +1785,10 @@ describe('PATCH /workflows/:id/test-payloads: zero-row 404 vs real DB error (#59
   })
 })
 
-describe('PUT /workflows/:id: zero-row update 404 vs real DB error (#595)', () => {
+// #595: a write that matched no row must read as not found, a real database
+// error as a 500, and neither may audit or refresh anything. Since #1947 both
+// arrive as write_workflow's own answers (workflow_not_found, or an error).
+describe('PUT and PATCH: a write that found no workflow is a 404, a database error a 500 (#595, #1947)', () => {
   let app: Awaited<ReturnType<typeof makeApp>>
 
   beforeEach(async () => {
@@ -1783,114 +1797,59 @@ describe('PUT /workflows/:id: zero-row update 404 vs real DB error (#595)', () =
     vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
     vi.mocked(writeAuditLog).mockResolvedValue(undefined)
     vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
-    vi.mocked(recordBackupSuccess).mockResolvedValue(undefined)
-    vi.mocked(recordBackupFailure).mockResolvedValue(false)
     app = await makeApp()
   })
 
-  it('returns 404 (not 500), skips audit + cache when the workflow-row update matches zero rows', async () => {
-    // Ownership read passes and the version snapshot is inserted, then the
-    // workflows UPDATE touches nothing (raced away or another org). That zero-row
-    // write must read as not-found, and must not audit or bust the cache.
+  const notFound = () => ({ data: null, error: { code: 'P0002', message: 'workflow_not_found' } })
+  const broken = () => ({ data: null, error: { code: '42P01', message: 'relation missing' } })
+
+  it.each([
+    ['PUT', { name: 'Renamed' }],
+    ['PATCH', { is_active: false }],
+  ])('%s returns 404 (not 500), skips audit and cache when write_workflow finds no workflow', async (method, body) => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: [{ single: existingWorkflow }, { single: null }],
-        workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-1', version_number: 2 } }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow } }, { write: notFound }) as unknown as ReturnType<typeof createSupabaseClient>
     )
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
+    const res = await request(app, method, '/workflows/wf-1', { body })
     expect(res.status).toBe(404)
     expect(await res.json()).toEqual({ error: 'Workflow not found' })
     expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 
-  it('returns 500 (not a false 404) when the workflow-row update hits a real DB error', async () => {
+  it.each([
+    ['PUT', { name: 'Renamed' }],
+    ['PATCH', { is_active: false }],
+  ])('%s returns 500 (not a false 404) when write_workflow hits a real database error', async (method, body) => {
     vi.spyOn(console, 'error').mockImplementation(() => {})
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: [{ single: existingWorkflow }, { updateError: { code: '42P01', message: 'relation missing' } }],
-        workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-1', version_number: 2 } }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow } }, { write: broken }) as unknown as ReturnType<typeof createSupabaseClient>
     )
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
+    const res = await request(app, method, '/workflows/wf-1', { body })
     expect(res.status).toBe(500)
     expect(await res.json()).toEqual({ error: 'Internal error' })
     expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
   })
 
-  it('returns 200 with the updated workflow on the happy path', async () => {
-    const updated = { ...existingWorkflow, name: 'Renamed' }
+  it('PUT returns 200 with the written workflow on the happy path', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: [{ single: existingWorkflow }, { single: updated }],
-        workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-1', version_number: 2 } }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase(
+        { users: { single: testUser }, workflows: { single: existingWorkflow } },
+        { write: () => ({ data: { workflow: { ...existingWorkflow, name: 'Renamed', version: 5 }, version_id: 'ver-1', version_number: 2 }, error: null }) },
+      ) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
     expect(res.status).toBe(200)
-    const body = await res.json() as { version_id: string; name: string }
-    expect(body.version_id).toBe('ver-1')
-    expect(body.name).toBe('Renamed')
-  })
-})
-
-describe('PATCH /workflows/:id: zero-row update 404 vs real DB error (#595)', () => {
-  let app: Awaited<ReturnType<typeof makeApp>>
-
-  beforeEach(async () => {
-    vi.clearAllMocks()
-    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
-    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
-    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
-    app = await makeApp()
+    expect(await res.json()).toMatchObject({ version_id: 'ver-1', name: 'Renamed', version: 5 })
   })
 
-  it('returns 404 (not 500), skips audit + cache when the update matches zero rows', async () => {
-    // Ownership read passes, then the field UPDATE touches nothing. That zero-row
-    // write must read as not-found, and must not audit or bust the cache.
+  it('PATCH returns 200 with the written fields on the happy path', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: [{ single: existingWorkflow }, { single: null }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
-    )
-    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })
-    expect(res.status).toBe(404)
-    expect(await res.json()).toEqual({ error: 'Workflow not found' })
-    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
-    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
-  })
-
-  it('returns 500 (not a false 404) when the update hits a real DB error', async () => {
-    vi.spyOn(console, 'error').mockImplementation(() => {})
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: [{ single: existingWorkflow }, { updateError: { code: '42P01', message: 'relation missing' } }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
-    )
-    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })
-    expect(res.status).toBe(500)
-    expect(await res.json()).toEqual({ error: 'Internal error' })
-    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
-  })
-
-  it('returns 200 with the updated fields on the happy path', async () => {
-    const updated = { id: 'wf-1', name: 'Lead Routing', is_active: false, updated_at: '2026-01-01' }
-    vi.mocked(createSupabaseClient).mockReturnValue(
-      makeSupabase({
-        users: { single: testUser },
-        workflows: [{ single: existingWorkflow }, { single: updated }],
-      }) as unknown as ReturnType<typeof createSupabaseClient>
+      makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow } }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })
     expect(res.status).toBe(200)
-    const body = await res.json() as { is_active: boolean }
-    expect(body.is_active).toBe(false)
+    expect(await res.json()).toMatchObject({ id: 'wf-1', is_active: false })
   })
 })
 
@@ -1907,10 +1866,9 @@ describe('code node script hygiene on every definition write (#1117)', () => {
   const paddedDefinition = { nodes: [{ id: 'c1', type: 'code', namespace: 'c1', config: { script: padded } }], edges: [] }
   let app: Awaited<ReturnType<typeof makeApp>>
 
-  const scriptsWritten = (sb: ReturnType<typeof makeSupabase>, table: string, method: string) =>
-    (sb.calls[table] ?? [])
-      .filter(([m]) => m === method)
-      .map(([, args]) => ((args[0] as { definition?: { nodes?: Array<{ config?: { script?: string } }> } }).definition?.nodes ?? []).map((n) => n.config?.script))
+  // One write_workflow call writes the snapshot and the row from the same definition (#1947).
+  const scriptsWritten = (sb: ReturnType<typeof makeSupabase>, op: string) =>
+    writesOf(sb, op).map((w) => ((w.p_fields.definition as { nodes?: Array<{ config?: { script?: string } }> } | undefined)?.nodes ?? []).map((n) => n.config?.script))
 
   beforeEach(async () => {
     vi.clearAllMocks()
@@ -1928,10 +1886,9 @@ describe('code node script hygiene on every definition write (#1117)', () => {
       workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
     })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: paddedDefinition } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: paddedDefinition } })
     expect(res.status).toBe(200)
-    expect(scriptsWritten(sb, 'workflow_versions', 'insert')).toEqual([[clean]])
-    expect(scriptsWritten(sb, 'workflows', 'update')).toEqual([[clean]])
+    expect(scriptsWritten(sb, 'save')).toEqual([[clean]])
   })
 
   it('POST strips the script of a newly created workflow', async () => {
@@ -1942,37 +1899,28 @@ describe('code node script hygiene on every definition write (#1117)', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition: paddedDefinition } })
     expect(res.status).toBe(201)
-    expect(scriptsWritten(sb, 'workflows', 'insert')).toEqual([[clean]])
+    expect(scriptsWritten(sb, 'create')).toEqual([[clean]])
   })
 
   it('restore strips the script of the version being restored', async () => {
     const sb = makeSupabase({
       users: { single: testUser },
-      workflow_versions: [
-        { single: { id: 'ver-1', definition: paddedDefinition, version_number: 1 } },
-        { single: { version_number: 3 } },
-        { insertResult: { id: 'ver-4', version_number: 4 } },
-      ],
-      workflows: [{ single: existingWorkflow }, { list: [{ id: 'wf-1' }] }],
+      workflow_versions: { single: { id: 'ver-1', definition: paddedDefinition, version_number: 1 } },
+      workflows: { single: existingWorkflow },
     })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
     expect(res.status).toBe(200)
-    expect(scriptsWritten(sb, 'workflow_versions', 'insert')).toEqual([[clean]])
-    expect(scriptsWritten(sb, 'workflows', 'update')).toEqual([[clean]])
+    expect(scriptsWritten(sb, 'restore')).toEqual([[clean]])
   })
 
   it('duplicate strips the script of the clone', async () => {
-    const source = { name: 'Lead Routing', description: null, definition: paddedDefinition, folder_id: null, is_active: true }
-    const sb = makeSupabase({
-      users: { single: testUser },
-      workflows: [{ single: source }, { insertResult: { id: 'wf-copy', name: 'Lead Routing (copy)', organization_id: USER_ORG } }],
-      workflow_versions: [{ list: [] }, { insertResult: {} }],
-    })
+    const source = { name: 'Lead Routing', description: null, definition: paddedDefinition, folder_id: null, is_active: true, lane: 'money' }
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: source } })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
     expect(res.status).toBe(201)
-    expect(scriptsWritten(sb, 'workflows', 'insert')).toEqual([[clean]])
+    expect(scriptsWritten(sb, 'duplicate')).toEqual([[clean]])
   })
 })
 
@@ -1982,10 +1930,11 @@ describe('code node script hygiene on every definition write (#1117)', () => {
 describe('new and duplicated workflows start inactive (#1706)', () => {
   let app: Awaited<ReturnType<typeof makeApp>>
 
-  const activeFlagsInserted = (sb: ReturnType<typeof makeSupabase>) =>
-    (sb.calls.workflows ?? [])
-      .filter(([m]) => m === 'insert')
-      .map(([, args]) => (args[0] as { is_active?: unknown }).is_active)
+  // write_workflow creates every workflow switched off and refuses an is_active
+  // field on create or duplicate (supabase/tests/write_workflow.test.sql A, F),
+  // so each create or duplicate the route sends must carry none: true per write.
+  const switchedOffCreates = (sb: ReturnType<typeof makeSupabase>) =>
+    sb.writes.filter((w) => w.p_op === 'create' || w.p_op === 'duplicate').map((w) => !Object.hasOwn(w.p_fields, 'is_active'))
 
   beforeEach(async () => {
     vi.clearAllMocks()
@@ -2005,7 +1954,7 @@ describe('new and duplicated workflows start inactive (#1706)', () => {
     const definition = { nodes: [null, 5, 'x'], edges: [], trigger: { type: 'http_webhook', config: {} } }
     const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition } })
     expect(res.status).toBe(400)
-    expect(activeFlagsInserted(sb)).toEqual([])
+    expect(switchedOffCreates(sb)).toEqual([])
   })
 
   it('POST creates the workflow with is_active false', async () => {
@@ -2016,7 +1965,7 @@ describe('new and duplicated workflows start inactive (#1706)', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'POST', '/workflows', { body: { name: 'New' } })
     expect(res.status).toBe(201)
-    expect(activeFlagsInserted(sb)).toEqual([false])
+    expect(switchedOffCreates(sb)).toEqual([true])
   })
 
   // A definition can enter by create as well as by save, so create holds it to the
@@ -2035,7 +1984,7 @@ describe('new and duplicated workflows start inactive (#1706)', () => {
     const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition } })
     expect(res.status).toBe(400)
     expect((await res.json() as { error: string }).error).toBe('inquiry_apex: omit_fields applies only to create, update and upsert')
-    expect(activeFlagsInserted(sb)).toEqual([])
+    expect(switchedOffCreates(sb)).toEqual([])
   })
 
   // #2590: a created workflow is switched off, so a half built lead validation
@@ -2053,7 +2002,7 @@ describe('new and duplicated workflows start inactive (#1706)', () => {
     }
     const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition } })
     expect(res.status).toBe(201)
-    expect(activeFlagsInserted(sb)).toEqual([false])
+    expect(switchedOffCreates(sb)).toEqual([true])
   })
 
   // #2590: the placement rule holds at create too, and nothing is inserted.
@@ -2075,7 +2024,7 @@ describe('new and duplicated workflows start inactive (#1706)', () => {
     const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition } })
     expect(res.status).toBe(400)
     expect((await res.json() as { error: string }).error).toMatch(/^validate: A lead validation step cannot run inside a parallel block/)
-    expect(activeFlagsInserted(sb)).toEqual([])
+    expect(switchedOffCreates(sb)).toEqual([])
   })
 
   it('POST ignores an is_active true sent in the body', async () => {
@@ -2086,20 +2035,16 @@ describe('new and duplicated workflows start inactive (#1706)', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'POST', '/workflows', { body: { name: 'New', is_active: true } })
     expect(res.status).toBe(201)
-    expect(activeFlagsInserted(sb)).toEqual([false])
+    expect(switchedOffCreates(sb)).toEqual([true])
   })
 
   it('duplicating an ACTIVE workflow creates an inactive copy', async () => {
-    const source = { name: 'Live Flow', description: null, definition: { nodes: [] }, folder_id: null, is_active: true }
-    const sb = makeSupabase({
-      users: { single: testUser },
-      workflows: [{ single: source }, { insertResult: { id: 'wf-copy', name: 'Live Flow (copy)', organization_id: USER_ORG, is_active: false } }],
-      workflow_versions: [{ list: [] }, { insertResult: {} }],
-    })
+    const source = { name: 'Live Flow', description: null, definition: { nodes: [], edges: [] }, folder_id: null, is_active: true, lane: 'money' }
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: source } })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
     expect(res.status).toBe(201)
-    expect(activeFlagsInserted(sb)).toEqual([false])
+    expect(switchedOffCreates(sb)).toEqual([true])
   })
 })
 
@@ -2243,7 +2188,7 @@ describe('a live buyer step that cannot read a buyer profile rule (#2149)', () =
 
   it('PUT on a live workflow that drops the loan amount template is 422 naming the step, the buyer and the rule, and writes no version', async () => {
     client({ workflows: [{ single: live(withLoan) }, { single: live(noLoan) }], workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2' } }] })
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: noLoan } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: noLoan } })
     expect(res.status).toBe(422)
     const body = await res.json() as { error: string }
     expect(body.error).toContain('Step buyer_select has no Loan amount template')
@@ -2255,13 +2200,13 @@ describe('a live buyer step that cannot read a buyer profile rule (#2149)', () =
 
   it('PUT on a switched off workflow saves, since it judges no lead; switching it on is checked', async () => {
     client({ workflows: [{ single: live(withLoan, false) }, { single: live(noLoan, false) }], workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2' } }] })
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: noLoan } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: noLoan } })
     expect(res.status).toBe(200)
   })
 
   it('PUT on a live workflow whose step reads every rule saves', async () => {
     client({ workflows: [{ single: live(noLoan) }, { single: live(withLoan) }], workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2' } }] })
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: withLoan } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: withLoan } })
     expect(res.status).toBe(200)
   })
 
@@ -2292,14 +2237,14 @@ describe('a live buyer step that cannot read a buyer profile rule (#2149)', () =
   it('a save is refused with 503 when the buyer profiles cannot be read, never let through as if none were enabled', async () => {
     vi.mocked(loadBuyerProfiles).mockRejectedValue(new Error('buyer profiles read failed'))
     client({ workflows: [{ single: live(withLoan) }, { single: live(noLoan) }], workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2' } }] })
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: noLoan } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: noLoan } })
     expect(res.status).toBe(503)
   })
 
   it('a definition with no buyer step never reads the profiles', async () => {
     const codeOnly = { nodes: [{ id: 'c', namespace: 'c', type: 'code', config: { script: 'x' } }], edges: [] }
     client({ workflows: [{ single: live({ nodes: [] }) }, { single: live(codeOnly) }], workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2' } }] })
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: codeOnly } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: codeOnly } })
     expect(res.status).toBe(200)
     expect(vi.mocked(loadBuyerProfiles)).not.toHaveBeenCalled()
   })
@@ -2335,8 +2280,10 @@ describe('workflow definition writers re-check connection ids (#2338)', () => {
   const checkAnswering = (answer: { data: unknown; error: unknown }) =>
     vi.fn(async (name: string, _args: unknown) => (name === 'definition_connection_problems' ? answer : { data: null, error: null }))
 
+  // Every write is one write_workflow call since #1947, which writes a save's
+  // snapshot with its row; any direct write to either table is counted too.
   const writes = (sb: ReturnType<typeof makeSupabase>) => ({
-    workflows: (sb.calls.workflows ?? []).filter(([m]) => m === 'insert' || m === 'update' || m === 'upsert'),
+    workflows: [...sb.writes, ...(sb.calls.workflows ?? []).filter(([m]) => m === 'insert' || m === 'update' || m === 'upsert')],
     versions: (sb.calls.workflow_versions ?? []).filter(([m]) => m === 'insert' || m === 'update' || m === 'upsert'),
   })
 
@@ -2350,7 +2297,7 @@ describe('workflow definition writers re-check connection ids (#2338)', () => {
     },
     {
       label: 'PUT /:id (save)',
-      method: 'PUT', path: '/workflows/wf-1', body: { definition: naming(REMOVED) },
+      method: 'PUT', path: '/workflows/wf-1', body: { ...saveKeys, definition: naming(REMOVED) },
       tables: {
         workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
         workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2 } }],
@@ -2404,7 +2351,7 @@ describe('workflow definition writers re-check connection ids (#2338)', () => {
       workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2 } }],
     }, { rpc: checkAnswering({ data: [elsewhereRow], error: null }) })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: naming(ELSEWHERE) } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: naming(ELSEWHERE) } })
     expect(res.status).toBe(409)
     const body = await res.json() as { error: string }
     expect(body.error).toBe(`Nothing was saved. The step sf_import names a connection that is not one of this organization's (${ELSEWHERE}). Give the step a replacement connection, then save again.`)
@@ -2446,48 +2393,30 @@ describe('workflow definition writers re-check connection ids (#2338)', () => {
     expect(rpc).not.toHaveBeenCalledWith('definition_connection_problems', expect.anything())
   })
 
-  it('a save that lost the race to a removal (the trigger refused the row) is answered by name, and its version snapshot is taken back', async () => {
-    const sb = makeSupabase({
-      users: { single: testUser },
-      workflows: [{ single: existingWorkflow }, { updateError: triggerRefusal }],
-      workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2 } }],
-    })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: naming(REMOVED) } })
-    expect(res.status).toBe(409)
-    expect(((await res.json()) as { error: string }).error).toContain('"Pennie Salesforce", which was removed')
-    expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'delete')).toHaveLength(1)
-    expect(sb.eqCalls.workflow_versions).toEqual(expect.arrayContaining([['workflow_id', 'wf-1'], ['version_number', 2]]))
-    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
-    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
-  })
-
-  it('a restore that lost the race is answered by name, and its version snapshot is taken back', async () => {
-    const sb = makeSupabase({
-      users: { single: testUser },
-      workflows: [{ single: existingWorkflow }, { updateError: triggerRefusal }],
-      workflow_versions: [{ single: { id: 'ver-1', definition: naming(REMOVED), version_number: 1 } }, { single: { version_number: 3 } }, { insertResult: { id: 'ver-4' } }],
-    })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore')
-    expect(res.status).toBe(409)
-    expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'delete')).toHaveLength(1)
-    expect(sb.eqCalls.workflow_versions).toEqual(expect.arrayContaining([['workflow_id', 'wf-1'], ['version_number', 4]]))
-    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
-  })
-
+  // The trigger refuses inside write_workflow's transaction, so the snapshot
+  // goes with the row (supabase/tests/write_workflow.test.sql G): nothing is
+  // left to take back, and the refusal is still answered by name.
   it.each([
-    { label: 'POST / (create)', method: 'POST', path: '/workflows', body: { name: 'New', definition: naming(REMOVED) } as unknown, tables: { workflows: { insertError: triggerRefusal } } as Tables },
-    { label: 'POST /:id/duplicate', method: 'POST', path: '/workflows/wf-1/duplicate', body: undefined as unknown, tables: {
-      workflows: [{ single: { name: 'Lead Routing', description: null, definition: naming(REMOVED), folder_id: null } }, { insertError: triggerRefusal }],
+    { label: 'PUT /:id (save)', method: 'PUT', path: '/workflows/wf-1', body: { ...saveKeys, definition: naming(REMOVED) } as unknown, tables: { workflows: { single: existingWorkflow } } as Tables },
+    { label: 'POST /:id/versions/:version_id/restore', method: 'POST', path: '/workflows/wf-1/versions/ver-1/restore', body: undefined as unknown, tables: {
+      workflows: { single: existingWorkflow }, workflow_versions: { single: { id: 'ver-1', definition: naming(REMOVED), version_number: 1 } },
     } as Tables },
-  ])('$label that lost the race is answered by name, never as an internal error', async (w) => {
-    const sb = makeSupabase({ users: { single: testUser }, ...w.tables })
+    { label: 'POST / (create)', method: 'POST', path: '/workflows', body: { name: 'New', definition: naming(REMOVED) } as unknown, tables: {} as Tables },
+    { label: 'POST /:id/duplicate', method: 'POST', path: '/workflows/wf-1/duplicate', body: undefined as unknown, tables: {
+      workflows: { single: { name: 'Lead Routing', description: null, definition: naming(REMOVED), folder_id: null, lane: 'money' } },
+    } as Tables },
+  ])('$label that lost the race to a removal is answered by name, never as an internal error, and takes nothing back by hand', async (w) => {
+    const sb = makeSupabase({ users: { single: testUser }, ...w.tables }, { write: () => ({ data: null, error: triggerRefusal }) })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
     const res = await request(app, w.method, w.path, { body: w.body })
     expect(res.status).toBe(409)
-    expect(((await res.json()) as { code: string }).code).toBe('workflow_connection_missing')
-    expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'insert')).toEqual([])
+    const body = (await res.json()) as { code: string; error: string }
+    expect(body.code).toBe('workflow_connection_missing')
+    expect(body.error).toContain('"Pennie Salesforce", which was removed')
+    expect((sb.calls.workflow_versions ?? []).filter(([m]) => m === 'delete' || m === 'insert')).toEqual([])
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
   })
 
   // The money workflows the money gate replays: a save of each, and a create of
@@ -2502,33 +2431,27 @@ describe('workflow definition writers re-check connection ids (#2338)', () => {
 
   it.each(money)('a save of the money workflow $name writes its definition byte for byte as before', async (m) => {
     const expected = JSON.stringify(sanitizeCodeNodeScripts(structuredClone(m.definition) as { nodes?: unknown }))
-    const sb = makeSupabase({
-      users: { single: testUser },
-      workflows: [{ single: { ...existingWorkflow, id: m.id, is_active: false } }, { single: { ...existingWorkflow, id: m.id } }],
-      workflow_versions: [{ single: { version_number: 7 } }, { insertResult: { id: 'ver-8', version_number: 8 } }],
-    })
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, id: m.id, is_active: false } } })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'PUT', `/workflows/${m.id}`, { body: { definition: m.definition } })
+    const res = await request(app, 'PUT', `/workflows/${m.id}`, { body: { ...saveKeys, definition: m.definition } })
     expect(res.status).toBe(200)
-    const written = (table: string, method: string) => (sb.calls[table] ?? []).filter(([k]) => k === method).map(([, args]) => JSON.stringify((args[0] as { definition: unknown }).definition))
-    expect(written('workflow_versions', 'insert')).toEqual([expected])
-    expect(written('workflows', 'update')).toEqual([expected])
+    // One write_workflow call writes the snapshot and the row from this definition.
+    expect(writesOf(sb, 'save').map((w) => JSON.stringify(w.p_fields.definition))).toEqual([expected])
   })
 
   it.each(money)('a create of the money workflow $name writes its definition byte for byte as before', async (m) => {
     const expected = JSON.stringify(sanitizeCodeNodeScripts(structuredClone(m.definition) as { nodes?: unknown }))
-    const sb = makeSupabase({ users: { single: testUser }, workflows: { insertResult: { id: 'wf-new' } } })
+    const sb = makeSupabase({ users: { single: testUser } })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'POST', '/workflows', { body: { name: m.name, definition: m.definition } })
     expect(res.status).toBe(201)
-    const inserted = (sb.calls.workflows ?? []).filter(([k]) => k === 'insert').map(([, args]) => JSON.stringify((args[0] as { definition: unknown }).definition))
-    expect(inserted).toEqual([expected])
+    expect(writesOf(sb, 'create').map((w) => JSON.stringify(w.p_fields.definition))).toEqual([expected])
   })
 
   // #2576: switching a workflow on writes no definition, so the trigger never
   // judges it; the route asks the same check about the definition it makes live.
   describe('PATCH /:id switching a workflow on (#2576)', () => {
-    const live = { id: 'wf-1', name: 'Achieve report import', is_active: false, definition: naming(REMOVED) }
+    const live = { id: 'wf-1', name: 'Achieve report import', is_active: false, definition: naming(REMOVED), version: 9, lane: 'money' }
     const patchTables = (): Tables => ({ workflows: [{ single: live }, { single: { id: 'wf-1', name: live.name, is_active: true, folder_id: null, updated_at: '2026-10-21T15:00:00Z' } }] })
 
     it('refuses to switch on a workflow naming a removed connection, by name, and writes nothing', async () => {
@@ -2552,7 +2475,8 @@ describe('workflow definition writers re-check connection ids (#2338)', () => {
       const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
       expect(res.status).toBe(200)
       expect(rpc).toHaveBeenCalledWith('definition_connection_problems', { p_organization_id: USER_ORG, p_definition: naming(REMOVED) })
-      expect(writes(sb).workflows).toHaveLength(1)
+      // Switched on from the version whose definition was checked (#1947).
+      expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'patch', p_expected_version: 9, p_fields: { is_active: true } })])
     })
 
     it.each([
@@ -2605,127 +2529,61 @@ describe('definition_schema_version is stamped by the Worker on every definition
     app = await makeApp()
   })
 
-  /** Every row written to `table` by `method`, flattened, as the route sent it. */
-  const rowsWritten = (sb: ReturnType<typeof makeSupabase>, table: string, method: string) =>
-    (sb.calls[table] ?? [])
-      .filter(([m]) => m === method)
-      .flatMap(([, args]) => (Array.isArray(args[0]) ? args[0] : [args[0]]) as Array<Record<string, unknown>>)
-  const stamps = (sb: ReturnType<typeof makeSupabase>, table: string, method: string) =>
-    rowsWritten(sb, table, method).map((row) => (Object.hasOwn(row, 'definition_schema_version') ? row.definition_schema_version : 'absent'))
+  // Since #1947 the stamp of a copied definition (a restore, a duplicate, the
+  // snapshot of a save that sends no definition) is decided by write_workflow
+  // from the row it copies, and the route may not send one: the function
+  // refuses it as field_not_writable. supabase/tests/write_workflow.test.sql
+  // proves the copy keeps the row's stamp (B rename, C restore, F duplicate).
+  // A definition the request wrote carries this build's stamp, never the caller's.
+  const stampSent = (sb: ReturnType<typeof makeSupabase>, op: string) =>
+    writesOf(sb, op).map((w) => (Object.hasOwn(w.p_fields, 'definition_schema_version') ? w.p_fields.definition_schema_version : 'absent'))
 
   it('POST / stamps a new workflow with the current version, whatever stamp the caller sends', async () => {
-    const sb = makeSupabase({
-      users: { single: testUser },
-      workflows: { insertResult: { id: 'wf-new', name: 'New' } },
-    })
+    const sb = makeSupabase({ users: { single: testUser } })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition, definition_schema_version: 99 } })
     expect(res.status).toBe(201)
-    expect(stamps(sb, 'workflows', 'insert')).toEqual([CURRENT])
+    expect(stampSent(sb, 'create')).toEqual([CURRENT])
   })
 
   it('POST / stamps the default definition it writes when the caller sends none', async () => {
-    const sb = makeSupabase({
-      users: { single: testUser },
-      workflows: { insertResult: { id: 'wf-new', name: 'New' } },
-    })
+    const sb = makeSupabase({ users: { single: testUser } })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'POST', '/workflows', { body: { name: 'New' } })
     expect(res.status).toBe(201)
-    expect(stamps(sb, 'workflows', 'insert')).toEqual([CURRENT])
+    expect(stampSent(sb, 'create')).toEqual([CURRENT])
   })
 
-  it('PUT with a definition stamps the snapshot and the workflow with the current version, whatever the caller sends', async () => {
-    const sb = makeSupabase({
-      users: { single: testUser },
-      workflows: [{ single: { ...existingWorkflow, definition_schema_version: 7 } }, { single: existingWorkflow }],
-      workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
-    })
+  it('PUT with a definition stamps it with the current version, whatever the caller sends', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, definition_schema_version: 7 } } })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition, definition_schema_version: 99 } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition, definition_schema_version: 99 } })
     expect(res.status).toBe(200)
-    expect(stamps(sb, 'workflow_versions', 'insert')).toEqual([CURRENT])
-    expect(stamps(sb, 'workflows', 'update')).toEqual([CURRENT])
+    expect(stampSent(sb, 'save')).toEqual([CURRENT])
   })
 
   it.each([
-    { stored: 7, label: 'a stamp' },
-    { stored: null, label: 'no stamp' },
-  ])('PUT without a definition snapshots the stored one with the stamp it holds ($label) and leaves the workflow stamp alone', async ({ stored }) => {
-    const sb = makeSupabase({
-      users: { single: testUser },
-      workflows: [{ single: { ...existingWorkflow, definition_schema_version: stored } }, { single: existingWorkflow }],
-      workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
-    })
+    { what: 'PUT without a definition', method: 'PUT', path: '/workflows/wf-1', op: 'save', tables: { workflows: { single: { ...existingWorkflow, definition_schema_version: 7 } } }, body: { name: 'Renamed', definition_schema_version: 99 } },
+    { what: 'restore', method: 'POST', path: '/workflows/wf-1/versions/ver-1/restore', op: 'restore', tables: {
+      workflows: { single: existingWorkflow }, workflow_versions: { single: { id: 'ver-1', definition, version_number: 1, definition_schema_version: 7 } },
+    }, body: { definition_schema_version: 99 } },
+    { what: 'duplicate', method: 'POST', path: '/workflows/wf-1/duplicate', op: 'duplicate', tables: {
+      workflows: { single: { name: 'Lead Routing', description: null, definition, folder_id: null, is_active: false, definition_schema_version: 7, lane: 'money' } },
+    }, body: { definition_schema_version: 99 } },
+  ])('$what sends no stamp, leaving the copied one to write_workflow, whatever the caller sends', async ({ method, path, op, tables, body }) => {
+    const sb = makeSupabase({ users: { single: testUser }, ...(tables as Record<string, TableConfig>) })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed', definition_schema_version: 99 } })
-    expect(res.status).toBe(200)
-    expect(stamps(sb, 'workflow_versions', 'insert')).toEqual([stored])
-    expect(stamps(sb, 'workflows', 'update')).toEqual(['absent'])
-  })
-
-  it.each([
-    { stored: 7, label: 'a stamp' },
-    { stored: null, label: 'no stamp' },
-  ])('restore keeps the restored version\'s stamp ($label) on the new snapshot and on the workflow', async ({ stored }) => {
-    const sb = makeSupabase({
-      users: { single: testUser },
-      workflow_versions: [
-        { single: { id: 'ver-1', definition, version_number: 1, definition_schema_version: stored } },
-        { single: { version_number: 3 } },
-        { insertResult: { id: 'ver-4', version_number: 4 } },
-      ],
-      workflows: [{ single: existingWorkflow }, { list: [{ id: 'wf-1' }] }],
-    })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-1/restore', { body: { definition_schema_version: 99 } })
-    expect(res.status).toBe(200)
-    expect(stamps(sb, 'workflow_versions', 'insert')).toEqual([stored])
-    // Written even when null: the workflow may hold a newer stamp from the save the restore replaces.
-    expect(stamps(sb, 'workflows', 'update')).toEqual([stored])
-  })
-
-  it('duplicate keeps the source workflow\'s stamp on the clone and each copied version\'s own stamp', async () => {
-    const source = { name: 'Lead Routing', description: null, definition, folder_id: null, is_active: false, definition_schema_version: 7 }
-    const sb = makeSupabase({
-      users: { single: testUser },
-      workflows: [{ single: source }, { insertResult: { id: 'wf-copy', name: 'Lead Routing (copy)', organization_id: USER_ORG } }],
-      workflow_versions: [
-        { list: [
-          { version_number: 1, definition, message: 'init', definition_schema_version: null },
-          { version_number: 2, definition, message: 'edit', definition_schema_version: 7 },
-        ] },
-        { insertResult: {} },
-      ],
-    })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'POST', '/workflows/wf-1/duplicate', { body: { definition_schema_version: 99 } })
-    expect(res.status).toBe(201)
-    expect(stamps(sb, 'workflows', 'insert')).toEqual([7])
-    expect(stamps(sb, 'workflow_versions', 'insert')).toEqual([null, 7])
-  })
-
-  it.each([
-    { stored: 7, label: 'a stamp' },
-    { stored: null, label: 'no stamp' },
-  ])('duplicate of a workflow never saved seeds its first version with the source\'s stamp ($label)', async ({ stored }) => {
-    const source = { name: 'Fresh', description: null, definition, folder_id: null, is_active: false, definition_schema_version: stored }
-    const sb = makeSupabase({
-      users: { single: testUser },
-      workflows: [{ single: source }, { insertResult: { id: 'wf-copy', name: 'Fresh (copy)', organization_id: USER_ORG } }],
-      workflow_versions: [{ list: [] }, { insertResult: {} }],
-    })
-    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
-    expect(res.status).toBe(201)
-    expect(stamps(sb, 'workflows', 'insert')).toEqual([stored])
-    expect(stamps(sb, 'workflow_versions', 'insert')).toEqual([stored])
+    const res = await request(app, method, path, { body })
+    expect(res.status).toBeLessThan(300)
+    expect(stampSent(sb, op)).toEqual(['absent'])
   })
 })
 
-/** Every write call the route made against the workflow tables, as [table, method]. */
-const definitionWrites = (sb: ReturnType<typeof makeSupabase>) =>
-  ['workflows', 'workflow_versions'].flatMap((t) => (sb.calls[t] ?? []).filter(([m]) => ['insert', 'update', 'upsert', 'delete'].includes(m)).map(([m]) => [t, m]))
+/** Every write the route made: each write_workflow call, and any direct write to the workflow tables, as [target, method]. */
+const definitionWrites = (sb: ReturnType<typeof makeSupabase>) => [
+  ...sb.writes.map((w) => ['write_workflow', w.p_op]),
+  ...['workflows', 'workflow_versions'].flatMap((t) => (sb.calls[t] ?? []).filter(([m]) => ['insert', 'update', 'upsert', 'delete'].includes(m)).map(([m]) => [t, m])),
+]
 
 const httpTrigger = { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } }
 
@@ -2750,7 +2608,7 @@ describe('a malformed definition is refused by a named 400 on create and save, a
   ])('PUT refuses %s by name and writes nothing', async (_, definition, named) => {
     const sb = makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow } })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition } })
     expect(res.status).toBe(400)
     const body = await res.json() as { error: string; reason: string; problems: Array<{ rule: string }> }
     expect(body.reason).toBe('definition_malformed')
@@ -2829,7 +2687,7 @@ describe('validateDefinition reports on every definition write and refuses nothi
       workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
     })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: integrationStep } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: integrationStep } })
     expect(res.status).toBe(200)
     expect(reports()).toEqual([expect.objectContaining({ writer: 'save', workflow_id: 'wf-1', lane: 'money', live: false, schema_version: 1, stamped: true, would_refuse_reasons: ['node_type_unknown'] })])
   })
@@ -2842,7 +2700,7 @@ describe('validateDefinition reports on every definition write and refuses nothi
       workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
     })
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [], edges: [], trigger: schedule } } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: { nodes: [], edges: [], trigger: schedule } } })
     expect(res.status).toBe(200)
     expect(reports()[0]).toMatchObject({ writer: 'save', would_refuse_reasons: ['trigger_not_on_lane'] })
   })
@@ -2869,7 +2727,7 @@ describe('validateDefinition reports on every definition write and refuses nothi
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-3/restore')
     expect(res.status).toBe(200)
-    const written = (sb.calls.workflows ?? []).filter(([m]) => m === 'update').map(([, a]) => (a[0] as { definition: { trigger: { type: string } } }).definition.trigger.type)
+    const written = writesOf(sb, 'restore').map((w) => (w.p_fields.definition as { trigger: { type: string } }).trigger.type)
     expect(written).toEqual(['webhook'])
     expect(reports()).toEqual([expect.objectContaining({ writer: 'restore', live: true, schema_version: 1, stamped: false, by_rule: { trigger: 1 }, would_refuse: 0 })])
   })
@@ -2921,5 +2779,139 @@ describe('validateDefinition reports on every definition write and refuses nothi
     vi.mocked(createSupabaseClient).mockReturnValue(off as unknown as ReturnType<typeof createSupabaseClient>)
     expect((await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })).status).toBe(200)
     expect(reports()).toEqual([])
+  })
+
+  it('a save stores what the report found beside its snapshot, so the flip can be decided from the table', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, is_active: false } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition: integrationStep } })
+    expect(res.status).toBe(200)
+    expect(writesOf(sb, 'save')[0].p_fields.definition_report).toMatchObject({ verdict: 'judged', would_refuse_reasons: ['node_type_unknown'] })
+  })
+
+  it('a restore stores its report beside the new snapshot too', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflow_versions: { single: { definition: integrationStep, version_number: 3, definition_schema_version: null } },
+      workflows: { single: { ...existingWorkflow, is_active: false } },
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    expect((await request(app, 'POST', '/workflows/wf-1/versions/ver-3/restore')).status).toBe(200)
+    expect(writesOf(sb, 'restore')[0].p_fields.definition_report).toMatchObject({ verdict: 'judged', stamped: false })
+  })
+})
+
+// #1947: every write of a workflow goes through write_workflow, which compares
+// the version a write was made from with the stored one. A save made on top of
+// someone else's newer save is refused by name and writes nothing, carrying the
+// current row so the page can say whose change it would have undone.
+describe('a save made from a version no longer stored is refused, never written over (#1947)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  const definition = { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: { script: 'return 1' } }], edges: [], trigger: httpTrigger }
+  const staleAnswer = (current: Record<string, unknown>) => () => ({
+    data: null,
+    error: { code: 'BP409', message: 'stale_version', details: JSON.stringify({ current, last_save_id: '1c0ffee0-0000-4000-8000-000000000001', changed_by_name: 'Bob', changed_at: '2026-10-23T14:05:00Z' }) },
+  })
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    app = await makeApp()
+  })
+
+  // Today's canvas names no version (its change waits on a design round, #1947):
+  // its save is made from the version this request read, so a write landing
+  // while the request runs is still refused rather than written over.
+  it('a save naming no version is made from the version the request read, and names no press', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, version: 9 } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
+    expect(res.status).toBe(200)
+    expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'save', p_expected_version: 9, p_save_id: null })])
+  })
+
+  it.each([
+    ['a version that is not a whole number', { expected_version: 'four', save_id: saveKeys.save_id }, 'expected_version_invalid'],
+    ['a negative version', { expected_version: -1, save_id: saveKeys.save_id }, 'expected_version_invalid'],
+    ['a press that is not a UUID', { expected_version: 4, save_id: 'press' }, 'save_id_invalid'],
+  ])('refuses %s with a named 400', async (_, keys, error) => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...keys, definition } })
+    expect(res.status).toBe(400)
+    expect(((await res.json()) as { error: string }).error).toBe(error)
+    expect(sb.writes).toEqual([])
+  })
+
+  it('sends the version the canvas was edited from and its press, never the one it read', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, version: 9 } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition } })
+    expect(res.status).toBe(200)
+    expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'save', p_expected_version: 4, p_save_id: saveKeys.save_id })])
+  })
+
+  it('answers a save that lost the race with 409, the current row, the press that won and who made it, and writes nothing else', async () => {
+    const current = { ...existingWorkflow, version: 5, name: 'Their name' }
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow } }, { write: staleAnswer(current) })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition } })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toEqual({
+      code: 'stale_version',
+      error: expect.stringMatching(/^Not saved\./),
+      current,
+      last_save_id: '1c0ffee0-0000-4000-8000-000000000001',
+      changed_by_name: 'Bob',
+      changed_at: '2026-10-23T14:05:00Z',
+    })
+    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+    expect(vi.mocked(writeAuditLog)).not.toHaveBeenCalled()
+    expect(vi.mocked(pushWorkflowToGitHub)).not.toHaveBeenCalled()
+  })
+
+  it('an unchanged save answers the stored version, so the canvas keeps the one it must send next', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, definition, version: 7 } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { ...saveKeys, definition } })
+    expect(await res.json()).toMatchObject({ no_changes: true, version: 7 })
+    expect(sb.writes).toEqual([])
+  })
+
+  it('a switch on that lost the race to a save is refused by name and switches nothing', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, is_active: false } } }, { write: staleAnswer({ ...existingWorkflow, version: 5 }) })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+    expect(res.status).toBe(409)
+    expect(await res.json()).toMatchObject({ code: 'stale_version', error: expect.stringMatching(/^Not switched on\./) })
+    expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'patch', p_expected_version: 4, p_fields: { is_active: true } })])
+    expect(vi.mocked(refreshWorkflowCaches)).not.toHaveBeenCalled()
+  })
+
+  it('a switch off and a move to a folder name no version', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: { ...existingWorkflow, is_active: true } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false, folder_id: 'f-1' } })
+    expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'patch', p_expected_version: null, p_fields: { is_active: false, folder_id: 'f-1' } })])
+  })
+
+  it('a folder of another organization is answered folder not found, as before', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow } }, { write: () => ({ data: null, error: { code: 'P0002', message: 'folder_not_found' } }) })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { folder_id: 'f-other' } })
+    expect(res.status).toBe(404)
+    expect(await res.json()).toEqual({ error: 'folder not found' })
+  })
+
+  it('a delete is a soft delete through write_workflow, naming no version', async () => {
+    const sb = makeSupabase({ users: { single: testUser } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'DELETE', '/workflows/wf-1')
+    expect(res.status).toBe(200)
+    expect(sb.writes).toEqual([expect.objectContaining({ p_op: 'delete', p_id: 'wf-1', p_expected_version: null, p_fields: {} })])
+    expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
   })
 })
