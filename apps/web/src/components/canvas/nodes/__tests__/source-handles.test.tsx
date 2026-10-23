@@ -47,6 +47,7 @@ const CONFIG: Record<NodeType, Record<string, unknown>> = {
   buyer_click_send: { partner_id: 'p' },
   buyer_click_check: { partner_id: 'p' },
   lead_validation: {},
+  app_action: { service: 'slack', action: 'slack.send-message', actionVersion: 1 },
 }
 
 /** trigger -> N, with every output of N wired to a child of its own. */

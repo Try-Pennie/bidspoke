@@ -45,6 +45,8 @@ export const CARD_KIND: Record<NodeType, 'fanout' | 'fixed' | 'single'> = {
   achieve_offers: 'single',
   // One output, the lead going on; a rejection answers and ends the run (#2589).
   lead_validation: 'single',
+  // One output, the action's result going on (#2339).
+  app_action: 'single',
 }
 
 export function cardKind(type: string | undefined): 'fanout' | 'fixed' | 'single' {

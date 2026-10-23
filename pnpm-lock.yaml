@@ -680,6 +680,9 @@ importers:
       '@bidspoke/references':
         specifier: workspace:*
         version: link:../references
+      '@bidspoke/service-catalogue':
+        specifier: workspace:*
+        version: link:../service-catalogue
     devDependencies:
       '@eslint/js':
         specifier: ^10.0.1

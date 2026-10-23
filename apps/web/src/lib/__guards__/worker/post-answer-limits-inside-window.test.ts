@@ -18,13 +18,15 @@
  *    window it would read as failed when it may have landed, so it keeps its own
  *    longer limit and a slow one is reported as unfinished, by name.
  *  - BEFORE THE ANSWER: the node decides what the answer says.
+ *  - NEVER ON MONEY: an ops only type the money lane refuses before any step
+ *    runs, so no run that answers early ever reaches it (#2339).
  *
  * It reads worker source, so it lives here rather than in `lib/__tests__/`.
  */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { NODE_TRAITS, NODE_TYPES, type NodeType } from '@bidspoke/node-types'
+import { NODE_TRAITS, NODE_TYPES, nodeTypeRunsInLane, type NodeType } from '@bidspoke/node-types'
 import { CONTINUATION_WINDOW_MS } from '../../../../../worker/src/lib/post-response-budget'
 import { REPO_ROOT, WORKER_SRC } from '../../__tests__/_scan-utils'
 
@@ -32,6 +34,7 @@ type PostAnswerKind =
   | { kind: 'bounded'; limitConstant: string; file: string }
   | { kind: 'left_to_finish'; why: string }
   | { kind: 'before_the_answer'; why: string }
+  | { kind: 'never_on_money'; why: string }
 
 const WRITE_THAT_MATTERS =
   'its outcome matters: cut short at the window it would read as failed when it may have landed, so a slow one is left to finish and is reported as unfinished, by name'
@@ -44,6 +47,7 @@ const POST_ANSWER: Record<string, PostAnswerKind> = {
   bid_group: { kind: 'before_the_answer', why: 'its winner is what the answer carries' },
   partner_bid: { kind: 'before_the_answer', why: 'its bid is what the answer carries' },
   buyer_select: { kind: 'before_the_answer', why: 'its sale decision is what the answer carries' },
+  app_action: { kind: 'never_on_money', why: 'an ops catalogue step: the money lane refuses it by name, and an ops run has no early answer' },
 }
 
 const NETWORK_TYPES: NodeType[] = NODE_TYPES.filter((t) => NODE_TRAITS[t].network)
@@ -79,6 +83,11 @@ describe('nodes that can run after the answer (#1882)', () => {
 
   it('classifies every network node type, and nothing that is not one', () => {
     expect(Object.keys(POST_ANSWER).sort()).toEqual([...NETWORK_TYPES].sort())
+  })
+
+  it('names as never on money exactly the network types the money lane cannot run', () => {
+    const never = Object.entries(POST_ANSWER).filter(([, e]) => e.kind === 'never_on_money').map(([t]) => t).sort()
+    expect(never).toEqual(NETWORK_TYPES.filter((t) => !nodeTypeRunsInLane(t, 'money')).sort())
   })
 
   for (const [type, entry] of Object.entries(POST_ANSWER)) {

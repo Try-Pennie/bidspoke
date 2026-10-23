@@ -34,6 +34,7 @@ export const SIMILAR_FALLBACK_EXCLUDED: Readonly<Partial<Record<NodeType, string
   branch_end: 'a passthrough: its duration is the chain that led to it, not its own',
   data_store: 'a KV round trip whose latency depends on the key and the colo, not the type',
   latency_gate: 'a KV round trip whose latency depends on the key and the colo, not the type',
+  app_action: 'one catalogue action against the service its own connection names, so another workflow\'s timing says nothing about it',
 }
 
 /** Whether the aggregate for this type is keyed by subtype as well. */
