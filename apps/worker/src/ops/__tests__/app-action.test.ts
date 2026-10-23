@@ -202,12 +202,13 @@ describe('app_action through the ledgered send and connectionFetch', () => {
     expect(w.d.rec.sent).toEqual([])
   })
 
-  it('a removed connection is refused by name with nothing sent, and its ledger row marked failed', async () => {
+  it('a removed connection is refused by name before anything is sent or written to the ledger', async () => {
     const w = world()
     w.d.setCopy(usableCopy(envelope, { state: 'connection_removed' }))
     const report = await w.run(definition(step()))
     expect(report).toMatchObject({ end: { outcome: 'failed', error: expect.stringContaining('connection_removed') } })
     expect(w.d.rec.sent).toEqual([])
+    expect(w.db.intents).toEqual([])
   })
 
   it('an unreadable connection copy is tried again later, since nothing was sent', async () => {

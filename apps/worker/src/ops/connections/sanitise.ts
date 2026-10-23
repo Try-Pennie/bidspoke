@@ -102,10 +102,11 @@ function scrubBytes(bytes: Uint8Array, forms: readonly string[]): Uint8Array {
     const needle = new TextEncoder().encode(form)
     const parts: Uint8Array[] = []
     let from = 0
-    let i = 0
-    while (i <= out.length - needle.length) {
+    // The native indexOf finds each candidate start, so a long answer is not walked byte by byte in script.
+    let i = out.indexOf(needle[0])
+    while (i !== -1 && i <= out.length - needle.length) {
       let match = true
-      for (let j = 0; j < needle.length; j++) {
+      for (let j = 1; j < needle.length; j++) {
         if (out[i + j] !== needle[j]) {
           match = false
           break
@@ -113,10 +114,10 @@ function scrubBytes(bytes: Uint8Array, forms: readonly string[]): Uint8Array {
       }
       if (match) {
         parts.push(out.subarray(from, i), REDACTED_BYTES)
-        i += needle.length
-        from = i
+        from = i + needle.length
+        i = out.indexOf(needle[0], from)
       } else {
-        i++
+        i = out.indexOf(needle[0], i + 1)
       }
     }
     if (parts.length === 0) continue

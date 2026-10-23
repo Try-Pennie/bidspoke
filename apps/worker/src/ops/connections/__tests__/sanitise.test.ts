@@ -167,6 +167,12 @@ describe('scrubResponse', () => {
     expect(clean.headers.get('content-type')).toBe('application/octet-stream')
   })
 
+  it('removes every occurrence, back to back ones included, and leaves a near miss that shares only its start', async () => {
+    const near = TOKEN.slice(0, -1)
+    const clean = await scrubResponse(new Response(`${TOKEN}${TOKEN} ${near}x ${TOKEN}`), [TOKEN])
+    expect(await clean.text()).toBe(`${REDACTED}${REDACTED} ${near}x ${REDACTED}`)
+  })
+
   it('answers a body with no secret in it byte for byte, and a bodiless answer as bodiless', async () => {
     const body = new Uint8Array([0, 1, 2, 250, 251])
     expect([...await bytes(await scrubResponse(new Response(body), [TOKEN]))]).toEqual([...body])
