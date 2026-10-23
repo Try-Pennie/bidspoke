@@ -109,6 +109,17 @@ describe('the shipped catalogue', () => {
     }
   })
 
+  it("folds the Anthropic action's request code into its fingerprint, and imports no npm package (#2337)", () => {
+    const lock = readImporterLock(SHIPPED.lockfile, SHIPPED.importer)
+    const reached = collectModuleImports(path.join(SHIPPED.actionsDir, 'anthropic.chat.v1.ts'), {
+      root: { importer: SHIPPED.importer, dir: PACKAGE_ROOT },
+      linkOf: (importer, name) => linkedPath(lock, importer, name),
+    })
+    expect(reached.files).toContain(path.join(SRC, 'runtime', 'anthropic', 'call.ts'))
+    expect(reached.files).toContain(path.join(SRC, 'runtime', 'failure.ts'))
+    expect(reached.packages).toEqual([])
+  })
+
   it('carries no test fixture action', () => {
     expect(catalogueActions(CATALOGUE).filter((a) => a.key.startsWith('fixture.'))).toEqual([])
     expect(RUNTIME_ACTIONS.filter((a) => a.key.startsWith('fixture.'))).toEqual([])

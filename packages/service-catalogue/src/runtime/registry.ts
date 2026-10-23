@@ -1,9 +1,11 @@
+import { ANTHROPIC_CHAT_V1 } from '../schema/services/anthropic'
 import {
   OPENAI_ADD_CONVERSATION_ITEMS_V1, OPENAI_CHAT_V1, OPENAI_CREATE_CONVERSATION_V1, OPENAI_CREATE_RESPONSE_V1, OPENAI_GET_CONVERSATION_V1,
   OPENAI_LIST_CONVERSATION_ITEMS_V1,
 } from '../schema/services/openai'
 import { SLACK_SEND_MESSAGE_V1 } from '../schema/services/slack'
 import { SNOWFLAKE_EXECUTE_SQL_QUERY_V1, SNOWFLAKE_INSERT_MULTIPLE_ROWS_V1 } from '../schema/services/snowflake'
+import { run as anthropicChatV1 } from './actions/anthropic.chat.v1'
 import { run as openaiAddConversationItemsV1 } from './actions/openai.add-conversation-items.v1'
 import { run as openaiChatV1 } from './actions/openai.chat.v1'
 import { run as openaiCreateConversationV1 } from './actions/openai.create-conversation.v1'
@@ -36,9 +38,14 @@ export const RUNTIME_ACTIONS: readonly RuntimeAction[] = [
   implement(OPENAI_ADD_CONVERSATION_ITEMS_V1, openaiAddConversationItemsV1),
   implement(OPENAI_LIST_CONVERSATION_ITEMS_V1, openaiListConversationItemsV1),
   implement(OPENAI_GET_CONVERSATION_V1, openaiGetConversationV1),
+  implement(ANTHROPIC_CHAT_V1, anthropicChatV1),
 ]
 
 /**
+ * Anthropic has no entry: a static API key needs no consent URL or refresh,
+ * and its verify is the ops Worker's free models call (apps/worker
+ * src/ops/connections/anthropic-service.ts).
+ *
  * OpenAI has no entry: a static API key needs no consent URL or refresh, and
  * its verify is the ops Worker's free models call (apps/worker
  * src/ops/connections/openai-service.ts).
