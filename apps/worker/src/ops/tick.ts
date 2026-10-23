@@ -780,7 +780,9 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
   if (fetchError !== null) {
     if (copies.length > 0) {
       bump(counts, 'copies_used_saved')
-      const oldest = Math.min(...copies.map((c) => Date.parse(c.confirmedAt)))
+      // A withdrawn copy is confirmed by no list, so its age says nothing about the others.
+      const named = copies.filter((c) => c.withdrawnAt === null)
+      const oldest = Math.min(...(named.length > 0 ? named : copies).map((c) => Date.parse(c.confirmedAt)))
       problem('workflows_fetch_failed', `The ops tick could not fetch the ops workflows from the bidding Worker (${fetchError}), so it planned from the saved copies, the oldest last confirmed ${slotLabel(oldest)}.`)
     } else {
       problem('workflows_fetch_failed', `The ops tick could not fetch the ops workflows from the bidding Worker (${fetchError}) and has no saved copy, so it planned nothing.`)
@@ -827,11 +829,13 @@ export async function runOpsTick(ports: OpsTickPorts): Promise<OpsTickReport> {
 
   // 4f. In live mode, copies last confirmed more than 6 hours ago start nothing
   // (Dan, 2026-10-22): no fire, no claim, and a page. One served list confirms
-  // every copy, so the oldest stands for them all.
+  // every copy it names, so the oldest stands for them all; a withdrawn copy is
+  // in no list, so nothing confirms it again, and it may start nothing anyway.
   const live = ports.mode === 'live'
   let liveHeld = false
-  if (live && dbNow !== null && copies.length > 0) {
-    const oldest = Math.min(...copies.map((c) => Date.parse(c.confirmedAt)))
+  const confirmable = copies.filter((c) => c.withdrawnAt === null)
+  if (live && dbNow !== null && confirmable.length > 0) {
+    const oldest = Math.min(...confirmable.map((c) => Date.parse(c.confirmedAt)))
     if (!(Date.parse(dbNow) - oldest <= COPIES_STALE_AFTER_MS)) {
       liveHeld = true
       problem('copies_stale', `The saved ops workflow copies were last confirmed ${slotLabel(oldest)}, more than 6 hours ago, so the tick fired no schedule and started no run; they start again once the bidding Worker serves the workflows.`)

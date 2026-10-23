@@ -728,6 +728,19 @@ describe('live mode (#1950): real fires, the claim and run dispatch', () => {
     expect(report.problem_keys).not.toContain('copies_stale')
   })
 
+  it('a withdrawn copy, which no served list confirms again, never holds the live tick on its own age', async () => {
+    const recent = new Date(Date.parse(DB_NOW) - 60_000).toISOString()
+    const longAgo = new Date(Date.parse(DB_NOW) - 3 * COPIES_STALE_AFTER_MS).toISOString()
+    const f = fake({
+      mode: 'live',
+      copies: [copy({ confirmedAt: recent }), copy({ workflowId: WF_B, confirmedAt: longAgo, withdrawnAt: longAgo, mayStart: false })],
+      claimed: [claimedRun(WF_A, 1)],
+    })
+    const report = await runOpsTick(f.ports)
+    expect(report.problem_keys).not.toContain('copies_stale')
+    expect(f.ranRuns).toHaveLength(1)
+  })
+
   it('one run whose dispatch throws stops none of the others (L73)', async () => {
     const f = fake({
       mode: 'live', claimed: [claimedRun(WF_A, 1), claimedRun(WF_A, 2)],
