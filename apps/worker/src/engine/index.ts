@@ -27,7 +27,7 @@ import { classifyHttpError, classifyStepError, formatCodeErrorMessage, isDetermi
 import { PartnerApiError } from './nodes/partner-bid'
 import { LeadValidationConfigFault } from './nodes/lead-validation'
 import { reportLeadValidationEvent, type LeadValidationAlertDeps } from '../lib/lead-validation-config-alert'
-import { constantsNamespacesOf } from '@bidspoke/workflow-definition'
+import { constantsNamespacesOf, type TriggerType } from '@bidspoke/workflow-definition'
 import { withRetry } from './retry'
 import { createExecutionRecord, updateExecutionRecord, flushStepLogs } from './step-logger'
 import { fieldPresenceColumns, fieldPresenceForCapture, shouldLogCapture } from './field-presence'
@@ -83,7 +83,7 @@ import { matchesMutedSignal } from '../lib/failure-rate'
 import { classifyOutageCause } from '../lib/upstream-outage'
 import { enforceSourceAssignment, SourceNotAuthorizedError, SourceAuthUnavailableError } from './source-assignment'
 import { log } from '../lib/logger'
-import { assertDefinitionRunsInLane, assertWorkflowServedInLane, laneRefusalFor, WorkflowLaneError, LaneRefusedNodeError } from './lane'
+import { assertDefinitionRunsInLane, assertTriggerStartsRunsInLane, assertWorkflowServedInLane, laneRefusalFor, WorkflowLaneError, LaneRefusedNodeError, TriggerLaneError } from './lane'
 import { runRealityOfOptions, shadowRunRefusal, stampRunReality } from './run-reality'
 import { startAtRiskWatch, startWatchSafely, runWatched, heldUntilOf } from './at-risk-writes'
 import { AtRiskLedger } from './at-risk-gap'
@@ -162,6 +162,12 @@ export interface ExecuteOptions {
   workflowId: string
   payload: unknown
   source: string
+  /**
+   * What started this run, named by the entry point that started it (#1947)
+   * and recorded as workflow_executions.trigger_type. Required, so a new entry
+   * point cannot inherit another's value: every one today is an HTTP request.
+   */
+  triggerType: TriggerType
   idempotencyKeyHeader?: string
   resumeFromExecutionId?: string
   /** Set on a fresh replay so parent_execution_id is populated without
@@ -237,7 +243,7 @@ export function moneyRuntime(supabase: SupabaseClient): EngineRuntime {
   return { lane: 'money', config: supabase, run: supabase }
 }
 
-export { WorkflowLaneError, LaneRefusedNodeError }
+export { WorkflowLaneError, LaneRefusedNodeError, TriggerLaneError }
 export { ShadowRunRefusedError } from './run-reality'
 
 /**
@@ -319,6 +325,7 @@ export async function executeWorkflow(
   // included) may carry only node types its lane can run.
   assertWorkflowServedInLane(workflowId, loaded.lane, runtime.lane)
   assertDefinitionRunsInLane(definition, runtime.lane)
+  assertTriggerStartsRunsInLane(options.triggerType, runtime.lane)
   // A shadow run must send nothing, so one carrying code nodes with no compare
   // bundle deployed for its scripts to run in is refused here (#1780, #1708).
   const shadowRefusal = shadowRunRefusal(definition, reality, options.codeBundleName)
@@ -432,6 +439,7 @@ export async function executeWorkflow(
     trace_id: traceId,
     started_at: startedAt,
     is_test: reality.isTest,
+    trigger_type: options.triggerType,
     parent_execution_id: options.parentExecutionId ?? options.resumeFromExecutionId,
     resumed_from_execution_id: options.resumeFromExecutionId,
   }, undefined, beforeFinalizeTiming)
@@ -1186,6 +1194,7 @@ export async function executeWorkflow(
           trigger_payload: payload,
           trace_id: traceId,
           is_test: reality.isTest,
+          trigger_type: options.triggerType,
           parent_execution_id: options.parentExecutionId ?? options.resumeFromExecutionId,
           resumed_from_execution_id: options.resumeFromExecutionId,
         }, () => { reconstructed = true }, writeTiming), writeTiming)

@@ -77,7 +77,7 @@ describe('executeWorkflow and the recovery lineage', () => {
     } as unknown as KVNamespace
     const e = { IDEMPOTENCY: kv, WORKFLOW_CACHE: kv, APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
     const ec = recordingContext()
-    const base = { workflowId: 'wf-1', payload: { prospect: 'p-1' }, source: 's' }
+    const base = { workflowId: 'wf-1', payload: { prospect: 'p-1' }, source: 's', triggerType: 'http_webhook' as const }
 
     await executeWorkflow(base, e, moneyRuntime(sb), ec)
     expect(lineageReads).toEqual([])
@@ -125,7 +125,7 @@ describe('executeWorkflow and the recovery lineage', () => {
     const e = { IDEMPOTENCY: kv, WORKFLOW_CACHE: kv, APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '', SECRET_ENCRYPTION_KEY: KEY } as unknown as Env
     const ec = recordingContext()
     const before = seen.length
-    await executeWorkflow({ workflowId: 'wf-1', payload: { prospect: 'p-1' }, source: 's', resumeFromExecutionId: 'replay1' }, e, moneyRuntime(sb), ec)
+    await executeWorkflow({ triggerType: 'http_webhook', workflowId: 'wf-1', payload: { prospect: 'p-1' }, source: 's', resumeFromExecutionId: 'replay1' }, e, moneyRuntime(sb), ec)
     expect(seen[before]?.holds?.held).toBe(true)
     // The finalize each run hands off is let finish before the test ends (#2120).
     await ec.settle()

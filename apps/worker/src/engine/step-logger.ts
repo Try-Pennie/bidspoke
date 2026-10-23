@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
+import type { TriggerType } from '@bidspoke/workflow-definition'
 import type { FieldPresenceMap } from './field-presence'
 import type { StepStatus, ErrorType, StepLogEntry as StepLogLine } from '../types'
 import { redactPii, parsePiiFields, redactPiiInLogMessage } from './pii-redactor'
@@ -265,6 +266,8 @@ export async function createExecutionRecord(
     trace_id: string
     started_at: string
     is_test: boolean
+    /** What started the run, named by its entry point (#1947), never assumed here. */
+    trigger_type: TriggerType
   },
   retryDelaysMs: readonly number[] = CREATE_RETRY_DELAYS_MS,
   // #1850: the clock and the run's post-response budget.
@@ -274,7 +277,7 @@ export async function createExecutionRecord(
   // via `.then().catch()`, so a thrown error surfaces as a clear "Step logs
   // failed to persist: <actual cause>" instead of a downstream FK violation
   // when the missing parent row blocks the step batch insert.
-  const row = { ...record, status: 'running', trigger_type: 'http_webhook' }
+  const row = { ...record, status: 'running' }
   let lastError: DbError | null = null
   for (let attempt = 0; attempt <= retryDelaysMs.length; attempt++) {
     if (attempt > 0) {
@@ -302,9 +305,11 @@ export async function createExecutionRecord(
 
 // #584: the create-time fields the finalize call site threads through so a
 // missing base row can be reconstructed. Mirrors createExecutionRecord's input
-// minus id/started_at (already function params) and trigger_type (constant).
+// minus id/started_at (already function params).
 export interface ExecutionCreateFields {
   workflow_id: string
+  /** The same trigger the create records (#1947), so a rebuilt row says what the lost one would have. */
+  trigger_type: TriggerType
   workflow_version_id?: string | null
   source?: string | null
   trigger_payload?: unknown
@@ -339,7 +344,7 @@ async function reconstructExecutionRecord(
   createFields: ExecutionCreateFields,
   timing?: RetryTiming,
 ): Promise<ReconstructOutcome> {
-  const row = { id, started_at, trigger_type: 'http_webhook', ...createFields, ...update }
+  const row = { id, started_at, ...createFields, ...update }
   let landedConcurrently = false
   const { error } = await withDbRetry(async () => {
     const res = await insertRowsOnce(supabase, 'workflow_executions', [row])

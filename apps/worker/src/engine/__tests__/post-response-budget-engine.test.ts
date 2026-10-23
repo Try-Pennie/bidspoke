@@ -305,7 +305,7 @@ async function run(
   const executionCtx = recordingContext()
 
   const result = await executeWorkflow(
-    { workflowId: WF_ID, payload: { lead: 1 }, source: 'engine', ...options.input },
+    { triggerType: 'http_webhook', workflowId: WF_ID, payload: { lead: 1 }, source: 'engine', ...options.input },
     env,
     { ...moneyRuntime(db.client), clock, stallSnapshotGate: new StallSnapshotGate(), ...(options.stepClock ? { stepClock: clock } : {}) },
     executionCtx,
