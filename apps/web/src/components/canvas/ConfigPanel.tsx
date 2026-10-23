@@ -3,7 +3,8 @@
 import { useState, useEffect, useMemo, useRef, useCallback, useId } from 'react'
 import dynamic from 'next/dynamic'
 
-const MonacoEditor = dynamic(() => import('@monaco-editor/react'), { ssr: false })
+// Self-hosted Monaco (#2695), loaded only when a config panel opens.
+const MonacoEditor = dynamic(() => import('./MonacoEditor'), { ssr: false })
 import type { Node } from '@xyflow/react'
 import type { CanvasNodeData, ConditionGroup, EdgeCondition, NodeType, ExecutionStep } from '@/types/workflow'
 import { formatLogTime } from '@/lib/dates'
