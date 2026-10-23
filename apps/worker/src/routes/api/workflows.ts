@@ -38,6 +38,7 @@ import { retirePartnerLastGood } from '../../lib/partner-last-good'
 import { checkDefinitionConnections, type ConnectionCheckedAction } from '../../lib/workflow-connection-check'
 import { copiedDefinitionStamp, writtenDefinitionStamp } from '../../lib/definition-stamp'
 import { writeWorkflow, type WriteWorkflowResult } from '../../lib/write-workflow'
+import { stampAppActionBinders } from '../../lib/app-action-binders'
 import { assertNever } from '@bidspoke/node-types'
 
 type Variables = AuthVariables
@@ -309,6 +310,7 @@ workflows.post('/', async (c) => {
     },
     saveId: null,
     actor: actorOf(c),
+    storedDefinition: null,
   })
   if (result.kind !== 'written') return answerUnwritten(c, result)
 
@@ -367,6 +369,8 @@ workflows.post('/:id/duplicate', async (c) => {
     fields: { name: `${source.name} (copy)`, definition: cloneDefinition },
     saveId: null,
     actor: actorOf(c),
+    // The copy has no stored definition of its own: every step is bound by whoever duplicated it (#2339).
+    storedDefinition: null,
   })
   if (result.kind !== 'written') {
     return answerUnwritten(c, result, 'Not duplicated. This workflow was saved by someone else while it was being copied. Nothing was created. Try again.')
@@ -559,7 +563,9 @@ workflows.put('/:id', async (c) => {
     nameUnchanged &&
     slackUnchanged &&
     descriptionNotTouched &&
-    jsonEqual(body.definition, existing.definition)
+    // Compared as writeWorkflow would write it: a canvas that never saw a step's binder stamp (#2339)
+    // still sends the definition unchanged.
+    jsonEqual(stampAppActionBinders(body.definition, existing.definition, actorOf(c).id), existing.definition)
   ) {
     const copyRefreshed = await copyCleared(async () => {
       await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
@@ -605,6 +611,7 @@ workflows.put('/:id', async (c) => {
     fields,
     saveId: typeof body.save_id === 'string' ? body.save_id : null,
     actor: actorOf(c),
+    storedDefinition: existing.definition,
   })
   if (result.kind !== 'written') return answerUnwritten(c, result)
   const updated = result.workflow
@@ -829,6 +836,7 @@ workflows.patch('/:id', async (c) => {
     fields,
     saveId: null,
     actor: actorOf(c),
+    storedDefinition: null,
   })
   if (result.kind !== 'written') {
     return answerUnwritten(c, result, 'Not switched on. This workflow was saved by someone else while it was being switched on, so the definition checked is no longer the one stored. Nothing was changed. Try again.')
@@ -876,7 +884,7 @@ workflows.delete('/:id', async (c) => {
 
   // Through write_workflow (#1947). A workflow that never existed, belongs to
   // another organization, or was already deleted is a 404 (#588).
-  const result = await writeWorkflow(supabase, { op: 'delete', orgId, workflowId: id, expectedVersion: null, fields: {}, saveId: null, actor: actorOf(c) })
+  const result = await writeWorkflow(supabase, { op: 'delete', orgId, workflowId: id, expectedVersion: null, fields: {}, saveId: null, actor: actorOf(c), storedDefinition: null })
   if (result.kind !== 'written') return answerUnwritten(c, result)
 
   const copyRefreshed = await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`)
@@ -1004,7 +1012,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   // 404 (not 403) to avoid leaking which workflow ids exist, matching siblings.
   const { data: owner, error: ownerError } = await supabase
     .from('workflows')
-    .select('id, name, is_active, lane, version')
+    .select('id, name, is_active, lane, version, definition')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -1065,6 +1073,8 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
     fields: { version_id: versionId, definition: restored, definition_report: report },
     saveId: null,
     actor: actorOf(c),
+    // A restored step keeps its binder only where its connection is the one bound now (#2339).
+    storedDefinition: owner.definition,
   })
   if (result.kind !== 'written') {
     return answerUnwritten(c, result, 'Not restored. This workflow was saved by someone else while it was being restored. Nothing was changed. Look at the latest version, then restore again if you still want to.')

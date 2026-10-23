@@ -242,7 +242,7 @@ describe('exchangeOAuthCode: a person\'s consent, handed to the connection\'s ob
 
   it('a new connection with no copy on ops yet may exchange', async () => {
     const objects = tokenObjects({ ok: true, generation: 2 })
-    const d = makeDoubles(keys, { state: 'not_found', connectionId: CONN, service: null, generation: null, envelope: null, publicConfig: null, target: null, servedAt: null, serveUntil: null, dbNow: new Date(T0).toISOString() }, () => [])
+    const d = makeDoubles(keys, { state: 'not_found', connectionId: CONN, service: null, generation: null, envelope: null, publicConfig: null, target: null, servedAt: null, serveUntil: null, dbNow: new Date(T0).toISOString(), ownerUserId: null }, () => [])
     await expect(exchangeOAuthCode({ tokens: objects, readCopy: d.deps.readCopy }, SERVICE, exchangeCall(appCandidate()))).resolves.toEqual({ generation: 2, account: null })
   })
 

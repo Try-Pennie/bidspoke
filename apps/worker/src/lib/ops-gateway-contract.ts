@@ -152,6 +152,13 @@ export interface ServedOpsConnection {
   public_config: Record<string, unknown>
   /** The declared host and account identity, or null for none. */
   target: Record<string, unknown> | null
+  /**
+   * The users.id a person bound connection acts as (service_connections.user_id),
+   * or null for a company connection (#2339). A person's own account may be used
+   * only by its owner, which the ops executor checks against who bound the step.
+   * A bidding Worker older than this field serves none, read as null.
+   */
+  owner_user_id: string | null
   /** served_at plus CONNECTION_SERVE_WINDOW_MS. */
   serve_until: string
 }
@@ -1161,6 +1168,9 @@ export function servedConnectionProblem(row: unknown, servedAt: string): string 
     const target = clearFieldProblem(row.target, 'a target')
     if (target) return target
   }
+  if (row.owner_user_id !== undefined && row.owner_user_id !== null && (typeof row.owner_user_id !== 'string' || !UUID.test(row.owner_user_id))) {
+    return 'an owner that is not a uuid'
+  }
   if (!isTime(row.serve_until)) return 'a serve_until that is not a time'
   const until = Date.parse(row.serve_until)
   const served = Date.parse(servedAt)
@@ -1208,6 +1218,7 @@ export function parseServedOpsConnections(raw: unknown): { list: ServedOpsConnec
       envelope: parseSealedEnvelope(r.envelope, 'the envelope'),
       public_config: r.public_config as Record<string, unknown>,
       target: r.target as Record<string, unknown> | null,
+      owner_user_id: typeof r.owner_user_id === 'string' ? r.owner_user_id : null,
       serve_until: r.serve_until as string,
     })
   })
