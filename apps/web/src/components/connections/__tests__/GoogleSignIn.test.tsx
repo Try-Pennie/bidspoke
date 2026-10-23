@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { ConnectionList, ConnectionListRow } from '@/lib/api'
 import { ConnectionsScreen, type ConnectionsClock, type ConnectionsSource } from '../ConnectionsScreen'
 import { GoogleSignInReturn, NO_SIGN_IN, signInReturnOf } from '../GoogleSignInReturn'
+import { GoogleSignInPreview } from '@/app/dev/google-sign-in/GoogleSignInPreview'
 
 const T0 = Date.parse('2026-10-20T16:00:00Z')
 const LINK = 'https://accounts.google.com/o/oauth2/v2/auth?state=s'
@@ -166,6 +167,15 @@ describe('the callback page', () => {
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/^You did not allow Bidspoke/))
     expect(screen.getByRole('link', { name: 'Back to Connections' }).getAttribute('href')).toBe('/connections')
     expect(open).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['working', /^Finishing the sign in with Google/],
+    ['failed', /^You did not allow Bidspoke/],
+    ['empty', /^This page holds no sign in/],
+  ] as const)('the screenshot preview draws the %s state with no call to the Worker', async (frame, words) => {
+    render(<GoogleSignInPreview frame={frame} />)
+    await waitFor(() => expect((screen.queryByRole('alert') ?? screen.getByRole('status')).textContent).toMatch(words))
   })
 
   it('an address with no sign in asks nothing and says so', () => {
