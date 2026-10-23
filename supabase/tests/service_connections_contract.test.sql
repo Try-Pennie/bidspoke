@@ -2,8 +2,8 @@
 -- migration 20261019150000.
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh builds
--- by replaying every migration from empty, never production. The tokens and the
--- ciphertexts below are planted placeholders, not credentials.
+-- by replaying every migration from empty, never production. The ciphertexts
+-- below are planted placeholders, not credentials.
 --
 -- WHAT IT PROVES:
 --   A. The old UNIQUE (organization_id, service_type) is gone and the new

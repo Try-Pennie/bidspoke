@@ -2,9 +2,9 @@
 -- migration 20261020200000.
 --
 -- WHERE THIS RUNS: only on the throwaway database scripts/sql-suite/run.sh builds
--- by replaying every migration from empty, never production. The envelopes and
--- tokens below are planted placeholders shaped like the seal's, not ciphertext
--- of anything.
+-- by replaying every migration from empty, never production. The envelopes
+-- below are planted placeholders shaped like the seal's, not ciphertext of
+-- anything.
 --
 -- WHAT IT PROVES (each case inside a block that is rolled back):
 --   A. The service_type CHECK takes every service key of the catalogue's shape,
