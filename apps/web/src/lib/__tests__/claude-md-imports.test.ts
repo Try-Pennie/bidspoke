@@ -37,7 +37,10 @@ describe('CLAUDE.md imports (#2606)', () => {
   const imports = importsOf(text)
 
   it('does not import TODO.md, and links it instead', () => {
-    expect(imports, 'CLAUDE.md imports TODO.md whole into every session; link it').not.toContain('TODO.md')
+    // Resolved and case folded, so any spelling of the planning list's path is caught (#2606).
+    const planningList = path.join(REPO_ROOT, 'TODO.md').toLowerCase()
+    const resolved = imports.map((p) => path.resolve(REPO_ROOT, p).toLowerCase())
+    expect(resolved, 'CLAUDE.md imports TODO.md whole into every session; link it').not.toContain(planningList)
     expect(text).toMatch(/\[TODO\.md\]\(\.\/TODO\.md\)/)
   })
 
