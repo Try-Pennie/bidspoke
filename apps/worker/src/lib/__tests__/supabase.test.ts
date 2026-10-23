@@ -82,11 +82,11 @@ describe('createSupabaseClient prod-write guard', () => {
 
     // The rpc surface is guarded by an ALLOWLIST of read only names (#1409, L96).
     // The old comment claimed every rpc was read only; record_archive_day_measurement
-    // already wrote, and save_buyer_profile is a user facing write path, so a local
+    // already wrote, and save_partner_page is a user facing write path, so a local
     // run pointed at production could write through either with no opt in.
     it('rejects a mutating rpc by name', () => {
       const supabase = createSupabaseClient(env)
-      expect(() => supabase.rpc('save_buyer_profile' as never, {} as never)).toThrow(/ALLOW_PROD_WRITES/)
+      expect(() => supabase.rpc('save_partner_page' as never, {} as never)).toThrow(/ALLOW_PROD_WRITES/)
       expect(() => supabase.rpc('record_archive_day_measurement' as never, {} as never)).toThrow(/record_archive_day_measurement/)
     })
 
@@ -98,12 +98,12 @@ describe('createSupabaseClient prod-write guard', () => {
 
   it('allows a mutating rpc in local dev when ALLOW_PROD_WRITES opts in explicitly', () => {
     const supabase = createSupabaseClient(envWith({ LOCAL_DEV: 'true', ALLOW_PROD_WRITES: 'true' }))
-    expect(() => supabase.rpc('save_buyer_profile' as never, {} as never)).not.toThrow()
+    expect(() => supabase.rpc('save_partner_page' as never, {} as never)).not.toThrow()
   })
 
   it('leaves rpc alone in production, where LOCAL_DEV is unset', () => {
     const supabase = createSupabaseClient(envWith({}))
-    expect(() => supabase.rpc('save_buyer_profile' as never, {} as never)).not.toThrow()
+    expect(() => supabase.rpc('save_partner_page' as never, {} as never)).not.toThrow()
   })
 
   it('allows writes in local dev when ALLOW_PROD_WRITES opts in explicitly', () => {

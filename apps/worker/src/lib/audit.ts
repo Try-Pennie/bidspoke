@@ -5,7 +5,7 @@ export type AuditEntityType =
   | 'partner_config'
   | 'partner_bid_config'
   // A buyer's eligibility profile and a sale to a buyer (#1409). The profile row
-  // is written by the database itself (save_buyer_profile and the table triggers);
+  // is written by the database itself (save_partner_page and the table triggers);
   // a settlement is written here by the settle route (#1412), after the ledger
   // has recorded it. One vocabulary either way.
   | 'buyer_profile'

@@ -14,7 +14,7 @@
 --    delete with a written reason;
 --  - what a notice carries: ids, versions, column names, whether the change had
 --    no actor, and never a field value;
---  - who sends: a hand write, save_partner_config, the legacy profile save, the
+--  - who sends: a hand write, save_partner_config, the
 --    page save (exactly one notice, with its save_id and client_id), a partner
 --    delete (one, and the cascade and its sub-account IDs are silent), change_partner_uuid (not direct),
 --    and nothing for a last_probe_response only change or a save that changed
@@ -64,6 +64,9 @@ BEGIN;
 
 CREATE TEMP TABLE IF NOT EXISTS suite_cases (name text PRIMARY KEY, ran_at timestamptz NOT NULL DEFAULT now());
 DELETE FROM suite_cases;
+
+-- Profile saves go through save_partner_page (helpers/save_profile.sql, #2187).
+\i /sql-suite-fixtures/tests/save_profile.sql
 
 -- Every bidspoke.* setting a writer leaves for the rest of its transaction. One
 -- transaction holds every case here, where production gives each RPC its own.
@@ -116,9 +119,9 @@ BEGIN
   VALUES ('33333333-3333-3333-3333-0000213500b1', '11111111-1111-1111-1111-000021350002', 'Other Buyer', 'other-buyer-2135', 'buyer', true);
   INSERT INTO public.partner_configs (id, organization_id, name, slug, partner_type, is_active)
   VALUES ('33333333-3333-3333-3333-0000213500c1', '11111111-1111-1111-1111-000021350003', 'Monitor Source', 'monitor-source-2135', 'source', true);
-  -- Partners 3 and 4 carry a profile, saved through the legacy function.
+  -- Partners 3 and 4 carry a profile, saved through the page save (helpers/save_profile.sql).
   FOR n IN 3..4 LOOP
-    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-000021350001', format('33333333-3333-3333-3333-00002135000%s', n)::uuid, 0,
+    PERFORM pg_temp.save_profile('11111111-1111-1111-1111-000021350001', format('33333333-3333-3333-3333-00002135000%s', n)::uuid, 0,
       '{"sold_on":"offer","is_enabled":false,"priority":1,"allowed_states":["CA"],"debt_min":10000,"debt_max":50000,"windows":[{"day_of_week":1,"opens_minute":540,"closes_minute":1020}],"blackout_dates":[],"tiers":[{"population":"engine","debt_from":10000,"debt_to":null,"multiplier":0.01}]}'::jsonb,
       '22222222-2222-2222-2222-00002135000a', 'erin@example.test');
   END LOOP;
@@ -512,32 +515,15 @@ BEGIN
 END
 $do$;
 
--- ── 10. The legacy profile save: exactly one notice ──────────────────────────
-DO $do$
-DECLARE
-  v jsonb;
-  v_version integer;
-BEGIN
-  PERFORM pg_temp.clear_notices();
-  SELECT version INTO v_version FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-000021350003';
-  PERFORM public.save_buyer_profile('11111111-1111-1111-1111-000021350001', '33333333-3333-3333-3333-000021350003', v_version,
-    '{"sold_on":"offer","is_enabled":false,"priority":2,"allowed_states":["CA"],"debt_min":10000,"debt_max":50000,"windows":[],"blackout_dates":[],"tiers":[{"population":"engine","debt_from":10000,"debt_to":null,"multiplier":0.01}]}'::jsonb,
-    '22222222-2222-2222-2222-00002135000a', 'erin@example.test');
-  v := pg_temp.one_notice('11111111-1111-1111-1111-000021350001', 'case 10');
-  IF v ->> 'kind' IS DISTINCT FROM 'profile' OR (v ->> 'direct')::boolean IS DISTINCT FROM false OR (v ->> 'profile_version')::integer IS DISTINCT FROM v_version + 1 THEN
-    RAISE EXCEPTION 'case 10: unexpected notice %', v;
-  END IF;
-  INSERT INTO suite_cases(name) VALUES ('legacy profile save: one notice');
-END
-$do$;
+-- (Case 10, the old save_buyer_profile's single notice, went with that function, #2187.)
 
--- ── 11. A profile created by the legacy save: one notice ─────────────────────
+-- ── 11. A profile created by a page save: one notice ─────────────────────────
 DO $do$
 DECLARE
   v jsonb;
 BEGIN
   PERFORM pg_temp.clear_notices();
-  PERFORM public.save_buyer_profile('11111111-1111-1111-1111-000021350001', '33333333-3333-3333-3333-000021350005', 0,
+  PERFORM pg_temp.save_profile('11111111-1111-1111-1111-000021350001', '33333333-3333-3333-3333-000021350005', 0,
     '{"sold_on":"offer","is_enabled":false,"priority":1,"allowed_states":["CA"],"debt_min":10000,"debt_max":50000,"windows":[],"blackout_dates":[],"tiers":[]}'::jsonb,
     '22222222-2222-2222-2222-00002135000a', 'erin@example.test');
   v := pg_temp.one_notice('11111111-1111-1111-1111-000021350001', 'case 11');
@@ -549,7 +535,7 @@ BEGIN
   DELETE FROM public.partner_configs WHERE id = '33333333-3333-3333-3333-000021350005';
   v := pg_temp.one_notice('11111111-1111-1111-1111-000021350001', 'case 11 hand delete');
   IF v ->> 'kind' IS DISTINCT FROM 'deleted' OR (v ->> 'direct')::boolean IS DISTINCT FROM true THEN RAISE EXCEPTION 'case 11: hand delete %', v; END IF;
-  INSERT INTO suite_cases(name) VALUES ('legacy profile create: one notice');
+  INSERT INTO suite_cases(name) VALUES ('profile create: one notice');
 END
 $do$;
 
@@ -779,7 +765,7 @@ DO $do$
 DECLARE n integer;
 BEGIN
   SELECT count(*) INTO n FROM suite_cases;
-  IF n IS DISTINCT FROM 20 THEN RAISE EXCEPTION 'partner_page_notice.test.sql: expected 20 cases, % ran', n; END IF;
+  IF n IS DISTINCT FROM 19 THEN RAISE EXCEPTION 'partner_page_notice.test.sql: expected 19 cases, % ran', n; END IF;
   RAISE NOTICE 'partner_page_notice.test.sql: % cases passed', n;
 END
 $do$;

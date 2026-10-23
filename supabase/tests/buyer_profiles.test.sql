@@ -22,6 +22,9 @@
 CREATE TEMP TABLE IF NOT EXISTS suite_cases (name text PRIMARY KEY, ran_at timestamptz NOT NULL DEFAULT now());
 DELETE FROM suite_cases;
 
+-- Profile saves go through save_partner_page (helpers/save_profile.sql, #2187).
+\i /sql-suite-fixtures/tests/save_profile.sql
+
 -- ── Fixtures ─────────────────────────────────────────────────────────────────
 -- Fixed ids so every case can name them. Deleted first so a rerun starts clean.
 DO $do$
@@ -62,7 +65,6 @@ DECLARE
   bad text[] := '{}';
 BEGIN
   FOREACH fn IN ARRAY ARRAY[
-    'public.save_buyer_profile(uuid, uuid, integer, jsonb, uuid, text)',
     'public.record_buyer_sale(jsonb)',
     'public.delete_partner_config(uuid, uuid, uuid, text, jsonb)',
     'public.rename_partner_step_namespace(uuid, uuid, jsonb, uuid, text, jsonb)',
@@ -121,7 +123,7 @@ DECLARE
   doc jsonb;
   n int;
 BEGIN
-  doc := public.save_buyer_profile(
+  doc := pg_temp.save_profile(
     '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330001', 0,
     '{"is_enabled": false, "priority": null, "allowed_states": ["ND","SD"], "debt_min": 20000, "debt_max": 60000, "loan_amount_min": 2500,
       "hourly_lead_cap": 10, "daily_lead_cap": 50, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
@@ -144,7 +146,7 @@ DECLARE
   doc jsonb;
   n int;
 BEGIN
-  doc := public.save_buyer_profile(
+  doc := pg_temp.save_profile(
     '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330001', 1,
     '{"is_enabled": false, "priority": null, "allowed_states": ["SD","ND"], "debt_min": 20000, "debt_max": 60000, "loan_amount_min": 2500,
       "hourly_lead_cap": 10, "daily_lead_cap": 50, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
@@ -165,7 +167,7 @@ DECLARE
   doc jsonb;
   ch jsonb;
 BEGIN
-  doc := public.save_buyer_profile(
+  doc := pg_temp.save_profile(
     '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330001', 1,
     '{"is_enabled": false, "priority": null, "allowed_states": ["ND","SD"], "debt_min": 20000, "debt_max": 60000, "loan_amount_min": 2500,
       "hourly_lead_cap": 10, "daily_lead_cap": 50, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
@@ -176,7 +178,7 @@ BEGIN
   IF (doc->>'version')::int IS DISTINCT FROM 2 THEN RAISE EXCEPTION 'version after one change: %', doc->>'version'; END IF;
   SELECT changes INTO ch FROM public.audit_log WHERE entity_type = 'buyer_profile' AND entity_id = '33333333-3333-3333-3333-333333330001' ORDER BY changed_at DESC LIMIT 1;
   -- Paths only: the keys starting with an underscore are bookkeeping, such as the
-  -- legacy route's _route tag (#2133).
+  -- page save's _actor.
   IF (SELECT count(*) FROM jsonb_object_keys(ch) k WHERE k NOT LIKE '\_%') IS DISTINCT FROM 1 THEN RAISE EXCEPTION 'expected one changed path, got %', ch; END IF;
   IF (ch->'tiers.engine.40000.multiplier'->>'old')::numeric IS DISTINCT FROM 0.0012 OR (ch->'tiers.engine.40000.multiplier'->>'new')::numeric IS DISTINCT FROM 0.0013 THEN
     RAISE EXCEPTION 'multiplier path old and new wrong: %', ch;
@@ -193,7 +195,7 @@ DECLARE
   detail text;
 BEGIN
   BEGIN
-    PERFORM public.save_buyer_profile(
+    PERFORM pg_temp.save_profile(
       '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330001', 1,
       '{"is_enabled": false, "priority": null, "allowed_states": ["ND"], "debt_min": 20000, "debt_max": 60000, "loan_amount_min": 2500,
         "hourly_lead_cap": 10, "daily_lead_cap": 50, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
@@ -204,7 +206,8 @@ BEGIN
   EXCEPTION WHEN SQLSTATE 'BP409' THEN
     GET STACKED DIAGNOSTICS msg = MESSAGE_TEXT, detail = PG_EXCEPTION_DETAIL;
     IF msg IS DISTINCT FROM 'stale_version' THEN RAISE EXCEPTION 'wrong message: %', msg; END IF;
-    IF (detail::jsonb->>'version')::int IS DISTINCT FROM 2 THEN RAISE EXCEPTION 'refusal does not carry the current document: %', detail; END IF;
+    -- The page save's refusal carries both halves; the profile is the current document.
+    IF (detail::jsonb->'profile'->>'version')::int IS DISTINCT FROM 2 THEN RAISE EXCEPTION 'refusal does not carry the current document: %', detail; END IF;
   END;
   -- Nothing changed underneath.
   IF (SELECT version FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-333333330001') IS DISTINCT FROM 2 THEN RAISE EXCEPTION 'stale save changed the row'; END IF;
@@ -219,7 +222,7 @@ DECLARE
   msg text;
 BEGIN
   BEGIN
-    PERFORM public.save_buyer_profile(
+    PERFORM pg_temp.save_profile(
       '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330002', 0,
       '{"is_enabled": false, "priority": null, "allowed_states": ["WY"], "debt_min": 20000, "debt_max": 60000, "loan_amount_min": null,
         "hourly_lead_cap": null, "daily_lead_cap": null, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
@@ -232,7 +235,7 @@ BEGIN
     IF msg IS DISTINCT FROM 'tiers_gap' THEN RAISE EXCEPTION 'wrong message for gap: %', msg; END IF;
   END;
   BEGIN
-    PERFORM public.save_buyer_profile(
+    PERFORM pg_temp.save_profile(
       '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330002', 0,
       '{"is_enabled": false, "priority": null, "allowed_states": ["WY"], "debt_min": null, "debt_max": null, "loan_amount_min": null,
         "hourly_lead_cap": null, "daily_lead_cap": null, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
@@ -594,7 +597,7 @@ DECLARE
   doc jsonb;
   changes jsonb;
 BEGIN
-  doc := public.save_buyer_profile(
+  doc := pg_temp.save_profile(
     '11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', 0,
     '{"sold_on": "click", "is_enabled": true, "priority": null, "allowed_states": ["DE","HI"], "debt_min": 20000, "debt_max": null, "loan_amount_min": 2500,
       "hourly_lead_cap": null, "daily_lead_cap": 50, "hourly_spend_cap_cents": null, "daily_spend_cap_cents": null,
@@ -619,7 +622,7 @@ DECLARE
 BEGIN
   SELECT version INTO v FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-333333330003';
   BEGIN
-    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
+    PERFORM pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
       body || '{"tiers": [{"population": "engine", "debt_from": 0, "debt_to": null, "multiplier": 0.001}]}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
     RAISE EXCEPTION 'a click buyer was saved with pricing';
   EXCEPTION WHEN SQLSTATE 'BP422' THEN
@@ -627,7 +630,7 @@ BEGIN
     IF msg IS DISTINCT FROM 'click_buyer_priced' THEN RAISE EXCEPTION 'wrong refusal for tiers: %', msg; END IF;
   END;
   BEGIN
-    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
+    PERFORM pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
       body || '{"hourly_lead_cap": 10}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
     RAISE EXCEPTION 'a click buyer was saved with an hourly cap';
   EXCEPTION WHEN SQLSTATE 'BP422' THEN
@@ -635,7 +638,7 @@ BEGIN
     IF msg IS DISTINCT FROM 'click_buyer_cap_unsupported' THEN RAISE EXCEPTION 'wrong refusal for an hourly cap: %', msg; END IF;
   END;
   BEGIN
-    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
+    PERFORM pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
       body || '{"daily_spend_cap_cents": 100000}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
     RAISE EXCEPTION 'a click buyer was saved with a spend cap';
   EXCEPTION WHEN SQLSTATE 'BP422' THEN
@@ -669,7 +672,7 @@ BEGIN
   doc := public.buyer_profile_document('33333333-3333-3333-3333-333333330001');
   IF doc->>'sold_on' IS DISTINCT FROM 'offer' THEN RAISE EXCEPTION 'an existing profile did not default to offer: %', doc->>'sold_on'; END IF;
   BEGIN
-    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330001', v,
+    PERFORM pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330001', v,
       (doc - 'partner_id' - 'version') || '{"sold_on": "click", "tiers": [], "hourly_lead_cap": null}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
     RAISE EXCEPTION 'an offer buyer with stored tiers was switched to click';
   EXCEPTION WHEN SQLSTATE 'BP422' THEN
@@ -681,7 +684,7 @@ BEGIN
   SELECT version INTO v FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-333333330003';
   doc := public.buyer_profile_document('33333333-3333-3333-3333-333333330003');
   BEGIN
-    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
+    PERFORM pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
       (doc - 'partner_id' - 'version') || '{"sold_on": "offer", "is_enabled": false}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
     RAISE EXCEPTION 'a buyer with stored accept rules was switched';
   EXCEPTION WHEN SQLSTATE 'BP422' THEN
@@ -690,11 +693,11 @@ BEGIN
   END;
   -- With neither stored, the switch goes through.
   UPDATE public.partner_configs SET accept_signals = '[]'::jsonb, updated_by = '22222222-2222-2222-2222-222222222222' WHERE id = '33333333-3333-3333-3333-333333330003';
-  doc := public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
+  doc := pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
     (doc - 'partner_id' - 'version') || '{"sold_on": "offer", "is_enabled": false}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
   IF doc->>'sold_on' IS DISTINCT FROM 'offer' THEN RAISE EXCEPTION 'the switch did not land: %', doc->>'sold_on'; END IF;
   -- And back again, so the later cases see a click buyer.
-  doc := public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
+  doc := pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
     (doc - 'partner_id' - 'version') || '{"sold_on": "click"}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
   IF doc->>'sold_on' IS DISTINCT FROM 'click' THEN RAISE EXCEPTION 'the switch back did not land: %', doc->>'sold_on'; END IF;
   INSERT INTO suite_cases(name) VALUES ('sold_on locked while tiers or accept rules are stored');
@@ -711,11 +714,11 @@ BEGIN
   SELECT version INTO v FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-333333330003';
   doc := public.buyer_profile_document('33333333-3333-3333-3333-333333330003');
   -- A Worker deployed before this migration sends no sold_on; the click buyer must stay a click buyer.
-  doc := public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
+  doc := pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
     (doc - 'partner_id' - 'version' - 'sold_on') || '{"daily_lead_cap": 60}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
   IF doc->>'sold_on' IS DISTINCT FROM 'click' THEN RAISE EXCEPTION 'a save without sold_on changed the kind: %', doc->>'sold_on'; END IF;
   BEGIN
-    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
+    PERFORM pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
       (doc - 'partner_id' - 'version') || '{"sold_on": "phone"}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
     RAISE EXCEPTION 'an unknown sold_on was saved';
   EXCEPTION WHEN SQLSTATE 'BP422' THEN
@@ -737,7 +740,7 @@ BEGIN
   SELECT version INTO v FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-333333330003';
   doc := public.buyer_profile_document('33333333-3333-3333-3333-333333330003');
   IF NOT (doc ? 'click_delivery') OR doc->'click_delivery' IS DISTINCT FROM 'null'::jsonb THEN RAISE EXCEPTION 'a profile without delivery does not say null: %', doc; END IF;
-  doc := public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
+  doc := pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', v,
     (doc - 'partner_id' - 'version') || jsonb_build_object('click_delivery', delivery), '22222222-2222-2222-2222-222222222222', 'suite@example.test');
   IF doc->'click_delivery' IS DISTINCT FROM delivery THEN RAISE EXCEPTION 'the document does not carry the delivery: %', doc->'click_delivery'; END IF;
   IF (doc->>'version')::int IS DISTINCT FROM v + 1 THEN RAISE EXCEPTION 'the version did not move: %', doc->>'version'; END IF;
@@ -758,15 +761,15 @@ BEGIN
   doc := public.buyer_profile_document('33333333-3333-3333-3333-333333330003');
   kept := doc->'click_delivery';
   -- A Worker or form from before #1639 sends no click_delivery: the stored one must survive.
-  doc := public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
+  doc := pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
     (doc - 'partner_id' - 'version' - 'click_delivery') || '{"daily_lead_cap": 70}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
   IF doc->'click_delivery' IS DISTINCT FROM kept THEN RAISE EXCEPTION 'a save without the key blanked the delivery: %', doc->'click_delivery'; END IF;
   IF (doc->>'daily_lead_cap')::int IS DISTINCT FROM 70 THEN RAISE EXCEPTION 'the rest of that save did not land: %', doc; END IF;
-  doc := public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
+  doc := pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
     (doc - 'partner_id' - 'version') || '{"click_delivery": null}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
   IF doc->'click_delivery' IS DISTINCT FROM 'null'::jsonb THEN RAISE EXCEPTION 'an explicit null did not clear it: %', doc->'click_delivery'; END IF;
   -- Put it back for case 28.
-  doc := public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
+  doc := pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
     (doc - 'partner_id' - 'version') || jsonb_build_object('click_delivery', kept), '22222222-2222-2222-2222-222222222222', 'suite@example.test');
   INSERT INTO suite_cases(name) VALUES ('click delivery kept when absent, cleared by null');
 END
@@ -782,7 +785,7 @@ BEGIN
   doc := public.buyer_profile_document('33333333-3333-3333-3333-333333330003');
   -- Switching to offer while a delivery is stored, even by a caller that omits the key.
   BEGIN
-    PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
+    PERFORM pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
       (doc - 'partner_id' - 'version' - 'click_delivery') || '{"sold_on": "offer", "is_enabled": false}'::jsonb, '22222222-2222-2222-2222-222222222222', 'suite@example.test');
     RAISE EXCEPTION 'an offer buyer kept a click delivery';
   EXCEPTION WHEN SQLSTATE 'BP422' THEN
@@ -805,7 +808,7 @@ BEGIN
     '{"routes": [{"name": "A ", "url": "https://a.example/a", "states": []}], "success_pattern": "(?<id>x)"}'::jsonb
   ] LOOP
     BEGIN
-      PERFORM public.save_buyer_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
+      PERFORM pg_temp.save_profile('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333330003', (doc->>'version')::int,
         (doc - 'partner_id' - 'version') || jsonb_build_object('click_delivery', bad), '22222222-2222-2222-2222-222222222222', 'suite@example.test');
       RAISE EXCEPTION 'a malformed delivery was saved: %', bad;
     EXCEPTION WHEN SQLSTATE 'BP422' THEN

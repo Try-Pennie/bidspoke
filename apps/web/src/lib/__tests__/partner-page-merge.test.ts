@@ -117,7 +117,7 @@ describe('mergeThreeWay', () => {
   it('a merge the validator refuses becomes a conflict, judged against the partner rules as the merge leaves them', () => {
     // Base is a disabled profile with accept rules; I enable it, they clear the
     // accept rules. Each side alone is valid; together an enabled offer buyer
-    // has no accept rules, which save_buyer_profile refuses.
+    // has no accept rules, which save_partner_page refuses.
     const disabled = { ...base, profile: { ...profile, is_enabled: false } }
     const mine: PageHalves = { partner, profile: { ...profile, is_enabled: true } }
     const theirs: PageHalves = { partner: { ...partner, accept_signals: [] }, profile: { ...profile, is_enabled: false, version: 4 } }

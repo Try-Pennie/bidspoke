@@ -80,7 +80,7 @@ A click buyer's addresses and success reply live on its buyer profile, under **C
 
 The node posts to the route listing the lead's state, else the catch-all. A lead with no readable state goes to the catch-all. The output records `route_name`, `route_matched` (`state`, `catch_all` or `no_state`), `route_state`, and `url_source` and `pattern_source`, which are `profile` (step rows written before #1671 can read `node`). A profile with no delivery is refused by name, as step 4 lists. A delivery that does not pass the shared rules fails the step as `click_delivery_invalid` before any claim.
 
-The profile form refuses a delivery the node would refuse (the shared validator in `@bidspoke/buyer-profile`, run by the form and the profile API), `save_buyer_profile` refuses its structure again as `click_delivery_invalid` and refuses one on a buyer sold on the offer as `click_delivery_on_offer_buyer`, and a save that sends no `click_delivery` keeps the stored one. Before saving a change, the form says where clicks from each state will go instead of where they went, and the profile history shows each route and the success reply old to new.
+The profile form refuses a delivery the node would refuse (the shared validator in `@bidspoke/buyer-profile`, run by the form and the profile API), `save_partner_page` refuses its structure again as `click_delivery_invalid` and refuses one on a buyer sold on the offer as `click_delivery_on_offer_buyer`, and a save that sends no `click_delivery` keeps the stored one. Before saving a change, the form says where clicks from each state will go instead of where they went, and the profile history shows each route and the success reply old to new.
 
 ### Why the partner is stored by id
 

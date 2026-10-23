@@ -28,7 +28,10 @@ case "$SQL_SUITE_PROJECT" in
     # /sql-suite-fixtures/money-gate/definitions/, which
     # workflow_connection_check.test.sql saves through the workflows trigger to
     # prove a money workflow's definition is stored exactly as sent.
-    SUITE_FIXTURES=("$ROOT/packages/buyer-profile/fixtures" "$ROOT/apps/worker/src/partner-delete/labels" "$ROOT/apps/worker/money-gate/fixtures")
+    # The suites' shared SQL helpers (#2187), at /sql-suite-fixtures/tests/,
+    # which a suite loads with \i: save_profile.sql saves a profile through
+    # save_partner_page for the suites that used save_buyer_profile.
+    SUITE_FIXTURES=("$ROOT/packages/buyer-profile/fixtures" "$ROOT/apps/worker/src/partner-delete/labels" "$ROOT/apps/worker/money-gate/fixtures" "$ROOT/supabase/tests/helpers")
     ;;
   ops)
     SUITE_MIGRATIONS="$ROOT/supabase-ops/supabase/migrations"

@@ -35,7 +35,6 @@ BEGIN
     'public.save_partner_config(uuid, uuid, integer, jsonb, uuid, uuid, text, text)',
     -- PR2 (#2133)
     'public._apply_buyer_profile(uuid, uuid, jsonb, uuid, text, jsonb)',
-    'public.save_buyer_profile(uuid, uuid, integer, jsonb, uuid, text)',
     'public.save_partner_page(uuid, uuid, integer, jsonb, integer, jsonb, uuid, uuid, text, text)',
     -- #2151
     'public.rename_partner_step_namespace(uuid, uuid, jsonb, uuid, text, jsonb)',
@@ -78,7 +77,6 @@ DECLARE
 BEGIN
   FOREACH fn IN ARRAY ARRAY[
     'public.save_partner_config(uuid, uuid, integer, jsonb, uuid, uuid, text, text)',
-    'public.save_buyer_profile(uuid, uuid, integer, jsonb, uuid, text)',
     'public.save_partner_page(uuid, uuid, integer, jsonb, integer, jsonb, uuid, uuid, text, text)',
     'public.rename_partner_step_namespace(uuid, uuid, jsonb, uuid, text, jsonb)',
     -- PR4 (#2135)
@@ -141,11 +139,24 @@ BEGIN
 END
 $do$;
 
+-- save_buyer_profile was the old profile save route's function. The page saves
+-- through save_partner_page since #2133, the route was retired, and the
+-- function is dropped (#2187), so nothing can write a profile outside the page
+-- save's version check of both halves.
+DO $do$
+BEGIN
+  IF to_regprocedure('public.save_buyer_profile(uuid, uuid, integer, jsonb, uuid, text)') IS NOT NULL THEN
+    RAISE EXCEPTION 'save_buyer_profile still exists';
+  END IF;
+  INSERT INTO suite_cases(name) VALUES ('save_buyer_profile is dropped');
+END
+$do$;
+
 DO $do$
 DECLARE n integer;
 BEGIN
   SELECT count(*) INTO n FROM suite_cases;
-  IF n IS DISTINCT FROM 3 THEN RAISE EXCEPTION 'partner_page_function_grants.test.sql: expected 3 cases, % ran', n; END IF;
+  IF n IS DISTINCT FROM 4 THEN RAISE EXCEPTION 'partner_page_function_grants.test.sql: expected 4 cases, % ran', n; END IF;
   RAISE NOTICE 'partner_page_function_grants.test.sql: % cases passed', n;
 END
 $do$;

@@ -35,6 +35,9 @@ BEGIN;
 CREATE TEMP TABLE IF NOT EXISTS suite_cases (name text PRIMARY KEY, ran_at timestamptz NOT NULL DEFAULT now());
 DELETE FROM suite_cases;
 
+-- Profile saves go through save_partner_page (helpers/save_profile.sql, #2187).
+\i /sql-suite-fixtures/tests/save_profile.sql
+
 CREATE FUNCTION pg_temp.reset_settings() RETURNS void LANGUAGE sql AS $$
   SELECT set_config(k, '', true) FROM unnest(ARRAY['bidspoke.actor_id', 'bidspoke.actor_email', 'bidspoke.actor_name', 'bidspoke.actor_job',
     'bidspoke.audit_handled', 'bidspoke.updated_by_actor', 'bidspoke.notice_updated_by', 'bidspoke.audit_reason', 'bidspoke.audit_context']) k;
@@ -84,7 +87,7 @@ DECLARE
 BEGIN
   PERFORM pg_temp.reset_settings();
   EXECUTE 'SET ROLE service_role';
-  PERFORM public.save_buyer_profile('11111111-1111-1111-1111-000021410001', '33333333-3333-3333-3333-000021410002', 0,
+  PERFORM pg_temp.save_profile('11111111-1111-1111-1111-000021410001', '33333333-3333-3333-3333-000021410002', 0,
     '{"sold_on":"offer","is_enabled":false,"priority":1,"allowed_states":["CA"],"debt_min":10000,"debt_max":50000,"windows":[{"day_of_week":1,"opens_minute":540,"closes_minute":1020}],"blackout_dates":[],"tiers":[{"population":"engine","debt_from":10000,"debt_to":null,"multiplier":0.01}]}'::jsonb,
     '22222222-2222-2222-2222-00002141000a', 'erin@example.test');
   PERFORM set_config('bidspoke.audit_handled', '', true);
@@ -190,7 +193,7 @@ DECLARE
 BEGIN
   PERFORM pg_temp.reset_settings();
   -- A profile for the buyer, saved by a person (its own audit row).
-  PERFORM public.save_buyer_profile('11111111-1111-1111-1111-000021410001', '33333333-3333-3333-3333-000021410001', 0,
+  PERFORM pg_temp.save_profile('11111111-1111-1111-1111-000021410001', '33333333-3333-3333-3333-000021410001', 0,
     '{"sold_on":"offer","is_enabled":false,"priority":1,"allowed_states":["CA"],"debt_min":10000,"debt_max":50000,"windows":[{"day_of_week":1,"opens_minute":540,"closes_minute":1020}],"blackout_dates":[],"tiers":[{"population":"engine","debt_from":10000,"debt_to":null,"multiplier":0.01}]}'::jsonb,
     '22222222-2222-2222-2222-00002141000a', 'erin@example.test');
   PERFORM pg_temp.reset_settings();
@@ -262,7 +265,7 @@ BEGIN
 
   SELECT version INTO v FROM public.buyer_profiles WHERE partner_id = '33333333-3333-3333-3333-000021410001';
   SELECT count(*) INTO n FROM public.audit_log WHERE entity_type = 'buyer_profile' AND entity_id = '33333333-3333-3333-3333-000021410001';
-  PERFORM public.save_buyer_profile('11111111-1111-1111-1111-000021410001', '33333333-3333-3333-3333-000021410001', v,
+  PERFORM pg_temp.save_profile('11111111-1111-1111-1111-000021410001', '33333333-3333-3333-3333-000021410001', v,
     '{"sold_on":"offer","is_enabled":false,"priority":2,"allowed_states":["CA"],"debt_min":10000,"debt_max":50000,"windows":[{"day_of_week":1,"opens_minute":540,"closes_minute":1020}],"blackout_dates":[],"tiers":[{"population":"engine","debt_from":10000,"debt_to":null,"multiplier":0.01}]}'::jsonb,
     '22222222-2222-2222-2222-00002141000a', 'erin@example.test');
   IF (SELECT count(*) FROM public.audit_log WHERE entity_type = 'buyer_profile' AND entity_id = '33333333-3333-3333-3333-000021410001') IS DISTINCT FROM (n + 1)::bigint THEN

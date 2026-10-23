@@ -68,7 +68,7 @@ export interface PartnerRulesForValidation {
  * What is stored for a profile that already exists, for the one rule that needs
  * it (#1541): the kind cannot be switched while tiers or accept rules are
  * stored, because an offer buyer's sales were priced and judged by them and a
- * click buyer must never carry them. save_buyer_profile enforces the same rule
+ * click buyer must never carry them. save_partner_page enforces the same rule
  * under its row lock; this copy lets the form say so beside the control.
  */
 export interface StoredKind {
