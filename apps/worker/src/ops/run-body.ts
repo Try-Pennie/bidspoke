@@ -1,15 +1,11 @@
 /**
- * What a run executes (#1950): the body invokeRun runs for one workflow version's
- * definition. PR 5 of B3 walks the definition with the ops lane executor, every
- * egress through ctx.send; until it lands, no ops executor exists, so a run
- * started in live mode ends failed by name rather than doing anything. The tick
- * ships in observe mode, which claims and starts nothing, so this is reached
- * only once Dan switches the tick to live.
+ * What a run executes (#1950): the body invokeRun runs for one workflow
+ * version's definition, the ops walk (run-walk.ts) with the step handlers
+ * registered for the ops lane (OPS_STEP_HANDLERS, where #2339 adds app_action).
  */
 import type { RunBody } from './run-invocation'
+import { OPS_STEP_HANDLERS, walkOpsDefinition } from './run-walk'
 
-export const NO_EXECUTOR_ERROR = 'no ops executor runs a workflow definition yet (#1950 PR 5), so the run did nothing and ended failed'
-
-export function runBodyFor(_definition: Record<string, unknown>): RunBody {
-  return () => Promise.resolve({ outcome: 'failed', error: NO_EXECUTOR_ERROR })
+export function runBodyFor(definition: Record<string, unknown>): RunBody {
+  return (ctx) => walkOpsDefinition(definition, ctx, OPS_STEP_HANDLERS)
 }

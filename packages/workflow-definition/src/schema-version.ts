@@ -8,9 +8,11 @@
  * meaning what it meant when it was written.
  *
  * The stamp is the definition_schema_version column of workflows and
- * workflow_versions, written only by the Worker (apps/worker/src/lib/
- * definition-stamp.ts): a definition a request writes gets this build's
- * version, and a copied one keeps the stamp of the row it came from. A row
+ * workflow_versions, written only through the write_workflow database
+ * function (#1947): a definition a request writes gets this build's version,
+ * which the Worker sends (apps/worker/src/lib/definition-stamp.ts), and a
+ * copied one keeps the stamp of the row it came from, which the function
+ * reads itself and refuses from a caller. A row
  * written before the column existed is unstamped, and an unstamped one is
  * version 1, the rules as they stood before any stamp.
  *

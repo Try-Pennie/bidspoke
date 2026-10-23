@@ -115,7 +115,7 @@ BEGIN
   -- Named, not left to default to 'slack': the row is flipped to ops_key below,
   -- and the alert name is reserved from ops rows (#2332).
   INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config, credential_enc, sealed_for)
-  VALUES ('11111111-1111-1111-1111-111111112331', 'slack', 'scg-row', 'bot_token', '', '{"default_channel":"#a"}', 'placeholder-ciphertext', 'bidding_ring');
+  VALUES ('11111111-1111-1111-1111-111111112331', 'slack', 'scg-row', 'bot_token', NULL, '{"default_channel":"#a"}', 'placeholder-ciphertext', 'bidding_ring');
 
   refused := false;
   BEGIN
@@ -132,8 +132,8 @@ BEGIN
   IF NOT refused THEN RAISE EXCEPTION 'a ciphertext with no sealed_for was accepted'; END IF;
 
   UPDATE public.service_connections SET sealed_for = 'ops_key' WHERE organization_id = '11111111-1111-1111-1111-111111112331';
-  -- A row with no ciphertext (every row before the backfill) needs no sealed_for.
-  UPDATE public.service_connections SET credential_enc = NULL, sealed_for = NULL WHERE organization_id = '11111111-1111-1111-1111-111111112331';
+  -- A row with no ciphertext (a legacy Worker secret row, its one stored credential the secret name) needs no sealed_for.
+  UPDATE public.service_connections SET credential_enc = NULL, sealed_for = NULL, cf_secret_key = 'CONN_PLANTED' WHERE organization_id = '11111111-1111-1111-1111-111111112331';
 
   DELETE FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-111111112331';
   DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-111111112331';
