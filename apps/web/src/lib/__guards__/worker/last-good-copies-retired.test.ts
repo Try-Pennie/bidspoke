@@ -392,7 +392,7 @@ describe('every handler writing partner_configs retires the partner copy (#1846)
 
   it('the enumeration finds the partner routes, the delete function and the rename function (L1)', () => {
     expect(found.handlers).toEqual(expect.arrayContaining([
-      'apps/worker/src/routes/api/partners.ts PUT /:id',
+      'apps/worker/src/routes/api/partners.ts PUT /:id/page',
       'apps/worker/src/routes/api/partner-delete.ts DELETE /:id',
       'apps/worker/src/routes/api/workflows.ts POST /:id/rename-apply',
     ]))

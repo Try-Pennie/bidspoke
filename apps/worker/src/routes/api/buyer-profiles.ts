@@ -4,7 +4,6 @@
  *
  *   GET  /partners/:id/buyer-profile          the document, the partner's accept rules, other sellers,
  *                                             and the other buyers sold on the offer (#2324)
- *   PUT  /partners/:id/buyer-profile          validate, save_buyer_profile, invalidate the cache
  *   GET  /partners/:id/buyer-usage            the ledger's counts for the current Eastern hour and day,
  *                                             or a click sold buyer's clicks today on the Pacific day
  *
@@ -12,16 +11,12 @@
  * bypasses RLS. Any allowlisted member of the org may call these, the same as the
  * partner routes (the escalated decision on #1407).
  *
- * The save is versioned: a stale expected_version is a 409 carrying the CURRENT
- * document (L717), so the form can show both sides and never discards the
- * person's edits by instruction. Every other named refusal from the function
- * keeps its own status and name (L11).
+ * The profile is saved with the partner record by PUT /partners/:id/page
+ * (#2133, partners.ts); the checks that save shares with the profile are
+ * exported from here.
  */
 import { Hono, type Context } from 'hono'
 import {
-  documentToProfile,
-  parseProfileDocument,
-  validateProfile,
   WIRED_POPULATIONS,
   easternDayStartUtc,
   PACIFIC,
@@ -38,12 +33,11 @@ import { createSupabaseClient } from '../../lib/supabase'
 import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
 import { fetchUpTo } from '../../lib/paginate'
 import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
-import { readBuyerSale, readBuyerSoldOn, refreshBuyerProfilesCache } from '../../lib/buyer-profile-loader'
+import { readBuyerSale, readBuyerSoldOn } from '../../lib/buyer-profile-loader'
 import { BuyerLedgerClient, ClickCounterClient } from '../../lib/buyer-object-clients'
 import { workflowsUsingPartner } from '../../lib/partner-workflow-finder'
 import { readOrgWorkflows } from '../../lib/org-workflows'
 import { inputGapsForProfileSave } from '../../lib/buyer-input-coverage'
-import type { Json } from '../../types/database'
 
 const buyerProfiles = new Hono<{ Bindings: Env; Variables: AuthVariables }>()
 
@@ -152,98 +146,6 @@ buyerProfiles.get('/:id/buyer-profile', async (c) => {
     other_sellers: finder(id),
     offer_buyers: offerBuyers,
   })
-})
-
-// ── Save ──────────────────────────────────────────────────────────────────────
-
-interface SaveBody {
-  expected_version?: unknown
-  profile?: unknown
-}
-
-/** The KV key a day's calls of the legacy profile save are counted under (#2133), by UTC date. */
-export function legacyBuyerProfileCallsKey(now: number): string {
-  return `legacy-buyer-profile-calls:${new Date(now).toISOString().slice(0, 10)}`
-}
-/** Long enough to read back well past the seven clear days the route's removal waits for. */
-const LEGACY_CALLS_TTL_SECONDS = 60 * 86400
-
-/**
- * One more call of this route today (#2133). The page saves through PUT
- * /partners/:id/page now; this route is kept one release for pages opened
- * before, and is removed after seven consecutive days with no key here, never
- * on a log search, because Cloudflare log searches over 7 days miss lines on
- * this project (L171). A get then put can lose a count to a concurrent call,
- * which cannot turn a day with calls into a day without. A failed write is
- * logged and never fails the save; the call's audit row carries _route too.
- */
-async function countLegacyCall(kv: KVNamespace): Promise<void> {
-  const key = legacyBuyerProfileCallsKey(Date.now())
-  try {
-    const current = Number(await kv.get(key)) || 0
-    await kv.put(key, String(current + 1), { expirationTtl: LEGACY_CALLS_TTL_SECONDS })
-  } catch (err) {
-    console.error(`[buyer-profile] could not count a legacy call in ${key}: ${err instanceof Error ? err.message : 'non Error thrown'}`)
-  }
-}
-
-buyerProfiles.put('/:id/buyer-profile', async (c) => {
-  const { orgId, userId, email } = c.get('user')
-  const id = c.req.param('id')
-  const supabase = createSupabaseClient(c.env)
-  await countLegacyCall(c.env.WORKFLOW_CACHE)
-
-  const loaded = await loadPartner(c, supabase, id, orgId)
-  if ('response' in loaded) return loaded.response
-
-  const body = await c.req.json<SaveBody>()
-  if (typeof body.expected_version !== 'number' || !Number.isInteger(body.expected_version) || body.expected_version < 0) {
-    return c.json({ error: 'expected_version_required', message: 'A save names the version it was edited from, so two people cannot overwrite each other unknowingly.' }, 400)
-  }
-  const parsed = parseProfileDocument(body.profile)
-  if (!parsed.ok) return c.json({ error: 'profile_malformed', errors: parsed.errors }, 400)
-
-  const profile = documentToProfile({ ...parsed.document, partner_id: id })
-  const validation = validateProfile(profile, {
-    acceptSignals: acceptSignalsOf(loaded.partner),
-    clickUrl: loaded.partner.click_url ?? null,
-    externalRoutingCode: typeof loaded.partner.external_routing_code === 'number' ? loaded.partner.external_routing_code : null,
-  })
-  if (!validation.ok) return c.json({ error: 'profile_invalid', errors: validation.errors }, 422)
-
-  const inUse = await refuseSwitchAwayFromClick(c, supabase, orgId, id, profile.soldOn)
-  if (inUse) return inUse
-  const unread = await refuseUnreadRules(c, supabase, orgId, id, profile)
-  if (unread) return unread
-
-  const { partner_id: _partner, version: _version, ...toSave } = parsed.document
-  const { data, error } = await supabase.rpc('save_buyer_profile', {
-    p_org: orgId,
-    p_partner: id,
-    p_expected_version: body.expected_version,
-    p_profile: toSave as unknown as Json,
-    p_actor: userId,
-    p_actor_email: email,
-  })
-  if (error) {
-    const detail = (error as { details?: string | null }).details ?? null
-    if (error.code === 'BP409') {
-      let current: unknown = null
-      try {
-        current = detail ? JSON.parse(detail) : null
-      } catch {
-        current = null
-      }
-      return c.json({ error: 'stale_version', current }, 409)
-    }
-    if (error.code === 'BP422') return c.json({ error: error.message, detail }, 422)
-    if (error.code === 'P0002') return c.json({ error: 'Partner not found' }, 404) // db-guard-ok: P0002 is the function's own named refusal for no such partner in this org, raised after the lookup, never a transport or query error
-    return dbError(c, error)
-  }
-
-  // Rebuild the snapshot now, so the next lead is served warm (#1492).
-  await refreshBuyerProfilesCache(orgId, c.env.WORKFLOW_CACHE, supabase)
-  return c.json({ profile: data })
 })
 
 /**

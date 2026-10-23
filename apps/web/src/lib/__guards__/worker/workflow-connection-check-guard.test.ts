@@ -16,6 +16,14 @@
  * definition write outside any route handler fails too, since no request is
  * there to answer by name.
  *
+ * Since #1947 every write is a writeWorkflow call (lib/write-workflow.ts, the
+ * write_workflow database function), which writes a save's snapshot and its
+ * row in one transaction, so the trigger's refusal now takes the snapshot back
+ * with it. The check is still asked first, so the refusal is answered by name
+ * before anything is sent. A writeWorkflow call counts as a write, and one
+ * whose op writes a definition (create, duplicate, save, restore) as a
+ * definition write.
+ *
  * Switching a workflow on (#2576, build PR 9) writes no definition, so the
  * trigger, which fires on a write of the definition, never judges it: a
  * workflow switched on while it names a connection that is gone would fail on
@@ -37,9 +45,17 @@ const SWITCHES_ON = /\.is_active\s*=(?!=)|\bis_active\s*:(?!\s*false\b)/
 
 interface Write { at: number; table: string; writesDefinitionArg: boolean }
 
-/** Every write chain on workflows or workflow_versions. */
+/** A writeWorkflow call and its op, the first key of the call it is sent (#1947). */
+const WRITE_WORKFLOW = /\bwriteWorkflow\s*\(\s*\w+\s*,\s*\{\s*op\s*:\s*(['"`])(\w+)\1/g
+/** The writeWorkflow ops that write a definition. */
+const DEFINITION_OPS = new Set(['create', 'duplicate', 'save', 'restore'])
+
+/** Every write chain on workflows or workflow_versions, and every writeWorkflow call. */
 function writesOf(src: string): Write[] {
   const out: Write[] = []
+  for (const m of src.matchAll(WRITE_WORKFLOW)) {
+    out.push({ at: m.index ?? 0, table: 'workflows', writesDefinitionArg: DEFINITION_OPS.has(m[2]) })
+  }
   for (const m of src.matchAll(/\.from\(\s*(['"`])(workflows|workflow_versions)\1\s*\)/g)) {
     const calls = chainCallsAfter(src, (m.index ?? 0) + m[0].length)
     if (!calls.some((call) => WRITES.has(call.name))) continue
@@ -180,6 +196,16 @@ describe('the scanner', () => {
     expect(scanSource('p.ts', asked).unchecked).toEqual([])
     const off = planted(["  await supabase.from('workflows').update({ deleted_at: now, is_active: false }).eq('id', id)"])
     expect(scanSource('p.ts', off).switchers).toEqual([])
+  })
+
+  it('counts a writeWorkflow call as a write, and its definition ops as definition writes (#1947)', () => {
+    const save = "  const result = await writeWorkflow(supabase, {\n    op: 'save',\n    orgId,\n  })"
+    expect(scanSource('p.ts', planted([save])).unchecked).toEqual(['p.ts PUT /:id'])
+    expect(scanSource('p.ts', planted([check, save])).unchecked).toEqual([])
+    const del = "  const result = await writeWorkflow(supabase, { op: 'delete', orgId })"
+    expect(scanSource('p.ts', planted([del])).definitionWriters).toEqual([])
+    const on = planted(['  fields.is_active = body.is_active', "  const result = await writeWorkflow(supabase, { op: 'patch', orgId })"])
+    expect(scanSource('p.ts', on).unchecked).toEqual(['p.ts PUT /:id'])
   })
 
   it('does not count a check that sits only in a comment', () => {
