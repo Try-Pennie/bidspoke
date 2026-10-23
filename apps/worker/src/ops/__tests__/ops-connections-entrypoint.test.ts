@@ -8,7 +8,7 @@
  * 40 ms. So the first test here is that OpsConnections stays exported from the
  * ops Worker's main module, with exactly the methods bidding calls
  * (OPS_CONNECTIONS_METHODS, the Google list's three among them since #2338
- * build PR 6); a rename or a removal fails here before it can deploy. That a real binding
+ * build PR 6, and signInClient since build PR 13); a rename or a removal fails here before it can deploy. That a real binding
  * reaches it inside workerd is ops-connections.workers.test.ts.
  *
  * The rest: every answer is a value (a rejection across an RPC call reads as a
