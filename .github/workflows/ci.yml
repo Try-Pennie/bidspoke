@@ -6,6 +6,18 @@ on:
   pull_request:
     branches: [main]
 
+# A newer commit on a pull request cancels that pull request's older CI run, so
+# a branch update never leaves two full runs holding or awaiting runner slots
+# (measured 2026-10-22: 14 CI runs queued at once). A push to main is never
+# cancelled: its group is its own commit and cancel-in-progress is false for it,
+# because its security steps check live systems for that commit. Safe on a pull
+# request only because no job here writes anything there (L671). Grouped by
+# workflow name, since groups are shared across the repository and CI must not
+# cancel the outage drill. Guard: ci-cancels-superseded-pr-runs.test.ts.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Every job sets timeout-minutes. GitHub's default is 360, so without one a
 # stalled step does not fail, it HANGS, and a hang is indistinguishable from
 # slowness: the PR sits at "pending" and nobody has a reason to look (L110).
