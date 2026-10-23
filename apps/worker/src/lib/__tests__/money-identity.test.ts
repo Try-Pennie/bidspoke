@@ -13,7 +13,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { OpsGatewayContractError, parseServedMoneyIdentities } from '../ops-gateway-contract'
 import {
-  MONEY_IDENTITY_JOB, measureMoneyIdentity, moneySalesforceIdentityKey, readMoneyIdentities, type MoneyIdentityDeps,
+  MONEY_IDENTITY_JOB, MONEY_SALESFORCE_IDENTITY_KEY, measureMoneyIdentity, readMoneyIdentities, type MoneyIdentityDeps,
 } from '../money-identity'
 
 const ORG = '6f1c2b8e-0d3a-4c1e-9a55-1b2c3d4e5f60'
@@ -59,7 +59,7 @@ beforeEach(() => {
 })
 afterEach(() => vi.restoreAllMocks())
 
-const kept = (store: ReturnType<typeof kv>) => JSON.parse(store.m.get(moneySalesforceIdentityKey(ORG))!)
+const kept = (store: ReturnType<typeof kv>) => JSON.parse(store.m.get(MONEY_SALESFORCE_IDENTITY_KEY)!)
 
 describe('measureMoneyIdentity', () => {
   it('makes one userinfo call with money\'s own token and keeps the org id and username it answers', async () => {
@@ -72,11 +72,19 @@ describe('measureMoneyIdentity', () => {
     expect(JSON.stringify([...store.m.values()])).not.toContain(TOKEN)
   })
 
+  it('keeps the one reading under one key for the whole lane, naming the organization that holds money\'s credentials (#2690)', async () => {
+    const { d, store } = deps()
+    await measureMoneyIdentity(d)
+    expect([...store.m.keys()]).toEqual([MONEY_SALESFORCE_IDENTITY_KEY])
+    expect(MONEY_SALESFORCE_IDENTITY_KEY).toBe('money-identity:salesforce')
+    expect(kept(store).organization_id).toBe(ORG)
+  })
+
   it('names the job the heartbeat registry knows it by', () => {
     expect(MONEY_IDENTITY_JOB).toBe('money-identity')
   })
 
-  const previous = { [moneySalesforceIdentityKey(ORG)]: JSON.stringify({ organization_id: ORG, sf_org_id: SF_ORG, username: USERNAME, measured_at: '2026-10-17T13:00:04.000Z' }) }
+  const previous = { [MONEY_SALESFORCE_IDENTITY_KEY]: JSON.stringify({ organization_id: ORG, sf_org_id: SF_ORG, username: USERNAME, measured_at: '2026-10-17T13:00:04.000Z' }) }
 
   it.each([
     ['no organization holds money\'s Salesforce credentials', { credentialOrg: async () => ({ orgId: null, error: 'no_org_holds_salesforce_credentials' }) }, /no_org_holds_salesforce_credentials/],
@@ -96,7 +104,7 @@ describe('measureMoneyIdentity', () => {
     expect(r.errors).toHaveLength(1)
     expect(r.errors[0]).toMatch(why)
     expect(r.errors[0]).not.toContain(TOKEN)
-    expect(store.m.get(moneySalesforceIdentityKey(ORG))).toBe(previous[moneySalesforceIdentityKey(ORG)])
+    expect(store.m.get(MONEY_SALESFORCE_IDENTITY_KEY)).toBe(previous[MONEY_SALESFORCE_IDENTITY_KEY])
     expect(logged.join('\n')).not.toContain(TOKEN)
   })
 
@@ -128,27 +136,37 @@ describe('measureMoneyIdentity', () => {
 })
 
 describe('readMoneyIdentities, what OpsGateway.moneyIdentities serves', () => {
-  const store = () => kv({ [moneySalesforceIdentityKey(ORG)]: JSON.stringify({ organization_id: ORG, sf_org_id: SF_ORG, username: USERNAME, measured_at: '2026-10-18T13:00:05.000Z' }) })
+  const reading = { organization_id: ORG, sf_org_id: SF_ORG, username: USERNAME, measured_at: '2026-10-18T13:00:05.000Z' }
+  const store = () => kv({ [MONEY_SALESFORCE_IDENTITY_KEY]: JSON.stringify(reading) })
+  const salesforce = { sf_org_id: SF_ORG, username: USERNAME, measured_at: '2026-10-18T13:00:05.000Z' }
 
-  it('answers the organization asked about with its reading, which the ops side reads back', async () => {
+  it('answers the organization holding money\'s credentials with its reading, which the ops side reads back', async () => {
     const served = await readMoneyIdentities(store(), ORG, NOW)
-    expect(served).toEqual({ organization_id: ORG, served_at: new Date(NOW).toISOString(), salesforce: { sf_org_id: SF_ORG, username: USERNAME, measured_at: '2026-10-18T13:00:05.000Z' } })
+    expect(served).toEqual({ organization_id: ORG, served_at: new Date(NOW).toISOString(), salesforce })
     expect(parseServedMoneyIdentities(served, ORG)).toEqual(served)
   })
 
-  it('finds the reading for an organization id asked in capitals, since the writer keys on the lowercase id', async () => {
-    const served = await readMoneyIdentities(store(), ORG.toUpperCase(), NOW)
-    expect(served.organization_id).toBe(ORG)
-    expect(served.salesforce).toEqual({ sf_org_id: SF_ORG, username: USERNAME, measured_at: '2026-10-18T13:00:05.000Z' })
+  it('answers another organization with money\'s one reading too, under that organization, since money\'s login is the same whoever adds a connection (#2690, Dan\'s option 1)', async () => {
+    const served = await readMoneyIdentities(store(), OTHER_ORG, NOW)
+    expect(served).toEqual({ organization_id: OTHER_ORG, served_at: new Date(NOW).toISOString(), salesforce })
+    expect(parseServedMoneyIdentities(served, OTHER_ORG).salesforce).toEqual(salesforce)
   })
 
-  it('answers another organization with no reading, never this one\'s', async () => {
-    expect(await readMoneyIdentities(store(), OTHER_ORG, NOW)).toEqual({ organization_id: OTHER_ORG, served_at: new Date(NOW).toISOString(), salesforce: null })
+  it('answers an organization id asked in capitals in lower case, as the ops side asks', async () => {
+    const served = await readMoneyIdentities(store(), OTHER_ORG.toUpperCase(), NOW)
+    expect(served.organization_id).toBe(OTHER_ORG)
+    expect(served.salesforce).toEqual(salesforce)
   })
 
-  it('refuses a reading kept under this organization that names another', async () => {
-    const s = kv({ [moneySalesforceIdentityKey(OTHER_ORG)]: JSON.stringify({ organization_id: ORG, sf_org_id: SF_ORG, username: USERNAME, measured_at: '2026-10-18T13:00:05.000Z' }) })
-    await expect(readMoneyIdentities(s, OTHER_ORG, NOW)).rejects.toThrow(/another organization/)
+  it('answers every organization unmeasured while there is no reading, never a pass', async () => {
+    for (const org of [ORG, OTHER_ORG]) {
+      expect(await readMoneyIdentities(kv(), org, NOW)).toEqual({ organization_id: org, served_at: new Date(NOW).toISOString(), salesforce: null })
+    }
+  })
+
+  it('refuses a kept reading that names no organization holding money\'s credentials', async () => {
+    const s = kv({ [MONEY_SALESFORCE_IDENTITY_KEY]: JSON.stringify({ ...reading, organization_id: 'pennie' }) })
+    await expect(readMoneyIdentities(s, OTHER_ORG, NOW)).rejects.toThrow(/no organization/)
   })
 
   it.each([
@@ -159,8 +177,8 @@ describe('readMoneyIdentities, what OpsGateway.moneyIdentities serves', () => {
   })
 
   it('refuses an unreadable kept reading by name rather than answering unmeasured', async () => {
-    await expect(readMoneyIdentities(kv({ [moneySalesforceIdentityKey(ORG)]: '{not json' }), ORG, NOW)).rejects.toThrow(/unreadable/)
-    await expect(readMoneyIdentities(kv({ [moneySalesforceIdentityKey(ORG)]: JSON.stringify({ organization_id: ORG, sf_org_id: 'x' }) }), ORG, NOW)).rejects.toThrow(/Salesforce org id/)
+    await expect(readMoneyIdentities(kv({ [MONEY_SALESFORCE_IDENTITY_KEY]: '{not json' }), ORG, NOW)).rejects.toThrow(/unreadable/)
+    await expect(readMoneyIdentities(kv({ [MONEY_SALESFORCE_IDENTITY_KEY]: JSON.stringify({ organization_id: ORG, sf_org_id: 'x' }) }), ORG, NOW)).rejects.toThrow(/Salesforce org id/)
   })
 })
 

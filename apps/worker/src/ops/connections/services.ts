@@ -11,8 +11,8 @@
  * bot (slack-service.ts, Dan's decision 6: never the alerts bot), then OpenAI
  * (openai-service.ts, a project's API key) and Anthropic (anthropic-service.ts,
  * a workspace's API key). Salesforce
- * (salesforce-service.ts) is registered ahead of its actions, so verify and
- * lookups reach the ops pool, which grants them only within the caps Dan
+ * (salesforce-service.ts) was registered ahead of its actions, which followed in
+ * #2337's Salesforce pull request; verify, lookups and steps reach the ops pool, which grants them only within the caps Dan
  * approved for the org (Decision 11, ops migration 20261020010000: the
  * trypennie org alone so far) and refuses every other one by name
  * (sf_cap_unset, or sf_org_unmeasured before verify has measured the org).
