@@ -21,8 +21,12 @@ const THREE_IN_A_ROW = [
   // The sf_limits sweep's passing failure while the org's reading is still
   // young (#2340): three runs of the sweep in a row, not three ticks.
   'sf_limits_read_failing',
+  // The frozen definition copies (#1950): every version not held is asked again next tick.
+  'definitions_failed', 'definition_save_failed',
 ]
 const AT_ONCE = [
+  // The frozen definition copies (#1950): a person must decide, and no later tick changes it.
+  'definition_conflict', 'definition_unserved', 'definition_refused', 'definitions_backlog',
   'db_not_configured', 'not_configured', 'secrets_unchecked', 'agreement_check_failed', 'queue_disagreement', 'workflow_refused',
   'workflows_too_many', 'copies_read_limit', 'schedule_refused', 'schedule_no_version', 'slot_missed', 'dispatch_failed',
   'connections_list_unreadable', 'connection_refused', 'connections_too_many', 'connection_copies_expired', 'connections_step_failed',

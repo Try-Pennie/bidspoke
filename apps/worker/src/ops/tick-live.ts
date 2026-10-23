@@ -25,7 +25,8 @@ import { raceDeadline } from '../lib/alert-claim'
 import { opsConnectionKeyProblems, type SealRegistry } from './connection-key'
 import { createOpsSupabaseClient, OpsDatabaseConfigError, type OpsSupabaseClient } from './ops-db'
 import {
-  claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, purgeScheduleObservations, readConnectionCheckTargets, readSfLimitsTargets,
+  claimOpsSweep, dueQueueDepth, expireOverdueRunRequests, opsNow, purgeExpiredConnectionTombstones, purgeScheduleObservations, readConnectionCheckTargets,
+  readMissingWorkflowDefinitions, saveWorkflowDefinition, readSfLimitsTargets,
   readWorkflowCopies, recordConnectionCheck, recordConnectionTombstone, recordScheduleObservation, recordSfBudgetReading, runQueueDisagreements,
   saveConnectionCopies, saveWorkflowCopies, sweepExpiredLeases, sweepSfLeases, type OpsRpcOptions,
 } from './ops-writes'
@@ -63,6 +64,8 @@ function databaseFor(client: OpsSupabaseClient, rpc: OpsRpcOptions | undefined):
     expireRuns: (limit) => expireOverdueRunRequests(client, limit, rpc),
     purgeTombstones: (limit) => purgeExpiredConnectionTombstones(client, limit, rpc),
     purgeObservations: (limit) => purgeScheduleObservations(client, limit, rpc),
+    missingDefinitions: (limit) => readMissingWorkflowDefinitions(client, limit, rpc),
+    saveDefinition: (org, workflowId, versionNumber, definition) => saveWorkflowDefinition(client, org, workflowId, versionNumber, definition, rpc),
     sweepSfLeases: (limit) => sweepSfLeases(client, limit, rpc),
     queueDisagreements: (limit) => runQueueDisagreements(client, limit, rpc),
     saveCopies: (servedAt, complete, copies) => saveWorkflowCopies(client, servedAt, complete, copies, rpc),
@@ -182,6 +185,10 @@ export function liveTickPorts(env: OpsEnv, scheduledTime: number | null, options
       fetchConnections: () => {
         if (!gateway) throw noGateway()
         return bounded('the bidding Worker\'s connection list', () => gateway.opsConnections(), GATEWAY_DEADLINE_MS, options.delay)
+      },
+      fetchDefinitions: (request) => {
+        if (!gateway) throw noGateway()
+        return bounded('the bidding Worker\'s workflow definitions', () => gateway.opsWorkflowDefinitions(request), GATEWAY_DEADLINE_MS, options.delay)
       },
       started: async () => {
         if (!gateway) throw noGateway()
