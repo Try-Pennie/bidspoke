@@ -23,14 +23,12 @@ made it unparseable. The same reasoning is applied to gitleaks (which is given a
 canary secret it must find, since it emits no coverage signal at all) and to
 semgrep (whose `paths.scanned` must cover every named source tree).
 
-To make that gate green-but-strict against the dependency tree as it stands today,
-a small set of pre-existing highs are either patched via `pnpm.overrides` (real
-fixes) in the root `package.json`, or baselined per-advisory in `.trivyignore`.
-
-The ignore list is **per-advisory, not blanket**: a brand-new high in any of these
-same packages still trips the gate (verified: dropping any single id from
-`.trivyignore` turns CI red again). Each entry below says why it is safe to
-baseline. Revisit whenever a Dependabot PR bumps the parent tooling.
+Pre-existing highs are fixed by forcing the patched version through
+`pnpm.overrides` in the root `package.json`. A high that cannot be fixed yet may be
+baselined per advisory in `.trivyignore`, never as a blanket rule, and only with
+its reason written in the Ignored section below:
+`apps/web/src/lib/__tests__/trivyignore-documented.test.ts` fails on an id that
+section does not name. The list is empty today.
 
 ## Why Trivy, not `pnpm audit`
 
@@ -56,6 +54,7 @@ tooling noise.
 | `glob` | `>=10.5.0 <11` | Pulled by `eslint-config-next` (lint tooling). Both ends are load-bearing: the lower bound patches the advisory, the upper keeps the override inside the 10.x line. |
 | `postcss` | `>=8.5.12 <9` (replacing only versions below the floor) | CVE-2026-45623 (file read via `sourceMappingURL` during CSS processing). The vulnerable 8.4.31 was `next` 14's own pin; the app's direct dep was already on 8.5.x. Range-scoped so nothing already safe is touched. |
 | `nanoid` | `>=3.3.18 <4` | CVE-2026-67213 (denial of service via an infinite loop in random ID generation). Reaches production only through `postcss`, which requires CommonJS; nanoid 5+ is ESM-only, hence the upper bound. |
+| `dompurify` | `>=3.4.17 <4` (replacing only versions below the floor) | GHSA-mrv2-3pqr-j5jr (#2691). Pulled by `monaco-editor`. This fixes the lockfile copy only: the canvas editor still loads Monaco from a CDN with its own DOMPurify 3.2.7 inside, which is #2695. |
 
 ### Every override carries an upper bound
 
@@ -75,40 +74,21 @@ above used to claim it pinned.
 when any override resolves outside the major it patches to. Crossing a major is
 still allowed, but as its own deliberate change with the consumer re-tested.
 
-## Ignored (.trivyignore): present, but remediation is tracked
+## Ignored (.trivyignore): none today
 
-### next — needs the blocked 14 to 15 major upgrade (tracked separately)
+Nothing is ignored. An id added to `.trivyignore` must be named in this section,
+with why it is safe to carry and what removes it.
 
-```
-CVE-2026-44573        # = GHSA-36qx-fr4f-26g5
-CVE-2026-44578        # = GHSA-c4j6-fc7j-m34r
-GHSA-8h8q-6873-q5fj
-GHSA-h25m-26qc-wcjf
-GHSA-q4gf-8mx6-v5v3
-```
+## Removed from the ignore list
 
-These five are all the same `next` advisories baselined before the tool swap;
-Trivy just reports two of them by their CVE alias (noted inline above). They are
-fixed only in Next 15.x. The app is on Next 14 (App Router), and the 14 to 15
-upgrade is a tracked major migration (also blocks the ESLint 8 to 9 bump, #296).
-The frontend is an internal, authenticated ops tool (small known user set), which
-lowers the practical exposure of the SSRF / cache / DoS classes here. The
-remediation is the Next 15 upgrade, tracked in #558 (which superseded the closed
-#443), not an indefinite ignore. Remove all five the moment Next is upgraded.
-
-Three more `next` advisories were published around 2026-07-24, in the same
-fixed-only-in-15.x situation, and were verified non-applicable before baselining:
-
-```
-CVE-2026-64641        # DoS in App Router Server Actions
-CVE-2026-64645        # SSRF in rewrites via attacker-controlled destination
-CVE-2026-64649        # SSRF in Server Actions on custom servers
-```
-
-`apps/web` contains no Server Actions (`rg "use server"` returns nothing),
-defines no rewrites in `next.config.js`, and deploys to Cloudflare Pages rather
-than a custom server, so none of the three vulnerable code paths exist here.
-Same remediation: remove them with the Next 15 upgrade (#558).
+Eight `next` advisories were baselined while the app was on Next 14:
+CVE-2026-44573, CVE-2026-44578, GHSA-8h8q-6873-q5fj, GHSA-h25m-26qc-wcjf,
+GHSA-q4gf-8mx6-v5v3, CVE-2026-64641, CVE-2026-64645 and CVE-2026-64649. Each is
+patched at or below 15.5.21 according to the GitHub advisory database, and the app
+is on 15.5.28 (#2675), so they were removed on 2026-10-22. Trivy run locally with
+an empty ignore file reported 0 findings on that day's lockfile, and the same run
+on the lockfile from before the upgrade reported the next and dompurify advisories,
+so the clean result is a real one.
 
 > The old `undici` (build/dev tooling) and `vite` (test-runner) exceptions were
 > dropped in the Trivy swap: Trivy does not scan dev/test deps by default, so they
