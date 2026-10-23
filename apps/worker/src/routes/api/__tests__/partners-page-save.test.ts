@@ -196,6 +196,53 @@ describe('PUT /partners/:id/page: the whole page in one save (#2133)', () => {
     expect(pageCalls(rpc)).toEqual([])
   })
 
+  // Carried over from the partner only save when it was retired (#2187).
+  it('answers 500, never a false 404, when the read of the stored partner hits a real database error (#596), and calls nothing', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const rpc = saved()
+    supabaseWith(rpc, { partner_configs: { singleError: { code: '57014', message: 'canceling statement due to statement timeout' } } })
+    expect((await put(page())).status).toBe(500)
+    expect(pageCalls(rpc)).toEqual([])
+  })
+
+  it('a buyer profile that cannot be read refuses a change to the click URL with 503 on the field, and calls nothing (#1561)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(readBuyerSale).mockRejectedValue(new Error('buyer_profiles: timeout'))
+    const rpc = saved()
+    supabaseWith(rpc)
+    const res = await put(page({ patch: { click_url: 'https://trypennie.com/portal/libertyone/' }, profile: null, expected_profile_version: null }))
+    expect(res.status).toBe(503)
+    const body = await res.json() as { error: string; message: string; errors: Array<{ path: string }> }
+    expect(body.error).toBe('click_url_unverifiable')
+    expect(body.message).toMatch(/click URL/)
+    expect(body.errors.map((e) => e.path)).toEqual(['clickUrl'])
+    expect(pageCalls(rpc)).toEqual([])
+  })
+
+  it('a buyer profile that cannot be read does not stop a save that leaves the click URL as stored, or does not send it', async () => {
+    vi.mocked(readBuyerSale).mockRejectedValue(new Error('buyer_profiles: timeout'))
+    for (const patch of [{ name: 'Tripoint', click_url: STORED.click_url }, { name: 'Tripoint' }]) {
+      const rpc = saved()
+      supabaseWith(rpc)
+      const res = await put(page({ patch, profile: null, expected_profile_version: null }))
+      expect(res.status, JSON.stringify(patch)).toBe(200)
+      expect(pageCalls(rpc)).toHaveLength(1)
+    }
+    expect(readBuyerSale).not.toHaveBeenCalled()
+  })
+
+  it('still saves a partner whose credential is not set, and warns from the row as saved, not from the patch (#416)', async () => {
+    // The patch only switches the partner on and names no cf_secret_key, so a
+    // warning derived from the request would call it clean on the very save
+    // that activates it. A warning must never become a block either.
+    const rpc = saved({ partner: { cf_secret_key: 'SOFI_SECRET', name: 'SoFi' } })
+    supabaseWith(rpc)
+    const res = await put(page({ patch: { is_active: true }, profile: null, expected_profile_version: null }))
+    expect(res.status).toBe(200)
+    const body = await res.json() as { partner: { credential_warning: string | null } }
+    expect(body.partner.credential_warning).toContain('SOFI_SECRET')
+  })
+
   it('a malformed profile document is 400 and calls nothing', async () => {
     const rpc = saved()
     supabaseWith(rpc)

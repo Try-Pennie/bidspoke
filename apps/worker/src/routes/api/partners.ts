@@ -2,7 +2,7 @@
  * Partner management API — PRD Section 2.1
  * CRUD for partner_configs. Daily cap count comes from the DailyCapDO.
  */
-import { Hono } from 'hono'
+import { Hono, type Context } from 'hono'
 import { dbError, dbErrorUnlessNotFound } from '../../lib/api-error'
 import { fetchUpTo } from '../../lib/paginate'
 import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
@@ -141,8 +141,8 @@ function deriveResolverConfig(body: PartnerBody): Record<string, unknown> {
 }
 
 /**
- * The answer to a save from a page opened before saves were versioned (#2132).
- * The edits are still on screen; a release can take a few minutes to reach a
+ * The answer to a save from a page opened before the save it sends was
+ * retired (#2132, #2187). The edits are still on screen; a release can take a few minutes to reach a
  * browser, so the sentence says to wait if it comes back after a reload (L598).
  */
 export const RELOAD_REQUIRED_MESSAGE =
@@ -157,23 +157,6 @@ const CONSTANTS_FIELDS = ['sell_off_offer_title', 'sell_off_offer_details', 'cli
 export async function rebuildBuyerProfiles(orgId: string, kv: KVNamespace, supabase: ReturnType<typeof createSupabaseClient>): Promise<void> {
   const snapshot = await refreshBuyerProfilesCache(orgId, kv, supabase)
   if (snapshot === null) throw new Error('the buyer profiles copy could not be rebuilt')
-}
-
-/** What a stale version refusal carries (save_partner_config's DETAIL), each part null when absent. */
-function staleDetail(detail: string | null): { current: unknown; last_save_id: unknown; changed_by_name: unknown; changed_at: unknown } {
-  let parsed: Record<string, unknown> = {}
-  try {
-    const value: unknown = detail ? JSON.parse(detail) : null
-    if (value && typeof value === 'object') parsed = value as Record<string, unknown>
-  } catch {
-    parsed = {}
-  }
-  return {
-    current: parsed.current ?? null,
-    last_save_id: parsed.last_save_id ?? null,
-    changed_by_name: parsed.changed_by_name ?? null,
-    changed_at: parsed.changed_at ?? null,
-  }
 }
 
 const partners = new Hono<{ Bindings: Env; Variables: Variables }>()
@@ -291,100 +274,21 @@ partners.post('/', async (c) => {
   return c.json(withCredentialWarning(c.env, data), 201)
 })
 
-// ── Update ────────────────────────────────────────────────────────────────────
+// ── The saves the page used before #2133, retired (#2187) ─────────────────────
 
-partners.put('/:id', async (c) => {
-  const { orgId, userId, email } = c.get('user')
-  const id = c.req.param('id')
-  const supabase = createSupabaseClient(c.env)
-  const raw = await c.req.json<PartnerBody & { expected_version?: unknown; save_id?: unknown }>()
-  const { expected_version: expectedVersion, save_id: saveId, ...body } = raw
-
-  // A save names the version it was edited from and the press that made it
-  // (#2132). A page opened before this release sends neither, and its save
-  // would write every field it holds over whatever is newer, so it is refused
-  // before anything is read, with its edits left on screen (L598).
-  if (expectedVersion === undefined || saveId === undefined) {
-    return c.json({ error: 'reload_required', message: RELOAD_REQUIRED_MESSAGE }, 428)
-  }
-  if (typeof expectedVersion !== 'number' || !Number.isInteger(expectedVersion) || expectedVersion < 0) {
-    return c.json({ error: 'expected_version_invalid', message: 'expected_version must be a whole number, 0 or more.' }, 400)
-  }
-  if (typeof saveId !== 'string' || !UUID.test(saveId)) {
-    return c.json({ error: 'save_id_invalid', message: 'save_id must be a UUID.' }, 400)
-  }
-
-  const updateTypeRefusal = partnerTypeRefusal(body)
-  if (updateTypeRefusal) return c.json({ error: updateTypeRefusal }, 400)
-  if (namesRetiredField(body)) return c.json({ error: 'field_not_editable', field: RETIRED_FIELD, message: RETIRED_FIELD_MESSAGE }, 400)
-  const updateNumbers = numberRefusal(body as unknown as Record<string, unknown>)
-  if (updateNumbers) return c.json(updateNumbers, 422)
-
-  const { data: partner, error: fetchError } = await supabase
-    .from('partner_configs')
-    .select('id, click_url')
-    .eq('id', id)
-    .eq('organization_id', orgId)
-    .single()
-
-  const fetchBlocked = dbErrorUnlessNotFound(c, fetchError)
-  if (fetchBlocked) return fetchBlocked
-  if (!partner) return c.json({ error: 'Partner not found' }, 404)
-
-  // An enabled click buyer is offered on this URL, and the offer refuses one
-  // without {prospect_id} on every lead (#1561). Judged before any write.
-  const clickUrlRefusal = await refuseClickUrlWithoutProspectId(c, supabase, orgId, id, partner.click_url ?? null, body.click_url)
-  if (clickUrlRefusal) return clickUrlRefusal
-
-  // Only the keys the body names are written (#2132): a field the page did not
-  // send is left exactly as stored. save_partner_config holds the one list of
-  // fields a save may write and refuses any other by name; it locks the row,
-  // refuses a version that is no longer stored, and the table's trigger audits
-  // the change with this actor.
-  const patch: Record<string, unknown> = {}
-  for (const [k, v] of Object.entries(body)) if (v !== undefined) patch[k] = v
-  const { data, error } = await supabase.rpc('save_partner_config', {
-    p_org: orgId,
-    p_id: id,
-    p_expected_version: expectedVersion,
-    p_patch: patch as unknown as Json,
-    p_save_id: saveId,
-    p_actor: userId,
-    p_actor_email: email,
-    p_actor_name: c.get('user').name ?? '',
-  })
-  if (error) {
-    const detail = (error as { details?: string | null }).details ?? null
-    if (error.code === 'BP409') return c.json({ error: 'stale_version', ...staleDetail(detail) }, 409)
-    if (error.code === 'BP422') return c.json({ error: error.message, field: detail }, 400)
-    if (error.code === 'P0002') return c.json({ error: 'Partner not found' }, 404) // db-guard-ok: P0002 is the function's own named refusal for no such partner in this org, raised after its locked read, never a transport or query error
-    return dbError(c, error)
-  }
-  const saved = data as unknown as Record<string, unknown>
-
-  // The save is committed. Nothing below may turn it into an error (L33): each
-  // stored copy of the old version is refreshed or cleared inside copyCleared,
-  // all three run whatever the others did, and any failure answers the save
-  // with stored_copy_warning. Nothing durable is written for a retry: the per
-  // minute prewarm rewrites the constants copy from the rows within the bound
-  // in BIDDING_PICKUP, and the stored copy sweep clears the partner copy once
-  // updated_at has moved.
-  const affectsConstants = CONSTANTS_FIELDS.some((f) => f in patch)
-  // The Partner Bid node bids from a stored copy of this row when the database
-  // read fails (#1296). Retired on every edit, so a partner switched off or
-  // changed is never bid with as it was in an outage (#1846).
-  const retired = await copyCleared(() => retirePartnerLastGood(c.env.WORKFLOW_CACHE, id), `partner copy ${id}`)
-  const constantsCleared = affectsConstants
-    ? await copyCleared(() => invalidatePartnerConstantsCache(orgId, c.env.WORKFLOW_CACHE), `partner constants of org ${orgId}`)
-    : true
-  // The buyer profile snapshot joins the partner row (endpoint, credential name,
-  // accept rules, mapping, active flag), so every edit rebuilds it (#1411). The
-  // rebuild answers null rather than throwing when it fails, so it is adapted to
-  // throw here, or a failed rebuild would read as a cleared copy.
-  const profilesRebuilt = await copyCleared(() => rebuildBuyerProfiles(orgId, c.env.WORKFLOW_CACHE, supabase), `buyer profiles of org ${orgId}`)
-
-  return c.json({ ...withCredentialWarning(c.env, saved), ...copyWarning(retired && constantsCleared && profilesRebuilt) })
-})
+/**
+ * PUT /partners/:id (the partner only save, #2132) and PUT
+ * /partners/:id/buyer-profile (#1412) are what a partners page opened before
+ * #2133 still sends. The profile route went seven UTC days with no call
+ * (its KV counter, read 2026-10-23), and nothing the page sends since reaches
+ * either. Such a tab shows the server's sentence beside the save, so each
+ * answers the reload it already understands, before reading or writing
+ * anything, rather than a bare 404 that would read as a missing partner.
+ * jwtAuth still runs first, as on every partner route.
+ */
+const retiredSave = (c: Context<{ Bindings: Env; Variables: AuthVariables }>) => c.json({ error: 'reload_required', message: RELOAD_REQUIRED_MESSAGE }, 428)
+partners.put('/:id', retiredSave)
+partners.put('/:id/buyer-profile', retiredSave)
 
 // ── The whole page in one save (#2133) ────────────────────────────────────────
 
