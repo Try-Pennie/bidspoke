@@ -37,7 +37,9 @@
  *               behind the per organization cap (take_lookup_allowance), every
  *               request through connectionFetch.
  *  exchangeOAuthCode  a person bound login's consent, handed to the connection's
- *               ConnectionTokenObject (minters/oauth-user.ts).
+ *               ConnectionTokenObject (minters/oauth-user.ts). Its success is
+ *               that login's Reconnect, so it then clears needs_reauth
+ *               (record_connection_reauth_cleared, #2338).
  *
  * Every answer is a value; a refusal's detail is built from names only (F120),
  * and nothing here writes to the console (the connection-seal-open-callers guard).
@@ -403,7 +405,18 @@ export async function exchangeConnectionCode(deps: OpsConnectionsDeps, request: 
     const { generation, account } = await exchangeOAuthCode({ tokens: deps.tokens, readCopy: deps.connection.readCopy }, oauthUser, {
       organizationId, connectionId: request.connection_id, candidate: candidateOf(request.candidate), code: request.code, verifier: request.verifier, redirectUri: request.redirect_uri,
     })
-    return { ok: true, generation, account }
+    // A consent is a person bound login's Reconnect (it is never verified as a candidate), so its
+    // success clears needs_reauth, as clearReauth does for every other login (#2338). The object has
+    // already stored the new login, so a clearing that cannot be written is answered as such, never
+    // as a failed consent: the login is kept either way (L5).
+    let cleared: 'recorded' | 'connection_removed' | 'unrecorded'
+    try {
+      cleared = await deps.recordReauthCleared(organizationId, request.connection_id)
+    } catch {
+      cleared = 'unrecorded'
+    }
+    if (cleared === 'connection_removed') return refuse('connection_removed', 'the connection was removed while the person signed in')
+    return { ok: true, generation, account, reauth_cleared: cleared === 'recorded' }
   } catch (err) {
     if (err instanceof ConnectionRefusal) return fromRefusal(err, false)
     return unexpected(err, 'the code exchange')

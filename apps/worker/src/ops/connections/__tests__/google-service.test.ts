@@ -230,7 +230,7 @@ describe('a person\'s own Google account (#2338, R17: Sign in with Google)', () 
     })
     expect(await exchange(TARGET)).toMatchObject({ ok: false, refused: 'connection_target_invalid' })
     expect(tokens.exchanges).toEqual([])
-    expect(await exchange(own)).toEqual({ ok: true, generation: 2, account: 'dan@trypennie.example' })
+    expect(await exchange(own)).toEqual({ ok: true, generation: 2, account: 'dan@trypennie.example', reauth_cleared: true })
     expect(tokens.exchanges).toEqual([expect.objectContaining({ service: 'google', tokenUrl: GOOGLE_TOKEN_URI, code: 'auth-code-2338' })])
   })
 

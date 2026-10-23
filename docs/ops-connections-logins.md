@@ -227,7 +227,7 @@ value, a refusal naming its cause. Each method has a ceiling
 | `revoke` | A removal. | the ops tombstone |
 | `health` | Each connection's status (`connection_status`). | nothing |
 | `lookup` | One level of a connection's schema, behind 60 lookups a minute per organization (`take_lookup_allowance`). | the allowance |
-| `exchangeOAuthCode` | A person bound login's consent, to its ConnectionTokenObject, which answers the new generation and, where the provider's id_token names a verified email for this client, whom the person signed in as (`id-token-account.ts`, #2338). | the object's storage |
+| `exchangeOAuthCode` | A person bound login's consent, to its ConnectionTokenObject, which answers the new generation and, where the provider's id_token names a verified email for this client, whom the person signed in as (`id-token-account.ts`, #2338). A consent is a person bound login's Reconnect (it is never verified as a candidate), so its success then records the clearing of needs_reauth; a clearing that cannot be written is answered `reauth_cleared: false`, never as a failed consent, since the login is already stored. | the object's storage, then `reauth_cleared_at` |
 | `signInClient` | The client id of the sign in app the ops Worker holds for a service (`connections/oauth-apps.ts`, #2338 build PR 13), for the bidding Worker's Sign in with Google link; never its secret. Refuses `sign_in_app_unset` or `sign_in_app_malformed` naming the secret, and `sign_in_not_offered` for a service with no sign in. Shipped ahead of the bidding route that calls it, so it is kept out of `OPS_CONNECTIONS_METHODS` until then, as the Google list's methods were. | nothing |
 
 - **No copy is written by any of these (F116, F126).** verify and clearReauth use

@@ -300,8 +300,13 @@ export interface HealthRow {
 }
 export type HealthAnswer = { ok: true; connections: HealthRow[]; reached_limit: boolean } | OpsConnectionsRefused
 export type LookupAnswer = { ok: true; answer: SchemaLookupAnswer } | OpsConnectionsRefused
-/** The generation the consent's login is sealed under, and whom the person signed in as where the provider said (#2338), else null. */
-export type ExchangeOAuthCodeAnswer = { ok: true; generation: number; account: string | null } | OpsConnectionsRefused
+/**
+ * The generation the consent's login is sealed under, whom the person signed in
+ * as where the provider said (#2338), else null, and whether needs_reauth was
+ * cleared: a consent is a person bound login's Reconnect, and false means the
+ * login is stored and the clearing could not be written.
+ */
+export type ExchangeOAuthCodeAnswer = { ok: true; generation: number; account: string | null; reauth_cleared: boolean } | OpsConnectionsRefused
 
 /**
  * The bidding Worker's OPS_CONNECTIONS binding (wrangler.toml, PR 9) to this
