@@ -78,7 +78,9 @@ function rowOf(c: FixtureConnection): ConnectionListRow {
       ? { instance_url: `https://${c.instance}`, client_id: clientIdOf(c.name) }
       : c.service === 'Slack' && !alert ? { team_id: 'T0PENNIE' }
         : c.service === 'OpenAI' ? { project_id: 'proj_bidspoke_ops' }
-          : c.service === 'Anthropic' ? { workspace_id: 'wrkspc_ops' } : null,
+          : c.service === 'Anthropic' ? { workspace_id: 'wrkspc_ops' }
+            // A Google connection declares the mailbox it acts as, which verify read back (#2337).
+            : c.service === 'Google' && c.actsAs ? { subject: c.actsAs } : null,
     org: c.instance ?? null,
     status,
     status_word: fixture.statusVocabulary[c.status as keyof typeof fixture.statusVocabulary] ?? null,
@@ -117,10 +119,10 @@ export function previewFrame(frame: string | undefined): { list: 'loaded' | 'sta
 
 /**
  * The services the form offers in the preview: the design's eight tiles, in its
- * order (D12). Salesforce and Snowflake are the catalogue's own entries. Google's
- * is a stand in until its catalogue entry ships with #2337, which settles its
- * field names; the other five are drawn so the grid holds the design's tiles,
- * each with one secret field, and are never offered by the live page.
+ * order (D12). Anthropic, Google, OpenAI, Salesforce, Slack and Snowflake are
+ * the catalogue's own entries (Google's since #2337); the other two are drawn
+ * so the grid holds the design's tiles, each with one secret field, and are
+ * never offered by the live page.
  */
 export function previewServices(): FormService[] {
   const shipped = new Map(catalogueServices().map((s) => [s.name, s]))
@@ -128,9 +130,6 @@ export function previewServices(): FormService[] {
     const real = shipped.get(name)
     if (real) return real
     const key = slug(name)
-    if (name === 'Google') {
-      return { key, name, tile, connection: { tile, auth: 'service_account_delegation', fields: [{ key: 'subject', label: 'Acts as', input: 'google_subject', required: true, target: 'subject' }] } }
-    }
     return { key, name, tile, connection: { tile, auth: 'static_key', fields: [{ key: 'api_key', label: 'API key', input: 'secret', required: true, login: 'api_key' }] } }
   })
 }
@@ -246,6 +245,8 @@ const SLACK_OTHER_WORKSPACE = 'Slack says this bot is in another workspace than 
 const OPENAI_OTHER_PROJECT = 'OpenAI says this API key belongs to another project than the Project ID entered. Nothing was saved. Check the Project ID and save again.'
 /** The create route's sentence for verify's Anthropic workspace refusal (#2337). */
 const ANTHROPIC_OTHER_WORKSPACE = 'Anthropic says this API key runs in another workspace than the Workspace ID entered. Nothing was saved. Check the Workspace ID and save again.'
+/** The create route's sentence for verify's Google mailbox refusal (#2337). */
+const GOOGLE_OTHER_MAILBOX = 'Google says this acts as another mailbox than the one chosen. Nothing was saved. Choose the mailbox again from the company list and save.'
 const IN_USE = 'Daily Salesforce cleanup uses this connection, so it cannot be removed. Nothing was removed. Take it out of that workflow first.'
 const OPS_NOT_TOLD = 'The connection is removed. The workflows server could not be told straight away, so it stops using the login at its next minute check, and within 6 hours at the latest if it cannot reach Bidspoke.'
 const ADD_REFUSED = 'ops@trypennie is not one mailbox address or one shared drive id. Nothing was added. Check it and add it again.'
@@ -286,6 +287,8 @@ export const SCRIPTED_FRAMES = [
   'add-openai', 'add-openai-project-mismatch', 'openai-summaries',
   // #2337: an Anthropic workspace's key: its form, verify's workspace refusal, and its panel.
   'add-anthropic', 'add-anthropic-workspace-mismatch', 'anthropic-lead-notes',
+  // #2337: Google, the catalogue's own entry now: verify's mailbox refusal, and a company mailbox's panel.
+  'add-google-mailbox-mismatch', 'google-ops-mailbox',
 ] as const
 
 export function previewScript(frame: string | undefined): PreviewScript | null {
@@ -458,6 +461,9 @@ function formScript(frame: string): PreviewScript | null {
     { type: 'add_field', field: 'workspace_id', text: 'wrkspc_ops' },
     { type: 'add_field', field: 'api_key', text: 'plainapikey' },
   ]
+  const googleForm: ConnectionsEvent[] = [
+    ...opened, { type: 'add_service', service: 'google' }, { type: 'add_name', text: fixture.draft.google.companyName }, { type: 'add_field', field: 'subject', text: fixture.draft.google.subject },
+  ]
   const reconnectOf = (name: string): ConnectionsEvent[] => [listed(), google, choose(name), { type: 'dialog_opened', dialog: 'reconnect', id: idOf(name) }]
   const removeOf = (): ConnectionsEvent[] => [listed([justSaved]), google, choose(fixture.justSaved.name), { type: 'dialog_opened', dialog: 'remove', id: idOf(fixture.justSaved.name) }]
   const typedSecret: ConnectionsEvent = { type: 'dialog_field', field: 'client_secret', text: 'plainsecrets' }
@@ -475,7 +481,11 @@ function formScript(frame: string): PreviewScript | null {
     case 'add-salesforce-new-org':
       return script(salesforce(fixture.draft.newOrg.name, fixture.draft.newOrg.address, true), { focus: '[data-part="add-form"] [data-field="Org"] input' })
     case 'add-google-company':
-      return script([...opened, { type: 'add_service', service: 'google' }, { type: 'add_name', text: fixture.draft.google.companyName }, { type: 'add_field', field: 'subject', text: fixture.draft.google.subject }])
+      return script(googleForm)
+    case 'add-google-mailbox-mismatch':
+      return script([...googleForm, saveAt(T - elapsed), { type: 'save_refused', attempt: 1, sentence: GOOGLE_OTHER_MAILBOX }])
+    case 'google-ops-mailbox':
+      return script([listed(), google, choose('Ops mailbox')])
     case 'add-google-own':
       return script([...opened, { type: 'add_service', service: 'google' }, { type: 'add_google', way: 'own' }, { type: 'add_name', text: fixture.draft.google.ownName }])
     case 'saved': {

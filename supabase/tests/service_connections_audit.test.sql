@@ -23,7 +23,10 @@
 --      write does not land unaudited.
 --
 -- Every insert here (cases A, D, E, F and F2) names its row, because #2332's
--- release 2 dropped the trigger that named a row saved with none.
+-- release 2 dropped the trigger that named a row saved with none. And every
+-- row holds exactly one stored credential (service_connections_one_stored_credential,
+-- #2332): a row not yet sealed carries a legacy Worker secret name, and the
+-- backfill-shaped seal in case B clears that name as it seals.
 
 CREATE TEMP TABLE IF NOT EXISTS sca_cases (name text PRIMARY KEY);
 DELETE FROM sca_cases;
@@ -53,7 +56,7 @@ DECLARE
   n int;
 BEGIN
   INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config, updated_by, updated_by_email)
-  VALUES ('11111111-1111-1111-1111-11111112331a', 'slack', 'slack', 'bot_token', NULL,
+  VALUES ('11111111-1111-1111-1111-11111112331a', 'slack', 'slack', 'bot_token', 'CONN_PLANTED_2331_A',
           '{"bot_token":"planted-bot-token-2331","default_channel":"#alerts","workspace_name":"Test"}',
           '22222222-2222-2222-2222-22222222331a', 'sca2331@example.test');
   SELECT count(*) INTO n FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
@@ -77,7 +80,7 @@ DECLARE
 BEGIN
   DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
   UPDATE public.service_connections
-  SET credential_enc = 'planted-ciphertext-2331', sealed_for = 'bidding_ring', updated_by = '22222222-2222-2222-2222-22222222331a'
+  SET credential_enc = 'planted-ciphertext-2331', cf_secret_key = NULL, sealed_for = 'bidding_ring', updated_by = '22222222-2222-2222-2222-22222222331a'
   WHERE organization_id = '11111111-1111-1111-1111-11111112331a' AND service_type = 'slack' AND credential_enc IS NULL;
   SELECT count(*) INTO n FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
   IF n <> 1 THEN RAISE EXCEPTION 'the backfill UPDATE wrote % audit rows', n; END IF;
@@ -94,7 +97,7 @@ BEGIN
   IF a.changes ? 'bot_token' OR a.changes ? 'config' THEN RAISE EXCEPTION 'an unchanged config or token was recorded as changed: %', a.changes; END IF;
   -- A second run of the same backfill matches nothing and writes nothing.
   UPDATE public.service_connections
-  SET credential_enc = 'planted-ciphertext-2331-again', sealed_for = 'bidding_ring', updated_by = '22222222-2222-2222-2222-22222222331a'
+  SET credential_enc = 'planted-ciphertext-2331-again', cf_secret_key = NULL, sealed_for = 'bidding_ring', updated_by = '22222222-2222-2222-2222-22222222331a'
   WHERE organization_id = '11111111-1111-1111-1111-11111112331a' AND service_type = 'slack' AND credential_enc IS NULL;
   IF (SELECT count(*) FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a') <> 1 THEN
     RAISE EXCEPTION 'a second backfill run was audited';
@@ -174,7 +177,7 @@ BEGIN
   END IF;
   -- The actor belongs to that call only: a later hand run delete names nobody.
   INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config)
-  VALUES ('11111111-1111-1111-1111-11111112331a', 'slack', 'slack', 'bot_token', NULL, '{"bot_token":"planted-bot-token-2331-c","default_channel":"#alerts"}');
+  VALUES ('11111111-1111-1111-1111-11111112331a', 'slack', 'slack', 'bot_token', 'CONN_PLANTED_2331_C', '{"bot_token":"planted-bot-token-2331-c","default_channel":"#alerts"}');
   DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
   DELETE FROM public.service_connections WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
   SELECT * INTO a FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
@@ -197,7 +200,7 @@ $do$;
 DO $do$
 BEGIN
   INSERT INTO public.service_connections (organization_id, service_type, name, auth_type, cf_secret_key, config, updated_by)
-  VALUES ('11111111-1111-1111-1111-11111112331a', 'slack', 'slack', 'bot_token', NULL, '{"bot_token":"planted-bot-token-2331-d","default_channel":"#alerts"}', '22222222-2222-2222-2222-22222222331a');
+  VALUES ('11111111-1111-1111-1111-11111112331a', 'slack', 'slack', 'bot_token', 'CONN_PLANTED_2331_D', '{"bot_token":"planted-bot-token-2331-d","default_channel":"#alerts"}', '22222222-2222-2222-2222-22222222331a');
   DELETE FROM public.audit_log WHERE organization_id = '11111111-1111-1111-1111-11111112331a';
   UPDATE public.service_connections SET updated_by = '22222222-2222-2222-2222-22222222331a', updated_by_email = 'sca2331@example.test'
   WHERE organization_id = '11111111-1111-1111-1111-11111112331a';

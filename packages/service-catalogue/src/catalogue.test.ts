@@ -137,6 +137,26 @@ describe('the shipped catalogue', () => {
     }
   })
 
+  it("folds each Google action's shared request code into its fingerprint, and imports no npm package (#2337)", () => {
+    const lock = readImporterLock(SHIPPED.lockfile, SHIPPED.importer)
+    const googleActions = RUNTIME_ACTIONS.filter((a) => a.key.startsWith('google.'))
+    expect(googleActions).toHaveLength(16)
+    for (const a of googleActions) {
+      const reached = collectModuleImports(path.join(SHIPPED.actionsDir, `${a.key}.v${a.version}.ts`), {
+        root: { importer: SHIPPED.importer, dir: PACKAGE_ROOT },
+        linkOf: (importer, name) => linkedPath(lock, importer, name),
+      })
+      expect(reached.files, a.key).toContain(path.join(SRC, 'runtime', 'google', 'call.ts'))
+      expect(reached.files, a.key).toContain(path.join(SRC, 'runtime', 'failure.ts'))
+      expect(reached.packages, a.key).toEqual([])
+    }
+    const send = collectModuleImports(path.join(SHIPPED.actionsDir, 'google.gmail-send-email.v1.ts'), {
+      root: { importer: SHIPPED.importer, dir: PACKAGE_ROOT },
+      linkOf: (importer, name) => linkedPath(lock, importer, name),
+    })
+    expect(send.files).toContain(path.join(SRC, 'runtime', 'google', 'mime.ts'))
+  })
+
   it('carries no test fixture action', () => {
     expect(catalogueActions(CATALOGUE).filter((a) => a.key.startsWith('fixture.'))).toEqual([])
     expect(RUNTIME_ACTIONS.filter((a) => a.key.startsWith('fixture.'))).toEqual([])

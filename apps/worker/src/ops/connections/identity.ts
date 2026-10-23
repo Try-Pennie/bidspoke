@@ -12,10 +12,10 @@
  * (slack-service.ts: auth.test, a bot in the declared workspace, #2337), and
  * OpenAI's (openai-service.ts: the free models list, in the declared project,
  * #2337), and Anthropic's (anthropic-service.ts: the free models list, in the
- * declared workspace, #2337). The
- * others the plan names (a Supabase key's project ref, Google's token for the
- * declared mailbox) arrive with each service's rules (Phase 7), each
- * as another kind here; until a service has one, verify refuses it by name
+ * declared workspace, #2337), and Google's (google-service.ts: the Gmail
+ * profile, acted as the declared mailbox, #2337). The
+ * other the plan names (a Supabase key's project ref) arrives with its
+ * service's rules (Phase 7), as another kind here; until a service has one, verify refuses it by name
  * (verify_identity_unmeasurable), never passes it unmeasured.
  */
 
@@ -49,6 +49,11 @@ export type MeasuredIdentity =
       readonly projectId: string
       /** The `openai-organization` header: the organization OpenAI bills the key's requests to, null where it named none. */
       readonly organization: string | null
+    }
+  | {
+      readonly kind: 'google'
+      /** The mailbox the delegated token acted as: the declared one, which Gmail's profile answered (google-service.ts). */
+      readonly mailbox: string
     }
   | {
       readonly kind: 'anthropic'
@@ -97,7 +102,8 @@ export class IdentityMismatch extends Error {
       | 'verify_slack_not_a_bot'
       | 'verify_slack_workspace_mismatch'
       | 'verify_openai_project_mismatch'
-      | 'verify_anthropic_workspace_mismatch' = 'verify_identity_mismatch',
+      | 'verify_anthropic_workspace_mismatch'
+      | 'verify_google_mailbox_mismatch' = 'verify_identity_mismatch',
   ) {
     super(message)
     this.name = 'IdentityMismatch'

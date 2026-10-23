@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono'
 import { isUuidV7 } from '@bidspoke/uuidv7'
 import { sanitizeCodeNodeScripts } from '@bidspoke/script-hygiene'
-import { dbError, dbErrorUnlessNotFound, isNotFoundError, requireRowOr404 } from '../../lib/api-error'
+import { dbError, dbErrorUnlessNotFound, isNotFoundError } from '../../lib/api-error'
 import { formatErr } from '../../lib/format-error'
 import type { Env } from '../../index'
 import type { AuthVariables } from '../../middleware/jwt-auth'
@@ -27,7 +27,6 @@ import { asJson } from '../../lib/json'
 import { fetchAllPaged, fetchUpTo } from '../../lib/paginate'
 import { CONFIG_LIST_BOUNDS } from '../../lib/config-list-bounds'
 import { jsonEqual } from '../../lib/stable-json'
-import type { Database } from '../../types/database'
 import { isNoRowMatchedError, requireRowsAffected } from '../../lib/db-retry'
 import { loadBuyerProfiles } from '../../lib/buyer-profile-loader'
 import { hasBuyerStep, inputGapsForWorkflowSave } from '../../lib/buyer-input-coverage'
@@ -36,8 +35,10 @@ import { workflowsUsingPartner as workflowsUsingPartnerShared } from '../../lib/
 import { readOrgWorkflows } from '../../lib/org-workflows'
 import { secretKeys } from '../../lib/secret-crypto'
 import { retirePartnerLastGood } from '../../lib/partner-last-good'
-import { checkDefinitionConnections, connectionRefusalOfWriteError, type ConnectionCheckedAction, type ConnectionCheckRefusal } from '../../lib/workflow-connection-check'
+import { checkDefinitionConnections, type ConnectionCheckedAction } from '../../lib/workflow-connection-check'
 import { copiedDefinitionStamp, writtenDefinitionStamp } from '../../lib/definition-stamp'
+import { writeWorkflow, type WriteWorkflowResult } from '../../lib/write-workflow'
+import { assertNever } from '@bidspoke/node-types'
 
 type Variables = AuthVariables
 
@@ -198,31 +199,54 @@ async function connectionRefusal(
   return refusal ? c.json(refusal.body, refusal.status) : null
 }
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** A version a caller names must be a whole number from 0; absent is allowed here and decided by each route. */
+function expectedVersionRefusal(c: Context<{ Bindings: Env; Variables: Variables }>, value: unknown): Response | null {
+  if (value === undefined) return null
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 0) return null
+  return c.json({ error: 'expected_version_invalid', message: 'expected_version must be a whole number, 0 or more.' }, 400)
+}
+
+/** The actor writeWorkflow records on the row. */
+function actorOf(c: Context<{ Bindings: Env; Variables: Variables }>) {
+  const { userId, email, name } = c.get('user')
+  return { id: userId, email, name }
+}
+
 /**
- * A save or restore writes its version snapshot before the workflow row. When
- * the trigger then refuses the row (a removal committed after the check), the
- * snapshot is taken back, so the history holds no version that never went live,
- * and the refusal is answered by name. A take back that fails is logged: the
- * stray snapshot is history only, never run, and its restore is refused the same
- * way.
+ * A save made from a version that is no longer stored (#1947). Nothing was
+ * written, and the caller's edits are its own. It is the `error` a page shows
+ * as it stands (this route's sentences are its errors), with `code` naming it
+ * and the current row, the press that won and who made it beside it.
  */
-async function answerLostRace(
-  c: Context<{ Bindings: Env; Variables: Variables }>,
-  supabase: ReturnType<typeof createSupabaseClient>,
-  refusal: ConnectionCheckRefusal,
-  workflowId: string,
-  versionNumber: number,
-): Promise<Response> {
-  // A miss is logged as a zero row write (the snapshot is not there to take back).
-  const { error } = await requireRowsAffected(
-    'workflow_versions.take_back',
-    () => supabase.from('workflow_versions').delete().eq('workflow_id', workflowId).eq('version_number', versionNumber).select('id'),
-    { onMiss: 'error', context: { workflow_id: workflowId, version_number: versionNumber } },
-  )
-  if (error && !isNoRowMatchedError(error)) {
-    console.error(JSON.stringify({ event: 'workflow_version_not_taken_back', workflow_id: workflowId, version_number: versionNumber, error: formatErr(error) }))
+export const STALE_WORKFLOW_MESSAGE =
+  'Not saved. This workflow was saved by someone else after you opened it, and saving yours would undo their change. Your changes are still on screen.'
+
+/**
+ * Every answer of writeWorkflow other than written, as a response: a lost
+ * race is a 409 carrying the current row, the save that won and who made it;
+ * a missing workflow, version or folder is a 404 naming which; the connection
+ * trigger's refusal is answered by name (#2338); a call the function refused
+ * is a 400 with its reason; anything else is a database error. Nothing was
+ * written in any of them, snapshot included: the function writes both or
+ * neither.
+ */
+function answerUnwritten(c: Context<{ Bindings: Env; Variables: Variables }>, result: Exclude<WriteWorkflowResult, { kind: 'written' }>, staleMessage = STALE_WORKFLOW_MESSAGE): Response {
+  switch (result.kind) {
+    case 'stale':
+      return c.json({ error: staleMessage, code: 'stale_version', current: result.current, last_save_id: result.lastSaveId, changed_by_name: result.changedByName, changed_at: result.changedAt }, 409)
+    case 'not_found':
+      return c.json({ error: result.what === 'version' ? 'Version not found' : result.what === 'folder' ? 'folder not found' : 'Workflow not found' }, 404)
+    case 'connection_refused':
+      return c.json(result.refusal.body, result.refusal.status)
+    case 'refused':
+      return c.json({ error: result.reason, detail: result.detail }, 400)
+    case 'failed':
+      return dbError(c, result.error)
+    default:
+      return assertNever(result, 'write_workflow answer')
   }
-  return c.json(refusal.body, refusal.status)
 }
 
 // POST /api/workflows
@@ -267,34 +291,29 @@ workflows.post('/', async (c) => {
   // Report only (#1947): a new workflow is a switched off money workflow.
   reportDefinition(definition, { writer: 'create', workflowId: null, lane: 'money', live: false, schemaVersion: writtenDefinitionStamp() })
 
-  const { data, error } = await supabase
-    .from('workflows')
-    .insert({
-      organization_id: orgId,
+  // A new workflow starts switched off (#1706), which write_workflow decides:
+  // nothing a caller sends can create one that takes traffic before a person
+  // has switched it on through PATCH, where the safeguards live. The stamp is
+  // never the caller's: the Worker says which rules this definition is judged by.
+  const result = await writeWorkflow(supabase, {
+    op: 'create',
+    orgId,
+    workflowId: null,
+    expectedVersion: null,
+    fields: {
       name: body.name,
       description: body.description ?? null,
-      definition: asJson(definition),
-      // Never the caller's: the Worker says which rules this definition is judged by (#1947).
-      definition_schema_version: writtenDefinitionStamp(),
-      // A new workflow starts switched off (#1706): nothing a caller sends can create
-      // one that takes traffic before a person has switched it on through PATCH,
-      // which is where the unconfigured node and partner safeguards live.
-      is_active: false,
       folder_id: body.folder_id ?? null,
-      created_by: userId,
-      updated_by: userId,
-      updated_by_email: c.get('user').email,
-      updated_by_name: c.get('user').name,
-    })
-    .select()
-    .single()
+      definition,
+      definition_schema_version: writtenDefinitionStamp(),
+    },
+    saveId: null,
+    actor: actorOf(c),
+  })
+  if (result.kind !== 'written') return answerUnwritten(c, result)
 
-  const lostRace = connectionRefusalOfWriteError(error)
-  if (lostRace) return c.json(lostRace.body, lostRace.status)
-  if (error) return dbError(c, error)
-
-  await writeAuditLog(supabase, orgId, 'workflow', data.id, 'created', userId)
-  return c.json(data, 201)
+  await writeAuditLog(supabase, orgId, 'workflow', result.workflow.id, 'created', userId)
+  return c.json(result.workflow, 201)
 })
 
 // POST /api/workflows/:id/duplicate — clone a workflow with its full version history
@@ -306,14 +325,14 @@ workflows.post('/', async (c) => {
 // copying it carries the most recent edits too. (A separate draft/undeployed concept
 // doesn't exist yet — see the staging-vs-prod issue — so there's nothing more to carry.)
 workflows.post('/:id/duplicate', async (c) => {
-  const { orgId, userId, email, name } = c.get('user')
+  const { orgId, userId } = c.get('user')
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
   // Load source (org-scoped)
   const { data: source, error: sourceErr } = await supabase
     .from('workflows')
-    .select('name, description, definition, folder_id, definition_schema_version, lane')
+    .select('name, description, definition, folder_id, definition_schema_version, lane, version')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -331,93 +350,28 @@ workflows.post('/:id/duplicate', async (c) => {
   // Report only (#1947): the clone is a switched off copy under the source's stamp.
   reportDefinition(cloneDefinition, { writer: 'duplicate', workflowId: id, lane: source.lane, live: false, schemaVersion: copiedDefinitionStamp(source) })
 
-  // Create the clone, always switched off (#1706), whatever the source's state.
-  // A copy of a live workflow is a second definition that could take traffic the
-  // moment anything routes to it, so a person switches it on deliberately.
-  const { data: clone, error: createErr } = await supabase
-    .from('workflows')
-    .insert({
-      organization_id: orgId,
-      name: `${source.name} (copy)`,
-      description: source.description ?? null,
-      definition: cloneDefinition,
-      // A copy keeps the stamp it was stored under (#1947).
-      definition_schema_version: copiedDefinitionStamp(source),
-      is_active: false,
-      folder_id: source.folder_id ?? null,
-      created_by: userId,
-      updated_by: userId,
-      updated_by_email: email,
-      updated_by_name: name,
-    })
-    .select()
-    .single()
-
-  const lostRace = connectionRefusalOfWriteError(createErr)
-  if (lostRace) return c.json(lostRace.body, lostRace.status)
-  if (createErr || !clone) return c.json({ error: createErr?.message ?? 'Failed to create copy' }, 500)
-
-  // Copy the full version history. Preserve version_number, created_at, message,
-  // commit_sha, and created_by so the timeline is identical and the next save
-  // increments from the source's latest version.
-  // Paged, so a history past PostgREST's 1,000 row cap is copied whole rather
-  // than silently cut short. A read that fails copies nothing and seeds nothing:
-  // inventing a v1 there would present a lost history as a workflow never saved.
-  type VersionCopy = Pick<Database['public']['Tables']['workflow_versions']['Row'], 'version_number' | 'definition' | 'commit_sha' | 'created_by' | 'created_at' | 'message' | 'definition_schema_version'>
-  let versions: VersionCopy[] | null
-  try {
-    versions = await fetchAllPaged<VersionCopy>(
-      (from, to) => supabase
-        .from('workflow_versions')
-        .select('version_number, definition, commit_sha, created_by, created_at, message, definition_schema_version')
-        .eq('workflow_id', id)
-        .order('version_number', { ascending: true })
-        .range(from, to),
-      'duplicate version history read',
-    )
-  } catch (err) {
-    console.error('[duplicate] version history read failed, clone has no history:', formatErr(err))
-    versions = null
+  // The clone, always switched off (#1706) whatever the source's state, on the
+  // source's lane, with the source's stamp and its whole version history, or a
+  // first version of it when it was never saved: one write_workflow call, so a
+  // copy never lands without its history (#1947). A copy of a live workflow is
+  // a second definition that could take traffic the moment anything routes to
+  // it, so a person switches it on deliberately. History is copied as stored;
+  // a restore of a copied version cleans its scripts as every restore does.
+  const result = await writeWorkflow(supabase, {
+    op: 'duplicate',
+    orgId,
+    workflowId: id,
+    // The version the copied definition was read from: a save landing since is
+    // refused, so the copy never pairs one definition with another's history.
+    expectedVersion: source.version,
+    fields: { name: `${source.name} (copy)`, definition: cloneDefinition },
+    saveId: null,
+    actor: actorOf(c),
+  })
+  if (result.kind !== 'written') {
+    return answerUnwritten(c, result, 'Not duplicated. This workflow was saved by someone else while it was being copied. Nothing was created. Try again.')
   }
-
-  // Said in the response rather than only logged, so the page can tell the
-  // person their copy starts with no saved versions (L12).
-  let historyCopied = versions !== null
-  if (versions === null) {
-    // Logged above; nothing to copy and nothing honest to seed.
-  } else if (versions.length > 0) {
-    const rows = versions.map((v) => ({
-      workflow_id: clone.id,
-      version_number: v.version_number,
-      definition: sanitizeDefinition(v.definition),
-      definition_schema_version: copiedDefinitionStamp(v),
-      commit_sha: v.commit_sha,
-      created_by: v.created_by,
-      created_at: v.created_at,
-      message: v.message,
-    }))
-    const { error: versionsErr } = await supabase.from('workflow_versions').insert(rows)
-    if (versionsErr) {
-      console.error('[duplicate] version history copy failed:', versionsErr.message)
-      historyCopied = false
-    }
-  } else {
-    // Source never had a saved version (created but not yet saved). Seed v1 from
-    // the current definition so the clone has a baseline snapshot, matching what
-    // a first save produces.
-    const { error: seedErr } = await supabase.from('workflow_versions').insert({
-      workflow_id: clone.id,
-      version_number: 1,
-      definition: source.definition,
-      definition_schema_version: copiedDefinitionStamp(source),
-      created_by: userId,
-      message: `Duplicated from ${source.name}`,
-    })
-    if (seedErr) {
-      console.error('[duplicate] baseline version write failed:', seedErr.message)
-      historyCopied = false
-    }
-  }
+  const clone = result.workflow
 
   // Deploy the clone's code-node bundle. Bundles are keyed per workflow id, so
   // the source's bundle doesn't cover the clone — without this, a cloned workflow
@@ -436,7 +390,7 @@ workflows.post('/:id/duplicate', async (c) => {
   }
 
   await writeAuditLog(supabase, orgId, 'workflow', clone.id, 'created', userId, { duplicated_from: id })
-  return c.json({ ...clone, history_copied: historyCopied, deploy_errors: deployErrors.length ? deployErrors : undefined }, 201)
+  return c.json({ ...clone, history_copied: true, deploy_errors: deployErrors.length ? deployErrors : undefined }, 201)
 })
 
 // GET /api/workflows/:id
@@ -529,10 +483,22 @@ workflows.get('/:id/timeout-suggestions', async (c) => {
 
 // PUT /api/workflows/:id — save definition, create version snapshot, invalidate KV cache
 workflows.put('/:id', async (c) => {
-  const { orgId, userId, email, name } = c.get('user')
+  const { orgId, userId, email } = c.get('user')
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
-  const body = await c.req.json<{ name?: string; description?: string; definition?: unknown; message?: string; slack_channel?: string | null }>()
+  const body = await c.req.json<{ name?: string; description?: string; definition?: unknown; message?: string; slack_channel?: string | null; expected_version?: unknown; save_id?: unknown }>()
+
+  // A save may name the version it was edited from and the press that made it
+  // (#1947); write_workflow refuses it as stale when that version is no longer
+  // stored. A save naming none (today's canvas, a rename from the list) is made
+  // from the version read below, so a write landing during this request is
+  // still caught. Requiring it of a definition save, once the canvas sends it,
+  // is the follow up named in #1947.
+  const versionRefusal = expectedVersionRefusal(c, body.expected_version)
+  if (versionRefusal) return versionRefusal
+  if (body.save_id !== undefined && (typeof body.save_id !== 'string' || !UUID.test(body.save_id))) {
+    return c.json({ error: 'save_id_invalid', message: 'save_id must be a UUID.' }, 400)
+  }
   // Before the cycle check and the no-op compare, so a save that only re-pads a clean
   // script reads as no_changes rather than minting a version row (#1117).
   if (body.definition !== undefined) body.definition = sanitizeDefinition(body.definition)
@@ -540,7 +506,7 @@ workflows.put('/:id', async (c) => {
   // Verify ownership
   const { data: existing, error: fetchError } = await supabase
     .from('workflows')
-    .select('id, definition, name, slack_channel, is_active, definition_schema_version, lane')
+    .select('id, definition, name, slack_channel, is_active, definition_schema_version, lane, version')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -598,7 +564,7 @@ workflows.put('/:id', async (c) => {
     const copyRefreshed = await copyCleared(async () => {
       await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase)
     }, `workflow ${id} caches`)
-    return c.json({ id, no_changes: true, ...copyWarning(copyRefreshed) })
+    return c.json({ id, no_changes: true, version: existing.version, ...copyWarning(copyRefreshed) })
   }
 
   // A new definition names only live connections of this organization (#2338),
@@ -610,68 +576,40 @@ workflows.put('/:id', async (c) => {
     if (missing) return missing
   }
 
-  // Get next version number. `.single()` reports "no prior versions" (first save)
-  // as PGRST116 — fine, start at 1. Any other error is a real DB failure: bailing
-  // beats defaulting to 1, which would collide with / clobber an existing chain.
-  const { data: lastVersion, error: lastVersionError } = await supabase
-    .from('workflow_versions')
-    .select('version_number')
-    .eq('workflow_id', id)
-    .order('version_number', { ascending: false })
-    .limit(1)
-    .single()
-  if (lastVersionError && !isNotFoundError(lastVersionError)) return dbError(c, lastVersionError)
-
-  const nextVersion = ((lastVersion?.version_number as number) ?? 0) + 1
-
-  // Create version snapshot. A save that sends no definition snapshots the stored
-  // one, which keeps the stamp it was stored under (#1947).
-  const savedStamp = body.definition !== undefined ? writtenDefinitionStamp() : copiedDefinitionStamp(existing)
-  // Report only (#1947): the definition this save writes, at its stamp, live if the workflow is.
+  // The snapshot and the row in one write_workflow call (#1947): from the
+  // version the canvas was edited from, numbered under the row lock, the stamp
+  // the Worker checked by when a definition is sent (the stored one's when not),
+  // and what validateDefinition found in it, reported only. A save that lost
+  // the race to someone else's writes nothing and answers 409 with theirs.
+  // A sent definition is stamped with this build's version; a save sending none
+  // snapshots the stored one, whose stamp write_workflow copies itself.
+  const savedStamp = writtenDefinitionStamp()
+  const report = body.definition !== undefined
+    ? reportDefinition(body.definition, { writer: 'save', workflowId: id, lane: existing.lane, live: existing.is_active === true, schemaVersion: savedStamp })
+    : null
+  const fields: Record<string, unknown> = {}
+  if (body.name !== undefined) fields.name = body.name
+  if (body.description !== undefined) fields.description = body.description
+  if (body.slack_channel !== undefined) fields.slack_channel = body.slack_channel
+  if (body.message !== undefined) fields.message = body.message
   if (body.definition !== undefined) {
-    reportDefinition(body.definition, { writer: 'save', workflowId: id, lane: existing.lane, live: existing.is_active === true, schemaVersion: savedStamp })
+    fields.definition = body.definition
+    fields.definition_schema_version = savedStamp
+    fields.definition_report = report
   }
-  const { data: version, error: versionError } = await supabase
-    .from('workflow_versions')
-    .insert({
-      workflow_id: id,
-      version_number: nextVersion,
-      definition: asJson(body.definition ?? existing.definition),
-      definition_schema_version: savedStamp,
-      created_by: userId,
-      message: body.message ?? null,
-    })
-    .select()
-    .single()
-
-  if (versionError) return dbError(c, versionError)
-
-  // Update workflow
-  const updates: Database['public']['Tables']['workflows']['Update'] = {
-    updated_by: userId,
-    updated_by_email: email,
-    updated_by_name: name,
-  }
-  if (body.name !== undefined) updates.name = body.name
-  if (body.description !== undefined) updates.description = body.description
-  if (body.definition !== undefined) {
-    updates.definition = asJson(body.definition)
-    updates.definition_schema_version = savedStamp
-  }
-  if (body.slack_channel !== undefined) updates.slack_channel = body.slack_channel
-
-  const { data: updated, error: updateError } = await supabase
-    .from('workflows')
-    .update(updates)
-    .eq('id', id)
-    .select()
-    .single()
-
-  const lostRace = connectionRefusalOfWriteError(updateError)
-  if (lostRace) return answerLostRace(c, supabase, lostRace, id, nextVersion)
-  const updateBlocked = dbErrorUnlessNotFound(c, updateError)
-  if (updateBlocked) return updateBlocked
-  if (!updated) return c.json({ error: 'Workflow not found' }, 404)
+  const result = await writeWorkflow(supabase, {
+    op: 'save',
+    orgId,
+    workflowId: id,
+    expectedVersion: typeof body.expected_version === 'number' ? body.expected_version : existing.version,
+    fields,
+    saveId: typeof body.save_id === 'string' ? body.save_id : null,
+    actor: actorOf(c),
+  })
+  if (result.kind !== 'written') return answerUnwritten(c, result)
+  const updated = result.workflow
+  const versionId = result.versionId
+  const nextVersion = result.versionNumber
 
   // Drop the KV cache and bring the last-good copy up to this save (#1845), so
   // a database outage straight after it runs the definition just saved. Right
@@ -701,7 +639,7 @@ workflows.put('/:id', async (c) => {
   }
 
   // Push definition to GitHub backup repo and store commit SHA on the version row (non-blocking)
-  const workflowName = (updates.name as string | undefined) ?? (existing.definition as { name?: string } | null)?.name ?? id
+  const workflowName = body.name ?? (existing.definition as { name?: string } | null)?.name ?? id
   c.executionCtx.waitUntil(
     pushWorkflowToGitHub(
       c.env.GITHUB_TOKEN,
@@ -709,7 +647,7 @@ workflows.put('/:id', async (c) => {
       id,
       workflowName,
       body.definition ?? existing.definition,
-      nextVersion,
+      nextVersion ?? 0,
       body.message
     )
       .then(async (commitSha) => {
@@ -720,17 +658,21 @@ workflows.put('/:id', async (c) => {
         // leaving a version row with no commit_sha that still looked like a
         // healthy backup. The GitHub push itself did succeed, so the streak is
         // still reset; only the bookkeeping is reported as broken (#588).
-        const { error: stampError } = await requireRowsAffected(
-          'workflow_versions.commit_sha',
-          () => supabase.from('workflow_versions').update({ commit_sha: commitSha }).eq('id', version.id).select('id'),
-          { onMiss: 'error', context: { workflow_id: id, version_id: version.id } }
-        )
+        // write_workflow names the snapshot it wrote; an answer without one leaves
+        // nothing to stamp, reported as the unset stamp it is, never sent as an empty id.
+        const { error: stampError } = versionId
+          ? await requireRowsAffected(
+            'workflow_versions.commit_sha',
+            () => supabase.from('workflow_versions').update({ commit_sha: commitSha }).eq('id', versionId).select('id'),
+            { onMiss: 'error', context: { workflow_id: id, version_id: versionId } }
+          )
+          : { error: new Error('write_workflow answered the save without the id of the version it wrote') }
         if (stampError && !isNoRowMatchedError(stampError)) {
           console.error(
             JSON.stringify({
               event: 'workflow_version_commit_sha_unset',
               workflow_id: id,
-              version_id: version.id,
+              version_id: versionId,
               reason: stampError.message,
             })
           )
@@ -761,7 +703,7 @@ workflows.put('/:id', async (c) => {
     changed_by_name: email,
   })
 
-  return c.json({ ...updated, version_id: version.id, deploy_errors: deployErrors.length ? deployErrors : undefined, ...copyWarning(copyRefreshed) })
+  return c.json({ ...updated, version_id: versionId, deploy_errors: deployErrors.length ? deployErrors : undefined, ...copyWarning(copyRefreshed) })
 })
 
 // POST /api/workflows/:id/draft-changelog — AI-drafted summary of pending changes for the save popover
@@ -841,7 +783,7 @@ workflows.patch('/:id', async (c) => {
 
   const { data: owner, error: fetchError } = await supabase
     .from('workflows')
-    .select('id, name, is_active, definition, definition_schema_version, lane')
+    .select('id, name, is_active, definition, definition_schema_version, lane, version')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -871,34 +813,28 @@ workflows.patch('/:id', async (c) => {
     reportDefinition(owner.definition, { writer: 'switch_on', workflowId: id, lane: owner.lane, live: true, schemaVersion: owner.definition_schema_version })
   }
 
-  const updates: Database['public']['Tables']['workflows']['Update'] = { updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name }
-  if (body.is_active !== undefined) updates.is_active = body.is_active
-  if ('folder_id' in body) {
-    if (body.folder_id === null) {
-      updates.folder_id = null
-    } else if (typeof body.folder_id === 'string') {
-      const { data: folder, error: folderError } = await supabase
-        .from('folders')
-        .select('id')
-        .eq('id', body.folder_id)
-        .eq('organization_id', orgId)
-        .single()
-      if (folderError && !isNotFoundError(folderError)) return dbError(c, folderError)
-      if (!folder) return c.json({ error: 'folder not found' }, 404)
-      updates.folder_id = body.folder_id
-    }
+  // One write_workflow call (#1947). Switching on is made from the version
+  // whose definition was checked above: a save landing in between makes it
+  // stale, so a definition nobody checked is never switched on. A switch off or
+  // a move needs no version. The function refuses a folder of another
+  // organization as folder not found.
+  const fields: Record<string, unknown> = {}
+  if (body.is_active !== undefined) fields.is_active = body.is_active
+  if ('folder_id' in body && (body.folder_id === null || typeof body.folder_id === 'string')) fields.folder_id = body.folder_id
+  const result = await writeWorkflow(supabase, {
+    op: 'patch',
+    orgId,
+    workflowId: id,
+    expectedVersion: body.is_active === true ? owner.version : null,
+    fields,
+    saveId: null,
+    actor: actorOf(c),
+  })
+  if (result.kind !== 'written') {
+    return answerUnwritten(c, result, 'Not switched on. This workflow was saved by someone else while it was being switched on, so the definition checked is no longer the one stored. Nothing was changed. Try again.')
   }
-
-  const { data, error } = await supabase
-    .from('workflows')
-    .update(updates)
-    .eq('id', id)
-    .select('id, name, is_active, folder_id, updated_at')
-    .single()
-
-  const updateBlocked = dbErrorUnlessNotFound(c, error)
-  if (updateBlocked) return updateBlocked
-  if (!data) return c.json({ error: 'Workflow not found' }, 404)
+  const { id: writtenId, name: writtenName, is_active, folder_id, updated_at } = result.workflow
+  const data = { id: writtenId, name: writtenName, is_active, folder_id, updated_at }
 
   // A switch off leaves a copy that refuses (#1845): an outage must not run a
   // workflow somebody turned off.
@@ -912,28 +848,36 @@ workflows.patch('/:id', async (c) => {
   return c.json({ ...data, ...copyWarning(copyRefreshed) })
 })
 
-// DELETE /api/workflows/:id — soft delete. Execution rows have a
-// RESTRICT FK on workflows(id) and are audit/cost history, so we retire
-// the workflow via deleted_at and also flip is_active off so anything that
-// only checks is_active (cache prewarm, definition loader) skips it too.
+// DELETE /api/workflows/:id: a soft delete. Execution rows have a RESTRICT
+// foreign key on workflows(id) and are audit and cost history, so the workflow
+// is retired by deleted_at and switched off, so anything that only checks
+// is_active skips it too.
+//
+// What a soft delete does to each piece of state derived from the workflow
+// (#1947, L38), each held by a test:
+// - the row: deleted_at set, is_active false, its version, definition and
+//   history kept (write_workflow; supabase/tests/write_workflow.test.sql E),
+//   and every later write of it is a 404 (workflow_not_found);
+// - the definition cache and the last good copy: dropped and replaced by a copy
+//   that refuses, so an outage never runs it (refreshWorkflowCaches, below;
+//   engine/__tests__/definition-copy.test.ts, the deleted case);
+// - the engine: the definition loader reads only rows with no deleted_at, so a
+//   webhook or a custom endpoint still mapped to it answers 404 Workflow not
+//   found and runs nothing; the endpoint row is left for a person to repoint;
+// - the ops tick (an ops lane workflow): its copy carries deleted_at and a
+//   deleted copy never starts (supabase-ops ops_tick.test.sql);
+// - deployed code node bundles, workflow scoped variables and folder
+//   membership: left, never loaded or counted, since nothing runs or lists a
+//   deleted workflow.
 workflows.delete('/:id', async (c) => {
   const { orgId, userId } = c.get('user')
   const id = c.req.param('id')
   const supabase = createSupabaseClient(c.env)
 
-  // Unlike its sibling handlers this one never looked the workflow up first, so
-  // a workflow that never existed, belongs to another org, or was already
-  // soft-deleted all collapsed into the same 200 {ok:true} (#588).
-  const blocked = await requireRowOr404(c, 'Workflow not found', () =>
-    supabase
-      .from('workflows')
-      .update({ deleted_at: new Date().toISOString(), is_active: false, updated_by: userId })
-      .eq('id', id)
-      .eq('organization_id', orgId)
-      .is('deleted_at', null)
-      .select('id')
-  )
-  if (blocked) return blocked
+  // Through write_workflow (#1947). A workflow that never existed, belongs to
+  // another organization, or was already deleted is a 404 (#588).
+  const result = await writeWorkflow(supabase, { op: 'delete', orgId, workflowId: id, expectedVersion: null, fields: {}, saveId: null, actor: actorOf(c) })
+  if (result.kind !== 'written') return answerUnwritten(c, result)
 
   const copyRefreshed = await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'deleted', userId)
@@ -1042,10 +986,17 @@ workflows.get('/:id/versions/:version_id', async (c) => {
 
 // POST /api/workflows/:id/versions/:version_id/restore
 workflows.post('/:id/versions/:version_id/restore', async (c) => {
-  const { orgId, userId, email } = c.get('user')
+  const { orgId, userId } = c.get('user')
   const id = c.req.param('id')
   const versionId = c.req.param('version_id')
   const supabase = createSupabaseClient(c.env)
+  // A restore may name the version its page last saw (#1947); without one it is
+  // made from the version read below, so a write landing during it is still caught.
+  // No body, one that is not JSON, and one that is not an object (null, a list) all name no version.
+  const parsed: unknown = await c.req.json().catch(() => null)
+  const body = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}) as { expected_version?: unknown }
+  const versionRefusal = expectedVersionRefusal(c, body.expected_version)
+  if (versionRefusal) return versionRefusal
 
   // Verify ownership — the service-role key bypasses RLS, so without this an
   // org-B caller who knows an org-A (workflow_id, version_id) pair could
@@ -1053,7 +1004,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   // 404 (not 403) to avoid leaking which workflow ids exist, matching siblings.
   const { data: owner, error: ownerError } = await supabase
     .from('workflows')
-    .select('id, name, is_active, lane')
+    .select('id, name, is_active, lane, version')
     .eq('id', id)
     .eq('organization_id', orgId)
     .is('deleted_at', null)
@@ -1091,65 +1042,34 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
   const missing = await connectionRefusal(c, supabase, orgId, restored)
   if (missing) return missing
 
-  // Restore = create a new version with the old definition. PGRST116 = no prior
-  // versions → start at 1; any other error is a real failure (defaulting to 1
-  // would clobber the chain), so bail.
-  const { data: lastVersion, error: lastVersionError } = await supabase
-    .from('workflow_versions')
-    .select('version_number')
-    .eq('workflow_id', id)
-    .order('version_number', { ascending: false })
-    .limit(1)
-    .single()
-  if (lastVersionError && !isNotFoundError(lastVersionError)) return dbError(c, lastVersionError)
-
-  const nextVersion = ((lastVersion?.version_number as number) ?? 0) + 1
-
   // A restored definition keeps the stamp its version row carries, unstamped
   // included (#1947): it was checked under those rules when it was saved, and
   // relabelling it with this build's version would claim a check it never had.
-  // The workflow row is written with it even when it is null, because the row
-  // may hold a newer stamp from the save this restore replaces.
+  // write_workflow reads that stamp from the version row itself and writes it
+  // to the workflow row even when it is null, because the row may hold a newer
+  // stamp from the save this restore replaces.
   const restoredStamp = copiedDefinitionStamp(version)
 
   // Report only (#1947): the old definition at the stamp it keeps, live if the
   // workflow is. A version a rule would refuse (a loop, the retired integration
   // step) is restored as before and named in the report.
-  reportDefinition(restored, { writer: 'restore', workflowId: id, lane: owner.lane, live: owner.is_active === true, schemaVersion: restoredStamp })
+  const report = reportDefinition(restored, { writer: 'restore', workflowId: id, lane: owner.lane, live: owner.is_active === true, schemaVersion: restoredStamp })
 
-  // Surface a failed snapshot write instead of silently "restoring" nothing.
-  const { error: restoreInsertError } = await supabase.from('workflow_versions').insert({
-    workflow_id: id,
-    version_number: nextVersion,
-    definition: restored,
-    definition_schema_version: restoredStamp,
-    created_by: userId,
-    message: `Restored from v${version.version_number}`,
+  // The new version and the row in one write_workflow call (#1947), so history
+  // and definition cannot diverge (#588) and a refusal leaves neither.
+  const result = await writeWorkflow(supabase, {
+    op: 'restore',
+    orgId,
+    workflowId: id,
+    expectedVersion: typeof body.expected_version === 'number' ? body.expected_version : owner.version,
+    fields: { version_id: versionId, definition: restored, definition_report: report },
+    saveId: null,
+    actor: actorOf(c),
   })
-  if (restoreInsertError) return dbError(c, restoreInsertError)
-
-  // The version snapshot is already inserted above. This update discarded its
-  // result entirely, so a restore could write history, fail to move the live
-  // definition, and still answer 200: history and definition silently diverge
-  // (#588).
-  // The raw error is kept, because the trigger's refusal (#2338) names the
-  // connections in a detail the rowcount helper does not carry.
-  let restoreWriteError: unknown = null
-  const restoreWrite = await requireRowsAffected('Workflow not found', async () => {
-    const result = await supabase
-      .from('workflows')
-      .update({ definition: restored, definition_schema_version: restoredStamp, updated_by: userId, updated_by_email: email, updated_by_name: c.get('user').name })
-      .eq('id', id)
-      .eq('organization_id', orgId)
-      .select('id')
-    restoreWriteError = result.error
-    return result
-  })
-  const lostRace = connectionRefusalOfWriteError(restoreWriteError)
-  if (lostRace) return answerLostRace(c, supabase, lostRace, id, nextVersion)
-  if (restoreWrite.error) {
-    return isNoRowMatchedError(restoreWrite.error) ? c.json({ error: 'Workflow not found' }, 404) : dbError(c, restoreWrite.error)
+  if (result.kind !== 'written') {
+    return answerUnwritten(c, result, 'Not restored. This workflow was saved by someone else while it was being restored. Nothing was changed. Look at the latest version, then restore again if you still want to.')
   }
+  const nextVersion = result.versionNumber
 
   const copyRefreshed = await copyCleared(async () => { await refreshWorkflowCaches(id, c.env.WORKFLOW_CACHE, supabase) }, `workflow ${id} caches`)
   await writeAuditLog(supabase, orgId, 'workflow', id, 'updated', userId, {
@@ -1157,7 +1077,7 @@ workflows.post('/:id/versions/:version_id/restore', async (c) => {
     new_version: nextVersion,
   })
 
-  return c.json({ ok: true, version_number: nextVersion, ...copyWarning(copyRefreshed) })
+  return c.json({ ok: true, version_number: nextVersion, version: result.workflow.version, ...copyWarning(copyRefreshed) })
 })
 
 // POST /api/workflows/:id/test
