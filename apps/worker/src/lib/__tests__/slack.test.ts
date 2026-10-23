@@ -373,6 +373,11 @@ describe('sendQueryCancelledAlert (#2651)', () => {
     // The statement is shown escaped for Slack, since `>` is markup there (L757).
     expect(text).toContain('response_body-&gt;&gt;reason=eq.?')
     expect(text.match(/\*Fix:\*/g)).toHaveLength(1)
+    // The check counts cancellations and when they happened, never how many runs finished,
+    // so the alert must not claim the query fails on every run: on 2026-10-22 the LendSwift
+    // rejection counts were cancelled in 2 of 11 hours and took about a second otherwise.
+    expect(text).not.toMatch(/every run until then|fails on every run/i)
+    expect(text).toContain('Until then, each run that hits the limit fails the same way.')
     // Plain words, not the machinery: no error code, role or stats view in the prose.
     expect(text).not.toMatch(/57014|service_role|pg_stat_statements|queryid/)
   })
