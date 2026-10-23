@@ -59,7 +59,7 @@ async function run(observeStep?: (entry: StepLogEntry) => void) {
   const env = { IDEMPOTENCY: makeKV(), WORKFLOW_CACHE: makeKV(), APP_URL: 'https://app.test', PII_REDACTION_FIELDS: '' } as unknown as Env
   const executionCtx = recordingContext()
   await executeWorkflow(
-    { workflowId: 'wf-obs', payload: { lead: 1 }, source: 'engine' },
+    { triggerType: 'http_webhook', workflowId: 'wf-obs', payload: { lead: 1 }, source: 'engine' },
     env,
     { ...moneyRuntime(supabase), ...(observeStep ? { observeStep } : {}) },
     executionCtx,

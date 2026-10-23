@@ -1,14 +1,17 @@
 /**
  * Lane checks for a run (#1707, plan 0.C). A workflow is stored under a lane,
- * money or ops, and the Worker running it serves one lane. Both refusals happen
- * before an execution row is written or a node runs, so a misrouted workflow
- * leaves no half recorded run behind.
+ * money or ops, and the Worker running it serves one lane. All three refusals
+ * (a workflow of another lane, a node type the lane cannot run, and a trigger
+ * that does not start runs in the lane, #1947) happen before an execution row
+ * is written or a node runs, so a misrouted run leaves no half recorded run
+ * behind.
  *
  * The walk holds the same line again on every node it reaches (#1725), through
  * laneRefusalFor, so code that reaches walkGraph without the entry check still
  * cannot run a node its lane does not allow.
  */
 import { isNodeType, isWorkflowLane, nodeTypeRunsInLane, type WorkflowLane } from '@bidspoke/node-types'
+import { TRIGGER_LANES, type TriggerType } from '@bidspoke/workflow-definition'
 import type { WorkflowDefinition } from '../types'
 
 /** A node type the workflow's lane may not run: an ops workflow never reaches a money executor. */
@@ -28,6 +31,24 @@ export class WorkflowLaneError extends Error {
     super(`Workflow ${workflowId} runs in the ${workflowLane} lane, not ${workerLane}`)
     this.name = 'WorkflowLaneError'
   }
+}
+
+/**
+ * A run started by a trigger its lane's engine does not run (#1947): a money
+ * run started by a schedule would be recorded as one, and nothing that reads
+ * the bidding database's trigger_type expects that value. TRIGGER_LANES in
+ * @bidspoke/workflow-definition is the one list of which lane runs which.
+ */
+export class TriggerLaneError extends Error {
+  constructor(readonly triggerType: TriggerType, readonly lane: WorkflowLane) {
+    super(`A ${triggerType} trigger does not start runs in the ${lane} lane`)
+    this.name = 'TriggerLaneError'
+  }
+}
+
+/** Refuses a run whose entry point names a trigger the lane does not run. */
+export function assertTriggerStartsRunsInLane(triggerType: TriggerType, lane: WorkflowLane): void {
+  if (!TRIGGER_LANES[triggerType].includes(lane)) throw new TriggerLaneError(triggerType, lane)
 }
 
 /**

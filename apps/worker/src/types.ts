@@ -16,9 +16,10 @@ export interface WorkflowDefinition {
   name: string
   // The money engine reads an http webhook's settings and nothing else, so its
   // definitions are typed as one. The full union is TriggerConfig, from
-  // @bidspoke/workflow-definition (#1947); widening this field to it, with the
-  // engine narrowing on the type, comes with the change that stamps a run's
-  // trigger_type from its trigger instead of a constant.
+  // @bidspoke/workflow-definition (#1947). A run's trigger_type is named by the
+  // entry point that started it (ExecuteOptions.triggerType), not read from
+  // here, so this stays narrow until an engine entry reads another trigger's
+  // settings; widening it then comes with that engine narrowing on the type.
   trigger: HttpWebhookTrigger
   nodes: NodeDefinition[]
   edges: EdgeDefinition[]

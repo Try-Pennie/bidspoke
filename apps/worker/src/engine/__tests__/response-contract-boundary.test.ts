@@ -62,7 +62,7 @@ function run(workflowId: string) {
   } as unknown as Env
   const executionCtx = recordingContext()
   return {
-    result: executeWorkflow({ workflowId, payload: { lead: 1 }, source: 'engine' }, env, moneyRuntime({} as SupabaseClient), executionCtx),
+    result: executeWorkflow({ triggerType: 'http_webhook', workflowId, payload: { lead: 1 }, source: 'engine' }, env, moneyRuntime({} as SupabaseClient), executionCtx),
     flush: async () => {
       await executionCtx.settle()
     },

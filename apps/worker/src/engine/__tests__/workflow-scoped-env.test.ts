@@ -97,7 +97,7 @@ async function envHandedToTheNode(workflowId: string): Promise<Record<string, st
   vi.mocked(executeNode).mockClear()
   const executionCtx = recordingContext()
   try {
-    await executeWorkflow({ workflowId, payload: { lead: 1 }, source: 'engine' }, env, moneyRuntime(client), executionCtx)
+    await executeWorkflow({ triggerType: 'http_webhook', workflowId, payload: { lead: 1 }, source: 'engine' }, env, moneyRuntime(client), executionCtx)
   } finally {
     await executionCtx.settle()
   }

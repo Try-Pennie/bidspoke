@@ -184,6 +184,7 @@ export async function handleCustomEndpoint(c: Context<{ Bindings: Env }>): Promi
         workflowId: endpoint.workflow_id,
         payload,
         source: endpoint.source_name,
+        triggerType: 'http_webhook',
         idempotencyKeyHeader: idempotencyKey,
         isTest: false,
       },

@@ -92,6 +92,8 @@ shadow.post('/:workflow_id', apiKeyAuth, async (c) => {
         workflowId,
         payload,
         source: `${source}__shadow`,
+        // A mirror of a webhook delivery.
+        triggerType: 'http_webhook',
         isTest: true,
         shadowMode,
         enforceSourceAssignment: false,

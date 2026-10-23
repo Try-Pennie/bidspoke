@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { PLANNED_TRIGGER_TYPES, TRIGGER_LANES, TRIGGER_TYPES, validateTrigger, type TriggerConfig } from '../index'
+import { PLANNED_TRIGGER_TYPES, TRIGGER_LANES, TRIGGER_TYPES, triggerTypeOf, validateTrigger, type TriggerConfig } from '../index'
 
 // The TriggerConfig union (#1947): the trigger types that exist, the lanes each
 // one runs in, and the ones the plan names that nothing can run yet, refused by
@@ -99,5 +99,30 @@ describe('validateTrigger', () => {
   ])('refuses an http webhook with %s', (_, trigger) => {
     const problems = validateTrigger(trigger, 'money')
     expect(problems.map((p) => [p.reason, p.severity])).toEqual([['trigger_config_invalid', 'error']])
+  })
+})
+
+// What a run records as its trigger_type (#1947, A1b): the stored type, with
+// the old spelling read as the type it spells, and nothing for a trigger that
+// names no type this build knows, so a caller cannot record a guess.
+describe('triggerTypeOf', () => {
+  it('reads each runnable type as itself', () => {
+    expect(triggerTypeOf(http())).toBe('http_webhook')
+    expect(triggerTypeOf(schedule())).toBe('schedule')
+  })
+
+  it('reads the old webhook spelling as http_webhook, which 14 saved versions still hold', () => {
+    expect(triggerTypeOf({ type: 'webhook', config: {} })).toBe('http_webhook')
+  })
+
+  it('gives nothing for a missing, planned or unknown trigger', () => {
+    expect(triggerTypeOf(undefined)).toBeNull()
+    expect(triggerTypeOf(null)).toBeNull()
+    expect(triggerTypeOf({ config: {} })).toBeNull()
+    expect(triggerTypeOf({ type: 'slack_event', config: {} })).toBeNull()
+    expect(triggerTypeOf({ type: 'carrier_pigeon', config: {} })).toBeNull()
+    expect(triggerTypeOf('http_webhook')).toBeNull()
+    // An inherited key is not a spelling the table holds.
+    expect(triggerTypeOf({ type: 'toString', config: {} })).toBeNull()
   })
 })

@@ -128,7 +128,7 @@ function run(extra: Partial<Parameters<typeof executeWorkflow>[0]> = {}, harness
   return {
     harness,
     result: executeWorkflow(
-      { workflowId: WF_ID, payload: PAYLOAD, source: 'test-source', ...extra },
+      { triggerType: 'http_webhook', workflowId: WF_ID, payload: PAYLOAD, source: 'test-source', ...extra },
       harness.env,
       moneyRuntime(supabase),
       harness.executionCtx
@@ -318,7 +318,7 @@ describe('processing marker ordering (#67)', () => {
     const executionCtx = recordingContext()
 
     const result = executeWorkflow(
-      { workflowId: WF_ID, payload: PAYLOAD, source: 'test-source' },
+      { triggerType: 'http_webhook', workflowId: WF_ID, payload: PAYLOAD, source: 'test-source' },
       env,
       moneyRuntime(supabase),
       executionCtx

@@ -36,9 +36,11 @@
  * nothing to it. Spike 0 measured the platform ceilings the run engine is sized
  * by: docs/ops-ceilings-spike.md.
  *
- * And the minute cron (#1949): scheduled() runs one tick of the run engine in
- * observe mode (tick.ts), which computes and records what it would run and runs
- * nothing that sends anywhere.
+ * And the minute cron (#1949): scheduled() runs one tick of the run engine
+ * (tick.ts). In observe mode, the default and as deployed, it computes and
+ * records what it would run and runs nothing that sends anywhere; with
+ * OPS_TICK_MODE=live (#1950) it records real fires, claims runs and runs each
+ * through OpsInternal.run.
  *
  * Before any of that, the Worker checks its lane (#1709, plan 0.E): LANE must
  * be "ops", set in wrangler.ops.toml, or every request is refused by name. A
@@ -75,6 +77,13 @@ export interface OpsEnv extends OpsDbEnv {
    * after each tick (reseal-live.ts). Unset, nothing is resealed.
    */
   OPS_RESEAL?: string
+  /**
+   * The minute tick's mode (#1950), in wrangler.ops.toml [vars] once Dan
+   * switches it: "live" records real fires, claims and runs; unset or
+   * "observe" (as deployed) records what it would run and runs nothing.
+   * Any other value runs observe and is reported not configured, by name.
+   */
+  OPS_TICK_MODE?: string
   PORTING_TEE: R2Bucket
   /**
    * The ops code namespace (bidspoke-code-nodes-ops). Its outbound Worker,
