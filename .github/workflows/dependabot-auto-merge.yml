@@ -1,11 +1,12 @@
 # Auto-merges only the routine, low-risk Dependabot PRs once CI passes.
 #
-# This repo is on GitHub's free plan for a private repo, so branch protection
-# and repository rulesets aren't available, meaning GitHub's built-in
-# "auto-merge" (gh pr merge --auto) has nothing to actually wait on and would
-# merge immediately instead of waiting for CI. This workflow instead triggers
-# after the CI workflow finishes and only merges once it has actually
-# succeeded.
+# Written while this repo was on GitHub's free plan, where rulesets were not
+# available, so GitHub's built-in "auto-merge" (gh pr merge --auto) had nothing
+# to wait on and would have merged immediately instead of waiting for CI. This
+# workflow instead triggers after the CI workflow finishes and only merges once
+# it has actually succeeded. Since 2026-10-23 a ruleset on main requires CI
+# passed (#2749), so the built-in auto-merge would now wait; this workflow is
+# kept as is, and its merge is refused by the ruleset if CI did not pass.
 #
 # What counts as safe to merge automatically:
 #   - The grouped npm "minor-and-patch" PR (dependabot.yml groups every

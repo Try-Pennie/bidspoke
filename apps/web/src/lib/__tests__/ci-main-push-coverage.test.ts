@@ -32,10 +32,20 @@ const stripComments = (yaml: string): string =>
     .map((line) => (/^\s*#/.test(line) ? '' : line.replace(/\s+#.*$/, '')))
     .join('\n')
 
+/**
+ * The summary job the main ruleset requires (#2749). It checks nothing itself:
+ * it reads the other jobs' results, and on main Verify's own fan-in plays that
+ * part, so it has no counterpart to find there. Exempt by name, not by shape,
+ * and its reviewer is ci-passed.test.ts, which fails unless it needs every
+ * other job and runs only the decision script (L129).
+ */
+const SUMMARY_JOB = 'ci-passed'
+
 /** ci.yml jobs whose job-level `if:` restricts them to pull requests. */
 function pullRequestOnlyJobs(): Array<{ id: string; body: string }> {
   const yaml = readWorkflow(CI)
   return workflowJobIds(yaml)
+    .filter((id) => id !== SUMMARY_JOB)
     .map((id) => ({ id, body: workflowJobBody(yaml, id) }))
     .filter(({ body }) => {
       // Job-level `if:` sits at four spaces; a step's sits deeper.
@@ -146,10 +156,10 @@ describe('ci.yml reports a check on every pull request (#894)', () => {
    * one to ci.yml to spare the a11y job would take the security scan, the
    * db-types check, lint, typecheck and both test jobs down with it on any pull
    * request that did not match, and a workflow that does not run reports no
-   * check at all. This repo has no server-side required checks today (#266), so
-   * that is currently a latent rather than an active hazard, which is precisely
-   * why it needs to be written down: the cost of the mistake is invisible until
-   * the plan is upgraded and then it is a merge button that never unblocks.
+   * check at all. Since 2026-10-23 the main ruleset requires CI passed (#2749),
+   * so the hazard is live: a filter that stopped ci.yml starting would leave CI
+   * passed unreported, and the pull request would show a merge button that
+   * never unblocks.
    *
    * The cost being avoided is about thirty seconds of runner time on a backend
    * pull request, now that the expensive steps are scoped (#968). That is a real

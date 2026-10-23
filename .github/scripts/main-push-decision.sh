@@ -2,12 +2,11 @@
 #
 # Decide whether a commit on main arrived without a reviewed pull request (#760).
 #
-# Server-side branch protection is unavailable on this repo (both
-# `.../rulesets` and `.../branches/main/protection` return 403 "Upgrade to GitHub
-# Pro or make this repository public"), so #266 stays open on that billing
-# decision. Merges to main deploy the production bidding engine, and the husky
-# hooks that partially cover the gap are bypassable with `--no-verify` /
-# `SKIP_TEST_CHECK`. This reports a direct push after the fact instead.
+# Since 2026-10-23 (Try-Pennie on GitHub Team) a ruleset on main refuses a
+# direct push and requires the CI passed check (#2749). This predates it and
+# stays as the backstop: an admin can switch the ruleset off or add a bypass,
+# and merges to main deploy the production bidding engine, so a direct push is
+# still reported after the fact.
 #
 # Usage:
 #   main-push-decision.sh <sha> <assoc_pr_count> <prs_recording_this_merge> <lookups_ok>

@@ -227,14 +227,28 @@ The guard keys on the hostname, not a hardcoded project ref, so any database it 
 - CI must pass before merging to main
 
 ### Never push straight to main (#266)
-Every change to main goes through a pull request that CI has passed. This is a
-**rule, not an enforced constraint**, and the difference matters: server-side
-branch protection is unavailable on this repo (both `/rulesets` and
-`/branches/main/protection` answer 403, "Upgrade to GitHub Pro or make this
-repository public"), and Dan decided on 2026-08-17 to keep detection rather than
-pay for prevention. So nothing stops a direct push except this line.
+Every change to main goes through a pull request that CI has passed, and since
+2026-10-23 GitHub **enforces** it: Try-Pennie moved to GitHub Team that day and
+the `Protect main` ruleset went on. It refuses a direct push, a force push and
+deleting main; it requires a pull request; and it requires two checks, `CI passed`
+(the summary job at the end of `ci.yml`, which needs every other job there, #2749)
+and `Outage drill` (its own workflow, so the summary cannot need it). Both are
+pinned to GitHub Actions, so a check of the same name from another app does not
+count. The bypass list is empty, so the ruleset binds every session too: a
+refused merge here is the ruleset, not a flake.
 
-What exists instead is **detection after the fact**. The `Main has no unreviewed direct push` step of the
+It requires **no approving review**, which departs from the plan this section
+used to record ("require one approving review" if the plan were ever upgraded).
+Dan chose 0 approvals on 2026-10-23 because nobody else reviews these PRs and
+GitHub never lets an author approve their own, so one required review would stop
+every merge.
+
+Two consequences to remember. Renaming `CI passed` or the `Outage drill` job
+blocks every pull request with nothing saying why, so change the ruleset in the
+same PR (Settings, Rules, Rulesets). And a new job added to `ci.yml` must be
+added to `ci-passed`'s `needs`; `ci-passed.test.ts` fails until it is.
+
+**Detection after the fact** stays as the backstop, since an admin can switch the ruleset off or add a bypass. The `Main has no unreviewed direct push` step of the
 Security scans job in `ci.yml` (#760) runs on every push to main and reports a
 commit that arrived without a reviewed PR. It is deliberately fail-safe towards
 staying quiet, because it makes an accusation rather than withholding an action,
@@ -245,9 +259,6 @@ merge, and a false accusation is what teaches everyone to ignore a guard.
 The husky pre-push hooks (test gate, style gate) are also rules rather than
 constraints: `--no-verify`, `SKIP_TEST_CHECK` and `SKIP_STYLE_CHECK` each bypass
 them, which is by design for the rare justified case and useless as a barrier.
-
-If the plan is ever upgraded, close this gap properly: require a PR, require the
-CI checks, require one approving review, and disallow force-push and deletion.
 - Always commit `pnpm-lock.yaml` in the same commit as `package.json` changes. Every CI job installs with `--frozen-lockfile`, so a lockfile that does not match `package.json`, or one with a duplicated entry, fails the build. The repo's pnpm version is declared once, as `packageManager` in the root `package.json` (pnpm 9.15.9, #1677): CI's `pnpm/action-setup` reads it (no workflow names a version of its own), a local pnpm 10 switches to it automatically, and Dependabot uses it. It must stay pnpm 9: pnpm 11 drops the root `pnpm.overrides` from the lockfile, which CI's frozen install then refuses, and next-on-pages finds the pinned Vercel CLI only under pnpm 9. `apps/web/src/lib/__tests__/pnpm-version-declared.test.ts` guards all of that. Regenerate the lockfile with `CI=true npx -y pnpm@9.15.9 install --lockfile-only`, never a plain install through npx, which rebuilds node_modules. `pnpm-lock.yaml` was corrupt on main for 18 days in 2026-07/08 precisely because nothing installed strictly; `apps/web/src/lib/__tests__/lockfile-integrity.test.ts` now guards it.
 
 ## Database migrations
