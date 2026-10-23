@@ -202,6 +202,26 @@ describe('app_action through the ledgered send and connectionFetch', () => {
     expect(w.d.rec.sent).toEqual([])
   })
 
+  // Dan's decision on #2338 (2026-10-23): a person's own Google account may be
+  // used only by its owner, so no workflow sends email as someone else. Ops
+  // holds no record yet of who owns such a connection or who bound a step to it,
+  // so the step is refused by name rather than run on a guess (L75).
+  it('refuses a step bound to a person\'s own account connection by name, with nothing sent, while who bound it is unrecorded', async () => {
+    const w = world()
+    w.d.setCopy(usableCopy(envelope, { target: { own_account: true } }))
+    const report = await w.run(definition(step()))
+    expect(report).toMatchObject({ end: { outcome: 'failed', error: expect.stringContaining('own_account_binder_unrecorded') } })
+    expect(w.d.rec.sent).toEqual([])
+    expect(w.db.intents).toEqual([])
+  })
+
+  it('a company connection whose target only resembles an own account is not refused for it', async () => {
+    const w = world()
+    w.d.setCopy(usableCopy(envelope, { target: { host: 'api.example.test', own_account: 'true' } }))
+    w.d.respond(Response.json({ id: 1 }))
+    expect(await w.run(definition(step()))).toMatchObject({ end: { outcome: 'done' } })
+  })
+
   it('a removed connection is refused by name before anything is sent or written to the ledger', async () => {
     const w = world()
     w.d.setCopy(usableCopy(envelope, { state: 'connection_removed' }))
