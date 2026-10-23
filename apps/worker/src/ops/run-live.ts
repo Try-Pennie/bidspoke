@@ -21,7 +21,8 @@
  *     spends no attempt.
  *  3. invokeRun (run-invocation.ts) with the ops database's own functions,
  *     the real clock, a UUIDv7 execution id, and the body for the definition
- *     (run-body.ts).
+ *     (run-body.ts), whose app_action steps send through connectionFetch with
+ *     the OpsConnections live dependencies (ops-connections-live.ts, #2339).
  */
 import { uuidv7 } from '@bidspoke/uuidv7'
 import { parseServedOpsDefinitions } from '../lib/ops-gateway-contract'
@@ -35,7 +36,9 @@ import {
   completeRunRequest, extendRunLease, readWorkflowDefinition, recordSendIntent, recordSendResult, saveWorkflowDefinition, startRunExecution,
   type ClaimedRun,
 } from './ops-writes'
-import { runBodyFor } from './run-body'
+import { appActionDeps } from './app-action'
+import { liveOpsConnectionsDeps } from './ops-connections-live'
+import { opsStepHandlers, runBodyFor } from './run-body'
 import { invokeRun, type RunClock, type RunDb, type RunInvocationReport } from './run-invocation'
 
 /** How long a run whose definition could not be had waits before it is claimed again. */
@@ -145,5 +148,12 @@ export async function runDispatched(env: OpsEnv, signed: unknown, deps: RunLiveD
     clock: deps.clock ?? realRunClock,
     newExecutionId: deps.newExecutionId ?? (() => uuidv7()),
     log: (fields) => console.log(JSON.stringify(fields)),
-  }, run, runBodyFor(definition))
+  }, run, runBodyFor(definition, opsStepHandlers({
+    // Built the first time an app_action step reaches its connection (app-action.ts), so a run with
+    // none never needs the ops connections key, and a deploy without it fails that step by name.
+    appAction: appActionDeps(() => {
+      const live = liveOpsConnectionsDeps(env, { opensLogins: true, ...(deps.opsFetch ? { opsFetch: deps.opsFetch } : {}) })
+      return { ...live.connection, rulesFor: (service) => live.services(service)?.rules }
+    }),
+  })))
 }
