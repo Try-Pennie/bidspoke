@@ -157,7 +157,7 @@ export function googleTargetSubjects(target: unknown): { mailbox: string; drives
  * target, the connection's declaration of whom it acts as, which the Google
  * minter mints from and checks against the list (minters/google.ts); acts_as
  * holds nothing for a Google connection (actsAsOf measures Salesforce,
- * Snowflake, Slack and OpenAI only). Any service's row is read, so a target of this shape under
+ * Snowflake, Slack, OpenAI and Anthropic only). Any service's row is read, so a target of this shape under
  * another service key refuses too, the harmless side (L648). Ordered by name.
  */
 export function connectionsNamingSubject<R extends { name: string; target: unknown }>(rows: readonly R[], kind: 'mailbox' | 'drive', subject: string): R[] {
@@ -177,6 +177,9 @@ export function actsAsOf(identity: MeasuredIdentityAnswer): string | null {
     ? identity.username
     : identity.kind === 'snowflake'
       ? identity.user
+      : identity.kind === 'anthropic'
+        // An Anthropic key acts in its workspace (#2337); its organization is an id, which would tell a reader nothing.
+        ? `Workspace ${identity.workspace_id}`
       : identity.kind === 'openai'
         // An OpenAI key acts in its project, billed to its organization where OpenAI named one (#2337).
         ? `Project ${identity.project_id}${identity.organization === null ? '' : ` in ${identity.organization}`}`
