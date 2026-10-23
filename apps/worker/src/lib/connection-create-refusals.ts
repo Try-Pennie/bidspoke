@@ -62,7 +62,7 @@ export const CREATE_ROUTE_REFUSAL_CODES = [
 ] as const
 export type CreateRouteRefusalCode = (typeof CREATE_ROUTE_REFUSAL_CODES)[number]
 
-/** OpsConnections refusals only another method answers: the Google list's, the lookups', health's, revoke's, the Reconnect's clearing and signInClient's. */
+/** OpsConnections refusals only another method answers: the Google list's, the lookups', health's, revoke's, the Reconnect's clearing, signInClient's and exchangeOAuthCode's. */
 export const NOT_VERIFY_REFUSALS = [
   'reauth_clear_unrecorded',
   'revoke_unrecorded',
