@@ -146,6 +146,18 @@ describe('canvasSaveReducer and pressKeys', () => {
     expect(pressKeys(s, ids('c'))).toEqual({ expected_version: 7, save_id: 'c' })
   })
 
+  // The canvas computes Save over's press from the reducer and dispatches
+  // nothing, so a save stopped before it is sent leaves the refusal shown and
+  // the next plain Save refused again, never saving over theirs unasked.
+  it("computing Save over's press leaves the shown refusal and the canvas's version as they were", () => {
+    const stale = { version: 7, changedByName: 'Maria Lopez', changedAt: null }
+    const shown = canvasSaveReducer(loaded(4), { type: 'refused', refusal: { kind: 'stale', stale } })
+    const before = structuredClone(shown)
+    expect(pressKeys(canvasSaveReducer(shown, { type: 'save_over' }), ids('d')).expected_version).toBe(7)
+    expect(shown).toEqual(before)
+    expect(pressKeys(shown, ids('e')).expected_version).toBe(4)
+  })
+
   it('Save mine over theirs with no refusal shown changes nothing', () => {
     expect(canvasSaveReducer(loaded(4), { type: 'save_over' })).toEqual(loaded(4))
   })

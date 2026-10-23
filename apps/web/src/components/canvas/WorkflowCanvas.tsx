@@ -2896,11 +2896,15 @@ function CanvasInner({ workflow, mode, onModeChange, executionId, executionSteps
     if (landedEarlier) await handleSave(message, landedEarlier, true)
   }
 
-  /** R3, once confirmed: saves the canvas naming the version the refusal showed. */
+  /**
+   * R3, once confirmed: saves the canvas naming the version the refusal showed.
+   * Only this press names it: the shown refusal and the canvas's version are
+   * left as they are until the save answers, so a save stopped before it is
+   * sent (a duplicate Step ID, a loop) leaves the next plain Save refused
+   * again rather than saving over theirs unasked.
+   */
   async function saveOverTheirs(): Promise<void> {
-    const from = canvasSaveReducer(saveState, { type: 'save_over' })
-    dispatchSave({ type: 'save_over' })
-    await handleSave(commitMessage, from)
+    await handleSave(commitMessage, canvasSaveReducer(saveState, { type: 'save_over' }))
   }
 
   /** R4, once confirmed: replaces the canvas with the version stored now. */
