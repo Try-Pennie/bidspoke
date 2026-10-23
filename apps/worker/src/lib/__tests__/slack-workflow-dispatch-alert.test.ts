@@ -3,6 +3,7 @@ import { slackPostJsonOf } from '../../__tests__/helpers/slack-fetch'
 import { sendWorkflowDispatchAlert } from '../slack'
 import type { DispatchAttempt } from '../workflow-dispatch-driver'
 import { alertRowsAnswer } from '../../__tests__/helpers/slack-alert-read'
+import { sealedSlackRow, withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
 
 /**
  * The Slack message for the worker's workflow dispatch driver (#1058).
@@ -23,13 +24,13 @@ function makeSupabase(connection: Record<string, string> | null) {
         if (prop === 'limit')
           return alertRowsAnswer(() =>
             connection
-              ? Promise.resolve({ data: { config: connection }, error: null })
+              ? sealedSlackRow(connection).then((row) => ({ data: row, error: null }))
               : Promise.resolve({ data: null, error: null }))
         return () => chain
       },
     },
   )
-  return { from: () => chain } as never
+  return withSlackKeyRing({ from: () => chain }) as never
 }
 
 const connection = { bot_token: 'xoxb-test', default_channel: '#alerts', workspace_name: 'Pennie' }

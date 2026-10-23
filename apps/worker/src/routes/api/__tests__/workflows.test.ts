@@ -4,7 +4,7 @@
  * DELETE, version restore, test runner endpoint.
  * Auth rejection is covered in workflows-auth.test.ts.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { sanitizeCodeNodeScripts } from '@bidspoke/script-hygiene'
 // The live money workflows the money gate replays (#2338: their save must be unchanged).
 import MONEY_MAIN_FLOW from '../../../../money-gate/fixtures/definitions/60e2e0bc-5aa2-47db-b333-3a8fe1c62e09.json'
@@ -67,7 +67,7 @@ const USER_ORG = 'org-abc'
 const testUser = { id: 'user-1', organization_id: USER_ORG, email: 'dan@pennie.com' }
 // A stored row always carries its lane (NOT NULL, default money, #1707), and the
 // test and test-node routes refuse a row without one (#1725).
-const existingWorkflow = { id: 'wf-1', name: 'Lead Routing', organization_id: USER_ORG, definition: { nodes: [] }, lane: 'money' }
+const existingWorkflow = { id: 'wf-1', name: 'Lead Routing', organization_id: USER_ORG, definition: { nodes: [], edges: [] }, lane: 'money' }
 const validPayload = { sub: 'user-1', email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
 // The keys the cache was asked to delete, read by the rename-apply tests (#1846).
 const kvDeleted: string[] = []
@@ -196,10 +196,9 @@ describe('PUT /workflows/:id', () => {
     expect(body.error).toBe('invalid_state_sf_post: rename_fields must map each field name to a new field name')
   })
 
-  // The Salesforce rule judges Salesforce steps only, so node entries that are not
-  // objects save as they did before it (#2170). A null entry is not shown here: the
-  // cycle check reads it before this rule and answers 500 on main too.
-  it('saves a definition whose nodes hold non-object entries beside a valid Salesforce step, as before the rule', async () => {
+  // Node entries that are not objects saved before #2190, beside any valid step;
+  // now the shape check refuses them by name before any other rule reads them.
+  it('refuses a definition whose nodes hold non-object entries beside a valid Salesforce step, naming the entries (#2190)', async () => {
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
         users: { single: testUser },
@@ -213,7 +212,11 @@ describe('PUT /workflows/:id', () => {
       trigger: { type: 'http_webhook', config: {} },
     }
     const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
-    expect(res.status).toBe(200)
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string; reason: string }
+    expect(body.reason).toBe('definition_malformed')
+    expect(body.error).toContain('step 1')
+    expect(body.error).toContain('step 2')
   })
 
   // #2589: a lead validation step is held at save to what its executor can run,
@@ -398,7 +401,7 @@ describe('PUT /workflows/:id', () => {
     // A definition that actually differs from existingWorkflow's ({ nodes: [] }),
     // so the save is real and exercises the version/cache/audit/backup paths
     // rather than short-circuiting as a #569 no-op.
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
+    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
     expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
   })
 
@@ -416,7 +419,7 @@ describe('PUT /workflows/:id', () => {
         workflow_versions: [{ single: { version_number: 1 } }, { insertResult: newVersion }],
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
-    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
     // The save landed, so it is answered as the success it was, with the warning beside it.
     expect(res.status).toBe(200)
     expect(((await res.json()) as { stored_copy_warning?: string }).stored_copy_warning).toMatch(/saved.*repaired automatically/i)
@@ -440,7 +443,7 @@ describe('PUT /workflows/:id', () => {
     // A definition that actually differs from existingWorkflow's ({ nodes: [] }),
     // so the save is real and exercises the version/cache/audit/backup paths
     // rather than short-circuiting as a #569 no-op.
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
+    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
     await drainWaitUntil()
     expect(vi.mocked(recordBackupSuccess)).toHaveBeenCalled()
     expect(vi.mocked(recordBackupFailure)).not.toHaveBeenCalled()
@@ -464,7 +467,7 @@ describe('PUT /workflows/:id', () => {
         ],
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
+    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
     await drainWaitUntil()
 
     // One structured zero_row_write line, emitted by requireRowsAffected rather
@@ -497,7 +500,7 @@ describe('PUT /workflows/:id', () => {
         ],
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
+    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
     await drainWaitUntil()
 
     const logged = errSpy.mock.calls.map((call) => String(call[0]))
@@ -519,7 +522,7 @@ describe('PUT /workflows/:id', () => {
     // A definition that actually differs from existingWorkflow's ({ nodes: [] }),
     // so the save is real and exercises the version/cache/audit/backup paths
     // rather than short-circuiting as a #569 no-op.
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
+    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
     await drainWaitUntil()
     expect(vi.mocked(recordBackupFailure)).toHaveBeenCalledWith(expect.objectContaining({ workflowId: 'wf-1' }))
     expect(vi.mocked(recordBackupSuccess)).not.toHaveBeenCalled()
@@ -539,7 +542,7 @@ describe('PUT /workflows/:id', () => {
     await app.request('/workflows/wf-1', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tok' },
-      body: JSON.stringify({ definition: { nodes: [] } }),
+      body: JSON.stringify({ definition: { nodes: [], edges: [] } }),
     }, localEnv, mockCtx)
     await drainWaitUntil()
     expect(vi.mocked(recordBackupFailure)).not.toHaveBeenCalled()
@@ -558,7 +561,7 @@ describe('PUT /workflows/:id', () => {
     // A definition that actually differs from existingWorkflow's ({ nodes: [] }),
     // so the save is real and exercises the version/cache/audit/backup paths
     // rather than short-circuiting as a #569 no-op.
-    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } } })
+    await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } } })
     expect(vi.mocked(writeAuditLog)).toHaveBeenCalledWith(
       expect.anything(), USER_ORG, 'workflow', 'wf-1', 'updated', 'user-1', expect.anything()
     )
@@ -577,7 +580,7 @@ describe('PUT /workflows/:id', () => {
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'PUT', '/workflows/wf-1', {
-      body: { name: 'Lead Routing', definition: { nodes: [] } },
+      body: { name: 'Lead Routing', definition: { nodes: [], edges: [] } },
     })
     expect(res.status).toBe(200)
     const body = await res.json() as { no_changes?: boolean; version_id?: string }
@@ -598,7 +601,7 @@ describe('PUT /workflows/:id', () => {
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'PUT', '/workflows/wf-1', {
-      body: { name: 'Lead Routing', definition: { nodes: [] } },
+      body: { name: 'Lead Routing', definition: { nodes: [], edges: [] } },
     })
     expect(((await res.json()) as { no_changes?: boolean }).no_changes).toBe(true)
     expect(vi.mocked(refreshWorkflowCaches)).toHaveBeenCalledWith('wf-1', testEnv.WORKFLOW_CACHE, routeClient())
@@ -613,7 +616,7 @@ describe('PUT /workflows/:id', () => {
     )
     vi.mocked(refreshWorkflowCaches).mockRejectedValueOnce(new Error('kv unavailable'))
     const res = await request(app, 'PUT', '/workflows/wf-1', {
-      body: { name: 'Lead Routing', definition: { nodes: [] } },
+      body: { name: 'Lead Routing', definition: { nodes: [], edges: [] } },
     })
     expect(res.status).toBe(200)
     const body = (await res.json()) as { no_changes?: boolean; stored_copy_warning?: string }
@@ -624,7 +627,7 @@ describe('PUT /workflows/:id', () => {
   it('treats a key-reordered but structurally identical definition as no_changes (jsonb round-trip)', async () => {
     const stored = {
       ...existingWorkflow,
-      definition: { nodes: [], trigger: { type: 'http_webhook', config: {} } },
+      definition: { nodes: [], edges: [], trigger: { type: 'http_webhook', config: {} } },
     }
     vi.mocked(createSupabaseClient).mockReturnValue(
       makeSupabase({
@@ -634,7 +637,7 @@ describe('PUT /workflows/:id', () => {
     )
     // Same content, keys in a different order (as jsonb would return them).
     const res = await request(app, 'PUT', '/workflows/wf-1', {
-      body: { name: 'Lead Routing', definition: { trigger: { config: {}, type: 'http_webhook' }, nodes: [] } },
+      body: { name: 'Lead Routing', definition: { trigger: { config: {}, type: 'http_webhook' }, edges: [], nodes: [] } },
     })
     const body = await res.json() as { no_changes?: boolean }
     expect(body.no_changes).toBe(true)
@@ -650,7 +653,7 @@ describe('PUT /workflows/:id', () => {
       }) as unknown as ReturnType<typeof createSupabaseClient>
     )
     const res = await request(app, 'PUT', '/workflows/wf-1', {
-      body: { name: 'Lead Routing', definition: { nodes: [{ id: 'a', type: 'code', config: {} }] } },
+      body: { name: 'Lead Routing', definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: {} }], edges: [] } },
     })
     expect(res.status).toBe(200)
     const body = await res.json() as { no_changes?: boolean; version_id?: string }
@@ -1901,7 +1904,7 @@ describe('PATCH /workflows/:id: zero-row update 404 vs real DB error (#595)', ()
 describe('code node script hygiene on every definition write (#1117)', () => {
   const padded = 'const a = 1;    \nconst body = `keep   \n`;   \nreturn body;   '
   const clean = 'const a = 1;\nconst body = `keep   \n`;\nreturn body;'
-  const paddedDefinition = { nodes: [{ id: 'c1', type: 'code', config: { script: padded } }], edges: [] }
+  const paddedDefinition = { nodes: [{ id: 'c1', type: 'code', namespace: 'c1', config: { script: padded } }], edges: [] }
   let app: Awaited<ReturnType<typeof makeApp>>
 
   const scriptsWritten = (sb: ReturnType<typeof makeSupabase>, table: string, method: string) =>
@@ -1991,10 +1994,9 @@ describe('new and duplicated workflows start inactive (#1706)', () => {
     app = await makeApp()
   })
 
-  // A node entry that is not an object is not the Salesforce rule's to judge
-  // (#2170): before that rule, create stored such a definition and answered 201,
-  // and it still does, rather than crashing on the entry with a 500.
-  it('POST still creates a definition whose nodes hold entries that are not objects, as it did before the Salesforce rule', async () => {
+  // Create stored a definition whose nodes held entries that were not objects
+  // until #2190; it now refuses one by name and creates nothing, switched off or not.
+  it('POST refuses a definition whose nodes hold entries that are not objects, and creates nothing (#2190)', async () => {
     const sb = makeSupabase({
       users: { single: testUser },
       workflows: { insertResult: { id: 'wf-new', name: 'New', is_active: false } },
@@ -2002,8 +2004,8 @@ describe('new and duplicated workflows start inactive (#1706)', () => {
     vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
     const definition = { nodes: [null, 5, 'x'], edges: [], trigger: { type: 'http_webhook', config: {} } }
     const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition } })
-    expect(res.status).toBe(201)
-    expect(activeFlagsInserted(sb)).toEqual([false])
+    expect(res.status).toBe(400)
+    expect(activeFlagsInserted(sb)).toEqual([])
   })
 
   it('POST creates the workflow with is_active false', async () => {
@@ -2718,5 +2720,206 @@ describe('definition_schema_version is stamped by the Worker on every definition
     expect(res.status).toBe(201)
     expect(stamps(sb, 'workflows', 'insert')).toEqual([stored])
     expect(stamps(sb, 'workflow_versions', 'insert')).toEqual([stored])
+  })
+})
+
+/** Every write call the route made against the workflow tables, as [table, method]. */
+const definitionWrites = (sb: ReturnType<typeof makeSupabase>) =>
+  ['workflows', 'workflow_versions'].flatMap((t) => (sb.calls[t] ?? []).filter(([m]) => ['insert', 'update', 'upsert', 'delete'].includes(m)).map(([m]) => [t, m]))
+
+const httpTrigger = { type: 'http_webhook', config: { method: 'POST', auth_method: 'api_key' } }
+
+// #2190: a definition the rules cannot read is refused by name on both routes a
+// caller's definition enters by, before any check reads it, and create runs the
+// same loop check as save.
+describe('a malformed definition is refused by a named 400 on create and save, and create refuses a loop (#2190)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    app = await makeApp()
+  })
+
+  it.each([
+    ['a null step', { nodes: [null], edges: [], trigger: httpTrigger }, 'step 1'],
+    ['steps that are numbers and text', { nodes: [5, 'x'], edges: [], trigger: httpTrigger }, 'step 1'],
+    ['a definition that is null', null, 'not an object'],
+    ['no list of connections', { nodes: [], trigger: httpTrigger }, 'connections'],
+  ])('PUT refuses %s by name and writes nothing', async (_, definition, named) => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { single: existingWorkflow } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition } })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string; reason: string; problems: Array<{ rule: string }> }
+    expect(body.reason).toBe('definition_malformed')
+    expect(body.error).toContain(named)
+    expect(new Set(body.problems.map((p) => p.rule))).toEqual(new Set(['definition_shape']))
+    expect(definitionWrites(sb)).toEqual([])
+  })
+
+  it('POST refuses a definition holding a null step by name, and inserts nothing', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { insertResult: { id: 'wf-new' } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition: { nodes: [null, 5, 'x'], edges: [], trigger: httpTrigger } } })
+    expect(res.status).toBe(400)
+    expect((await res.json() as { reason: string }).reason).toBe('definition_malformed')
+    expect(definitionWrites(sb)).toEqual([])
+  })
+
+  it('POST refuses a looping definition, naming the loop, as save does, and inserts nothing', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { insertResult: { id: 'wf-new' } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const definition = {
+      nodes: [{ id: 'a', namespace: 'validate', type: 'code', config: {} }, { id: 'b', namespace: 'enrich', type: 'code', config: {} }],
+      edges: [{ id: 'e1', source: 'a', target: 'b' }, { id: 'e2', source: 'b', target: 'a' }],
+      trigger: httpTrigger,
+    }
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition } })
+    expect(res.status).toBe(400)
+    const body = await res.json() as { error: string }
+    expect(body.error).toMatch(/loop/i)
+    expect(body.error).toContain('validate')
+    expect(definitionWrites(sb)).toEqual([])
+  })
+
+  it('POST with no definition still creates the default one', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { insertResult: { id: 'wf-new' } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New' } })
+    expect(res.status).toBe(201)
+  })
+})
+
+// #1947 PR 3: validateDefinition runs report only on every money lane write. It
+// logs what it would refuse and refuses nothing new; the five saved shapes the
+// production calibration found are each written as they were.
+describe('validateDefinition reports on every definition write and refuses nothing new (#1947)', () => {
+  let app: Awaited<ReturnType<typeof makeApp>>
+  let warn: ReturnType<typeof vi.spyOn>
+  let log: ReturnType<typeof vi.spyOn>
+
+  const reports = () =>
+    [...log.mock.calls, ...warn.mock.calls]
+      .map((c) => { try { return JSON.parse(String(c[0])) as Record<string, unknown> } catch { return null } })
+      .filter((l): l is Record<string, unknown> => l !== null && l.event === 'definition_report')
+
+  const integrationStep = { nodes: [{ id: 'f', type: 'integration', namespace: 'fail_test', config: {} }], edges: [], trigger: httpTrigger }
+
+  beforeEach(async () => {
+    vi.clearAllMocks()
+    vi.mocked(verifyJwt).mockResolvedValue(validPayload)
+    vi.mocked(refreshWorkflowCaches).mockResolvedValue(undefined)
+    vi.mocked(writeAuditLog).mockResolvedValue(undefined)
+    vi.mocked(pushWorkflowToGitHub).mockResolvedValue(null)
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    app = await makeApp()
+  })
+  afterEach(() => {
+    warn.mockRestore()
+    log.mockRestore()
+  })
+
+  it('PUT saves a definition a rule would refuse, and logs what it would refuse at the stamp it writes', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: { ...existingWorkflow, is_active: false } }, { single: existingWorkflow }],
+      workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: integrationStep } })
+    expect(res.status).toBe(200)
+    expect(reports()).toEqual([expect.objectContaining({ writer: 'save', workflow_id: 'wf-1', lane: 'money', live: false, schema_version: 1, stamped: true, would_refuse_reasons: ['node_type_unknown'] })])
+  })
+
+  it('PUT of a money workflow with a schedule trigger saves, and logs that no money entry point fires it', async () => {
+    const schedule = { type: 'schedule', config: { interval_seconds: 300, timezone: 'UTC', overlap: 'skip', catch_up: 'none', jitter_max_seconds: 0 } }
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: { ...existingWorkflow, is_active: false } }, { single: existingWorkflow }],
+      workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { definition: { nodes: [], edges: [], trigger: schedule } } })
+    expect(res.status).toBe(200)
+    expect(reports()[0]).toMatchObject({ writer: 'save', would_refuse_reasons: ['trigger_not_on_lane'] })
+  })
+
+  it('a save sending no definition reports nothing, since it writes none', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: existingWorkflow }, { single: existingWorkflow }],
+      workflow_versions: [{ single: { version_number: 1 } }, { insertResult: { id: 'ver-2', version_number: 2, workflow_id: 'wf-1' } }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PUT', '/workflows/wf-1', { body: { name: 'Renamed' } })
+    expect(res.status).toBe(200)
+    expect(reports()).toEqual([])
+  })
+
+  it('restore of a version with the old webhook spelling writes it unchanged, and logs the warning at the version\'s own stamp', async () => {
+    const legacy = { nodes: [], edges: [], trigger: { type: 'webhook', config: { method: 'POST', auth_method: 'api_key' } } }
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflow_versions: [{ single: { definition: legacy, version_number: 3, definition_schema_version: null } }, { single: { version_number: 5 } }, { insertResult: { id: 'ver-6' } }],
+      workflows: [{ single: { ...existingWorkflow, is_active: true } }, { list: [{ id: 'wf-1' }] }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-3/restore')
+    expect(res.status).toBe(200)
+    const written = (sb.calls.workflows ?? []).filter(([m]) => m === 'update').map(([, a]) => (a[0] as { definition: { trigger: { type: string } } }).definition.trigger.type)
+    expect(written).toEqual(['webhook'])
+    expect(reports()).toEqual([expect.objectContaining({ writer: 'restore', live: true, schema_version: 1, stamped: false, by_rule: { trigger: 1 }, would_refuse: 0 })])
+  })
+
+  it('restore of a version holding the retired integration step restores it, and logs that a rule would refuse it', async () => {
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflow_versions: [{ single: { definition: integrationStep, version_number: 3, definition_schema_version: null } }, { single: { version_number: 5 } }, { insertResult: { id: 'ver-6' } }],
+      workflows: [{ single: { ...existingWorkflow, is_active: false } }, { list: [{ id: 'wf-1' }] }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/versions/ver-3/restore')
+    expect(res.status).toBe(200)
+    expect(reports()).toEqual([expect.objectContaining({ writer: 'restore', live: false, would_refuse_reasons: ['node_type_unknown'] })])
+  })
+
+  it('create logs the definition it writes as a draft at the current stamp', async () => {
+    const sb = makeSupabase({ users: { single: testUser }, workflows: { insertResult: { id: 'wf-new' } } })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows', { body: { name: 'New', definition: integrationStep } })
+    expect(res.status).toBe(201)
+    expect(reports()).toEqual([expect.objectContaining({ writer: 'create', workflow_id: null, live: false, schema_version: 1, would_refuse_reasons: ['node_type_unknown'] })])
+  })
+
+  it('duplicate logs the clone as a draft at the source\'s own stamp', async () => {
+    const source = { name: 'Lead Routing', description: null, definition: integrationStep, folder_id: null, is_active: true, definition_schema_version: null, lane: 'money' }
+    const sb = makeSupabase({
+      users: { single: testUser },
+      workflows: [{ single: source }, { insertResult: { id: 'wf-copy', name: 'Lead Routing (copy)', organization_id: USER_ORG } }],
+      workflow_versions: [{ list: [] }, { insertResult: {} }],
+    })
+    vi.mocked(createSupabaseClient).mockReturnValue(sb as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'POST', '/workflows/wf-1/duplicate')
+    expect(res.status).toBe(201)
+    expect(reports()).toEqual([expect.objectContaining({ writer: 'duplicate', workflow_id: 'wf-1', live: false, stamped: false, would_refuse_reasons: ['node_type_unknown'] })])
+  })
+
+  it('switching a workflow on logs its stored definition as live, and switching off logs nothing', async () => {
+    const stored = { ...existingWorkflow, is_active: false, definition: { nodes: [{ id: 'a', type: 'code', namespace: 'a', config: { script: '' } }, { id: 'b', type: 'response', namespace: 'b', config: {} }], edges: [{ source: 'a', target: 'b' }], trigger: httpTrigger }, definition_schema_version: null }
+    const on = makeSupabase({ users: { single: testUser }, workflows: [{ single: stored }, { single: { id: 'wf-1', is_active: true } }] })
+    vi.mocked(createSupabaseClient).mockReturnValue(on as unknown as ReturnType<typeof createSupabaseClient>)
+    const res = await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: true } })
+    expect(res.status).toBe(200)
+    expect(reports()).toEqual([expect.objectContaining({ writer: 'switch_on', live: true, stamped: false, would_refuse_reasons: ['node_unconfigured'] })])
+
+    log.mockClear()
+    warn.mockClear()
+    const off = makeSupabase({ users: { single: testUser }, workflows: [{ single: { ...stored, is_active: true } }, { single: { id: 'wf-1', is_active: false } }] })
+    vi.mocked(createSupabaseClient).mockReturnValue(off as unknown as ReturnType<typeof createSupabaseClient>)
+    expect((await request(app, 'PATCH', '/workflows/wf-1', { body: { is_active: false } })).status).toBe(200)
+    expect(reports()).toEqual([])
   })
 })

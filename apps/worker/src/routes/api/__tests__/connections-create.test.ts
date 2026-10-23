@@ -86,6 +86,10 @@ import { createSupabaseClient } from '../../../lib/supabase'
 import { writeAuditLog } from '../../../lib/audit'
 import { resolveSalesforceCredsFor } from '../../../lib/salesforce-creds'
 import api from '../index'
+import { encryptSecret } from '../../../lib/secret-crypto'
+import { SLACK_TEST_KEY } from '../../../__tests__/helpers/sealed-slack-row'
+
+const ALERT_SEALED = await encryptSecret('canary-alert-bot-token-2337', SLACK_TEST_KEY)
 
 const ORG = '0a000000-0000-4000-8000-000000000001'
 const OTHER_ORG = '0b000000-0000-4000-8000-000000000002'
@@ -189,7 +193,7 @@ function makeEnv(ops: { verify?: Verify; list?: () => Promise<unknown>; revoke?:
     clearReauth: vi.fn(), health: vi.fn(), lookup: vi.fn(), exchangeOAuthCode: vi.fn(),
   }
   // Shaped like the real RPC stub, so a call it would refuse fails here too (#2570).
-  const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {}, OPS_CONNECTIONS: rpcStub(binding), ...WORKER_ENV } as unknown as Env
+  const env = { SUPABASE_JWKS_URL: 'https://fake.jwks', WORKFLOW_CACHE: {}, OPS_CONNECTIONS: rpcStub(binding), ...WORKER_ENV, SECRET_ENCRYPTION_KEY: SLACK_TEST_KEY } as unknown as Env
   return { env, binding }
 }
 
@@ -399,7 +403,8 @@ describe('the sealed login opens through the real ops minters (round trip)', () 
 
 describe('an ops Slack connection is never the alerts bot (Dan\'s decision 6, #2337)', () => {
   const ALERT_TOKEN = 'canary-alert-bot-token-2337'
-  const alertRow = { id: 'a1', organization_id: ORG, service_type: 'slack', name: 'slack', sealed_for: null, credential_enc: null, config: { bot_token: ALERT_TOKEN, default_channel: 'C0ALERTS' } }
+  // The alert row as stored (#2331's contract release): its token sealed with the Worker's key, no plaintext.
+  const alertRow = { id: 'a1', organization_id: ORG, service_type: 'slack', name: 'slack', sealed_for: null, credential_enc: ALERT_SEALED, config: { default_channel: 'C0ALERTS' } }
   const opsSlack = { service: 'slack', name: 'Ops bot', fields: { team_id: 'T0PENNIE', bot_token: 'canary-ops-bot-token-2337' } }
   const measured = (botId: string): Verify => async (r) => ({
     ok: true, service: r.candidate!.service, generation: 1,

@@ -28,30 +28,33 @@ import { parseSlackConnection } from '../../../lib/slack-connection'
 import { readSlackCopy, rememberSlackConnections } from '../../../lib/slack-copy'
 import { fakePostgrest, type Row } from '../../../__tests__/helpers/postgrest-fake'
 import api from '../index'
+import { encryptSecret } from '../../../lib/secret-crypto'
 
 const ORG = 'org-2332'
 const USER = 'user-2332'
 const KEY = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)))
 const validPayload = { sub: USER, email: 'dan@pennie.com', exp: 9999999999, iat: 1, aud: 'authenticated' }
+// Each row's token sealed with the Worker's key, as stored since #2331's contract release (no plaintext in config).
+const SEALED = { alert: await encryptSecret('alert-bot-token', KEY), ops: await encryptSecret('OPS-bot-token', KEY), second: await encryptSecret('second-bot-token', KEY), other: await encryptSecret('other-bot-token', KEY) }
 
 const alertRow = (): Row => ({
-  id: 'alert-row', organization_id: ORG, service_type: 'slack', name: 'slack', sealed_for: null, credential_enc: null,
-  config: { bot_token: 'alert-bot-token', default_channel: '#alerts', workspace_name: 'Pennie' },
+  id: 'alert-row', organization_id: ORG, service_type: 'slack', name: 'slack', sealed_for: null, credential_enc: SEALED.alert,
+  config: { default_channel: '#alerts', workspace_name: 'Pennie' },
   updated_at: '2026-10-17T00:00:00Z', updated_by_email: 'dan@pennie.com',
 })
 const opsRow = (): Row => ({
-  id: 'ops-row', organization_id: ORG, service_type: 'slack', name: 'ops-bot', sealed_for: 'ops_key', credential_enc: null,
-  config: { bot_token: 'OPS-bot-token', default_channel: '#ops', workspace_name: 'Ops' },
+  id: 'ops-row', organization_id: ORG, service_type: 'slack', name: 'ops-bot', sealed_for: 'ops_key', credential_enc: SEALED.ops,
+  config: { default_channel: '#ops', workspace_name: 'Ops' },
   updated_at: '2026-10-16T00:00:00Z', updated_by_email: 'ops@pennie.com',
 })
 const secondCandidate = (): Row => ({
-  id: 'second-row', organization_id: ORG, service_type: 'slack', name: 'slack', sealed_for: 'bidding_ring', credential_enc: null,
-  config: { bot_token: 'second-bot-token', default_channel: '#second' },
+  id: 'second-row', organization_id: ORG, service_type: 'slack', name: 'slack', sealed_for: 'bidding_ring', credential_enc: SEALED.second,
+  config: { default_channel: '#second' },
 })
 
 const otherSlackRow = (): Row => ({
-  id: 'other-slack-row', organization_id: ORG, service_type: 'slack', name: 'second workspace', sealed_for: null, credential_enc: null,
-  config: { bot_token: 'other-bot-token', default_channel: '#other' },
+  id: 'other-slack-row', organization_id: ORG, service_type: 'slack', name: 'second workspace', sealed_for: null, credential_enc: SEALED.other,
+  config: { default_channel: '#other' },
 })
 
 /**

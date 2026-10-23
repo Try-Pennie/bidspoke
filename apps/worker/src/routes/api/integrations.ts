@@ -27,13 +27,11 @@
 // "not connected" (which is what PostgREST's more than one row error did).
 //
 // The token (#2331, phase 1 of #1689). POST seals the bot token into
-// service_connections.credential_enc with the Worker's key ring and, in this
-// release, keeps config.bot_token beside it (dual write): the code before this
-// release, the wrangler rollback target, reads only config.bot_token, so the
-// old field must stay readable until the contract release (L640). Every read
-// of the token here goes through resolveSlackConnection (lib/slack-connection.ts),
-// which opens the ciphertext first. The browser roles can no longer read the
-// table at all (migration 20261017120000), which is what closed the exposure.
+// service_connections.credential_enc with the Worker's key ring, its only home
+// since the contract release: config never carries it. Every read of the token
+// here goes through resolveSlackConnection (lib/slack-connection.ts), which
+// reads only the ciphertext. The browser roles can no longer read the table at
+// all (migration 20261017120000), which is what closed the exposure.
 //
 // The audit record (#2331, F119). The table's own trigger writes one audit_log
 // row per change, naming the user from updated_by (every write here sets it)
@@ -163,8 +161,8 @@ integrations.post('/slack', async (c) => {
     return c.json({ error: slackTokenRefusedMessage(verified.slackError), code: 'slack_token_invalid', slack_error: verified.slackError }, 400)
   }
 
-  // config.bot_token stays beside the sealed copy in this release (dual write,
-  // see the header): the rollback target reads only it.
+  // The token is sealed into credential_enc and never kept in config (#2331's
+  // contract release): saveSlackAlertConnection takes it out of the config.
   const saved = await saveSlackAlertConnection(c.env, supabase, { orgId, userId, email }, {
     bot_token: body.bot_token,
     default_channel: body.default_channel,
@@ -187,9 +185,11 @@ export type SlackAlertSave =
  * POST /slack calls it, and so does the Connections page's Reconnect on the
  * Slack alerts login (POST /api/connections/:id/reconnect), so there is one way
  * to save that token. The token is checked with Slack (verifySlackToken)
- * before either caller gets here. `config` is the whole config the row will
- * hold: a Reconnect passes the row's own with the new token in it, so the
- * channel and the alert switches are kept.
+ * before either caller gets here. `config` is the row's config with the token
+ * in it: a Reconnect passes the row's own with the new token, so the channel
+ * and the alert switches are kept. The token is sealed into credential_enc and
+ * taken OUT of the config before the write (#2331's contract release), so no
+ * plaintext is stored, a stale one included.
  *
  * Who: the caller's organization's row, from the verified token; updated_by
  * names the user, so the table's trigger audits the change under them.
@@ -201,11 +201,12 @@ export async function saveSlackAlertConnection(
   config: Record<string, unknown> & { bot_token: string },
 ): Promise<SlackAlertSave> {
   const { orgId, userId, email } = who
+  const { bot_token: token, ...stored } = config
   let keys: SecretKeys
   let credentialEnc: string
   try {
     keys = secretKeys(env)
-    credentialEnc = await encryptSecret(config.bot_token, keys)
+    credentialEnc = await encryptSecret(token, keys)
   } catch (e) {
     console.error(`[integrations] the Slack token could not be sealed for org ${orgId}, so nothing was saved: ${formatErr(e)}`)
     return { kind: 'seal_failed' }
@@ -237,7 +238,7 @@ export async function saveSlackAlertConnection(
         // The token is in credential_enc, not a Cloudflare secret (#2332).
         cf_secret_key: null,
         // A Reconnect passes the row's own config back, which was read as JSON.
-        config: config as Json,
+        config: stored as Json,
         credential_enc: credentialEnc,
         sealed_for: 'bidding_ring',
         updated_by: userId,
@@ -252,7 +253,7 @@ export async function saveSlackAlertConnection(
 
   const copyEdited = await copyCleared(
     async () => {
-      const entry = await copyEntryFor(keys, orgId, { config, credential_enc: credentialEnc })
+      const entry = await copyEntryFor(keys, orgId, { config: stored, credential_enc: credentialEnc })
       if (entry !== KEEP_ENTRY) await editSlackCopyEntry(env.IDEMPOTENCY, keys, orgId, entry)
     },
     `the saved Slack copy for org ${orgId}`,
@@ -307,11 +308,10 @@ integrations.get('/slack/channels', async (c) => {
   const resolved = await resolveSlackConnection(picked.row, secretKeys(c.env))
   const subject = `integrations channel search for org ${orgId}`
   if (resolved.kind === 'unreadable') {
-    console.error(slackTokenProblemLine(subject, resolved, false))
+    console.error(slackTokenProblemLine(subject, resolved))
     return c.json({ error: `${resolved.reason}: the saved Slack token cannot be read; save the connection again` }, 500)
   }
   if (resolved.kind === 'none') return c.json({ error: 'Slack is not connected' }, 404)
-  if (resolved.problem) console.error(slackTokenProblemLine(subject, resolved.problem, true))
   // Through the one Slack client (#2331), each page read as its body as
   // before (slackBodyOf), so the page is told exactly what it was.
   const slack = createSlackClient(resolved.connection)
@@ -382,7 +382,7 @@ integrations.patch('/slack/settings', async (c) => {
   if (updateBlocked) return updateBlocked
 
   // The copy entry is the new settings with the token the row holds, opened
-  // from credential_enc, so a row with no plaintext copy stays in the copy.
+  // from credential_enc, its only home, so the org stays in the copy.
   const copyEdited = await copyCleared(
     async () => {
       // The ring is read in here, so a missing key can fail only the copy edit.
@@ -450,10 +450,9 @@ async function copyEntryFor(keys: SecretKeys, orgId: string, row: SlackConnectio
   const resolved = await resolveSlackConnection(row, keys)
   const subject = `integrations saved copy for org ${orgId}`
   if (resolved.kind === 'unreadable') {
-    console.error(slackTokenProblemLine(subject, resolved, false))
+    console.error(slackTokenProblemLine(subject, resolved))
     return KEEP_ENTRY
   }
-  if (resolved.kind === 'connection' && resolved.problem) console.error(slackTokenProblemLine(subject, resolved.problem, true))
   return resolved.kind === 'connection' ? resolved.connection : null
 }
 

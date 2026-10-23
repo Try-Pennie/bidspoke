@@ -20,6 +20,14 @@ name: Outage Drill
 on:
   pull_request:
 
+# A newer commit on a pull request cancels that pull request's older drill: the
+# drill writes nothing (it replays fixtures in a local workerd and uploads its
+# report), so a superseded run is pure queue (L671). Grouped by workflow name so
+# it never cancels CI. Guard: ci-cancels-superseded-pr-runs.test.ts.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   outage-drill:
     name: Outage drill

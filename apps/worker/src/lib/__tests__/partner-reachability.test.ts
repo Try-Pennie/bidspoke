@@ -36,6 +36,7 @@ import { recoveryKey } from '../alert-recovery'
 import { RECOVERY_REARM_MINUTES } from '../alert-recovery'
 import { ACHIEVE_HOSTS, ACHIEVE_CLIENT_HEADER, ACHIEVE_KEY_HEADER } from '../../engine/nodes/achieve-identity'
 import { ACHIEVE_CLOUDFLARE_BLOCK_PAGE } from './fixtures/achieve-cloudflare-block-page'
+import { sealedSlackRow, withSlackKeyRing } from '../../__tests__/helpers/sealed-slack-row'
 
 const MIN = 60 * 1000
 
@@ -680,6 +681,8 @@ describe('resolveSlackForEveryOrg: the probe belongs to no org, so it posts to e
   // The scheduled client's one bounded read of every org's connection (#1303).
   const scheduledClient = async (answers: DbAnswer[], copy: Record<string, unknown> | null) => {
     const { client, calls } = fakeClient(answers)
+    // createScheduledSupabaseClient registers the key ring too (it builds through createSupabaseClient).
+    withSlackKeyRing(client)
     registerScheduledSlack(client, { kv: copy ? await kvWithCopy(copy) : kvWith(), secretKeys: TEST_KEY, sleep: fakeTimers(answers.includes('stall') ? 'now' : 'never').sleep })
     return { client, calls }
   }
@@ -692,7 +695,7 @@ describe('resolveSlackForEveryOrg: the probe belongs to no org, so it posts to e
     quiet()
     const { resolveSlackForEveryOrg } = await import('../standing-alert')
     const { client, calls } = await scheduledClient([{ data: [
-      { organization_id: 'a', config: { bot_token: 'ta', default_channel: '#a' } },
+      await sealedSlackRow({ bot_token: 'ta', default_channel: '#a' }, { organization_id: 'a' }),
       { organization_id: 'b', config: null },
     ] }], null)
     const found = await resolveSlackForEveryOrg({ supabase: client, use: 'tell-only', log: () => {}, logPrefix: '[partner-reachability]' })
